@@ -1,0 +1,19 @@
+version: 1
+# Mem0 two-tier memory (DESIGN.md §6). Implementation: P3.
+
+project_memory:
+  writers: ["em", "sr-architect"]
+  readers: ["em", "tester", "sr-developer", "sr-architect"]
+  store: "chromadb"
+  path: ".mem0/project"
+
+per_agent_memory:
+  roles: ["em", "tester", "sr-developer", "sr-architect"]
+  store: "chromadb"
+  path_pattern: ".mem0/agent/{role}"
+
+token_budget_per_call: 8000
+compression:
+  enabled: true
+  summarize_over: 16000
+embedding_model: "nomic-embed-text"
