@@ -1,0 +1,53 @@
+name: "Work ticket"
+description: "New work for the AI crew (feature/fix/chore). EM picks up from here."
+title: "[TICKET] "
+labels: ["ticket", "assignee/em"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Lifecycle:** human → EM → Tester → Sr Dev → Tester → Sr Architect → MR → human merges.
+        See `DESIGN.md` §4. All updates thread under this ticket.
+  - type: input
+    id: goal
+    attributes:
+      label: "Goal (one sentence)"
+      placeholder: "Add user authentication endpoint."
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: "Context"
+      description: "Why this matters, relevant prior tickets, external constraints."
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: "Definition of done"
+      description: "How you will know this is complete."
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: "Out of scope"
+      description: "Anything explicitly NOT included (prevents scope creep)."
+  - type: dropdown
+    id: priority
+    attributes:
+      label: "Priority"
+      options: ["p0", "p1", "p2", "p3"]
+      default: 2
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: "Safety checklist"
+      options:
+        - label: "I confirm this ticket contains no secrets or PII."
+          required: true
+        - label: "I confirm this ticket does not ask the crew to bypass DESIGN.md §8 rules."
+          required: true
