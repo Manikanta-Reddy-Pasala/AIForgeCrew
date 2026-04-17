@@ -8,6 +8,16 @@ See [`DESIGN.md`](./DESIGN.md) for the complete architecture.
 
 Phase 0 (hardware) / Phase 1 (scaffolding) in progress. See [`docs/superpowers/plans/`](./docs/superpowers/plans/) for implementation plans.
 
+### Automation
+
+| Workflow | Runs on | Purpose |
+|----------|---------|---------|
+| `lint` | push/PR | yamllint + markdownlint + shellcheck |
+| `validate-configs` | push/PR | JSON-schema validation + permission matrix + pytest |
+| `bats` | push/PR | shell script tests |
+
+Local equivalents: `make lint`, `make validate`, `make permission-check`, `make test`.
+
 ## Quickstart
 
 Prerequisites: Docker, Python 3.11+, Node 20+, `bats-core`, `shellcheck`, `yamllint`, `markdownlint-cli2`.
