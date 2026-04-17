@@ -1,0 +1,22 @@
+version: 1
+alerts:
+  - name: stale_ticket
+    condition: "ticket has no activity for 60 minutes"
+    severity: warning
+    channel: human
+  - name: circuit_breaker
+    condition: "3 consecutive agent failures on same ticket"
+    severity: critical
+    channel: human
+  - name: budget_exceeded
+    condition: "agent monthly cost > budget"
+    severity: critical
+    channel: human
+  - name: coverage_regression
+    condition: "coverage delta < -5% vs main"
+    severity: warning
+    channel: human
+  - name: blocked_path_write_attempt
+    condition: "any agent attempts write to security.blocked-paths"
+    severity: critical
+    channel: human

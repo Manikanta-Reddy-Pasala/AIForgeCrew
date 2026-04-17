@@ -1,0 +1,22 @@
+{
+  "name": "rag",
+  "version": "0.1.0",
+  "description": "Retrieves relevant chunks from indexed project docs.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["aiforgecrew-rag-mcp", "serve"],
+  "tools": [
+    {
+      "name": "query",
+      "description": "Natural-language query over indexed sources.",
+      "input_schema": {
+        "type": "object",
+        "required": ["q"],
+        "properties": {
+          "q": {"type": "string"},
+          "top_k": {"type": "integer", "default": 5}
+        }
+      }
+    }
+  ]
+}

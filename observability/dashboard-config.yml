@@ -1,0 +1,24 @@
+version: 1
+# Observability per DESIGN.md §9. Implementation: P7.
+panels:
+  - id: ticket-latency
+    title: "Ticket → MR time (p50/p95)"
+    source: paperclip.timestamps
+  - id: token-usage
+    title: "Tokens per agent per ticket"
+    source: paperclip.cost
+  - id: test-pass-rate
+    title: "Test pass rate (first-try)"
+    source: tester.reports
+  - id: coverage
+    title: "Coverage % by ticket"
+    source: tester.reports
+  - id: review-reject-rate
+    title: "Review reject rate"
+    source: sr-architect.decisions
+  - id: loop-counts
+    title: "Dev↔Tester and Dev↔Review loops"
+    source: paperclip.retry
+  - id: cost-monthly
+    title: "Cloud cost (EM) per month"
+    source: paperclip.cost

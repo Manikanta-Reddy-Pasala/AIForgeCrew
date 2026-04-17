@@ -1,0 +1,45 @@
+{
+  "name": "git-tools",
+  "version": "0.1.0",
+  "description": "Scoped Git operations — respects per-role permissions.yml.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["aiforgecrew-git-mcp", "serve"],
+  "tools": [
+    {
+      "name": "branch",
+      "description": "Create or switch branch. Allowed: tester, sr-developer.",
+      "input_schema": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}}
+      }
+    },
+    {
+      "name": "commit",
+      "description": "Stage + commit. Scoped by role write globs.",
+      "input_schema": {
+        "type": "object",
+        "required": ["paths", "message"],
+        "properties": {
+          "paths": {"type": "array", "items": {"type": "string"}},
+          "message": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "create_mr",
+      "description": "Create merge request. Allowed: sr-architect only.",
+      "input_schema": {
+        "type": "object",
+        "required": ["title", "description", "source_branch"],
+        "properties": {
+          "title": {"type": "string"},
+          "description": {"type": "string"},
+          "source_branch": {"type": "string"},
+          "target_branch": {"type": "string", "default": "main"}
+        }
+      }
+    }
+  ]
+}

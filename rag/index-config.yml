@@ -1,0 +1,10 @@
+version: 1
+# RAG config per DESIGN.md §7. Implementation: P4.
+embedding_model: "nomic-embed-text"
+vector_store: "chromadb"
+store_path: ".rag-index"
+chunking:
+  strategy: "markdown-aware"
+  max_tokens: 512
+  overlap: 64
+reindex_trigger: "push-to-main"
