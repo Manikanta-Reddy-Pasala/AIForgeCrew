@@ -1,0 +1,53 @@
+version: 1
+# Matches DESIGN.md §8.3 file-system sandboxing.
+# Runtime (Hermes) and CI both consume this file.
+roles:
+  em:
+    write: []
+    read: []          # ticket text only — no repo access
+    deny:
+      - ".env"
+      - ".env.*"
+      - "secrets/**"
+      - "config/prod/**"
+      - ".github/**"
+  tester:
+    write:
+      - "tests/**"
+    read:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+      - ".env.test"
+      - "config/test/**"
+    deny:
+      - ".env"
+      - ".env.prod"
+      - "secrets/**"
+      - "config/prod/**"
+      - ".github/**"
+  sr-developer:
+    write:
+      - "src/**"
+    read:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+    deny:
+      - ".env"
+      - ".env.*"
+      - "secrets/**"
+      - "config/prod/**"
+      - "config/test/**"
+      - ".github/**"
+  sr-architect:
+    write: []
+    read:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+      - ".github/**"   # review-only visibility into CI configs
+    deny:
+      - ".env"
+      - ".env.*"
+      - "secrets/**"
