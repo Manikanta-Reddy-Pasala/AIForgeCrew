@@ -1,0 +1,11 @@
+version: 1
+# SHA-256 of every model tarball/weight file used by any agent.
+# Populated in Phase P0 after model download + initial checksum.
+# verify-checksums.sh enforces these; mismatches block startup.
+models: []
+# Example (filled during P0):
+# models:
+#   - name: "qwen2.5-coder-32b-instruct-q5"
+#     path: "models/qwen2.5-coder-32b-instruct-q5.gguf"
+#     sha256: "PLACEHOLDER_PLACEHOLDER_PLACEHOLDER_PLACEHOLDER_PLACEHOLDER_PLACEHOLDER64"
+#     assigned_to: ["sr-developer"]
