@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aiforgecrew/schemas/permissions.schema.json",
+  "title": "Agent permissions",
+  "type": "object",
+  "required": ["role", "reports_to", "model_location", "can"],
+  "additionalProperties": false,
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": ["em", "tester", "sr-developer", "sr-architect"]
+    },
+    "reports_to": {
+      "type": "string",
+      "enum": ["human", "em"]
+    },
+    "model_location": {
+      "type": "string",
+      "enum": ["cloud", "local"]
+    },
+    "can": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "read_src", "write_src", "read_tests", "write_tests",
+        "git_commit", "git_create_mr",
+        "ticket_comment", "ticket_assign",
+        "hermes_execute", "mem0_project_write"
+      ],
+      "properties": {
+        "read_src": {"type": "boolean"},
+        "write_src": {"type": "boolean"},
+        "read_tests": {"type": "boolean"},
+        "write_tests": {"type": "boolean"},
+        "git_commit": {"type": "boolean"},
+        "git_create_mr": {"type": "boolean"},
+        "ticket_comment": {"type": "boolean"},
+        "ticket_assign": {"type": "boolean"},
+        "hermes_execute": {"type": "boolean"},
+        "mem0_project_write": {"type": "boolean"}
+      }
+    }
+  }
+}
