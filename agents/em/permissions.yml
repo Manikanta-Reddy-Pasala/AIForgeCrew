@@ -1,0 +1,14 @@
+role: em
+reports_to: human
+model_location: cloud
+can:
+  read_src: false
+  write_src: false
+  read_tests: false
+  write_tests: false
+  git_commit: false
+  git_create_mr: false
+  ticket_comment: true
+  ticket_assign: true
+  hermes_execute: false
+  mem0_project_write: true
