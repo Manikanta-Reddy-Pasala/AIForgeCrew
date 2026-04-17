@@ -1,0 +1,51 @@
+version: "3.9"
+# Service skeleton. Actual image tags populated in P1+.
+services:
+  paperclip:
+    image: "aiforgecrew/paperclip:dev"
+    build: ./deploy/paperclip
+    ports: ["8900:8900"]
+    volumes:
+      - ./paperclip.config.yml:/app/paperclip.config.yml:ro
+      - ./agents:/app/agents:ro
+      - ./security:/app/security:ro
+    environment:
+      - CONFIG_PATH=/app/paperclip.config.yml
+
+  hermes:
+    image: "aiforgecrew/hermes:dev"
+    build: ./deploy/hermes
+    ports: ["8910:8910"]
+    volumes:
+      - ./hermes:/app/hermes:ro
+      - ./agents:/app/agents:ro
+      - ./security:/app/security:ro
+      - ./mcp:/app/mcp:ro
+
+  mem0:
+    image: "aiforgecrew/mem0:dev"
+    build: ./deploy/mem0
+    ports: ["8920:8920"]
+    volumes:
+      - ./memory:/app/memory:ro
+      - mem0-data:/data
+
+  rag:
+    image: "aiforgecrew/rag:dev"
+    build: ./deploy/rag
+    ports: ["8930:8930"]
+    volumes:
+      - ./rag:/app/rag:ro
+      - ./docs:/app/docs:ro
+      - rag-index:/data
+
+  ollama:
+    image: "ollama/ollama:latest"
+    ports: ["11434:11434"]
+    volumes:
+      - ollama-models:/root/.ollama
+
+volumes:
+  mem0-data:
+  rag-index:
+  ollama-models:
