@@ -1,0 +1,14 @@
+role: tester
+reports_to: em
+model_location: local
+can:
+  read_src: true
+  write_src: false
+  read_tests: true
+  write_tests: true
+  git_commit: true
+  git_create_mr: false
+  ticket_comment: true
+  ticket_assign: true
+  hermes_execute: true
+  mem0_project_write: false
