@@ -1,37 +1,46 @@
 #!/usr/bin/env bash
-# scripts/setup-models.sh — download models listed in security/model-checksums.yml.
-# Pre-P0: manifest empty → script exits with "nothing to do".
+# scripts/setup-models.sh — orchestrator: download → verify → start server → health check.
+# Idempotent. Safe to re-run. Works locally or over ssh.
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
 DRY_RUN=0
+SKIP_DOWNLOAD=0
+SKIP_VERIFY=0
+SKIP_SERVER=0
 for arg in "$@"; do
   case "$arg" in
-    --dry-run) DRY_RUN=1 ;;
-    -h|--help) echo "Usage: setup-models.sh [--dry-run]"; exit 0 ;;
+    --dry-run)       DRY_RUN=1 ;;
+    --skip-download) SKIP_DOWNLOAD=1 ;;
+    --skip-verify)   SKIP_VERIFY=1 ;;
+    --skip-server)   SKIP_SERVER=1 ;;
+    -h|--help)
+      cat <<'H'
+Usage: setup-models.sh [--dry-run] [--skip-download] [--skip-verify] [--skip-server]
+
+Orchestrates P0 model setup:
+  1. scripts/download-models.sh    (reads security/model-checksums.yml)
+  2. scripts/verify-checksums.sh   (enforces sha256)
+  3. scripts/start-servers.sh      (LM Studio OpenAI-compat on :1234)
+  4. scripts/health-check.sh       (probe per-role inference)
+H
+      exit 0 ;;
     *) echo "Unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
 
-MANIFEST="security/model-checksums.yml"
+run() {
+  echo ">>> $*"
+  if [[ $DRY_RUN -eq 1 ]]; then return 0; fi
+  "$@"
+}
 
-python3 - "$MANIFEST" "$DRY_RUN" <<'PY'
-import sys
-from pathlib import Path
+[[ $SKIP_DOWNLOAD -eq 0 ]] && run bash scripts/download-models.sh
+[[ $SKIP_VERIFY   -eq 0 ]] && run bash scripts/verify-checksums.sh
+[[ $SKIP_SERVER   -eq 0 ]] && run bash scripts/start-servers.sh
+run bash scripts/load-models.sh
+run bash scripts/health-check.sh
 
-import yaml
-
-manifest = yaml.safe_load(Path(sys.argv[1]).read_text()) or {}
-dry = sys.argv[2] == "1"
-models = manifest.get("models") or []
-
-if not models:
-    print("nothing to do — manifest empty")
-    sys.exit(0)
-
-for m in models:
-    if dry:
-        print(f"would download {m['name']} → {m['path']}")
-        continue
-    # Actual download plumbed in P0 with huggingface-cli or curl + resume.
-    print(f"TODO(P0): download {m['name']}")
-PY
+echo "setup-models.sh: OK"

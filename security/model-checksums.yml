@@ -1,11 +1,88 @@
 version: 1
-# SHA-256 of every model tarball/weight file used by any agent.
-# Populated in Phase P0 after model download + initial checksum.
+# SHA-256 of every model weight file used by any agent.
+# Source of truth for download + verification + role assignment.
+#
+# Runtime: LM Studio MLX on Apple Silicon (Mac Studio M3 Ultra, 96 GB).
+# Inference endpoint: http://localhost:1234 (OpenAI-compatible).
+# Paths default to LM Studio layout: ~/.lmstudio/models/<publisher>/<repo>/
+#
+# sha256 computation:
+#   - For MLX directory models: shasum -a 256 of every *.safetensors,
+#     sorted by filename, concatenated hashes, then re-hashed.
+#   - For single-file models (GGUF): direct shasum -a 256 of the file.
+# Mode "directory" or "file" encoded via `kind:`.
+#
 # verify-checksums.sh enforces these; mismatches block startup.
-models: []
-# Example (filled during P0):
-# models:
-#   - name: "qwen2.5-coder-32b-instruct-q5"
-#     path: "models/qwen2.5-coder-32b-instruct-q5.gguf"
-#     sha256: "PLACEHOLDER_PLACEHOLDER_PLACEHOLDER_PLACEHOLDER_PLACEHOLDER_PLACEHOLDER64"
-#     assigned_to: ["sr-developer"]
+# download-models.sh reads source_url to fetch any missing entries.
+models:
+  - name: "qwen3.6-35b-a3b-mlx-4bit"
+    path: "~/.lmstudio/models/mlx-community/Qwen3.6-35B-A3B-4bit/"
+    kind: directory
+    source_url: "https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit"
+    sha256: "97de9d29799ee61a584d0cdb672dccb8cd7ffe2fc2ca4cf9ce6c95a97cfd422c"
+    size_gb: 20.43
+    format: mlx
+    quant: "4bit"
+    active_params: "3B"
+    total_params: "35B"
+    assigned_to: ["sr-developer"]
+    role_rationale: "Top SWE-bench Verified (73.4%) in open 30-40B MoE class. 3B active = fastest tok/s under concurrent load."
+
+  - name: "glm-4.7-flash-mlx-6bit"
+    path: "~/.lmstudio/models/lmstudio-community/GLM-4.7-Flash-MLX-6bit/"
+    kind: directory
+    source_url: "https://huggingface.co/lmstudio-community/GLM-4.7-Flash-MLX-6bit"
+    sha256: "0b65c98a4da8bb36e06018aa1525f049d46b07808ef67fc7184c36bab441050f"
+    size_gb: 24.36
+    format: mlx
+    quant: "6bit"
+    active_params: "3B"
+    total_params: "30B"
+    assigned_to: ["tester"]
+    role_rationale: "Best open agentic/tool-use model. τ²-Bench 79.5% (ties Claude 3.5 Sonnet). Optimized for MCP, browser automation, UI generation — required for Tester browser validation per DESIGN §3.2."
+
+  - name: "gemma-4-31b-it-mlx-4bit"
+    path: "~/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit/"
+    kind: directory
+    source_url: "https://huggingface.co/mlx-community/gemma-4-31b-it-4bit"
+    sha256: "6a799e99d3ec17ee8b6cda5225d08f730d7a35d45545a5cdebffb13117283a1e"
+    size_gb: 18.44
+    format: mlx
+    quant: "4bit"
+    active_params: "31B"
+    total_params: "31B"
+    assigned_to: ["sr-architect"]
+    role_rationale: "Arena #3 open model. Dense architecture = every param fires per token → deeper reasoning for code review + security audit per DESIGN §3.4."
+
+  - name: "qwen3-0.6b-mlx-4bit"
+    path: "~/.lmstudio/models/mlx-community/Qwen3-0.6B-4bit/"
+    kind: directory
+    source_url: "https://huggingface.co/mlx-community/Qwen3-0.6B-4bit"
+    sha256: "aedc7010068fdbb8a56bfca818286881aba71c1f5e6e199eb1b92148a1d2107f"
+    size_gb: 0.35
+    format: mlx
+    quant: "4bit"
+    assigned_to: ["sr-developer"]
+    role_rationale: "Speculative-decoding draft model for Qwen3.6-35B-A3B. Expected 2.5× tok/s boost. Note: Qwen3-Coder-0.6B-MLX not yet published, Qwen3-0.6B used as compatible fallback (same tokenizer family)."
+
+  - name: "gemma-4-e2b-it-mlx-4bit"
+    path: "~/.lmstudio/models/mlx-community/gemma-4-e2b-it-4bit/"
+    kind: directory
+    source_url: "https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit"
+    sha256: "bf31e7acb15e31bdc72d9008021ee36c99913b7518a7fad789ce6e2bbd279a67"
+    size_gb: 3.61
+    format: mlx
+    quant: "4bit"
+    assigned_to: ["sr-architect"]
+    role_rationale: "Speculative-decoding draft model for Gemma-4-31B-Dense. Expected 3× tok/s boost on dense target."
+
+  - name: "nomic-embed-text-v1.5-gguf-q4-km"
+    path: "~/.lmstudio/.internal/bundled-models/nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    kind: file
+    source_url: "bundled-with-lm-studio"
+    sha256: "d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac"
+    size_gb: 0.084
+    format: gguf
+    quant: "Q4_K_M"
+    assigned_to: ["rag"]
+    role_rationale: "RAG embeddings per DESIGN §7. Pre-bundled with LM Studio install."
