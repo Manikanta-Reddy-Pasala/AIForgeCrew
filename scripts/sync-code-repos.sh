@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# scripts/sync-code-repos.sh — rsync ~/Documents/codeRepo/ to Mac Studio.
-# Skips .venv/, node_modules/, .git/objects packs that pull without them.
-# Target = ~/codeRepo/ on Mac Studio (per user request).
+# scripts/sync-code-repos.sh — rsync laptop ~/Documents/codeRepo/ → Mac Studio ~/codeRepo/.
+# Remote path resolved via remote $HOME to avoid user-mismatch issues.
 set -euo pipefail
 
 SSH_HOST="${SSH_HOST:-manikanta@192.168.70.185}"
 SRC="${SRC:-$HOME/Documents/codeRepo/}"
-DST_DIR="${DST_DIR:-codeRepo}"   # relative to Mac Studio $HOME
+DST_SUB="${DST_SUB:-codeRepo}"   # relative to remote $HOME
 
 [[ -d "$SRC" ]] || { echo "source missing: $SRC" >&2; exit 1; }
 
-ssh "$SSH_HOST" "mkdir -p ~/$DST_DIR"
+REMOTE_HOME=$(ssh "$SSH_HOST" 'printf %s "$HOME"')
+[[ -n "$REMOTE_HOME" ]] || { echo "could not resolve remote \$HOME" >&2; exit 1; }
 
-echo ">>> rsync $SRC → $SSH_HOST:~/$DST_DIR/"
-rsync -avhP --partial --inplace \
+DST="$REMOTE_HOME/$DST_SUB/"
+ssh "$SSH_HOST" "mkdir -p '$DST'"
+
+echo ">>> rsync $SRC → $SSH_HOST:$DST"
+rsync -ahP --partial --inplace \
   --exclude '.venv/' \
   --exclude 'node_modules/' \
   --exclude '__pycache__/' \
@@ -27,8 +30,8 @@ rsync -avhP --partial --inplace \
   --exclude 'dist/' \
   --exclude '*.class' \
   --exclude '*.pyc' \
-  "$SRC" "$SSH_HOST:\$HOME/$DST_DIR/"
+  "$SRC" "$SSH_HOST:$DST"
 
 echo
 echo "Done. Verify:"
-echo "  ssh $SSH_HOST 'ls ~/$DST_DIR | head'"
+echo "  ssh $SSH_HOST 'ls $DST | head'"
