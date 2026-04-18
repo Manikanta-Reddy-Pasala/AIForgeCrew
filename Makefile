@@ -1,8 +1,9 @@
-.PHONY: setup lint test validate permission-check clean help \
-        models download verify server load health bench bench-concurrent \
-        paperclip-install paperclip-test paperclip-doctor paperclip \
+.PHONY: setup lint test validate permission-check audit-tools clean help \
+        models download verify server load health bench bench-concurrent bench-passk \
+        aiforge-install aiforge-test aiforge-doctor aiforge \
         hermes-test hermes mempalace-install mempalace-test \
-        rag-install rag-reindex rag-query crg-query
+        rag-install rag-reindex rag-query crg-query \
+        paperclip-install paperclip-start paperclip-stop paperclip-status
 
 PY := python3
 PIP := $(PY) -m pip
@@ -17,23 +18,42 @@ help:
 	@echo "  test               bats + pytest"
 	@echo "  validate           JSON-schema validate configs"
 	@echo "  permission-check   enforce DESIGN.md §5.2 permission matrix"
+	@echo "  audit-tools        verify no network-capable tool handlers"
 	@echo ""
 	@echo "P0 model targets (run on Mac Studio or via SSH_HOST):"
 	@echo "  models             full pipeline: download + verify + server + load + health"
-	@echo "  download           idempotent model download (reads security/model-checksums.yml)"
+	@echo "  download           idempotent model download"
 	@echo "  verify             sha256 verify all entries"
 	@echo "  server             start LM Studio OpenAI-compat server on :1234"
 	@echo "  load               load role models into memory (128K ctx default)"
 	@echo "  health             probe /v1/models + per-role inference"
 	@echo "  bench              P0 benchmark harness (solo per role)"
 	@echo "  bench-concurrent   paired concurrent throughput bench"
-	@echo "  bench-passk        pass@1 harness on docs/eval/tickets/ (P9)"
+	@echo "  bench-passk        pass@1 harness on docs/eval/tickets/"
 	@echo ""
-	@echo "P1 paperclip runtime (local, macOS-only):"
-	@echo "  paperclip-install  create .venv/ + uv pip install -e .[dev]"
-	@echo "  paperclip-test     run paperclip pytest suite"
-	@echo "  paperclip-doctor   sanity-check config + permissions + DB"
-	@echo "  paperclip -- ARGS  run paperclip CLI (e.g. 'make paperclip -- ticket list')"
+	@echo "AIForge-core runtime (local Hermes-side orchestrator, macOS-only):"
+	@echo "  aiforge-install    create .venv/ + uv pip install -e .[dev]"
+	@echo "  aiforge-test       run pytest suite"
+	@echo "  aiforge-doctor     sanity-check config + permissions + DB"
+	@echo "  aiforge -- ARGS    run aiforge CLI (e.g. 'make aiforge -- ticket list')"
+	@echo ""
+	@echo "Hermes agent runtime:"
+	@echo "  hermes-test        hermes tests"
+	@echo "  hermes -- ARGS     hermes CLI"
+	@echo ""
+	@echo "Memory / RAG / CRG:"
+	@echo "  mempalace-install  install MemPalace + init 5 palaces"
+	@echo "  mempalace-test     mempalace tests"
+	@echo "  rag-install        install chromadb + initial reindex"
+	@echo "  rag-reindex        rebuild RAG index"
+	@echo "  rag-query -- Q     RAG query"
+	@echo "  crg-query -- PATH  code-review-graph blast radius"
+	@echo ""
+	@echo "Real Paperclip UI (Node, bring-your-own-agent dashboard):"
+	@echo "  paperclip-install  npx paperclipai onboard on Mac Studio"
+	@echo "  paperclip-start    start Paperclip server + UI on :3100"
+	@echo "  paperclip-stop     stop Paperclip server"
+	@echo "  paperclip-status   show Paperclip server status"
 
 setup:
 	$(PIP) install --upgrade pip
@@ -62,9 +82,6 @@ audit-tools:
 	.venv/bin/python tools/audit_tool_network.py
 
 # ---- P0 model pipeline (executed on Mac Studio or via SSH_HOST) ----
-# All targets run remotely via `ssh $(SSH_HOST) 'bash -s' < scripts/X.sh`
-# so the invocation works from any dev machine.
-
 models:
 	ssh $(SSH_HOST) 'bash -s' < scripts/setup-models.sh
 
@@ -96,51 +113,72 @@ bench-passk:
 	scp -r docs/eval $(SSH_HOST):/tmp/aiforge-eval/ >/dev/null
 	ssh $(SSH_HOST) "EVAL_DIR=/tmp/aiforge-eval/tickets bash -s" < scripts/benchmark-passk.sh
 
-# ---- P1 paperclip runtime (local) ----
-paperclip-install:
-	bash scripts/install-paperclip.sh
+# ---- AIForge-core runtime (local, macOS-only) ----
+aiforge-install:
+	bash scripts/install-aiforge.sh
 
-paperclip-test:
-	.venv/bin/pytest tests/python/test_paperclip_*.py -v
+aiforge-test:
+	.venv/bin/pytest tests/python -v
 
-paperclip-doctor:
-	.venv/bin/paperclip doctor
+aiforge-doctor:
+	.venv/bin/aiforge doctor
 
-paperclip:
-	@.venv/bin/paperclip $(filter-out $@,$(MAKECMDGOALS))
+aiforge:
+	@.venv/bin/aiforge $(filter-out $@,$(MAKECMDGOALS))
 
-# ---- P2 hermes runtime (local) ----
+# ---- Hermes agent runtime ----
 hermes-test:
 	.venv/bin/pytest tests/python/test_hermes_*.py -v
 
 hermes:
 	@.venv/bin/hermes $(filter-out $@,$(MAKECMDGOALS))
 
-# ---- P3 mempalace two-tier memory (local) ----
+# ---- MemPalace two-tier memory ----
 mempalace-install:
 	bash scripts/install-mempalace.sh
 
 mempalace-test:
 	.venv/bin/pytest tests/python/test_paperclip_mem.py -v
 
-# ---- P4 RAG + code-review-graph (local) ----
+# ---- RAG + code-review-graph ----
 rag-install:
 	bash scripts/install-rag.sh
 
 rag-reindex:
-	.venv/bin/python -c "from pathlib import Path; from paperclip.rag import RagIndex; print(RagIndex(Path('.')).reindex())"
+	.venv/bin/python -c "from pathlib import Path; from aiforge_core.rag import RagIndex; print(RagIndex(Path('.')).reindex())"
 
 rag-query:
-	@.venv/bin/python -c "import sys; from pathlib import Path; from paperclip.rag import RagIndex; \
+	@.venv/bin/python -c "import sys; from pathlib import Path; from aiforge_core.rag import RagIndex; \
 	q=' '.join(sys.argv[1:]) or 'permission matrix'; \
 	idx = RagIndex(Path('.')); \
 	[print(f'[{h.source}]', h.text[:200].replace(chr(10), ' | ')[:200], '...') for h in idx.query(q)]" $(filter-out $@,$(MAKECMDGOALS))
 
 crg-query:
-	@.venv/bin/python -c "import sys; from pathlib import Path; from paperclip.crg import build_graph, blast_radius; \
-	t=sys.argv[1] if len(sys.argv)>1 else 'paperclip/store.py'; \
+	@.venv/bin/python -c "import sys; from pathlib import Path; from aiforge_core.crg import build_graph, blast_radius; \
+	t=sys.argv[1] if len(sys.argv)>1 else 'aiforge_core/store.py'; \
 	g=build_graph(Path('.')); \
 	import json; print(json.dumps(blast_radius(g, t), indent=2))" $(filter-out $@,$(MAKECMDGOALS))
+
+# ---- Real Paperclip UI (runs on Mac Studio) ----
+paperclip-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-paperclip-ui.sh
+
+paperclip-start:
+	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-start.sh
+
+paperclip-stop:
+	ssh $(SSH_HOST) 'pkill -f paperclipai || true; echo stopped'
+
+paperclip-status:
+	ssh $(SSH_HOST) 'curl -s http://localhost:3100/api/health 2>&1 || echo not running'
+
+paperclip-bootstrap:
+	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-bootstrap-agents.sh
+
+paperclip-tunnel:
+	@echo "Opening SSH tunnel: laptop:3100 → Mac Studio:3100"
+	@echo "Then open http://localhost:3100 in your browser. Ctrl-C to close tunnel."
+	ssh -L 3100:localhost:3100 -N $(SSH_HOST)
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info

@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from paperclip.crg import blast_radius as crg_blast_radius
-from paperclip.crg import build_graph, dependency_chain as crg_dependency_chain
-from paperclip.git_ops import GitOps
-from paperclip.permissions import PermissionDenied, file_access, role_can
+from aiforge_core.crg import blast_radius as crg_blast_radius
+from aiforge_core.crg import build_graph, dependency_chain as crg_dependency_chain
+from aiforge_core.git_ops import GitOps
+from aiforge_core.permissions import PermissionDenied, file_access, role_can
 
 
 @dataclass(frozen=True)
@@ -134,7 +134,7 @@ def _dependency_chain(repo_root: Path, args: dict) -> dict:
 
 
 def _rag_query(repo_root: Path, args: dict) -> dict:
-    from paperclip.rag import RagIndex
+    from aiforge_core.rag import RagIndex
     top_k = int(args.get("top_k", 5))
     idx = RagIndex(repo_root)
     chunks = idx.query(args["q"], top_k=top_k)

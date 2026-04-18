@@ -13,8 +13,8 @@ import os
 import sys
 from pathlib import Path
 
-from paperclip.config import PaperclipConfig
-from paperclip.store import Store
+from aiforge_core.config import PaperclipConfig
+from aiforge_core.store import Store
 
 from . import __version__
 from .agent import Agent

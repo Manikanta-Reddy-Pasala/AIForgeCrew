@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from hermes.tools import build_default_registry
-from paperclip.safety import assert_no_network_tools, scrub_ticket_text
+from aiforge_core.safety import assert_no_network_tools, scrub_ticket_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

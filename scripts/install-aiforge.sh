@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# scripts/install-paperclip.sh — install paperclip package via uv.
+# scripts/install-aiforge.sh — install the aiforge-core + hermes Python runtime via uv.
 # Mac-only (no Linux/Windows support). Idempotent: safe to re-run.
 #
-# Creates .venv/ at repo root, installs paperclip + dev deps editable,
-# exposes `paperclip` CLI binary under .venv/bin/.
+# Creates .venv/ at repo root, installs aiforge-core + hermes + dev deps editable,
+# exposes `aiforge` + `hermes` CLI binaries under .venv/bin/.
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "paperclip install: macOS only (got $(uname -s))" >&2
+  echo "aiforge install: macOS only (got $(uname -s))" >&2
   exit 1
 fi
 
@@ -31,6 +31,6 @@ fi
 "$UV" pip install --python "$VENV/bin/python" -e ".[dev]"
 
 # Sanity.
-"$VENV/bin/paperclip" --version
+"$VENV/bin/aiforge" --version
 echo
-echo "paperclip installed. Add to PATH or invoke via ./.venv/bin/paperclip"
+echo "aiforge installed. Add to PATH or invoke via ./.venv/bin/aiforge  /  ./.venv/bin/hermes"

@@ -8,8 +8,8 @@ import pytest
 
 from hermes.agent import Agent
 from hermes.llm import LLMClient, LLMReply
-from paperclip.config import PaperclipConfig
-from paperclip.store import Store
+from aiforge_core.config import PaperclipConfig
+from aiforge_core.store import Store
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

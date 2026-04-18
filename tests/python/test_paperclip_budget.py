@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from paperclip.budget import BudgetExceeded, Spend, assert_within_budget, record, ticket_tokens
-from paperclip.config import PaperclipConfig
-from paperclip.store import Store
+from aiforge_core.budget import BudgetExceeded, Spend, assert_within_budget, record, ticket_tokens
+from aiforge_core.config import PaperclipConfig
+from aiforge_core.store import Store
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

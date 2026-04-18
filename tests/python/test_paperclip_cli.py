@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from paperclip import cli
+from aiforge_core import cli
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

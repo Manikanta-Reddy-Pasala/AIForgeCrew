@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hermes.tools import build_default_registry  # noqa: E402
-from paperclip.safety import assert_no_network_tools  # noqa: E402
+from aiforge_core.safety import assert_no_network_tools  # noqa: E402
 
 
 def main() -> int:

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from paperclip.budget import Spend, record
-from paperclip.config import PaperclipConfig
-from paperclip.lifecycle import advance
-from paperclip.observe import fleet_summary, ticket_report
-from paperclip.store import Store
+from aiforge_core.budget import Spend, record
+from aiforge_core.config import PaperclipConfig
+from aiforge_core.lifecycle import advance
+from aiforge_core.observe import fleet_summary, ticket_report
+from aiforge_core.store import Store
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

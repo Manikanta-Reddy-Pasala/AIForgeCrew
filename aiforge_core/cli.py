@@ -149,7 +149,7 @@ def cmd_report_fleet(args, cfg: PaperclipConfig, store: Store) -> int:
 
 def cmd_doctor(args, cfg: PaperclipConfig, store: Store) -> int:
     """Sanity checks: config parses, agent ACLs load, DB writable, lifecycle graph sane."""
-    print(f"paperclip {__version__}")
+    print(f"aiforge {__version__}")
     print(f"repo:      {cfg.repo_root}")
     print(f"db:        {(cfg.repo_root / '.paperclip' / 'paperclip.db').resolve()}")
     print(f"audit log: {cfg.audit.log_path}")
@@ -165,8 +165,8 @@ def cmd_doctor(args, cfg: PaperclipConfig, store: Store) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="paperclip", description="AIForgeCrew orchestrator CLI")
-    p.add_argument("--version", action="version", version=f"paperclip {__version__}")
+    p = argparse.ArgumentParser(prog="aiforge", description="AIForgeCrew core CLI (Hermes-side orchestrator)")
+    p.add_argument("--version", action="version", version=f"aiforge {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     t = sub.add_parser("ticket", help="ticket operations")

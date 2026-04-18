@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from paperclip.crg import blast_radius, build_graph, dependency_chain
+from aiforge_core.crg import blast_radius, build_graph, dependency_chain
 
 
 @pytest.fixture

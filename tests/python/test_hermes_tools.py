@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from hermes.tools import build_default_registry
-from paperclip.permissions import PermissionDenied
+from aiforge_core.permissions import PermissionDenied
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -28,11 +28,11 @@ rag = [
 ]
 
 [project.scripts]
-paperclip = "paperclip.cli:main"
+aiforge = "aiforge_core.cli:main"
 hermes = "hermes.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["paperclip*", "hermes*"]
+include = ["aiforge_core*", "hermes*"]
 
 [tool.ruff]
 line-length = 100

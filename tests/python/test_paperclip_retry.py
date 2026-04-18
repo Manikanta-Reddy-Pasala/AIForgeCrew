@@ -4,16 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from paperclip.config import PaperclipConfig
-from paperclip.lifecycle import LifecycleError, advance
-from paperclip.retry import (
+from aiforge_core.config import PaperclipConfig
+from aiforge_core.lifecycle import LifecycleError, advance
+from aiforge_core.retry import (
     BreakerTripped,
     CircuitBreaker,
     RetryExceeded,
     enforce_loop_caps,
     require_coverage_for_mr,
 )
-from paperclip.store import Store
+from aiforge_core.store import Store
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

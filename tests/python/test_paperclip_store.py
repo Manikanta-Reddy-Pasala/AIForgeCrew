@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from paperclip.store import Store
+from aiforge_core.store import Store
 
 
 def test_create_and_get(tmp_path: Path) -> None:

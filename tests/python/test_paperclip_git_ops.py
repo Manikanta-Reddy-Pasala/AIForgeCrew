@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from paperclip.git_ops import GitError, GitOps
-from paperclip.permissions import PermissionDenied
+from aiforge_core.git_ops import GitError, GitOps
+from aiforge_core.permissions import PermissionDenied
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

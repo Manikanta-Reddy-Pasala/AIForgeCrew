@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("chromadb")  # skip entire module if chromadb not installed
 
-from paperclip.rag import RagIndex
+from aiforge_core.rag import RagIndex
 
 
 def test_index_and_query(tmp_path: Path) -> None:

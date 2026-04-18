@@ -11,12 +11,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from paperclip.budget import BudgetExceeded, Spend, assert_within_budget, record
-from paperclip.config import PaperclipConfig
-from paperclip.mem import MemBus
-from paperclip.permissions import PermissionDenied
-from paperclip.safety import scrub_ticket_text
-from paperclip.store import Store
+from aiforge_core.budget import BudgetExceeded, Spend, assert_within_budget, record
+from aiforge_core.config import PaperclipConfig
+from aiforge_core.mem import MemBus
+from aiforge_core.permissions import PermissionDenied
+from aiforge_core.safety import scrub_ticket_text
+from aiforge_core.store import Store
 
 from .llm import LLMClient, LLMReply
 from .tools import ToolRegistry, build_default_registry

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from paperclip.mem import MemBus
-from paperclip.permissions import PermissionDenied
+from aiforge_core.mem import MemBus
+from aiforge_core.permissions import PermissionDenied
 
 
 def test_project_memory_write_acl(tmp_path: Path) -> None:
