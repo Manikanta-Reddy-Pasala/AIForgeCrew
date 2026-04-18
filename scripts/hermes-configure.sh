@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# scripts/hermes-configure.sh — configure Hermes to route by role:
-#   - Tester + Sr Developer + Sr Architect → LM Studio :1234 (local MLX)
-#   - EM → cloud (Anthropic via API key in ~/.hermes/.env)
+# scripts/hermes-configure.sh — configure Hermes per-role providers.
 #
-# Writes:
-#   ~/.hermes/config.yaml           — default provider = lmstudio
-#   ~/.hermes/profiles/em.yaml      — overrides EM to cloud
-#   ~/.hermes/profiles/tester.yaml      — local, model=glm-4.7-flash
-#   ~/.hermes/profiles/sr-developer.yaml — local, model=qwen3.6-35b-a3b
-#   ~/.hermes/profiles/sr-architect.yaml — local, model=gemma-4-31b-it
+# Defaults:
+#   tester / sr-developer / sr-architect  →  LM Studio :1234 (local MLX)
+#   em                                     →  NVIDIA NIM (if NVIDIA_API_KEY set)
+#                                              or Claude Code (if user ran
+#                                              `hermes claude-login`)
+#                                              or Anthropic API (ANTHROPIC_API_KEY)
 #
-# Paperclip's hermes_local adapter picks the right profile per agent via
-# the --profile flag the adapter passes on each spawn.
+# Override via env:
+#   EM_PROVIDER=nvidia|claude-code|anthropic|openrouter
+#   EM_MODEL=<model-id-for-that-provider>
+#   NVIDIA_API_KEY=...   (persisted to ~/.hermes/.env)
+#   ANTHROPIC_API_KEY=...
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -20,10 +21,34 @@ fi
 
 HERMES_DIR="${HERMES_DIR:-$HOME/.hermes}"
 LLM_ENDPOINT="${LLM_ENDPOINT:-http://localhost:1234/v1}"
+EM_PROVIDER="${EM_PROVIDER:-}"
+EM_MODEL="${EM_MODEL:-}"
 
 mkdir -p "$HERMES_DIR/profiles"
 
-# Default config — local LM Studio.
+# Choose EM provider if caller didn't force one.
+if [[ -z "$EM_PROVIDER" ]]; then
+  if [[ -n "${NVIDIA_API_KEY:-}" ]]; then
+    EM_PROVIDER=nvidia
+  elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    EM_PROVIDER=anthropic
+  else
+    EM_PROVIDER=claude-code
+  fi
+fi
+
+# Default model per provider.
+if [[ -z "$EM_MODEL" ]]; then
+  case "$EM_PROVIDER" in
+    nvidia)       EM_MODEL="nvidia/llama-3.3-nemotron-super-49b-v1" ;;
+    anthropic)    EM_MODEL="anthropic/claude-opus-4-7" ;;
+    claude-code)  EM_MODEL="claude-opus-4-7" ;;
+    openrouter)   EM_MODEL="anthropic/claude-opus-4-7" ;;
+    *) echo "unknown EM_PROVIDER=$EM_PROVIDER" >&2; exit 2 ;;
+  esac
+fi
+
+# Default shared config — local LM Studio for everything but EM.
 cat > "$HERMES_DIR/config.yaml" <<EOF
 # ~/.hermes/config.yaml — written by scripts/hermes-configure.sh
 model:
@@ -32,14 +57,46 @@ model:
   base_url: "$LLM_ENDPOINT"
 EOF
 
-cat > "$HERMES_DIR/profiles/em.yaml" <<'EOF'
-# EM — cloud only (DESIGN §5.1)
+# EM profile per chosen provider.
+case "$EM_PROVIDER" in
+  nvidia)
+    cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
+# EM — NVIDIA NIM. DESIGN §3.1: cloud only, sees ticket text never code.
 model:
-  default: "anthropic/claude-opus-4.6"
-  provider: "anthropic"
-  # ANTHROPIC_API_KEY must be set in ~/.hermes/.env
+  default: "$EM_MODEL"
+  provider: "nvidia"
+  base_url: "https://integrate.api.nvidia.com/v1"
 EOF
+    ;;
+  anthropic)
+    cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
+# EM — direct Anthropic API.
+model:
+  default: "$EM_MODEL"
+  provider: "anthropic"
+EOF
+    ;;
+  claude-code)
+    cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
+# EM — Claude Code subscription (no API key; OAuth via `hermes claude-login`).
+model:
+  default: "$EM_MODEL"
+  provider: "openai-codex"
+# Run this once on the Mac Studio:
+#   hermes claude-login
+EOF
+    ;;
+  openrouter)
+    cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
+# EM — OpenRouter (single key, many models).
+model:
+  default: "$EM_MODEL"
+  provider: "openrouter"
+EOF
+    ;;
+esac
 
+# Local profiles use the matching LM Studio model id.
 cat > "$HERMES_DIR/profiles/tester.yaml" <<EOF
 model:
   default: "zai-org/glm-4.7-flash"
@@ -61,20 +118,27 @@ model:
   base_url: "$LLM_ENDPOINT"
 EOF
 
-# .env stub — user fills ANTHROPIC_API_KEY etc.
-if [[ ! -f "$HERMES_DIR/.env" ]]; then
-  cat > "$HERMES_DIR/.env" <<'EOF'
-# Hermes environment. Fill in the ones you need.
-# ANTHROPIC_API_KEY=sk-ant-...
-# OPENROUTER_API_KEY=sk-or-...
-EOF
-  echo "created $HERMES_DIR/.env (fill cloud keys for EM role)"
-fi
+# Persist API keys into ~/.hermes/.env if caller exported them.
+ENV="$HERMES_DIR/.env"
+touch "$ENV"; chmod 600 "$ENV"
+write_env() {
+  local k="$1" v="$2"
+  grep -q "^${k}=" "$ENV" && sed -i '' "s|^${k}=.*|${k}=${v}|" "$ENV" \
+                         || echo "${k}=${v}" >> "$ENV"
+}
+[[ -n "${NVIDIA_API_KEY:-}"   ]] && write_env NVIDIA_API_KEY   "$NVIDIA_API_KEY"
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] && write_env ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+[[ -n "${OPENROUTER_API_KEY:-}" ]] && write_env OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
 
 echo
 echo "Hermes configured:"
 echo "  default       = $LLM_ENDPOINT  qwen3.6-35b-a3b"
-echo "  profiles      = em (cloud) / tester / sr-developer / sr-architect"
+echo "  em            = $EM_PROVIDER    $EM_MODEL"
+echo "  tester        = lmstudio        zai-org/glm-4.7-flash"
+echo "  sr-developer  = lmstudio        qwen3.6-35b-a3b"
+echo "  sr-architect  = lmstudio        gemma-4-31b-it"
 echo
-echo "Smoke:"
-echo "  hermes --profile sr-developer --model qwen3.6-35b-a3b -q 'ping'"
+if [[ "$EM_PROVIDER" == "claude-code" ]]; then
+  echo "NEXT: run once on the Mac Studio to authorize EM via Claude Code subscription:"
+  echo "  hermes claude-login"
+fi
