@@ -51,7 +51,12 @@ def route_assignee(cfg: PaperclipConfig, routing_key: str) -> str:
 
 
 def advance(store: Store, cfg: PaperclipConfig, ticket_id: str, next_state: str, actor: str) -> None:
-    """Move a ticket to next_state (must be allowed); update assignee per routing."""
+    """Move a ticket to next_state (must be allowed); update assignee per routing.
+
+    §10 enforcements happen *before* the transition is committed:
+      - dev↔tester and dev↔architect loop caps
+      - coverage ≥80 before mr_created
+    """
     t = store.get_ticket(ticket_id)
     if t is None:
         raise LifecycleError(f"ticket not found: {ticket_id}")
@@ -67,6 +72,12 @@ def advance(store: Store, cfg: PaperclipConfig, ticket_id: str, next_state: str,
             f"invalid transition {t.state} → {next_state} "
             f"(allowed: {', '.join(allowed_next_states(t.state)) or 'none'})"
         )
+
+    # §10 loop caps — lazy import to avoid cycle with retry → observe → lifecycle.
+    from .retry import enforce_loop_caps, require_coverage_for_mr
+    enforce_loop_caps(store, cfg, ticket_id, t.state, next_state)
+    if next_state == "mr_created":
+        require_coverage_for_mr(store, ticket_id)
 
     store.transition(ticket_id, next_state, actor)
     if routing_key is not None:

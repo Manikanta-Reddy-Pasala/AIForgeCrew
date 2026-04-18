@@ -65,6 +65,8 @@ def test_full_tdd_lifecycle(tmp_path: Path) -> None:
     # --- Tester verifies ---
     tester.run(t.id, "Re-run tests", store=store, cfg=cfg)
     store.add_comment(t.id, "tester", "14/14 pass, 91% coverage")
+    # §10 coverage gate — recorded so the architect can transition to mr_created.
+    store.audit_event(t.id, "coverage", "tester", {"pct": 91.0, "pass": 14, "total": 14})
     advance(store, cfg, t.id, "reviewing", actor="tester")
 
     # --- Architect reviews + MR ---

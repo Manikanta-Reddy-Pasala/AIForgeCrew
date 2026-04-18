@@ -36,6 +36,9 @@ def test_full_happy_path(tmp_path: Path) -> None:
     advance(s, cfg, t.id, "reviewing",      actor="tester")       # → Architect
     assert s.get_ticket(t.id).assignee == cfg.routing.post_verified
 
+    # §10 coverage gate — tester's verify phase records coverage; architect reads it.
+    s.audit_event(t.id, "coverage", "tester", {"pct": 91.0})
+
     advance(s, cfg, t.id, "mr_created",     actor="sr-architect") # → human
     assert s.get_ticket(t.id).assignee == cfg.routing.on_approve
 
