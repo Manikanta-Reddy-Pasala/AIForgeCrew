@@ -14,3 +14,32 @@ Hermes consults `security/file-access-rules.yml` at every read/write. Check the 
 
 ## Cloud call fails for Tester / Sr Dev / Sr Arch
 By design — only EM is allowed cloud inference. See `hermes/config.yml → inference.cloud.allowed_roles`.
+
+## SSH to Mac Studio times out (was working earlier)
+Usually the Mac Studio went to sleep and/or the DHCP lease rolled over.
+1. Wake via Chrome Remote Desktop.
+2. On the Mac: `caffeinate -dimsu &`.
+3. `ifconfig` and grab the new `en1` inet address.
+4. Use `make SSH_HOST=user@NEW_IP <target>` or reserve the IP at the router.
+
+## `lms load` hangs at 0% CPU
+LM Studio's `lms load` wants a TTY for the progress bar. Over a plain SSH
+call it stalls. Skip explicit loading — LM Studio auto-loads on the first
+`/v1/chat/completions` for a model. `make health` triggers that.
+
+## Python dies with `xcode-select: note: No developer tools were found`
+Your host doesn't have Xcode CLT and something tried to use system
+`/usr/bin/python3`. Every AIForgeCrew script uses `uv run --with pyyaml
+python` to avoid this. If a new script breaks, port it to the same pattern.
+
+## MemPalace verify-checksums complains about `globally_blocked`
+`paperclip/permissions.py` accepts both `globally_blocked` (current key
+in `security/blocked-paths.yml`) and legacy `blocked_paths`. If the manifest
+drifts, fix it there — don't change the permission module.
+
+## Circuit breaker tripped — test after fix
+See `docs/runbook.md` §2 "Circuit breaker tripped" for the human-only reset.
+
+## Coverage gate fails on every MR
+Tester must emit `event='coverage'` in the audit before the architect
+transitions to `mr_created`. See runbook §2 "Coverage gate blocks MR".

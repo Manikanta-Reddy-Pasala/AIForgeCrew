@@ -6,8 +6,27 @@ See [`DESIGN.md`](./DESIGN.md) for the complete architecture.
 
 ## Status
 
-Phase P0 (hardware + models) complete. Phase P1 (Paperclip org chart) next.
-See [`docs/superpowers/plans/`](./docs/superpowers/plans/) for implementation plans.
+Phases P0 – P9 complete. All runtime + CLI + tests ship in this repo.
+P10 (blog post + demo video) is content work; see `docs/runbook.md` for ops.
+
+| Phase | Deliverable | Shipped |
+|-------|-------------|---------|
+| P0 | LM Studio + MLX models (Qwen3.6 / GLM-4.7 / Gemma-4) | ✅ |
+| P1 | Paperclip runtime (tickets / lifecycle / budget / CLI) | ✅ |
+| P2 | Hermes (agent driver, tool registry, LLM client) | ✅ |
+| P3 | MemPalace two-tier memory with ACL | ✅ |
+| P4 | RAG (ChromaDB) + code-review-graph (AST) | ✅ |
+| P5 | Git MCP + end-to-end TDD integration test | ✅ |
+| P6 | Prompt-injection scrub + network-tool audit | ✅ |
+| P7 | Observability (per-ticket + fleet reports) | ✅ |
+| P8 | Retry caps + circuit breaker + coverage gate | ✅ |
+| P9 | pass@1 harness + 3 seed eval tickets | ✅ |
+| P10 | `docs/runbook.md` (ops manual) | ✅ |
+
+Bring-up on a fresh Mac Studio is `make paperclip-install && make mempalace-install && make rag-install && make models`. Full command reference: `make help`.
+
+See [`docs/runbook.md`](./docs/runbook.md) for daily ops + failure playbook,
+[`docs/superpowers/plans/`](./docs/superpowers/plans/) for detailed implementation plans.
 
 ## P0 model pipeline (reproducible)
 
