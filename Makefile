@@ -5,7 +5,8 @@
         rag-install rag-reindex rag-query crg-query \
         paperclip-install paperclip-start paperclip-stop paperclip-status \
         paperclip-bootstrap paperclip-tunnel \
-        hermes-install hermes-adapter-install
+        hermes-install hermes-adapter-install \
+        deploy-mac-studio hermes-configure hermes-skills-install
 
 PY := python3
 PIP := $(PY) -m pip
@@ -175,6 +176,15 @@ hermes-install:
 
 hermes-adapter-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/install-hermes-adapter.sh
+
+deploy-mac-studio:
+	ssh $(SSH_HOST) 'bash -s' < scripts/deploy-to-mac-studio.sh
+
+hermes-configure:
+	ssh $(SSH_HOST) 'bash -s' < scripts/hermes-configure.sh
+
+hermes-skills-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-aiforge-skills.sh
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info
