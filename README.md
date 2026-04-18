@@ -8,15 +8,18 @@ See [`DESIGN.md`](./DESIGN.md) for the complete architecture.
 
 Phase 0 (hardware) / Phase 1 (scaffolding) in progress. See [`docs/superpowers/plans/`](./docs/superpowers/plans/) for implementation plans.
 
-### Automation
+### Local automation
 
-| Workflow | Runs on | Purpose |
-|----------|---------|---------|
-| `lint` | push/PR | yamllint + markdownlint + shellcheck |
-| `validate-configs` | push/PR | JSON-schema validation + permission matrix + pytest |
-| `bats` | push/PR | shell script tests |
+Validation + tests run locally via `make`:
 
-Local equivalents: `make lint`, `make validate`, `make permission-check`, `make test`.
+| Target | Purpose |
+|--------|---------|
+| `make validate` | JSON-schema validation of every config |
+| `make permission-check` | Enforce DESIGN.md §5.2 permission matrix |
+| `make test` | `bats tests/shell` + `pytest tests/python` |
+| `make lint` | yamllint + markdownlint + shellcheck (install-dependent) |
+
+No CI pipeline. Commit gate is local `make validate permission-check test` before push.
 
 ## Quickstart
 
@@ -44,7 +47,7 @@ make test        # bats + pytest
 | `tools/` | Schema validators, permission matrix check |
 | `tests/` | bats (shell) + pytest (validator) tests |
 | `docs/` | Hardware, model-evaluation, security policy, troubleshooting |
-| `.github/` | Issue/PR templates, CI workflows |
+| `.github/` | Issue/PR templates, CODEOWNERS |
 
 ## License
 
