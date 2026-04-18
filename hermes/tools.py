@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from paperclip.crg import blast_radius as crg_blast_radius
+from paperclip.crg import build_graph, dependency_chain as crg_dependency_chain
 from paperclip.permissions import PermissionDenied, file_access, role_can
 
 
@@ -109,6 +111,38 @@ def _run_tests(repo_root: Path, role: str, args: dict) -> dict:
         return {"exit": 124, "stdout": "", "stderr": "timeout"}
 
 
+# Lazy-cached call graph + RAG index per-process.
+_CRG_CACHE: dict[str, object] = {}
+
+
+def _crg_graph(repo_root: Path):
+    key = str(repo_root)
+    if key not in _CRG_CACHE:
+        _CRG_CACHE[key] = build_graph(repo_root)
+    return _CRG_CACHE[key]
+
+
+def _blast_radius(repo_root: Path, args: dict) -> dict:
+    target = args["target"]
+    depth = int(args.get("max_depth", 3))
+    return crg_blast_radius(_crg_graph(repo_root), target, max_depth=depth)
+
+
+def _dependency_chain(repo_root: Path, args: dict) -> dict:
+    return crg_dependency_chain(_crg_graph(repo_root), args["target"])
+
+
+def _rag_query(repo_root: Path, args: dict) -> dict:
+    from paperclip.rag import RagIndex
+    top_k = int(args.get("top_k", 5))
+    idx = RagIndex(repo_root)
+    chunks = idx.query(args["q"], top_k=top_k)
+    return {
+        "q": args["q"],
+        "hits": [{"source": c.source, "text": c.text[:800]} for c in chunks],
+    }
+
+
 def build_default_registry(repo_root: Path, role: str) -> ToolRegistry:
     """Register the P2 baseline tool set for a given role; permission checks are later enforced per call."""
     reg = ToolRegistry(repo_root)
@@ -144,5 +178,42 @@ def build_default_registry(repo_root: Path, role: str) -> ToolRegistry:
         schema={"type": "object", "properties": {"path": {"type": "string"}}},
         handler=lambda a: _run_tests(repo_root, role, a),
         capability="hermes_execute",
+    ))
+
+    # code-review-graph (all roles can query for review-by-impact).
+    reg.register(Tool(
+        name="blast_radius",
+        description="List files/symbols affected if the target file or symbol changes. Target like 'path/to/file.py' or 'path/to/file.py::function_name'.",
+        schema={
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "string"}, "max_depth": {"type": "integer"}},
+        },
+        handler=lambda a: _blast_radius(repo_root, a),
+        capability=None,
+    ))
+    reg.register(Tool(
+        name="dependency_chain",
+        description="Upstream callers + downstream callees for a target symbol.",
+        schema={
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "string"}},
+        },
+        handler=lambda a: _dependency_chain(repo_root, a),
+        capability=None,
+    ))
+
+    # RAG over project docs.
+    reg.register(Tool(
+        name="rag_query",
+        description="Semantic search over project docs (README, DESIGN, docs/**, agents/**).",
+        schema={
+            "type": "object",
+            "required": ["q"],
+            "properties": {"q": {"type": "string"}, "top_k": {"type": "integer"}},
+        },
+        handler=lambda a: _rag_query(repo_root, a),
+        capability=None,
     ))
     return reg

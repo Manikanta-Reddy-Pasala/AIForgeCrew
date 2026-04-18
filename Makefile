@@ -1,7 +1,8 @@
 .PHONY: setup lint test validate permission-check clean help \
         models download verify server load health bench bench-concurrent \
         paperclip-install paperclip-test paperclip-doctor paperclip \
-        hermes-test hermes mempalace-install mempalace-test
+        hermes-test hermes mempalace-install mempalace-test \
+        rag-install rag-reindex rag-query crg-query
 
 PY := python3
 PIP := $(PY) -m pip
@@ -113,6 +114,25 @@ mempalace-install:
 
 mempalace-test:
 	.venv/bin/pytest tests/python/test_paperclip_mem.py -v
+
+# ---- P4 RAG + code-review-graph (local) ----
+rag-install:
+	bash scripts/install-rag.sh
+
+rag-reindex:
+	.venv/bin/python -c "from pathlib import Path; from paperclip.rag import RagIndex; print(RagIndex(Path('.')).reindex())"
+
+rag-query:
+	@.venv/bin/python -c "import sys; from pathlib import Path; from paperclip.rag import RagIndex; \
+	q=' '.join(sys.argv[1:]) or 'permission matrix'; \
+	idx = RagIndex(Path('.')); \
+	[print(f'[{h.source}]', h.text[:200].replace(chr(10), ' | ')[:200], '...') for h in idx.query(q)]" $(filter-out $@,$(MAKECMDGOALS))
+
+crg-query:
+	@.venv/bin/python -c "import sys; from pathlib import Path; from paperclip.crg import build_graph, blast_radius; \
+	t=sys.argv[1] if len(sys.argv)>1 else 'paperclip/store.py'; \
+	g=build_graph(Path('.')); \
+	import json; print(json.dumps(blast_radius(g, t), indent=2))" $(filter-out $@,$(MAKECMDGOALS))
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info
