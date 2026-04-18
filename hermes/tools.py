@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from paperclip.crg import blast_radius as crg_blast_radius
 from paperclip.crg import build_graph, dependency_chain as crg_dependency_chain
+from paperclip.git_ops import GitOps
 from paperclip.permissions import PermissionDenied, file_access, role_can
 
 
@@ -215,5 +216,51 @@ def build_default_registry(repo_root: Path, role: str) -> ToolRegistry:
         },
         handler=lambda a: _rag_query(repo_root, a),
         capability=None,
+    ))
+
+    # Git ops — scoped per role via git_commit / git_create_mr capabilities.
+    git = GitOps(repo_root=repo_root)
+    reg.register(Tool(
+        name="git_branch",
+        description="Create or switch branch. Allowed: tester, sr-developer.",
+        schema={"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}},
+        handler=lambda a: git.branch(role, a["name"]),
+        capability="git_commit",
+    ))
+    reg.register(Tool(
+        name="git_commit",
+        description="Stage + commit the listed paths with the given message. Paths must fall under the role's write ACL.",
+        schema={
+            "type": "object",
+            "required": ["paths", "message"],
+            "properties": {
+                "paths": {"type": "array", "items": {"type": "string"}},
+                "message": {"type": "string"},
+            },
+        },
+        handler=lambda a: git.commit(role, a["paths"], a["message"]),
+        capability="git_commit",
+    ))
+    reg.register(Tool(
+        name="git_create_mr",
+        description="Open a merge request. Allowed: sr-architect only.",
+        schema={
+            "type": "object",
+            "required": ["title", "description", "source_branch"],
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "source_branch": {"type": "string"},
+                "target_branch": {"type": "string"},
+            },
+        },
+        handler=lambda a: git.create_mr(
+            role,
+            title=a["title"],
+            body=a["description"],
+            source_branch=a["source_branch"],
+            target_branch=a.get("target_branch", "main"),
+        ),
+        capability="git_create_mr",
     ))
     return reg
