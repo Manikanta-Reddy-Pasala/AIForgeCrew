@@ -26,6 +26,7 @@ from .budget import BudgetExceeded, Spend, assert_within_budget, month_usd, reco
 from .config import PaperclipConfig, load_permissions
 from .lifecycle import advance as lc_advance
 from .lifecycle import allowed_next_states
+from .observe import fleet_summary, ticket_report
 from .permissions import check as perm_check
 from .store import Store
 
@@ -132,6 +133,20 @@ def cmd_budget_report(args, cfg: PaperclipConfig, store: Store) -> int:
     return 0
 
 
+def cmd_report_ticket(args, cfg: PaperclipConfig, store: Store) -> int:
+    r = ticket_report(store, args.id)
+    if r is None:
+        print(f"not found: {args.id}", file=sys.stderr)
+        return 1
+    print(json.dumps(r.to_dict(), indent=2, default=str))
+    return 0
+
+
+def cmd_report_fleet(args, cfg: PaperclipConfig, store: Store) -> int:
+    print(json.dumps(fleet_summary(store, cfg), indent=2, default=str))
+    return 0
+
+
 def cmd_doctor(args, cfg: PaperclipConfig, store: Store) -> int:
     """Sanity checks: config parses, agent ACLs load, DB writable, lifecycle graph sane."""
     print(f"paperclip {__version__}")
@@ -180,6 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     br = sub.add_parser("budget-report"); br.add_argument("--role")
     br.set_defaults(handler=cmd_budget_report)
+
+    rt = sub.add_parser("report-ticket"); rt.add_argument("id")
+    rt.set_defaults(handler=cmd_report_ticket)
+
+    rf = sub.add_parser("report-fleet")
+    rf.set_defaults(handler=cmd_report_fleet)
 
     dr = sub.add_parser("doctor")
     dr.set_defaults(handler=cmd_doctor)
