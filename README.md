@@ -5,14 +5,45 @@ implement, review, open MR. All threaded under one ticket.
 
 Full architecture: [`DESIGN.md`](./DESIGN.md). Ops guide: [`docs/runbook.md`](./docs/runbook.md).
 
-## Flow
+## Flow — how it works
 
 ```
-human ticket → EM plans → Tester writes failing tests → Sr Dev makes them pass
-   → Tester verifies (≥80% cov) → Sr Architect reviews → MR → human merges
+  Human
+    │
+    │  paperclip ticket create --title ... --body ...
+    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  PAPERCLIP (one ticket, all updates thread here, audit on DB)    │
+└──────────────────────────────────────────────────────────────────┘
+    │
+    │  assignee = engineering_manager
+    ▼
+  [EM]           plans subtasks + acceptance criteria + test scenarios
+    │           (cloud LLM; ticket text scrubbed first)
+    │           comments on ticket, advances → tests_writing
+    ▼
+  [Tester]       writes failing unit + integration tests
+    │           (Hermes → GLM-4.7-Flash; git commits to tests/**)
+    │           comments "N tests, all failing", advances → coding
+    ▼
+  [Sr Developer] reads failing tests, writes prod code
+    │           (Hermes → Qwen3.6-35B-A3B; git commits to src/**)
+    │           comments "code ready", advances → verifying
+    ▼
+  [Tester]       re-runs pytest, records coverage event (≥80 required)
+    │           pass → advances → reviewing
+    │           fail → loops back to coding (max 3× per §10)
+    ▼
+  [Sr Architect] reviews code + tests + blast radius
+    │           (Hermes → Gemma-4-31B; read-only)
+    │           approve → advances → mr_created, gh pr create
+    │           reject → loops back to coding (max 3×)
+    ▼
+  Human          merges MR
 ```
 
-One ticket. One audit trail. No sub-tickets.
+One ticket. One audit trail. No sub-tickets. Every state transition + tool
+call + token spend persisted in `.paperclip/paperclip.db`.
 
 ## Agents + models
 
