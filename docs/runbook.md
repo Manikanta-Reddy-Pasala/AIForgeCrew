@@ -17,8 +17,8 @@ caffeinate -dimsu &
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew
 cd AIForgeCrew
 
-# 5. Install the Python runtime + Paperclip + Hermes
-make paperclip-install        # .venv + `paperclip` + `hermes` CLIs
+# 5. Install the Hermes-side Python runtime
+make aiforge-install        # .venv + `aiforge` + `hermes` CLIs
 
 # 6. Install MemPalace + init 5 palaces (project + 4 roles)
 make mempalace-install
@@ -29,15 +29,24 @@ make rag-install
 # 8. Pull models per security/model-checksums.yml (≈65 GB, ~2h on residential link)
 make models                   # download + verify sha256 + start LM Studio + load + health
 
-# 9. Sanity checks
+# 9. Install real Paperclip (UI on Mac Studio :3100)
+make paperclip-install        # Node 20 via fnm + npx paperclipai onboard --yes
+make paperclip-start          # server up
+make paperclip-bootstrap      # create OneShell company + 4 agents (idempotent)
+
+# 10. Sanity checks
 make validate permission-check audit-tools
-make paperclip-doctor
+make aiforge-doctor
 make hermes-test              # 7 hermes tests
 .venv/bin/pytest tests/python/ -q     # 72 tests total
 
-# 10. Live smoke
-.venv/bin/paperclip ticket create --title "hello world" --body "ping"
-.venv/bin/paperclip report-fleet | jq .
+# 11. Live smoke
+make paperclip-status
+.venv/bin/aiforge ticket create --title "hello world" --body "ping"
+.venv/bin/aiforge report-fleet | jq .
+
+# 12. Open Paperclip UI from your laptop (keep-open)
+make paperclip-tunnel         # ssh -L 3100; then open http://localhost:3100
 ```
 
 ## 1. Daily ops
@@ -56,10 +65,10 @@ make health                   # verifies per-role inference
 ### Check current state
 
 ```bash
-make paperclip-doctor                           # config + DB sanity
-.venv/bin/paperclip ticket list --state reviewing
-.venv/bin/paperclip report-fleet | jq .         # fleet metrics
-.venv/bin/paperclip report-ticket TICKET-xxx    # per-ticket drill-in
+make aiforge-doctor                           # config + DB sanity
+.venv/bin/aiforge ticket list --state reviewing
+.venv/bin/aiforge report-fleet | jq .         # fleet metrics
+.venv/bin/aiforge report-ticket TICKET-xxx    # per-ticket drill-in
 ```
 
 ### Rebuild RAG after adding docs
@@ -73,7 +82,7 @@ make rag-reindex
 ```bash
 .venv/bin/python -c "
 from pathlib import Path
-from paperclip.mem import MemBus
+from aiforge_core.mem import MemBus
 MemBus(Path('.aiforge/mem')).remember(
     role='sr-architect',
     scope='project',
@@ -109,8 +118,8 @@ make verify                   # re-checks all sha256
 ### Agent budget blew up
 
 ```bash
-.venv/bin/paperclip report-ticket TICKET-xxx | jq .tokens_per_role
-.venv/bin/paperclip budget-report --role sr_developer
+.venv/bin/aiforge report-ticket TICKET-xxx | jq .tokens_per_role
+.venv/bin/aiforge budget-report --role sr_developer
 # If mid-run: the BudgetExceeded exception already halted the call; ticket
 # stays in its current state. Reset by transitioning to `escalated` with
 # actor=human and rerouting after fix.
@@ -120,12 +129,12 @@ make verify                   # re-checks all sha256
 
 ```bash
 # Look for the trip event
-.venv/bin/paperclip audit TICKET-xxx | grep breaker
+.venv/bin/aiforge audit TICKET-xxx | grep breaker
 # Reset (requires human actor)
 .venv/bin/python -c "
 from pathlib import Path
-from paperclip.store import Store
-from paperclip.retry import CircuitBreaker
+from aiforge_core.store import Store
+from aiforge_core.retry import CircuitBreaker
 s = Store(Path('.paperclip/paperclip.db'))
 CircuitBreaker(store=s).reset('TICKET-xxx', 'sr-developer', actor='human')
 "
@@ -139,7 +148,7 @@ Tester re-runs + records the new coverage:
 # from Tester context (automated by the agent; here the manual override):
 .venv/bin/python -c "
 from pathlib import Path
-from paperclip.store import Store
+from aiforge_core.store import Store
 s = Store(Path('.paperclip/paperclip.db'))
 s.audit_event('TICKET-xxx', 'coverage', 'tester', {'pct': 87.0, 'pass': 14, 'total': 14})
 "

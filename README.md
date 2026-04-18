@@ -10,13 +10,20 @@ Full architecture: [`DESIGN.md`](./DESIGN.md). Ops guide: [`docs/runbook.md`](./
 ```
   Human
     │
-    │  paperclip ticket create --title ... --body ...
+    │  create ticket in Paperclip UI @ http://localhost:3100
     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  PAPERCLIP (one ticket, all updates thread here, audit on DB)    │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│  PAPERCLIP (Node + React UI, embedded Postgres, trusted-loopback)   │
+│  Company = OneShell. One ticket, audit trail, org chart, budgets.   │
+└────────────────────────────────────────────────────────────────────┘
+    │  hermes_local adapter dispatches task →
+    ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  aiforge_core + hermes (Python, Hermes-side runtime)                │
+│  Agent tool-call loop against LM Studio :1234 (Mac Studio M3 Ultra) │
+└────────────────────────────────────────────────────────────────────┘
     │
-    │  assignee = engineering_manager
+    │  assignee = Engineering Manager
     ▼
   [EM]           plans subtasks + acceptance criteria + test scenarios
     │           (cloud LLM; ticket text scrubbed first)
@@ -42,8 +49,9 @@ Full architecture: [`DESIGN.md`](./DESIGN.md). Ops guide: [`docs/runbook.md`](./
   Human          merges MR
 ```
 
-One ticket. One audit trail. No sub-tickets. Every state transition + tool
-call + token spend persisted in `.paperclip/paperclip.db`.
+One ticket. One audit trail. No sub-tickets. Paperclip stores the canonical
+ticket state in embedded Postgres; `aiforge_core` mirrors tool calls + budget
+spend into `.paperclip/paperclip.db` for local §10 gates + observability.
 
 ## Agents + models
 
@@ -59,25 +67,36 @@ All roles except EM run on the Mac Studio (LM Studio OpenAI-compat :1234).
 
 ## Components
 
-| Component | What it does | Code |
+| Component | What it does | Where |
 |---|---|---|
-| **Paperclip** | Ticket store + lifecycle SM + audit + budgets | `paperclip/` |
-| **Hermes** | Per-agent driver: loads prompts, tool-call loop, LLM calls | `hermes/` |
-| **MemPalace** | Two-tier memory (project shared + per-role). ACL: EM+Arch write project | `paperclip/mem.py` + `.aiforge/mem/` |
-| **RAG** | ChromaDB semantic search over docs + agent configs | `paperclip/rag.py` + `.aiforge/rag/` |
-| **code-review-graph** | Python AST call graph → blast radius / dependency chain | `paperclip/crg.py` |
-| **Git MCP** | Role-scoped git ops (branch, commit, create_mr) | `paperclip/git_ops.py` |
-| **Safety** | Prompt-injection scrub + network-tool audit | `paperclip/safety.py` |
-| **Retry** | Loop caps, circuit breaker, coverage gate | `paperclip/retry.py` |
-| **Observability** | Per-ticket + fleet reports from audit table | `paperclip/observe.py` |
+| **Paperclip** (external) | Org chart UI, ticket store, goals, agent adapters, dashboard | Node.js app on Mac Studio :3100 |
+| **aiforge_core** | §4 lifecycle SM + audit + budgets + retry + coverage gate + observe | `aiforge_core/` |
+| **Hermes** | Per-agent driver: prompts, tool-call loop, LLM calls | `hermes/` |
+| **MemPalace** | Two-tier memory (project shared + per-role) via MemPalace 3.3 + 29 MCP tools | `aiforge_core/mem.py` + `.aiforge/mem/` |
+| **RAG** | ChromaDB semantic search over docs + agent configs | `aiforge_core/rag.py` + `.aiforge/rag/` |
+| **code-review-graph** | Python AST call graph → blast radius / dependency chain | `aiforge_core/crg.py` |
+| **Git ops** | Role-scoped git (branch, commit, create_mr) via subprocess | `aiforge_core/git_ops.py` |
+| **Safety** | Prompt-injection scrub + network-tool audit | `aiforge_core/safety.py` |
+| **Retry** | Loop caps, circuit breaker, coverage gate | `aiforge_core/retry.py` |
+| **Observability** | Per-ticket + fleet reports | `aiforge_core/observe.py` |
+| **Bridge** | Poll Paperclip tasks → Hermes run → report back | `aiforge_core/bridge.py` |
 
 ## How each part works — crisp
 
-### Paperclip
-SQLite at `.paperclip/paperclip.db`. 3 tables: `tickets`, `comments`, `audit`
-(append-only). Every state transition + tool call + budget spend records an
-audit row. State machine in `lifecycle.py` enforces DESIGN §4 — invalid
-transitions raise before DB commit.
+### Paperclip (external, Node + React UI)
+Real Paperclip ([github.com/paperclipai/paperclip](https://github.com/paperclipai/paperclip),
+MIT) running on the Mac Studio. Trusted-loopback mode → :3100, embedded
+Postgres → :54329. Holds the canonical org chart (OneShell + 4 agents),
+tickets, goals, budgets, dashboard, audit. REST API at `/api/companies`,
+`/api/agents`, etc. `hermes_local` adapter ships with Paperclip and is how
+it hands tasks to our Python runtime.
+
+### aiforge_core
+Our Hermes-side runtime. SQLite mirror at `.paperclip/paperclip.db` captures
+tool calls + budget spend + coverage events so §10 gates (loop caps,
+coverage ≥80, circuit breaker) run locally before Paperclip accepts a
+state transition. State machine in `aiforge_core/lifecycle.py` enforces
+DESIGN §4 — invalid transitions raise before the DB commit.
 
 ### Hermes
 `Agent.load(repo, role)` reads `agents/<role>/system-prompt.md` + `contract.md`,
@@ -135,23 +154,27 @@ Everything is script-driven — no manual config edits.
 ### 1. First-time bring-up (fresh Mac Studio)
 
 ```bash
-# On the Mac Studio
-curl -LsSf https://astral.sh/uv/install.sh | sh       # uv, no Xcode
+# On the Mac Studio (one-time)
+curl -LsSf https://astral.sh/uv/install.sh | sh       # uv (no Xcode CLT needed)
 caffeinate -dimsu &                                   # prevent sleep
-# Install LM Studio from lmstudio.ai (one-time GUI install)
+# Install LM Studio from lmstudio.ai                   (GUI install → ships `lms` CLI)
 
-# Clone the repo
+# From any dev machine (or on the Mac Studio itself)
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew
 cd AIForgeCrew
 
-# Everything else
-make paperclip-install       # Paperclip + Hermes CLIs
-make mempalace-install       # MemPalace + 5 palaces
-make rag-install             # ChromaDB + initial index
-make models                  # ~65 GB MLX models + verify + load + health
+make aiforge-install          # .venv + aiforge + hermes CLIs
+make mempalace-install        # MemPalace + 5 palaces (1 shared + 4 per-role)
+make rag-install              # ChromaDB + first RAG reindex
+make models                   # ~65 GB MLX models + sha256 verify + server + load + health
+
+make paperclip-install        # real Paperclip UI (Node 20 via fnm + npx paperclipai)
+make paperclip-start          # server on Mac Studio :3100
+make paperclip-bootstrap      # create OneShell company + 4 agents (idempotent)
+make paperclip-tunnel         # ssh -L 3100 so laptop browser can reach the UI
 ```
 
-Can also drive all of that over SSH from any dev machine — override the target:
+All `SSH_HOST` defaults to `manikanta@192.168.70.185`; override per invocation:
 
 ```bash
 make models SSH_HOST=user@your-mac-studio.local
@@ -162,21 +185,25 @@ make models SSH_HOST=user@your-mac-studio.local
 ```bash
 # Health checks
 make validate permission-check audit-tools          # config + permissions + network audit
-make paperclip-doctor                               # DB + config sanity
+make aiforge-doctor                                 # DB + config sanity
+make paperclip-status                               # real Paperclip health
 make health                                         # per-role LLM probe
 
-# Ticket CLI
-paperclip ticket create --title "Add JWT auth" --body "login endpoint + middleware"
-paperclip ticket list --state reviewing
-paperclip ticket show TICKET-xxx
-paperclip ticket advance TICKET-xxx --to planning --actor em
-paperclip ticket comment TICKET-xxx --author em --body "Plan ready"
-paperclip audit TICKET-xxx
-paperclip report-ticket TICKET-xxx | jq .
-paperclip report-fleet     | jq .
-paperclip budget-report --role sr_developer
+# Tickets — via Paperclip UI (http://localhost:3100 through the tunnel) or REST API:
+curl -X POST http://localhost:3100/api/companies/$COMPANY_ID/issues \
+     -H 'Content-Type: application/json' \
+     -d '{"title":"Add JWT auth","body":"login endpoint + middleware"}'
 
-# Run a single agent turn
+# Local aiforge CLI (mirrors Paperclip state + exposes §10 gates + reports)
+aiforge ticket list --state reviewing
+aiforge ticket show TICKET-xxx
+aiforge ticket advance TICKET-xxx --to planning --actor em
+aiforge audit TICKET-xxx
+aiforge report-ticket TICKET-xxx | jq .
+aiforge report-fleet  | jq .
+aiforge budget-report --role sr_developer
+
+# Run a single agent turn (bypasses Paperclip — useful for debugging)
 hermes run --role sr-developer --ticket TICKET-xxx --message "Make failing tests pass"
 hermes tools --role tester      # show tools visible to the role
 
@@ -211,31 +238,34 @@ coverage gate blocks MR, stale ticket.
 `make help` — full target list. Groups:
 
 ```
-Dev:               setup, lint, test, validate, permission-check, audit-tools
-P0 models:         models, download, verify, server, load, health, bench*
-P1 paperclip:      paperclip-install, paperclip-test, paperclip-doctor, paperclip
-P2 hermes:         hermes-test, hermes
-P3 mempalace:      mempalace-install, mempalace-test
-P4 rag + crg:      rag-install, rag-reindex, rag-query, crg-query
+Dev:              setup, lint, test, validate, permission-check, audit-tools
+P0 models:        models, download, verify, server, load, health, bench*, bench-passk
+aiforge-core:     aiforge-install, aiforge-test, aiforge-doctor, aiforge -- ARGS
+hermes:           hermes-test, hermes -- ARGS
+memory:           mempalace-install, mempalace-test
+rag + crg:        rag-install, rag-reindex, rag-query, crg-query
+Paperclip UI:     paperclip-install, paperclip-start, paperclip-stop, paperclip-status
+                  paperclip-bootstrap (create OneShell + 4 agents)
+                  paperclip-tunnel    (ssh -L 3100 → laptop browser)
 ```
 
 ## Repo layout
 
 | Path | Purpose |
 |------|---------|
-| `paperclip/` | Orchestrator runtime (tickets, lifecycle, mem, rag, crg, git, safety, retry, observe, CLI) |
-| `hermes/` | Agent runtime (LLM client, tool registry, agent driver, CLI) |
+| `aiforge_core/` | Hermes-side runtime: lifecycle, store, mem, rag, crg, git, safety, retry, observe, bridge, CLI |
+| `hermes/` | Agent runtime: LLM client, tool registry, agent driver, CLI |
 | `agents/<role>/` | system-prompt.md, contract.md, permissions.yml |
 | `security/` | File access rules, blocked paths, model checksums |
 | `memory/` | MemPalace config + agent schemas |
 | `mcp/` | MCP server manifests (tool contracts) |
 | `observability/` | Dashboard + alerts config |
-| `scripts/` | All install + benchmark + health scripts (macOS-only) |
+| `scripts/` | Install + benchmark + Paperclip bootstrap scripts (macOS-only) |
 | `tools/` | Schema validators, permission matrix, tool-network audit |
 | `tests/` | pytest + bats — 72 python tests |
-| `docs/` | Runbook, model-evaluation, hardware-guide, security-policy, troubleshooting, eval/tickets |
+| `docs/` | Runbook, architecture, model-evaluation, hardware-guide, security-policy, troubleshooting, eval/tickets |
 
-Runtime state (gitignored): `.paperclip/` · `.aiforge/` · `.venv/`
+Runtime state (gitignored): `.paperclip/` · `.aiforge/` · `.venv/` · `~/.paperclip/` (real Paperclip, Postgres)
 
 ## License
 
