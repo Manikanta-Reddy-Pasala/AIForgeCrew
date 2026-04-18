@@ -23,10 +23,8 @@ printf '  %s\n' "${ADAPTERS[@]}"
 patch_one() {
   local f="$1"
   [[ -f "$f.orig" ]] || cp "$f" "$f.orig"
-  if grep -q '"lmstudio"' "$f"; then
-    echo "[skip] already patched: $f"
-    return
-  fi
+  # Restore from backup before re-patching (so re-runs pick up new hint values).
+  cp "$f.orig" "$f"
   python3 - "$f" <<'PY'
 import re, sys
 p = sys.argv[1]
@@ -40,13 +38,16 @@ src = re.sub(
 )
 
 # 2. Insert local-model prefix hints at top of MODEL_PREFIX_PROVIDER_HINTS.
+# Map to "auto" so adapter skips --provider flag (Hermes CLI enum rejects
+# lmstudio). Then Hermes reads ~/.hermes/config.yaml which has
+# provider=lmstudio (alias for custom) + base_url=http://localhost:1234/v1.
 hints_insert = (
-    "    // AIForgeCrew override: local LM Studio ids → lmstudio\n"
-    '    ["zai-org/", "lmstudio"],\n'
-    '    ["qwen3.6-", "lmstudio"],\n'
-    '    ["qwen3-0.6b", "lmstudio"],\n'
-    '    ["gemma-4-31b-it", "lmstudio"],\n'
-    '    ["gemma-4-e2b-it", "lmstudio"],\n'
+    "    // AIForgeCrew override: local LM Studio ids → auto (no CLI flag)\n"
+    '    ["zai-org/", "auto"],\n'
+    '    ["qwen3.6-", "auto"],\n'
+    '    ["qwen3-0.6b", "auto"],\n'
+    '    ["gemma-4-31b-it", "auto"],\n'
+    '    ["gemma-4-e2b-it", "auto"],\n'
 )
 src = re.sub(
     r'(export const MODEL_PREFIX_PROVIDER_HINTS = \[\n)',
