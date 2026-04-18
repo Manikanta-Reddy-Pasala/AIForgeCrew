@@ -1,0 +1,14 @@
+id: eval-03
+role: sr-developer
+prompt: |
+  Write `src/num_utils.py` with `prime_factors(n)` returning a sorted list of
+  prime factors of n (repetitions kept, e.g. 12 → [2,2,3]). Code only.
+expected_tests: |
+  from src.num_utils import prime_factors
+  def test_small():
+      assert prime_factors(12) == [2, 2, 3]
+      assert prime_factors(2) == [2]
+  def test_prime():
+      assert prime_factors(13) == [13]
+  def test_one():
+      assert prime_factors(1) == []

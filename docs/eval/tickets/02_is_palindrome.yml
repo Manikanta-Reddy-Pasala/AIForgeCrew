@@ -1,0 +1,15 @@
+id: eval-02
+role: sr-developer
+prompt: |
+  Write `src/str_utils.py` containing `is_palindrome(s)` that returns True
+  iff `s` reads the same forward and backward, case-insensitive, ignoring
+  non-alphanumerics. Code only, no prose.
+expected_tests: |
+  from src.str_utils import is_palindrome
+  def test_simple():
+      assert is_palindrome("racecar")
+      assert not is_palindrome("hello")
+  def test_ignore_case_and_punct():
+      assert is_palindrome("A man, a plan, a canal: Panama")
+  def test_empty():
+      assert is_palindrome("")

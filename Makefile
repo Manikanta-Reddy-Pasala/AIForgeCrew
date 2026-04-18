@@ -27,6 +27,7 @@ help:
 	@echo "  health             probe /v1/models + per-role inference"
 	@echo "  bench              P0 benchmark harness (solo per role)"
 	@echo "  bench-concurrent   paired concurrent throughput bench"
+	@echo "  bench-passk        pass@1 harness on docs/eval/tickets/ (P9)"
 	@echo ""
 	@echo "P1 paperclip runtime (local, macOS-only):"
 	@echo "  paperclip-install  create .venv/ + uv pip install -e .[dev]"
@@ -90,6 +91,10 @@ bench:
 
 bench-concurrent:
 	ssh $(SSH_HOST) 'bash -s' < scripts/benchmark-concurrent.sh
+
+bench-passk:
+	scp -r docs/eval $(SSH_HOST):/tmp/aiforge-eval/ >/dev/null
+	ssh $(SSH_HOST) "EVAL_DIR=/tmp/aiforge-eval/tickets bash -s" < scripts/benchmark-passk.sh
 
 # ---- P1 paperclip runtime (local) ----
 paperclip-install:
