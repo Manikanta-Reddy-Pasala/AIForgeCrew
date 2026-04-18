@@ -57,6 +57,9 @@ validate:
 permission-check:
 	$(PY) tools/check_permission_matrix.py
 
+audit-tools:
+	.venv/bin/python tools/audit_tool_network.py
+
 # ---- P0 model pipeline (executed on Mac Studio or via SSH_HOST) ----
 # All targets run remotely via `ssh $(SSH_HOST) 'bash -s' < scripts/X.sh`
 # so the invocation works from any dev machine.

@@ -15,6 +15,7 @@ from paperclip.budget import BudgetExceeded, Spend, assert_within_budget, record
 from paperclip.config import PaperclipConfig
 from paperclip.mem import MemBus
 from paperclip.permissions import PermissionDenied
+from paperclip.safety import scrub_ticket_text
 from paperclip.store import Store
 
 from .llm import LLMClient, LLMReply
@@ -108,6 +109,10 @@ Stop after completing your contract's OUT deliverable."""
         """Run the tool-call loop. Enforces budget via cfg + store (if both given)."""
         if self.model is None:
             raise RuntimeError(f"no model configured for role {self.role}")
+
+        # DESIGN §8.2: EM's cloud LLM must never see unsanitized ticket text.
+        if self.role == "em":
+            user_message = scrub_ticket_text(user_message)
 
         messages = self._build_messages(user_message, ticket_id)
         tools = self.registry.openai_schema(self.role)
