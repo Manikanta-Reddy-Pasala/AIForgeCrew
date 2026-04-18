@@ -45,6 +45,7 @@ logs/
 .hermes/
 .mem0/
 .rag-index/
+.paperclip/
 
 # Tooling local state
 .claude/

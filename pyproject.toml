@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "aiforgecrew-tools"
+name = "aiforgecrew"
 version = "0.1.0"
-description = "Config validators and permission matrix checker for AIForgeCrew"
+description = "AIForgeCrew orchestrator (Paperclip) + config validators"
 requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6.0",
@@ -14,6 +18,12 @@ dev = [
   "ruff>=0.4",
   "yamllint>=1.35",
 ]
+
+[project.scripts]
+paperclip = "paperclip.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["paperclip*"]
 
 [tool.ruff]
 line-length = 100

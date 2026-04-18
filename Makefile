@@ -1,5 +1,6 @@
 .PHONY: setup lint test validate permission-check clean help \
-        models download verify server load health bench bench-concurrent
+        models download verify server load health bench bench-concurrent \
+        paperclip-install paperclip-test paperclip-doctor paperclip
 
 PY := python3
 PIP := $(PY) -m pip
@@ -24,6 +25,12 @@ help:
 	@echo "  health             probe /v1/models + per-role inference"
 	@echo "  bench              P0 benchmark harness (solo per role)"
 	@echo "  bench-concurrent   paired concurrent throughput bench"
+	@echo ""
+	@echo "P1 paperclip runtime (local, macOS-only):"
+	@echo "  paperclip-install  create .venv/ + uv pip install -e .[dev]"
+	@echo "  paperclip-test     run paperclip pytest suite"
+	@echo "  paperclip-doctor   sanity-check config + permissions + DB"
+	@echo "  paperclip -- ARGS  run paperclip CLI (e.g. 'make paperclip -- ticket list')"
 
 setup:
 	$(PIP) install --upgrade pip
@@ -78,6 +85,19 @@ bench:
 
 bench-concurrent:
 	ssh $(SSH_HOST) 'bash -s' < scripts/benchmark-concurrent.sh
+
+# ---- P1 paperclip runtime (local) ----
+paperclip-install:
+	bash scripts/install-paperclip.sh
+
+paperclip-test:
+	.venv/bin/pytest tests/python/test_paperclip_*.py -v
+
+paperclip-doctor:
+	.venv/bin/paperclip doctor
+
+paperclip:
+	@.venv/bin/paperclip $(filter-out $@,$(MAKECMDGOALS))
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info
