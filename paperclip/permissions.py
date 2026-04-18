@@ -48,7 +48,7 @@ def file_access(repo_root: Path, role: str, op: str, path: str) -> bool:
     rel = path.lstrip("./").lstrip("/")
 
     blocked = _load_yaml(repo_root / "security" / "blocked-paths.yml")
-    for pat in blocked.get("blocked_paths") or []:
+    for pat in (blocked.get("globally_blocked") or blocked.get("blocked_paths") or []):
         if fnmatch(rel, pat):
             return False
 

@@ -21,9 +21,10 @@ dev = [
 
 [project.scripts]
 paperclip = "paperclip.cli:main"
+hermes = "hermes.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["paperclip*"]
+include = ["paperclip*", "hermes*"]
 
 [tool.ruff]
 line-length = 100

@@ -1,6 +1,7 @@
 .PHONY: setup lint test validate permission-check clean help \
         models download verify server load health bench bench-concurrent \
-        paperclip-install paperclip-test paperclip-doctor paperclip
+        paperclip-install paperclip-test paperclip-doctor paperclip \
+        hermes-test hermes
 
 PY := python3
 PIP := $(PY) -m pip
@@ -98,6 +99,13 @@ paperclip-doctor:
 
 paperclip:
 	@.venv/bin/paperclip $(filter-out $@,$(MAKECMDGOALS))
+
+# ---- P2 hermes runtime (local) ----
+hermes-test:
+	.venv/bin/pytest tests/python/test_hermes_*.py -v
+
+hermes:
+	@.venv/bin/hermes $(filter-out $@,$(MAKECMDGOALS))
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info
