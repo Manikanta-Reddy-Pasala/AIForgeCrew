@@ -16,7 +16,12 @@ CODE_DIR="${CODE_DIR:-$HOME/codeRepo}"
 CLAUDE_MEMORY="${CLAUDE_MEMORY:-$HOME/.claude/memory}"
 CLAUDE_MEM_DB="${CLAUDE_MEM_DB:-$HOME/.claude-mem/claude-mem.db}"
 
-command -v mempalace >/dev/null || { echo "mempalace missing: pip install mempalace" >&2; exit 1; }
+MEMPALACE="${MEMPALACE:-$HOME/AIForgeCrew/.venv/bin/mempalace}"
+if [[ -x "$MEMPALACE" ]]; then
+  PATH="$(dirname "$MEMPALACE"):$PATH"
+else
+  command -v mempalace >/dev/null || { echo "mempalace missing: run `make mempalace-install` first" >&2; exit 1; }
+fi
 [[ -d "$PROJECT_PALACE" ]] || mempalace --palace "$PROJECT_PALACE" init "$PROJECT_PALACE" --yes </dev/null
 
 # --- codeRepo: mine each subrepo as its own wing ---
