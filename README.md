@@ -1,107 +1,210 @@
 # AIForgeCrew
 
-Autonomous AI development team. Human creates a ticket; AI agents plan, write tests first (TDD), implement, review, and raise an MR — all threaded under the same ticket.
+Autonomous AI dev team. Human files ticket → AI agents plan, write tests (TDD),
+implement, review, open MR. All threaded under one ticket.
 
-See [`DESIGN.md`](./DESIGN.md) for the complete architecture.
+Full architecture: [`DESIGN.md`](./DESIGN.md). Ops guide: [`docs/runbook.md`](./docs/runbook.md).
 
-## Status
+## Flow
 
-Phases P0 – P9 complete. All runtime + CLI + tests ship in this repo.
-P10 (blog post + demo video) is content work; see `docs/runbook.md` for ops.
-
-| Phase | Deliverable | Shipped |
-|-------|-------------|---------|
-| P0 | LM Studio + MLX models (Qwen3.6 / GLM-4.7 / Gemma-4) | ✅ |
-| P1 | Paperclip runtime (tickets / lifecycle / budget / CLI) | ✅ |
-| P2 | Hermes (agent driver, tool registry, LLM client) | ✅ |
-| P3 | MemPalace two-tier memory with ACL | ✅ |
-| P4 | RAG (ChromaDB) + code-review-graph (AST) | ✅ |
-| P5 | Git MCP + end-to-end TDD integration test | ✅ |
-| P6 | Prompt-injection scrub + network-tool audit | ✅ |
-| P7 | Observability (per-ticket + fleet reports) | ✅ |
-| P8 | Retry caps + circuit breaker + coverage gate | ✅ |
-| P9 | pass@1 harness + 3 seed eval tickets | ✅ |
-| P10 | `docs/runbook.md` (ops manual) | ✅ |
-
-Bring-up on a fresh Mac Studio is `make paperclip-install && make mempalace-install && make rag-install && make models`. Full command reference: `make help`.
-
-See [`docs/runbook.md`](./docs/runbook.md) for daily ops + failure playbook,
-[`docs/superpowers/plans/`](./docs/superpowers/plans/) for detailed implementation plans.
-
-## P0 model pipeline (reproducible)
-
-One host (Mac Studio M3 Ultra 96 GB) runs LM Studio MLX. Any dev machine
-drives download/verify/benchmark via SSH. Prereqs on the Mac Studio:
-LM Studio installed (ships `~/.lmstudio/bin/lms` CLI) and [`uv`](https://docs.astral.sh/uv/)
-for Python-without-Xcode.
-
-Host target is `SSH_HOST=manikanta@192.168.70.185` by default; override
-at invocation: `make models SSH_HOST=user@host`.
-
-| Target | Action |
-|--------|--------|
-| `make models` | End-to-end: download + verify + server + load + health |
-| `make download` | Idempotent fetch (reads `security/model-checksums.yml`) |
-| `make verify` | sha256 verify every entry |
-| `make server` | Start LM Studio OpenAI-compat server on :1234 |
-| `make load` | Load role models with 128K context |
-| `make health` | Probe `/v1/models` + one chat/completion per role |
-| `make bench` | Solo per-role benchmark |
-| `make bench-concurrent` | Paired concurrent throughput bench |
-
-Every model entry in `security/model-checksums.yml` carries: path, `source_url`,
-sha256, role assignment, quant, size, and rationale. Re-provisioning a fresh
-Mac Studio from scratch is:
-
-```bash
-# on Mac Studio (one-time)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# install LM Studio from lmstudio.ai, run once to bootstrap lms CLI
-
-# from any dev machine
-make models       # pulls + verifies + starts + loads + health
+```
+human ticket → EM plans → Tester writes failing tests → Sr Dev makes them pass
+   → Tester verifies (≥80% cov) → Sr Architect reviews → MR → human merges
 ```
 
-### Local automation
+One ticket. One audit trail. No sub-tickets.
 
-Validation + tests run locally via `make`:
+## Agents + models
 
-| Target | Purpose |
-|--------|---------|
-| `make validate` | JSON-schema validation of every config |
-| `make permission-check` | Enforce DESIGN.md §5.2 permission matrix |
-| `make test` | `bats tests/shell` + `pytest tests/python` |
-| `make lint` | yamllint + markdownlint + shellcheck (install-dependent) |
+| Role | Model (MLX, local) | Size | Why |
+|---|---|---:|---|
+| Engineering Manager | Cloud (Claude/GPT) | — | Plans, never sees code |
+| Tester | GLM-4.7-Flash (MoE 3B active) | 24 GB | Best open tool-use (Playwright MCP) |
+| Sr Developer | Qwen3.6-35B-A3B (MoE 3B active) | 20 GB | Top open SWE-bench 73.4% |
+| Sr Architect | Gemma-4-31B dense | 18 GB | Dense → deep review reasoning |
+| Embed | nomic-embed-text v1.5 | 0.08 GB | RAG |
 
-No CI pipeline. Commit gate is local `make validate permission-check test` before push.
+All roles except EM run on the Mac Studio (LM Studio OpenAI-compat :1234).
 
-## Quickstart
+## Components
 
-Prerequisites: Docker, Python 3.11+, Node 20+, `bats-core`, `shellcheck`, `yamllint`, `markdownlint-cli2`.
+| Component | What it does | Code |
+|---|---|---|
+| **Paperclip** | Ticket store + lifecycle SM + audit + budgets | `paperclip/` |
+| **Hermes** | Per-agent driver: loads prompts, tool-call loop, LLM calls | `hermes/` |
+| **MemPalace** | Two-tier memory (project shared + per-role). ACL: EM+Arch write project | `paperclip/mem.py` + `.aiforge/mem/` |
+| **RAG** | ChromaDB semantic search over docs + agent configs | `paperclip/rag.py` + `.aiforge/rag/` |
+| **code-review-graph** | Python AST call graph → blast radius / dependency chain | `paperclip/crg.py` |
+| **Git MCP** | Role-scoped git ops (branch, commit, create_mr) | `paperclip/git_ops.py` |
+| **Safety** | Prompt-injection scrub + network-tool audit | `paperclip/safety.py` |
+| **Retry** | Loop caps, circuit breaker, coverage gate | `paperclip/retry.py` |
+| **Observability** | Per-ticket + fleet reports from audit table | `paperclip/observe.py` |
+
+## How each part works — crisp
+
+### Paperclip
+SQLite at `.paperclip/paperclip.db`. 3 tables: `tickets`, `comments`, `audit`
+(append-only). Every state transition + tool call + budget spend records an
+audit row. State machine in `lifecycle.py` enforces DESIGN §4 — invalid
+transitions raise before DB commit.
+
+### Hermes
+`Agent.load(repo, role)` reads `agents/<role>/system-prompt.md` + `contract.md`,
+builds the tool registry, calls LM Studio with `tools=[...]`. When model
+returns `tool_calls`, Hermes dispatches through `paperclip.permissions` and
+appends each result as a `role=tool` message. Loops until `tool_calls=[]` or
+checkpoint cap (15 tool calls). Budget enforced every round.
+
+### MemPalace
+5 palaces under `.aiforge/mem/`: `project/` + `agent/{role}/`. `MemBus.remember(role, scope, text)`
+fails early if writer ACL rejects (only EM + Sr Architect write project).
+`search(role, q, scope='auto')` hits own + project palaces. Hermes injects
+`wake_up() + search(user_message)` into system prompt before every turn.
+
+### RAG
+`RagIndex(repo).reindex()` chunks markdown/yml at 1200 chars with 200 overlap,
+stores in ChromaDB PersistentClient. `query(q, top_k=5)` returns `Chunk(source, text)`.
+Embedder = ChromaDB bundled (fully local). Registered as `rag_query` Hermes tool.
+
+### code-review-graph
+`build_graph(repo)` walks every `.py` (excluding `.venv/.aiforge/node_modules`),
+uses stdlib `ast` to collect `FunctionDef + Call` nodes. `blast_radius(g, target, max_depth=3)`
+finds upstream callers — tells you what breaks if you change target. Registered
+as `blast_radius` + `dependency_chain` Hermes tools.
+
+### Git MCP
+`GitOps(repo).commit(role, paths, msg)` validates every path against role's
+file-access glob before `git add -- <paths>`. Tester may only commit `tests/**`,
+Sr Dev only `src/**`, Architect only opens MRs via `gh pr create`. No `git add .`
+anywhere. Network-free until create_mr.
+
+### Safety
+`scrub_ticket_text()` redacts "ignore all instructions", "reveal system prompt",
+jailbreak + exfil patterns, strips NUL + C0 chars, caps 32K chars. EM agent runs
+this before every cloud call. `assert_no_network_tools(registry)` introspects
+handler source — fails fast if any imports urllib/requests/httpx/socket.
+
+### Retry + coverage gate
+Before every transition: `enforce_loop_caps` counts verifying↔coding and
+reviewing↔coding loops from audit; >3 → RetryExceeded + auto-escalate.
+Before mr_created: `require_coverage_for_mr` demands latest `coverage` audit
+event ≥80%. `CircuitBreaker` tracks per-(role, ticket) consecutive failures;
+trips at 3, only human `reset()` clears it.
+
+### Observability
+`ticket_report(store, TID)` aggregates: tokens per role, tool-call counts,
+transitions, loop counters, duration, comment count. `fleet_summary(store, cfg)`
+rolls up all tickets + flags stalled ones (>60 min inactivity per retry_rules).
+CLI emits JSON for `jq` or dashboard panels.
+
+## How to use it
+
+Everything is script-driven — no manual config edits.
+
+### 1. First-time bring-up (fresh Mac Studio)
 
 ```bash
-make setup       # install Python + Node tooling
-make validate    # validate all configs against schemas
-make lint        # yamllint + markdownlint + shellcheck
-make test        # bats + pytest
+# On the Mac Studio
+curl -LsSf https://astral.sh/uv/install.sh | sh       # uv, no Xcode
+caffeinate -dimsu &                                   # prevent sleep
+# Install LM Studio from lmstudio.ai (one-time GUI install)
+
+# Clone the repo
+git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew
+cd AIForgeCrew
+
+# Everything else
+make paperclip-install       # Paperclip + Hermes CLIs
+make mempalace-install       # MemPalace + 5 palaces
+make rag-install             # ChromaDB + initial index
+make models                  # ~65 GB MLX models + verify + load + health
 ```
 
-## Repo Layout
+Can also drive all of that over SSH from any dev machine — override the target:
+
+```bash
+make models SSH_HOST=user@your-mac-studio.local
+```
+
+### 2. Daily ops
+
+```bash
+# Health checks
+make validate permission-check audit-tools          # config + permissions + network audit
+make paperclip-doctor                               # DB + config sanity
+make health                                         # per-role LLM probe
+
+# Ticket CLI
+paperclip ticket create --title "Add JWT auth" --body "login endpoint + middleware"
+paperclip ticket list --state reviewing
+paperclip ticket show TICKET-xxx
+paperclip ticket advance TICKET-xxx --to planning --actor em
+paperclip ticket comment TICKET-xxx --author em --body "Plan ready"
+paperclip audit TICKET-xxx
+paperclip report-ticket TICKET-xxx | jq .
+paperclip report-fleet     | jq .
+paperclip budget-report --role sr_developer
+
+# Run a single agent turn
+hermes run --role sr-developer --ticket TICKET-xxx --message "Make failing tests pass"
+hermes tools --role tester      # show tools visible to the role
+
+# Rebuild RAG after editing docs
+make rag-reindex
+```
+
+### 3. Benchmarks
+
+```bash
+make bench                   # solo per role (TTFT + tok/s)
+make bench-concurrent        # paired throughput (DEV+TESTER, DEV+ARCH, TESTER+ARCH)
+make bench-passk             # pass@1 over docs/eval/tickets/
+MODEL=zai-org/glm-4.7-flash make bench-passk
+```
+
+### 4. Full regression
+
+```bash
+make validate permission-check audit-tools
+.venv/bin/pytest tests/python/ -v       # 72 tests
+```
+
+### 5. When things break
+
+See [`docs/runbook.md`](./docs/runbook.md) §2 failure playbook:
+SSH timeout, LM Studio model issues, budget blew up, circuit breaker tripped,
+coverage gate blocks MR, stale ticket.
+
+## Command reference
+
+`make help` — full target list. Groups:
+
+```
+Dev:               setup, lint, test, validate, permission-check, audit-tools
+P0 models:         models, download, verify, server, load, health, bench*
+P1 paperclip:      paperclip-install, paperclip-test, paperclip-doctor, paperclip
+P2 hermes:         hermes-test, hermes
+P3 mempalace:      mempalace-install, mempalace-test
+P4 rag + crg:      rag-install, rag-reindex, rag-query, crg-query
+```
+
+## Repo layout
 
 | Path | Purpose |
 |------|---------|
-| `agents/` | Per-role system prompts, contracts, permissions |
-| `security/` | File-access rules, blocked paths, model checksums |
-| `hermes/` | Hermes agent runtime config + skills |
-| `memory/` | Mem0 config, project memory, agent schemas |
-| `rag/` | RAG indexing config and sources |
-| `mcp/` | MCP server manifests |
-| `observability/` | Dashboard + alert configs |
-| `scripts/` | Setup, start, health-check, checksum-verify scripts |
-| `tools/` | Schema validators, permission matrix check |
-| `tests/` | bats (shell) + pytest (validator) tests |
-| `docs/` | Hardware, model-evaluation, security policy, troubleshooting |
-| `.github/` | Issue/PR templates, CODEOWNERS |
+| `paperclip/` | Orchestrator runtime (tickets, lifecycle, mem, rag, crg, git, safety, retry, observe, CLI) |
+| `hermes/` | Agent runtime (LLM client, tool registry, agent driver, CLI) |
+| `agents/<role>/` | system-prompt.md, contract.md, permissions.yml |
+| `security/` | File access rules, blocked paths, model checksums |
+| `memory/` | MemPalace config + agent schemas |
+| `mcp/` | MCP server manifests (tool contracts) |
+| `observability/` | Dashboard + alerts config |
+| `scripts/` | All install + benchmark + health scripts (macOS-only) |
+| `tools/` | Schema validators, permission matrix, tool-network audit |
+| `tests/` | pytest + bats — 72 python tests |
+| `docs/` | Runbook, model-evaluation, hardware-guide, security-policy, troubleshooting, eval/tickets |
+
+Runtime state (gitignored): `.paperclip/` · `.aiforge/` · `.venv/`
 
 ## License
 
