@@ -11,18 +11,23 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "patch: macOS only" >&2; exit 1
 fi
 
-ADAPTER_JS="$HOME/.hermes/node/lib/node_modules/hermes-paperclip-adapter/dist/shared/constants.js"
-[[ -f "$ADAPTER_JS" ]] || { echo "adapter not found at $ADAPTER_JS" >&2; exit 1; }
+# Patch every installed copy of the adapter constants.js.
+# Paperclip may load from the npx cache dir, not the hermes-bundled one.
+ADAPTERS=()
+while IFS= read -r line; do ADAPTERS+=("$line"); done < <(find "$HOME" -name constants.js -path "*hermes-paperclip-adapter*dist/shared*" 2>/dev/null)
+[[ ${#ADAPTERS[@]} -gt 0 ]] || { echo "no adapter constants.js found" >&2; exit 1; }
 
-# Back up once.
-[[ -f "$ADAPTER_JS.orig" ]] || cp "$ADAPTER_JS" "$ADAPTER_JS.orig"
+echo "found ${#ADAPTERS[@]} adapter copies:"
+printf '  %s\n' "${ADAPTERS[@]}"
 
-if grep -q '"lmstudio"' "$ADAPTER_JS"; then
-  echo "[skip] adapter already patched for lmstudio"
-  exit 0
-fi
-
-python3 - "$ADAPTER_JS" <<'PY'
+patch_one() {
+  local f="$1"
+  [[ -f "$f.orig" ]] || cp "$f" "$f.orig"
+  if grep -q '"lmstudio"' "$f"; then
+    echo "[skip] already patched: $f"
+    return
+  fi
+  python3 - "$f" <<'PY'
 import re, sys
 p = sys.argv[1]
 src = open(p).read()
@@ -52,10 +57,16 @@ src = re.sub(
 open(p, "w").write(src)
 print("patched:", p)
 PY
+}
+
+for a in "${ADAPTERS[@]}"; do patch_one "$a"; done
 
 echo
 echo "Verification:"
-grep -n '"lmstudio"' "$ADAPTER_JS" | head -10
+for a in "${ADAPTERS[@]}"; do
+  printf '  %s: ' "$a"
+  grep -c '"lmstudio"' "$a"
+done
 echo
 echo "Restart Paperclip on Mac Studio Terminal to pick up patched adapter:"
 echo "  make paperclip-stop && bash scripts/paperclip-start.sh"
