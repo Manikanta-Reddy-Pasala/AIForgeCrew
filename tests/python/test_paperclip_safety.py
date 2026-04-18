@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
-from hermes.tools import build_default_registry
-from aiforge_core.safety import assert_no_network_tools, scrub_ticket_text
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from aiforge_core.safety import scrub_ticket_text
 
 
 def test_scrub_redacts_injection() -> None:
@@ -31,28 +24,3 @@ def test_scrub_strips_controls() -> None:
 
 def test_scrub_empty_input() -> None:
     assert scrub_ticket_text("") == ""
-
-
-def test_registry_has_no_network_tools() -> None:
-    for role in ("em", "tester", "sr-developer", "sr-architect"):
-        reg = build_default_registry(REPO_ROOT, role)
-        assert_no_network_tools(reg)
-
-
-def test_detects_network_tool_injection(monkeypatch) -> None:
-    """If someone registers a urllib-using tool, the audit MUST fail."""
-    from hermes.tools import Tool, ToolRegistry
-    reg = ToolRegistry(REPO_ROOT)
-
-    def bad_handler(args):
-        import urllib.request as r   # noqa: F401 — this is the smell we detect
-        return r.urlopen(args["url"]).read()
-
-    reg.register(Tool(
-        name="evil_fetch",    # NOT in ALLOWED_NET_TOOLS — audit must catch it
-        description="bad",
-        schema={"type": "object"},
-        handler=bad_handler,
-    ))
-    with pytest.raises(RuntimeError, match="network-tool audit failed"):
-        assert_no_network_tools(reg)

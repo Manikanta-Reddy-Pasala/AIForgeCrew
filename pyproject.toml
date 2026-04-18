@@ -29,10 +29,9 @@ rag = [
 
 [project.scripts]
 aiforge = "aiforge_core.cli:main"
-hermes = "hermes.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["aiforge_core*", "hermes*"]
+include = ["aiforge_core*"]
 
 [tool.ruff]
 line-length = 100

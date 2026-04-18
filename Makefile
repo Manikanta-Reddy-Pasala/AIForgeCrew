@@ -1,14 +1,16 @@
-.PHONY: setup lint test validate permission-check audit-tools clean help \
+.PHONY: setup lint test validate permission-check clean help \
         models download verify server load health bench bench-concurrent bench-passk \
         aiforge-install aiforge-test aiforge-doctor aiforge \
-        hermes-test hermes mempalace-install mempalace-test \
+        mempalace-install mempalace-test \
         rag-install rag-reindex rag-query crg-query \
-        paperclip-install paperclip-start paperclip-stop paperclip-status
+        paperclip-install paperclip-start paperclip-stop paperclip-status \
+        paperclip-bootstrap paperclip-tunnel \
+        hermes-install hermes-adapter-install
 
 PY := python3
 PIP := $(PY) -m pip
 
-# SSH target for Mac Studio P0 work. Override: `make models SSH_HOST=user@host`.
+# SSH target for Mac Studio work. Override: `make X SSH_HOST=user@host`.
 SSH_HOST ?= manikanta@192.168.70.185
 
 help:
@@ -18,7 +20,6 @@ help:
 	@echo "  test               bats + pytest"
 	@echo "  validate           JSON-schema validate configs"
 	@echo "  permission-check   enforce DESIGN.md §5.2 permission matrix"
-	@echo "  audit-tools        verify no network-capable tool handlers"
 	@echo ""
 	@echo "P0 model targets (run on Mac Studio or via SSH_HOST):"
 	@echo "  models             full pipeline: download + verify + server + load + health"
@@ -27,19 +28,15 @@ help:
 	@echo "  server             start LM Studio OpenAI-compat server on :1234"
 	@echo "  load               load role models into memory (128K ctx default)"
 	@echo "  health             probe /v1/models + per-role inference"
-	@echo "  bench              P0 benchmark harness (solo per role)"
+	@echo "  bench              solo benchmark harness"
 	@echo "  bench-concurrent   paired concurrent throughput bench"
 	@echo "  bench-passk        pass@1 harness on docs/eval/tickets/"
 	@echo ""
-	@echo "AIForge-core runtime (local Hermes-side orchestrator, macOS-only):"
-	@echo "  aiforge-install    create .venv/ + uv pip install -e .[dev]"
-	@echo "  aiforge-test       run pytest suite"
+	@echo "aiforge-core runtime (local, macOS-only):"
+	@echo "  aiforge-install    .venv + uv pip install -e .[dev]"
+	@echo "  aiforge-test       pytest suite"
 	@echo "  aiforge-doctor     sanity-check config + permissions + DB"
-	@echo "  aiforge -- ARGS    run aiforge CLI (e.g. 'make aiforge -- ticket list')"
-	@echo ""
-	@echo "Hermes agent runtime:"
-	@echo "  hermes-test        hermes tests"
-	@echo "  hermes -- ARGS     hermes CLI"
+	@echo "  aiforge -- ARGS    run aiforge CLI"
 	@echo ""
 	@echo "Memory / RAG / CRG:"
 	@echo "  mempalace-install  install MemPalace + init 5 palaces"
@@ -49,19 +46,21 @@ help:
 	@echo "  rag-query -- Q     RAG query"
 	@echo "  crg-query -- PATH  code-review-graph blast radius"
 	@echo ""
-	@echo "Real Paperclip UI (Node, bring-your-own-agent dashboard):"
-	@echo "  paperclip-install  npx paperclipai onboard on Mac Studio"
-	@echo "  paperclip-start    start Paperclip server + UI on :3100"
-	@echo "  paperclip-stop     stop Paperclip server"
-	@echo "  paperclip-status   show Paperclip server status"
+	@echo "Real Paperclip UI (runs on Mac Studio):"
+	@echo "  paperclip-install  npx paperclipai onboard"
+	@echo "  paperclip-start    start server on :3100"
+	@echo "  paperclip-stop     stop server"
+	@echo "  paperclip-status   show server status"
+	@echo "  paperclip-bootstrap create OneShell company + 4 agents"
+	@echo "  paperclip-tunnel   ssh -L 3100 → laptop browser"
+	@echo ""
+	@echo "Real Hermes Agent (runs on Mac Studio):"
+	@echo "  hermes-install          NousResearch/hermes-agent CLI"
+	@echo "  hermes-adapter-install  hermes-paperclip-adapter"
 
 setup:
 	$(PIP) install --upgrade pip
 	$(PIP) install -e ".[dev]"
-	@command -v bats >/dev/null || echo "WARN: bats-core not installed (brew install bats-core)"
-	@command -v shellcheck >/dev/null || echo "WARN: shellcheck not installed"
-	@command -v yamllint >/dev/null || echo "WARN: yamllint not installed (pip install yamllint)"
-	@command -v markdownlint-cli2 >/dev/null || echo "WARN: markdownlint-cli2 not installed (npm i -g markdownlint-cli2)"
 
 lint:
 	yamllint -c .yamllint.yml .
@@ -78,10 +77,7 @@ validate:
 permission-check:
 	$(PY) tools/check_permission_matrix.py
 
-audit-tools:
-	.venv/bin/python tools/audit_tool_network.py
-
-# ---- P0 model pipeline (executed on Mac Studio or via SSH_HOST) ----
+# ---- P0 model pipeline ----
 models:
 	ssh $(SSH_HOST) 'bash -s' < scripts/setup-models.sh
 
@@ -113,7 +109,7 @@ bench-passk:
 	scp -r docs/eval $(SSH_HOST):/tmp/aiforge-eval/ >/dev/null
 	ssh $(SSH_HOST) "EVAL_DIR=/tmp/aiforge-eval/tickets bash -s" < scripts/benchmark-passk.sh
 
-# ---- AIForge-core runtime (local, macOS-only) ----
+# ---- aiforge-core runtime (local) ----
 aiforge-install:
 	bash scripts/install-aiforge.sh
 
@@ -126,21 +122,14 @@ aiforge-doctor:
 aiforge:
 	@.venv/bin/aiforge $(filter-out $@,$(MAKECMDGOALS))
 
-# ---- Hermes agent runtime ----
-hermes-test:
-	.venv/bin/pytest tests/python/test_hermes_*.py -v
-
-hermes:
-	@.venv/bin/hermes $(filter-out $@,$(MAKECMDGOALS))
-
-# ---- MemPalace two-tier memory ----
+# ---- MemPalace ----
 mempalace-install:
 	bash scripts/install-mempalace.sh
 
 mempalace-test:
 	.venv/bin/pytest tests/python/test_paperclip_mem.py -v
 
-# ---- RAG + code-review-graph ----
+# ---- RAG + CRG ----
 rag-install:
 	bash scripts/install-rag.sh
 
@@ -159,7 +148,7 @@ crg-query:
 	g=build_graph(Path('.')); \
 	import json; print(json.dumps(blast_radius(g, t), indent=2))" $(filter-out $@,$(MAKECMDGOALS))
 
-# ---- Real Paperclip UI (runs on Mac Studio) ----
+# ---- Real Paperclip UI (Mac Studio) ----
 paperclip-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/install-paperclip-ui.sh
 
@@ -177,8 +166,15 @@ paperclip-bootstrap:
 
 paperclip-tunnel:
 	@echo "Opening SSH tunnel: laptop:3100 → Mac Studio:3100"
-	@echo "Then open http://localhost:3100 in your browser. Ctrl-C to close tunnel."
+	@echo "Then open http://localhost:3100 in your browser. Ctrl-C closes tunnel."
 	ssh -L 3100:localhost:3100 -N $(SSH_HOST)
+
+# ---- Real Hermes Agent (Mac Studio) ----
+hermes-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-hermes-agent.sh
+
+hermes-adapter-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-hermes-adapter.sh
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info

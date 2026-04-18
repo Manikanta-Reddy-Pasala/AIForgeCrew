@@ -69,34 +69,47 @@ All roles except EM run on the Mac Studio (LM Studio OpenAI-compat :1234).
 
 | Component | What it does | Where |
 |---|---|---|
-| **Paperclip** (external) | Org chart UI, ticket store, goals, agent adapters, dashboard | Node.js app on Mac Studio :3100 |
-| **aiforge_core** | §4 lifecycle SM + audit + budgets + retry + coverage gate + observe | `aiforge_core/` |
-| **Hermes** | Per-agent driver: prompts, tool-call loop, LLM calls | `hermes/` |
-| **MemPalace** | Two-tier memory (project shared + per-role) via MemPalace 3.3 + 29 MCP tools | `aiforge_core/mem.py` + `.aiforge/mem/` |
+| **Paperclip** (external) | Org chart UI, ticket store, goals, agent adapters, dashboard | Node app on Mac Studio :3100 |
+| **Hermes Agent** (external) | 30+ tools, 80+ skills, session resume, MCP client/server | Node CLI on Mac Studio |
+| **hermes-paperclip-adapter** (external) | Wires Paperclip's `hermes_local` agent type to the Hermes CLI | npm global |
+| **aiforge_core** | §4 lifecycle + audit + budgets + retry + coverage gate + observability | `aiforge_core/` |
+| **MemPalace** | Two-tier memory (project shared + per-role) via MemPalace 3.3 | `aiforge_core/mem.py` + `.aiforge/mem/` |
 | **RAG** | ChromaDB semantic search over docs + agent configs | `aiforge_core/rag.py` + `.aiforge/rag/` |
 | **code-review-graph** | Python AST call graph → blast radius / dependency chain | `aiforge_core/crg.py` |
 | **Git ops** | Role-scoped git (branch, commit, create_mr) via subprocess | `aiforge_core/git_ops.py` |
-| **Safety** | Prompt-injection scrub + network-tool audit | `aiforge_core/safety.py` |
+| **Safety** | Prompt-injection scrub for EM cloud path | `aiforge_core/safety.py` |
 | **Retry** | Loop caps, circuit breaker, coverage gate | `aiforge_core/retry.py` |
-| **Observability** | Per-ticket + fleet reports | `aiforge_core/observe.py` |
-| **Bridge** | Poll Paperclip tasks → Hermes run → report back | `aiforge_core/bridge.py` |
+| **Net** | Allowlisted outbound HTTP for Tester + Sr Dev | `aiforge_core/net.py` |
+| **Fetch** | GET/HEAD against `security/network-allowlist.yml` | exposed as Hermes skill |
 
 ## How each part works — crisp
 
 ### Paperclip (external, Node + React UI)
-Real Paperclip ([github.com/paperclipai/paperclip](https://github.com/paperclipai/paperclip),
-MIT) running on the Mac Studio. Trusted-loopback mode → :3100, embedded
-Postgres → :54329. Holds the canonical org chart (OneShell + 4 agents),
-tickets, goals, budgets, dashboard, audit. REST API at `/api/companies`,
-`/api/agents`, etc. `hermes_local` adapter ships with Paperclip and is how
-it hands tasks to our Python runtime.
+[github.com/paperclipai/paperclip](https://github.com/paperclipai/paperclip),
+MIT. Runs on Mac Studio :3100, trusted-loopback, embedded Postgres :54329.
+Holds canonical org chart (OneShell + 4 agents), tickets, goals, budgets,
+dashboard, audit. REST API `/api/companies`, `/api/agents`, etc.
 
-### aiforge_core
-Our Hermes-side runtime. SQLite mirror at `.paperclip/paperclip.db` captures
-tool calls + budget spend + coverage events so §10 gates (loop caps,
-coverage ≥80, circuit breaker) run locally before Paperclip accepts a
-state transition. State machine in `aiforge_core/lifecycle.py` enforces
-DESIGN §4 — invalid transitions raise before the DB commit.
+### Hermes Agent (external, Node CLI)
+[github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent),
+MIT. The real agent runtime: 30+ native tools (file, shell, memory, etc.),
+80+ skills (togglable from Paperclip UI), session persistence via
+`--resume`, MCP client + server mode (`hermes mcp serve` exposes sessions
+to Claude Desktop / Cursor / VS Code). Config at `~/.hermes/`.
+
+### hermes-paperclip-adapter
+The glue: Paperclip's `hermes_local` adapter type shells out to the Hermes
+CLI with `-q --resume` per heartbeat. Our 4 Paperclip agents already use
+`adapterType=hermes_local` — installing this adapter is what makes that
+wiring actually dispatch.
+
+### aiforge_core (our policy layer)
+Not an agent runtime — it's the DESIGN-specific policy enforcement exposed
+to Hermes as a skill set. SQLite mirror at `.paperclip/paperclip.db`
+captures tool calls + budget + coverage so §10 gates (loop caps, coverage
+≥80, circuit breaker) run before Paperclip accepts a state transition.
+Lifecycle state machine in `aiforge_core/lifecycle.py` rejects invalid
+transitions before DB commit.
 
 ### Hermes
 `Agent.load(repo, role)` reads `agents/<role>/system-prompt.md` + `contract.md`,
@@ -163,7 +176,7 @@ caffeinate -dimsu &                                   # prevent sleep
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew
 cd AIForgeCrew
 
-make aiforge-install          # .venv + aiforge + hermes CLIs
+make aiforge-install          # .venv + aiforge CLI (policy / reports)
 make mempalace-install        # MemPalace + 5 palaces (1 shared + 4 per-role)
 make rag-install              # ChromaDB + first RAG reindex
 make models                   # ~65 GB MLX models + sha256 verify + server + load + health
@@ -171,6 +184,10 @@ make models                   # ~65 GB MLX models + sha256 verify + server + loa
 make paperclip-install        # real Paperclip UI (Node 20 via fnm + npx paperclipai)
 make paperclip-start          # server on Mac Studio :3100
 make paperclip-bootstrap      # create OneShell company + 4 agents (idempotent)
+
+make hermes-install           # real Hermes Agent CLI (30+ tools, 80+ skills)
+make hermes-adapter-install   # wires Paperclip's hermes_local → Hermes CLI
+
 make paperclip-tunnel         # ssh -L 3100 so laptop browser can reach the UI
 ```
 
@@ -203,9 +220,12 @@ aiforge report-ticket TICKET-xxx | jq .
 aiforge report-fleet  | jq .
 aiforge budget-report --role sr_developer
 
-# Run a single agent turn (bypasses Paperclip — useful for debugging)
-hermes run --role sr-developer --ticket TICKET-xxx --message "Make failing tests pass"
-hermes tools --role tester      # show tools visible to the role
+# Run a single Hermes turn directly (bypasses Paperclip — useful for debugging)
+hermes -q "Make the failing tests in tests/test_foo.py pass"
+hermes --resume            # continue last session
+
+# Expose Hermes sessions to Claude Desktop / Cursor / VS Code via MCP
+hermes mcp serve           # stdio MCP server
 
 # Rebuild RAG after editing docs
 make rag-reindex
@@ -238,34 +258,34 @@ coverage gate blocks MR, stale ticket.
 `make help` — full target list. Groups:
 
 ```
-Dev:              setup, lint, test, validate, permission-check, audit-tools
+Dev:              setup, lint, test, validate, permission-check
 P0 models:        models, download, verify, server, load, health, bench*, bench-passk
 aiforge-core:     aiforge-install, aiforge-test, aiforge-doctor, aiforge -- ARGS
-hermes:           hermes-test, hermes -- ARGS
 memory:           mempalace-install, mempalace-test
 rag + crg:        rag-install, rag-reindex, rag-query, crg-query
 Paperclip UI:     paperclip-install, paperclip-start, paperclip-stop, paperclip-status
                   paperclip-bootstrap (create OneShell + 4 agents)
                   paperclip-tunnel    (ssh -L 3100 → laptop browser)
+Real Hermes:      hermes-install, hermes-adapter-install
 ```
 
 ## Repo layout
 
 | Path | Purpose |
 |------|---------|
-| `aiforge_core/` | Hermes-side runtime: lifecycle, store, mem, rag, crg, git, safety, retry, observe, bridge, CLI |
-| `hermes/` | Agent runtime: LLM client, tool registry, agent driver, CLI |
+| `aiforge_core/` | Policy layer: lifecycle, store, mem, rag, crg, git, safety, retry, observe, net, CLI |
 | `agents/<role>/` | system-prompt.md, contract.md, permissions.yml |
-| `security/` | File access rules, blocked paths, model checksums |
+| `security/` | File access rules, blocked paths, network allowlist, model checksums |
 | `memory/` | MemPalace config + agent schemas |
 | `mcp/` | MCP server manifests (tool contracts) |
 | `observability/` | Dashboard + alerts config |
-| `scripts/` | Install + benchmark + Paperclip bootstrap scripts (macOS-only) |
-| `tools/` | Schema validators, permission matrix, tool-network audit |
-| `tests/` | pytest + bats — 72 python tests |
+| `scripts/` | Install + benchmark + Paperclip/Hermes bootstrap scripts (macOS-only) |
+| `tools/` | Schema validators, permission matrix |
+| `tests/` | pytest + bats — 68 python tests |
 | `docs/` | Runbook, architecture, model-evaluation, hardware-guide, security-policy, troubleshooting, eval/tickets |
 
-Runtime state (gitignored): `.paperclip/` · `.aiforge/` · `.venv/` · `~/.paperclip/` (real Paperclip, Postgres)
+Runtime state (gitignored): `.paperclip/` · `.aiforge/` · `.venv/`
+External-tool state on Mac Studio: `~/.paperclip/` (Postgres) · `~/.hermes/` (Hermes Agent sessions/skills)
 
 ## License
 
