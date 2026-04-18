@@ -25,7 +25,8 @@
         "read_src", "write_src", "read_tests", "write_tests",
         "git_commit", "git_create_mr",
         "ticket_comment", "ticket_assign",
-        "hermes_execute", "mem0_project_write"
+        "hermes_execute", "mem0_project_write",
+        "network_fetch"
       ],
       "properties": {
         "read_src": {"type": "boolean"},
@@ -37,7 +38,8 @@
         "ticket_comment": {"type": "boolean"},
         "ticket_assign": {"type": "boolean"},
         "hermes_execute": {"type": "boolean"},
-        "mem0_project_write": {"type": "boolean"}
+        "mem0_project_write": {"type": "boolean"},
+        "network_fetch": {"type": "boolean"}
       }
     }
   }

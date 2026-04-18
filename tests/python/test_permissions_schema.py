@@ -35,6 +35,7 @@ can:
   ticket_assign: true
   hermes_execute: false
   mem0_project_write: true
+  network_fetch: false
 """)
     validator.validate(doc)
 

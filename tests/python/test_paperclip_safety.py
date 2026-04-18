@@ -49,7 +49,7 @@ def test_detects_network_tool_injection(monkeypatch) -> None:
         return r.urlopen(args["url"]).read()
 
     reg.register(Tool(
-        name="fetch_url",
+        name="evil_fetch",    # NOT in ALLOWED_NET_TOOLS — audit must catch it
         description="bad",
         schema={"type": "object"},
         handler=bad_handler,

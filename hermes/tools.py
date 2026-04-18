@@ -15,6 +15,7 @@ from typing import Any, Callable
 from aiforge_core.crg import blast_radius as crg_blast_radius
 from aiforge_core.crg import build_graph, dependency_chain as crg_dependency_chain
 from aiforge_core.git_ops import GitOps
+from aiforge_core.net import fetch_url as net_fetch_url
 from aiforge_core.permissions import PermissionDenied, file_access, role_can
 
 
@@ -216,6 +217,23 @@ def build_default_registry(repo_root: Path, role: str) -> ToolRegistry:
         },
         handler=lambda a: _rag_query(repo_root, a),
         capability=None,
+    ))
+
+    # Network fetch — narrow allowlisted GET/HEAD. DESIGN §8 exception,
+    # audited via audit_tool_network.py's ALLOWED_NET_TOOLS set.
+    reg.register(Tool(
+        name="fetch_url",
+        description="HTTP GET/HEAD against an allowlisted domain. Returns status + headers + body (truncated at 500KB). Allowlist lives at security/network-allowlist.yml.",
+        schema={
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+                "url": {"type": "string"},
+                "method": {"type": "string", "enum": ["GET", "HEAD"]},
+            },
+        },
+        handler=lambda a: net_fetch_url(repo_root, a),
+        capability="network_fetch",
     ))
 
     # Git ops — scoped per role via git_commit / git_create_mr capabilities.

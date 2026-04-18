@@ -1,0 +1,22 @@
+version: 1
+# Narrow allowlist for the `fetch_url` Hermes tool. See aiforge_core/net.py.
+# Empty allow_domains = deny all. Wildcards via leading "*." (exact-suffix match).
+#
+# Adding a domain here is equivalent to opening a hole in DESIGN §8's
+# "no network tool for local agents" rule. Review every entry.
+allow_domains:
+  - "docs.python.org"
+  - "peps.python.org"
+  - "*.readthedocs.io"
+  - "github.com"
+  - "raw.githubusercontent.com"
+  - "api.github.com"
+  - "huggingface.co"
+  - "pypi.org"
+  - "stackoverflow.com"
+  - "*.mozilla.org"         # MDN
+  - "developer.mozilla.org"
+  - "lmstudio.ai"
+
+# Private IPs + localhost are denied by default; flip only for integration tests.
+allow_localhost: false

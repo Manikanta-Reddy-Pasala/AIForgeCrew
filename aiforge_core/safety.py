@@ -75,13 +75,19 @@ def _handler_sources(tool_registry: object) -> Iterable[tuple[str, str]]:
         yield (name, src)
 
 
+#: Tools explicitly exempt from the no-network-library guard. These handlers
+#: open HTTP on purpose and are capability-gated (see permissions `network_fetch`
+#: and the domain allowlist at security/network-allowlist.yml).
+ALLOWED_NET_TOOLS: set[str] = {"fetch_url"}
+
+
 def assert_no_network_tools(tool_registry: object, *, allow: set[str] | None = None) -> None:
     """Fail fast if any non-allowed tool handler references a network library.
 
     The LLM client (hermes.llm) is the only permitted network caller; since it
     lives outside the tool registry it never shows up here.
     """
-    allow = allow or set()
+    allow = (allow or set()) | ALLOWED_NET_TOOLS
     violations: list[str] = []
     for name, src in _handler_sources(tool_registry):
         if name in allow:

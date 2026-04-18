@@ -19,6 +19,7 @@ CANONICAL: dict[str, dict[str, bool]] = {
         "git_commit": False, "git_create_mr": False,
         "ticket_comment": True, "ticket_assign": True,
         "hermes_execute": False, "mem0_project_write": True,
+        "network_fetch": False,
     },
     "tester": {
         "read_src": True, "write_src": False,
@@ -26,6 +27,7 @@ CANONICAL: dict[str, dict[str, bool]] = {
         "git_commit": True, "git_create_mr": False,
         "ticket_comment": True, "ticket_assign": True,
         "hermes_execute": True, "mem0_project_write": False,
+        "network_fetch": True,    # allowlisted domains only — see aiforge_core/net.py
     },
     "sr-developer": {
         "read_src": True, "write_src": True,
@@ -33,6 +35,7 @@ CANONICAL: dict[str, dict[str, bool]] = {
         "git_commit": True, "git_create_mr": False,
         "ticket_comment": True, "ticket_assign": False,
         "hermes_execute": True, "mem0_project_write": False,
+        "network_fetch": True,    # allowlisted domains only
     },
     "sr-architect": {
         "read_src": True, "write_src": False,
@@ -40,6 +43,7 @@ CANONICAL: dict[str, dict[str, bool]] = {
         "git_commit": False, "git_create_mr": True,
         "ticket_comment": True, "ticket_assign": True,
         "hermes_execute": False, "mem0_project_write": True,
+        "network_fetch": False,
     },
 }
 
