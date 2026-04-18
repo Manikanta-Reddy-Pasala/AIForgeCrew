@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 # scripts/install-hermes-agent.sh — install real Hermes Agent
-# (github.com/NousResearch/hermes-agent) on the Mac Studio.
+# (github.com/NousResearch/hermes-agent, Apache-2.0).
 #
-# Hermes ships: 30+ native tools, 80+ skills, session persistence, MCP
-# client + server mode, multi-provider LLM. CLI: `hermes`.
-# Config lives at ~/.hermes/ (skills, sessions, memory).
-#
-# Node 20+ required. fnm bootstrap reused from install-paperclip-ui.sh
-# (run that first if Node is missing).
+# Hermes is Python (uv-managed). Official one-liner curl+bash.
+# CLI lands at ~/.local/bin/hermes or wherever the installer places it.
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -15,30 +11,33 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-# Node 20+ check (fnm should already be installed by install-paperclip-ui.sh)
-if ! command -v node >/dev/null || [[ "$(node -v | sed 's/v//' | cut -d. -f1)" -lt 20 ]]; then
-  FNM_BIN="$HOME/Library/Application Support/fnm/fnm"
-  if [[ -x "$FNM_BIN" ]]; then
-    export FNM_DIR="$HOME/.fnm"
-    mkdir -p "$FNM_DIR"
-    eval "$("$FNM_BIN" env --shell bash)"
-    "$FNM_BIN" use 20 2>/dev/null || "$FNM_BIN" install 20
-  else
-    echo "Node 20 missing. Run `make paperclip-install` first (bootstraps fnm+Node)." >&2
-    exit 1
-  fi
+# uv is our Python bootstrap — Hermes's installer uses it too.
+UV="${UV:-$HOME/.local/bin/uv}"
+command -v "$UV" >/dev/null || UV=uv
+if ! command -v "$UV" >/dev/null; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
+
+# Add ~/.local/bin to PATH for this session so `hermes` is reachable below.
+export PATH="$HOME/.local/bin:$PATH"
 
 if command -v hermes >/dev/null; then
   echo "[skip] hermes already installed: $(hermes --version 2>&1 | head -1)"
 else
-  echo ">>> installing hermes-agent via npm"
-  npm install -g @nousresearch/hermes-agent
+  echo ">>> running official Hermes installer"
+  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 fi
 
-# Idempotent init. Hermes creates ~/.hermes on first run.
+# Idempotent skills dir.
 mkdir -p "$HOME/.hermes/skills"
-hermes --version
+
+# Verify.
+hash -r
+if ! command -v hermes >/dev/null; then
+  echo "hermes CLI not on PATH after install. Add \$HOME/.local/bin to PATH." >&2
+  exit 1
+fi
+hermes --version || true
 echo
 echo "hermes installed. Skills dir: ~/.hermes/skills/"
-echo "Next: make hermes-adapter-install (wires Paperclip hermes_local adapter)"
+echo "Next: make hermes-adapter-install"
