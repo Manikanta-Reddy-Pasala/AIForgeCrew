@@ -82,12 +82,17 @@ upsert_agent() {
 }
 
 # Agent defs per DESIGN §3. capabilities must be a single string per Paperclip schema.
+#
+# EM uses claude_local adapter (Paperclip spawns Claude Code CLI, reusing the
+# user's claude /login subscription — no API key). Other roles use hermes_local
+# with local MLX models.
 upsert_agent "Engineering Manager" "pm" "Engineering Manager" "" "$(jq -nc '{
-  adapterType:"hermes_local",
-  adapterConfig:{},
+  adapterType:"claude_local",
+  adapterConfig:{model:"claude-opus-4-7"},
   capabilities:"planning, task decomposition, acceptance criteria, test scenarios (cloud LLM)",
   budgetMonthlyCents:5000,
-  permissions:{canCreateAgents:false}
+  permissions:{canCreateAgents:false},
+  runtimeConfig:{heartbeat:{enabled:true,intervalSec:60}}
 }')"
 
 refresh_agents
