@@ -170,6 +170,9 @@ paperclip-bootstrap:
 paperclip-em-use-claude:
 	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-em-use-claude.sh
 
+patch-hermes-adapter:
+	ssh $(SSH_HOST) 'bash -s' < scripts/patch-hermes-adapter-for-lmstudio.sh
+
 paperclip-tunnel:
 	@echo "Opening SSH tunnel: laptop:3100 → Mac Studio:3100"
 	@echo "Then open http://localhost:3100 in your browser. Ctrl-C closes tunnel."
