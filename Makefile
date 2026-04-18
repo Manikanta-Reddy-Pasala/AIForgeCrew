@@ -7,7 +7,8 @@
         paperclip-bootstrap paperclip-tunnel \
         hermes-install hermes-adapter-install \
         deploy-mac-studio hermes-configure hermes-skills-install \
-        hermes-login hermes-dashboard-start hermes-dashboard-stop hermes-dashboard-tunnel
+        hermes-login hermes-dashboard-start hermes-dashboard-stop hermes-dashboard-tunnel \
+        claude-cli-install sync-memory-push sync-memory-pull sync-code-repos mempalace-index-all
 
 PY := python3
 PIP := $(PY) -m pip
@@ -200,6 +201,22 @@ hermes-dashboard-tunnel:
 	@echo "Opening SSH tunnel: laptop:9119 -> Mac Studio:9119"
 	@echo "Then open http://localhost:9119 in your browser. Ctrl-C closes."
 	ssh -L 9119:localhost:9119 -N $(SSH_HOST)
+
+# ---- Claude CLI + memory + code repo sync on Mac Studio ----
+claude-cli-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-claude-cli-macstudio.sh
+
+sync-memory-push:
+	SSH_HOST=$(SSH_HOST) DIR=push bash scripts/sync-memory.sh
+
+sync-memory-pull:
+	SSH_HOST=$(SSH_HOST) DIR=pull bash scripts/sync-memory.sh
+
+sync-code-repos:
+	SSH_HOST=$(SSH_HOST) bash scripts/sync-code-repos.sh
+
+mempalace-index-all:
+	ssh $(SSH_HOST) 'bash -s' < scripts/mempalace-index-all.sh
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info
