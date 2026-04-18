@@ -13,6 +13,7 @@ from pathlib import Path
 
 from paperclip.budget import BudgetExceeded, Spend, assert_within_budget, record
 from paperclip.config import PaperclipConfig
+from paperclip.mem import MemBus
 from paperclip.permissions import PermissionDenied
 from paperclip.store import Store
 
@@ -38,6 +39,7 @@ class Agent:
     registry: ToolRegistry
     client: LLMClient
     repo_root: Path
+    mem: MemBus | None = None
     max_tool_calls: int = 15            # DESIGN §9.3 checkpoint interval
     stop_after_checkpoints: int = 3     # hard cap on tool-call rounds
 
@@ -49,6 +51,7 @@ class Agent:
         *,
         model: str | None = None,
         client: LLMClient | None = None,
+        mem: MemBus | None = None,
     ) -> "Agent":
         sp = (repo_root / "agents" / role / "system-prompt.md").read_text()
         ct = (repo_root / "agents" / role / "contract.md").read_text()
@@ -65,14 +68,26 @@ class Agent:
             registry=registry,
             client=client,
             repo_root=repo_root,
+            mem=mem,
         )
 
     def _build_messages(self, user_message: str, ticket_id: str | None) -> list[dict]:
+        mem_block = ""
+        if self.mem is not None:
+            wake = self.mem.wake_up(self.role).strip()
+            hits = self.mem.search(self.role, user_message, scope="auto", limit=3)
+            if wake or hits:
+                mem_block = "\n--- MEMORY ---\n"
+                if wake:
+                    mem_block += f"Own wake-up:\n{wake[:4000]}\n"
+                if hits:
+                    mem_block += f"Relevant hits:\n" + "\n".join(h[:600] for h in hits if h)
+
         sys = f"""{self.system_prompt}
 
 --- CONTRACT ---
 {self.contract}
-
+{mem_block}
 --- RUNTIME CONTEXT ---
 You are the {self.role} agent. Current ticket: {ticket_id or '(none)'}.
 You may only use the tools declared. All file paths are repo-relative.

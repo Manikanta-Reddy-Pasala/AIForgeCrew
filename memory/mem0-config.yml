@@ -1,19 +1,25 @@
-version: 1
-# Mem0 two-tier memory (DESIGN.md §6). Implementation: P3.
+version: 2
+# Two-tier memory (DESIGN.md §6). Runtime: paperclip/mem.py (MemBus).
+# Backend: MemPalace v3.3+ (local-first, ChromaDB default, zero API calls).
+# Filename kept as mem0-config.yml for historical reasons; actual tool = mempalace.
 
 project_memory:
   writers: ["em", "sr-architect"]
   readers: ["em", "tester", "sr-developer", "sr-architect"]
-  store: "chromadb"
-  path: ".mem0/project"
+  palace_path: ".aiforge/mem/project"
 
 per_agent_memory:
   roles: ["em", "tester", "sr-developer", "sr-architect"]
-  store: "chromadb"
-  path_pattern: ".mem0/agent/{role}"
+  palace_path_pattern: ".aiforge/mem/agent/{role}"
 
-token_budget_per_call: 8000
-compression:
-  enabled: true
-  summarize_over: 16000
-embedding_model: "nomic-embed-text"
+token_budget_per_call: 8000        # DESIGN §6.1 hard cap per agent turn
+wake_up_target_tokens: 900         # mempalace wake-up defaults
+
+retrieval:
+  scope_default: "auto"            # search own + project palace simultaneously
+  limit_default: 5
+
+embedding:
+  backend: "chromadb-default"       # ChromaDB's bundled embedder (fully local)
+  # Alt: point at LM Studio nomic-embed via chromadb OpenAI embedding adapter
+  # with base_url=http://localhost:1234/v1 and model=text-embedding-nomic-embed-text-v1.5

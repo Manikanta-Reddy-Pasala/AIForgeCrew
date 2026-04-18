@@ -1,7 +1,7 @@
 .PHONY: setup lint test validate permission-check clean help \
         models download verify server load health bench bench-concurrent \
         paperclip-install paperclip-test paperclip-doctor paperclip \
-        hermes-test hermes
+        hermes-test hermes mempalace-install mempalace-test
 
 PY := python3
 PIP := $(PY) -m pip
@@ -106,6 +106,13 @@ hermes-test:
 
 hermes:
 	@.venv/bin/hermes $(filter-out $@,$(MAKECMDGOALS))
+
+# ---- P3 mempalace two-tier memory (local) ----
+mempalace-install:
+	bash scripts/install-mempalace.sh
+
+mempalace-test:
+	.venv/bin/pytest tests/python/test_paperclip_mem.py -v
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info

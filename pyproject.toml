@@ -18,6 +18,14 @@ dev = [
   "ruff>=0.4",
   "yamllint>=1.35",
 ]
+mem = [
+  "mempalace",
+  "chromadb>=0.5",
+]
+rag = [
+  "chromadb>=0.5",
+  "markdown-it-py>=3.0",
+]
 
 [project.scripts]
 paperclip = "paperclip.cli:main"

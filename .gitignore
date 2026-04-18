@@ -46,6 +46,7 @@ logs/
 .mem0/
 .rag-index/
 .paperclip/
+.aiforge/
 
 # Tooling local state
 .claude/
