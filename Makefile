@@ -127,7 +127,7 @@ aiforge:
 
 # ---- MemPalace ----
 mempalace-install:
-	bash scripts/install-mempalace.sh
+	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && bash scripts/install-mempalace.sh'
 
 mempalace-test:
 	.venv/bin/pytest tests/python/test_paperclip_mem.py -v
