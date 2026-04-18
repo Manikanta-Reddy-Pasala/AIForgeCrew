@@ -6,7 +6,8 @@
         paperclip-install paperclip-start paperclip-stop paperclip-status \
         paperclip-bootstrap paperclip-tunnel \
         hermes-install hermes-adapter-install \
-        deploy-mac-studio hermes-configure hermes-skills-install
+        deploy-mac-studio hermes-configure hermes-skills-install \
+        hermes-login hermes-dashboard-start hermes-dashboard-stop hermes-dashboard-tunnel
 
 PY := python3
 PIP := $(PY) -m pip
@@ -185,6 +186,20 @@ hermes-configure:
 
 hermes-skills-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/install-aiforge-skills.sh
+
+hermes-login:
+	ssh -t $(SSH_HOST) 'export PATH=$$HOME/.local/bin:$$PATH; hermes login --provider openai-codex'
+
+hermes-dashboard-start:
+	ssh $(SSH_HOST) 'bash -s' < scripts/hermes-dashboard-start.sh
+
+hermes-dashboard-stop:
+	ssh $(SSH_HOST) 'pkill -f "hermes dashboard" || true; echo stopped'
+
+hermes-dashboard-tunnel:
+	@echo "Opening SSH tunnel: laptop:9119 -> Mac Studio:9119"
+	@echo "Then open http://localhost:9119 in your browser. Ctrl-C closes."
+	ssh -L 9119:localhost:9119 -N $(SSH_HOST)
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info

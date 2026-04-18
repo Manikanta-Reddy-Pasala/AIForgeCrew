@@ -71,6 +71,23 @@ make aiforge-doctor                           # config + DB sanity
 .venv/bin/aiforge report-ticket TICKET-xxx    # per-ticket drill-in
 ```
 
+### Provider + fallback configuration
+
+```bash
+# NVIDIA key for cloud fallback (persisted to ~/.hermes/.env on the Mac Studio)
+NVIDIA_API_KEY=nvapi-... make hermes-configure
+
+# EM auth — pick one:
+ssh -t manikanta@192.168.70.185 'hermes auth claude'      # interactive OAuth
+# OR export ANTHROPIC_API_KEY then re-run hermes-configure
+
+# Fallback model swap
+FALLBACK_MODEL=deepseek-ai/deepseek-v3 make hermes-configure
+```
+
+Fallback fires automatically via `aiforge_core.retry.pick_profile()` after 2
+failed dev↔tester/dev↔architect loops.
+
 ### Rebuild RAG after adding docs
 
 ```bash

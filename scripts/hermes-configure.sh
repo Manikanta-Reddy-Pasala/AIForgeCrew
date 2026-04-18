@@ -31,17 +31,22 @@ FALLBACK_BASE="https://integrate.api.nvidia.com/v1"
 mkdir -p "$HERMES_DIR/profiles"
 
 # Pick EM provider.
+# Preference order: explicit EM_PROVIDER > ANTHROPIC_API_KEY > NVIDIA_API_KEY > openai-codex OAuth.
+# (Hermes's `login` subcommand supports only `nous` and `openai-codex` OAuth paths —
+#  there is no direct Claude Code / anthropic OAuth flow, so ANTHROPIC_API_KEY is the
+#  only way to hit Claude directly.)
 if [[ -z "$EM_PROVIDER" ]]; then
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then EM_PROVIDER=anthropic
-  else EM_PROVIDER=claude-code
+  elif [[ -n "${NVIDIA_API_KEY:-}" ]];   then EM_PROVIDER=nvidia
+  else EM_PROVIDER=openai-codex
   fi
 fi
 if [[ -z "$EM_MODEL" ]]; then
   case "$EM_PROVIDER" in
-    nvidia)       EM_MODEL="$FALLBACK_MODEL" ;;
-    anthropic)    EM_MODEL="anthropic/claude-opus-4-7" ;;
-    claude-code)  EM_MODEL="claude-opus-4-7" ;;
-    openrouter)   EM_MODEL="anthropic/claude-opus-4-7" ;;
+    nvidia)        EM_MODEL="nvidia/llama-3.3-nemotron-super-49b-v1" ;;
+    anthropic)     EM_MODEL="anthropic/claude-opus-4-7" ;;
+    openai-codex)  EM_MODEL="gpt-5-codex" ;;
+    openrouter)    EM_MODEL="anthropic/claude-opus-4-7" ;;
     *) echo "unknown EM_PROVIDER=$EM_PROVIDER" >&2; exit 2 ;;
   esac
 fi
@@ -73,9 +78,10 @@ model:
   provider: "anthropic"
 EOF
     ;;
-  claude-code)
+  openai-codex)
     cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
-# EM — Claude Code subscription (OAuth via `hermes claude-login`).
+# EM — OpenAI Codex CLI (ChatGPT Plus subscription via OAuth).
+# Run once on the Mac Studio:  hermes login --provider openai-codex
 model:
   default: "$EM_MODEL"
   provider: "openai-codex"
@@ -150,7 +156,19 @@ echo "  sr-developer  lmstudio        qwen3.6-35b-a3b"
 echo "  sr-architect  lmstudio        gemma-4-31b-it"
 echo "  *-fallback    $FALLBACK_PROVIDER  $FALLBACK_MODEL"
 echo
-if [[ "$EM_PROVIDER" == "claude-code" ]]; then
-  echo "NEXT: authorize EM via Claude Code subscription (one-time):"
-  echo "  hermes claude-login"
-fi
+case "$EM_PROVIDER" in
+  openai-codex)
+    echo "NEXT: authorize EM (one-time, OAuth):"
+    echo "  hermes login --provider openai-codex"
+    ;;
+  nvidia)
+    [[ -n "${NVIDIA_API_KEY:-}" ]] \
+      && echo "NVIDIA_API_KEY persisted to ~/.hermes/.env — EM ready." \
+      || echo "WARN: EM_PROVIDER=nvidia but NVIDIA_API_KEY not set. Re-run with the key exported."
+    ;;
+  anthropic)
+    [[ -n "${ANTHROPIC_API_KEY:-}" ]] \
+      && echo "ANTHROPIC_API_KEY persisted to ~/.hermes/.env — EM ready." \
+      || echo "WARN: EM_PROVIDER=anthropic but ANTHROPIC_API_KEY not set."
+    ;;
+esac

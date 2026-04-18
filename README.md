@@ -55,15 +55,21 @@ spend into `.paperclip/paperclip.db` for local §10 gates + observability.
 
 ## Agents + models
 
-| Role | Model (MLX, local) | Size | Why |
+| Role | Primary (local MLX) | Size | Fallback (cloud) |
 |---|---|---:|---|
-| Engineering Manager | Cloud (Claude/GPT) | — | Plans, never sees code |
-| Tester | GLM-4.7-Flash (MoE 3B active) | 24 GB | Best open tool-use (Playwright MCP) |
-| Sr Developer | Qwen3.6-35B-A3B (MoE 3B active) | 20 GB | Top open SWE-bench 73.4% |
-| Sr Architect | Gemma-4-31B dense | 18 GB | Dense → deep review reasoning |
-| Embed | nomic-embed-text v1.5 | 0.08 GB | RAG |
+| Engineering Manager | Claude Opus 4.7 via Claude Code subscription | — | — |
+| Tester | GLM-4.7-Flash (MoE 3B active) | 24 GB | NVIDIA NIM `minimax-m2.7` (230B) |
+| Sr Developer | Qwen3.6-35B-A3B (MoE 3B active) | 20 GB | NVIDIA NIM `minimax-m2.7` (230B) |
+| Sr Architect | Gemma-4-31B dense | 18 GB | NVIDIA NIM `minimax-m2.7` (230B) |
+| Embed | nomic-embed-text v1.5 | 0.08 GB | — |
 
-All roles except EM run on the Mac Studio (LM Studio OpenAI-compat :1234).
+All primary (non-EM) inference hits LM Studio :1234 on the Mac Studio. EM
+uses Claude Code OAuth (no separate API key) by default; override with
+`EM_PROVIDER=anthropic` or `nvidia` at configure time.
+
+**Fallback** (cloud NVIDIA NIM, 230B MoE) auto-selected by
+`aiforge_core.retry.pick_profile()` after 2 failed dev↔tester or dev↔architect
+loops — one retry below DESIGN §10's hard escalate-to-human cap.
 
 ## Components
 
@@ -72,7 +78,8 @@ All roles except EM run on the Mac Studio (LM Studio OpenAI-compat :1234).
 | **Paperclip** (external) | Org chart UI, ticket store, goals, agent adapters, dashboard | Node app on Mac Studio :3100 |
 | **Hermes Agent** (external) | 30+ tools, 80+ skills, session resume, MCP client/server | Node CLI on Mac Studio |
 | **hermes-paperclip-adapter** (external) | Wires Paperclip's `hermes_local` agent type to the Hermes CLI | npm global |
-| **aiforge_core** | §4 lifecycle + audit + budgets + retry + coverage gate + observability | `aiforge_core/` |
+| **aiforge_core** | §4 lifecycle + audit + budgets + retry + coverage gate + fallback routing + observability | `aiforge_core/` |
+| **aiforge skills** (for Hermes) | 8 Markdown skills wrapping aiforge_core — lifecycle, coverage, rag, crg, memory, git, fetch, report | `aiforge_core/skills/` → `~/.hermes/skills/aiforge/` |
 | **MemPalace** | Two-tier memory (project shared + per-role) via MemPalace 3.3 | `aiforge_core/mem.py` + `.aiforge/mem/` |
 | **RAG** | ChromaDB semantic search over docs + agent configs | `aiforge_core/rag.py` + `.aiforge/rag/` |
 | **code-review-graph** | Python AST call graph → blast radius / dependency chain | `aiforge_core/crg.py` |
@@ -185,10 +192,29 @@ make paperclip-install        # real Paperclip UI (Node 20 via fnm + npx papercl
 make paperclip-start          # server on Mac Studio :3100
 make paperclip-bootstrap      # create OneShell company + 4 agents (idempotent)
 
-make hermes-install           # real Hermes Agent CLI (30+ tools, 80+ skills)
+make hermes-install           # real Hermes Agent CLI (30+ tools, 77 skills)
 make hermes-adapter-install   # wires Paperclip's hermes_local → Hermes CLI
+make deploy-mac-studio        # clone repo + install aiforge on the Mac Studio
+make hermes-skills-install    # 8 aiforge skills → ~/.hermes/skills/aiforge/
 
-make paperclip-tunnel         # ssh -L 3100 so laptop browser can reach the UI
+# Provider wiring.
+# With NVIDIA key: EM + fallback both use NVIDIA NIM (no OAuth needed).
+NVIDIA_API_KEY=nvapi-... make hermes-configure
+
+# Alt: EM via OpenAI Codex CLI (ChatGPT Plus subscription, OAuth):
+EM_PROVIDER=openai-codex make hermes-configure
+make hermes-login             # runs `hermes login --provider openai-codex` with TTY
+
+# Alt: EM via direct Anthropic API (separate key, not Claude Code subscription —
+#      Hermes login only supports nous + openai-codex OAuth):
+ANTHROPIC_API_KEY=sk-ant-... make hermes-configure
+
+# Hermes web dashboard (agent config, keys, sessions, insights) — runs on Mac Studio
+make hermes-dashboard-start
+make hermes-dashboard-tunnel  # ssh -L 9119 so laptop browser can reach it
+
+# Paperclip UI (org chart, tickets, runs, audit)
+make paperclip-tunnel         # ssh -L 3100 so laptop browser can reach it
 ```
 
 All `SSH_HOST` defaults to `manikanta@192.168.70.185`; override per invocation:
@@ -226,6 +252,9 @@ hermes --resume            # continue last session
 
 # Expose Hermes sessions to Claude Desktop / Cursor / VS Code via MCP
 hermes mcp serve           # stdio MCP server
+
+# Hermes's own web dashboard (local on Mac Studio :9119)
+hermes dashboard --port 9119
 
 # Rebuild RAG after editing docs
 make rag-reindex
@@ -266,7 +295,10 @@ rag + crg:        rag-install, rag-reindex, rag-query, crg-query
 Paperclip UI:     paperclip-install, paperclip-start, paperclip-stop, paperclip-status
                   paperclip-bootstrap (create OneShell + 4 agents)
                   paperclip-tunnel    (ssh -L 3100 → laptop browser)
-Real Hermes:      hermes-install, hermes-adapter-install
+Real Hermes:      hermes-install, hermes-adapter-install,
+                  deploy-mac-studio, hermes-skills-install, hermes-configure,
+                  hermes-login (OAuth for EM=openai-codex),
+                  hermes-dashboard-start / -stop / -tunnel (web UI :9119)
 ```
 
 ## Repo layout
