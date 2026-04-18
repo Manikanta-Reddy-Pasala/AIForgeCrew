@@ -125,3 +125,41 @@ class CircuitBreaker:
 
     def reset(self, ticket_id: str, role: str, actor: str = "human") -> None:
         self.store.audit_event(ticket_id, "breaker_reset", actor, {"for": role})
+
+
+# --------- fallback routing ---------
+
+#: Loops to burn before swapping to the big cloud fallback model.
+#: One below DESIGN §10 hard cap so local still gets a last word before
+#: escalate-to-human fires.
+FALLBACK_THRESHOLD = 2
+
+
+def should_escalate_to_fallback(store: Store, ticket_id: str, role: str) -> bool:
+    """True iff `role` has ≥FALLBACK_THRESHOLD loops on this ticket.
+
+    Paperclip's hermes_local adapter reads this to decide whether the next
+    Hermes spawn should use `<role>-fallback` profile (big cloud model)
+    instead of the local-model profile.
+
+    Loop attribution:
+      sr-developer → dev↔tester + dev↔architect
+      tester       → dev↔tester
+      sr-architect → dev↔architect
+    """
+    report = ticket_report(store, ticket_id)
+    if report is None:
+        return False
+    loops = report.loops
+    if role == "sr-developer":
+        return (loops["dev_tester"] + loops["dev_architect"]) >= FALLBACK_THRESHOLD
+    if role == "tester":
+        return loops["dev_tester"] >= FALLBACK_THRESHOLD
+    if role == "sr-architect":
+        return loops["dev_architect"] >= FALLBACK_THRESHOLD
+    return False
+
+
+def pick_profile(store: Store, ticket_id: str, role: str) -> str:
+    """Which Hermes profile name for the next spawn? `<role>` or `<role>-fallback`."""
+    return f"{role}-fallback" if should_escalate_to_fallback(store, ticket_id, role) else role

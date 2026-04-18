@@ -1,46 +1,44 @@
 #!/usr/bin/env bash
-# scripts/hermes-configure.sh — configure Hermes per-role providers.
+# scripts/hermes-configure.sh — configure Hermes per-role providers + fallbacks.
 #
 # Defaults:
 #   tester / sr-developer / sr-architect  →  LM Studio :1234 (local MLX)
-#   em                                     →  NVIDIA NIM (if NVIDIA_API_KEY set)
-#                                              or Claude Code (if user ran
-#                                              `hermes claude-login`)
-#                                              or Anthropic API (ANTHROPIC_API_KEY)
+#   em                                     →  Claude Code subscription
+#                                              (set ANTHROPIC_API_KEY for direct API,
+#                                               or EM_PROVIDER=nvidia to override)
+#   <role>-fallback                         →  NVIDIA NIM with minimax-m2.7 (230B)
+#                                              (requires NVIDIA_API_KEY)
 #
-# Override via env:
+# Overrides (env vars):
 #   EM_PROVIDER=nvidia|claude-code|anthropic|openrouter
-#   EM_MODEL=<model-id-for-that-provider>
-#   NVIDIA_API_KEY=...   (persisted to ~/.hermes/.env)
-#   ANTHROPIC_API_KEY=...
+#   EM_MODEL=<id>
+#   FALLBACK_PROVIDER=nvidia|openrouter
+#   FALLBACK_MODEL=<id>  (default: minimax-ai/minimax-m2.7)
+#   NVIDIA_API_KEY=...   → persisted to ~/.hermes/.env (chmod 600)
+#   ANTHROPIC_API_KEY=... / OPENROUTER_API_KEY=...
 set -euo pipefail
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "hermes-configure: macOS only" >&2; exit 1
-fi
+[[ "$(uname -s)" == "Darwin" ]] || { echo "hermes-configure: macOS only" >&2; exit 1; }
 
 HERMES_DIR="${HERMES_DIR:-$HOME/.hermes}"
 LLM_ENDPOINT="${LLM_ENDPOINT:-http://localhost:1234/v1}"
 EM_PROVIDER="${EM_PROVIDER:-}"
 EM_MODEL="${EM_MODEL:-}"
+FALLBACK_PROVIDER="${FALLBACK_PROVIDER:-nvidia}"
+FALLBACK_MODEL="${FALLBACK_MODEL:-minimax-ai/minimax-m2.7}"
+FALLBACK_BASE="https://integrate.api.nvidia.com/v1"
 
 mkdir -p "$HERMES_DIR/profiles"
 
-# Choose EM provider if caller didn't force one.
+# Pick EM provider.
 if [[ -z "$EM_PROVIDER" ]]; then
-  if [[ -n "${NVIDIA_API_KEY:-}" ]]; then
-    EM_PROVIDER=nvidia
-  elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    EM_PROVIDER=anthropic
-  else
-    EM_PROVIDER=claude-code
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then EM_PROVIDER=anthropic
+  else EM_PROVIDER=claude-code
   fi
 fi
-
-# Default model per provider.
 if [[ -z "$EM_MODEL" ]]; then
   case "$EM_PROVIDER" in
-    nvidia)       EM_MODEL="nvidia/llama-3.3-nemotron-super-49b-v1" ;;
+    nvidia)       EM_MODEL="$FALLBACK_MODEL" ;;
     anthropic)    EM_MODEL="anthropic/claude-opus-4-7" ;;
     claude-code)  EM_MODEL="claude-opus-4-7" ;;
     openrouter)   EM_MODEL="anthropic/claude-opus-4-7" ;;
@@ -48,7 +46,7 @@ if [[ -z "$EM_MODEL" ]]; then
   esac
 fi
 
-# Default shared config — local LM Studio for everything but EM.
+# Shared default — local LM Studio.
 cat > "$HERMES_DIR/config.yaml" <<EOF
 # ~/.hermes/config.yaml — written by scripts/hermes-configure.sh
 model:
@@ -57,7 +55,7 @@ model:
   base_url: "$LLM_ENDPOINT"
 EOF
 
-# EM profile per chosen provider.
+# EM profile.
 case "$EM_PROVIDER" in
   nvidia)
     cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
@@ -65,12 +63,11 @@ case "$EM_PROVIDER" in
 model:
   default: "$EM_MODEL"
   provider: "nvidia"
-  base_url: "https://integrate.api.nvidia.com/v1"
+  base_url: "$FALLBACK_BASE"
 EOF
     ;;
   anthropic)
     cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
-# EM — direct Anthropic API.
 model:
   default: "$EM_MODEL"
   provider: "anthropic"
@@ -78,17 +75,14 @@ EOF
     ;;
   claude-code)
     cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
-# EM — Claude Code subscription (no API key; OAuth via `hermes claude-login`).
+# EM — Claude Code subscription (OAuth via `hermes claude-login`).
 model:
   default: "$EM_MODEL"
   provider: "openai-codex"
-# Run this once on the Mac Studio:
-#   hermes claude-login
 EOF
     ;;
   openrouter)
     cat > "$HERMES_DIR/profiles/em.yaml" <<EOF
-# EM — OpenRouter (single key, many models).
 model:
   default: "$EM_MODEL"
   provider: "openrouter"
@@ -96,7 +90,7 @@ EOF
     ;;
 esac
 
-# Local profiles use the matching LM Studio model id.
+# Local role profiles (first-pass).
 cat > "$HERMES_DIR/profiles/tester.yaml" <<EOF
 model:
   default: "zai-org/glm-4.7-flash"
@@ -118,7 +112,24 @@ model:
   base_url: "$LLM_ENDPOINT"
 EOF
 
-# Persist API keys into ~/.hermes/.env if caller exported them.
+# Fallback profiles — used after ≥2 local failures on the same ticket.
+# Paperclip's hermes_local adapter switches profile via --profile <role>-fallback
+# when aiforge_core.retry.should_escalate_to_fallback() returns True.
+write_fallback() {
+  local role="$1"
+  cat > "$HERMES_DIR/profiles/${role}-fallback.yaml" <<EOF
+# ${role} fallback — big cloud model when local MLX gets stuck (DESIGN §10 retry rules).
+model:
+  default: "$FALLBACK_MODEL"
+  provider: "$FALLBACK_PROVIDER"
+  base_url: "$FALLBACK_BASE"
+EOF
+}
+write_fallback tester
+write_fallback sr-developer
+write_fallback sr-architect
+
+# Persist keys into ~/.hermes/.env (chmod 600).
 ENV="$HERMES_DIR/.env"
 touch "$ENV"; chmod 600 "$ENV"
 write_env() {
@@ -126,19 +137,20 @@ write_env() {
   grep -q "^${k}=" "$ENV" && sed -i '' "s|^${k}=.*|${k}=${v}|" "$ENV" \
                          || echo "${k}=${v}" >> "$ENV"
 }
-[[ -n "${NVIDIA_API_KEY:-}"   ]] && write_env NVIDIA_API_KEY   "$NVIDIA_API_KEY"
+[[ -n "${NVIDIA_API_KEY:-}"    ]] && write_env NVIDIA_API_KEY    "$NVIDIA_API_KEY"
 [[ -n "${ANTHROPIC_API_KEY:-}" ]] && write_env ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
 [[ -n "${OPENROUTER_API_KEY:-}" ]] && write_env OPENROUTER_API_KEY "$OPENROUTER_API_KEY"
 
 echo
 echo "Hermes configured:"
-echo "  default       = $LLM_ENDPOINT  qwen3.6-35b-a3b"
-echo "  em            = $EM_PROVIDER    $EM_MODEL"
-echo "  tester        = lmstudio        zai-org/glm-4.7-flash"
-echo "  sr-developer  = lmstudio        qwen3.6-35b-a3b"
-echo "  sr-architect  = lmstudio        gemma-4-31b-it"
+echo "  default       local LM Studio :1234"
+echo "  em            $EM_PROVIDER    $EM_MODEL"
+echo "  tester        lmstudio        zai-org/glm-4.7-flash"
+echo "  sr-developer  lmstudio        qwen3.6-35b-a3b"
+echo "  sr-architect  lmstudio        gemma-4-31b-it"
+echo "  *-fallback    $FALLBACK_PROVIDER  $FALLBACK_MODEL"
 echo
 if [[ "$EM_PROVIDER" == "claude-code" ]]; then
-  echo "NEXT: run once on the Mac Studio to authorize EM via Claude Code subscription:"
+  echo "NEXT: authorize EM via Claude Code subscription (one-time):"
   echo "  hermes claude-login"
 fi

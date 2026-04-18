@@ -9,9 +9,12 @@ from aiforge_core.lifecycle import LifecycleError, advance
 from aiforge_core.retry import (
     BreakerTripped,
     CircuitBreaker,
+    FALLBACK_THRESHOLD,
     RetryExceeded,
     enforce_loop_caps,
+    pick_profile,
     require_coverage_for_mr,
+    should_escalate_to_fallback,
 )
 from aiforge_core.store import Store
 
@@ -109,3 +112,42 @@ def test_breaker_success_resets_count(tmp_path: Path) -> None:
     # Counter now zero. Two fresh failures must not trip.
     cb.record_failure(t.id, "sr-developer", "c")
     cb.record_failure(t.id, "sr-developer", "d")
+
+
+# --- fallback routing ---
+def test_fallback_false_initially(tmp_path: Path) -> None:
+    store = Store(tmp_path / "db.sqlite")
+    cfg = PaperclipConfig.load(REPO_ROOT)
+    t = store.create_ticket("x", "", assignee="em")
+    assert should_escalate_to_fallback(store, t.id, "sr-developer") is False
+    assert pick_profile(store, t.id, "sr-developer") == "sr-developer"
+
+
+def test_fallback_kicks_after_two_loops(tmp_path: Path) -> None:
+    store = Store(tmp_path / "db.sqlite")
+    cfg = PaperclipConfig.load(REPO_ROOT)
+    t = store.create_ticket("x", "", assignee="em")
+    advance(store, cfg, t.id, "planning", actor="em")
+    advance(store, cfg, t.id, "tests_writing", actor="em")
+    advance(store, cfg, t.id, "coding", actor="tester")
+    # 2 dev↔tester loops.
+    for _ in range(FALLBACK_THRESHOLD):
+        advance(store, cfg, t.id, "verifying", actor="sr-developer")
+        advance(store, cfg, t.id, "coding", actor="tester")
+    assert should_escalate_to_fallback(store, t.id, "sr-developer") is True
+    assert pick_profile(store, t.id, "sr-developer") == "sr-developer-fallback"
+
+
+def test_fallback_attribution_tester_only_dev_tester(tmp_path: Path) -> None:
+    store = Store(tmp_path / "db.sqlite")
+    cfg = PaperclipConfig.load(REPO_ROOT)
+    t = store.create_ticket("x", "", assignee="em")
+    advance(store, cfg, t.id, "planning", actor="em")
+    advance(store, cfg, t.id, "tests_writing", actor="em")
+    advance(store, cfg, t.id, "coding", actor="tester")
+    for _ in range(FALLBACK_THRESHOLD):
+        advance(store, cfg, t.id, "verifying", actor="sr-developer")
+        advance(store, cfg, t.id, "coding", actor="tester")
+    assert should_escalate_to_fallback(store, t.id, "tester") is True
+    # sr-architect doesn't see these; only dev↔architect counts for them.
+    assert should_escalate_to_fallback(store, t.id, "sr-architect") is False
