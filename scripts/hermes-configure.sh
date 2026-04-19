@@ -106,7 +106,7 @@ esac
 # Sr Arch   → Gemma-4-26B-A4B (architect reasoning, MoE A4B, 2026-04-02)
 cat > "$HERMES_DIR/profiles/tester.yaml" <<EOF
 model:
-  default: "qwen3.5-9b"
+  default: "qwen3.5-9b-mlx"
   provider: "lmstudio"
   base_url: "$LLM_ENDPOINT"
 EOF
@@ -158,7 +158,7 @@ echo
 echo "Hermes configured:"
 echo "  default       local LM Studio :1234"
 echo "  em            $EM_PROVIDER    $EM_MODEL"
-echo "  tester        lmstudio        qwen3.5-9b          (Qwen, 2026-03-02)"
+echo "  tester        lmstudio        qwen3.5-9b-mlx      (Qwen, 2026-03-02)"
 echo "  sr-developer  lmstudio        qwen3.6-35b-a3b     (Qwen, 2026-04-14)"
 echo "  sr-architect  lmstudio        gemma-4-26b-a4b-it  (Gemma, 2026-04-02)"
 echo "  *-fallback    $FALLBACK_PROVIDER  $FALLBACK_MODEL"
