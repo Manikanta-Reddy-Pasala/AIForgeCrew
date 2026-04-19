@@ -20,10 +20,11 @@ UID_=$(id -u)
 mkdir -p "$LA" "$LOG_DIR"
 
 write_plist() {
-  local label="$1" out="$LA/com.aiforge.$1.plist" ; shift
-  local cmd_args=("$@")
+  local label="$1" ; shift
+  local keep_alive="$1" ; shift        # true or false
+  local out="$LA/com.aiforge.${label}.plist"
   local args_xml=""
-  for a in "${cmd_args[@]}"; do
+  for a in "$@"; do
     args_xml+="        <string>${a//&/&amp;}</string>\n"
   done
   cat > "$out" <<PLIST
@@ -36,7 +37,7 @@ write_plist() {
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <${keep_alive}/>
     <key>ProgramArguments</key>
     <array>
 $(printf "$args_xml")    </array>
@@ -62,17 +63,13 @@ PLIST
 # Wrapper script for LM Studio — server + 3 models @ 128K
 cat > "$LA/com.aiforge.lmstudio.sh" <<'SH'
 #!/usr/bin/env bash
+# Oneshot loader — exits 0 after loading. Paired KeepAlive=false in plist.
 export PATH="$HOME/.lmstudio/bin:$PATH"
-# Wait a moment in case network/filesystem not ready.
 sleep 5
 lms server start || true
-# Load role models @ 128K. -y picks preferred variant automatically.
-for kv in "qwen3.6-35b-a3b:" "zai-org/glm-4.7-flash:" "gemma-4-31b-it:"; do
-  key="${kv%:*}"
+for key in "qwen3.6-35b-a3b" "zai-org/glm-4.7-flash" "gemma-4-31b-it"; do
   lms load -y "$key" -c 131072 --gpu max 2>/dev/null || echo "load $key already loaded"
 done
-# Sleep forever so KeepAlive doesn't thrash.
-exec sleep infinity
 SH
 chmod +x "$LA/com.aiforge.lmstudio.sh"
 
@@ -96,10 +93,11 @@ SH
 chmod +x "$LA/com.aiforge.hermes-dashboard.sh"
 
 # Write plists referencing the wrapper scripts.
-write_plist caffeinate /usr/bin/caffeinate -dimsu
-write_plist lmstudio "$LA/com.aiforge.lmstudio.sh"
-write_plist paperclip "$LA/com.aiforge.paperclip.sh"
-write_plist hermes-dashboard "$LA/com.aiforge.hermes-dashboard.sh"
+# KeepAlive=true for long-running servers, false for one-shot loaders.
+write_plist caffeinate       true  /usr/bin/caffeinate -dimsu
+write_plist lmstudio         false "$LA/com.aiforge.lmstudio.sh"
+write_plist paperclip        true  "$LA/com.aiforge.paperclip.sh"
+write_plist hermes-dashboard true  "$LA/com.aiforge.hermes-dashboard.sh"
 
 # Load/reload each agent.
 for svc in caffeinate lmstudio paperclip hermes-dashboard; do
