@@ -39,7 +39,7 @@ models:
     path: "~/.lmstudio/models/mlx-community/Qwen3.5-9B-MLX-4bit/"
     kind: directory
     source_url: "https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit"
-    sha256: "tbd"
+    sha256: "9192f73fd3192deb3678ef6a5a17491dc5eabd6edb0cbbfaca1de4a1292b1172"
     size_gb: 5.95
     format: mlx
     quant: "4bit"
@@ -52,7 +52,7 @@ models:
     path: "~/.lmstudio/models/mlx-community/gemma-4-26b-a4b-it-4bit/"
     kind: directory
     source_url: "https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-4bit"
-    sha256: "tbd"
+    sha256: "3cbac5c487a27dec3a300b3e06e40fc49013cba245b68ccee691d05043e9c5c0"
     size_gb: 15.6
     format: mlx
     quant: "4bit"
