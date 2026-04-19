@@ -30,13 +30,13 @@ set -euo pipefail
 # if the model is huge (Qwen3-Coder-Next 80B uses 32K, others go bigger).
 declare -a CANDIDATES=(
   # Big coders only — budget 60GB per model, one loaded at a time.
-  # Small models (<20B) skipped: DeepSeek-V2-Lite and Qwen3.5-9B hallucinated
-  # or template-leaked in initial passes — not worth the bench cycle time.
   # qwen3.6-35b-a3b baseline already captured (PR#2, ea2830e). Skip.
   "qwen3-coder-next|65536|Qwen3-Coder-Next-80B-A3B"     # 45GB + 12GB KV = 57GB
   "gemma-4-31b-it|131072|Gemma-4-31B-dense"             # 18GB + 24GB KV = 42GB
-  "qwen3.5-35b-a3b|262144|Qwen3.5-35B-A3B-4bit"         # 19GB + ~25GB KV = 44GB (2026-02-24, in-window)
-  # Excluded: gemma-4-26b-a4b-it (template leakage in Sr Dev role)
+  # Excluded:
+  #   gemma-4-26b-a4b-it (template-token leakage in Sr Dev role)
+  #   Qwen3.5-35B-A3B     (already have 3.6 — same family, newer; no signal)
+  #   Qwen3.5-9B / DeepSeek-V2-Lite (too small, hallucinated/narrated)
 )
 
 declare -a BANKS=(PNB CANARA BOB CITI INDUSIND)
