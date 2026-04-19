@@ -175,9 +175,10 @@ paperclip-bootstrap:
 	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-bootstrap-agents.sh
 
 paperclip-install-agent-instructions:
-	scp -rq agents/ $(SSH_HOST):$$HOME/AIForgeCrew-tmp-agents/
+	ssh $(SSH_HOST) 'rm -rf ./AIForgeCrew-tmp-agents && mkdir ./AIForgeCrew-tmp-agents'
+	scp -rq agents $(SSH_HOST):AIForgeCrew-tmp-agents/
 	ssh $(SSH_HOST) 'REPO=$$HOME/AIForgeCrew-tmp-agents bash -s' < scripts/paperclip-install-agent-instructions.sh
-	ssh $(SSH_HOST) 'rm -rf $$HOME/AIForgeCrew-tmp-agents'
+	ssh $(SSH_HOST) 'rm -rf ./AIForgeCrew-tmp-agents'
 
 paperclip-em-use-claude:
 	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-em-use-claude.sh

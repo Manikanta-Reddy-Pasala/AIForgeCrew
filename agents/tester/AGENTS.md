@@ -35,10 +35,12 @@ For each `in_progress` ticket titled "TDD: X":
 
 2. **Read the parent ticket** to get acceptance criteria + target file paths.
 
-3. **Find the target repo** under `~/codeRepo/<repo>/`. Checkout a branch:
+3. **Find the target repo** under `~/codeRepo/<repo>/`. Checkout a branch off the default (master or main — detect it, don't hardcode):
    ```bash
    cd ~/codeRepo/<repo>
-   git checkout -b aiforge/ONE-X-tests main
+   DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+   git fetch origin "$DEFAULT_BRANCH"
+   git checkout -b aiforge/ONE-X-tests "origin/$DEFAULT_BRANCH"
    ```
 
 4. **Write tests** in the existing test framework. Match conventions of

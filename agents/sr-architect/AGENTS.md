@@ -46,8 +46,9 @@ For each `in_progress` ticket titled "Review + PR: X":
    cd ~/codeRepo/<repo>
    git fetch origin aiforge/ONE-X-tests
    git checkout aiforge/ONE-X-tests
-   git log --oneline main..HEAD  # commits to review
-   git diff main...HEAD          # actual changes
+   DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+   git log --oneline "$DEFAULT_BRANCH..HEAD"  # commits to review
+   git diff "$DEFAULT_BRANCH...HEAD"          # actual changes
    ```
 
 4. **Review checklist** (block PR if any fails):
@@ -69,8 +70,9 @@ For each `in_progress` ticket titled "Review + PR: X":
 
 6. **If LGTM** — open the PR via `gh`:
    ```bash
+   DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
    gh pr create \
-     --base main \
+     --base "$DEFAULT_BRANCH" \
      --head aiforge/ONE-X-tests \
      --title "feat(ONE-X): <feature>" \
      --body "$(cat <<EOF

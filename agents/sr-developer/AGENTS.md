@@ -41,6 +41,7 @@ For each `in_progress` ticket titled "Implement: X":
    ```bash
    cd ~/codeRepo/<repo>
    git fetch origin aiforge/ONE-X-tests
+   DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
    git checkout aiforge/ONE-X-tests
    ```
 
