@@ -6,17 +6,20 @@
 set -euo pipefail
 
 MAC_STUDIO_IP="${MAC_STUDIO_IP:-192.168.70.185}"
-LINE="$MAC_STUDIO_IP paperclip.local hermes.local"
+LINE="$MAC_STUDIO_IP paperclip.lan hermes.lan"
+
+# NOTE: macOS routes *.local via mDNSResponder and ignores /etc/hosts for
+# .local names (getaddrinfo times out). Use .lan instead.
 
 if grep -qxF "$LINE" /etc/hosts; then
   echo "[skip] /etc/hosts already has: $LINE"
   exit 0
 fi
 
-# Remove any stale AIForgeCrew-tagged line first, then append fresh.
-if grep -q "paperclip.local" /etc/hosts; then
-  echo "Cleaning old paperclip.local entries..."
-  sudo sed -i.bak '/paperclip\.local/d' /etc/hosts
+# Remove any stale AIForgeCrew-tagged lines (.local or old .lan).
+if grep -qE "paperclip\.(local|lan)|hermes\.(local|lan)" /etc/hosts; then
+  echo "Cleaning old paperclip/hermes entries..."
+  sudo sed -i.bak -E "/paperclip\.(local|lan)|hermes\.(local|lan)/d" /etc/hosts
 fi
 
 echo ">>> adding to /etc/hosts (sudo)"
@@ -24,7 +27,7 @@ echo "$LINE" | sudo tee -a /etc/hosts >/dev/null
 
 echo
 echo "Now open:"
-echo "  http://paperclip.local    (Paperclip UI)"
-echo "  http://hermes.local       (Hermes dashboard)"
+echo "  http://paperclip.lan    (Paperclip UI)"
+echo "  http://hermes.lan       (Hermes dashboard)"
 echo
 echo "Backup of original at /etc/hosts.bak"
