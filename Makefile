@@ -224,5 +224,15 @@ sync-code-repos:
 mempalace-index-all:
 	ssh $(SSH_HOST) 'bash -s' < scripts/mempalace-index-all.sh
 
+# ---- Auto-start all services on Mac Studio login ----
+autostart-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/autostart-install.sh
+
+autostart-uninstall:
+	ssh $(SSH_HOST) 'bash -s' < scripts/autostart-uninstall.sh
+
+autostart-status:
+	ssh $(SSH_HOST) 'launchctl list | grep com.aiforge; echo ---logs---; ls -la ~/aiforge-logs/*.log 2>/dev/null | head'
+
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info
