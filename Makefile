@@ -7,6 +7,7 @@
         paperclip-bootstrap paperclip-tunnel \
         hermes-install hermes-adapter-install \
         deploy-mac-studio hermes-configure hermes-skills-install \
+        hermes-skills-hub-install hermes-hindsight-setup hermes-memory-seed hermes-memory-stats \
         hermes-login hermes-dashboard-start hermes-dashboard-stop hermes-dashboard-tunnel \
         claude-cli-install sync-memory-push sync-memory-pull sync-code-repos mempalace-index-all
 
@@ -58,8 +59,13 @@ help:
 	@echo "  paperclip-tunnel   ssh -L 3100 → laptop browser"
 	@echo ""
 	@echo "Real Hermes Agent (runs on Mac Studio):"
-	@echo "  hermes-install          NousResearch/hermes-agent CLI"
-	@echo "  hermes-adapter-install  hermes-paperclip-adapter"
+	@echo "  hermes-install              NousResearch/hermes-agent CLI"
+	@echo "  hermes-adapter-install      hermes-paperclip-adapter"
+	@echo "  hermes-skills-install       install aiforge_core skill pack (our DESIGN tooling)"
+	@echo "  hermes-skills-hub-install   install official optional + community Hermes skills"
+	@echo "  hermes-hindsight-setup      enable Hindsight memory provider (replaces MemPalace)"
+	@echo "  hermes-memory-seed          import ~/.claude/memory into Hindsight"
+	@echo "  hermes-memory-stats         show memory row count + sample recall"
 
 setup:
 	$(PIP) install --upgrade pip
@@ -193,6 +199,23 @@ hermes-configure:
 
 hermes-skills-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/install-aiforge-skills.sh
+
+# Skills from the Hermes hub (official optional + community).
+hermes-skills-hub-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/hermes-install-skills.sh
+
+# Hindsight memory provider (replaces MemPalace + pgmem).
+hermes-hindsight-setup:
+	ssh -t $(SSH_HOST) 'bash -s' < scripts/hermes-setup-hindsight.sh
+
+hermes-memory-seed:
+	scp -q -r ~/.claude/memory $(SSH_HOST):/tmp/claude-memory-seed/ 2>/dev/null || true
+	ssh $(SSH_HOST) 'CLAUDE_MEMORY=/tmp/claude-memory-seed bash -s' < scripts/hermes-seed-memory.sh
+
+hermes-memory-stats:
+	ssh $(SSH_HOST) 'export PATH=$$HOME/.local/bin:$$PATH; hermes memory stats 2>/dev/null || \
+	  (export PATH=/opt/homebrew/opt/postgresql@16/bin:$$PATH; \
+	   psql -d aiforge -c "SELECT COUNT(*) AS hindsight_rows FROM hindsight.memories" 2>&1 | head)'
 
 hermes-login:
 	ssh -t $(SSH_HOST) 'export PATH=$$HOME/.local/bin:$$PATH; hermes login --provider openai-codex'
