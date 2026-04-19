@@ -174,6 +174,12 @@ paperclip-status:
 paperclip-bootstrap:
 	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-bootstrap-agents.sh
 
+hermes-serial-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-hermes-serial.sh
+
+benchmark-agent-models:
+	bash scripts/benchmark-agent-models.sh $(SSH_HOST)
+
 paperclip-install-agent-instructions:
 	ssh $(SSH_HOST) 'rm -rf ./AIForgeCrew-tmp-agents && mkdir ./AIForgeCrew-tmp-agents'
 	scp -rq agents $(SSH_HOST):AIForgeCrew-tmp-agents/
