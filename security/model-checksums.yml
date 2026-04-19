@@ -35,18 +35,18 @@ models:
     assigned_to: ["sr-developer"]
     role_rationale: "Top SWE-bench Verified (73.4%) in open 30-40B MoE class. 3B active = fastest tok/s under concurrent load."
 
-  - name: "devstral-small-2-24b-instruct-mlx-4bit"
-    path: "~/.lmstudio/models/mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit/"
+  - name: "qwen3.5-9b-mlx-4bit"
+    path: "~/.lmstudio/models/mlx-community/Qwen3.5-9B-MLX-4bit/"
     kind: directory
-    source_url: "https://huggingface.co/mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"
+    source_url: "https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit"
     sha256: "tbd"
-    size_gb: 14.1
+    size_gb: 5.95
     format: mlx
     quant: "4bit"
-    active_params: "24B"
-    total_params: "24B"
+    active_params: "9B"
+    total_params: "9B"
     assigned_to: ["tester"]
-    role_rationale: "Mistral Devstral 2 — SWE-bench Verified 68.0% (matches 5× larger). Agentic code + test writing. 256K ctx. Mistral fn-call template works via Hermes openai-compat. Different vendor from Qwen/Gemma."
+    role_rationale: "Qwen3.5-9B (released 2026-03-02). Native tool-use, 74K downloads. General instruct with strong pytest/jest/JUnit pattern recall from Qwen3.5 training data. Right size for test-writing without the latency of 30B+."
 
   - name: "gemma-4-26b-a4b-it-mlx-4bit"
     path: "~/.lmstudio/models/mlx-community/gemma-4-26b-a4b-it-4bit/"

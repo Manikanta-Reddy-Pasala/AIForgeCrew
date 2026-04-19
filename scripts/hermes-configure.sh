@@ -100,13 +100,13 @@ EOF
     ;;
 esac
 
-# Local role profiles — vendor-diverse picks (<3 months old models only).
-# Tester    → Mistral Devstral-Small-2-24B (agentic code + test writing)
-# Sr Dev    → Qwen3.6-35B-A3B (primary implementer, SWE-bench SOTA)
-# Sr Arch   → Gemma-4-26B-A4B (architect-tier reasoning, MoE A4B speed)
+# Local role profiles (<3 months old models only).
+# Tester    → Qwen3.5-9B (2026-03-02, small+fast, strong tool-use)
+# Sr Dev    → Qwen3.6-35B-A3B (primary implementer, SWE-bench SOTA, 2026-04-14)
+# Sr Arch   → Gemma-4-26B-A4B (architect reasoning, MoE A4B, 2026-04-02)
 cat > "$HERMES_DIR/profiles/tester.yaml" <<EOF
 model:
-  default: "devstral-small-2-24b-instruct-2512"
+  default: "qwen3.5-9b"
   provider: "lmstudio"
   base_url: "$LLM_ENDPOINT"
 EOF
@@ -158,9 +158,9 @@ echo
 echo "Hermes configured:"
 echo "  default       local LM Studio :1234"
 echo "  em            $EM_PROVIDER    $EM_MODEL"
-echo "  tester        lmstudio        devstral-small-2-24b-instruct-2512  (Mistral)"
-echo "  sr-developer  lmstudio        qwen3.6-35b-a3b                      (Qwen)"
-echo "  sr-architect  lmstudio        gemma-4-26b-a4b-it                   (Gemma)"
+echo "  tester        lmstudio        qwen3.5-9b          (Qwen, 2026-03-02)"
+echo "  sr-developer  lmstudio        qwen3.6-35b-a3b     (Qwen, 2026-04-14)"
+echo "  sr-architect  lmstudio        gemma-4-26b-a4b-it  (Gemma, 2026-04-02)"
 echo "  *-fallback    $FALLBACK_PROVIDER  $FALLBACK_MODEL"
 echo
 case "$EM_PROVIDER" in
