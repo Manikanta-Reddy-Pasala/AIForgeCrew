@@ -86,13 +86,18 @@ upsert_agent() {
 # EM uses claude_local adapter (Paperclip spawns Claude Code CLI, reusing the
 # user's claude /login subscription — no API key). Other roles use hermes_local
 # with local MLX models.
+# 300s heartbeat throttles local-agent parallelism. 60s caused 4+ concurrent
+# Sr Dev runs that swamped LM Studio and exhausted swap. 300s = one agent
+# wakes every 5 min on average, so work flows mostly serial.
+HEARTBEAT_JSON='{enabled:true,intervalSec:300}'
+
 upsert_agent "Engineering Manager" "pm" "Engineering Manager" "" "$(jq -nc '{
   adapterType:"claude_local",
   adapterConfig:{model:"claude-opus-4-7"},
   capabilities:"planning, task decomposition, acceptance criteria, test scenarios (cloud LLM)",
   budgetMonthlyCents:5000,
   permissions:{canCreateAgents:false},
-  runtimeConfig:{heartbeat:{enabled:true,intervalSec:60}}
+  runtimeConfig:{heartbeat:{enabled:true,intervalSec:300}}
 }')"
 
 refresh_agents
@@ -101,26 +106,29 @@ EM_ID=$(echo "$EXISTING" | jq -r '[.[] | select(.role=="pm" and .name=="Engineer
 
 upsert_agent "Tester" "qa" "QA / Tester" "$EM_ID" "$(jq -nc '{
   adapterType:"hermes_local",
-  adapterConfig:{},
+  adapterConfig:{model:"qwen3.5-9b"},
   capabilities:"TDD tests, Playwright MCP + browser validation, coverage reporting",
   budgetMonthlyCents:0,
-  permissions:{canCreateAgents:false}
+  permissions:{canCreateAgents:false},
+  runtimeConfig:{heartbeat:{enabled:true,intervalSec:300}}
 }')"
 
 upsert_agent "Sr Developer" "engineer" "Senior Developer" "$EM_ID" "$(jq -nc '{
   adapterType:"hermes_local",
-  adapterConfig:{},
+  adapterConfig:{model:"qwen3.6-35b-a3b"},
   capabilities:"code generation, refactoring, bug fixing, make failing tests pass",
   budgetMonthlyCents:0,
-  permissions:{canCreateAgents:false}
+  permissions:{canCreateAgents:false},
+  runtimeConfig:{heartbeat:{enabled:true,intervalSec:300}}
 }')"
 
 upsert_agent "Sr Architect" "cto" "Senior Software Architect" "$EM_ID" "$(jq -nc '{
   adapterType:"hermes_local",
-  adapterConfig:{},
+  adapterConfig:{model:"gemma-4-26b-a4b-it"},
   capabilities:"code review, security audit, architecture compliance, coverage gate, MR creation",
   budgetMonthlyCents:0,
-  permissions:{canCreateAgents:false}
+  permissions:{canCreateAgents:false},
+  runtimeConfig:{heartbeat:{enabled:true,intervalSec:300}}
 }')"
 
 echo
