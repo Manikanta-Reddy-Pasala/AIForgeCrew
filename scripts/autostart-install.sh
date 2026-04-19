@@ -64,11 +64,13 @@ PLIST
 cat > "$LA/com.aiforge.lmstudio.sh" <<'SH'
 #!/usr/bin/env bash
 # Oneshot loader — exits 0 after loading. Paired KeepAlive=false in plist.
+# Context = 32K per role: 3 models × 32K fits in 96 GB; 128K per model would
+# hit the LM Studio guardrail ("insufficient system resources") on the third.
 export PATH="$HOME/.lmstudio/bin:$PATH"
 sleep 5
 lms server start || true
 for key in "qwen3.6-35b-a3b" "zai-org/glm-4.7-flash" "gemma-4-31b-it"; do
-  lms load -y "$key" -c 131072 --gpu max 2>/dev/null || echo "load $key already loaded"
+  lms load -y "$key" -c 32768 --gpu max 2>/dev/null || echo "load $key already loaded"
 done
 SH
 chmod +x "$LA/com.aiforge.lmstudio.sh"
