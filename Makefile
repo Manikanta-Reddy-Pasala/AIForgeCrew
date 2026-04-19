@@ -224,6 +224,14 @@ sync-code-repos:
 mempalace-index-all:
 	ssh $(SSH_HOST) 'bash -s' < scripts/mempalace-index-all.sh
 
+mempalace-wipe-reindex:
+	scp scripts/mempalace-index-all.sh $(SSH_HOST):/tmp/mempalace-index-all.sh >/dev/null
+	scp scripts/mempalace-wipe-reindex.sh $(SSH_HOST):/tmp/mempalace-wipe-reindex.sh >/dev/null
+	ssh $(SSH_HOST) 'chmod +x /tmp/mempalace-*.sh && bash /tmp/mempalace-wipe-reindex.sh'
+
+mempalace-validate:
+	ssh $(SSH_HOST) 'bash -s' < scripts/mempalace-validate.sh
+
 # ---- Auto-start all services on Mac Studio login ----
 autostart-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/autostart-install.sh

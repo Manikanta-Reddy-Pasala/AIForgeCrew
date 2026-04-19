@@ -25,13 +25,15 @@ fi
 [[ -d "$PROJECT_PALACE" ]] || mempalace --palace "$PROJECT_PALACE" init "$PROJECT_PALACE" --yes </dev/null
 
 # --- codeRepo: mine each subrepo as its own wing ---
+# NB: `--mode projects` (plural) for code/docs, `--mode convos` for chat logs.
 if [[ -d "$CODE_DIR" ]]; then
   echo ">>> mining codeRepo/ into project palace (wing per subdir)"
   for d in "$CODE_DIR"/*/; do
     [[ -d "$d" ]] || continue
     wing=$(basename "$d")
     echo "  mine: $wing"
-    mempalace --palace "$PROJECT_PALACE" mine "$d" --wing "$wing" --mode project || echo "  WARN: mining $wing failed (continuing)"
+    "$MEMPALACE" --palace "$PROJECT_PALACE" mine "$d" --wing "$wing" --mode projects 2>&1 | tail -1 \
+      || echo "  WARN: mining $wing failed (continuing)"
   done
 else
   echo "[skip] $CODE_DIR (missing — run scripts/sync-code-repos.sh first)"
@@ -40,14 +42,14 @@ fi
 # --- Claude daily memory notes ---
 if [[ -d "$CLAUDE_MEMORY" ]]; then
   echo ">>> mining Claude daily memory"
-  mempalace --palace "$PROJECT_PALACE" mine "$CLAUDE_MEMORY" --wing claude-daily --mode convos || true
+  "$MEMPALACE" --palace "$PROJECT_PALACE" mine "$CLAUDE_MEMORY" --wing claude-daily --mode convos 2>&1 | tail -1 || true
 fi
 
 # --- claude-mem observer sessions (if present) ---
 OBS="$HOME/.claude/projects/-Users-manip--claude-mem-observer-sessions"
 if [[ -d "$OBS" ]]; then
   echo ">>> mining claude-mem observer sessions"
-  mempalace --palace "$PROJECT_PALACE" mine "$OBS" --wing claude-observer --mode convos || true
+  "$MEMPALACE" --palace "$PROJECT_PALACE" mine "$OBS" --wing claude-observer --mode convos 2>&1 | tail -1 || true
 fi
 
 echo
