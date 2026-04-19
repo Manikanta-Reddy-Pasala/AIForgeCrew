@@ -52,11 +52,15 @@ if [[ -z "$EM_MODEL" ]]; then
 fi
 
 # Shared default — local LM Studio.
+# Use provider="custom" (the canonical internal name) not the "lmstudio" alias,
+# so Hermes's detect-model + CLI path both accept the config. The "lmstudio"
+# alias routes via prefix inference which mis-attributes for publisher-qualified
+# model ids like "zai-org/glm-4.7-flash".
 cat > "$HERMES_DIR/config.yaml" <<EOF
 # ~/.hermes/config.yaml — written by scripts/hermes-configure.sh
 model:
   default: "qwen3.6-35b-a3b"
-  provider: "lmstudio"
+  provider: "custom"
   base_url: "$LLM_ENDPOINT"
 EOF
 
