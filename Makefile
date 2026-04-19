@@ -232,6 +232,20 @@ mempalace-wipe-reindex:
 mempalace-validate:
 	ssh $(SSH_HOST) 'bash -s' < scripts/mempalace-validate.sh
 
+# ---- pgvector-backed memory (supersedes MemPalace) ----
+pgvector-install:
+	ssh -t $(SSH_HOST) 'cd ~/AIForgeCrew && git fetch origin && git reset --hard origin/main && bash scripts/install-pgvector-macstudio.sh'
+
+pgmem-import:
+	ssh $(SSH_HOST) 'bash -s' < scripts/pgmem-import.sh
+
+pgmem-validate:
+	ssh $(SSH_HOST) 'export PATH=/opt/homebrew/opt/postgresql@16/bin:$$PATH; \
+	  psql -d aiforge -c "SELECT wing, COUNT(*) FROM memories GROUP BY wing ORDER BY 2 DESC" && \
+	  ~/AIForgeCrew/.venv/bin/python -c "from aiforge_core.pgmem import PgMemBus; \
+	  hits = PgMemBus().search(\"sr-developer\", \"permission matrix DESIGN\", limit=3); \
+	  [print(h[\"wing\"], h[\"source\"], round(h[\"score\"],3), h[\"text\"][:140]) for h in hits]"'
+
 # ---- Auto-start all services on Mac Studio login ----
 autostart-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/autostart-install.sh

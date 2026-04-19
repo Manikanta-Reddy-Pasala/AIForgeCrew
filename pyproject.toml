@@ -19,6 +19,9 @@ dev = [
   "yamllint>=1.35",
 ]
 mem = [
+  "psycopg[binary]>=3.2",
+]
+mem-legacy-mempalace = [
   "mempalace",
   "chromadb>=0.5",
 ]
