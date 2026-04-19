@@ -29,9 +29,10 @@ set -euo pipefail
 # CTX picked per model so weights + KV cache ≤ ~50 GB at fp16 KV, or lower
 # if the model is huge (Qwen3-Coder-Next 80B uses 32K, others go bigger).
 declare -a CANDIDATES=(
-  "qwen3.6-35b-a3b|262144|Qwen3.6-35B-A3B (baseline)"
-  "qwen3-coder-next|32768|Qwen3-Coder-Next-80B-A3B"
-  "gemma-4-26b-a4b-it|131072|Gemma-4-26B-A4B"
+  # qwen3.6-35b-a3b baseline already captured (PR#2, ea2830e). Skip on re-run.
+  "qwen3-coder-next|65536|Qwen3-Coder-Next-80B-A3B"          # 45GB + 12GB KV = 57GB
+  "gemma-4-31b-it|131072|Gemma-4-31B-dense"                  # 17GB + 24GB KV = 41GB (best Gemma 4)
+  "gemma-4-26b-a4b-it|131072|Gemma-4-26B-A4B-MoE"            # 16GB + 12GB KV = 28GB
   "deepseek-coder-v2-lite-instruct-mlx|131072|DeepSeek-Coder-V2-Lite-16B-A2.4B"
   "qwen3.5-9b-mlx|131072|Qwen3.5-9B"
 )

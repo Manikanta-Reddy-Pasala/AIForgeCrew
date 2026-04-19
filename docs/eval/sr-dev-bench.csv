@@ -1,0 +1,2 @@
+model,ctx,bank,ticket,file_created,test_created,branch,commit_sha,pr_url,hallucinated,wall_seconds,input_tokens,output_tokens,final_status
+qwen3.6-35b-a3b,262144,PNB,ONE-25,1,1,aiforge/ONE-25-pnb-bank-ocr,ea2830e1d595fc1f98c321a92effa6bb892a9c24,https://github.com/OneShellSolutions/PosPythonBackend/pull/2,0,~300,?,?,done
