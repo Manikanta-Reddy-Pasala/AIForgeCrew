@@ -106,7 +106,7 @@ EM_ID=$(echo "$EXISTING" | jq -r '[.[] | select(.role=="pm" and .name=="Engineer
 
 upsert_agent "Tester" "qa" "QA / Tester" "$EM_ID" "$(jq -nc '{
   adapterType:"hermes_local",
-  adapterConfig:{model:"qwen3.5-9b"},
+  adapterConfig:{model:"qwen3.5-9b-mlx"},
   capabilities:"TDD tests, Playwright MCP + browser validation, coverage reporting",
   budgetMonthlyCents:0,
   permissions:{canCreateAgents:false},
