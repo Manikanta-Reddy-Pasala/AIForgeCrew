@@ -32,8 +32,16 @@ curl -s "http://127.0.0.1:3100/api/companies/$COMPANY_ID/issues?assigneeAgentId=
 
 For each `in_progress` ticket titled "Implement: X":
 
-1. **Recall**: `hindsight_recall` for "X implementation patterns" —
-   prior bank-OCR modules, similar features — so you reuse idioms.
+1. **MANDATORY first step — call `hindsight_recall`** with a query based
+   on the ticket title. Examples: "bank OCR handler patterns", "pytest
+   fixture conventions", "dispatcher registration pattern". Do this
+   BEFORE reading any source files. The recall result tells you what
+   prior tickets established as the pattern. If recall returns nothing,
+   still proceed, but log in your ticket comment: "hindsight_recall for
+   '<query>' returned 0 facts — no prior precedent."
+
+   Only after recall, read neighboring source files for implementation
+   idioms.
 
 2. **Read parent ticket** to get acceptance criteria + file paths.
 
