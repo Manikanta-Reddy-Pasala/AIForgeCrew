@@ -12,8 +12,15 @@ version: 1
 #   - For single-file models (GGUF): direct shasum -a 256 of the file.
 # Mode "directory" or "file" encoded via `kind:`.
 #
-# verify-checksums.sh enforces these; mismatches block startup.
-# download-models.sh reads source_url to fetch any missing entries.
+# sha256="tbd" means compute-and-store on first successful download
+# (see scripts/compute-checksums.sh). verify-checksums.sh skips "tbd"
+# entries on first pass; on re-run they must match.
+#
+# Current picks (vendor diversity; all <3 months old):
+#   Tester       → Mistral  (Devstral-Small-2-24B,  2025-12-09 base)
+#   Sr Developer → Qwen     (Qwen3.6-35B-A3B,  existing)
+#   Sr Architect → Gemma    (gemma-4-26b-a4b-it, 2026-04-02)
+# GLM-4.7-Flash, gemma-4-31b, gemma-4-e2b, qwen3-0.6b removed 2026-04-19.
 models:
   - name: "qwen3.6-35b-a3b-mlx-4bit"
     path: "~/.lmstudio/models/mlx-community/Qwen3.6-35B-A3B-4bit/"
@@ -28,53 +35,31 @@ models:
     assigned_to: ["sr-developer"]
     role_rationale: "Top SWE-bench Verified (73.4%) in open 30-40B MoE class. 3B active = fastest tok/s under concurrent load."
 
-  - name: "glm-4.7-flash-mlx-6bit"
-    path: "~/.lmstudio/models/lmstudio-community/GLM-4.7-Flash-MLX-6bit/"
+  - name: "devstral-small-2-24b-instruct-mlx-4bit"
+    path: "~/.lmstudio/models/mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit/"
     kind: directory
-    source_url: "https://huggingface.co/lmstudio-community/GLM-4.7-Flash-MLX-6bit"
-    sha256: "0b65c98a4da8bb36e06018aa1525f049d46b07808ef67fc7184c36bab441050f"
-    size_gb: 24.36
+    source_url: "https://huggingface.co/mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit"
+    sha256: "tbd"
+    size_gb: 14.1
     format: mlx
-    quant: "6bit"
-    active_params: "3B"
-    total_params: "30B"
+    quant: "4bit"
+    active_params: "24B"
+    total_params: "24B"
     assigned_to: ["tester"]
-    role_rationale: "Best open agentic/tool-use model. τ²-Bench 79.5% (ties Claude 3.5 Sonnet). Optimized for MCP, browser automation, UI generation — required for Tester browser validation per DESIGN §3.2."
+    role_rationale: "Mistral Devstral 2 — SWE-bench Verified 68.0% (matches 5× larger). Agentic code + test writing. 256K ctx. Mistral fn-call template works via Hermes openai-compat. Different vendor from Qwen/Gemma."
 
-  - name: "gemma-4-31b-it-mlx-4bit"
-    path: "~/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit/"
+  - name: "gemma-4-26b-a4b-it-mlx-4bit"
+    path: "~/.lmstudio/models/mlx-community/gemma-4-26b-a4b-it-4bit/"
     kind: directory
-    source_url: "https://huggingface.co/mlx-community/gemma-4-31b-it-4bit"
-    sha256: "6a799e99d3ec17ee8b6cda5225d08f730d7a35d45545a5cdebffb13117283a1e"
-    size_gb: 18.44
+    source_url: "https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-4bit"
+    sha256: "tbd"
+    size_gb: 15.6
     format: mlx
     quant: "4bit"
-    active_params: "31B"
-    total_params: "31B"
+    active_params: "4B"
+    total_params: "26B"
     assigned_to: ["sr-architect"]
-    role_rationale: "Arena #3 open model. Dense architecture = every param fires per token → deeper reasoning for code review + security audit per DESIGN §3.4."
-
-  - name: "qwen3-0.6b-mlx-4bit"
-    path: "~/.lmstudio/models/mlx-community/Qwen3-0.6B-4bit/"
-    kind: directory
-    source_url: "https://huggingface.co/mlx-community/Qwen3-0.6B-4bit"
-    sha256: "aedc7010068fdbb8a56bfca818286881aba71c1f5e6e199eb1b92148a1d2107f"
-    size_gb: 0.35
-    format: mlx
-    quant: "4bit"
-    assigned_to: ["sr-developer"]
-    role_rationale: "Speculative-decoding draft model for Qwen3.6-35B-A3B. Expected 2.5× tok/s boost. Note: Qwen3-Coder-0.6B-MLX not yet published, Qwen3-0.6B used as compatible fallback (same tokenizer family)."
-
-  - name: "gemma-4-e2b-it-mlx-4bit"
-    path: "~/.lmstudio/models/mlx-community/gemma-4-e2b-it-4bit/"
-    kind: directory
-    source_url: "https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit"
-    sha256: "bf31e7acb15e31bdc72d9008021ee36c99913b7518a7fad789ce6e2bbd279a67"
-    size_gb: 3.61
-    format: mlx
-    quant: "4bit"
-    assigned_to: ["sr-architect"]
-    role_rationale: "Speculative-decoding draft model for Gemma-4-31B-Dense. Expected 3× tok/s boost on dense target."
+    role_rationale: "Gemma 4 MoE A4B. LCB 77.1, CF ELO 1718, GPQA-D 79.2, MMLU-Pro 82.6. Architect-tier review reasoning at A4B inference speed. 256K ctx. Different vendor from Qwen/Mistral."
 
   - name: "nomic-embed-text-v1.5-gguf-q4-km"
     path: "~/.lmstudio/.internal/bundled-models/nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"

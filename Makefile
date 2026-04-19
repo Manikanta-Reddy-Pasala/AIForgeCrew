@@ -275,6 +275,21 @@ pgvector-install:
 pgmem-import:
 	ssh $(SSH_HOST) 'bash -s' < scripts/pgmem-import.sh
 
+# ---- Model management (download + compute sha256 + delete unused) ----
+models-delete-unused:
+	scp -q security/model-checksums.yml $(SSH_HOST):/tmp/aiforge-checksums.yml >/dev/null
+	ssh -t $(SSH_HOST) "MANIFEST=/tmp/aiforge-checksums.yml CONFIRM=$${CONFIRM:-0} bash -s" < scripts/delete-unused-models.sh
+
+models-compute-sha:
+	scp -q security/model-checksums.yml $(SSH_HOST):/tmp/aiforge-checksums.yml >/dev/null
+	ssh $(SSH_HOST) "MANIFEST=/tmp/aiforge-checksums.yml bash -s" < scripts/compute-checksums.sh
+	scp -q $(SSH_HOST):/tmp/aiforge-checksums.yml /tmp/aiforge-checksums.updated.yml
+	@echo "Updated manifest on Mac Studio at /tmp/aiforge-checksums.yml"
+	@echo "Review /tmp/aiforge-checksums.updated.yml and copy over security/model-checksums.yml if happy."
+
+models-refresh: download
+	@echo "Now run: make models-compute-sha && make models-delete-unused CONFIRM=1"
+
 pgmem-validate:
 	ssh $(SSH_HOST) 'export PATH=/opt/homebrew/opt/postgresql@16/bin:$$PATH; \
 	  psql -d aiforge -c "SELECT wing, COUNT(*) FROM memories GROUP BY wing ORDER BY 2 DESC" && \

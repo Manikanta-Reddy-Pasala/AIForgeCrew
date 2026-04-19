@@ -69,7 +69,12 @@ cat > "$LA/com.aiforge.lmstudio.sh" <<'SH'
 export PATH="$HOME/.lmstudio/bin:$PATH"
 sleep 5
 lms server start || true
-for key in "qwen3.6-35b-a3b" "zai-org/glm-4.7-flash" "gemma-4-31b-it"; do
+# Current picks (all <3 months old, vendor-diverse):
+#   Sr Dev    → qwen3.6-35b-a3b                    (Qwen,    16 GB)
+#   Tester    → devstral-small-2-24b-instruct-2512 (Mistral, 14 GB)
+#   Sr Arch   → gemma-4-26b-a4b-it                 (Gemma,   15.6 GB)
+# 3 × 32K ctx fits in 96 GB with Hindsight daemon + Paperclip + system.
+for key in "qwen3.6-35b-a3b" "devstral-small-2-24b-instruct-2512" "gemma-4-26b-a4b-it"; do
   lms load -y "$key" -c 32768 --gpu max 2>/dev/null || echo "load $key already loaded"
 done
 SH
