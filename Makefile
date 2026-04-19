@@ -234,5 +234,18 @@ autostart-uninstall:
 autostart-status:
 	ssh $(SSH_HOST) 'launchctl list | grep com.aiforge; echo ---logs---; ls -la ~/aiforge-logs/*.log 2>/dev/null | head'
 
+# ---- Caddy reverse proxy on Mac Studio + hostnames on laptop ----
+caddy-install:
+	ssh -t $(SSH_HOST) 'cd ~/AIForgeCrew && git fetch origin && git reset --hard origin/main && bash scripts/install-caddy-macstudio.sh'
+
+hosts-install-laptop:
+	bash scripts/install-hosts-laptop.sh
+
+hosts-install: hosts-install-laptop caddy-install
+	@echo
+	@echo "Done. Open in browser:"
+	@echo "  http://paperclip.local"
+	@echo "  http://hermes.local"
+
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info
