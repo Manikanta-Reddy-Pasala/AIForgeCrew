@@ -62,6 +62,11 @@ model:
   default: "qwen3.6-35b-a3b"
   provider: "custom"
   base_url: "$LLM_ENDPOINT"
+
+# Hindsight memory provider (configured by scripts/hermes-setup-hindsight.sh).
+# Exposes hindsight_retain / hindsight_recall as tools in every agent session.
+memory:
+  provider: hindsight
 EOF
 
 # EM profile.
