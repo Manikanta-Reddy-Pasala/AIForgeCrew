@@ -106,7 +106,7 @@ EM_ID=$(echo "$EXISTING" | jq -r '[.[] | select(.role=="pm" and .name=="Engineer
 
 upsert_agent "Tester" "qa" "QA / Tester" "$EM_ID" "$(jq -nc '{
   adapterType:"hermes_local",
-  adapterConfig:{model:"qwen3.5-9b-mlx"},
+  adapterConfig:{model:"qwen3.5-9b-mlx",timeoutSec:900},
   capabilities:"TDD tests, Playwright MCP + browser validation, coverage reporting",
   budgetMonthlyCents:0,
   permissions:{canCreateAgents:false},
@@ -115,7 +115,7 @@ upsert_agent "Tester" "qa" "QA / Tester" "$EM_ID" "$(jq -nc '{
 
 upsert_agent "Sr Developer" "engineer" "Senior Developer" "$EM_ID" "$(jq -nc '{
   adapterType:"hermes_local",
-  adapterConfig:{model:"qwen3.6-35b-a3b"},
+  adapterConfig:{model:"qwen3.6-35b-a3b",timeoutSec:900},
   capabilities:"code generation, refactoring, bug fixing, make failing tests pass",
   budgetMonthlyCents:0,
   permissions:{canCreateAgents:false},
@@ -124,7 +124,7 @@ upsert_agent "Sr Developer" "engineer" "Senior Developer" "$EM_ID" "$(jq -nc '{
 
 upsert_agent "Sr Architect" "cto" "Senior Software Architect" "$EM_ID" "$(jq -nc '{
   adapterType:"hermes_local",
-  adapterConfig:{model:"gemma-4-26b-a4b-it"},
+  adapterConfig:{model:"gemma-4-26b-a4b-it",timeoutSec:900},
   capabilities:"code review, security audit, architecture compliance, coverage gate, MR creation",
   budgetMonthlyCents:0,
   permissions:{canCreateAgents:false},
