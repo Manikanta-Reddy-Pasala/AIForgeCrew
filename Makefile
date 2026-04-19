@@ -174,6 +174,9 @@ paperclip-status:
 paperclip-bootstrap:
 	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-bootstrap-agents.sh
 
+patch-hindsight-shutdown-bug:
+	ssh $(SSH_HOST) 'bash -s' < scripts/patch-hindsight-shutdown-bug.sh
+
 hermes-serial-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/install-hermes-serial.sh
 
