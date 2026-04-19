@@ -221,6 +221,10 @@ reboot-macstudio:
 hermes-hindsight-setup:
 	ssh -t $(SSH_HOST) 'bash -s' < scripts/hermes-setup-hindsight.sh
 
+# Wire Hindsight into Claude Code CLI (EM uses claude_local adapter).
+claude-mcp-hindsight:
+	ssh $(SSH_HOST) 'bash -s' < scripts/claude-mcp-hindsight.sh
+
 hermes-memory-seed:
 	scp -q -r ~/.claude/memory $(SSH_HOST):/tmp/claude-memory-seed/ 2>/dev/null || true
 	ssh $(SSH_HOST) 'CLAUDE_MEMORY=/tmp/claude-memory-seed bash -s' < scripts/hermes-seed-memory.sh
