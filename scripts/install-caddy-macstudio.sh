@@ -108,6 +108,21 @@ sudo launchctl enable system/com.aiforge.caddy
 echo "caddy LaunchDaemon loaded."
 
 sleep 3
+
+# --- 5. allow paperclip.local in Paperclip (else it returns 403) ---
+export PATH="$HOME/.hermes/node/bin:$PATH"
+if command -v npx >/dev/null; then
+  echo ">>> allowing paperclip.local in Paperclip config"
+  npx -y paperclipai allowed-hostname paperclip.local 2>&1 | tail -3 || true
+  UID_=$(id -u)
+  launchctl kickstart -k "gui/$UID_/com.aiforge.paperclip" 2>/dev/null || true
+  # Wait for Paperclip to come back.
+  for _ in $(seq 1 30); do
+    curl -sf http://localhost:3100/api/health >/dev/null 2>&1 && break
+    sleep 2
+  done
+fi
+
 echo
 echo "=== verify ==="
 curl -s -o /dev/null -w "  http://paperclip.local → %{http_code}\n" http://paperclip.local/
