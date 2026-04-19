@@ -35,27 +35,33 @@ fi
 CADDY_CONF="$HOME/.config/caddy"
 mkdir -p "$CADDY_CONF"
 cat > "$CADDY_CONF/Caddyfile" <<'EOF'
-# AIForgeCrew reverse proxy.
-# Both vhosts plain HTTP on :80 (no cert — internal .lan names).
+# AIForgeCrew reverse proxy — dual routing.
 #
-# NOTE: `.local` TLD is intercepted by macOS mDNSResponder and bypasses
-# /etc/hosts, causing curl/browser resolve timeouts. Use `.lan` (or any
-# non-.local TLD) so getaddrinfo actually reads /etc/hosts.
+# .lan is the preferred TLD: macOS mDNSResponder intercepts *.local DNS
+# queries and bypasses /etc/hosts, so curl (and some browsers after a cold
+# resolver state) time out on resolve. .lan goes through getaddrinfo which
+# reads /etc/hosts normally.
+#
+# We still accept .local so browser tabs / hosts-file entries that already
+# reference paperclip.local / hermes.local keep working without a 502 or a
+# JSON-parse error from the fallback route.
 {
     auto_https off
     admin off
 }
 
-http://paperclip.lan, http://paperclip {
+http://paperclip.lan, http://paperclip.local, http://paperclip {
     reverse_proxy 127.0.0.1:3100
 }
 
-http://hermes.lan, http://hermes {
+http://hermes.lan, http://hermes.local, http://hermes {
     reverse_proxy 127.0.0.1:9119
 }
 
 # Fallback on any other Host header: show a tiny index so misdirected requests
-# don't 404 confusingly.
+# don't 404 confusingly. NOTE: UI fetch() calls will JSON.parse this plain
+# text and error out with "Unexpected token 'A'" — that's the signal that
+# the Host header isn't matching any vhost above.
 :80 {
     respond "AIForgeCrew — try http://paperclip.lan or http://hermes.lan" 200
 }
