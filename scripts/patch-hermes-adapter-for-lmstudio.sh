@@ -38,12 +38,16 @@ src = re.sub(
 )
 
 # 2. Insert local-model prefix hints at top of MODEL_PREFIX_PROVIDER_HINTS.
-# Map to "auto" so adapter skips --provider flag (Hermes CLI enum rejects
-# lmstudio). Then Hermes reads ~/.hermes/config.yaml which has
-# provider=lmstudio (alias for custom) + base_url=http://localhost:1234/v1.
+# Adapter's inferProviderFromModel strips any "publisher/" prefix via
+# `model.split("/").pop()` before matching, so we must match on the bare
+# model name, not the publisher-qualified form.
+# Map to "auto" so adapter skips --provider flag → Hermes CLI reads
+# ~/.hermes/config.yaml (provider=custom, base_url=http://localhost:1234/v1).
 hints_insert = (
-    "    // AIForgeCrew override: local LM Studio ids → auto (no CLI flag)\n"
-    '    ["zai-org/", "auto"],\n'
+    "    // AIForgeCrew override: local LM Studio ids → auto (no CLI flag).\n"
+    "    // Match BARE names (publisher/ prefix is stripped before matching).\n"
+    '    ["glm-4.7-flash", "auto"],\n'
+    '    ["glm-4.7-", "auto"],\n'
     '    ["qwen3.6-", "auto"],\n'
     '    ["qwen3-0.6b", "auto"],\n'
     '    ["gemma-4-31b-it", "auto"],\n'
