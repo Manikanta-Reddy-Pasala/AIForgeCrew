@@ -183,6 +183,9 @@ hermes-serial-install:
 benchmark-agent-models:
 	bash scripts/benchmark-agent-models.sh $(SSH_HOST)
 
+benchmark-sr-dev-models:
+	bash scripts/benchmark-sr-dev-models.sh $(SSH_HOST)
+
 paperclip-install-agent-instructions:
 	ssh $(SSH_HOST) 'rm -rf ./AIForgeCrew-tmp-agents && mkdir ./AIForgeCrew-tmp-agents'
 	scp -rq agents $(SSH_HOST):AIForgeCrew-tmp-agents/
