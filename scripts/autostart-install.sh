@@ -73,10 +73,29 @@ lms server start || true
 #   Sr Dev    → qwen3.6-35b-a3b     (Qwen,   19 GB,  2026-04-14)
 #   Tester    → qwen3.5-9b          (Qwen,    6 GB,  2026-03-02)
 #   Sr Arch   → gemma-4-26b-a4b-it  (Gemma, 15.6 GB, 2026-04-02)
-# ~40 GB total fits in 96 GB with Hindsight daemon + Paperclip + system.
+#
+# 64K ctx is the FLOOR — Hermes Agent enforces minimum 64K and refuses to
+# initialize sessions on anything smaller ("Failed to initialize agent:
+# Model X has a context window of 32,768 tokens, which is below the
+# minimum 64,000 required by Hermes Agent").
+#
+# Memory footprint at 64K (within 96 GB budget):
+#   qwen3.6-35b-a3b  ~22 GB  (20 weights + 2 KV)
+#   qwen3.5-9b-mlx    ~7 GB  (6 + 1)
+#   gemma-4-26b-a4b  ~18 GB  (15.6 + 2)
+#   TOTAL            ~47 GB  (+ ~15 GB for Paperclip/Hindsight/system)
 for key in "qwen3.6-35b-a3b" "qwen3.5-9b" "gemma-4-26b-a4b-it"; do
-  lms load -y "$key" -c 32768 --gpu max 2>/dev/null || echo "load $key already loaded"
+  lms load -y "$key" -c 65536 --gpu max 2>/dev/null || echo "load $key already loaded"
 done
+
+# Refresh Hermes context_length_cache so Hermes sees the 64K — otherwise a
+# stale 32K entry causes "below the minimum 64,000" init errors on first run.
+cat > "$HOME/.hermes/context_length_cache.yaml" <<EOF
+context_lengths:
+  qwen3.6-35b-a3b@http://localhost:1234/v1: 65536
+  qwen3.5-9b-mlx@http://localhost:1234/v1: 65536
+  gemma-4-26b-a4b-it@http://localhost:1234/v1: 65536
+EOF
 SH
 chmod +x "$LA/com.aiforge.lmstudio.sh"
 
