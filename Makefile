@@ -8,6 +8,7 @@
         hermes-install hermes-adapter-install \
         deploy-mac-studio hermes-configure hermes-skills-install \
         hermes-skills-hub-install hermes-hindsight-setup hermes-memory-seed hermes-memory-stats \
+        brew-install-macstudio reboot-macstudio \
         hermes-login hermes-dashboard-start hermes-dashboard-stop hermes-dashboard-tunnel \
         claude-cli-install sync-memory-push sync-memory-pull sync-code-repos mempalace-index-all
 
@@ -203,6 +204,18 @@ hermes-skills-install:
 # Skills from the Hermes hub (official optional + community).
 hermes-skills-hub-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/hermes-install-skills.sh
+
+# Homebrew + openssl@3 + postgresql@16 on Mac Studio.
+brew-install-macstudio:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-brew-macstudio.sh
+
+# Reboot Mac Studio (needs passwordless sudo).
+reboot-macstudio:
+	@echo "Rebooting Mac Studio — will reconnect after ~60s"
+	ssh $(SSH_HOST) 'sudo shutdown -r now' || true
+	@sleep 70
+	@until ssh -o ConnectTimeout=5 $(SSH_HOST) 'uptime' 2>/dev/null; do sleep 5; done
+	@echo "Mac Studio back online."
 
 # Hindsight memory provider (replaces MemPalace + pgmem).
 hermes-hindsight-setup:
