@@ -1,0 +1,57 @@
+model,ctx,ticket,tests_passed,tests_total,file_created,test_file_created,branch,commit_sha,pr_url,wall_seconds,input_tokens,output_tokens,final_status
+qwen3-coder-next,65536,ONE-48,0,12,1,1,,,,3022,0,0,    09:46:56 ONE-48 status=todo
+    09:47:56 ONE-48 status=todo
+    09:48:56 ONE-48 status=todo
+    09:49:57 ONE-48 status=todo
+    09:50:57 ONE-48 status=todo
+    09:51:58 ONE-48 status=todo
+    09:52:58 ONE-48 status=todo
+    09:53:59 ONE-48 status=todo
+    09:54:59 ONE-48 status=todo
+    09:56:00 ONE-48 status=todo
+    09:57:00 ONE-48 status=todo
+    09:58:01 ONE-48 status=todo
+    09:59:01 ONE-48 status=todo
+    10:00:01 ONE-48 status=todo
+    10:01:02 ONE-48 status=todo
+    10:02:02 ONE-48 status=todo
+    10:03:03 ONE-48 status=todo
+    10:04:03 ONE-48 status=todo
+    10:05:03 ONE-48 status=todo
+    10:06:04 ONE-48 status=todo
+    10:07:04 ONE-48 status=todo
+    10:08:05 ONE-48 status=todo
+    10:09:05 ONE-48 status=todo
+    10:10:06 ONE-48 status=todo
+    10:11:06 ONE-48 status=todo
+    10:12:07 ONE-48 status=todo
+    10:13:07 ONE-48 status=todo
+    10:14:07 ONE-48 status=todo
+    10:15:08 ONE-48 status=todo
+    10:16:08 ONE-48 status=todo
+    10:17:09 ONE-48 status=todo
+    10:18:09 ONE-48 status=todo
+    10:19:09 ONE-48 status=todo
+    10:20:10 ONE-48 status=todo
+    10:21:10 ONE-48 status=todo
+    10:22:11 ONE-48 status=todo
+    10:23:11 ONE-48 status=todo
+    10:24:11 ONE-48 status=todo
+    10:25:12 ONE-48 status=todo
+    10:26:12 ONE-48 status=todo
+    10:27:13 ONE-48 status=todo
+    10:28:13 ONE-48 status=todo
+    10:29:14 ONE-48 status=todo
+    10:30:14 ONE-48 status=todo
+    10:31:15 ONE-48 status=todo
+    10:32:15 ONE-48 status=todo
+    10:33:15 ONE-48 status=todo
+    10:34:16 ONE-48 status=todo
+    10:35:16 ONE-48 status=todo
+    10:36:17 ONE-48 status=todo
+todo
+qwen3-coder-next,65536,aiforge/ONE-48-qwen-boi-v2,0,12,1,0,c52004b1856374d6820756cbf4d11c31b7ec3a44,,3612,incomplete
+gemma-4-31b-it,32768,,0,12,0,0,,,16,incomplete
+gemma-4-31b-it,131072,,0,13,0,0,,,13,incomplete
+gemma-4-31b-it,131072,aiforge/ONE-48-gemma-boi-v2,0,13,1,0,c52004b1856374d6820756cbf4d11c31b7ec3a44,,1211,incomplete
+gemma-4-26b-a4b-it,65536,aiforge/ONE-48-gemma26-boi-v2,1,13,1,0,c52004b1856374d6820756cbf4d11c31b7ec3a44,,1153,partial

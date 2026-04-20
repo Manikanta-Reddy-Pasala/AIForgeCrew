@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Bash shim that picks the right venv python for rag-cli.py.
+set -euo pipefail
+VENV_PY=""
+for p in \
+  /Users/manikanta/AIForgeCrew/.venv/bin/python \
+  /Users/manip/Documents/codeRepo/AIForgeCrew/.venv/bin/python \
+  ~/AIForgeCrew/.venv/bin/python \
+  ~/Documents/codeRepo/AIForgeCrew/.venv/bin/python; do
+  if [ -x "$p" ]; then VENV_PY="$p"; break; fi
+done
+if [ -z "$VENV_PY" ]; then
+  echo "rag: cannot find AIForgeCrew venv python" >&2
+  exit 1
+fi
+# Resolve symlink to real location so SCRIPT_DIR points at the actual scripts/ dir.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+exec "$VENV_PY" "$SCRIPT_DIR/rag-cli.py" "$@"

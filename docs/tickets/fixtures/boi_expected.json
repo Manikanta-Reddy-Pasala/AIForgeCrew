@@ -1,0 +1,38 @@
+{
+  "_source_pdf": "BOI.pdf",
+  "_source_hash_note": "Derived from Bank of India Cash Credit statement, PARI COMPUTERS PVT LTD, Bremen Chowk Branch, period 01/04/2026-02/04/2026",
+  "metadata": {
+    "bank_name": "Bank of India",
+    "branch": "Bremen Chowk Branch",
+    "account_name": "PARI COMPUTERS PVT LTD",
+    "account_number": "052230110000005",
+    "customer_id": "015585750",
+    "account_type": "Cash Credit Account",
+    "ifsc_code": "BKID0000522",
+    "statement_period_start": "2026-04-01",
+    "statement_period_end": "2026-04-02",
+    "statement_generated_at": "2026-04-18T11:54:53"
+  },
+  "transactions": [
+    {"serial": 1, "txn_date": "2026-04-02", "description": "NEFT/DEUTH02609203593/DEUT/AMAZON PAY (INDIA) PRIV", "chequeNo": null, "transactionAmount": 15070.00, "transactionDirection": "CR", "balance": -23051566.93},
+    {"serial": 2, "txn_date": "2026-04-02", "description": "NEFT/DEUTH02609203581/DEUT/AMAZON PAY (INDIA) PRIV", "chequeNo": null, "transactionAmount": 324037.40, "transactionDirection": "CR", "balance": -22727529.53},
+    {"serial": 3, "txn_date": "2026-04-02", "description": "NEFT/DEUTH02609203643/DEUT/AMAZON PAY (INDIA) PRIV", "chequeNo": null, "transactionAmount": 114000.00, "transactionDirection": "CR", "balance": -22613529.53},
+    {"serial": 4, "txn_date": "2026-04-02", "description": "NEFT/DEUTH02609203630/DEUT/AMAZON PAY (INDIA) PRIV", "chequeNo": null, "transactionAmount": 16500.00, "transactionDirection": "CR", "balance": -22597029.53},
+    {"serial": 5, "txn_date": "2026-04-02", "description": "BY CASH-0537- SHAILESH", "chequeNo": null, "transactionAmount": 5400.00, "transactionDirection": "CR", "balance": -22591629.53},
+    {"serial": 6, "txn_date": "2026-04-02", "description": "BY CASH-0557- SELF", "chequeNo": null, "transactionAmount": 5110.00, "transactionDirection": "CR", "balance": -22586519.53},
+    {"serial": 7, "txn_date": "2026-04-02", "description": "NEFT/MAHBH00247350911/MAHB/DISHA INDUSTRIAL CARRIE", "chequeNo": null, "transactionAmount": 45000.00, "transactionDirection": "CR", "balance": -22541519.53},
+    {"serial": 8, "txn_date": "2026-04-02", "description": "NEFT/AXSK260920009746/UTIB/PAWAR PROPERTIES", "chequeNo": null, "transactionAmount": 75000.00, "transactionDirection": "CR", "balance": -22466519.53},
+    {"serial": 9, "txn_date": "2026-04-02", "description": "NEFT/COSBH26092337269/COSB/CYNERGY AI AND AUTOMATI", "chequeNo": null, "transactionAmount": 144400.00, "transactionDirection": "CR", "balance": -22322119.53},
+    {"serial": 10, "txn_date": "2026-04-02", "description": "NEFT/HDFCH00906121919/HDFC/BAJAJ FINANCE LTDRDP", "chequeNo": null, "transactionAmount": 51000.00, "transactionDirection": "CR", "balance": -22271119.53},
+    {"serial": 11, "txn_date": "2026-04-02", "description": "NEFT/HDFCH00906351297/HDFC/RFBYTES PRIVATE LIMITED", "chequeNo": null, "transactionAmount": 24997.00, "transactionDirection": "CR", "balance": -22246122.53},
+    {"serial": 12, "txn_date": "2026-04-02", "description": "BY CLG-HDF-001938", "chequeNo": null, "transactionAmount": 237600.00, "transactionDirection": "CR", "balance": -22008522.53}
+  ],
+  "ledger_sanity": {
+    "note": "Opening = first_balance - first_txn_amount (since all CR). Closing = last balance. Sum of CR amounts = (closing - opening).",
+    "opening_balance": -23066636.93,
+    "closing_balance": -22008522.53,
+    "sum_cr": 1058114.40,
+    "sum_dr": 0.00,
+    "delta_verified": true
+  }
+}
