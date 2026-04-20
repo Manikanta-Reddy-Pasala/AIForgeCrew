@@ -85,6 +85,15 @@ ssh manikanta@192.168.70.185 'cd ~/AIForgeCrew && .venv/bin/python scripts/rag-r
 
 Indexes: AIForgeCrew docs + PosPythonBackend + TallyConnector + MongoDbService + PosDataSyncService. Java files chunked at method boundaries, markdown/etc at 2500-char windows.
 
+### Re-seed repo inventory (after edits to docs/repo-inventory.md)
+
+```bash
+bash scripts/seed-repo-inventory.sh
+# Seeds 44 world facts into Hindsight aiforge bank (one per codeRepo sibling).
+# Idempotent: clears `repo-inventory` tagged rows then reinserts.
+# Direct SQL — no LLM extraction, avoids NIM 429 + LM Studio response_format quirks.
+```
+
 ### Paperclip agent state
 
 ```bash
