@@ -26,6 +26,32 @@ DEFAULT_SOURCES = [
     "tools/**/*.py",
 ]
 
+# Generic multi-language globs for external repos.
+# Covers Java/Kotlin/Python/TS/JS/Go/MD/YAML. Intentionally ignores
+# node_modules, .git, dist, build, target, .venv — excluded via _EXCLUDES.
+GENERIC_SOURCES = [
+    "**/*.java",
+    "**/*.kt",
+    "**/*.py",
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.js",
+    "**/*.jsx",
+    "**/*.go",
+    "**/*.md",
+    "**/*.yml",
+    "**/*.yaml",
+    "**/*.sh",
+    "**/*.sql",
+]
+
+_EXCLUDES = (
+    "node_modules/", ".git/", ".venv/", "venv/",
+    "dist/", "build/", "target/", ".next/",
+    "__pycache__/", ".pytest_cache/",
+    "graphify-out/", ".aiforge/",
+)
+
 CHUNK_CHARS = 2500
 CHUNK_OVERLAP = 300
 
@@ -114,8 +140,18 @@ def reindex_repo(store: "Store", *, repo: str, repo_root: Path,
     seen: set[Path] = set()
     for pat in sources:
         for p in repo_root.glob(pat):
-            if p.is_file():
-                seen.add(p.resolve())
+            if not p.is_file():
+                continue
+            rel = p.relative_to(repo_root).as_posix()
+            if any(exc in rel + "/" for exc in _EXCLUDES):
+                continue
+            # Skip very large files (>1 MB) — rarely useful for retrieval
+            try:
+                if p.stat().st_size > 1_000_000:
+                    continue
+            except OSError:
+                continue
+            seen.add(p.resolve())
 
     total_chunks = 0
     for f in sorted(seen):

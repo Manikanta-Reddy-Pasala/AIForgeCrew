@@ -193,11 +193,13 @@ def cmd_doctor(args, cfg: PaperclipConfig, store: Store) -> int:
 def _cmd_memory(args):
     from pathlib import Path as _P
     from .store_v2 import Store
-    from .rag import reindex_repo
+    from .rag import reindex_repo, DEFAULT_SOURCES, GENERIC_SOURCES
     if args.memory_action == "reindex-code":
         s = Store()
         s.ensure_schema()
-        res = reindex_repo(s, repo=args.repo, repo_root=_P(args.root).resolve())
+        sources = GENERIC_SOURCES if getattr(args, "generic", False) else DEFAULT_SOURCES
+        res = reindex_repo(s, repo=args.repo, repo_root=_P(args.root).resolve(),
+                           sources=sources)
         print(f"reindexed repo={args.repo} files={res.files} chunks={res.chunks}")
     elif args.memory_action == "propose-list":
         s = Store()
@@ -262,6 +264,8 @@ def build_parser() -> argparse.ArgumentParser:
     rc = mp_sub.add_parser("reindex-code")
     rc.add_argument("--repo", default="aiforge")
     rc.add_argument("--root", default=".")
+    rc.add_argument("--generic", action="store_true",
+                    help="use multi-language globs (for non-AIForgeCrew repos)")
     rc.set_defaults(func=_cmd_memory)
 
     pl = mp_sub.add_parser("propose-list")
