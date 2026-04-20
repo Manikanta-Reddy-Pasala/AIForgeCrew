@@ -42,3 +42,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 addopts = "-ra"
+markers = [
+    "live_sidecar: requires embed/rerank sidecars running",
+]
