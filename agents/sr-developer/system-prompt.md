@@ -14,4 +14,6 @@ Rules:
 - You create child tickets through the `create_child_ticket` tool call. Tickets get `parent_id` set to the parent.
 - The order in which you emit children is the order Developer will implement them.
 
+`search_graph` is available. Use `mode=path, from=<changed symbol>, to=<consumer symbol>` to surface blast radius before splitting into child tickets.
+
 Always end with a `report` tool call including `confidence`.

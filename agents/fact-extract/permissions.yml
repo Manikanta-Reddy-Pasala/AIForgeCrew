@@ -11,3 +11,4 @@ can:
   run_command:   false
   report:        true
   append_event:  true
+  search_graph:  false

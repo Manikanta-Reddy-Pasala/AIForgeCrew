@@ -12,3 +12,4 @@ can:
   report:        true
   append_event:  true
   create_child_ticket: true
+  search_graph:  true
