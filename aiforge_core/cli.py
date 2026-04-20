@@ -190,6 +190,72 @@ def cmd_doctor(args, cfg: PaperclipConfig, store: Store) -> int:
     return 0
 
 
+def _index_claude_memory(roots: list[str]) -> None:
+    """Index all CLAUDE.md / AGENTS.md / memory/*.md across roots into T4
+    under wing `code/claude-memory`. Each file = one chunk (they're usually
+    <100KB). Whole-file upsert keeps file-level retrieval clean."""
+    from pathlib import Path as _P
+    from .store_v2 import Store
+
+    patterns = ["CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+    deep_globs = ["**/CLAUDE.md", "**/AGENTS.md", "**/GEMINI.md",
+                  "**/memory/**/*.md", "**/instructions/**/*.md"]
+
+    seen: set[_P] = set()
+    for root in roots:
+        r = _P(root).expanduser()
+        if not r.exists():
+            continue
+        # top-level exact matches
+        for pat in patterns:
+            p = r / pat
+            if p.is_file():
+                seen.add(p.resolve())
+        # deep globs
+        for pat in deep_globs:
+            for p in r.glob(pat):
+                if not p.is_file():
+                    continue
+                # skip obviously noisy paths
+                parts = set(p.parts)
+                if parts & {"node_modules", ".git", ".venv", "dist", "build", "target"}:
+                    continue
+                if p.stat().st_size > 500_000:
+                    continue
+                seen.add(p.resolve())
+
+    if not seen:
+        print("no CLAUDE/AGENTS/memory files found under given roots")
+        return
+
+    store = Store()
+    store.ensure_schema()
+    # Wipe prior claude-memory wing for a clean re-seed
+    with store._connect() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM memories WHERE tier='t4' AND wing='code/claude-memory'")
+        c.commit()
+
+    ok = 0
+    for f in sorted(seen):
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not text.strip():
+            continue
+        abs_path = str(f)
+        short = abs_path.replace(str(_P("~").expanduser()), "~")
+        store.upsert_code_chunk(
+            repo="claude-memory",
+            path=short,
+            symbol="<file>",
+            text=text[:50000],
+            metadata={"kind": "claude_md", "size": f.stat().st_size},
+        )
+        ok += 1
+    print(f"indexed claude-memory: {ok} files under wing code/claude-memory")
+
+
 def _cmd_memory(args):
     from pathlib import Path as _P
     from .store_v2 import Store
@@ -201,6 +267,14 @@ def _cmd_memory(args):
         res = reindex_repo(s, repo=args.repo, repo_root=_P(args.root).resolve(),
                            sources=sources)
         print(f"reindexed repo={args.repo} files={res.files} chunks={res.chunks}")
+    elif args.memory_action == "index-claude-memory":
+        _index_claude_memory(args.roots or [
+            str(_P("~/codeRepo").expanduser()),
+            str(_P("~/.claude").expanduser()),
+            str(_P("~/.paperclip").expanduser()),
+        ])
+    elif False:
+        pass
     elif args.memory_action == "propose-list":
         s = Store()
         for p in s.list_proposals("pending"):
@@ -267,6 +341,12 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--generic", action="store_true",
                     help="use multi-language globs (for non-AIForgeCrew repos)")
     rc.set_defaults(func=_cmd_memory)
+
+    ic = mp_sub.add_parser("index-claude-memory",
+                           help="index CLAUDE.md/AGENTS.md/memory/*.md files into T4")
+    ic.add_argument("--roots", nargs="+",
+                    help="root dirs to scan (default: ~/codeRepo, ~/.claude, ~/.paperclip)")
+    ic.set_defaults(func=_cmd_memory)
 
     pl = mp_sub.add_parser("propose-list")
     pl.set_defaults(func=_cmd_memory)
