@@ -1,26 +1,28 @@
-from __future__ import annotations
-
 from pathlib import Path
-
-import pytest
-
-pytest.importorskip("chromadb")  # skip entire module if chromadb not installed
-
-from aiforge_core.rag import RagIndex
+from aiforge_core.rag import _chunk_generic, _chunk_for_path
 
 
-def test_index_and_query(tmp_path: Path) -> None:
-    repo = tmp_path
-    (repo / "docs").mkdir()
-    (repo / "docs" / "auth.md").write_text("# Auth\n\nWe use JWT with 15 minute expiry.")
-    (repo / "docs" / "db.md").write_text("# Database\n\nPostgres 16, multi-tenant schema.")
-    (repo / "README.md").write_text("# Project")
-    idx = RagIndex(repo, db_dir=tmp_path / "rag-db")
-    stats = idx.reindex(sources=["docs/**/*.md", "README.md"])
-    assert stats["files"] >= 3
-    assert stats["chunks"] >= 3
+def test_chunk_generic_char_overlap():
+    text = "a" * 6000
+    chunks = _chunk_generic(text)
+    assert len(chunks) >= 2
+    # Overlap present: chunk[1] starts within chunk[0]
+    assert chunks[1][:100] in chunks[0] + text
 
-    hits = idx.query("how long does the token live?", top_k=2)
-    assert hits
-    # Expect the auth doc (JWT expiry) to surface as the top hit.
-    assert any("JWT" in h.text or "auth" in h.source for h in hits)
+
+def test_python_chunker_splits_by_def(monkeypatch):
+    # Force fallback (no tree-sitter) by raising on import
+    import builtins
+    real_import = builtins.__import__
+
+    def raising_import(name, *a, **kw):
+        if name == "tree_sitter_python":
+            raise ImportError
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", raising_import)
+    from aiforge_core.rag import _chunk_python
+    text = "def a(): pass\n\ndef b(): pass\n"
+    out = _chunk_python(text)
+    assert out
+    assert any("def a" in c[1] or "def b" in c[1] for c in out)

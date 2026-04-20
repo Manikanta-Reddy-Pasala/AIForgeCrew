@@ -24,8 +24,34 @@ from pathlib import Path
 from . import __version__
 from .budget import BudgetExceeded, Spend, assert_within_budget, month_usd, record, ticket_tokens
 from .config import PaperclipConfig, load_permissions
-from .lifecycle import advance as lc_advance
-from .lifecycle import allowed_next_states
+# TODO: adapt to v4.1 — advance() removed; use lifecycle parent/child state machines directly
+# from .lifecycle import advance as lc_advance
+# from .lifecycle import allowed_next_states
+from .lifecycle import parent_allowed_next as _parent_allowed_next
+from .lifecycle import child_allowed_next as _child_allowed_next
+
+
+def allowed_next_states(state: str) -> list[str]:
+    """Compat shim: try parent SM, then child SM, then return empty list."""
+    try:
+        return _parent_allowed_next(state)
+    except Exception:
+        pass
+    try:
+        return _child_allowed_next(state)
+    except Exception:
+        return []
+
+
+def lc_advance(store, cfg, ticket_id, to_state, actor):
+    """Compat shim: basic state advance without full lifecycle logic."""
+    t = store.get_ticket(ticket_id)
+    if t is None:
+        raise KeyError(f"ticket not found: {ticket_id}")
+    allowed = allowed_next_states(t.state)
+    if to_state not in allowed:
+        raise ValueError(f"cannot advance {t.state!r} → {to_state!r}; allowed={allowed}")
+    store.set_state(ticket_id, to_state, actor)
 from .observe import fleet_summary, ticket_report
 from .permissions import check as perm_check
 from .store import Store
@@ -164,6 +190,31 @@ def cmd_doctor(args, cfg: PaperclipConfig, store: Store) -> int:
     return 0
 
 
+def _cmd_memory(args):
+    from pathlib import Path as _P
+    from .store_v2 import Store
+    from .rag import reindex_repo
+    if args.memory_action == "reindex-code":
+        s = Store()
+        s.ensure_schema()
+        res = reindex_repo(s, repo=args.repo, repo_root=_P(args.root).resolve())
+        print(f"reindexed repo={args.repo} files={res.files} chunks={res.chunks}")
+    elif args.memory_action == "propose-list":
+        s = Store()
+        for p in s.list_proposals("pending"):
+            print(f"#{p['id']} [{p['tier']}] {p['title'] or '(no title)'} — {p['text'][:80]!r}")
+    elif args.memory_action == "propose-approve":
+        s = Store()
+        s.decide_proposal(args.id, approve=True, decided_by="human")
+        print(f"approved #{args.id}")
+    elif args.memory_action == "propose-reject":
+        s = Store()
+        s.decide_proposal(args.id, approve=False, decided_by="human")
+        print(f"rejected #{args.id}")
+    else:
+        raise SystemExit(f"unknown memory action: {args.memory_action}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aiforge", description="AIForgeCrew core CLI (Hermes-side orchestrator)")
     p.add_argument("--version", action="version", version=f"aiforge {__version__}")
@@ -205,11 +256,42 @@ def build_parser() -> argparse.ArgumentParser:
     dr = sub.add_parser("doctor")
     dr.set_defaults(handler=cmd_doctor)
 
+    mp = sub.add_parser("memory", help="memory store operations")
+    mp_sub = mp.add_subparsers(dest="memory_action", required=True)
+
+    rc = mp_sub.add_parser("reindex-code")
+    rc.add_argument("--repo", default="aiforge")
+    rc.add_argument("--root", default=".")
+    rc.set_defaults(func=_cmd_memory)
+
+    pl = mp_sub.add_parser("propose-list")
+    pl.set_defaults(func=_cmd_memory)
+
+    pa = mp_sub.add_parser("propose-approve")
+    pa.add_argument("id", type=int)
+    pa.set_defaults(func=_cmd_memory)
+
+    pr = mp_sub.add_parser("propose-reject")
+    pr.add_argument("id", type=int)
+    pr.set_defaults(func=_cmd_memory)
+
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    # Memory subcommand uses args.func (no store/cfg wiring needed)
+    if hasattr(args, "func"):
+        try:
+            args.func(args)
+            return 0
+        except SystemExit:
+            raise
+        except Exception as e:
+            print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+            return 1
+
     repo_root = _repo_root()
     cfg = PaperclipConfig.load(repo_root)
     store = _store(repo_root)
