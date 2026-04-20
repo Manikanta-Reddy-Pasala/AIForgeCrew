@@ -99,3 +99,75 @@ class Store:
         with self._connect() as c, c.cursor() as cur:
             cur.execute(SCHEMA_SQL)
             c.commit()
+
+    # ---------- T1 episodic ----------
+    def append_event(
+        self,
+        parent_id: str,
+        kind: str,
+        text: str,
+        *,
+        title: str | None = None,
+        source: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        """Append an episodic T1 row for a given parent ticket. Returns id."""
+        vec = embed_mod.embed(text)
+        wing = f"ticket/{parent_id}"
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO memories
+                   (tier, wing, parent_id, kind, source, title, text, embedding, metadata)
+                   VALUES ('t1', %s, %s, %s, %s, %s, %s, %s::vector, %s::jsonb)
+                   RETURNING id""",
+                (wing, parent_id, kind, source, title, text,
+                 _vec_literal(vec), json.dumps(metadata or {})),
+            )
+            rid = cur.fetchone()[0]
+            c.commit()
+            return rid
+
+    def get_episodic(self, parent_id: str) -> list[Memory]:
+        """Return all T1 rows for a parent, chronological."""
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT id, tier, wing, parent_id, kind, source, title, text,
+                          metadata, created_at, expires_at
+                   FROM memories
+                   WHERE tier = 't1' AND parent_id = %s
+                   ORDER BY id ASC""",
+                (parent_id,),
+            )
+            return [
+                Memory(
+                    id=r[0], tier=r[1], wing=r[2], parent_id=r[3], kind=r[4],
+                    source=r[5], title=r[6], text=r[7],
+                    metadata=r[8] or {},
+                    created_at=r[9], expires_at=r[10],
+                )
+                for r in cur.fetchall()
+            ]
+
+    def mark_ticket_merged(self, parent_id: str, ttl_days: int = 7) -> int:
+        """Set expires_at on all T1 rows for this parent."""
+        expires = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(
+                "UPDATE memories SET expires_at = %s "
+                "WHERE tier = 't1' AND parent_id = %s AND expires_at IS NULL",
+                (expires, parent_id),
+            )
+            n = cur.rowcount
+            c.commit()
+            return n
+
+    def gc_expired(self) -> int:
+        """Delete T1 rows past expires_at. Returns deleted count."""
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(
+                "DELETE FROM memories WHERE tier = 't1' "
+                "AND expires_at IS NOT NULL AND expires_at < now()"
+            )
+            n = cur.rowcount
+            c.commit()
+            return n

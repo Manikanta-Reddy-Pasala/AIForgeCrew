@@ -35,3 +35,25 @@ def store():
 def test_ensure_schema_idempotent(store):
     store.ensure_schema()
     store.ensure_schema()  # no error
+
+
+def test_append_t1_event(store, monkeypatch):
+    # Stub embed so tests don't need live sidecar
+    from aiforge_core import embed as embed_mod
+    monkeypatch.setattr(embed_mod, "embed", lambda t: [0.001] * 1024)
+
+    mid = store.append_event(
+        parent_id="TICKET-77",
+        kind="tool_call",
+        title="search_code called",
+        text="query: 'publishToRemoteServer' | hits: 3",
+        metadata={"tool": "search_code", "top_k": 5},
+        source="agent:developer",
+    )
+    assert mid > 0
+
+    rows = store.get_episodic("TICKET-77")
+    assert len(rows) == 1
+    assert rows[0].kind == "tool_call"
+    assert rows[0].metadata["tool"] == "search_code"
+    assert rows[0].expires_at is None  # not set until ticket merges
