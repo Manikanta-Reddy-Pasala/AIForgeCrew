@@ -39,3 +39,17 @@ def test_assemble_prompt_drops_lowest_ranked_memory_first_when_over_budget():
     assert out.count("m" * 2000) < 20
     assert "sys" in out
     assert "task" in out
+
+
+from aiforge_core.context import compact_hop
+
+
+def test_compact_hop_summary_is_bulleted_under_cap(monkeypatch):
+    monkeypatch.setattr(
+        "aiforge_core.context._llm_summarize",
+        lambda text, cap: "- did X\n- got Y\n- next Z",
+    )
+    raw = "x" * 10_000
+    summary = compact_hop(role="developer", raw_text=raw, cap_chars=200)
+    assert summary.startswith("- ")
+    assert len(summary) < 200

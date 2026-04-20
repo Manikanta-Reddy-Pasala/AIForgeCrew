@@ -80,3 +80,47 @@ def assemble_prompt(inp: PromptInputs, budget_bytes: int) -> str:
         flex.append(_section("RECENT WORK (compacted)", bullets))
 
     return "".join(locked + flex)
+
+
+import os
+import urllib.request
+
+SUMMARIZER_URL = os.environ.get(
+    "AIFORGE_SUMMARIZER_URL", "http://127.0.0.1:1234/v1/chat/completions"
+)
+SUMMARIZER_MODEL = os.environ.get(
+    "AIFORGE_SUMMARIZER_MODEL", "qwen3-4b-thinking-2507"
+)
+
+
+def _llm_summarize(text: str, cap_chars: int) -> str:
+    """Call the small thinking model to produce a bulleted summary <= cap_chars."""
+    sys_msg = (
+        "You summarize an agent's prior-hop transcript into <=5 concise bullets. "
+        "Keep IDs (mem:NNN, code:path#sym). Drop reasoning chatter. "
+        f"Output plain text only, total <= {cap_chars} chars."
+    )
+    body = {
+        "model": SUMMARIZER_MODEL,
+        "messages": [
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": text[:16000]},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 400,
+    }
+    req = urllib.request.Request(
+        SUMMARIZER_URL,
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as r:
+        resp = json.loads(r.read().decode())
+    return resp["choices"][0]["message"]["content"].strip()[:cap_chars]
+
+
+def compact_hop(role: str, raw_text: str, cap_chars: int = 600) -> str:
+    """Compress a prior-hop transcript to a bulleted summary under cap_chars."""
+    if len(raw_text) <= cap_chars:
+        return raw_text
+    return _llm_summarize(raw_text, cap_chars)
