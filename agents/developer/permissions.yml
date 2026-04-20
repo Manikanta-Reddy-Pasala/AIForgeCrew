@@ -1,14 +1,13 @@
 version: 1
-role: sr_developer
+role: developer
 can:
   search_memory: true
   search_code:   true
   read_file:     true
-  write_file:    false
+  write_file:    true
   git_diff:      true
-  git_ops:       false
-  run_tests:     false
-  run_command:   false
+  git_ops:       true
+  run_tests:     true
+  run_command:   true
   report:        true
   append_event:  true
-  create_child_ticket: true

@@ -1,5 +1,5 @@
 version: 1
-role: sr_developer
+role: architect
 can:
   search_memory: true
   search_code:   true
@@ -11,4 +11,3 @@ can:
   run_command:   false
   report:        true
   append_event:  true
-  create_child_ticket: true

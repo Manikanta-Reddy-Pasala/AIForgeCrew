@@ -1,14 +1,13 @@
 version: 1
-role: sr_developer
+role: fact_extract
 can:
   search_memory: true
-  search_code:   true
-  read_file:     true
+  search_code:   false
+  read_file:     false
   write_file:    false
-  git_diff:      true
+  git_diff:      false
   git_ops:       false
   run_tests:     false
   run_command:   false
   report:        true
   append_event:  true
-  create_child_ticket: true
