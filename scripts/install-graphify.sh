@@ -24,12 +24,8 @@ graphify install
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-if [[ ! -d "graphify-out" ]]; then
-  echo "building graph for the first time (this may take minutes)..."
-  graphify .
-else
-  echo "rebuilding graph..."
-  graphify . --incremental
-fi
+echo "extracting code graph (AST pass, no LLM)..."
+graphify update .
 
 echo "Graphify graph ready. Top insights: graphify-out/GRAPH_REPORT.md"
+echo "For semantic enrichment, use /graphify . inside Claude Code / your AI assistant."
