@@ -1,252 +1,498 @@
 # AIForgeCrew
 
-Autonomous AI dev team. Human files a ticket in Paperclip → AI agents plan, implement, review, open PR. All threaded on one ticket. Runs on a single Mac Studio (M3 Ultra, 96 GB) with a laptop as remote control.
+**Autonomous AI dev team.** Human files a ticket in Paperclip → 4 AI agents plan, decompose, implement, review, and open a PR. Single parent-ticket thread, sub-tickets per work unit, cross-session memory, code knowledge graph, hybrid retrieval. Runs on one Mac Studio (M3 Ultra, 96 GB). Laptop = remote control.
 
-Architecture details: [`DESIGN.md`](./DESIGN.md) · Memory + orchestration v4.1: [`docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md`](./docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md) · Memory system: [`docs/agents/memory-system.md`](./docs/agents/memory-system.md) · Ops: [`docs/runbook.md`](./docs/runbook.md)
+**Pipeline:** v4.1 (2026-04-21)
+**Spec:** [`docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md`](./docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md)
+**Plan:** [`docs/superpowers/plans/2026-04-21-memory-orchestration.md`](./docs/superpowers/plans/2026-04-21-memory-orchestration.md)
+**Runbook:** [`docs/runbook.md`](./docs/runbook.md)
 
-## Code knowledge graph (Graphify)
+---
 
-Install once:
+## TL;DR — first ticket in 10 minutes
 
-    make graphify-build
+```bash
+# Mac Studio (once)
+bash scripts/install-pg-aiforge.sh              # Postgres schema
+bash scripts/install-embed-sidecar.sh &         # bge-m3 embed on :8764
+bash scripts/install-rerank-sidecar.sh &        # bge-reranker on :8765
+bash scripts/install-graphify.sh                # code knowledge graph
+.venv/bin/aiforge memory reindex-code --repo aiforge --root .
+bash scripts/install-sidecar-agents.sh install  # launchd auto-start
+bash scripts/paperclip-bootstrap-v41.sh         # 4 v4.1 agents + prompts
 
-Rebuild after changes:
-
-    make graphify-rebuild
-
-Agents query via the `search_graph` MCP tool. Top insights live at `graphify-out/GRAPH_REPORT.md`.
-
-## Three-layer stack
-
-| Layer | Component | What it does |
-|---|---|---|
-| Orchestrator | **Paperclip** (Node + React UI, `github.com/paperclipai/paperclip`) | Org chart, tickets, goals, runs, audit, dashboard. Embedded Postgres. |
-| Agent runtime | **Hermes Agent** (Python CLI, `github.com/NousResearch/hermes-agent`) | Per-turn LLM loop, 30+ tools, 80+ skills, session resume. |
-| Policy layer | **aiforge_core** (this repo) | Lifecycle, permissions, RAG, memory, dispatcher scripts. Installed as Hermes skill pack at `~/.hermes/skills/aiforge/`. |
-
-## Pipeline v4 (2026-04-20) — Architect / Sr Dev / Developer
-
-| Role | Who | Model | Job |
-|---|---|---|---|
-| **Software Architect** | Claude Code (external, this session) | Opus 4.7 cloud | Writes `docs/tickets/<TICKET-ID>.md` with design choice + acceptance criteria. Creates `aiforge/<TICKET-ID>` branch per repo. |
-| **Sr Developer** | Paperclip agent `28b8c064` | `gemma-4-31b-it` @ 64K (LM Studio MLX) | Reads context, recalls memory + RAG, writes `docs/breakdowns/<TICKET-ID>.md` with numbered sub-tasks + test spec. Also runs **REVIEW mode** after Developer commits. |
-| **Developer** | Paperclip agent `e0502e94` | `qwen3-coder-next` @ 64K (LM Studio MLX) | Implements each sub-task + unit test. `mvn compile` + `mvn test` must pass. Commits per sub-task. Pushes. `gh pr create`. |
-
-Branch convention: `aiforge/<TICKET-ID>` — same name across every involved repo.
-
-Handoff markers (in ticket comments): `READY_FOR_DEV`, `READY_FOR_REVIEW`, `NEEDS_DEV_REWORK`, `NEEDS_HUMAN`.
-
-Max 2 bounce cycles. Exceeded → status `blocked`.
-
-## Pipeline flow
-
-```
-Human              Architect (me)          Sr Dev (gemma)       Developer (qwen)      Sr Dev review
-  │                    │                       │                     │                     │
-  │ ticket idea        │                       │                     │                     │
-  ├───────────────────►│ writes docs/tickets   │                     │                     │
-  │                    │ /<TICKET>.md          │                     │                     │
-  │                    │ creates branches      │                     │                     │
-  │                    │ across repos          │                     │                     │
-  │                    │                       │                     │                     │
-  │                    │ bash srdev-run.sh ────►│ rag + hindsight    │                     │
-  │                    │                       │ → docs/breakdowns/ │                     │
-  │                    │                       │ → READY_FOR_DEV     │                     │
-  │                    │                       │                     │                     │
-  │                    │ bash dev-run.sh ───────────────────────────►│ impl + unit test    │
-  │                    │                       │                     │ mvn compile + test  │
-  │                    │                       │                     │ git push + gh pr    │
-  │                    │                       │                     │ → READY_FOR_REVIEW  │
-  │                    │                       │                     │                     │
-  │                    │ bash review-run.sh ────────────────────────────────────────────►│ verify diff
-  │                    │                       │                     │                     │ mvn test
-  │                    │                       │                     │                     │ verdict
-  │                    │                       │                     │                     │
-  │                    │◄───────────────────────── if NEEDS_DEV_REWORK (≤2×)                │
-  │                    │ bounce-run.sh                                                      │
-  │                    │                                                                    │
-  │◄─────────────── human review + merge PR                           (if READY_FOR_REVIEW) │
+# Fire a ticket — assign to Architect agent in Paperclip UI or via SQL.
+# Heartbeat picks it up within 60 s. Watch comments flow on the parent.
 ```
 
-## Dispatcher scripts
+---
 
-| Script | Role | Model | Key guards |
-|---|---|---|---|
-| `scripts/srdev-run.sh <TICKET>` | Sr Dev breakdown | gemma-4-31b @ 64K | mandates hindsight+rag+≤3 file reads |
-| `scripts/dev-run.sh <TICKET>` | Developer impl | qwen-coder-next @ 64K | mvn compile + mvn test -Dtest=<X> required; auto `gh pr create` |
-| `scripts/review-run.sh <TICKET>` | Sr Dev review | gemma-4-31b @ 64K | git diff + mvn check; emits `VERDICT_START..VERDICT_END` block |
-| `scripts/bounce-run.sh <TICKET>` | Developer rework | qwen-coder-next @ 64K | feeds review verdict back; cap 2 per ticket |
-| `scripts/ticket-run.sh <TICKET>` | Full pipeline | — | runs all 4 phases w/ review loop |
+## How it works
 
-Supporting:
-- `scripts/lib/ensure-model.sh <MODEL> <CTX>` — guards against LM Studio silent ctx reduction + JIT-loaded `:N` clones. Syncs Hermes ctx cache. REST smoke test.
-- `scripts/rag "<query>"` — CLI wrapper for aiforge-rag (ChromaDB over AIForgeCrew + OneShell repos, method-boundary chunked).
-- `scripts/rag-reindex-multi.py` — rebuilds vector index across all repos.
+### 1. Pipeline — 4 agents, 1 parent ticket, N children
 
-All dispatchers:
-- Set ticket status to `backlog` during hermes run (prevents Paperclip auto-retry interference)
-- Post verdict comments via curl themselves (not trusting agents to POST)
-- Restore status to `todo` / `in_review` / `blocked` based on outcome
+```
+ HUMAN ──► Paperclip ticket (parent)
+                │
+                ▼
+ ┌──────────── ARCHITECT ─────────────┐
+ │ Claude Opus 4.7 OR gemma-4-31b-it  │   designs: spec, ADR, contracts,
+ │ (AIFORGE_ARCHITECT_MODE toggle)    │   acceptance criteria, test plan
+ └─────────────────┬──────────────────┘
+                   ▼
+ ┌────────────── SR DEVELOPER ────────┐
+ │ gemma-4-31b-it @ 64K               │   splits parent → N child tickets
+ └─────────────────┬──────────────────┘   each w/ scoped context + insights
+                   │
+        (one Developer run per child)
+                   ▼
+ ┌────────────── DEVELOPER ───────────┐
+ │ qwen3-coder-next MoE 80B/3B @ 128K │   writes code + tests, diff-patch,
+ └─────────────────┬──────────────────┘   commits, pushes, opens PR
+                   ▼
+ ┌──────── ARCHITECT REVIEW ──────────┐
+ │ same as Architect above            │   approve → MR;  reject → loop ≤3
+ └─────────────────┬──────────────────┘
+                   ▼ (after every child merged)
+ ┌──────── FACT EXTRACT ──────────────┐
+ │ qwen3-4b-thinking-2507             │   distils facts + recipes from
+ └─────────────────┬──────────────────┘   ticket trace → T2/T3 proposals
+                   ▼
+            human-gated memory merge
+```
 
-## Company + agents
+| Role | Model | Context | Writes | Reads |
+|------|-------|---------|--------|-------|
+| Architect | claude-opus-4-7 *or* gemma-4-31b-it | 200K / 64K | parent comment only | T2 · T4 · T3 · T1 · graph |
+| Sr Developer | gemma-4-31b-it | 64K | child tickets | T2 · T3 · T4 · T1 · graph |
+| Developer | qwen3-coder-next | 128K | src + tests + commits | T4 · T3 · T1 · T2 · graph |
+| Fact Extract | qwen3-4b-thinking-2507 | 32K | T2/T3 *proposals* only | T1 of one parent |
 
-**OneShell** — "Solving Business Problems with Software".
+### 2. Lifecycle state machine (v4.1)
 
-| Role | Agent ID | Adapter | Model |
-|---|---|---|---|
-| Sr Developer | `28b8c064-bfcf-44e1-9e91-e37c39e0097c` | `hermes_local` | `gemma-4-31b-it` |
-| Developer | `e0502e94-0608-4fb9-9afa-b70d8dbf014a` | `hermes_local` | `qwen3-coder-next` |
+**Parent ticket:**
 
-Company ID: `fd294bd0-2f65-405f-b443-fb41d66226fb`.
+```
+  created → planning(Arch) → splitting(SrDev) → spawned
+                                                    │
+                               all children merged  ▼
+                                          reflection(FactExtract) → closed
+```
 
-## Runtime tooling on Mac Studio
+**Child ticket** (one per Developer task):
 
-Installed 2026-04-20 via `brew`:
-- OpenJDK 25 (`/opt/homebrew/Cellar/openjdk/25.0.2/.../Contents/Home`)
-- Maven 3.9.15 (`/opt/homebrew/Cellar/maven/3.9.15/libexec/bin/mvn`)
-- `uv` 0.11.7 for Python (`~/.local/bin/uv`)
+```
+  created(by SrDev) → coding(Dev) → reviewing(Arch)
+                                        │
+                                        ├─ approve → mr_created → merged
+                                        └─ reject  → coding (loop ≤3)
+                                                   → escalated (cap hit)
+```
 
-`JAVA_HOME` + `MAVEN_HOME` + `PATH` exported in `~/.zshrc`, `~/.zshenv`, `~/.profile`, `~/.bashrc` — visible in every ssh session.
+Enforced in `aiforge_core/lifecycle.py`. Invalid transitions raise `LifecycleError`.
 
-LM Studio + MLX models:
-- `gemma-4-31b-it` (dense 31B, 18 GB weights, 4-bit MLX)
-- `qwen3-coder-next` (MoE 80B / 3B active, 44.86 GB)
-- Both kept with `--ttl 86400` (24h, prevents LM Studio auto-evict)
-- 96GB Mac Studio cannot keep both at 64K+ ctx simultaneously → dispatcher swaps per phase via `ensure-model.sh`
+---
 
-Hermes config (`~/.hermes/config.yaml`):
-- `model.default = qwen3-coder-next` (so aux/vision probes hit a loaded model)
-- `auxiliary.compression.model = qwen3-coder-next` (aux uses local, not cloud)
-- `compression.enabled = false` + `threshold = 0.99` (belt + suspenders)
+## Memory system — 4 tiers + graph
 
-## Memory system — 6 layers
+> RAG = **execution layer** (give me the code chunk)
+> Graphify = **understanding layer** (why is it shaped this way, what depends on it)
 
-| # | Layer | Source | Per |
-|---|---|---|---|
-| 1 | System prompt | `~/.paperclip/.../agents/<id>/instructions/AGENTS.md` | agent |
-| 2 | Ticket context | `docs/tickets/<TICKET-ID>.md` | ticket (Architect writes) |
-| 3 | Breakdown | `docs/breakdowns/<TICKET-ID>.md` | ticket (Sr Dev writes) |
-| 4 | Codebase RAG | ChromaDB via `rag` CLI | shared (multi-repo, method-boundary chunked) |
-| 5 | Fact memory | Hindsight pgvector (per-agent bank planned) | agent |
-| 6 | Git history | native git | shared |
+```
+┌───────────────────────────────────────────────────────────────┐
+│                 POSTGRES 17 — aiforge DB                      │
+│              pgvector (HNSW) + pg_trgm (BM25-ish)             │
+├───────────────────────────────────────────────────────────────┤
+│  T1 EPISODIC   per-ticket trace, tool calls, decisions        │
+│                wing = ticket/<parent-id>                      │
+│                TTL: 7 days after parent merges                │
+│                writer: any agent (append-only)                │
+│                                                               │
+│  T2 SEMANTIC   distilled cross-ticket facts, conventions      │
+│                wing = project                                 │
+│                writer: reflection runner (human-gated)        │
+│                                                               │
+│  T3 PROCEDURAL recipes, how-to, tool-use patterns             │
+│                wing = skills                                  │
+│                writer: reflection runner (human-gated)        │
+│                                                               │
+│  T4 CODEBASE   AST-chunked source + docs, per symbol          │
+│                wing = code/<repo>                             │
+│                rebuilt: post-commit hook + reindex CLI        │
+└───────────────────────────────────────────────────────────────┘
+                  ▲                 ▲
+                  │                 │
+    ┌─────────────┴──┐    ┌─────────┴────────────┐
+    │ bge-m3 ONNX     │   │ memory_proposals     │
+    │ embed :8764     │   │ (pending human OK    │
+    │ 1024-d dense    │   │  before T2/T3 write) │
+    └─────────────────┘   └──────────────────────┘
 
-Full design: [`docs/agents/memory-system.md`](./docs/agents/memory-system.md)
+┌───────────────────────────────────────────────────────────────┐
+│        GRAPHIFY — code knowledge graph (understanding)        │
+├───────────────────────────────────────────────────────────────┤
+│  tree-sitter AST → NetworkX → Leiden clustering               │
+│  graphify-out/graph.json       (persisted)                    │
+│  graphify-out/GRAPH_REPORT.md  (top insights)                 │
+│  graphify-out/graph.html       (interactive)                  │
+│  current: 424 nodes, 864 edges, 26 communities                │
+│                                                               │
+│  Agents call `search_graph {mode=query|path|explain}` via MCP │
+│  mode=explain  → "why is this designed like this?"            │
+│  mode=path     → dependency chain from A to B (blast radius)  │
+│  mode=query    → general graph search                         │
+└───────────────────────────────────────────────────────────────┘
+```
 
-## URLs (via Caddy reverse proxy on Mac Studio)
+**Why 4 tiers, not 1:** different write gates + TTLs. T1 high-volume ephemeral, T4 fully automated, T2/T3 curated knowledge that only lands after human review so the memory never poisons itself.
 
-| Hostname | What |
-|---|---|
-| `http://paperclip.local` | Paperclip UI + REST API |
-| `http://hermes.local` | Hermes web dashboard |
-| Raw ports | `localhost:3100` (Paperclip), `localhost:9119` (Hermes), `localhost:1234` (LM Studio) |
+### Retrieval pipeline
+
+```
+ query text
+    │
+    ├── BM25 (pg_trgm similarity on text + title)   → top-K per tier
+    │
+    └── vector (pgvector HNSW cosine over bge-m3)   → top-K per tier
+                   │
+                   ▼
+         Reciprocal Rank Fusion (k=60)  — merge all ranked lists
+                   │
+                   ▼
+         bge-reranker-v2-m3 cross-encoder (:8765, FP16)
+                   │
+                   ▼
+         Budget-aware packer (drop lowest if over token cap)
+                   │
+                   ▼
+            assembled prompt w/ citations
+```
+
+Per-role retrieval policy (`aiforge_core/retrieval.py::ROLE_POLICIES`) sets tier priority + top_k per role. Example — Developer:
+
+```python
+tiers = [
+    {tier: t4, top_k: 20, wing_prefix: "code/"},   # codebase first
+    {tier: t3, top_k: 6,  wing_prefix: "skills"},  # recipes
+    {tier: t1, top_k: 8},                           # this ticket's history
+    {tier: t2, top_k: 4},                           # cross-cutting facts
+]
+rerank_keep = 15
+```
+
+### Context assembly rules (hard)
+
+Enforced in `aiforge_core/context.py::assemble_prompt`:
+
+1. **Never compress** current task body, retrieved code chunks, tool schemas, output contract.
+2. **Only compress** prior-hop transcripts (into ≤5 bulleted summary via qwen3-4b-thinking).
+3. Over budget → drop lowest-ranked **memory** hits first. Never the code.
+4. Every section is cited (`[mem:12345]`, `[code:src/foo.py#symbol]`).
+
+---
+
+## Tools + MCP surface
+
+All tools exposed via MCP JSON schemas. All return structured JSON with `status`, `result`, `error?`, `citations[]`.
+
+| Tool | Purpose |
+|------|---------|
+| `search_memory` | hybrid retrieval via role policy |
+| `search_code` | AST-chunked T4 retrieval |
+| `search_graph` | Graphify code KG (query / path / explain) |
+| `read_file` | read with optional line range |
+| `write_file` | unified-diff patch (default) or full-file rewrite |
+| `git_diff` | working tree or between-refs diff |
+| `git_ops` | branch / commit / push (Developer only) |
+| `run_tests` | pytest runner, pass/fail + report path |
+| `run_command` | allowlisted build/test cmd |
+| `report` | agent's terminal turn — status + summary + confidence + citations |
+| `append_event` | write a T1 episodic row |
+
+### Permissions matrix
+
+|                 | Architect | SrDev | Developer | FactExtract |
+|-----------------|:---------:|:-----:|:---------:|:-----------:|
+| search_memory   | ✅ | ✅ | ✅ | ✅ |
+| search_code     | ✅ | ✅ | ✅ | ❌ |
+| search_graph    | ✅ | ✅ | ✅ | ❌ |
+| read_file       | ✅ | ✅ | ✅ | ❌ |
+| write_file      | ❌ | ❌ | ✅ | ❌ |
+| git_diff        | ✅ | ✅ | ✅ | ❌ |
+| git_ops         | ❌ | ❌ | ✅ | ❌ |
+| run_tests       | ❌ | ❌ | ✅ | ❌ |
+| run_command     | ❌ | ❌ | ✅* | ❌ |
+| report          | ✅ | ✅ | ✅ | ✅ |
+| append_event    | ✅ | ✅ | ✅ | ✅ |
+
+`*` Developer `run_command` is allowlisted — only build / test runners, no network.
+
+### `report` contract
+
+Every agent's last turn emits:
+
+```json
+{
+  "status": "done" | "needs_more_context" | "failed",
+  "summary": "short human-readable line",
+  "confidence": 0.0,
+  "next_action": "review" | "retry" | "escalate",
+  "citations": ["mem:12345", "code:src/foo.py#symbol"]
+}
+```
+
+Orchestrator routes on `confidence`:
+
+| Range | Action |
+|-------|--------|
+| ≥ 0.70 | proceed to next lifecycle state |
+| 0.30 – 0.70 | re-invoke same role with expanded context (retry ≤3) |
+| < 0.30 | escalate — reassign to human, ticket tag `blocked` |
+
+---
+
+## Failure control
+
+Hard, code-enforced limits (`aiforge_core/retry.py`, `aiforge_core/lifecycle.py`).
+
+| Guard | Value | Where |
+|-------|-------|-------|
+| Max steps per ticket | 20 tool calls | orchestrator counter |
+| Max retries per step | 3 | `CircuitBreaker` |
+| Tool timeout | 60 s | subprocess / httpx |
+| LLM request timeout | 300 s | LM Studio client |
+| Review reject cap | 3 | `enforce_loop_caps()` |
+| Confidence escalate | < 0.30 | `confidence_route()` |
+| Stale ticket timeout | 120 min | `fleet_summary()` |
+| Global kill switch | `.aiforge/KILL` file | `kill_switch_tripped()` |
+| Per-ticket kill | label `kill` | same |
+
+### Kill switch — when it fires, how to trip it
+
+The orchestrator calls `kill_switch_tripped(...)` **before every agent hop**. Either signal stops the pipeline for the affected scope.
+
+**Global (halts every ticket, every agent):**
+
+```bash
+ssh manikanta@192.168.70.185 'touch ~/AIForgeCrew/.aiforge/KILL'
+# release
+ssh manikanta@192.168.70.185 'rm ~/AIForgeCrew/.aiforge/KILL'
+```
+
+Use global when:
+- Paperclip is mis-routing tickets
+- A model started looping / burning budget
+- You need to apply a config change without racing live agents
+
+**Per-ticket (stops one ticket):** apply the red `kill` label in Paperclip UI, or:
+
+```bash
+KILL_LABEL_ID=d2e52007-ae22-4448-b952-f6176ee32e9c
+TICKET_UUID=<issue-uuid>
+ssh manikanta@192.168.70.185 "curl -s -X POST \
+  http://localhost:3100/api/issues/$TICKET_UUID/labels \
+  -H 'Content-Type: application/json' \
+  -d '{\"labelId\":\"$KILL_LABEL_ID\"}'"
+```
+
+Use per-ticket when:
+- One ticket is in a loop but others should keep running
+- A specific ticket leaked bad context and you want to force human review
+
+The orchestrator treats either signal as a **graceful stop**: current in-flight tool call finishes, agent's last `report` is recorded, ticket moves to `escalated` state. No partial commits pushed.
+
+---
+
+## Runtime hosts + ports
+
+All local. No cloud deps except Architect-in-cloud-mode.
+
+| Component | Host | Port | Notes |
+|-----------|------|------|-------|
+| Paperclip UI + API | Mac Studio | 3100 | Node + React |
+| Paperclip embedded Postgres | Mac Studio | 54329 | paperclip/paperclip |
+| LM Studio inference | Mac Studio | 1234 | gemma-4-31b, qwen-coder, qwen-4b-thinking |
+| aiforge Postgres | Mac Studio | 5432 | pgvector + pg_trgm, manikanta |
+| bge-m3 embed sidecar | Mac Studio | 8764 | FastAPI + ONNX + CoreML |
+| bge-reranker-v2-m3 sidecar | Mac Studio | 8765 | FastAPI + FlagReranker FP16 |
+| Graphify MCP | Mac Studio | stdio | via `search_graph` tool |
+| aiforge_core orchestrator | Laptop | — | Python, talks to Mac Studio |
+| Claude Code | Laptop | — | Architect (cloud mode only) |
+
+### VRAM budget (M3 Ultra 96 GB unified)
+
+| Slot | Model | VRAM |
+|------|-------|------|
+| Architect | claude cloud (`cloud` mode) OR gemma-4-31b-it (`local_30b`) | 0 / 20 GB |
+| Sr Developer | gemma-4-31b-it (shared w/ Arch in local_30b) | 20 / 0 GB |
+| Developer | qwen3-coder-next (MoE 80B, 3B active) | 45 GB |
+| Fact Extract | qwen3-4b-thinking-2507 | 3 GB |
+| Embed sidecar | bge-m3 ONNX | 2 GB |
+| Rerank sidecar | bge-reranker-v2-m3 | 1 GB |
+| **Total (cloud Arch)** | | **~71 GB** (25 GB headroom) |
+| **Total (local_30b)** | | **~71 GB** (Arch+SrDev share 20 GB instance) |
+
+---
+
+## 30B-only mode (no Claude cloud)
+
+Flip Architect to local gemma:
+
+```bash
+ssh manikanta@192.168.70.185 'cd AIForgeCrew && bash scripts/flip-architect-mode.sh local_30b'
+```
+
+Flip back:
+
+```bash
+ssh manikanta@192.168.70.185 'cd AIForgeCrew && bash scripts/flip-architect-mode.sh cloud'
+```
+
+The local_30b variant uses a simplified prompt (`agents/architect/system-prompt.local-30b.md`) — strict 5-section output (Problem / Plan / Interfaces / Acceptance / Tests) tuned for a 31B dense model.
+
+---
 
 ## Daily ops
 
 ```bash
-# Status
-make autostart-status
-curl -sf http://paperclip.local/api/health
+# Rebuild code KG after edits
+make graphify-rebuild
 
-# Write an Architect ticket
-vim docs/tickets/ONE-NN.md        # follow docs/tickets/TEMPLATE.md
-# Create Paperclip ticket + branch via your preferred method
+# Reindex T4 after significant edits (post-commit hook does this auto)
+.venv/bin/aiforge memory reindex-code --repo aiforge --root .
 
-# Run full pipeline (or per phase)
-bash scripts/ticket-run.sh ONE-NN
-# OR
-bash scripts/srdev-run.sh ONE-NN          # just breakdown
-bash scripts/dev-run.sh  ONE-NN           # just impl
-bash scripts/review-run.sh ONE-NN         # just review
-bash scripts/bounce-run.sh ONE-NN         # rework after NEEDS_DEV_REWORK
+# Review + approve semantic/procedural proposals from reflection
+.venv/bin/aiforge memory propose-list
+.venv/bin/aiforge memory propose-approve <id>
+.venv/bin/aiforge memory propose-reject  <id>
 
-# RAG query
-~/.local/bin/rag "atomic update pattern" -k 5
+# GC expired T1 rows (post-merge, 7-day TTL)
+python3 -c "from aiforge_core.store_v2 import Store; print('gc:', Store().gc_expired())"
 
-# Rebuild RAG after doc edits (Mac Studio)
-ssh manikanta@192.168.70.185 'cd ~/AIForgeCrew && .venv/bin/python scripts/rag-reindex-multi.py'
+# Sidecar LaunchAgents
+make sidecar-agents-status
+make sidecar-agents-restart
+make sidecar-agents-uninstall
 ```
+
+### Automatic refresh on every commit
+
+Installed post-commit hook (`.git/hooks/post-commit`):
+- Runs `graphify update .` in the background
+- Runs `aiforge memory reindex-code` in the background
+- Non-blocking — commit finishes immediately, refresh completes asynchronously
+
+Install on any clone:
+
+```bash
+bash scripts/install-post-commit-hook.sh
+```
+
+---
 
 ## Fresh Mac Studio bring-up
 
-One-time on Mac Studio (Chrome Remote Desktop → Terminal):
-
 ```bash
-# 1. Xcode CLT
-xcode-select --install
+# Repo
+git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew ~/AIForgeCrew
+cd ~/AIForgeCrew
 
-# 2. Homebrew (not in default PATH previously)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# Dependencies (homebrew)
+brew install postgresql@16 pgvector uv
 
-# 3. JDK + Maven + uv
-/opt/homebrew/bin/brew install openjdk maven
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# pgvector for pg16 (homebrew pgvector targets latest pg; rebuild against @16)
+cd /tmp && git clone --branch v0.8.2 https://github.com/pgvector/pgvector.git
+cd pgvector
+PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config make
+PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config make install
+brew services start postgresql@16
 
-# 4. Export env persistently (all 4 shell init files)
-for f in ~/.zshrc ~/.zshenv ~/.profile ~/.bashrc; do
-  cat >> $f <<'EOF'
-export JAVA_HOME=/opt/homebrew/Cellar/openjdk/25.0.2/libexec/openjdk.jdk/Contents/Home
-export MAVEN_HOME=/opt/homebrew/Cellar/maven/3.9.15/libexec
-export PATH=$JAVA_HOME/bin:$MAVEN_HOME/bin:/opt/homebrew/bin:$PATH
-EOF
-done
+# aiforge DB schema
+cd ~/AIForgeCrew && bash scripts/install-pg-aiforge.sh
 
-# 5. LM Studio.app — drag to /Applications, launch once (for server init)
+# Sidecars (downloads models ~3 GB total)
+bash scripts/install-embed-sidecar.sh &
+bash scripts/install-rerank-sidecar.sh &
 
-# 6. Clone repos
-mkdir -p ~/codeRepo && cd ~/codeRepo
-for r in PosPythonBackend MongoDbService TallyConnector PosServerBackend PosDataSyncService; do
-  git clone https://github.com/OneShellSolutions/$r
-done
-git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew
+# Code knowledge graph
+bash scripts/install-graphify.sh
+
+# T4 seed
+.venv/bin/aiforge memory reindex-code --repo aiforge --root .
+
+# Auto-start on reboot
+bash scripts/install-sidecar-agents.sh install
+
+# Register v4.1 agents in Paperclip
+bash scripts/paperclip-bootstrap-v41.sh
+
+# Auto-refresh on commit
+bash scripts/install-post-commit-hook.sh
 ```
 
-Then from the laptop:
-
-```bash
-make aiforge-install           # Python policy layer
-make rag-install               # ChromaDB + deps
-make models                    # ~65 GB MLX download (one-time)
-make hermes-install            # real Hermes CLI via uv
-make paperclip-install         # Paperclip via npx
-make autostart-install         # LaunchAgents
-```
-
-## Test harness
-
-```bash
-.venv/bin/pytest tests/python/ -q     # policy-layer tests (~72 pass, ~2s)
-make validate permission-check         # config schemas + DESIGN §5.2 matrix
-make bench                             # per-role tok/s
-```
+---
 
 ## Repo layout
 
 | Path | Purpose |
 |------|---------|
-| `aiforge_core/` | Python policy layer (lifecycle, store, mem, rag, CLI) |
-| `aiforge_core/skills/` | Hermes skill pack (installed to `~/.hermes/skills/aiforge/`) |
-| `agents/<role>/` | system-prompt.md, contract.md, permissions.yml |
-| `docs/agents/` | CODEBASE_INDEX.md, memory-system.md, role-redesign-plan.md, engineer-split.md |
-| `docs/tickets/` | Architect-written per-ticket context bundles (+ `TEMPLATE.md`) |
-| `docs/breakdowns/` | Sr Dev-written per-ticket sub-task plans |
-| `docs/eval/` | Bench CSVs, analysis reports |
-| `scripts/` | Dispatchers: `srdev-run.sh`, `dev-run.sh`, `review-run.sh`, `bounce-run.sh`, `ticket-run.sh`; `lib/ensure-model.sh`; `rag`, `rag-cli.py`, `rag-reindex-multi.py`; install + bench scripts |
-| `scripts/archive/` | Retired v3 dispatchers + per-model bench harnesses |
-| `security/` | File ACL rules, blocked paths, network allowlist, model checksums |
-| `mcp/` | MCP server manifests |
-| `tests/python/` | 72 pytest tests |
-| `docs/` | runbook, architecture, hardware-guide, model-evaluation, security-policy, troubleshooting |
+| `aiforge_core/store_v2.py` | 4-tier memory store + proposals |
+| `aiforge_core/retrieval.py` | BM25 + vec + RRF + rerank per role |
+| `aiforge_core/context.py` | prompt assembler + compaction |
+| `aiforge_core/reflection.py` | FactExtract XML parser + proposal writer |
+| `aiforge_core/embed.py` | single `embed()` helper → :8764 |
+| `aiforge_core/rag.py` | AST-aware codebase indexer → T4 |
+| `aiforge_core/lifecycle.py` | parent + child state machines |
+| `aiforge_core/retry.py` | loop caps, breaker, kill switch, confidence |
+| `aiforge_core/config.py` | paperclip.config.yml loader |
+| `aiforge_core/cli.py` | `aiforge memory …` subcommand |
+| `agents/architect/` | system prompts (cloud + local_30b), permissions |
+| `agents/sr-developer/` | decomposition prompt, permissions |
+| `agents/developer/` | implementation prompt, permissions |
+| `agents/fact-extract/` | reflection XML prompt, permissions |
+| `mcp/memory-server.json` | search_memory + append_event |
+| `mcp/rag-server.json` | search_code |
+| `mcp/graphify-server.json` | search_graph |
+| `mcp/git-tools.json` | git_diff + run_tests + run_command |
+| `services/embed_sidecar/` | bge-m3 ONNX FastAPI |
+| `services/rerank_sidecar/` | bge-reranker FastAPI |
+| `scripts/launchd/` | LaunchAgent plists |
+| `scripts/install-*.sh` | bootstrap + sidecar + graphify installers |
+| `scripts/paperclip-bootstrap-v41.sh` | register + configure 4 v4.1 agents |
+| `scripts/flip-architect-mode.sh` | swap Architect cloud ↔ local_30b |
+| `scripts/install-post-commit-hook.sh` | auto graphify + T4 reindex |
+| `scripts/install-sidecar-agents.sh` | install + start LaunchAgents |
+| `docs/runbook.md` | full v4.1 operational guide |
+| `docs/superpowers/specs/` | v4.1 design spec |
+| `docs/superpowers/plans/` | phased impl plan |
+| `tests/python/test_integration.py` | wire-to-wire integration suite |
 
-Runtime state (gitignored):
-- Laptop: `.paperclip/`, `.aiforge/`, `.venv/`
-- Mac Studio: `~/.paperclip/instances/default/` (Paperclip + Postgres), `~/.hermes/` (sessions + skills), `~/codeRepo/` (mirrored repos)
+Runtime state (gitignored): `.aiforge/`, `graphify-out/cache/`, `.venv/`, `~/.paperclip/`.
+
+---
+
+## Test harness
+
+```bash
+.venv/bin/pytest tests/python/ -v -m "not live_sidecar"
+# 62 tests (62 pass)
+
+# With live infra on Mac Studio
+pytest tests/python/test_embed_sidecar.py tests/python/test_rerank_sidecar.py -v -m live_sidecar
+# Contract tests against running sidecars
+```
+
+Integration test (`tests/python/test_integration.py`) exercises every layer wire-to-wire with mocks: embed → store → retrieve_for_role → assemble_prompt → reflection → propose.
+
+---
 
 ## Key shortcuts
 
-- **Paperclip UI:** http://paperclip.local
-- **Hermes dashboard:** http://hermes.local
+- **Paperclip UI:** http://localhost:3100 (direct) or http://paperclip.local (Caddy)
 - **Mac Studio SSH:** `manikanta@192.168.70.185` (override `SSH_HOST=...`)
-- **Everything scripted.** No manual config edits. No unscripted SSH commands.
+- **Architect mode:** `AIFORGE_ARCHITECT_MODE={cloud,local_30b}` (orchestrator) or `scripts/flip-architect-mode.sh` (Paperclip)
+- **Global kill:** `touch ~/AIForgeCrew/.aiforge/KILL` on Mac Studio
+- **Per-ticket kill:** `kill` label in Paperclip
 
 ## License
 
