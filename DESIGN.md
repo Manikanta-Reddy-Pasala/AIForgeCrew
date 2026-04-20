@@ -4,6 +4,11 @@
 **Author:** Manikanta Reddy Pasala | **Date:** April 2026
 **Repo:** `github.com/Manikanta-Reddy-Pasala/AIForgeCrew`
 
+> **Status:** Partially superseded. Sections §4 (TDD lifecycle), §5 (tool stack), §6 (memory), §7 (RAG) are replaced by
+> `docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md` (pipeline v4.1).
+> Sections §1–§3 org and §8 security remain current.
+> Graphify code-KG is wired as an MCP tool (`search_graph`) alongside T4 code RAG — see §13 of the v4.1 spec.
+
 ---
 
 ## 1. One-Liner
