@@ -3,6 +3,113 @@
 How to bring up, operate, and recover AIForgeCrew. macOS-only. Every step
 scripted — no manual clicks inside configs.
 
+---
+
+## Pipeline v4 operations (2026-04-20)
+
+Dispatcher scripts replace per-role daemons. Human (Architect) drives the loop.
+
+### Ship a ticket end-to-end
+
+```bash
+# 1. Write Architect context (human step)
+cp docs/tickets/TEMPLATE.md docs/tickets/ONE-NN.md
+vim docs/tickets/ONE-NN.md
+
+# 2. Create Paperclip ticket + branches across involved repos
+# (manual via curl or Paperclip UI — eventually script this)
+
+# 3. Full pipeline in one command (all phases + review loop, max 2 bounces)
+bash scripts/ticket-run.sh ONE-NN
+
+# OR per-phase
+bash scripts/srdev-run.sh ONE-NN      # Sr Dev breakdown (gemma-4-31b)
+bash scripts/dev-run.sh  ONE-NN       # Developer code + tests (qwen-coder-next)
+bash scripts/review-run.sh ONE-NN     # Sr Dev review
+bash scripts/bounce-run.sh ONE-NN     # Developer rework on review fail
+```
+
+Status transitions (enforced by dispatchers):
+- `backlog` while any hermes run active → prevents Paperclip auto-retry
+- `todo` after agent completes + dispatcher posts verdict
+- `in_review` if review verdict = READY_FOR_REVIEW
+- `blocked` if bounce cap exceeded
+
+Markers in ticket comments:
+- `READY_FOR_DEV` (Sr Dev → Developer)
+- `READY_FOR_REVIEW` (Developer → human)
+- `NEEDS_DEV_REWORK` (Review → Developer bounce)
+- `NEEDS_HUMAN` (cap exceeded)
+
+### Runtime tooling (verify after reboot)
+
+```bash
+# JDK + Maven + uv present in ssh PATH
+ssh manikanta@192.168.70.185 'java --version && mvn --version | head -1 && uv --version'
+
+# LM Studio parallel-load check (dispatchers auto-invoke ensure-model.sh)
+ssh manikanta@192.168.70.185 '~/.lmstudio/bin/lms ps'
+
+# Hermes context cache (should match actual loaded ctx)
+ssh manikanta@192.168.70.185 'grep -E "gemma|qwen" ~/.hermes/context_length_cache.yaml'
+
+# RAG CLI sanity
+ssh manikanta@192.168.70.185 '~/.local/bin/rag -k 1 "atomic update pattern"'
+```
+
+### Context-related recovery (common LM Studio quirks)
+
+Symptom: Developer/Review exit after ~2–15s with EXIT=1.
+
+Check:
+```bash
+ssh manikanta@192.168.70.185 'curl -s http://localhost:1234/v1/models | python3 -m json.tool | head -20'
+# Verify target model ID listed
+ssh manikanta@192.168.70.185 '~/.lmstudio/bin/lms ps'
+# If CONTEXT < 64K or model has `:N` suffix clone, dispatcher's ensure-model will clean up automatically
+```
+
+Force-reload manually:
+```bash
+bash scripts/lib/ensure-model.sh qwen3-coder-next 65536
+bash scripts/lib/ensure-model.sh gemma-4-31b-it 65536
+```
+
+Hermes requires ≥ 64K ctx. LM Studio's RAM guardrail will silently reduce ctx — `ensure-model.sh` detects this + syncs Hermes cache to whatever LM Studio actually loaded.
+
+### Rebuild RAG after doc edits
+
+```bash
+ssh manikanta@192.168.70.185 'cd ~/AIForgeCrew && .venv/bin/python scripts/rag-reindex-multi.py'
+```
+
+Indexes: AIForgeCrew docs + PosPythonBackend + TallyConnector + MongoDbService + PosDataSyncService. Java files chunked at method boundaries, markdown/etc at 2500-char windows.
+
+### Paperclip agent state
+
+```bash
+# List active/paused agents
+ssh manikanta@192.168.70.185 "PGPASSWORD=paperclip psql -h 127.0.0.1 -p 54329 -U paperclip -d paperclip -At -c \"SELECT name, status, adapter_config->>'model' FROM agents WHERE company_id='fd294bd0-2f65-405f-b443-fb41d66226fb' ORDER BY status\""
+
+# Active = Sr Developer (gemma-4-31b) + Developer (qwen-coder-next)
+# Paused = Engineering Manager, Sr Architect, Tester
+```
+
+### Reset a stuck ticket
+
+```bash
+# Kill hermes + reset ticket
+ssh manikanta@192.168.70.185 'pkill -9 -f "hermes chat" 2>/dev/null; sleep 2'
+ssh manikanta@192.168.70.185 "PGPASSWORD=paperclip psql -h 127.0.0.1 -p 54329 -U paperclip -d paperclip -At -c \"UPDATE issues SET status='todo' WHERE identifier='ONE-NN'\""
+
+# Reset bounce counter (dispatcher counts comments matching BOUNCE_ROUND)
+ssh manikanta@192.168.70.185 "PGPASSWORD=paperclip psql -h 127.0.0.1 -p 54329 -U paperclip -d paperclip -At -c \"DELETE FROM issue_comments WHERE issue_id=(SELECT id FROM issues WHERE identifier='ONE-NN') AND body LIKE '%BOUNCE_ROUND%'\""
+```
+
+---
+
+## Legacy bring-up (v2 flow — still valid for auxiliary install tasks)
+
 ## 0. First-time bring-up on a fresh Mac Studio
 
 ```bash

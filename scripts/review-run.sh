@@ -16,6 +16,8 @@ pc_comment() {
   echo "$json" | remote "curl -sS -X POST 'http://localhost:3100/api/issues/$uuid/comments' -H 'Content-Type: application/json' --data @-" >/dev/null
 }
 
+bash "$(dirname "$0")/lib/ensure-model.sh" gemma-4-31b-it 65536 || { echo "ensure-model failed"; exit 1; }
+
 echo "=== Sr Dev REVIEW: $TICKET ==="
 
 ISSUE_UUID=$(rpsql "SELECT id FROM issues WHERE identifier='$TICKET'")
@@ -80,12 +82,21 @@ echo "$VERDICT"
 pc_comment "$ISSUE_UUID" "$(printf 'REVIEW — wall=%ss\n\n%s' "$WALL" "$VERDICT")"
 echo "posted review verdict to Paperclip"
 
-# If NEEDS_DEV_REWORK → keep as backlog; if READY → todo
+# Status transition per verdict + bounce count
 if echo "$VERDICT" | grep -q "READY_FOR_REVIEW"; then
-  rpsql "UPDATE issues SET status='todo' WHERE identifier='$TICKET'" >/dev/null
-  echo "status → todo (ready for human review)"
+  rpsql "UPDATE issues SET status='in_review' WHERE identifier='$TICKET'" >/dev/null
+  echo "status → in_review (awaiting human merge)"
 else
-  echo "status stays backlog (needs dev rework)"
+  BOUNCES=$(rpsql "SELECT COUNT(*) FROM issue_comments WHERE issue_id='$ISSUE_UUID' AND body LIKE '%BOUNCE_ROUND%'")
+  MAX_B=2
+  if (( BOUNCES >= MAX_B )); then
+    rpsql "UPDATE issues SET status='blocked' WHERE identifier='$TICKET'" >/dev/null
+    pc_comment "$ISSUE_UUID" "$TICKET — exceeded $MAX_B bounce cap. Status → blocked. NEEDS_HUMAN."
+    echo "status → blocked (exceeded bounce cap $BOUNCES/$MAX_B)"
+  else
+    rpsql "UPDATE issues SET status='todo' WHERE identifier='$TICKET'" >/dev/null
+    echo "status → todo (bounces=$BOUNCES/$MAX_B — another bounce possible)"
+  fi
 fi
 
 echo "---session stats---"

@@ -18,6 +18,8 @@ pc_comment() {
   echo "$json" | remote "curl -sS -X POST 'http://localhost:3100/api/issues/$uuid/comments' -H 'Content-Type: application/json' --data @-" >/dev/null
 }
 
+bash "$(dirname "$0")/lib/ensure-model.sh" qwen3-coder-next 65536 || { echo "ensure-model failed"; exit 1; }
+
 echo "=== Bounce (Developer rework): $TICKET ==="
 
 ISSUE_UUID=$(rpsql "SELECT id FROM issues WHERE identifier='$TICKET'")
@@ -35,7 +37,7 @@ echo "$REVIEW" | head -10 | sed 's/^/    /'
 # Bounce counter: count prior bounce comments to cap iterations
 BOUNCES=$(rpsql "SELECT COUNT(*) FROM issue_comments WHERE issue_id='$ISSUE_UUID' AND body LIKE '%BOUNCE_ROUND%'")
 BOUNCE_NEXT=$((BOUNCES + 1))
-MAX_BOUNCES=${MAX_BOUNCES:-3}
+MAX_BOUNCES=${MAX_BOUNCES:-2}
 if (( BOUNCE_NEXT > MAX_BOUNCES )); then
   MSG="BOUNCE_ROUND $BOUNCE_NEXT — exceeded max ($MAX_BOUNCES). NEEDS_HUMAN."
   pc_comment "$ISSUE_UUID" "$MSG"

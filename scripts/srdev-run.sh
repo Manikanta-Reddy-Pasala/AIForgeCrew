@@ -17,6 +17,8 @@ pc_comment() {
   echo "$json" | remote "curl -sS -X POST 'http://localhost:3100/api/issues/$issue_uuid/comments' -H 'Content-Type: application/json' --data @-" >/dev/null
 }
 
+bash "$(dirname "$0")/lib/ensure-model.sh" gemma-4-31b-it 65536 || { echo "ensure-model failed"; exit 1; }
+
 echo "=== Sr Dev: $TICKET ==="
 
 # Local ticket context must exist

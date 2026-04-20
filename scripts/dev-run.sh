@@ -18,6 +18,8 @@ pc_comment() {
   echo "$json" | remote "curl -sS -X POST 'http://localhost:3100/api/issues/$uuid/comments' -H 'Content-Type: application/json' --data @-" >/dev/null
 }
 
+bash "$(dirname "$0")/lib/ensure-model.sh" qwen3-coder-next 65536 || { echo "ensure-model failed"; exit 1; }
+
 echo "=== Developer: $TICKET ==="
 
 # Sync latest ticket + breakdown

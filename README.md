@@ -1,234 +1,244 @@
 # AIForgeCrew
 
-Autonomous AI dev team. Human files a ticket in Paperclip → AI agents plan,
-write tests first (TDD), implement, review, open MR. All threaded on one
-ticket. Runs on a single Mac Studio (M3 Ultra, 96 GB) with a laptop as
-remote control.
+Autonomous AI dev team. Human files a ticket in Paperclip → AI agents plan, implement, review, open PR. All threaded on one ticket. Runs on a single Mac Studio (M3 Ultra, 96 GB) with a laptop as remote control.
 
-Architecture details: [`DESIGN.md`](./DESIGN.md). Ops: [`docs/runbook.md`](./docs/runbook.md).
+Architecture details: [`DESIGN.md`](./DESIGN.md) · Memory system: [`docs/agents/memory-system.md`](./docs/agents/memory-system.md) · Ops: [`docs/runbook.md`](./docs/runbook.md)
 
-## Three-layer stack (external tools + our policy layer)
+## Three-layer stack
 
 | Layer | Component | What it does |
 |---|---|---|
-| Orchestrator | **Paperclip** (Node + React UI, github.com/paperclipai/paperclip) | Org chart, tickets, goals, runs, audit, dashboard. Embedded Postgres. |
-| Agent runtime | **Hermes Agent** (Python CLI, github.com/NousResearch/hermes-agent) | Per-heartbeat LLM loop, 30+ tools, 80+ skills, session resume via `--resume`. |
-| Policy layer | **aiforge_core** (this repo, Python) | DESIGN §4 lifecycle, §5 permissions, §8 security, §10 retry/coverage gate, §6 memory, §7 RAG + code-review-graph. Loaded into Hermes as a skill pack at `~/.hermes/skills/aiforge/`. |
+| Orchestrator | **Paperclip** (Node + React UI, `github.com/paperclipai/paperclip`) | Org chart, tickets, goals, runs, audit, dashboard. Embedded Postgres. |
+| Agent runtime | **Hermes Agent** (Python CLI, `github.com/NousResearch/hermes-agent`) | Per-turn LLM loop, 30+ tools, 80+ skills, session resume. |
+| Policy layer | **aiforge_core** (this repo) | Lifecycle, permissions, RAG, memory, dispatcher scripts. Installed as Hermes skill pack at `~/.hermes/skills/aiforge/`. |
 
-Paperclip's `claude_local` adapter drives EM (Claude Code subscription).
-`hermes_local` adapter drives the other 3 (local LM Studio → MLX models).
+## Pipeline v4 (2026-04-20) — Architect / Sr Dev / Developer
+
+| Role | Who | Model | Job |
+|---|---|---|---|
+| **Software Architect** | Claude Code (external, this session) | Opus 4.7 cloud | Writes `docs/tickets/<TICKET-ID>.md` with design choice + acceptance criteria. Creates `aiforge/<TICKET-ID>` branch per repo. |
+| **Sr Developer** | Paperclip agent `28b8c064` | `gemma-4-31b-it` @ 64K (LM Studio MLX) | Reads context, recalls memory + RAG, writes `docs/breakdowns/<TICKET-ID>.md` with numbered sub-tasks + test spec. Also runs **REVIEW mode** after Developer commits. |
+| **Developer** | Paperclip agent `e0502e94` | `qwen3-coder-next` @ 64K (LM Studio MLX) | Implements each sub-task + unit test. `mvn compile` + `mvn test` must pass. Commits per sub-task. Pushes. `gh pr create`. |
+
+Paused roles (kept for audit): Engineering Manager, Sr Architect, Tester.
+
+Branch convention: `aiforge/<TICKET-ID>` — same name across every involved repo.
+
+Handoff markers (in ticket comments): `READY_FOR_DEV`, `READY_FOR_REVIEW`, `NEEDS_DEV_REWORK`, `NEEDS_HUMAN`.
+
+Max 2 bounce cycles. Exceeded → status `blocked`.
+
+## Pipeline flow
+
+```
+Human              Architect (me)          Sr Dev (gemma)       Developer (qwen)      Sr Dev review
+  │                    │                       │                     │                     │
+  │ ticket idea        │                       │                     │                     │
+  ├───────────────────►│ writes docs/tickets   │                     │                     │
+  │                    │ /<TICKET>.md          │                     │                     │
+  │                    │ creates branches      │                     │                     │
+  │                    │ across repos          │                     │                     │
+  │                    │                       │                     │                     │
+  │                    │ bash srdev-run.sh ────►│ rag + hindsight    │                     │
+  │                    │                       │ → docs/breakdowns/ │                     │
+  │                    │                       │ → READY_FOR_DEV     │                     │
+  │                    │                       │                     │                     │
+  │                    │ bash dev-run.sh ───────────────────────────►│ impl + unit test    │
+  │                    │                       │                     │ mvn compile + test  │
+  │                    │                       │                     │ git push + gh pr    │
+  │                    │                       │                     │ → READY_FOR_REVIEW  │
+  │                    │                       │                     │                     │
+  │                    │ bash review-run.sh ────────────────────────────────────────────►│ verify diff
+  │                    │                       │                     │                     │ mvn test
+  │                    │                       │                     │                     │ verdict
+  │                    │                       │                     │                     │
+  │                    │◄───────────────────────── if NEEDS_DEV_REWORK (≤2×)                │
+  │                    │ bounce-run.sh                                                      │
+  │                    │                                                                    │
+  │◄─────────────── human review + merge PR                           (if READY_FOR_REVIEW) │
+```
+
+## Dispatcher scripts
+
+| Script | Role | Model | Key guards |
+|---|---|---|---|
+| `scripts/srdev-run.sh <TICKET>` | Sr Dev breakdown | gemma-4-31b @ 64K | mandates hindsight+rag+≤3 file reads |
+| `scripts/dev-run.sh <TICKET>` | Developer impl | qwen-coder-next @ 64K | mvn compile + mvn test -Dtest=<X> required; auto `gh pr create` |
+| `scripts/review-run.sh <TICKET>` | Sr Dev review | gemma-4-31b @ 64K | git diff + mvn check; emits `VERDICT_START..VERDICT_END` block |
+| `scripts/bounce-run.sh <TICKET>` | Developer rework | qwen-coder-next @ 64K | feeds review verdict back; cap 2 per ticket |
+| `scripts/ticket-run.sh <TICKET>` | Full pipeline | — | runs all 4 phases w/ review loop |
+
+Supporting:
+- `scripts/lib/ensure-model.sh <MODEL> <CTX>` — guards against LM Studio silent ctx reduction + JIT-loaded `:N` clones. Syncs Hermes ctx cache. REST smoke test.
+- `scripts/rag "<query>"` — CLI wrapper for aiforge-rag (ChromaDB over AIForgeCrew + OneShell repos, method-boundary chunked).
+- `scripts/rag-reindex-multi.py` — rebuilds vector index across all repos.
+
+All dispatchers:
+- Set ticket status to `backlog` during hermes run (prevents Paperclip auto-retry interference)
+- Post verdict comments via curl themselves (not trusting agents to POST)
+- Restore status to `todo` / `in_review` / `blocked` based on outcome
 
 ## Company + agents
 
 **OneShell** — "Solving Business Problems with Software".
 
-| Role | Paperclip adapter | Model | Where model runs |
+Active:
+| Role | Agent ID | Adapter | Model |
 |---|---|---|---|
-| Engineering Manager | `claude_local` | `claude-opus-4-7` | Claude.ai subscription (OAuth) |
-| Tester | `hermes_local` | `zai-org/glm-4.7-flash` | LM Studio :1234 (MLX) |
-| Sr Developer | `hermes_local` | `qwen3.6-35b-a3b` | LM Studio :1234 (MLX) |
-| Sr Architect | `hermes_local` | `gemma-4-31b-it` | LM Studio :1234 (MLX) |
-| *-fallback | `hermes_local` | `minimax-ai/minimax-m2.7` (230B) | NVIDIA NIM (cloud, `NVIDIA_API_KEY`) |
+| Sr Developer | `28b8c064-bfcf-44e1-9e91-e37c39e0097c` | `hermes_local` | `gemma-4-31b-it` |
+| Developer | `e0502e94-0608-4fb9-9afa-b70d8dbf014a` | `hermes_local` | `qwen3-coder-next` |
 
-Fallback fires after 2 dev↔tester (or dev↔architect) loops — one retry
-below the DESIGN §10 hard escalate-to-human cap. Logic in
-`aiforge_core.retry.pick_profile()`.
-
-## Flow
-
-```
-Human
-  │  creates ticket in Paperclip UI (http://paperclip.local)
-  ▼
-PAPERCLIP  (Node server, embedded Postgres, trusted-loopback)
-  │  assigns to EM, heartbeat fires → claude_local adapter spawns Claude CLI
-  ▼
-[EM]            plans subtasks + acceptance criteria + test scenarios
-                (ticket text scrubbed by aiforge_core.safety.scrub_ticket_text)
-                comments on ticket, advances → tests_writing
-  ▼
-[Tester]        writes failing tests (Hermes → GLM-4.7-Flash @ LM Studio)
-                git commit to tests/** via aiforge-git skill
-                advances → coding
-  ▼
-[Sr Developer]  makes tests pass (Hermes → Qwen3.6-35B-A3B)
-                git commit to src/** only (file ACL enforced)
-                advances → verifying
-  ▼
-[Tester]        re-runs pytest, records `coverage` audit event (≥80 required)
-                pass → reviewing ; fail → loop back to coding (max 3×)
-  ▼
-[Sr Architect]  reviews code + tests (Hermes → Gemma-4-31B, read-only)
-                approve → mr_created, runs `gh pr create`
-                reject → loop back to coding (max 3×)
-  ▼
-Human           merges MR
-```
-
-Loop caps + coverage gate are runtime-enforced by
-`aiforge_core.lifecycle.advance()` via `retry.enforce_loop_caps` +
-`retry.require_coverage_for_mr`. Every transition / tool call / budget
-spend is append-only in `.paperclip/paperclip.db`.
-
-## URLs (via Caddy reverse proxy)
-
-After `make hosts-install` (edits `/etc/hosts` on both hosts + installs
-Caddy as a LaunchDaemon on :80):
-
-| Hostname | What | Maps to |
+Paused (history retained):
+| Role | Agent ID | Original model |
 |---|---|---|
-| `http://paperclip.local` | Paperclip UI + API | localhost:3100 on Mac Studio |
-| `http://hermes.local` | Hermes web dashboard | localhost:9119 on Mac Studio |
+| Engineering Manager | `35760e2f-4cef-4013-9aff-d93592b5f71e` | `claude-opus-4-7` |
+| Sr Architect | `0e173374-287c-4595-bf46-6ba26c11035f` | `gemma-4-26b-a4b-it` |
+| Tester | `eb1c388d-8601-4df4-89d8-447ec2ff5946` | `qwen3.5-9b-mlx` |
 
-Plain HTTP on LAN (no cert — `.local` names can't get Let's Encrypt).
+Company ID: `fd294bd0-2f65-405f-b443-fb41d66226fb`.
 
-Raw ports still work too: `:3100` and `:9119` on the Mac Studio.
+## Runtime tooling on Mac Studio
 
-## Auto-start on login
+Installed 2026-04-20 via `brew`:
+- OpenJDK 25 (`/opt/homebrew/Cellar/openjdk/25.0.2/.../Contents/Home`)
+- Maven 3.9.15 (`/opt/homebrew/Cellar/maven/3.9.15/libexec/bin/mvn`)
+- `uv` 0.11.7 for Python (`~/.local/bin/uv`)
 
-All services are LaunchAgents / LaunchDaemons so nothing needs babysitting:
+`JAVA_HOME` + `MAVEN_HOME` + `PATH` exported in `~/.zshrc`, `~/.zshenv`, `~/.profile`, `~/.bashrc` — visible in every ssh session.
 
-| Service | Label | Survives reboot |
-|---|---|---|
-| `caffeinate -dimsu` | `com.aiforge.caffeinate` | ✓ user agent |
-| LM Studio server + 3 role models loaded @ 128K | `com.aiforge.lmstudio` | ✓ user agent (one-shot) |
-| Paperclip (`npx paperclipai run`) | `com.aiforge.paperclip` | ✓ user agent |
-| Hermes dashboard (`hermes dashboard --port 9119`) | `com.aiforge.hermes-dashboard` | ✓ user agent |
-| Caddy reverse proxy on :80 | `com.aiforge.caddy` | ✓ system daemon (root — needs sudo install) |
+LM Studio + MLX models:
+- `gemma-4-31b-it` (dense 31B, 18 GB weights, 4-bit MLX)
+- `qwen3-coder-next` (MoE 80B / 3B active, 44.86 GB)
+- Both kept with `--ttl 86400` (24h, prevents LM Studio auto-evict)
+- 96GB Mac Studio cannot keep both at 64K+ ctx simultaneously → dispatcher swaps per phase via `ensure-model.sh`
 
-User agents run inside the GUI login session → inherit login keychain →
-Claude Code subscription token is accessible to the `claude_local`
-adapter's spawned children.
+Hermes config (`~/.hermes/config.yaml`):
+- `model.default = qwen3-coder-next` (so aux/vision probes hit a loaded model)
+- `auxiliary.compression.model = qwen3-coder-next` (aux uses local, not cloud)
+- `compression.enabled = false` + `threshold = 0.99` (belt + suspenders)
 
-## Fresh Mac Studio bring-up
+## Memory system — 6 layers
 
-One-time on the Mac Studio itself (Chrome Remote Desktop → Terminal):
+| # | Layer | Source | Per |
+|---|---|---|---|
+| 1 | System prompt | `~/.paperclip/.../agents/<id>/instructions/AGENTS.md` | agent |
+| 2 | Ticket context | `docs/tickets/<TICKET-ID>.md` | ticket (Architect writes) |
+| 3 | Breakdown | `docs/breakdowns/<TICKET-ID>.md` | ticket (Sr Dev writes) |
+| 4 | Codebase RAG | ChromaDB via `rag` CLI | shared (multi-repo, method-boundary chunked) |
+| 5 | Fact memory | Hindsight pgvector (per-agent bank planned) | agent |
+| 6 | Git history | native git | shared |
 
-```bash
-# 1. Xcode CLT (dialog — Install)
-xcode-select --install
+Full design: [`docs/agents/memory-system.md`](./docs/agents/memory-system.md)
 
-# 2. uv (Python bootstrap, no sudo)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+## URLs (via Caddy reverse proxy on Mac Studio)
 
-# 3. LM Studio.app — download .dmg from lmstudio.ai, drag to /Applications
-
-# 4. Clone repo
-git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew
-cd AIForgeCrew
-```
-
-Then from the laptop (everything else scripted):
-
-```bash
-# Core Python policy layer + tests + CLI
-make aiforge-install
-
-# Memory / RAG / CRG (optional)
-make mempalace-install
-make rag-install
-
-# P0 models (~65 GB MLX download once)
-make models
-
-# External tools
-make hermes-install                # real Hermes CLI (Python via uv)
-make hermes-adapter-install        # hermes-paperclip-adapter (npm)
-make paperclip-install             # Node 20 via fnm + npx paperclipai onboard
-make paperclip-bootstrap           # create OneShell + 4 agents via REST
-make paperclip-em-use-claude       # EM adapter → claude_local
-make patch-hermes-adapter          # map local model prefixes → auto provider
-
-# Claude CLI (EM's subscription) + login (interactive — must be done on Mac Studio)
-make claude-cli-install
-ssh -t manikanta@192.168.70.185 'claude /login'   # browser OAuth
-
-# Fallback provider
-NVIDIA_API_KEY=nvapi-... make hermes-configure
-
-# Autostart + friendly URLs
-make autostart-install
-make hosts-install                 # laptop /etc/hosts + Caddy on Mac Studio
-```
+| Hostname | What |
+|---|---|
+| `http://paperclip.local` | Paperclip UI + REST API |
+| `http://hermes.local` | Hermes web dashboard |
+| Raw ports | `localhost:3100` (Paperclip), `localhost:9119` (Hermes), `localhost:1234` (LM Studio) |
 
 ## Daily ops
 
 ```bash
 # Status
 make autostart-status
-curl -s http://paperclip.local/api/health
+curl -sf http://paperclip.local/api/health
 
-# Open UI on laptop
-open http://paperclip.local
-open http://hermes.local
+# Write an Architect ticket
+vim docs/tickets/ONE-NN.md        # follow docs/tickets/TEMPLATE.md
+# Create Paperclip ticket + branch via your preferred method
 
-# Ticket via REST (Paperclip assigns by heartbeat; no CLI needed)
-UUID=$(curl -s http://paperclip.local/api/companies | jq -r .[0].id)
-EM=$(curl -s "http://paperclip.local/api/companies/$UUID/agents" | jq -r '.[] | select(.role=="pm") | .id')
-curl -s -X POST "http://paperclip.local/api/companies/$UUID/issues" \
-     -H 'Content-Type: application/json' \
-     -d "{\"title\":\"Add foo()\",\"description\":\"...\",\"assigneeAgentId\":\"$EM\"}"
+# Run full pipeline (or per phase)
+bash scripts/ticket-run.sh ONE-NN
+# OR
+bash scripts/srdev-run.sh ONE-NN          # just breakdown
+bash scripts/dev-run.sh  ONE-NN           # just impl
+bash scripts/review-run.sh ONE-NN         # just review
+bash scripts/bounce-run.sh ONE-NN         # rework after NEEDS_DEV_REWORK
 
-# Local aiforge CLI (policy + reports, mirrors Paperclip runs)
-.venv/bin/aiforge report-ticket TICKET-xxx | jq .
-.venv/bin/aiforge report-fleet              | jq .
-.venv/bin/aiforge audit TICKET-xxx
+# RAG query
+~/.local/bin/rag "atomic update pattern" -k 5
 
-# Rebuild RAG after doc edits
-make rag-reindex
+# Rebuild RAG after doc edits (Mac Studio)
+ssh manikanta@192.168.70.185 'cd ~/AIForgeCrew && .venv/bin/python scripts/rag-reindex-multi.py'
+```
+
+## Fresh Mac Studio bring-up
+
+One-time on Mac Studio (Chrome Remote Desktop → Terminal):
+
+```bash
+# 1. Xcode CLT
+xcode-select --install
+
+# 2. Homebrew (not in default PATH previously)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 3. JDK + Maven + uv
+/opt/homebrew/bin/brew install openjdk maven
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 4. Export env persistently (all 4 shell init files)
+for f in ~/.zshrc ~/.zshenv ~/.profile ~/.bashrc; do
+  cat >> $f <<'EOF'
+export JAVA_HOME=/opt/homebrew/Cellar/openjdk/25.0.2/libexec/openjdk.jdk/Contents/Home
+export MAVEN_HOME=/opt/homebrew/Cellar/maven/3.9.15/libexec
+export PATH=$JAVA_HOME/bin:$MAVEN_HOME/bin:/opt/homebrew/bin:$PATH
+EOF
+done
+
+# 5. LM Studio.app — drag to /Applications, launch once (for server init)
+
+# 6. Clone repos
+mkdir -p ~/codeRepo && cd ~/codeRepo
+for r in PosPythonBackend MongoDbService TallyConnector PosServerBackend PosDataSyncService; do
+  git clone https://github.com/OneShellSolutions/$r
+done
+git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew
+```
+
+Then from the laptop:
+
+```bash
+make aiforge-install           # Python policy layer
+make rag-install               # ChromaDB + deps
+make models                    # ~65 GB MLX download (one-time)
+make hermes-install            # real Hermes CLI via uv
+make paperclip-install         # Paperclip via npx
+make autostart-install         # LaunchAgents
 ```
 
 ## Test harness
 
 ```bash
-.venv/bin/pytest tests/python/ -q     # 72 tests, ~2s
-make validate permission-check        # config schemas + DESIGN §5.2 matrix
-make bench                            # per-role tok/s on LM Studio
-make bench-passk                      # pass@1 on docs/eval/tickets/
-```
-
-## Command reference
-
-`make help` — full list. Groups:
-
-```
-Dev             : setup, lint, test, validate, permission-check
-P0 models       : models, download, verify, server, load, health,
-                  bench, bench-concurrent, bench-passk
-aiforge-core    : aiforge-install, aiforge-test, aiforge-doctor, aiforge -- ARGS
-memory          : mempalace-install, mempalace-test, mempalace-index-all
-rag + crg       : rag-install, rag-reindex, rag-query, crg-query
-Paperclip       : paperclip-install, paperclip-start, paperclip-stop,
-                  paperclip-status, paperclip-bootstrap, paperclip-em-use-claude,
-                  paperclip-tunnel
-Real Hermes     : hermes-install, hermes-adapter-install, hermes-configure,
-                  hermes-skills-install, hermes-dashboard-start, -stop, -tunnel,
-                  hermes-login, patch-hermes-adapter
-Claude CLI      : claude-cli-install
-Sync            : sync-memory-push, sync-memory-pull, sync-code-repos,
-                  deploy-mac-studio
-Autostart + DNS : autostart-install, autostart-uninstall, autostart-status,
-                  caddy-install, hosts-install-laptop, hosts-install
+.venv/bin/pytest tests/python/ -q     # policy-layer tests (~72 pass, ~2s)
+make validate permission-check         # config schemas + DESIGN §5.2 matrix
+make bench                             # per-role tok/s
 ```
 
 ## Repo layout
 
 | Path | Purpose |
 |------|---------|
-| `aiforge_core/` | Python policy layer (lifecycle, store, mem, rag, crg, git_ops, safety, retry, observe, net, CLI) |
-| `aiforge_core/skills/` | Hermes skill pack templates (installed to `~/.hermes/skills/aiforge/`) |
-| `agents/<role>/` | system-prompt.md, contract.md, permissions.yml per DESIGN §3 |
+| `aiforge_core/` | Python policy layer (lifecycle, store, mem, rag, CLI) |
+| `aiforge_core/skills/` | Hermes skill pack (installed to `~/.hermes/skills/aiforge/`) |
+| `agents/<role>/` | system-prompt.md, contract.md, permissions.yml |
+| `docs/agents/` | CODEBASE_INDEX.md, memory-system.md, role-redesign-plan.md, engineer-split.md |
+| `docs/tickets/` | Architect-written per-ticket context bundles (+ `TEMPLATE.md`) |
+| `docs/breakdowns/` | Sr Dev-written per-ticket sub-task plans |
+| `docs/eval/` | Bench CSVs, analysis reports |
+| `scripts/` | Dispatchers: `srdev-run.sh`, `dev-run.sh`, `review-run.sh`, `bounce-run.sh`, `ticket-run.sh`; `lib/ensure-model.sh`; `rag`, `rag-cli.py`, `rag-reindex-multi.py`; install + bench scripts |
+| `scripts/archive/` | Retired v3 dispatchers + per-model bench harnesses |
 | `security/` | File ACL rules, blocked paths, network allowlist, model checksums |
-| `memory/` | MemPalace config |
-| `mcp/` | MCP server manifests (tool contracts) |
-| `scripts/` | All install / provision / benchmark scripts (macOS-only) |
-| `tools/` | Schema validators, permission matrix check |
+| `memory/` | MemPalace config (legacy) |
+| `mcp/` | MCP server manifests |
 | `tests/python/` | 72 pytest tests |
-| `docs/` | runbook, architecture, hardware-guide, model-evaluation, security-policy, troubleshooting, eval/tickets |
+| `docs/` | runbook, architecture, hardware-guide, model-evaluation, security-policy, troubleshooting |
 
-Runtime state (all gitignored):
-- Laptop: `.paperclip/` (our SQLite mirror), `.aiforge/` (mem + rag + crg), `.venv/`
-- Mac Studio: `~/.paperclip/instances/default/` (Paperclip + Postgres), `~/.hermes/` (Hermes sessions + skills), `~/codeRepo/` (mirrored repos), `~/.mempalace/`
+Runtime state (gitignored):
+- Laptop: `.paperclip/`, `.aiforge/`, `.venv/`
+- Mac Studio: `~/.paperclip/instances/default/` (Paperclip + Postgres), `~/.hermes/` (sessions + skills), `~/codeRepo/` (mirrored repos)
 
 ## Key shortcuts
 
