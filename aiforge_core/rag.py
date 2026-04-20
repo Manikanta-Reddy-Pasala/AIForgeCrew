@@ -124,10 +124,14 @@ def reindex_repo(store: "Store", *, repo: str, repo_root: Path,
         except OSError:
             continue
         rel = str(f.relative_to(repo_root))
-        for symbol, chunk in _chunk_for_path(rel, text):
+        file_chunks = _chunk_for_path(rel, text)
+        for idx, (symbol, chunk) in enumerate(file_chunks):
+            # Ensure per-chunk uniqueness of `source` so upsert-by-source doesn't
+            # collapse multi-chunk files to a single row.
+            sym = symbol if len(file_chunks) == 1 else f"{symbol}:{idx}"
             store.upsert_code_chunk(
-                repo=repo, path=rel, symbol=symbol, text=chunk,
-                metadata={"lang": rel.split(".")[-1]},
+                repo=repo, path=rel, symbol=sym, text=chunk,
+                metadata={"lang": rel.split(".")[-1], "chunk_index": idx},
             )
             total_chunks += 1
     return ReindexResult(files=len(seen), chunks=total_chunks)
