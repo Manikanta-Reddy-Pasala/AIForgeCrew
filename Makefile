@@ -269,6 +269,19 @@ sync-memory-pull:
 sync-code-repos:
 	SSH_HOST=$(SSH_HOST) bash scripts/sync-code-repos.sh
 
+# ---- Daily sync-memory launchd agent (macOS) ----
+sync-memory-agent-install:
+	bash scripts/install-sync-memory-agent.sh install
+
+sync-memory-agent-uninstall:
+	bash scripts/install-sync-memory-agent.sh uninstall
+
+sync-memory-agent-status:
+	bash scripts/install-sync-memory-agent.sh status
+
+sync-memory-agent-run:
+	bash scripts/install-sync-memory-agent.sh run
+
 # ---- pgvector-backed memory ----
 pgvector-install:
 	ssh -t $(SSH_HOST) 'cd ~/AIForgeCrew && git fetch origin && git reset --hard origin/main && bash scripts/install-pgvector-macstudio.sh'
