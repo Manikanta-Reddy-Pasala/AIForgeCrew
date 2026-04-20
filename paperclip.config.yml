@@ -6,7 +6,13 @@ org_chart:
   architect:
     reports_to: human
     config: agents/architect
-    model: claude-code-external
+    mode: ${AIFORGE_ARCHITECT_MODE:-cloud}   # cloud | local_30b
+    cloud:
+      model: claude-code-external
+      prompt_file: system-prompt.md
+    local_30b:
+      model: gemma-4-31b-it
+      prompt_file: system-prompt.local-30b.md
   sr_developer:
     reports_to: architect
     config: agents/sr-developer

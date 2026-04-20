@@ -1,6 +1,8 @@
 """Config loader for paperclip.config.yml v4.1."""
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,13 @@ class RetryRules:
     tool_timeout_s: int
     llm_request_timeout_s: int
     stale_ticket_timeout_minutes: int
+
+
+@dataclass(frozen=True)
+class ArchitectMode:
+    mode: str                 # 'cloud' | 'local_30b'
+    model: str
+    prompt_file: str
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,7 @@ class PaperclipConfig:
     kill_switch: KillSwitch
     audit: AuditCfg
     repo_root: Path
+    architect_mode: ArchitectMode
 
     @classmethod
     def load(cls, repo_root: Path) -> "PaperclipConfig":
@@ -86,6 +96,22 @@ class PaperclipConfig:
         cf = doc.get("confidence") or {}
         ks = doc.get("kill_switch") or {}
         au = doc.get("audit") or {}
+
+        org = doc.get("org_chart") or {}
+        arch = org.get("architect", {})
+        mode_spec = arch.get("mode", "cloud")
+        # env expansion: "${AIFORGE_ARCHITECT_MODE:-cloud}" → os.environ value or default
+        m = re.fullmatch(r"\$\{([A-Z_]+):-([^}]*)\}", str(mode_spec))
+        if m:
+            env_name, default = m.group(1), m.group(2)
+            mode_spec = os.environ.get(env_name, default)
+        mode_spec = mode_spec if mode_spec in ("cloud", "local_30b") else "cloud"
+        mode_cfg = arch.get(mode_spec, {}) or {}
+        architect_mode = ArchitectMode(
+            mode=mode_spec,
+            model=mode_cfg.get("model", "claude-code-external"),
+            prompt_file=mode_cfg.get("prompt_file", "system-prompt.md"),
+        )
 
         return cls(
             org_chart=doc.get("org_chart") or {},
@@ -124,6 +150,7 @@ class PaperclipConfig:
                 log_path=repo_root / au.get("log_path", ".paperclip/audit"),
             ),
             repo_root=repo_root,
+            architect_mode=architect_mode,
         )
 
 
