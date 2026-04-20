@@ -12,15 +12,19 @@ Either the model file is corrupt (re-download) or an unauthorized update happene
 ## Hermes agent refuses a file
 Hermes consults `security/file-access-rules.yml` at every read/write. Check the role's `deny:` and `write:` globs. Do not loosen rules without updating `tools/check_permission_matrix.py` and DESIGN.md.
 
-## Cloud call fails for Tester / Sr Dev / Sr Arch
-By design — only EM is allowed cloud inference. See `hermes/config.yml → inference.cloud.allowed_roles`.
-
 ## SSH to Mac Studio times out (was working earlier)
 Usually the Mac Studio went to sleep and/or the DHCP lease rolled over.
 1. Wake via Chrome Remote Desktop.
 2. On the Mac: `caffeinate -dimsu &`.
 3. `ifconfig` and grab the new `en1` inet address.
 4. Use `make SSH_HOST=user@NEW_IP <target>` or reserve the IP at the router.
+
+## Hermes exits after 2-15s with EXIT=1
+See runbook §"Context-related recovery". Root cause usually:
+- LM Studio silently loaded model at 4K ctx instead of 64K (RAM guardrail)
+- Hermes `context_length_cache.yaml` drifted from actual loaded ctx
+- `model:N` JIT clone created alongside main
+Run `bash scripts/lib/ensure-model.sh <MODEL> 65536` to reset.
 
 ## `lms load` hangs at 0% CPU
 LM Studio's `lms load` wants a TTY for the progress bar. Over a plain SSH
@@ -40,6 +44,3 @@ drifts, fix it there — don't change the permission module.
 ## Circuit breaker tripped — test after fix
 See `docs/runbook.md` §2 "Circuit breaker tripped" for the human-only reset.
 
-## Coverage gate fails on every MR
-Tester must emit `event='coverage'` in the audit before the architect
-transitions to `mr_created`. See runbook §2 "Coverage gate blocks MR".

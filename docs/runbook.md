@@ -88,11 +88,10 @@ Indexes: AIForgeCrew docs + PosPythonBackend + TallyConnector + MongoDbService +
 ### Paperclip agent state
 
 ```bash
-# List active/paused agents
+# List agents
 ssh manikanta@192.168.70.185 "PGPASSWORD=paperclip psql -h 127.0.0.1 -p 54329 -U paperclip -d paperclip -At -c \"SELECT name, status, adapter_config->>'model' FROM agents WHERE company_id='fd294bd0-2f65-405f-b443-fb41d66226fb' ORDER BY status\""
 
 # Active = Sr Developer (gemma-4-31b) + Developer (qwen-coder-next)
-# Paused = Engineering Manager, Sr Architect, Tester
 ```
 
 ### Reset a stuck ticket
@@ -178,42 +177,10 @@ make aiforge-doctor                           # config + DB sanity
 .venv/bin/aiforge report-ticket TICKET-xxx    # per-ticket drill-in
 ```
 
-### Provider + fallback configuration
-
-```bash
-# NVIDIA key for cloud fallback (persisted to ~/.hermes/.env on the Mac Studio)
-NVIDIA_API_KEY=nvapi-... make hermes-configure
-
-# EM auth — pick one:
-ssh -t manikanta@192.168.70.185 'hermes auth claude'      # interactive OAuth
-# OR export ANTHROPIC_API_KEY then re-run hermes-configure
-
-# Fallback model swap
-FALLBACK_MODEL=deepseek-ai/deepseek-v3 make hermes-configure
-```
-
-Fallback fires automatically via `aiforge_core.retry.pick_profile()` after 2
-failed dev↔tester/dev↔architect loops.
-
 ### Rebuild RAG after adding docs
 
 ```bash
-make rag-reindex
-```
-
-### Add a memory manually (project scope — EM / Architect only)
-
-```bash
-.venv/bin/python -c "
-from pathlib import Path
-from aiforge_core.mem import MemBus
-MemBus(Path('.aiforge/mem')).remember(
-    role='sr-architect',
-    scope='project',
-    text='Adopted Qwen3.6 for Dev role — see docs/model-evaluation.md',
-    title='Model decision 2026-04-19',
-)
-"
+ssh manikanta@192.168.70.185 'cd ~/AIForgeCrew && .venv/bin/python scripts/rag-reindex-multi.py'
 ```
 
 ## 2. Failure playbook
@@ -263,22 +230,6 @@ s = Store(Path('.paperclip/paperclip.db'))
 CircuitBreaker(store=s).reset('TICKET-xxx', 'sr-developer', actor='human')
 "
 ```
-
-### Coverage gate blocks MR (<80%)
-
-Tester re-runs + records the new coverage:
-
-```bash
-# from Tester context (automated by the agent; here the manual override):
-.venv/bin/python -c "
-from pathlib import Path
-from aiforge_core.store import Store
-s = Store(Path('.paperclip/paperclip.db'))
-s.audit_event('TICKET-xxx', 'coverage', 'tester', {'pct': 87.0, 'pass': 14, 'total': 14})
-"
-```
-
-The architect's transition to `mr_created` will then succeed.
 
 ### Stale ticket > 1h with no activity
 

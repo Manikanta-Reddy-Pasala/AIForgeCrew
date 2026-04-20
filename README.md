@@ -20,8 +20,6 @@ Architecture details: [`DESIGN.md`](./DESIGN.md) · Memory system: [`docs/agents
 | **Sr Developer** | Paperclip agent `28b8c064` | `gemma-4-31b-it` @ 64K (LM Studio MLX) | Reads context, recalls memory + RAG, writes `docs/breakdowns/<TICKET-ID>.md` with numbered sub-tasks + test spec. Also runs **REVIEW mode** after Developer commits. |
 | **Developer** | Paperclip agent `e0502e94` | `qwen3-coder-next` @ 64K (LM Studio MLX) | Implements each sub-task + unit test. `mvn compile` + `mvn test` must pass. Commits per sub-task. Pushes. `gh pr create`. |
 
-Paused roles (kept for audit): Engineering Manager, Sr Architect, Tester.
-
 Branch convention: `aiforge/<TICKET-ID>` — same name across every involved repo.
 
 Handoff markers (in ticket comments): `READY_FOR_DEV`, `READY_FOR_REVIEW`, `NEEDS_DEV_REWORK`, `NEEDS_HUMAN`.
@@ -82,18 +80,10 @@ All dispatchers:
 
 **OneShell** — "Solving Business Problems with Software".
 
-Active:
 | Role | Agent ID | Adapter | Model |
 |---|---|---|---|
 | Sr Developer | `28b8c064-bfcf-44e1-9e91-e37c39e0097c` | `hermes_local` | `gemma-4-31b-it` |
 | Developer | `e0502e94-0608-4fb9-9afa-b70d8dbf014a` | `hermes_local` | `qwen3-coder-next` |
-
-Paused (history retained):
-| Role | Agent ID | Original model |
-|---|---|---|
-| Engineering Manager | `35760e2f-4cef-4013-9aff-d93592b5f71e` | `claude-opus-4-7` |
-| Sr Architect | `0e173374-287c-4595-bf46-6ba26c11035f` | `gemma-4-26b-a4b-it` |
-| Tester | `eb1c388d-8601-4df4-89d8-447ec2ff5946` | `qwen3.5-9b-mlx` |
 
 Company ID: `fd294bd0-2f65-405f-b443-fb41d66226fb`.
 
