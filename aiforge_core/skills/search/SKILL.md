@@ -62,7 +62,7 @@ for root in "$HOME/.claude/memory" "$HOME/.claude/projects"; do
     echo "  [$short] $excerpt"
     ((found++))
     [[ $found -ge $TOP_K ]] && break 2
-  done < <(grep -rln --include="*.md" "$QUERY" "$root" 2>/dev/null)
+  done < <(grep -irln --include="*.md" "$QUERY" "$root" 2>/dev/null)
 done
 [[ $found -eq 0 ]] && echo "  (no literal hits — hindsight already covers semantic matches)"
 ```
