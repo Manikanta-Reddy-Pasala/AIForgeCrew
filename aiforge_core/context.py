@@ -20,6 +20,13 @@ class PriorHop:
 
 
 @dataclass
+class GraphInsight:
+    title: str
+    text: str
+    source: str | None = None
+
+
+@dataclass
 class PromptInputs:
     role: str
     system_prompt: str
@@ -29,6 +36,7 @@ class PromptInputs:
     prior_hops: list[PriorHop]
     tool_schemas: list[dict]
     output_contract: str
+    graph_insights: list["GraphInsight"] = field(default_factory=list)
 
 
 def _section(title: str, body: str) -> str:
@@ -73,6 +81,13 @@ def assemble_prompt(inp: PromptInputs, budget_bytes: int) -> str:
         mem_bytes += b
     if mem_kept:
         flex.append(_section("RETRIEVED MEMORY", "\n\n".join(_hit_block(h) for h in mem_kept)))
+
+    if inp.graph_insights:
+        body = "\n\n".join(
+            f"[{g.source or 'graph'}] {g.title}\n{g.text}"
+            for g in inp.graph_insights
+        )
+        flex.append(_section("GRAPH INSIGHTS", body))
 
     # prior hops — always a bulleted summary, never raw
     if inp.prior_hops:

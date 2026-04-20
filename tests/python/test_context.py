@@ -53,3 +53,23 @@ def test_compact_hop_summary_is_bulleted_under_cap(monkeypatch):
     summary = compact_hop(role="developer", raw_text=raw, cap_chars=200)
     assert summary.startswith("- ")
     assert len(summary) < 200
+
+
+from aiforge_core.context import GraphInsight
+
+
+def test_assemble_prompt_includes_graph_insights_section():
+    inputs = PromptInputs(
+        role="architect",
+        system_prompt="sys",
+        task_body="task",
+        retrieved_code=[],
+        retrieved_memory=[],
+        prior_hops=[],
+        tool_schemas=[],
+        output_contract="",
+        graph_insights=[GraphInsight(title="Cluster: sync", text="NATS + JetStream tie push flow")],
+    )
+    out = assemble_prompt(inputs, budget_bytes=100_000)
+    assert "GRAPH INSIGHTS" in out
+    assert "Cluster: sync" in out
