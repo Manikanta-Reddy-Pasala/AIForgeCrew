@@ -58,3 +58,16 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"docker compose"* ]]
 }
+
+@test "install-pg-aiforge.sh exists and is executable" {
+  [ -x scripts/install-pg-aiforge.sh ]
+}
+
+@test "install-pg-aiforge.sh --dry-run prints CREATE EXTENSION statements" {
+  run bash scripts/install-pg-aiforge.sh --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "CREATE EXTENSION IF NOT EXISTS vector" ]]
+  [[ "$output" =~ "CREATE EXTENSION IF NOT EXISTS pg_trgm" ]]
+  [[ "$output" =~ "CREATE TABLE memories" ]]
+  [[ "$output" =~ "CREATE TABLE memory_proposals" ]]
+}
