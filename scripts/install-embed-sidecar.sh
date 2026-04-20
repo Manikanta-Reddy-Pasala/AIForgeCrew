@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install + run bge-m3 embed sidecar on port 8764.
+# Install + run bge-m3 embed sidecar on port 8764. Uses uv + Python 3.12.
 set -euo pipefail
 
 SIDECAR_DIR="$(cd "$(dirname "$0")/.." && pwd)/services/embed_sidecar"
@@ -8,16 +8,21 @@ VENV="${EMBED_VENV:-$HOME/.aiforge/venv-embed}"
 
 mkdir -p "$MODEL_DIR" "$(dirname "$VENV")"
 
-if [[ ! -d "$VENV" ]]; then
-  python3 -m venv "$VENV"
+if ! command -v uv >/dev/null; then
+  echo "uv required. Install via: brew install uv" >&2
+  exit 1
 fi
-"$VENV/bin/pip" install -q -r "$SIDECAR_DIR/requirements.txt"
+
+if [[ ! -d "$VENV" ]]; then
+  uv venv --python 3.12 "$VENV"
+fi
+uv pip install --python "$VENV/bin/python" -r "$SIDECAR_DIR/requirements.txt"
 
 # Model download (ONNX export of bge-m3) — first run only
 if [[ ! -f "$MODEL_DIR/model.onnx" ]]; then
   "$VENV/bin/python" -c "
 from huggingface_hub import snapshot_download
-snapshot_download('aapot/bge-m3-onnx', local_dir='$MODEL_DIR', local_dir_use_symlinks=False)
+snapshot_download('aapot/bge-m3-onnx', local_dir='$MODEL_DIR')
 "
 fi
 
