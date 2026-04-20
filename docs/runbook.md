@@ -48,13 +48,29 @@ python3 -c "from aiforge_core.store_v2 import Store; print('gc:', Store().gc_exp
 
 ### Kill switch
 
-Trip the emergency stop — orchestrator checks before every agent hop:
+Trip the emergency stop — orchestrator checks before every agent hop.
+
+**Global kill (halts every ticket):**
 
 ```bash
-touch .aiforge/KILL     # global — halts all tickets
-# Per-ticket: tag the ticket with `kill` in Paperclip UI.
-rm .aiforge/KILL        # release
+ssh manikanta@192.168.70.185 'touch ~/AIForgeCrew/.aiforge/KILL'
+# release
+ssh manikanta@192.168.70.185 'rm ~/AIForgeCrew/.aiforge/KILL'
 ```
+
+**Per-ticket kill (stops one ticket):** apply the `kill` label in Paperclip
+UI, or via SQL:
+
+```bash
+KILL_LABEL_ID=d2e52007-ae22-4448-b952-f6176ee32e9c
+TICKET_UUID=<issue-uuid>
+ssh manikanta@192.168.70.185 "curl -s -X POST \
+  http://localhost:3100/api/issues/$TICKET_UUID/labels \
+  -H 'Content-Type: application/json' \
+  -d '{\"labelId\":\"$KILL_LABEL_ID\"}'"
+```
+
+Remove by deleting the `kill` label from the ticket in the UI.
 
 ### 30B-only mode (no Claude cloud)
 
