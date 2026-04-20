@@ -1,0 +1,39 @@
+{
+  "name": "aiforge-memory",
+  "version": "1.0.0",
+  "description": "Unified 4-tier memory store (T1/T2/T3/T4) + append_event.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": ["aiforgecrew-memory-mcp", "serve"],
+  "tools": [
+    {
+      "name": "search_memory",
+      "description": "Hybrid BM25+vector+rerank retrieval per role policy.",
+      "input_schema": {
+        "type": "object",
+        "required": ["q", "role"],
+        "properties": {
+          "q":         {"type": "string"},
+          "role":      {"enum": ["architect", "sr_developer", "developer", "fact_extract"]},
+          "parent_id": {"type": ["string", "null"], "default": null}
+        }
+      }
+    },
+    {
+      "name": "append_event",
+      "description": "Append a T1 episodic row for the current parent ticket.",
+      "input_schema": {
+        "type": "object",
+        "required": ["parent_id", "kind", "text"],
+        "properties": {
+          "parent_id": {"type": "string"},
+          "kind":      {"type": "string"},
+          "title":     {"type": "string"},
+          "text":      {"type": "string"},
+          "source":    {"type": "string"},
+          "metadata":  {"type": "object"}
+        }
+      }
+    }
+  ]
+}
