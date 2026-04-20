@@ -273,8 +273,6 @@ def _cmd_memory(args):
             str(_P("~/.claude").expanduser()),
             str(_P("~/.paperclip").expanduser()),
         ])
-    elif False:
-        pass
     elif args.memory_action == "propose-list":
         s = Store()
         for p in s.list_proposals("pending"):
