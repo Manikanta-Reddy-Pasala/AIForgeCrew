@@ -344,3 +344,16 @@ graphify-build:        ## initial build of code knowledge graph
 
 graphify-rebuild:      ## incremental rebuild after code changes (AST only)
 	graphify update .
+
+# ---- Sidecar LaunchAgents (run ON Mac Studio) ----
+sidecar-agents-install:    ## install embed + rerank LaunchAgents
+	bash scripts/install-sidecar-agents.sh install
+
+sidecar-agents-uninstall:  ## remove embed + rerank LaunchAgents
+	bash scripts/install-sidecar-agents.sh uninstall
+
+sidecar-agents-status:     ## show embed + rerank LaunchAgent status
+	bash scripts/install-sidecar-agents.sh status
+
+sidecar-agents-restart:    ## kickstart both sidecar LaunchAgents
+	bash scripts/install-sidecar-agents.sh restart
