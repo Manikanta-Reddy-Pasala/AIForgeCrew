@@ -126,10 +126,7 @@ cd AIForgeCrew
 # 5. Install the Hermes-side Python runtime
 make aiforge-install        # .venv + `aiforge` + `hermes` CLIs
 
-# 6. Install MemPalace + init 5 palaces (project + 4 roles)
-make mempalace-install
-
-# 7. Install ChromaDB + build initial RAG index
+# 6. Install ChromaDB + build initial RAG index
 make rag-install
 
 # 8. Pull models per security/model-checksums.yml (≈65 GB, ~2h on residential link)
@@ -265,7 +262,6 @@ make bench-passk                       # pass@1 on docs/eval/tickets
 | `security/model-checksums.yml` | Model path / URL / sha256 / role assignment |
 | `security/file-access-rules.yml` | Per-role read/write globs (DESIGN §8.3) |
 | `security/blocked-paths.yml` | Globally-blocked paths (.env, secrets/, .github/) |
-| `memory/mem0-config.yml` | Two-tier memory config (MemPalace) |
 | `.aiforge/mem/` | Palaces (gitignored): project + 4 per-role |
 | `.aiforge/rag/` | ChromaDB RAG index (gitignored) |
 | `.aiforge/crg/` | Cached call graph (gitignored) |

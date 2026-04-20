@@ -221,7 +221,6 @@ make bench                             # per-role tok/s
 | `scripts/` | Dispatchers: `srdev-run.sh`, `dev-run.sh`, `review-run.sh`, `bounce-run.sh`, `ticket-run.sh`; `lib/ensure-model.sh`; `rag`, `rag-cli.py`, `rag-reindex-multi.py`; install + bench scripts |
 | `scripts/archive/` | Retired v3 dispatchers + per-model bench harnesses |
 | `security/` | File ACL rules, blocked paths, network allowlist, model checksums |
-| `memory/` | MemPalace config (legacy) |
 | `mcp/` | MCP server manifests |
 | `tests/python/` | 72 pytest tests |
 | `docs/` | runbook, architecture, hardware-guide, model-evaluation, security-policy, troubleshooting |

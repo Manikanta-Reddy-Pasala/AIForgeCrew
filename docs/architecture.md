@@ -43,10 +43,10 @@ Paperclip task assigned to <role>
          Hermes CLI `-q` single-query + `--resume <sid>`
                 │
                 ├─ Hermes loads native tools + ~/.hermes/skills/aiforge/*
-                │    (our skills call aiforge_core.{mem, rag, crg, git_ops, net, safety, budget, retry})
+                │    (our skills call aiforge_core.{pgmem, rag, crg, git_ops, net, safety, budget, retry})
                 │
                 ├─ aiforge_core.safety.scrub_ticket_text()  (if role == em, before cloud call)
-                ├─ aiforge_core.mem.wake_up(role) + search(q)   (injected at session boot)
+                ├─ Hindsight recall (injected at session boot via hindsight_recall tool)
                 │
                 ▼
          LLM round-trip (LM Studio :1234 for local roles, cloud for EM)
@@ -70,7 +70,7 @@ Paperclip task assigned to <role>
 | `aiforge_core.permissions` | `role_can()` + `file_access()`; blocked paths win over allow lists |
 | `aiforge_core.budget` | Per-ticket tokens + per-month USD; raises BudgetExceeded |
 | `aiforge_core.retry` | enforce_loop_caps, require_coverage_for_mr, CircuitBreaker, `should_escalate_to_fallback` + `pick_profile` (routes next Hermes spawn to `<role>-fallback` after 2 loops) |
-| `aiforge_core.mem` | Two-tier MemPalace wrapper with writer ACL |
+| `aiforge_core.pgmem` | Two-tier pgvector memory with writer ACL |
 | `aiforge_core.rag` | ChromaDB PersistentClient; reindex + query |
 | `aiforge_core.crg` | AST call graph; blast_radius + dependency_chain |
 | `aiforge_core.git_ops` | git subprocess ops; per-path ACL before `git add` |
@@ -84,7 +84,6 @@ Paperclip task assigned to <role>
 | Path | Owner | Rebuild with |
 |---|---|---|
 | `.paperclip/paperclip.db` | aiforge_core | `rm -rf .paperclip/ && aiforge doctor` |
-| `.aiforge/mem/{project,agent/<role>}/` | MemPalace | `make mempalace-install` |
 | `.aiforge/rag/` | RAG / ChromaDB | `make rag-reindex` |
 | `.aiforge/crg/graph.json` | code-review-graph | auto-rebuilt on first call |
 | `.venv/` | uv | `make aiforge-install` |

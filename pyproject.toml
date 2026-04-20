@@ -21,10 +21,6 @@ dev = [
 mem = [
   "psycopg[binary]>=3.2",
 ]
-mem-legacy-mempalace = [
-  "mempalace",
-  "chromadb>=0.5",
-]
 rag = [
   "chromadb>=0.5",
   "markdown-it-py>=3.0",

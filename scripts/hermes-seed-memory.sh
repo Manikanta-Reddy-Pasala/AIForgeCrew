@@ -72,13 +72,16 @@ def collect():
     CP = os.environ.get("CLAUDE_PROJECTS", "")
     REPO = os.environ.get("REPO_DIR", "")
 
-    # 1. Global Claude memory (MEMORY.md + user/feedback/project/reference notes)
+    # 1. Global Claude memory (MEMORY.md + user/feedback/project/reference notes + repo-persona subdirs)
     if CM:
         p = Path(CM)
         if p.is_dir():
             for f in p.rglob("*.md"):
                 if f.is_file() and f.stat().st_size <= 100_000:
-                    files.append((f, "claude-global"))
+                    # Tag by top-level subdir so recall can route by domain
+                    rel = f.relative_to(p) if f.is_relative_to(p) else f
+                    subdir = rel.parts[0] if len(rel.parts) > 1 else "root"
+                    files.append((f, f"claude-global:{subdir}"))
 
     # 2. Per-project memory/ dirs only — skip tool-results + session logs.
     if CP:

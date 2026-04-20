@@ -1,6 +1,6 @@
-"""PgVector-backed two-tier memory (replaces the MemPalace shell-out).
+"""PgVector-backed two-tier memory.
 
-Same two-tier ACL as aiforge_core.mem.MemBus:
+Two-tier ACL:
   - `project` scope (wing='project'): writers = em + sr-architect only.
   - `own`     scope (wing='agent/<role>'): writer = owner only; readers = all.
 

@@ -31,7 +31,7 @@ cat > "$DEST/DESCRIPTION.md" <<EOF
 
 AIForgeCrew policy + DESIGN-specific tooling exposed as Hermes skills.
 Source: $REPO_DIR
-Skills: lifecycle · coverage · rag · crg · memory · git · fetch · report
+Skills: lifecycle · coverage · rag · crg · search · git · fetch · report · paperclip · lmstudio · reindex
 
 Backed by $AIFORGE_BIN + $AIFORGE_PY. Repo-relative paths assume the Hermes
 session cwd is the AIForgeCrew working tree (or set with --working-dir).

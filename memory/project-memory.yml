@@ -1,7 +1,0 @@
-version: 1
-# Seed values for project memory. EM + Sr Architect append here over time.
-architecture_decisions: []
-coding_standards: []
-known_tech_debt: []
-sprint_context: []
-api_contracts: []

@@ -36,11 +36,6 @@ Your host doesn't have Xcode CLT and something tried to use system
 `/usr/bin/python3`. Every AIForgeCrew script uses `uv run --with pyyaml
 python` to avoid this. If a new script breaks, port it to the same pattern.
 
-## MemPalace verify-checksums complains about `globally_blocked`
-`paperclip/permissions.py` accepts both `globally_blocked` (current key
-in `security/blocked-paths.yml`) and legacy `blocked_paths`. If the manifest
-drifts, fix it there — don't change the permission module.
-
 ## Circuit breaker tripped — test after fix
 See `docs/runbook.md` §2 "Circuit breaker tripped" for the human-only reset.
 

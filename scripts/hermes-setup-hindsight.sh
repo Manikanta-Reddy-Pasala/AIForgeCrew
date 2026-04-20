@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/hermes-setup-hindsight.sh — enable Hindsight as the Hermes memory
-# provider in LOCAL_EMBEDDED mode (replaces MemPalace + custom pgmem).
+# provider in LOCAL_EMBEDDED mode.
 #
 # Hindsight local_embedded:
 #   - Spins up a local Hindsight daemon with built-in PostgreSQL

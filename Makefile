@@ -1,7 +1,6 @@
 .PHONY: setup lint test validate permission-check clean help \
         models download verify server load health bench bench-concurrent bench-passk \
         aiforge-install aiforge-test aiforge-doctor aiforge \
-        mempalace-install mempalace-test \
         rag-install rag-reindex rag-query crg-query \
         paperclip-install paperclip-start paperclip-stop paperclip-status \
         paperclip-bootstrap paperclip-tunnel \
@@ -10,7 +9,7 @@
         hermes-skills-hub-install hermes-hindsight-setup hermes-memory-seed hermes-memory-stats \
         brew-install-macstudio reboot-macstudio \
         hermes-login hermes-dashboard-start hermes-dashboard-stop hermes-dashboard-tunnel \
-        claude-cli-install sync-memory-push sync-memory-pull sync-code-repos mempalace-index-all
+        claude-cli-install sync-memory-push sync-memory-pull sync-code-repos
 
 PY := python3
 PIP := $(PY) -m pip
@@ -44,8 +43,6 @@ help:
 	@echo "  aiforge -- ARGS    run aiforge CLI"
 	@echo ""
 	@echo "Memory / RAG / CRG:"
-	@echo "  mempalace-install  install MemPalace + init 5 palaces"
-	@echo "  mempalace-test     mempalace tests"
 	@echo "  rag-install        install chromadb + initial reindex"
 	@echo "  rag-reindex        rebuild RAG index"
 	@echo "  rag-query -- Q     RAG query"
@@ -64,7 +61,7 @@ help:
 	@echo "  hermes-adapter-install      hermes-paperclip-adapter"
 	@echo "  hermes-skills-install       install aiforge_core skill pack (our DESIGN tooling)"
 	@echo "  hermes-skills-hub-install   install official optional + community Hermes skills"
-	@echo "  hermes-hindsight-setup      enable Hindsight memory provider (replaces MemPalace)"
+	@echo "  hermes-hindsight-setup      enable Hindsight memory provider"
 	@echo "  hermes-memory-seed          import ~/.claude/memory into Hindsight"
 	@echo "  hermes-memory-stats         show memory row count + sample recall"
 
@@ -131,13 +128,6 @@ aiforge-doctor:
 
 aiforge:
 	@.venv/bin/aiforge $(filter-out $@,$(MAKECMDGOALS))
-
-# ---- MemPalace ----
-mempalace-install:
-	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && bash scripts/install-mempalace.sh'
-
-mempalace-test:
-	.venv/bin/pytest tests/python/test_paperclip_mem.py -v
 
 # ---- RAG + CRG ----
 rag-install:
@@ -235,7 +225,7 @@ reboot-macstudio:
 	@until ssh -o ConnectTimeout=5 $(SSH_HOST) 'uptime' 2>/dev/null; do sleep 5; done
 	@echo "Mac Studio back online."
 
-# Hindsight memory provider (replaces MemPalace + pgmem).
+# Hindsight memory provider.
 hermes-hindsight-setup:
 	ssh -t $(SSH_HOST) 'bash -s' < scripts/hermes-setup-hindsight.sh
 
@@ -279,18 +269,7 @@ sync-memory-pull:
 sync-code-repos:
 	SSH_HOST=$(SSH_HOST) bash scripts/sync-code-repos.sh
 
-mempalace-index-all:
-	ssh $(SSH_HOST) 'bash -s' < scripts/mempalace-index-all.sh
-
-mempalace-wipe-reindex:
-	scp scripts/mempalace-index-all.sh $(SSH_HOST):/tmp/mempalace-index-all.sh >/dev/null
-	scp scripts/mempalace-wipe-reindex.sh $(SSH_HOST):/tmp/mempalace-wipe-reindex.sh >/dev/null
-	ssh $(SSH_HOST) 'chmod +x /tmp/mempalace-*.sh && bash /tmp/mempalace-wipe-reindex.sh'
-
-mempalace-validate:
-	ssh $(SSH_HOST) 'bash -s' < scripts/mempalace-validate.sh
-
-# ---- pgvector-backed memory (supersedes MemPalace) ----
+# ---- pgvector-backed memory ----
 pgvector-install:
 	ssh -t $(SSH_HOST) 'cd ~/AIForgeCrew && git fetch origin && git reset --hard origin/main && bash scripts/install-pgvector-macstudio.sh'
 
