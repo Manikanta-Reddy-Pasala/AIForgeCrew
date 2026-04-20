@@ -1,44 +1,15 @@
-role: sr-developer
-reports_to: em
-model_location: local
-
+version: 1
+role: sr_developer
 can:
-  read_src: true
-  write_src: true
-  read_tests: true
-  write_tests: false        # Tester owns tests/
-  git_commit: true
-  git_create_mr: true       # gh pr create allowed
-  ticket_comment: true
-  ticket_assign: false
-  hermes_execute: true
-  hindsight_recall: true    # mandatory first step per AGENTS.md
-  hindsight_retain: true
-  network_fetch: true       # curl for Paperclip API
-
-filesystem:
-  allowed_write_paths:
-    - "app/**"
-    - "src/**"
-    - "lib/**"
-    - "com/**"
-  denied_write_paths:
-    - "tests/**"            # Tester role only
-    - "__tests__/**"
-    - ".github/**"          # CI/CD locked
-    - "SetupRelated/**"     # infra locked
-    - "**/CLAUDE.md"        # human-authored docs
-    - "**/AGENTS.md"
-  denied_delete_paths:
-    - "**"                  # agents cannot delete files; must request human
-
-project_scope:
-  enforced_by: paperclip    # execution_workspace_policy on projects table
-  allowed_cwd_per_ticket:
-    - must_be_within: project.execution_workspace_policy.cwd
-  branch_naming: "{project.execution_workspace_policy.branch_prefix}{ticket-id}-{short-slug}"
-  base_branch_from: project.execution_workspace_policy.base_branch
-
-hermes_session:
-  isolation: worktree       # hermes chat --worktree (enforced by hermes-serial wrapper)
-  max_concurrent: 1         # flock serialization per host
+  search_memory: true
+  search_code:   true
+  read_file:     true
+  write_file:    false
+  git_diff:      true
+  git_ops:       false
+  run_tests:     false
+  run_command:   false
+  report:        true
+  append_event:  true
+  create_child_ticket: true
+  search_graph:  true

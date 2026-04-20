@@ -40,6 +40,41 @@
           "target_branch": {"type": "string", "default": "main"}
         }
       }
+    },
+    {
+      "name": "git_diff",
+      "description": "Diff between two refs or working tree.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ref":   {"type": "string"},
+          "paths": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    {
+      "name": "run_tests",
+      "description": "Run pytest. Returns pass/fail counts + report path.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "paths":  {"type": "array", "items": {"type": "string"}},
+          "filter": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "run_command",
+      "description": "Run an allowlisted build/test command.",
+      "input_schema": {
+        "type": "object",
+        "required": ["cmd"],
+        "properties": {
+          "cmd":       {"type": "string"},
+          "cwd":       {"type": "string"},
+          "timeout_s": {"type": "integer", "default": 60}
+        }
+      }
     }
   ]
 }

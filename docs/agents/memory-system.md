@@ -1,5 +1,20 @@
 # Memory System — AIForgeCrew Pipeline v4
 
+> **Superseded by v4.1.** Current design lives in [`docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md`](../superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md) §3.
+>
+> **Summary of v4.1 changes:**
+> - Retired Hindsight + Chroma. Single store: Postgres 17 + pgvector + pg_trgm.
+> - 4 tiers: **T1 episodic** (per-ticket, 7-day TTL) · **T2 semantic** (human-gated distilled facts) · **T3 procedural** (recipes) · **T4 codebase** (AST-chunked).
+> - Hybrid retrieval: BM25 + vector → RRF → bge-reranker-v2-m3 cross-encoder.
+> - Per-role retrieval policies in `aiforge_core/retrieval.py::ROLE_POLICIES`.
+> - Write gating: agents append T1 directly; T2/T3 only via reflection proposals with human approval.
+> - Graphify code KG added as **understanding layer** (search_graph MCP tool) — orthogonal to T4 execution retrieval.
+> - Single embedding model: bge-m3 (1024-d ONNX), replaces LM Studio nomic.
+
+The rest of this document is the historical v4 design kept for archaeology.
+
+---
+
 Design (2026-04-20) after v3 failure: shared `aiforge` hindsight bank leaked agent identity across roles ("Tester agent..." burned into Developer's memory). Every agent read stale facts from prior role runs. Root cause: ONE bank, NO isolation.
 
 ## Goals

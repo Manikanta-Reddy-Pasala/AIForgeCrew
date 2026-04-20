@@ -9,7 +9,8 @@
         hermes-skills-hub-install hermes-hindsight-setup hermes-memory-seed hermes-memory-stats \
         brew-install-macstudio reboot-macstudio \
         hermes-login hermes-dashboard-start hermes-dashboard-stop hermes-dashboard-tunnel \
-        claude-cli-install sync-memory-push sync-memory-pull sync-code-repos
+        claude-cli-install sync-memory-push sync-memory-pull sync-code-repos \
+        graphify-build graphify-rebuild
 
 PY := python3
 PIP := $(PY) -m pip
@@ -336,3 +337,10 @@ hosts-install: hosts-install-laptop caddy-install
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache __pycache__ build dist *.egg-info
+
+# ---- Graphify code knowledge graph ----
+graphify-build:        ## initial build of code knowledge graph
+	bash scripts/install-graphify.sh
+
+graphify-rebuild:      ## incremental rebuild after code changes
+	graphify . --incremental

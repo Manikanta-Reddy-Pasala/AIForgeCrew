@@ -163,3 +163,25 @@ def should_escalate_to_fallback(store: Store, ticket_id: str, role: str) -> bool
 def pick_profile(store: Store, ticket_id: str, role: str) -> str:
     """Which Hermes profile name for the next spawn? `<role>` or `<role>-fallback`."""
     return f"{role}-fallback" if should_escalate_to_fallback(store, ticket_id, role) else role
+
+
+# --------- kill switch + confidence routing ---------
+
+import os
+
+
+def kill_switch_tripped(global_file: str, ticket_tags: list[str]) -> bool:
+    """True if the global KILL file exists or ticket is tagged kill."""
+    if global_file and os.path.exists(global_file):
+        return True
+    if "kill" in (ticket_tags or []):
+        return True
+    return False
+
+
+def confidence_route(c: float, proceed: float, retry: float, escalate: float) -> str:
+    if c >= proceed:
+        return "proceed"
+    if c >= escalate:
+        return "retry"
+    return "escalate"

@@ -1,72 +1,32 @@
+"""Lifecycle v4.1 — parent/child two-SM model."""
 from __future__ import annotations
-
-from pathlib import Path
-
 import pytest
 
-from aiforge_core.config import PaperclipConfig
-from aiforge_core.lifecycle import LifecycleError, advance, allowed_next_states
-from aiforge_core.store import Store
+from aiforge_core.lifecycle import (
+    parent_allowed_next, child_allowed_next, LifecycleError,
+    parent_transitions, child_transitions,
+)
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def test_parent_sm_path():
+    assert "planning" in parent_allowed_next("created")
+    assert "splitting" in parent_allowed_next("planning")
+    assert "spawned" in parent_allowed_next("splitting")
+    assert "reflection" in parent_allowed_next("spawned")
+    assert "closed" in parent_allowed_next("reflection")
 
 
-def _store(tmp_path: Path) -> Store:
-    return Store(tmp_path / "db.sqlite")
+def test_child_sm_path():
+    assert "coding" in child_allowed_next("created")
+    assert "reviewing" in child_allowed_next("coding")
+    assert "mr_created" in child_allowed_next("reviewing")
+    assert "coding" in child_allowed_next("reviewing")  # reject loop
+    assert "merged" in child_allowed_next("mr_created")
+    assert "escalated" in child_allowed_next("reviewing")
 
 
-def test_full_happy_path(tmp_path: Path) -> None:
-    s = _store(tmp_path)
-    cfg = PaperclipConfig.load(REPO_ROOT)
-    t = s.create_ticket("bug", "", assignee=cfg.routing.initial_assignee)
-
-    advance(s, cfg, t.id, "planning",       actor="em")           # EM picks up
-    assert s.get_ticket(t.id).state == "planning"
-
-    advance(s, cfg, t.id, "tests_writing",  actor="em")           # → Tester
-    assert s.get_ticket(t.id).assignee == cfg.routing.post_planning
-
-    advance(s, cfg, t.id, "coding",         actor="tester")       # → Sr Dev
-    assert s.get_ticket(t.id).assignee == cfg.routing.post_tests_ready
-
-    advance(s, cfg, t.id, "verifying",      actor="sr-developer") # → Tester (verify)
-    assert s.get_ticket(t.id).assignee == cfg.routing.post_code_ready
-
-    advance(s, cfg, t.id, "reviewing",      actor="tester")       # → Architect
-    assert s.get_ticket(t.id).assignee == cfg.routing.post_verified
-
-    # §10 coverage gate — tester's verify phase records coverage; architect reads it.
-    s.audit_event(t.id, "coverage", "tester", {"pct": 91.0})
-
-    advance(s, cfg, t.id, "mr_created",     actor="sr-architect") # → human
-    assert s.get_ticket(t.id).assignee == cfg.routing.on_approve
-
-    advance(s, cfg, t.id, "merged",         actor="human")
-    assert s.get_ticket(t.id).state == "merged"
-
-
-def test_verify_fail_loops_back(tmp_path: Path) -> None:
-    s = _store(tmp_path)
-    cfg = PaperclipConfig.load(REPO_ROOT)
-    t = s.create_ticket("bug", "", assignee=cfg.routing.initial_assignee)
-    for step in ("planning", "tests_writing", "coding", "verifying"):
-        advance(s, cfg, t.id, step, actor="em")
-    advance(s, cfg, t.id, "coding", actor="tester")  # tests fail → back to Dev
-    assert s.get_ticket(t.id).state == "coding"
-    assert s.get_ticket(t.id).assignee == cfg.routing.post_tests_ready
-
-
-def test_invalid_transition_raises(tmp_path: Path) -> None:
-    s = _store(tmp_path)
-    cfg = PaperclipConfig.load(REPO_ROOT)
-    t = s.create_ticket("bug", "", assignee=cfg.routing.initial_assignee)
-    # skip-ahead: created → reviewing is not allowed.
+def test_invalid_transition_raises():
     with pytest.raises(LifecycleError):
-        advance(s, cfg, t.id, "reviewing", actor="em")
-
-
-def test_allowed_states() -> None:
-    assert allowed_next_states("created") == ["planning"]
-    assert set(allowed_next_states("verifying")) == {"reviewing", "coding", "escalated"}
-    assert allowed_next_states("merged") == []
+        parent_allowed_next("nonexistent_state")
+    assert "merged" not in parent_allowed_next("created")
+    assert "reviewing" not in parent_allowed_next("created")

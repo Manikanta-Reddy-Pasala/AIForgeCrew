@@ -5,7 +5,82 @@ scripted — no manual clicks inside configs.
 
 ---
 
-## Pipeline v4 operations (2026-04-20)
+## Pipeline v4.1 bring-up (2026-04-21)
+
+Full v4.1 spec: [`docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md`](./superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md)
+
+### First-time install on Mac Studio
+
+```bash
+# 1. Postgres schema for the 4-tier memory store
+bash scripts/install-pg-aiforge.sh
+
+# 2. Embed sidecar (bge-m3 ONNX) on :8764
+bash scripts/install-embed-sidecar.sh &
+
+# 3. Rerank sidecar (bge-reranker-v2-m3) on :8765
+bash scripts/install-rerank-sidecar.sh &
+
+# 4. Graphify code knowledge graph (understanding layer)
+bash scripts/install-graphify.sh
+
+# 5. Seed codebase into T4
+make migrate-memory    # or: python3 -m aiforge_core.cli memory reindex-code --repo aiforge
+```
+
+### Daily ops
+
+```bash
+# Rebuild graph after code changes
+make graphify-rebuild
+
+# Reindex T4 after significant edits
+python3 -m aiforge_core.cli memory reindex-code --repo aiforge
+
+# Review + approve semantic/procedural proposals from reflection
+python3 -m aiforge_core.cli memory propose-list
+python3 -m aiforge_core.cli memory propose-approve <id>
+python3 -m aiforge_core.cli memory propose-reject  <id>
+
+# Garbage-collect expired T1 rows (post-merge, 7-day TTL)
+python3 -c "from aiforge_core.store_v2 import Store; print('gc:', Store().gc_expired())"
+```
+
+### Kill switch
+
+Trip the emergency stop — orchestrator checks before every agent hop:
+
+```bash
+touch .aiforge/KILL     # global — halts all tickets
+# Per-ticket: tag the ticket with `kill` in Paperclip UI.
+rm .aiforge/KILL        # release
+```
+
+### 30B-only mode (no Claude cloud)
+
+Run the Architect locally on gemma-4-31b-it instead of Claude Code:
+
+```bash
+export AIFORGE_ARCHITECT_MODE=local_30b
+# Architect now uses agents/architect/system-prompt.local-30b.md
+# with gemma-4-31b-it via LM Studio
+```
+
+Memory footprint (all-local, all models hot on M3 Ultra 96 GB):
+
+| Slot          | Model                         | VRAM   |
+|---------------|-------------------------------|--------|
+| Architect     | gemma-4-31b-it (local_30b)    | ~20 GB |
+| SrDev         | gemma-4-31b-it (same instance)| 0 GB  (shared) |
+| Developer     | qwen3-coder-next (MoE 80B/3B) | ~45 GB |
+| Fact Extract  | qwen3-4b-thinking-2507        | ~3 GB  |
+| Embed sidecar | bge-m3 ONNX                   | ~2 GB  |
+| Rerank sidecar| bge-reranker-v2-m3            | ~1 GB  |
+| **Total**     |                               | ~71 GB (25 GB headroom) |
+
+---
+
+## Pipeline v4 operations (2026-04-20, superseded by v4.1 above)
 
 Dispatcher scripts replace per-role daemons. Human (Architect) drives the loop.
 

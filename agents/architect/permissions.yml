@@ -1,0 +1,14 @@
+version: 1
+role: architect
+can:
+  search_memory: true
+  search_code:   true
+  read_file:     true
+  write_file:    false
+  git_diff:      true
+  git_ops:       false
+  run_tests:     false
+  run_command:   false
+  report:        true
+  append_event:  true
+  search_graph:  true

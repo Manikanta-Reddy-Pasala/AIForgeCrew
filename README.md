@@ -2,7 +2,19 @@
 
 Autonomous AI dev team. Human files a ticket in Paperclip → AI agents plan, implement, review, open PR. All threaded on one ticket. Runs on a single Mac Studio (M3 Ultra, 96 GB) with a laptop as remote control.
 
-Architecture details: [`DESIGN.md`](./DESIGN.md) · Memory system: [`docs/agents/memory-system.md`](./docs/agents/memory-system.md) · Ops: [`docs/runbook.md`](./docs/runbook.md)
+Architecture details: [`DESIGN.md`](./DESIGN.md) · Memory + orchestration v4.1: [`docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md`](./docs/superpowers/specs/2026-04-21-autonomous-memory-orchestration-design.md) · Memory system: [`docs/agents/memory-system.md`](./docs/agents/memory-system.md) · Ops: [`docs/runbook.md`](./docs/runbook.md)
+
+## Code knowledge graph (Graphify)
+
+Install once:
+
+    make graphify-build
+
+Rebuild after changes:
+
+    make graphify-rebuild
+
+Agents query via the `search_graph` MCP tool. Top insights live at `graphify-out/GRAPH_REPORT.md`.
 
 ## Three-layer stack
 

@@ -591,7 +591,67 @@ Migration order:
 
 ---
 
-## 13. Open Questions
+## 13. Graphify — Understanding Layer (added 2026-04-21)
+
+RAG + rerank (§4) is the **execution layer** — "give me the code chunk that
+matches this query". It does not answer *why* code is shaped the way it is,
+or which modules depend on which. For that we add a parallel **understanding
+layer** via [Graphify](https://github.com/safishamsi/graphify), a
+tree-sitter + NetworkX + Leiden-clustering code knowledge graph with MCP
+query surface.
+
+### 13.1 Roles and queries it serves
+
+| Role        | Graphify use                                                       |
+|-------------|--------------------------------------------------------------------|
+| Architect   | "why is this designed like this?", "what are the module clusters?" |
+| SrDev       | "what depends on <module>?", "blast radius of changing <symbol>?"  |
+| Developer   | optional — only used when the Architect spec calls it out          |
+| FactExtract | not used (reflection operates on ticket trace, not graph)          |
+
+### 13.2 Integration contract
+
+- Graphify runs as a local MCP server (`graphify install` + `graphify .`
+  sets up slash commands and MCP endpoints).
+- Graph output lives in `graphify-out/` at repo root, checked into git so
+  the whole team sees identical graph state.
+- Rebuild hook: post-commit to `main`, same cadence as T4 reindex.
+- **New MCP tool exposed to agents:** `search_graph` with three modes
+  matching Graphify's CLI: `query`, `path`, `explain`. Returns JSON.
+
+### 13.3 Data model — does it create a new tier?
+
+**No new tier in `memories` table.** Graphify stores its own graph in
+`graphify-out/`. The orchestrator treats Graphify as an external MCP tool,
+not a row-level memory store. This keeps Postgres schema frozen and avoids
+duplicate state.
+
+### 13.4 Tool permissions update (supersedes §6.2 row)
+
+| Tool          | Architect | SrDev | Developer | Fact Extract |
+|---------------|:---------:|:-----:|:---------:|:------------:|
+| search_graph  |    ✅     |  ✅   |    ✅     |      ❌      |
+
+### 13.5 Retrieval policy addendum (supersedes §4.2 table for Architect + SrDev)
+
+- Architect: after hybrid retrieval, also run one `search_graph explain`
+  call seeded by the ticket title. Top 3 graph insights get a dedicated
+  `GRAPH INSIGHTS` section in the assembled prompt (§5.1).
+- SrDev: when decomposing, run one `search_graph path` per identified
+  touch-point to surface dependency chains. Insights appended to child
+  ticket context.
+- Developer: only invokes `search_graph` if Architect's spec lists a
+  `graph_query:` field. Default off to save latency.
+
+### 13.6 Context budget impact
+
+Graph results are compact (JSON edge lists + short explanations, typically
+<2 KB per query). They fit inside the existing role budgets in §5.3 —
+Architect 80 KB, SrDev 48 KB. No budget change needed.
+
+---
+
+## 14. Open Questions
 
 - Should T4 codebase index cover external referenced repos
   (e.g. `~/codeRepo/PosPythonBackend`) or stay AIForgeCrew-only? Memory note

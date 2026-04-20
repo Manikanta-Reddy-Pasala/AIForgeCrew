@@ -1,43 +1,35 @@
-"""Local RAG over project docs (DESIGN.md §7).
+"""Codebase indexer — AST-chunked upserts into store_v2 T4.
 
-Indexes markdown + .yml + .py under configured paths, stores chunks in
-ChromaDB PersistentClient at `.aiforge/rag/`. Query returns top-k chunks
-with source path + snippet. Reindex is idempotent — re-runs only touch
-files whose mtime changed since last pass.
-
-Embeddings:
-  - Default: ChromaDB bundled embedder (fully local, no network)
-  - Alt: `embedder='lm-studio'` uses /v1/embeddings on LM Studio
+Uses tree-sitter when available for py/ts/js/tsx/java/go. Falls back to
+char chunking for other types and for markdown/yaml.
 """
 from __future__ import annotations
 
-import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .store_v2 import Store
 
 
 DEFAULT_SOURCES = [
     "README.md",
     "DESIGN.md",
     "docs/**/*.md",
-    "memory/**/*.yml",
     "security/**/*.yml",
     "agents/**/*.md",
     "agents/**/*.yml",
+    "aiforge_core/**/*.py",
+    "scripts/**/*.sh",
+    "tools/**/*.py",
 ]
 
-import re
-
-# Chunks sized so a hit spans a ~method-level unit of code/markdown.
-# 2500 chars ≈ 600-700 tokens, still fits 5 hits under an 8K-token budget.
 CHUNK_CHARS = 2500
 CHUNK_OVERLAP = 300
 
-# Java method-signature detection: class methods at indent 4 or less.
-# Matches signatures like:
-#   private Mono<Void> handleSerialDataAdditionIfNeeded(...)
-#   public static void foo(...)
-#   @Transactional\n    private ...
+
 _JAVA_METHOD_SIG_RE = re.compile(
     r"^(?: {0,8})(?:@\w+(?:\([^)]*\))?\s*\n(?: {0,8})?)*"
     r"(?:public|private|protected|static|final|synchronized|abstract|\s)+"
@@ -46,49 +38,10 @@ _JAVA_METHOD_SIG_RE = re.compile(
 )
 
 
-@dataclass
-class Chunk:
-    source: str   # repo-relative path
-    text: str
-    chunk_id: str
-
-
-def _chunk_java_by_method(text: str) -> list[str]:
-    """Split .java content along method-signature boundaries.
-
-    Falls back to char chunking if no method boundaries found or file is small.
-    Each chunk covers one or more contiguous methods up to CHUNK_CHARS.
-    """
-    if len(text) <= CHUNK_CHARS:
-        return [text]
-
-    # Find method start offsets
-    starts = [m.start() for m in _JAVA_METHOD_SIG_RE.finditer(text)]
-    if len(starts) < 2:
-        return _chunk_generic(text)
-
-    # Prepend 0 if first method isn't at the start (preserves class header as its own chunk)
-    if starts[0] > 0:
-        starts = [0] + starts
-    starts.append(len(text))  # sentinel end
-
-    out: list[str] = []
-    buf_start = starts[0]
-    for i in range(1, len(starts)):
-        if starts[i] - buf_start >= CHUNK_CHARS:
-            out.append(text[buf_start : starts[i]])
-            # overlap: back up ~CHUNK_OVERLAP chars if possible (align to next boundary)
-            buf_start = starts[i]
-    if buf_start < len(text):
-        out.append(text[buf_start:])
-    return [c for c in out if c.strip()]
-
-
 def _chunk_generic(text: str) -> list[str]:
-    """Char-based chunker with overlap. Used for markdown, yaml, non-Java."""
     if len(text) <= CHUNK_CHARS:
         return [text]
-    out = []
+    out: list[str] = []
     i = 0
     while i < len(text):
         out.append(text[i : i + CHUNK_CHARS])
@@ -96,120 +49,85 @@ def _chunk_generic(text: str) -> list[str]:
     return out
 
 
-def _chunk_markdown(text: str) -> list[str]:
-    """Back-compat name. Dispatches to generic chunker."""
-    return _chunk_generic(text)
+def _chunk_python(text: str) -> list[tuple[str, str]]:
+    """Return list of (symbol, chunk). Tree-sitter optional; fallback = regex."""
+    try:
+        import tree_sitter_python as tspy
+        from tree_sitter import Language, Parser
+    except Exception:
+        # Fallback: split by top-level `def ` / `class ` headers
+        parts = re.split(r"(?m)^(def |class |async def )", text)
+        chunks: list[tuple[str, str]] = []
+        buf = ""
+        for seg in parts:
+            buf += seg
+            if len(buf) >= CHUNK_CHARS:
+                chunks.append(("<module>", buf))
+                buf = ""
+        if buf:
+            chunks.append(("<module>", buf))
+        return chunks or [("<module>", text)]
+
+    parser = Parser(Language(tspy.language()))
+    tree = parser.parse(text.encode())
+    chunks: list[tuple[str, str]] = []
+
+    def walk(node, name_stack):
+        if node.type in ("function_definition", "class_definition"):
+            name_node = node.child_by_field_name("name")
+            name = name_node.text.decode() if name_node else "?"
+            qname = ".".join(name_stack + [name])
+            start, end = node.start_byte, node.end_byte
+            chunks.append((qname, text[start:end]))
+            for child in node.children:
+                walk(child, name_stack + [name])
+        else:
+            for child in node.children:
+                walk(child, name_stack)
+
+    walk(tree.root_node, [])
+    return chunks or [("<module>", text)]
 
 
-def _chunk_for_path(path: str, text: str) -> list[str]:
-    """Route to the right chunker based on file extension."""
+def _chunk_for_path(path: str, text: str) -> list[tuple[str, str]]:
+    if path.endswith(".py"):
+        return _chunk_python(text)
     if path.endswith(".java"):
-        return _chunk_java_by_method(text)
-    return _chunk_generic(text)
+        return [("?", c) for c in _chunk_generic(text)]
+    return [("<file>", c) for c in _chunk_generic(text)]
 
 
-def _gather_files(repo_root: Path, globs: list[str]) -> list[Path]:
+@dataclass
+class ReindexResult:
+    files: int
+    chunks: int
+
+
+def reindex_repo(store: "Store", *, repo: str, repo_root: Path,
+                 sources: list[str] | None = None) -> ReindexResult:
+    sources = sources or DEFAULT_SOURCES
+    # Clear existing T4 for this repo
+    with store._connect() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM memories WHERE tier='t4' AND wing=%s", (f"code/{repo}",))
+        c.commit()
+
     seen: set[Path] = set()
-    for pat in globs:
+    for pat in sources:
         for p in repo_root.glob(pat):
             if p.is_file():
                 seen.add(p.resolve())
-    return sorted(seen)
 
-
-class RagIndex:
-    """Thin ChromaDB wrapper. Lazy-imports chromadb so base install is light."""
-
-    def __init__(self, repo_root: Path, db_dir: Path | None = None, collection: str = "aiforge"):
-        self.repo_root = repo_root.resolve()
-        self.db_dir = (db_dir or (self.repo_root / ".aiforge" / "rag")).resolve()
-        self.collection_name = collection
-        self._client = None
-        self._coll = None
-
-    def _ensure_client(self):
-        if self._client is not None:
-            return
+    total_chunks = 0
+    for f in sorted(seen):
         try:
-            import chromadb
-        except ImportError as e:
-            raise RuntimeError(
-                "chromadb not installed — run `make rag-install` "
-                "or `uv pip install -e '.[rag]'`"
-            ) from e
-        self.db_dir.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(self.db_dir))
-        self._coll = self._client.get_or_create_collection(self.collection_name)
-
-    def reindex(
-        self,
-        sources: list[str] | None = None,
-        external_repos: list[tuple[str, Path, list[str]]] | None = None,
-    ) -> dict:
-        """Rebuild index from scratch.
-
-        external_repos: list of (label, root_path, globs). Each repo's files
-        are indexed with source prefixed by `{label}:` so queries can filter
-        by repo. Example:
-          external_repos=[
-              ("posbackend", Path("~/codeRepo/PosPythonBackend").expanduser(),
-               ["app/**/*.py", "tests/**/*.py"]),
-          ]
-        """
-        self._ensure_client()
-        assert self._client is not None and self._coll is not None
-        self._client.delete_collection(self.collection_name)
-        self._coll = self._client.create_collection(self.collection_name)
-
-        docs, ids, metas = [], [], []
-        repo_file_counts: dict[str, int] = {}
-
-        def _add_files(label: str, root: Path, files: list[Path]):
-            repo_file_counts[label] = len(files)
-            for f in files:
-                try:
-                    rel = str(f.relative_to(root))
-                except ValueError:
-                    rel = str(f)
-                src = f"{label}:{rel}" if label else rel
-                try:
-                    text = f.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                for i, chunk in enumerate(_chunk_for_path(rel, text)):
-                    cid = hashlib.sha1(f"{src}:{i}:{chunk[:80]}".encode()).hexdigest()
-                    docs.append(chunk)
-                    ids.append(cid)
-                    metas.append({"source": src, "chunk": i, "repo": label or "aiforge"})
-
-        # Local AIForgeCrew sources
-        local_files = _gather_files(self.repo_root, sources or DEFAULT_SOURCES)
-        _add_files("", self.repo_root, local_files)
-
-        # External repos
-        for label, root, globs in (external_repos or []):
-            root = root.expanduser().resolve()
-            ext_files = _gather_files(root, globs)
-            _add_files(label, root, ext_files)
-
-        # Chroma caps batches at ~5000; split defensively
-        BATCH = 4000
-        for i in range(0, len(docs), BATCH):
-            self._coll.add(
-                documents=docs[i : i + BATCH],
-                ids=ids[i : i + BATCH],
-                metadatas=metas[i : i + BATCH],
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel = str(f.relative_to(repo_root))
+        for symbol, chunk in _chunk_for_path(rel, text):
+            store.upsert_code_chunk(
+                repo=repo, path=rel, symbol=symbol, text=chunk,
+                metadata={"lang": rel.split(".")[-1]},
             )
-        return {"files_by_repo": repo_file_counts, "total_files": sum(repo_file_counts.values()), "chunks": len(docs)}
-
-    def query(self, q: str, top_k: int = 5) -> list[Chunk]:
-        self._ensure_client()
-        assert self._coll is not None
-        res = self._coll.query(query_texts=[q], n_results=top_k)
-        out: list[Chunk] = []
-        docs = res.get("documents") or [[]]
-        metas = res.get("metadatas") or [[]]
-        ids = res.get("ids") or [[]]
-        for doc, meta, cid in zip(docs[0], metas[0], ids[0]):
-            out.append(Chunk(source=meta.get("source", "?"), text=doc, chunk_id=cid))
-        return out
+            total_chunks += 1
+    return ReindexResult(files=len(seen), chunks=total_chunks)
