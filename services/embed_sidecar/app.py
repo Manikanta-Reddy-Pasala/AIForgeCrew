@@ -67,8 +67,11 @@ def _embed_batch(texts: List[str]) -> List[List[float]]:
         "attention_mask": enc["attention_mask"].astype(np.int64),
     }
     outputs = _session.run(None, inputs)
-    # bge-m3 dense head output: last_hidden_state[:, 0, :]  (CLS pooling)
-    cls = outputs[0][:, 0, :]
+    # bge-m3 ONNX exports vary: some emit last_hidden_state [B, L, H] requiring
+    # CLS slice; others expose already-pooled dense head [B, H]. Handle both.
+    cls = outputs[0]
+    if cls.ndim == 3:
+        cls = cls[:, 0, :]
     # L2 normalize for cosine
     norms = np.linalg.norm(cls, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
