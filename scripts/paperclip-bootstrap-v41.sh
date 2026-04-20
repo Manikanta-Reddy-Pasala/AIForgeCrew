@@ -16,7 +16,10 @@ set -euo pipefail
 
 REPO="${REPO:-$HOME/AIForgeCrew}"
 CID="${CID:-fd294bd0-2f65-405f-b443-fb41d66226fb}"
-PG="PGPASSWORD=paperclip /Users/manikanta/.pg0/installation/18.1.0/bin/psql -h 127.0.0.1 -p 54329 -U paperclip -d paperclip"
+export PGPASSWORD=paperclip
+PSQL=/Users/manikanta/.pg0/installation/18.1.0/bin/psql
+PG_ARGS=(-h 127.0.0.1 -p 54329 -U paperclip -d paperclip)
+pg() { "$PSQL" "${PG_ARGS[@]}" "$@"; }
 INST_ROOT="$HOME/.paperclip/instances/default/companies/$CID/agents"
 
 echo ">>> resolving existing agent UUIDs"
@@ -24,12 +27,12 @@ echo ">>> resolving existing agent UUIDs"
 ARCHITECT_ID="35760e2f-4cef-4013-9aff-d93592b5f71e"   # was EM (claude)
 SRDEV_ID="28b8c064-bfcf-44e1-9e91-e37c39e0097c"       # was Sr Developer (gemma)
 DEV_ID="e0502e94-0608-4fb9-9afa-b70d8dbf014a"         # was Developer (qwen-coder)
-FACTX_ID="$($PG -Atc "SELECT id FROM agents WHERE company_id='$CID' AND role='fact_extract' LIMIT 1" 2>/dev/null || true)"
+FACTX_ID="$(pg -Atc "SELECT id FROM agents WHERE company_id='$CID' AND role='fact_extract' LIMIT 1" 2>/dev/null || true)"
 
 if [[ -z "$FACTX_ID" ]]; then
   echo ">>> creating Fact Extract agent"
   FACTX_ID=$(uuidgen | tr 'A-Z' 'a-z')
-  $PG -c "
+  pg -c "
   INSERT INTO agents (id, company_id, name, role, title, status, adapter_type, adapter_config, budget_monthly_cents, permissions, runtime_config)
   VALUES (
     '$FACTX_ID', '$CID', 'Fact Extract', 'fact_extract', 'Reflection Agent',
@@ -40,7 +43,7 @@ if [[ -z "$FACTX_ID" ]]; then
 fi
 
 echo ">>> updating agent metadata"
-$PG -c "
+pg -c "
 UPDATE agents SET name='Architect', role='architect', title='System Architect', status='idle',
   adapter_type='claude_local',
   adapter_config = adapter_config || '{\"model\":\"claude-opus-4-7\",\"provider\":\"claude-cloud\"}'
