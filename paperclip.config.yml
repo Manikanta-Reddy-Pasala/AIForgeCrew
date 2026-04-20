@@ -1,51 +1,68 @@
-version: 1
-# Paperclip orchestrator config. Runtime implementation: Phase P1.
-# This stub locks the org chart + per-agent budget contract.
+version: 2
+# Paperclip orchestrator config v4.1. 4 roles, parent/child tickets, no TDD.
 
 org_chart:
-  ceo:
-    human: true
-  engineering_manager:
-    reports_to: ceo
-    config: agents/em
-  tester:
-    reports_to: engineering_manager
-    config: agents/tester
+  human: {role: ceo}
+  architect:
+    reports_to: human
+    config: agents/architect
+    model: claude-code-external
   sr_developer:
-    reports_to: engineering_manager
+    reports_to: architect
     config: agents/sr-developer
-  sr_architect:
-    reports_to: engineering_manager
-    config: agents/sr-architect
+    model: gemma-4-31b-it
+  developer:
+    reports_to: sr_developer
+    config: agents/developer
+    model: qwen3-coder-next
+  fact_extract:
+    reports_to: human
+    config: agents/fact-extract
+    model: qwen3-4b-thinking-2507
 
 budgets:
-  # Per-agent monthly caps. Circuit breaker trips on exceed (DESIGN.md §10).
-  em:
-    cloud_usd_per_month: 50
-    tokens_per_ticket: 20000
-  tester:
-    tokens_per_ticket: 80000
+  architect:
+    cloud_usd_per_month: 100
+    tokens_per_ticket: 32000
   sr_developer:
-    tokens_per_ticket: 150000
-  sr_architect:
-    tokens_per_ticket: 60000
+    tokens_per_ticket: 48000
+  developer:
+    tokens_per_ticket: 120000
+  fact_extract:
+    tokens_per_ticket: 8000
 
 retry_rules:
-  dev_tester_loops_max: 3
-  dev_architect_loops_max: 3
-  hermes_checkpoint_every_n_calls: 15
-  stale_ticket_timeout_minutes: 60
+  review_reject_loops_max: 3
+  max_steps_per_ticket: 20
+  max_retries_per_step: 3
+  tool_timeout_s: 60
+  llm_request_timeout_s: 300
+  stale_ticket_timeout_minutes: 120
 
 routing:
-  # §4 lifecycle. Paperclip enforces this order.
-  initial_assignee: engineering_manager
-  post_planning: tester
-  post_tests_ready: sr_developer
-  post_code_ready: tester
-  post_verified: sr_architect
-  on_approve: human  # human merges
+  # Parent lifecycle
+  initial_assignee_parent: architect
+  post_architect_planning: sr_developer
+  post_sr_decomposition:   _spawned   # parent waits for children
+  post_children_merged:    fact_extract
+  post_reflection:         _closed
+
+  # Child lifecycle
+  initial_assignee_child: developer
+  post_developer_code:    architect
+  on_architect_approve:   _mr_created
+  on_architect_reject:    developer   # reject loop
+
+confidence:
+  proceed_threshold: 0.70
+  retry_threshold: 0.50
+  escalate_threshold: 0.30
+
+kill_switch:
+  global_file: ".aiforge/KILL"
+  ticket_tag:  "kill"
 
 audit:
   append_only: true
-  single_ticket_thread: true
+  single_thread_per_parent: true
   log_path: ".paperclip/audit"
