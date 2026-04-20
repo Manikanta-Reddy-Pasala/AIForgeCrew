@@ -88,3 +88,31 @@ def test_t4_upsert_chunk(store, monkeypatch):
         metadata={"lang": "python", "lines": "120-160"},
     )
     assert mid > 0
+
+
+def test_search_tier_bm25(store, monkeypatch):
+    from aiforge_core import embed as embed_mod
+    monkeypatch.setattr(embed_mod, "embed", lambda t: [0.0] * 1024)
+    store.upsert_code_chunk(repo="aiforge", path="a.py",
+                            text="publishToRemoteServer posts to NATS")
+    store.upsert_code_chunk(repo="aiforge", path="b.py",
+                            text="unrelated haiku about spring")
+    hits = store.search_tier_bm25(tier="t4", query="publishToRemoteServer", top_k=5)
+    assert len(hits) >= 1
+    assert "publishToRemote" in hits[0].text
+
+
+def test_search_tier_vec(store, monkeypatch):
+    from aiforge_core import embed as embed_mod
+    # Fake two embeddings that differ so cosine ordering is deterministic
+    calls = {"i": 0}
+
+    def fake_embed(t):
+        calls["i"] += 1
+        return [1.0 if "apple" in t else 0.0] * 1024
+
+    monkeypatch.setattr(embed_mod, "embed", fake_embed)
+    store.upsert_code_chunk(repo="aiforge", path="a.py", text="banana bread recipe")
+    store.upsert_code_chunk(repo="aiforge", path="b.py", text="apple pie recipe")
+    hits = store.search_tier_vec(tier="t4", query="apple tart", top_k=5)
+    assert hits[0].text == "apple pie recipe"

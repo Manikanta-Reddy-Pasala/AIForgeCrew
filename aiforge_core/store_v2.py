@@ -271,6 +271,61 @@ class Store:
             c.commit()
             return rid
 
+    # ---------- retrieval primitives ----------
+    def search_tier_bm25(self, tier: str, query: str, top_k: int = 20,
+                         wing_prefix: str | None = None) -> list["Hit"]:
+        """Trigram-similarity search over text+title for a tier."""
+        from .retrieval import Hit
+        if tier not in VALID_TIERS:
+            raise ValueError(tier)
+        sql = (
+            "SELECT id, tier, source, title, text, metadata, "
+            "  GREATEST(similarity(text, %s), similarity(COALESCE(title, ''), %s)) AS sc "
+            "FROM memories WHERE tier = %s"
+        )
+        params: list[Any] = [query, query, tier]
+        if wing_prefix:
+            sql += " AND wing LIKE %s"
+            params.append(f"{wing_prefix}%")
+        sql += " ORDER BY sc DESC LIMIT %s"
+        params.append(top_k)
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(sql, params)
+            return [
+                Hit(id=f"mem:{r[0]}", score=float(r[6] or 0.0),
+                    source=r[2], tier=r[1], title=r[3], text=r[4],
+                    metadata=r[5] or {})
+                for r in cur.fetchall() if (r[6] or 0.0) > 0.05
+            ]
+
+    def search_tier_vec(self, tier: str, query: str, top_k: int = 20,
+                        wing_prefix: str | None = None) -> list["Hit"]:
+        """Vector cosine search."""
+        from .retrieval import Hit
+        if tier not in VALID_TIERS:
+            raise ValueError(tier)
+        qvec = embed_mod.embed(query)
+        vlit = _vec_literal(qvec)
+        sql = (
+            "SELECT id, tier, source, title, text, metadata, "
+            "  1 - (embedding <=> %s::vector) AS sc "
+            "FROM memories WHERE tier = %s"
+        )
+        params: list[Any] = [vlit, tier]
+        if wing_prefix:
+            sql += " AND wing LIKE %s"
+            params.append(f"{wing_prefix}%")
+        sql += " ORDER BY embedding <=> %s::vector LIMIT %s"
+        params += [vlit, top_k]
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(sql, params)
+            return [
+                Hit(id=f"mem:{r[0]}", score=float(r[6] or 0.0),
+                    source=r[2], tier=r[1], title=r[3], text=r[4],
+                    metadata=r[5] or {})
+                for r in cur.fetchall()
+            ]
+
     # ---------- low-level tier search (used by retrieval.py later) ----------
     def search_tier(self, tier: str, query: str, top_k: int = 10,
                     wing_prefix: str | None = None) -> list[Memory]:
