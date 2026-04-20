@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from aiforge_core.config import PaperclipConfig
-from aiforge_core.lifecycle import LifecycleError, advance
+from aiforge_core.lifecycle import LifecycleError  # advance removed in P6.1; restored in a later task
 from aiforge_core.retry import (
     BreakerTripped,
     CircuitBreaker,
@@ -151,3 +151,27 @@ def test_fallback_attribution_tester_only_dev_tester(tmp_path: Path) -> None:
     assert should_escalate_to_fallback(store, t.id, "tester") is True
     # sr-architect doesn't see these; only dev↔architect counts for them.
     assert should_escalate_to_fallback(store, t.id, "sr-architect") is False
+
+
+from pathlib import Path
+from aiforge_core.retry import kill_switch_tripped, confidence_route
+
+
+def test_kill_switch_global(tmp_path):
+    ks = tmp_path / "KILL"
+    assert not kill_switch_tripped(str(ks), ticket_tags=[])
+    ks.write_text("die")
+    assert kill_switch_tripped(str(ks), ticket_tags=[])
+
+
+def test_kill_switch_ticket_tag(tmp_path):
+    ks = tmp_path / "KILL"
+    assert not kill_switch_tripped(str(ks), ticket_tags=["ok"])
+    assert kill_switch_tripped(str(ks), ticket_tags=["kill"])
+
+
+def test_confidence_route_thresholds():
+    assert confidence_route(0.9, 0.7, 0.5, 0.3) == "proceed"
+    assert confidence_route(0.6, 0.7, 0.5, 0.3) == "retry"
+    assert confidence_route(0.4, 0.7, 0.5, 0.3) == "retry"
+    assert confidence_route(0.2, 0.7, 0.5, 0.3) == "escalate"
