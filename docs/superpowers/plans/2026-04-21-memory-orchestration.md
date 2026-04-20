@@ -3208,6 +3208,333 @@ git commit --allow-empty -m "chore(p6): phase 6 complete — lifecycle v4.1 + mi
 
 ---
 
+## Phase 7 — Graphify understanding layer
+
+Spec §13. RAG (T4) is execution; Graphify is understanding. Runs as MCP
+server. Graph rebuilt on push. Agents call `search_graph` when they need
+"why" or "what depends on".
+
+### Task 7.1: Install Graphify + build graph
+
+**Files:**
+- Create: `scripts/install-graphify.sh`
+- Create: `.gitignore` entry for `graphify-out/` intermediates (keep top report)
+- Modify: `Makefile` (add `graphify-build`, `graphify-rebuild` targets)
+
+- [ ] **Step 1: Write installer script**
+
+Create `scripts/install-graphify.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Install Graphify CLI + build knowledge graph for the repo.
+set -euo pipefail
+
+if ! command -v pipx >/dev/null; then
+  echo "installing pipx first..."
+  python3 -m pip install --user pipx
+  python3 -m pipx ensurepath
+fi
+
+pipx install graphifyy || pipx upgrade graphifyy
+
+# Sets up slash commands / MCP server for the user's coding assistants.
+graphify install
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+if [[ ! -d "graphify-out" ]]; then
+  echo "building graph for the first time (this may take minutes)..."
+  graphify .
+else
+  echo "rebuilding graph..."
+  graphify . --incremental
+fi
+
+echo "Graphify graph ready. Top insights: graphify-out/GRAPH_REPORT.md"
+```
+
+Then: `chmod +x scripts/install-graphify.sh`
+
+- [ ] **Step 2: Add Makefile targets**
+
+Append to `Makefile`:
+
+```makefile
+graphify-build:        ## initial build of code knowledge graph
+	bash scripts/install-graphify.sh
+
+graphify-rebuild:      ## incremental rebuild after code changes
+	graphify . --incremental
+```
+
+And add `graphify-build graphify-rebuild` to the `.PHONY` line at the top of `Makefile`.
+
+- [ ] **Step 3: Update .gitignore**
+
+Append to `.gitignore` (create if missing):
+
+```
+# Graphify intermediates (keep GRAPH_REPORT.md and graph.json at root)
+graphify-out/cache/
+graphify-out/*.log
+```
+
+- [ ] **Step 4: Verify syntax**
+
+Run: `bash -n scripts/install-graphify.sh && make -n graphify-build`
+Expected: no errors
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/install-graphify.sh Makefile .gitignore
+git commit -m "feat(p7): install-graphify.sh + make targets for code KG"
+```
+
+---
+
+### Task 7.2: MCP server config for Graphify
+
+**Files:**
+- Create: `mcp/graphify-server.json`
+- Test: existing `tests/python/test_validate_configs.py`
+
+- [ ] **Step 1: Write MCP config**
+
+Create `mcp/graphify-server.json`:
+
+```json
+{
+  "name": "aiforge-graphify",
+  "version": "1.0.0",
+  "description": "Code knowledge graph queries for architecture understanding.",
+  "transport": "stdio",
+  "command": "graphify",
+  "args": ["mcp-server"],
+  "tools": [
+    {
+      "name": "search_graph",
+      "description": "Query the code knowledge graph. Modes: query, path, explain.",
+      "input_schema": {
+        "type": "object",
+        "required": ["mode", "q"],
+        "properties": {
+          "mode": {"enum": ["query", "path", "explain"]},
+          "q":    {"type": "string"},
+          "from": {"type": "string", "description": "used when mode=path"},
+          "to":   {"type": "string", "description": "used when mode=path"}
+        }
+      }
+    }
+  ]
+}
+```
+
+- [ ] **Step 2: Run schema validation**
+
+Run: `pytest tests/python/test_validate_configs.py -v`
+Expected: PASS (configs conform to mcp schema)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add mcp/graphify-server.json
+git commit -m "feat(p7): mcp surface for graphify search_graph tool"
+```
+
+---
+
+### Task 7.3: Add search_graph permission to agent matrices
+
+**Files:**
+- Modify: `agents/architect/permissions.yml`
+- Modify: `agents/sr-developer/permissions.yml`
+- Modify: `agents/developer/permissions.yml`
+- Modify: `agents/fact-extract/permissions.yml`
+
+- [ ] **Step 1: Add `search_graph: true` to Architect, SrDev, Developer**
+
+Edit each of `agents/{architect,sr-developer,developer}/permissions.yml` to add under `can:`:
+
+```yaml
+  search_graph: true
+```
+
+- [ ] **Step 2: Set `search_graph: false` for Fact Extract**
+
+Edit `agents/fact-extract/permissions.yml` to add under `can:`:
+
+```yaml
+  search_graph: false
+```
+
+- [ ] **Step 3: Update Architect system prompt**
+
+Append to `agents/architect/system-prompt.md` (at the end of the tools list):
+
+```markdown
+Additionally, you may call `search_graph` with one of three modes:
+- `mode=query`, `q=<natural language>` for general graph search
+- `mode=path`, `from=<symbol>`, `to=<symbol>` for dependency chains
+- `mode=explain`, `q=<symbol or cluster>` for "why designed like this"
+
+Use `search_graph explain` at least once per planning pass, seeded by the ticket title, to surface relevant architecture context.
+```
+
+- [ ] **Step 4: Update SrDev system prompt**
+
+Append to `agents/sr-developer/system-prompt.md`:
+
+```markdown
+`search_graph` is available. Use `mode=path, from=<changed symbol>, to=<consumer symbol>` to surface blast radius before splitting into child tickets.
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add agents/architect/ agents/sr-developer/ agents/developer/ agents/fact-extract/
+git commit -m "feat(p7): agents gain search_graph permission + architect/srdev prompts call it"
+```
+
+---
+
+### Task 7.4: Orchestrator prompt injects GRAPH INSIGHTS section
+
+**Files:**
+- Modify: `aiforge_core/context.py`
+- Modify: `tests/python/test_context.py`
+
+- [ ] **Step 1: Failing test**
+
+Append to `tests/python/test_context.py`:
+
+```python
+from aiforge_core.context import PromptInputs, GraphInsight, assemble_prompt
+from aiforge_core.retrieval import Hit
+
+
+def test_assemble_prompt_includes_graph_insights_section():
+    inputs = PromptInputs(
+        role="architect",
+        system_prompt="sys",
+        task_body="task",
+        retrieved_code=[],
+        retrieved_memory=[],
+        prior_hops=[],
+        tool_schemas=[],
+        output_contract="",
+        graph_insights=[GraphInsight(title="Cluster: sync", text="NATS + JetStream tie push flow")],
+    )
+    out = assemble_prompt(inputs, budget_bytes=100_000)
+    assert "GRAPH INSIGHTS" in out
+    assert "Cluster: sync" in out
+```
+
+- [ ] **Step 2: Run, verify fails**
+
+- [ ] **Step 3: Extend PromptInputs + assembler**
+
+Edit `aiforge_core/context.py`. After the existing `PriorHop` dataclass add:
+
+```python
+@dataclass
+class GraphInsight:
+    title: str
+    text: str
+    source: str | None = None
+```
+
+Extend the `PromptInputs` dataclass with:
+
+```python
+    graph_insights: list[GraphInsight] = field(default_factory=list)
+```
+
+(Import `field` if not already; the dataclass uses `field(default_factory=list)` pattern.)
+
+In `assemble_prompt`, after the existing retrieved-memory section and before prior-hops, append:
+
+```python
+    if inp.graph_insights:
+        body = "\n\n".join(
+            f"[{g.source or 'graph'}] {g.title}\n{g.text}"
+            for g in inp.graph_insights
+        )
+        flex.append(_section("GRAPH INSIGHTS", body))
+```
+
+- [ ] **Step 4: Run, verify passes**
+
+Run: `pytest tests/python/test_context.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add aiforge_core/context.py tests/python/test_context.py
+git commit -m "feat(p7): prompt assembler carries GRAPH INSIGHTS section"
+```
+
+---
+
+### Task 7.5: DESIGN.md + README pointer
+
+**Files:**
+- Modify: `DESIGN.md` (note Graphify integration alongside RAG)
+- Modify: `README.md` (one-line quickstart)
+
+- [ ] **Step 1: Add a line under existing supersede banner in DESIGN.md**
+
+Append to the supersede banner you added in Phase 6:
+
+```markdown
+> Graphify code-KG is wired as an MCP tool (`search_graph`) alongside T4 code RAG — see §13 of the v4.1 spec.
+```
+
+- [ ] **Step 2: Add README quickstart**
+
+Add a section to `README.md`:
+
+```markdown
+## Code knowledge graph (Graphify)
+
+Install once:
+
+    make graphify-build
+
+Rebuild after changes:
+
+    make graphify-rebuild
+
+Agents query via the `search_graph` MCP tool. Top insights live at `graphify-out/GRAPH_REPORT.md`.
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add DESIGN.md README.md
+git commit -m "docs(p7): point to graphify integration in design + readme"
+```
+
+---
+
+### Task 7.6: Phase 7 tag
+
+- [ ] **Step 1: Run suite**
+
+Run: `pytest tests/python/ -v -m "not live_sidecar"`
+Expected: PASS
+
+- [ ] **Step 2: Tag**
+
+```bash
+git commit --allow-empty -m "chore(p7): phase 7 complete — graphify understanding layer wired"
+```
+
+---
+
 ## Self-Review Checklist (already applied)
 
 1. **Spec coverage** — every section of the design doc has at least one task:
