@@ -35,35 +35,48 @@ fi
 CADDY_CONF="$HOME/.config/caddy"
 mkdir -p "$CADDY_CONF"
 cat > "$CADDY_CONF/Caddyfile" <<'EOF'
-# AIForgeCrew reverse proxy.
-# Both vhosts plain HTTP on :80 (no cert — .local names can't get public LE).
+# AIForgeCrew reverse proxy — dual routing.
+#
+# .lan is the preferred TLD: macOS mDNSResponder intercepts *.local DNS
+# queries and bypasses /etc/hosts, so curl (and some browsers after a cold
+# resolver state) time out on resolve. .lan goes through getaddrinfo which
+# reads /etc/hosts normally.
+#
+# We still accept .local so browser tabs / hosts-file entries that already
+# reference paperclip.local / hermes.local keep working without a 502 or a
+# JSON-parse error from the fallback route.
 {
     auto_https off
     admin off
 }
 
-http://paperclip.local, http://paperclip {
+http://paperclip.lan, http://paperclip.local, http://paperclip {
     reverse_proxy 127.0.0.1:3100
 }
 
-http://hermes.local, http://hermes {
+http://hermes.lan, http://hermes.local, http://hermes {
     reverse_proxy 127.0.0.1:9119
 }
 
 # Fallback on any other Host header: show a tiny index so misdirected requests
-# don't 404 confusingly.
+# don't 404 confusingly. NOTE: UI fetch() calls will JSON.parse this plain
+# text and error out with "Unexpected token 'A'" — that's the signal that
+# the Host header isn't matching any vhost above.
 :80 {
-    respond "AIForgeCrew — try http://paperclip.local or http://hermes.local" 200
+    respond "AIForgeCrew — try http://paperclip.lan or http://hermes.lan" 200
 }
 EOF
 echo "wrote $CADDY_CONF/Caddyfile"
 
 # --- 3. /etc/hosts ---
-HOSTS_LINE="127.0.0.1 paperclip.local hermes.local"
-if ! grep -qxF "$HOSTS_LINE" /etc/hosts; then
-  echo ">>> adding hosts entry (needs sudo)"
-  echo "$HOSTS_LINE" | sudo tee -a /etc/hosts >/dev/null
+# On the Mac Studio itself, 127.0.0.1 is fine — Caddy listens locally.
+HOSTS_LINE="127.0.0.1 paperclip.lan hermes.lan"
+# Strip any stale .local entries that would shadow the new names.
+if grep -qE "paperclip\.(local|lan)|hermes\.(local|lan)" /etc/hosts; then
+  sudo sed -i.bak -E "/paperclip\.(local|lan)|hermes\.(local|lan)/d" /etc/hosts
 fi
+echo "$HOSTS_LINE" | sudo tee -a /etc/hosts >/dev/null
+echo "wrote /etc/hosts: $HOSTS_LINE"
 
 # --- 4. LaunchDaemon (root) so Caddy can bind :80 ---
 DAEMON=/Library/LaunchDaemons/com.aiforge.caddy.plist
@@ -109,11 +122,11 @@ echo "caddy LaunchDaemon loaded."
 
 sleep 3
 
-# --- 5. allow paperclip.local in Paperclip (else it returns 403) ---
+# --- 5. allow paperclip.lan in Paperclip (else it returns 403) ---
 export PATH="$HOME/.hermes/node/bin:$PATH"
 if command -v npx >/dev/null; then
-  echo ">>> allowing paperclip.local in Paperclip config"
-  npx -y paperclipai allowed-hostname paperclip.local 2>&1 | tail -3 || true
+  echo ">>> allowing paperclip.lan in Paperclip config"
+  npx -y paperclipai allowed-hostname paperclip.lan 2>&1 | tail -3 || true
   UID_=$(id -u)
   launchctl kickstart -k "gui/$UID_/com.aiforge.paperclip" 2>/dev/null || true
   # Wait for Paperclip to come back.
@@ -125,5 +138,5 @@ fi
 
 echo
 echo "=== verify ==="
-curl -s -o /dev/null -w "  http://paperclip.local → %{http_code}\n" http://paperclip.local/
-curl -s -o /dev/null -w "  http://hermes.local    → %{http_code}\n" http://hermes.local/
+curl -s -o /dev/null -w "  http://paperclip.lan → %{http_code}\n" http://paperclip.lan/
+curl -s -o /dev/null -w "  http://hermes.lan    → %{http_code}\n" http://hermes.lan/

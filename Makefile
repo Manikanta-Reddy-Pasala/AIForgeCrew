@@ -7,6 +7,8 @@
         paperclip-bootstrap paperclip-tunnel \
         hermes-install hermes-adapter-install \
         deploy-mac-studio hermes-configure hermes-skills-install \
+        hermes-skills-hub-install hermes-hindsight-setup hermes-memory-seed hermes-memory-stats \
+        brew-install-macstudio reboot-macstudio \
         hermes-login hermes-dashboard-start hermes-dashboard-stop hermes-dashboard-tunnel \
         claude-cli-install sync-memory-push sync-memory-pull sync-code-repos mempalace-index-all
 
@@ -58,8 +60,13 @@ help:
 	@echo "  paperclip-tunnel   ssh -L 3100 → laptop browser"
 	@echo ""
 	@echo "Real Hermes Agent (runs on Mac Studio):"
-	@echo "  hermes-install          NousResearch/hermes-agent CLI"
-	@echo "  hermes-adapter-install  hermes-paperclip-adapter"
+	@echo "  hermes-install              NousResearch/hermes-agent CLI"
+	@echo "  hermes-adapter-install      hermes-paperclip-adapter"
+	@echo "  hermes-skills-install       install aiforge_core skill pack (our DESIGN tooling)"
+	@echo "  hermes-skills-hub-install   install official optional + community Hermes skills"
+	@echo "  hermes-hindsight-setup      enable Hindsight memory provider (replaces MemPalace)"
+	@echo "  hermes-memory-seed          import ~/.claude/memory into Hindsight"
+	@echo "  hermes-memory-stats         show memory row count + sample recall"
 
 setup:
 	$(PIP) install --upgrade pip
@@ -167,6 +174,24 @@ paperclip-status:
 paperclip-bootstrap:
 	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-bootstrap-agents.sh
 
+patch-hindsight-shutdown-bug:
+	ssh $(SSH_HOST) 'bash -s' < scripts/patch-hindsight-shutdown-bug.sh
+
+hermes-serial-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-hermes-serial.sh
+
+benchmark-agent-models:
+	bash scripts/benchmark-agent-models.sh $(SSH_HOST)
+
+benchmark-sr-dev-models:
+	bash scripts/benchmark-sr-dev-models.sh $(SSH_HOST)
+
+paperclip-install-agent-instructions:
+	ssh $(SSH_HOST) 'rm -rf ./AIForgeCrew-tmp-agents && mkdir ./AIForgeCrew-tmp-agents'
+	scp -rq agents $(SSH_HOST):AIForgeCrew-tmp-agents/
+	ssh $(SSH_HOST) 'REPO=$$HOME/AIForgeCrew-tmp-agents bash -s' < scripts/paperclip-install-agent-instructions.sh
+	ssh $(SSH_HOST) 'rm -rf ./AIForgeCrew-tmp-agents'
+
 paperclip-em-use-claude:
 	ssh $(SSH_HOST) 'bash -s' < scripts/paperclip-em-use-claude.sh
 
@@ -193,6 +218,39 @@ hermes-configure:
 
 hermes-skills-install:
 	ssh $(SSH_HOST) 'bash -s' < scripts/install-aiforge-skills.sh
+
+# Skills from the Hermes hub (official optional + community).
+hermes-skills-hub-install:
+	ssh $(SSH_HOST) 'bash -s' < scripts/hermes-install-skills.sh
+
+# Homebrew + openssl@3 + postgresql@16 on Mac Studio.
+brew-install-macstudio:
+	ssh $(SSH_HOST) 'bash -s' < scripts/install-brew-macstudio.sh
+
+# Reboot Mac Studio (needs passwordless sudo).
+reboot-macstudio:
+	@echo "Rebooting Mac Studio — will reconnect after ~60s"
+	ssh $(SSH_HOST) 'sudo shutdown -r now' || true
+	@sleep 70
+	@until ssh -o ConnectTimeout=5 $(SSH_HOST) 'uptime' 2>/dev/null; do sleep 5; done
+	@echo "Mac Studio back online."
+
+# Hindsight memory provider (replaces MemPalace + pgmem).
+hermes-hindsight-setup:
+	ssh -t $(SSH_HOST) 'bash -s' < scripts/hermes-setup-hindsight.sh
+
+# Wire Hindsight into Claude Code CLI (EM uses claude_local adapter).
+claude-mcp-hindsight:
+	ssh $(SSH_HOST) 'bash -s' < scripts/claude-mcp-hindsight.sh
+
+hermes-memory-seed:
+	scp -q -r ~/.claude/memory $(SSH_HOST):/tmp/claude-memory-seed/ 2>/dev/null || true
+	ssh $(SSH_HOST) 'CLAUDE_MEMORY=/tmp/claude-memory-seed bash -s' < scripts/hermes-seed-memory.sh
+
+hermes-memory-stats:
+	ssh $(SSH_HOST) 'export PATH=$$HOME/.local/bin:$$PATH; hermes memory stats 2>/dev/null || \
+	  (export PATH=/opt/homebrew/opt/postgresql@16/bin:$$PATH; \
+	   psql -d aiforge -c "SELECT COUNT(*) AS hindsight_rows FROM hindsight.memories" 2>&1 | head)'
 
 hermes-login:
 	ssh -t $(SSH_HOST) 'export PATH=$$HOME/.local/bin:$$PATH; hermes login --provider openai-codex'
@@ -238,6 +296,21 @@ pgvector-install:
 
 pgmem-import:
 	ssh $(SSH_HOST) 'bash -s' < scripts/pgmem-import.sh
+
+# ---- Model management (download + compute sha256 + delete unused) ----
+models-delete-unused:
+	scp -q security/model-checksums.yml $(SSH_HOST):/tmp/aiforge-checksums.yml >/dev/null
+	ssh -t $(SSH_HOST) "MANIFEST=/tmp/aiforge-checksums.yml CONFIRM=$${CONFIRM:-0} bash -s" < scripts/delete-unused-models.sh
+
+models-compute-sha:
+	scp -q security/model-checksums.yml $(SSH_HOST):/tmp/aiforge-checksums.yml >/dev/null
+	ssh $(SSH_HOST) "MANIFEST=/tmp/aiforge-checksums.yml bash -s" < scripts/compute-checksums.sh
+	scp -q $(SSH_HOST):/tmp/aiforge-checksums.yml /tmp/aiforge-checksums.updated.yml
+	@echo "Updated manifest on Mac Studio at /tmp/aiforge-checksums.yml"
+	@echo "Review /tmp/aiforge-checksums.updated.yml and copy over security/model-checksums.yml if happy."
+
+models-refresh: download
+	@echo "Now run: make models-compute-sha && make models-delete-unused CONFIRM=1"
 
 pgmem-validate:
 	ssh $(SSH_HOST) 'export PATH=/opt/homebrew/opt/postgresql@16/bin:$$PATH; \

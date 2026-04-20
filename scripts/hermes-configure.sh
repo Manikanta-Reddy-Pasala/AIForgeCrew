@@ -62,6 +62,11 @@ model:
   default: "qwen3.6-35b-a3b"
   provider: "custom"
   base_url: "$LLM_ENDPOINT"
+
+# Hindsight memory provider (configured by scripts/hermes-setup-hindsight.sh).
+# Exposes hindsight_retain / hindsight_recall as tools in every agent session.
+memory:
+  provider: hindsight
 EOF
 
 # EM profile.
@@ -100,10 +105,13 @@ EOF
     ;;
 esac
 
-# Local role profiles (first-pass).
+# Local role profiles (<3 months old models only).
+# Tester    → Qwen3.5-9B (2026-03-02, small+fast, strong tool-use)
+# Sr Dev    → Qwen3.6-35B-A3B (primary implementer, SWE-bench SOTA, 2026-04-14)
+# Sr Arch   → Gemma-4-26B-A4B (architect reasoning, MoE A4B, 2026-04-02)
 cat > "$HERMES_DIR/profiles/tester.yaml" <<EOF
 model:
-  default: "zai-org/glm-4.7-flash"
+  default: "qwen3.5-9b-mlx"
   provider: "lmstudio"
   base_url: "$LLM_ENDPOINT"
 EOF
@@ -117,7 +125,7 @@ EOF
 
 cat > "$HERMES_DIR/profiles/sr-architect.yaml" <<EOF
 model:
-  default: "gemma-4-31b-it"
+  default: "gemma-4-26b-a4b-it"
   provider: "lmstudio"
   base_url: "$LLM_ENDPOINT"
 EOF
@@ -155,9 +163,9 @@ echo
 echo "Hermes configured:"
 echo "  default       local LM Studio :1234"
 echo "  em            $EM_PROVIDER    $EM_MODEL"
-echo "  tester        lmstudio        zai-org/glm-4.7-flash"
-echo "  sr-developer  lmstudio        qwen3.6-35b-a3b"
-echo "  sr-architect  lmstudio        gemma-4-31b-it"
+echo "  tester        lmstudio        qwen3.5-9b-mlx      (Qwen, 2026-03-02)"
+echo "  sr-developer  lmstudio        qwen3.6-35b-a3b     (Qwen, 2026-04-14)"
+echo "  sr-architect  lmstudio        gemma-4-26b-a4b-it  (Gemma, 2026-04-02)"
 echo "  *-fallback    $FALLBACK_PROVIDER  $FALLBACK_MODEL"
 echo
 case "$EM_PROVIDER" in

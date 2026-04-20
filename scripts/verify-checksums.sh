@@ -65,7 +65,12 @@ for m in models:
     kind = m.get("kind", "file")
     raw_path = m["path"]
     path = Path(raw_path).expanduser()
-    want = m["sha256"]
+    want = str(m["sha256"]).strip().lower()
+
+    # Allow "tbd" placeholders — new entries pending first compute-checksums.sh.
+    if want == "tbd":
+        print(f"  ⊙ {name}  (sha256=tbd — run scripts/compute-checksums.sh after download)")
+        continue
 
     try:
         if kind == "file":
