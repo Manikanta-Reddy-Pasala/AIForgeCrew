@@ -342,5 +342,5 @@ clean:
 graphify-build:        ## initial build of code knowledge graph
 	bash scripts/install-graphify.sh
 
-graphify-rebuild:      ## incremental rebuild after code changes
-	graphify . --incremental
+graphify-rebuild:      ## incremental rebuild after code changes (AST only)
+	graphify update .
