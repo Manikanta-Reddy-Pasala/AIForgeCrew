@@ -67,3 +67,68 @@ def rerank_http(query: str, hits: list[Hit], keep: int) -> list[Hit]:
         h.score = float(scores[pos])
         out.append(h)
     return out
+
+
+ROLE_POLICIES: dict[str, dict] = {
+    "architect": {
+        "tiers": [
+            {"tier": "t2", "top_k": 8},
+            {"tier": "t4", "top_k": 8, "wing_prefix": "code/"},
+            {"tier": "t3", "top_k": 4, "wing_prefix": "skills"},
+            {"tier": "t1", "top_k": 8},
+        ],
+        "rerank_keep": 10,
+    },
+    "sr_developer": {
+        "tiers": [
+            {"tier": "t2", "top_k": 6},
+            {"tier": "t3", "top_k": 8, "wing_prefix": "skills"},
+            {"tier": "t4", "top_k": 12, "wing_prefix": "code/"},
+            {"tier": "t1", "top_k": 8},
+        ],
+        "rerank_keep": 12,
+    },
+    "developer": {
+        "tiers": [
+            {"tier": "t4", "top_k": 20, "wing_prefix": "code/"},
+            {"tier": "t3", "top_k": 6, "wing_prefix": "skills"},
+            {"tier": "t1", "top_k": 8},
+            {"tier": "t2", "top_k": 4},
+        ],
+        "rerank_keep": 15,
+    },
+    "fact_extract": {
+        "tiers": [
+            {"tier": "t1", "top_k": 200},
+        ],
+        "rerank_keep": 50,
+    },
+}
+
+
+def retrieve_for_role(
+    store,
+    role: str,
+    query: str,
+    parent_id: str | None,
+) -> list[Hit]:
+    """Full pipeline per role: BM25 + vector per tier → RRF → rerank."""
+    if role not in ROLE_POLICIES:
+        raise KeyError(f"no retrieval policy for role {role}")
+    policy = ROLE_POLICIES[role]
+    rankings_bm25: list[list[Hit]] = []
+    rankings_vec: list[list[Hit]] = []
+    for spec in policy["tiers"]:
+        tier = spec["tier"]
+        top_k = spec["top_k"]
+        wing_prefix = spec.get("wing_prefix")
+        # Fact Extract scoped to one ticket
+        if tier == "t1" and parent_id is not None:
+            wing_prefix = f"ticket/{parent_id}"
+        rankings_bm25.append(store.search_tier_bm25(
+            tier=tier, query=query, top_k=top_k, wing_prefix=wing_prefix))
+        rankings_vec.append(store.search_tier_vec(
+            tier=tier, query=query, top_k=top_k, wing_prefix=wing_prefix))
+    fused = rrf_fuse(rankings_bm25 + rankings_vec, k=60,
+                     top_n=sum(s["top_k"] for s in policy["tiers"]))
+    return rerank_http(query, fused, keep=policy["rerank_keep"])
