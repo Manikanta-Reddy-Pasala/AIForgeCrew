@@ -171,3 +171,132 @@ class Store:
             n = cur.rowcount
             c.commit()
             return n
+
+    # ---------- T2/T3 proposals + approval ----------
+    def propose(
+        self,
+        tier: str,
+        wing: str,
+        kind: str,
+        text: str,
+        source_trace: str,
+        proposed_by: str,
+        *,
+        title: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        if tier not in {"t2", "t3"}:
+            raise ValueError("propose only supports t2/t3")
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO memory_proposals
+                   (tier, wing, kind, title, text, metadata, source_trace, proposed_by)
+                   VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s) RETURNING id""",
+                (tier, wing, kind, title, text,
+                 json.dumps(metadata or {}), source_trace, proposed_by),
+            )
+            pid = cur.fetchone()[0]
+            c.commit()
+            return pid
+
+    def list_proposals(self, status: str = "pending") -> list[dict]:
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(
+                """SELECT id, tier, wing, kind, title, text, metadata, source_trace,
+                          proposed_by, status, created_at, decided_at, decided_by
+                   FROM memory_proposals WHERE status = %s ORDER BY id ASC""",
+                (status,),
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def decide_proposal(self, proposal_id: int, approve: bool, decided_by: str) -> None:
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute("SELECT tier, wing, kind, title, text, metadata "
+                        "FROM memory_proposals WHERE id = %s AND status = 'pending'",
+                        (proposal_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"no pending proposal {proposal_id}")
+            tier, wing, kind, title, text, metadata = row
+
+            status = "approved" if approve else "rejected"
+            cur.execute(
+                "UPDATE memory_proposals SET status=%s, decided_at=now(), decided_by=%s "
+                "WHERE id=%s",
+                (status, decided_by, proposal_id),
+            )
+
+            if approve:
+                vec = embed_mod.embed(text)
+                cur.execute(
+                    """INSERT INTO memories
+                       (tier, wing, kind, title, text, embedding, metadata)
+                       VALUES (%s, %s, %s, %s, %s, %s::vector, %s::jsonb)""",
+                    (tier, wing, kind, title, text,
+                     _vec_literal(vec), json.dumps(metadata or {})),
+                )
+            c.commit()
+
+    # ---------- T4 codebase ----------
+    def upsert_code_chunk(
+        self,
+        repo: str,
+        path: str,
+        text: str,
+        *,
+        symbol: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        vec = embed_mod.embed(text)
+        wing = f"code/{repo}"
+        source = f"{path}" + (f"#{symbol}" if symbol else "")
+        md = dict(metadata or {})
+        md["repo"] = repo
+        md["path"] = path
+        if symbol:
+            md["symbol"] = symbol
+        with self._connect() as c, c.cursor() as cur:
+            # Idempotency: delete prior chunk with same source before insert
+            cur.execute("DELETE FROM memories WHERE tier='t4' AND source=%s", (source,))
+            cur.execute(
+                """INSERT INTO memories
+                   (tier, wing, kind, source, title, text, embedding, metadata)
+                   VALUES ('t4', %s, 'chunk', %s, %s, %s, %s::vector, %s::jsonb)
+                   RETURNING id""",
+                (wing, source, symbol or path, text,
+                 _vec_literal(vec), json.dumps(md)),
+            )
+            rid = cur.fetchone()[0]
+            c.commit()
+            return rid
+
+    # ---------- low-level tier search (used by retrieval.py later) ----------
+    def search_tier(self, tier: str, query: str, top_k: int = 10,
+                    wing_prefix: str | None = None) -> list[Memory]:
+        if tier not in VALID_TIERS:
+            raise ValueError(f"bad tier {tier}")
+        qvec = embed_mod.embed(query)
+        vlit = _vec_literal(qvec)
+        sql_final = (
+            "SELECT id, tier, wing, parent_id, kind, source, title, text, "
+            "metadata, created_at, expires_at "
+            "FROM memories WHERE tier = %s"
+            + (" AND wing LIKE %s" if wing_prefix else "")
+            + " ORDER BY embedding <=> %s::vector LIMIT %s"
+        )
+        params: list[Any] = [tier]
+        if wing_prefix:
+            params.append(f"{wing_prefix}%")
+        params += [vlit, top_k]
+        with self._connect() as c, c.cursor() as cur:
+            cur.execute(sql_final, params)
+            return [
+                Memory(
+                    id=r[0], tier=r[1], wing=r[2], parent_id=r[3], kind=r[4],
+                    source=r[5], title=r[6], text=r[7],
+                    metadata=r[8] or {},
+                    created_at=r[9], expires_at=r[10],
+                )
+                for r in cur.fetchall()
+            ]

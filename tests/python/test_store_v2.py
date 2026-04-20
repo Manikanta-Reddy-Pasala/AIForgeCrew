@@ -57,3 +57,34 @@ def test_append_t1_event(store, monkeypatch):
     assert rows[0].kind == "tool_call"
     assert rows[0].metadata["tool"] == "search_code"
     assert rows[0].expires_at is None  # not set until ticket merges
+
+
+def test_propose_semantic_queued(store, monkeypatch):
+    from aiforge_core import embed as embed_mod
+    monkeypatch.setattr(embed_mod, "embed", lambda t: [0.0] * 1024)
+    pid = store.propose(
+        tier="t2", wing="project", kind="fact",
+        title="use WebFlux", text="Repo uses Spring WebFlux throughout.",
+        source_trace="TICKET-77", proposed_by="fact_extract",
+    )
+    assert pid > 0
+    pending = store.list_proposals(status="pending")
+    assert len(pending) == 1
+
+    # Approve → should insert into memories
+    store.decide_proposal(pid, approve=True, decided_by="human")
+    semantic = store.search_tier("t2", "WebFlux", top_k=5)
+    assert len(semantic) == 1
+
+
+def test_t4_upsert_chunk(store, monkeypatch):
+    from aiforge_core import embed as embed_mod
+    monkeypatch.setattr(embed_mod, "embed", lambda t: [0.0] * 1024)
+    mid = store.upsert_code_chunk(
+        repo="aiforge",
+        path="aiforge_core/store_v2.py",
+        symbol="Store.append_event",
+        text="def append_event(self, ...): ...",
+        metadata={"lang": "python", "lines": "120-160"},
+    )
+    assert mid > 0
