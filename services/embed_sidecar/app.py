@@ -6,6 +6,8 @@ Loads model on startup. Single process recommended (holds ~2GB).
 from __future__ import annotations
 
 import os
+import threading
+from contextlib import asynccontextmanager
 from typing import List
 
 import numpy as np
@@ -17,27 +19,31 @@ from transformers import AutoTokenizer
 MODEL_DIR = os.environ.get("BGE_M3_DIR", os.path.expanduser("~/.aiforge/models/bge-m3"))
 MAX_LEN = int(os.environ.get("BGE_M3_MAX_LEN", "512"))
 
-app = FastAPI(title="aiforge-embed-sidecar", version="1.0.0")
-
 _tokenizer = None
 _session = None
+_load_lock = threading.Lock()
 
 
 def _load():
     global _tokenizer, _session
-    if _session is not None:
-        return
-    _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
-    providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
-    _session = ort.InferenceSession(
-        os.path.join(MODEL_DIR, "model.onnx"),
-        providers=providers,
-    )
+    with _load_lock:
+        if _session is not None:
+            return
+        _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+        providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+        _session = ort.InferenceSession(
+            os.path.join(MODEL_DIR, "model.onnx"),
+            providers=providers,
+        )
 
 
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     _load()
+    yield
+
+
+app = FastAPI(title="aiforge-embed-sidecar", version="1.0.0", lifespan=lifespan)
 
 
 class EmbedReq(BaseModel):
