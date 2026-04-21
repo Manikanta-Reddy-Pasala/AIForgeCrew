@@ -95,11 +95,15 @@ def main() -> int:
     p = argparse.ArgumentParser(prog="aiforge ticket")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    ALL_ROLES = ["supervisor", "planner", "doer", "feedback", "learner",
+                 # legacy aliases still accepted:
+                 "architect", "sr_developer", "developer", "fact_extract"]
+
     c = sub.add_parser("create")
     c.add_argument("--title", required=True)
     c.add_argument("--body")
-    c.add_argument("--assignee", choices=["architect", "sr_developer",
-                   "developer", "fact_extract"], required=True)
+    c.add_argument("--assignee", choices=ALL_ROLES, default=None,
+                   help="optional — defaults to 'supervisor' for triage")
     c.add_argument("--priority", default="medium",
                    choices=["low", "medium", "high", "urgent"])
     c.add_argument("--project")
@@ -129,8 +133,7 @@ def main() -> int:
     st.set_defaults(func=_cmd_status)
 
     tk = sub.add_parser("tick")
-    tk.add_argument("role", choices=["architect", "sr_developer",
-                                     "developer", "fact_extract"])
+    tk.add_argument("role", choices=ALL_ROLES)
     tk.set_defaults(func=_cmd_tick)
 
     args = p.parse_args()
