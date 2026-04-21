@@ -299,15 +299,27 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
     )
     tool_schemas = tools_mod.schemas(role_cfg.tool_allowlist)
 
-    # Initial messages. Context bundle = deep-context CLI + linked tickets
-    # (parent/siblings/children/related) + graph hint.
-    ctx_bundle = _build_context_bundle(ticket.title, role_cfg.name)
-    linked = _linked_tickets_block(ticket)
-    if linked:
-        ctx_bundle = f"{ctx_bundle}\n\n{linked}"
-    g_hint = _graph_hint(worktree_path)
-    if g_hint:
-        ctx_bundle = f"{ctx_bundle}\n{g_hint}"
+    # Initial messages. Context bundle varies by role:
+    # - supervisor/feedback/learner: tiny models, short ctx — skip heavy
+    #   deep-context CLI + embedding-related-tickets section. Feedback
+    #   only needs the ticket body + doer's last comment + diff access
+    #   (via read_file/run_shell).
+    # - planner/doer: full bundle (deep-context + linked tickets + graph).
+    canonical = _canonical_role(role_cfg.name)
+    if canonical in ("feedback", "learner", "supervisor"):
+        ctx_bundle = "(heavy context bundle skipped for this role — use `search` or `read_file` tools if you need specific files)"
+        # Still show linked tickets (small, ≤ 20 lines).
+        linked = _linked_tickets_block(ticket)
+        if linked:
+            ctx_bundle = f"{linked}\n\n{ctx_bundle}"
+    else:
+        ctx_bundle = _build_context_bundle(ticket.title, role_cfg.name)
+        linked = _linked_tickets_block(ticket)
+        if linked:
+            ctx_bundle = f"{ctx_bundle}\n\n{linked}"
+        g_hint = _graph_hint(worktree_path)
+        if g_hint:
+            ctx_bundle = f"{ctx_bundle}\n{g_hint}"
     events_tail = _format_events_tail(ticket.id)
     # Derive the repo name from the worktree path so the hint is accurate.
     worktree_repo = None
