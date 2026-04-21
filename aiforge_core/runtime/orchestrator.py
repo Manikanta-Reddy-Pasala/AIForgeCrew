@@ -276,15 +276,22 @@ def _detect_default_branch(repo_dir: str) -> str:
 
 
 def _infer_repo_from_ticket(ticket: tickets.Ticket) -> str | None:
+    """Pick the repo directory under WORKTREE_ROOT whose name appears in
+    title+body. Longest-match wins (so 'oneshell-commons-model' picks up
+    oneshell-commons root, and 'MongoDbService' beats 'Mongo')."""
     text = f"{ticket.title}\n{ticket.body}"
-    candidates = [
-        "mongoEventListner", "PosClientBackend", "PosServerBackend",
-        "MongoDbService", "PosService", "BusinessService", "PosFrontend",
-        "PosAdmin", "PosPythonBackend", "PosDataSyncService", "Scheduler",
-        "QuartzScheduler", "EmailService", "NotificationService",
-        "AIForgeCrew",
-    ]
-    for name in candidates:
+    project = (ticket.project or "").strip()
+    if project and os.path.isdir(os.path.join(WORKTREE_ROOT, project)):
+        return project
+    # Candidates sorted longest-first so substring collisions resolve correctly.
+    try:
+        all_dirs = [d for d in os.listdir(WORKTREE_ROOT)
+                    if os.path.isdir(os.path.join(WORKTREE_ROOT, d))
+                    and not d.startswith(".")]
+    except OSError:
+        all_dirs = []
+    all_dirs.sort(key=len, reverse=True)
+    for name in all_dirs:
         if name in text:
             return name
     return None
