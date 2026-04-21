@@ -24,7 +24,10 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Iterator
+
+from psycopg.rows import dict_row
 
 from . import tickets, roles as roles_mod, tools as tools_mod
 from .config import (
@@ -34,6 +37,11 @@ from .config import (
 from .llm import AssistantTurn, complete
 from .logging_setup import emit, get_logger
 from .tools import ToolContext
+
+
+# Orphan / retry policy. Tunable via env.
+STALE_EVENT_SECS = int(os.environ.get("AIFORGE_STALE_EVENT_SECS", "300"))
+MAX_RECLAIMS = int(os.environ.get("AIFORGE_MAX_RECLAIMS", "3"))
 
 
 # ─────────────────────────── Locking ────────────────────────────────────
@@ -348,7 +356,163 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
     return {
         "stop_reason": stop_reason, "turns": turn,
         "wall_s": round(time.time() - t_start, 2),
+        "has_commented": _has_commented,
     }
+
+
+# ─────────────────────────── Orphan reaper ──────────────────────────────
+def _reap_orphans(role_name: str, log) -> int:
+    """Reset or block tickets stuck in_progress for this role.
+
+    Invoked under the per-role lock, so any in_progress ticket for this role
+    is by definition orphaned (no other tick is running). The stale-event
+    window guards against reaping a ticket whose tick died mid-update.
+
+    Returns number of tickets acted on.
+    """
+    with tickets._conn() as c, c.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT t.*, "
+            "  (SELECT MAX(created_at) FROM ticket_events "
+            "    WHERE ticket_id=t.id) AS last_event_at "
+            "FROM tickets t "
+            "WHERE t.assignee_role=%s AND t.status='in_progress' "
+            "ORDER BY t.id ASC",
+            (role_name,),
+        )
+        rows = cur.fetchall()
+    now = datetime.now(timezone.utc)
+    acted = 0
+    for r in rows:
+        last = r.get("last_event_at") or r["created_at"]
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        age = (now - last).total_seconds()
+        if age < STALE_EVENT_SECS:
+            continue
+        meta = dict(r.get("metadata") or {})
+        count = int(meta.get("reclaim_count", 0))
+        ident = r["identifier"]
+        if count >= MAX_RECLAIMS:
+            emit(log, "orphan.blocked",
+                 ticket=ident, reclaims=count, stale_s=round(age, 1))
+            tickets.add_event(
+                r["id"], role_name, "system",
+                body=f"orphan blocked after {count} reclaims "
+                     f"(stale {int(age)}s)",
+                metadata={"orphan": True, "reclaims": count},
+            )
+            tickets.update_status(
+                r["id"], "blocked", role=role_name,
+                metadata_patch={"last_blocked_reason": "max_reclaims"},
+            )
+        else:
+            emit(log, "orphan.reclaimed",
+                 ticket=ident, reclaims=count + 1, stale_s=round(age, 1))
+            tickets.add_event(
+                r["id"], role_name, "system",
+                body=f"orphan reclaimed (stale {int(age)}s, "
+                     f"attempt {count + 1}/{MAX_RECLAIMS})",
+                metadata={"orphan": True, "reclaim_count": count + 1},
+            )
+            tickets.update_status(
+                r["id"], "todo", role=role_name,
+                metadata_patch={
+                    "reclaim_count": count + 1,
+                    "last_stop_reason": "orphan_reclaim",
+                    "last_reclaim_at": now.isoformat(),
+                },
+            )
+        acted += 1
+    return acted
+
+
+def _finalize_ticket(ticket: tickets.Ticket, role_name: str,
+                     summary: dict, log) -> None:
+    """Safety net: if the tool loop ended without the agent moving the
+    ticket out of in_progress, route it to a terminal state based on why
+    the loop stopped.
+
+    Agents *should* call set_status themselves. This ensures no ticket is
+    ever left orphaned by a tick that finished normally.
+    """
+    fresh = tickets.get(ticket.id)
+    if fresh is None or fresh.status != "in_progress":
+        return
+    reason = summary.get("stop_reason", "unknown")
+    reclaim = int((fresh.metadata or {}).get("reclaim_count", 0))
+    has_commented = bool(summary.get("has_commented"))
+
+    # Transient error → retry if budget remains.
+    if reason == "llm_error":
+        if reclaim >= MAX_RECLAIMS:
+            emit(log, "finalize.block",
+                 ticket=fresh.identifier, reason=reason, reclaims=reclaim)
+            tickets.update_status(
+                fresh.id, "blocked", role=role_name,
+                metadata_patch={"last_blocked_reason": reason},
+            )
+        else:
+            emit(log, "finalize.retry",
+                 ticket=fresh.identifier, reason=reason,
+                 reclaims=reclaim + 1)
+            tickets.update_status(
+                fresh.id, "todo", role=role_name,
+                metadata_patch={"reclaim_count": reclaim + 1,
+                                "last_stop_reason": reason},
+            )
+        return
+
+    # Model stopped on its own. If it at least posted a comment, treat as
+    # handoff; otherwise block for human review.
+    if reason == "model_done":
+        target = "in_review" if has_commented else "blocked"
+        patch: dict = {"last_stop_reason": reason, "auto_finalized": True}
+        if target == "blocked":
+            patch["last_blocked_reason"] = "silent_model_done"
+        emit(log, "finalize.auto",
+             ticket=fresh.identifier, reason=reason, target=target,
+             has_commented=has_commented)
+        tickets.update_status(fresh.id, target, role=role_name,
+                              metadata_patch=patch)
+        return
+
+    # Wall timeout, max_turns, loop_detected → block for review.
+    emit(log, "finalize.block",
+         ticket=fresh.identifier, reason=reason, reclaims=reclaim)
+    tickets.update_status(
+        fresh.id, "blocked", role=role_name,
+        metadata_patch={"last_blocked_reason": reason,
+                        "last_stop_reason": reason},
+    )
+
+
+def _finalize_on_exception(ticket: tickets.Ticket, role_name: str,
+                           exc: Exception, log) -> None:
+    """Exception path: bump reclaim counter, reset to todo (or block if we're
+    out of retries)."""
+    fresh = tickets.get(ticket.id)
+    if fresh is None or fresh.status != "in_progress":
+        return
+    reclaim = int((fresh.metadata or {}).get("reclaim_count", 0))
+    if reclaim >= MAX_RECLAIMS:
+        emit(log, "finalize.block",
+             ticket=fresh.identifier, reason="exception", reclaims=reclaim)
+        tickets.update_status(
+            fresh.id, "blocked", role=role_name,
+            metadata_patch={"last_blocked_reason": "exception",
+                            "last_exception": str(exc)[:500]},
+        )
+    else:
+        emit(log, "finalize.retry",
+             ticket=fresh.identifier, reason="exception",
+             reclaims=reclaim + 1)
+        tickets.update_status(
+            fresh.id, "todo", role=role_name,
+            metadata_patch={"reclaim_count": reclaim + 1,
+                            "last_stop_reason": "exception",
+                            "last_exception": str(exc)[:500]},
+        )
 
 
 # ─────────────────────────── Entry ──────────────────────────────────────
@@ -360,6 +524,10 @@ def tick(role_name: str) -> int:
         if not got:
             emit(log, "lock.skip")
             return 0
+
+        reaped = _reap_orphans(role_name, log)
+        if reaped:
+            emit(log, "reap.done", role=role_name, count=reaped)
 
         ticket = tickets.claim_next(role_name)
         if ticket is None:
@@ -375,14 +543,13 @@ def tick(role_name: str) -> int:
 
             summary = _run_tool_loop(rc, ticket, worktree, log)
             emit(log, "tick.end", ticket=ticket.identifier, **summary)
+            _finalize_ticket(ticket, role_name, summary, log)
         except Exception as exc:
             emit(log, "tick.exception", ticket=ticket.identifier,
                  error=str(exc)[:500])
             tickets.add_event(ticket.id, role_name, "error",
                               body=f"orchestrator exception: {exc}")
-            # Leave status as in_progress so a human/Paperclip-janitor can
-            # see — we don't auto-mark blocked anymore; that's what killed
-            # good runs in v4.
+            _finalize_on_exception(ticket, role_name, exc, log)
             return 2
     return 0
 
