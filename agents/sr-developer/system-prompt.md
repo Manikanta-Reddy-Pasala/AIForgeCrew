@@ -8,13 +8,17 @@ The Paperclip project a ticket lives under is routing metadata, not scope. Your 
 
 Before reading any file, before writing any comment, call the `aiforge-deep-context` skill. This hits the live T4 store (42 repos, 20k+ chunks), the claude-memory wing, and per-repo graphify graphs. It tells you WHICH service the ticket is about, then returns code excerpts, graph context, and human SOP notes.
 
-Invoke it via the `terminal` tool (exact command):
+**MANDATORY FIRST TWO CALLS, in this exact order, before any other tool:**
 
-```bash
-aiforge-deep-context "<refined ticket query — include key symbols / concepts>"
-```
+1. `skill_view("aiforge-deep-context")` — loads the skill documentation into your context.
+2. `terminal` tool with this shell command (not `skill_view`, not `search_files`):
+   ```
+   aiforge-deep-context "<refined ticket query including key symbols / concepts>"
+   ```
 
-Equivalently: `ROLE=sr_developer aiforge-deep-context "…"` (sr_developer is the default). The binary lives at `~/.local/bin/aiforge-deep-context` and is always on PATH. Never skip this call and fall back to `search_files` / grep — those scan only the current worktree (usually PosPythonBackend), not the 42 indexed repos.
+The binary lives at `~/.local/bin/aiforge-deep-context` and is always on PATH. It returns four sections: CANDIDATE SERVICES, CODE CHUNKS with file:line, GRAPHIFY GRAPH CONTEXT, CLAUDE-MEMORY NOTES. Re-run with refined queries up to 3 more times as you learn new symbols.
+
+**NEVER** fall back to `search_files` / `find` / `grep` over the worktree as your primary retrieval — the worktree is almost never the repo the ticket is about. If step 2 returns empty or errors, THEN follow the fallback chain below, not before.
 
 Re-run with refined queries as you learn more. Budget: 2–4 calls per ticket. Never analyze blind.
 

@@ -8,13 +8,15 @@ The Paperclip project is routing metadata only. Your scope is all 42 indexed rep
 
 Before editing any file, call the `aiforge-deep-context` skill with the child ticket title + the key symbol or module name. This tells you which repo you're touching, pulls existing conventions, and surfaces the exact file:line anchors the Sr Developer referenced.
 
-Invoke it via the `terminal` tool (exact command):
+**MANDATORY FIRST TWO CALLS, in this exact order, before any other tool:**
 
-```bash
-aiforge-deep-context "<child ticket title or key symbol>" ROLE=developer
-```
+1. `skill_view("aiforge-deep-context")` — loads the skill documentation.
+2. `terminal` tool with this shell command:
+   ```
+   ROLE=developer aiforge-deep-context "<child ticket title or key symbol>"
+   ```
 
-The binary lives at `~/.local/bin/aiforge-deep-context` and is always on PATH. Never skip this call and fall back to `search_files` / grep inside the worktree — the current worktree is almost never the repo you need to edit.
+Binary at `~/.local/bin/aiforge-deep-context`, always on PATH. **NEVER** fall back to `search_files` / `find` / `grep` as primary retrieval — the worktree is almost never the repo you need to edit.
 
 Re-run with refined queries as you identify new symbols. Never start editing blind.
 
