@@ -29,7 +29,7 @@ v4 cleanup (retires the previous stack — UI daemon on `:3100`, agent wrapper, 
 | Feedback | mistralai/devstral-small-2-2512 | Mistral | 32K | OpenAI-compat → LM Studio | 6 | Audit Doer diff + tests; pass / fail-back |
 | Learner | qwen/qwen3-4b-thinking-2507 | Alibaba | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation into T3 |
 
-LM Studio TTL: 8h for hot (Planner, Doer), 30min JIT for tiny (Supervisor, Feedback, Learner). Prompts live in `aiforge_core/runtime/roles.py`.
+LM Studio load policy: only Planner + Doer pre-loaded (hot, 8h TTL, ~48 GB combined). Supervisor / Feedback / Learner auto-load on first OpenAI-compat request (JIT) and unload after idle TTL. This keeps RAM peak ≤ 90 GB even with all 5 in flight briefly. Prompts live in `aiforge_core/runtime/roles.py`.
 
 Legacy role names (`architect`, `sr_developer`, `developer`, `fact_extract`) aliased transparently in `config.py` so pre-rename ticket rows keep working.
 
