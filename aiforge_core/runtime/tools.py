@@ -171,6 +171,38 @@ def _tool_write_file(ctx: ToolContext, path: str, content: str) -> ToolResult:
     return ToolResult(True, f"wrote {len(content)} bytes to {p}", {"path": p})
 
 
+@register("edit", {
+    "name": "edit",
+    "description": "Replace an exact old_string with new_string in an existing file. old_string must match exactly once. Prefer this over write_file for small edits.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "old_string": {"type": "string"},
+            "new_string": {"type": "string"},
+        },
+        "required": ["path", "old_string", "new_string"],
+    },
+})
+def _tool_edit(ctx: ToolContext, path: str, old_string: str, new_string: str) -> ToolResult:
+    p = _resolve_path(ctx, path)
+    if not os.path.exists(p):
+        return ToolResult(False, f"file not found: {p}", {})
+    with open(p, "r", encoding="utf-8") as f:
+        src = f.read()
+    cnt = src.count(old_string)
+    if cnt == 0:
+        return ToolResult(False, f"old_string not found in {p}", {"matches": 0})
+    if cnt > 1:
+        return ToolResult(False, f"old_string matches {cnt}x in {p}; make it unique",
+                          {"matches": cnt})
+    new = src.replace(old_string, new_string, 1)
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(new)
+    return ToolResult(True, f"edited {p} (-{len(old_string)} +{len(new_string)} chars)",
+                      {"path": p})
+
+
 # ── run_shell (no allowlist — user authorised full shell)
 @register("run_shell", {
     "name": "run_shell",

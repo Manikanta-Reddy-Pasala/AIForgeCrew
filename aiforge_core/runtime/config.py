@@ -56,7 +56,7 @@ class RoleConfig:
 # The Developer gets every tool; other roles are progressively narrower.
 _ALL_DEV_TOOLS = (
     "search", "read_file", "run_shell", "fetch_url",
-    "write_file", "git_commit", "git_push",
+    "write_file", "edit", "git_commit", "git_push",
     "create_child_ticket", "post_comment", "set_status", "retain_fact",
 )
 _PLANNER_TOOLS = (

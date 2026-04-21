@@ -223,11 +223,32 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
     # Loop-guard: if agent repeats the same (tool, args) N times in a row,
     # we break out with a system nudge so it doesn't burn the wall budget.
     _recent_calls: list[str] = []
+    _deadline_warned = False
+    _has_commented = False
     while turn < max_turns:
         if time.time() - t_start > TICK_MAX_WALL_SECS:
             stop_reason = "wall_timeout"
             break
         turn += 1
+
+        # Deadline watchdog — once we cross 75% of max_turns with no
+        # post_comment yet, inject a hard nudge so the agent closes out.
+        if (not _has_commented and not _deadline_warned
+                and turn >= int(max_turns * 0.75)):
+            _deadline_warned = True
+            emit(log, "deadline.warn", turn=turn, max_turns=max_turns)
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"⚠ DEADLINE WARNING: you are on turn {turn} of {max_turns}. "
+                    "You have NOT posted a comment yet. In your VERY NEXT turn, "
+                    "IN ORDER: (1) git_commit if you have uncommitted changes, "
+                    "(2) post_comment with a brief summary of what you did, "
+                    "(3) set_status(status='in_review'). Do not run any more "
+                    "`ls`, `find`, `git log`, or `search` calls. Commit + "
+                    "report + exit NOW."
+                ),
+            })
 
         t0 = time.time()
         try:
@@ -287,6 +308,8 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
                 looped = True
 
             result = tools_mod.dispatch(ctx, name, arguments)
+            if name == "post_comment" and result.ok:
+                _has_commented = True
             emit(log, "tool.result", turn=turn, tool=name,
                  ok=result.ok, dur_ms=(result.meta or {}).get("dur_ms"),
                  chars=len(result.output))

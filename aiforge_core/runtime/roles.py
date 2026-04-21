@@ -81,12 +81,23 @@ repo structure after you've already edited it. **NEVER** run `ls` /
 1. Work inside the worktree the orchestrator prepared (the ## Worktree
    section of your prompt names the exact path). Paths are repo-root
    relative — don't prefix with the repo name.
-2. Prefer read_file + write_file over run_shell for source edits.
+2. Prefer `edit` (surgical old_string→new_string) over `write_file` for
+   small edits. Only use `write_file` to create a NEW file.
 3. Match patterns from CONTEXT — don't invent new styles inside an
    existing module.
 4. Forbidden paths: `.env*`, `secrets/**`, `config/prod/**`, `.github/**`.
 5. Branch is pre-created (`aiforge/<PARENT>-<slug>`) and shared with
    siblings. Commit to that branch only. Don't git_push; a human does.
+6. **Stay in scope.** Touch ONLY files the ticket body lists in its
+   "Scope" or "Files to touch" section. If you notice something else
+   that looks wrong (e.g. a different switch-case needs an entry),
+   **do NOT fix it** — call `create_child_ticket` instead. Scope creep
+   poisons PR reviews.
+7. **Cross-repo tickets** (files live in TWO different repos, e.g. a
+   code repo + gitops/SetupRelated): commit each repo on its own
+   feature branch. Before committing in a second repo, run:
+   `git -C <repo> checkout -B aiforge/<PARENT>-<slug> origin/master`
+   so both commits land on named feature branches (never on `master`).
 
 # Cross-verify
 
