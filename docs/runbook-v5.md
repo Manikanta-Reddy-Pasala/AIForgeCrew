@@ -1,19 +1,6 @@
 # AIForge v5 runbook
 
-Hermes-less, Paperclip-less, single-Postgres runtime. Last update: 2026-04-21.
-
-## What changed from v4
-
-| v4 | v5 | Why |
-|---|---|---|
-| Paperclip UI + DB (`:3100`, `:54329`) | Our FastAPI + React UI + aiforge Postgres (`:8799`, `:5432`) | One source of truth, no external dep |
-| hermes chat agent wrapper | Custom orchestrator (`aiforge_core.runtime`) | hermes hangs on cleanup + has 64 K-ctx hard floor |
-| Per-tick 1-h gtimeout + global flock | Per-role fcntl lock, 20 min wall cap | Roles don't block each other |
-| Paperclip heartbeat daemon | launchd tick timers (`com.aiforge.tick-<role>`) | Simpler lifecycle |
-| hindsight daemon at `:9177` + own Postgres | Direct Postgres writes to `memories` table | Removes teardown-lock hang |
-| ChromaDB `.aiforge/rag/` | pgvector T4 rows in `memories` | One embedding store |
-| `aiforge-deep-context` CLI + SKILL.md | Same CLI, now also a `search` tool in the orchestrator | Agents can use either |
-| Skill registry via hermes `skill_view` | `@function_tool`-style JSON schemas in `aiforge_core.runtime.tools` | Typed, versioned in repo |
+Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. Last update: 2026-04-21.
 
 ## Stack
 
@@ -28,7 +15,7 @@ Hermes-less, Paperclip-less, single-Postgres runtime. Last update: 2026-04-21.
 | REST / SSE API | FastAPI (`aiforge_core.runtime.api`) | 8799 | launchd (`com.aiforge.api`) |
 | Dashboard UI | React/Vite static (`web/dist/`) | served at `:8799/ui/` | same FastAPI |
 
-Legacy kill list: Paperclip (`:3100`), hermes daemon, ChromaDB (`.aiforge/rag/`), hindsight daemon/DB (`:5433`). See `scripts/runtime/cleanup-v4.sh`.
+v4 cleanup (retires the previous stack — UI daemon on `:3100`, agent wrapper, ChromaDB, hindsight daemon): `scripts/runtime/cleanup-v4.sh`.
 
 ## Agents
 
@@ -69,22 +56,18 @@ bash scripts/runtime/cleanup-v4.sh              # backup + delete
 
 Backups land in `~/.aiforge/backups/YYYY-MM-DD/`.
 
-## Legacy DNS cleanup (run ON each machine)
+## Legacy `/etc/hosts` cleanup
 
-v4 left `/etc/hosts` entries you don't need anymore. Remove with:
+v4 may have left LAN-hostname aliases you no longer need. On each machine:
 
 ```bash
-# Mac Studio
-sudo sed -i.bak "/paperclip\.lan\|hermes\.lan/d" /etc/hosts
-
-# Laptop
-sudo sed -i.bak "/paperclip\.local\|hermes\.local/d" /etc/hosts
+# Drop anything pointing at the old UI/agent hostnames
+sudo sed -i.bak '/paperclip\.\(lan\|local\)\|hermes\.\(lan\|local\)/d' /etc/hosts
 ```
 
-If you want a nice hostname for the UI:
+Optional nicer hostname for the new UI (run on the laptop that tunnels in):
 ```bash
-# on laptop
-echo '192.168.70.185 aiforge.local' | sudo tee -a /etc/hosts
+echo '127.0.0.1 aiforge.local' | sudo tee -a /etc/hosts
 # then open http://aiforge.local:8799/ui/
 ```
 
@@ -151,7 +134,7 @@ Each tick (`python -m aiforge_core.runtime <role>`):
    - Every tool call + tool result → `ticket_event(kind='tool_call')` + structured log line.
 8. Writes `tick.end` with `stop_reason` (model_done / max_turns / wall_timeout / llm_error / loop_detected).
 
-Status transitions are agent-driven (`set_status` tool); orchestrator does NOT auto-block stuck tickets (that was v4 Paperclip's behaviour and caused false negatives).
+Status transitions are agent-driven (`set_status` tool); orchestrator does NOT auto-block stuck tickets (the v4 UI did, which caused false negatives under model latency).
 
 ## Tool catalogue (`aiforge_core/runtime/tools.py`)
 
