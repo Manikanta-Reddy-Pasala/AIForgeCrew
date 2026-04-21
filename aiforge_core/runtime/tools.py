@@ -496,28 +496,35 @@ def _tool_verdict_pass(ctx: ToolContext, test_output: str, note: str) -> ToolRes
         metadata_patch={"feedback_verdict": "pass",
                         "feedback_note": note[:500]},
     )
-    # Queue a Learner sibling under the same parent (dedup-safe).
+    # Queue a Learner ticket. Two cases:
+    #   - Current ticket has a parent: learner is a sibling under that parent.
+    #   - Current ticket is top-level: learner becomes a CHILD of this ticket.
+    # Dedup-safe either way: skip if a learner ticket already exists in the
+    # relevant cohort.
     try:
         t = tickets.get(ctx.ticket_id)
-        if t is not None and t.parent_id is not None:
-            for s in tickets.children(t.parent_id):
-                if s.assignee_role in ("learner", "fact_extract"):
-                    break
-            else:
-                parent = tickets.get(t.parent_id)
+        if t is not None:
+            parent_id_for_learner = t.parent_id if t.parent_id else t.id
+            cohort = tickets.children(parent_id_for_learner)
+            already = any(
+                s.assignee_role in ("learner", "fact_extract")
+                for s in cohort
+            )
+            if not already:
+                parent = tickets.get(t.parent_id) if t.parent_id else t
                 learner = tickets.create(
                     title=f"Distil facts: {parent.title[:50] if parent else t.identifier}",
                     body=(
                         f"Feedback passed {t.identifier}. Scan recent commits + "
-                        f"comments on parent "
-                        f"{parent.identifier if parent else t.parent_id} + siblings. "
-                        f"Emit up to 5 retain_fact calls (skills/<service> or "
-                        f"patterns/<topic> or rules/<area>). Anchor each to "
-                        f"file:line or commit sha. Then post_comment + "
-                        f"set_status(done)."
+                        f"comments on "
+                        f"{parent.identifier if parent else t.identifier} "
+                        f"+ any children. Emit up to 5 retain_fact calls "
+                        f"(skills/<service> or patterns/<topic> or "
+                        f"rules/<area>). Anchor each to file:line or commit "
+                        f"sha. Then post_comment + set_status(done)."
                     ),
                     assignee_role="learner",
-                    parent_id=t.parent_id,
+                    parent_id=parent_id_for_learner,
                     priority="low",
                     branch=t.branch,
                     project=t.project,
