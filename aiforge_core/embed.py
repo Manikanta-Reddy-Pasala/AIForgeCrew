@@ -13,7 +13,7 @@ SIDECAR_URL = os.environ.get("AIFORGE_EMBED_URL", "http://127.0.0.1:8764")
 DIM = 1024
 
 
-def _post(path: str, body: dict, timeout: float = 30.0) -> dict:
+def _post(path: str, body: dict, timeout: float = 20.0) -> dict:
     req = urllib.request.Request(
         f"{SIDECAR_URL}{path}",
         data=json.dumps(body).encode(),

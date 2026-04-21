@@ -13,14 +13,41 @@ This is the authoritative retrieval skill for every AIForgeCrew agent (Architect
 
 Every agent MUST run this before drawing conclusions about which service a question touches, which files to read, or what prior context exists.
 
+## Timeouts (wall-clock budgets per sub-call)
+
+Every external call inside this skill has a timeout. If a sub-call exceeds its budget, it is dropped (section becomes "(timeout)") and the rest of the skill still returns. No sub-call can hang the agent.
+
+| Sub-call | Budget | Source |
+|---|---|---|
+| Whole skill (outer) | 120 s | `timeout 120 …` wraps the Python block |
+| bge-m3 embed (`:8764/embed`) | 20 s | `urllib` timeout in `aiforge_core.embed._post` |
+| Postgres retrieval (T1–T4) | 15 s | `statement_timeout=15s` + connect timeout |
+| bge-reranker (`:8765/rerank`) | 20 s | `urllib` timeout in `aiforge_core.retrieval.rerank_http` |
+| `graphify query` per repo | 30 s | `subprocess.run(timeout=30)` below |
+| file reads (graph.json probe) | OS-level only | `Path.exists()` / local stat |
+
+Individual timeouts are short on purpose: the whole skill must return in ≤ 2 min. If anything blocks, the agent gets partial output and can proceed, rather than hanging the whole session and leaking the flock.
+
 ## Usage
 
 ```bash
 QUERY="${QUERY:-mongoEventListner change stream how it works}"
 ROLE="${ROLE:-sr_developer}"       # architect | sr_developer | developer | fact_extract
 TOP_K="${TOP_K:-20}"
+SKILL_BUDGET="${SKILL_BUDGET:-120}"
 
-{{AIFORGE_PY}} - <<PY
+# Outer timeout: kills the whole Python block if anything hangs.
+# Uses gtimeout (coreutils) on macOS; falls back to `timeout` on Linux.
+TIMEOUT_BIN="$(command -v gtimeout || command -v timeout)"
+
+"$TIMEOUT_BIN" --kill-after=10s "${SKILL_BUDGET}s" {{AIFORGE_PY}} - <<PY || {
+  rc=$?
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    echo "aiforge-deep-context: TIMEOUT after ${SKILL_BUDGET}s — returning partial / empty context."
+    echo "Agent: fall back to 'refine query + re-run' per system prompt fallback chain."
+  fi
+  exit 0
+}
 from aiforge_core.store_v2 import Store
 from aiforge_core.retrieval import retrieve_for_role
 from collections import defaultdict
@@ -30,10 +57,15 @@ import subprocess
 role  = "$ROLE"
 query = r"""$QUERY"""
 
-store = Store(); store.ensure_schema()
-hits  = retrieve_for_role(store, role, query, parent_id=None)
+# --- retrieve with error isolation; Store + retrieve_for_role already timeout via urllib ---
+try:
+    store = Store(); store.ensure_schema()
+    hits  = retrieve_for_role(store, role, query, parent_id=None)
+except Exception as e:
+    print(f"=== RETRIEVAL ERROR ===\n  {type(e).__name__}: {e}")
+    hits = []
 
-# ---- 1. candidate services (grouped by repo, ranked by aggregated rerank score) ----
+# ---- 1. candidate services ----
 by_repo = defaultdict(list)
 for h in hits:
     repo = (h.metadata or {}).get("repo", "?")
@@ -41,13 +73,15 @@ for h in hits:
 
 print("=== CANDIDATE SERVICES (ranked by evidence) ===")
 ranked_repos = sorted(by_repo, key=lambda r: -sum(h.score for h in by_repo[r]))
+if not ranked_repos:
+    print("  (no hits — retrieval timeout or empty result)")
 for repo in ranked_repos[:8]:
     chunks = by_repo[repo]
     agg = sum(h.score for h in chunks)
     print(f"  {repo:<32} score={agg:7.3f}  chunks={len(chunks)}")
 print()
 
-# ---- 2. top code chunks for top 5 repos ----
+# ---- 2. top code chunks ----
 print("=== CODE CHUNKS (file:line + excerpt, ≤3 per repo) ===")
 for repo in ranked_repos[:5]:
     for h in by_repo[repo][:3]:
@@ -59,7 +93,7 @@ for repo in ranked_repos[:5]:
         print(f"    {excerpt}")
     print()
 
-# ---- 3. graphify graph context for top 3 repos ----
+# ---- 3. graphify graph context ----
 print("=== GRAPHIFY GRAPH CONTEXT (per top service) ===")
 graphify_bin = "/Users/manikanta/.local/bin/graphify"
 for repo in ranked_repos[:3]:
@@ -75,9 +109,11 @@ for repo in ranked_repos[:3]:
     try:
         out = subprocess.check_output(
             [graphify_bin, "query", query, "--budget", "600", "--graph", str(gpath)],
-            text=True, stderr=subprocess.DEVNULL, timeout=45)
+            text=True, stderr=subprocess.DEVNULL, timeout=30)
         for line in out.splitlines()[:40]:
             print(f"    {line}")
+    except subprocess.TimeoutExpired:
+        print(f"    (graphify timeout after 30s — skipping this repo)")
     except Exception as e:
         print(f"    (graphify failed: {e})")
     print()

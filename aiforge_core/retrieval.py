@@ -57,7 +57,7 @@ def rerank_http(query: str, hits: list[Hit], keep: int) -> list[Hit]:
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout=20) as r:
         resp = json.loads(r.read().decode())
     order = resp["order"]
     scores = resp["scores"]

@@ -93,7 +93,13 @@ class Store:
         self.dsn = dsn
 
     def _connect(self):
-        return psycopg.connect(self.dsn, autocommit=False)
+        conn = psycopg.connect(
+            self.dsn,
+            autocommit=False,
+            connect_timeout=5,
+            options="-c statement_timeout=15000",
+        )
+        return conn
 
     def ensure_schema(self) -> None:
         with self._connect() as c, c.cursor() as cur:
