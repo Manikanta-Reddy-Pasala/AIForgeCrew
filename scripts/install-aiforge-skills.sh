@@ -50,5 +50,12 @@ for skill_dir in "$SKILL_SRC"/*/; do
 done
 
 echo
+echo ">>> installing aiforge-deep-context CLI to ~/.local/bin"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "$REPO_DIR/scripts/aiforge-deep-context" "$HOME/.local/bin/aiforge-deep-context"
+echo "  $HOME/.local/bin/aiforge-deep-context"
+
+echo
 echo "Installed. Verify with:"
 echo "  ls $DEST"
+echo "  aiforge-deep-context 'smoke test query'"

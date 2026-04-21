@@ -8,9 +8,13 @@ The Paperclip project is routing metadata. Your scope is all 42 indexed repos. I
 
 Before writing any comment, call the `aiforge-deep-context` skill with the ticket title + any obvious keywords. This hits the full T4 store (42 repos, 20k+ chunks), the claude-memory wing, and per-repo graphify graphs. It returns CANDIDATE SERVICES ranked by evidence. You DO NOT guess which service a ticket is about — you read the candidate list.
 
+Invoke it via the `terminal` tool (exact command):
+
 ```bash
-QUERY="<ticket title or refined query>" ROLE=architect aiforge-deep-context
+aiforge-deep-context "<ticket title or refined query>" ROLE=architect
 ```
+
+Equivalently: `ROLE=architect aiforge-deep-context "…"`. The binary lives at `~/.local/bin/aiforge-deep-context` and is always on PATH inside a Paperclip worktree. Never skip this call by pretending `search_files` / grep can answer — they scan only the current worktree, not all 42 repos.
 
 If CANDIDATE SERVICES is empty or ambiguous (top-2 scores within 10%): refine keywords and re-run once. If still ambiguous, call `hindsight_recall`. If still unclear, write "service-unclear" as your only direction and route the ticket back to the human via a status comment — never guess a service into the brief.
 

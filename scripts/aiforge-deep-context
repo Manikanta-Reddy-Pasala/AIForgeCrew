@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# aiforge-deep-context — unified retrieval CLI for every AIForgeCrew agent.
+#
+# Usage:
+#   aiforge-deep-context "<natural-language query>"
+#   QUERY="..." ROLE=sr_developer aiforge-deep-context
+#
+# Output (stdout):
+#   === CANDIDATE SERVICES ===
+#   === CODE CHUNKS ===
+#   === GRAPHIFY GRAPH CONTEXT ===
+#   === CLAUDE-MEMORY / MD NOTES ===
+#
+# Timeouts: 120s outer, 20s embed/rerank, 15s pg statement, 30s per graphify query.
+# If it times out, prints "TIMEOUT" line and exits 0 so callers (agents) proceed.
+#
+# Resolved at install time by scripts/install-aiforge-skills.sh if paths change.
+set -u
+
+QUERY="${1:-${QUERY:-}}"
+ROLE="${ROLE:-sr_developer}"           # architect | sr_developer | developer | fact_extract
+SKILL_BUDGET="${SKILL_BUDGET:-120}"
+AIFORGE_PY="${AIFORGE_PY:-/Users/manikanta/AIForgeCrew/.venv/bin/python}"
+
+if [[ -z "$QUERY" ]]; then
+  echo "aiforge-deep-context: query required. Usage: aiforge-deep-context '<query>' [ROLE=sr_developer]" >&2
+  exit 2
+fi
+
+TIMEOUT_BIN="$(command -v gtimeout 2>/dev/null || command -v timeout 2>/dev/null || true)"
+if [[ -z "$TIMEOUT_BIN" ]]; then
+  echo "aiforge-deep-context: no gtimeout/timeout found; running without outer wall-clock guard" >&2
+  TIMEOUT_BIN=""
+fi
+
+run_python() {
+  "$AIFORGE_PY" - "$QUERY" "$ROLE" <<'PY'
+import sys
+from aiforge_core.store_v2 import Store
+from aiforge_core.retrieval import retrieve_for_role
+from collections import defaultdict
+from pathlib import Path
+import subprocess
+
+query = sys.argv[1]
+role  = sys.argv[2]
+
+# --- retrieve with error isolation ---
+try:
+    store = Store(); store.ensure_schema()
+    hits  = retrieve_for_role(store, role, query, parent_id=None)
+except Exception as e:
+    print(f"=== RETRIEVAL ERROR ===\n  {type(e).__name__}: {e}")
+    hits = []
+
+# 1. candidate services
+by_repo = defaultdict(list)
+for h in hits:
+    repo = (h.metadata or {}).get("repo", "?")
+    by_repo[repo].append(h)
+
+print("=== CANDIDATE SERVICES (ranked by evidence) ===")
+ranked = sorted(by_repo, key=lambda r: -sum(h.score for h in by_repo[r]))
+if not ranked:
+    print("  (no hits — retrieval empty or timeout)")
+for repo in ranked[:8]:
+    agg = sum(h.score for h in by_repo[repo])
+    print(f"  {repo:<32} score={agg:7.3f}  chunks={len(by_repo[repo])}")
+print()
+
+# 2. code chunks per top repo
+print("=== CODE CHUNKS (file:line + excerpt, ≤3 per repo) ===")
+for repo in ranked[:5]:
+    for h in by_repo[repo][:3]:
+        meta = h.metadata or {}
+        path = meta.get("path", "?")
+        sym  = meta.get("symbol") or ""
+        excerpt = (h.text or "").replace("\n", " ").strip()[:260]
+        print(f"  [{repo}] {path} {sym}")
+        print(f"    {excerpt}")
+    print()
+
+# 3. graphify per top repo
+print("=== GRAPHIFY GRAPH CONTEXT (per top service) ===")
+graphify_bin = "/Users/manikanta/.local/bin/graphify"
+for repo in ranked[:3]:
+    if repo == "?": continue
+    candidates = [
+        Path.home() / "codeRepo" / repo / "graphify-out" / "graph.json",
+        Path.home() / "AIForgeCrew" / "graphify-out" / "graph.json" if repo in ("aiforge","AIForgeCrew") else None,
+    ]
+    gpath = next((p for p in candidates if p and p.exists()), None)
+    if not gpath:
+        print(f"  -- {repo}: no graph.json --"); continue
+    print(f"  -- {repo} --")
+    try:
+        out = subprocess.check_output(
+            [graphify_bin, "query", query, "--budget", "600", "--graph", str(gpath)],
+            text=True, stderr=subprocess.DEVNULL, timeout=30)
+        for line in out.splitlines()[:40]:
+            print(f"    {line}")
+    except subprocess.TimeoutExpired:
+        print(f"    (graphify timeout after 30s — skipping this repo)")
+    except Exception as e:
+        print(f"    (graphify failed: {e})")
+    print()
+
+# 4. claude-memory
+print("=== CLAUDE-MEMORY / MD NOTES ===")
+cm = [h for h in hits if (h.metadata or {}).get("repo") == "claude-memory"]
+if not cm:
+    print("  (no claude-memory hits for this query)")
+for h in cm[:6]:
+    path = (h.metadata or {}).get("path", "?")
+    excerpt = (h.text or "").replace("\n", " ").strip()[:260]
+    print(f"  [claude-memory] {path}")
+    print(f"    {excerpt}")
+PY
+}
+
+rc=0
+if [[ -n "$TIMEOUT_BIN" ]]; then
+  "$TIMEOUT_BIN" --kill-after=10s "${SKILL_BUDGET}s" bash -c "$(declare -f run_python); run_python" || rc=$?
+else
+  run_python || rc=$?
+fi
+
+if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+  echo
+  echo "aiforge-deep-context: TIMEOUT after ${SKILL_BUDGET}s — partial / empty context returned."
+  echo "Agent: fall back to refine-and-re-run per system prompt fallback chain."
+fi
+
+exit 0

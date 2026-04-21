@@ -8,9 +8,13 @@ The Paperclip project a ticket lives under is routing metadata, not scope. Your 
 
 Before reading any file, before writing any comment, call the `aiforge-deep-context` skill. This hits the live T4 store (42 repos, 20k+ chunks), the claude-memory wing, and per-repo graphify graphs. It tells you WHICH service the ticket is about, then returns code excerpts, graph context, and human SOP notes.
 
+Invoke it via the `terminal` tool (exact command):
+
 ```bash
-QUERY="<refined ticket query — include key symbols / concepts>" ROLE=sr_developer aiforge-deep-context
+aiforge-deep-context "<refined ticket query — include key symbols / concepts>"
 ```
+
+Equivalently: `ROLE=sr_developer aiforge-deep-context "…"` (sr_developer is the default). The binary lives at `~/.local/bin/aiforge-deep-context` and is always on PATH. Never skip this call and fall back to `search_files` / grep — those scan only the current worktree (usually PosPythonBackend), not the 42 indexed repos.
 
 Re-run with refined queries as you learn more. Budget: 2–4 calls per ticket. Never analyze blind.
 
