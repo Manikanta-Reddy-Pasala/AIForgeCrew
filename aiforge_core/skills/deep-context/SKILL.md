@@ -40,14 +40,7 @@ SKILL_BUDGET="${SKILL_BUDGET:-120}"
 # Uses gtimeout (coreutils) on macOS; falls back to `timeout` on Linux.
 TIMEOUT_BIN="$(command -v gtimeout || command -v timeout)"
 
-"$TIMEOUT_BIN" --kill-after=10s "${SKILL_BUDGET}s" {{AIFORGE_PY}} - <<PY || {
-  rc=$?
-  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-    echo "aiforge-deep-context: TIMEOUT after ${SKILL_BUDGET}s — returning partial / empty context."
-    echo "Agent: fall back to 'refine query + re-run' per system prompt fallback chain."
-  fi
-  exit 0
-}
+"$TIMEOUT_BIN" --kill-after=10s "${SKILL_BUDGET}s" {{AIFORGE_PY}} - <<PY
 from aiforge_core.store_v2 import Store
 from aiforge_core.retrieval import retrieve_for_role
 from collections import defaultdict
@@ -129,6 +122,13 @@ for h in cm_hits[:6]:
     print(f"  [claude-memory] {path}")
     print(f"    {excerpt}")
 PY
+rc=$?
+if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+  echo
+  echo "aiforge-deep-context: TIMEOUT after ${SKILL_BUDGET}s — returning partial / empty context."
+  echo "Agent: fall back to 'refine query + re-run' per system prompt fallback chain."
+fi
+exit 0
 ```
 
 ## Output contract
