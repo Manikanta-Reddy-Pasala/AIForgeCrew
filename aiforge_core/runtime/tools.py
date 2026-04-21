@@ -359,7 +359,39 @@ def _tool_retain(ctx: ToolContext, text: str, wing: str, tier: str = "t3") -> To
 
 # ─────────────────────────── helpers ────────────────────────────────────
 def _resolve_path(ctx: ToolContext, path: str) -> str:
+    """Resolve agent-supplied paths.
+
+    Try, in order:
+      1. Absolute path (return as-is if it exists).
+      2. Worktree-relative: <worktree>/<path>.
+      3. WORKTREE_ROOT-relative: ~/codeRepo/<path>  (handles paths that
+         start with the repo name, e.g. 'mongoEventListner/src/…').
+      4. Stripped-repo-prefix: if worktree is inside <repo> and the
+         agent-supplied path starts with '<repo>/', drop that prefix.
+
+    Returns whichever exists; otherwise the worktree-relative form so the
+    caller gets a clean "file not found" error.
+    """
     if os.path.isabs(path):
         return path
+    candidates: list[str] = []
     base = ctx.worktree_path or WORKTREE_ROOT
-    return os.path.abspath(os.path.join(base, path))
+    candidates.append(os.path.abspath(os.path.join(base, path)))
+
+    # try absolute under WORKTREE_ROOT (~/codeRepo)
+    candidates.append(os.path.abspath(os.path.join(WORKTREE_ROOT, path)))
+
+    # strip duplicated repo-name prefix if worktree is under a repo named X
+    # and path starts with 'X/...'
+    if ctx.worktree_path:
+        parts = path.split("/", 1)
+        if len(parts) == 2:
+            repo_name = parts[0]
+            if f"/codeRepo/{repo_name}/" in ctx.worktree_path + "/":
+                candidates.append(os.path.abspath(
+                    os.path.join(ctx.worktree_path, parts[1])))
+
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[0]

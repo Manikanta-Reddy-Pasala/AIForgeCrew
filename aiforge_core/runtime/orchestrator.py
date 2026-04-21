@@ -169,8 +169,13 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
     # Initial messages.
     ctx_bundle = _build_context_bundle(ticket.title, role_cfg.name)
     events_tail = _format_events_tail(ticket.id)
+    # Derive the repo name from the worktree path so the hint is accurate.
+    worktree_repo = None
+    if worktree_path and "/codeRepo/" in worktree_path:
+        worktree_repo = worktree_path.split("/codeRepo/", 1)[1].split("/")[0]
     messages = roles_mod.build_messages(
         role_cfg.name, ticket, ctx_bundle, events_tail,
+        worktree_path=worktree_path, worktree_repo=worktree_repo,
     )
     emit(log, "context.built",
          bundle_chars=len(ctx_bundle), events_chars=len(events_tail))
@@ -179,6 +184,9 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
     turn = 0
     max_turns = min(role_cfg.max_turns, TICK_MAX_TURNS)
     stop_reason = "max_turns"
+    # Loop-guard: if agent repeats the same (tool, args) N times in a row,
+    # we break out with a system nudge so it doesn't burn the wall budget.
+    _recent_calls: list[str] = []
     while turn < max_turns:
         if time.time() - t_start > TICK_MAX_WALL_SECS:
             stop_reason = "wall_timeout"
@@ -226,11 +234,22 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
             break
 
         # Dispatch each tool call, feed results back.
+        looped = False
         for tc in turn_result.tool_calls:
             name = tc["function"]["name"]
             arguments = tc["function"].get("arguments", "{}")
             emit(log, "tool.call", turn=turn, tool=name,
                  args_preview=arguments[:200])
+
+            # Loop-guard: same (tool,args) 3x consecutive → break out with
+            # a system nudge appended to messages so next turn changes course.
+            key = f"{name}::{arguments}"
+            _recent_calls.append(key)
+            _recent_calls[:] = _recent_calls[-3:]
+            if len(_recent_calls) == 3 and len(set(_recent_calls)) == 1:
+                emit(log, "loop.detected", turn=turn, tool=name)
+                looped = True
+
             result = tools_mod.dispatch(ctx, name, arguments)
             emit(log, "tool.result", turn=turn, tool=name,
                  ok=result.ok, dur_ms=(result.meta or {}).get("dur_ms"),
@@ -246,6 +265,26 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
                 "name": name,
                 "content": result.output[:8000],
             })
+
+        if looped:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "STOP REPEATING that same tool call — you've run it 3 "
+                    "times with identical args and the result isn't changing. "
+                    "Change strategy NOW: (a) read_file on a specific path "
+                    "from the CONTEXT bundle, (b) call post_comment with "
+                    "what you already know + a `(speculative)` tag for "
+                    "anything missing, or (c) call create_child_ticket for "
+                    "the implementation and then set_status(status='in_review'). "
+                    "Do not issue that same search again."
+                ),
+            })
+            stop_reason = "loop_detected"
+            # Give the model ONE more turn to recover before we hard-stop.
+            _recent_calls.clear()
+            if turn >= max_turns - 2:
+                break
 
     return {
         "stop_reason": stop_reason, "turns": turn,

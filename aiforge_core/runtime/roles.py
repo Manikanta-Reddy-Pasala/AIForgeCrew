@@ -104,19 +104,39 @@ _ROLE_SYSTEM = {
 
 
 def build_messages(role: str, ticket: Ticket, context_bundle: str,
-                   events_tail: str) -> list[dict]:
+                   events_tail: str, *,
+                   worktree_path: str | None = None,
+                   worktree_repo: str | None = None) -> list[dict]:
     """Construct the OpenAI-style messages list for a tick.
 
     events_tail = last N ticket_events rendered to text, so the agent
     sees prior comments from the Architect / Sr Dev when it picks up.
+    worktree_repo = repo name whose tree the worktree is a checkout of
+      (e.g. 'mongoEventListner'). Used in a loud hint so the model gives
+      relative paths starting from the repo root, not prefixed with the
+      repo name.
     """
     system = _ROLE_SYSTEM[role]
+    wt_hint = ""
+    if worktree_path and worktree_repo:
+        wt_hint = (
+            f"\n\n## Worktree\n"
+            f"You are currently checked into `{worktree_path}` — a worktree of the "
+            f"`{worktree_repo}` repo. File paths in read_file / write_file are "
+            f"resolved against the repo root, so a path like "
+            f"`src/main/java/.../Foo.java` works. **Do NOT prefix paths with "
+            f"`{worktree_repo}/`** — that will miss the file.\n"
+            f"If you need a file from a DIFFERENT repo (e.g. `PosClientBackend`), "
+            f"use an absolute path rooted at `~/codeRepo/<repo>/…`.\n"
+        )
+
     user = (
         f"# Ticket {ticket.identifier}\n"
         f"## Title\n{ticket.title}\n\n"
         f"## Body\n{ticket.body}\n\n"
         f"## Prior events (most recent last)\n{events_tail or '(none)'}\n\n"
-        f"## CONTEXT BUNDLE (aiforge-deep-context)\n{context_bundle}\n"
+        f"## CONTEXT BUNDLE (aiforge-deep-context)\n{context_bundle}"
+        f"{wt_hint}\n"
     )
     return [
         {"role": "system", "content": system},
