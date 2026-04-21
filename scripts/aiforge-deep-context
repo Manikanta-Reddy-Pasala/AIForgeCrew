@@ -47,12 +47,41 @@ except Exception as e:
     print(f"=== RETRIEVAL ERROR ===\n  {type(e).__name__}: {e}")
     hits = []
 
+# ── Two-pass filter: separate hits into (A) high-level docs and (B) service code ──
+DOC_PATH_SUBSTRINGS = (
+    "/CLAUDE.md", "/AGENTS.md", "/GEMINI.md",
+    "/README.md", "/DESIGN.md", "/ARCHITECTURE.md", "/SOLUTION_DESIGN.md",
+    "/docs/", "/memory/", "/runbook", "/overview",
+)
+def _is_doc_hit(h):
+    md = h.metadata or {}
+    if md.get("repo") == "claude-memory":
+        return True
+    p = (md.get("path") or "").lower()
+    return any(sub.lower() in p for sub in DOC_PATH_SUBSTRINGS)
+
+doc_hits  = [h for h in hits if _is_doc_hit(h)]
+code_hits = [h for h in hits if not _is_doc_hit(h)]
+
+# ── Section 0: high-level overview (read this FIRST before narrowing to a service) ──
+print("=== HIGH-LEVEL DOCS (read first — architecture, SOPs, design) ===")
+if not doc_hits:
+    print("  (no doc-layer hits for this query)")
+for h in doc_hits[:6]:
+    md = h.metadata or {}
+    repo = md.get("repo", "?")
+    path = md.get("path", "?")
+    excerpt = (h.text or "").replace("\n", " ").strip()[:320]
+    print(f"  [{repo}] {path}")
+    print(f"    {excerpt}")
+print()
+
 by_repo = defaultdict(list)
-for h in hits:
+for h in code_hits:
     repo = (h.metadata or {}).get("repo", "?")
     by_repo[repo].append(h)
 
-print("=== CANDIDATE SERVICES (ranked by evidence) ===")
+print("=== CANDIDATE SERVICES (ranked by evidence, service-code only) ===")
 ranked = sorted(by_repo, key=lambda r: -sum(h.score for h in by_repo[r]))
 if not ranked:
     print("  (no hits — retrieval empty or timeout)")
@@ -99,15 +128,7 @@ for repo in ranked[:3]:
         print(f"    (graphify failed: {e})")
     print()
 
-print("=== CLAUDE-MEMORY / MD NOTES ===")
-cm = [h for h in hits if (h.metadata or {}).get("repo") == "claude-memory"]
-if not cm:
-    print("  (no claude-memory hits for this query)")
-for h in cm[:6]:
-    path = (h.metadata or {}).get("path", "?")
-    excerpt = (h.text or "").replace("\n", " ").strip()[:260]
-    print(f"  [claude-memory] {path}")
-    print(f"    {excerpt}")
+# Note: CLAUDE-MEMORY / MD hits are shown first in the HIGH-LEVEL DOCS section above.
 PYEOF
 
 rc=0
