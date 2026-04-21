@@ -41,7 +41,7 @@ const root = document.getElementById('root');
 if (root) {
   createRoot(root).render(
     <React.StrictMode>
-      <BrowserRouter>
+      <BrowserRouter basename="/ui">
         <Shell />
       </BrowserRouter>
     </React.StrictMode>,
