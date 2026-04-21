@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Backfill bge-m3 embeddings for memories rows that have NULL embedding.
 
-Used after migrate-hindsight-to-aiforge.sh, or any bulk ingest path that
-doesn't embed inline.
+Used after any bulk ingest path that doesn't embed inline.
 
 Run:
     python scripts/runtime/embed-backfill.py           # process up to 5000

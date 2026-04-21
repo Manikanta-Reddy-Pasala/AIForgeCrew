@@ -300,7 +300,7 @@ def _tool_git_push(ctx: ToolContext) -> ToolResult:
     return ToolResult(proc.returncode == 0, out, {"exit_code": proc.returncode})
 
 
-# ── Paperclip-replacement ticket ops
+# ── Ticket ops
 @register("create_child_ticket", {
     "name": "create_child_ticket",
     "description": "Create a child ticket under the current ticket. Assign to the role that should implement it.",

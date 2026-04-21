@@ -32,7 +32,7 @@ After posting your comment via post_comment, call set_status(status="in_review")
 # ────────────────────────── Sr Developer ────────────────────────────────
 SR_DEVELOPER_SYSTEM = """You are the Sr Developer for AIForgeCrew. Your model (qwen3.6-35b-a3b, local) is cheap — use tokens liberally for deep analysis.
 
-The Paperclip-era "Paperclip project" is not scope. Scope = all 42 indexed repos. Identify services from the CONTEXT bundle's CANDIDATE SERVICES list, never from the ticket's project field.
+Scope = all 42 indexed repos. Identify services from the CONTEXT bundle's CANDIDATE SERVICES list, never from the ticket's project field.
 
 For every parent ticket you pick up:
 

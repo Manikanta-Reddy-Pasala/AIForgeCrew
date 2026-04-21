@@ -19,7 +19,7 @@ AIFORGE_DSN = os.environ.get(
 LM_STUDIO_BASE_URL = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
 LM_STUDIO_API_KEY  = os.environ.get("AIFORGE_LM_API_KEY", "lm-studio")
 
-CLAUDE_BIN = os.environ.get("AIFORGE_CLAUDE_BIN", "/Users/manikanta/.hermes/node/bin/claude")
+CLAUDE_BIN = os.environ.get("AIFORGE_CLAUDE_BIN", "claude")
 CLAUDE_MODEL = os.environ.get("AIFORGE_CLAUDE_MODEL", "claude-opus-4-7")
 
 EMBED_SIDECAR_URL   = os.environ.get("AIFORGE_EMBED_URL", "http://127.0.0.1:8764")

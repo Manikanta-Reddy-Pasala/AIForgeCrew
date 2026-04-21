@@ -1,6 +1,6 @@
 """Ticket + ticket_event CRUD on aiforge Postgres.
 
-Replaces Paperclip as the source of truth for work items.
+Source of truth for work items.
 
 Public surface:
     new_identifier()                 -> str            # atomic ONE-<n>

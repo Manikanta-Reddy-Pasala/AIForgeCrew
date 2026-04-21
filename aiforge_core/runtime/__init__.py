@@ -1,6 +1,5 @@
 """AIForge v5 orchestrator runtime.
 
-Replaces hermes + Paperclip-heartbeat with a small Python orchestrator
-driven by the OpenAI Agents SDK for tool-loop execution. One tick per
-role per launchd timer firing.
+Single-Postgres tick-based orchestrator. One tick per role per launchd
+timer firing. Per-role fcntl lock, claim_next → tool loop → finalize.
 """

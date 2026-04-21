@@ -1,4 +1,0 @@
-model,ctx,bank,ticket,file_created,test_created,branch,commit_sha,pr_url,hallucinated,wall_seconds,input_tokens,output_tokens,final_status
-qwen3.6-35b-a3b,262144,PNB,ONE-25,1,1,aiforge/ONE-25-pnb-bank-ocr,ea2830e1d595fc1f98c321a92effa6bb892a9c24,https://github.com/OneShellSolutions/PosPythonBackend/pull/2,0,~300,?,?,done
-qwen3-coder-next-80b-a3b,65536,CANARA,ONE-26,1,1,aiforge/ONE-26-canara-bank-ocr,15d5cfa,https://github.com/OneShellSolutions/PosPythonBackend/pull/3,0,~720,?,?,done
-gemma-4-26b-a4b-it,131072,BOB,ONE-27,0,0,,,,0,~300,?,?,blocked

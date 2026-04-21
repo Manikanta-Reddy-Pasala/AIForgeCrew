@@ -1,9 +1,4 @@
-"""Paperclip — AIForgeCrew orchestrator.
-
-Phase P1 runtime. Reads `paperclip.config.yml` + `agents/<role>/permissions.yml`,
-persists tickets + comments + audit in SQLite (`.paperclip/paperclip.db`).
-All state transitions must match DESIGN.md §4 lifecycle.
-"""
+"""AIForgeCrew v5 runtime package."""
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "5.0.0"

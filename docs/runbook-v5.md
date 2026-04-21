@@ -33,7 +33,7 @@ LM Studio load-time TTL: 8 h. Prompts live in `agents/<role>/system-prompt.md` (
 | Tier | Wing pattern | Populator | Lifetime |
 |---|---|---|---|
 | T1 episodic | `ticket/<id>` | orchestrator tool-calls | ticket lifetime |
-| T2 canon | `rules/canon`, `rules/*` | hindsight migration + Architect `retain_fact` | permanent |
+| T2 canon | `rules/canon`, `rules/*` | seeded 145 rules + Architect `retain_fact` | permanent |
 | T3 skills/patterns | `skills/*`, `patterns/*` | Sr Dev / Developer / Fact Extract `retain_fact` | permanent |
 | T4 code | `code/<repo>`, `code/claude-memory` | `scripts/bulk-index-all-repos.sh` | rebuilt on post-commit hook |
 | graph | `~/codeRepo/<repo>/graphify-out/graph.json` | graphify CLI | rebuilt on post-commit hook |

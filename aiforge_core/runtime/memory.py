@@ -5,7 +5,7 @@ so tools.py can expose a single `search` and `retain_fact` surface to the LLM.
 
 All tiers live in one Postgres table (`memories`) on the aiforge DB:
   T1 episodic  wing = ticket/<identifier>
-  T2 canon     wing = rules/*     (hindsight migration target)
+  T2 canon     wing = rules/*
   T3 skills    wing = skills/*, patterns/*
   T4 code      wing = code/<repo>, code/claude-memory
 """
@@ -84,9 +84,8 @@ class Memory:
     ) -> int:
         """Persist a net-new fact into the memories table.
 
-        Defaults: tier=t2 (canon) + wing=rules/canon, i.e. the bucket we
-        migrated hindsight into. Fact Extract typically writes to
-        tier=t3 + wing='patterns/<topic>' for recipe-style facts.
+        Defaults: tier=t2 (canon) + wing=rules/canon. Fact Extract typically
+        writes to tier=t3 + wing='patterns/<topic>' for recipe-style facts.
         """
         if not text or not text.strip():
             raise ValueError("retain_fact: text is empty")

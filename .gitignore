@@ -42,10 +42,6 @@ models/
 # Runtime
 logs/
 *.log
-.hermes/
-.mem0/
-.rag-index/
-.paperclip/
 .aiforge/
 
 # Tooling local state
@@ -55,8 +51,11 @@ logs/
 coverage/
 .coverage
 htmlcov/
-!aiforge_core/skills/coverage/
 
-# Graphify intermediates (keep GRAPH_REPORT.md and graph.json at root)
+# Vite build output
+web/dist/
+web/node_modules/
+
+# Graphify intermediates
 graphify-out/cache/
 graphify-out/*.log
