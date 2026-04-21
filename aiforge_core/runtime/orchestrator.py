@@ -822,9 +822,10 @@ def tick(role_name: str) -> int:
         emit(log, "tick.start", ticket=ticket.identifier, title=ticket.title)
         try:
             tickets.update_status(ticket.id, "in_progress", role=role_name)
-            # RAM guard: ensure this role's model is loaded at the desired ctx
-            # before we hit the LLM. Evicts LRU non-protected models first.
+            # RAM guard: first enforce global (active + wired) ceiling, then
+            # ensure this role's model is loaded at the desired ctx.
             if rc.transport == "openai":
+                memguard.enforce_ram_ceiling(log, reason=f"pre-{role_name}")
                 memguard.ensure_loaded(rc.model, rc.ctx, rc.ttl_s, log)
             worktree = _ensure_branch_and_worktree(ticket)
             emit(log, "worktree.prepared",

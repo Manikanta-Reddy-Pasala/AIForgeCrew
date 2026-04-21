@@ -33,9 +33,12 @@ BUDGET_GB = float(os.environ.get("AIFORGE_RAM_BUDGET_GB", "75"))
 # 1.15 accounts for KV + framework overhead for actively inferring models.
 _RAM_OVERHEAD = float(os.environ.get("AIFORGE_RAM_OVERHEAD", "1.15"))
 # Post-tick behaviour: after a tick completes on a NON-protected role,
-# immediately unload the role's model to free its KV cache. Saves ~1-3 GB
-# of actual RSS (not weights — those are mmap'd) without waiting for TTL.
+# immediately unload the role's model to free its KV cache.
 RELEASE_AFTER_TICK = os.environ.get("AIFORGE_MEMGUARD_RELEASE", "1") == "1"
+# Hard RAM ceiling on actual macOS (active + wired) combined pages.
+# When breached, memguard will unload non-protected first, then fall back
+# to protected if still over. Keeps the system out of swap/compression.
+RAM_CEILING_GB = float(os.environ.get("AIFORGE_RAM_CEILING_GB", "85"))
 DISABLE = os.environ.get("AIFORGE_MEMGUARD_DISABLE") == "1"
 
 # Models never evicted by memguard. Their tick traffic dominates.
@@ -183,6 +186,81 @@ def _evict_one_lru(loaded: dict[str, LoadedModel], exclude: set[str],
     if _lms_unload(victim.identifier, log):
         return victim.identifier
     return None
+
+
+def _host_ram_used_gb() -> float:
+    """Return macOS (active + wired) RAM in GB. 0.0 on parse failure."""
+    try:
+        proc = subprocess.run(["vm_stat"], capture_output=True, timeout=5,
+                              check=False, text=True)
+    except Exception:
+        return 0.0
+    active_pages = 0
+    wired_pages = 0
+    page_size = 16384
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("Mach Virtual Memory Statistics"):
+            # header line
+            import re
+            m = re.search(r"\(page size of (\d+) bytes\)", line)
+            if m:
+                page_size = int(m.group(1))
+            continue
+        parts = line.split(":")
+        if len(parts) != 2:
+            continue
+        key = parts[0].lower()
+        val = parts[1].strip().rstrip(".")
+        if not val.isdigit():
+            continue
+        n = int(val)
+        if "pages active" in key:
+            active_pages = n
+        elif "pages wired down" in key:
+            wired_pages = n
+    return round((active_pages + wired_pages) * page_size / (1024 ** 3), 2)
+
+
+def enforce_ram_ceiling(log, reason: str = "pre-load") -> None:
+    """If (active + wired) RAM exceeds RAM_CEILING_GB, evict models until
+    under ceiling. Evicts non-protected first; falls back to protected
+    models if still over. Meant to run at tick-start before ensure_loaded."""
+    if DISABLE:
+        return
+    used_gb = _host_ram_used_gb()
+    if used_gb <= 0 or used_gb <= RAM_CEILING_GB:
+        return
+    emit(log, "memguard.ceiling_breach",
+         used_gb=used_gb, ceiling_gb=RAM_CEILING_GB, reason=reason)
+    loaded = _lms_ps()
+    # Pass 1: evict non-protected LRU
+    candidates = sorted(
+        (m for m in loaded.values() if m.identifier not in PROTECTED_MODELS),
+        key=lambda m: m.ttl_remaining_s,
+    )
+    for victim in candidates:
+        if _lms_unload(victim.identifier, log):
+            emit(log, "memguard.ceiling_evict",
+                 model=victim.identifier, protected=False)
+        used_gb = _host_ram_used_gb()
+        if used_gb <= RAM_CEILING_GB:
+            return
+    # Pass 2: if still over, evict protected (Planner first — Doer does
+    # the actual work and is more expensive to cold-reload).
+    loaded = _lms_ps()
+    prot_order = ["qwen3.6-35b-a3b", "qwen3-coder-next"]
+    for name in prot_order:
+        if name in loaded:
+            if _lms_unload(name, log):
+                emit(log, "memguard.ceiling_evict",
+                     model=name, protected=True)
+            used_gb = _host_ram_used_gb()
+            if used_gb <= RAM_CEILING_GB:
+                return
+    # Still over — log + give up. System compressor will handle it.
+    emit(log, "memguard.ceiling_over",
+         used_gb=_host_ram_used_gb(), ceiling_gb=RAM_CEILING_GB)
 
 
 def release_after_tick(identifier: str, log) -> None:
