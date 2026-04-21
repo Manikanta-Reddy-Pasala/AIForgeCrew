@@ -94,7 +94,7 @@ PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3.6-35b-a3b")
 DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3-coder-next")
 FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL", "gemma-3-12b-it")
 LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",
-                                  "qwen/qwen3-4b-thinking-2507")
+                                  "phi-4-mini-reasoning")
 
 # Supervisor transport — flip to claude_cli for cloud oversight on tough
 # routing calls. Default = local gemma-4-26b (fast + fits memory budget).

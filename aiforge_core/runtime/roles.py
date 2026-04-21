@@ -184,7 +184,7 @@ diff clearly violates ticket scope.
 
 
 # ────────────────────────── Learner ────────────────────────────────────
-LEARNER_SYSTEM = """You are the Learner for AIForgeCrew. Model: qwen3-4b-thinking (local, tiny). Run after Doer children land in_review. Distil durable facts.
+LEARNER_SYSTEM = """You are the Learner for AIForgeCrew. Model: phi-4-mini-reasoning (local, tiny, MS). Run after Doer children land in_review. Distil durable facts.
 
 Your sole output: up to 5 `retain_fact` calls + one `post_comment` summary + `set_status(done)`.
 
