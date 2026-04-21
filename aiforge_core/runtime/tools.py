@@ -394,6 +394,312 @@ def _tool_retain(ctx: ToolContext, text: str, wing: str, tier: str = "t3") -> To
                       {"memory_id": rid})
 
 
+# ── related_tickets (find similar tickets by embedding)
+@register("related_tickets", {
+    "name": "related_tickets",
+    "description": "Find tickets similar to the current one (or a free-text query) by embedding similarity. Returns identifier + title + status + snippet.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "optional — defaults to the current ticket's title+body"},
+            "top_k": {"type": "integer", "default": 5},
+        },
+    },
+})
+def _tool_related_tickets(ctx: ToolContext, query: str | None = None,
+                          top_k: int = 5) -> ToolResult:
+    t = tickets.get(ctx.ticket_id)
+    if t is None:
+        return ToolResult(False, "current ticket not found", {})
+    q = query or f"{t.title}\n{t.body[:2000]}"
+    mem = memory.Memory()
+    # Look for ticket-wing memories first (T1 episodic we auto-write on finalize),
+    # then fall back to cross-tier similarity.
+    hits = mem.search(q, role=ctx.role, top_k=max(top_k * 3, 15))
+    seen: set[str] = set()
+    rows: list[str] = []
+    for h in hits:
+        wing = (h.metadata or {}).get("wing", "")
+        if not wing.startswith("ticket/"):
+            continue
+        ident = wing.split("/", 1)[1]
+        if ident == t.identifier or ident in seen:
+            continue
+        seen.add(ident)
+        rel = tickets.get(ident)
+        if rel is None:
+            continue
+        rows.append(
+            f"  {rel.identifier:<8}  {rel.status:<12}  {rel.assignee_role or '-':<14}  "
+            f"{rel.title[:60]}"
+        )
+        if len(rows) >= top_k:
+            break
+    if not rows:
+        return ToolResult(True, "(no related tickets yet — T1 memory is still warming up)",
+                          {"count": 0})
+    return ToolResult(True, "\n".join(rows), {"count": len(rows)})
+
+
+# ── graph_neighbors (read graphify-out/graph.json for file-level neighbours)
+@register("graph_neighbors", {
+    "name": "graph_neighbors",
+    "description": "Return files in the code knowledge graph that reference OR are referenced by the given file. Works only for repos indexed by graphify. Good first call when you want to see a call-site map.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string", "description": "repo-relative path, e.g. 'src/main/java/.../Foo.java'"},
+            "depth": {"type": "integer", "default": 1, "description": "1 = direct neighbours; 2 = 2-hop"},
+            "limit": {"type": "integer", "default": 20},
+        },
+        "required": ["file_path"],
+    },
+})
+def _tool_graph_neighbors(ctx: ToolContext, file_path: str, depth: int = 1,
+                          limit: int = 20) -> ToolResult:
+    # find repo root (walk up the worktree looking for graphify-out/graph.json)
+    base = ctx.worktree_path or WORKTREE_ROOT
+    # worktrees live at <repo>/.aiforge-worktrees/<PARENT>; graphify-out at <repo> root.
+    repo_root = base
+    for _ in range(4):
+        cand = os.path.join(repo_root, "graphify-out", "graph.json")
+        if os.path.isfile(cand):
+            graph_path = cand
+            break
+        parent = os.path.dirname(repo_root)
+        if parent == repo_root:
+            return ToolResult(False, "graph.json not found walking up from worktree", {})
+        repo_root = parent
+    else:
+        return ToolResult(False, "no graphify-out/graph.json within 4 levels", {})
+
+    try:
+        with open(graph_path, "r", encoding="utf-8") as f:
+            graph = json.load(f)
+    except Exception as e:
+        return ToolResult(False, f"graph.json load failed: {e}", {})
+
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    # normalise target path
+    target = file_path
+    if target.startswith(repo_root):
+        target = target[len(repo_root):].lstrip("/")
+
+    def _match(n: dict) -> bool:
+        p = n.get("path") or n.get("file") or n.get("id") or ""
+        return p.endswith(target) or target in p
+
+    hit_ids = {n.get("id") for n in nodes if _match(n)}
+    if not hit_ids:
+        return ToolResult(True, f"(no graph node matches {target!r})", {"count": 0})
+
+    frontier = set(hit_ids)
+    neighbours: set[str] = set()
+    for _ in range(max(1, depth)):
+        new_neighbours = set()
+        for e in edges:
+            src, dst = e.get("source") or e.get("from"), e.get("target") or e.get("to")
+            if src in frontier and dst not in hit_ids and dst not in neighbours:
+                new_neighbours.add(dst)
+            if dst in frontier and src not in hit_ids and src not in neighbours:
+                new_neighbours.add(src)
+        if not new_neighbours:
+            break
+        neighbours |= new_neighbours
+        frontier = new_neighbours
+
+    id_to_path = {n.get("id"): (n.get("path") or n.get("file") or n.get("id"))
+                  for n in nodes}
+    rows = sorted({id_to_path.get(nid, nid) for nid in neighbours if id_to_path.get(nid)})
+    if not rows:
+        return ToolResult(True, f"no neighbours found for {target}", {"count": 0})
+    return ToolResult(True, "\n".join(rows[:limit]),
+                      {"count": min(len(rows), limit), "total": len(rows),
+                       "graph": graph_path})
+
+
+# ── kubectl_read (safe subset: get/describe/logs/top only; TLS skip enforced)
+_KUBECTL_ALLOWED_VERBS = {"get", "describe", "logs", "top", "version", "api-resources",
+                          "cluster-info", "config"}
+_KUBECTL_FORBIDDEN = {"apply", "delete", "patch", "edit", "replace", "scale",
+                      "rollout", "exec", "cp", "create", "run", "port-forward",
+                      "proxy", "drain", "cordon", "uncordon", "taint"}
+
+
+@register("kubectl_read", {
+    "name": "kubectl_read",
+    "description": "Run a READ-ONLY kubectl command (get/describe/logs/top) against the OneShell cluster. Auto-appends --insecure-skip-tls-verify. Forbidden: apply/delete/patch/exec/run/port-forward.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "args": {"type": "string",
+                     "description": "args after 'kubectl', e.g. 'get pods -n pos' or 'logs deployment/posclientbackend -n pos --tail=200'"},
+            "timeout_s": {"type": "integer", "default": 60},
+        },
+        "required": ["args"],
+    },
+})
+def _tool_kubectl_read(ctx: ToolContext, args: str, timeout_s: int = 60) -> ToolResult:
+    try:
+        parts = shlex.split(args)
+    except ValueError as e:
+        return ToolResult(False, f"could not parse args: {e}", {})
+    if not parts:
+        return ToolResult(False, "empty args", {})
+    verb = parts[0]
+    if verb in _KUBECTL_FORBIDDEN:
+        return ToolResult(False, f"forbidden verb {verb!r}; kubectl_read is read-only",
+                          {"error": "forbidden"})
+    if verb not in _KUBECTL_ALLOWED_VERBS:
+        return ToolResult(False,
+                          f"verb {verb!r} not allowlisted; use: {sorted(_KUBECTL_ALLOWED_VERBS)}",
+                          {"error": "not_allowed"})
+    cmd = ["kubectl", *parts, "--insecure-skip-tls-verify"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout_s, check=False)
+    except subprocess.TimeoutExpired:
+        return ToolResult(False, f"kubectl timeout after {timeout_s}s", {"error": "timeout"})
+    except FileNotFoundError:
+        return ToolResult(False, "kubectl binary missing on this host", {"error": "no_kubectl"})
+    out = (proc.stdout + proc.stderr).decode("utf-8", "replace")[:10_240]
+    return ToolResult(proc.returncode == 0,
+                      f"exit={proc.returncode}\n{out}",
+                      {"exit_code": proc.returncode})
+
+
+# ── mongo_query (read-only find/aggregate against sharded cluster)
+_MONGO_READ_OPS = {"find", "findOne", "countDocuments", "aggregate", "distinct",
+                   "stats", "listCollections"}
+_MONGO_DEFAULT_NS = "mongodb"
+_MONGO_DEFAULT_POD = "prod-cluster-mongos-0"
+_MONGO_DEFAULT_DB = "oneshell"
+_MONGO_URI = os.environ.get(
+    "AIFORGE_MONGO_URI",
+    "mongodb://databaseAdmin:akyFqNelEclMhlkNx06c@localhost:27017/oneshell?authSource=admin",
+)
+
+
+@register("mongo_query", {
+    "name": "mongo_query",
+    "description": "Run a READ-ONLY mongosh query against prod MongoDB via kubectl exec of the mongos pod. Operations: find, findOne, countDocuments, aggregate, distinct, stats. Arguments are a mongosh snippet expression. 60s timeout. 10KB output cap.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "collection": {"type": "string",
+                           "description": "e.g. 'changeStreamEventErrors', 'productTxn', 'sales'"},
+            "operation": {"type": "string", "enum": sorted(list(_MONGO_READ_OPS))},
+            "query_expr": {"type": "string",
+                           "description": "the expression given to mongosh, e.g. '{resolved:false}' for find, or '[{$match:{...}},{$limit:5}]' for aggregate"},
+            "limit": {"type": "integer", "default": 20},
+            "db": {"type": "string", "default": _MONGO_DEFAULT_DB},
+        },
+        "required": ["collection", "operation", "query_expr"],
+    },
+})
+def _tool_mongo_query(ctx: ToolContext, collection: str, operation: str,
+                      query_expr: str, limit: int = 20,
+                      db: str = _MONGO_DEFAULT_DB) -> ToolResult:
+    if operation not in _MONGO_READ_OPS:
+        return ToolResult(False, f"op {operation!r} not allowed (read-only tool)",
+                          {"error": "not_allowed"})
+    # crude guard against injected write ops inside the expression
+    bad_tokens = ("insertOne", "insertMany", "updateOne", "updateMany",
+                  "deleteOne", "deleteMany", "drop(", "remove(", "replaceOne",
+                  "$out", "$merge", "bulkWrite", "renameCollection")
+    if any(tok in query_expr for tok in bad_tokens):
+        return ToolResult(False, "expression contains a write-op token; rejected",
+                          {"error": "write_in_expr"})
+    if operation == "aggregate":
+        expr = f"db.{collection}.aggregate({query_expr}).toArray().slice(0, {limit})"
+    elif operation == "find":
+        expr = (f"db.{collection}.find({query_expr}).limit({limit}).toArray()")
+    elif operation == "findOne":
+        expr = f"db.{collection}.findOne({query_expr})"
+    elif operation == "countDocuments":
+        expr = f"db.{collection}.countDocuments({query_expr})"
+    elif operation == "distinct":
+        expr = f"db.{collection}.distinct({query_expr})"
+    elif operation == "stats":
+        expr = f"db.{collection}.stats()"
+    elif operation == "listCollections":
+        expr = "db.getCollectionNames()"
+    script = f"use {db}; printjson({expr})"
+    cmd = [
+        "kubectl", "exec", "-n", _MONGO_DEFAULT_NS, _MONGO_DEFAULT_POD,
+        "--insecure-skip-tls-verify", "--",
+        "mongosh", _MONGO_URI, "--quiet", "--eval", script,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=60, check=False)
+    except subprocess.TimeoutExpired:
+        return ToolResult(False, "mongo_query timeout after 60s", {"error": "timeout"})
+    except FileNotFoundError:
+        return ToolResult(False, "kubectl missing on this host", {"error": "no_kubectl"})
+    out = (proc.stdout + proc.stderr).decode("utf-8", "replace")[:10_240]
+    return ToolResult(proc.returncode == 0,
+                      f"exit={proc.returncode}\n{out}",
+                      {"exit_code": proc.returncode, "op": operation,
+                       "collection": collection})
+
+
+# ── read_claude_memory (agent consultation of human's ~/.claude/memory/*.md)
+_CLAUDE_MEMORY_DIR = os.environ.get(
+    "AIFORGE_CLAUDE_MEMORY_DIR",
+    os.path.expanduser("~/.claude/memory"),
+)
+
+
+@register("read_claude_memory", {
+    "name": "read_claude_memory",
+    "description": "Read the human operator's personal claude-memory markdown index. These files capture domain notes, decisions, and SOPs that are NOT in the repo. Use when you need business/operator context the code alone doesn't explain.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "grep-style pattern across all memory files"},
+            "file": {"type": "string", "description": "optional — read a specific file by name"},
+            "limit": {"type": "integer", "default": 40, "description": "max matching lines"},
+        },
+    },
+})
+def _tool_read_claude_memory(ctx: ToolContext, query: str | None = None,
+                             file: str | None = None, limit: int = 40) -> ToolResult:
+    if not os.path.isdir(_CLAUDE_MEMORY_DIR):
+        return ToolResult(False, f"claude-memory dir not present: {_CLAUDE_MEMORY_DIR}",
+                          {"error": "no_dir"})
+    if file:
+        path = os.path.join(_CLAUDE_MEMORY_DIR, file)
+        if not os.path.isfile(path):
+            return ToolResult(False, f"claude-memory file not found: {file}", {})
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            body = f.read(12_288)
+        return ToolResult(True, body, {"path": path})
+    if not query:
+        return ToolResult(False, "either 'query' or 'file' required", {"error": "bad_args"})
+    # cheap grep across .md files, return ranked lines
+    import re
+    pat = re.compile(query, re.IGNORECASE)
+    hits: list[str] = []
+    for fn in sorted(os.listdir(_CLAUDE_MEMORY_DIR), reverse=True):
+        if not fn.endswith(".md"):
+            continue
+        path = os.path.join(_CLAUDE_MEMORY_DIR, fn)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    if pat.search(line):
+                        hits.append(f"{fn}:{i}: {line.rstrip()[:200]}")
+                        if len(hits) >= limit:
+                            break
+        except Exception:
+            continue
+        if len(hits) >= limit:
+            break
+    if not hits:
+        return ToolResult(True, f"(no claude-memory hits for {query!r})", {"count": 0})
+    return ToolResult(True, "\n".join(hits), {"count": len(hits)})
+
+
 # ─────────────────────────── helpers ────────────────────────────────────
 def _resolve_path(ctx: ToolContext, path: str) -> str:
     """Resolve agent-supplied paths.

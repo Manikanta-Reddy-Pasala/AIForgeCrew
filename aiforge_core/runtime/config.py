@@ -58,16 +58,21 @@ _ALL_DEV_TOOLS = (
     "search", "read_file", "run_shell", "fetch_url",
     "write_file", "edit", "git_commit", "git_push",
     "create_child_ticket", "post_comment", "set_status", "retain_fact",
+    "related_tickets", "graph_neighbors", "kubectl_read", "read_claude_memory",
 )
 _PLANNER_TOOLS = (
     "search", "read_file", "run_shell", "fetch_url",
     "create_child_ticket", "post_comment", "set_status", "retain_fact",
+    "related_tickets", "graph_neighbors", "kubectl_read", "mongo_query",
+    "read_claude_memory",
 )
 _ARCHITECT_TOOLS = (
     "search", "read_file", "create_child_ticket", "post_comment", "set_status",
+    "related_tickets", "read_claude_memory",
 )
 _FACT_TOOLS = (
     "search", "retain_fact", "post_comment", "set_status",
+    "related_tickets", "read_claude_memory",
 )
 
 

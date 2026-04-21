@@ -78,6 +78,95 @@ def _build_context_bundle(ticket_title: str, role: str) -> str:
         return "(deep-context binary missing — agent should call search tool)"
 
 
+def _linked_tickets_block(ticket: tickets.Ticket) -> str:
+    """Render parent + siblings + embedding-related tickets for the prompt."""
+    out: list[str] = []
+
+    # Parent
+    if ticket.parent_id:
+        parent = tickets.get(ticket.parent_id)
+        if parent is not None:
+            out.append("## PARENT")
+            out.append(f"  {parent.identifier}  {parent.status}  {parent.title}")
+            summary = (parent.body or "").strip().replace("\n", " ")[:300]
+            if summary:
+                out.append(f"    body: {summary}")
+
+    # Siblings (same parent)
+    if ticket.parent_id:
+        sibs = [s for s in tickets.children(ticket.parent_id) if s.id != ticket.id]
+        if sibs:
+            out.append("")
+            out.append(f"## SIBLINGS ({len(sibs)}) — same parent, shared branch")
+            for s in sibs[:10]:
+                out.append(
+                    f"  {s.identifier:<8} {s.status:<12} {s.assignee_role or '-':<14}  "
+                    f"{s.title[:70]}"
+                )
+
+    # Direct children of this ticket (for sr_dev picking up an in-review parent)
+    kids = tickets.children(ticket.id)
+    if kids:
+        out.append("")
+        out.append(f"## CHILDREN ({len(kids)})")
+        for c in kids[:10]:
+            out.append(
+                f"  {c.identifier:<8} {c.status:<12} {c.assignee_role or '-':<14}  "
+                f"{c.title[:70]}"
+            )
+
+    # Embedding-related tickets via T1 episodic wing
+    try:
+        from .memory import Memory
+        m = Memory()
+        q = f"{ticket.title}\n{(ticket.body or '')[:1500]}"
+        hits = m.search(q, role="sr_developer", top_k=25)
+        seen: set[str] = {ticket.identifier}
+        rows: list[str] = []
+        for h in hits:
+            wing = (h.metadata or {}).get("wing", "") or ""
+            if not wing.startswith("ticket/"):
+                continue
+            ident = wing.split("/", 1)[1]
+            if ident in seen:
+                continue
+            seen.add(ident)
+            related = tickets.get(ident)
+            if related is None:
+                continue
+            rows.append(
+                f"  {related.identifier:<8} {related.status:<12}  "
+                f"{related.title[:70]}"
+            )
+            if len(rows) >= 5:
+                break
+        if rows:
+            out.append("")
+            out.append("## RELATED (embedding-similar, done elsewhere)")
+            out.extend(rows)
+    except Exception:
+        # memory backend unreachable → skip silently, don't fail the tick
+        pass
+
+    return "\n".join(out) if out else ""
+
+
+def _graph_hint(worktree_path: str | None) -> str:
+    """If the worktree's repo has graphify-out/graph.json, mention it so the
+    agent knows graph_neighbors is available here."""
+    if not worktree_path:
+        return ""
+    repo_root = worktree_path
+    for _ in range(4):
+        if os.path.isfile(os.path.join(repo_root, "graphify-out", "graph.json")):
+            return f"\n## GRAPH\n  `{repo_root}/graphify-out/graph.json` present. Call `graph_neighbors(file_path)` for call-site maps.\n"
+        parent = os.path.dirname(repo_root)
+        if parent == repo_root:
+            return ""
+        repo_root = parent
+    return ""
+
+
 def _format_events_tail(ticket_id: int, limit: int = 20) -> str:
     events = tickets.comments(ticket_id, limit=limit)
     if not events:
@@ -210,8 +299,15 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
     )
     tool_schemas = tools_mod.schemas(role_cfg.tool_allowlist)
 
-    # Initial messages.
+    # Initial messages. Context bundle = deep-context CLI + linked tickets
+    # (parent/siblings/children/related) + graph hint.
     ctx_bundle = _build_context_bundle(ticket.title, role_cfg.name)
+    linked = _linked_tickets_block(ticket)
+    if linked:
+        ctx_bundle = f"{ctx_bundle}\n\n{linked}"
+    g_hint = _graph_hint(worktree_path)
+    if g_hint:
+        ctx_bundle = f"{ctx_bundle}\n{g_hint}"
     events_tail = _format_events_tail(ticket.id)
     # Derive the repo name from the worktree path so the hint is accurate.
     worktree_repo = None
@@ -475,6 +571,9 @@ def _finalize_ticket(ticket: tickets.Ticket, role_name: str,
              has_commented=has_commented)
         tickets.update_status(fresh.id, target, role=role_name,
                               metadata_patch=patch)
+        if target == "in_review":
+            _write_t1_memory(fresh, role_name, summary, log)
+            _maybe_queue_fact_extract(fresh, role_name, log)
         return
 
     # Wall timeout, max_turns, loop_detected → block for review.
@@ -485,6 +584,132 @@ def _finalize_ticket(ticket: tickets.Ticket, role_name: str,
         metadata_patch={"last_blocked_reason": reason,
                         "last_stop_reason": reason},
     )
+
+
+# ─────────────────────────── Memory write-back ──────────────────────────
+def _write_t1_memory(ticket: tickets.Ticket, role_name: str, summary: dict,
+                     log) -> None:
+    """Auto-upsert a T1 episodic memory for this ticket.
+
+    Wing = ticket/<identifier>. Text = title + last agent comment + commit
+    sha (if any) so `search` + `related_tickets` can surface it later.
+    No LLM needed — orchestrator gathers the data from events.
+    """
+    try:
+        from .memory import Memory
+        with tickets._conn() as c, c.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT kind, body, metadata FROM ticket_events "
+                "WHERE ticket_id=%s ORDER BY created_at DESC LIMIT 40",
+                (ticket.id,),
+            )
+            evts = cur.fetchall()
+        last_comment = ""
+        commits: list[str] = []
+        files_touched: set[str] = set()
+        for e in evts:
+            if not last_comment and e["kind"] == "comment":
+                last_comment = (e["body"] or "")[:1500]
+            if e["kind"] == "tool_call":
+                meta = e.get("metadata") or {}
+                tool = meta.get("tool")
+                body = (e.get("body") or "")
+                if tool == "git_commit" and "]" not in body[:20]:
+                    # crude: first 12 chars of new sha appear in stdout
+                    for line in body.splitlines():
+                        if len(line) >= 7 and all(
+                            c in "0123456789abcdef " for c in line[:7]):
+                            commits.append(line.split()[0][:12])
+                            break
+                if tool in ("edit", "write_file"):
+                    args = meta.get("args_preview") or body
+                    # extract path=... from the args preview
+                    import re
+                    m = re.search(r'"path"\s*:\s*"([^"]+)"', args)
+                    if m:
+                        files_touched.add(m.group(1))
+
+        parts = [
+            f"{ticket.identifier}: {ticket.title}",
+            f"status={ticket.status}  duration={summary.get('wall_s')}s  "
+            f"turns={summary.get('turns')}  by={role_name}",
+        ]
+        if commits:
+            parts.append(f"commits: {', '.join(sorted(set(commits))[:3])}")
+        if files_touched:
+            fs = sorted(files_touched)[:8]
+            parts.append("files: " + ", ".join(fs))
+        if last_comment:
+            parts.append("summary: " + last_comment)
+        text = "\n".join(parts)[:4000]
+
+        mem = Memory()
+        rid = mem.retain_fact(
+            text=text, tier="t1",
+            wing=f"ticket/{ticket.identifier}",
+            source=f"orchestrator.finalize@{role_name}",
+            metadata={
+                "ticket": ticket.identifier,
+                "assignee_role": ticket.assignee_role,
+                "parent_id": ticket.parent_id,
+                "commits": list(sorted(set(commits)))[:3],
+                "files": sorted(files_touched)[:8],
+                "wing": f"ticket/{ticket.identifier}",
+            },
+        )
+        emit(log, "t1.written", ticket=ticket.identifier, memory_id=rid,
+             chars=len(text))
+    except Exception as exc:
+        emit(log, "t1.write_failed", ticket=ticket.identifier,
+             error=str(exc)[:200])
+
+
+def _maybe_queue_fact_extract(ticket: tickets.Ticket, role_name: str,
+                              log) -> None:
+    """When the Developer lands a child ticket in in_review with a commit,
+    auto-queue a fact_extract sibling to distil T3 skills/patterns.
+
+    Safeguards:
+      - Only triggers for role_name=='developer' (implementation role).
+      - Skips if a fact_extract sibling already exists for this parent.
+      - Skips if the ticket itself has no parent (nothing to sibling under).
+    """
+    if role_name != "developer":
+        return
+    if ticket.parent_id is None:
+        return
+    try:
+        # Dedup: already a fact_extract ticket under this parent?
+        for s in tickets.children(ticket.parent_id):
+            if s.assignee_role == "fact_extract" and s.status in (
+                "todo", "in_progress", "in_review", "done"
+            ):
+                return
+        parent = tickets.get(ticket.parent_id)
+        child = tickets.create(
+            title=f"Distil facts: {parent.title[:50] if parent else ticket.identifier}",
+            body=(
+                f"Post-merge fact distillation for {ticket.identifier} and siblings.\n\n"
+                f"Scope: scan recent commits + comments on the parent "
+                f"{parent.identifier if parent else ticket.parent_id} and its children. "
+                f"Emit up to 5 retain_fact calls (tier='t3', wing='patterns/<topic>' "
+                f"or 'skills/<service>'). Anchor each to file:line or commit sha. "
+                f"Then post_comment + set_status(done)."
+            ),
+            assignee_role="fact_extract",
+            parent_id=ticket.parent_id,
+            priority="low",
+            branch=ticket.branch,
+            project=ticket.project,
+            metadata={"auto_queued_by": "orchestrator.finalize",
+                      "trigger_ticket": ticket.identifier},
+        )
+        emit(log, "fact_extract.queued",
+             parent=parent.identifier if parent else None,
+             ticket=child.identifier, trigger=ticket.identifier)
+    except Exception as exc:
+        emit(log, "fact_extract.queue_failed",
+             trigger=ticket.identifier, error=str(exc)[:200])
 
 
 def _finalize_on_exception(ticket: tickets.Ticket, role_name: str,
