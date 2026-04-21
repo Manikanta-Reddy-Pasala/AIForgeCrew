@@ -114,9 +114,15 @@ def _ensure_branch_and_worktree(ticket: tickets.Ticket,
         slug = _slugify(parent.title if parent else ticket.title)
         branch = f"aiforge/{parent_ident}-{slug}"
 
-    # Infer repo path — look for repo name in the ticket body / context,
-    # otherwise default to AIForgeCrew (safe for meta tickets).
-    repo_name = _infer_repo_from_ticket(ticket) or repo_guess
+    # Infer repo path — prefer the parent ticket's body for children
+    # (sr dev / developer child tickets often omit the repo name in their
+    # own title, but the parent always mentions it).
+    probe_ticket = ticket
+    if ticket.parent_id:
+        parent = tickets.get(ticket.parent_id)
+        if parent is not None:
+            probe_ticket = parent
+    repo_name = _infer_repo_from_ticket(probe_ticket) or repo_guess
     repo_dir = os.path.join(WORKTREE_ROOT, repo_name)
     if not os.path.isdir(os.path.join(repo_dir, ".git")):
         return None
