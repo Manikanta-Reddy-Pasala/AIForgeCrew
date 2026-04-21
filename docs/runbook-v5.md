@@ -1,6 +1,6 @@
 # AIForge v5 runbook
 
-Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. Last update: 2026-04-21.
+Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. 5-agent pipeline (Supervisor / Planner / Doer / Feedback / Learner). Last update: 2026-04-22.
 
 ## Stack
 

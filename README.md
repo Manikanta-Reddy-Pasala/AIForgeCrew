@@ -1,6 +1,6 @@
 # AIForgeCrew
 
-**Autonomous AI dev team.** Human files a ticket → 4 AI agents plan, decompose, implement, and reflect. Single parent-ticket thread, sub-tickets per work unit, cross-session memory, code knowledge graph, hybrid retrieval. Runs on one Mac Studio (M3 Ultra, 96 GB). Laptop = remote control.
+**Autonomous AI dev team.** Human files a ticket → 5 AI agents triage, plan, implement, review, and learn. Supervisor → Planner → Doer → Feedback → Learner, each a different model family. Single parent-ticket thread, sub-tickets per work unit, cross-session memory, code knowledge graph, hybrid retrieval. Runs on one Mac Studio (M3 Ultra, 96 GB). Laptop = remote control.
 
 **Stack:** v5 (2026-04-21) — custom Python orchestrator + FastAPI + React/Vite UI. No external agent wrapper.
 **Runbook:** [`docs/runbook-v5.md`](./docs/runbook-v5.md)
