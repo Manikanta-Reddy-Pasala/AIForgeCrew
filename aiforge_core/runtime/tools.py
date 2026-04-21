@@ -393,7 +393,9 @@ def _tool_update_assignee(ctx: ToolContext, assignee_role: str, reason: str,
                           priority: str | None = None,
                           project: str | None = None,
                           labels: list[str] | None = None) -> ToolResult:
-    sets: list[str] = ["assignee_role=%s"]
+    # Force status=todo so the new assignee's tick will claim it. Prevents
+    # the supervisor's set_status(in_review) from stranding the ticket.
+    sets: list[str] = ["assignee_role=%s", "status='todo'", "completed_at=NULL"]
     params: list[Any] = [assignee_role]
     if priority:
         sets.append("priority=%s"); params.append(priority)

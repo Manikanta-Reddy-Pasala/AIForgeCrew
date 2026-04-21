@@ -103,6 +103,48 @@ ROLE_POLICIES: dict[str, dict] = {
         ],
         "rerank_keep": 50,
     },
+    # v5 canonical role names
+    "supervisor": {
+        "tiers": [
+            {"tier": "t1", "top_k": 20},
+            {"tier": "t3", "top_k": 6, "wing_prefix": "decisions/"},
+            {"tier": "t2", "top_k": 4},
+        ],
+        "rerank_keep": 10,
+    },
+    "planner": {
+        "tiers": [
+            {"tier": "t2", "top_k": 6},
+            {"tier": "t3", "top_k": 8, "wing_prefix": "skills"},
+            {"tier": "t4", "top_k": 12, "wing_prefix": "code/"},
+            {"tier": "t1", "top_k": 8},
+        ],
+        "rerank_keep": 12,
+    },
+    "doer": {
+        "tiers": [
+            {"tier": "t4", "top_k": 20, "wing_prefix": "code/"},
+            {"tier": "t3", "top_k": 6, "wing_prefix": "skills"},
+            {"tier": "t1", "top_k": 8},
+            {"tier": "t2", "top_k": 4},
+        ],
+        "rerank_keep": 15,
+    },
+    "feedback": {
+        "tiers": [
+            {"tier": "t4", "top_k": 10, "wing_prefix": "code/"},
+            {"tier": "t1", "top_k": 10},
+            {"tier": "t3", "top_k": 4, "wing_prefix": "skills"},
+        ],
+        "rerank_keep": 8,
+    },
+    "learner": {
+        "tiers": [
+            {"tier": "t1", "top_k": 50},
+            {"tier": "t3", "top_k": 10},
+        ],
+        "rerank_keep": 20,
+    },
 }
 
 

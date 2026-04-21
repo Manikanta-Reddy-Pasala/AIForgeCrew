@@ -66,7 +66,8 @@ _PLANNER_TOOLS = (
     "read_claude_memory",
 )
 _SUPERVISOR_TOOLS = (
-    "search", "read_file", "post_comment", "set_status",
+    # set_status intentionally excluded — update_assignee handles status.
+    "search", "read_file", "post_comment",
     "create_child_ticket", "update_assignee",
     "related_tickets", "read_claude_memory",
 )
