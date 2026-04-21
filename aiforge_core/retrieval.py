@@ -45,26 +45,41 @@ def rrf_fuse(rankings: list[list[Hit]], k: int = 60, top_n: int = 30) -> list[Hi
 
 
 def rerank_http(query: str, hits: list[Hit], keep: int) -> list[Hit]:
-    """Call :8765 rerank sidecar, return top-`keep`."""
+    """Call :8765 rerank sidecar, return top-`keep`. On sidecar failure,
+    fall back to the fused (RRF) order so retrieval still works."""
     if not hits:
         return []
     body = {
         "query": query,
         "candidates": [{"id": h.id, "text": h.text} for h in hits],
     }
-    req = urllib.request.Request(
-        f"{RERANK_URL}/rerank",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=20) as r:
-        resp = json.loads(r.read().decode())
-    order = resp["order"]
-    scores = resp["scores"]
+    try:
+        req = urllib.request.Request(
+            f"{RERANK_URL}/rerank",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            resp = json.loads(r.read().decode())
+        order = resp["order"]
+        scores = resp["scores"]
+    except Exception as exc:
+        # Sidecar unreachable, slow, or malformed. Downgrade to RRF order
+        # rather than fail the caller.
+        import logging
+        logging.getLogger("aiforge.retrieval").warning(
+            "rerank sidecar failed (%s); falling back to RRF order", exc,
+        )
+        return hits[:keep]
     out = []
     for pos in order[:keep]:
+        if pos < 0 or pos >= len(hits):
+            continue
         h = hits[pos]
-        h.score = float(scores[pos])
+        try:
+            h.score = float(scores[pos])
+        except (ValueError, IndexError):
+            pass
         out.append(h)
     return out
 
@@ -154,9 +169,20 @@ def retrieve_for_role(
     query: str,
     parent_id: str | None,
 ) -> list[Hit]:
-    """Full pipeline per role: BM25 + vector per tier → RRF → rerank."""
+    """Full pipeline per role: BM25 + vector per tier → RRF → rerank.
+
+    Resilience:
+      - unknown role name → fallback to 'planner' policy (log warn).
+      - per-tier BM25/vec errors → skip that ranking, don't fail run.
+      - rerank sidecar failure → handled in rerank_http (RRF fallback).
+    """
+    import logging
+    log = logging.getLogger("aiforge.retrieval")
+    if not query or not query.strip():
+        return []
     if role not in ROLE_POLICIES:
-        raise KeyError(f"no retrieval policy for role {role}")
+        log.warning("unknown role %r for retrieval; using 'planner' policy", role)
+        role = "planner"
     policy = ROLE_POLICIES[role]
     rankings_bm25: list[list[Hit]] = []
     rankings_vec: list[list[Hit]] = []
@@ -164,13 +190,24 @@ def retrieve_for_role(
         tier = spec["tier"]
         top_k = spec["top_k"]
         wing_prefix = spec.get("wing_prefix")
-        # Fact Extract scoped to one ticket
+        # Episodic wing scoped to one ticket if parent_id is given.
         if tier == "t1" and parent_id is not None:
             wing_prefix = f"ticket/{parent_id}"
-        rankings_bm25.append(store.search_tier_bm25(
-            tier=tier, query=query, top_k=top_k, wing_prefix=wing_prefix))
-        rankings_vec.append(store.search_tier_vec(
-            tier=tier, query=query, top_k=top_k, wing_prefix=wing_prefix))
+        try:
+            rankings_bm25.append(store.search_tier_bm25(
+                tier=tier, query=query, top_k=top_k, wing_prefix=wing_prefix))
+        except Exception as exc:
+            log.warning("bm25 tier=%s wing_prefix=%s failed: %s",
+                        tier, wing_prefix, exc)
+        try:
+            rankings_vec.append(store.search_tier_vec(
+                tier=tier, query=query, top_k=top_k, wing_prefix=wing_prefix))
+        except Exception as exc:
+            log.warning("vec tier=%s wing_prefix=%s failed: %s",
+                        tier, wing_prefix, exc)
+    if not rankings_bm25 and not rankings_vec:
+        log.warning("retrieve_for_role: all rankings empty (role=%s)", role)
+        return []
     fused = rrf_fuse(rankings_bm25 + rankings_vec, k=60,
                      top_n=sum(s["top_k"] for s in policy["tiers"]))
     return rerank_http(query, fused, keep=policy["rerank_keep"])

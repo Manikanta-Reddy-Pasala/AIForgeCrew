@@ -109,9 +109,16 @@ def dispatch(ctx: ToolContext, name: str, arguments_json: str) -> ToolResult:
 })
 def _tool_search(ctx: ToolContext, query: str, wing_prefix: str | None = None,
                  top_k: int = 10) -> ToolResult:
-    mem = memory.Memory()
-    hits = mem.search(query, role=ctx.role, parent_id=None,
-                      top_k=top_k, wing_prefix=wing_prefix)
+    if not query or not query.strip():
+        return ToolResult(False, "search: query is empty",
+                          {"error": "empty_query"})
+    try:
+        mem = memory.Memory()
+        hits = mem.search(query, role=ctx.role, parent_id=None,
+                          top_k=top_k, wing_prefix=wing_prefix)
+    except Exception as exc:
+        return ToolResult(False, f"search backend unavailable: {exc}",
+                          {"error": "backend_failure"})
     if not hits:
         return ToolResult(True, "(no hits)", {"count": 0})
     lines = []
@@ -496,11 +503,11 @@ def _tool_verdict_pass(ctx: ToolContext, test_output: str, note: str) -> ToolRes
         metadata_patch={"feedback_verdict": "pass",
                         "feedback_note": note[:500]},
     )
-    # Queue a Learner ticket. Two cases:
+    # Queue a Learner ticket with a pre-built DIGEST so learner doesn't
+    # have to hunt for data. Two cases:
     #   - Current ticket has a parent: learner is a sibling under that parent.
     #   - Current ticket is top-level: learner becomes a CHILD of this ticket.
-    # Dedup-safe either way: skip if a learner ticket already exists in the
-    # relevant cohort.
+    # Dedup-safe either way: skip if a learner ticket already exists.
     try:
         t = tickets.get(ctx.ticket_id)
         if t is not None:
@@ -512,32 +519,30 @@ def _tool_verdict_pass(ctx: ToolContext, test_output: str, note: str) -> ToolRes
             )
             if not already:
                 parent = tickets.get(t.parent_id) if t.parent_id else t
+                digest = _build_learner_digest(t, parent)
                 learner = tickets.create(
                     title=f"Distil facts: {parent.title[:50] if parent else t.identifier}",
-                    body=(
-                        f"Feedback passed {t.identifier}. Scan recent commits + "
-                        f"comments on "
-                        f"{parent.identifier if parent else t.identifier} "
-                        f"+ any children. Emit up to 5 retain_fact calls "
-                        f"(skills/<service> or patterns/<topic> or "
-                        f"rules/<area>). Anchor each to file:line or commit "
-                        f"sha. Then post_comment + set_status(done)."
-                    ),
+                    body=digest,
                     assignee_role="learner",
                     parent_id=parent_id_for_learner,
                     priority="low",
                     branch=t.branch,
                     project=t.project,
                     metadata={"auto_queued_by": "feedback.verdict_pass",
-                              "trigger_ticket": t.identifier},
+                              "trigger_ticket": t.identifier,
+                              "digest_chars": len(digest)},
                 )
                 tickets.add_event(
                     ctx.ticket_id, ctx.role, "learner_queued",
-                    body=f"→ {learner.identifier}",
-                    metadata={"learner_ticket": learner.identifier},
+                    body=f"→ {learner.identifier} (digest {len(digest)} chars)",
+                    metadata={"learner_ticket": learner.identifier,
+                              "digest_chars": len(digest)},
                 )
-    except Exception:
-        pass  # non-fatal
+    except Exception as exc:
+        import logging
+        logging.getLogger("aiforge.tools").warning(
+            "verdict_pass: learner queue failed: %s", exc,
+        )
     return ToolResult(True, "verdict=pass; status→in_review; learner queued",
                       {"verdict": "pass"})
 
@@ -915,6 +920,179 @@ def _tool_read_claude_memory(ctx: ToolContext, query: str | None = None,
     if not hits:
         return ToolResult(True, f"(no claude-memory hits for {query!r})", {"count": 0})
     return ToolResult(True, "\n".join(hits), {"count": len(hits)})
+
+
+def _build_learner_digest(trigger_ticket, parent_ticket) -> str:
+    """Build a complete self-contained DIGEST for the Learner ticket body.
+
+    Includes:
+      - Parent (or trigger) ticket title + body
+      - All sibling tickets with assignee, status, last comment, commits
+      - Trigger's own verdict_pass note + test_output
+    The Learner then has everything it needs to emit retain_fact calls
+    without reading files from the repo.
+    """
+    from . import tickets as tk
+
+    lines: list[str] = []
+    scope_id = parent_ticket.id if parent_ticket else trigger_ticket.id
+    cohort = tk.children(scope_id)
+
+    # Parent section
+    lines.append("# LEARNER DIGEST")
+    lines.append("")
+    lines.append(f"Triggered by: **{trigger_ticket.identifier}** "
+                 f"(feedback verdict_pass)")
+    lines.append("")
+    if parent_ticket and parent_ticket.id != trigger_ticket.id:
+        lines.append(f"## PARENT — {parent_ticket.identifier}")
+        lines.append(f"**Title:** {parent_ticket.title}")
+        body = (parent_ticket.body or "").strip()[:1500]
+        if body:
+            lines.append("")
+            lines.append(body)
+    else:
+        lines.append(f"## TICKET — {trigger_ticket.identifier}")
+        lines.append(f"**Title:** {trigger_ticket.title}")
+        body = (trigger_ticket.body or "").strip()[:1500]
+        if body:
+            lines.append("")
+            lines.append(body)
+
+    # Sibling / child summary
+    if cohort:
+        lines.append("")
+        lines.append(f"## CHILDREN / SIBLINGS ({len(cohort)})")
+        for c in cohort:
+            if c.id == trigger_ticket.id:
+                marker = " ← TRIGGER"
+            else:
+                marker = ""
+            lines.append(f"- **{c.identifier}**  {c.status}  "
+                         f"assignee={c.assignee_role}{marker}  —  "
+                         f"{c.title[:80]}")
+            # Last comment from this ticket's events
+            last_comment = _last_comment(c.id)
+            if last_comment:
+                lines.append(f"    last comment: {last_comment[:300]}")
+            # Commits from tool_call events
+            commits = _commits_from_events(c.id)
+            if commits:
+                lines.append(f"    commits: {', '.join(commits[:3])}")
+            # Files touched
+            files = _files_touched_from_events(c.id)
+            if files:
+                lines.append(f"    files: {', '.join(files[:5])}")
+
+    # Trigger's own verdict evidence
+    verdict_ev = _last_event_by_kind(trigger_ticket.id, "verdict")
+    if verdict_ev:
+        lines.append("")
+        lines.append("## FEEDBACK VERDICT")
+        lines.append(verdict_ev[:1500])
+
+    # Instructions (concise — full spec is in LEARNER_SYSTEM prompt)
+    lines.append("")
+    lines.append("## YOUR TASK")
+    lines.append(
+        "Emit up to 5 `retain_fact` calls from the content above. Each fact:\n"
+        "- ≤ 300 chars, anchored to a file:line or commit sha from above,\n"
+        "- wing = `skills/<service>` / `patterns/<topic>` / `rules/<area>`,\n"
+        "- call `search(fact_text[:60])` first to avoid duplicates.\n"
+        "Then `post_comment` with a bulleted list of stored facts + `set_status(done)`."
+    )
+    return "\n".join(lines)
+
+
+def _last_comment(ticket_id: int) -> str:
+    """Return the most recent post_comment body for ticket_id, or empty."""
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        from .config import AIFORGE_DSN
+        with psycopg.connect(AIFORGE_DSN, row_factory=dict_row,
+                             connect_timeout=3) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT body FROM ticket_events WHERE ticket_id=%s "
+                "AND kind='comment' ORDER BY created_at DESC LIMIT 1",
+                (ticket_id,),
+            )
+            row = cur.fetchone()
+            return (row["body"] or "").strip() if row else ""
+    except Exception:
+        return ""
+
+
+def _last_event_by_kind(ticket_id: int, kind: str) -> str:
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        from .config import AIFORGE_DSN
+        with psycopg.connect(AIFORGE_DSN, row_factory=dict_row,
+                             connect_timeout=3) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT body FROM ticket_events WHERE ticket_id=%s "
+                "AND kind=%s ORDER BY created_at DESC LIMIT 1",
+                (ticket_id, kind),
+            )
+            row = cur.fetchone()
+            return (row["body"] or "").strip() if row else ""
+    except Exception:
+        return ""
+
+
+def _commits_from_events(ticket_id: int) -> list[str]:
+    """Extract commit shas from git_commit tool_call events."""
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        from .config import AIFORGE_DSN
+        with psycopg.connect(AIFORGE_DSN, row_factory=dict_row,
+                             connect_timeout=3) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT body FROM ticket_events WHERE ticket_id=%s "
+                "AND kind='tool_call' AND body LIKE 'git_commit%%' "
+                "ORDER BY created_at ASC",
+                (ticket_id,),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return []
+    import re
+    shas: list[str] = []
+    pat = re.compile(r"\b([0-9a-f]{7,40})\b")
+    for r in rows:
+        m = pat.search((r["body"] or "").lower())
+        if m:
+            shas.append(m.group(1)[:12])
+    return list(dict.fromkeys(shas))  # dedup preserving order
+
+
+def _files_touched_from_events(ticket_id: int) -> list[str]:
+    """Extract file paths from edit / write_file tool_call args."""
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        from .config import AIFORGE_DSN
+        with psycopg.connect(AIFORGE_DSN, row_factory=dict_row,
+                             connect_timeout=3) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT body FROM ticket_events WHERE ticket_id=%s "
+                "AND kind='tool_call' AND "
+                "(body LIKE 'edit(%%' OR body LIKE 'write_file(%%')",
+                (ticket_id,),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return []
+    import re
+    pat = re.compile(r'"path"\s*:\s*"([^"]+)"')
+    files: list[str] = []
+    for r in rows:
+        m = pat.search(r["body"] or "")
+        if m:
+            files.append(m.group(1))
+    return list(dict.fromkeys(files))
 
 
 # ─────────────────────────── helpers ────────────────────────────────────

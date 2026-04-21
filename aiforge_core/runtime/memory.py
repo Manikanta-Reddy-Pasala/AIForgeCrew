@@ -54,9 +54,16 @@ class Memory:
         `metadata.wing` here — hit.metadata doesn't guarantee a `wing`
         key, which silently emptied results.
         """
-        hits: list[Hit] = retrieve_for_role(
-            self._store, role=role, query=query, parent_id=parent_id,
-        )
+        try:
+            hits: list[Hit] = retrieve_for_role(
+                self._store, role=role, query=query, parent_id=parent_id,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger("aiforge.memory").warning(
+                "search failed role=%s query=%r: %s", role, query[:80], exc,
+            )
+            return []
         if top_k is not None:
             hits = hits[:top_k]
         return [
