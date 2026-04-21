@@ -1,0 +1,38 @@
+// Minimal fetch wrapper against the FastAPI backend.
+const BASE = '/api';
+
+async function j<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(`${BASE}${path}`, init);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+export const api = {
+  health:   () => j<any>('/health'),
+  agents:   () => j<any[]>('/agents'),
+  tickets:  (qs: Record<string, string> = {}) =>
+    j<any[]>(`/tickets?${new URLSearchParams(qs).toString()}`),
+  ticket:   (id: string) => j<any>(`/tickets/${id}`),
+  create:   (body: any) => j<any>('/tickets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }),
+  patch:    (id: string, body: any) => j<any>(`/tickets/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }),
+  comment:  (id: string, body: string) => j<any>(`/tickets/${id}/comments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body, author: 'human' }),
+  }),
+  memoryStats:  () => j<any>('/memory/stats'),
+  memorySearch: (q: string, role = 'sr_developer', topK = 12) =>
+    j<any[]>(`/memory/search?q=${encodeURIComponent(q)}&role=${role}&top_k=${topK}`),
+};
+
+export function logStreamURL(role: string): string {
+  return `${BASE}/logs/${role}/stream`;
+}

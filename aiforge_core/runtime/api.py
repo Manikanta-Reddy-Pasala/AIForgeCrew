@@ -1,0 +1,342 @@
+"""FastAPI backend for the v5 dashboard UI.
+
+Exposes the aiforge Postgres state + live log tails as a small REST + SSE
+surface the React/Vite frontend talks to.
+
+Run:
+    uvicorn aiforge_core.runtime.api:app --host 127.0.0.1 --port 8799 --reload
+
+Routes:
+    GET  /api/health
+    GET  /api/agents
+    GET  /api/tickets                     # ?role=&status=&parent=&limit=
+    GET  /api/tickets/{identifier}        # incl. events + children + git
+    POST /api/tickets                     # create
+    PATCH /api/tickets/{id}               # status / labels / assignee
+    POST /api/tickets/{id}/comments
+    GET  /api/logs/{role}/stream          # SSE live tail of orchestrator ndjson
+    GET  /api/memory/stats
+    GET  /api/memory/search?q=&wing=&top_k=
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import time
+from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
+from . import tickets as tickets_mod
+from .config import (
+    AIFORGE_DSN, LM_STUDIO_BASE_URL, LOG_DIR, ROLES,
+)
+
+
+app = FastAPI(title="AIForge v5 API", version="5.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # dev only
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ─────────────────────────── Helpers ────────────────────────────────────
+def _db():
+    return psycopg.connect(AIFORGE_DSN, row_factory=dict_row, connect_timeout=5,
+                           options="-c statement_timeout=10000")
+
+
+def _ticket_row_out(r: dict) -> dict:
+    return {
+        "id": r["id"], "identifier": r["identifier"], "title": r["title"],
+        "body": r["body"], "status": r["status"], "priority": r["priority"],
+        "assignee_role": r["assignee_role"], "parent_id": r["parent_id"],
+        "branch": r["branch"], "project": r["project"],
+        "labels": list(r["labels"] or []),
+        "metadata": dict(r["metadata"] or {}),
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+    }
+
+
+def _event_row_out(r: dict) -> dict:
+    return {
+        "id": r["id"], "ticket_id": r["ticket_id"],
+        "agent_role": r["agent_role"], "kind": r["kind"],
+        "body": r["body"] or "",
+        "metadata": dict(r["metadata"] or {}),
+        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+    }
+
+
+# ─────────────────────────── Health / Agents ────────────────────────────
+@app.get("/api/health")
+def health() -> dict:
+    status = {"ok": True, "postgres": False, "lm_studio": False}
+    try:
+        with _db() as c, c.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+        status["postgres"] = True
+    except Exception:
+        status["ok"] = False
+    try:
+        import urllib.request
+        with urllib.request.urlopen(
+            f"{LM_STUDIO_BASE_URL}/models", timeout=3) as r:
+            status["lm_studio"] = r.getcode() == 200
+    except Exception:
+        pass
+    return status
+
+
+@app.get("/api/agents")
+def list_agents() -> list[dict]:
+    """Static role catalogue + dynamic last-activity from ticket_events."""
+    out = []
+    with _db() as c, c.cursor() as cur:
+        for name, rc in ROLES.items():
+            cur.execute(
+                "SELECT MAX(created_at) AS last_activity, "
+                "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
+                "FROM ticket_events WHERE agent_role = %s",
+                (name,),
+            )
+            row = cur.fetchone() or {}
+            last = row.get("last_activity")
+            cur.execute(
+                "SELECT identifier, status FROM tickets "
+                "WHERE assignee_role = %s AND status IN "
+                "('todo','in_progress','in_review') ORDER BY created_at DESC",
+                (name,),
+            )
+            active = [{"identifier": r["identifier"], "status": r["status"]}
+                      for r in cur.fetchall()]
+            out.append({
+                "role": name,
+                "model": rc.model,
+                "transport": rc.transport,
+                "max_turns": rc.max_turns,
+                "tool_allowlist": list(rc.tool_allowlist),
+                "last_activity": last.isoformat() if last else None,
+                "lifetime_turns": row.get("turns", 0),
+                "active_tickets": active,
+            })
+    return out
+
+
+# ─────────────────────────── Tickets ────────────────────────────────────
+class TicketCreate(BaseModel):
+    title: str
+    body: str = ""
+    assignee_role: str | None = None
+    priority: str = "medium"
+    parent_identifier: str | None = None
+    project: str | None = None
+    labels: list[str] = Field(default_factory=list)
+
+
+class TicketPatch(BaseModel):
+    status: str | None = None
+    assignee_role: str | None = None
+    labels: list[str] | None = None
+    body: str | None = None
+
+
+class CommentCreate(BaseModel):
+    body: str
+    author: str = "human"
+
+
+@app.get("/api/tickets")
+def list_tickets(role: str | None = Query(None),
+                 status: str | None = Query(None),
+                 parent: str | None = Query(None),
+                 limit: int = Query(100, le=500)) -> list[dict]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if role:
+        clauses.append("assignee_role = %s"); params.append(role)
+    if status:
+        statuses = [s.strip() for s in status.split(",")]
+        clauses.append("status = ANY(%s)"); params.append(statuses)
+    if parent:
+        clauses.append("parent_id = (SELECT id FROM tickets WHERE identifier=%s)")
+        params.append(parent)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    q = f"SELECT * FROM tickets{where} ORDER BY id DESC LIMIT %s"
+    params.append(limit)
+    with _db() as c, c.cursor() as cur:
+        cur.execute(q, params)
+        rows = cur.fetchall()
+    return [_ticket_row_out(r) for r in rows]
+
+
+@app.get("/api/tickets/{identifier}")
+def get_ticket(identifier: str) -> dict:
+    with _db() as c, c.cursor() as cur:
+        cur.execute("SELECT * FROM tickets WHERE identifier=%s", (identifier,))
+        t = cur.fetchone()
+        if not t:
+            raise HTTPException(404, f"ticket {identifier} not found")
+        ticket_id = t["id"]
+        cur.execute(
+            "SELECT * FROM ticket_events WHERE ticket_id=%s "
+            "ORDER BY created_at ASC LIMIT 500",
+            (ticket_id,),
+        )
+        events = [_event_row_out(r) for r in cur.fetchall()]
+        cur.execute(
+            "SELECT * FROM tickets WHERE parent_id=%s ORDER BY created_at ASC",
+            (ticket_id,),
+        )
+        children = [_ticket_row_out(r) for r in cur.fetchall()]
+    return {
+        "ticket": _ticket_row_out(t),
+        "events": events,
+        "children": children,
+    }
+
+
+@app.post("/api/tickets", status_code=201)
+def create_ticket(payload: TicketCreate) -> dict:
+    parent_id = None
+    if payload.parent_identifier:
+        parent = tickets_mod.get(payload.parent_identifier)
+        if parent is None:
+            raise HTTPException(400, f"parent {payload.parent_identifier} not found")
+        parent_id = parent.id
+    t = tickets_mod.create(
+        title=payload.title, body=payload.body,
+        assignee_role=payload.assignee_role,
+        priority=payload.priority, parent_id=parent_id,
+        project=payload.project, labels=payload.labels,
+    )
+    return _ticket_row_out({
+        "id": t.id, "identifier": t.identifier, "title": t.title,
+        "body": t.body, "status": t.status, "priority": t.priority,
+        "assignee_role": t.assignee_role, "parent_id": t.parent_id,
+        "branch": t.branch, "project": t.project, "labels": t.labels,
+        "metadata": t.metadata, "created_at": t.created_at,
+        "updated_at": t.updated_at, "completed_at": t.completed_at,
+    })
+
+
+@app.patch("/api/tickets/{identifier}")
+def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
+    t = tickets_mod.get(identifier)
+    if t is None:
+        raise HTTPException(404, f"ticket {identifier} not found")
+    if payload.status:
+        if payload.status not in tickets_mod.VALID_STATUS:
+            raise HTTPException(400, f"bad status {payload.status!r}")
+        tickets_mod.update_status(t.id, payload.status, role="human")
+    if payload.assignee_role or payload.labels is not None or payload.body is not None:
+        sets: list[str] = []
+        params: list[Any] = []
+        if payload.assignee_role:
+            sets.append("assignee_role=%s"); params.append(payload.assignee_role)
+        if payload.labels is not None:
+            sets.append("labels=%s"); params.append(payload.labels)
+        if payload.body is not None:
+            sets.append("body=%s"); params.append(payload.body)
+        params.append(t.id)
+        with _db() as c, c.cursor() as cur:
+            cur.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id=%s",
+                        params)
+            c.commit()
+    return get_ticket(identifier)
+
+
+@app.post("/api/tickets/{identifier}/comments", status_code=201)
+def add_comment(identifier: str, payload: CommentCreate) -> dict:
+    t = tickets_mod.get(identifier)
+    if t is None:
+        raise HTTPException(404, f"ticket {identifier} not found")
+    eid = tickets_mod.add_comment(t.id, payload.author, payload.body)
+    return {"event_id": eid}
+
+
+# ─────────────────────────── Memory ─────────────────────────────────────
+@app.get("/api/memory/stats")
+def memory_stats() -> dict:
+    with _db() as c, c.cursor() as cur:
+        cur.execute(
+            "SELECT tier, wing, COUNT(*) AS n, "
+            "COUNT(embedding) AS embedded "
+            "FROM memories GROUP BY tier, wing "
+            "ORDER BY tier, wing"
+        )
+        rows = cur.fetchall()
+    return {"wings": rows}
+
+
+@app.get("/api/memory/search")
+def memory_search(q: str = Query(..., min_length=2),
+                  role: str = Query("sr_developer"),
+                  top_k: int = Query(12, le=50)) -> list[dict]:
+    from .memory import Memory
+    m = Memory()
+    hits = m.search(q, role=role, top_k=top_k)
+    return [
+        {
+            "tier": h.tier, "wing": h.wing, "source": h.source,
+            "text": h.text[:800], "score": h.score,
+            "metadata": h.metadata,
+        }
+        for h in hits
+    ]
+
+
+# ─────────────────────────── Logs SSE ───────────────────────────────────
+@app.get("/api/logs/{role}/stream")
+def stream_role_log(role: str):
+    if role not in ROLES:
+        raise HTTPException(404, f"unknown role {role!r}")
+    path = os.path.join(LOG_DIR, f"orchestrator-{role}.ndjson")
+
+    async def gen():
+        last_size = 0
+        if os.path.exists(path):
+            last_size = os.path.getsize(path)
+        try:
+            while True:
+                await asyncio.sleep(1.5)
+                if not os.path.exists(path):
+                    continue
+                sz = os.path.getsize(path)
+                if sz <= last_size:
+                    continue
+                with open(path, "r", encoding="utf-8") as f:
+                    f.seek(last_size)
+                    chunk = f.read()
+                last_size = sz
+                for line in chunk.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    yield f"data: {line}\n\n"
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ─────────────────────────── Root ───────────────────────────────────────
+@app.get("/")
+def root() -> dict:
+    return {
+        "service": "aiforge v5 api",
+        "version": "5.0.0",
+        "routes": [r.path for r in app.routes if hasattr(r, "path")],
+    }
