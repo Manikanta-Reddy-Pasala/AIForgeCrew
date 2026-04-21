@@ -369,6 +369,179 @@ def _tool_set_status(ctx: ToolContext, status: str, note: str | None = None) -> 
     return ToolResult(True, f"status → {status}", {"status": status})
 
 
+# ── update_assignee (supervisor only — triage + re-route)
+@register("update_assignee", {
+    "name": "update_assignee",
+    "description": "Re-route this ticket to a different role. Use after triage: pick 'planner' for multi-step work, 'doer' for trivial single-commit edits, 'learner' for post-merge fact distillation. Also lets you set priority + labels + project.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "assignee_role": {"type": "string",
+                              "enum": ["planner", "doer", "feedback", "learner",
+                                       "supervisor"]},
+            "priority": {"type": "string",
+                         "enum": ["low", "medium", "high", "urgent"]},
+            "project": {"type": "string"},
+            "labels": {"type": "array", "items": {"type": "string"}},
+            "reason": {"type": "string",
+                       "description": "1-sentence why — stored in metadata.supervisor_decision"},
+        },
+        "required": ["assignee_role", "reason"],
+    },
+})
+def _tool_update_assignee(ctx: ToolContext, assignee_role: str, reason: str,
+                          priority: str | None = None,
+                          project: str | None = None,
+                          labels: list[str] | None = None) -> ToolResult:
+    sets: list[str] = ["assignee_role=%s"]
+    params: list[Any] = [assignee_role]
+    if priority:
+        sets.append("priority=%s"); params.append(priority)
+    if project:
+        sets.append("project=%s"); params.append(project)
+    if labels is not None:
+        sets.append("labels=%s"); params.append(labels)
+    patch = {
+        "supervisor_decision": reason,
+        "supervisor_decided_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    import json as _json
+    sets.append("metadata = metadata || %s::jsonb")
+    params.append(_json.dumps(patch))
+    params.append(ctx.ticket_id)
+    with tickets._conn() as c, c.cursor() as cur:
+        cur.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id=%s", params)
+        c.commit()
+    # Audit event
+    tickets.add_event(
+        ctx.ticket_id, ctx.role, "routing",
+        body=f"→ {assignee_role}: {reason}",
+        metadata={"new_assignee": assignee_role, "priority": priority,
+                  "project": project, "labels": labels, "reason": reason},
+    )
+    # Decision-trace memory for future supervisor consistency
+    try:
+        t = tickets.get(ctx.ticket_id)
+        if t is not None:
+            mem = memory.Memory()
+            mem.retain_fact(
+                text=f"Routed {t.identifier} ({t.title[:80]}) → {assignee_role}. Reason: {reason[:300]}",
+                tier="t3", wing="decisions/supervisor",
+                source=f"supervisor@{t.identifier}",
+                metadata={"ticket": t.identifier, "assignee": assignee_role,
+                          "priority": priority, "reason": reason[:500]},
+            )
+    except Exception:
+        pass  # Decision trace is best-effort
+    return ToolResult(True, f"routed to {assignee_role}",
+                      {"assignee_role": assignee_role})
+
+
+# ── Feedback verdicts
+@register("verdict_pass", {
+    "name": "verdict_pass",
+    "description": "Pass the Doer's work. Requires test_output evidence. Triggers: ticket status → in_review + Learner auto-queued.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "test_output": {"type": "string",
+                            "description": "excerpt of passing test / compile output that justifies the pass"},
+            "note": {"type": "string", "description": "short human-readable summary"},
+        },
+        "required": ["test_output", "note"],
+    },
+})
+def _tool_verdict_pass(ctx: ToolContext, test_output: str, note: str) -> ToolResult:
+    if len(test_output.strip()) < 40:
+        return ToolResult(False,
+                          "verdict_pass requires test_output ≥ 40 chars (cite actual evidence)",
+                          {"error": "insufficient_evidence"})
+    tickets.add_event(
+        ctx.ticket_id, ctx.role, "verdict",
+        body=f"PASS: {note}\n\nEvidence:\n{test_output[:2000]}",
+        metadata={"verdict": "pass", "note": note},
+    )
+    tickets.update_status(
+        ctx.ticket_id, "in_review", role=ctx.role,
+        metadata_patch={"feedback_verdict": "pass",
+                        "feedback_note": note[:500]},
+    )
+    # Queue a Learner sibling under the same parent (dedup-safe).
+    try:
+        t = tickets.get(ctx.ticket_id)
+        if t is not None and t.parent_id is not None:
+            for s in tickets.children(t.parent_id):
+                if s.assignee_role in ("learner", "fact_extract"):
+                    break
+            else:
+                parent = tickets.get(t.parent_id)
+                learner = tickets.create(
+                    title=f"Distil facts: {parent.title[:50] if parent else t.identifier}",
+                    body=(
+                        f"Feedback passed {t.identifier}. Scan recent commits + "
+                        f"comments on parent "
+                        f"{parent.identifier if parent else t.parent_id} + siblings. "
+                        f"Emit up to 5 retain_fact calls (skills/<service> or "
+                        f"patterns/<topic> or rules/<area>). Anchor each to "
+                        f"file:line or commit sha. Then post_comment + "
+                        f"set_status(done)."
+                    ),
+                    assignee_role="learner",
+                    parent_id=t.parent_id,
+                    priority="low",
+                    branch=t.branch,
+                    project=t.project,
+                    metadata={"auto_queued_by": "feedback.verdict_pass",
+                              "trigger_ticket": t.identifier},
+                )
+                tickets.add_event(
+                    ctx.ticket_id, ctx.role, "learner_queued",
+                    body=f"→ {learner.identifier}",
+                    metadata={"learner_ticket": learner.identifier},
+                )
+    except Exception:
+        pass  # non-fatal
+    return ToolResult(True, "verdict=pass; status→in_review; learner queued",
+                      {"verdict": "pass"})
+
+
+@register("verdict_fail", {
+    "name": "verdict_fail",
+    "description": "Fail the Doer's work. Lists concrete fixes. Ticket goes back to doer with the fixlist attached as guidance.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "fixlist": {"type": "array", "items": {"type": "string"},
+                        "description": "3-7 concrete fixes the Doer must apply. Each bullet references a file:line or test name."},
+            "note": {"type": "string", "description": "one-paragraph summary"},
+        },
+        "required": ["fixlist", "note"],
+    },
+})
+def _tool_verdict_fail(ctx: ToolContext, fixlist: list[str], note: str) -> ToolResult:
+    if not fixlist or len(fixlist) < 1:
+        return ToolResult(False, "verdict_fail requires ≥1 fix item", {})
+    body = f"FAIL: {note}\n\nFixlist:\n" + "\n".join(f"  - {f}" for f in fixlist[:7])
+    tickets.add_event(
+        ctx.ticket_id, ctx.role, "verdict",
+        body=body, metadata={"verdict": "fail", "note": note, "fixlist": fixlist},
+    )
+    # Send back to doer for another pass.
+    import json as _json
+    with tickets._conn() as c, c.cursor() as cur:
+        cur.execute(
+            "UPDATE tickets SET assignee_role='doer', status='todo', "
+            "metadata = metadata || %s::jsonb WHERE id=%s",
+            (_json.dumps({"feedback_verdict": "fail",
+                           "feedback_fixlist": fixlist,
+                           "feedback_note": note[:500]}),
+             ctx.ticket_id),
+        )
+        c.commit()
+    return ToolResult(True, "verdict=fail; sent back to doer",
+                      {"verdict": "fail", "fixes": len(fixlist)})
+
+
 # ── retain_fact (write to memories)
 @register("retain_fact", {
     "name": "retain_fact",
@@ -385,9 +558,16 @@ def _tool_set_status(ctx: ToolContext, status: str, note: str | None = None) -> 
 })
 def _tool_retain(ctx: ToolContext, text: str, wing: str, tier: str = "t3") -> ToolResult:
     mem = memory.Memory()
-    rid = mem.retain_fact(text=text, tier=tier, wing=wing,
-                          source=f"{ctx.role}@{ctx.ticket_identifier}",
-                          metadata={"ticket": ctx.ticket_identifier, "role": ctx.role})
+    rid = mem.retain_fact(
+        text=text, tier=tier, wing=wing,
+        source=f"{ctx.role}@{ctx.ticket_identifier}",
+        metadata={
+            "ticket": ctx.ticket_identifier,
+            "role": ctx.role,
+            "retained_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "hit_count": 0,
+        },
+    )
     tickets.add_event(ctx.ticket_id, ctx.role, "retain",
                       body=text, metadata={"memory_id": rid, "tier": tier, "wing": wing})
     return ToolResult(True, f"retained memory id={rid} ({tier}/{wing})",

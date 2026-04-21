@@ -2,19 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>com.aiforge.tick-architect</string>
+    <key>Label</key><string>com.aiforge.tick-planner</string>
     <key>ProgramArguments</key>
     <array>
         <string>/Users/manikanta/AIForgeCrew/.venv/bin/python</string>
         <string>-m</string><string>aiforge_core.runtime</string>
-        <string>architect</string>
+        <string>planner</string>
     </array>
     <key>StartInterval</key><integer>60</integer>
     <key>RunAtLoad</key><false/>
     <key>StandardOutPath</key>
-    <string>/Users/manikanta/.aiforge/logs/launchd-tick-architect.log</string>
+    <string>/Users/manikanta/.aiforge/logs/launchd-tick-planner.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/manikanta/.aiforge/logs/launchd-tick-architect.log</string>
+    <string>/Users/manikanta/.aiforge/logs/launchd-tick-planner.log</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>

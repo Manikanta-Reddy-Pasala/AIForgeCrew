@@ -53,16 +53,35 @@ python -m aiforge_core.runtime <role>
 
 ## Agents
 
-| Role | Model | Ctx | Transport | Max turns | Purpose |
-|---|---|---|---|---|---|
-| Architect | claude-opus-4-7 | cloud | `claude --print` | 6 | ≤ 250-word direction brief |
-| Sr Developer | qwen3.6-35b-a3b (MoE) | 128 K | OpenAI-compat → LM Studio | 25 | Deep analysis + child-ticket decomposition |
-| Developer | qwen3-coder-next | 256 K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
-| Fact Extract | qwen/qwen3-4b-thinking-2507 | 128 K | OpenAI-compat → LM Studio | 4 | Post-merge reflection → durable facts |
+Five-role pipeline (Supervisor → Planner → Doer → Feedback → Learner). Cross-family models. All local by default; Supervisor can flip to cloud Claude via env.
 
-Prompts: `agents/<role>/system-prompt.md` (source of truth). Mirrored into `aiforge_core/runtime/roles.py` at runtime.
+| Role | Model | Family | Ctx | Transport | Max turns | Purpose |
+|---|---|---|---|---|---|---|
+| Supervisor | gemma-4-26b-a4b-it | Google MoE (~4B active) | 32K | OpenAI-compat → LM Studio | 4 | Triage + route + standards enforcement |
+| Planner | qwen3.6-35b-a3b | Alibaba MoE (~3B active) | 64K | OpenAI-compat → LM Studio | 25 | Deep analysis + child-ticket decomposition |
+| Doer | qwen3-coder-next | Alibaba dense | 128K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
+| Feedback | mistralai/devstral-small-2-2512 | Mistral dense (24B) | 32K | OpenAI-compat → LM Studio | 6 | Audits Doer's diff + tests; pass or fail back |
+| Learner | qwen/qwen3-4b-thinking-2507 | Alibaba dense (4B) | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation → T3 memory |
 
-3-month trajectory: swap Architect from cloud Claude to a local planner model. No orchestrator change — only `config.py.ROLES["architect"].model`.
+Prompts live in `aiforge_core/runtime/roles.py`. Tool allowlists in `config.py` per role.
+
+### Flow
+```
+human files ticket
+    ↓  (assignee_role defaults to supervisor)
+Supervisor  — triage + update_assignee + 1-sentence brief
+    ↓
+Planner     — analysis comment + N child tickets (assignee=doer)
+    ↓
+Doer        — edit + compile + test + commit + post_comment
+    ↓  (orchestrator auto-routes to feedback)
+Feedback    — read_file + run test verify → verdict_pass or verdict_fail
+    ↓  pass: status=in_review + auto-queue Learner sibling
+    ↓  fail: back to Doer with fixlist in metadata.feedback_fixlist
+Learner     — retain_fact × N + post_comment + set_status(done)
+```
+
+3-month trajectory: swap Supervisor to local planner model — already local by default.
 
 ---
 

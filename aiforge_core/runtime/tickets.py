@@ -83,6 +83,43 @@ def new_identifier() -> str:
     return f"ONE-{n}"
 
 
+_DANGEROUS_PATTERNS = [
+    "drop table", "rm -rf /", "rm -rf ~", "delete all", "truncate table",
+    "shutdown -h", "mkfs", "format c:", "> /dev/sda",
+]
+_URGENT_KEYWORDS = ["prod", "outage", "crash", "p0", "urgent", "incident"]
+
+
+def _apply_supervisor_invariants(
+    title: str, body: str, assignee_role: str | None,
+    priority: str, labels: list[str] | None, metadata: dict | None,
+) -> tuple[str | None, str, list[str], dict]:
+    """Enforce hard safety + routing invariants at ticket-create time.
+    Supervisor LLM still runs for the creative decisions; these are the
+    floor that prevents dangerous work from being auto-routed."""
+    labels = list(labels or [])
+    metadata = dict(metadata or {})
+    lower_body = f"{title}\n{body}".lower()
+
+    # Dangerous intent → force supervisor review, never auto-route.
+    if any(pat in lower_body for pat in _DANGEROUS_PATTERNS):
+        assignee_role = "supervisor"
+        if "review-required" not in labels:
+            labels.append("review-required")
+        metadata["dangerous_pattern"] = True
+
+    # Auto priority-boost on urgent keywords.
+    if priority not in ("urgent",) and any(kw in lower_body for kw in _URGENT_KEYWORDS):
+        priority = "urgent"
+        metadata["priority_auto_boosted"] = True
+
+    # Default assignee → supervisor for triage unless caller set one.
+    if assignee_role is None:
+        assignee_role = "supervisor"
+
+    return assignee_role, priority, labels, metadata
+
+
 def create(
     *,
     title: str,
@@ -98,6 +135,15 @@ def create(
 ) -> Ticket:
     if priority not in VALID_PRIORITY:
         raise ValueError(f"bad priority {priority!r}")
+    # Children inherit their parent's assignee if caller didn't pick — DON'T
+    # send them through supervisor triage again.
+    if parent_id is None:
+        assignee_role, priority, labels, metadata = _apply_supervisor_invariants(
+            title, body, assignee_role, priority, labels, metadata,
+        )
+    else:
+        labels = list(labels or [])
+        metadata = dict(metadata or {})
     ident = identifier or new_identifier()
     with _conn() as c, c.cursor(row_factory=dict_row) as cur:
         cur.execute(
@@ -110,7 +156,7 @@ def create(
             """,
             (ident, title, body, priority, assignee_role,
              parent_id, project, labels or [], branch,
-             json.dumps(metadata or {})),
+             json.dumps(metadata)),
         )
         row = cur.fetchone()
         c.commit()

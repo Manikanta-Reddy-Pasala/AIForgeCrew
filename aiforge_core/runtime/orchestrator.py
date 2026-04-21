@@ -569,11 +569,19 @@ def _finalize_ticket(ticket: tickets.Ticket, role_name: str,
         emit(log, "finalize.auto",
              ticket=fresh.identifier, reason=reason, target=target,
              has_commented=has_commented)
+
+        # Doer → Feedback instead of straight to in_review.
+        # Feedback's verdict_pass will set in_review + queue Learner.
+        canonical_role = _canonical_role(role_name)
+        if target == "in_review" and canonical_role == "doer":
+            _route_to_feedback(fresh, role_name, patch, log)
+            _write_t1_memory(fresh, role_name, summary, log)
+            return
+
         tickets.update_status(fresh.id, target, role=role_name,
                               metadata_patch=patch)
         if target == "in_review":
             _write_t1_memory(fresh, role_name, summary, log)
-            _maybe_queue_fact_extract(fresh, role_name, log)
         return
 
     # Wall timeout, max_turns, loop_detected → block for review.
@@ -662,6 +670,38 @@ def _write_t1_memory(ticket: tickets.Ticket, role_name: str, summary: dict,
     except Exception as exc:
         emit(log, "t1.write_failed", ticket=ticket.identifier,
              error=str(exc)[:200])
+
+
+def _canonical_role(name: str) -> str:
+    """Map legacy role names (architect/sr_developer/developer/fact_extract)
+    onto current canonical names (supervisor/planner/doer/learner)."""
+    return {
+        "architect": "supervisor",
+        "sr_developer": "planner",
+        "developer": "doer",
+        "fact_extract": "learner",
+    }.get(name, name)
+
+
+def _route_to_feedback(ticket: tickets.Ticket, role_name: str, patch: dict,
+                       log) -> None:
+    """Doer just set in_review via model_done. Route to Feedback instead."""
+    import json as _json
+    with tickets._conn() as c, c.cursor() as cur:
+        merged = {**patch, "routed_to_feedback_by": role_name,
+                  "routed_to_feedback_at": datetime.now(timezone.utc).isoformat()}
+        cur.execute(
+            "UPDATE tickets SET assignee_role='feedback', status='todo', "
+            "metadata = metadata || %s::jsonb WHERE id=%s",
+            (_json.dumps(merged), ticket.id),
+        )
+        c.commit()
+    tickets.add_event(
+        ticket.id, role_name, "routing",
+        body="→ feedback (auto-routed after commit)",
+        metadata={"new_assignee": "feedback", "trigger": "doer_complete"},
+    )
+    emit(log, "doer.route_to_feedback", ticket=ticket.identifier)
 
 
 def _maybe_queue_fact_extract(ticket: tickets.Ticket, role_name: str,

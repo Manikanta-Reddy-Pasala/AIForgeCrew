@@ -19,14 +19,38 @@ v4 cleanup (retires the previous stack — UI daemon on `:3100`, agent wrapper, 
 
 ## Agents
 
-| Role | Model | Ctx | Transport | Max turns | Role purpose |
-|---|---|---|---|---|---|
-| Architect | claude-opus-4-7 | cloud | `claude --print` | 6 | ≤ 250-word direction brief |
-| Sr Developer | qwen3.6-35b-a3b (MoE) | 128 K | OpenAI-compat → LM Studio | 25 | Deep analysis + child-ticket decomposition |
-| Developer | qwen3-coder-next | 256 K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
-| Fact Extract | qwen/qwen3-4b-thinking-2507 | 128 K | OpenAI-compat → LM Studio | 4 | Post-merge XML reflection |
+5-role pipeline, cross-family local models. Supervisor can be flipped to cloud Claude via `AIFORGE_SUPERVISOR_TRANSPORT=claude_cli`.
 
-LM Studio load-time TTL: 8 h. Prompts live in `agents/<role>/system-prompt.md` (source) → mirrored into `aiforge_core/runtime/roles.py` (runtime).
+| Role | Model | Family | Ctx | Transport | Max turns | Role purpose |
+|---|---|---|---|---|---|---|
+| Supervisor | gemma-4-26b-a4b-it | Google MoE | 32K | OpenAI-compat → LM Studio | 4 | Triage + route + invariant enforcement |
+| Planner | qwen3.6-35b-a3b | Alibaba MoE | 64K | OpenAI-compat → LM Studio | 25 | Analysis + child-ticket decomposition |
+| Doer | qwen3-coder-next | Alibaba | 128K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
+| Feedback | mistralai/devstral-small-2-2512 | Mistral | 32K | OpenAI-compat → LM Studio | 6 | Audit Doer diff + tests; pass / fail-back |
+| Learner | qwen/qwen3-4b-thinking-2507 | Alibaba | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation into T3 |
+
+LM Studio TTL: 8h for hot (Planner, Doer), 30min JIT for tiny (Supervisor, Feedback, Learner). Prompts live in `aiforge_core/runtime/roles.py`.
+
+Legacy role names (`architect`, `sr_developer`, `developer`, `fact_extract`) aliased transparently in `config.py` so pre-rename ticket rows keep working.
+
+### Ticket lifecycle
+
+```
+create → assignee=supervisor (default via tickets._apply_supervisor_invariants)
+       → supervisor tick: update_assignee(planner|doer|learner) + post_comment + reason
+       → planner tick:    analysis comment + N children with assignee=doer
+       → doer tick:       edit + test + git_commit + post_comment + set_status(in_review)
+                          orchestrator finalize AUTO-ROUTES to assignee=feedback, status=todo
+       → feedback tick:   read_file + run_shell(tests) + verdict_pass | verdict_fail
+                          pass: status=in_review + auto-queue learner sibling
+                          fail: ticket → assignee=doer with feedback_fixlist in metadata
+       → learner tick:    retain_fact × 1-5 + post_comment + set_status(done)
+```
+
+Supervisor's hard safety rules (enforced in `tickets._apply_supervisor_invariants`, cannot be bypassed by LLM):
+- Body containing destructive-intent patterns (`drop table`, `rm -rf /`, `delete all`, credential patterns) → forced `assignee=supervisor` + label `review-required` + `metadata.dangerous_pattern=true`. Never auto-routed.
+- Title or body containing `prod|outage|crash|p0|urgent|incident` → auto `priority=urgent` + `metadata.priority_auto_boosted=true`.
+- Children inherit parent's assignee (skip re-triage).
 
 ## Memory tiers (one Postgres, one `memories` table)
 
@@ -140,18 +164,26 @@ Status transitions are agent-driven (`set_status` tool); orchestrator does NOT a
 
 | Tool | Description | Allowed for |
 |---|---|---|
-| `search` | bge-m3 + bge-rerank across all tiers (role-tuned policy) | all |
+| `search` | bge-m3 + bge-rerank across all tiers | all |
 | `read_file` | Read text file (line range) | all |
-| `write_file` | Create/overwrite file | sr_dev, dev |
-| `edit` | Surgical old_string → new_string (unique-match required) | sr_dev, dev |
-| `run_shell` | Bash `-lc`, 120 s default, cwd=worktree | sr_dev, dev |
-| `fetch_url` | GET (20 s), 12 KB body cap | sr_dev, dev |
-| `git_commit` | Stage + commit on ticket branch | dev |
-| `git_push` | `git push -u origin HEAD` | dev (manual only) |
-| `create_child_ticket` | Spawn child under current ticket | arch, sr_dev |
+| `write_file` | Create/overwrite file | doer |
+| `edit` | Surgical old_string → new_string (unique-match required) | doer |
+| `run_shell` | Bash `-lc`, 120 s default, cwd=worktree | planner, doer, feedback (read-only for feedback) |
+| `fetch_url` | GET (20 s), 12 KB body cap | planner, doer |
+| `git_commit` | Stage + commit on ticket branch | doer |
+| `git_push` | `git push -u origin HEAD` | doer (manual only) |
+| `create_child_ticket` | Spawn child under current ticket | supervisor, planner |
 | `post_comment` | Append event (`kind=comment`) | all |
 | `set_status` | Move ticket through workflow states | all |
-| `retain_fact` | Write to `memories` (tier t2/t3, chosen wing) | all |
+| `retain_fact` | Write to `memories` (tier t1/t2/t3, chosen wing) | planner, doer, learner |
+| `related_tickets` | Find similar tickets by embedding | all |
+| `graph_neighbors` | Call-site map from `graphify-out/graph.json` | planner, doer |
+| `kubectl_read` | Safe subset (get/describe/logs/top); auto `--insecure-skip-tls-verify` | planner, doer |
+| `mongo_query` | Read-only mongosh via `kubectl exec mongos-0` | planner only |
+| `read_claude_memory` | Grep / read `~/.claude/memory/*.md` | all |
+| `update_assignee` | Re-route ticket (supervisor's triage action) | supervisor |
+| `verdict_pass` | Feedback pass — requires ≥40 char test evidence | feedback |
+| `verdict_fail` | Feedback fail — routes back to doer with fixlist | feedback |
 
 ## Branch convention
 
@@ -164,10 +196,11 @@ Status transitions are agent-driven (`set_status` tool); orchestrator does NOT a
 
 Stop all agents:
 ```bash
-for r in architect sr_developer developer fact_extract; do
+for r in supervisor planner doer feedback learner; do
   launchctl bootout gui/$(id -u)/com.aiforge.tick-$r
 done
 launchctl bootout gui/$(id -u)/com.aiforge.api
+launchctl bootout gui/$(id -u)/com.aiforge.reindex-daily
 ```
 
 Resume: `bash ~/AIForgeCrew/scripts/runtime/install-v5-launchd.sh` + `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aiforge.api.plist`.
