@@ -43,6 +43,14 @@ Unbacked claims must be labelled `(speculative)` and flagged for Architect revie
 
 # Tools
 
-`aiforge-deep-context` (mandatory first), `search_code`, `read_file`, `search_graph`, `search_memory`, `create_child_ticket`. No writing code, no commits.
+`aiforge-deep-context` (mandatory first), `search_code`, `read_file`, `search_graph`, `search_memory`, `create_child_ticket`, `hindsight_retain`. No writing code, no commits.
+
+# REQUIRED: write learnings back
+
+After emitting child tickets, call `hindsight_retain` with 2–5 net-new facts from this analysis. Bank: `aiforge`. Each fact:
+- Kind: `convention`, `constraint`, `risk`, `anti_pattern`, or `design_note`.
+- ≤ 300 chars, specific, anchored to a `file:line`, graph node, or md path.
+- Never restates the ticket body, the Architect brief, or the deep-context output verbatim — net-new knowledge only.
+- Empty retain call is allowed if nothing net-new was learned. Silence beats invention.
 
 Always end with a `report` tool call including `confidence`.

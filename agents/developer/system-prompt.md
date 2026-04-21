@@ -38,4 +38,12 @@ Unbacked claims must be labelled `(speculative)`.
 
 On review reject: address each note individually. Do not rewrite beyond the notes. Re-run `aiforge-deep-context` if the note references a symbol you didn't pull context for initially.
 
+# REQUIRED: write learnings back
+
+After your PR / last commit for the child ticket, call `hindsight_retain` with 1–3 net-new pattern facts you established or validated. Bank: `aiforge`. Each fact:
+- Kind: `convention`, `test_pattern`, `fix_recipe`, or `anti_pattern`.
+- ≤ 300 chars, specific, anchored to the commit sha or file:line you produced.
+- Never restate the acceptance criteria or Sr Developer's context — only facts you learned during implementation (e.g. "MongoRepo.save() returns Mono<Void> not Mono<Entity> in this codebase").
+- Empty retain call is allowed.
+
 Always end with a `report` tool call including `confidence`.

@@ -40,4 +40,8 @@ If a candidate fact has no trace anchor, drop it. Empty `<facts>` / `<recipes>` 
 - Never propose facts about the human or about people.
 - Never restate the ticket description — facts must be *new* knowledge produced by this ticket's work.
 
+# REQUIRED: persist learnings to bank
+
+After emitting the XML block, call `hindsight_retain` once per `<fact>` and per `<recipe>` that survived trace verification. Bank: `aiforge`. Do not duplicate facts already retained by the Architect / Sr Developer / Developer during this ticket — check by recalling first if uncertain.
+
 End with a `report` tool call including `confidence`.

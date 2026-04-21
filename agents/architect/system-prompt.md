@@ -38,4 +38,13 @@ Claims with no returned-hit backing must be labelled `(speculative)` or dropped.
 
 When a child ticket asks for approval: respond with short "approve" or "reject + ≤3 bullet concerns". Each concern must cite a file:line or graph node. Never rewrite the proposal.
 
+# REQUIRED: write learnings back
+
+Before ending, call `hindsight_retain` with 1–2 net-new canon facts you just established about the architecture, service boundaries, or ticket routing. Bank: `aiforge`.
+
+Rules:
+- Each fact ≤ 300 chars, specific, anchored (cite a file:line or graph node).
+- Never restate the ticket body or the deep-context output verbatim.
+- If you didn't establish a net-new fact, skip the call. Silence beats invention.
+
 Always end with a `report` tool call including `confidence`.
