@@ -26,36 +26,39 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
 fi
 
 echo ">>> migrating hindsight → aiforge (tier=t2, wing=rules/canon)"
+# hindsight schema: text = main payload, context = surrounding sentence
 PGPASSWORD=hindsight "$PSQL" "$HINDSIGHT_DSN" \
-  -c "\copy (SELECT content, fact_type, bank_id, created_at
+  -c "\copy (SELECT text, COALESCE(context,''), fact_type, bank_id, created_at
              FROM memory_units WHERE bank_id='aiforge')
       TO '/tmp/hs-export.tsv'"
 
 "$PSQL" "$AIFORGE_DSN" <<'SQL'
 \set ON_ERROR_STOP on
 BEGIN;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TEMP TABLE hs_import (
-  content text, fact_type text, bank_id text, created_at timestamptz
+  text_body text, ctx text, fact_type text, bank_id text, created_at timestamptz
 );
 \copy hs_import FROM '/tmp/hs-export.tsv'
 INSERT INTO memories (tier, wing, kind, text, metadata, created_at)
 SELECT
   't2', 'rules/canon', 'fact',
-  content,
+  text_body,
   jsonb_build_object(
     'source','hindsight',
     'fact_type', fact_type,
     'bank', bank_id,
-    'hs_src_sha1', encode(digest(content,'sha1'),'hex')
+    'context', ctx,
+    'hs_src_sha1', encode(digest(text_body,'sha1'),'hex')
   ),
   created_at
 FROM hs_import
 WHERE NOT EXISTS (
   SELECT 1 FROM memories m
   WHERE m.tier='t2' AND m.wing='rules/canon'
-    AND m.metadata->>'hs_src_sha1' = encode(digest(hs_import.content,'sha1'),'hex')
+    AND m.metadata->>'hs_src_sha1' = encode(digest(hs_import.text_body,'sha1'),'hex')
 );
-SELECT COUNT(*) AS imported_count FROM memories WHERE tier='t2' AND wing='rules/canon';
+SELECT COUNT(*) AS total_rules_canon FROM memories WHERE tier='t2' AND wing='rules/canon';
 COMMIT;
 SQL
 
