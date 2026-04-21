@@ -74,6 +74,7 @@ _SUPERVISOR_TOOLS = (
     "related_tickets", "read_claude_memory",
 )
 _FEEDBACK_TOOLS = (
+    # No set_status — verdict_pass / verdict_fail handle status transitions.
     "search", "read_file", "run_shell",
     "post_comment", "verdict_pass", "verdict_fail",
     "related_tickets", "read_claude_memory",

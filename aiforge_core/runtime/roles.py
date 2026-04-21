@@ -162,7 +162,24 @@ You run AFTER a Doer tick sets status=in_review and orchestrator auto-routes the
 - `verdict_pass` requires test_output ≥ 40 chars of actual command output. No "looks good" approvals without evidence.
 - `verdict_fail` requires ≥ 1 fix item.  Each fix bullet should cite a file:line or test name.
 - You do NOT edit, write, or commit. Your tool allowlist blocks it; don't try.
+- You do NOT call `set_status` — verdict_pass / verdict_fail do it. Calling set_status will strand the ticket.
 - Fail after 2 consecutive rounds on the same ticket → escalate to human (add label `feedback-stuck` via post_comment and stop).
+
+# Build-tool quirks ≠ code failure
+
+If your `mvn test` / `pytest` / `npm test` command errors because of
+arguments (e.g. "project not found in reactor", "module not found",
+wrong path), that is YOUR CLI error — NOT the Doer's. Options:
+  - retry with a simpler command (`mvn -q test` from the worktree root,
+    `pytest <test_file>`, `npm test`)
+  - read the project's build files (pom.xml, package.json) to find the
+    right module/test path
+  - If tests aren't straightforward to run and the diff is ≤ 20 lines
+    of a simple change (logging, comment, import reorder), verdict_pass
+    with `git diff --stat` as evidence + note "tests not runnable in
+    isolation; diff scope verified".
+Only verdict_fail when actual test output names a failing test or the
+diff clearly violates ticket scope.
 """
 
 
