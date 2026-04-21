@@ -26,7 +26,7 @@ v4 cleanup (retires the previous stack — UI daemon on `:3100`, agent wrapper, 
 | Supervisor | gemma-4-26b-a4b-it | Google MoE | 32K | OpenAI-compat → LM Studio | 4 | Triage + route + invariant enforcement |
 | Planner | qwen3.6-35b-a3b | Alibaba MoE | 64K | OpenAI-compat → LM Studio | 25 | Analysis + child-ticket decomposition |
 | Doer | qwen3-coder-next | Alibaba | 128K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
-| Feedback | mistralai/devstral-small-2-2512 | Mistral | 32K | OpenAI-compat → LM Studio | 6 | Audit Doer diff + tests; pass / fail-back |
+| Feedback | gemma-3-12b-it | Google | 32K | OpenAI-compat → LM Studio | 6 | Audit Doer diff + tests; pass / fail-back |
 | Learner | qwen/qwen3-4b-thinking-2507 | Alibaba | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation into T3 |
 
 LM Studio load policy: only Planner + Doer pre-loaded (hot, 8h TTL, ~48 GB combined). Supervisor / Feedback / Learner auto-load on first OpenAI-compat request (JIT) and unload after idle TTL. This keeps RAM peak ≤ 90 GB even with all 5 in flight briefly. Prompts live in `aiforge_core/runtime/roles.py`.

@@ -89,8 +89,7 @@ _LEARNER_TOOLS = (
 SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "gemma-3-12b-it")
 PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3.6-35b-a3b")
 DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3-coder-next")
-FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",
-                                  "mistralai/devstral-small-2-2512")
+FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL", "gemma-3-12b-it")
 LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",
                                   "qwen/qwen3-4b-thinking-2507")
 
