@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api';
+import { durationCell, durationTitle } from './Tickets';
 
 export default function TicketDetail() {
   const { id = '' } = useParams();
@@ -34,6 +35,7 @@ export default function TicketDetail() {
       <div className="row small muted" style={{ marginBottom: '1rem' }}>
         <span>assignee: {t.assignee_role || '—'}</span>
         <span>priority: {t.priority}</span>
+        <span title={durationTitle(t)}>duration: {durationCell(t)}</span>
         {t.branch && <span>branch: <code>{t.branch}</code></span>}
         {t.parent_id && <span>parent: #{t.parent_id}</span>}
       </div>
@@ -47,7 +49,7 @@ export default function TicketDetail() {
         <div className="card">
           <h2>Children ({data.children.length})</h2>
           <table>
-            <thead><tr><th>ID</th><th>Status</th><th>Assignee</th><th>Title</th></tr></thead>
+            <thead><tr><th>ID</th><th>Status</th><th>Assignee</th><th>Title</th><th>Duration</th></tr></thead>
             <tbody>
               {data.children.map((c: any) => (
                 <tr key={c.id}>
@@ -55,6 +57,7 @@ export default function TicketDetail() {
                   <td><span className={`chip ${statusClass(c.status)}`}>{c.status}</span></td>
                   <td className="muted small">{c.assignee_role || '—'}</td>
                   <td>{c.title}</td>
+                  <td className="small muted" title={durationTitle(c)}>{durationCell(c)}</td>
                 </tr>
               ))}
             </tbody>

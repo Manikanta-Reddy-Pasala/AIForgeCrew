@@ -79,7 +79,7 @@ export default function Tickets() {
           <span className="muted small">{rows.length} shown</span>
         </div>
         <table>
-          <thead><tr><th>ID</th><th>Status</th><th>Priority</th><th>Assignee</th><th>Title</th><th>Updated</th></tr></thead>
+          <thead><tr><th>ID</th><th>Status</th><th>Priority</th><th>Assignee</th><th>Title</th><th>Duration</th><th>Updated</th></tr></thead>
           <tbody>
             {rows.map(t => (
               <tr key={t.id}>
@@ -88,6 +88,7 @@ export default function Tickets() {
                 <td className="small muted">{t.priority}</td>
                 <td className="muted small">{t.assignee_role || '—'}</td>
                 <td>{t.title}</td>
+                <td className="small muted" title={durationTitle(t)}>{durationCell(t)}</td>
                 <td className="small muted">{t.updated_at?.slice(0, 19).replace('T', ' ')}</td>
               </tr>
             ))}
@@ -103,4 +104,31 @@ function statusClass(s: string) {
   if (s === 'blocked' || s === 'cancelled') return 'err';
   if (s === 'in_progress' || s === 'in_review') return 'active';
   return '';
+}
+
+const TERMINAL = new Set(['done', 'cancelled']);
+
+export function formatDuration(sec: number | null | undefined): string {
+  if (sec == null || !isFinite(sec) || sec < 0) return '—';
+  const s = Math.round(sec);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), rs = s % 60;
+  if (m < 60) return rs ? `${m}m ${rs}s` : `${m}m`;
+  const h = Math.floor(m / 60), rm = m % 60;
+  if (h < 24) return rm ? `${h}h ${rm}m` : `${h}h`;
+  const d = Math.floor(h / 24), rh = h % 24;
+  return rh ? `${d}d ${rh}h` : `${d}d`;
+}
+
+export function durationCell(t: any): string {
+  if (!t.started_at) return t.status === 'todo' ? '—' : '…';
+  const live = !TERMINAL.has(t.status);
+  return live ? `${formatDuration(t.duration_s)} ⏱` : formatDuration(t.duration_s);
+}
+
+export function durationTitle(t: any): string {
+  if (!t.started_at) return 'never entered in_progress';
+  const live = !TERMINAL.has(t.status);
+  const base = `started ${t.started_at.slice(0, 19).replace('T', ' ')}`;
+  return live ? `${base} (running)` : `${base} → ${t.completed_at?.slice(0, 19).replace('T', ' ') || 'end'}`;
 }

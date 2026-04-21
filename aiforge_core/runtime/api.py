@@ -56,7 +56,25 @@ def _db():
                            options="-c statement_timeout=10000")
 
 
+_TERMINAL = {"done", "cancelled"}
+
+
 def _ticket_row_out(r: dict) -> dict:
+    started = r.get("started_at")
+    completed = r.get("completed_at")
+    created = r.get("created_at")
+    status = r.get("status")
+    end = completed if (completed and status in _TERMINAL) else None
+    if started is None:
+        duration_s: float | None = None
+    else:
+        from datetime import datetime, timezone
+        end_ts = end or datetime.now(timezone.utc)
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.replace(tzinfo=timezone.utc)
+        duration_s = max(0.0, (end_ts - started).total_seconds())
     return {
         "id": r["id"], "identifier": r["identifier"], "title": r["title"],
         "body": r["body"], "status": r["status"], "priority": r["priority"],
@@ -64,9 +82,11 @@ def _ticket_row_out(r: dict) -> dict:
         "branch": r["branch"], "project": r["project"],
         "labels": list(r["labels"] or []),
         "metadata": dict(r["metadata"] or {}),
-        "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        "created_at": created.isoformat() if created else None,
         "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
-        "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        "completed_at": completed.isoformat() if completed else None,
+        "started_at": started.isoformat() if started else None,
+        "duration_s": duration_s,
     }
 
 
@@ -175,7 +195,13 @@ def list_tickets(role: str | None = Query(None),
         clauses.append("parent_id = (SELECT id FROM tickets WHERE identifier=%s)")
         params.append(parent)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    q = f"SELECT * FROM tickets{where} ORDER BY id DESC LIMIT %s"
+    q = (
+        "SELECT tickets.*, "
+        "(SELECT MIN(created_at) FROM ticket_events "
+        " WHERE ticket_id=tickets.id AND kind='status_change' AND body='in_progress'"
+        ") AS started_at "
+        f"FROM tickets{where} ORDER BY id DESC LIMIT %s"
+    )
     params.append(limit)
     with _db() as c, c.cursor() as cur:
         cur.execute(q, params)
@@ -185,8 +211,16 @@ def list_tickets(role: str | None = Query(None),
 
 @app.get("/api/tickets/{identifier}")
 def get_ticket(identifier: str) -> dict:
+    _started_expr = (
+        "(SELECT MIN(created_at) FROM ticket_events "
+        " WHERE ticket_id=tickets.id AND kind='status_change' AND body='in_progress'"
+        ") AS started_at"
+    )
     with _db() as c, c.cursor() as cur:
-        cur.execute("SELECT * FROM tickets WHERE identifier=%s", (identifier,))
+        cur.execute(
+            f"SELECT tickets.*, {_started_expr} FROM tickets WHERE identifier=%s",
+            (identifier,),
+        )
         t = cur.fetchone()
         if not t:
             raise HTTPException(404, f"ticket {identifier} not found")
@@ -198,7 +232,8 @@ def get_ticket(identifier: str) -> dict:
         )
         events = [_event_row_out(r) for r in cur.fetchall()]
         cur.execute(
-            "SELECT * FROM tickets WHERE parent_id=%s ORDER BY created_at ASC",
+            f"SELECT tickets.*, {_started_expr} FROM tickets "
+            "WHERE parent_id=%s ORDER BY created_at ASC",
             (ticket_id,),
         )
         children = [_ticket_row_out(r) for r in cur.fetchall()]
