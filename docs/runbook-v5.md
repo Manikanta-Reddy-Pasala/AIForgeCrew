@@ -21,15 +21,36 @@ v4 cleanup (retires the previous stack — UI daemon on `:3100`, agent wrapper, 
 
 5-role pipeline, cross-family local models. Supervisor can be flipped to cloud Claude via `AIFORGE_SUPERVISOR_TRANSPORT=claude_cli`.
 
-| Role | Model | Family | Ctx | Transport | Max turns | Role purpose |
-|---|---|---|---|---|---|---|
-| Supervisor | gemma-4-26b-a4b-it | Google MoE | 32K | OpenAI-compat → LM Studio | 4 | Triage + route + invariant enforcement |
-| Planner | qwen3.6-35b-a3b | Alibaba MoE | 64K | OpenAI-compat → LM Studio | 25 | Analysis + child-ticket decomposition |
-| Doer | qwen3-coder-next | Alibaba | 128K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
-| Feedback | gemma-3-12b-it | Google | 32K | OpenAI-compat → LM Studio | 6 | Audit Doer diff + tests; pass / fail-back |
-| Learner | qwen/qwen3-4b-thinking-2507 | Alibaba | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation into T3 |
+| Role | Model | Family | Ctx | Transport | Max turns | TTL | Role purpose |
+|---|---|---|---|---|---|---|---|
+| Supervisor | gemma-3-12b-it | Google | 16K | OpenAI-compat → LM Studio | 4 | 30min | Triage + route + invariant enforcement |
+| Planner | qwen3.6-35b-a3b | Alibaba MoE | 64K | OpenAI-compat → LM Studio | 25 | 8h | Analysis + child-ticket decomposition |
+| Doer | qwen3-coder-next | Alibaba | 128K | OpenAI-compat → LM Studio | 40 | 8h | Implementation + tests + commit |
+| Feedback | gemma-3-12b-it (shares Supervisor's slot) | Google | 16K | OpenAI-compat → LM Studio | 6 | 30min | Audit Doer diff + tests; pass / fail-back |
+| Learner | qwen/qwen3-4b-thinking-2507 | Alibaba | 16K | OpenAI-compat → LM Studio | 4 | 30min | Post-merge fact distillation into T3 |
 
-LM Studio load policy: only Planner + Doer pre-loaded (hot, 8h TTL, ~48 GB combined). Supervisor / Feedback / Learner auto-load on first OpenAI-compat request (JIT) and unload after idle TTL. This keeps RAM peak ≤ 90 GB even with all 5 in flight briefly. Prompts live in `aiforge_core/runtime/roles.py`.
+LM Studio load policy: only Planner + Doer pre-loaded (hot, 8h TTL, ~65 GB combined). Supervisor + Feedback share the same gemma-3-12b-it slot (~8 GB). Learner auto-loads on first request. `memguard.py` enforces a ≤ 90 GB weights budget at tick-start, evicting LRU non-protected models before loading the target. Prompts live in `aiforge_core/runtime/roles.py`; ctx + TTL in `config.py` RoleConfig.
+
+### RAM + memguard
+
+Before each LLM tick, `aiforge_core.runtime.memguard.ensure_loaded()` runs:
+1. Parse `lms ps` — which models loaded, sizes, TTL remaining.
+2. If the target model is already loaded at ≥ requested ctx, done.
+3. Else, if loading would push total LLM weights past `AIFORGE_RAM_BUDGET_GB` (default 85), evict LRU non-protected models (`qwen3-coder-next` + `qwen3.6-35b-a3b` are protected).
+4. `lms load <model> --context-length <N> --ttl <S>` .
+
+Env knobs:
+- `AIFORGE_RAM_BUDGET_GB` — weights ceiling (default 85)
+- `AIFORGE_MEMGUARD_DISABLE=1` — emergency bypass
+- `AIFORGE_LMS_BIN` — path to `lms` binary
+
+Emits structured log events: `memguard.budget`, `memguard.evict`, `memguard.load`, `memguard.unload`, `memguard.over_budget`.
+
+### Context-bundle policy (prompt size)
+
+Tiny-model roles (supervisor / feedback / learner) see a **trimmed context bundle** — no `aiforge-deep-context` CLI output, no graph_hint. Just ticket body + last 20 events + linked-tickets block. Prevents 400 errors on 16K-ctx models.
+
+Heavy roles (planner / doer) get the full bundle.
 
 Legacy role names (`architect`, `sr_developer`, `developer`, `fact_extract`) aliased transparently in `config.py` so pre-rename ticket rows keep working.
 
@@ -110,21 +131,22 @@ On the Mac Studio itself: `http://127.0.0.1:8799/ui/`.
 - **Dashboard** — postgres + LM Studio health, agent cards, recent tickets, memory wings
 - **Tickets** — list w/ role+status filter, inline "New ticket" form
 - **Ticket detail** — body, children, full event timeline, comment box, one-click status transitions
-- **Agents** — 4 role cards (model, tool allowlist, open tickets, live-log link)
+- **Agents** — 5 role cards (model, tool allowlist, open tickets, live-log link)
 - **Logs** — live SSE tail per role, structured event render
 - **Memory** — bge-reranked semantic search across tiers
 
 ### CLI (no UI needed)
 
 ```bash
+# assignee is optional — defaults to 'supervisor' for triage
 python -m aiforge_core.runtime.cli create \
-  --title "…" --body "…" --assignee sr_developer --priority medium
+  --title "…" --body "…" --priority medium
 
-python -m aiforge_core.runtime.cli list --role sr_developer --status todo,in_progress
+python -m aiforge_core.runtime.cli list --role planner --status todo,in_progress
 python -m aiforge_core.runtime.cli show ONE-123
 python -m aiforge_core.runtime.cli comment ONE-123 --body "…"
 python -m aiforge_core.runtime.cli status  ONE-123 --status done
-python -m aiforge_core.runtime      sr_developer        # manual one-shot tick
+python -m aiforge_core.runtime      planner        # manual one-shot tick
 ```
 
 ### Structured logs

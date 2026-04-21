@@ -90,7 +90,7 @@ Learner     — retain_fact × N + post_comment + set_status(done)
 | Tier | Wing pattern | Source | Lifetime |
 |---|---|---|---|
 | **T1 episodic** | `ticket/<id>` | orchestrator tool-call events | ticket lifetime |
-| **T2 canon** | `rules/canon`, `rules/*` | curated + Architect `retain_fact` | permanent |
+| **T2 canon** | `rules/canon`, `rules/*` | curated + Planner / Supervisor `retain_fact` | permanent |
 | **T3 skills/recipes** | `skills/*`, `patterns/*` | Sr Dev / Dev / Fact Extract `retain_fact` | permanent |
 | **T4 code chunks** | `code/<repo>`, `code/claude-memory` | `scripts/bulk-index-all-repos.sh` | rebuilt on post-commit hook |
 | **Graph** | per-repo `graphify-out/graph.json` | graphify CLI | rebuilt on post-commit hook |
@@ -117,7 +117,7 @@ Retrieval: bge-m3 (dim 1024, sidecar `:8764`) for embeddings + BM25 + RRF + bge-
 
 Status transitions are **agent-driven via the `set_status` tool**. The orchestrator does NOT auto-move tickets — that prevents false blocks under model latency.
 
-Branch convention: `aiforge/<PARENT_ID>-<slug>`. All children of the same parent share it. Developer commits locally; a human pushes + PRs.
+Branch convention: `aiforge/<PARENT_ID>-<slug>`. All children of the same parent share it. Doer commits locally; a human pushes + PRs.
 
 ---
 
@@ -130,7 +130,18 @@ Branch convention: `aiforge/<PARENT_ID>-<slug>`. All children of the same parent
 | 8764 | bge-m3 embed sidecar | launchd `com.aiforge.embed-sidecar` |
 | 8765 | bge-reranker-v2-m3 sidecar | launchd `com.aiforge.rerank-sidecar` |
 | 8799 | FastAPI + React UI | launchd `com.aiforge.api` |
-| — | 4× per-role tick timers | launchd `com.aiforge.tick-<role>` (60 s interval) |
+| — | 5× per-role tick timers | launchd `com.aiforge.tick-<role>` (60-120 s interval) |
+| — | Daily reindex @ 02:00 | launchd `com.aiforge.reindex-daily` |
+
+---
+
+## RAM guard (memguard)
+
+`aiforge_core/runtime/memguard.py` runs at every tick-start (before LLM). Parses `lms ps`, evicts LRU non-protected models if loading the target would exceed `AIFORGE_RAM_BUDGET_GB` (default 85). Protected: `qwen3-coder-next`, `qwen3.6-35b-a3b` (Doer + Planner always hot). Supervisor + Feedback share one `gemma-3-12b-it` slot. Learner JIT-loads on demand.
+
+Env: `AIFORGE_RAM_BUDGET_GB`, `AIFORGE_MEMGUARD_DISABLE=1` (bypass).
+
+Emits structured log events: `memguard.load`, `memguard.unload`, `memguard.evict`, `memguard.over_budget`.
 
 ---
 
@@ -141,7 +152,7 @@ React 18 + Vite + TypeScript, served by FastAPI at `/ui/`.
 - **Dashboard** — Postgres + LM Studio health, agent cards, recent tickets, memory wings
 - **Tickets** — list w/ role+status filter, inline "New ticket" form
 - **Ticket detail** — body, children, full event timeline, comment box, one-click status transitions
-- **Agents** — 4 role cards (model, tool allowlist, open tickets, live-log link)
+- **Agents** — 5 role cards (model, tool allowlist, open tickets, live-log link)
 - **Logs** — live SSE tail per role, structured event render
 - **Memory** — bge-reranked semantic search across all tiers
 
@@ -255,7 +266,7 @@ docs/
 | LLM 400 ctx overflow | `llm.error` event on ticket | raise LM Studio ctx or tighten prompt |
 | UI blank | browser console | hard-reload (Cmd+Shift+R) — old cached bundle |
 | UI can't reach API | laptop curl health | SSH tunnel (see Access from laptop) |
-| Developer hits max_turns | `tick.end.stop_reason=max_turns` | tighten role prompt or raise `TICK_MAX_TURNS` |
+| Doer hits max_turns | `tick.end.stop_reason=max_turns` | tighten role prompt or raise `TICK_MAX_TURNS` |
 | Two ticks collide | `lock.skip` event | expected — per-role fcntl lock |
 
 ---
