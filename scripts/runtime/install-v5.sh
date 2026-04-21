@@ -25,8 +25,9 @@ LMS=$HOME/.lmstudio/bin/lms
 echo ">>> 1/6 applying aiforge schema"
 "$PSQL" -h 127.0.0.1 -U manikanta aiforge -f "$REPO/db/migrations/2026-04-21-tickets.sql"
 
-echo ">>> 2/6 installing python deps"
-"$VENV/bin/pip" install --upgrade --quiet openai psycopg[binary] pgvector
+echo ">>> 2/6 installing python deps (via uv)"
+cd "$REPO" && /opt/homebrew/bin/uv pip install --python "$VENV/bin/python" \
+  openai 'psycopg[binary]' pgvector 2>&1 | tail -4
 
 echo ">>> 3/6 loading models at max context"
 "$LMS" unload --all 2>&1 | tail -1
