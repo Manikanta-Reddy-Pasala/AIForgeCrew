@@ -1,4 +1,4 @@
-"""Memory access for the v5 orchestrator.
+"""Memory access for the orchestrator.
 
 Wraps the existing `aiforge_core.store_v2.Store` + `retrieval.retrieve_for_role`
 so tools.py can expose a single `search` and `retain_fact` surface to the LLM.
@@ -52,7 +52,7 @@ class Memory:
         applies per-tier wing filters inside `retrieve_for_role` (see
         ROLE_POLICIES in retrieval.py). We do NOT post-filter hits on
         `metadata.wing` here — hit.metadata doesn't guarantee a `wing`
-        key, which silently emptied results in v5 early tests.
+        key, which silently emptied results.
         """
         hits: list[Hit] = retrieve_for_role(
             self._store, role=role, query=query, parent_id=parent_id,

@@ -1,4 +1,4 @@
-"""FastAPI backend for the v5 dashboard UI.
+"""FastAPI backend for the dashboard UI.
 
 Exposes the aiforge Postgres state + live log tails as a small REST + SSE
 surface the React/Vite frontend talks to.
@@ -40,7 +40,7 @@ from .config import (
 )
 
 
-app = FastAPI(title="AIForge v5 API", version="5.0.0")
+app = FastAPI(title="AIForge API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -392,8 +392,7 @@ else:
     @app.get("/")
     def _root_info() -> dict:
         return {
-            "service": "aiforge v5 api",
-            "version": "5.0.0",
+            "service": "aiforge api",
             "hint": "run `cd web && npm run build` to serve the UI at /ui/",
             "routes": [r.path for r in app.routes if hasattr(r, "path")],
         }

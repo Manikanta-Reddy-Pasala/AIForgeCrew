@@ -1,6 +1,6 @@
-# AIForge v5 runbook
+# AIForge runbook
 
-Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. 5-agent pipeline (Supervisor / Planner / Doer / Feedback / Learner). Last update: 2026-04-22.
+Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. 5-agent pipeline: Supervisor / Planner / Doer / Feedback / Learner.
 
 ## Stack
 
@@ -14,8 +14,6 @@ Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. 5
 | Orchestrator | `python -m aiforge_core.runtime <role>` | — | launchd timer (60 s / role) |
 | REST / SSE API | FastAPI (`aiforge_core.runtime.api`) | 8799 | launchd (`com.aiforge.api`) |
 | Dashboard UI | React/Vite static (`web/dist/`) | served at `:8799/ui/` | same FastAPI |
-
-v4 cleanup (retires the previous stack — UI daemon on `:3100`, agent wrapper, ChromaDB, hindsight daemon): `scripts/runtime/cleanup-v4.sh`.
 
 ## Agents
 
@@ -89,28 +87,13 @@ Embeddings: bge-m3 (dim 1024). Rerank: bge-reranker-v2-m3 FP16. Retrieval policy
 
 ```bash
 cd ~/AIForgeCrew && git pull
-bash scripts/runtime/install-v5.sh      # schema + pip deps + LM Studio loads + migrations + launchd
+bash scripts/runtime/install.sh         # schema + pip deps + LM Studio loads + migrations + launchd
 bash scripts/runtime/install-ui.sh      # brew node + npm install + Vite build + API plist
 ```
 
-Retire v4 (after v5 tick is green):
-```bash
-DRY_RUN=1 bash scripts/runtime/cleanup-v4.sh   # preview
-bash scripts/runtime/cleanup-v4.sh              # backup + delete
-```
+Backups from migrations / resets land in `~/.aiforge/backups/YYYY-MM-DD/`.
 
-Backups land in `~/.aiforge/backups/YYYY-MM-DD/`.
-
-## Legacy `/etc/hosts` cleanup
-
-v4 may have left LAN-hostname aliases you no longer need. On each machine:
-
-```bash
-# Drop anything pointing at the old UI/agent hostnames
-sudo sed -i.bak '/paperclip\.\(lan\|local\)\|hermes\.\(lan\|local\)/d' /etc/hosts
-```
-
-Optional nicer hostname for the new UI (run on the laptop that tunnels in):
+## Optional hostname
 ```bash
 echo '127.0.0.1 aiforge.local' | sudo tee -a /etc/hosts
 # then open http://aiforge.local:8799/ui/
@@ -180,7 +163,7 @@ Each tick (`python -m aiforge_core.runtime <role>`):
    - Every tool call + tool result → `ticket_event(kind='tool_call')` + structured log line.
 8. Writes `tick.end` with `stop_reason` (model_done / max_turns / wall_timeout / llm_error / loop_detected).
 
-Status transitions are agent-driven (`set_status` tool); orchestrator does NOT auto-block stuck tickets (the v4 UI did, which caused false negatives under model latency).
+Status transitions are agent-driven (`set_status` tool); orchestrator's finalize auto-blocks only on wall_timeout / max_turns / loop_detected, never on healthy ticks.
 
 ## Tool catalogue (`aiforge_core/runtime/tools.py`)
 
@@ -225,7 +208,7 @@ launchctl bootout gui/$(id -u)/com.aiforge.api
 launchctl bootout gui/$(id -u)/com.aiforge.reindex-daily
 ```
 
-Resume: `bash ~/AIForgeCrew/scripts/runtime/install-v5-launchd.sh` + `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aiforge.api.plist`.
+Resume: `bash ~/AIForgeCrew/scripts/runtime/install-launchd.sh` + `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aiforge.api.plist`.
 
 Per-ticket stop: `python -m aiforge_core.runtime.cli status ONE-123 --status cancelled`.
 
@@ -247,7 +230,7 @@ Per-ticket stop: `python -m aiforge_core.runtime.cli status ONE-123 --status can
 
 `aiforge_core/runtime/config.py.ROLES` is the source of truth. Edit → `git push` → pull on Mac Studio → `launchctl kickstart -k gui/$(id -u)/com.aiforge.tick-<role>`.
 
-Runtime override via adapter DB is intentionally NOT supported (that's what v4 bootstrap scripts kept regressing).
+Runtime override via adapter DB is intentionally NOT supported — only env vars + git push.
 
 ## 3-month trajectory to full local
 

@@ -13,7 +13,7 @@ function Shell() {
   return (
     <div className="shell">
       <header className="topnav">
-        <Link to="/" className="brand">AIForge <span>v5</span></Link>
+        <Link to="/" className="brand">AIForge</Link>
         <nav>
           <NavLink to="/" end>Dashboard</NavLink>
           <NavLink to="/tickets">Tickets</NavLink>

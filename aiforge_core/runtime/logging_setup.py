@@ -1,4 +1,4 @@
-"""Structured JSON logging for the v5 orchestrator.
+"""Structured JSON logging for the orchestrator.
 
 One JSON object per line. Stdout → parseable by `jq`. File handler per role
 writes to `~/.aiforge/logs/orchestrator-<role>.ndjson`, rotated daily by

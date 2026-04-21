@@ -103,7 +103,7 @@ ROLE_POLICIES: dict[str, dict] = {
         ],
         "rerank_keep": 50,
     },
-    # v5 canonical role names
+    # canonical role names
     "supervisor": {
         "tiers": [
             {"tier": "t1", "top_k": 20},

@@ -1,5 +1,5 @@
-.PHONY: help install test ui deploy pull cleanup-v4 kill-all \
-        index-all status logs-tail health
+.PHONY: help install test ui deploy pull kill-all \
+        index-all status logs-tail health sync-memory reindex-memory
 
 # SSH target for Mac Studio. Override: `make X SSH_HOST=user@host`.
 SSH_HOST ?= manikanta@192.168.70.185
@@ -11,7 +11,6 @@ help:
 	@echo "  ui                 vite build (web/dist)"
 	@echo "  deploy             git push + pull+build+restart on Mac Studio"
 	@echo "  pull               git pull on Mac Studio"
-	@echo "  cleanup-v4         legacy paperclip/hermes/hindsight purge (backed up)"
 	@echo ""
 	@echo "Ops:"
 	@echo "  status             tickets + agents + health"
@@ -38,9 +37,6 @@ deploy:
 
 pull:
 	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && git pull'
-
-cleanup-v4:
-	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && bash scripts/runtime/cleanup-v4.sh'
 
 status:
 	ssh $(SSH_HOST) 'curl -s http://127.0.0.1:8799/api/health; echo; curl -s http://127.0.0.1:8799/api/tickets?limit=15 | head -c 2000'

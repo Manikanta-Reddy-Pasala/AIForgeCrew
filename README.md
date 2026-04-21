@@ -2,8 +2,8 @@
 
 **Autonomous AI dev team.** Human files a ticket → 5 AI agents triage, plan, implement, review, and learn. Supervisor → Planner → Doer → Feedback → Learner, each a different model family. Single parent-ticket thread, sub-tickets per work unit, cross-session memory, code knowledge graph, hybrid retrieval. Runs on one Mac Studio (M3 Ultra, 96 GB). Laptop = remote control.
 
-**Stack:** v5 (2026-04-21) — custom Python orchestrator + FastAPI + React/Vite UI. No external agent wrapper.
-**Runbook:** [`docs/runbook-v5.md`](./docs/runbook-v5.md)
+**Stack:** Custom Python orchestrator + FastAPI + React/Vite UI.
+**Runbook:** [`docs/runbook.md`](./docs/runbook.md)
 
 ---
 
@@ -12,16 +12,16 @@
 ```bash
 # Mac Studio (once)
 cd ~/AIForgeCrew && git pull
-bash scripts/runtime/install-v5.sh      # Postgres schema + models + migrations + tick timers
+bash scripts/runtime/install.sh         # Postgres schema + models + migrations + tick timers
 bash scripts/runtime/install-ui.sh      # Node + Vite build + API LaunchAgent
 
 # Open the UI (via SSH tunnel from laptop)
 ssh -fNL 8799:127.0.0.1:8799 manikanta@<mac-studio-ip>
 open http://127.0.0.1:8799/ui/
 
-# Or file a ticket from the CLI
+# Or file a ticket from the CLI (assignee optional — defaults to supervisor)
 python -m aiforge_core.runtime.cli create \
-  --title "…" --body "…" --assignee sr_developer --priority medium
+  --title "…" --body "…" --priority medium
 ```
 
 Tick timers run every 60 s. Watch events land in the UI's Logs view or via `tail -f ~/.aiforge/logs/orchestrator-*.ndjson | jq`.
@@ -233,19 +233,17 @@ aiforge_core/
 │   └── __main__.py           # `python -m aiforge_core.runtime <role>`
 ├── embed.py retrieval.py store_v2.py …   (reused from earlier tier-indexer)
 
-agents/<role>/system-prompt.md             # source prompts (copied into roles.py)
-
 db/migrations/2026-04-21-tickets.sql       # tickets + ticket_events + counter
 
 scripts/runtime/
-├── install-v5.sh             # first-time Mac Studio provisioning
-├── install-v5-launchd.sh     # LaunchAgent installer
+├── install.sh                # first-time Mac Studio provisioning
+├── install-launchd.sh        # LaunchAgent installer
 ├── install-ui.sh             # Node + Vite build + API LaunchAgent
-├── cleanup-v4.sh             # retire legacy services (backup-first)
-├── com.aiforge.tick-<role>.plist   # 4 per-role timers
+├── com.aiforge.tick-<role>.plist   # 5 per-role timers
 ├── com.aiforge.api.plist     # FastAPI LaunchAgent
-├── migrate-*-to-aiforge.*     # one-shot v4 → v5 data imports
-└── embed-backfill.py          # bge-m3 backfill for NULL embeddings
+├── com.aiforge.reindex-daily.plist # daily memory reindex @ 02:00
+├── reindex-daily.py          # reindex claude-memory + project-rules + aiforge
+└── embed-backfill.py         # bge-m3 backfill for NULL embeddings
 
 web/                          # Vite + React UI
 ├── src/views/{Dashboard,Tickets,TicketDetail,Agents,Logs,Memory}.tsx
@@ -253,7 +251,7 @@ web/                          # Vite + React UI
 └── vite.config.ts package.json tsconfig.json
 
 docs/
-└── runbook-v5.md             # full operational guide
+└── runbook.md                # full operational guide
 ```
 
 ---

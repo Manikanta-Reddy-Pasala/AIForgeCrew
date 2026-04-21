@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the v5 tick-<role> LaunchAgents + daily reindex. Idempotent.
+# Install the tick-<role> LaunchAgents + daily reindex. Idempotent.
 # Runs ON Mac Studio.
 #
 # Roles (current):  supervisor  planner  doer  feedback  learner
@@ -30,7 +30,7 @@ do
   rm -f "${DST}/${legacy}.plist" 2>/dev/null || true
 done
 
-echo ">>> installing v5 tick LaunchAgents"
+echo ">>> installing tick LaunchAgents"
 for role in supervisor planner doer feedback learner; do
   label="com.aiforge.tick-${role}"
   src="${SRC}/${label}.plist"

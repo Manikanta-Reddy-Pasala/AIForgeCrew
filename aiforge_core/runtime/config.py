@@ -1,4 +1,4 @@
-"""Static config for the v5 orchestrator.
+"""Static config for the orchestrator.
 
 Everything lives in code — no YAML, no env explosion. Override per-deploy via
 the `AIFORGE_RUNTIME_*` env vars at the bottom.
@@ -146,9 +146,8 @@ ROLES: dict[str, RoleConfig] = {
 }
 
 
-# Legacy role-name aliases — v4/v5-early tickets still carry these as
-# `assignee_role`. Map them to new roles so ticks don't break on DB rows
-# that were written before the rename.
+# Legacy role-name aliases — older ticket rows still carry these as
+# `assignee_role`. Map them to current roles so ticks don't break.
 _LEGACY_ALIASES = {
     "architect": "supervisor",
     "sr_developer": "planner",

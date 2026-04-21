@@ -1,4 +1,4 @@
--- v5 ticket store in aiforge Postgres. Replaces Paperclip issues.
+-- Ticket store in aiforge Postgres.
 -- Run:  PGPASSWORD=... psql -h 127.0.0.1 -U manikanta aiforge -f this.sql
 
 CREATE TABLE IF NOT EXISTS tickets (

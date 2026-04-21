@@ -20,7 +20,7 @@ export default function Dashboard() {
 
   return (
     <>
-      <h1>AIForge v5</h1>
+      <h1>AIForge</h1>
       <div className="grid grid-4">
         <div className="card">
           <h2>Postgres</h2>

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aiforgecrew"
-version = "5.0.0"
-description = "AIForgeCrew v5 — autonomous AI dev team orchestrator (single-Postgres runtime)"
+version = "0.1.0"
+description = "AIForgeCrew — autonomous AI dev team orchestrator (single-Postgres runtime)"
 requires-python = ">=3.11"
 dependencies = [
   "psycopg[binary]>=3.2",

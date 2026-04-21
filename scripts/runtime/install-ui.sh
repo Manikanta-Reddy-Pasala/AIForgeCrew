@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Provision the v5 web UI (FastAPI + Vite/React) on Mac Studio.
-# Runs after install-v5.sh. Idempotent.
+# Provision the web UI (FastAPI + Vite/React) on Mac Studio.
+# Runs after install.sh. Idempotent.
 set -euo pipefail
 
 REPO="${REPO:-$HOME/AIForgeCrew}"

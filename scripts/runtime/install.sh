@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Provision the v5 runtime on Mac Studio. Idempotent. Non-destructive (use
-# cleanup-v4.sh separately to retire legacy services).
+# Provision the runtime on Mac Studio. Idempotent.
 #
 # Steps:
 #   1. Ensure aiforge Postgres schema (tickets tables) via migration SQL.
@@ -10,7 +9,7 @@
 #   5. Install launchd plists.
 #
 # Usage (on Mac Studio):
-#   bash scripts/runtime/install-v5.sh
+#   bash scripts/runtime/install.sh
 set -euo pipefail
 
 REPO="${REPO:-$HOME/AIForgeCrew}"
@@ -44,8 +43,8 @@ echo ">>> 4/5 backfilling embeddings (idempotent)"
 "$VENV/bin/python" "$REPO/scripts/runtime/embed-backfill.py" --limit 5000
 
 echo ">>> 5/5 installing launchd plists"
-bash "$REPO/scripts/runtime/install-v5-launchd.sh"
+bash "$REPO/scripts/runtime/install-launchd.sh"
 
 echo
-echo "v5 install complete. First tick fires within 60s. Watch:"
+echo "install complete. First tick fires within 60s. Watch:"
 echo "  tail -f ~/.aiforge/logs/orchestrator-*.ndjson | jq -c '{ts,role,ticket,event,tool,dur_ms}'"
