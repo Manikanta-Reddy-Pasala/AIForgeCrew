@@ -17,6 +17,8 @@ help:
 	@echo "  status             tickets + agents + health"
 	@echo "  logs-tail          stream orchestrator ndjson logs (all roles)"
 	@echo "  health             /api/health on Mac Studio"
+	@echo "  sync-memory        rsync CLAUDE.md + ~/.claude/memory → Mac Studio + reindex"
+	@echo "  reindex-memory     reindex-only (no rsync) — after commits land on Mac Studio"
 	@echo "  index-all          bulk re-index all ~/codeRepo trees into T4"
 	@echo "  kill-all           launchctl bootout every com.aiforge.* agent"
 
@@ -49,8 +51,14 @@ logs-tail:
 health:
 	ssh $(SSH_HOST) 'curl -s http://127.0.0.1:8799/api/health'
 
+sync-memory:
+	SSH_HOST=$(SSH_HOST) bash scripts/sync-memory.sh
+
+reindex-memory:
+	SSH_HOST=$(SSH_HOST) REINDEX_ONLY=1 bash scripts/sync-memory.sh
+
 index-all:
-	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && bash scripts/bulk-index-all-repos.sh'
+	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && bash scripts/runtime/embed-backfill.py --limit 5000'
 
 kill-all:
 	ssh $(SSH_HOST) 'for r in architect sr_developer developer fact_extract; do launchctl bootout gui/$$(id -u)/com.aiforge.tick-$$r 2>/dev/null || true; done; launchctl bootout gui/$$(id -u)/com.aiforge.api 2>/dev/null || true; echo stopped'
