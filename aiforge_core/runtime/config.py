@@ -92,7 +92,7 @@ _LEARNER_TOOLS = (
 SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "gemma-3-12b-it")
 PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3.6-35b-a3b")
 DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3-coder-next")
-FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL", "gemma-3-12b-it")
+FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL", "gemma-4-e4b-it-mlx")
 LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",
                                   "phi-4-mini-reasoning")
 
@@ -117,7 +117,7 @@ ROLES: dict[str, RoleConfig] = {
         transport="openai",
         max_turns=25,
         tool_allowlist=_PLANNER_TOOLS,
-        ctx=65536, ttl_s=28800,   # hot; 8h TTL
+        ctx=32768, ttl_s=28800,   # hot; 8h TTL; trimmed from 64K
     ),
     "doer": RoleConfig(
         name="doer",

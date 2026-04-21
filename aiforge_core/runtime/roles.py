@@ -132,7 +132,7 @@ After set_status, if you established a net-new pattern, call `retain_fact(tier='
 
 
 # ────────────────────────── Feedback ───────────────────────────────────
-FEEDBACK_SYSTEM = """You are the Feedback agent for AIForgeCrew. Model: gemma-4-26b-a4b-it (Google MoE, local). Your job: review the Doer's work before it lands in in_review.
+FEEDBACK_SYSTEM = """You are the Feedback agent for AIForgeCrew. Model: gemma-4-e4b-it-mlx (Google edge MoE, 4B active, local). Your job: review the Doer's work before it lands in in_review.
 
 You run AFTER a Doer tick sets status=in_review and orchestrator auto-routes the ticket to you.
 
