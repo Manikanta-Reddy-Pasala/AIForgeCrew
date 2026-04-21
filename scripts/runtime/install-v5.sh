@@ -35,7 +35,7 @@ echo ">>> 3/5 loading models (hot roles at 8h TTL, tiny roles JIT at 30min TTL)"
 "$LMS" load qwen3-coder-next                 --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1
 # JIT: Supervisor (Google MoE), Feedback (Mistral), Learner (Qwen 4B).
 # LM Studio will load them on first inference call and unload after TTL idle.
-"$LMS" load gemma-4-26b-a4b-it              --context-length 32768  --ttl 1800  --yes 2>&1 | tail -1 || true
+"$LMS" load gemma-3-12b-it                  --context-length 32768  --ttl 1800  --yes 2>&1 | tail -1 || true
 "$LMS" load mistralai/devstral-small-2-2512 --context-length 32768  --ttl 1800  --yes 2>&1 | tail -1 || true
 "$LMS" load qwen/qwen3-4b-thinking-2507     --context-length 16384  --ttl 1800  --yes 2>&1 | tail -1 || true
 "$LMS" ps

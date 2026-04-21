@@ -85,7 +85,7 @@ _LEARNER_TOOLS = (
 # Cross-family diversity: Google MoE (Supervisor), Qwen MoE (Planner),
 # Qwen dense (Doer), Mistral dense (Feedback), Qwen small (Learner).
 # All models already on disk; change here + git push to swap.
-SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "gemma-4-26b-a4b-it")
+SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "gemma-3-12b-it")
 PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3.6-35b-a3b")
 DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3-coder-next")
 FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",
