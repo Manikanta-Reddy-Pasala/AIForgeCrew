@@ -1,0 +1,202 @@
+"""LM Studio RAM guard.
+
+Called at tick-start (after claim_next, before _run_tool_loop). Ensures
+the role's model is loaded; evicts non-hot LRU models first if the
+weights-total would exceed the budget.
+
+Why Python + deterministic, not LLM:
+  - Runs on every tick. LLM overhead (5-15s) would be wasteful.
+  - Decisions are rule-based (LRU + protected set + budget ceiling).
+  - Must succeed sub-second to not delay the tick.
+
+Env overrides:
+  AIFORGE_RAM_BUDGET_GB      default 85   (LLM weights + KV only; OS+sidecars separate)
+  AIFORGE_LMS_BIN            default ~/.lmstudio/bin/lms
+  AIFORGE_MEMGUARD_DISABLE   if "1" → skip all calls (emergency bypass)
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import time
+from dataclasses import dataclass
+
+from .logging_setup import emit
+
+
+LMS_BIN = os.environ.get("AIFORGE_LMS_BIN",
+                         os.path.expanduser("~/.lmstudio/bin/lms"))
+BUDGET_GB = float(os.environ.get("AIFORGE_RAM_BUDGET_GB", "85"))
+DISABLE = os.environ.get("AIFORGE_MEMGUARD_DISABLE") == "1"
+
+# Models never evicted by memguard. Their tick traffic dominates.
+PROTECTED_MODELS = frozenset({
+    "qwen3-coder-next",
+    "qwen3.6-35b-a3b",
+})
+
+
+@dataclass
+class LoadedModel:
+    identifier: str
+    size_gb: float
+    context: int
+    ttl_remaining_s: int  # negative if expired
+
+
+def _lms_ps() -> dict[str, LoadedModel]:
+    """Parse `lms ps` output into {identifier: LoadedModel}. Empty on error."""
+    try:
+        proc = subprocess.run([LMS_BIN, "ps"], capture_output=True,
+                              timeout=10, check=False, text=True)
+    except Exception:
+        return {}
+    out: dict[str, LoadedModel] = {}
+    # Table format columns: IDENTIFIER, MODEL, STATUS, SIZE, CONTEXT, PARALLEL, DEVICE, TTL
+    # TTL example: "8h / 8h"  "30m / 30m"  "56m / 1h"
+    for line in proc.stdout.splitlines():
+        line = line.rstrip()
+        if not line or line.lstrip().startswith(("IDENTIFIER", "-")):
+            continue
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        # Size column is like "8.07 GB" — two tokens. Find it.
+        size_idx = None
+        for i, tok in enumerate(parts):
+            if tok in ("GB", "MB") and i > 0:
+                size_idx = i - 1
+                break
+        if size_idx is None:
+            continue
+        try:
+            size_val = float(parts[size_idx])
+            if parts[size_idx + 1] == "MB":
+                size_val /= 1024.0
+        except ValueError:
+            continue
+        identifier = parts[0]
+        # Context = next numeric after GB/MB pair
+        ctx_idx = size_idx + 2
+        try:
+            context = int(parts[ctx_idx])
+        except (ValueError, IndexError):
+            context = 0
+        # TTL "30m / 30m" — parse first token
+        ttl_rem_s = 0
+        for j in range(len(parts) - 1, -1, -1):
+            m = re.match(r"^(\d+)([smh])$", parts[j])
+            if m:
+                n = int(m.group(1))
+                unit = m.group(2)
+                ttl_rem_s = n * {"s": 1, "m": 60, "h": 3600}[unit]
+                break
+        out[identifier] = LoadedModel(
+            identifier=identifier, size_gb=size_val,
+            context=context, ttl_remaining_s=ttl_rem_s,
+        )
+    return out
+
+
+def _lms_unload(identifier: str, log) -> bool:
+    try:
+        proc = subprocess.run([LMS_BIN, "unload", identifier],
+                              capture_output=True, timeout=15, check=False)
+        ok = proc.returncode == 0
+    except Exception as exc:
+        emit(log, "memguard.unload_error",
+             model=identifier, error=str(exc)[:200])
+        return False
+    emit(log, "memguard.unload", model=identifier, ok=ok)
+    return ok
+
+
+def _lms_load(identifier: str, ctx: int, ttl_s: int, log) -> bool:
+    t0 = time.time()
+    try:
+        proc = subprocess.run(
+            [LMS_BIN, "load", identifier,
+             "--context-length", str(ctx),
+             "--ttl", str(ttl_s), "--yes"],
+            capture_output=True, timeout=300, check=False,
+        )
+        ok = proc.returncode == 0
+    except Exception as exc:
+        emit(log, "memguard.load_error",
+             model=identifier, error=str(exc)[:200])
+        return False
+    dur = round(time.time() - t0, 2)
+    emit(log, "memguard.load", model=identifier, ctx=ctx,
+         ttl_s=ttl_s, ok=ok, dur_s=dur)
+    return ok
+
+
+def _size_estimate_gb(identifier: str) -> float:
+    """Best-effort weights-size lookup. Falls back to `lms ls` parse.
+    Returns 4.0 GB if unknown (conservative under-estimate to avoid
+    over-eager eviction)."""
+    # Fast path: our known catalogue (4-bit MLX quant sizes).
+    known = {
+        "qwen3-coder-next": 45.0,
+        "qwen3.6-35b-a3b": 20.0,
+        "gemma-3-12b-it": 8.0,
+        "qwen/qwen3-4b-thinking-2507": 2.5,
+        "mistralai/devstral-small-2-2512": 14.0,
+    }
+    if identifier in known:
+        return known[identifier]
+    return 4.0
+
+
+def ensure_loaded(identifier: str, ctx: int, ttl_s: int, log) -> bool:
+    """Load `identifier` at `ctx` if not already loaded. Evict LRU
+    non-protected models first if budget would be exceeded.
+
+    Returns True if the model is loaded at the end of the call.
+    Emits memguard.* events for every decision.
+    """
+    if DISABLE or not identifier:
+        return True
+    loaded = _lms_ps()
+    # Already loaded at ≥ requested ctx — done.
+    existing = loaded.get(identifier)
+    if existing is not None and existing.context >= ctx:
+        return True
+
+    target_gb = _size_estimate_gb(identifier)
+    current_gb = sum(m.size_gb for m in loaded.values())
+    # If we're re-loading at a different ctx, subtract its current slot.
+    if existing is not None:
+        current_gb -= existing.size_gb
+        _lms_unload(identifier, log)
+        loaded = _lms_ps()
+        current_gb = sum(m.size_gb for m in loaded.values())
+
+    # Evict until target fits.
+    if current_gb + target_gb > BUDGET_GB:
+        # LRU order = shortest TTL remaining first.
+        evict_order = sorted(
+            (m for m in loaded.values()
+             if m.identifier not in PROTECTED_MODELS
+             and m.identifier != identifier),
+            key=lambda m: m.ttl_remaining_s,
+        )
+        emit(log, "memguard.budget",
+             budget_gb=BUDGET_GB, current_gb=round(current_gb, 1),
+             target_gb=target_gb,
+             protected=sorted(PROTECTED_MODELS),
+             evictable=[m.identifier for m in evict_order])
+        for victim in evict_order:
+            if _lms_unload(victim.identifier, log):
+                current_gb -= victim.size_gb
+            if current_gb + target_gb <= BUDGET_GB:
+                break
+
+    if current_gb + target_gb > BUDGET_GB:
+        emit(log, "memguard.over_budget",
+             current_gb=round(current_gb, 1), target_gb=target_gb,
+             budget_gb=BUDGET_GB)
+        # Attempt load anyway — LM Studio may still accept with compression.
+
+    return _lms_load(identifier, ctx, ttl_s, log)

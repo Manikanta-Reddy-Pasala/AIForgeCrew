@@ -46,6 +46,8 @@ class RoleConfig:
     max_turns: int
     tool_allowlist: tuple[str, ...]
     identity_prefix: str = "" # appended to system prompt
+    ctx: int = 32768         # LM Studio context length memguard requests
+    ttl_s: int = 1800        # LM Studio TTL; 8h (28800) for hot roles
 
     @property
     def lock_path(self) -> str:
@@ -106,6 +108,7 @@ ROLES: dict[str, RoleConfig] = {
         transport=SUPERVISOR_TRANSPORT,
         max_turns=4,
         tool_allowlist=_SUPERVISOR_TOOLS,
+        ctx=16384, ttl_s=1800,
     ),
     "planner": RoleConfig(
         name="planner",
@@ -113,6 +116,7 @@ ROLES: dict[str, RoleConfig] = {
         transport="openai",
         max_turns=25,
         tool_allowlist=_PLANNER_TOOLS,
+        ctx=65536, ttl_s=28800,   # hot; 8h TTL
     ),
     "doer": RoleConfig(
         name="doer",
@@ -120,6 +124,7 @@ ROLES: dict[str, RoleConfig] = {
         transport="openai",
         max_turns=40,
         tool_allowlist=_DOER_TOOLS,
+        ctx=131072, ttl_s=28800,  # hot; 8h TTL
     ),
     "feedback": RoleConfig(
         name="feedback",
@@ -127,6 +132,7 @@ ROLES: dict[str, RoleConfig] = {
         transport="openai",
         max_turns=6,
         tool_allowlist=_FEEDBACK_TOOLS,
+        ctx=16384, ttl_s=1800,
     ),
     "learner": RoleConfig(
         name="learner",
@@ -134,6 +140,7 @@ ROLES: dict[str, RoleConfig] = {
         transport="openai",
         max_turns=4,
         tool_allowlist=_LEARNER_TOOLS,
+        ctx=16384, ttl_s=1800,
     ),
 }
 
