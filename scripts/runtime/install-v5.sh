@@ -30,10 +30,9 @@ echo ">>> 2/6 installing python deps"
 
 echo ">>> 3/6 loading models at max context"
 "$LMS" unload --all 2>&1 | tail -1
-"$LMS" load qwen3.6-35b-a3b    --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1
-"$LMS" load qwen3-coder-next    --context-length 262144 --ttl 28800 --yes 2>&1 | tail -1
-"$LMS" load google/gemma-3-4b-it --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1 || \
-  echo "  (gemma-3-4b-it not downloaded — run: lms get google/gemma-3-4b-it)"
+"$LMS" load qwen3.6-35b-a3b                 --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1
+"$LMS" load qwen3-coder-next                 --context-length 262144 --ttl 28800 --yes 2>&1 | tail -1
+"$LMS" load qwen/qwen3-4b-thinking-2507      --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1
 "$LMS" ps
 
 echo ">>> 4/6 migrating hindsight → aiforge.memories (idempotent)"

@@ -94,8 +94,11 @@ ROLES: dict[str, RoleConfig] = {
         tool_allowlist=_ALL_DEV_TOOLS,
     ),
     "fact_extract": RoleConfig(
+        # Using already-downloaded thinking-tuned 4B model. gemma-3-4b-it is
+        # not in the LM Studio catalogue as-named; qwen3-4b-thinking-2507
+        # is ~2.3 GB on disk, handles XML reflection cleanly.
         name="fact_extract",
-        model="google/gemma-3-4b-it",
+        model="qwen/qwen3-4b-thinking-2507",
         transport="openai",
         max_turns=4,
         tool_allowlist=_FACT_TOOLS,
