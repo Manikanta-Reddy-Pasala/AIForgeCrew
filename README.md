@@ -60,7 +60,7 @@ Five-role pipeline (Supervisor → Planner → Doer → Feedback → Learner). C
 | Supervisor | gemma-4-26b-a4b-it | Google MoE (~4B active) | 32K | OpenAI-compat → LM Studio | 4 | Triage + route + standards enforcement |
 | Planner | qwen3.6-35b-a3b | Alibaba MoE (~3B active) | 64K | OpenAI-compat → LM Studio | 25 | Deep analysis + child-ticket decomposition |
 | Doer | qwen3-coder-next | Alibaba dense | 128K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
-| Feedback | gemma-3-12b-it | Google dense (12B) | 32K | OpenAI-compat → LM Studio | 6 | Audits Doer's diff + tests; pass or fail back |
+| Feedback | gemma-4-26b-a4b-it | Google MoE (~4B active) | 16K | OpenAI-compat → LM Studio | 6 | Audits Doer's diff + tests; pass or fail back |
 | Learner | phi-4-mini-reasoning | Microsoft dense (3.8B) | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation → T3 memory |
 
 Prompts live in `aiforge_core/runtime/roles.py`. Tool allowlists in `config.py` per role.
@@ -137,7 +137,7 @@ Branch convention: `aiforge/<PARENT_ID>-<slug>`. All children of the same parent
 
 ## RAM guard (memguard)
 
-`aiforge_core/runtime/memguard.py` runs at every tick-start (before LLM). Parses `lms ps`, evicts LRU non-protected models if loading the target would exceed `AIFORGE_RAM_BUDGET_GB` (default 85). Protected: `qwen3-coder-next`, `qwen3.6-35b-a3b` (Doer + Planner always hot). Supervisor + Feedback share one `gemma-3-12b-it` slot. Learner JIT-loads on demand.
+`aiforge_core/runtime/memguard.py` runs at every tick-start (before LLM). Parses `lms ps`, applies a 1.4× overhead factor on loaded weights, evicts LRU non-protected models if loading the target would exceed `AIFORGE_RAM_BUDGET_GB` (default 70). On LM Studio load failure, retries-with-evict up to 3 attempts. Protected: `qwen3-coder-next`, `qwen3.6-35b-a3b` (Doer + Planner always hot). Supervisor + Feedback share one `gemma-4-26b-a4b-it` slot. Learner (`phi-4-mini-reasoning`) JIT-loads on demand.
 
 Env: `AIFORGE_RAM_BUDGET_GB`, `AIFORGE_MEMGUARD_DISABLE=1` (bypass).
 

@@ -143,7 +143,9 @@ def _size_estimate_gb(identifier: str) -> float:
     known = {
         "qwen3-coder-next": 45.0,
         "qwen3.6-35b-a3b": 20.0,
+        "gemma-4-26b-a4b-it": 16.0,
         "gemma-3-12b-it": 8.0,
+        "gemma-3-4b-it": 3.5,
         "qwen/qwen3-4b-thinking-2507": 2.5,
         "phi-4-mini-reasoning": 2.5,
         "mistralai/devstral-small-2-2512": 14.0,
