@@ -173,20 +173,44 @@ def get(ident_or_id: str | int) -> Ticket | None:
     return Ticket.from_row(row) if row else None
 
 
+_ROLE_ALIASES = {
+    "supervisor":  ["supervisor", "architect"],
+    "planner":     ["planner", "sr_developer"],
+    "doer":        ["doer", "developer"],
+    "learner":     ["learner", "fact_extract"],
+    "feedback":    ["feedback"],
+}
+
+
+def _aliases_for(role: str) -> list[str]:
+    """Return canonical role + any legacy names that should also match."""
+    if role in _ROLE_ALIASES:
+        return _ROLE_ALIASES[role]
+    for canonical, aliases in _ROLE_ALIASES.items():
+        if role in aliases:
+            return aliases
+    return [role]
+
+
 def claim_next(role: str) -> Ticket | None:
     """Pick the next todo ticket for a role: priority DESC, then FIFO.
+
+    Matches both canonical and legacy role names so tickets created with
+    stale assignee_role values (e.g. 'developer' from an older planner
+    tool-schema enum) are still claimed by the current 'doer' tick.
+
     Does NOT mutate status — caller must update_status(..., 'in_progress')
     once it actually starts executing."""
-    priority_rank = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+    aliases = _aliases_for(role)
     with _conn() as c, c.cursor(row_factory=dict_row) as cur:
         cur.execute(
             "SELECT * FROM tickets "
-            "WHERE assignee_role=%s AND status='todo' "
+            "WHERE assignee_role = ANY(%s) AND status='todo' "
             "ORDER BY CASE priority "
             "  WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 "
             "  WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
             "created_at ASC LIMIT 1",
-            (role,),
+            (aliases,),
         )
         row = cur.fetchone()
     return Ticket.from_row(row) if row else None

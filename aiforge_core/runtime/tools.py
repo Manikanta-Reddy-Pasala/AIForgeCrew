@@ -316,7 +316,7 @@ def _tool_git_push(ctx: ToolContext) -> ToolResult:
         "properties": {
             "title": {"type": "string"},
             "body": {"type": "string"},
-            "assignee_role": {"type": "string", "enum": ["sr_developer", "developer", "fact_extract"]},
+            "assignee_role": {"type": "string", "enum": ["planner", "doer", "feedback", "learner"]},
             "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"], "default": "medium"},
         },
         "required": ["title", "body", "assignee_role"],
