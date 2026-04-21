@@ -27,7 +27,10 @@ from .logging_setup import emit
 
 LMS_BIN = os.environ.get("AIFORGE_LMS_BIN",
                          os.path.expanduser("~/.lmstudio/bin/lms"))
-BUDGET_GB = float(os.environ.get("AIFORGE_RAM_BUDGET_GB", "85"))
+BUDGET_GB = float(os.environ.get("AIFORGE_RAM_BUDGET_GB", "70"))
+# KV cache + framework overhead multiplier on top of raw weights.
+# bge-m3 embed = 0.4 of weights; typical transformer KV ≈ 0.3-0.6.
+_RAM_OVERHEAD = float(os.environ.get("AIFORGE_RAM_OVERHEAD", "1.4"))
 DISABLE = os.environ.get("AIFORGE_MEMGUARD_DISABLE") == "1"
 
 # Models never evicted by memguard. Their tick traffic dominates.
@@ -149,9 +152,32 @@ def _size_estimate_gb(identifier: str) -> float:
     return 4.0
 
 
+def _effective_gb(loaded: dict[str, LoadedModel]) -> float:
+    """Weights × overhead factor. KV cache + framework bloat included."""
+    return sum(m.size_gb for m in loaded.values()) * _RAM_OVERHEAD
+
+
+def _evict_one_lru(loaded: dict[str, LoadedModel], exclude: set[str],
+                   log) -> str | None:
+    """Evict the single LRU non-protected model. Returns its identifier."""
+    candidates = sorted(
+        (m for m in loaded.values()
+         if m.identifier not in PROTECTED_MODELS
+         and m.identifier not in exclude),
+        key=lambda m: m.ttl_remaining_s,
+    )
+    if not candidates:
+        return None
+    victim = candidates[0]
+    if _lms_unload(victim.identifier, log):
+        return victim.identifier
+    return None
+
+
 def ensure_loaded(identifier: str, ctx: int, ttl_s: int, log) -> bool:
     """Load `identifier` at `ctx` if not already loaded. Evict LRU
-    non-protected models first if budget would be exceeded.
+    non-protected models first if budget would be exceeded OR if the
+    initial load fails with "insufficient system resources".
 
     Returns True if the model is loaded at the end of the call.
     Emits memguard.* events for every decision.
@@ -165,38 +191,40 @@ def ensure_loaded(identifier: str, ctx: int, ttl_s: int, log) -> bool:
         return True
 
     target_gb = _size_estimate_gb(identifier)
-    current_gb = sum(m.size_gb for m in loaded.values())
-    # If we're re-loading at a different ctx, subtract its current slot.
+    # If we're re-loading at a different ctx, unload current first.
     if existing is not None:
-        current_gb -= existing.size_gb
         _lms_unload(identifier, log)
         loaded = _lms_ps()
-        current_gb = sum(m.size_gb for m in loaded.values())
 
-    # Evict until target fits.
-    if current_gb + target_gb > BUDGET_GB:
-        # LRU order = shortest TTL remaining first.
-        evict_order = sorted(
-            (m for m in loaded.values()
-             if m.identifier not in PROTECTED_MODELS
-             and m.identifier != identifier),
-            key=lambda m: m.ttl_remaining_s,
-        )
+    # Pre-emptive eviction if budget would be exceeded (using overhead-
+    # adjusted effective GB).
+    current_eff = _effective_gb(loaded)
+    if current_eff + target_gb * _RAM_OVERHEAD > BUDGET_GB:
         emit(log, "memguard.budget",
-             budget_gb=BUDGET_GB, current_gb=round(current_gb, 1),
+             budget_gb=BUDGET_GB, current_eff_gb=round(current_eff, 1),
              target_gb=target_gb,
              protected=sorted(PROTECTED_MODELS),
-             evictable=[m.identifier for m in evict_order])
-        for victim in evict_order:
-            if _lms_unload(victim.identifier, log):
-                current_gb -= victim.size_gb
-            if current_gb + target_gb <= BUDGET_GB:
+             evictable=[m.identifier for m in loaded.values()
+                        if m.identifier not in PROTECTED_MODELS])
+        while current_eff + target_gb * _RAM_OVERHEAD > BUDGET_GB:
+            victim = _evict_one_lru(loaded, exclude={identifier}, log=log)
+            if victim is None:
                 break
+            loaded = _lms_ps()
+            current_eff = _effective_gb(loaded)
 
-    if current_gb + target_gb > BUDGET_GB:
-        emit(log, "memguard.over_budget",
-             current_gb=round(current_gb, 1), target_gb=target_gb,
-             budget_gb=BUDGET_GB)
-        # Attempt load anyway — LM Studio may still accept with compression.
-
-    return _lms_load(identifier, ctx, ttl_s, log)
+    # Try load. If LM Studio's own guardrail still rejects, retry-with-evict
+    # up to 3 times — each time evict one more LRU non-protected model.
+    for attempt in range(1, 4):
+        if _lms_load(identifier, ctx, ttl_s, log):
+            return True
+        emit(log, "memguard.retry", model=identifier, attempt=attempt)
+        loaded = _lms_ps()
+        victim = _evict_one_lru(loaded, exclude={identifier}, log=log)
+        if victim is None:
+            emit(log, "memguard.over_budget",
+                 model=identifier,
+                 loaded=sorted(loaded.keys()),
+                 protected=sorted(PROTECTED_MODELS))
+            return False
+    return False
