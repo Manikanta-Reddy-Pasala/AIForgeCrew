@@ -124,13 +124,20 @@ def _ensure_branch_and_worktree(ticket: tickets.Ticket,
     worktree_path = os.path.join(repo_dir, ".aiforge-worktrees", parent_ident)
     if not os.path.isdir(worktree_path):
         os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
-        # Create branch off origin/main if absent.
         subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False,
                        capture_output=True)
-        subprocess.run(
-            ["git", "worktree", "add", "-B", branch, worktree_path, "origin/main"],
+        # Detect the repo's default branch dynamically (master vs main).
+        default_branch = _detect_default_branch(repo_dir)
+        base = f"origin/{default_branch}"
+        proc = subprocess.run(
+            ["git", "worktree", "add", "-B", branch, worktree_path, base],
             cwd=repo_dir, check=False, capture_output=True,
         )
+        if proc.returncode != 0 or not os.path.isdir(worktree_path):
+            # Fall back to the main repo dir so the agent can still read files.
+            err = (proc.stderr or b"").decode("utf-8", "replace")[:500]
+            print(f"[worktree.failed] {err}", flush=True)
+            return repo_dir
 
     # Persist branch on ticket for re-use.
     if ticket.branch != branch:
@@ -139,6 +146,29 @@ def _ensure_branch_and_worktree(ticket: tickets.Ticket,
                         (branch, ticket.id))
             c.commit()
     return worktree_path
+
+
+def _detect_default_branch(repo_dir: str) -> str:
+    """Return the repo's default branch name ('main' or 'master' etc)."""
+    # Prefer `origin/HEAD` if set
+    proc = subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+        cwd=repo_dir, check=False, capture_output=True,
+    )
+    if proc.returncode == 0:
+        # stdout e.g. "refs/remotes/origin/master"
+        ref = proc.stdout.decode("utf-8", "replace").strip()
+        if "/" in ref:
+            return ref.rsplit("/", 1)[1]
+    # Fallback: try main, then master
+    for candidate in ("main", "master"):
+        probe = subprocess.run(
+            ["git", "rev-parse", "--verify", f"origin/{candidate}"],
+            cwd=repo_dir, check=False, capture_output=True,
+        )
+        if probe.returncode == 0:
+            return candidate
+    return "master"
 
 
 def _infer_repo_from_ticket(ticket: tickets.Ticket) -> str | None:

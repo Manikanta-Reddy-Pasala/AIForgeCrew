@@ -185,7 +185,9 @@ def _tool_write_file(ctx: ToolContext, path: str, content: str) -> ToolResult:
     },
 })
 def _tool_run_shell(ctx: ToolContext, command: str, timeout_s: int = 120) -> ToolResult:
-    cwd = ctx.worktree_path or os.getcwd()
+    # cwd must exist, else subprocess raises FileNotFoundError at spawn.
+    cwd = ctx.worktree_path if (ctx.worktree_path and os.path.isdir(ctx.worktree_path)) \
+          else os.path.expanduser("~")
     try:
         proc = subprocess.run(
             ["bash", "-lc", command], cwd=cwd,
@@ -193,6 +195,9 @@ def _tool_run_shell(ctx: ToolContext, command: str, timeout_s: int = 120) -> Too
         )
     except subprocess.TimeoutExpired:
         return ToolResult(False, f"timeout after {timeout_s}s", {"error": "timeout"})
+    except Exception as e:
+        return ToolResult(False, f"shell spawn failed: {e}",
+                          {"error": type(e).__name__})
     out = (proc.stdout + proc.stderr).decode("utf-8", "replace")[:8192]
     return ToolResult(
         proc.returncode == 0,

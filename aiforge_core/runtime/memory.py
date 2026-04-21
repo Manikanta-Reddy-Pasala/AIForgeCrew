@@ -43,15 +43,20 @@ class Memory:
         role: str = "sr_developer",
         parent_id: str | None = None,
         top_k: int | None = None,
-        wing_prefix: str | None = None,
+        wing_prefix: str | None = None,  # accepted for prompt UX; NOT post-filtered
     ) -> list[SearchResult]:
-        """Role-tuned retrieval across all tiers. `wing_prefix` further
-        narrows the search if supplied."""
+        """Role-tuned retrieval across all tiers.
+
+        `wing_prefix` kept in the signature for backward-compatibility
+        with agent tool-call JSON, but the retrieval policy already
+        applies per-tier wing filters inside `retrieve_for_role` (see
+        ROLE_POLICIES in retrieval.py). We do NOT post-filter hits on
+        `metadata.wing` here — hit.metadata doesn't guarantee a `wing`
+        key, which silently emptied results in v5 early tests.
+        """
         hits: list[Hit] = retrieve_for_role(
             self._store, role=role, query=query, parent_id=parent_id,
         )
-        if wing_prefix:
-            hits = [h for h in hits if (h.metadata.get("wing") or "").startswith(wing_prefix)]
         if top_k is not None:
             hits = hits[:top_k]
         return [
