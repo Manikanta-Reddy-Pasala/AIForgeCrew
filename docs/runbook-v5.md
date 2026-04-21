@@ -1,101 +1,126 @@
 # AIForge v5 runbook
 
-Hermes-less, Paperclip-less, single-Postgres runtime.
+Hermes-less, Paperclip-less, single-Postgres runtime. Last update: 2026-04-21.
+
+## What changed from v4
+
+| v4 | v5 | Why |
+|---|---|---|
+| Paperclip UI + DB (`:3100`, `:54329`) | Our FastAPI + React UI + aiforge Postgres (`:8799`, `:5432`) | One source of truth, no external dep |
+| hermes chat agent wrapper | Custom orchestrator (`aiforge_core.runtime`) | hermes hangs on cleanup + has 64 K-ctx hard floor |
+| Per-tick 1-h gtimeout + global flock | Per-role fcntl lock, 20 min wall cap | Roles don't block each other |
+| Paperclip heartbeat daemon | launchd tick timers (`com.aiforge.tick-<role>`) | Simpler lifecycle |
+| hindsight daemon at `:9177` + own Postgres | Direct Postgres writes to `memories` table | Removes teardown-lock hang |
+| ChromaDB `.aiforge/rag/` | pgvector T4 rows in `memories` | One embedding store |
+| `aiforge-deep-context` CLI + SKILL.md | Same CLI, now also a `search` tool in the orchestrator | Agents can use either |
+| Skill registry via hermes `skill_view` | `@function_tool`-style JSON schemas in `aiforge_core.runtime.tools` | Typed, versioned in repo |
 
 ## Stack
 
 | Layer | Component | Port | Owner |
 |---|---|---|---|
-| Inference | LM Studio | 1234 | local |
+| Inference (local) | LM Studio | 1234 | local process |
+| Inference (cloud) | `claude --print` CLI subprocess | — | subscription auth |
 | Embeddings | bge-m3 sidecar | 8764 | launchd |
 | Rerank | bge-reranker-v2-m3 | 8765 | launchd |
-| Storage | aiforge Postgres + pgvector | 5432 | manikanta |
-| Orchestrator | `python -m aiforge_core.runtime <role>` | — | launchd timer (60s/role) |
-| Cloud fallback | `claude --print` CLI | — | subprocess, subscription auth |
+| Storage | aiforge Postgres + pgvector | 5432 | homebrew postgres |
+| Orchestrator | `python -m aiforge_core.runtime <role>` | — | launchd timer (60 s / role) |
+| REST / SSE API | FastAPI (`aiforge_core.runtime.api`) | 8799 | launchd (`com.aiforge.api`) |
+| Dashboard UI | React/Vite static (`web/dist/`) | served at `:8799/ui/` | same FastAPI |
 
-No Paperclip. No hermes. No ChromaDB. No hindsight daemon.
+Legacy kill list: Paperclip (`:3100`), hermes daemon, ChromaDB (`.aiforge/rag/`), hindsight daemon/DB (`:5433`). See `scripts/runtime/cleanup-v4.sh`.
 
 ## Agents
 
-| Role | Model | Context | Transport | Max turns |
-|---|---|---|---|---|
-| Architect | claude-opus-4-7 | — | `claude --print` | 6 |
-| Sr Developer | qwen3.6-35b-a3b | 128K | OpenAI-compat → LM Studio | 25 |
-| Developer | qwen3-coder-next | 256K | OpenAI-compat → LM Studio | 40 |
-| Fact Extract | google/gemma-3-4b-it | 128K | OpenAI-compat → LM Studio | 4 |
+| Role | Model | Ctx | Transport | Max turns | Role purpose |
+|---|---|---|---|---|---|
+| Architect | claude-opus-4-7 | cloud | `claude --print` | 6 | ≤ 250-word direction brief |
+| Sr Developer | qwen3.6-35b-a3b (MoE) | 128 K | OpenAI-compat → LM Studio | 25 | Deep analysis + child-ticket decomposition |
+| Developer | qwen3-coder-next | 256 K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
+| Fact Extract | qwen/qwen3-4b-thinking-2507 | 128 K | OpenAI-compat → LM Studio | 4 | Post-merge XML reflection |
 
-## Memory tiers (single Postgres, one `memories` table)
+LM Studio load-time TTL: 8 h. Prompts live in `agents/<role>/system-prompt.md` (source) → mirrored into `aiforge_core/runtime/roles.py` (runtime).
 
-| Tier | Wing | Source |
-|---|---|---|
-| T1 | `ticket/<id>` | per-ticket facts during a run |
-| T2 | `rules/canon`, `rules/*` | migrated hindsight + curated |
-| T3 | `skills/*`, `patterns/*` | Fact Extract output + curated |
-| T4 | `code/<repo>`, `code/claude-memory` | bulk-index-all-repos |
-| graph | `~/codeRepo/<repo>/graphify-out/graph.json` | graphify |
+## Memory tiers (one Postgres, one `memories` table)
+
+| Tier | Wing pattern | Populator | Lifetime |
+|---|---|---|---|
+| T1 episodic | `ticket/<id>` | orchestrator tool-calls | ticket lifetime |
+| T2 canon | `rules/canon`, `rules/*` | hindsight migration + Architect `retain_fact` | permanent |
+| T3 skills/patterns | `skills/*`, `patterns/*` | Sr Dev / Developer / Fact Extract `retain_fact` | permanent |
+| T4 code | `code/<repo>`, `code/claude-memory` | `scripts/bulk-index-all-repos.sh` | rebuilt on post-commit hook |
+| graph | `~/codeRepo/<repo>/graphify-out/graph.json` | graphify CLI | rebuilt on post-commit hook |
+
+Embeddings: bge-m3 (dim 1024). Rerank: bge-reranker-v2-m3 FP16. Retrieval policy per role lives in `aiforge_core/retrieval.py:ROLE_POLICIES`.
 
 ## Install on Mac Studio (first time)
 
 ```bash
 cd ~/AIForgeCrew && git pull
-bash scripts/runtime/install-v5.sh
+bash scripts/runtime/install-v5.sh      # schema + pip deps + LM Studio loads + migrations + launchd
+bash scripts/runtime/install-ui.sh      # brew node + npm install + Vite build + API plist
 ```
 
-That script:
-1. Applies `db/migrations/2026-04-21-tickets.sql`.
-2. `pip install openai psycopg[binary] pgvector`.
-3. LM Studio unload-all → loads qwen3.6-35b@128K + qwen3-coder-next@256K + gemma-3-4b@128K.
-4. Migrates hindsight → aiforge.memories (tier=t2, wing=rules/canon).
-5. Runs embed-backfill on null-embedding rows.
-6. Installs the 4 launchd timers.
-
-## Retire v4 (after v5 tick is green)
-
+Retire v4 (after v5 tick is green):
 ```bash
 DRY_RUN=1 bash scripts/runtime/cleanup-v4.sh   # preview
 bash scripts/runtime/cleanup-v4.sh              # backup + delete
 ```
 
-Backups land in `~/.aiforge/backups/YYYY-MM-DD/`:
-- `paperclip.sql`, `hindsight.sql` (full DB dumps)
-- `hermes.tar.gz`, `aiforge-rag.tar.gz` (filesystem snapshots)
+Backups land in `~/.aiforge/backups/YYYY-MM-DD/`.
+
+## Legacy DNS cleanup (run ON each machine)
+
+v4 left `/etc/hosts` entries you don't need anymore. Remove with:
+
+```bash
+# Mac Studio
+sudo sed -i.bak "/paperclip\.lan\|hermes\.lan/d" /etc/hosts
+
+# Laptop
+sudo sed -i.bak "/paperclip\.local\|hermes\.local/d" /etc/hosts
+```
+
+If you want a nice hostname for the UI:
+```bash
+# on laptop
+echo '192.168.70.185 aiforge.local' | sudo tee -a /etc/hosts
+# then open http://aiforge.local:8799/ui/
+```
 
 ## Daily operation
 
-### File a ticket
+### Access the UI
+
+The FastAPI app binds `0.0.0.0:8799` (LAN-reachable) and serves:
+- **API:** `http://<mac-studio-ip>:8799/api/health`
+- **UI:**  `http://<mac-studio-ip>:8799/ui/`
+
+On the Mac Studio itself: `http://127.0.0.1:8799/ui/`.
+
+### UI views
+
+- **Dashboard** — postgres + LM Studio health, agent cards, recent tickets, memory wings
+- **Tickets** — list w/ role+status filter, inline "New ticket" form
+- **Ticket detail** — body, children, full event timeline, comment box, one-click status transitions
+- **Agents** — 4 role cards (model, tool allowlist, open tickets, live-log link)
+- **Logs** — live SSE tail per role, structured event render
+- **Memory** — bge-reranked semantic search across tiers
+
+### CLI (no UI needed)
 
 ```bash
 python -m aiforge_core.runtime.cli create \
-  --title "Add CDC listener for purchases collection" \
-  --body "Extend mongoEventListner to watch purchases … (see existing sales pattern)" \
-  --assignee architect --priority medium
-```
+  --title "…" --body "…" --assignee sr_developer --priority medium
 
-### Inspect
-
-```bash
-python -m aiforge_core.runtime.cli list                     # all recent
 python -m aiforge_core.runtime.cli list --role sr_developer --status todo,in_progress
-python -m aiforge_core.runtime.cli show ONE-123             # full event log
-```
-
-### Comment / move status manually
-
-```bash
-python -m aiforge_core.runtime.cli comment ONE-123 --body "looks good, merge"
+python -m aiforge_core.runtime.cli show ONE-123
+python -m aiforge_core.runtime.cli comment ONE-123 --body "…"
 python -m aiforge_core.runtime.cli status  ONE-123 --status done
+python -m aiforge_core.runtime      sr_developer        # manual one-shot tick
 ```
 
-### Manual single-tick (bypass launchd)
-
-```bash
-python -m aiforge_core.runtime sr_developer
-```
-
-Useful for one-shot debugging. Honours the same per-role lock — if the launchd
-timer is mid-tick, this will no-op.
-
-### Watch the logs
+### Structured logs
 
 ```bash
 tail -f ~/.aiforge/logs/orchestrator-*.ndjson \
@@ -103,7 +128,6 @@ tail -f ~/.aiforge/logs/orchestrator-*.ndjson \
 ```
 
 Per-ticket reconstruction:
-
 ```sql
 SELECT created_at, agent_role, kind, left(body, 200) AS body
 FROM ticket_events
@@ -111,60 +135,85 @@ WHERE ticket_id = (SELECT id FROM tickets WHERE identifier='ONE-123')
 ORDER BY created_at;
 ```
 
-## Event kinds (for log / SQL filters)
+## Orchestrator internals
 
-- `tick.start`, `tick.end`, `tick.idle`, `tick.exception`
-- `lock.skip`
-- `context.built`
-- `worktree.prepared`
-- `llm.turn`, `llm.error`
-- `tool.call`, `tool.result`
-- (ticket_events.kind): `comment`, `status_change`, `tool_call`,
-  `llm_turn`, `child_created`, `retain`, `error`
+Each tick (`python -m aiforge_core.runtime <role>`):
 
-## Kill switch
+1. fcntl lock at `/tmp/aiforge-tick-<role>.lock` (non-blocking; skip if held).
+2. `tickets.claim_next(role)` — oldest `todo` for the role.
+3. `tickets.update_status(id, 'in_progress', role=<self>)`.
+4. `_ensure_branch_and_worktree(ticket)` — creates `aiforge/<PARENT>-<slug>` branch + worktree under `<repo>/.aiforge-worktrees/<PARENT>`. Children inherit the parent's branch + repo.
+5. Context bundle = `aiforge-deep-context "<title>"` (CLI, 150 s timeout).
+6. System prompt from `roles.py` + user msg (body + context) + tool JSON schemas (allowlisted).
+7. Tool loop up to `role.max_turns` or `TICK_MAX_WALL_SECS` (1200 s):
+   - Loop-guard: 3 identical `(tool, args)` in a row → inject "change strategy" user msg.
+   - Deadline watchdog: at 75 % of turns with no `post_comment` yet → inject "⚠ DEADLINE … commit + report + exit NOW".
+   - Every tool call + tool result → `ticket_event(kind='tool_call')` + structured log line.
+8. Writes `tick.end` with `stop_reason` (model_done / max_turns / wall_timeout / llm_error / loop_detected).
 
-Immediate stop for all agents:
+Status transitions are agent-driven (`set_status` tool); orchestrator does NOT auto-block stuck tickets (that was v4 Paperclip's behaviour and caused false negatives).
 
-```bash
-launchctl bootout gui/$(id -u)/com.aiforge.tick-architect
-launchctl bootout gui/$(id -u)/com.aiforge.tick-sr_developer
-launchctl bootout gui/$(id -u)/com.aiforge.tick-developer
-launchctl bootout gui/$(id -u)/com.aiforge.tick-fact_extract
-```
+## Tool catalogue (`aiforge_core/runtime/tools.py`)
 
-Resume with:
-
-```bash
-bash ~/AIForgeCrew/scripts/runtime/install-v5-launchd.sh
-```
-
-Per-ticket stop: set status to `cancelled`:
-
-```bash
-python -m aiforge_core.runtime.cli status ONE-123 --status cancelled
-```
-
-## Model hot-swap
-
-Editing `ROLES` in `aiforge_core/runtime/config.py` is the authoritative way
-to change a role's model. Redeploy: `git push → git pull → restart timer`.
-
-Runtime override via adapter metadata is intentionally **not** supported in
-v5 — too much foot-gun (cf. v4 `paperclip-bootstrap-v41.sh` regressions).
+| Tool | Description | Allowed for |
+|---|---|---|
+| `search` | bge-m3 + bge-rerank across all tiers (role-tuned policy) | all |
+| `read_file` | Read text file (line range) | all |
+| `write_file` | Create/overwrite file | sr_dev, dev |
+| `edit` | Surgical old_string → new_string (unique-match required) | sr_dev, dev |
+| `run_shell` | Bash `-lc`, 120 s default, cwd=worktree | sr_dev, dev |
+| `fetch_url` | GET (20 s), 12 KB body cap | sr_dev, dev |
+| `git_commit` | Stage + commit on ticket branch | dev |
+| `git_push` | `git push -u origin HEAD` | dev (manual only) |
+| `create_child_ticket` | Spawn child under current ticket | arch, sr_dev |
+| `post_comment` | Append event (`kind=comment`) | all |
+| `set_status` | Move ticket through workflow states | all |
+| `retain_fact` | Write to `memories` (tier t2/t3, chosen wing) | all |
 
 ## Branch convention
 
-One branch per parent ticket: `aiforge/<PARENT_ID>-<slug>`. All child work
-shares that branch. Developer does not `git push` automatically — human
-reviews the local branch, then pushes + PRs.
+- One branch per parent ticket: `aiforge/<PARENT>-<slug>`.
+- Sr Dev + Developer + Fact Extract share it.
+- Developer does NOT `git push` automatically; human reviews then pushes.
+- Cross-repo tickets: Developer must `git -C <second-repo> checkout -B aiforge/<PARENT>-<slug> origin/master` before committing there.
+
+## Kill switch
+
+Stop all agents:
+```bash
+for r in architect sr_developer developer fact_extract; do
+  launchctl bootout gui/$(id -u)/com.aiforge.tick-$r
+done
+launchctl bootout gui/$(id -u)/com.aiforge.api
+```
+
+Resume: `bash ~/AIForgeCrew/scripts/runtime/install-v5-launchd.sh` + `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aiforge.api.plist`.
+
+Per-ticket stop: `python -m aiforge_core.runtime.cli status ONE-123 --status cancelled`.
 
 ## Failure modes and responses
 
 | Symptom | Where to look | Fix |
 |---|---|---|
-| Tick does nothing | `tail ~/.aiforge/logs/launchd-tick-<role>.log` | usually no todo tickets — `list --role <role>` |
-| Tool call fails | `ticket_events` row `kind='tool_call'` + `metadata.error` | fix args in agent prompt or tool impl |
-| LLM 400 (context overflow) | `llm.error` event | reduce prompt (context bundle trim) or raise LM Studio context |
-| Two ticks collide | `lock.skip` log event | expected — the second tick no-ops |
-| Worktree missing | `worktree.prepared` with `path=null` | repo not under `~/codeRepo` — clone it |
+| Tick does nothing | `tail ~/.aiforge/logs/launchd-tick-<role>.log` | usually no `todo` — `list --role` |
+| Tool call fails | `ticket_events.metadata.error` | fix args in tool impl or agent prompt |
+| LLM 400 (ctx overflow) | `llm.error` event | reduce prompt or raise LM Studio ctx |
+| Two ticks collide | `lock.skip` | expected (per-role lock) |
+| Worktree prepared at wrong repo | `worktree.prepared` path vs ticket text | child must carry parent's repo — fixed in p13.8 |
+| `edit` fails on whitespace | `tool.result` with 0 matches | use `run_shell` + `sed -n '<lines>p' | od -c` to check exact bytes, then retry `edit` |
+| Developer blows max_turns | `tick.end.stop_reason=max_turns` | raise `TICK_MAX_TURNS` or tighten prompt schedule |
+| API down | `tail ~/.aiforge/logs/api.err.log` | `launchctl kickstart -k gui/$(id -u)/com.aiforge.api` |
+| UI loads but empty | browser console + `/api/health` | CORS? wrong port? recheck launchd |
+
+## Model hot-swap
+
+`aiforge_core/runtime/config.py.ROLES` is the source of truth. Edit → `git push` → pull on Mac Studio → `launchctl kickstart -k gui/$(id -u)/com.aiforge.tick-<role>`.
+
+Runtime override via adapter DB is intentionally NOT supported (that's what v4 bootstrap scripts kept regressing).
+
+## 3-month trajectory to full local
+
+- **Now:** Architect = Claude (cloud). Others local.
+- **Month 1:** Swap `retain_fact` writer from `store.upsert_memory` (sync) to an async queue so the write doesn't stall the tick.
+- **Month 2:** Evaluate a local planner replacement for Architect (qwen3.6-35b or a future MoE). Lower its max_turns to 6.
+- **Month 3:** Flip `claude_local` transport to `openai` (LM Studio) — zero-code change, model swap only.

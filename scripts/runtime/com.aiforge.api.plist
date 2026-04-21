@@ -8,7 +8,7 @@
         <string>/Users/manikanta/AIForgeCrew/.venv/bin/python</string>
         <string>-m</string><string>uvicorn</string>
         <string>aiforge_core.runtime.api:app</string>
-        <string>--host</string><string>127.0.0.1</string>
+        <string>--host</string><string>0.0.0.0</string>
         <string>--port</string><string>8799</string>
     </array>
     <key>WorkingDirectory</key>
