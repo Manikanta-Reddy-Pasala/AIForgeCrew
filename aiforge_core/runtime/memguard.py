@@ -27,10 +27,15 @@ from .logging_setup import emit
 
 LMS_BIN = os.environ.get("AIFORGE_LMS_BIN",
                          os.path.expanduser("~/.lmstudio/bin/lms"))
-BUDGET_GB = float(os.environ.get("AIFORGE_RAM_BUDGET_GB", "70"))
-# KV cache + framework overhead multiplier on top of raw weights.
-# bge-m3 embed = 0.4 of weights; typical transformer KV ≈ 0.3-0.6.
-_RAM_OVERHEAD = float(os.environ.get("AIFORGE_RAM_OVERHEAD", "1.4"))
+BUDGET_GB = float(os.environ.get("AIFORGE_RAM_BUDGET_GB", "75"))
+# Overhead factor on raw weights. MLX on Apple Silicon memory-maps weight
+# files; idle models sit mostly in OS page cache (not counted against RSS).
+# 1.15 accounts for KV + framework overhead for actively inferring models.
+_RAM_OVERHEAD = float(os.environ.get("AIFORGE_RAM_OVERHEAD", "1.15"))
+# Post-tick behaviour: after a tick completes on a NON-protected role,
+# immediately unload the role's model to free its KV cache. Saves ~1-3 GB
+# of actual RSS (not weights — those are mmap'd) without waiting for TTL.
+RELEASE_AFTER_TICK = os.environ.get("AIFORGE_MEMGUARD_RELEASE", "1") == "1"
 DISABLE = os.environ.get("AIFORGE_MEMGUARD_DISABLE") == "1"
 
 # Models never evicted by memguard. Their tick traffic dominates.
@@ -175,6 +180,26 @@ def _evict_one_lru(loaded: dict[str, LoadedModel], exclude: set[str],
     if _lms_unload(victim.identifier, log):
         return victim.identifier
     return None
+
+
+def release_after_tick(identifier: str, log) -> None:
+    """Unload `identifier` after a tick finishes if it's non-protected.
+    Frees KV cache + framework overhead immediately. Idle mmap'd weights
+    would otherwise sit in the OS page cache — harmless, but KV-cache RAM
+    isn't reclaimed until TTL (default 30min).
+
+    Bypassed when AIFORGE_MEMGUARD_RELEASE=0.
+    """
+    if DISABLE or not RELEASE_AFTER_TICK or not identifier:
+        return
+    if identifier in PROTECTED_MODELS:
+        return
+    # Only unload if actually loaded (avoid noise).
+    loaded = _lms_ps()
+    if identifier not in loaded:
+        return
+    if _lms_unload(identifier, log):
+        emit(log, "memguard.release", model=identifier)
 
 
 def ensure_loaded(identifier: str, ctx: int, ttl_s: int, log) -> bool:

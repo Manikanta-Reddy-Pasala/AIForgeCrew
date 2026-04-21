@@ -833,6 +833,9 @@ def tick(role_name: str) -> int:
             summary = _run_tool_loop(rc, ticket, worktree, log)
             emit(log, "tick.end", ticket=ticket.identifier, **summary)
             _finalize_ticket(ticket, role_name, summary, log)
+            # Free tiny-model KV cache immediately instead of waiting for TTL.
+            if rc.transport == "openai":
+                memguard.release_after_tick(rc.model, log)
         except Exception as exc:
             emit(log, "tick.exception", ticket=ticket.identifier,
                  error=str(exc)[:500])
