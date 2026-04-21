@@ -30,7 +30,8 @@ import psycopg
 from psycopg.rows import dict_row
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import tickets as tickets_mod
@@ -332,11 +333,32 @@ def stream_role_log(role: str):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-# ─────────────────────────── Root ───────────────────────────────────────
-@app.get("/")
-def root() -> dict:
-    return {
-        "service": "aiforge v5 api",
-        "version": "5.0.0",
-        "routes": [r.path for r in app.routes if hasattr(r, "path")],
-    }
+# ─────────────────────────── Static UI ──────────────────────────────────
+# If the Vite production build exists, serve it at /ui/ and redirect "/" to it.
+_DIST = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "web", "dist"))
+
+if os.path.isdir(_DIST):
+    # SPA fallback: any unknown path under /ui/ returns index.html so
+    # react-router can handle the route client-side.
+    class _SpaStatic(StaticFiles):
+        async def get_response(self, path: str, scope):
+            try:
+                return await super().get_response(path, scope)
+            except Exception:
+                return FileResponse(os.path.join(_DIST, "index.html"))
+
+    app.mount("/ui", _SpaStatic(directory=_DIST, html=True), name="ui")
+
+    @app.get("/")
+    def _root_redirect():
+        return FileResponse(os.path.join(_DIST, "index.html"))
+else:
+    @app.get("/")
+    def _root_info() -> dict:
+        return {
+            "service": "aiforge v5 api",
+            "version": "5.0.0",
+            "hint": "run `cd web && npm run build` to serve the UI at /ui/",
+            "routes": [r.path for r in app.routes if hasattr(r, "path")],
+        }
