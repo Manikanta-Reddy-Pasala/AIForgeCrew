@@ -481,27 +481,42 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
             # emit a "thinking out loud" message ("Now let me write the
             # README...") then halt without actually calling a tool —
             # Doer burns 60 turns reading files, then vanishes.
-            # Give ONE nudge-retry: inject a system hint and loop once
-            # more. Feedback's natural terminal (verdict_pass/fail) is
-            # a real tool call, so this doesn't interfere there.
-            if (role_cfg.name in ("doer", "planner", "learner")
-                    and not locals().get("_nudged_once", False)):
-                _nudged_once = True
-                tickets.add_event(ticket.id, role_cfg.name, "nudge",
-                                  body="model_done with no tool call — retrying with nudge",
-                                  metadata={"turn": turn})
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        "You produced prose but no tool call. "
-                        "You MUST call a tool every turn. "
-                        "If you said you would write or edit a file, call "
-                        "`write_file` or `edit` now. "
-                        "If done, call `set_status(in_review)` (doer/planner) "
-                        "or `set_status(done)` (learner)."
-                    ),
-                })
-                continue
+            # Give up to 2 nudge-retries with escalating pressure, then
+            # force-terminate with post_comment("stalled") + set_status.
+            # Feedback's natural terminal (verdict_pass/fail) is a real
+            # tool call, so this doesn't interfere there.
+            if role_cfg.name in ("doer", "planner", "learner"):
+                _nudge_count = locals().get("_nudge_count", 0)
+                if _nudge_count < 2:
+                    _nudge_count += 1
+                    tickets.add_event(
+                        ticket.id, role_cfg.name, "nudge",
+                        body=f"model_done with no tool call — nudge {_nudge_count}/2",
+                        metadata={"turn": turn, "nudge_n": _nudge_count},
+                    )
+                    if _nudge_count == 1:
+                        nudge_msg = (
+                            "You produced prose but no tool call. "
+                            "EVERY turn must end with a tool call. "
+                            "If you said you would write/edit a file, call "
+                            "`write_file` or `edit` NOW. If analysis is done, "
+                            "call `post_comment` with your findings then "
+                            "`set_status(in_review)` (doer/planner) or "
+                            "`set_status(done)` (learner)."
+                        )
+                    else:
+                        nudge_msg = (
+                            "FINAL WARNING. Still no tool call. "
+                            "Call EXACTLY ONE of these now:\n"
+                            "  • `post_comment(body=\"<what you have so far>\")` "
+                            "    then `set_status(in_review)`\n"
+                            "  • `create_child_ticket(...)` to split remaining work\n"
+                            "  • `set_status(blocked)` with a note explaining why\n"
+                            "No more prose-only turns — anything without a tool "
+                            "call next will block the ticket."
+                        )
+                    messages.append({"role": "system", "content": nudge_msg})
+                    continue
             stop_reason = "model_done"
             break
 
