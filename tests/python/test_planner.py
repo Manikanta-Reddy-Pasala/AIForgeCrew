@@ -484,9 +484,9 @@ public class SyncController {
         assert "no signatures found" in result
 
 
-# ─────────────────────────── 8. TestWritePlanWithImplementation ──────────
+# ─────────────────────────── 8. TestWritePlanSignaturesAndPitfalls ──────
 
-class TestWritePlanWithImplementation:
+class TestWritePlanSignaturesAndPitfalls:
     def _make_mock_conn(self) -> tuple:
         """Return (mock_conn, mock_cur) wired for context-manager use."""
         mock_cur = MagicMock()
@@ -497,36 +497,34 @@ class TestWritePlanWithImplementation:
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
         return mock_conn, mock_cur
 
-    def test_appends_implementation_section(self, tmp_path: Path) -> None:
-        """write_plan appends ## Implementation block when implementation kwarg is non-empty."""
+    def test_appends_signatures_and_pitfalls(self, tmp_path: Path) -> None:
+        """write_plan appends ## Signatures + ## Compile pitfalls when provided."""
         from aiforge_core.planner.tools import make_write_plan
 
         ticket = _FakeTicket(body="Ticket body.\n")
         ctx = _make_ctx(tmp_path, ticket=ticket)
         mock_conn, mock_cur = self._make_mock_conn()
 
-        impl_text = (
-            "### src/main/java/Foo.java\n"
-            "```\nfind:\npublic void oldMethod() {\n---\nreplace:\npublic void newMethod() {\n```"
-        )
+        sigs = "src/main/java/Foo.java:42: public void oldMethod()"
+        pits = "lambda ResponseEntity<?> cast required"
         write_plan = make_write_plan(ctx)
 
         with patch("aiforge_core.planner.tools.psycopg.connect", return_value=mock_conn):
             result = write_plan(
                 files=["src/main/java/Foo.java"],
                 plan="1. Rename the method.",
-                implementation=impl_text,
+                signatures=sigs,
+                pitfalls=pits,
             )
 
         assert "OK:" in result
-        assert "## Implementation" in ticket.body
-        assert "find:" in ticket.body
-        assert "replace:" in ticket.body
+        assert "## Signatures" in ticket.body
         assert "oldMethod" in ticket.body
-        assert "newMethod" in ticket.body
+        assert "## Compile pitfalls" in ticket.body
+        assert "ResponseEntity<?>" in ticket.body
 
-    def test_without_implementation_still_works(self, tmp_path: Path) -> None:
-        """write_plan backward-compat: omits ## Implementation when kwarg is absent/empty."""
+    def test_without_signatures_still_works(self, tmp_path: Path) -> None:
+        """write_plan backward-compat: omits optional sections when absent."""
         from aiforge_core.planner.tools import make_write_plan
 
         ticket = _FakeTicket(body="Body.\n")
@@ -541,4 +539,6 @@ class TestWritePlanWithImplementation:
         assert "OK:" in result
         assert "## Files" in ticket.body
         assert "## Plan" in ticket.body
+        assert "## Signatures" not in ticket.body
+        assert "## Compile pitfalls" not in ticket.body
         assert "## Implementation" not in ticket.body

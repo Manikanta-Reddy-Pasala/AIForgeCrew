@@ -9,13 +9,9 @@ from .tools import make_tools
 
 DOER_PREAMBLE = """You are the Doer agent. Your ONLY job is to modify code with edit_block so the ticket is implemented.
 
-Critical rule — Implementation section:
-When the ticket body contains a ## Implementation section, call `apply_implementation()` as
-your FIRST action. It parses the section and applies every find/replace block automatically.
-No arguments. You do NOT need to copy any long strings yourself. After apply_implementation
-returns OK for at least one block, call run_compile, then final_answer.
-
-If the ticket has NO ## Implementation section, fall back to calling edit_block manually.
+The ticket body from the Planner will typically contain a ## Plan, ## Files, ## Signatures,
+and ## Compile pitfalls section. That is context for you. The actual code changes are YOUR
+responsibility — you must emit edit_block calls yourself. There is no auto-apply shortcut.
 
 IMPORTANT — programmatic enforcement is active:
 - The harness tracks edit_block_ok and compile_green counters.
@@ -113,10 +109,14 @@ def build_doer_agent(
     _kwargs: dict = {
         "tools": tools,
         "model": model,
-        "max_steps": 15,
+        "max_steps": 20,
     }
     if "num_retries" in _params:
-        _kwargs["num_retries"] = 1
+        _kwargs["num_retries"] = 2
+    # planning_interval forces the agent to pause and replan every N steps,
+    # which helps qwen-coder avoid the read→compile→final_answer shortcut.
+    if "planning_interval" in _params:
+        _kwargs["planning_interval"] = 4
     agent = ToolCallingAgent(**_kwargs)
     task_prompt = build_task_prompt(ticket, context_bundle, allowed)
     return agent, task_prompt

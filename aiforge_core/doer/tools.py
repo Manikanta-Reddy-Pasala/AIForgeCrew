@@ -338,13 +338,15 @@ def make_tools(worktree_path: str, scope_guard: ScopeGuard,
     ``final_answer`` is intentionally excluded: ``ToolCallingAgent`` adds its
     own ``FinalAnswerTool`` automatically, so adding a second one would
     cause a duplicate-name error at agent construction time.
+
+    ``ticket_body_provider`` is unused now (kept for API stability). The Doer
+    must emit edit_block calls itself — no implicit apply-from-body shortcut.
     """
     if counters is None:
         counters = {}
+    _ = ticket_body_provider  # intentionally unused — Doer writes the code
     return [
         make_read_file(worktree_path),
-        make_apply_implementation(worktree_path, scope_guard, counters,
-                                  ticket_body_provider=ticket_body_provider),
         make_edit_block(worktree_path, scope_guard, counters),
         make_run_compile(worktree_path, counters),
         make_grep(worktree_path),

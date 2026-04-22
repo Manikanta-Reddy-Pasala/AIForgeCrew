@@ -284,21 +284,26 @@ def make_write_plan(ctx: dict) -> Callable:
     def write_plan(
         files: list,
         plan: str,
+        signatures: str = "",
+        pitfalls: str = "",
         cross_service: str = "",
-        implementation: str = "",
     ) -> str:
-        """Append ## Files, ## Plan, ## Implementation, and ## Cross-service sections.
+        """Append ## Files, ## Plan, ## Signatures, ## Compile pitfalls, ## Cross-service.
 
         Mutates the ticket body in Postgres via a direct UPDATE.  Emits a
         planner.plan.written log event.
 
         Args:
             files: List of file paths that the Doer will need to edit.
-            plan: Numbered implementation plan (plain text).
+            plan: Numbered high-level plan (plain text). High-level only — the Doer
+                writes the actual code.
+            signatures: Optional block of verified method signatures (one per line
+                with file:line prefix). Lets the Doer call real methods, not
+                invented ones.
+            pitfalls: Optional compile pitfalls pulled from memory
+                (e.g. "ResponseEntity<?> cast required when lambda branches
+                return different payload types").
             cross_service: Optional cross-service coordination notes.
-            implementation: Concrete find/replace blocks for the Doer.  When
-                non-empty, a ``## Implementation`` section is appended containing
-                one ``### <path>`` heading per file and fenced find/replace pairs.
         """
         try:
             from aiforge_core.runtime.config import AIFORGE_DSN
@@ -308,10 +313,11 @@ def make_write_plan(ctx: dict) -> Callable:
 
             files_block = "\n## Files\n" + "".join(f"- {f}\n" for f in files)
             plan_block = f"\n## Plan\n{plan}\n"
-            impl_block = f"\n## Implementation\n{implementation}\n" if implementation else ""
+            sig_block = f"\n## Signatures\n{signatures}\n" if signatures else ""
+            pit_block = f"\n## Compile pitfalls\n{pitfalls}\n" if pitfalls else ""
             cross_block = f"\n## Cross-service\n{cross_service}\n" if cross_service else ""
 
-            new_body = current_body + files_block + plan_block + impl_block + cross_block
+            new_body = current_body + files_block + plan_block + sig_block + pit_block + cross_block
 
             with psycopg.connect(AIFORGE_DSN, autocommit=False,
                                  connect_timeout=5,
