@@ -267,7 +267,10 @@ def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> 
                 stats["errors"] += 1
                 continue
             prev = existing.get(rel)
-            if prev and prev.get("hash") == h and prev.get("outline_ver") == OUTLINE_VER and not full:
+            fg = _feature_group(rel)
+            unchanged = (prev and prev.get("hash") == h
+                         and prev.get("outline_ver") == OUTLINE_VER and not full)
+            if unchanged and not fg:
                 stats["unchanged"] += 1
                 continue
             try:
@@ -277,6 +280,13 @@ def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> 
                 continue
             ext = p.suffix.lower()
             parts = extract_outline_parts(rel, ext, content)
+            # Aggregate into feature bucket (even for unchanged files, so
+            # rollup can be regenerated without re-embedding outlines).
+            if fg:
+                per_feature.setdefault(fg, []).append(parts)
+            if unchanged:
+                stats["unchanged"] += 1
+                continue
             outline = build_outline(rel, ext, content)
             mtime = int(p.stat().st_mtime)
             md = {"file_hash": h, "size": p.stat().st_size,
@@ -289,10 +299,6 @@ def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> 
             # upsert_code_chunk handles DELETE-by-source + INSERT + embed.
             store.upsert_code_chunk(repo=repo_name, path=rel,
                                     text=outline, metadata=md)
-            # Aggregate into feature bucket (or top-level "misc") for rollup.
-            fg = _feature_group(rel)
-            if fg:
-                per_feature.setdefault(fg, []).append(parts)
 
         # Archive rows for files that no longer exist. Only touch rows
         # this indexer wrote (outline_ver set). Leaves legacy t4 chunks
