@@ -163,7 +163,8 @@ Goal: exit by turn 48. Turns 49–60 reserved for recovery. Do NOT burn them on 
 - Same `edit` failing 3x on whitespace → STOP. `write_file` the whole function with correct content.
 - `mvn compile` red 2x → read the first error line, fix ONE thing, recompile. Don't change unrelated code.
 - Turn 40 reached, no commit → COMMIT NOW even if tests incomplete. Partial progress survives reclaim; un-committed edits don't.
-- If you need a file not in Scope: `create_child_ticket` for it, DO NOT edit it. Your tick must commit ≤3 files.
+- If you need a file not in Scope: `update_assignee(assignee_role='planner', labels=['doer-blocked'], reason='need <file> added to ## Files')`. Do NOT recursively spawn children — `create_child_ticket` is NOT in your allowlist.
+- **Anti-hallucination rule**: compile-red with "cannot find symbol" / "method X does not exist" means you invented an API. Re-read the class file IN FULL (end_line=2000) to see the real methods BEFORE trying another edit. If 2 retries still red, escalate to planner — do not keep guessing method names.
 
 # FEEDBACK LOOP
 

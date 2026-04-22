@@ -67,7 +67,10 @@ class RoleConfig:
 _DOER_TOOLS = (
     "search", "read_file", "grep_repo", "run_shell", "fetch_url",
     "write_file", "edit", "git_commit", "git_push",
-    "create_child_ticket", "post_comment", "set_status", "retain_fact",
+    # create_child_ticket intentionally REMOVED — Doer must not spawn
+    # retry-children. On compile-red / spec gap it escalates back to
+    # Planner via update_assignee (label=doer-blocked), never recurses.
+    "post_comment", "set_status", "retain_fact",
     "update_assignee",   # escalate back to planner on compile-red / spec gap
     "related_tickets", "graph_neighbors", "kubectl_read", "read_claude_memory",
 )
