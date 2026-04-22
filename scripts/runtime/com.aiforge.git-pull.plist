@@ -7,7 +7,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-lc</string>
-        <string>cd $HOME/AIForgeCrew &amp;&amp; git fetch --quiet origin main &amp;&amp; LOCAL=$(git rev-parse HEAD) &amp;&amp; REMOTE=$(git rev-parse origin/main) &amp;&amp; if [ "$LOCAL" != "$REMOTE" ]; then echo "[$(date)] pulling $LOCAL -&gt; $REMOTE"; git reset --hard origin/main; fi</string>
+        <string>cd $HOME/AIForgeCrew &amp;&amp; git fetch --quiet origin main &amp;&amp; LOCAL=$(git rev-parse HEAD) &amp;&amp; REMOTE=$(git rev-parse origin/main) &amp;&amp; if [ "$LOCAL" != "$REMOTE" ]; then echo "[$(date)] pulling $LOCAL -&gt; $REMOTE"; git reset --hard origin/main; launchctl kickstart -k "gui/$(id -u)/com.aiforge.api" 2&gt;/dev/null || true; echo "[$(date)] restarted api"; fi</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/manikanta/AIForgeCrew</string>
