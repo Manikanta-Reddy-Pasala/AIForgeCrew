@@ -50,21 +50,41 @@ def run_graph(ticket_id: int) -> int:
     try:
         final_state = graph.invoke(state, config=config)
         wall_s = round(time.time() - t_start, 2)
+        stop_reason = final_state.get("stop_reason") or ""
+        verdict = final_state.get("verdict") or ""
+
+        # Map graph terminal state → ticket status. The graph END edge
+        # leaves the ticket at whatever status _finalize_ticket wrote
+        # from the last node; we override here so reclaim doesn't
+        # immediately pull the ticket again.
+        if stop_reason == "done" or verdict == "pass":
+            new_status = "done"
+        elif verdict == "scope_violation":
+            new_status = "blocked"
+        elif stop_reason in ("blocked", "loop_detected"):
+            new_status = "blocked"
+        else:
+            new_status = None  # let reclaim logic handle transient failures
+
+        if new_status:
+            tickets_mod.update_status(ticket_id, new_status)
+
         emit(
             log,
             "graph_runner.done",
             ticket=ticket.identifier,
-            stop_reason=final_state.get("stop_reason"),
-            verdict=final_state.get("verdict"),
+            stop_reason=stop_reason,
+            verdict=verdict,
+            final_status=new_status,
             wall_s=wall_s,
         )
         tickets_mod.add_event(
             ticket_id,
             "graph_runner",
             "comment",
-            body=f"graph run complete stop_reason={final_state.get('stop_reason')} "
-                 f"verdict={final_state.get('verdict')} wall_s={wall_s}",
-            metadata={"wall_s": wall_s},
+            body=f"graph run complete stop_reason={stop_reason} "
+                 f"verdict={verdict} wall_s={wall_s} status={new_status}",
+            metadata={"wall_s": wall_s, "final_status": new_status},
         )
         return 0
     except Exception as exc:

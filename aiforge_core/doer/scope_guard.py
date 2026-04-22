@@ -28,6 +28,11 @@ def parse_allowed_files(body: str) -> set[str]:
     """
     if not body:
         return set()
+    # Some callers (e.g. psql shell inserts) store literal '\n' escape
+    # sequences instead of real newlines. Normalize so the line-based
+    # parser works on either form.
+    if "\\n" in body and "\n" not in body:
+        body = body.replace("\\n", "\n")
     lower = body.lower()
     # Accept both "## files" and "## allowed files"
     for header in ("## allowed files", "## files"):

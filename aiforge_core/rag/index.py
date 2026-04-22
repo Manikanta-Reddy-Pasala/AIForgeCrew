@@ -9,21 +9,43 @@ if TYPE_CHECKING:
 
 
 EMBED_SIDECAR_BASE = os.environ.get("AIFORGE_EMBED_BASE", "http://localhost:8764")
-# LlamaIndex's OpenAIEmbedding validates model name against its enum. Our sidecar
-# ignores the name and always runs bge-m3, so we pass a valid OpenAI placeholder
-# to satisfy the validator while api_base routes to our sidecar.
-EMBED_MODEL_PLACEHOLDER = "text-embedding-3-small"
 
 
 def _make_embed_model() -> Any:
-    from llama_index.embeddings.openai import OpenAIEmbedding
+    """Custom LlamaIndex BaseEmbedding that hits our /embed sidecar directly.
 
-    return OpenAIEmbedding(
-        model=EMBED_MODEL_PLACEHOLDER,
-        api_base=EMBED_SIDECAR_BASE + "/v1",
-        api_key="not-used",
-        embed_batch_size=32,
-    )
+    The sidecar only serves AIForge-native /embed (not OpenAI /v1/embeddings),
+    so we bypass OpenAIEmbedding and call the native endpoint.
+    """
+    import json
+    import urllib.request
+    from llama_index.core.embeddings import BaseEmbedding
+
+    base_url = EMBED_SIDECAR_BASE
+
+    def _embed_one(text: str) -> list[float]:
+        payload = json.dumps({"text": text}).encode()
+        req = urllib.request.Request(
+            f"{base_url}/embed",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+        return body["embedding"]
+
+    class _SidecarEmbedding(BaseEmbedding):
+        def _get_text_embedding(self, text: str) -> list[float]:
+            return _embed_one(text)
+
+        def _get_query_embedding(self, query: str) -> list[float]:
+            return _embed_one(query)
+
+        async def _aget_query_embedding(self, query: str) -> list[float]:
+            return _embed_one(query)
+
+    return _SidecarEmbedding()
 
 
 def build_index(
