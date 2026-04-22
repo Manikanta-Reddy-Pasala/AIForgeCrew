@@ -38,6 +38,12 @@ class ToolContext:
     # your history" notice instead of the full file, nudging the model
     # to stop re-reading.
     read_cache: dict = field(default_factory=dict)
+    # Parsed `## Files` allowlist from ticket body. Doer may only
+    # write_file / edit paths that appear here (substring or basename
+    # match). None = no allowlist parsed yet, empty list = parsed but
+    # no files listed (refuse all writes). Populated by orchestrator
+    # before the tool loop starts.
+    allowed_files: list[str] | None = None
 
 
 # ─────────────────────────── Dispatch result ────────────────────────────
@@ -250,6 +256,9 @@ def _tool_write_file(ctx: ToolContext, path: str, content: str) -> ToolResult:
                 "an absolute path under the worktree.",
                 {"worktree": wt, "requested": p},
             )
+    refusal = _scope_check(ctx, p, path)
+    if refusal:
+        return refusal
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         f.write(content)
@@ -280,6 +289,9 @@ def _tool_edit(ctx: ToolContext, path: str, old_string: str, new_string: str) ->
                 "Pass a repo-relative path.",
                 {"worktree": wt, "requested": p},
             )
+    refusal = _scope_check(ctx, p, path)
+    if refusal:
+        return refusal
     if not os.path.exists(p):
         return ToolResult(False, f"file not found: {p}", {})
     with open(p, "r", encoding="utf-8") as f:
@@ -1309,6 +1321,97 @@ def _files_touched_from_events(ticket_id: int) -> list[str]:
 
 
 # ─────────────────────────── helpers ────────────────────────────────────
+def parse_allowed_files(body: str) -> list[str] | None:
+    """Extract the `## Files` section from a ticket body and return a list
+    of path patterns. Returns None if no `## Files` header found (caller
+    should treat as 'no scope constraint' — legacy tickets). Returns []
+    if header present but empty (refuse all writes — malformed ticket).
+
+    Accepts several formats:
+      - "- src/foo/Bar.java:45"
+      - "- src/foo/Bar.java (adds isActive field)"
+      - "* src/foo/Bar.java"
+      - bare path on its own line
+
+    Reads only the first `## Files` section, stops at next `## ` or blank
+    line separator.
+    """
+    if not body:
+        return None
+    lower = body.lower()
+    marker_idx = lower.find("## files")
+    if marker_idx < 0:
+        return None
+    # Move past the header line
+    nl = body.find("\n", marker_idx)
+    if nl < 0:
+        return []
+    section = body[nl + 1:]
+    # Stop at next `## ` heading
+    end = section.find("\n## ")
+    if end >= 0:
+        section = section[:end]
+    paths: list[str] = []
+    import re as _re
+    for line in section.splitlines():
+        s = line.strip().lstrip("-*").lstrip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            break
+        # Capture first path-ish token: contains `/` and optional `:<digits>`
+        m = _re.match(r"`?([\w./-]+\.[A-Za-z0-9]+|[\w./-]+/[\w./-]+)(?::\d+)?", s)
+        if m:
+            paths.append(m.group(1).strip("`"))
+    return paths
+
+
+def _scope_check(ctx: ToolContext, abs_path: str, agent_path: str) -> ToolResult | None:
+    """Refuse writes that escape the ticket's `## Files` allowlist.
+
+    - Supervisors/Planners/Learners/Feedback never write code; they won't
+      call write/edit anyway, but their allowed_files is None → skip.
+    - Doer: allowed_files parsed from ticket body. Match by basename OR
+      by suffix (so 'src/main/java/.../Foo.java' allows both the full
+      path and 'Foo.java').
+    - allowed_files == [] (empty list): refuse all writes — malformed
+      ticket with no files declared.
+    """
+    if ctx.role != "doer":
+        return None  # non-doers aren't subject to scope gate
+    allow = ctx.allowed_files
+    if allow is None:
+        return None  # legacy ticket, no ## Files section — no gate
+    if not allow:
+        return ToolResult(
+            False,
+            ("refused: ticket has `## Files` header but lists no paths. "
+             "Ask Planner to re-emit the ticket with concrete file:line "
+             "anchors under `## Files` (or escalate via update_assignee)."),
+            {"scope_creep": True, "requested": agent_path},
+        )
+    ap = os.path.abspath(abs_path)
+    base = os.path.basename(ap)
+    for entry in allow:
+        e = entry.strip()
+        if not e:
+            continue
+        # Accept full substring match OR basename match.
+        if e in ap or ap.endswith(e) or base == os.path.basename(e):
+            return None
+    return ToolResult(
+        False,
+        (f"refused: `{agent_path}` is not in the ticket's `## Files` "
+         f"allowlist. Allowed: {', '.join(allow[:5])}"
+         f"{'…' if len(allow) > 5 else ''}. "
+         "If this file is legitimately needed, escalate via "
+         "update_assignee(assignee_role='planner', labels=['doer-blocked'], "
+         "reason='need <file> added to ## Files')."),
+        {"scope_creep": True, "requested": agent_path,
+         "allowed_files": allow},
+    )
+
+
 def _resolve_path(ctx: ToolContext, path: str, *, for_write: bool = False) -> str:
     """Resolve agent-supplied paths.
 

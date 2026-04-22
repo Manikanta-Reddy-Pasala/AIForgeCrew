@@ -43,8 +43,8 @@ for label_slug in supervisor planner planner-b doer doer-b feedback learner; do
   echo "  loaded $label"
 done
 
-echo ">>> installing watchdogs (postgres + git-pull + daily reindex)"
-for label in com.aiforge.pg-watchdog com.aiforge.git-pull com.aiforge.reindex-daily; do
+echo ">>> installing watchdogs (postgres + git-pull + file-indexer + daily reindex)"
+for label in com.aiforge.pg-watchdog com.aiforge.git-pull com.aiforge.file-indexer com.aiforge.reindex-daily; do
   src="${SRC}/${label}.plist"
   dst="${DST}/${label}.plist"
   [[ -f "$src" ]] || { echo "missing $src"; continue; }

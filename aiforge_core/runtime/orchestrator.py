@@ -350,11 +350,16 @@ def _compact_old_tool_results(messages: list[dict], keep_tail: int = 5) -> None:
 # ─────────────────────────── Tool loop ──────────────────────────────────
 def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
                    worktree_path: str | None, log) -> dict:
+    allowed_files = tools_mod.parse_allowed_files(ticket.body or "")
     ctx = ToolContext(
         role=role_cfg.name, ticket_id=ticket.id,
         ticket_identifier=ticket.identifier, parent_id=ticket.parent_id,
         worktree_path=worktree_path, logger=log,
+        allowed_files=allowed_files,
     )
+    if allowed_files is not None:
+        emit(log, "scope.allowed_files", count=len(allowed_files),
+             files=allowed_files[:10])
     tool_schemas = tools_mod.schemas(role_cfg.tool_allowlist)
 
     # Initial messages. Context bundle varies by role:
