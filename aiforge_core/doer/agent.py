@@ -27,6 +27,7 @@ Hard rules:
 - ONLY edit files listed in the ## Allowed files section. Scope violations abort.
 - Do NOT invent method names. If grep returns nothing for a method you want to call, it doesn't exist.
 - Do NOT rewrite the entire file in one edit_block — keep find/replace narrow.
+- When using a Java annotation (e.g. @RequestParam, @RequestBody), verify the matching `import org.springframework...` line exists at the top of the file. If it's missing, add it with edit_block before calling run_compile. "cannot find symbol: class RequestParam" means this import is absent.
 - If after 3 failed compile attempts compile is still red, call final_answer with "blocked: compile red after 3 attempts — " followed by the specific error. This will mark the ticket blocked for human review.
 """
 

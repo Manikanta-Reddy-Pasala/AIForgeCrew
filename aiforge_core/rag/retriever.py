@@ -1,7 +1,8 @@
-"""LlamaIndex hybrid retrieval — drop-in replacement for retrieval.retrieve_for_role.
+"""Hybrid retrieval — BM25 + vector → RRF → rerank.
 
-Returns the same ``Hit`` dataclass so memory.py can convert hits to
-``SearchResult`` objects unchanged.
+Uses store_v2's tier-aware search directly (works against our actual
+`memories` table). LlamaIndex's PGVectorStore hardcodes `data_` prefix
+which broke against our schema; bypassing it here keeps things simple.
 """
 from __future__ import annotations
 
@@ -9,53 +10,39 @@ import json
 import logging
 import os
 import urllib.request
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from aiforge_core.retrieval import Hit, ROLE_POLICIES, rrf_fuse
-
-if TYPE_CHECKING:
-    from llama_index.core import VectorStoreIndex
+from aiforge_core.store_v2 import Store
 
 
 log = logging.getLogger("aiforge.rag.retriever")
 
 RERANK_URL = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:8765")
 
-
-def _node_to_hit(node_with_score: Any) -> Hit:
-    node = node_with_score.node
-    meta: dict[str, Any] = dict(node.metadata or {})
-    return Hit(
-        id=str(meta.get("id") or node.node_id),
-        score=float(node_with_score.score or 0.0),
-        source=meta.get("source"),
-        tier=meta.get("tier"),
-        text=node.get_content(),
-        title=meta.get("title"),
-        metadata=meta,
-    )
+_store: Store | None = None
 
 
-def _vector_retrieve(index: Any, query: str, top_k: int) -> list[Hit]:
-    from llama_index.core import QueryBundle
-    from llama_index.core.retrievers import VectorIndexRetriever
+def _get_store() -> Store:
+    global _store
+    if _store is None:
+        _store = Store()
+    return _store
 
-    retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k)
+
+def _vector_retrieve(store: Store, tier: str, wing_prefix: str | None,
+                     query: str, top_k: int) -> list[Hit]:
     try:
-        nodes = retriever.retrieve(QueryBundle(query_str=query))
-        return [_node_to_hit(n) for n in nodes]
+        return store.search_tier_vec(tier, query, top_k, wing_prefix)
     except Exception as exc:
         log.warning("vector retrieve failed: %s", exc)
         return []
 
 
-def _bm25_retrieve(index: Any, query: str, top_k: int) -> list[Hit]:
+def _bm25_retrieve(store: Store, tier: str, wing_prefix: str | None,
+                   query: str, top_k: int) -> list[Hit]:
     try:
-        from llama_index.retrievers.bm25 import BM25Retriever
-
-        bm25 = BM25Retriever.from_defaults(index=index, similarity_top_k=top_k)
-        nodes = bm25.retrieve(query)
-        return [_node_to_hit(n) for n in nodes]
+        return store.search_tier_bm25(tier, query, top_k, wing_prefix)
     except Exception as exc:
         log.warning("bm25 retrieve failed: %s", exc)
         return []
@@ -100,15 +87,10 @@ def retrieve_for_role_li(
     query: str,
     parent_id: int | None,
 ) -> list[Hit]:
-    """Hybrid BM25 + vector → RRF → rerank using LlamaIndex retrievers.
+    """Hybrid BM25 + vector → RRF → rerank using store_v2 directly.
 
-    ``store`` accepts either a ``VectorStoreIndex`` or any object with a
-    ``_index`` attribute holding one.  Passing a ``Store`` (store_v2) is
-    also accepted — in that case the function falls back to building its
-    own index via ``aiforge_core.rag.index.build_index`` using
-    ``AIFORGE_PGMEM_DSN``.
-
-    Return type is identical to ``retrieval.retrieve_for_role``.
+    The ``store`` arg is accepted for API compatibility but ignored —
+    we instantiate a singleton Store() internally.
     """
     if not query or not query.strip():
         return []
@@ -118,24 +100,7 @@ def retrieve_for_role_li(
         role = "planner"
 
     policy = ROLE_POLICIES[role]
-
-    index: Any
-    try:
-        from llama_index.core import VectorStoreIndex as _VSI
-
-        if isinstance(store, _VSI):
-            index = store
-        elif hasattr(store, "_index"):
-            index = store._index
-        else:
-            from aiforge_core.rag.index import build_index
-
-            dsn = os.environ.get(
-                "AIFORGE_PGMEM_DSN", "host=127.0.0.1 port=5432 dbname=aiforge"
-            )
-            index = build_index(dsn)
-    except ImportError:
-        index = store
+    s = _get_store()
 
     rankings: list[list[Hit]] = []
     for spec in policy["tiers"]:
@@ -145,14 +110,14 @@ def retrieve_for_role_li(
         if tier == "t1" and parent_id is not None:
             wing_prefix = f"ticket/{parent_id}"
 
-        vec_hits = _vector_retrieve(index, query, top_k)
-        bm25_hits = _bm25_retrieve(index, query, top_k)
+        vec_hits = _vector_retrieve(s, tier, wing_prefix, query, top_k)
+        bm25_hits = _bm25_retrieve(s, tier, wing_prefix, query, top_k)
         rankings.extend([vec_hits, bm25_hits])
 
     if not any(rankings):
         log.warning("retrieve_for_role_li: all rankings empty (role=%s)", role)
         return []
 
-    top_n = sum(s["top_k"] for s in policy["tiers"])
+    top_n = sum(s_["top_k"] for s_ in policy["tiers"])
     fused = rrf_fuse(rankings, k=60, top_n=top_n)
     return _rerank(query, fused, keep=policy["rerank_keep"])
