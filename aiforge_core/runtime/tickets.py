@@ -234,6 +234,41 @@ def claim_next(role: str) -> Ticket | None:
     return Ticket.from_row(row)
 
 
+def claim_next_any() -> Ticket | None:
+    """Atomically claim the oldest todo ticket across all roles.
+
+    Uses SELECT ... FOR UPDATE SKIP LOCKED so concurrent graph runners
+    cannot double-claim. Marks status='in_progress' in the same transaction.
+    Returns None when no todo tickets exist for any role.
+    """
+    with _conn() as c, c.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT * FROM tickets "
+            "WHERE status='todo' "
+            "ORDER BY CASE priority "
+            "  WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 "
+            "  WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
+            "created_at ASC LIMIT 1 "
+            "FOR UPDATE SKIP LOCKED",
+        )
+        row = cur.fetchone()
+        if row is None:
+            c.rollback()
+            return None
+        cur.execute(
+            "UPDATE tickets SET status='in_progress' WHERE id=%s RETURNING *",
+            (row["id"],),
+        )
+        row = cur.fetchone()
+        cur.execute(
+            "INSERT INTO ticket_events (ticket_id, agent_role, kind, body) "
+            "VALUES (%s, %s, 'status_change', 'in_progress')",
+            (row["id"], "graph_runner"),
+        )
+        c.commit()
+    return Ticket.from_row(row)
+
+
 def update_status(ticket_id: int, status: str, *, role: str | None = None,
                   metadata_patch: dict | None = None) -> Ticket:
     if status not in VALID_STATUS:

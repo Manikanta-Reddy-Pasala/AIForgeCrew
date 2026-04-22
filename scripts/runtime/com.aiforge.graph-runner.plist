@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aiforge.graph-runner</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/manikanta/Documents/codeRepo/AIForgeCrew/.venv/bin/python</string>
+    <string>-m</string>
+    <string>aiforge_core.runtime</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AIFORGE_FLAG_ORCHESTRATOR_BACKEND</key>
+    <string>langgraph</string>
+  </dict>
+
+  <key>StartInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/manikanta/.aiforge/logs/graph-runner.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/manikanta/.aiforge/logs/graph-runner.err</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/manikanta/Documents/codeRepo/AIForgeCrew</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

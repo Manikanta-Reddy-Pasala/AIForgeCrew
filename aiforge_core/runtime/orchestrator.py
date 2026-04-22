@@ -35,10 +35,19 @@ from .config import (
     RoleConfig, TICK_MAX_TURNS, TICK_MAX_WALL_SECS,
     WORKTREE_ROOT, role as role_cfg_get,
 )
+from .feature_flags import get_flag
 from .llm import AssistantTurn, complete
 from .logging_setup import emit, get_logger
 from .tools import ToolContext
 
+
+__all__ = [
+    "_run_tool_loop",
+    "_ensure_branch_and_worktree",
+    "_finalize_ticket",
+    "_build_context_bundle",
+    "_write_t1_memory",
+]
 
 # Orphan / retry policy. Tunable via env.
 STALE_EVENT_SECS = int(os.environ.get("AIFORGE_STALE_EVENT_SECS", "300"))
@@ -1090,8 +1099,21 @@ def tick(role_name: str) -> int:
                      stop_reason="no_target_repo")
                 return 0
 
-            summary = _run_tool_loop(rc, ticket, worktree, log)
-            emit(log, "tick.end", ticket=ticket.identifier, **summary)
+            # Feature-flagged smolagents Doer path.
+            # Default is "legacy" — no behaviour change unless the env var
+            # AIFORGE_FLAG_DOER_BACKEND=smolagents is set.
+            if (
+                _canonical_role(role_name) == "doer"
+                and get_flag("doer.backend", "legacy") == "smolagents"
+                and worktree is not None
+            ):
+                from aiforge_core.doer import run_smolagents_doer
+                summary = run_smolagents_doer(ticket, worktree, log)
+            else:
+                summary = _run_tool_loop(rc, ticket, worktree, log)
+            emit(log, "tick.end", ticket=ticket.identifier, **{
+                k: v for k, v in summary.items() if k != "summary"
+            })
             _finalize_ticket(ticket, role_name, summary, log)
             # Free tiny-model KV cache immediately instead of waiting for TTL.
             if rc.transport == "openai":

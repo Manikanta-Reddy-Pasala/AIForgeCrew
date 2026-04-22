@@ -12,8 +12,12 @@ def test_rrf_fuse_reinforces_agreed():
     assert ids.index("b") < ids.index("d")
 
 
-def test_role_policies_defined_for_four_roles():
-    assert set(ROLE_POLICIES) == {"architect", "sr_developer", "developer", "fact_extract"}
+def test_role_policies_defined_for_expected_roles():
+    expected = {
+        "architect", "sr_developer", "developer", "fact_extract",
+        "supervisor", "planner", "doer", "feedback", "learner",
+    }
+    assert expected <= set(ROLE_POLICIES)
     for pol in ROLE_POLICIES.values():
         assert "tiers" in pol
         assert "rerank_keep" in pol

@@ -16,6 +16,7 @@ from typing import Iterable
 
 from aiforge_core.store_v2 import Store
 from aiforge_core.retrieval import retrieve_for_role, Hit
+from aiforge_core.runtime.feature_flags import get_flag
 
 
 @dataclass
@@ -56,9 +57,15 @@ class Memory:
         key, which silently emptied results.
         """
         try:
-            hits: list[Hit] = retrieve_for_role(
-                self._store, role=role, query=query, parent_id=parent_id,
-            )
+            if get_flag("rag.backend", "legacy") == "llamaindex":
+                from aiforge_core.rag.retriever import retrieve_for_role_li
+                hits: list[Hit] = retrieve_for_role_li(
+                    self._store, role=role, query=query, parent_id=parent_id,
+                )
+            else:
+                hits = retrieve_for_role(
+                    self._store, role=role, query=query, parent_id=parent_id,
+                )
         except Exception as exc:
             import logging
             logging.getLogger("aiforge.memory").warning(
