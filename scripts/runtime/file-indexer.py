@@ -229,18 +229,23 @@ def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> 
             store.upsert_code_chunk(repo=repo_name, path=rel,
                                     text=outline, metadata=md)
 
-        # Archive rows for files that no longer exist.
+        # Archive rows for files that no longer exist. Only touch rows
+        # this indexer wrote (outline_ver set). Leaves legacy t4 chunks
+        # from graphify/upsert_code_chunk alone.
         for src, meta in existing.items():
-            if src and src not in seen and not meta.get("hash", "").startswith("archived:"):
-                cur.execute(
-                    "UPDATE memories SET wing = %s, "
-                    "  metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), "
-                    "    '{archived_at}', to_jsonb(%s::text)) "
-                    "WHERE id = %s",
-                    (f"{wing}/archived", time.strftime("%Y-%m-%dT%H:%M:%SZ"), meta["id"]),
-                )
-                conn.commit()
-                stats["archived"] += 1
+            if not src or src in seen:
+                continue
+            if not meta.get("outline_ver"):
+                continue
+            cur.execute(
+                "UPDATE memories SET wing = %s, "
+                "  metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), "
+                "    '{archived_at}', to_jsonb(%s::text)) "
+                "WHERE id = %s",
+                (f"{wing}/archived", time.strftime("%Y-%m-%dT%H:%M:%SZ"), meta["id"]),
+            )
+            conn.commit()
+            stats["archived"] += 1
 
     return stats
 
