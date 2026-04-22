@@ -70,8 +70,8 @@ def run_smolagents_doer(ticket: object, worktree_path: str, log: object) -> dict
     emit(log, "smolagents.start", ticket=ticket.identifier)  # type: ignore[attr-defined]
 
     try:
-        agent = build_doer_agent(ticket, worktree_path, context_bundle, llm_config)
-        result = agent.run(task=ticket.body)  # type: ignore[attr-defined]
+        agent, task_prompt = build_doer_agent(ticket, worktree_path, context_bundle, llm_config)
+        result = agent.run(task=task_prompt)
 
         # smolagents returns the final_answer string on success.
         summary_text = str(result) if result is not None else ""
