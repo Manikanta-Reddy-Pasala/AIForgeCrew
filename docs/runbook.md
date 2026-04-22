@@ -24,10 +24,10 @@ Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. 5
 | Supervisor | gemma-4-26b-a4b-it | Google MoE (~4B active) | 16K | OpenAI-compat → LM Studio | 4 | 30min | Triage + route + invariant enforcement |
 | Planner | openai/gpt-oss-20b | OpenAI open dense (20B) | 32K | OpenAI-compat → LM Studio | 25 | 8h | Analysis + child-ticket decomposition; non-vision → supports parallel=4 |
 | Doer | qwen3-coder-next | Alibaba | 128K | OpenAI-compat → LM Studio | 40 | 8h | Implementation + tests + commit |
-| Feedback | gemma-4-e4b-it-mlx | Google MoE (4B active, edge-tuned) | 16K | OpenAI-compat → LM Studio | 6 | 30min | Audit Doer diff + tests; pass / fail-back |
+| Feedback | openai/gpt-oss-20b (shared w/ Planner slot) | OpenAI open dense (20B) | 16K | OpenAI-compat → LM Studio | 6 | 30min | Audit Doer diff + tests; pass / fail-back; reliable tool-call |
 | Learner | phi-4-mini-reasoning | Microsoft | 16K | OpenAI-compat → LM Studio | 4 | 30min | Post-merge fact distillation into T3 |
 
-LM Studio load policy: only Planner + Doer pre-loaded (hot, 8h TTL, ~65 GB combined). Supervisor + Feedback share the same gemma-3-12b-it slot (~8 GB). Learner auto-loads on first request. `memguard.py` enforces a ≤ 90 GB weights budget at tick-start, evicting LRU non-protected models before loading the target. Prompts live in `aiforge_core/runtime/roles.py`; ctx + TTL in `config.py` RoleConfig.
+LM Studio load policy: only Doer (`qwen3-coder-next`, 45 GB) pre-loaded and protected. Planner + Feedback share one `openai/gpt-oss-20b` slot (12 GB, JIT). Supervisor (`gemma-3-12b-it`, 8 GB) and Learner (`phi-4-mini-reasoning`, 2 GB) also JIT. `memguard.plan_rebalance` keeps the single non-protected model with most queued work warm, evicts others. Hard 85 GB RAM ceiling (`AIFORGE_RAM_CEILING_GB`). All loads use `--parallel 4` so one model slot handles concurrent tick workers. Prompts live in `aiforge_core/runtime/roles.py`; ctx + TTL in `config.py` RoleConfig.
 
 ### RAM + memguard
 
