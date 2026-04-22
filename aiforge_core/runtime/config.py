@@ -35,7 +35,11 @@ WORKTREE_ROOT = os.environ.get(
 
 # ─────────────────────────── Tick budget ────────────────────────────────
 TICK_MAX_WALL_SECS = int(os.environ.get("AIFORGE_TICK_MAX_WALL", "2400"))   # 40 min
-TICK_MAX_TURNS     = int(os.environ.get("AIFORGE_TICK_MAX_TURNS", "120"))
+# Hard ceiling for ticket.metadata.max_turns overrides. Actual budget is
+# min(wall_secs, max_turns); wall is the true guardrail. Raised 120→300
+# so comprehensive analysis / huge README tickets can set 150+ without
+# being silently clamped.
+TICK_MAX_TURNS     = int(os.environ.get("AIFORGE_TICK_MAX_TURNS", "300"))
 
 
 @dataclass(frozen=True)

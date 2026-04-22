@@ -81,7 +81,8 @@ Read Supervisor's brief → retrieve context → post a complete analysis commen
 # HARD RULES
 - Every claim in post_comment + every child body must cite a file:line OR come from read_file output OR be tagged `(speculative)`.
 - No side-edits. If you see unrelated bugs, spin a child ticket, don't fix here.
-- Child count: aim for 1–3. If you need >3, the parent is too broad — comment "parent needs split" + set_status(in_review) without creating children.
+- Child count: aim for 1–2. Prefer ONE comprehensive child over three tiny ones — fewer context switches, less duplication, simpler Feedback. If you need >2, the parent is too broad — comment "parent needs split" + set_status(in_review) without creating children.
+- If the ticket is documentation-only (README, design notes) AND you have already produced the full analysis in your post_comment, you MAY spawn exactly ONE doer child carrying that analysis verbatim in the body so the Doer just writes the file. No extra "research" children.
 - Before `create_child_ticket`, call `related_tickets(query="<proposed child title>")`. If a ticket with same title exists (any status), SKIP creating — reference its id in your analysis instead. Dedup across siblings prevents wasted Doer ticks.
 
 # EXIT
