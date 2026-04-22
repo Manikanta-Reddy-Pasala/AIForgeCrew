@@ -45,11 +45,25 @@ class AssistantTurn:
     raw: dict | None = None
 
 
+# Per-role output token caps. Bigger == verbose reasoning; smaller == snappy
+# tool-calling. Learner used to run at 5000+ tokens per turn (phi-4-mini
+# reasoning goes long) — capping shortens Learner turn from 37s to ~10s.
+ROLE_MAX_TOKENS: dict[str, int] = {
+    "supervisor": 400,
+    "planner":    1500,
+    "doer":       2000,
+    "feedback":   600,
+    "learner":    800,
+}
+
+
 # ─────────────────────────── Dispatcher ─────────────────────────────────
 def complete(role_cfg: RoleConfig, messages: list[dict], tools: list[dict],
              *, timeout_s: int = 300) -> AssistantTurn:
+    max_tokens = ROLE_MAX_TOKENS.get(role_cfg.name)
     if role_cfg.transport == "openai":
-        return _openai_complete(role_cfg.model, messages, tools, timeout_s=timeout_s)
+        return _openai_complete(role_cfg.model, messages, tools,
+                                timeout_s=timeout_s, max_tokens=max_tokens)
     if role_cfg.transport == "claude_cli":
         return _claude_cli_complete(role_cfg.model, messages, tools, timeout_s=timeout_s)
     raise ValueError(f"unknown transport {role_cfg.transport!r}")
@@ -68,7 +82,8 @@ def _get_openai_client():
 
 
 def _openai_complete(model: str, messages: list[dict], tools: list[dict],
-                     *, timeout_s: int) -> AssistantTurn:
+                     *, timeout_s: int,
+                     max_tokens: int | None = None) -> AssistantTurn:
     client = _get_openai_client()
     kwargs: dict[str, Any] = {
         "model": model,
@@ -76,6 +91,8 @@ def _openai_complete(model: str, messages: list[dict], tools: list[dict],
         "temperature": 0.2,
         "timeout": timeout_s,
     }
+    if max_tokens:
+        kwargs["max_tokens"] = max_tokens
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"

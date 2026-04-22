@@ -132,7 +132,7 @@ ROLES: dict[str, RoleConfig] = {
         name="doer",
         model=DOER_MODEL,
         transport="openai",
-        max_turns=120,
+        max_turns=60,
         tool_allowlist=_DOER_TOOLS,
         ctx=131072, ttl_s=28800,  # hot; 8h TTL
     ),
