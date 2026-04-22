@@ -9,17 +9,17 @@ if TYPE_CHECKING:
 
 
 EMBED_SIDECAR_BASE = os.environ.get("AIFORGE_EMBED_BASE", "http://localhost:8764")
-EMBED_MODEL_NAME = os.environ.get("AIFORGE_EMBED_MODEL", "bge-m3")
+# LlamaIndex's OpenAIEmbedding validates model name against its enum. Our sidecar
+# ignores the name and always runs bge-m3, so we pass a valid OpenAI placeholder
+# to satisfy the validator while api_base routes to our sidecar.
+EMBED_MODEL_PLACEHOLDER = "text-embedding-3-small"
 
 
 def _make_embed_model() -> Any:
     from llama_index.embeddings.openai import OpenAIEmbedding
 
-    class _BgeM3Embedding(OpenAIEmbedding):
-        """OpenAIEmbedding subclass that routes to the local bge-m3 sidecar."""
-
-    return _BgeM3Embedding(
-        model=EMBED_MODEL_NAME,
+    return OpenAIEmbedding(
+        model=EMBED_MODEL_PLACEHOLDER,
         api_base=EMBED_SIDECAR_BASE + "/v1",
         api_key="not-used",
         embed_batch_size=32,
