@@ -5,7 +5,6 @@ from aiforge_core.runtime.config import role as role_cfg_get
 from aiforge_core.runtime.logging_setup import get_logger
 from aiforge_core.runtime.orchestrator import (
     _ensure_branch_and_worktree,
-    _finalize_ticket,
     _run_tool_loop,
 )
 
@@ -31,7 +30,9 @@ def doer_node(state: AgentState) -> AgentState:
     else:
         summary = _run_tool_loop(rc, ticket, worktree, log)
 
-    _finalize_ticket(ticket, "doer", summary, log)
+    # Graph-runner handles terminal status at END; don't call _finalize_ticket
+    # here — it treats stop_reason='final_answer' as unknown and blocks the
+    # ticket, short-circuiting the doer→feedback→learner flow.
 
     fresh = tickets_mod.get(ticket_id)
     updated_ticket = dict(fresh.__dict__) if fresh else state["ticket"]

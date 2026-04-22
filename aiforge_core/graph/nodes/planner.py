@@ -5,7 +5,6 @@ from aiforge_core.runtime.config import role as role_cfg_get
 from aiforge_core.runtime.logging_setup import get_logger
 from aiforge_core.runtime.orchestrator import (
     _ensure_branch_and_worktree,
-    _finalize_ticket,
     _run_tool_loop,
 )
 
@@ -26,7 +25,7 @@ def planner_node(state: AgentState) -> AgentState:
     updated_state = inject_context(state, "planner")
 
     summary = _run_tool_loop(rc, ticket, worktree, log)
-    _finalize_ticket(ticket, "planner", summary, log)
+    # Graph-runner sets terminal status at END.
 
     fresh = tickets_mod.get(ticket_id)
     updated_ticket = dict(fresh.__dict__) if fresh else state["ticket"]
