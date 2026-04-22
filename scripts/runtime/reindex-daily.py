@@ -31,6 +31,27 @@ JOBS = [
 ]
 
 
+def archive_dead_facts(age_days: int = 90) -> int:
+    """Move retained T2/T3 facts that have zero hits after `age_days` to
+    archived/<original-wing>. Keeps them searchable but deprioritized.
+    Returns number archived."""
+    import psycopg
+    from aiforge_core.runtime.config import AIFORGE_DSN
+    with psycopg.connect(AIFORGE_DSN, connect_timeout=5) as c, c.cursor() as cur:
+        cur.execute(
+            "UPDATE memories SET wing = 'archived/' || wing "
+            "WHERE tier IN ('t2', 't3') "
+            "AND wing NOT LIKE 'archived/%' "
+            "AND COALESCE((metadata->>'hit_count')::int, 0) = 0 "
+            "AND (metadata->>'retained_at')::timestamptz < now() - %s::interval "
+            "RETURNING id",
+            (f'{age_days} days',),
+        )
+        n = cur.rowcount
+        c.commit()
+    return n
+
+
 def main() -> int:
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] daily reindex starting")
     store = Store()
@@ -45,6 +66,12 @@ def main() -> int:
         print(f"  + {repo:<15}  {r.files:>3} files  {r.chunks:>4} chunks")
         total_files += r.files
         total_chunks += r.chunks
+    # Dead-fact archival (B): retained facts with 0 hits after 90d → archived/*
+    try:
+        n_archived = archive_dead_facts(age_days=90)
+        print(f"  + archive_dead_facts: {n_archived} rows moved to archived/*")
+    except Exception as exc:
+        print(f"  - archive_dead_facts failed: {exc}")
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
           f"done; {total_files} files → {total_chunks} chunks")
     return 0

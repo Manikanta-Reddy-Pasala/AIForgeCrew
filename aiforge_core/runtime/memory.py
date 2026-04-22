@@ -26,6 +26,7 @@ class SearchResult:
     text: str
     score: float
     metadata: dict
+    id: int | None = None
 
 
 class Memory:
@@ -66,8 +67,31 @@ class Memory:
             return []
         if top_k is not None:
             hits = hits[:top_k]
+        # Fact hit-tracking: bump hit_count + stamp last_hit_at on every
+        # memory row returned. Bulk UPDATE in a single query.
+        hit_ids = [int(h.id) for h in hits if h.id is not None]
+        if hit_ids:
+            try:
+                import psycopg
+                from .config import AIFORGE_DSN
+                with psycopg.connect(AIFORGE_DSN, connect_timeout=3) as c, \
+                     c.cursor() as cur:
+                    cur.execute(
+                        "UPDATE memories SET metadata = "
+                        "  jsonb_set("
+                        "    jsonb_set(COALESCE(metadata, '{}'::jsonb), "
+                        "      '{hit_count}', "
+                        "      to_jsonb(COALESCE((metadata->>'hit_count')::int, 0) + 1)), "
+                        "    '{last_hit_at}', to_jsonb(now()::text)) "
+                        "WHERE id = ANY(%s)",
+                        (hit_ids,),
+                    )
+                    c.commit()
+            except Exception:
+                pass  # hit-tracking is best-effort
         return [
             SearchResult(
+                id=h.id,
                 tier=(h.tier or "?"),
                 wing=(h.metadata or {}).get("wing", "?"),
                 source=h.source,
