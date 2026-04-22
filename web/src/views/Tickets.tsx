@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api';
 
-const ROLES = ['', 'architect', 'sr_developer', 'developer', 'fact_extract'];
+const ROLES = ['', 'supervisor', 'planner', 'doer', 'feedback', 'learner'];
 const STATUSES = ['', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'];
 
 export default function Tickets() {
@@ -11,7 +11,7 @@ export default function Tickets() {
   const [status, setStatus] = useState('');
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({
-    title: '', body: '', assignee_role: 'sr_developer', priority: 'medium',
+    title: '', body: '', assignee_role: 'planner', priority: 'medium',
   });
 
   async function load() {
@@ -25,7 +25,7 @@ export default function Tickets() {
 
   async function submit() {
     await api.create(draft);
-    setDraft({ title: '', body: '', assignee_role: 'sr_developer', priority: 'medium' });
+    setDraft({ title: '', body: '', assignee_role: 'planner', priority: 'medium' });
     setCreating(false);
     load();
   }

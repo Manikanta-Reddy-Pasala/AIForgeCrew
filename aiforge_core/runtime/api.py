@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import tickets as tickets_mod
+from . import config as _cfg
 from .config import (
     AIFORGE_DSN, LM_STUDIO_BASE_URL, LOG_DIR, ROLES,
 )
@@ -78,7 +79,8 @@ def _ticket_row_out(r: dict) -> dict:
     return {
         "id": r["id"], "identifier": r["identifier"], "title": r["title"],
         "body": r["body"], "status": r["status"], "priority": r["priority"],
-        "assignee_role": r["assignee_role"], "parent_id": r["parent_id"],
+        "assignee_role": _cfg.canonical_role(r["assignee_role"]) if r.get("assignee_role") else None,
+        "parent_id": r["parent_id"],
         "branch": r["branch"], "project": r["project"],
         "labels": list(r["labels"] or []),
         "metadata": dict(r["metadata"] or {}),
@@ -259,9 +261,10 @@ def create_ticket(payload: TicketCreate) -> dict:
     md = dict(payload.metadata or {})
     if payload.max_turns is not None:
         md["max_turns"] = int(payload.max_turns)
+    assignee = _cfg.canonical_role(payload.assignee_role) if payload.assignee_role else None
     t = tickets_mod.create(
         title=payload.title, body=payload.body,
-        assignee_role=payload.assignee_role,
+        assignee_role=assignee,
         priority=payload.priority, parent_id=parent_id,
         project=payload.project, labels=payload.labels,
         metadata=md or None,
@@ -295,7 +298,8 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
         sets: list[str] = []
         params: list[Any] = []
         if payload.assignee_role:
-            sets.append("assignee_role=%s"); params.append(payload.assignee_role)
+            sets.append("assignee_role=%s")
+            params.append(_cfg.canonical_role(payload.assignee_role))
         if payload.labels is not None:
             sets.append("labels=%s"); params.append(payload.labels)
         if payload.body is not None:

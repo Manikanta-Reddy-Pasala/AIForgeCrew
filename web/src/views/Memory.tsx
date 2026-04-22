@@ -3,7 +3,7 @@ import { api } from '../api';
 
 export default function Memory() {
   const [q, setQ] = useState('');
-  const [role, setRole] = useState('sr_developer');
+  const [role, setRole] = useState('planner');
   const [hits, setHits] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -27,7 +27,7 @@ export default function Memory() {
                  onKeyDown={e => e.key === 'Enter' && search()}
                  style={{ flex: 1 }} />
           <select value={role} onChange={e => setRole(e.target.value)}>
-            {['architect', 'sr_developer', 'developer', 'fact_extract'].map(r =>
+            {['supervisor', 'planner', 'doer', 'feedback', 'learner'].map(r =>
               <option key={r} value={r}>{r}</option>,
             )}
           </select>

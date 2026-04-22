@@ -29,7 +29,7 @@ export const api = {
     body: JSON.stringify({ body, author: 'human' }),
   }),
   memoryStats:  () => j<any>('/memory/stats'),
-  memorySearch: (q: string, role = 'sr_developer', topK = 12) =>
+  memorySearch: (q: string, role = 'planner', topK = 12) =>
     j<any[]>(`/memory/search?q=${encodeURIComponent(q)}&role=${role}&top_k=${topK}`),
 };
 

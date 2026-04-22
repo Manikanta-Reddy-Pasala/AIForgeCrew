@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { logStreamURL } from '../api';
 
-const ROLES = ['architect', 'sr_developer', 'developer', 'fact_extract'];
+const ROLES = ['supervisor', 'planner', 'doer', 'feedback', 'learner'];
 
 export default function Logs() {
   const { role: urlRole } = useParams();
-  const [role, setRole] = useState(urlRole || 'sr_developer');
+  const [role, setRole] = useState(urlRole || 'planner');
   const [lines, setLines] = useState<any[]>([]);
   const sourceRef = useRef<EventSource | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
