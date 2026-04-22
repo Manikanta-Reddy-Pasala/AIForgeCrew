@@ -1,11 +1,40 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import time
 
 from aiforge_core.graph import build_graph
 from aiforge_core.graph.state import AgentState
 from aiforge_core.runtime import tickets as tickets_mod
 from aiforge_core.runtime.logging_setup import emit, get_logger
+
+
+def _cleanup_worktree(worktree_path: str | None, log) -> None:
+    """Remove the worktree + local branch reference on terminal states.
+
+    The branch itself stays on origin (via the push) so the PR / commit
+    remain reviewable; only the local worktree directory + local branch
+    pointer are removed to keep .aiforge-worktrees/ tidy.
+    """
+    if not worktree_path or not os.path.isdir(worktree_path):
+        return
+    # The parent repo is .aiforge-worktrees/<ident>/ — walk up to find .git
+    parent_repo = worktree_path
+    for _ in range(4):
+        parent_repo = os.path.dirname(parent_repo)
+        if os.path.isdir(os.path.join(parent_repo, ".git")):
+            break
+    try:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", worktree_path],
+            cwd=parent_repo, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        emit(log, "graph_runner.worktree_cleaned", path=worktree_path)
+    except Exception as exc:
+        emit(log, "graph_runner.worktree_cleanup_failed",
+             path=worktree_path, err=str(exc)[:200])
 
 
 def run_graph(ticket_id: int) -> int:
@@ -71,6 +100,10 @@ def run_graph(ticket_id: int) -> int:
 
         if new_status:
             tickets_mod.update_status(ticket_id, new_status)
+            # Terminal state — clean up the worktree so .aiforge-worktrees/
+            # doesn't balloon. Remote branch stays for review.
+            if new_status in ("done", "blocked"):
+                _cleanup_worktree(final_state.get("worktree_path"), log)
 
         emit(
             log,

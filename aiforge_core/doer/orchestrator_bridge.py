@@ -188,16 +188,35 @@ def run_smolagents_doer(ticket: object, worktree_path: str, log: object) -> dict
             ["git", "diff", "--name-only", "HEAD"],
             cwd=worktree_path, capture_output=True, text=True, check=False,
         )
-        changed_files = [ln for ln in diff_proc.stdout.splitlines() if ln.strip()]
+        all_changed = [ln for ln in diff_proc.stdout.splitlines() if ln.strip()]
 
-        if not changed_files:
-            emit(log, "smolagents.no_changes", ticket=ticket.identifier,  # type: ignore[attr-defined]
-                 summary_chars=len(summary_text))
+        # Filter build noise that gets written by mvn compile itself
+        # (flattened-pom, target/, .mvn cache, etc). Require at least one
+        # real source file change to count as "work done".
+        _NOISE_PATTERNS = (
+            ".flattened-pom.xml", "target/", ".mvn/", ".idea/",
+            ".gradle/", "node_modules/", ".aiforge-worktrees/",
+        )
+        real_changes = [
+            p for p in all_changed
+            if not any(p == n or p.startswith(n) for n in _NOISE_PATTERNS)
+        ]
+
+        if not real_changes:
+            emit(log, "smolagents.no_real_changes", ticket=ticket.identifier,  # type: ignore[attr-defined]
+                 summary_chars=len(summary_text),
+                 noise_only=all_changed)
             tickets.add_event(
                 ticket_id, role_name, "error",
-                body=f"final_answer called with empty diff: {summary_text[:2000]}",
-                metadata={"stop_reason": "no_changes"},
+                body=(f"final_answer called but only build-noise files changed "
+                      f"({all_changed}); no source edit detected.\n\n"
+                      f"Agent summary: {summary_text[:1500]}"),
+                metadata={"stop_reason": "no_changes", "noise_only": all_changed},
             )
+            # Undo the noise so the worktree is clean for the next attempt.
+            subprocess.run(["git", "checkout", "--", "."],
+                           cwd=worktree_path, check=False,
+                           capture_output=True, timeout=30)
             return {
                 "stop_reason": "no_changes",
                 "has_commented": False,
@@ -205,6 +224,8 @@ def run_smolagents_doer(ticket: object, worktree_path: str, log: object) -> dict
                 "wall_s": round(time.time() - t_start, 2),
                 "summary": summary_text,
             }
+
+        changed_files = real_changes
 
         # Commit + push + PR (fail-soft each step).
         pub = _git_commit_push_pr(ticket, worktree_path, summary_text, changed_files, log)
