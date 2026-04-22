@@ -142,6 +142,7 @@ class TestFullPipelineHappyPath:
             "worktree_path": None,
             "stop_reason": None,
             "compile_fail_count": 0,
+            "feedback_fail_count": 0,
             "verdict": None,
             "feedback_fixlist": None,
             "learner_digest": None,

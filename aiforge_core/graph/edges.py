@@ -30,6 +30,9 @@ def after_doer(state: AgentState) -> str:
     return "feedback_node"
 
 
+MAX_FEEDBACK_FAILS = 2
+
+
 def after_feedback(state: AgentState) -> str:
     stop = state.get("stop_reason")
     if stop in ("done", "blocked"):
@@ -38,5 +41,9 @@ def after_feedback(state: AgentState) -> str:
     if verdict == "pass":
         return "learner_node"
     if verdict == "scope_violation":
+        return END
+    # verdict == "fail" (or None) → retry via doer, up to MAX_FEEDBACK_FAILS.
+    fail_count = (state.get("feedback_fail_count") or 0)
+    if fail_count >= MAX_FEEDBACK_FAILS:
         return END
     return "doer_node"

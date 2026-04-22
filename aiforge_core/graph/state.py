@@ -12,6 +12,7 @@ class AgentState(TypedDict):
     worktree_path: str | None
     stop_reason: str | None
     compile_fail_count: int
+    feedback_fail_count: int
     verdict: str | None
     feedback_fixlist: str | None
     learner_digest: str | None

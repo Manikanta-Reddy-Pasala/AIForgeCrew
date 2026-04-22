@@ -137,6 +137,10 @@ def feedback_node(state: AgentState) -> AgentState:
     fresh = tickets_mod.get(ticket_id)
     updated_ticket = dict(fresh.__dict__) if fresh else state["ticket"]
 
+    fail_count = state.get("feedback_fail_count") or 0
+    if verdict == "fail":
+        fail_count += 1
+
     return {
         **state,
         "role": "feedback",
@@ -145,5 +149,6 @@ def feedback_node(state: AgentState) -> AgentState:
         "stop_reason": summary.get("stop_reason"),
         "verdict": verdict,
         "feedback_fixlist": fixlist_str or None,
+        "feedback_fail_count": fail_count,
         "tool_results": state.get("tool_results", []) + [summary],
     }
