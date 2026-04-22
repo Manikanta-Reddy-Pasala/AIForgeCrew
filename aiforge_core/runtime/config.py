@@ -68,19 +68,22 @@ _DOER_TOOLS = (
     "search", "read_file", "grep_repo", "run_shell", "fetch_url",
     "write_file", "edit", "git_commit", "git_push",
     "create_child_ticket", "post_comment", "set_status", "retain_fact",
+    "update_assignee",   # escalate back to planner on compile-red / spec gap
     "related_tickets", "graph_neighbors", "kubectl_read", "read_claude_memory",
 )
 _PLANNER_TOOLS = (
     "search", "read_file", "grep_repo", "run_shell", "fetch_url",
     "create_child_ticket", "post_comment", "set_status", "retain_fact",
+    "update_assignee",   # escalation to supervisor when stuck
     "related_tickets", "graph_neighbors", "kubectl_read", "mongo_query",
     "read_claude_memory",
 )
 _SUPERVISOR_TOOLS = (
-    # set_status intentionally excluded — update_assignee handles status.
-    "search", "read_file", "post_comment",
+    # Supervisor now has triage + rescue + audit duty. Needs read + grep +
+    # child creation + routing. No write/edit/commit — always delegates.
+    "search", "read_file", "grep_repo", "post_comment",
     "create_child_ticket", "update_assignee",
-    "related_tickets", "read_claude_memory",
+    "related_tickets", "graph_neighbors", "read_claude_memory",
 )
 _FEEDBACK_TOOLS = (
     # No set_status — verdict_pass / verdict_fail handle status transitions.
@@ -120,7 +123,7 @@ ROLES: dict[str, RoleConfig] = {
         model=(CLAUDE_MODEL if SUPERVISOR_TRANSPORT == "claude_cli"
                else SUPERVISOR_MODEL),
         transport=SUPERVISOR_TRANSPORT,
-        max_turns=4,
+        max_turns=15,   # was 4 — triage+rescue+audit needs headroom
         tool_allowlist=_SUPERVISOR_TOOLS,
         ctx=16384, ttl_s=1800,
     ),

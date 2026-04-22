@@ -482,13 +482,20 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
             assistant_msg["tool_calls"] = turn_result.tool_calls
         messages.append(assistant_msg)
 
-        # Context compaction: once we're past turn 15, truncate older tool
-        # results to first 400 chars. Keeps the last 5 turns' tool outputs
-        # in full — that's what the model needs for immediate decisions.
-        # Earlier file reads or shell outputs get replaced with a
-        # placeholder the model can see but that stops eating ctx.
-        if turn >= 15:
+        # Context compaction: turn-based AND size-based.
+        # Turn-based trigger catches slow bloat after turn 15.
+        # Size-based trigger catches one huge read_file or shell output
+        # that blows past the model's ctx immediately.
+        # msg_chars is the cheap proxy we already computed above.
+        _HARD_CAP = 60_000   # ~15k tokens rough; most role ctx is 16-128k
+        if turn >= 15 or msg_chars > _HARD_CAP:
             _compact_old_tool_results(messages, keep_tail=5)
+            # If STILL over hard cap after compaction, be more aggressive.
+            recomputed = sum(len(str(m.get("content", ""))) for m in messages)
+            if recomputed > _HARD_CAP:
+                _compact_old_tool_results(messages, keep_tail=3)
+                emit(log, "ctx.compact_aggressive",
+                     turn=turn, before=msg_chars, after=recomputed)
 
         tickets.add_event(ticket.id, role_cfg.name, "llm_turn",
                           body=(turn_result.content or "")[:4000],

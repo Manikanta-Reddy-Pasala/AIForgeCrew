@@ -57,11 +57,11 @@ Five-role pipeline (Supervisor → Planner → Doer → Feedback → Learner). C
 
 | Role | Model | Family | Ctx | Transport | Max turns | Purpose |
 |---|---|---|---|---|---|---|
-| Supervisor | gemma-4-26b-a4b-it | Google MoE (~4B active) | 32K | OpenAI-compat → LM Studio | 4 | Triage + route + standards enforcement |
-| Planner | openai/gpt-oss-20b | OpenAI open dense (20B) | 32K | OpenAI-compat → LM Studio | 40 | Deep analysis + child-ticket decomposition; supports parallel=4 |
-| Doer | qwen3-coder-next | Alibaba dense | 128K | OpenAI-compat → LM Studio | 60 | Implementation + tests + commit |
+| Supervisor | gemma-3-12b-it | Google dense (12B) | 16K | OpenAI-compat → LM Studio | 15 | Triage + rescue stuck tickets + audit completed tickets |
+| Planner | openai/gpt-oss-20b | OpenAI open dense (20B) | 32K | OpenAI-compat → LM Studio | 25 | Deep analysis + child-ticket decomposition; can escalate to Supervisor when stuck |
+| Doer | qwen3-coder-next | Alibaba dense | 128K | OpenAI-compat → LM Studio | 60 | Implementation, compile-gated commit; can escalate to Planner on spec gap |
 | Feedback | openai/gpt-oss-20b (shared with Planner) | OpenAI open dense (20B) | 16K | OpenAI-compat → LM Studio | 6 | Audits Doer's diff + tests; pass or fail back; reliable tool-call protocol |
-| Learner | phi-4-mini-reasoning | Microsoft dense (3.8B) | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation → T3 memory |
+| Learner | phi-4-mini-reasoning | Microsoft dense (3.8B) | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation → T3 memory; dedup search before retain |
 
 Prompts live in `aiforge_core/runtime/roles.py`. Tool allowlists in `config.py` per role.
 
@@ -69,17 +69,19 @@ Prompts live in `aiforge_core/runtime/roles.py`. Tool allowlists in `config.py` 
 ```
 human files ticket
     ↓  (assignee_role defaults to supervisor)
-Supervisor  — triage + update_assignee + 1-sentence brief
+Supervisor  — triage (Case A) OR rescue stuck ticket (Case B, label=supervisor-help) OR audit (Case C)
     ↓
-Planner     — analysis comment + N child tickets (assignee=doer)
-    ↓
-Doer        — edit + compile + test + commit + post_comment
-    ↓  (orchestrator auto-routes to feedback)
-Feedback    — read_file + run test verify → verdict_pass or verdict_fail
+Planner     — analysis comment + 1-2 child tickets (each with project + ## Scope/Files/Acceptance)
+    ↓        if stuck → escalate back to Supervisor with "supervisor-help" label
+Doer        — memory-first → grep → read → edit → COMPILE (mandatory) → commit (never broken) → comment
+    ↓        if compile still red after 2 retries → escalate back to Planner with "doer-blocked" label
+Feedback    — git show --stat + read_file + compile verify → verdict_pass or verdict_fail (scope-creep = auto-fail)
     ↓  pass: status=in_review + auto-queue Learner sibling
     ↓  fail: back to Doer with fixlist in metadata.feedback_fixlist
-Learner     — retain_fact × N + post_comment + set_status(done)
+Learner     — search-for-dup → retain_fact × 1-3 + post_comment + set_status(done)
 ```
+
+**Escalation loops (v2)**: Planner can bounce a ticket to Supervisor when it can't identify target repo / file anchors. Doer can bounce to Planner on compile-red or spec gap. Supervisor fills the missing pieces (project, file anchors, revised Scope) and routes the ticket back. Prevents agents from silently blocking on ambiguity.
 
 3-month trajectory: swap Supervisor to local planner model — already local by default.
 
