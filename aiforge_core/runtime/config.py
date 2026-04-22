@@ -124,7 +124,7 @@ ROLES: dict[str, RoleConfig] = {
         name="planner",
         model=PLANNER_MODEL,
         transport="openai",
-        max_turns=40,
+        max_turns=25,
         tool_allowlist=_PLANNER_TOOLS,
         ctx=32768, ttl_s=28800,   # hot; 8h TTL; gpt-oss-20b non-vision parallel=4
     ),
@@ -132,7 +132,7 @@ ROLES: dict[str, RoleConfig] = {
         name="doer",
         model=DOER_MODEL,
         transport="openai",
-        max_turns=60,
+        max_turns=40,
         tool_allowlist=_DOER_TOOLS,
         ctx=131072, ttl_s=28800,  # hot; 8h TTL
     ),

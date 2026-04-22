@@ -283,6 +283,31 @@ def children(parent_id: int) -> list[Ticket]:
     return [Ticket.from_row(r) for r in rows]
 
 
+def by_title_project(title: str, project: str | None) -> list[Ticket]:
+    """Find tickets with same lower(title) in the same project (active only)."""
+    if not title:
+        return []
+    needle = title.strip().lower()
+    with _conn() as c, c.cursor(row_factory=dict_row) as cur:
+        if project:
+            cur.execute(
+                "SELECT * FROM tickets "
+                "WHERE lower(title)=%s AND project=%s "
+                "AND status IN ('todo','in_progress','in_review','blocked','done') "
+                "ORDER BY created_at ASC LIMIT 20",
+                (needle, project),
+            )
+        else:
+            cur.execute(
+                "SELECT * FROM tickets WHERE lower(title)=%s "
+                "AND status IN ('todo','in_progress','in_review','blocked','done') "
+                "ORDER BY created_at ASC LIMIT 20",
+                (needle,),
+            )
+        rows = cur.fetchall()
+    return [Ticket.from_row(r) for r in rows]
+
+
 def comments(ticket_id: int, limit: int = 50) -> list[dict]:
     with _conn() as c, c.cursor(row_factory=dict_row) as cur:
         cur.execute(

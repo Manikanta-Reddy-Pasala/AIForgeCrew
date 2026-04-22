@@ -333,11 +333,29 @@ def _tool_create_child(ctx: ToolContext, title: str, body: str,
     # Default assignee to doer when agent omits (common with smaller models).
     if not assignee_role or assignee_role.strip() in ("", "null", "None"):
         assignee_role = "doer"
-    # Dedup: skip if a child with the same title already exists under this parent.
-    for existing in tickets.children(ctx.ticket_id):
-        if existing.title.strip().lower() == title.strip().lower():
+    # Enforce doer-ticket body structure so Doer has a clear Scope/Files list.
+    if assignee_role == "doer":
+        lowered = body.lower()
+        required = ("## scope", "## files", "## acceptance")
+        missing = [s for s in required if s not in lowered]
+        if missing:
+            return ToolResult(
+                False,
+                ("doer child body missing required sections: "
+                 f"{', '.join(missing)}. Every doer ticket MUST have "
+                 "`## Scope`, `## Files` (with ≤3 file:line anchors), "
+                 "and `## Acceptance` sections. Re-emit with these."),
+                {"missing_sections": missing},
+            )
+    # Dedup across the project, not just direct siblings — Planner otherwise
+    # spawns same-title README tickets under different parents.
+    needle = title.strip().lower()
+    siblings = tickets.children(ctx.ticket_id)
+    project_dupes = tickets.by_title_project(title, parent.project)
+    for existing in list(siblings) + list(project_dupes):
+        if existing.title.strip().lower() == needle and existing.id != ctx.ticket_id:
             return ToolResult(True,
-                              f"child with same title already exists: {existing.identifier}",
+                              f"ticket with same title already exists: {existing.identifier}",
                               {"child_identifier": existing.identifier,
                                "deduped": True})
     child = tickets.create(
@@ -613,6 +631,28 @@ def _tool_verdict_fail(ctx: ToolContext, fixlist: list[str], note: str) -> ToolR
 })
 def _tool_retain(ctx: ToolContext, text: str, wing: str, tier: str = "t3") -> ToolResult:
     mem = memory.Memory()
+    # Dedup: if an existing fact is ≥0.85 similar and shares the same wing, skip.
+    try:
+        hits = mem.search(query=text[:240], top_k=5)
+        for h in hits or []:
+            h_wing = (getattr(h, "wing", None)
+                      or (getattr(h, "metadata", {}) or {}).get("wing"))
+            if h_wing != wing:
+                continue
+            score = getattr(h, "score", None) or getattr(h, "rerank", 0.0) or 0.0
+            if score >= 0.85:
+                tickets.add_event(
+                    ctx.ticket_id, ctx.role, "retain_skipped",
+                    body=f"dedup hit id={getattr(h,'id',None)} score={score:.2f}",
+                    metadata={"memory_id": getattr(h, "id", None), "tier": tier, "wing": wing},
+                )
+                return ToolResult(
+                    True,
+                    f"skipped (duplicate of memory id={getattr(h,'id',None)}, score={score:.2f})",
+                    {"deduped": True, "memory_id": getattr(h, "id", None)},
+                )
+    except Exception:
+        pass  # search outage must not block retain
     rid = mem.retain_fact(
         text=text, tier=tier, wing=wing,
         source=f"{ctx.role}@{ctx.ticket_identifier}",
