@@ -45,8 +45,12 @@ def build_doer_agent(
     import inspect as _inspect_lm
     _lm_params = set(_inspect_lm.signature(LiteLLMModel.__init__).parameters)
     _model_id_key = "model_id" if "model_id" in _lm_params else "model"
+    # LiteLLM needs a provider prefix for custom OpenAI-compat endpoints (LM Studio).
+    model_id = llm_config.model
+    if "/" not in model_id:
+        model_id = f"openai/{model_id}"
     model = LiteLLMModel(**{
-        _model_id_key: llm_config.model,
+        _model_id_key: model_id,
         "api_base": llm_config.base_url,
         "api_key": llm_config.api_key,
     })
