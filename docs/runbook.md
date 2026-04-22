@@ -34,7 +34,7 @@ LM Studio load policy: only Planner + Doer pre-loaded (hot, 8h TTL, ~65 GB combi
 Before each LLM tick, `aiforge_core.runtime.memguard.ensure_loaded()` runs:
 1. Parse `lms ps` — which models loaded, sizes, TTL remaining.
 2. If the target model is already loaded at ≥ requested ctx, done.
-3. Else, if loading would push total LLM weights past `AIFORGE_RAM_BUDGET_GB` (default 85), evict LRU non-protected models (`qwen3-coder-next` + `qwen3.6-35b-a3b` are protected).
+3. Else, if loading would push total LLM weights past `AIFORGE_RAM_BUDGET_GB` (default 75), evict LRU non-protected models (`qwen3-coder-next` is the sole protected slot — Planner's `openai/gpt-oss-20b` JIT-loads via memguard).
 4. `lms load <model> --context-length <N> --ttl <S>` .
 
 Env knobs:

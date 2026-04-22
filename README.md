@@ -137,7 +137,11 @@ Branch convention: `aiforge/<PARENT_ID>-<slug>`. All children of the same parent
 
 ## RAM guard (memguard)
 
-`aiforge_core/runtime/memguard.py` runs at every tick-start (before LLM). Parses `lms ps`, applies a 1.4× overhead factor on loaded weights, evicts LRU non-protected models if loading the target would exceed `AIFORGE_RAM_BUDGET_GB` (default 70). On LM Studio load failure, retries-with-evict up to 3 attempts. Protected: `qwen3-coder-next`, `qwen3.6-35b-a3b` (Doer + Planner always hot). Supervisor + Feedback share one `gemma-4-26b-a4b-it` slot. Learner (`phi-4-mini-reasoning`) JIT-loads on demand.
+`aiforge_core/runtime/memguard.py` runs at every tick-start (before LLM). Parses `lms ps`, applies a 1.15× overhead factor on loaded weights, evicts LRU non-protected models if loading the target would exceed `AIFORGE_RAM_BUDGET_GB` (default 75). On LM Studio load failure, retries-with-evict up to 3 attempts. Hard `AIFORGE_RAM_CEILING_GB=85` on (active + wired) also triggers eviction.
+
+Protected: `qwen3-coder-next` only (Doer always hot, 8h TTL). Planner model `openai/gpt-oss-20b` JIT-loads via memguard at the first planner tick then stays warm while planner queue has todos. Supervisor (`gemma-3-12b-it`), Feedback (`gemma-4-e4b-it-mlx`), Learner (`phi-4-mini-reasoning`) all JIT-load on demand. 2× Doer + 2× Planner workers via `AIFORGE_TICK_INSTANCE=a|b` plists; `--parallel 4` on every `lms load` so one model slot serves concurrent inference.
+
+History note: Planner was initially `qwen3.6-35b-a3b` (Qwen MoE "thinking" model) but that's vision-capable — LM Studio rejects `numParallelSessions > 1` for vision models. Swapped to `openai/gpt-oss-20b` (non-vision, 20B dense, reasoning-tuned) so both planner-a + planner-b workers can actually run concurrent inference.
 
 Env: `AIFORGE_RAM_BUDGET_GB`, `AIFORGE_MEMGUARD_DISABLE=1` (bypass).
 
