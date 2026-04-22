@@ -102,7 +102,7 @@ _LEARNER_TOOLS = (
 SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "gemma-3-12b-it")
 PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "openai/gpt-oss-20b")
 DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3-coder-next")
-FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",   "gemma-4-e4b-it-mlx")
+FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",   "openai/gpt-oss-20b")
 LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",    "phi-4-mini-reasoning")
 
 # Supervisor transport — flip to claude_cli for cloud oversight on tough

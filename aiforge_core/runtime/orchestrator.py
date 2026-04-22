@@ -590,11 +590,45 @@ def _finalize_ticket(ticket: tickets.Ticket, role_name: str,
              ticket=fresh.identifier, reason=reason, target=target,
              has_commented=has_commented)
 
+        canonical_role = _canonical_role(role_name)
+
         # Doer → Feedback instead of straight to in_review.
         # Feedback's verdict_pass will set in_review + queue Learner.
-        canonical_role = _canonical_role(role_name)
         if target == "in_review" and canonical_role == "doer":
             _route_to_feedback(fresh, role_name, patch, log)
+            _write_t1_memory(fresh, role_name, summary, log)
+            return
+
+        # Feedback silent-pass fallback: if feedback agent finished model_done
+        # and posted a comment but never called verdict_pass/verdict_fail,
+        # treat as implicit pass. Small model (edge) often skips tool call.
+        if canonical_role == "feedback" and has_commented:
+            emit(log, "finalize.feedback_implicit_pass",
+                 ticket=fresh.identifier)
+            # Queue Learner + flip to in_review (mimics verdict_pass).
+            from . import tools as tools_mod
+            try:
+                from .tools import _build_learner_digest
+                if fresh.parent_id is not None:
+                    parent = tickets.get(fresh.parent_id)
+                    digest = _build_learner_digest(fresh, parent)
+                    tickets.create(
+                        title=f"Distil facts: {parent.title[:50] if parent else fresh.identifier}",
+                        body=digest,
+                        assignee_role="learner",
+                        parent_id=fresh.parent_id,
+                        priority="low",
+                        branch=fresh.branch,
+                        project=fresh.project,
+                        metadata={"auto_queued_by": "feedback.implicit_pass",
+                                  "trigger_ticket": fresh.identifier},
+                    )
+            except Exception:
+                pass
+            tickets.update_status(
+                fresh.id, "in_review", role=role_name,
+                metadata_patch={**patch, "feedback_verdict": "implicit_pass"},
+            )
             _write_t1_memory(fresh, role_name, summary, log)
             return
 

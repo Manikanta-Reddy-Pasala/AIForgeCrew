@@ -310,23 +310,36 @@ def _tool_git_push(ctx: ToolContext) -> ToolResult:
 # ── Ticket ops
 @register("create_child_ticket", {
     "name": "create_child_ticket",
-    "description": "Create a child ticket under the current ticket. Assign to the role that should implement it.",
+    "description": "Create a child ticket under the current ticket. Assign to the role that should implement it. Defaults to 'doer' if assignee_role omitted. Dedup-safe: if a child with the same title already exists under this parent, the existing child is returned.",
     "parameters": {
         "type": "object",
         "properties": {
             "title": {"type": "string"},
             "body": {"type": "string"},
-            "assignee_role": {"type": "string", "enum": ["planner", "doer", "feedback", "learner"]},
+            "assignee_role": {"type": "string",
+                              "enum": ["planner", "doer", "feedback", "learner"],
+                              "default": "doer"},
             "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"], "default": "medium"},
         },
-        "required": ["title", "body", "assignee_role"],
+        "required": ["title", "body"],
     },
 })
 def _tool_create_child(ctx: ToolContext, title: str, body: str,
-                       assignee_role: str, priority: str = "medium") -> ToolResult:
+                       assignee_role: str | None = None,
+                       priority: str = "medium") -> ToolResult:
     parent = tickets.get(ctx.ticket_id)
     if parent is None:
         return ToolResult(False, "parent ticket missing", {})
+    # Default assignee to doer when agent omits (common with smaller models).
+    if not assignee_role or assignee_role.strip() in ("", "null", "None"):
+        assignee_role = "doer"
+    # Dedup: skip if a child with the same title already exists under this parent.
+    for existing in tickets.children(ctx.ticket_id):
+        if existing.title.strip().lower() == title.strip().lower():
+            return ToolResult(True,
+                              f"child with same title already exists: {existing.identifier}",
+                              {"child_identifier": existing.identifier,
+                               "deduped": True})
     child = tickets.create(
         title=title, body=body,
         assignee_role=assignee_role,
