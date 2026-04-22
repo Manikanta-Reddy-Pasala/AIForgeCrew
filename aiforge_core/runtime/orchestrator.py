@@ -1083,7 +1083,7 @@ def tick(role_name: str) -> int:
                                       note="no target repo")
                 emit(log, "tick.end", ticket=ticket.identifier,
                      stop_reason="no_target_repo")
-                continue
+                return 0
 
             summary = _run_tool_loop(rc, ticket, worktree, log)
             emit(log, "tick.end", ticket=ticket.identifier, **summary)
