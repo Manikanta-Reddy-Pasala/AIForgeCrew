@@ -167,6 +167,7 @@ def _size_estimate_gb(identifier: str) -> float:
     known = {
         "qwen3-coder-next": 45.0,
         "qwen3.6-35b-a3b": 20.0,
+        "openai/gpt-oss-20b": 12.0,
         "gemma-4-26b-a4b-it": 16.0,
         "gemma-3-12b-it": 8.0,
         "gemma-4-e4b-it-mlx": 7.0,

@@ -100,7 +100,7 @@ _LEARNER_TOOLS = (
 # ticks run; Supervisor / Feedback / Learner kept in config for re-enable
 # but their plists aren't installed.
 SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "gemma-3-12b-it")
-PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3.6-35b-a3b")
+PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "openai/gpt-oss-20b")
 DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3-coder-next")
 FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",   "gemma-4-e4b-it-mlx")
 LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",    "phi-4-mini-reasoning")
@@ -126,7 +126,7 @@ ROLES: dict[str, RoleConfig] = {
         transport="openai",
         max_turns=25,
         tool_allowlist=_PLANNER_TOOLS,
-        ctx=32768, ttl_s=28800,   # hot; 8h TTL; trimmed from 64K
+        ctx=32768, ttl_s=28800,   # hot; 8h TTL; gpt-oss-20b non-vision parallel=4
     ),
     "doer": RoleConfig(
         name="doer",
