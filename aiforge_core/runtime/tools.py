@@ -371,8 +371,34 @@ def _tool_post_comment(ctx: ToolContext, body: str) -> ToolResult:
     },
 })
 def _tool_set_status(ctx: ToolContext, status: str, note: str | None = None) -> ToolResult:
-    # 2-role pipeline (Planner + Doer) — no feedback/learner auto-routing.
-    # Doer's set_status(in_review) is the terminal handoff for the human.
+    # Auto-route doer → feedback. Doer's in_review means "I'm done editing";
+    # Feedback verifies before the ticket lands truly in_review. Keeps the
+    # prompt sequence "commit → post_comment → set_status(in_review)" working
+    # without the ticket skipping the review gate.
+    canonical = {"developer": "doer"}.get(ctx.role, ctx.role)
+    if status == "in_review" and canonical == "doer":
+        import json as _json
+        patch = {"last_note": note, "routed_to_feedback_by": ctx.role,
+                 "routed_to_feedback_at": time.strftime(
+                     "%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        with tickets._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "UPDATE tickets SET assignee_role='feedback', status='todo', "
+                "completed_at=NULL, "
+                "metadata = metadata || %s::jsonb WHERE id=%s",
+                (_json.dumps({k: v for k, v in patch.items() if v is not None}),
+                 ctx.ticket_id),
+            )
+            c.commit()
+        tickets.add_event(
+            ctx.ticket_id, ctx.role, "routing",
+            body="→ feedback (auto-routed from doer set_status)",
+            metadata={"new_assignee": "feedback", "trigger": "doer_set_in_review"},
+        )
+        return ToolResult(True,
+                          "routed to feedback (doer in_review → feedback todo)",
+                          {"status": "todo", "assignee_role": "feedback"})
+
     tickets.update_status(ctx.ticket_id, status, role=ctx.role,
                           metadata_patch={"last_note": note} if note else None)
     return ToolResult(True, f"status → {status}", {"status": status})
