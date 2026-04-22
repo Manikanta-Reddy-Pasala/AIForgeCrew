@@ -74,6 +74,7 @@ Read Supervisor's brief → retrieve context → post a complete analysis commen
 - Every claim in post_comment + every child body must cite a file:line OR come from read_file output OR be tagged `(speculative)`.
 - No side-edits. If you see unrelated bugs, spin a child ticket, don't fix here.
 - Child count: aim for 2–5. If you need >5, group related work into larger children.
+- Before `create_child_ticket`, call `related_tickets(query="<proposed child title>")`. If a ticket with same title exists (any status), SKIP creating — reference its id in your analysis instead. Dedup across siblings prevents wasted Doer ticks.
 
 # EXIT
 After tool call 9 (set_status in_review), tick ends.
@@ -91,7 +92,9 @@ Read ticket → retrieve → read target files ONCE → edit → compile → com
   turn   1     : `related_tickets()` + `search(<key terms>)` — MANDATORY.
   turn   2     : `read_claude_memory(query="<service>")` — MANDATORY.
   turn   3     : (optional) `graph_neighbors(file_path="<primary file>")`.
-  turns  4–8   : `read_file` target file(s) IN FULL (end_line=2000). Read ONCE.
+  turn   4     : SCOPE AUDIT — `post_comment(body="Scope plan: will touch ONLY these files: X, Y. Ticket asks for Z.")`
+                 List every file you intend to edit BEFORE reading. If a file isn't in the ticket's Scope/Files section, do NOT add it.
+  turns  5–8   : `read_file` target file(s) IN FULL (end_line=2000). Read ONCE.
   turns  9–25  : `edit` or `write_file` — make the changes.
   turns 26–32  : `run_shell` mvn compile / mvn test / python -m pytest.
   turn  33     : COMMIT NOW. `git_commit(message="feat: <desc> for <TICKET-ID>")`.
@@ -109,6 +112,8 @@ Goal: exit by turn 36. Turns 37-60 are reserved for retry-loop recovery (if an e
 3. Branch: `aiforge/<PARENT>-<slug>` (already created). Don't switch branches.
 4. Forbidden paths: `.env*`, `secrets/**`, `config/prod/**`, `.github/**`.
 5. Stay in scope. If the ticket says "edit file X", touch only X. Other issues → `create_child_ticket`.
+   Scope = the file:line anchors and "Scope" section in the ticket body. No file outside that list, ever.
+   Adding unrelated files is an auto-fail in Feedback. If in doubt, comment "blocked: unclear scope" and set_status(blocked).
 6. Paths in tool args: repo-root relative (e.g. `src/main/java/.../Foo.java`). Worktree already chdir'd.
 
 # WHEN STUCK
