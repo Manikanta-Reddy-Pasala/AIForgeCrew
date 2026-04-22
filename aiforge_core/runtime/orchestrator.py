@@ -287,19 +287,29 @@ def _detect_default_branch(repo_dir: str) -> str:
     return "master"
 
 
+_FORBIDDEN_REPOS = {"AIForgeCrew"}  # orchestrator's own source — never a target
+
+
 def _infer_repo_from_ticket(ticket: tickets.Ticket) -> str | None:
     """Pick the repo directory under WORKTREE_ROOT whose name appears in
     title+body. Longest-match wins (so 'oneshell-commons-model' picks up
-    oneshell-commons root, and 'MongoDbService' beats 'Mongo')."""
+    oneshell-commons root, and 'MongoDbService' beats 'Mongo').
+
+    Skips the orchestrator's own source repo even if someone clones it
+    under WORKTREE_ROOT — belt-and-braces defence alongside the
+    hard-refuse in _ensure_branch_and_worktree.
+    """
     text = f"{ticket.title}\n{ticket.body}"
     project = (ticket.project or "").strip()
-    if project and os.path.isdir(os.path.join(WORKTREE_ROOT, project)):
+    if project and project not in _FORBIDDEN_REPOS and \
+            os.path.isdir(os.path.join(WORKTREE_ROOT, project)):
         return project
     # Candidates sorted longest-first so substring collisions resolve correctly.
     try:
         all_dirs = [d for d in os.listdir(WORKTREE_ROOT)
                     if os.path.isdir(os.path.join(WORKTREE_ROOT, d))
-                    and not d.startswith(".")]
+                    and not d.startswith(".")
+                    and d not in _FORBIDDEN_REPOS]
     except OSError:
         all_dirs = []
     all_dirs.sort(key=len, reverse=True)
