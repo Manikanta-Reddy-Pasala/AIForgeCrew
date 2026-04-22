@@ -193,14 +193,16 @@ def _aliases_for(role: str) -> list[str]:
 
 
 def claim_next(role: str) -> Ticket | None:
-    """Pick the next todo ticket for a role: priority DESC, then FIFO.
+    """Atomically pick + mark-in_progress the next todo ticket for a role.
 
-    Matches both canonical and legacy role names so tickets created with
-    stale assignee_role values (e.g. 'developer' from an older planner
-    tool-schema enum) are still claimed by the current 'doer' tick.
+    Uses SELECT ... FOR UPDATE SKIP LOCKED so two parallel tick processes
+    can't claim the same row. Marks status='in_progress' inside the same
+    transaction, so by the time this returns the ticket is ours.
 
-    Does NOT mutate status — caller must update_status(..., 'in_progress')
-    once it actually starts executing."""
+    Matches canonical + legacy role names via _aliases_for.
+
+    Returns None when no todo exists for this role (caller should emit
+    tick.idle and exit)."""
     aliases = _aliases_for(role)
     with _conn() as c, c.cursor(row_factory=dict_row) as cur:
         cur.execute(
@@ -209,11 +211,27 @@ def claim_next(role: str) -> Ticket | None:
             "ORDER BY CASE priority "
             "  WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 "
             "  WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
-            "created_at ASC LIMIT 1",
+            "created_at ASC LIMIT 1 "
+            "FOR UPDATE SKIP LOCKED",
             (aliases,),
         )
         row = cur.fetchone()
-    return Ticket.from_row(row) if row else None
+        if row is None:
+            c.rollback()
+            return None
+        # Atomic claim: flip to in_progress before releasing the row lock.
+        cur.execute(
+            "UPDATE tickets SET status='in_progress' WHERE id=%s RETURNING *",
+            (row["id"],),
+        )
+        row = cur.fetchone()
+        cur.execute(
+            "INSERT INTO ticket_events (ticket_id, agent_role, kind, body) "
+            "VALUES (%s, %s, 'status_change', 'in_progress')",
+            (row["id"], role),
+        )
+        c.commit()
+    return Ticket.from_row(row)
 
 
 def update_status(ticket_id: int, status: str, *, role: str | None = None,

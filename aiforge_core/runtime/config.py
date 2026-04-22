@@ -51,7 +51,12 @@ class RoleConfig:
 
     @property
     def lock_path(self) -> str:
-        return f"{LOCK_DIR}/aiforge-tick-{self.name}.lock"
+        # Per-instance lock so multiple tick workers for the same role can
+        # run in parallel. Set AIFORGE_TICK_INSTANCE=a|b|c... on each
+        # launchd plist to spawn N concurrent workers. claim_next uses
+        # FOR UPDATE SKIP LOCKED so row-level claims are race-safe.
+        instance = os.environ.get("AIFORGE_TICK_INSTANCE", "a")
+        return f"{LOCK_DIR}/aiforge-tick-{self.name}-{instance}.lock"
 
 
 # Tool allowlists per role. Narrower = less distraction + less mischief.

@@ -821,7 +821,8 @@ def tick(role_name: str) -> int:
 
         emit(log, "tick.start", ticket=ticket.identifier, title=ticket.title)
         try:
-            tickets.update_status(ticket.id, "in_progress", role=role_name)
+            # Note: claim_next already flipped status to in_progress atomically
+            # with SELECT FOR UPDATE SKIP LOCKED, so we don't re-set here.
             # RAM guard: first enforce global (active + wired) ceiling, then
             # ensure this role's model is loaded at the desired ctx.
             if rc.transport == "openai":

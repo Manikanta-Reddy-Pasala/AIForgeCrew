@@ -30,9 +30,9 @@ do
   rm -f "${DST}/${legacy}.plist" 2>/dev/null || true
 done
 
-echo ">>> installing tick LaunchAgents (5-role pipeline)"
-for role in supervisor planner doer feedback learner; do
-  label="com.aiforge.tick-${role}"
+echo ">>> installing tick LaunchAgents (5-role pipeline + 2nd doer worker)"
+for label_slug in supervisor planner doer doer-b feedback learner; do
+  label="com.aiforge.tick-${label_slug}"
   src="${SRC}/${label}.plist"
   dst="${DST}/${label}.plist"
   [[ -f "$src" ]] || { echo "missing $src"; continue; }
