@@ -298,9 +298,58 @@ def _tool_edit(ctx: ToolContext, path: str, old_string: str, new_string: str) ->
 
 
 # ── run_shell (no allowlist — user authorised full shell)
+_DANGEROUS_SHELL = (
+    "git reset --hard",
+    "git push --force",
+    "git push -f",
+    "git clean -fdx",
+    "git clean -fd",
+    "git commit --allow-empty",
+    "git commit -a --allow-empty",
+    "rm -rf /",
+    "rm -rf ~",
+    "rm -rf $HOME",
+    "sudo ",
+    ":(){",
+    "mkfs",
+    "dd if=",
+)
+
+
+def _reject_shell(command: str, ctx: ToolContext) -> str | None:
+    """Return rejection reason if command must be blocked, else None."""
+    low = command.strip().lower()
+    for bad in _DANGEROUS_SHELL:
+        if bad in low:
+            return f"refused: dangerous pattern `{bad.strip()}` in command"
+    # cd escape: if the command starts with `cd /path && ...` and the
+    # path is outside the worktree, block. Doer's ONE-2 post-mortem
+    # showed gpt-oss-20b cd'ing into AIForgeCrew itself and running
+    # destructive git ops there.
+    if ctx.worktree_path:
+        stripped = command.strip()
+        if stripped.startswith("cd "):
+            try:
+                target = stripped.split(" ", 1)[1].split("&&", 1)[0].strip()
+                target = target.strip("'").strip('"').rstrip("/")
+                if target.startswith("~"):
+                    target = os.path.expanduser(target)
+                abs_target = os.path.abspath(target) if target else ""
+                wt = os.path.abspath(ctx.worktree_path)
+                if abs_target and not (abs_target.startswith(wt + os.sep)
+                                       or abs_target == wt):
+                    return (f"refused: `cd {target}` escapes worktree {wt}. "
+                            "Run commands in the current worktree only. "
+                            "Remove the `cd …` prefix — the shell already "
+                            "starts in the worktree.")
+            except Exception:
+                pass
+    return None
+
+
 @register("run_shell", {
     "name": "run_shell",
-    "description": "Run an arbitrary shell command in the ticket worktree. Output truncated to 8 KB. 120s timeout.",
+    "description": "Run a shell command in the ticket worktree. Output truncated to 8 KB. 120s timeout. Destructive patterns (git reset --hard, git push -f, git clean -fd, git commit --allow-empty, rm -rf /, sudo, …) and `cd` escapes from the worktree are REFUSED.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -311,6 +360,10 @@ def _tool_edit(ctx: ToolContext, path: str, old_string: str, new_string: str) ->
     },
 })
 def _tool_run_shell(ctx: ToolContext, command: str, timeout_s: int = 120) -> ToolResult:
+    # Safety: block destructive patterns + cd escapes from worktree.
+    refusal = _reject_shell(command, ctx)
+    if refusal:
+        return ToolResult(False, refusal, {"blocked": True})
     # cwd must exist, else subprocess raises FileNotFoundError at spawn.
     cwd = ctx.worktree_path if (ctx.worktree_path and os.path.isdir(ctx.worktree_path)) \
           else os.path.expanduser("~")
