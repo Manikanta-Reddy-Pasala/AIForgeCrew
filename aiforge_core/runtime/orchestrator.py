@@ -199,11 +199,17 @@ def _ensure_branch_and_worktree(ticket: tickets.Ticket) -> str | None:
     orchestrator repo — doing so caused ONE-2 to write junk into our
     own source tree.
     """
-    parent_ident = ticket.identifier
-    if ticket.parent_id:
-        p = tickets.get(ticket.parent_id)
-        if p is not None:
-            parent_ident = p.identifier
+    # Walk to ROOT parent for worktree naming. For ONE-3 → ONE-4 → ONE-5
+    # chain, all three share the worktree at .aiforge-worktrees/ONE-3.
+    # The earlier one-level walk broke nested children — ONE-5 tried to
+    # create a second worktree on the already-checked-out branch, failing.
+    root = ticket
+    while root.parent_id:
+        p = tickets.get(root.parent_id)
+        if p is None:
+            break
+        root = p
+    parent_ident = root.identifier
 
     existing = ticket.branch
     # Branch derived from parent identifier + parent title slug.
@@ -214,15 +220,12 @@ def _ensure_branch_and_worktree(ticket: tickets.Ticket) -> str | None:
         slug = _slugify(parent.title if parent else ticket.title)
         branch = f"aiforge/{parent_ident}-{slug}"
 
-    # Infer repo path — prefer the parent ticket's body for children
-    # (child tickets often omit the repo name in their own title, but
-    # the parent always mentions it). project field wins if set.
-    probe_ticket = ticket
-    if ticket.parent_id:
-        parent = tickets.get(ticket.parent_id)
-        if parent is not None:
-            probe_ticket = parent
-    repo_name = _infer_repo_from_ticket(probe_ticket)
+    # Infer repo path — prefer the ticket's own project field, then walk
+    # up to the root. _infer_repo_from_ticket already checks .project
+    # first, then scans title+body. Try child first (it may have its
+    # own project), fall through to root parent if child has none.
+    repo_name = _infer_repo_from_ticket(ticket) or \
+                _infer_repo_from_ticket(root)
     if not repo_name:
         # No target repo could be identified. Refuse to create a
         # worktree — the tick will post a helpful comment and block.
@@ -1079,8 +1082,10 @@ def tick(role_name: str) -> int:
                           "PosServerBackend, MongoDbService, etc.) or "
                           "include the repo name in the ticket title/body."),
                 )
-                tickets.update_status(ticket.id, "blocked", role=role_name,
-                                      note="no target repo")
+                tickets.update_status(
+                    ticket.id, "blocked", role=role_name,
+                    metadata_patch={"last_blocked_reason": "no_target_repo"},
+                )
                 emit(log, "tick.end", ticket=ticket.identifier,
                      stop_reason="no_target_repo")
                 return 0
