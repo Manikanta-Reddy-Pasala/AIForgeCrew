@@ -69,7 +69,18 @@ class Memory:
             hits = hits[:top_k]
         # Fact hit-tracking: bump hit_count + stamp last_hit_at on every
         # memory row returned. Bulk UPDATE in a single query.
-        hit_ids = [int(h.id) for h in hits if h.id is not None]
+        # store_v2 emits ids as "mem:<int>" — strip prefix before casting.
+        hit_ids: list[int] = []
+        for h in hits:
+            if h.id is None:
+                continue
+            sid = str(h.id)
+            if sid.startswith("mem:"):
+                sid = sid[4:]
+            try:
+                hit_ids.append(int(sid))
+            except ValueError:
+                continue
         if hit_ids:
             try:
                 import psycopg

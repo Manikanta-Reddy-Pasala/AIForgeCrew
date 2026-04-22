@@ -171,7 +171,17 @@ def _tool_read_file(ctx: ToolContext, path: str, start_line: int = 1,
     },
 })
 def _tool_write_file(ctx: ToolContext, path: str, content: str) -> ToolResult:
-    p = _resolve_path(ctx, path)
+    p = _resolve_path(ctx, path, for_write=True)
+    if ctx.worktree_path:
+        wt = os.path.abspath(ctx.worktree_path)
+        if not (os.path.abspath(p).startswith(wt + os.sep) or os.path.abspath(p) == wt):
+            return ToolResult(
+                False,
+                f"refused: write path {p} escapes worktree {wt}. "
+                "Pass a repo-relative path like 'src/main/...' or "
+                "an absolute path under the worktree.",
+                {"worktree": wt, "requested": p},
+            )
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", encoding="utf-8") as f:
         f.write(content)
@@ -192,7 +202,16 @@ def _tool_write_file(ctx: ToolContext, path: str, content: str) -> ToolResult:
     },
 })
 def _tool_edit(ctx: ToolContext, path: str, old_string: str, new_string: str) -> ToolResult:
-    p = _resolve_path(ctx, path)
+    p = _resolve_path(ctx, path, for_write=True)
+    if ctx.worktree_path:
+        wt = os.path.abspath(ctx.worktree_path)
+        if not (os.path.abspath(p).startswith(wt + os.sep) or os.path.abspath(p) == wt):
+            return ToolResult(
+                False,
+                f"refused: edit path {p} escapes worktree {wt}. "
+                "Pass a repo-relative path.",
+                {"worktree": wt, "requested": p},
+            )
     if not os.path.exists(p):
         return ToolResult(False, f"file not found: {p}", {})
     with open(p, "r", encoding="utf-8") as f:
@@ -1149,10 +1168,10 @@ def _files_touched_from_events(ticket_id: int) -> list[str]:
 
 
 # ─────────────────────────── helpers ────────────────────────────────────
-def _resolve_path(ctx: ToolContext, path: str) -> str:
+def _resolve_path(ctx: ToolContext, path: str, *, for_write: bool = False) -> str:
     """Resolve agent-supplied paths.
 
-    Try, in order:
+    Read path order:
       1. Absolute path (return as-is if it exists).
       2. Worktree-relative: <worktree>/<path>.
       3. WORKTREE_ROOT-relative: ~/codeRepo/<path>  (handles paths that
@@ -1160,10 +1179,29 @@ def _resolve_path(ctx: ToolContext, path: str) -> str:
       4. Stripped-repo-prefix: if worktree is inside <repo> and the
          agent-supplied path starts with '<repo>/', drop that prefix.
 
-    Returns whichever exists; otherwise the worktree-relative form so the
-    caller gets a clean "file not found" error.
+    Write path (`for_write=True`): if the agent passes an absolute path
+    that escapes the worktree (e.g. /Users/…/codeRepo/PosServerBackend/…
+    when the worktree is the aiforge branch worktree), strip the repo
+    root and remap to <worktree>/<relative>. This prevents "wrote bytes
+    but git_commit saw nothing" — the root bug behind ONE-209 loop.
     """
     if os.path.isabs(path):
+        if for_write and ctx.worktree_path:
+            wt = os.path.abspath(ctx.worktree_path)
+            abspath = os.path.abspath(path)
+            if abspath.startswith(wt + os.sep) or abspath == wt:
+                return abspath
+            # Try to remap: strip any ~/codeRepo/<repo>/ prefix and rejoin under worktree.
+            root = os.path.abspath(WORKTREE_ROOT) + os.sep
+            if abspath.startswith(root):
+                tail = abspath[len(root):]
+                # tail looks like "PosServerBackend/src/main/..."; drop first segment
+                parts = tail.split(os.sep, 1)
+                if len(parts) == 2:
+                    remapped = os.path.abspath(os.path.join(wt, parts[1]))
+                    return remapped
+            # Cannot remap safely — return as-is; caller will error.
+            return abspath
         return path
     candidates: list[str] = []
     base = ctx.worktree_path or WORKTREE_ROOT
