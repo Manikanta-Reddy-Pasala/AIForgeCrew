@@ -103,13 +103,15 @@ The Doer node runs a `smolagents.ToolCallingAgent` via LiteLLM routed to LM Stud
 
 ## Agent model table
 
-| Node | Role | Model (env var) | Default |
-|------|------|-----------------|---------|
-| supervisor_node | supervisor | `AIFORGE_SUPERVISOR_MODEL` | `gemma-4-26b-a4b-it` |
-| planner_node | planner | `AIFORGE_PLANNER_MODEL` | `openai/gpt-oss-20b` |
-| doer_node | doer | `AIFORGE_DOER_MODEL` | `qwen3-coder-next` |
-| feedback_node | feedback | `AIFORGE_FEEDBACK_MODEL` | `gemma-4-26b-a4b-it` |
-| learner_node | learner | `AIFORGE_LEARNER_MODEL` | `openai/gpt-oss-20b` |
+| Node | Calls LLM? | Env var | Effective model |
+|------|------------|---------|-----------------|
+| supervisor_node | **no** (rule-based routing only) | `AIFORGE_SUPERVISOR_MODEL` (dead for this node) | n/a |
+| planner_node | yes | `AIFORGE_PLANNER_MODEL` | `openai/gpt-oss-20b` (config.py default; no plist override) |
+| doer_node | yes (via smolagents + LiteLLM) | `AIFORGE_DOER_MODEL` | `qwen3-coder-next` (config.py default; no plist override) |
+| feedback_node | yes (single-shot) | `AIFORGE_FEEDBACK_MODEL` | `gemma-4-26b-a4b-it` (plist override) |
+| learner_node | yes (single-shot) | `AIFORGE_LEARNER_MODEL` | `openai/gpt-oss-20b` (plist override) |
+
+`AIFORGE_SUPERVISOR_MODEL` is still defined + overridden in the plist (`gemma-4-26b-a4b-it`) but the current `supervisor_node` never instantiates an LLM — it only reads `ticket.assignee_role` to route. Kept in config in case a future supervisor variant needs reasoning.
 
 All models are served by local LM Studio at `http://localhost:1234/v1` (Mac Studio, M3 Ultra 96 GB). Override the base URL via `AIFORGE_LM_BASE_URL`.
 
@@ -123,7 +125,11 @@ The worktree and branch setup is unchanged. `_ensure_branch_and_worktree` in `ai
 - Worktree: `<repo>/.aiforge-worktrees/<PARENT_TICKET_IDENT>/`
 - All children of the same parent ticket share the branch and worktree.
 - The doer's `edit_block` and `run_compile` tools operate inside the worktree. The scope guard enforces that writes stay within paths listed in the ticket's `## Files` section.
-- Doer does NOT push automatically. A human reviews and pushes.
+- **Doer auto-commits + pushes + opens a PR** when the agent calls `final_answer` with a non-empty diff and compile was green. Each step is fail-soft:
+  - `git add -A && git commit` with `aiforge(<ID>): <title>` message + changed-file list + Co-Authored-By trailer.
+  - `git push -u origin <branch>` — failure is logged, Doer still returns success for commit.
+  - `gh pr create` — only if `gh` is on PATH **and** the `origin` URL contains `github.com`. Local-path origins (e.g. canary fixtures) skip PR creation with `doer.pr.skipped reason=origin_not_github`.
+- Events emitted per step: `doer.commit.ok` / `.failed` / `.exception`, `doer.push.ok` / `.failed`, `doer.pr.ok` / `.failed` / `.skipped`. The ticket comment body also includes `PR: <url>` or `Commit: <sha>` so the UI surfaces the link.
 
 ---
 
@@ -178,8 +184,8 @@ The plist polls every 60 seconds. The first tick after ticket creation will clai
 | `AIFORGE_DSN` | `postgresql://manikanta@127.0.0.1:5432/aiforge` | Postgres DSN (tickets + memories + checkpoints) |
 | `AIFORGE_LM_BASE_URL` | `http://127.0.0.1:1234/v1` | LM Studio OpenAI-compat endpoint |
 | `AIFORGE_LM_API_KEY` | `lm-studio` | API key (LM Studio accepts any value) |
-| `AIFORGE_SUPERVISOR_MODEL` | `gemma-4-26b-a4b-it` | Supervisor + Feedback model (set in plist) |
-| `AIFORGE_FEEDBACK_MODEL` | `gemma-4-26b-a4b-it` | Feedback model (set in plist; shares SUPERVISOR_MODEL slot by default) |
+| `AIFORGE_SUPERVISOR_MODEL` | `gemma-4-26b-a4b-it` (plist) / `gemma-3-12b-it` (config.py default) | Dead for current rule-based supervisor_node; still set for future use |
+| `AIFORGE_FEEDBACK_MODEL` | `gemma-4-26b-a4b-it` (plist) / `openai/gpt-oss-20b` (config.py default) | Feedback verdict model (single-shot) |
 | `AIFORGE_LEARNER_MODEL` | `openai/gpt-oss-20b` | Learner model (set in plist) |
 | `AIFORGE_DOER_MODEL` | `qwen3-coder-next` | Doer model (config.py default) |
 | `AIFORGE_PLANNER_MODEL` | `openai/gpt-oss-20b` | Planner model (config.py default) |
