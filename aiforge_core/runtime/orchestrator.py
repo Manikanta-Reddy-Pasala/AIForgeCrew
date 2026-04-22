@@ -386,8 +386,21 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
     # Loop-guard: if agent repeats the same (tool, args) N times in a row,
     # we break out with a system nudge so it doesn't burn the wall budget.
     _recent_calls: list[str] = []
+    # Semantic loop guard: per-path read counts + consecutive reads-only
+    # turn counter. Catches models that re-read the same file in different
+    # line ranges or read 15 files without ever writing.
+    _path_reads: dict[str, int] = {}
+    _consecutive_read_only_turns = 0
+    _read_only_nudged = False
+    _path_nudged: set[str] = set()
     _deadline_warned = False
     _has_commented = False
+    _WRITE_TOOLS = {"write_file", "edit", "git_commit", "post_comment",
+                    "retain_fact", "set_status", "verdict_pass",
+                    "verdict_fail", "create_child_ticket", "update_assignee"}
+    _READ_TOOLS = {"read_file", "search", "related_tickets",
+                   "graph_neighbors", "run_shell", "fetch_url",
+                   "kubectl_read", "mongo_query", "read_claude_memory"}
     while turn < max_turns:
         if time.time() - t_start > TICK_MAX_WALL_SECS:
             stop_reason = "wall_timeout"
@@ -494,6 +507,8 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
 
         # Dispatch each tool call, feed results back.
         looped = False
+        _turn_saw_write = False
+        _reread_warning: str | None = None
         for tc in turn_result.tool_calls:
             name = tc["function"]["name"]
             arguments = tc["function"].get("arguments", "{}")
@@ -508,6 +523,24 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
             if len(_recent_calls) == 3 and len(set(_recent_calls)) == 1:
                 emit(log, "loop.detected", turn=turn, tool=name)
                 looped = True
+
+            # Semantic loop: count reads of the same path. Catches
+            # read_file(start=200,end=400) then read_file(start=400,end=600)
+            # which the (tool,args) guard misses.
+            if name == "read_file":
+                try:
+                    import json as _json
+                    path = (_json.loads(arguments or "{}") or {}).get("path", "")
+                except Exception:
+                    path = ""
+                if path:
+                    _path_reads[path] = _path_reads.get(path, 0) + 1
+                    if _path_reads[path] >= 3 and path not in _path_nudged:
+                        _path_nudged.add(path)
+                        _reread_warning = path
+
+            if name in _WRITE_TOOLS:
+                _turn_saw_write = True
 
             result = tools_mod.dispatch(ctx, name, arguments)
             if name == "post_comment" and result.ok:
@@ -525,6 +558,45 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
                 "tool_call_id": tc.get("id"),
                 "name": name,
                 "content": result.output[:8000],
+            })
+
+        # Track consecutive read-only turns and nudge if too long.
+        if _turn_saw_write:
+            _consecutive_read_only_turns = 0
+        else:
+            _consecutive_read_only_turns += 1
+
+        if _reread_warning:
+            tickets.add_event(ticket.id, role_cfg.name, "loop.reread",
+                              body=f"path re-read 3+ times: {_reread_warning}",
+                              metadata={"turn": turn, "path": _reread_warning})
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"STOP re-reading `{_reread_warning}`. You've read it 3 "
+                    "times already (possibly in different line ranges). "
+                    "The full content is in your message history. "
+                    "MOVE ON: write_file / edit the target, or post_comment "
+                    "with your analysis, or set_status(in_review). "
+                    "Do not call read_file on that path again this tick."
+                ),
+            })
+
+        if _consecutive_read_only_turns >= 15 and not _read_only_nudged:
+            _read_only_nudged = True
+            tickets.add_event(ticket.id, role_cfg.name, "loop.read_only",
+                              body=f"{_consecutive_read_only_turns} consecutive read-only turns",
+                              metadata={"turn": turn})
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"You've spent {_consecutive_read_only_turns} turns reading "
+                    "with no write. That's enough exploration. The ticket's "
+                    "`## Files` section names your target. Call `write_file` "
+                    "or `edit` NOW with your best draft. You can revise on "
+                    "the next turn. No more read_file / search / run_shell "
+                    "until you have produced a write."
+                ),
             })
 
         if looped:

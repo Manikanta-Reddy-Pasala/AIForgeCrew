@@ -39,7 +39,7 @@ TICK_MAX_WALL_SECS = int(os.environ.get("AIFORGE_TICK_MAX_WALL", "2400"))   # 40
 # min(wall_secs, max_turns); wall is the true guardrail. Raised 120→300
 # so comprehensive analysis / huge README tickets can set 150+ without
 # being silently clamped.
-TICK_MAX_TURNS     = int(os.environ.get("AIFORGE_TICK_MAX_TURNS", "300"))
+TICK_MAX_TURNS     = int(os.environ.get("AIFORGE_TICK_MAX_TURNS", "500"))
 
 
 @dataclass(frozen=True)
