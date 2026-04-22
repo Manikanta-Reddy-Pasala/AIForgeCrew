@@ -94,10 +94,12 @@ def _patch_node_internals(ticket: _FakeTicket):
         patch("aiforge_core.graph.nodes.doer.inject_context", side_effect=_fake_inject_context),
         patch("aiforge_core.doer.run_smolagents_doer", side_effect=_fake_run_smolagents_doer),
         patch("aiforge_core.graph.nodes.feedback.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.feedback._run_tool_loop", side_effect=_fake_run_tool_loop),
-        patch("aiforge_core.graph.nodes.feedback._finalize_ticket", side_effect=_fake_finalize),
-        patch("aiforge_core.graph.nodes.feedback._write_t1_memory", side_effect=_fake_write_t1),
-        patch("aiforge_core.graph.nodes.feedback._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
+        patch("aiforge_core.graph.nodes.feedback.tickets_mod.add_event", side_effect=_fake_add_event),
+        patch("aiforge_core.graph.nodes.feedback._git_diff", side_effect=lambda wt: "(fake diff)"),
+        patch(
+            "aiforge_core.graph.nodes.feedback._call_llm",
+            side_effect=lambda prompt: '{"verdict": "pass", "reason": "ok", "fixlist": []}',
+        ),
         patch("aiforge_core.graph.nodes.learner.tickets_mod.get", side_effect=_fake_get),
         patch("aiforge_core.graph.nodes.learner._run_tool_loop", side_effect=_fake_run_tool_loop),
         patch("aiforge_core.graph.nodes.learner._finalize_ticket", side_effect=_fake_finalize),
@@ -114,26 +116,7 @@ class TestFullPipelineHappyPath:
         """Supervisor→Planner→Doer→Feedback→Learner completes with stop_reason=done."""
         ticket = _FakeTicket()
 
-        # Supervisor routes to planner (assignee_role=planner in ticket).
-        # Feedback verdict=pass routes to learner.
-        # Learner sets stop_reason=done.
-
-        # We need feedback_node to return verdict=pass.
-        # Override feedback get to return a ticket with metadata.
-        def _fake_get_feedback(ident_or_id):
-            t = _FakeTicket()
-            t.metadata = {"feedback_verdict": "pass"}
-            return t
-
         all_patches = _patch_node_internals(ticket)
-        # Stack a feedback-specific override on top — ExitStack enters in order,
-        # so the later patch wins for aiforge_core.graph.nodes.feedback.tickets_mod.get.
-        all_patches.append(
-            patch(
-                "aiforge_core.graph.nodes.feedback.tickets_mod.get",
-                side_effect=_fake_get_feedback,
-            )
-        )
 
         # Suppress checkpointer: empty DSN causes build_graph to skip it.
         with patch.dict("os.environ", {"AIFORGE_DSN": ""}):
@@ -199,10 +182,6 @@ class TestFullPipelineHappyPath:
         ctx.enter_context(
             patch("aiforge_core.graph.nodes.doer.role_cfg_get",
                   return_value=MagicMock(name="doer"))
-        )
-        ctx.enter_context(
-            patch("aiforge_core.graph.nodes.feedback.role_cfg_get",
-                  return_value=MagicMock(name="feedback"))
         )
         ctx.enter_context(
             patch("aiforge_core.graph.nodes.learner.role_cfg_get",
