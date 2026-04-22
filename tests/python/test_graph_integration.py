@@ -79,8 +79,6 @@ def _patch_node_internals(ticket: _FakeTicket):
 
     patches = [
         patch("aiforge_core.graph.nodes.supervisor.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.supervisor._run_tool_loop", side_effect=_fake_run_tool_loop),
-        patch("aiforge_core.graph.nodes.supervisor._finalize_ticket", side_effect=_fake_finalize),
         patch("aiforge_core.graph.nodes.supervisor._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
         patch("aiforge_core.graph.nodes.planner.tickets_mod.get", side_effect=_fake_get),
         patch("aiforge_core.graph.nodes.planner._run_tool_loop", side_effect=_fake_run_tool_loop),
@@ -101,10 +99,13 @@ def _patch_node_internals(ticket: _FakeTicket):
             side_effect=lambda prompt: '{"verdict": "pass", "reason": "ok", "fixlist": []}',
         ),
         patch("aiforge_core.graph.nodes.learner.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.learner._run_tool_loop", side_effect=_fake_run_tool_loop),
-        patch("aiforge_core.graph.nodes.learner._finalize_ticket", side_effect=_fake_finalize),
+        patch("aiforge_core.graph.nodes.learner.tickets_mod.add_event", side_effect=_fake_add_event),
+        patch("aiforge_core.graph.nodes.learner.tickets_mod.comments", return_value=[]),
         patch("aiforge_core.graph.nodes.learner._write_t1_memory", side_effect=_fake_write_t1),
-        patch("aiforge_core.graph.nodes.learner._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
+        patch(
+            "aiforge_core.graph.nodes.learner._call_llm",
+            side_effect=lambda prompt: '{"digest": "ok", "keywords": []}',
+        ),
     ]
     return patches
 
@@ -160,6 +161,9 @@ class TestFullPipelineHappyPath:
             patch("aiforge_core.graph.nodes.supervisor.get_logger", return_value=fake_log)
         )
         ctx.enter_context(
+            patch("aiforge_core.graph.nodes.learner.get_logger", return_value=fake_log)
+        )
+        ctx.enter_context(
             patch("aiforge_core.graph.nodes.planner.get_logger", return_value=fake_log)
         )
         ctx.enter_context(
@@ -169,23 +173,12 @@ class TestFullPipelineHappyPath:
             patch("aiforge_core.graph.nodes.feedback.get_logger", return_value=fake_log)
         )
         ctx.enter_context(
-            patch("aiforge_core.graph.nodes.learner.get_logger", return_value=fake_log)
-        )
-        ctx.enter_context(
-            patch("aiforge_core.graph.nodes.supervisor.role_cfg_get",
-                  return_value=MagicMock(name="supervisor"))
-        )
-        ctx.enter_context(
             patch("aiforge_core.graph.nodes.planner.role_cfg_get",
                   return_value=MagicMock(name="planner"))
         )
         ctx.enter_context(
             patch("aiforge_core.graph.nodes.doer.role_cfg_get",
                   return_value=MagicMock(name="doer"))
-        )
-        ctx.enter_context(
-            patch("aiforge_core.graph.nodes.learner.role_cfg_get",
-                  return_value=MagicMock(name="learner"))
         )
 
         with ctx:

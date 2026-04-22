@@ -1,16 +1,90 @@
+"""Learner node — single-shot insight extraction.
+
+Previous legacy path ran _run_tool_loop which looped on qwen-coder.
+Replaced with one LLM call that produces a short DIGEST line and one
+T1 memory write.
+"""
 from __future__ import annotations
 
+import json
+import time
+import urllib.request
+
 from aiforge_core.runtime import tickets as tickets_mod
-from aiforge_core.runtime.config import role as role_cfg_get
-from aiforge_core.runtime.logging_setup import get_logger
-from aiforge_core.runtime.orchestrator import (
-    _ensure_branch_and_worktree,
-    _finalize_ticket,
-    _run_tool_loop,
-    _write_t1_memory,
+from aiforge_core.runtime.config import (
+    LEARNER_MODEL,
+    LM_STUDIO_API_KEY,
+    LM_STUDIO_BASE_URL,
 )
+from aiforge_core.runtime.logging_setup import emit, get_logger
+from aiforge_core.runtime.orchestrator import _write_t1_memory
 
 from ..state import AgentState
+
+
+LEARNER_PROMPT = """You are the Learner. Extract one single DIGEST line from the work done on this ticket.
+
+## Ticket
+{body}
+
+## Most recent events
+{events}
+
+Respond with a JSON object ONLY. No prose before or after.
+Keys:
+- digest: one short line (<= 200 chars) summarizing what was learned / shipped.
+- keywords: array of up to 5 short keywords.
+
+Your JSON:
+"""
+
+
+def _recent_events_text(ticket_id: int, limit: int = 6) -> str:
+    events = tickets_mod.comments(ticket_id, limit=limit)
+    if not events:
+        return "(no prior events)"
+    lines = []
+    for e in events:
+        kind = e.get("kind") or "?"
+        role = e.get("agent_role") or "?"
+        body = (e.get("body") or "").replace("\n", " ")[:300]
+        lines.append(f"[{role}] ({kind}) {body}")
+    return "\n".join(lines)
+
+
+def _call_llm(prompt: str) -> str:
+    payload = json.dumps({
+        "model": LEARNER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 256,
+        "temperature": 0.0,
+    }).encode()
+    req = urllib.request.Request(
+        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LM_STUDIO_API_KEY}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=90) as resp:
+        body = json.loads(resp.read())
+    return (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+
+
+def _parse(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = "\n".join(text.splitlines()[1:-1]) if text.count("```") >= 2 else text.strip("`")
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except Exception:
+            pass
+    return {"digest": text[:200], "keywords": []}
 
 
 def learner_node(state: AgentState) -> AgentState:
@@ -19,26 +93,50 @@ def learner_node(state: AgentState) -> AgentState:
     if ticket is None:
         return {**state, "stop_reason": "blocked"}
 
-    rc = role_cfg_get("learner")
     log = get_logger("learner")
-    worktree = state.get("worktree_path") or _ensure_branch_and_worktree(ticket)
+    t0 = time.time()
 
-    summary = _run_tool_loop(rc, ticket, worktree, log)
-    _finalize_ticket(ticket, "learner", summary, log)
+    body = (ticket.body or "")[:4000]
+    events_text = _recent_events_text(ticket_id)[:4000]
+    prompt = LEARNER_PROMPT.format(body=body, events=events_text)
+
+    try:
+        raw = _call_llm(prompt)
+        parsed = _parse(raw)
+    except Exception as exc:
+        parsed = {"digest": f"learner llm error: {exc}", "keywords": []}
+        emit(log, "learner.llm_error", error=str(exc)[:200])
+
+    digest = (parsed.get("digest") or "")[:200] or "(empty)"
+    keywords = parsed.get("keywords") or []
+
+    summary = {
+        "stop_reason": "done",
+        "has_commented": True,
+        "turns": 1,
+        "wall_s": round(time.time() - t0, 2),
+        "digest": digest,
+    }
+
+    try:
+        _write_t1_memory(ticket, "learner", summary, log)
+    except Exception as exc:
+        emit(log, "learner.t1_write_error", error=str(exc)[:200])
+
+    tickets_mod.add_event(
+        ticket_id, "learner", "comment",
+        body=f"DIGEST: {digest}\nkeywords: {', '.join(keywords[:5])}",
+        metadata={"source": "learner_single_shot"},
+    )
 
     fresh = tickets_mod.get(ticket_id)
     updated_ticket = dict(fresh.__dict__) if fresh else state["ticket"]
-
-    _write_t1_memory(ticket, "learner", summary, log)
-
-    learner_digest = (updated_ticket.get("body") or "")[:2000]
 
     return {
         **state,
         "role": "learner",
         "ticket": updated_ticket,
-        "worktree_path": worktree,
         "stop_reason": "done",
-        "learner_digest": learner_digest,
+        "learner_digest": digest,
         "tool_results": state.get("tool_results", []) + [summary],
     }

@@ -17,6 +17,12 @@
   <dict>
     <key>PATH</key>
     <string>/Users/manikanta/.local/bin:/Users/manikanta/.lmstudio/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>AIFORGE_SUPERVISOR_MODEL</key>
+    <string>gemma-4-26b-a4b-it</string>
+    <key>AIFORGE_FEEDBACK_MODEL</key>
+    <string>openai/gpt-oss-20b</string>
+    <key>AIFORGE_LEARNER_MODEL</key>
+    <string>openai/gpt-oss-20b</string>
   </dict>
 
   <key>StartInterval</key>
