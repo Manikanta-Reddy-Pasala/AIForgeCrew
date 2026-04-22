@@ -370,7 +370,18 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
 
     t_start = time.time()
     turn = 0
-    max_turns = min(role_cfg.max_turns, TICK_MAX_TURNS)
+    # Per-ticket override beats role default. Planner sets this via
+    # create_child_ticket(max_turns=...) when it knows the workload size.
+    # Caps against the global TICK_MAX_TURNS hard ceiling so a bad
+    # metadata value can't runaway-eat the wall budget.
+    _meta = ticket.metadata or {}
+    _override = _meta.get("max_turns")
+    try:
+        _override = int(_override) if _override is not None else None
+    except (TypeError, ValueError):
+        _override = None
+    _budget = _override if _override and _override > 0 else role_cfg.max_turns
+    max_turns = min(_budget, TICK_MAX_TURNS)
     stop_reason = "max_turns"
     # Loop-guard: if agent repeats the same (tool, args) N times in a row,
     # we break out with a system nudge so it doesn't burn the wall budget.

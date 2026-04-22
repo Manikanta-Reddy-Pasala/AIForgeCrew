@@ -329,7 +329,7 @@ def _tool_git_push(ctx: ToolContext) -> ToolResult:
 # ── Ticket ops
 @register("create_child_ticket", {
     "name": "create_child_ticket",
-    "description": "Create a child ticket under the current ticket. Assign to the role that should implement it. Defaults to 'doer' if assignee_role omitted. Dedup-safe: if a child with the same title already exists under this parent, the existing child is returned.",
+    "description": "Create a child ticket under the current ticket. Assign to the role that should implement it. Defaults to 'doer' if assignee_role omitted. Dedup-safe: if a child with the same title already exists under this parent or project, the existing child is returned. Optional `max_turns` overrides the assignee role's default turn budget — use 20 for trivial single-line edits, 40 for normal file changes, 60 for multi-file + docs, 80 for long READMEs or heavy analysis.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -339,13 +339,17 @@ def _tool_git_push(ctx: ToolContext) -> ToolResult:
                               "enum": ["planner", "doer", "feedback", "learner"],
                               "default": "doer"},
             "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"], "default": "medium"},
+            "max_turns": {"type": "integer",
+                          "description": "Turn budget for the assignee. 20=trivial, 40=normal, 60=docs, 80=comprehensive README. Capped at global TICK_MAX_TURNS.",
+                          "minimum": 4, "maximum": 120},
         },
         "required": ["title", "body"],
     },
 })
 def _tool_create_child(ctx: ToolContext, title: str, body: str,
                        assignee_role: str | None = None,
-                       priority: str = "medium") -> ToolResult:
+                       priority: str = "medium",
+                       max_turns: int | None = None) -> ToolResult:
     parent = tickets.get(ctx.ticket_id)
     if parent is None:
         return ToolResult(False, "parent ticket missing", {})
@@ -384,7 +388,8 @@ def _tool_create_child(ctx: ToolContext, title: str, body: str,
         priority=priority,
         branch=parent.branch,    # share branch
         project=parent.project,
-        metadata={"created_by_role": ctx.role},
+        metadata={"created_by_role": ctx.role,
+                  **({"max_turns": int(max_turns)} if max_turns else {})},
     )
     tickets.add_event(ctx.ticket_id, ctx.role, "child_created",
                       body=f"{child.identifier} → {assignee_role}",

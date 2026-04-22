@@ -165,6 +165,8 @@ class TicketCreate(BaseModel):
     parent_identifier: str | None = None
     project: str | None = None
     labels: list[str] = Field(default_factory=list)
+    max_turns: int | None = None
+    metadata: dict | None = None
 
 
 class TicketPatch(BaseModel):
@@ -172,6 +174,8 @@ class TicketPatch(BaseModel):
     assignee_role: str | None = None
     labels: list[str] | None = None
     body: str | None = None
+    max_turns: int | None = None
+    metadata: dict | None = None
 
 
 class CommentCreate(BaseModel):
@@ -252,11 +256,15 @@ def create_ticket(payload: TicketCreate) -> dict:
         if parent is None:
             raise HTTPException(400, f"parent {payload.parent_identifier} not found")
         parent_id = parent.id
+    md = dict(payload.metadata or {})
+    if payload.max_turns is not None:
+        md["max_turns"] = int(payload.max_turns)
     t = tickets_mod.create(
         title=payload.title, body=payload.body,
         assignee_role=payload.assignee_role,
         priority=payload.priority, parent_id=parent_id,
         project=payload.project, labels=payload.labels,
+        metadata=md or None,
     )
     return _ticket_row_out({
         "id": t.id, "identifier": t.identifier, "title": t.title,
@@ -277,7 +285,13 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
         if payload.status not in tickets_mod.VALID_STATUS:
             raise HTTPException(400, f"bad status {payload.status!r}")
         tickets_mod.update_status(t.id, payload.status, role="human")
-    if payload.assignee_role or payload.labels is not None or payload.body is not None:
+    merge_md: dict = {}
+    if payload.metadata:
+        merge_md.update(payload.metadata)
+    if payload.max_turns is not None:
+        merge_md["max_turns"] = int(payload.max_turns)
+    if (payload.assignee_role or payload.labels is not None
+            or payload.body is not None or merge_md):
         sets: list[str] = []
         params: list[Any] = []
         if payload.assignee_role:
@@ -286,6 +300,10 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
             sets.append("labels=%s"); params.append(payload.labels)
         if payload.body is not None:
             sets.append("body=%s"); params.append(payload.body)
+        if merge_md:
+            import json as _json
+            sets.append("metadata = COALESCE(metadata,'{}'::jsonb) || %s::jsonb")
+            params.append(_json.dumps(merge_md))
         params.append(t.id)
         with _db() as c, c.cursor() as cur:
             cur.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id=%s",

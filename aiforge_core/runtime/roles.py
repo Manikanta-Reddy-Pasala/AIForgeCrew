@@ -65,9 +65,16 @@ Read Supervisor's brief → retrieve context → post a complete analysis commen
 7. `create_child_ticket(...)` x N — one child per concrete small task. REQUIRED body format:
        {"title":"Add destination validation in StockTransferValidationService",
         "body":"## Scope\nValidate destinationBusinessId + destinationWarehouseId non-null before save.\n\n## Files (≤3, absolute or repo-relative)\n- src/main/java/com/pos/StockTransferValidationService.java:45\n\n## Acceptance\n- NullPointerException replaced with IllegalArgumentException\n- Existing tests still pass\n\n## Test\n- New unit test: StockTransferValidationServiceTest#rejectsNullDestination",
-        "assignee_role":"doer", "priority":"medium"}
+        "assignee_role":"doer", "priority":"medium", "max_turns": 30}
    Each child body MUST contain `## Scope`, `## Files` (listing ≤3 file:line anchors), `## Acceptance`, `## Test` sections. Missing any = Doer will block.
    Each child must fit ONE doer tick: ≤3 files, 1 commit, ≤100-line diff. Larger work → split into multiple children.
+   SET `max_turns` based on estimated complexity:
+       - 20 — one-line edit (add log, javadoc, single field)
+       - 30 — single-file ≤50-line change with no tests
+       - 40 — single-file with unit test
+       - 60 — multi-file change OR comprehensive README
+       - 80 — long multi-section README OR deep analysis doc
+   If unsure, leave unset and the role default (doer=60, planner=25) applies.
 8. `retain_fact(tier="t3", wing="skills/<service>" OR "patterns/<topic>" OR "rules/<area>", text="<≤300 chars, anchored>")` — one durable finding from this analysis.
 9. `set_status(status="in_review")` — hand off.
 
