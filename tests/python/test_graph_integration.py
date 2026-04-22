@@ -62,6 +62,9 @@ def _patch_node_internals(ticket: _FakeTicket):
     def _fake_run_tool_loop(rc, t, worktree, log) -> dict:
         return _make_summary()
 
+    def _fake_run_planner(t, log) -> dict:
+        return {**_make_summary(), "enriched_ticket_body": t.body}
+
     def _fake_run_smolagents_doer(t, worktree, log) -> dict:
         return _make_summary()
 
@@ -81,9 +84,8 @@ def _patch_node_internals(ticket: _FakeTicket):
         patch("aiforge_core.graph.nodes.supervisor.tickets_mod.get", side_effect=_fake_get),
         patch("aiforge_core.graph.nodes.supervisor._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
         patch("aiforge_core.graph.nodes.planner.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.planner._run_tool_loop", side_effect=_fake_run_tool_loop),
-        patch("aiforge_core.graph.nodes.planner._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
         patch("aiforge_core.graph.nodes.planner.inject_context", side_effect=_fake_inject_context),
+        patch("aiforge_core.planner.run_planner", side_effect=_fake_run_planner),
         patch("aiforge_core.graph.nodes.doer.tickets_mod.get", side_effect=_fake_get),
         patch("aiforge_core.graph.nodes.doer._run_tool_loop", side_effect=_fake_run_tool_loop),
         patch("aiforge_core.graph.nodes.doer._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
@@ -170,10 +172,6 @@ class TestFullPipelineHappyPath:
         )
         ctx.enter_context(
             patch("aiforge_core.graph.nodes.feedback.get_logger", return_value=fake_log)
-        )
-        ctx.enter_context(
-            patch("aiforge_core.graph.nodes.planner.role_cfg_get",
-                  return_value=MagicMock(name="planner"))
         )
         ctx.enter_context(
             patch("aiforge_core.graph.nodes.doer.role_cfg_get",
