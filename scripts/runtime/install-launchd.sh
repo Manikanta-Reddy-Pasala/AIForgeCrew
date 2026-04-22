@@ -31,7 +31,7 @@ do
 done
 
 echo ">>> installing tick LaunchAgents (5-role pipeline + 2nd doer worker)"
-for label_slug in supervisor planner doer doer-b feedback learner; do
+for label_slug in supervisor planner planner-b doer doer-b feedback learner; do
   label="com.aiforge.tick-${label_slug}"
   src="${SRC}/${label}.plist"
   dst="${DST}/${label}.plist"

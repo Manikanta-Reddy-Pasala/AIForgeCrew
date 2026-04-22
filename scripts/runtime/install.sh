@@ -29,7 +29,7 @@ cd "$REPO" && /opt/homebrew/bin/uv pip install --python "$VENV/bin/python" \
 
 echo ">>> 3/5 loading Doer model (always hot); Planner loads on-demand via memguard"
 "$LMS" unload --all 2>&1 | tail -1
-"$LMS" load qwen3-coder-next --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1
+"$LMS" load qwen3-coder-next --context-length 131072 --ttl 28800 --parallel 4 --yes 2>&1 | tail -1
 "$LMS" ps
 
 echo ">>> 4/5 backfilling embeddings (idempotent)"

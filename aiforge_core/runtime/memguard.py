@@ -123,13 +123,20 @@ def _lms_unload(identifier: str, log) -> bool:
     return ok
 
 
+_PARALLEL_LOAD = int(os.environ.get("AIFORGE_LMS_PARALLEL", "4"))
+
+
 def _lms_load(identifier: str, ctx: int, ttl_s: int, log) -> bool:
+    """Load via `lms load`. --parallel=4 by default so 2 concurrent tick
+    workers for the same role can both inference on the same model."""
     t0 = time.time()
     try:
         proc = subprocess.run(
             [LMS_BIN, "load", identifier,
              "--context-length", str(ctx),
-             "--ttl", str(ttl_s), "--yes"],
+             "--ttl", str(ttl_s),
+             "--parallel", str(_PARALLEL_LOAD),
+             "--yes"],
             capture_output=True, timeout=300, check=False,
         )
         ok = proc.returncode == 0
@@ -139,7 +146,7 @@ def _lms_load(identifier: str, ctx: int, ttl_s: int, log) -> bool:
         return False
     dur = round(time.time() - t0, 2)
     emit(log, "memguard.load", model=identifier, ctx=ctx,
-         ttl_s=ttl_s, ok=ok, dur_s=dur)
+         ttl_s=ttl_s, parallel=_PARALLEL_LOAD, ok=ok, dur_s=dur)
     return ok
 
 
