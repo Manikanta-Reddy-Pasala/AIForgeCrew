@@ -27,16 +27,9 @@ echo ">>> 2/5 installing python deps (via uv)"
 cd "$REPO" && /opt/homebrew/bin/uv pip install --python "$VENV/bin/python" \
   openai 'psycopg[binary]' pgvector 2>&1 | tail -4
 
-echo ">>> 3/5 loading models (ONLY hot roles pre-loaded; tiny roles JIT on first call)"
+echo ">>> 3/5 loading single shared model (Planner + Doer share qwen3-coder-next)"
 "$LMS" unload --all 2>&1 | tail -1
-# Hot: Planner + Doer are most tick traffic — keep loaded with 8h TTL.
-"$LMS" load qwen3.6-35b-a3b                 --context-length 65536  --ttl 28800 --yes 2>&1 | tail -1
-"$LMS" load qwen3-coder-next                 --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1
-# Supervisor / Feedback / Learner are NOT pre-loaded — RAM pressure would
-# exceed 90 GB budget. LM Studio auto-loads them on first inference call
-# via OpenAI-compat API (JIT). TTL defaults from LM Studio settings; if
-# you want to override per-model, use `lms load <id> --ttl 1800` ad-hoc.
-echo "Note: supervisor/feedback/learner models JIT-load on first tick."
+"$LMS" load qwen3-coder-next --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1
 "$LMS" ps
 
 echo ">>> 4/5 backfilling embeddings (idempotent)"

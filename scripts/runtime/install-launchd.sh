@@ -16,7 +16,7 @@ DST="$HOME/Library/LaunchAgents"
 mkdir -p "$HOME/.aiforge/logs"
 mkdir -p "$DST"
 
-echo ">>> stopping legacy LaunchAgents"
+echo ">>> stopping legacy + disabled LaunchAgents"
 for legacy in \
   com.aiforge.paperclip \
   com.aiforge.paperclip-tunnel \
@@ -24,14 +24,17 @@ for legacy in \
   com.aiforge.tick-architect \
   com.aiforge.tick-sr_developer \
   com.aiforge.tick-developer \
-  com.aiforge.tick-fact_extract
+  com.aiforge.tick-fact_extract \
+  com.aiforge.tick-supervisor \
+  com.aiforge.tick-feedback \
+  com.aiforge.tick-learner
 do
   launchctl bootout "gui/$(id -u)/${legacy}" 2>/dev/null || true
   rm -f "${DST}/${legacy}.plist" 2>/dev/null || true
 done
 
-echo ">>> installing tick LaunchAgents"
-for role in supervisor planner doer feedback learner; do
+echo ">>> installing tick LaunchAgents (2-step pipeline)"
+for role in planner doer; do
   label="com.aiforge.tick-${role}"
   src="${SRC}/${label}.plist"
   dst="${DST}/${label}.plist"
@@ -43,8 +46,8 @@ for role in supervisor planner doer feedback learner; do
   echo "  loaded $label"
 done
 
-echo ">>> installing daily reindex LaunchAgent (02:00)"
-for label in com.aiforge.reindex-daily; do
+echo ">>> installing watchdogs (postgres auto-restart) + daily reindex"
+for label in com.aiforge.pg-watchdog com.aiforge.reindex-daily; do
   src="${SRC}/${label}.plist"
   dst="${DST}/${label}.plist"
   [[ -f "$src" ]] || { echo "missing $src"; continue; }

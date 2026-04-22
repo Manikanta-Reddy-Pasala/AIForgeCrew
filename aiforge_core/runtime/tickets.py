@@ -113,9 +113,10 @@ def _apply_supervisor_invariants(
         priority = "urgent"
         metadata["priority_auto_boosted"] = True
 
-    # Default assignee → supervisor for triage unless caller set one.
+    # Default assignee → planner (supervisor/feedback/learner disabled to
+    # keep RAM footprint tight to Planner + Doer hot only).
     if assignee_role is None:
-        assignee_role = "supervisor"
+        assignee_role = "planner"
 
     return assignee_role, priority, labels, metadata
 

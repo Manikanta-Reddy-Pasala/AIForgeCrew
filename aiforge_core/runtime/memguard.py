@@ -41,10 +41,10 @@ RELEASE_AFTER_TICK = os.environ.get("AIFORGE_MEMGUARD_RELEASE", "1") == "1"
 RAM_CEILING_GB = float(os.environ.get("AIFORGE_RAM_CEILING_GB", "85"))
 DISABLE = os.environ.get("AIFORGE_MEMGUARD_DISABLE") == "1"
 
-# Models never evicted by memguard. Their tick traffic dominates.
+# Models never evicted by memguard. Single shared LLM across Planner +
+# Doer keeps RAM tight; if you add roles later, add them here.
 PROTECTED_MODELS = frozenset({
     "qwen3-coder-next",
-    "qwen3.6-35b-a3b",
 })
 
 

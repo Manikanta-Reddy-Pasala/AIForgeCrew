@@ -89,12 +89,16 @@ _LEARNER_TOOLS = (
 # Cross-family diversity: Google MoE (Supervisor), Qwen MoE (Planner),
 # Qwen dense (Doer), Mistral dense (Feedback), Qwen small (Learner).
 # All models already on disk; change here + git push to swap.
-SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "gemma-3-12b-it")
-PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3.6-35b-a3b")
+# Two-step pipeline (Planner → Doer). Single shared LLM keeps RAM under
+# control. Supervisor / Feedback / Learner roles kept in the codebase for
+# reference but their tick plists are not installed. If you re-enable
+# them later, also bring back distinct models + the model-slot eviction
+# dance in memguard.
+SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "qwen3-coder-next")
+PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3-coder-next")
 DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3-coder-next")
-FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL", "gemma-4-e4b-it-mlx")
-LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",
-                                  "phi-4-mini-reasoning")
+FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",   "qwen3-coder-next")
+LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",    "qwen3-coder-next")
 
 # Supervisor transport — flip to claude_cli for cloud oversight on tough
 # routing calls. Default = local gemma-4-26b (fast + fits memory budget).
