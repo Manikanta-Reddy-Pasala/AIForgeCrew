@@ -283,6 +283,111 @@ def _role_has_more_work(role_name: str) -> bool:
         return False
 
 
+def _queue_counts_per_role() -> dict[str, int]:
+    """Return {role_name: todo_count} across canonical role names,
+    collapsing legacy aliases into their canonical counterpart."""
+    try:
+        import psycopg
+        from .config import AIFORGE_DSN, _LEGACY_ALIASES
+        with psycopg.connect(AIFORGE_DSN, connect_timeout=3) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT assignee_role, COUNT(*) FROM tickets "
+                "WHERE status='todo' GROUP BY assignee_role"
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return {}
+    counts: dict[str, int] = {}
+    for role_name, n in rows:
+        canon = _LEGACY_ALIASES.get(role_name, role_name)
+        counts[canon] = counts.get(canon, 0) + int(n)
+    return counts
+
+
+def plan_rebalance(log, current_role: str | None = None) -> dict:
+    """Queue-aware intelligent rebalance. Called at tick-end (after
+    release consideration) and optionally at tick-start.
+
+    Logic:
+      1. Get todo counts per canonical role.
+      2. Enumerate non-protected role models (planner/supervisor/feedback/
+         learner). For each, compute a 'need score' = queue count + recent
+         usage boost for current_role.
+      3. Pick ≤ 1 non-protected model to keep warm (the highest need).
+         All other non-protected models are evicted.
+      4. If RAM is tight (near ceiling), evict the chosen model too so
+         the protected Doer model has breathing room.
+
+    Returns a dict summary emitted as memguard.rebalance log event.
+    """
+    if DISABLE:
+        return {"skipped": "disabled"}
+    try:
+        from .config import ROLES
+    except Exception as exc:
+        emit(log, "memguard.rebalance_error", error=str(exc)[:200])
+        return {"error": str(exc)[:200]}
+
+    queue = _queue_counts_per_role()
+    loaded = _lms_ps()
+    used_gb = _host_ram_used_gb()
+
+    # Build non-protected role→model map. Reverse-map model→roles because
+    # multiple roles may share a model (shared-slot layout).
+    non_protected: dict[str, list[str]] = {}  # model → [role names]
+    for rname, rc in ROLES.items():
+        if rc.transport != "openai":
+            continue
+        if rc.model in PROTECTED_MODELS:
+            continue
+        non_protected.setdefault(rc.model, []).append(rname)
+
+    # Score each candidate non-protected model by total queue across all
+    # roles that use it.
+    scores: dict[str, int] = {}
+    for model, roles in non_protected.items():
+        score = sum(queue.get(r, 0) for r in roles)
+        if current_role and current_role in roles:
+            score += 1  # tiny recency bias
+        scores[model] = score
+
+    # Pick the winner (highest score > 0). If all zero, no one kept warm.
+    winner = None
+    if scores:
+        winner_candidate = max(scores.keys(), key=lambda m: scores[m])
+        if scores[winner_candidate] > 0:
+            winner = winner_candidate
+
+    # Evict all non-protected models that aren't the winner.
+    evicted: list[str] = []
+    for model in list(loaded.keys()):
+        if model in PROTECTED_MODELS:
+            continue
+        if model == winner:
+            continue
+        if _lms_unload(model, log):
+            evicted.append(model)
+
+    # If RAM is still tight after evictions, also evict the winner so the
+    # Doer model has room. Rationale: ceiling takes priority over warmth.
+    ram_after = _host_ram_used_gb()
+    if winner and ram_after > (RAM_CEILING_GB - 3):
+        if _lms_unload(winner, log):
+            evicted.append(winner)
+            winner = None
+
+    summary = {
+        "queue": queue,
+        "loaded_before": sorted(loaded.keys()),
+        "winner": winner,
+        "evicted": evicted,
+        "ram_before_gb": used_gb,
+        "ram_after_gb": _host_ram_used_gb(),
+    }
+    emit(log, "memguard.rebalance", **summary)
+    return summary
+
+
 def release_after_tick(identifier: str, log, role_name: str | None = None) -> None:
     """Unload `identifier` after a tick finishes if it's non-protected
     AND the role has no more todos waiting.
