@@ -464,7 +464,31 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
                                                    for tc in (turn_result.tool_calls or [])]})
 
         if not turn_result.tool_calls:
-            # No tool calls → treat as final.
+            # Small models (qwen-coder, phi-mini, gpt-oss-20b) sometimes
+            # emit a "thinking out loud" message ("Now let me write the
+            # README...") then halt without actually calling a tool —
+            # Doer burns 60 turns reading files, then vanishes.
+            # Give ONE nudge-retry: inject a system hint and loop once
+            # more. Feedback's natural terminal (verdict_pass/fail) is
+            # a real tool call, so this doesn't interfere there.
+            if (role_cfg.name in ("doer", "planner", "learner")
+                    and not locals().get("_nudged_once", False)):
+                _nudged_once = True
+                tickets.add_event(ticket.id, role_cfg.name, "nudge",
+                                  body="model_done with no tool call — retrying with nudge",
+                                  metadata={"turn": turn})
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "You produced prose but no tool call. "
+                        "You MUST call a tool every turn. "
+                        "If you said you would write or edit a file, call "
+                        "`write_file` or `edit` now. "
+                        "If done, call `set_status(in_review)` (doer/planner) "
+                        "or `set_status(done)` (learner)."
+                    ),
+                })
+                continue
             stop_reason = "model_done"
             break
 
