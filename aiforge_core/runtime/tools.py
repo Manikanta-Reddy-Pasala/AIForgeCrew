@@ -574,6 +574,28 @@ def _tool_post_comment(ctx: ToolContext, body: str) -> ToolResult:
     },
 })
 def _tool_set_status(ctx: ToolContext, status: str, note: str | None = None) -> ToolResult:
+    # Planner guard: in_review with no children = "I posted an analysis
+    # but never called create_child_ticket". Refuse so the Planner has to
+    # actually spawn the child before exiting. This was the ONE-3 failure
+    # mode — planner analysed, promised to spawn a doer, then set_status
+    # without doing it. Orchestrator-side enforcement, not prompt hope.
+    if (status == "in_review" and ctx.role == "planner"
+            and not ctx.parent_id):
+        kids = tickets.children(ctx.ticket_id)
+        if not kids:
+            return ToolResult(
+                False,
+                ("refused: Planner cannot `set_status(in_review)` without "
+                 "creating a child ticket. Your analysis comment is good but "
+                 "it is not actionable on its own — Doer needs a ticket with "
+                 "`## Scope`, `## Files`, `## Acceptance`, `## Test`. "
+                 "Call `create_child_ticket(project=<repo>, title=..., "
+                 "body=<sections>, assignee_role='doer', max_turns=...)` "
+                 "now, then set_status again. If you truly cannot decompose, "
+                 "escalate: `update_assignee(assignee_role='supervisor', "
+                 "labels=['supervisor-help'], reason='cannot decompose')`."),
+                {"children": 0},
+            )
     # Auto-route doer → feedback. Doer's in_review means "I'm done editing";
     # Feedback verifies before the ticket lands truly in_review. Keeps the
     # prompt sequence "commit → post_comment → set_status(in_review)" working
