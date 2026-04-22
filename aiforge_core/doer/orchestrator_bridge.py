@@ -179,10 +179,39 @@ def run_smolagents_doer(ticket: object, worktree_path: str, log: object) -> dict
     emit(log, "smolagents.start", ticket=ticket.identifier)  # type: ignore[attr-defined]
 
     try:
-        agent, task_prompt = build_doer_agent(ticket, worktree_path, context_bundle, llm_config)
+        counters: dict = {"edit_block_ok": 0, "compile_green": 0}
+        agent, task_prompt = build_doer_agent(
+            ticket, worktree_path, context_bundle, llm_config, counters=counters,
+        )
         result = agent.run(task=task_prompt)
 
         summary_text = str(result) if result is not None else ""
+
+        # Programmatic checklist enforcement — the preamble asks the agent for
+        # edit_block + EXIT=0, but qwen-coder sometimes calls final_answer
+        # after only read_file. Verify the counters or reject.
+        if counters.get("edit_block_ok", 0) == 0 or counters.get("compile_green", 0) == 0:
+            emit(log, "smolagents.checklist_fail", ticket=ticket.identifier,  # type: ignore[attr-defined]
+                 summary_chars=len(summary_text),
+                 counters=counters)
+            tickets.add_event(
+                ticket_id, role_name, "error",
+                body=(f"final_answer called but checklist not met "
+                      f"(edit_block_ok={counters.get('edit_block_ok', 0)}, "
+                      f"compile_green={counters.get('compile_green', 0)}).\n\n"
+                      f"Agent summary: {summary_text[:1500]}"),
+                metadata={"stop_reason": "checklist_fail", "counters": counters},
+            )
+            subprocess.run(["git", "checkout", "--", "."],
+                           cwd=worktree_path, check=False,
+                           capture_output=True, timeout=30)
+            return {
+                "stop_reason": "checklist_fail",
+                "has_commented": False,
+                "turns": getattr(agent, "step_number", 0),
+                "wall_s": round(time.time() - t_start, 2),
+                "summary": summary_text,
+            }
 
         diff_proc = subprocess.run(
             ["git", "diff", "--name-only", "HEAD"],

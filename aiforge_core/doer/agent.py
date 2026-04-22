@@ -55,14 +55,20 @@ def build_doer_agent(
     worktree_path: str,
     context_bundle: str,
     llm_config: object,
+    counters: dict | None = None,
 ) -> tuple[ToolCallingAgent, str]:
     """Build a :class:`~smolagents.ToolCallingAgent` for one Doer tick.
 
+    If *counters* is provided, edit_block and run_compile will bump it so
+    the caller can verify real work happened before accepting final_answer.
+
     Returns the agent plus the composed task prompt to pass to ``agent.run(task=...)``.
     """
+    if counters is None:
+        counters = {}
     allowed = parse_allowed_files(getattr(ticket, "body", "") or "")
     scope_guard = ScopeGuard(allowed)
-    tools = make_tools(worktree_path, scope_guard)
+    tools = make_tools(worktree_path, scope_guard, counters)
 
     # LiteLLMModel kwarg names differ across smolagents minor versions.
     import inspect as _inspect_lm

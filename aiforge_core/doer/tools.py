@@ -47,8 +47,15 @@ def make_read_file(worktree_path: str) -> Callable:
 
 # ─────────────────────────── edit_block ─────────────────────────────────
 
-def make_edit_block(worktree_path: str, scope_guard: ScopeGuard) -> Callable:
-    """Return an ``edit_block`` tool bound to *worktree_path* and *scope_guard*."""
+def make_edit_block(worktree_path: str, scope_guard: ScopeGuard,
+                    counters: dict | None = None) -> Callable:
+    """Return an ``edit_block`` tool bound to *worktree_path* and *scope_guard*.
+
+    On each successful edit, bumps ``counters['edit_block_ok']`` so the bridge
+    can verify the agent did real work before accepting final_answer.
+    """
+    if counters is None:
+        counters = {}
 
     @tool
     def edit_block(path: str, find: str, replace: str) -> str:
@@ -81,6 +88,7 @@ def make_edit_block(worktree_path: str, scope_guard: ScopeGuard) -> Callable:
         new_src = src.replace(find, replace, 1)
         with open(resolved, "w", encoding="utf-8") as fh:
             fh.write(new_src)
+        counters["edit_block_ok"] = counters.get("edit_block_ok", 0) + 1
         return f"OK: edited {resolved} (-{len(find)} +{len(replace)} chars)"
 
     return edit_block
@@ -88,8 +96,13 @@ def make_edit_block(worktree_path: str, scope_guard: ScopeGuard) -> Callable:
 
 # ─────────────────────────── run_compile ────────────────────────────────
 
-def make_run_compile(worktree_path: str) -> Callable:
-    """Return a ``run_compile`` tool bound to *worktree_path*."""
+def make_run_compile(worktree_path: str, counters: dict | None = None) -> Callable:
+    """Return a ``run_compile`` tool bound to *worktree_path*.
+
+    On each compile that returns EXIT=0, bumps ``counters['compile_green']``.
+    """
+    if counters is None:
+        counters = {}
 
     @tool
     def run_compile() -> str:
@@ -111,6 +124,8 @@ def make_run_compile(worktree_path: str) -> Callable:
             return "EXIT=1\nERROR: compile timed out after 300s"
         combined = (proc.stdout + proc.stderr).decode("utf-8", "replace")
         tail = "\n".join(combined.splitlines()[-40:])
+        if proc.returncode == 0:
+            counters["compile_green"] = counters.get("compile_green", 0) + 1
         return f"EXIT={proc.returncode}\n{tail}"
 
     return run_compile
@@ -193,17 +208,24 @@ def final_answer(summary: str) -> str:
 
 # ─────────────────────────── factory ────────────────────────────────────
 
-def make_tools(worktree_path: str, scope_guard: ScopeGuard) -> list:
+def make_tools(worktree_path: str, scope_guard: ScopeGuard,
+               counters: dict | None = None) -> list:
     """Build the tool list for a Doer agent invocation.
+
+    ``counters`` is a dict that edit_block and run_compile bump so the caller
+    can verify real work happened (edit_block_ok > 0 AND compile_green > 0)
+    before accepting final_answer.
 
     ``final_answer`` is intentionally excluded: ``ToolCallingAgent`` adds its
     own ``FinalAnswerTool`` automatically, so adding a second one would
     cause a duplicate-name error at agent construction time.
     """
+    if counters is None:
+        counters = {}
     return [
         make_read_file(worktree_path),
-        make_edit_block(worktree_path, scope_guard),
-        make_run_compile(worktree_path),
+        make_edit_block(worktree_path, scope_guard, counters),
+        make_run_compile(worktree_path, counters),
         make_grep(worktree_path),
         make_list_dir(worktree_path),
     ]
