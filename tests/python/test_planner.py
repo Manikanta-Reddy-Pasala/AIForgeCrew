@@ -385,3 +385,160 @@ class TestAgentBuilds:
         assert len(captured_kwargs) == 1
         model_val = captured_kwargs[0].get("model_id") or captured_kwargs[0].get("model")
         assert model_val == "openai/gemma-4-26b"
+
+
+# ─────────────────────────── 7. TestExtractSignatures ───────────────────
+
+class TestExtractSignatures:
+    _JAVA_SOURCE = """\
+package com.example;
+
+import java.util.List;
+
+public class SyncController {
+
+    private final SyncService syncService;
+
+    public SyncController(SyncService syncService) {
+        this.syncService = syncService;
+    }
+
+    public Mono<ResponseEntity<?>> queryAndProcess(@RequestBody MessageRequest<T> request) {
+        return syncService.process(request);
+    }
+
+    protected Mono<Object> processMessageDirect(MessageRequest<?> request) {
+        return syncService.processDirect(request);
+    }
+
+    private void helperMethod(String value) {
+        // internal
+    }
+}
+"""
+
+    def test_java_method_signatures(self, tmp_path: Path) -> None:
+        """extract_signatures returns line-prefixed public/protected/private sigs for Java."""
+        from aiforge_core.planner.tools import make_extract_signatures
+
+        src = tmp_path / "SyncController.java"
+        src.write_text(self._JAVA_SOURCE, encoding="utf-8")
+
+        ctx = _make_ctx(tmp_path)
+        extract = make_extract_signatures(ctx)
+
+        result = extract(path=str(src))
+
+        # All three visibility levels should appear.
+        assert "queryAndProcess" in result
+        assert "processMessageDirect" in result
+        assert "helperMethod" in result
+        # Each result line must start with a line number.
+        for line in result.splitlines():
+            parts = line.split(":", 1)
+            assert parts[0].strip().isdigit(), f"Expected line number prefix in: {line!r}"
+
+    def test_respects_line_range(self, tmp_path: Path) -> None:
+        """extract_signatures only scans lines within start_line..end_line."""
+        from aiforge_core.planner.tools import make_extract_signatures
+
+        src = tmp_path / "SyncController.java"
+        src.write_text(self._JAVA_SOURCE, encoding="utf-8")
+
+        ctx = _make_ctx(tmp_path)
+        extract = make_extract_signatures(ctx)
+
+        # The constructor is on line 9.  Restrict to lines 1-8 — should miss the constructor.
+        result_narrow = extract(path=str(src), start_line=1, end_line=8)
+        assert "SyncController" not in result_narrow or result_narrow == "(no signatures found in range)"
+
+        # The first public method (queryAndProcess) is on line 13.  Lines 1-12 miss it.
+        result_before = extract(path=str(src), start_line=1, end_line=12)
+        assert "queryAndProcess" not in result_before
+
+        # Lines 13-14 cover the queryAndProcess declaration.
+        result_method = extract(path=str(src), start_line=13, end_line=14)
+        assert "queryAndProcess" in result_method
+
+    def test_returns_error_on_missing_file(self, tmp_path: Path) -> None:
+        """extract_signatures returns ERROR string when file is not found."""
+        from aiforge_core.planner.tools import make_extract_signatures
+
+        ctx = _make_ctx(tmp_path)
+        extract = make_extract_signatures(ctx)
+
+        result = extract(path="/nonexistent/path/Missing.java")
+        assert "ERROR" in result
+
+    def test_no_signatures_returns_sentinel(self, tmp_path: Path) -> None:
+        """extract_signatures returns the no-signatures sentinel for a trivial file."""
+        from aiforge_core.planner.tools import make_extract_signatures
+
+        src = tmp_path / "empty.java"
+        src.write_text("// just a comment\n", encoding="utf-8")
+
+        ctx = _make_ctx(tmp_path)
+        extract = make_extract_signatures(ctx)
+
+        result = extract(path=str(src))
+        assert "no signatures found" in result
+
+
+# ─────────────────────────── 8. TestWritePlanWithImplementation ──────────
+
+class TestWritePlanWithImplementation:
+    def _make_mock_conn(self) -> tuple:
+        """Return (mock_conn, mock_cur) wired for context-manager use."""
+        mock_cur = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cur)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_conn, mock_cur
+
+    def test_appends_implementation_section(self, tmp_path: Path) -> None:
+        """write_plan appends ## Implementation block when implementation kwarg is non-empty."""
+        from aiforge_core.planner.tools import make_write_plan
+
+        ticket = _FakeTicket(body="Ticket body.\n")
+        ctx = _make_ctx(tmp_path, ticket=ticket)
+        mock_conn, mock_cur = self._make_mock_conn()
+
+        impl_text = (
+            "### src/main/java/Foo.java\n"
+            "```\nfind:\npublic void oldMethod() {\n---\nreplace:\npublic void newMethod() {\n```"
+        )
+        write_plan = make_write_plan(ctx)
+
+        with patch("aiforge_core.planner.tools.psycopg.connect", return_value=mock_conn):
+            result = write_plan(
+                files=["src/main/java/Foo.java"],
+                plan="1. Rename the method.",
+                implementation=impl_text,
+            )
+
+        assert "OK:" in result
+        assert "## Implementation" in ticket.body
+        assert "find:" in ticket.body
+        assert "replace:" in ticket.body
+        assert "oldMethod" in ticket.body
+        assert "newMethod" in ticket.body
+
+    def test_without_implementation_still_works(self, tmp_path: Path) -> None:
+        """write_plan backward-compat: omits ## Implementation when kwarg is absent/empty."""
+        from aiforge_core.planner.tools import make_write_plan
+
+        ticket = _FakeTicket(body="Body.\n")
+        ctx = _make_ctx(tmp_path, ticket=ticket)
+        mock_conn, mock_cur = self._make_mock_conn()
+
+        write_plan = make_write_plan(ctx)
+
+        with patch("aiforge_core.planner.tools.psycopg.connect", return_value=mock_conn):
+            result = write_plan(files=["src/Foo.java"], plan="1. Do it.")
+
+        assert "OK:" in result
+        assert "## Files" in ticket.body
+        assert "## Plan" in ticket.body
+        assert "## Implementation" not in ticket.body

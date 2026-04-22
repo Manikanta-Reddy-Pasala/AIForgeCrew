@@ -11,6 +11,7 @@ Factories follow the same pattern as aiforge_core.doer.tools.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Callable
 
@@ -19,6 +20,33 @@ from smolagents import tool
 
 # Imported at module level so tests can patch aiforge_core.planner.tools.tickets
 from aiforge_core.runtime import tickets
+
+
+# ─────────────────────────── _SIGNATURE_PATTERNS ────────────────────────
+
+# Per-language regex patterns that match declaration lines.
+# Each pattern must capture the full line (no groups required).
+_JAVA_SIG_RE = re.compile(
+    r"^\s*(?:public|protected|private)\s+"   # visibility
+    r"(?:(?:static|final|abstract|synchronized|native|default|strictfp)\s+)*"  # modifiers
+    r"(?:.+?\s+)?"                            # optional return type (non-greedy, any chars)
+    r"\w[\w\d]*\s*\([^)]*\)"                 # method/constructor name + param list
+    r"(?:\s*throws\s+[\w,\s]+)?"
+    r"\s*\{?\s*$",
+    re.MULTILINE,
+)
+
+_PYTHON_SIG_RE = re.compile(
+    r"^\s*(?:async\s+)?def\s+\w[\w\d_]*\s*\([^)]*\)\s*(?:->\s*[^:]+)?\s*:\s*$",
+    re.MULTILINE,
+)
+
+_TS_SIG_RE = re.compile(
+    r"^\s*(?:export\s+)?(?:async\s+)?(?:function\s+\w[\w\d]*|"
+    r"(?:public|private|protected|static|readonly|\s)*\w[\w\d]*)\s*\([^)]*\)"
+    r"(?:\s*:\s*[^\{]+)?\s*\{?\s*$",
+    re.MULTILINE,
+)
 
 
 # ─────────────────────────── search_memory ──────────────────────────────
@@ -178,14 +206,88 @@ def make_list_dir(ctx: dict) -> Callable:
     return list_dir
 
 
+# ─────────────────────────── extract_signatures ─────────────────────────
+
+def make_extract_signatures(ctx: dict) -> Callable:
+    """Return an ``extract_signatures`` tool that extracts method/class signatures."""
+
+    @tool
+    def extract_signatures(path: str, start_line: int = 1, end_line: int = 600) -> str:
+        """Extract public method/class signatures from a Java/Python/TS file.
+
+        Scans only the requested line range and returns one signature per line,
+        prefixed with its 1-indexed line number.  Example output::
+
+            82: public <T> Mono<ResponseEntity<?>> queryAndProcess(@RequestBody MessageRequest<T> request)
+            149: public Mono<Object> processMessageDirect(MessageRequest<?> request)
+
+        Args:
+            path: Repo-relative or absolute path to the source file.
+            start_line: First line to scan (1-indexed, inclusive).
+            end_line: Last line to scan (inclusive).  Defaults to 600.
+        """
+        root = ctx.get("worktree_root", os.path.expanduser("~/codeRepo"))
+        resolved = path if os.path.isabs(path) else os.path.join(root, path)
+        try:
+            with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
+                all_lines = fh.readlines()
+        except FileNotFoundError:
+            return f"ERROR: file not found: {resolved}"
+        except OSError as exc:
+            return f"ERROR: {exc}"
+
+        # Determine which regex to use based on file extension.
+        ext = os.path.splitext(resolved)[1].lower()
+        if ext == ".java":
+            pattern = _JAVA_SIG_RE
+        elif ext == ".py":
+            pattern = _PYTHON_SIG_RE
+        elif ext in (".ts", ".tsx", ".js", ".jsx"):
+            pattern = _TS_SIG_RE
+        else:
+            # Best-effort: try all patterns.
+            pattern = re.compile(
+                r"(?:"
+                + _JAVA_SIG_RE.pattern
+                + r"|" + _PYTHON_SIG_RE.pattern
+                + r"|" + _TS_SIG_RE.pattern
+                + r")",
+                re.MULTILINE,
+            )
+
+        start_idx = max(0, start_line - 1)
+        end_idx = min(len(all_lines), end_line)
+        slice_lines = all_lines[start_idx:end_idx]
+
+        results: list[str] = []
+        for relative_idx, line in enumerate(slice_lines):
+            lineno = start_idx + relative_idx + 1  # 1-indexed absolute
+            stripped = line.rstrip("\n")
+            if pattern.match(stripped):
+                results.append(f"{lineno}: {stripped.strip()}")
+
+        if not results:
+            return "(no signatures found in range)"
+
+        output = "\n".join(results)
+        return output[:4000]
+
+    return extract_signatures
+
+
 # ─────────────────────────── write_plan ─────────────────────────────────
 
 def make_write_plan(ctx: dict) -> Callable:
     """Return a ``write_plan`` tool that enriches the ticket body in Postgres."""
 
     @tool
-    def write_plan(files: list, plan: str, cross_service: str = "") -> str:
-        """Append ## Files, ## Plan, and ## Cross-service sections to the ticket body.
+    def write_plan(
+        files: list,
+        plan: str,
+        cross_service: str = "",
+        implementation: str = "",
+    ) -> str:
+        """Append ## Files, ## Plan, ## Implementation, and ## Cross-service sections.
 
         Mutates the ticket body in Postgres via a direct UPDATE.  Emits a
         planner.plan.written log event.
@@ -194,6 +296,9 @@ def make_write_plan(ctx: dict) -> Callable:
             files: List of file paths that the Doer will need to edit.
             plan: Numbered implementation plan (plain text).
             cross_service: Optional cross-service coordination notes.
+            implementation: Concrete find/replace blocks for the Doer.  When
+                non-empty, a ``## Implementation`` section is appended containing
+                one ``### <path>`` heading per file and fenced find/replace pairs.
         """
         try:
             from aiforge_core.runtime.config import AIFORGE_DSN
@@ -203,9 +308,10 @@ def make_write_plan(ctx: dict) -> Callable:
 
             files_block = "\n## Files\n" + "".join(f"- {f}\n" for f in files)
             plan_block = f"\n## Plan\n{plan}\n"
+            impl_block = f"\n## Implementation\n{implementation}\n" if implementation else ""
             cross_block = f"\n## Cross-service\n{cross_service}\n" if cross_service else ""
 
-            new_body = current_body + files_block + plan_block + cross_block
+            new_body = current_body + files_block + plan_block + impl_block + cross_block
 
             with psycopg.connect(AIFORGE_DSN, autocommit=False,
                                  connect_timeout=5,
@@ -285,6 +391,7 @@ def make_tools(ctx: dict) -> list:
         make_list_repos(ctx),
         make_read_file(ctx),
         make_list_dir(ctx),
+        make_extract_signatures(ctx),
         make_write_plan(ctx),
         make_create_child_ticket(ctx),
     ]

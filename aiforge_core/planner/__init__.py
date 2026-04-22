@@ -6,5 +6,6 @@ from __future__ import annotations
 
 from .agent import build_planner_agent
 from .runner import run_planner
+from .tools import make_extract_signatures
 
-__all__ = ["build_planner_agent", "run_planner"]
+__all__ = ["build_planner_agent", "run_planner", "make_extract_signatures"]

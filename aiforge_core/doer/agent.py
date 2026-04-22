@@ -9,6 +9,11 @@ from .tools import make_tools
 
 DOER_PREAMBLE = """You are the Doer agent. Your ONLY job is to modify code with edit_block so the ticket is implemented.
 
+Critical rule — Implementation section:
+When the ticket body contains a ## Implementation section with concrete find:/replace: blocks,
+you MUST use those verbatim as arguments to edit_block — do not paraphrase or adjust the find
+or replace strings.  The planner already verified them against the current file.
+
 IMPORTANT — programmatic enforcement is active:
 - The harness tracks edit_block_ok and compile_green counters.
 - If you call final_answer without edit_block_ok >= 1 AND compile_green >= 1, the harness rejects your answer, rolls back the worktree, and blocks the ticket. You cannot cheat the checklist.
