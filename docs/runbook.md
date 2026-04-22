@@ -22,8 +22,8 @@ Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. 5
 | Role | Model | Family | Ctx | Transport | Max turns | TTL | Role purpose |
 |---|---|---|---|---|---|---|---|
 | Supervisor | gemma-4-26b-a4b-it | Google MoE (~4B active) | 16K | OpenAI-compat → LM Studio | 4 | 30min | Triage + route + invariant enforcement |
-| Planner | openai/gpt-oss-20b | OpenAI open dense (20B) | 32K | OpenAI-compat → LM Studio | 25 | 8h | Analysis + child-ticket decomposition; non-vision → supports parallel=4 |
-| Doer | qwen3-coder-next | Alibaba | 128K | OpenAI-compat → LM Studio | 40 | 8h | Implementation + tests + commit |
+| Planner | openai/gpt-oss-20b | OpenAI open dense (20B) | 32K | OpenAI-compat → LM Studio | 40 | 8h | Analysis + child-ticket decomposition; non-vision → supports parallel=4 |
+| Doer | qwen3-coder-next | Alibaba | 128K | OpenAI-compat → LM Studio | 60 | 8h | Implementation + tests + commit |
 | Feedback | openai/gpt-oss-20b (shared w/ Planner slot) | OpenAI open dense (20B) | 16K | OpenAI-compat → LM Studio | 6 | 30min | Audit Doer diff + tests; pass / fail-back; reliable tool-call |
 | Learner | phi-4-mini-reasoning | Microsoft | 16K | OpenAI-compat → LM Studio | 4 | 30min | Post-merge fact distillation into T3 |
 

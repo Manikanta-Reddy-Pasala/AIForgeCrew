@@ -58,8 +58,8 @@ Five-role pipeline (Supervisor → Planner → Doer → Feedback → Learner). C
 | Role | Model | Family | Ctx | Transport | Max turns | Purpose |
 |---|---|---|---|---|---|---|
 | Supervisor | gemma-4-26b-a4b-it | Google MoE (~4B active) | 32K | OpenAI-compat → LM Studio | 4 | Triage + route + standards enforcement |
-| Planner | openai/gpt-oss-20b | OpenAI open dense (20B) | 32K | OpenAI-compat → LM Studio | 25 | Deep analysis + child-ticket decomposition; supports parallel=4 |
-| Doer | qwen3-coder-next | Alibaba dense | 128K | OpenAI-compat → LM Studio | 40 | Implementation + tests + commit |
+| Planner | openai/gpt-oss-20b | OpenAI open dense (20B) | 32K | OpenAI-compat → LM Studio | 40 | Deep analysis + child-ticket decomposition; supports parallel=4 |
+| Doer | qwen3-coder-next | Alibaba dense | 128K | OpenAI-compat → LM Studio | 60 | Implementation + tests + commit |
 | Feedback | openai/gpt-oss-20b (shared with Planner) | OpenAI open dense (20B) | 16K | OpenAI-compat → LM Studio | 6 | Audits Doer's diff + tests; pass or fail back; reliable tool-call protocol |
 | Learner | phi-4-mini-reasoning | Microsoft dense (3.8B) | 16K | OpenAI-compat → LM Studio | 4 | Post-merge fact distillation → T3 memory |
 
@@ -140,6 +140,64 @@ Branch convention: `aiforge/<PARENT_ID>-<slug>`. All children of the same parent
 `aiforge_core/runtime/memguard.py` runs at every tick-start (before LLM). Parses `lms ps`, applies a 1.15× overhead factor on loaded weights, evicts LRU non-protected models if loading the target would exceed `AIFORGE_RAM_BUDGET_GB` (default 75). On LM Studio load failure, retries-with-evict up to 3 attempts. Hard `AIFORGE_RAM_CEILING_GB=85` on (active + wired) also triggers eviction.
 
 Protected: `qwen3-coder-next` only (Doer, 45 GB, 8h TTL). **Planner + Feedback share `openai/gpt-oss-20b`** (one 12 GB slot, JIT-loaded, plan_rebalance keeps it warm while queue has work). Supervisor (`gemma-3-12b-it`, 8 GB) and Learner (`phi-4-mini-reasoning`, 2 GB) JIT-load on demand. 2× Doer + 2× Planner workers via `AIFORGE_TICK_INSTANCE=a|b` plists; `--parallel 4` on every `lms load` so one model slot serves concurrent inference.
+
+---
+
+## Context management
+
+**Per-tick assembly** (`orchestrator._build_context_bundle`):
+1. `aiforge-deep-context` CLI — role-tuned RAG over all memory tiers, reranked.
+2. Linked tickets (parent + siblings + children + embedding-related via T1 wing).
+3. Graph hint (graphify call-site JSON pointer if repo has one).
+4. Last 20 events tail.
+5. FEEDBACK FIXLIST section on Doer retry (if prior feedback_fail).
+6. Pre-built DIGEST embedded in Learner ticket body at verdict_pass time.
+
+**Per-role ctx window** (`config.RoleConfig.ctx`): supervisor/feedback/learner 16K, planner 32K, doer 128K. LM Studio loads each at role-sized window via `lms load --context-length`.
+
+**Tiny-model trim**: supervisor/feedback/learner skip the heavy deep-context CLI block to stay within 16K.
+
+**Mid-tick compaction** (`orchestrator._compact_old_tool_results`): after turn 15, tool result messages older than the last 5 get truncated to 400 chars + `[elided N chars — re-call tool if needed]`. Saves 50-80% prompt tokens on long ticks without dropping the tool-call chain.
+
+**Per-role output caps** (`llm.ROLE_MAX_TOKENS`): supervisor 400, planner 1500, doer 2000, feedback 600, learner 800. Prevents reasoning models from going verbose (learner phi-4-mini was generating 5000+ tokens per turn = 37s; capped at 800 = ~8s).
+
+---
+
+## Memory + auto-learn
+
+**Four tiers** (single Postgres `memories` table, pgvector HNSW):
+- `t1` episodic (wing=`ticket/<id>`) — auto-written by orchestrator at finalize
+- `t2` canon (wing=`rules/*`) — seeded + Supervisor/Planner retain
+- `t3` skills/patterns (wing=`skills/<service>`, `patterns/<topic>`) — Learner + Planner retain
+- `t4` code chunks (wing=`code/<repo>`) — indexed by bulk/incremental reindex
+
+**Retrieval** (`retrieval.retrieve_for_role`): role-tuned BM25 + vector per tier → RRF fuse → bge-reranker-v2-m3 top-k. Gracefully degrades: unknown role → planner policy, sidecar down → RRF fallback, per-tier errors skipped.
+
+**Fact hit-tracking**: every successful `search()` bulk-UPDATEs hit_count + last_hit_at on returned memory rows. Query via `/api/metrics → top_facts_by_hits`.
+
+**Dead-fact archival**: daily reindex cron runs `archive_dead_facts(age_days=90)`. Retained t2/t3 memories with zero hits after 90 days → wing=`archived/<original>`. Still searchable but deprioritized.
+
+**Auto-queue Learner**: on `verdict_pass`, orchestrator creates a Learner ticket with a pre-built DIGEST (parent + siblings + commits + files) so Learner has everything to emit retain_facts without spelunking.
+
+**Supervisor decision trace**: every `update_assignee` writes a memory to wing=`decisions/supervisor`. Future supervisor ticks retrieve via search for consistent routing.
+
+---
+
+## Metrics + ops
+
+- `GET /api/metrics` — ticket grid × role/status, feedback verdict ratios, stop_reason distribution, reclaim histogram, memory hit-rate per tier, top 10 facts by hits, 24h activity per role.
+- `GET /api/agents` — live model matrix (reads `config.ROLES`).
+- `GET /api/health` — postgres + LM Studio HTTP status.
+- Structured ndjson logs per role under `~/.aiforge/logs/orchestrator-*.ndjson`. `jq -c` friendly.
+- Every `llm.turn` carries `msg_chars`, `msg_count`, `tokens_in`, `tokens_out`, `dur_ms` for ctx + latency monitoring.
+
+---
+
+## Watchdogs
+
+- `com.aiforge.pg-watchdog` — polls `pg_isready` every 30s; clears stale `postmaster.pid` + `brew services restart postgresql@16` on failure.
+- `com.aiforge.lmstudio` — polls `/v1/models` every 30s; restarts `lms server start` on failure.
+- Both `KeepAlive=true` so launchd respawns the watchdog itself if it crashes.
 
 History notes:
 - Planner was initially `qwen3.6-35b-a3b` (vision-capable → LM Studio rejects `numParallelSessions > 1`). Swapped to `openai/gpt-oss-20b` (non-vision dense 20B) so planner-a + planner-b can run concurrent inference.
