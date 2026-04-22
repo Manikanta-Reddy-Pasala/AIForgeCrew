@@ -8,15 +8,15 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/manikanta/Documents/codeRepo/AIForgeCrew/.venv/bin/python</string>
+    <string>/Users/manikanta/AIForgeCrew/.venv/bin/python</string>
     <string>-m</string>
     <string>aiforge_core.runtime</string>
   </array>
 
   <key>EnvironmentVariables</key>
   <dict>
-    <key>AIFORGE_FLAG_ORCHESTRATOR_BACKEND</key>
-    <string>langgraph</string>
+    <key>PATH</key>
+    <string>/Users/manikanta/.local/bin:/Users/manikanta/.lmstudio/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 
   <key>StartInterval</key>
@@ -29,7 +29,7 @@
   <string>/Users/manikanta/.aiforge/logs/graph-runner.err</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/manikanta/Documents/codeRepo/AIForgeCrew</string>
+  <string>/Users/manikanta/AIForgeCrew</string>
 
   <key>RunAtLoad</key>
   <false/>
