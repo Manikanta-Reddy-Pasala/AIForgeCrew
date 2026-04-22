@@ -194,6 +194,124 @@ def make_list_dir(worktree_path: str) -> Callable:
     return list_dir
 
 
+# ─────────────────────────── apply_implementation ──────────────────────
+
+def make_apply_implementation(worktree_path: str, scope_guard: ScopeGuard,
+                              counters: dict | None = None,
+                              ticket_body_provider: Callable[[], str] | None = None) -> Callable:
+    """Return an ``apply_implementation`` tool that parses the ticket's
+    ``## Implementation`` section and applies all find/replace blocks.
+
+    This lets the Doer execute planner-prepared edits without having to
+    emit long strings via JSON tool calls — which qwen-coder via smolagents
+    routinely refuses to do. Each successful block bumps
+    ``counters['edit_block_ok']``.
+
+    The ticket body is fetched lazily via ``ticket_body_provider`` so fresh
+    planner-written sections are picked up on retry.
+    """
+    if counters is None:
+        counters = {}
+
+    import re as _re
+
+    def _normalize_newlines(s: str) -> str:
+        # psql heredoc inserts sometimes store literal '\n' escapes.
+        if "\\n" in s and "\n" not in s:
+            s = s.replace("\\n", "\n")
+        return s
+
+    def _parse_impl_blocks(body: str) -> list[dict]:
+        body = _normalize_newlines(body)
+        # Find the ## Implementation section.
+        m = _re.search(r"##\s*Implementation\s*\n", body, _re.IGNORECASE)
+        if not m:
+            return []
+        section = body[m.end():]
+        # Stop at next ## heading.
+        next_hdr = _re.search(r"\n##\s", section)
+        if next_hdr:
+            section = section[:next_hdr.start()]
+        # Each block: ### <path>\n```\nfind:\n<x>\n---\nreplace:\n<y>\n```
+        blocks: list[dict] = []
+        for m2 in _re.finditer(
+            r"###\s+([^\n]+?)\s*\n+```[a-zA-Z]*\n+find:\n(.*?)\n---\n+replace:\n(.*?)\n+```",
+            section, _re.DOTALL,
+        ):
+            blocks.append({
+                "path": m2.group(1).strip(),
+                "find": m2.group(2),
+                "replace": m2.group(3),
+            })
+        return blocks
+
+    def _strip_repo_prefix(p: str) -> str:
+        # Planner writes "PosClientBackend/src/..." but worktree is rooted
+        # at the project. Drop leading "<ProjectName>/" if present.
+        if "/" in p and not os.path.isabs(p):
+            parts = p.split("/", 1)
+            abs_candidate = os.path.join(worktree_path, parts[1])
+            if os.path.exists(abs_candidate):
+                return parts[1]
+        return p
+
+    @tool
+    def apply_implementation() -> str:
+        """Apply every find/replace block from the ticket's ## Implementation section.
+
+        No arguments. Parses the current ticket body, finds ``### <path>`` + fenced
+        ``find:`` / ``replace:`` pairs, and writes each change to disk. Scope guard
+        enforced. Returns a summary line per block (OK / ERROR / SCOPE_VIOLATION).
+        Use this as step 1 when the ticket has a ## Implementation section — it's
+        more reliable than calling edit_block manually.
+
+        Args:
+        """
+        body = ""
+        if ticket_body_provider is not None:
+            try:
+                body = ticket_body_provider() or ""
+            except Exception as exc:  # pragma: no cover
+                return f"ERROR: failed to load ticket body: {exc}"
+        blocks = _parse_impl_blocks(body)
+        if not blocks:
+            return "ERROR: no ## Implementation section found in ticket body"
+        results: list[str] = []
+        for i, blk in enumerate(blocks, 1):
+            path = _strip_repo_prefix(blk["path"])
+            resolved = (
+                path if os.path.isabs(path)
+                else os.path.join(worktree_path, path)
+            )
+            try:
+                scope_guard.check(resolved)
+            except ScopeViolation as exc:
+                results.append(f"{i}) SCOPE_VIOLATION: {path}: {exc}")
+                continue
+            if not os.path.exists(resolved):
+                results.append(f"{i}) ERROR: file not found: {path}")
+                continue
+            with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
+                src = fh.read()
+            find = blk["find"]
+            count = src.count(find)
+            if count == 0:
+                results.append(f"{i}) ERROR: find not found in {path}")
+                continue
+            if count > 1:
+                results.append(f"{i}) ERROR: find matches {count}x in {path}")
+                continue
+            new_src = src.replace(find, blk["replace"], 1)
+            with open(resolved, "w", encoding="utf-8") as fh:
+                fh.write(new_src)
+            counters["edit_block_ok"] = counters.get("edit_block_ok", 0) + 1
+            results.append(f"{i}) OK: edited {path} "
+                           f"(-{len(find)} +{len(blk['replace'])} chars)")
+        return "\n".join(results)
+
+    return apply_implementation
+
+
 # ─────────────────────────── final_answer ───────────────────────────────
 
 @tool
@@ -209,7 +327,8 @@ def final_answer(summary: str) -> str:
 # ─────────────────────────── factory ────────────────────────────────────
 
 def make_tools(worktree_path: str, scope_guard: ScopeGuard,
-               counters: dict | None = None) -> list:
+               counters: dict | None = None,
+               ticket_body_provider: Callable[[], str] | None = None) -> list:
     """Build the tool list for a Doer agent invocation.
 
     ``counters`` is a dict that edit_block and run_compile bump so the caller
@@ -224,6 +343,8 @@ def make_tools(worktree_path: str, scope_guard: ScopeGuard,
         counters = {}
     return [
         make_read_file(worktree_path),
+        make_apply_implementation(worktree_path, scope_guard, counters,
+                                  ticket_body_provider=ticket_body_provider),
         make_edit_block(worktree_path, scope_guard, counters),
         make_run_compile(worktree_path, counters),
         make_grep(worktree_path),

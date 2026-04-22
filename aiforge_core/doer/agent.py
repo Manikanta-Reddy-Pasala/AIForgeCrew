@@ -10,9 +10,12 @@ from .tools import make_tools
 DOER_PREAMBLE = """You are the Doer agent. Your ONLY job is to modify code with edit_block so the ticket is implemented.
 
 Critical rule — Implementation section:
-When the ticket body contains a ## Implementation section with concrete find:/replace: blocks,
-you MUST use those verbatim as arguments to edit_block — do not paraphrase or adjust the find
-or replace strings.  The planner already verified them against the current file.
+When the ticket body contains a ## Implementation section, call `apply_implementation()` as
+your FIRST action. It parses the section and applies every find/replace block automatically.
+No arguments. You do NOT need to copy any long strings yourself. After apply_implementation
+returns OK for at least one block, call run_compile, then final_answer.
+
+If the ticket has NO ## Implementation section, fall back to calling edit_block manually.
 
 IMPORTANT — programmatic enforcement is active:
 - The harness tracks edit_block_ok and compile_green counters.
@@ -83,7 +86,11 @@ def build_doer_agent(
         counters = {}
     allowed = parse_allowed_files(getattr(ticket, "body", "") or "")
     scope_guard = ScopeGuard(allowed)
-    tools = make_tools(worktree_path, scope_guard, counters)
+    # Pass the ticket body as a provider so the apply_implementation tool can
+    # parse the latest planner-written ## Implementation section.
+    body = getattr(ticket, "body", "") or ""
+    tools = make_tools(worktree_path, scope_guard, counters,
+                       ticket_body_provider=lambda: body)
 
     # LiteLLMModel kwarg names differ across smolagents minor versions.
     import inspect as _inspect_lm
