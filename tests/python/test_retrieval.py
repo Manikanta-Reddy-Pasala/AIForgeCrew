@@ -1,5 +1,4 @@
-from unittest.mock import patch
-from aiforge_core.retrieval import rrf_fuse, Hit, retrieve_for_role, ROLE_POLICIES
+from aiforge_core.retrieval import rrf_fuse, Hit, ROLE_POLICIES
 
 
 def test_rrf_fuse_reinforces_agreed():
@@ -21,22 +20,3 @@ def test_role_policies_defined_for_expected_roles():
     for pol in ROLE_POLICIES.values():
         assert "tiers" in pol
         assert "rerank_keep" in pol
-
-
-def test_retrieve_for_role_calls_tiers_in_policy_order():
-    calls = []
-
-    class FakeStore:
-        def search_tier_bm25(self, tier, query, top_k, wing_prefix=None):
-            calls.append(("bm25", tier, top_k))
-            return []
-        def search_tier_vec(self, tier, query, top_k, wing_prefix=None):
-            calls.append(("vec", tier, top_k))
-            return []
-
-    with patch("aiforge_core.retrieval.rerank_http", side_effect=lambda q, h, keep: h[:keep]):
-        retrieve_for_role(FakeStore(), role="developer", query="x", parent_id=None)
-
-    tiers_queried = [c[1] for c in calls if c[0] == "bm25"]
-    policy = ROLE_POLICIES["developer"]["tiers"]
-    assert tiers_queried == [t["tier"] for t in policy]

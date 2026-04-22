@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from aiforge_core.runtime import tickets as tickets_mod
 from aiforge_core.runtime.config import role as role_cfg_get
-from aiforge_core.runtime.feature_flags import get_flag
 from aiforge_core.runtime.logging_setup import get_logger
 from aiforge_core.runtime.orchestrator import (
     _ensure_branch_and_worktree,
@@ -20,15 +19,13 @@ def doer_node(state: AgentState) -> AgentState:
     if ticket is None:
         return {**state, "stop_reason": "blocked"}
 
-    flags = state.get("flags") or {}
     rc = role_cfg_get("doer")
     log = get_logger("doer")
     worktree = state.get("worktree_path") or _ensure_branch_and_worktree(ticket)
 
     updated_state = inject_context(state, "doer")
 
-    doer_backend = flags.get("doer.backend") or get_flag("doer.backend", "legacy")
-    if doer_backend == "smolagents" and worktree is not None:
+    if worktree is not None:
         from aiforge_core.doer import run_smolagents_doer
         summary = run_smolagents_doer(ticket, worktree, log)
     else:

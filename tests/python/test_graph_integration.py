@@ -62,6 +62,9 @@ def _patch_node_internals(ticket: _FakeTicket):
     def _fake_run_tool_loop(rc, t, worktree, log) -> dict:
         return _make_summary()
 
+    def _fake_run_smolagents_doer(t, worktree, log) -> dict:
+        return _make_summary()
+
     def _fake_finalize(*a, **kw) -> None:
         return None
 
@@ -89,6 +92,7 @@ def _patch_node_internals(ticket: _FakeTicket):
         patch("aiforge_core.graph.nodes.doer._finalize_ticket", side_effect=_fake_finalize),
         patch("aiforge_core.graph.nodes.doer._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
         patch("aiforge_core.graph.nodes.doer.inject_context", side_effect=_fake_inject_context),
+        patch("aiforge_core.doer.run_smolagents_doer", side_effect=_fake_run_smolagents_doer),
         patch("aiforge_core.graph.nodes.feedback.tickets_mod.get", side_effect=_fake_get),
         patch("aiforge_core.graph.nodes.feedback._run_tool_loop", side_effect=_fake_run_tool_loop),
         patch("aiforge_core.graph.nodes.feedback._finalize_ticket", side_effect=_fake_finalize),
@@ -159,11 +163,7 @@ class TestFullPipelineHappyPath:
             "verdict": None,
             "feedback_fixlist": None,
             "learner_digest": None,
-            "flags": {
-                "orchestrator.backend": "langgraph",
-                "doer.backend": "legacy",
-                "rag.backend": "legacy",
-            },
+            "flags": {},
         }
 
         import logging

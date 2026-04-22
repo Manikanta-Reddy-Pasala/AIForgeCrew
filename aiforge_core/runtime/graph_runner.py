@@ -5,7 +5,6 @@ import time
 from aiforge_core.graph import build_graph
 from aiforge_core.graph.state import AgentState
 from aiforge_core.runtime import tickets as tickets_mod
-from aiforge_core.runtime.feature_flags import get_flag
 from aiforge_core.runtime.logging_setup import emit, get_logger
 
 
@@ -15,12 +14,6 @@ def run_graph(ticket_id: int) -> int:
     if ticket is None:
         emit(log, "graph_runner.not_found", ticket_id=ticket_id)
         return 1
-
-    flags: dict = {
-        "orchestrator.backend": get_flag("orchestrator.backend", "legacy"),
-        "doer.backend": get_flag("doer.backend", "legacy"),
-        "rag.backend": get_flag("rag.backend", "legacy"),
-    }
 
     state: AgentState = {
         "ticket_id": ticket_id,
@@ -45,7 +38,7 @@ def run_graph(ticket_id: int) -> int:
         "verdict": None,
         "feedback_fixlist": None,
         "learner_digest": None,
-        "flags": flags,
+        "flags": {},
     }
 
     graph = build_graph()
@@ -71,7 +64,7 @@ def run_graph(ticket_id: int) -> int:
             "comment",
             body=f"graph run complete stop_reason={final_state.get('stop_reason')} "
                  f"verdict={final_state.get('verdict')} wall_s={wall_s}",
-            metadata={"wall_s": wall_s, "flags": flags},
+            metadata={"wall_s": wall_s},
         )
         return 0
     except Exception as exc:

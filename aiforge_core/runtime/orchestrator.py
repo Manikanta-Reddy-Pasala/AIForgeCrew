@@ -35,7 +35,6 @@ from .config import (
     RoleConfig, TICK_MAX_TURNS, TICK_MAX_WALL_SECS,
     WORKTREE_ROOT, role as role_cfg_get,
 )
-from .feature_flags import get_flag
 from .llm import AssistantTurn, complete
 from .logging_setup import emit, get_logger
 from .tools import ToolContext
@@ -1045,99 +1044,3 @@ def _finalize_on_exception(ticket: tickets.Ticket, role_name: str,
         )
 
 
-# ─────────────────────────── Entry ──────────────────────────────────────
-def tick(role_name: str) -> int:
-    rc = role_cfg_get(role_name)
-    log = get_logger(role_name)
-
-    with _role_lock(rc.lock_path) as got:
-        if not got:
-            emit(log, "lock.skip")
-            return 0
-
-        reaped = _reap_orphans(role_name, log)
-        if reaped:
-            emit(log, "reap.done", role=role_name, count=reaped)
-
-        ticket = tickets.claim_next(role_name)
-        if ticket is None:
-            emit(log, "tick.idle")
-            return 0
-
-        emit(log, "tick.start", ticket=ticket.identifier, title=ticket.title)
-        try:
-            # Note: claim_next already flipped status to in_progress atomically
-            # with SELECT FOR UPDATE SKIP LOCKED, so we don't re-set here.
-            # RAM guard: first enforce global (active + wired) ceiling, then
-            # ensure this role's model is loaded at the desired ctx.
-            if rc.transport == "openai":
-                memguard.enforce_ram_ceiling(log, reason=f"pre-{role_name}")
-                memguard.ensure_loaded(rc.model, rc.ctx, rc.ttl_s, log)
-            worktree = _ensure_branch_and_worktree(ticket)
-            emit(log, "worktree.prepared",
-                 ticket=ticket.identifier, path=worktree)
-
-            # No target repo — block with a clear instruction instead of
-            # running the tool loop against the orchestrator source.
-            # Planner / Supervisor tiers are exempt since they work off
-            # context bundles + search and don't need a worktree to
-            # produce analysis.
-            if worktree is None and role_name in ("doer", "feedback"):
-                tickets.add_event(
-                    ticket.id, role_name, "blocked",
-                    body=("no target repo could be identified for this "
-                          "ticket. Set the `project` field to one of the "
-                          "repos under ~/codeRepo (e.g. PosClientBackend, "
-                          "PosServerBackend, MongoDbService, etc.) or "
-                          "include the repo name in the ticket title/body."),
-                )
-                tickets.update_status(
-                    ticket.id, "blocked", role=role_name,
-                    metadata_patch={"last_blocked_reason": "no_target_repo"},
-                )
-                emit(log, "tick.end", ticket=ticket.identifier,
-                     stop_reason="no_target_repo")
-                return 0
-
-            # Feature-flagged smolagents Doer path.
-            # Default is "legacy" — no behaviour change unless the env var
-            # AIFORGE_FLAG_DOER_BACKEND=smolagents is set.
-            if (
-                _canonical_role(role_name) == "doer"
-                and get_flag("doer.backend", "legacy") == "smolagents"
-                and worktree is not None
-            ):
-                from aiforge_core.doer import run_smolagents_doer
-                summary = run_smolagents_doer(ticket, worktree, log)
-            else:
-                summary = _run_tool_loop(rc, ticket, worktree, log)
-            emit(log, "tick.end", ticket=ticket.identifier, **{
-                k: v for k, v in summary.items() if k != "summary"
-            })
-            _finalize_ticket(ticket, role_name, summary, log)
-            # Free tiny-model KV cache immediately instead of waiting for TTL.
-            if rc.transport == "openai":
-                # Smart rebalance: looks at full queue, keeps only the
-                # single non-protected model with most pending work warm,
-                # evicts the rest. Stronger than per-tick release.
-                memguard.plan_rebalance(log, current_role=role_name)
-        except Exception as exc:
-            emit(log, "tick.exception", ticket=ticket.identifier,
-                 error=str(exc)[:500])
-            tickets.add_event(ticket.id, role_name, "error",
-                              body=f"orchestrator exception: {exc}")
-            _finalize_on_exception(ticket, role_name, exc, log)
-            return 2
-    return 0
-
-
-def _cli():
-    if len(sys.argv) < 2:
-        print("usage: python -m aiforge_core.runtime <role>", file=sys.stderr)
-        sys.exit(2)
-    role = sys.argv[1]
-    sys.exit(tick(role))
-
-
-if __name__ == "__main__":
-    _cli()

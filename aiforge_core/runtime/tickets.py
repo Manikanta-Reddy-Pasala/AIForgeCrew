@@ -6,7 +6,7 @@ Public surface:
     new_identifier()                 -> str            # atomic ONE-<n>
     create(title, body, ...)         -> Ticket
     get(identifier | id)             -> Ticket
-    claim_next(role)                 -> Ticket | None  # oldest todo for role
+    claim_next_any()                 -> Ticket | None  # oldest todo across all roles
     update_status(id, status, ...)   -> Ticket
     add_comment(id, role, body)      -> int
     add_event(id, role, kind, body, metadata) -> int
@@ -191,47 +191,6 @@ def _aliases_for(role: str) -> list[str]:
             return aliases
     return [role]
 
-
-def claim_next(role: str) -> Ticket | None:
-    """Atomically pick + mark-in_progress the next todo ticket for a role.
-
-    Uses SELECT ... FOR UPDATE SKIP LOCKED so two parallel tick processes
-    can't claim the same row. Marks status='in_progress' inside the same
-    transaction, so by the time this returns the ticket is ours.
-
-    Matches canonical + legacy role names via _aliases_for.
-
-    Returns None when no todo exists for this role (caller should emit
-    tick.idle and exit)."""
-    aliases = _aliases_for(role)
-    with _conn() as c, c.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            "SELECT * FROM tickets "
-            "WHERE assignee_role = ANY(%s) AND status='todo' "
-            "ORDER BY CASE priority "
-            "  WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 "
-            "  WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
-            "created_at ASC LIMIT 1 "
-            "FOR UPDATE SKIP LOCKED",
-            (aliases,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            c.rollback()
-            return None
-        # Atomic claim: flip to in_progress before releasing the row lock.
-        cur.execute(
-            "UPDATE tickets SET status='in_progress' WHERE id=%s RETURNING *",
-            (row["id"],),
-        )
-        row = cur.fetchone()
-        cur.execute(
-            "INSERT INTO ticket_events (ticket_id, agent_role, kind, body) "
-            "VALUES (%s, %s, 'status_change', 'in_progress')",
-            (row["id"], role),
-        )
-        c.commit()
-    return Ticket.from_row(row)
 
 
 def claim_next_any() -> Ticket | None:

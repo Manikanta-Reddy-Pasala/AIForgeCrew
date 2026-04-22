@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Install the tick-<role> LaunchAgents + daily reindex. Idempotent.
+# Install the graph-runner LaunchAgent + daily reindex + watchdogs. Idempotent.
 # Runs ON Mac Studio.
 #
-# Roles (current):  supervisor  planner  doer  feedback  learner
-# Legacy roles (architect/sr_developer/developer/fact_extract) are unloaded
-# here — they still work via aliases inside the orchestrator, but the
-# launchd agents are renamed to the canonical role names.
+# The LangGraph graph-runner replaces the old per-role tick plists.
 set -euo pipefail
 
 [[ "$(uname -s)" == "Darwin" ]] || { echo "macOS only" >&2; exit 1; }
@@ -24,20 +21,25 @@ for legacy in \
   com.aiforge.tick-architect \
   com.aiforge.tick-sr_developer \
   com.aiforge.tick-developer \
-  com.aiforge.tick-fact_extract
+  com.aiforge.tick-fact_extract \
+  com.aiforge.tick-supervisor \
+  com.aiforge.tick-planner \
+  com.aiforge.tick-planner-b \
+  com.aiforge.tick-doer \
+  com.aiforge.tick-doer-b \
+  com.aiforge.tick-feedback \
+  com.aiforge.tick-learner
 do
   launchctl bootout "gui/$(id -u)/${legacy}" 2>/dev/null || true
   rm -f "${DST}/${legacy}.plist" 2>/dev/null || true
 done
 
-echo ">>> installing tick LaunchAgents (5-role pipeline + 2nd doer worker)"
-for label_slug in supervisor planner planner-b doer doer-b feedback learner; do
-  label="com.aiforge.tick-${label_slug}"
+echo ">>> installing graph-runner LaunchAgent"
+for label in com.aiforge.graph-runner; do
   src="${SRC}/${label}.plist"
   dst="${DST}/${label}.plist"
   [[ -f "$src" ]] || { echo "missing $src"; continue; }
   cp "$src" "$dst"
-
   launchctl bootout "gui/$(id -u)/${label}" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$dst"
   echo "  loaded $label"
