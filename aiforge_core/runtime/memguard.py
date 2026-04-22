@@ -263,11 +263,37 @@ def enforce_ram_ceiling(log, reason: str = "pre-load") -> None:
          used_gb=_host_ram_used_gb(), ceiling_gb=RAM_CEILING_GB)
 
 
-def release_after_tick(identifier: str, log) -> None:
-    """Unload `identifier` after a tick finishes if it's non-protected.
-    Frees KV cache + framework overhead immediately. Idle mmap'd weights
-    would otherwise sit in the OS page cache — harmless, but KV-cache RAM
-    isn't reclaimed until TTL (default 30min).
+def _role_has_more_work(role_name: str) -> bool:
+    """True if at least one todo ticket exists for this role (including
+    legacy aliases). Keeps the model warm across a batch of same-role ticks
+    instead of cold-loading for every ticket."""
+    try:
+        import psycopg
+        from .config import AIFORGE_DSN
+        from .tickets import _aliases_for
+        aliases = _aliases_for(role_name)
+        with psycopg.connect(AIFORGE_DSN, connect_timeout=3) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM tickets WHERE assignee_role = ANY(%s) "
+                "AND status='todo' LIMIT 1",
+                (aliases,),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def release_after_tick(identifier: str, log, role_name: str | None = None) -> None:
+    """Unload `identifier` after a tick finishes if it's non-protected
+    AND the role has no more todos waiting.
+
+    Smart retention: if more todos for this role exist, keep the model
+    warm — next tick fires in 60s, cold-load is 10-20s on tiny models and
+    15-30s on Planner (qwen3.6-35b). Saves substantial cycle time when
+    processing batches.
+
+    Forced to unload if global RAM ceiling is breached regardless of
+    queue state — enforce_ram_ceiling handles that path.
 
     Bypassed when AIFORGE_MEMGUARD_RELEASE=0.
     """
@@ -279,6 +305,14 @@ def release_after_tick(identifier: str, log) -> None:
     loaded = _lms_ps()
     if identifier not in loaded:
         return
+    # Smart keep-warm: if more ticks for this role are queued AND we're
+    # below the RAM ceiling, skip the unload.
+    if role_name and _role_has_more_work(role_name):
+        used_gb = _host_ram_used_gb()
+        if used_gb > 0 and used_gb < (RAM_CEILING_GB - 5):
+            emit(log, "memguard.keep_warm",
+                 model=identifier, role=role_name, used_gb=used_gb)
+            return
     if _lms_unload(identifier, log):
         emit(log, "memguard.release", model=identifier)
 

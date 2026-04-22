@@ -836,7 +836,8 @@ def tick(role_name: str) -> int:
             _finalize_ticket(ticket, role_name, summary, log)
             # Free tiny-model KV cache immediately instead of waiting for TTL.
             if rc.transport == "openai":
-                memguard.release_after_tick(rc.model, log)
+                memguard.release_after_tick(rc.model, log,
+                                            role_name=role_name)
         except Exception as exc:
             emit(log, "tick.exception", ticket=ticket.identifier,
                  error=str(exc)[:500])
