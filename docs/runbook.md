@@ -1,240 +1,354 @@
-# AIForge runbook
+# AIForgeCrew Runbook
 
-Single-Postgres runtime. Custom Python orchestrator + FastAPI + React/Vite UI. 5-agent pipeline: Supervisor / Planner / Doer / Feedback / Learner.
+Ops guide for the LangGraph-based autonomous dev-team pipeline. Single graph-runner process; one launchd plist; Postgres as the source of truth.
 
-## Stack
+---
+
+## Stack at a glance
 
 | Layer | Component | Port | Owner |
-|---|---|---|---|
-| Inference (local) | LM Studio | 1234 | local process |
-| Inference (cloud) | `claude --print` CLI subprocess | — | subscription auth |
+|-------|-----------|------|-------|
+| Inference | LM Studio | 1234 | `lms server` |
 | Embeddings | bge-m3 sidecar | 8764 | launchd |
-| Rerank | bge-reranker-v2-m3 | 8765 | launchd |
-| Storage | aiforge Postgres + pgvector | 5432 | homebrew postgres |
-| Orchestrator | `python -m aiforge_core.runtime <role>` | — | launchd timer (60 s / role) |
-| REST / SSE API | FastAPI (`aiforge_core.runtime.api`) | 8799 | launchd (`com.aiforge.api`) |
-| Dashboard UI | React/Vite static (`web/dist/`) | served at `:8799/ui/` | same FastAPI |
+| Rerank | bge-reranker-v2-m3 sidecar | 8765 | launchd |
+| Storage | Postgres + pgvector (`aiforge` DB) | 5432 | homebrew postgresql |
+| Orchestration | LangGraph graph-runner | — | launchd `com.aiforge.graph-runner` (60 s) |
+| Watchdogs | pg-watchdog, git-pull, file-indexer, reindex-daily | — | launchd |
 
-## Agents
+---
 
-5-role pipeline, cross-family local models. Supervisor can be flipped to cloud Claude via `AIFORGE_SUPERVISOR_TRANSPORT=claude_cli`.
+## 1. Daily commands
 
-| Role | Model | Family | Ctx | Transport | Max turns | TTL | Role purpose |
-|---|---|---|---|---|---|---|---|
-| Supervisor | gemma-4-26b-a4b-it | Google MoE (~4B active) | 16K | OpenAI-compat → LM Studio | 4 | 30min | Triage + route + invariant enforcement |
-| Planner | openai/gpt-oss-20b | OpenAI open dense (20B) | 32K | OpenAI-compat → LM Studio | 40 | 8h | Analysis + child-ticket decomposition; non-vision → supports parallel=4 |
-| Doer | qwen3-coder-next | Alibaba | 128K | OpenAI-compat → LM Studio | 60 | 8h | Implementation + tests + commit |
-| Feedback | openai/gpt-oss-20b (shared w/ Planner slot) | OpenAI open dense (20B) | 16K | OpenAI-compat → LM Studio | 6 | 30min | Audit Doer diff + tests; pass / fail-back; reliable tool-call |
-| Learner | phi-4-mini-reasoning | Microsoft | 16K | OpenAI-compat → LM Studio | 4 | 30min | Post-merge fact distillation into T3 |
-
-LM Studio load policy: only Doer (`qwen3-coder-next`, 45 GB) pre-loaded and protected. Planner + Feedback share one `openai/gpt-oss-20b` slot (12 GB, JIT). Supervisor (`gemma-3-12b-it`, 8 GB) and Learner (`phi-4-mini-reasoning`, 2 GB) also JIT. `memguard.plan_rebalance` keeps the single non-protected model with most queued work warm, evicts others. Hard 85 GB RAM ceiling (`AIFORGE_RAM_CEILING_GB`). All loads use `--parallel 4` so one model slot handles concurrent tick workers. Prompts live in `aiforge_core/runtime/roles.py`; ctx + TTL in `config.py` RoleConfig.
-
-### RAM + memguard
-
-Before each LLM tick, `aiforge_core.runtime.memguard.ensure_loaded()` runs:
-1. Parse `lms ps` — which models loaded, sizes, TTL remaining.
-2. If the target model is already loaded at ≥ requested ctx, done.
-3. Else, if loading would push total LLM weights past `AIFORGE_RAM_BUDGET_GB` (default 75), evict LRU non-protected models (`qwen3-coder-next` is the sole protected slot — Planner's `openai/gpt-oss-20b` JIT-loads via memguard).
-4. `lms load <model> --context-length <N> --ttl <S>` .
-
-Env knobs:
-- `AIFORGE_RAM_BUDGET_GB` — weights ceiling (default 85)
-- `AIFORGE_MEMGUARD_DISABLE=1` — emergency bypass
-- `AIFORGE_LMS_BIN` — path to `lms` binary
-
-Emits structured log events: `memguard.budget`, `memguard.evict`, `memguard.load`, `memguard.unload`, `memguard.over_budget`.
-
-### Context-bundle policy (prompt size)
-
-Tiny-model roles (supervisor / feedback / learner) see a **trimmed context bundle** — no `aiforge-deep-context` CLI output, no graph_hint. Just ticket body + last 20 events + linked-tickets block. Prevents 400 errors on 16K-ctx models.
-
-Heavy roles (planner / doer) get the full bundle.
-
-Legacy role names (`architect`, `sr_developer`, `developer`, `fact_extract`) aliased transparently in `config.py` so pre-rename ticket rows keep working.
-
-### Ticket lifecycle
-
-```
-create → assignee=supervisor (default via tickets._apply_supervisor_invariants)
-       → supervisor tick: update_assignee(planner|doer|learner) + post_comment + reason
-       → planner tick:    analysis comment + N children with assignee=doer
-       → doer tick:       edit + test + git_commit + post_comment + set_status(in_review)
-                          orchestrator finalize AUTO-ROUTES to assignee=feedback, status=todo
-       → feedback tick:   read_file + run_shell(tests) + verdict_pass | verdict_fail
-                          pass: status=in_review + auto-queue learner sibling
-                          fail: ticket → assignee=doer with feedback_fixlist in metadata
-       → learner tick:    retain_fact × 1-5 + post_comment + set_status(done)
-```
-
-Supervisor's hard safety rules (enforced in `tickets._apply_supervisor_invariants`, cannot be bypassed by LLM):
-- Body containing destructive-intent patterns (`drop table`, `rm -rf /`, `delete all`, credential patterns) → forced `assignee=supervisor` + label `review-required` + `metadata.dangerous_pattern=true`. Never auto-routed.
-- Title or body containing `prod|outage|crash|p0|urgent|incident` → auto `priority=urgent` + `metadata.priority_auto_boosted=true`.
-- Children inherit parent's assignee (skip re-triage).
-
-## Memory tiers (one Postgres, one `memories` table)
-
-| Tier | Wing pattern | Populator | Lifetime |
-|---|---|---|---|
-| T1 episodic | `ticket/<id>` | orchestrator tool-calls | ticket lifetime |
-| T2 canon | `rules/canon`, `rules/*` | seeded 145 rules + Architect `retain_fact` | permanent |
-| T3 skills/patterns | `skills/*`, `patterns/*` | Sr Dev / Developer / Fact Extract `retain_fact` | permanent |
-| T4 code | `code/<repo>`, `code/claude-memory` | `scripts/bulk-index-all-repos.sh` | rebuilt on post-commit hook |
-| graph | `~/codeRepo/<repo>/graphify-out/graph.json` | graphify CLI | rebuilt on post-commit hook |
-
-Embeddings: bge-m3 (dim 1024). Rerank: bge-reranker-v2-m3 FP16. Retrieval policy per role lives in `aiforge_core/retrieval.py:ROLE_POLICIES`.
-
-## Install on Mac Studio (first time)
+### Tail logs
 
 ```bash
-cd ~/AIForgeCrew && git pull
-bash scripts/runtime/install.sh         # schema + pip deps + LM Studio loads + migrations + launchd
-bash scripts/runtime/install-ui.sh      # brew node + npm install + Vite build + API plist
-```
+# Graph-runner raw output
+tail -f ~/.aiforge/logs/graph-runner.log
 
-Backups from migrations / resets land in `~/.aiforge/backups/YYYY-MM-DD/`.
-
-## Optional hostname
-```bash
-echo '127.0.0.1 aiforge.local' | sudo tee -a /etc/hosts
-# then open http://aiforge.local:8799/ui/
-```
-
-## Daily operation
-
-### Access the UI
-
-The FastAPI app binds `0.0.0.0:8799` (LAN-reachable) and serves:
-- **API:** `http://<mac-studio-ip>:8799/api/health`
-- **UI:**  `http://<mac-studio-ip>:8799/ui/`
-
-On the Mac Studio itself: `http://127.0.0.1:8799/ui/`.
-
-### UI views
-
-- **Dashboard** — postgres + LM Studio health, agent cards, recent tickets, memory wings
-- **Tickets** — list w/ role+status filter, inline "New ticket" form
-- **Ticket detail** — body, children, full event timeline, comment box, one-click status transitions
-- **Agents** — 5 role cards (model, tool allowlist, open tickets, live-log link)
-- **Logs** — live SSE tail per role, structured event render
-- **Memory** — bge-reranked semantic search across tiers
-
-### CLI (no UI needed)
-
-```bash
-# assignee is optional — defaults to 'supervisor' for triage
-python -m aiforge_core.runtime.cli create \
-  --title "…" --body "…" --priority medium
-
-python -m aiforge_core.runtime.cli list --role planner --status todo,in_progress
-python -m aiforge_core.runtime.cli show ONE-123
-python -m aiforge_core.runtime.cli comment ONE-123 --body "…"
-python -m aiforge_core.runtime.cli status  ONE-123 --status done
-python -m aiforge_core.runtime      planner        # manual one-shot tick
-```
-
-### Structured logs
-
-```bash
+# Structured ndjson (all roles combined)
 tail -f ~/.aiforge/logs/orchestrator-*.ndjson \
-  | jq -c '{ts, role, ticket, event, tool, turn, dur_ms, tokens_out}'
+  | jq -c '{ts, role, ticket, event, tool, dur_ms}'
+
+# Last 20 graph runner events
+tail -20 ~/.aiforge/logs/graph-runner.log
 ```
 
-Per-ticket reconstruction:
-```sql
-SELECT created_at, agent_role, kind, left(body, 200) AS body
-FROM ticket_events
-WHERE ticket_id = (SELECT id FROM tickets WHERE identifier='ONE-123')
-ORDER BY created_at;
-```
+### Process check
 
-## Orchestrator internals
-
-Each tick (`python -m aiforge_core.runtime <role>`):
-
-1. fcntl lock at `/tmp/aiforge-tick-<role>.lock` (non-blocking; skip if held).
-2. `tickets.claim_next(role)` — oldest `todo` for the role.
-3. `tickets.update_status(id, 'in_progress', role=<self>)`.
-4. `_ensure_branch_and_worktree(ticket)` — creates `aiforge/<PARENT>-<slug>` branch + worktree under `<repo>/.aiforge-worktrees/<PARENT>`. Children inherit the parent's branch + repo.
-5. Context bundle = `aiforge-deep-context "<title>"` (CLI, 150 s timeout).
-6. System prompt from `roles.py` + user msg (body + context) + tool JSON schemas (allowlisted).
-7. Tool loop up to `role.max_turns` or `TICK_MAX_WALL_SECS` (1200 s):
-   - Loop-guard: 3 identical `(tool, args)` in a row → inject "change strategy" user msg.
-   - Deadline watchdog: at 75 % of turns with no `post_comment` yet → inject "⚠ DEADLINE … commit + report + exit NOW".
-   - Every tool call + tool result → `ticket_event(kind='tool_call')` + structured log line.
-8. Writes `tick.end` with `stop_reason` (model_done / max_turns / wall_timeout / llm_error / loop_detected).
-
-Status transitions are agent-driven (`set_status` tool); orchestrator's finalize auto-blocks only on wall_timeout / max_turns / loop_detected, never on healthy ticks.
-
-## Tool catalogue (`aiforge_core/runtime/tools.py`)
-
-| Tool | Description | Allowed for |
-|---|---|---|
-| `search` | bge-m3 + bge-rerank across all tiers | all |
-| `read_file` | Read text file (line range) | all |
-| `write_file` | Create/overwrite file | doer |
-| `edit` | Surgical old_string → new_string (unique-match required) | doer |
-| `run_shell` | Bash `-lc`, 120 s default, cwd=worktree | planner, doer, feedback (read-only for feedback) |
-| `fetch_url` | GET (20 s), 12 KB body cap | planner, doer |
-| `git_commit` | Stage + commit on ticket branch | doer |
-| `git_push` | `git push -u origin HEAD` | doer (manual only) |
-| `create_child_ticket` | Spawn child under current ticket | supervisor, planner |
-| `post_comment` | Append event (`kind=comment`) | all |
-| `set_status` | Move ticket through workflow states | all |
-| `retain_fact` | Write to `memories` (tier t1/t2/t3, chosen wing) | planner, doer, learner |
-| `related_tickets` | Find similar tickets by embedding | all |
-| `graph_neighbors` | Call-site map from `graphify-out/graph.json` | planner, doer |
-| `kubectl_read` | Safe subset (get/describe/logs/top); auto `--insecure-skip-tls-verify` | planner, doer |
-| `mongo_query` | Read-only mongosh via `kubectl exec mongos-0` | planner only |
-| `read_claude_memory` | Grep / read `~/.claude/memory/*.md` | all |
-| `update_assignee` | Re-route ticket (supervisor's triage action) | supervisor |
-| `verdict_pass` | Feedback pass — requires ≥40 char test evidence | feedback |
-| `verdict_fail` | Feedback fail — routes back to doer with fixlist | feedback |
-
-## Branch convention
-
-- One branch per parent ticket: `aiforge/<PARENT>-<slug>`.
-- Sr Dev + Developer + Fact Extract share it.
-- Developer does NOT `git push` automatically; human reviews then pushes.
-- Cross-repo tickets: Developer must `git -C <second-repo> checkout -B aiforge/<PARENT>-<slug> origin/master` before committing there.
-
-## Kill switch
-
-Stop all agents:
 ```bash
-for r in supervisor planner doer feedback learner; do
-  launchctl bootout gui/$(id -u)/com.aiforge.tick-$r
-done
-launchctl bootout gui/$(id -u)/com.aiforge.api
-launchctl bootout gui/$(id -u)/com.aiforge.reindex-daily
+# Confirm plist is loaded
+launchctl list | grep aiforge
+
+# LM Studio loaded models
+lms ps
+
+# Postgres
+pg_isready -d aiforge
 ```
 
-Resume: `bash ~/AIForgeCrew/scripts/runtime/install-launchd.sh` + `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aiforge.api.plist`.
+### Common psql queries
 
-Per-ticket stop: `python -m aiforge_core.runtime.cli status ONE-123 --status cancelled`.
+```sql
+-- Open tickets
+SELECT identifier, assignee_role, status, priority, updated_at
+FROM tickets
+WHERE status NOT IN ('done', 'cancelled')
+ORDER BY updated_at DESC;
 
-## Failure modes and responses
+-- Recent ticket events for ONE-123
+SELECT created_at, agent_role, kind, left(body, 200)
+FROM ticket_events
+WHERE ticket_id = (SELECT id FROM tickets WHERE identifier = 'ONE-123')
+ORDER BY created_at;
 
-| Symptom | Where to look | Fix |
-|---|---|---|
-| Tick does nothing | `tail ~/.aiforge/logs/launchd-tick-<role>.log` | usually no `todo` — `list --role` |
-| Tool call fails | `ticket_events.metadata.error` | fix args in tool impl or agent prompt |
-| LLM 400 (ctx overflow) | `llm.error` event | reduce prompt or raise LM Studio ctx |
-| Two ticks collide | `lock.skip` | expected (per-role lock) |
-| Worktree prepared at wrong repo | `worktree.prepared` path vs ticket text | child must carry parent's repo — fixed in p13.8 |
-| `edit` fails on whitespace | `tool.result` with 0 matches | use `run_shell` + `sed -n '<lines>p' | od -c` to check exact bytes, then retry `edit` |
-| Developer blows max_turns | `tick.end.stop_reason=max_turns` | raise `TICK_MAX_TURNS` or tighten prompt schedule |
-| API down | `tail ~/.aiforge/logs/api.err.log` | `launchctl kickstart -k gui/$(id -u)/com.aiforge.api` |
-| UI loads but empty | browser console + `/api/health` | CORS? wrong port? recheck launchd |
+-- Feedback verdicts today
+SELECT t.identifier, te.metadata->>'feedback_verdict' AS verdict, te.created_at
+FROM ticket_events te
+JOIN tickets t ON t.id = te.ticket_id
+WHERE te.agent_role = 'feedback'
+  AND te.created_at > now() - interval '24 hours';
 
-## Model hot-swap
+-- LangGraph checkpoint for a ticket
+SELECT thread_id, checkpoint_id, created_at
+FROM checkpoints
+WHERE thread_id = 'ONE-123'
+ORDER BY created_at DESC
+LIMIT 5;
 
-`aiforge_core/runtime/config.py.ROLES` is the source of truth. Edit → `git push` → pull on Mac Studio → `launchctl kickstart -k gui/$(id -u)/com.aiforge.tick-<role>`.
+-- Recent memories written
+SELECT wing, left(content, 120), tier, created_at
+FROM memories
+ORDER BY created_at DESC
+LIMIT 10;
+```
 
-Runtime override via adapter DB is intentionally NOT supported — only env vars + git push.
+---
 
-## 3-month trajectory to full local
+## 2. Unsticking a ticket
 
-- **Now:** Architect = Claude (cloud). Others local.
-- **Month 1:** Swap `retain_fact` writer from `store.upsert_memory` (sync) to an async queue so the write doesn't stall the tick.
-- **Month 2:** Evaluate a local planner replacement for Architect (qwen3.6-35b or a future MoE). Lower its max_turns to 6.
-- **Month 3:** Flip `claude_local` transport to `openai` (LM Studio) — zero-code change, model swap only.
+### Ticket stuck in in_progress
+
+The graph-runner crashed mid-run, or the process was killed. The ticket remains `in_progress` indefinitely since no agent will re-claim it.
+
+```sql
+-- Reset to todo so the next poll picks it up
+UPDATE tickets
+SET status = 'todo', updated_at = now()
+WHERE identifier = 'ONE-123';
+```
+
+### Worktree cleanup
+
+If the worktree is in a dirty state after a crash:
+
+```bash
+REPO=~/codeRepo/<project>
+TICKET=ONE-123
+
+# Remove the worktree (git will complain if it has uncommitted changes — add --force if needed)
+git -C "$REPO" worktree remove "$REPO/.aiforge-worktrees/$TICKET" --force
+
+# Delete the branch if you want a clean retry
+git -C "$REPO" branch -D "aiforge/$TICKET-<slug>"
+```
+
+After cleanup, reset the ticket to `todo` (SQL above). The next poll will recreate the worktree from `origin/<default-branch>`.
+
+### Ticket blocked by scope violation
+
+Feedback returned `verdict=scope_violation`. Graph ended. The ticket is in `blocked` status.
+
+1. Review the ticket's `## Files` allowlist — it may be missing a file the Doer needs to edit.
+2. Edit the ticket body to add the missing path.
+3. Reset: `UPDATE tickets SET status = 'todo' WHERE identifier = 'ONE-123';`
+
+### Ticket looping on fail
+
+Feedback has failed twice (`feedback_fail_count >= 2`). Graph ended, ticket is `blocked`.
+
+1. Check ticket events for the `fixlist` in the feedback comments.
+2. Either fix the ticket body (clarify acceptance criteria) or manually edit the worktree and reset to `in_review`:
+
+```sql
+UPDATE tickets SET status = 'in_review', updated_at = now()
+WHERE identifier = 'ONE-123';
+```
+
+---
+
+## 3. Model management
+
+### Required models (must be loaded or loadable in LM Studio)
+
+| Role | Model | Notes |
+|------|-------|-------|
+| Supervisor / Feedback | `gemma-4-26b-a4b-it` | Set via `AIFORGE_SUPERVISOR_MODEL` + `AIFORGE_FEEDBACK_MODEL` in plist |
+| Planner | `openai/gpt-oss-20b` | Default in `config.py` |
+| Doer | `qwen3-coder-next` | Default in `config.py`; the primary hot model |
+| Learner | `openai/gpt-oss-20b` | Set via `AIFORGE_LEARNER_MODEL` in plist |
+
+### Health checks
+
+```bash
+# LM Studio server responding
+curl -s http://127.0.0.1:1234/v1/models | jq '.data[].id'
+
+# bge-m3 embed sidecar
+curl -s http://127.0.0.1:8764/health
+
+# bge-reranker-v2-m3 sidecar
+curl -s http://127.0.0.1:8765/health
+```
+
+### Load a model manually
+
+```bash
+lms load gemma-4-26b-a4b-it --context-length 16384
+lms load qwen3-coder-next --context-length 131072
+```
+
+### Hot-swap a model
+
+Edit `aiforge_core/runtime/config.py` (defaults) or the plist env vars, then:
+
+```bash
+git push                          # on laptop / dev machine
+ssh mac-studio "cd ~/AIForgeCrew && git pull"
+launchctl kickstart -k gui/$(id -u)/com.aiforge.graph-runner
+```
+
+---
+
+## 4. Graph-runner troubleshooting
+
+### Reading log events
+
+```bash
+tail -f ~/.aiforge/logs/graph-runner.log
+tail -f ~/.aiforge/logs/orchestrator-*.ndjson | jq -c '{ts,event,ticket,stop_reason,verdict}'
+```
+
+### Key log events and what they mean
+
+| Event | Meaning | Action |
+|-------|---------|--------|
+| `graph_runner.start` | Ticket claimed, graph invoked | Normal |
+| `graph_runner.done stop_reason=done` | Happy path, ticket marked done | None |
+| `graph_runner.done stop_reason=blocked` | Scope violation or loop-break | Check fixlist; reset ticket if fixable |
+| `graph_runner.done verdict=scope_violation` | Doer wrote outside `## Files` allowlist | Extend allowlist in ticket body |
+| `graph_runner.exception` | Unhandled exception in a node | Check `graph-runner.err` for traceback |
+| `smolagents.no_changes` | Doer called final_answer with empty diff | Ticket comment posted; graph ends; re-queue |
+| `smolagents.scope_violation` | Doer tried to write a disallowed file | `ScopeViolation` caught; feedback_fail_count++ |
+| `supervisor.route assignee=<role>` | Supervisor resolved role, forwarding | Normal |
+| `tick.idle` | No todo tickets at poll time | Normal |
+
+### Graph ends without reaching learner
+
+Expected when:
+- `verdict=scope_violation` (Doer touched files outside `## Files`)
+- `feedback_fail_count >= 2` (two consecutive fail verdicts)
+- `stop_reason=done/blocked` emitted by any node
+
+Check `ticket_events` for the feedback comment with `fixlist` to understand why.
+
+### `graph_runner.exception` with LangGraph checkpoint error
+
+If `PostgresSaver` fails (e.g. checkpoint tables missing), the graph falls back to no checkpointing and continues. If it fails fatally:
+
+```bash
+psql aiforge < db/migrations/2026-04-23-langgraph-checkpoints.sql
+```
+
+---
+
+## 5. RAG troubleshooting
+
+### Embed sidecar down
+
+`retrieve_for_role_li` catches sidecar errors per-tier. Vector retrieval for that tier returns `[]`; BM25 results still contribute. The node continues without crashing. Watch for log lines:
+
+```
+vector retrieve failed: ...
+```
+
+Restart the sidecar and verify:
+
+```bash
+curl -s http://127.0.0.1:8764/health
+```
+
+### Rerank sidecar down
+
+`_rerank` in `aiforge_core/rag/retriever.py` catches sidecar errors and falls back to the RRF-fused order. Retrieval still works, just unranked. Watch for:
+
+```
+rerank sidecar failed (...); falling back to RRF order
+```
+
+### `data_memories` error (LlamaIndex PGVectorStore relic)
+
+If someone swaps `rag/retriever.py` to use `LlamaIndex PGVectorStore`, it will fail with a table-not-found error because LlamaIndex hardcodes a `data_` prefix (looking for `data_memories` instead of `memories`). The fix is to revert to the `store_v2`-direct path — do not use `PGVectorStore` with this schema.
+
+### Verify retrieval is working
+
+```bash
+python - <<'EOF'
+from aiforge_core.rag.retriever import retrieve_for_role_li
+hits = retrieve_for_role_li(None, "doer", "pagination controller", None)
+print(len(hits), "hits")
+for h in hits[:3]:
+    print(h.tier, h.score, h.text[:80])
+EOF
+```
+
+---
+
+## 6. Canary procedure
+
+Use this to verify the full pipeline after any infrastructure change.
+
+### Insert a canary ticket
+
+```sql
+INSERT INTO tickets (identifier, title, body, status, priority, assignee_role, created_at, updated_at)
+VALUES (
+  'ONE-CANARY-' || floor(random()*9000+1000)::text,
+  'Canary: verify graph pipeline',
+  E'## Files\n- README.md\n## Acceptance\n- Add a comment line to README.md\n- Compile is skipped (non-Java repo)',
+  'todo',
+  'medium',
+  'doer',
+  now(),
+  now()
+);
+```
+
+### Kick the runner
+
+```bash
+# Force an immediate tick (without waiting for the 60 s interval)
+launchctl kickstart gui/$(id -u)/com.aiforge.graph-runner
+```
+
+### Watch events
+
+```bash
+tail -f ~/.aiforge/logs/graph-runner.log &
+psql aiforge -c "
+  SELECT created_at, agent_role, kind, left(body, 120)
+  FROM ticket_events
+  WHERE ticket_id = (SELECT id FROM tickets WHERE identifier LIKE 'ONE-CANARY-%' ORDER BY created_at DESC LIMIT 1)
+  ORDER BY created_at;"
+```
+
+### Expected sequence
+
+```
+graph_runner.start
+supervisor.route → doer_node
+smolagents.start
+smolagents.done  (files_changed >= 1)
+feedback: verdict=pass   (or fail if acceptance not met)
+learner: DIGEST written
+graph_runner.done stop_reason=done
+```
+
+End-to-end wall time for a compile-green path: ~2 minutes.
+
+---
+
+## 7. Rollback plan
+
+There is no automated rollback. The legacy per-role stack was deleted in commit 31a2bf8. If the LangGraph pipeline is broken and must be abandoned:
+
+1. Find the last pre-migration commit: `git log --oneline | grep -i "before migration"` or check `docs/migration/2026-04-22-langgraph-llamaindex-smolagents.md` for the reference commit.
+2. `git revert <commit-range>` or `git checkout <pre-migration-sha> -- .` (the latter is destructive; commit the result).
+3. Reinstall the old plists. The old plist names were: `com.aiforge.tick-supervisor`, `com.aiforge.tick-planner`, `com.aiforge.tick-planner-b`, `com.aiforge.tick-doer`, `com.aiforge.tick-doer-b`, `com.aiforge.tick-feedback`, `com.aiforge.tick-learner`. These are gone from the repo; you would need to recover them from git history.
+4. Restore `aiforge_core/runtime/feature_flags.py` and the old `tickets.claim_next(role)` signature from git history.
+
+**This is intentionally painful.** The migration is one-way. Fix forward when possible.
+
+---
+
+## 8. Kill switch
+
+```bash
+# Stop the graph-runner (tickets in todo stay todo; in_progress may need manual reset)
+launchctl bootout gui/$(id -u)/com.aiforge.graph-runner
+
+# Stop everything aiforge
+for label in com.aiforge.graph-runner com.aiforge.pg-watchdog com.aiforge.git-pull \
+             com.aiforge.file-indexer com.aiforge.reindex-daily; do
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+done
+
+# Resume
+bash ~/AIForgeCrew/scripts/runtime/install-launchd.sh
+```
+
+Per-ticket stop (prevents re-claim without touching infra):
+
+```sql
+UPDATE tickets SET status = 'cancelled', updated_at = now()
+WHERE identifier = 'ONE-123';
+```
