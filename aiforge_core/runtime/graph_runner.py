@@ -60,7 +60,9 @@ def run_graph(ticket_id: int) -> int:
         # immediately pull the ticket again.
         if stop_reason == "done" or verdict == "pass":
             new_status = "done"
-        elif verdict == "scope_violation":
+        elif verdict in ("scope_violation", "fail"):
+            # Reaching END with verdict=fail means feedback_fail_count hit the
+            # cap (2) — human review needed, not a transient retry.
             new_status = "blocked"
         elif stop_reason in ("blocked", "loop_detected"):
             new_status = "blocked"
