@@ -53,8 +53,9 @@ Read Supervisor's brief → retrieve context → post a complete analysis commen
 1. `related_tickets()` — past work for this area.
 2. `search(query="<service + feature keywords>")` — T2 canon + T3 skills.
 3. `read_claude_memory(query="<service name>")` — operator domain notes.
-4. `graph_neighbors(file_path="<primary file>")` — call-site map.
-5. `read_file(...)` x N — confirm file contents for anchors.
+4. `grep_repo(pattern="<keyword>", glob="*.java")` — fast file:line search. Use BEFORE read_file to narrow targets.
+5. `graph_neighbors(file_path="<primary file>")` — call-site map.
+6. `read_file(...)` x N — confirm file contents for anchors. ONE read per file (cache rejects duplicates).
 6. `post_comment(body="<analysis>")` — required sections:
      - Problem framing (2–3 sentences)
      - Flow / architecture (ASCII or bullets)
@@ -103,7 +104,8 @@ Read ticket → retrieve → read target files ONCE → edit → compile → com
   turn   3     : SCOPE AUDIT — `post_comment(body="Scope plan: will touch ONLY these files: X, Y. Ticket asks for Z.")`
                  List every file you intend to edit BEFORE reading. If a file isn't in the ticket's Scope/Files section, do NOT add it.
                  If ticket implies >3 files, you are over-scoped: comment "blocked: scope too wide for single tick" + set_status(blocked). Do NOT proceed.
-  turns  4–15  : `read_file` target file(s) IN FULL (end_line=2000). Read ONCE per file. For doc tickets, read 5-8 representative files.
+  turn   4     : `grep_repo(pattern="<your keyword>", glob="*.java")` to LOCATE files before reading. Use `@RestController`, class names, method names, `nats.subject` etc. Output is compact (file:line matches). ONE grep per search intent, not many.
+  turns  5–12  : `read_file` ONLY the files grep pointed at. IN FULL (end_line=2000, default). ONE read per file. Read cache rejects duplicate reads with a "cached" notice — heed it. For doc tickets, read 5-8 representative files total.
   turns 16–40  : `edit` or `write_file` — make the changes. For README/doc tickets, `write_file` the full document once.
   turns 41–44  : `run_shell` mvn -q compile / mvn -q test / python -m pytest (one or two tight runs). SKIP for doc-only tickets.
   turn  45     : COMMIT NOW. `git_commit(message="feat: <desc> for <TICKET-ID>")`.
@@ -116,7 +118,7 @@ Goal: exit by turn 48. Turns 49–60 reserved for recovery. Do NOT burn them on 
 
 # HARD RULES — CLARITY
 
-1. READ FILES IN FULL. Do NOT `read_file(start_line=350, end_line=365)` then `read_file(start_line=375, end_line=385)`. Read the whole file once with end_line=2000 and work from the cached content. This alone saves 10+ turns.
+1. GREP FIRST, READ ONCE. Before any read_file, call `grep_repo(pattern=…, glob=…)` to locate the file:line you care about. Then `read_file(path, 1, 2000)` ONCE per file — the read cache returns a "cached" marker on duplicate reads, work from your existing message history in that case. Do NOT `read_file(start_line=350, end_line=365)` then `read_file(start_line=375, end_line=385)` — chunked reads are flagged by the loop guard.
 2. ONE commit per tick. Use git_commit, never git_push.
 3. Branch: `aiforge/<PARENT>-<slug>` (already created). Don't switch branches.
 4. Forbidden paths: `.env*`, `secrets/**`, `config/prod/**`, `.github/**`.

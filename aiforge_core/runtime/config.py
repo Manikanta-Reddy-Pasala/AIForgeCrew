@@ -65,13 +65,13 @@ class RoleConfig:
 
 # Tool allowlists per role. Narrower = less distraction + less mischief.
 _DOER_TOOLS = (
-    "search", "read_file", "run_shell", "fetch_url",
+    "search", "read_file", "grep_repo", "run_shell", "fetch_url",
     "write_file", "edit", "git_commit", "git_push",
     "create_child_ticket", "post_comment", "set_status", "retain_fact",
     "related_tickets", "graph_neighbors", "kubectl_read", "read_claude_memory",
 )
 _PLANNER_TOOLS = (
-    "search", "read_file", "run_shell", "fetch_url",
+    "search", "read_file", "grep_repo", "run_shell", "fetch_url",
     "create_child_ticket", "post_comment", "set_status", "retain_fact",
     "related_tickets", "graph_neighbors", "kubectl_read", "mongo_query",
     "read_claude_memory",

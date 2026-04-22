@@ -17,7 +17,7 @@ import shlex
 import subprocess
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import tickets, memory
@@ -33,6 +33,11 @@ class ToolContext:
     parent_id: int | None
     worktree_path: str | None            # absolute path to git worktree
     logger: Any                          # logging.Logger (emit() + info())
+    # Per-tick in-memory cache so repeated read_file on the same (path,
+    # range) costs zero I/O and returns a short "cached — already in
+    # your history" notice instead of the full file, nudging the model
+    # to stop re-reading.
+    read_cache: dict = field(default_factory=dict)
 
 
 # ─────────────────────────── Dispatch result ────────────────────────────
@@ -132,20 +137,30 @@ def _tool_search(ctx: ToolContext, query: str, wing_prefix: str | None = None,
 # ── read_file
 @register("read_file", {
     "name": "read_file",
-    "description": "Read a UTF-8 file. Supports line ranges. Absolute or worktree-relative paths.",
+    "description": "Read a UTF-8 file IN FULL (default end_line=2000). Absolute or worktree-relative paths. If you call this twice on the same path within a tick, the second call returns a 'cached — already in your history' notice: stop re-reading and work from earlier output. For narrow-scope lookups use `grep_repo` first to locate the right line, then `read_file` once.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string"},
             "start_line": {"type": "integer", "default": 1},
-            "end_line": {"type": "integer", "default": 400},
+            "end_line": {"type": "integer", "default": 2000},
         },
         "required": ["path"],
     },
 })
 def _tool_read_file(ctx: ToolContext, path: str, start_line: int = 1,
-                    end_line: int = 400) -> ToolResult:
+                    end_line: int = 2000) -> ToolResult:
     p = _resolve_path(ctx, path)
+    cache_key = f"{p}:{start_line}:{end_line}"
+    if cache_key in ctx.read_cache:
+        return ToolResult(
+            True,
+            (f"(cached — you already read `{path}` earlier this tick. "
+             f"Scroll up in your message history for the content. "
+             f"Stop re-reading; proceed to write_file / edit / "
+             f"post_comment with what you already know.)"),
+            {"path": p, "cached": True},
+        )
     try:
         with open(p, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
@@ -153,8 +168,61 @@ def _tool_read_file(ctx: ToolContext, path: str, start_line: int = 1,
         return ToolResult(False, f"file not found: {p}", {})
     sliced = lines[max(0, start_line - 1): end_line]
     numbered = "".join(f"{i + start_line:5d}| {l}" for i, l in enumerate(sliced))
+    ctx.read_cache[cache_key] = True
     return ToolResult(True, numbered or "(empty)",
                       {"path": p, "lines_returned": len(sliced)})
+
+
+# ── grep_repo
+@register("grep_repo", {
+    "name": "grep_repo",
+    "description": "ripgrep across the worktree (or a directory under it). Use this BEFORE read_file to locate the exact file:line you need. Example: `grep_repo('@RestController', '*.java')` returns every controller class with path:line. Much cheaper than reading whole files.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string",
+                        "description": "Regex pattern (ripgrep syntax). Case-insensitive by default."},
+            "glob": {"type": "string",
+                     "description": "File glob filter, e.g. '*.java', '*.py', '!*.test.js'. Optional."},
+            "path": {"type": "string",
+                     "description": "Subdir to search under worktree root. Optional; defaults to worktree."},
+            "max_matches": {"type": "integer", "default": 60,
+                            "description": "Cap results so output stays small."},
+        },
+        "required": ["pattern"],
+    },
+})
+def _tool_grep_repo(ctx: ToolContext, pattern: str,
+                    glob: str | None = None,
+                    path: str | None = None,
+                    max_matches: int = 60) -> ToolResult:
+    base = ctx.worktree_path or WORKTREE_ROOT
+    target = _resolve_path(ctx, path) if path else base
+    cmd = ["rg", "-n", "-i", "--no-heading", "--color=never",
+           "-S", "-m", str(int(max_matches))]
+    if glob:
+        cmd += ["-g", glob]
+    cmd += [pattern, target]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, timeout=30, check=False,
+        )
+    except FileNotFoundError:
+        return ToolResult(False, "rg (ripgrep) not installed; fall back to run_shell('grep -rn …')", {})
+    except subprocess.TimeoutExpired:
+        return ToolResult(False, "grep_repo timed out (30s) — narrow the pattern or glob", {})
+    out = proc.stdout.decode("utf-8", "replace")
+    err = proc.stderr.decode("utf-8", "replace")
+    if proc.returncode == 1 and not out:
+        return ToolResult(True, "(no matches)",
+                          {"matches": 0, "pattern": pattern})
+    if proc.returncode not in (0, 1):
+        return ToolResult(False, f"rg exit={proc.returncode}: {err[:400]}", {})
+    lines = out.splitlines()
+    trimmed = "\n".join(lines[:max_matches])
+    meta = {"matches": len(lines), "pattern": pattern,
+            "truncated": len(lines) > max_matches}
+    return ToolResult(True, trimmed or "(no matches)", meta)
 
 
 # ── write_file
