@@ -27,7 +27,7 @@ echo ">>> 2/5 installing python deps (via uv)"
 cd "$REPO" && /opt/homebrew/bin/uv pip install --python "$VENV/bin/python" \
   openai 'psycopg[binary]' pgvector 2>&1 | tail -4
 
-echo ">>> 3/5 loading single shared model (Planner + Doer share qwen3-coder-next)"
+echo ">>> 3/5 loading Doer model (always hot); Planner loads on-demand via memguard"
 "$LMS" unload --all 2>&1 | tail -1
 "$LMS" load qwen3-coder-next --context-length 131072 --ttl 28800 --yes 2>&1 | tail -1
 "$LMS" ps
