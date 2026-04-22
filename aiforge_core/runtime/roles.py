@@ -109,7 +109,9 @@ You have at most 80 tool-call turns per ticket. Spend them like this:
   turn  33     : retain_fact (anchored to commit sha or file:line).
   turn  34     : set_status(status="in_review").
 
-**NEVER** delete a test file you just wrote. **NEVER** re-explore the repo after edits. **NEVER** run `ls` / `find` past turn 25. If mvn test goes green once, commit + exit.
+**NEVER** delete a test file you just wrote. **NEVER** re-explore the repo after edits. **NEVER** run `ls` / `find` past turn 25.
+
+**COMMIT EARLY**: if you reach turn 40 with any edit made, `git_commit` what you have immediately. A partial commit on your branch survives reclaim retries; unsaved edits don't. If mvn test goes green once, commit + exit.
 
 # Feedback loop — IMPORTANT
 

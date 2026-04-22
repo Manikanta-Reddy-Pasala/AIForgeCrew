@@ -34,8 +34,8 @@ WORKTREE_ROOT = os.environ.get(
 )
 
 # ─────────────────────────── Tick budget ────────────────────────────────
-TICK_MAX_WALL_SECS = int(os.environ.get("AIFORGE_TICK_MAX_WALL", "1800"))   # 30 min
-TICK_MAX_TURNS     = int(os.environ.get("AIFORGE_TICK_MAX_TURNS", "80"))
+TICK_MAX_WALL_SECS = int(os.environ.get("AIFORGE_TICK_MAX_WALL", "2400"))   # 40 min
+TICK_MAX_TURNS     = int(os.environ.get("AIFORGE_TICK_MAX_TURNS", "120"))
 
 
 @dataclass(frozen=True)
@@ -132,7 +132,7 @@ ROLES: dict[str, RoleConfig] = {
         name="doer",
         model=DOER_MODEL,
         transport="openai",
-        max_turns=80,
+        max_turns=120,
         tool_allowlist=_DOER_TOOLS,
         ctx=131072, ttl_s=28800,  # hot; 8h TTL
     ),
