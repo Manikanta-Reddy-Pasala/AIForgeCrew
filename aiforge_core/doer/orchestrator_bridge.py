@@ -6,6 +6,7 @@ same shape as ``_run_tool_loop`` so ``_finalize_ticket`` works unchanged.
 """
 from __future__ import annotations
 
+import subprocess
 import time
 from typing import TYPE_CHECKING
 
@@ -73,15 +74,41 @@ def run_smolagents_doer(ticket: object, worktree_path: str, log: object) -> dict
         agent, task_prompt = build_doer_agent(ticket, worktree_path, context_bundle, llm_config)
         result = agent.run(task=task_prompt)
 
-        # smolagents returns the final_answer string on success.
         summary_text = str(result) if result is not None else ""
+
+        # Guard: if the agent called final_answer without actually modifying any
+        # file, reclassify as no_changes so the reclaim logic kicks in instead of
+        # prematurely marking the ticket complete.
+        diff_proc = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            cwd=worktree_path, capture_output=True, text=True, check=False,
+        )
+        changed_files = [ln for ln in diff_proc.stdout.splitlines() if ln.strip()]
+
+        if not changed_files:
+            emit(log, "smolagents.no_changes", ticket=ticket.identifier,  # type: ignore[attr-defined]
+                 summary_chars=len(summary_text))
+            tickets.add_event(
+                ticket_id, role_name, "error",
+                body=f"final_answer called with empty diff: {summary_text[:2000]}",
+                metadata={"stop_reason": "no_changes"},
+            )
+            return {
+                "stop_reason": "no_changes",
+                "has_commented": False,
+                "turns": getattr(agent, "step_number", 0),
+                "wall_s": round(time.time() - t_start, 2),
+                "summary": summary_text,
+            }
+
         tickets.add_event(
             ticket_id, role_name, "comment",
             body=summary_text[:4000],
-            metadata={"source": "smolagents_final_answer"},
+            metadata={"source": "smolagents_final_answer", "files_changed": changed_files},
         )
         emit(log, "smolagents.done", ticket=ticket.identifier,  # type: ignore[attr-defined]
-             summary_chars=len(summary_text))
+             summary_chars=len(summary_text),
+             files_changed=len(changed_files))
         return {
             "stop_reason": "final_answer",
             "has_commented": bool(summary_text),
