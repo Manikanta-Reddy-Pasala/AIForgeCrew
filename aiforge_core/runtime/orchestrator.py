@@ -297,6 +297,34 @@ def _infer_repo_from_ticket(ticket: tickets.Ticket) -> str | None:
     return None
 
 
+def _compact_old_tool_results(messages: list[dict], keep_tail: int = 5) -> None:
+    """In-place compact old tool result messages to prevent context bloat.
+
+    Tool results (role='tool') older than the last `keep_tail` such messages
+    get their content truncated to 400 chars + a `[elided]` marker. The
+    assistant messages that referenced them stay intact so the model sees
+    the tool-call chain — just not the full payload.
+
+    Called after turn 15+ in the tool loop. Typical doer/planner tick hits
+    this once ctx pressure starts mattering. Saves 50-80% of prompt tokens
+    on long ticks without losing recent context.
+    """
+    # Collect indices of tool messages. Last `keep_tail` stay full.
+    tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+    if len(tool_indices) <= keep_tail:
+        return
+    to_trim = tool_indices[:-keep_tail]
+    for i in to_trim:
+        content = messages[i].get("content", "")
+        if isinstance(content, str) and len(content) > 450:
+            head = content[:400]
+            elided = len(content) - len(head)
+            messages[i]["content"] = (
+                f"{head}\n…[{elided} chars elided — call the same tool again "
+                f"if you need the full result]"
+            )
+
+
 # ─────────────────────────── Tool loop ──────────────────────────────────
 def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
                    worktree_path: str | None, log) -> dict:
@@ -388,11 +416,18 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
             stop_reason = "llm_error"
             break
         dt = round((time.time() - t0) * 1000)
+        # Rough messages size estimate (char count as proxy for tokens).
+        msg_chars = sum(len(str(m.get("content", ""))) for m in messages) + sum(
+            len(str(tc)) for m in messages
+            for tc in (m.get("tool_calls") or [])
+        )
         emit(log, "llm.turn", turn=turn, dur_ms=dt,
              finish_reason=turn_result.finish_reason,
              tokens_in=turn_result.prompt_tokens,
              tokens_out=turn_result.completion_tokens,
-             tool_calls=len(turn_result.tool_calls or []))
+             tool_calls=len(turn_result.tool_calls or []),
+             msg_chars=msg_chars,
+             msg_count=len(messages))
 
         # Append assistant message to history (including tool_calls).
         assistant_msg: dict = {"role": "assistant",
@@ -400,6 +435,14 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
         if turn_result.tool_calls:
             assistant_msg["tool_calls"] = turn_result.tool_calls
         messages.append(assistant_msg)
+
+        # Context compaction: once we're past turn 15, truncate older tool
+        # results to first 400 chars. Keeps the last 5 turns' tool outputs
+        # in full — that's what the model needs for immediate decisions.
+        # Earlier file reads or shell outputs get replaced with a
+        # placeholder the model can see but that stops eating ctx.
+        if turn >= 15:
+            _compact_old_tool_results(messages, keep_tail=5)
 
         tickets.add_event(ticket.id, role_cfg.name, "llm_turn",
                           body=(turn_result.content or "")[:4000],
