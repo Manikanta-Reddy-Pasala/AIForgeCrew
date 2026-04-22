@@ -3,10 +3,25 @@ from __future__ import annotations
 
 from smolagents import LiteLLMModel, ToolCallingAgent
 
-from aiforge_core.runtime.roles import DOER_SYSTEM
-
 from .scope_guard import ScopeGuard, parse_allowed_files
 from .tools import make_tools
+
+
+DOER_PREAMBLE = """You are the Doer agent. Implement the ticket below using the tools provided.
+
+Strategy:
+1. read_file the target file(s) to understand current shape.
+2. grep or read_file the referenced service to verify method signatures before calling them.
+3. Plan minimal edits. Prefer surgical edit_block calls over full-file rewrites.
+4. run_compile after your edits.
+5. If compile fails: read the first error, fix exactly that one thing, retry. Max 3 compile attempts.
+6. Call final_answer with a one-paragraph summary when compile is green or after 3 failed attempts.
+
+Hard rules:
+- ONLY edit files listed in the ## Allowed files section.
+- Do NOT invent method names. If grep returns nothing for a method you want to call, it doesn't exist.
+- Do NOT rewrite the entire file via a single edit_block with the whole file as find+replace — use narrow blocks.
+"""
 
 
 def build_task_prompt(ticket: object, context_bundle: str, allowed: set[str]) -> str:
@@ -20,7 +35,7 @@ def build_task_prompt(ticket: object, context_bundle: str, allowed: set[str]) ->
     )
     body = getattr(ticket, "body", "") or ""
     return (
-        f"{DOER_SYSTEM}\n\n"
+        f"{DOER_PREAMBLE}\n"
         f"## Context bundle\n{context_bundle}"
         f"{scope_block}\n\n"
         f"## Ticket body\n{body}"
