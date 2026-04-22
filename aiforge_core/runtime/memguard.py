@@ -54,6 +54,11 @@ class LoadedModel:
     size_gb: float
     context: int
     ttl_remaining_s: int  # negative if expired
+    status: str = "IDLE"    # IDLE | GENERATING | PROCESSINGPROMPT | LOADING
+
+    @property
+    def in_use(self) -> bool:
+        return self.status.upper() in ("GENERATING", "PROCESSINGPROMPT", "LOADING")
 
 
 def _lms_ps() -> dict[str, LoadedModel]:
@@ -88,6 +93,9 @@ def _lms_ps() -> dict[str, LoadedModel]:
         except ValueError:
             continue
         identifier = parts[0]
+        # Status column is between MODEL and SIZE. parts[0]=IDENT, parts[1]=MODEL,
+        # parts[2]=STATUS (IDLE / GENERATING / PROCESSINGPROMPT).
+        status = parts[2] if len(parts) > 2 else "IDLE"
         # Context = next numeric after GB/MB pair
         ctx_idx = size_idx + 2
         try:
@@ -106,6 +114,7 @@ def _lms_ps() -> dict[str, LoadedModel]:
         out[identifier] = LoadedModel(
             identifier=identifier, size_gb=size_val,
             context=context, ttl_remaining_s=ttl_rem_s,
+            status=status,
         )
     return out
 
@@ -365,15 +374,21 @@ def plan_rebalance(log, current_role: str | None = None) -> dict:
         if scores[winner_candidate] > 0:
             winner = winner_candidate
 
-    # Evict all non-protected models that aren't the winner.
+    # Evict all non-protected models that aren't the winner AND aren't
+    # actively generating. Evicting mid-inference yanks the model out from
+    # under a concurrent tick → 'Model unloaded' errors.
     evicted: list[str] = []
-    for model in list(loaded.keys()):
-        if model in PROTECTED_MODELS:
+    for model_id, loaded_m in loaded.items():
+        if model_id in PROTECTED_MODELS:
             continue
-        if model == winner:
+        if model_id == winner:
             continue
-        if _lms_unload(model, log):
-            evicted.append(model)
+        if loaded_m.in_use:
+            emit(log, "memguard.skip_evict_in_use",
+                 model=model_id, status=loaded_m.status)
+            continue
+        if _lms_unload(model_id, log):
+            evicted.append(model_id)
 
     # If RAM is still tight after evictions, also evict the winner so the
     # Doer model has room. Rationale: ceiling takes priority over warmth.
@@ -416,6 +431,12 @@ def release_after_tick(identifier: str, log, role_name: str | None = None) -> No
     # Only unload if actually loaded (avoid noise).
     loaded = _lms_ps()
     if identifier not in loaded:
+        return
+    # Never evict a model currently generating — another concurrent tick
+    # is using it. This happens with 2x doer / 2x planner parallel workers.
+    if loaded[identifier].in_use:
+        emit(log, "memguard.skip_release_in_use",
+             model=identifier, status=loaded[identifier].status)
         return
     # Smart keep-warm: if more ticks for this role are queued AND we're
     # below the RAM ceiling, skip the unload.
