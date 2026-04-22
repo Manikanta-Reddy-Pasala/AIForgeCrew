@@ -104,10 +104,10 @@ def _lang_for(ext: str) -> str:
     }.get(ext, "text")
 
 
-def build_outline(rel_path: str, ext: str, content: str) -> str:
-    """Compact, searchable, one-string summary of a file."""
+def extract_outline_parts(rel_path: str, ext: str, content: str) -> dict:
+    """Return structured outline pieces so both per-file and per-feature
+    summaries can reuse the same extraction."""
     lang = _lang_for(ext)
-    # First non-blank line or docstring-ish header
     head = ""
     for line in content.splitlines()[:30]:
         s = line.strip().lstrip("/").lstrip("#").lstrip('"').lstrip("*").strip()
@@ -124,15 +124,21 @@ def build_outline(rel_path: str, ext: str, content: str) -> str:
         raw = funcs.findall(content)
         flat = [n for grp in raw for n in (grp if isinstance(grp, tuple) else [grp]) if n]
         func_names = sorted(set(flat))[:30]
-    parts = [f"{rel_path} ({lang})"]
-    if head:
-        parts.append(f"header: {head}")
-    if class_names:
-        parts.append(f"classes: {', '.join(class_names)}")
-    if func_names:
-        parts.append(f"functions: {', '.join(func_names)}")
-    if not class_names and not func_names:
-        # Fallback: first 200 chars as summary
+    return {"rel": rel_path, "lang": lang, "header": head,
+            "classes": class_names, "funcs": func_names}
+
+
+def build_outline(rel_path: str, ext: str, content: str) -> str:
+    """Compact, searchable, one-string summary of a file."""
+    o = extract_outline_parts(rel_path, ext, content)
+    parts = [f"{o['rel']} ({o['lang']})"]
+    if o["header"]:
+        parts.append(f"header: {o['header']}")
+    if o["classes"]:
+        parts.append(f"classes: {', '.join(o['classes'])}")
+    if o["funcs"]:
+        parts.append(f"functions: {', '.join(o['funcs'])}")
+    if not o["classes"] and not o["funcs"]:
         parts.append(f"snippet: {content[:200].replace(chr(10), ' ')}")
     return " | ".join(parts)
 
@@ -184,12 +190,66 @@ def existing_index(cur, wing: str) -> dict[str, dict]:
     return out
 
 
+def _feature_group(rel_path: str) -> str | None:
+    """If the file sits under a `.../feature/<name>/...` tree, return the
+    feature directory (relative to repo root). Catches both:
+      - src/main/java/com/pos/backend/feature/businessProduct/Foo.java
+      - src/main/java/com/oneshell/business/application/feature/products/Bar.java
+    Returns None when the file isn't inside a feature folder."""
+    parts = rel_path.split("/")
+    for i, seg in enumerate(parts):
+        if seg == "feature" and i + 1 < len(parts) - 1:
+            return "/".join(parts[:i + 2])
+    return None
+
+
+def build_feature_rollup(feature_path: str, files: list[dict]) -> str:
+    """One paragraph summary of a feature folder's contents.
+
+    files = list of {rel, lang, classes:[], funcs:[], header}
+    """
+    name = feature_path.rsplit("/", 1)[-1]
+    langs = sorted({f["lang"] for f in files})
+    all_classes: set[str] = set()
+    all_funcs: set[str] = set()
+    controllers: list[str] = []
+    services: list[str] = []
+    models: list[str] = []
+    for f in files:
+        all_classes.update(f["classes"])
+        all_funcs.update(f["funcs"])
+        for c in f["classes"]:
+            low = c.lower()
+            if "controller" in low:
+                controllers.append(c)
+            elif "service" in low:
+                services.append(c)
+            elif "dao" in low or "entity" in low or low.endswith(("dao", "dto", "request", "response")):
+                models.append(c)
+    parts = [f"feature={name} (files={len(files)}, langs={','.join(langs)})"]
+    if controllers:
+        parts.append(f"controllers: {', '.join(sorted(set(controllers))[:10])}")
+    if services:
+        parts.append(f"services: {', '.join(sorted(set(services))[:10])}")
+    if models:
+        parts.append(f"models: {', '.join(sorted(set(models))[:10])}")
+    file_list = ", ".join(f["rel"].rsplit("/", 1)[-1] for f in files[:12])
+    if len(files) > 12:
+        file_list += f", ... (+{len(files)-12} more)"
+    parts.append(f"files: {file_list}")
+    return " | ".join(parts)
+
+
 def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> dict:
     """Index a single repo. Returns stats."""
     wing = f"code/{repo_name}"
+    feature_wing = f"feature/{repo_name}"
     stats = {"repo": repo_name, "scanned": 0, "changed": 0,
-             "new": 0, "archived": 0, "unchanged": 0, "errors": 0}
+             "new": 0, "archived": 0, "unchanged": 0, "errors": 0,
+             "features": 0}
     seen: set[str] = set()
+    # Collected for feature rollup pass.
+    per_feature: dict[str, list[dict]] = {}
 
     with psycopg.connect(AIFORGE_DSN, connect_timeout=5) as conn, conn.cursor() as cur:
         existing = existing_index(cur, wing)
@@ -216,6 +276,7 @@ def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> 
                 stats["errors"] += 1
                 continue
             ext = p.suffix.lower()
+            parts = extract_outline_parts(rel, ext, content)
             outline = build_outline(rel, ext, content)
             mtime = int(p.stat().st_mtime)
             md = {"file_hash": h, "size": p.stat().st_size,
@@ -228,6 +289,10 @@ def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> 
             # upsert_code_chunk handles DELETE-by-source + INSERT + embed.
             store.upsert_code_chunk(repo=repo_name, path=rel,
                                     text=outline, metadata=md)
+            # Aggregate into feature bucket (or top-level "misc") for rollup.
+            fg = _feature_group(rel)
+            if fg:
+                per_feature.setdefault(fg, []).append(parts)
 
         # Archive rows for files that no longer exist. Only touch rows
         # this indexer wrote (outline_ver set). Leaves legacy t4 chunks
@@ -246,6 +311,45 @@ def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> 
             )
             conn.commit()
             stats["archived"] += 1
+
+    # ─── Feature rollup pass ─────────────────────────────────────
+    # One aggregate row per `feature/<name>` dir under the repo. Uses
+    # the per-feature file list accumulated during the file loop.
+    # Purged and rebuilt fully each run — cheap (few hundred rows total).
+    if per_feature:
+        with psycopg.connect(AIFORGE_DSN, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM memories WHERE tier='t4' AND wing = %s",
+                (feature_wing,),
+            )
+            conn.commit()
+        for feature_path, files in sorted(per_feature.items()):
+            if not files:
+                continue
+            text = build_feature_rollup(feature_path, files)
+            md = {"feature": feature_path.rsplit("/", 1)[-1],
+                  "feature_path": feature_path,
+                  "file_count": len(files),
+                  "repo": repo_name,
+                  "outline_ver": OUTLINE_VER,
+                  "rollup": True}
+            # Reuse upsert_code_chunk — it sets tier=t4 and wing=code/<repo>.
+            # We manually insert to use the `feature/<repo>` wing instead.
+            from aiforge_core import embedder as embed_mod
+            from aiforge_core.store_v2 import _vec_literal
+            import json as _json
+            vec = embed_mod.embed(text)
+            with psycopg.connect(AIFORGE_DSN, connect_timeout=5) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO memories
+                       (tier, wing, kind, source, title, text, embedding, metadata)
+                       VALUES ('t4', %s, 'feature_rollup', %s, %s, %s, %s::vector, %s::jsonb)""",
+                    (feature_wing, feature_path,
+                     md["feature"], text, _vec_literal(vec),
+                     _json.dumps(md)),
+                )
+                conn.commit()
+            stats["features"] += 1
 
     return stats
 
@@ -271,21 +375,23 @@ def main(full: bool = False, only: str | None = None) -> int:
 
     store = Store(AIFORGE_DSN)
     totals = {"scanned": 0, "changed": 0, "new": 0, "archived": 0,
-              "unchanged": 0, "errors": 0}
+              "unchanged": 0, "errors": 0, "features": 0}
     for name, root in repos:
         try:
             stats = index_repo(store, name, root, full=full)
         except Exception as exc:
             log.exception("index_repo failed for %s: %s", name, exc)
             continue
-        log.info("%s: scanned=%d new=%d changed=%d archived=%d unchanged=%d errors=%d",
+        log.info("%s: scanned=%d new=%d changed=%d archived=%d unchanged=%d features=%d errors=%d",
                  name, stats["scanned"], stats["new"], stats["changed"],
-                 stats["archived"], stats["unchanged"], stats["errors"])
+                 stats["archived"], stats["unchanged"],
+                 stats.get("features", 0), stats["errors"])
         for k in totals:
-            totals[k] += stats[k]
-    log.info("total: scanned=%d new=%d changed=%d archived=%d unchanged=%d errors=%d dur=%.1fs",
+            totals[k] = totals.get(k, 0) + stats.get(k, 0)
+    log.info("total: scanned=%d new=%d changed=%d archived=%d unchanged=%d features=%d errors=%d dur=%.1fs",
              totals["scanned"], totals["new"], totals["changed"],
-             totals["archived"], totals["unchanged"], totals["errors"],
+             totals["archived"], totals["unchanged"],
+             totals.get("features", 0), totals["errors"],
              time.time() - t0)
     return 0
 
