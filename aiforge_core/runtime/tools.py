@@ -450,18 +450,20 @@ def _tool_git_push(ctx: ToolContext) -> ToolResult:
 # ── Ticket ops
 @register("create_child_ticket", {
     "name": "create_child_ticket",
-    "description": "Create a child ticket under the current ticket. Assign to the role that should implement it. Defaults to 'doer' if assignee_role omitted. Dedup-safe: if a child with the same title already exists under this parent or project, the existing child is returned. Optional `max_turns` overrides the assignee role's default turn budget — use 20 for trivial single-line edits, 40 for normal file changes, 60 for multi-file + docs, 80 for long READMEs or heavy analysis.",
+    "description": "Create a child ticket under the current ticket. REQUIRED: `project` (the target repo folder under ~/codeRepo such as 'PosClientBackend', 'PosServerBackend', 'MongoDbService', etc.) — the orchestrator creates the git worktree based on this. Dedup-safe across project. Optional `max_turns` overrides the assignee role's default turn budget: 20=trivial, 40=normal, 60=docs, 100=comprehensive README, 150=deep analysis.",
     "parameters": {
         "type": "object",
         "properties": {
             "title": {"type": "string"},
             "body": {"type": "string"},
+            "project": {"type": "string",
+                        "description": "Target repo folder under ~/codeRepo (e.g. 'PosClientBackend'). REQUIRED for doer children. Planner/feedback children inherit parent.project if omitted."},
             "assignee_role": {"type": "string",
                               "enum": ["planner", "doer", "feedback", "learner"],
                               "default": "doer"},
             "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"], "default": "medium"},
             "max_turns": {"type": "integer",
-                          "description": "Turn budget for the assignee. 20=trivial, 40=normal, 60=docs, 100=comprehensive README, 150=deep multi-file analysis. Hard-capped at TICK_MAX_TURNS (300); wall_secs is the real guardrail.",
+                          "description": "Turn budget. 20=trivial, 40=normal, 60=docs, 100=comprehensive README, 150=deep analysis. Max 300.",
                           "minimum": 4, "maximum": 300},
         },
         "required": ["title", "body"],
@@ -470,15 +472,28 @@ def _tool_git_push(ctx: ToolContext) -> ToolResult:
 def _tool_create_child(ctx: ToolContext, title: str, body: str,
                        assignee_role: str | None = None,
                        priority: str = "medium",
-                       max_turns: int | None = None) -> ToolResult:
+                       max_turns: int | None = None,
+                       project: str | None = None) -> ToolResult:
     parent = tickets.get(ctx.ticket_id)
     if parent is None:
         return ToolResult(False, "parent ticket missing", {})
     # Default assignee to doer when agent omits (common with smaller models).
     if not assignee_role or assignee_role.strip() in ("", "null", "None"):
         assignee_role = "doer"
-    # Enforce doer-ticket body structure so Doer has a clear Scope/Files list.
+    # Resolve project — explicit param > parent.project.
+    eff_project = (project or "").strip() or parent.project
+    # Enforce doer-ticket body structure + project assignment.
     if assignee_role == "doer":
+        if not eff_project or eff_project.strip().lower() in ("aiforgecrew", ""):
+            return ToolResult(
+                False,
+                ("doer child REQUIRES `project` — the repo folder under "
+                 "~/codeRepo (e.g. 'PosClientBackend', 'PosServerBackend', "
+                 "'MongoDbService'). Orchestrator uses this to create the "
+                 "git worktree. AIForgeCrew is the orchestrator itself and "
+                 "cannot be a target."),
+                {"missing": "project"},
+            )
         lowered = body.lower()
         required = ("## scope", "## files", "## acceptance")
         missing = [s for s in required if s not in lowered]
@@ -508,7 +523,7 @@ def _tool_create_child(ctx: ToolContext, title: str, body: str,
         parent_id=ctx.ticket_id,
         priority=priority,
         branch=parent.branch,    # share branch
-        project=parent.project,
+        project=eff_project,
         metadata={"created_by_role": ctx.role,
                   **({"max_turns": int(max_turns)} if max_turns else {})},
     )

@@ -63,10 +63,13 @@ Read Supervisor's brief → retrieve context → post a complete analysis commen
      - Risks, races, edge cases (observed, not invented)
      - Acceptance criteria
      - Test expectations
-7. `create_child_ticket(...)` x N — one child per concrete small task. REQUIRED body format:
+7. `create_child_ticket(...)` x N — one child per concrete small task. REQUIRED fields:
        {"title":"Add destination validation in StockTransferValidationService",
-        "body":"## Scope\nValidate destinationBusinessId + destinationWarehouseId non-null before save.\n\n## Files (≤3, absolute or repo-relative)\n- src/main/java/com/pos/StockTransferValidationService.java:45\n\n## Acceptance\n- NullPointerException replaced with IllegalArgumentException\n- Existing tests still pass\n\n## Test\n- New unit test: StockTransferValidationServiceTest#rejectsNullDestination",
+        "body":"## Scope\nValidate destinationBusinessId + destinationWarehouseId non-null before save.\n\n## Files (≤3, repo-relative)\n- src/main/java/com/pos/StockTransferValidationService.java:45\n\n## Acceptance\n- NullPointerException replaced with IllegalArgumentException\n- Existing tests still pass\n\n## Test\n- New unit test: StockTransferValidationServiceTest#rejectsNullDestination",
+        "project":"PosClientBackend",
         "assignee_role":"doer", "priority":"medium", "max_turns": 30}
+   `project` is MANDATORY for doer children — it's the repo folder under ~/codeRepo. Pick ONE of: PosClientBackend, PosServerBackend, MongoDbService, BusinessService, PosService, GatewayService, Scheduler, QuartzScheduler, PosPythonBackend. Never use "AIForgeCrew" (that's the orchestrator).
+   If the parent ticket spans multiple repos, spawn ONE child per repo with its own `project`. Do NOT try to make one child edit multiple repos — the worktree is per-repo.
    Each child body MUST contain `## Scope`, `## Files` (listing ≤3 file:line anchors), `## Acceptance`, `## Test` sections. Missing any = Doer will block.
    Each child must fit ONE doer tick: ≤3 files, 1 commit, ≤100-line diff. Larger work → split into multiple children.
    SET `max_turns` based on estimated complexity:

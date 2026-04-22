@@ -189,13 +189,15 @@ def _slugify(s: str) -> str:
     return s[:40] or "ticket"
 
 
-def _ensure_branch_and_worktree(ticket: tickets.Ticket,
-                                repo_guess: str = "AIForgeCrew") -> str | None:
+def _ensure_branch_and_worktree(ticket: tickets.Ticket) -> str | None:
     """Create `aiforge/ONE-<parent>-<slug>` branch and a dedicated
     worktree the first time we touch this parent-ticket tree. Children
     reuse the same branch/worktree via ticket.branch.
 
-    Returns worktree absolute path, or None if repo inference fails.
+    Returns worktree absolute path, or None if a target repo can't be
+    safely identified. NEVER silently falls back to the AIForgeCrew
+    orchestrator repo — doing so caused ONE-2 to write junk into our
+    own source tree.
     """
     parent_ident = ticket.identifier
     if ticket.parent_id:
@@ -213,14 +215,22 @@ def _ensure_branch_and_worktree(ticket: tickets.Ticket,
         branch = f"aiforge/{parent_ident}-{slug}"
 
     # Infer repo path — prefer the parent ticket's body for children
-    # (sr dev / developer child tickets often omit the repo name in their
-    # own title, but the parent always mentions it).
+    # (child tickets often omit the repo name in their own title, but
+    # the parent always mentions it). project field wins if set.
     probe_ticket = ticket
     if ticket.parent_id:
         parent = tickets.get(ticket.parent_id)
         if parent is not None:
             probe_ticket = parent
-    repo_name = _infer_repo_from_ticket(probe_ticket) or repo_guess
+    repo_name = _infer_repo_from_ticket(probe_ticket)
+    if not repo_name:
+        # No target repo could be identified. Refuse to create a
+        # worktree — the tick will post a helpful comment and block.
+        # Better than silently editing AIForgeCrew.
+        return None
+    # Hard rule: never run a ticket in the orchestrator's own source.
+    if repo_name == "AIForgeCrew":
+        return None
     repo_dir = os.path.join(WORKTREE_ROOT, repo_name)
     if not os.path.isdir(os.path.join(repo_dir, ".git")):
         return None
@@ -238,10 +248,12 @@ def _ensure_branch_and_worktree(ticket: tickets.Ticket,
             cwd=repo_dir, check=False, capture_output=True,
         )
         if proc.returncode != 0 or not os.path.isdir(worktree_path):
-            # Fall back to the main repo dir so the agent can still read files.
+            # Worktree add failed. Do NOT fall back to repo_dir — that
+            # would let the agent write directly to main working tree
+            # (branch, uncommitted state, etc.). Block the ticket.
             err = (proc.stderr or b"").decode("utf-8", "replace")[:500]
-            print(f"[worktree.failed] {err}", flush=True)
-            return repo_dir
+            print(f"[worktree.failed] repo={repo_name} err={err}", flush=True)
+            return None
 
     # Persist branch on ticket for re-use.
     if ticket.branch != branch:
@@ -1030,6 +1042,26 @@ def tick(role_name: str) -> int:
             worktree = _ensure_branch_and_worktree(ticket)
             emit(log, "worktree.prepared",
                  ticket=ticket.identifier, path=worktree)
+
+            # No target repo — block with a clear instruction instead of
+            # running the tool loop against the orchestrator source.
+            # Planner / Supervisor tiers are exempt since they work off
+            # context bundles + search and don't need a worktree to
+            # produce analysis.
+            if worktree is None and role_name in ("doer", "feedback"):
+                tickets.add_event(
+                    ticket.id, role_name, "blocked",
+                    body=("no target repo could be identified for this "
+                          "ticket. Set the `project` field to one of the "
+                          "repos under ~/codeRepo (e.g. PosClientBackend, "
+                          "PosServerBackend, MongoDbService, etc.) or "
+                          "include the repo name in the ticket title/body."),
+                )
+                tickets.update_status(ticket.id, "blocked", role=role_name,
+                                      note="no target repo")
+                emit(log, "tick.end", ticket=ticket.identifier,
+                     stop_reason="no_target_repo")
+                continue
 
             summary = _run_tool_loop(rc, ticket, worktree, log)
             emit(log, "tick.end", ticket=ticket.identifier, **summary)
