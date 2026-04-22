@@ -660,24 +660,17 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
             })
 
         if looped:
-            messages.append({
-                "role": "user",
-                "content": (
-                    "STOP REPEATING that same tool call — you've run it 3 "
-                    "times with identical args and the result isn't changing. "
-                    "Change strategy NOW: (a) read_file on a specific path "
-                    "from the CONTEXT bundle, (b) call post_comment with "
-                    "what you already know + a `(speculative)` tag for "
-                    "anything missing, or (c) call create_child_ticket for "
-                    "the implementation and then set_status(status='in_review'). "
-                    "Do not issue that same search again."
-                ),
-            })
+            # Hard-break: the soft nudge rarely recovers qwen-coder from an
+            # identical-args loop. Block the ticket and let the supervisor
+            # (or human) decide next. Saves tokens + wall time.
+            emit(log, "loop.break", turn=turn, tool=name)
+            tickets.add_event(
+                ticket.id, role_cfg.name, "error",
+                body=f"loop hard-break at turn {turn}: {name} called 3x identically",
+                metadata={"stop_reason": "loop_detected"},
+            )
             stop_reason = "loop_detected"
-            # Give the model ONE more turn to recover before we hard-stop.
-            _recent_calls.clear()
-            if turn >= max_turns - 2:
-                break
+            break
 
     return {
         "stop_reason": stop_reason, "turns": turn,
