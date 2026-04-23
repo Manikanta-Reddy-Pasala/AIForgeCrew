@@ -56,10 +56,14 @@ health:
 	ssh $(NUC_HOST) 'curl -s http://127.0.0.1:8799/api/health'
 
 sync-memory:
-	SSH_HOST=$(SSH_HOST) bash scripts/sync-memory.sh
+	# Memory bank is now a git repo: github.com/Manikanta-Reddy-Pasala/claude-memory
+	# Laptop: commit + push; MS/NUC pull on their own cron.
+	cd ~/.claude/memory && git add -A && \
+	    (git diff --cached --quiet || git commit -m "memory sync $$(date -Iseconds)") && \
+	    git push
 
 reindex-memory:
-	SSH_HOST=$(SSH_HOST) REINDEX_ONLY=1 bash scripts/sync-memory.sh
+	ssh $(NUC_HOST) 'cd ~/.claude/memory && git pull --ff-only && cd ~/AIForgeCrew && .venv/bin/python scripts/runtime/reindex-daily.py'
 
 index-all:
 	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && bash scripts/runtime/embed-backfill.py --limit 5000'
