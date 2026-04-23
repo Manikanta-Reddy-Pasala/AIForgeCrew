@@ -73,9 +73,14 @@ while IFS= read -r line; do
         --repo "$path" --out "$OUT/${repo}.java.jsonl" || echo "  skip $repo"
       ;;
     node|react)
-      [ -f tsparser/dist/extractor.js ] && \
-        node tsparser/dist/extractor.js --repo "$path" --out "$OUT/${repo}.ts.jsonl" \
-        || echo "  skip $repo (no ts build)"
+      if [ -f tsparser/dist/extractor.js ]; then
+        # Huge React bundles (PosFrontend) blow the default 1.7G Node heap.
+        NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}" \
+          node tsparser/dist/extractor.js --repo "$path" --out "$OUT/${repo}.ts.jsonl" \
+          || echo "  skip $repo (ts extractor error)"
+      else
+        echo "  skip $repo (no ts build)"
+      fi
       ;;
     python)
       "$VENV/bin/aiforge-pyparser" --repo "$path" --out "$OUT/${repo}.py.jsonl" \
@@ -131,11 +136,15 @@ echo "==[9/11]== Linking passes"
 "$PY" link_memories.py --neo4j "$NEO4J"
 
 echo "==[10/11]== Embeddings (Method, Class, Endpoint, NatsSubject, MongoCollection, Memory)"
-# bge-m3 TEI at :8764, 1024d. embed_nodes.py default --lm is LM Studio; override
-# to point at the TEI container. If using LM Studio instead, set LM_URL +
-# EMBED_MODEL accordingly.
-"$PY" embed_nodes.py --neo4j "$NEO4J" --lm "${LM_URL:-http://127.0.0.1:8764/v1}" \
-  --model "${EMBED_MODEL:-bge-m3}" --dim "${EMBED_DIM:-1024}"
+# bge-m3 at :8764 (infinity arm64 or TEI x86). Non-fatal: if the embed
+# sidecar isn't up the rest of the graph is still usable.
+if curl -fsS "${LM_URL:-http://127.0.0.1:8764}/health" >/dev/null 2>&1; then
+  "$PY" embed_nodes.py --neo4j "$NEO4J" --lm "${LM_URL:-http://127.0.0.1:8764/v1}" \
+    --model "${EMBED_MODEL:-bge-m3}" --dim "${EMBED_DIM:-1024}" || \
+    echo "  embed step failed — graph usable without vectors"
+else
+  echo "  embed sidecar down at ${LM_URL:-http://127.0.0.1:8764} — skipping embeddings"
+fi
 
 echo "==[11/11]== Sanity"
 bash bin/graph_sanity.sh

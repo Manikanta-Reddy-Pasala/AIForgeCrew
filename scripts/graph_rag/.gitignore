@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+javaparser/target/
+tsparser/node_modules/
+tsparser/dist/
+pyparser/*.egg-info/
+mcp_server/*.egg-info/
+config/*.local.yaml
