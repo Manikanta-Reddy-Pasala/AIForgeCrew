@@ -62,6 +62,7 @@ public final class Extractor {
         if (srcRoots.isEmpty()) srcRoots.add("src/main/java");
 
         var cfg = new ParserConfiguration();
+        cfg.setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21);
         if (resolve) {
             var ts = new CombinedTypeSolver(new ReflectionTypeSolver());
             for (String s : srcRoots) {
