@@ -345,10 +345,19 @@ def make_tools(worktree_path: str, scope_guard: ScopeGuard,
     if counters is None:
         counters = {}
     _ = ticket_body_provider  # intentionally unused — Doer writes the code
-    return [
+    tools = [
         make_read_file(worktree_path),
         make_edit_block(worktree_path, scope_guard, counters),
         make_run_compile(worktree_path, counters),
         make_grep(worktree_path),
         make_list_dir(worktree_path),
     ]
+    # Opt-in: expose graph_rag MCP tools to the Doer when
+    # AIFORGE_GRAPH_MCP_ENABLED=1. Doer can then call sym_lookup, impact,
+    # cross_repo_flow, etc. for richer context.
+    try:
+        from aiforge_core.mcp_graph import graph_rag_tools
+        tools.extend(graph_rag_tools())
+    except Exception:
+        pass
+    return tools

@@ -391,7 +391,7 @@ def make_tools(ctx: dict) -> list:
     ``final_answer`` is excluded: ``ToolCallingAgent`` adds its own
     ``FinalAnswerTool`` automatically.
     """
-    return [
+    tools = [
         make_search_memory(ctx),
         make_grep_repos(ctx),
         make_list_repos(ctx),
@@ -401,3 +401,12 @@ def make_tools(ctx: dict) -> list:
         make_write_plan(ctx),
         make_create_child_ticket(ctx),
     ]
+    # Opt-in graph_rag MCP tools (AIFORGE_GRAPH_MCP_ENABLED=1). Planner gets
+    # sym_lookup / impact / cross_repo_flow / ticket_brief etc. so it can
+    # build plans from the Neo4j graph instead of grep alone.
+    try:
+        from aiforge_core.mcp_graph import graph_rag_tools
+        tools.extend(graph_rag_tools())
+    except Exception:
+        pass
+    return tools

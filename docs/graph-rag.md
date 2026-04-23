@@ -86,7 +86,22 @@ Incremental: git `post-merge` hook fires `bin/graph_incremental.sh`.
 
 ## MCP tools (25)
 
-Exposed via stdio at `aiforge-graph-mcp`.
+Exposed via stdio at `aiforge-graph-mcp`. Wired into smolagents
+(LangGraph Planner + Doer nodes) through
+`aiforge_core.mcp_graph.graph_rag_tools` — opt-in via env flag.
+
+```bash
+# On NUC (graph-runner process co-located with MCP server)
+export AIFORGE_GRAPH_MCP_ENABLED=1
+export AIFORGE_GRAPH_MCP_BIN=/home/mani/aiforge-venv/bin/aiforge-graph-mcp
+
+# On Mac Studio (reach NUC over ssh)
+export AIFORGE_GRAPH_MCP_ENABLED=1
+export AIFORGE_GRAPH_MCP_HOST=mani@192.168.70.191
+```
+
+LangGraph node → smolagents `ToolCallingAgent` → `make_tools()` merges
+local file tools + graph_rag MCP tools into one list handed to the LLM.
 
 - Discovery: `sym_lookup`, `list_{repos,services,endpoints,integrations}`
 - Navigation: `graph_neighborhood`, `caller_chain`, `callee_chain`, `read_source`
