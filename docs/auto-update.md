@@ -30,7 +30,7 @@ On each `git pull` that brings new commits:
 
 | Label | Period | What |
 |---|---|---|
-| `com.aiforge.k8s-sync` | 15 min | `k8s_sync.py` QA cluster → rsync to NUC → `ingest_k8s.py` |
+| `com.aiforge.k8s-sync` | 15 min | `k8s_sync.py` QA + prod clusters → rsync NUC → `ingest_k8s.py` |
 
 ### Manual / not-yet-wired
 
@@ -38,7 +38,7 @@ On each `git pull` that brings new commits:
 |---|---|
 | `bin/memory_sync.sh` | Laptop → GitHub memory-repo. Needs `~/.claude/memory-repo` initialized with remote. Auto-fires via `com.aiforge.memory-push` launchd once set up. |
 | `bin/graph_full_reindex.sh` | Only for cold start or schema change. Phase-0 nukes graph. |
-| Prod k8s | Cert expired (see memory `incidents-prod-cert`). Rotate → same launchd as QA. |
+| Prod k8s cert | Rotated 2026-04-24, valid to 2027-01. Both envs now in graph. |
 
 ## Flow diagram
 

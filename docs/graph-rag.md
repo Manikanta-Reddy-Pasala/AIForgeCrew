@@ -126,4 +126,4 @@ Exposed via stdio at `aiforge-graph-mcp`.
 - Logs — skipped
 - Tekton state — skipped
 - bge-m3 / bge-reranker — reachable endpoint TBD; currently nomic only
-- Prod k8s — cert expired (memory #8118), QA snapshot only
+- Prod k8s cert rotated 2026-04-24 (fresh cert valid to 2027-01); QA + prod both indexed
