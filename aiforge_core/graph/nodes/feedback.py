@@ -67,7 +67,7 @@ def _call_llm(prompt: str) -> str:
     payload = json.dumps({
         "model": FEEDBACK_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 2048,
+        "max_tokens": 16384,
         "temperature": 0.0,
         "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
