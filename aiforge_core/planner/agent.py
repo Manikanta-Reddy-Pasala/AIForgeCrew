@@ -107,6 +107,7 @@ def build_planner_agent(
         _model_id_key: model_id,
         "api_base": llm_config.base_url,
         "api_key": llm_config.api_key,
+        "max_tokens": 262144,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     })
 

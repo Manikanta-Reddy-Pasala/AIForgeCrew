@@ -111,7 +111,7 @@ _LEARNER_TOOLS = (
 # but their plists aren't installed.
 SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "qwen3.6-27b")
 PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3.6-27b")
-DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3-coder-next")
+DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3.6-35b-a3b")
 FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",   "qwen3.6-27b")
 LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",    "qwen3.6-27b")
 
