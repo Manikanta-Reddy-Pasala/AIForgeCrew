@@ -33,33 +33,62 @@ class _LLMConfig:
         self.api_key = api_key
 
 
+# Match the first block that looks like an explicit acceptance contract.
+# Supports both ``## Acceptance criteria`` headers and inline prose such as
+# ``Acceptance criteria — ALL three must be implemented:``.
 _REQ_HEADER_RX = re.compile(
-    r"^\s*##+\s*(?:acceptance\s*criteria|required|requirements|must(?:\s+do)?|done\s+when)\b",
-    re.I | re.M,
+    r"(?:^|\n)\s*(?:#{1,6}\s*)?"
+    r"(?:acceptance\s*criteria|required|requirements|must\s+do|done\s+when)"
+    r"\b[^\n]{0,120}",
+    re.I,
 )
-_NUMBERED_ITEM_RX = re.compile(r"^\s*(?:\d+\.|\*|-)\s+\*?\*?([^\n]{3,})", re.M)
+# Only count top-level numbered items — ``1. ...``. Bullet lists are
+# explicitly ignored because planner output adds lots of sub-bullets under
+# each numbered step, which would inflate the count.
+_NUMBERED_ITEM_RX = re.compile(r"^\s{0,3}(\d+)\.\s+\S", re.M)
+
+_ACCEPTANCE_CAP = 8  # hard cap — no real ticket has more than ~5 acceptance items
 
 
 def _count_required_items(body: str) -> int:
-    """Best-effort count of acceptance criteria bullets in the ticket body.
+    """Count numbered acceptance items from the first contract block.
 
-    Looks for a section header like ``## Acceptance criteria`` / ``## Required``
-    and counts numbered/bulleted items under it. Falls back to a generic scan
-    over the whole body if no header is present. Returns 0 when the ticket
-    looks like a plain prose request.
+    Looks for the first ``Acceptance criteria`` / ``Required`` line, then
+    counts numbered list items (``1.`` / ``2.`` / …) until the block ends
+    — defined as the first blank line that's followed by a new section
+    (``## ...``) or by non-item prose.
+    Returns 0 when the ticket has no such block. Capped at ``_ACCEPTANCE_CAP``.
     """
     if not body:
         return 0
     m = _REQ_HEADER_RX.search(body)
-    if m:
-        tail = body[m.end():]
-        # Stop at the next ## section if any.
-        end = re.search(r"\n##+\s", tail)
-        block = tail[: end.start()] if end else tail
-        return len(_NUMBERED_ITEM_RX.findall(block))
-    # No explicit section — if the body has a single numbered list, count it.
-    items = _NUMBERED_ITEM_RX.findall(body)
-    return len(items) if len(items) >= 2 else 0
+    if not m:
+        return 0
+    tail = body[m.end():]
+    # Terminate at the next markdown section header or a double-newline that
+    # introduces something other than a numbered item.
+    end = re.search(r"\n\s*#{1,6}\s+\w", tail)
+    block = tail[: end.start()] if end else tail
+    # Also trim at the first blank line followed by non-numbered prose.
+    lines = block.splitlines()
+    collected: list[str] = []
+    in_list = False
+    for ln in lines:
+        stripped = ln.strip()
+        if not stripped:
+            if in_list:
+                # blank line after we started the list ends it unless the next
+                # non-empty line continues numbering; approximate by stopping.
+                break
+            continue
+        if _NUMBERED_ITEM_RX.match(ln):
+            in_list = True
+            collected.append(stripped)
+        elif in_list and not stripped[0].isdigit():
+            # prose between items — stop collecting once we're past the list
+            if len(collected) >= 1:
+                break
+    return min(len(collected), _ACCEPTANCE_CAP)
 
 
 def _run(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str]:
