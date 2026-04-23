@@ -9,12 +9,15 @@ Mac Studio 192.168.70.185         NUC 192.168.70.191 (static)
 LM Studio        :1234             Postgres        :5432   (aiforge db)
   qwen3.6-27b             16 GB    Neo4j (docker)  :7474 / :7687
   qwen3.6-35b-a3b@8bit    38 GB    aiforge-api     :8799   (FastAPI)
-bge-m3 embed-sidecar :8764
+  qwen3-coder-next       (MCP)
+  nomic-embed-text-v1.5  (768d)
 graph-runner (launchd, 60 s)      aiforge-* timers (systemd --user)
-caffeinate (wake lock)              ├─ repo-pull       5 min  (git pull)
-pg-tunnel (ssh -L 5433→NUC:5432)    ├─ git-pull       10 min  (AIForgeCrew)
-                                    ├─ file-indexer   30 min  (T4 chunks)
-                                    └─ reindex-daily  02:00   (T2/T3)
+caffeinate (wake lock)              ├─ repo-pull          5 min
+pg-tunnel (ssh -L 5433→NUC:5432)    ├─ memory-pull        5 min
+com.aiforge.k8s-sync (launchd,      ├─ git-pull          10 min
+  15m, qa+prod → NUC Neo4j)         ├─ file-indexer      30 min
+                                    ├─ post-merge hooks  (graph_rag incremental)
+                                    └─ reindex-daily     02:00
                                    lm-tunnel (ssh -L 1235→MS:1234)
                                    ┌─────────────────────────────┐
                                    │ Direct LAN 10.10.10.1 ↔ .2 │
@@ -26,8 +29,8 @@ pg-tunnel (ssh -L 5433→NUC:5432)    ├─ git-pull       10 min  (AIForgeCrew
 
 | Concern | Host |
 |---|---|
-| LLM inference (planner, doer, feedback) | Mac Studio |
-| Embeddings (bge-m3 ONNX) | Mac Studio |
+| LLM inference (planner, doer, feedback, MCP Qwen) | Mac Studio (LM Studio) |
+| Embeddings (nomic-embed-text via LM Studio) | Mac Studio (LM Studio) |
 | Orchestrator (graph-runner ticks) | Mac Studio |
 | Java repo worktrees + `mvn compile` | Mac Studio |
 | Tickets + memories + checkpoints (Postgres) | NUC |

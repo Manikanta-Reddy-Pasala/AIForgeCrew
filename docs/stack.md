@@ -6,8 +6,8 @@
 
 | Tool | What for |
 |---|---|
-| **LM Studio** (`:1234`) | Local LLM server, OpenAI-compat. Hosts `qwen3.6-27b` + `qwen3.6-35b-a3b@8bit` |
-| **bge-m3** (`:8764`) | 1024-d embeddings (ONNX, Mac native) |
+| **LM Studio** (`:1234`) | Local LLM + embed server, OpenAI-compat. Hosts `qwen3.6-27b`, `qwen3.6-35b-a3b@8bit`, `qwen3-coder-next`, and `nomic-embed-text-v1.5` |
+| **nomic-embed-text-v1.5** | 768-d embeddings served by LM Studio (no separate sidecar). Reached via NUC tunnel `:1235` |
 | **smolagents** | `ToolCallingAgent` (Doer) + `CodeAgent` (Planner) — the LLM's tool loop |
 | **LiteLLM** | Uniform client to LM Studio from smolagents |
 | **LangGraph** | State machine that routes a ticket through agents |
@@ -38,7 +38,7 @@
 | **FastAPI / uvicorn** | `http://NUC:8799` REST: tickets, events, health |
 | **psycopg v3** | Postgres client (with DSN) |
 | **pymongo** | Mongo client (for the `mongo_agent` tool) |
-| **httpx** | HTTP client (embed, LM Studio) |
+| **httpx** | HTTP client (embed + LLM calls to LM Studio) |
 | **MCP stdio** | Protocol for exposing graph-RAG tools to the LLM |
 | **Docker / OrbStack** | Container for Neo4j on NUC |
 | **systemd --user** | NUC services + timers (`aiforge-*`) |
