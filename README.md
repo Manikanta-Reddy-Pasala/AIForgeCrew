@@ -9,6 +9,7 @@ through supervisor → planner → doer → feedback → learner → compile-gre
 | Read | For |
 |---|---|
 | [`docs/architecture.md`](./docs/architecture.md) | Hosts, services, ports, bridges |
+| [`docs/stack.md`](./docs/stack.md) | Tools + libraries + why two machines |
 | [`docs/graph-rag.md`](./docs/graph-rag.md) | Neo4j graph + vector DB, MCP tools |
 | [`docs/ticket-flow.md`](./docs/ticket-flow.md) | What happens when a ticket arrives |
 | [`docs/runbook.md`](./docs/runbook.md) | Ops runbook |
