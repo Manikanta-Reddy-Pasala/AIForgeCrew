@@ -213,9 +213,10 @@ def _bm25_hits(tier: str, wing_prefix: str | None,
             for r in s.run(cypher, q=query, tier=tier, k=top_k,
                            wing_prefix=wing_prefix or ""):
                 out.append(Hit(
-                    id=r["fact_id"], tier=r["tier"], wing=r["wing"],
+                    id=r["fact_id"], tier=r["tier"],
+                    source=r["wing"],
                     title=r["title"] or "", text=r["text"] or "",
-                    score=float(r["score"] or 0.0), how="bm25",
+                    score=float(r["score"] or 0.0),
                 ))
     except Exception as exc:
         log.warning("neo4j bm25 retrieve failed: %s", exc)
