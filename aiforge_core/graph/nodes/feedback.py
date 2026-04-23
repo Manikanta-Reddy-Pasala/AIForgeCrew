@@ -57,10 +57,18 @@ def _git_diff(worktree_path: str | None) -> str:
 
 def _call_llm(prompt: str) -> str:
     import urllib.request
+    # qwen3.6 is a reasoning model — it writes chain-of-thought into
+    # `reasoning_content` before emitting the user-facing `content`. With
+    # max_tokens=512 the reasoning alone exhausts the budget and `content`
+    # comes back empty. We (1) append the Qwen `/no_think` toggle to ask
+    # the model to skip CoT, (2) raise max_tokens to 2048 as belt-and-braces,
+    # (3) fall back to `reasoning_content` if `content` is empty so we at
+    # least harvest a parseable verdict from the thinking trace.
+    suffix = "\n\n/no_think"
     payload = json.dumps({
         "model": FEEDBACK_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 512,
+        "messages": [{"role": "user", "content": prompt + suffix}],
+        "max_tokens": 2048,
         "temperature": 0.0,
     }).encode()
     req = urllib.request.Request(
@@ -72,9 +80,15 @@ def _call_llm(prompt: str) -> str:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=180) as resp:
         body = json.loads(resp.read())
-    return (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
+    content = (msg.get("content") or "").strip()
+    if content:
+        return content
+    # Reasoning-model fallback: some runtimes put the answer in
+    # `reasoning_content` when /no_think is ignored.
+    return (msg.get("reasoning_content") or "").strip()
 
 
 def _parse_verdict(text: str) -> dict:
