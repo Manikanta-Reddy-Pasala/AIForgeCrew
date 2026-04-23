@@ -147,12 +147,22 @@ def _git_commit_push_pr(
     return result
 
 
-def run_smolagents_doer(ticket: object, worktree_path: str, log: object) -> dict:
+def run_smolagents_doer(
+    ticket: object,
+    worktree_path: str,
+    log: object,
+    prior_verdict: str | None = None,
+    prior_fixlist: str | None = None,
+) -> dict:
     """Run the smolagents ToolCallingAgent for one Doer tick.
 
     On compile-green + final_answer, commits the diff on the ticket's
     branch, pushes to origin, and opens a GitHub PR (if the origin
     supports it). All publishing steps are fail-soft.
+
+    *prior_verdict* / *prior_fixlist* come from the previous feedback tick and
+    are forwarded into the agent's task prompt so Doer can continue from
+    where the last tick left off.
     """
     t_start = time.time()
     ticket_id = ticket.id  # type: ignore[attr-defined]
@@ -182,6 +192,7 @@ def run_smolagents_doer(ticket: object, worktree_path: str, log: object) -> dict
         counters: dict = {"edit_block_ok": 0, "compile_green": 0}
         agent, task_prompt = build_doer_agent(
             ticket, worktree_path, context_bundle, llm_config, counters=counters,
+            prior_verdict=prior_verdict, prior_fixlist=prior_fixlist,
         )
         result = agent.run(task=task_prompt)
 
@@ -202,9 +213,9 @@ def run_smolagents_doer(ticket: object, worktree_path: str, log: object) -> dict
                       f"Agent summary: {summary_text[:1500]}"),
                 metadata={"stop_reason": "checklist_fail", "counters": counters},
             )
-            subprocess.run(["git", "checkout", "--", "."],
-                           cwd=worktree_path, check=False,
-                           capture_output=True, timeout=30)
+            # Preserve the worktree diff — the feedback→doer retry should
+            # continue from this state instead of starting from pristine
+            # (2026-04-23 ONE-16 finding). Only wipe on terminal cleanup.
             return {
                 "stop_reason": "checklist_fail",
                 "has_commented": False,

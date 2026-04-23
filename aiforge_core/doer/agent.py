@@ -15,14 +15,16 @@ responsibility — you must emit edit_block calls yourself. There is no auto-app
 
 IMPORTANT — programmatic enforcement is active:
 - The harness tracks edit_block_ok and compile_green counters.
-- If you call final_answer without edit_block_ok >= 1 AND compile_green >= 1, the harness rejects your answer, rolls back the worktree, and blocks the ticket. You cannot cheat the checklist.
+- If you call final_answer without edit_block_ok >= 1 AND compile_green >= 1, the harness rejects your answer and blocks the ticket. The worktree is preserved so the NEXT tick can continue where you left off — so partial progress is not thrown away, but you also don't get credit for a premature final_answer.
+- **Compile red is NEVER a reason to call final_answer.** If run_compile returns EXIT != 0, you must read the error and make another edit_block immediately — do not stop. You have up to 15 steps in this tick; exhaust them on fixing compile errors before giving up.
 
 Mandatory sequence:
-1. read_file ONCE on the first file in ## Allowed files to see current shape.
-2. Call edit_block NOW with a narrow find/replace block that implements the first piece of the ticket. Do not overthink — a small real edit beats a large planned one.
-3. Call run_compile.
-4. If EXIT != 0: read the first error message, make ONE targeted fix via another edit_block, call run_compile again. Max 3 compile attempts total.
-5. When run_compile returns EXIT=0, call final_answer with a one-paragraph summary citing the change + the EXIT=0 evidence.
+1. read_file on the first file in ## Allowed files to see current shape.
+2. git_diff_head to see if a previous tick already made edits — if so, your job is to continue from that state (implement what's missing, not re-do what's there).
+3. Call edit_block with a narrow find/replace block that implements the NEXT missing piece from the ticket plan. A small real edit beats a large planned one.
+4. Call run_compile.
+5. If EXIT != 0: read the first error message, make ONE targeted fix via another edit_block, call run_compile again. Keep iterating — do NOT call final_answer while compile is red unless you have genuinely exhausted 15 steps trying.
+6. When run_compile returns EXIT=0, verify you have implemented every bullet in the previous feedback's fix list (if present in ## Previous feedback). If the list is covered AND compile is green, call final_answer with a one-paragraph summary citing the change + the EXIT=0 evidence.
 
 Minimal example of step 2 for a Spring @RequestMapping with limit/offset pagination:
 ```
@@ -40,13 +42,19 @@ Hard rules:
 - Do NOT rewrite the entire file in one edit_block — keep find/replace narrow.
 - When using a Java annotation (e.g. @RequestParam, @RequestBody), make sure the matching `import org.springframework...` line exists at the top of the file.
 - When a .map() lambda has conditional branches each returning ResponseEntity.ok(...), cast each branch to (ResponseEntity<?>) to satisfy type inference.
-- If after 3 failed compile attempts compile is still red, call final_answer with "blocked: compile red after 3 attempts — " followed by the specific error.
+- If compile is still red after you have genuinely tried 5+ distinct edit_block fixes (not the same one in a loop), THEN and only then call final_answer with "blocked: compile red after N attempts — " followed by the specific error.
 
-DO NOT just read and claim done. The only acceptable path to final_answer is: edit_block → compile green → final_answer.
+DO NOT just read and claim done. The only acceptable path to final_answer (without "blocked:") is: edit_block → compile green → all feedback-fixlist bullets addressed → final_answer.
 """
 
 
-def build_task_prompt(ticket: object, context_bundle: str, allowed: set[str]) -> str:
+def build_task_prompt(
+    ticket: object,
+    context_bundle: str,
+    allowed: set[str],
+    prior_verdict: str | None = None,
+    prior_fixlist: str | None = None,
+) -> str:
     scope_block = (
         "\n\n## Allowed files (scope guard — write-tool violations are blocked)\n"
         + (
@@ -55,11 +63,18 @@ def build_task_prompt(ticket: object, context_bundle: str, allowed: set[str]) ->
             else "(no ## Files section — writes unrestricted by scope guard)"
         )
     )
+    feedback_block = ""
+    if prior_verdict == "fail" and (prior_fixlist or "").strip():
+        feedback_block = (
+            "\n\n## Previous feedback (fix list — address every bullet before final_answer)\n"
+            f"{prior_fixlist.strip()}"
+        )
     body = getattr(ticket, "body", "") or ""
     return (
         f"{DOER_PREAMBLE}\n"
         f"## Context bundle\n{context_bundle}"
-        f"{scope_block}\n\n"
+        f"{scope_block}"
+        f"{feedback_block}\n\n"
         f"## Ticket body\n{body}"
     )
 
@@ -70,6 +85,8 @@ def build_doer_agent(
     context_bundle: str,
     llm_config: object,
     counters: dict | None = None,
+    prior_verdict: str | None = None,
+    prior_fixlist: str | None = None,
 ) -> tuple[ToolCallingAgent, str]:
     """Build a :class:`~smolagents.ToolCallingAgent` for one Doer tick.
 
@@ -106,10 +123,12 @@ def build_doer_agent(
     # context is delivered via the task string passed to .run().
     import inspect as _inspect
     _params = set(_inspect.signature(ToolCallingAgent.__init__).parameters)
+    # max_steps bumped 20→25 so Doer can iterate on compile errors instead of
+    # giving up on the 3rd attempt (2026-04-23 ONE-16 finding).
     _kwargs: dict = {
         "tools": tools,
         "model": model,
-        "max_steps": 20,
+        "max_steps": 25,
     }
     if "num_retries" in _params:
         _kwargs["num_retries"] = 2
@@ -118,5 +137,8 @@ def build_doer_agent(
     if "planning_interval" in _params:
         _kwargs["planning_interval"] = 4
     agent = ToolCallingAgent(**_kwargs)
-    task_prompt = build_task_prompt(ticket, context_bundle, allowed)
+    task_prompt = build_task_prompt(
+        ticket, context_bundle, allowed,
+        prior_verdict=prior_verdict, prior_fixlist=prior_fixlist,
+    )
     return agent, task_prompt

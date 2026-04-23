@@ -65,7 +65,7 @@ def _patch_node_internals(ticket: _FakeTicket):
     def _fake_run_planner(t, log) -> dict:
         return {**_make_summary(), "enriched_ticket_body": t.body}
 
-    def _fake_run_smolagents_doer(t, worktree, log) -> dict:
+    def _fake_run_smolagents_doer(t, worktree, log, **kwargs) -> dict:
         return _make_summary()
 
     def _fake_finalize(*a, **kw) -> None:

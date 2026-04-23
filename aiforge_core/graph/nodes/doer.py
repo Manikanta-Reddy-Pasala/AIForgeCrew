@@ -26,7 +26,13 @@ def doer_node(state: AgentState) -> AgentState:
 
     if worktree is not None:
         from aiforge_core.doer import run_smolagents_doer
-        summary = run_smolagents_doer(ticket, worktree, log)
+        # Forward prior feedback so Doer can continue from the last tick's state
+        # instead of re-planning from scratch (2026-04-23).
+        summary = run_smolagents_doer(
+            ticket, worktree, log,
+            prior_verdict=state.get("verdict"),
+            prior_fixlist=state.get("feedback_fixlist"),
+        )
     else:
         summary = _run_tool_loop(rc, ticket, worktree, log)
 
