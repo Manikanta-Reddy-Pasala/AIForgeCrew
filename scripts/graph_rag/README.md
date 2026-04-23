@@ -1,170 +1,186 @@
-# Graph-RAG PoC (logic-aware)
+# Graph-RAG (logic-aware RAG) for PosClientBackend
 
-Parse a Java repo into a Neo4j graph keyed on classes / methods / endpoints /
-autowired dependencies / Mongo collections / NATS subjects, then answer
-"show me the full flow for endpoint X" questions with a couple of Cypher
-queries instead of grep or embedding retrieval.
+Build a Neo4j graph of the Java repo (classes, methods, endpoints, Mongo
+reads/writes, calls, autowired deps, external REST targets, annotations)
+and a vector layer on top. Ask natural-language questions; answer with
+Cypher + cosine similarity in a single shot.
 
-## Setup (laptop Docker)
+## Topology
+
+```
+Mac Studio 192.168.70.185   NUC 192.168.70.191 (static)    Laptop
+--------------------------  -----------------------------  ------------------
+LM Studio                   Neo4j 5.x (Docker)             dev + queries
+  qwen3.6-35b-a3b @ 256K    JavaParser 3.26 + Maven
+  qwen3-coder-next @ 256K   Python 3.12 / aiforge-venv
+  nomic-embed-text (768d)   systemd --user lm-tunnel
+                              -> Mac:1234 via ssh :1235
+```
+
+Laptop `bolt://192.168.70.191:7687` → NUC Neo4j. NUC reaches LM Studio
+through a persistent ssh tunnel (systemd user unit `lm-tunnel.service`).
+
+## Pipeline
+
+```
+repo/*.java
+   │  JavaParser CLI (java -jar …/graph-rag-extractor.jar)
+   ▼
+/tmp/pcb-ast.jsonl  (one JSON per file)
+   │  ingest_jsonl.py  (Python, Neo4j driver, batched UNWIND)
+   ▼
+Neo4j on NUC  (nodes + ~15 relationship types)
+   │  embed_nodes.py  (per-node text -> nomic-embed -> 768-dim vector)
+   ▼
+Neo4j with vector indexes
+   │  semantic.py / query.py
+   ▼
+Answers
+```
+
+## Schema (v3, JavaParser-backed)
+
+### Nodes
+
+| Label | Key properties |
+|-------|-----------------|
+| Package | name |
+| Class | fqn, simple, kind, file, package, layer, loc, start_line, annotations, imports, javadoc, transactional, async, scheduled, cacheable, embedding |
+| Method | fqn (`pkg.Class#method:line`), name, sig, return_type, line, loc, annotations, body_snippet (4 KB), javadoc, transactional, async, scheduled, cacheable, embedding |
+| Endpoint | http, path, params, method_fqn |
+| MongoCollection | name |
+| NatsSubject | subject |
+| ExternalEndpoint | url |
+| Annotation | name |
+
+### Edges
+
+| Relation | From → To | Properties | Notes |
+|----------|-----------|------------|-------|
+| `CONTAINS_CLASS` | Package → Class | | |
+| `CONTAINS` | Class → Method | | |
+| `EXTENDS` | Class → Class | | supertypes, including library types |
+| `IMPLEMENTS` | Class → Class | | |
+| `USES` | Class → Class | field, final, inject | only @Autowired/@Inject/@Value/@Resource or final |
+| `IMPORTS` | Class → Class | | only when imported class exists in the graph |
+| `ANNOTATED` | Class or Method → Annotation | | 58 annotation types in PosClientBackend |
+| `EXPOSES` | Method → Endpoint | | @*Mapping → full path |
+| `CALLS` | Method → Method | via, certainty (`resolved` when JavaParser's symbol-solver gave a FQN, else `heuristic`) | |
+| `PARAM_TYPE` | Method → Class | pos, name | one edge per parameter |
+| `RETURNS` | Method → Class | | declared return type |
+| `THROWS` | Method → Class | | checked exceptions |
+| `READS` / `WRITES` / `DELETES` | Method → MongoCollection | | `mongoTemplate.*` + Spring Data repo methods |
+| `CALLS_EXTERNAL` | Method → ExternalEndpoint | | WebClient.uri + URL literals in bodies |
+| `PUBLISH` / `SUBSCRIBE` | Method → NatsSubject | | body scan |
+
+### PosClientBackend v3 counts
+
+```
+Node                Count
+Method              4,085
+Class               1,362
+Endpoint              463
+Package               199
+Annotation             58
+MongoCollection        37
+ExternalEndpoint       26
+
+Relationship        Count
+CALLS               8,503
+PARAM_TYPE          8,117
+CONTAINS            4,085
+RETURNS             3,803
+ANNOTATED           2,623
+IMPORTS             2,183
+USES                1,671
+CONTAINS_CLASS      1,005
+EXPOSES               463
+EXTENDS               171
+IMPLEMENTS            117
+READS                  80
+CALLS_EXTERNAL         31
+WRITES                 17
+THROWS                  7
+```
+
+## Commands
+
+### One-time NUC setup
 
 ```bash
-docker rm -f neo4j-poc 2>/dev/null
-docker run -d --name neo4j-poc -p 7474:7474 -p 7687:7687 \
+ssh mani@192.168.70.191
+
+# repo
+git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
+python3 -m venv ~/aiforge-venv
+~/aiforge-venv/bin/pip install neo4j httpx
+
+# Neo4j (Docker, port 7474/7687)
+docker run -d --name neo4j-aiforge --restart=unless-stopped \
+    -p 7474:7474 -p 7687:7687 \
     -e NEO4J_AUTH=neo4j/password \
-    -e 'NEO4J_PLUGINS=["apoc", "genai"]' \
-    neo4j:latest
+    -e 'NEO4J_PLUGINS=["apoc","genai"]' \
+    -e NEO4J_dbms_memory_heap_max__size=4G \
+    -v neo4j-data:/data neo4j:latest
 
-uv pip install neo4j tree_sitter tree-sitter-java
+# JavaParser jar
+cd ~/AIForgeCrew/scripts/graph_rag/javaparser && mvn -q package -DskipTests
+
+# Persistent SSH tunnel to LM Studio
+systemctl --user enable --now lm-tunnel.service
 ```
 
-Browser: <http://localhost:7474> (user `neo4j`, password `password`).
-
-## Ingest PosClientBackend
+### Ingest
 
 ```bash
-.venv/bin/python scripts/graph_rag/ingest_java.py \
-    --repo ~/Documents/codeRepo/PosClientBackend --reset
+# 1. mirror Java sources from laptop
+rsync -az --exclude target --exclude .git \
+    ~/Documents/codeRepo/PosClientBackend/src \
+    ~/Documents/codeRepo/PosClientBackend/pom.xml \
+    mani@192.168.70.191:~/code/PosClientBackend/
+
+# 2. JavaParser extract (on NUC, ~4s)
+ssh mani@192.168.70.191 'cd ~/code/PosClientBackend && \
+    java -jar ~/AIForgeCrew/scripts/graph_rag/javaparser/target/graph-rag-extractor.jar \
+        --repo $PWD --out /tmp/pcb-ast.jsonl'
+
+# 3. push to Neo4j (on NUC, ~15s)
+ssh mani@192.168.70.191 '~/aiforge-venv/bin/python \
+    ~/AIForgeCrew/scripts/graph_rag/ingest_jsonl.py \
+    --jsonl /tmp/pcb-ast.jsonl --reset'
+
+# 4. embed (on NUC, ~90s via LM Studio tunnel)
+ssh mani@192.168.70.191 '~/aiforge-venv/bin/python \
+    ~/AIForgeCrew/scripts/graph_rag/embed_nodes.py \
+    --lm http://127.0.0.1:1235/v1 --batch 32'
 ```
 
-Current counts (as of 2026-04-23 ingest v2 on PosClientBackend):
-
-```
-Classes: 1,135  Methods: 4,144  Endpoints: 463  Packages: 200
-MongoCollections: 37  ExternalEndpoints: 3
-
-CALLS: 11,824  CONTAINS: 4,144  USES: 3,485  IMPORTS: 2,744
-CONTAINS_CLASS: 1,066  EXPOSES: 463  IMPLEMENTS: 119
-READS: 83  WRITES: 17  EXTENDS: 8  CALLS_EXTERNAL: 5
-```
-
-## Query — stock transfer flow
+### Query (laptop or NUC)
 
 ```bash
-.venv/bin/python scripts/graph_rag/query.py --topic stockTransfer
-```
+# Structural canned queries
+python scripts/graph_rag/query.py --neo4j bolt://192.168.70.191:7687 \
+    --topic stockTransfer
 
-Returns: endpoints, class list, autowired deps, call graph, inbound
-callers, cross-service sync relations (the `PosServerBackendService`
-autowire in `StockTransferWorkflow` surfaces here).
+# Semantic + 2-hop structural expansion
+python scripts/graph_rag/semantic.py --neo4j bolt://192.168.70.191:7687 \
+    --topk 5 --hops 2 "stock transfer complete validation"
 
-Ad-hoc Cypher:
-
-```bash
-.venv/bin/python scripts/graph_rag/query.py \
+# Ad-hoc Cypher
+python scripts/graph_rag/query.py --neo4j bolt://192.168.70.191:7687 \
     --free 'MATCH (m:Method)-[:EXPOSES]->(e:Endpoint) WHERE e.path CONTAINS "stockTransfer" RETURN e, m LIMIT 20'
 ```
 
-## Schema (v2)
+## Why Graph + Vector > just RAG
 
-```
-(:Package {name})
-(:Class  {fqn, simple, kind, file, package, layer, loc,
-          annotations, imports, javadoc,
-          transactional, async, scheduled, cacheable})
-(:Method {fqn, name, sig, file, line, loc, return_type,
-          body_snippet, javadoc, annotations,
-          transactional, async, scheduled, cacheable})
-(:Endpoint {http, path, params, method_fqn})
-(:MongoCollection {name})
-(:NatsSubject {subject})
-(:ExternalEndpoint {url})
+The Planner's earlier grep-based retrieval spent 15+ steps reading a
+large controller before it could write a plan for a topic as simple as
+"add pagination". With this graph:
 
-(Package)-[:CONTAINS_CLASS]->(Class)
-(Class)-[:CONTAINS]->(Method)
-(Class)-[:EXTENDS|IMPLEMENTS]->(Class)
-(Class)-[:USES {field}]->(Class)          # autowired / final fields
-(Class)-[:IMPORTS]->(Class)               # import statements resolved in-repo
-(Class)-[:BINDS]->(MongoCollection)       # @Document
-(Class)-[:PUBLISHES]->(NatsSubject)       # legacy heuristic
-(Method)-[:EXPOSES]->(Endpoint)           # @*Mapping
-(Method)-[:CALLS {via, certainty}]->(Method)
-                                          # certainty: resolved | name_only
-(Method)-[:READS|WRITES|DELETES]->(MongoCollection)
-                                          # mongoTemplate + Spring Data repo calls
-(Method)-[:CALLS_EXTERNAL]->(ExternalEndpoint)
-                                          # WebClient.uri / restTemplate
-(Method)-[:PUBLISH|SUBSCRIBE]->(NatsSubject)
-                                          # publish(..) / subscribe(..) in bodies
-```
-
-### v2 additions over v1
-
-- **Layer tagging** on Class (controller | service | repository | workflow |
-  mapper | model | config | component | other) from annotations + name
-  conventions.
-- **Method body snippets** (first 2.5 KB) + **javadoc** stored as properties
-  — gives an LLM a "read this function" hit without going to disk.
-- **Return type** + **LOC** per method — triage signal ("how big is this").
-- **Imports** as edges when the imported class is in-repo → enables transitive
-  dependency graphs by actual types, not just autowired fields.
-- **Type-resolved CALLS**: when a call's receiver is an autowired field or
-  local variable whose type we know, the edge is marked `certainty: resolved`
-  and pointed at the unique target. Ambiguous calls fall back to
-  `certainty: name_only` with a fanout cap.
-- **Mongo R/W/D edges** from Method to MongoCollection — detects
-  `mongoTemplate.find*/save*/update*/delete*` and Spring Data repository
-  method name patterns (`findBy*` = READ, `save*` = WRITE, `delete*` =
-  DELETE) against the `@Document` collection-hint index built in pass 1.
-- **External endpoints** (WebClient `.uri("...")`, `restTemplate.*For*`).
-- **Spring flags** on both Class and Method: `transactional`, `async`,
-  `scheduled`, `cacheable`.
-- **Canned queries** in `query.py`: `classes`, `endpoints`, `deps_out`,
-  `deps_in`, `callgraph`, `inbound_calls`, `mongo_rw`, `external`, `nats`,
-  `cross_service`, `fanout`, `ctx_brief`, `transactional`.
-- **Batched writes** via UNWIND everywhere + indexes on `Class.simple`,
-  `Method.name`, `Endpoint.path`, `Class.layer` for fast topic lookups.
-
-## Why Graph-RAG here
-
-Today's Planner uses memory + grep + read_file. For a wide ticket like
-"explore stock transfer flow refactoring" it spent 15+ steps reading a
-800-line controller before writing a plan. Graph-RAG answers the same
-structural questions in one Cypher query:
-
-- `controllers at /stockTransfer` → 9 endpoints in 1 call
-- `classes touching this flow` → 7 classes in 1 call
-- `cross-service deps` → `StockTransferWorkflow` wires
-  `PosServerBackendService` (remote sync) — surfaced without reading code
-
-Next step: feed these query results into the Planner's context bundle
-instead of `aiforge-deep-context` grep output.
-
-## Hybrid semantic + structural queries (vector layer)
-
-`embed_nodes.py` computes 768-dim embeddings for every Method and Class
-via LM Studio's `text-embedding-nomic-embed-text-v1.5` and stores them on
-the nodes. Two Neo4j native vector indexes are created:
-
-- `method_embedding_vec` on `Method.embedding`
-- `class_embedding_vec` on `Class.embedding`
-
-Text used for each method embedding combines the signature, return type,
-annotations, javadoc, and the first ~1.8KB of the body — so semantic
-similarity reflects intent, not just identifier names.
-
-```bash
-# One-time ssh tunnel since LM Studio only binds to 127.0.0.1 on Mac Studio:
-ssh -f -N -L 1235:localhost:1234 manikanta@192.168.70.185
-
-.venv/bin/python scripts/graph_rag/embed_nodes.py --lm http://127.0.0.1:1235/v1
-```
-
-Throughput observed: ~60 methods/s, ~70 classes/s. Full PosClientBackend
-(4,144 methods + 1,135 classes) embeds in ~90s.
-
-### Semantic query
-
-`semantic.py` takes a natural-language question, embeds it with the same
-model, finds the top-K closest Methods/Classes, and then expands the
-graph neighbourhood (CALLS hops, EXPOSES, READS/WRITES). That's the
-"graph-along-with-vector" traversal: vector picks the entry nodes,
-Cypher walks the structural edges.
-
-```bash
-scripts/graph_rag/semantic.py --topk 3 --hops 2 \\
-    "stock transfer complete validation"
-```
-
-Returns each method with score, layer, endpoints exposed, Mongo ops,
-javadoc, first lines of body, and reachable callees within N hops —
-ready to drop into an LLM's context window.
+- `MATCH (e:Endpoint {path:'…'})<-[:EXPOSES]-(m:Method)-[:CALLS*1..2]->(t)`
+  returns the full call closure in one query.
+- `MATCH (m:Method)-[:READS|WRITES]->(c:MongoCollection)` says which
+  method mutates which collection without reading code.
+- Vector similarity picks entry methods by intent even when the words
+  are different ("*complete validation*" → the right three methods,
+  none of which share the whole phrase in their name).
