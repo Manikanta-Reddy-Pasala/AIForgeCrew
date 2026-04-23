@@ -24,7 +24,7 @@
         <key>PATH</key>
         <string>/Users/manikanta/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>AIFORGE_DSN</key>
-        <string>postgresql://aiforge:aiforgepass@192.168.70.191:5432/aiforge</string>
+        <string>postgresql://aiforge:aiforgepass@127.0.0.1:5433/aiforge</string>
     </dict>
 </dict>
 </plist>
