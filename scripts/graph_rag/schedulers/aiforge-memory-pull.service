@@ -1,0 +1,11 @@
+[Unit]
+Description=AIForge memory repo pull + incremental graph reindex
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/memory-repo
+Environment=AIFORGE_GRAPH_RAG=/home/mani/AIForgeCrew/scripts/graph_rag
+Environment=VENV=/home/mani/aiforge-venv
+ExecStart=/usr/bin/git pull --ff-only
+# post-merge hook (installed separately) triggers graph_incremental / ingest_memory.

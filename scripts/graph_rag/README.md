@@ -1,184 +1,311 @@
-# Graph-RAG (logic-aware RAG) for PosClientBackend
+# graph_rag — cross-repo code graph + vector RAG
 
-Build a Neo4j graph of the Java repo (classes, methods, endpoints, Mongo
-reads/writes, calls, autowired deps, external REST targets, annotations)
-and a vector layer on top. Ask natural-language questions; answer with
-Cypher + cosine similarity in a single shot.
+Ingests every repo (Java, Node/TS/React, Python), every k8s deployment,
+every Claude memory into a single Neo4j graph + vector index. MCP server
+exposes ~18 tools that let a local LLM (Qwen via LM Studio) answer ticket
+questions with precise file:line citations, impact blast-radius, and full
+build/test/deploy context.
 
-## Topology
-
-```
-Mac Studio 192.168.70.185   NUC 192.168.70.191 (static)    Laptop
---------------------------  -----------------------------  ------------------
-LM Studio                   Neo4j 5.x (Docker)             dev + queries
-  qwen3.6-35b-a3b @ 256K    JavaParser 3.26 + Maven
-  qwen3-coder-next @ 256K   Python 3.12 / aiforge-venv
-  nomic-embed-text (768d)   systemd --user lm-tunnel
-                              -> Mac:1234 via ssh :1235
-```
-
-Laptop `bolt://192.168.70.191:7687` → NUC Neo4j. NUC reaches LM Studio
-through a persistent ssh tunnel (systemd user unit `lm-tunnel.service`).
-
-## Pipeline
+## Architecture
 
 ```
-repo/*.java
-   │  JavaParser CLI (java -jar …/graph-rag-extractor.jar)
-   ▼
-/tmp/pcb-ast.jsonl  (one JSON per file)
-   │  ingest_jsonl.py  (Python, Neo4j driver, batched UNWIND)
-   ▼
-Neo4j on NUC  (nodes + ~15 relationship types)
-   │  embed_nodes.py  (per-node text -> nomic-embed -> 768-dim vector)
-   ▼
-Neo4j with vector indexes
-   │  semantic.py / query.py
-   ▼
-Answers
+┌─────────────────── Qwen (LM Studio :1234) ───────────────────┐
+│                                                               │
+│        MCP stdio: aiforge-graph (~18 tools)                   │
+│                                                               │
+│  ┌─────┴──────┐  ┌────────┐  ┌──────────┐  ┌──────────────┐   │
+│  │  Neo4j 5   │  │ bge-m3 │  │  bge-    │  │ k8s READ     │   │
+│  │  APOC +    │  │  :8764 │  │ reranker │  │ (kubectl)    │   │
+│  │  genai     │  │ (embed)│  │  :8765   │  │              │   │
+│  │ (graph +   │  │  TEI   │  │   TEI    │  └──────────────┘   │
+│  │  vector +  │  └────────┘  └──────────┘                      │
+│  │  BM25)     │                                                │
+│  └─────┬──────┘                                                │
+│        │ Cypher UNWIND                                         │
+│  ┌─────┴────────────────────────────────────────────────┐      │
+│  │ Ingest:                                              │      │
+│  │   SCIP indexers (scip-java / ts / python) —          │      │
+│  │     cross-language symbols + calls + refs            │      │
+│  │   JavaParser domain — Spring annotations, body,      │      │
+│  │     NATS/Mongo string scan                            │      │
+│  │   tsparser (ts-morph) — React, express, nest,        │      │
+│  │     fetch URLs, mongoose                              │      │
+│  │   pyparser (libcst+ast) — FastAPI/Flask, pymongo,    │      │
+│  │     nats-py, env vars                                 │      │
+│  │   k8s_sync — Deployment/Service/Ingress/ConfigMap/   │      │
+│  │     Secret(keys only)/CronJob/PodStatus               │      │
+│  │   ingest_memory — ~/.claude/projects/*/memory/*.md   │      │
+│  └──────────────────────────────────────────────────────┘      │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-## Schema (v3, JavaParser-backed)
+### Sidecars, no more, no less
+
+| Purpose | Tool | Port / Path |
+|---|---|---|
+| Graph + vector + BM25 | Neo4j 5 + APOC + genai plugin | 7474 / 7687 |
+| Embeddings | HuggingFace TEI `bge-m3` (1024d) | 8764 |
+| Reranker | HuggingFace TEI `bge-reranker-v2-m3` | 8765 |
+| LLM | LM Studio `qwen3-coder-next @ 256K` | 1234 |
+
+No Qdrant, no Chroma, no LlamaIndex, no GraphRAG framework — Neo4j covers
+all four retrieval layers (vector, BM25, graph, rerank piggybacked via TEI).
+
+## Graph schema
 
 ### Nodes
 
-| Label | Key properties |
-|-------|-----------------|
-| Package | name |
-| Class | fqn, simple, kind, file, package, layer, loc, start_line, annotations, imports, javadoc, transactional, async, scheduled, cacheable, embedding |
-| Method | fqn (`pkg.Class#method:line`), name, sig, return_type, line, loc, annotations, body_snippet (4 KB), javadoc, transactional, async, scheduled, cacheable, embedding |
-| Endpoint | http, path, params, method_fqn |
-| MongoCollection | name |
-| NatsSubject | subject |
-| ExternalEndpoint | url |
-| Annotation | name |
+| Label | Origin |
+|---|---|
+| `Repo` `File` `Package` `Module` | repo_meta + extractors |
+| `Class` `Method` `Function` `Component` `Field` | extractors |
+| `Symbol` | SCIP (cross-lang) |
+| `Test` `Annotation` `Dependency` | extractors |
+| `Endpoint` `ExternalEndpoint` | extractors (Spring/Nest/express/FastAPI/Flask) |
+| `MongoCollection` `MongoIndex` `Document` | extractors |
+| `NatsSubject` `NatsStream` `KafkaTopic` | extractors |
+| `RedisKey` `EnvVar` `ConfigKey` `FeatureToggle` | extractors + k8s |
+| `GraphQLOperation` | extractors (planned) |
+| `Cluster` `Namespace` `Deployment` `Service` `Ingress` | k8s_sync |
+| `ConfigMap` `Secret` (keys only) `CronJob` `PodStatus` | k8s_sync |
+| `DockerImage` `ArgoApp` `CiPipeline` | gitops parse (planned) |
+| `Memory` | claude-memory md |
+| `Ticket` | ticket_client (lazy) |
 
 ### Edges
 
-| Relation | From → To | Properties | Notes |
-|----------|-----------|------------|-------|
-| `CONTAINS_CLASS` | Package → Class | | |
-| `CONTAINS` | Class → Method | | |
-| `EXTENDS` | Class → Class | | supertypes, including library types |
-| `IMPLEMENTS` | Class → Class | | |
-| `USES` | Class → Class | field, final, inject | only @Autowired/@Inject/@Value/@Resource or final |
-| `IMPORTS` | Class → Class | | only when imported class exists in the graph |
-| `ANNOTATED` | Class or Method → Annotation | | 58 annotation types in PosClientBackend |
-| `EXPOSES` | Method → Endpoint | | @*Mapping → full path |
-| `CALLS` | Method → Method | via, certainty (`resolved` when JavaParser's symbol-solver gave a FQN, else `heuristic`) | |
-| `PARAM_TYPE` | Method → Class | pos, name | one edge per parameter |
-| `RETURNS` | Method → Class | | declared return type |
-| `THROWS` | Method → Class | | checked exceptions |
-| `READS` / `WRITES` / `DELETES` | Method → MongoCollection | | `mongoTemplate.*` + Spring Data repo methods |
-| `CALLS_EXTERNAL` | Method → ExternalEndpoint | | WebClient.uri + URL literals in bodies |
-| `PUBLISH` / `SUBSCRIBE` | Method → NatsSubject | | body scan |
+| Edge | Meaning |
+|---|---|
+| `CONTAINS` `DEFINES` `EXTENDS` `IMPLEMENTS` `USES` `IMPORTS` `ANNOTATED` | code structure |
+| `CALLS` `PARAM_TYPE` `RETURNS` `THROWS` `REFERENCES` | call graph |
+| `EXPOSES` `CALLS_EXTERNAL` | HTTP |
+| `READS` `WRITES` `DELETES` | Mongo |
+| `PUBLISH` `SUBSCRIBE` `PRODUCES` `CONSUMES` | NATS / Kafka |
+| `LOCKS` `READS_CACHE` `WRITES_CACHE` | Redis |
+| `RENDERS` `USES_HOOK` `READS_CONTEXT` | React |
+| `TESTS` | Tests → target |
+| `READS_ENV` `READS_CONFIG` | env + config |
+| `FLOWS_TO` `DATA_FLOWS_TO` | **cross-repo** producer → consumer |
+| `HAS_NS` `HAS_WORKLOAD` `TARGETS` `ROUTES` `MOUNTS` `RUNS_IMAGE` `HAS_STATUS` | k8s |
+| `IS_SERVICE` `EMITS_IMAGE` `DEPENDS_ON` | repo ↔ runtime |
+| `DESCRIBES` | Memory → code target |
 
-### PosClientBackend v3 counts
+`FLOWS_TO` is the key cross-repo edge: producer method in repo A → consumer
+method in repo B, joined via NATS subject / Mongo collection / REST path.
+
+## What "full context" means
+
+Given any ticket, `ticket_brief` MCP tool returns a single JSON pack:
+
+- **candidate services** — ranked list of repos touched
+- **primary symbols** — top methods with fqn, signature, file:line
+- **impact** — upstream callers, data readers, subscribers, tests, deployments
+- **build_info** — install + test + package commands for each candidate repo
+- **kube** — current deployed image tag, pod phase, restart count (qa + prod)
+- **related memories** — claude-memory entries describing touched code
+- **integrations touched** — Mongo collections / NATS subjects / REST paths
+
+All within a ~12k token context budget; Qwen has the other 244k for reasoning.
+
+## MCP tools
+
+| Tool | Purpose |
+|---|---|
+| `sym_lookup` | Hybrid BM25 + vector + rerank search |
+| `list_repos` / `list_services` / `list_endpoints` / `list_integrations` | Discovery |
+| `graph_neighborhood` | 1-hop in/out neighbors |
+| `caller_chain` / `callee_chain` | Up/downstream call traversal |
+| `read_source` | Exact file slice |
+| `impact` | Blast radius for a change |
+| `cross_repo_flow` | Trace producer ↔ consumer via NATS/Mongo/REST |
+| `data_lineage` | Writers + readers + deleters of a collection |
+| `build_plan` / `test_plan` / `run_commands` | Build / test / run ordered cmds |
+| `kube_status` / `kube_describe` / `kube_image_tag` / `kube_config` | k8s read |
+| `kube_port_forward_cmd` | Emit port-forward cmd (user runs it) |
+| `kube_rollout_restart` | **Write**, requires `confirm:true` |
+| `find_doc` / `related_memories` | Memory search |
+| `ticket_fetch` / `ticket_brief` | Ticket context pack |
+
+## Directory layout
 
 ```
-Node                Count
-Method              4,085
-Class               1,362
-Endpoint              463
-Package               199
-Annotation             58
-MongoCollection        37
-ExternalEndpoint       26
-
-Relationship        Count
-CALLS               8,503
-PARAM_TYPE          8,117
-CONTAINS            4,085
-RETURNS             3,803
-ANNOTATED           2,623
-IMPORTS             2,183
-USES                1,671
-CONTAINS_CLASS      1,005
-EXPOSES               463
-EXTENDS               171
-IMPLEMENTS            117
-READS                  80
-CALLS_EXTERNAL         31
-WRITES                 17
-THROWS                  7
+graph_rag/
+├── config/                 service-map, ticket-url, link-patterns
+├── requirements.txt        Python deps
+├── docker-compose.yml      neo4j + bge-m3 + bge-reranker
+│
+├── javaparser/             Maven shaded jar (existing v3, extended)
+├── tsparser/               ts-morph domain layer (React/express/fetch)
+├── pyparser/               libcst + ast domain layer (FastAPI/Flask)
+│
+├── scip_to_neo4j.py        SCIP protobuf → Cypher
+├── ingest_jsonl.py         JavaParser/tsparser/pyparser jsonl → Neo4j
+├── ingest_memory.py        .md → (:Memory), sha-diff incremental
+├── ingest_k8s.py           k8s_sync output → graph
+├── ingest_repo_meta.py     per-repo build meta → (:Repo)
+│
+├── link_services.py        Repo ↔ Deployment
+├── link_integrations.py    Cross-repo NATS/Mongo/REST/Kafka FLOWS_TO
+├── link_memories.py        Memory → code DESCRIBES via regex
+│
+├── k8s_sync.py             READ-ONLY cluster snapshot (secrets = keys only)
+├── repo_meta.py            build/test/deploy metadata emitter
+├── ticket_client.py        Custom-URL ticket fetcher
+├── impact.py               Blast-radius CLI
+├── ticket_brief.py         All-in-one context pack
+├── embed_nodes.py          bge-m3 1024d embedding into Neo4j vector index
+├── query.py / semantic.py  Ad-hoc CLI queries
+│
+├── mcp_server/             MCP stdio (18 tools across 7 modules)
+├── bin/                    graph_full_reindex / _incremental / _sanity / memory_sync
+└── schedulers/             launchd (Mac) + systemd (NUC) + git post-merge hook
 ```
 
-## Commands
+## Run
 
-### One-time NUC setup
+### One-time setup
 
 ```bash
-ssh mani@192.168.70.191
+# 1. Stack
+docker compose up -d
 
-# repo
-git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
+# 2. Python env
 python3 -m venv ~/aiforge-venv
-~/aiforge-venv/bin/pip install neo4j httpx
+~/aiforge-venv/bin/pip install -r requirements.txt
+~/aiforge-venv/bin/pip install -e pyparser -e mcp_server
 
-# Neo4j (Docker, port 7474/7687)
-docker run -d --name neo4j-aiforge --restart=unless-stopped \
-    -p 7474:7474 -p 7687:7687 \
-    -e NEO4J_AUTH=neo4j/password \
-    -e 'NEO4J_PLUGINS=["apoc","genai"]' \
-    -e NEO4J_dbms_memory_heap_max__size=4G \
-    -v neo4j-data:/data neo4j:latest
+# 3. TS build
+cd tsparser && npm ci && npm run build && cd ..
 
-# JavaParser jar
-cd ~/AIForgeCrew/scripts/graph_rag/javaparser && mvn -q package -DskipTests
+# 4. Java extractor
+cd javaparser && mvn -q package -DskipTests && cd ..
 
-# Persistent SSH tunnel to LM Studio
-systemctl --user enable --now lm-tunnel.service
+# 5. SCIP CLIs (optional; driver skips if absent)
+cs install sourcegraph/scip-java
+npm i -g @sourcegraph/scip-typescript
+pip install scip-python
+
+# 6. Ticket provider
+cp config/ticket-url-template.yaml config/ticket-url-template.yaml.local
+# edit local copy with real URL + set TICKET_API_TOKEN env var
+
+# 7. Memory repo on GitHub
+mkdir -p ~/.claude/memory-repo && cd ~/.claude/memory-repo
+git init && git remote add origin git@github.com:<you>/claude-memories.git
+bash ~/Documents/codeRepo/AIForgeCrew/scripts/graph_rag/bin/memory_sync.sh
+
+# 8. Kubeconfigs
+export QA_KUBECONFIG=~/.kubeconfigs/qa.yaml
+export PROD_KUBECONFIG=~/.kubeconfigs/prod.yaml
+
+# 9. Hooks in every repo
+for r in ~/Documents/codeRepo/*; do
+  [ -d "$r/.git" ] || continue
+  cp schedulers/git-hooks/post-merge-index.sh "$r/.git/hooks/post-merge"
+  chmod +x "$r/.git/hooks/post-merge"
+done
 ```
 
-### Ingest
+### Full reindex
 
 ```bash
-# 1. NUC already has the repo via aiforge-repo-pull.timer (git pull every 5m
-#    from GitHub). If stale, trigger a pull:
-ssh mani@192.168.70.191 'systemctl --user start aiforge-repo-pull.service'
-
-# 2. JavaParser extract (on NUC, ~4s)
-ssh mani@192.168.70.191 'cd ~/codeRepo/PosClientBackend && \
-    java -jar ~/AIForgeCrew/scripts/graph_rag/javaparser/target/graph-rag-extractor.jar \
-        --repo $PWD --out /tmp/pcb-ast.jsonl'
-
-# 3. push to Neo4j (on NUC, ~15s)
-ssh mani@192.168.70.191 '~/aiforge-venv/bin/python \
-    ~/AIForgeCrew/scripts/graph_rag/ingest_jsonl.py \
-    --jsonl /tmp/pcb-ast.jsonl --reset'
-
-# 4. embed (on NUC, ~90s via LM Studio tunnel)
-ssh mani@192.168.70.191 '~/aiforge-venv/bin/python \
-    ~/AIForgeCrew/scripts/graph_rag/embed_nodes.py \
-    --lm http://127.0.0.1:1235/v1 --batch 32'
+bash bin/graph_full_reindex.sh          # nuke + rebuild everything
+NO_RESET=1 bash bin/graph_full_reindex.sh   # merge mode, keep existing
+bash bin/graph_sanity.sh                # counts + 5 acceptance queries
 ```
 
-### Query (laptop or NUC)
+Phase 0 nuke drops all nodes + relationships + vector indexes + constraints,
+then phases 1-11 rebuild. First v5 run: ~30–40 min on NUC.
+
+### Incremental (automatic)
 
 ```bash
-# Structural canned queries
-python scripts/graph_rag/query.py --neo4j bolt://192.168.70.191:7687 \
-    --topic stockTransfer
-
-# Semantic + 2-hop structural expansion
-python scripts/graph_rag/semantic.py --neo4j bolt://192.168.70.191:7687 \
-    --topk 5 --hops 2 "stock transfer complete validation"
-
-# Ad-hoc Cypher
-python scripts/graph_rag/query.py --neo4j bolt://192.168.70.191:7687 \
-    --free 'MATCH (m:Method)-[:EXPOSES]->(e:Endpoint) WHERE e.path CONTAINS "stockTransfer" RETURN e, m LIMIT 20'
+# Installed post-merge hook runs on every git pull:
+bash bin/graph_incremental.sh <repo_path> <changed_file_1> [...]
 ```
 
-## Why Graph + Vector > just RAG
+### Wire MCP server into Qwen / Claude
 
-The Planner's earlier grep-based retrieval spent 15+ steps reading a
-large controller before it could write a plan for a topic as simple as
-"add pagination". With this graph:
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`
+(Claude Desktop) or your Claude Code `mcp.json`:
 
-- `MATCH (e:Endpoint {path:'…'})<-[:EXPOSES]-(m:Method)-[:CALLS*1..2]->(t)`
-  returns the full call closure in one query.
-- `MATCH (m:Method)-[:READS|WRITES]->(c:MongoCollection)` says which
-  method mutates which collection without reading code.
-- Vector similarity picks entry methods by intent even when the words
-  are different ("*complete validation*" → the right three methods,
-  none of which share the whole phrase in their name).
+```json
+{
+  "mcpServers": {
+    "aiforge-graph": {
+      "command": "python",
+      "args": ["-m", "aiforge_graph_mcp.server"],
+      "env": {
+        "NEO4J_URI": "bolt://192.168.70.191:7687",
+        "NEO4J_USER": "neo4j",
+        "NEO4J_PASS": "password",
+        "EMBED_URL": "http://127.0.0.1:8764",
+        "RERANK_URL": "http://127.0.0.1:8765",
+        "QA_KUBECONFIG": "~/.kubeconfigs/qa.yaml",
+        "PROD_KUBECONFIG": "~/.kubeconfigs/prod.yaml",
+        "TICKET_API_TOKEN": "${TICKET_API_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+### Background automation
+
+```bash
+# Mac laptop (push memory to GitHub every 30 min)
+launchctl bootstrap gui/$(id -u) schedulers/com.aiforge.memory-push.plist
+
+# NUC (pull memory + code repos every 5 min, auto-reindex via post-merge)
+sudo cp schedulers/aiforge-*.{service,timer} /etc/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now aiforge-memory-pull.timer aiforge-repo-pull.timer
+
+# Mac (poll k8s state every 15 min)
+launchctl bootstrap gui/$(id -u) schedulers/com.aiforge.k8s-sync.plist
+```
+
+## Safety
+
+- **Neo4j read-only by default** — all ingest scripts use MERGE; no destructive
+  writes unless `graph_full_reindex.sh` runs phase 0
+- **k8s tools read-only by default** — `kube_rollout_restart` requires
+  `confirm:true` arg; secrets never leave cluster (keys only)
+- **Ticket credentials via env var only** — never stored in graph
+- **SSH keys untouched** — scripts only read kubeconfig paths
+
+## Extending
+
+1. **New language** — add `foo_parser/` emitting the same jsonl schema
+   (`lang`, `repo`, `file`, `classes[]`, `functions[]`, `endpoints[]`,
+   `integrations`, `tests[]`); `ingest_jsonl.py` already tolerates superset
+   keys.
+2. **New integration kind** — add extractor regex, add Cypher pass in
+   `link_integrations.py`.
+3. **New MCP tool** — drop a module under `mcp_server/aiforge_graph_mcp/tools/`
+   exposing `TOOLS` list + `HANDLERS` dict; `server.py` auto-registers.
+
+## Test queries (acceptance)
+
+After reindex these should all return precise `file:line` answers under 2k
+tokens:
+
+1. `cross_repo_flow({value:"business.push.request"})`
+   → Java publisher `PosServerBackendService.publishToRemoteServer`
+   → Java consumer `ClientSyncPushRequestConsumer.onMessage`
+2. `sym_lookup({query:"restaurant gate quantity bug"})`
+   → Java methods in restaurant flow
+3. `caller_chain({key:"...TransactionSyncRulesServiceImpl.applyRulesForBusiness"})`
+   → all invokers
+4. `sym_lookup({query:"bank statement OCR parse"})`
+   → Python `PosPythonBackend` funcs + Java REST callers via
+     `CALLS_ENDPOINT`
+5. `ticket_brief({id:"ONE-57"})`
+   → full context pack < 12k tokens
+
+## History
+
+- **v3** (2026-04-23): Java-only (PosClientBackend), JavaParser + Neo4j +
+  nomic-embed-text, 4085 methods / 1362 classes / 8503 CALLS.
+- **v5** (2026-04-24): Multi-language (Java/TS/Py) + k8s + memories +
+  cross-repo flows + MCP server, switched to bge-m3 + bge-reranker.

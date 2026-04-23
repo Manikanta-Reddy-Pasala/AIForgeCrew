@@ -1,0 +1,23 @@
+{
+  "name": "aiforge-tsparser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Domain-layer TS/React/Node extractor for AIForge graph_rag. SCIP handles symbols; this captures React components, HTTP routes, fetch calls, mongoose collections, NATS, env vars.",
+  "bin": {
+    "aiforge-tsparser": "dist/extractor.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -w -p tsconfig.json",
+    "start": "node dist/extractor.js"
+  },
+  "dependencies": {
+    "ts-morph": "^22.0.0",
+    "typescript": "^5.5.0",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/yargs": "^17.0.32"
+  }
+}

@@ -1,0 +1,120 @@
+# Repo name -> k8s deployment binding + image + deps
+# Authoritative mapping between source repo and runtime deployment.
+# Keep in sync with CLAUDE.md service table.
+
+bindings:
+  PosClientBackend:
+    image_prefix: harbor.oneshell.in/posclientbackend
+    deployments:
+      qa:   { ns: pos, name: posclientbackend }
+      prod: { ns: pos, name: posclientbackend }
+    depends_on: [PosServerBackend, MongoDbService]
+    env_required: [MONGO_URI, NATS_URL, REDIS_HOST]
+
+  PosServerBackend:
+    image_prefix: harbor.oneshell.in/posserverbackend
+    deployments:
+      qa:   { ns: default, name: posserverbackend }
+      prod: { ns: default, name: posserverbackend }
+    depends_on: [MongoDbService]
+    env_required: [MONGO_URI, NATS_URL, REDIS_HOST]
+
+  MongoDbService:
+    image_prefix: harbor.oneshell.in/mongodbservice
+    deployments:
+      qa:   { ns: default, name: mongodbservice }
+      prod: { ns: default, name: mongodbservice }
+    depends_on: []
+    env_required: [MONGO_URI]
+
+  GatewayService:
+    image_prefix: harbor.oneshell.in/gatewayservice
+    deployments:
+      qa:   { ns: default, name: gatewayservice }
+      prod: { ns: default, name: gatewayservice }
+    depends_on: [MongoDbService]
+
+  BusinessService:
+    image_prefix: harbor.oneshell.in/businessservice
+    deployments:
+      qa:   { ns: default, name: businessservice }
+      prod: { ns: default, name: businessservice }
+    depends_on: [MongoDbService]
+
+  PosService:
+    image_prefix: harbor.oneshell.in/posservice
+    deployments:
+      qa:   { ns: default, name: posservice }
+      prod: { ns: default, name: posservice }
+    depends_on: [MongoDbService]
+
+  Scheduler:
+    image_prefix: harbor.oneshell.in/scheduler
+    deployments:
+      qa:   { ns: default, name: scheduler }
+      prod: { ns: default, name: scheduler }
+
+  QuartzScheduler:
+    image_prefix: harbor.oneshell.in/quartzscheduler
+    deployments:
+      qa:   { ns: default, name: quartzscheduler }
+      prod: { ns: default, name: quartzscheduler }
+
+  CacheLayer:
+    image_prefix: harbor.oneshell.in/cachelayer
+    deployments:
+      qa:   { ns: default, name: cachelayer }
+      prod: { ns: default, name: cachelayer }
+
+  EmailService:
+    image_prefix: harbor.oneshell.in/emailservice
+    deployments:
+      qa:   { ns: default, name: emailservice }
+      prod: { ns: default, name: emailservice }
+
+  NotificationService:
+    image_prefix: harbor.oneshell.in/notificationservice
+    deployments:
+      qa:   { ns: default, name: notificationservice }
+      prod: { ns: default, name: notificationservice }
+
+  WhatsappApiService:
+    image_prefix: harbor.oneshell.in/whatsappapiservice
+    deployments:
+      qa:   { ns: default, name: whatsappapiservice }
+      prod: { ns: default, name: whatsappapiservice }
+
+  GstApiService:
+    image_prefix: harbor.oneshell.in/gstapiservice
+    deployments:
+      qa:   { ns: default, name: gstapiservice }
+      prod: { ns: default, name: gstapiservice }
+
+  PosDataSyncService:
+    image_prefix: harbor.oneshell.in/posdatasyncservice
+    deployments:
+      qa:   { ns: default, name: posdatasyncservice }
+      prod: { ns: default, name: posdatasyncservice }
+
+  TallyConnector:
+    image_prefix: null   # runs on Windows VM, not k8s
+    deployments: {}
+
+  PosAdmin:
+    image_prefix: harbor.oneshell.in/posadmin
+    deployments:
+      qa:   { ns: default, name: posadmin }
+      prod: { ns: default, name: posadmin }
+
+  PosFrontend:
+    image_prefix: null   # Electron desktop, no k8s
+    deployments: {}
+
+  PosPythonBackend:
+    image_prefix: harbor.oneshell.in/pospythonbackend
+    deployments:
+      qa:   { ns: pos, name: pospythonbackend }
+      prod: { ns: pos, name: pospythonbackend }
+    env_required: [MONGO_URI, OLLAMA_URL]
+
+# Default for unmapped repos: no deployment, code-only index.

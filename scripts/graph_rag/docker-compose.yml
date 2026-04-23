@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: aiforge-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_PLUGINS: '["apoc","genai"]'
+      NEO4J_dbms_memory_heap_max__size: 8G
+      NEO4J_dbms_memory_pagecache_size: 4G
+      NEO4J_server_default__listen__address: 0.0.0.0
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+
+  embed:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: aiforge-embed
+    restart: unless-stopped
+    command: ["--model-id", "BAAI/bge-m3", "--port", "8764"]
+    ports:
+      - "8764:8764"
+    volumes:
+      - tei_cache:/data
+
+  rerank:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: aiforge-rerank
+    restart: unless-stopped
+    command: ["--model-id", "BAAI/bge-reranker-v2-m3", "--port", "8765"]
+    ports:
+      - "8765:8765"
+    volumes:
+      - tei_cache:/data
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  tei_cache:

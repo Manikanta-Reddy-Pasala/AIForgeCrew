@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiforge-pyparser"
+version = "0.1.0"
+description = "Domain-layer Python extractor for AIForge graph_rag. Focuses on FastAPI/Flask routes, pymongo/motor collections, nats-py pub/sub, env vars. SCIP handles symbol/call graph."
+requires-python = ">=3.10"
+dependencies = [
+  "libcst>=1.4",
+  "jedi>=0.19",
+]
+
+[project.scripts]
+aiforge-pyparser = "pyparser.extract:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pyparser*"]
