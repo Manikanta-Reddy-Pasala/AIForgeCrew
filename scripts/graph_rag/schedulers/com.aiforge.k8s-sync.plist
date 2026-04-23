@@ -9,8 +9,10 @@
     <string>/bin/bash</string>
     <string>-lc</string>
     <string>cd ~/Documents/codeRepo/AIForgeCrew/scripts/graph_rag &amp;&amp; \
-~/aiforge-venv/bin/python k8s_sync.py --env qa --kubeconfig ~/.kubeconfigs/qa.yaml --context qa &gt; /tmp/graph_rag/k8s-qa.jsonl &amp;&amp; \
-~/aiforge-venv/bin/python ingest_k8s.py /tmp/graph_rag/k8s-qa.jsonl</string>
+mkdir -p /tmp/graph_rag &amp;&amp; \
+~/aiforge-venv/bin/python k8s_sync.py --env qa --kubeconfig /tmp/kube-qa.yaml --context qa --namespaces default pos mongodb 2&gt;/dev/null &gt; /tmp/graph_rag/k8s-qa.jsonl &amp;&amp; \
+rsync -az /tmp/graph_rag/k8s-qa.jsonl mani@192.168.70.191:/tmp/graph_rag/k8s-qa.jsonl &amp;&amp; \
+ssh mani@192.168.70.191 'cd ~/AIForgeCrew/scripts/graph_rag &amp;&amp; ~/aiforge-venv/bin/python ingest_k8s.py /tmp/graph_rag/k8s-qa.jsonl --neo4j bolt://127.0.0.1:7687'</string>
   </array>
   <key>StartInterval</key>
   <integer>900</integer>
