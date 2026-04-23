@@ -85,19 +85,22 @@ def ensure_schema() -> None:
 # ─────────────── embeddings ───────────────
 
 def _embed(text: str) -> list[float] | None:
+    """Call bge-m3 sidecar. Shape: POST /embed {"text": "..."}
+    → {"embedding": [...]}. Falls back to None on any failure."""
     if not text:
         return None
     try:
         req = urllib.request.Request(
             f"{EMBED_URL}/embed",
-            data=json.dumps({"texts": [text[:8000]]}).encode(),
+            data=json.dumps({"text": text[:8000]}).encode(),
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=15) as r:
-            vecs = json.loads(r.read())["vectors"]
-        return list(vecs[0]) if vecs else None
+            resp = json.loads(r.read())
+        emb = resp.get("embedding") or resp.get("vector")
+        return list(emb) if emb else None
     except Exception as exc:
-        log.warning("embed failed (%s); storing without vector", exc)
+        log.debug("embed failed (%s); storing without vector", exc)
         return None
 
 
@@ -181,9 +184,10 @@ def _vector_hits(tier: str, wing_prefix: str | None,
             for r in s.run(cypher, k=top_k * 3, vec=query_vec, tier=tier,
                            wing_prefix=wing_prefix or ""):
                 out.append(Hit(
-                    id=r["fact_id"], tier=r["tier"], wing=r["wing"],
+                    id=r["fact_id"], tier=r["tier"],
+                    source=r["wing"],
                     title=r["title"] or "", text=r["text"] or "",
-                    score=float(r["score"] or 0.0), how="vec",
+                    score=float(r["score"] or 0.0),
                 ))
                 if len(out) >= top_k:
                     break
