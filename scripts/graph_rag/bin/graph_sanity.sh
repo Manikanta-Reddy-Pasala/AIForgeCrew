@@ -5,9 +5,14 @@ set -euo pipefail
 NEO4J_URI="${NEO4J_URI:-bolt://127.0.0.1:7687}"
 NEO4J_USER="${NEO4J_USER:-neo4j}"
 NEO4J_PASS="${NEO4J_PASS:-password}"
+NEO4J_CONTAINER="${NEO4J_CONTAINER:-aiforge-neo4j}"
 
 cypher() {
-  cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain "$1"
+  if command -v cypher-shell >/dev/null 2>&1; then
+    cypher-shell -a "$NEO4J_URI" -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain "$1"
+  else
+    docker exec "$NEO4J_CONTAINER" cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASS" --format plain "$1"
+  fi
 }
 
 echo "== Node counts =="
