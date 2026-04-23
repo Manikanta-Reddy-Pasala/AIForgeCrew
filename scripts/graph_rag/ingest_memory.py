@@ -112,7 +112,11 @@ def main() -> int:
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
-    paths = list(collect(args.files, Path(args.root)))
+    root_path = Path(args.root)
+    if not args.files and not root_path.exists():
+        print(f"no memory root at {root_path} — skipping")
+        return 0
+    paths = list(collect(args.files, root_path))
     if not paths:
         print("no memory files found")
         return 0

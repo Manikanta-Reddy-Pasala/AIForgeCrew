@@ -23,7 +23,9 @@ SET r.image_prefix = $image_prefix
 
 LINK_IMAGE = """
 MERGE (i:DockerImage {repo: $image_prefix})
-MERGE (r:Repo {name:$repo})-[:EMITS_IMAGE]->(i)
+WITH i
+MATCH (r:Repo {name:$repo})
+MERGE (r)-[:EMITS_IMAGE]->(i)
 """
 
 LINK_DEPLOY = """

@@ -213,16 +213,46 @@ com.aiforge.pg-tunnel  (bridge)    aiforge-repo-pull.timer (5m — every ~/codeR
 | `AIFORGE_DSN` | `postgresql://aiforge:aiforgepass@127.0.0.1:5433/aiforge` (MS via pg-tunnel) / `postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge` (NUC direct) | Postgres DSN (tickets + memories + checkpoints) |
 | `AIFORGE_LM_BASE_URL` | `http://127.0.0.1:1234/v1` (MS) / `http://127.0.0.1:1235/v1` (NUC via lm-tunnel) | LM Studio OpenAI-compat endpoint |
 | `AIFORGE_LM_API_KEY` | `lm-studio` | API key (LM Studio accepts any value) |
-| `AIFORGE_SUPERVISOR_MODEL` | `qwen3.6-35b-a3b` | Supervisor LLM (rule-based routing, model used for tie-break) |
-| `AIFORGE_PLANNER_MODEL` | `qwen3.6-35b-a3b` | Planner LLM |
+| `AIFORGE_SUPERVISOR_MODEL` | `qwen3.6-27b` | Supervisor LLM (rule-based routing, model used for tie-break) |
+| `AIFORGE_PLANNER_MODEL` | `qwen3.6-27b` | Planner LLM |
 | `AIFORGE_PLANNER_BACKEND` | `code` | `code` \| `toolcalling` — smolagents backend |
-| `AIFORGE_DOER_MODEL` | `qwen3-coder-next` | Doer LLM (code-focused) |
-| `AIFORGE_FEEDBACK_MODEL` | `qwen3.6-35b-a3b` | Feedback verdict LLM |
-| `AIFORGE_LEARNER_MODEL` | `qwen3.6-35b-a3b` | Learner LLM |
+| `AIFORGE_DOER_MODEL` | `qwen3.6-35b-a3b@8bit` | Doer LLM (coding-tuned MoE, 8-bit MLX for Java edit precision) |
+| `AIFORGE_FEEDBACK_MODEL` | `qwen3.6-27b` | Feedback verdict LLM |
+| `AIFORGE_LEARNER_MODEL` | `qwen3.6-27b` | Learner LLM |
 | `AIFORGE_NEO4J_URI` | `bolt://127.0.0.1:7687` | Neo4j (NUC-local) for graph-RAG |
 | `AIFORGE_EMBED_URL` | `http://127.0.0.1:8764` | bge-m3 embed sidecar (MS) |
 | `AIFORGE_TICK_MAX_WALL` | `2400` | Max wall seconds per graph invocation |
 | `AIFORGE_MEMGUARD_DISABLE` | unset | Set to `1` to bypass RAM guard |
+
+---
+
+## Models (current, 2026-04-24)
+
+Two Qwen3.6 MLX variants resident on Mac Studio, pinned at 256K ctx + 12 h TTL:
+
+| Model | Role(s) | Size | Notes |
+|-------|---------|------|-------|
+| `qwen3.6-27b` (4-bit MLX) | planner / feedback / supervisor / learner | 16 GB | Dense, fast, enough for structured output |
+| `qwen3.6-35b-a3b@8bit` (MLX) | doer | 38 GB | Qwen's "Agentic Coding" release; 8-bit preserves tool-call discipline + Java edit precision |
+
+Total resident: ~54 GB weights + ~20 GB KV @ 256K ≈ 74 GB on 96 GB unified memory.
+
+### Thinking toggle
+
+Qwen3.6 is a reasoning model by default — it writes chain-of-thought into
+`message.reasoning_content` and leaves `message.content` empty until the
+reasoning budget is spent. For structured-output roles we disable thinking:
+
+```python
+LiteLLMModel(..., extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+```
+
+Applied uniformly in `aiforge_core/planner/agent.py`, `aiforge_core/doer/agent.py`,
+and `aiforge_core/graph/nodes/feedback.py`. The `/no_think` prompt suffix does
+**not** work for Qwen3.6 — verified 2026-04-24 on both 27B and 35B-A3B.
+
+`max_tokens` is `262144` everywhere — cap not floor; model stops at EOS. Prevents
+any truncation of plans, tool-call JSON, or verdicts.
 
 ---
 
