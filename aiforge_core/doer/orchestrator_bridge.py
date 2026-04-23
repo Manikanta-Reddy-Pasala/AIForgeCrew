@@ -33,6 +33,35 @@ class _LLMConfig:
         self.api_key = api_key
 
 
+_REQ_HEADER_RX = re.compile(
+    r"^\s*##+\s*(?:acceptance\s*criteria|required|requirements|must(?:\s+do)?|done\s+when)\b",
+    re.I | re.M,
+)
+_NUMBERED_ITEM_RX = re.compile(r"^\s*(?:\d+\.|\*|-)\s+\*?\*?([^\n]{3,})", re.M)
+
+
+def _count_required_items(body: str) -> int:
+    """Best-effort count of acceptance criteria bullets in the ticket body.
+
+    Looks for a section header like ``## Acceptance criteria`` / ``## Required``
+    and counts numbered/bulleted items under it. Falls back to a generic scan
+    over the whole body if no header is present. Returns 0 when the ticket
+    looks like a plain prose request.
+    """
+    if not body:
+        return 0
+    m = _REQ_HEADER_RX.search(body)
+    if m:
+        tail = body[m.end():]
+        # Stop at the next ## section if any.
+        end = re.search(r"\n##+\s", tail)
+        block = tail[: end.start()] if end else tail
+        return len(_NUMBERED_ITEM_RX.findall(block))
+    # No explicit section — if the body has a single numbered list, count it.
+    items = _NUMBERED_ITEM_RX.findall(body)
+    return len(items) if len(items) >= 2 else 0
+
+
 def _run(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str]:
     proc = subprocess.run(
         cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False,
@@ -91,10 +120,11 @@ def _git_commit_push_pr(
         emit(log, "doer.push.skipped", ticket=identifier, reason="no_branch")
         return result
 
-    # 2) push — fail-soft
+    # 2) push — use --force-with-lease so retries after a blocked tick don't
+    #    get rejected as non-fast-forward against their own earlier push.
     try:
         rc, _, err = _run(
-            ["git", "push", "-u", "origin", branch],
+            ["git", "push", "--force-with-lease", "-u", "origin", branch],
             cwd=worktree_path, timeout=180,
         )
         if rc != 0:
@@ -188,30 +218,47 @@ def run_smolagents_doer(
 
     emit(log, "smolagents.start", ticket=ticket.identifier)  # type: ignore[attr-defined]
 
+    # Count required acceptance items from the ticket body so we can gate
+    # final_answer on "N edit_blocks green", not just ">=1". A ticket with
+    # "Acceptance criteria: 1. X  2. Y  3. Z" should produce >=3 edit_blocks.
+    required_items = _count_required_items(getattr(ticket, "body", "") or "")
+
     try:
         counters: dict = {"edit_block_ok": 0, "compile_green": 0}
         agent, task_prompt = build_doer_agent(
             ticket, worktree_path, context_bundle, llm_config, counters=counters,
             prior_verdict=prior_verdict, prior_fixlist=prior_fixlist,
         )
+        # Tell the agent upfront how many distinct edits we expect.
+        if required_items > 1:
+            task_prompt += (
+                f"\n\n## Required-items bar\n"
+                f"The ticket lists ~{required_items} acceptance items. "
+                f"Do NOT call final_answer until you have made at least "
+                f"{required_items} successful edit_block calls AND "
+                f"run_compile returns EXIT=0.\n"
+            )
         result = agent.run(task=task_prompt)
 
         summary_text = str(result) if result is not None else ""
 
-        # Programmatic checklist enforcement — the preamble asks the agent for
-        # edit_block + EXIT=0, but qwen-coder sometimes calls final_answer
-        # after only read_file. Verify the counters or reject.
-        if counters.get("edit_block_ok", 0) == 0 or counters.get("compile_green", 0) == 0:
+        # Programmatic checklist enforcement.
+        edits_ok = counters.get("edit_block_ok", 0)
+        compile_ok = counters.get("compile_green", 0)
+        min_edits = max(1, required_items)
+        checklist_failed = (edits_ok < min_edits) or (compile_ok == 0)
+        if checklist_failed:
             emit(log, "smolagents.checklist_fail", ticket=ticket.identifier,  # type: ignore[attr-defined]
                  summary_chars=len(summary_text),
-                 counters=counters)
+                 counters=counters, required_items=required_items)
             tickets.add_event(
                 ticket_id, role_name, "error",
                 body=(f"final_answer called but checklist not met "
-                      f"(edit_block_ok={counters.get('edit_block_ok', 0)}, "
-                      f"compile_green={counters.get('compile_green', 0)}).\n\n"
+                      f"(edit_block_ok={edits_ok} < required={min_edits}, "
+                      f"compile_green={compile_ok}).\n\n"
                       f"Agent summary: {summary_text[:1500]}"),
-                metadata={"stop_reason": "checklist_fail", "counters": counters},
+                metadata={"stop_reason": "checklist_fail", "counters": counters,
+                          "required_items": required_items},
             )
             # Preserve the worktree diff — the feedback→doer retry should
             # continue from this state instead of starting from pristine

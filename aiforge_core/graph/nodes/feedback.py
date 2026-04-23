@@ -78,18 +78,57 @@ def _call_llm(prompt: str) -> str:
 
 
 def _parse_verdict(text: str) -> dict:
-    # Strip markdown fences and extract first {...} block.
-    text = text.strip()
-    if text.startswith("```"):
-        text = "\n".join(text.splitlines()[1:-1]) if text.count("```") >= 2 else text.strip("`")
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            return json.loads(text[start:end + 1])
-        except Exception:
-            pass
-    return {"verdict": "fail", "reason": "could not parse verdict JSON", "fixlist": []}
+    """Parse the LLM's verdict response.
+
+    Tolerate markdown fences, leading prose/CoT, and JSON with trailing
+    commentary. Falls back to regex-matching ``verdict: <value>`` and
+    ``reason: <...>`` lines so a non-JSON reply still yields actionable
+    feedback instead of ``could not parse verdict JSON``.
+    """
+    if not text:
+        return {"verdict": "fail", "reason": "empty verdict", "fixlist": []}
+    raw = text.strip()
+    # Drop first/last triple-backtick fence if present.
+    if raw.startswith("```"):
+        fenced = raw.split("```")
+        if len(fenced) >= 3:
+            raw = fenced[1].lstrip("json").lstrip("JSON").strip()
+
+    # First try: the outermost balanced {...} block anywhere in the text.
+    # Scan brace depth to find the first complete object (handles trailing prose).
+    depth = 0
+    start = -1
+    for i, ch in enumerate(raw):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    obj = json.loads(raw[start:i + 1])
+                    if isinstance(obj, dict) and "verdict" in obj:
+                        obj.setdefault("reason", "")
+                        obj.setdefault("fixlist", [])
+                        return obj
+                except Exception:
+                    pass
+                start = -1
+
+    # Fallback: regex verdict/reason out of plain text.
+    import re
+    vm = re.search(r"verdict\s*[:=]\s*\"?(pass|fail|scope_violation)", raw, re.I)
+    if vm:
+        verdict = vm.group(1).lower()
+        rm = re.search(r"reason\s*[:=]\s*\"?([^\"\n]{3,300})", raw, re.I)
+        reason = (rm.group(1).strip().rstrip("\",.") if rm else
+                  raw[:300].replace("\n", " "))
+        return {"verdict": verdict, "reason": reason, "fixlist": []}
+
+    return {"verdict": "fail",
+            "reason": f"could not parse verdict JSON (got: {raw[:140]!r})",
+            "fixlist": []}
 
 
 def feedback_node(state: AgentState) -> AgentState:
