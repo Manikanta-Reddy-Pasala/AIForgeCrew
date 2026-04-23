@@ -12,7 +12,9 @@
 set -euo pipefail
 
 LMS="${LMS:-$HOME/.lmstudio/bin/lms}"
-CTX="${CTX:-131072}"           # 128K default; set CTX=262144 for 256K but risk OOM on Gemma
+# 2026-04-23: collapsed to 2 models (qwen3.6-35b-a3b + qwen3-coder-next) at 256K ctx.
+# See docs/runtime/model-config.md / plist env AIFORGE_*_MODEL.
+CTX="${CTX:-262144}"
 GPU="${GPU:-max}"
 # EVAL-3 finding (2026-04-23): default LM Studio TTL=1h w/ idle-unload
 # kills mid-run multi-query agents. Pin for 12h by default; override w/ TTL=... .

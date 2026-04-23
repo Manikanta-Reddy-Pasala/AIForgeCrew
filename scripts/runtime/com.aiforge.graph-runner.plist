@@ -18,7 +18,7 @@
     <key>PATH</key>
     <string>/Users/manikanta/.local/bin:/Users/manikanta/.lmstudio/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>AIFORGE_SUPERVISOR_MODEL</key>
-    <string>gemma-4-26b-a4b-it</string>
+    <string>qwen3.6-35b-a3b</string>
     <key>AIFORGE_PLANNER_MODEL</key>
     <string>qwen3.6-35b-a3b</string>
     <key>AIFORGE_PLANNER_BACKEND</key>
@@ -26,9 +26,9 @@
     <key>AIFORGE_DOER_MODEL</key>
     <string>qwen3-coder-next</string>
     <key>AIFORGE_FEEDBACK_MODEL</key>
-    <string>gemma-4-26b-a4b-it</string>
+    <string>qwen3.6-35b-a3b</string>
     <key>AIFORGE_LEARNER_MODEL</key>
-    <string>openai/gpt-oss-20b</string>
+    <string>qwen3.6-35b-a3b</string>
   </dict>
 
   <key>StartInterval</key>
