@@ -1,11 +1,17 @@
-"""Factory for the smolagents ToolCallingAgent used by the Planner role.
+"""Factory for the smolagents Planner agent.
 
-Model hint: AIFORGE_PLANNER_MODEL defaults to gemma-4-26b-a4b-it
-(set in scripts/runtime/com.aiforge.graph-runner.plist).
+Model: AIFORGE_PLANNER_MODEL (default qwen3.6-35b-a3b).
+Backend: AIFORGE_PLANNER_BACKEND=code|toolcalling (default code).
+
+EVAL-1 (2026-04-23) showed gemma-4-26b-a4b-it never produces a plan and
+that qwen3.6-35b-a3b + CodeAgent writes a plan 3/3 runs vs ToolCallingAgent
+1/3. Both are kept available; the env flag lets ops fall back instantly.
 """
 from __future__ import annotations
 
-from smolagents import LiteLLMModel, ToolCallingAgent
+import os
+
+from smolagents import CodeAgent, LiteLLMModel, MultiStepAgent, ToolCallingAgent
 
 from .tools import make_tools
 
@@ -53,37 +59,44 @@ def build_task_prompt(ticket: object, context_bundle: str) -> str:
     )
 
 
+def _agent_class(backend: str) -> type[MultiStepAgent]:
+    if backend == "toolcalling":
+        return ToolCallingAgent
+    if backend == "code":
+        return CodeAgent
+    raise ValueError(
+        f"AIFORGE_PLANNER_BACKEND={backend!r}; expected 'code' or 'toolcalling'"
+    )
+
+
 def build_planner_agent(
     ticket: object,
     context_bundle: str,
     llm_config: object,
-) -> tuple[ToolCallingAgent, str]:
-    """Build a :class:`~smolagents.ToolCallingAgent` for one Planner tick.
+) -> tuple[MultiStepAgent, str]:
+    """Build a smolagents Planner agent for one Planner tick.
 
-    Returns the agent plus the composed task prompt to pass to ``agent.run(task=...)``.
+    Backend controlled by AIFORGE_PLANNER_BACKEND (default ``code`` — see
+    EVAL-1 2026-04-23: CodeAgent wrote the plan in 3/3 runs vs TC 1/3).
 
-    The ``ctx`` dict is constructed here and injected into every tool factory
-    so all tools share the same ticket reference and can mutate it in place.
+    Returns the agent plus the composed task prompt.
     """
-    import os
     from aiforge_core.runtime.config import WORKTREE_ROOT
     from aiforge_core.runtime.logging_setup import get_logger
 
     ctx: dict = {
         "ticket": ticket,
         "worktree_root": WORKTREE_ROOT,
-        "store": None,  # lazily instantiated inside tools that need it
+        "store": None,
         "log": get_logger("planner"),
     }
 
     tools = make_tools(ctx)
 
-    # LiteLLMModel kwarg names differ across smolagents minor versions.
     import inspect as _inspect_lm
     _lm_params = set(_inspect_lm.signature(LiteLLMModel.__init__).parameters)
     _model_id_key = "model_id" if "model_id" in _lm_params else "model"
 
-    # LiteLLM needs a provider prefix for custom OpenAI-compat endpoints (LM Studio).
     model_id = llm_config.model
     if "/" not in model_id:
         model_id = f"openai/{model_id}"
@@ -94,8 +107,11 @@ def build_planner_agent(
         "api_key": llm_config.api_key,
     })
 
+    backend = os.environ.get("AIFORGE_PLANNER_BACKEND", "code").strip().lower()
+    agent_cls = _agent_class(backend)
+
     import inspect as _inspect
-    _params = set(_inspect.signature(ToolCallingAgent.__init__).parameters)
+    _params = set(_inspect.signature(agent_cls.__init__).parameters)
     _kwargs: dict = {
         "tools": tools,
         "model": model,
@@ -103,7 +119,9 @@ def build_planner_agent(
     }
     if "num_retries" in _params:
         _kwargs["num_retries"] = 1
+    if agent_cls is CodeAgent and "additional_authorized_imports" in _params:
+        _kwargs["additional_authorized_imports"] = ["re", "json"]
 
-    agent = ToolCallingAgent(**_kwargs)
+    agent = agent_cls(**_kwargs)
     task_prompt = build_task_prompt(ticket, context_bundle)
     return agent, task_prompt

@@ -20,7 +20,9 @@
     <key>AIFORGE_SUPERVISOR_MODEL</key>
     <string>gemma-4-26b-a4b-it</string>
     <key>AIFORGE_PLANNER_MODEL</key>
-    <string>gemma-4-26b-a4b-it</string>
+    <string>qwen3.6-35b-a3b</string>
+    <key>AIFORGE_PLANNER_BACKEND</key>
+    <string>code</string>
     <key>AIFORGE_DOER_MODEL</key>
     <string>qwen3-coder-next</string>
     <key>AIFORGE_FEEDBACK_MODEL</key>

@@ -14,6 +14,9 @@ set -euo pipefail
 LMS="${LMS:-$HOME/.lmstudio/bin/lms}"
 CTX="${CTX:-131072}"           # 128K default; set CTX=262144 for 256K but risk OOM on Gemma
 GPU="${GPU:-max}"
+# EVAL-3 finding (2026-04-23): default LM Studio TTL=1h w/ idle-unload
+# kills mid-run multi-query agents. Pin for 12h by default; override w/ TTL=... .
+TTL="${TTL:-43200}"
 MANIFEST="${MANIFEST:-security/model-checksums.yml}"
 
 [[ -x "$LMS" ]] || { echo "LM Studio CLI missing: $LMS" >&2; exit 1; }
@@ -39,10 +42,11 @@ for m in doc.get("models") or []:
 PY
 
 while IFS='|' read -r name path role; do
-  echo ">>> load $name (role=$role) ctx=$CTX gpu=$GPU"
+  echo ">>> load $name (role=$role) ctx=$CTX gpu=$GPU ttl=${TTL}s"
   "$LMS" load "$path" \
     --gpu "$GPU" \
     --context-length "$CTX" \
+    --ttl "$TTL" \
     --identifier "$role" \
     || echo "WARN: load failed for $name; continuing" >&2
 done < /tmp/aiforge-roles.tsv

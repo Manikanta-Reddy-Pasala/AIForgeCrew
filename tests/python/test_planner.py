@@ -313,12 +313,12 @@ class TestReadFileTool:
 # ─────────────────────────── 6. TestAgentBuilds ─────────────────────────
 
 class TestAgentBuilds:
-    def test_build_planner_agent_returns_tool_calling_agent(
-        self, tmp_path: Path
+    def test_build_planner_agent_returns_code_agent_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """build_planner_agent returns a ToolCallingAgent without hitting LM Studio."""
+        """Default backend is CodeAgent (EVAL-1 winner)."""
         pytest.importorskip("smolagents")
-        from smolagents import ToolCallingAgent
+        from smolagents import CodeAgent
 
         from aiforge_core.planner.agent import build_planner_agent
 
@@ -333,23 +333,60 @@ class TestAgentBuilds:
 
         class _FakeLLMConfig:
             base_url = "http://localhost:1234/v1"
-            model = "gemma-4-26b-a4b-it"
+            model = "qwen3.6-35b-a3b"
             api_key = "test"
 
-        import logging
-
+        monkeypatch.delenv("AIFORGE_PLANNER_BACKEND", raising=False)
         with patch("aiforge_core.planner.agent.LiteLLMModel", return_value=_StubModel()):
-                agent, task_prompt = build_planner_agent(
-                    ticket, "context bundle", _FakeLLMConfig()
-                )
+            agent, task_prompt = build_planner_agent(
+                ticket, "context bundle", _FakeLLMConfig()
+            )
 
-        assert isinstance(agent, ToolCallingAgent)
+        assert isinstance(agent, CodeAgent)
         assert "final_answer" in (
             set(agent.tools.keys())
             if isinstance(agent.tools, dict)
             else {t.name for t in agent.tools}
         )
-        assert "ADD validation" in task_prompt or "sync handler" in task_prompt or ticket.body in task_prompt
+        assert ticket.body in task_prompt
+
+    def test_build_planner_agent_backend_flag_selects_toolcalling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AIFORGE_PLANNER_BACKEND=toolcalling falls back to ToolCallingAgent."""
+        pytest.importorskip("smolagents")
+        from smolagents import ToolCallingAgent
+
+        from aiforge_core.planner.agent import build_planner_agent
+
+        class _StubModel:
+            def __call__(self, *a, **kw):
+                raise RuntimeError("stub")
+
+        class _FakeLLMConfig:
+            base_url = "http://localhost:1234/v1"
+            model = "qwen3.6-35b-a3b"
+            api_key = "test"
+
+        monkeypatch.setenv("AIFORGE_PLANNER_BACKEND", "toolcalling")
+        with patch("aiforge_core.planner.agent.LiteLLMModel", return_value=_StubModel()):
+            agent, _ = build_planner_agent(_FakeTicket(), "ctx", _FakeLLMConfig())
+        assert isinstance(agent, ToolCallingAgent)
+
+    def test_build_planner_agent_rejects_unknown_backend(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from aiforge_core.planner.agent import build_planner_agent
+
+        class _FakeLLMConfig:
+            base_url = "http://localhost:1234/v1"
+            model = "qwen3.6-35b-a3b"
+            api_key = "test"
+
+        monkeypatch.setenv("AIFORGE_PLANNER_BACKEND", "bogus")
+        with patch("aiforge_core.planner.agent.LiteLLMModel"):
+            with pytest.raises(ValueError, match="AIFORGE_PLANNER_BACKEND"):
+                build_planner_agent(_FakeTicket(), "ctx", _FakeLLMConfig())
 
     def test_model_id_gets_openai_prefix(self, tmp_path: Path) -> None:
         """build_planner_agent prepends 'openai/' when model has no slash."""
