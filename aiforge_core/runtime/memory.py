@@ -14,8 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+import os
+
 from aiforge_core.store_v2 import Store
 from aiforge_core.retrieval import Hit
+
+_BACKEND = os.environ.get("AIFORGE_MEMORY_BACKEND", "postgres").lower()
 
 
 @dataclass
@@ -33,8 +37,16 @@ class Memory:
     """Thin adapter so tools.py never touches the Store class directly."""
 
     def __init__(self) -> None:
-        self._store = Store()
-        self._store.ensure_schema()
+        self._backend = _BACKEND
+        if self._backend == "neo4j":
+            # Neo4j-backed memory (Option A). Store stays only for pieces
+            # that still need pg (e.g. memory_proposals curation queue).
+            from aiforge_core.rag.neo4j_memory import ensure_schema
+            ensure_schema()
+            self._store = None
+        else:
+            self._store = Store()
+            self._store.ensure_schema()
 
     # ── read path ────────────────────────────────────────────────────────
     def search(
@@ -56,7 +68,9 @@ class Memory:
         key, which silently emptied results.
         """
         try:
-            from aiforge_core.rag.retriever import retrieve_for_role_li
+            # Route via the package-level symbol so
+            # AIFORGE_MEMORY_BACKEND=neo4j swaps the implementation.
+            from aiforge_core.rag import retrieve_for_role_li
             hits: list[Hit] = retrieve_for_role_li(
                 self._store, role=role, query=query, parent_id=parent_id,
             )
@@ -69,19 +83,21 @@ class Memory:
         if top_k is not None:
             hits = hits[:top_k]
         # Fact hit-tracking: bump hit_count + stamp last_hit_at on every
-        # memory row returned. Bulk UPDATE in a single query.
-        # store_v2 emits ids as "mem:<int>" — strip prefix before casting.
+        # memory row returned. Postgres-only (store_v2 emits ids as
+        # "mem:<int>"); skipped entirely on neo4j backend where ids are
+        # opaque fact_id UUIDs.
         hit_ids: list[int] = []
-        for h in hits:
-            if h.id is None:
-                continue
-            sid = str(h.id)
-            if sid.startswith("mem:"):
-                sid = sid[4:]
-            try:
-                hit_ids.append(int(sid))
-            except ValueError:
-                continue
+        if self._backend != "neo4j":
+            for h in hits:
+                if h.id is None:
+                    continue
+                sid = str(h.id)
+                if sid.startswith("mem:"):
+                    sid = sid[4:]
+                try:
+                    hit_ids.append(int(sid))
+                except ValueError:
+                    continue
         if hit_ids:
             try:
                 import psycopg
@@ -134,6 +150,19 @@ class Memory:
             raise ValueError("retain_fact: text is empty")
         if tier not in ("t1", "t2", "t3", "t4"):
             raise ValueError(f"retain_fact: bad tier {tier!r}")
+
+        # Neo4j backend: route directly to the :Memory writer.
+        if self._backend == "neo4j":
+            from aiforge_core.rag.neo4j_memory import MemoryRow, retain_fact as n4j_retain
+            fact_id = n4j_retain(MemoryRow(
+                tier=tier, wing=wing, text=text[:10_000],
+                kind=kind, source=source,
+                metadata={"source": source or "agent.retain",
+                          **(metadata or {})},
+            ))
+            # Memory callers treat the return as opaque; fact_id string works
+            # as identity everywhere (search hit .id is already a string).
+            return fact_id  # type: ignore[return-value]
 
         # Store.upsert_memory is the canonical writer on the store; fall
         # back to a direct insert if the helper doesn't exist on this

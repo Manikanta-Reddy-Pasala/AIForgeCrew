@@ -43,14 +43,47 @@ Your JSON:
 
 
 def _git_diff(worktree_path: str | None) -> str:
+    """Return the diff the Doer produced in this tick.
+
+    Uses ``git diff origin/<default>...HEAD`` to compare only the new
+    commits on this ticket's branch, plus uncommitted changes. That
+    shows what the Doer actually did, not the repo's most-recent
+    master commit (which was the old bug — ``HEAD~1`` on an unedited
+    worktree yielded the previous master commit as "Doer output").
+    """
     if not worktree_path:
         return ""
     try:
-        proc = subprocess.run(
-            ["git", "diff", "HEAD~1"],
-            cwd=worktree_path, capture_output=True, text=True, timeout=30, check=False,
+        # Detect default branch (fall back to origin/master).
+        base_proc = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=10, check=False,
         )
-        return (proc.stdout or proc.stderr)[:15000]
+        base_ref = "origin/master"
+        if base_proc.returncode == 0:
+            ref = base_proc.stdout.strip()
+            if "/" in ref:
+                base_ref = "origin/" + ref.rsplit("/", 1)[1]
+
+        # Committed changes ahead of base + uncommitted tree.
+        diffs: list[str] = []
+        proc1 = subprocess.run(
+            ["git", "diff", f"{base_ref}...HEAD"],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        if proc1.stdout:
+            diffs.append(proc1.stdout)
+        proc2 = subprocess.run(
+            ["git", "diff", "HEAD"],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        if proc2.stdout:
+            diffs.append(proc2.stdout)
+        combined = "\n".join(diffs) if diffs else "(no diff — Doer made no changes)"
+        return combined[:15000]
     except Exception as exc:
         return f"(git diff failed: {exc})"
 
