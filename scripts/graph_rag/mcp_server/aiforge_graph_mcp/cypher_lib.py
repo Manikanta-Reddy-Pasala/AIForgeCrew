@@ -11,8 +11,17 @@ from neo4j import GraphDatabase
 NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://127.0.0.1:7687")
 NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
 NEO4J_PASS = os.environ.get("NEO4J_PASS", "password")
-EMBED_URL = os.environ.get("EMBED_URL", "http://127.0.0.1:8764")
-RERANK_URL = os.environ.get("RERANK_URL", "http://127.0.0.1:8765")
+# Default: LM Studio OpenAI-compatible endpoint reachable on NUC
+# localhost:1235 via the lm-tunnel systemd unit (forwards to Mac Studio
+# :1234). Override via EMBED_URL / EMBED_MODEL.
+EMBED_URL = os.environ.get("EMBED_URL", "http://127.0.0.1:1235/v1")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-nomic-embed-text-v1.5")
+# LM Studio does not serve a reranker. Default blank -> rerank() returns
+# identity scores and caller keeps vector-order ranking.
+RERANK_URL = os.environ.get("RERANK_URL", "")
+# LLM (used by ticket_brief for summary if needed). Same tunnel.
+LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:1235/v1")
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3-coder-next")
 
 _driver = None
 
@@ -31,6 +40,21 @@ def session():
 
 
 def embed(text: str) -> list[float]:
+    """Call OpenAI /v1/embeddings (LM Studio compatible) first, fall back to
+    TEI /embed if that fails. Both shapes handled."""
+    try:
+        r = httpx.post(
+            f"{EMBED_URL}/embeddings",
+            json={"model": EMBED_MODEL, "input": text},
+            headers={"Authorization": "Bearer lm-studio"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        j = r.json()
+        if isinstance(j, dict) and "data" in j:
+            return j["data"][0]["embedding"]
+    except Exception:
+        pass
     r = httpx.post(f"{EMBED_URL}/embed", json={"inputs": text}, timeout=30)
     r.raise_for_status()
     j = r.json()
@@ -40,17 +64,21 @@ def embed(text: str) -> list[float]:
 
 
 def rerank(query: str, texts: list[str]) -> list[float]:
-    if not texts:
-        return []
-    r = httpx.post(f"{RERANK_URL}/rerank",
-                   json={"query": query, "texts": texts}, timeout=30)
-    r.raise_for_status()
-    out = r.json()
-    # TEI returns [{index, score}]; normalize back to input order
-    scores = [0.0] * len(texts)
-    for item in out:
-        scores[item["index"]] = item["score"]
-    return scores
+    """Optional reranker. If RERANK_URL is empty or unreachable, return
+    uniform zero scores — callers keep their vector-derived order."""
+    if not texts or not RERANK_URL:
+        return [0.0] * len(texts)
+    try:
+        r = httpx.post(f"{RERANK_URL}/rerank",
+                       json={"query": query, "texts": texts}, timeout=30)
+        r.raise_for_status()
+        out = r.json()
+        scores = [0.0] * len(texts)
+        for item in out:
+            scores[item["index"]] = item["score"]
+        return scores
+    except Exception:
+        return [0.0] * len(texts)
 
 
 # Common Cypher snippets

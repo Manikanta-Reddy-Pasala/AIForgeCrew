@@ -21,11 +21,25 @@ from neo4j import GraphDatabase
 import ticket_client
 import impact as impact_mod
 
-EMBED_URL = os.environ.get("EMBED_URL", "http://127.0.0.1:8764")
-RERANK_URL = os.environ.get("RERANK_URL", "http://127.0.0.1:8765")
+EMBED_URL = os.environ.get("EMBED_URL", "http://127.0.0.1:1235/v1")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "text-embedding-nomic-embed-text-v1.5")
+RERANK_URL = os.environ.get("RERANK_URL", "")
 
 
 def embed(text: str) -> list[float]:
+    try:
+        r = httpx.post(
+            f"{EMBED_URL}/embeddings",
+            json={"model": EMBED_MODEL, "input": text},
+            headers={"Authorization": "Bearer lm-studio"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        j = r.json()
+        if isinstance(j, dict) and "data" in j:
+            return j["data"][0]["embedding"]
+    except Exception:
+        pass
     r = httpx.post(f"{EMBED_URL}/embed", json={"inputs": text}, timeout=30)
     r.raise_for_status()
     data = r.json()
@@ -59,8 +73,8 @@ def fulltext(session, query: str, label="Method", k=20):
 
 
 def rerank(query: str, candidates: list[dict], key="text") -> list[dict]:
-    if not candidates:
-        return []
+    if not candidates or not RERANK_URL:
+        return candidates
     try:
         r = httpx.post(
             f"{RERANK_URL}/rerank",

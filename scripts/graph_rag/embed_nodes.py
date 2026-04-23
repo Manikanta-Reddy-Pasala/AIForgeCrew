@@ -100,6 +100,10 @@ def main() -> int:
     ap.add_argument("--dim", type=int, default=768)
     ap.add_argument("--skip-classes", action="store_true")
     ap.add_argument("--skip-methods", action="store_true")
+    ap.add_argument("--extras", action="store_true",
+                    help="Also embed Endpoint, MongoCollection, NatsSubject, KafkaTopic, Memory.")
+    ap.add_argument("--only-new", action="store_true",
+                    help="Skip rows that already have an embedding. Default on.")
     args = ap.parse_args()
 
     drv = GraphDatabase.driver(args.neo4j, auth=(args.user, args.password))
@@ -132,8 +136,93 @@ def main() -> int:
             print(f"classes to embed: {len(rows)}")
             _embed_and_store(s, rows, class_text, "Class", args)
 
+        if args.extras:
+            _embed_label(s, "Endpoint",
+                "MATCH (e:Endpoint) WHERE e.embedding IS NULL "
+                "OPTIONAL MATCH (m:Method)-[:EXPOSES]->(e) "
+                "RETURN e.path AS key, e.http AS http, e.path AS path, "
+                "collect(DISTINCT m.fqn)[0..5] AS handlers, "
+                "collect(DISTINCT m.javadoc)[0..3] AS docs",
+                lambda r: f"HTTP {r.get('http') or ''} {r['path']}\n"
+                          f"handlers: {', '.join(r.get('handlers') or [])}\n"
+                          f"{' '.join((r.get('docs') or []))[:800]}",
+                "key_field=path", args)
+
+            _embed_label(s, "MongoCollection",
+                "MATCH (c:MongoCollection) WHERE c.embedding IS NULL "
+                "OPTIONAL MATCH (m:Method)-[r:READS|WRITES|DELETES]->(c) "
+                "WITH c, type(r) AS op, m.fqn AS fqn "
+                "RETURN c.name AS key, c.name AS name, "
+                "collect(DISTINCT op) AS ops, "
+                "collect(DISTINCT fqn)[0..10] AS methods",
+                lambda r: f"Mongo collection {r['name']}\n"
+                          f"ops: {', '.join(r.get('ops') or [])}\n"
+                          f"accessed by: {', '.join((r.get('methods') or [])[:10])}",
+                "key_field=name", args)
+
+            _embed_label(s, "NatsSubject",
+                "MATCH (s:NatsSubject) WHERE s.embedding IS NULL "
+                "OPTIONAL MATCH (m:Method)-[r:PUBLISH|SUBSCRIBE]->(s) "
+                "WITH s, type(r) AS role, m.fqn AS fqn "
+                "RETURN s.subject AS key, s.subject AS subject, "
+                "collect(DISTINCT role) AS roles, "
+                "collect(DISTINCT fqn)[0..10] AS methods",
+                lambda r: f"NATS subject {r['subject']}\n"
+                          f"roles: {', '.join(r.get('roles') or [])}\n"
+                          f"methods: {', '.join((r.get('methods') or [])[:10])}",
+                "key_field=subject", args)
+
+            _embed_label(s, "KafkaTopic",
+                "MATCH (t:KafkaTopic) WHERE t.embedding IS NULL "
+                "OPTIONAL MATCH (m:Method)-[r:PRODUCES|CONSUMES]->(t) "
+                "WITH t, type(r) AS role, m.fqn AS fqn "
+                "RETURN t.name AS key, t.name AS name, "
+                "collect(DISTINCT role) AS roles, "
+                "collect(DISTINCT fqn)[0..10] AS methods",
+                lambda r: f"Kafka topic {r['name']}\n"
+                          f"roles: {', '.join(r.get('roles') or [])}\n"
+                          f"methods: {', '.join((r.get('methods') or [])[:10])}",
+                "key_field=name", args)
+
+            _embed_label(s, "Memory",
+                "MATCH (m:Memory) WHERE m.embedding IS NULL "
+                "RETURN m.path AS key, m.title AS title, m.type AS type, "
+                "m.description AS description, m.body AS body",
+                lambda r: f"{r.get('title') or ''} ({r.get('type') or ''})\n"
+                          f"{r.get('description') or ''}\n"
+                          f"{(r.get('body') or '')[:3000]}",
+                "key_field=path", args)
+
     drv.close()
     return 0
+
+
+def _embed_label(session, label: str, cypher_fetch: str, text_fn,
+                 key_spec: str, args) -> None:
+    """Embed any label where we can identify rows by a single key field."""
+    ensure_vector_index(session, label, "embedding", args.dim)
+    rows = [dict(r) for r in session.run(cypher_fetch)]
+    print(f"{label.lower()}s to embed: {len(rows)}")
+    if not rows:
+        return
+    key_field = key_spec.split("=", 1)[1]
+    import time as _t
+    t0 = _t.time()
+    for i in range(0, len(rows), args.batch):
+        batch = rows[i:i + args.batch]
+        texts = [text_fn(r) for r in batch]
+        try:
+            vecs = embed_batch(args.lm, args.model, texts, dim=args.dim)
+        except Exception as exc:
+            print(f"  {label} batch {i} failed: {exc}", file=sys.stderr)
+            continue
+        session.run(
+            f"UNWIND $rows AS r "
+            f"MATCH (n:{label} {{{key_field}: r.key}}) "
+            f"SET n.embedding = r.vec",
+            rows=[{"key": r["key"], "vec": v} for r, v in zip(batch, vecs)],
+        )
+    print(f"  {label} done: {len(rows)} in {_t.time()-t0:.1f}s")
 
 
 def _embed_and_store(session, rows: list[dict], text_fn, label: str, args) -> None:

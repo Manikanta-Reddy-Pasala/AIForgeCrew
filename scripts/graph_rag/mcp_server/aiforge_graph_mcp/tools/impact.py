@@ -12,8 +12,8 @@ def impact(args: dict) -> dict:
 
 
 def cross_repo_flow(args: dict) -> dict:
-    """For a given integration value (nats subject / mongo coll / rest path)
-    return producer(s) and consumer(s) across repos."""
+    """For a given integration value (nats subject / kafka topic / mongo coll /
+    rest path) return producer(s) and consumer(s) across repos."""
     value = args["value"]
     kind = args.get("kind") or "auto"
 
@@ -22,6 +22,13 @@ def cross_repo_flow(args: dict) -> dict:
     OPTIONAL MATCH (p:Method)-[:PUBLISH]->(s)
     OPTIONAL MATCH (s)<-[:SUBSCRIBE]-(c:Method)
     RETURN 'nats' AS via, collect(DISTINCT p.fqn) AS producers,
+           collect(DISTINCT c.fqn) AS consumers
+    """
+    cy_kafka = """
+    MATCH (t:KafkaTopic {name:$v})
+    OPTIONAL MATCH (p:Method)-[:PRODUCES]->(t)
+    OPTIONAL MATCH (t)<-[:CONSUMES]-(c:Method)
+    RETURN 'kafka' AS via, collect(DISTINCT p.fqn) AS producers,
            collect(DISTINCT c.fqn) AS consumers
     """
     cy_mongo = """
@@ -35,13 +42,15 @@ def cross_repo_flow(args: dict) -> dict:
     MATCH (e:Endpoint {path:$v})
     OPTIONAL MATCH (h:Method)-[:EXPOSES]->(e)
     OPTIONAL MATCH (cl:Method)-[:CALLS_EXTERNAL]->(ex:ExternalEndpoint)
-      WHERE ex.url CONTAINS e.path
+      WHERE ex.url ENDS WITH e.path OR ex.url STARTS WITH e.path
     RETURN 'http' AS via, collect(DISTINCT h.fqn) AS producers,
            collect(DISTINCT cl.fqn) AS consumers
     """
     cys = []
     if kind in ("auto", "nats"):
         cys.append(cy_nats)
+    if kind in ("auto", "kafka"):
+        cys.append(cy_kafka)
     if kind in ("auto", "mongo"):
         cys.append(cy_mongo)
     if kind in ("auto", "http"):
@@ -92,7 +101,8 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "value": {"type": "string"},
-                "kind": {"type": "string", "enum": ["auto", "nats", "mongo", "http"]},
+                "kind": {"type": "string",
+                         "enum": ["auto", "nats", "kafka", "mongo", "http"]},
             },
             "required": ["value"],
         },
