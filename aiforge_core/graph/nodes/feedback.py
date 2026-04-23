@@ -57,19 +57,19 @@ def _git_diff(worktree_path: str | None) -> str:
 
 def _call_llm(prompt: str) -> str:
     import urllib.request
-    # qwen3.6 is a reasoning model — it writes chain-of-thought into
-    # `reasoning_content` before emitting the user-facing `content`. With
-    # max_tokens=512 the reasoning alone exhausts the budget and `content`
-    # comes back empty. We (1) append the Qwen `/no_think` toggle to ask
-    # the model to skip CoT, (2) raise max_tokens to 2048 as belt-and-braces,
-    # (3) fall back to `reasoning_content` if `content` is empty so we at
-    # least harvest a parseable verdict from the thinking trace.
-    suffix = "\n\n/no_think"
+    # Qwen3.6 is a reasoning model. LM Studio exposes a chat_template_kwarg
+    # (``enable_thinking: false``) that routes the output into ``content``
+    # directly instead of burning the budget on ``reasoning_content``. The
+    # ``/no_think`` in-prompt toggle does NOT work for Qwen3.6 — verified
+    # 2026-04-24 on both qwen3.6-27b and qwen3.6-35b-a3b.
+    # We keep max_tokens high (2048) and fall back to reasoning_content as a
+    # defensive last resort.
     payload = json.dumps({
         "model": FEEDBACK_MODEL,
-        "messages": [{"role": "user", "content": prompt + suffix}],
+        "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 2048,
         "temperature": 0.0,
+        "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
     req = urllib.request.Request(
         f"{LM_STUDIO_BASE_URL}/chat/completions",

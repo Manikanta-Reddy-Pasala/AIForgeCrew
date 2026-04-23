@@ -101,10 +101,13 @@ def build_planner_agent(
     if "/" not in model_id:
         model_id = f"openai/{model_id}"
 
+    # Qwen3.6 ships as a reasoning model; content field stays empty unless we
+    # tell LM Studio to disable the thinking trace via chat_template_kwargs.
     model = LiteLLMModel(**{
         _model_id_key: model_id,
         "api_base": llm_config.base_url,
         "api_key": llm_config.api_key,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     })
 
     backend = os.environ.get("AIFORGE_PLANNER_BACKEND", "code").strip().lower()

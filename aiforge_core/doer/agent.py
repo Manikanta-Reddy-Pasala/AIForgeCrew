@@ -117,6 +117,9 @@ def build_doer_agent(
         _model_id_key: model_id,
         "api_base": llm_config.base_url,
         "api_key": llm_config.api_key,
+        # Harmless on non-reasoning models (Qwen3-Coder), required on Qwen3.6
+        # family so message.content actually gets populated.
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     })
 
     # smolagents ToolCallingAgent 1.24 has no `system_prompt` kwarg; full
