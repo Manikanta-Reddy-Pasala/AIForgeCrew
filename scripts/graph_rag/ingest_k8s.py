@@ -96,16 +96,23 @@ def handle(session, rec: dict) -> None:
                  c=rec["cluster"], ns=rec["ns"], dn=rec["name"])
 
     elif kind == "Service":
+        # Neo4j rejects nested maps; serialize to JSON then decode in Cypher
+        # via apoc.convert.fromJsonMap when a comparison is needed.
+        sel = rec.get("selector") or {}
         session.run("""
             MERGE (s:Service {cluster:$c, ns:$ns, name:$name})
-            SET s.ports = $ports, s.selector = $sel, s.type = $type
+            SET s.ports = $ports, s.selector = $sel_json, s.type = $type
             WITH s
             MATCH (d:Deployment {cluster:$c, ns:$ns})
-            WHERE ALL(k IN keys($sel) WHERE apoc.convert.fromJsonMap(d.selector)[k] = $sel[k])
+            WHERE size($sel_keys) > 0
+              AND ALL(k IN $sel_keys
+                      WHERE apoc.convert.fromJsonMap(d.selector)[k] = $sel_vals[k])
             MERGE (s)-[:TARGETS]->(d)
         """, c=rec["cluster"], ns=rec["ns"], name=rec["name"],
              ports=json.dumps(rec.get("ports") or []),
-             sel=rec.get("selector") or {},
+             sel_json=json.dumps(sel),
+             sel_keys=list(sel.keys()),
+             sel_vals=sel,
              type=rec.get("type"))
     elif kind == "Ingress":
         session.run("""

@@ -160,7 +160,10 @@ public final class Extractor {
             }
         }
 
-        // Fields (autowired / final — dependency edges)
+        // Fields (autowired / final — dependency edges).
+        // String-literal static finals are captured with their value so the
+        // ingester can resolve `.subscribe(SUBJECT_PATTERN)` calls to the
+        // underlying subject.
         List<Map<String, Object>> fields = new ArrayList<>();
         for (FieldDeclaration fd : td.getFields()) {
             boolean isFinal = fd.isFinal();
@@ -168,16 +171,23 @@ public final class Extractor {
                 .map(x -> x.getNameAsString())
                 .anyMatch(n -> n.equals("Autowired") || n.equals("Inject")
                          || n.equals("Value") || n.equals("Resource"));
-            if (!(isFinal || hasInject)) continue;
             String type = fd.getVariables().isEmpty() ? ""
                 : fd.getVariable(0).getTypeAsString();
+            boolean isStringConst = isFinal && fd.isStatic() && "String".equals(stripGenerics(type));
+            if (!(isFinal || hasInject || isStringConst)) continue;
             for (var v : fd.getVariables()) {
-                fields.add(Map.of(
-                    "name", v.getNameAsString(),
-                    "type", stripGenerics(type),
-                    "final", isFinal,
-                    "inject", hasInject
-                ));
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("name", v.getNameAsString());
+                entry.put("type", stripGenerics(type));
+                entry.put("final", isFinal);
+                entry.put("inject", hasInject);
+                if (isStringConst && v.getInitializer().isPresent()) {
+                    var init = v.getInitializer().get();
+                    if (init.isStringLiteralExpr()) {
+                        entry.put("value", init.asStringLiteralExpr().getValue());
+                    }
+                }
+                fields.add(entry);
             }
         }
 
@@ -237,7 +247,12 @@ public final class Extractor {
         int endLine = md.getEnd().map(pos -> pos.line).orElse(line);
 
         List<String> annotations = new ArrayList<>();
-        for (var a : md.getAnnotations()) annotations.add(a.getNameAsString());
+        List<String> annotationsFull = new ArrayList<>();
+        for (var a : md.getAnnotations()) {
+            annotations.add(a.getNameAsString());
+            // Full source incl. parenthesized args; needed for @KafkaListener topic parsing.
+            annotationsFull.add(a.toString());
+        }
 
         // Endpoint extraction
         Map<String, Object> endpoint = null;
@@ -308,6 +323,7 @@ public final class Extractor {
         out.put("line", line);
         out.put("loc", Math.max(0, endLine - line + 1));
         out.put("annotations", annotations);
+        out.put("annotations_full", annotationsFull);
         out.put("param_types", paramTypes);
         out.put("param_names", paramNames);
         out.put("throws", throwsList);
@@ -334,7 +350,11 @@ public final class Extractor {
             paramNames.add(p.getNameAsString());
         }
         List<String> annotations = new ArrayList<>();
-        for (var a : cd.getAnnotations()) annotations.add(a.getNameAsString());
+        List<String> annotationsFull = new ArrayList<>();
+        for (var a : cd.getAnnotations()) {
+            annotations.add(a.getNameAsString());
+            annotationsFull.add(a.toString());
+        }
         String body = cd.getBody().toString();
         if (body.length() > 4000) body = body.substring(0, 4000);
         String javadoc = cd.getJavadocComment().map(jc -> jc.getContent().strip()).orElse("");
@@ -347,6 +367,7 @@ public final class Extractor {
         out.put("line", line);
         out.put("loc", Math.max(0, endLine - line + 1));
         out.put("annotations", annotations);
+        out.put("annotations_full", annotationsFull);
         out.put("param_types", paramTypes);
         out.put("param_names", paramNames);
         out.put("throws", List.of());

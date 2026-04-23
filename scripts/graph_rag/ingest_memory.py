@@ -121,7 +121,16 @@ def main() -> int:
         print("no memory files found")
         return 0
 
-    records = [parse(p) for p in paths]
+    records = []
+    skipped = 0
+    for p in paths:
+        try:
+            records.append(parse(p))
+        except Exception as exc:
+            skipped += 1
+            print(f"  skip {p}: {exc.__class__.__name__}", file=sys.stderr)
+    if skipped:
+        print(f"  ({skipped} files skipped due to parse errors)", file=sys.stderr)
 
     drv = GraphDatabase.driver(args.neo4j, auth=(args.user, args.password))
     with drv.session() as s:

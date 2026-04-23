@@ -24,10 +24,13 @@ PASSES = [
         RETURN count(*) AS n
     """),
     ("http_flows", """
+        // Use endsWith/startsWith instead of CONTAINS to avoid range-index
+        // STRING_CONTAINS predicate error on Neo4j 5 with the endpoint_path
+        // index. Keeps the semantic: external URL hits the endpoint path.
         MATCH (caller:Method)-[:CALLS_EXTERNAL]->(ext:ExternalEndpoint)
+        WITH caller, ext, ext.url AS url
         MATCH (handler:Method)-[:EXPOSES]->(e:Endpoint)
-        WHERE ext.url CONTAINS e.path
-          AND (e.http IS NULL OR ext.url CONTAINS toLower(e.http))
+        WHERE url ENDS WITH e.path OR url STARTS WITH e.path
         MERGE (caller)-[r:FLOWS_TO {via:'http'}]->(handler)
         SET r.path = e.path
         RETURN count(*) AS n

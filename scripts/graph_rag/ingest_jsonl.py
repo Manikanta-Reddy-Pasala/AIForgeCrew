@@ -45,8 +45,42 @@ SCHEMA = [
 
 
 _URL_RX = re.compile(r'"(https?://[^"]+|/v1/[^"]+|/api/[^"]+)"')
-_NATS_PUB_RX = re.compile(r'(?:publisher|natsClient|connection|nc)\.publish\s*\(\s*"([^"]+)"')
-_NATS_SUB_RX = re.compile(r'subscribe(?:Sync|Async)?\s*\(\s*"([^"]+)"')
+
+# Broadened: any <identifier>.publish("literal"). Catches jetStream, localJetStream,
+# natsConnection, publisher, nc, etc. without an allowlist.
+_NATS_PUB_RX = re.compile(
+    r'\b[A-Za-z_][A-Za-z0-9_]*\.publish\s*\(\s*"([a-zA-Z][a-zA-Z0-9._\-\*]*)"'
+)
+# Broadened: any <identifier>.subscribe("literal") where the identifier suggests
+# a JetStream / NATS context (filters out Reactor Mono.subscribe noise by requiring
+# a string-literal first arg).
+_NATS_SUB_RX = re.compile(
+    r'\b[A-Za-z_][A-Za-z0-9_]*\.subscribe\s*\(\s*"([a-zA-Z][a-zA-Z0-9._\-\*]*)"'
+)
+# Constant-resolved subscribe: `x.subscribe(SUBJECT_PATTERN, ...)` where
+# SUBJECT_PATTERN is a String constant in the same class. Captures the
+# identifier so the second pass can swap it for the literal value.
+_NATS_SUB_CONST_RX = re.compile(
+    r'\b[A-Za-z_][A-Za-z0-9_]*\.subscribe\s*\(\s*([A-Z][A-Z0-9_]*)\b'
+)
+_STRING_CONST_RX = re.compile(
+    r'\bstatic\s+final\s+String\s+([A-Z][A-Z0-9_]*)\s*=\s*"([^"]+)"'
+)
+
+# Kafka: kafkaTemplate.send("topic", ...)  OR wrapped sendWithCallback("topic", ...)
+_KAFKA_PUB_RX = re.compile(
+    r'\b(?:kafkaTemplate|kafkaProductTemplate|[a-zA-Z_][a-zA-Z0-9_]*Template)\.send'
+    r'\s*\(\s*"([a-zA-Z][a-zA-Z0-9._\-]*)"'
+)
+_KAFKA_WRAP_RX = re.compile(
+    r'\bsendWithCallback\s*\(\s*"([a-zA-Z][a-zA-Z0-9._\-]*)"'
+)
+# @KafkaListener(topics = "stock" ...)  OR  @KafkaListener(topics={"a","b"} ...)
+_KAFKA_LISTENER_RX = re.compile(
+    r'@KafkaListener\s*\([^)]*topics\s*=\s*(?:"([^"]+)"|\{([^}]+)\})',
+    re.DOTALL,
+)
+
 _MONGO_TEMPLATE_RX = re.compile(
     r'mongoTemplate\.(find\w*|count\w*|exists\w*|insert\w*|save\w*|update\w*|'
     r'remove\w*|delete\w*|bulkOps\w*)'
@@ -123,6 +157,7 @@ def resolve_class(fqn_hint: str, by_simple: dict[str, list[str]]) -> str:
 
 def write_graph(driver, records: list[dict], collection_hints: dict[str, str]):
     classes, methods, by_simple = collect_all(records)
+    classes_by_fqn = {c["fqn"]: c for c in classes}
 
     with driver.session() as s:
         for q in SCHEMA:
@@ -391,10 +426,23 @@ def write_graph(driver, records: list[dict], collection_hints: dict[str, str]):
         mongo_rows = []
         ext_rows = []
         nats_rows = []
+        kafka_rows = []
+        # Group methods by class so we can reuse class-level string constants
+        # when resolving subscribe(SUBJECT_PATTERN) calls.
+        methods_by_class: dict[str, list[dict]] = defaultdict(list)
+        for m in methods:
+            methods_by_class[m["class_fqn"]].append(m)
+        class_body_cache: dict[str, str] = {}
         for m in methods:
             body = m.get("body") or ""
             src = m["fqn"]
             klass_fqn = m["class_fqn"]
+            # Build class-level body blob once for const lookup.
+            if klass_fqn not in class_body_cache:
+                class_body_cache[klass_fqn] = "\n".join(
+                    (mm.get("body") or "") for mm in methods_by_class[klass_fqn]
+                )
+            cls = {"header": "", "methods": methods_by_class[klass_fqn]}
             # mongoTemplate.* ops
             for match in _MONGO_TEMPLATE_RX.finditer(body):
                 op = match.group(1)
@@ -437,11 +485,37 @@ def write_graph(driver, records: list[dict], collection_hints: dict[str, str]):
             for u in _URL_RX.findall(body):
                 if u.startswith("http") or u.startswith("/v1") or u.startswith("/api"):
                     ext_rows.append({"m": src, "u": u[:300]})
-            # NATS publish / subscribe
+            # NATS publish / subscribe (literal)
             for sub in _NATS_PUB_RX.findall(body):
                 nats_rows.append({"m": src, "s": sub, "op": "PUBLISH"})
             for sub in _NATS_SUB_RX.findall(body):
                 nats_rows.append({"m": src, "s": sub, "op": "SUBSCRIBE"})
+            # NATS subscribe via constant: resolve from class-level String
+            # finals (emitted by the extractor) plus one-pass body scan.
+            consts = {
+                k: v for k, v in _STRING_CONST_RX.findall(class_body_cache[klass_fqn])
+            }
+            # Overlay constants declared as (:Class).fields[*].value
+            for fld in classes_by_fqn.get(klass_fqn, {}).get("fields", []) or []:
+                if isinstance(fld, dict) and fld.get("value") and fld.get("name"):
+                    consts[fld["name"]] = fld["value"]
+            for cname in _NATS_SUB_CONST_RX.findall(body):
+                if cname in consts:
+                    nats_rows.append({"m": src, "s": consts[cname], "op": "SUBSCRIBE"})
+            # Kafka producer
+            for topic in _KAFKA_PUB_RX.findall(body):
+                kafka_rows.append({"m": src, "t": topic, "op": "PRODUCES"})
+            for topic in _KAFKA_WRAP_RX.findall(body):
+                kafka_rows.append({"m": src, "t": topic, "op": "PRODUCES"})
+            # Kafka consumer (@KafkaListener on method). annotations_full carries
+            # the full @KafkaListener(...) source text when the Extractor emits it.
+            annotation_text = " ".join(m.get("annotations_full") or [])
+            for ann_hit in _KAFKA_LISTENER_RX.finditer(annotation_text):
+                if ann_hit.group(1):
+                    kafka_rows.append({"m": src, "t": ann_hit.group(1), "op": "CONSUMES"})
+                elif ann_hit.group(2):
+                    for lit in re.findall(r'"([^"]+)"', ann_hit.group(2)):
+                        kafka_rows.append({"m": src, "t": lit, "op": "CONSUMES"})
 
         # Dedup mongo_rows
         mongo_seen = set()
@@ -478,6 +552,16 @@ def write_graph(driver, records: list[dict], collection_hints: dict[str, str]):
                     "UNWIND $rows AS r MERGE (s:NatsSubject {subject: r.s}) "
                     "WITH s, r MATCH (m:Method {fqn: r.m}) "
                     f"MERGE (m)-[:{op}]->(s)",
+                    rows=subset,
+                )
+
+        for op in ("PRODUCES", "CONSUMES"):
+            subset = [r for r in kafka_rows if r["op"] == op]
+            if subset:
+                s.run(
+                    "UNWIND $rows AS r MERGE (t:KafkaTopic {name: r.t}) "
+                    "WITH t, r MATCH (m:Method {fqn: r.m}) "
+                    f"MERGE (m)-[:{op}]->(t)",
                     rows=subset,
                 )
 
