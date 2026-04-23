@@ -1,8 +1,14 @@
 .PHONY: help install test ui deploy pull kill-all \
         index-all status logs-tail health sync-memory reindex-memory
 
-# SSH target for Mac Studio. Override: `make X SSH_HOST=user@host`.
-SSH_HOST ?= manikanta@192.168.70.185
+# SSH targets.
+#   MS_HOST: Mac Studio — runs graph-runner + LM Studio + embed sidecar
+#   NUC_HOST: NUC — runs API, Neo4j, Postgres, indexers
+# Override on the CLI e.g. `make status NUC_HOST=user@host`.
+MS_HOST  ?= manikanta@192.168.70.185
+NUC_HOST ?= mani@192.168.70.191
+# Legacy single-host reference (kept for ssh targets that still run on MS).
+SSH_HOST ?= $(MS_HOST)
 
 help:
 	@echo "Dev + deploy targets:"
@@ -33,19 +39,21 @@ ui:
 
 deploy:
 	git push origin main
-	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && git pull && cd web && npm run build && launchctl kickstart -k gui/$$(id -u)/com.aiforge.api'
+	ssh $(MS_HOST)  'cd ~/AIForgeCrew && git pull'
+	ssh $(NUC_HOST) 'cd ~/AIForgeCrew && git pull && systemctl --user restart aiforge-api'
 
 pull:
-	ssh $(SSH_HOST) 'cd ~/AIForgeCrew && git pull'
+	ssh $(MS_HOST)  'cd ~/AIForgeCrew && git pull'
+	ssh $(NUC_HOST) 'cd ~/AIForgeCrew && git pull'
 
 status:
-	ssh $(SSH_HOST) 'curl -s http://127.0.0.1:8799/api/health; echo; curl -s http://127.0.0.1:8799/api/tickets?limit=15 | head -c 2000'
+	ssh $(NUC_HOST) 'curl -s http://127.0.0.1:8799/api/health; echo; curl -s http://127.0.0.1:8799/api/tickets?limit=15 | head -c 2000'
 
 logs-tail:
-	ssh $(SSH_HOST) "tail -f ~/.aiforge/logs/orchestrator-*.ndjson | jq -c '{ts,role,ticket,event,tool,turn,stop_reason}'"
+	ssh $(MS_HOST) "tail -f ~/.aiforge/logs/orchestrator-*.ndjson | jq -c '{ts,role,ticket,event,tool,turn,stop_reason}'"
 
 health:
-	ssh $(SSH_HOST) 'curl -s http://127.0.0.1:8799/api/health'
+	ssh $(NUC_HOST) 'curl -s http://127.0.0.1:8799/api/health'
 
 sync-memory:
 	SSH_HOST=$(SSH_HOST) bash scripts/sync-memory.sh

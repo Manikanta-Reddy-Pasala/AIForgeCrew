@@ -1,0 +1,7 @@
+[Unit]
+Description=AIForge repo git pull
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/mani/AIForgeCrew
+ExecStart=/usr/bin/git pull --ff-only

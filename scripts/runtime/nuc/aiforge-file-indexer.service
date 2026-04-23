@@ -1,0 +1,9 @@
+[Unit]
+Description=AIForge repo file indexer (one-shot)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/mani/AIForgeCrew
+Environment=AIFORGE_DSN=postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge
+Environment=HOME=/home/mani
+ExecStart=/home/mani/AIForgeCrew/.venv/bin/python scripts/runtime/file-indexer.py
