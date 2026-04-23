@@ -123,12 +123,14 @@ def build_doer_agent(
     # context is delivered via the task string passed to .run().
     import inspect as _inspect
     _params = set(_inspect.signature(ToolCallingAgent.__init__).parameters)
-    # max_steps bumped 20→25 so Doer can iterate on compile errors instead of
-    # giving up on the 3rd attempt (2026-04-23 ONE-16 finding).
+    # max_steps 12: tight enough to avoid qwen3-coder-next's tool-call grammar
+    # drift on long multi-turn runs (ONE-16 tick 2: agent emitted raw
+    # <tool_call> text as prose at step ~14). Enough room to do 3 edits +
+    # 3 compile attempts + final_answer.
     _kwargs: dict = {
         "tools": tools,
         "model": model,
-        "max_steps": 25,
+        "max_steps": 12,
     }
     if "num_retries" in _params:
         _kwargs["num_retries"] = 2
