@@ -8,7 +8,6 @@
 |---|---|
 | **LM Studio** (`:1234`) | Local LLM server, OpenAI-compat. Hosts `qwen3.6-27b` + `qwen3.6-35b-a3b@8bit` |
 | **bge-m3** (`:8764`) | 1024-d embeddings (ONNX, Mac native) |
-| **bge-reranker-v2-m3** (`:8765`) | Rerank step on top of hybrid search |
 | **smolagents** | `ToolCallingAgent` (Doer) + `CodeAgent` (Planner) — the LLM's tool loop |
 | **LiteLLM** | Uniform client to LM Studio from smolagents |
 | **LangGraph** | State machine that routes a ticket through agents |
@@ -19,7 +18,7 @@
 
 | Tool | What for |
 |---|---|
-| **Neo4j 5 + APOC + genai** | One DB does four jobs: graph, vector, BM25, rerank piggyback |
+| **Neo4j 5 + APOC + genai** | One DB does three jobs: graph, vector, BM25 (rerank skipped — RRF order is prod ranking) |
 | **PostgreSQL 16 + pgvector + pg_trgm + pgcrypto** | Tickets, events, memories, langgraph checkpoints |
 
 ### Code parsers (→ graph)
@@ -39,7 +38,7 @@
 | **FastAPI / uvicorn** | `http://NUC:8799` REST: tickets, events, health |
 | **psycopg v3** | Postgres client (with DSN) |
 | **pymongo** | Mongo client (for the `mongo_agent` tool) |
-| **httpx** | HTTP client (embed, rerank, LM Studio) |
+| **httpx** | HTTP client (embed, LM Studio) |
 | **MCP stdio** | Protocol for exposing graph-RAG tools to the LLM |
 | **Docker / OrbStack** | Container for Neo4j on NUC |
 | **systemd --user** | NUC services + timers (`aiforge-*`) |

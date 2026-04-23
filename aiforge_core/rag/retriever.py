@@ -77,7 +77,8 @@ def _rerank(query: str, hits: list[Hit], keep: int) -> list[Hit]:
             out.append(h)
         return out
     except Exception as exc:
-        log.warning("rerank sidecar failed (%s); falling back to RRF order", exc)
+        # Rerank sidecar retired 2026-04-23; RRF order is production ranking.
+        log.debug("rerank skipped (%s); RRF order used", exc)
         return hits[:keep]
 
 

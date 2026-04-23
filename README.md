@@ -84,7 +84,7 @@ Single Postgres `memories` table with pgvector HNSW.
 | T3 | `skills/*`, `patterns/*` | planner + learner | permanent |
 | T4 | `code/<repo>` | bulk / incremental reindex | rebuilt on commit |
 
-Embed: bge-m3 1024-d. Rerank: bge-reranker-v2-m3.
+Embed: bge-m3 1024-d. Ranking: RRF over BM25 + vector (rerank sidecar retired).
 
 ## License
 

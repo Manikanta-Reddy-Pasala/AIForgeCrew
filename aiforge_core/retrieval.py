@@ -64,11 +64,11 @@ def rerank_http(query: str, hits: list[Hit], keep: int) -> list[Hit]:
         order = resp["order"]
         scores = resp["scores"]
     except Exception as exc:
-        # Sidecar unreachable, slow, or malformed. Downgrade to RRF order
-        # rather than fail the caller.
+        # Rerank sidecar retired 2026-04-23; RRF order is our production
+        # ranking. Silently fall back (no log spam per tick).
         import logging
-        logging.getLogger("aiforge.retrieval").warning(
-            "rerank sidecar failed (%s); falling back to RRF order", exc,
+        logging.getLogger("aiforge.retrieval").debug(
+            "rerank skipped (%s); RRF order used", exc,
         )
         return hits[:keep]
     out = []
