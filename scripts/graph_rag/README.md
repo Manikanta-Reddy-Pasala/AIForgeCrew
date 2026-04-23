@@ -133,14 +133,12 @@ systemctl --user enable --now lm-tunnel.service
 ### Ingest
 
 ```bash
-# 1. mirror Java sources from laptop
-rsync -az --exclude target --exclude .git \
-    ~/Documents/codeRepo/PosClientBackend/src \
-    ~/Documents/codeRepo/PosClientBackend/pom.xml \
-    mani@192.168.70.191:~/code/PosClientBackend/
+# 1. NUC already has the repo via aiforge-repo-pull.timer (git pull every 5m
+#    from GitHub). If stale, trigger a pull:
+ssh mani@192.168.70.191 'systemctl --user start aiforge-repo-pull.service'
 
 # 2. JavaParser extract (on NUC, ~4s)
-ssh mani@192.168.70.191 'cd ~/code/PosClientBackend && \
+ssh mani@192.168.70.191 'cd ~/codeRepo/PosClientBackend && \
     java -jar ~/AIForgeCrew/scripts/graph_rag/javaparser/target/graph-rag-extractor.jar \
         --repo $PWD --out /tmp/pcb-ast.jsonl'
 

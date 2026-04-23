@@ -164,16 +164,45 @@ The plist polls every 60 seconds. The first tick after ticket creation will clai
 
 ---
 
+## Infrastructure topology (2026-04-23)
+
+Three hosts. Mac Studio is LLM-only, NUC runs the stateful stuff,
+laptop is for dev + UI.
+
+```
+Mac Studio 192.168.70.185          NUC 192.168.70.191 (static IP)   Laptop
+---------------------------------  --------------------------------  ------------------
+com.aiforge.lmstudio       (LLM)   aiforge-api.service  (FastAPI)    dev shell
+com.aiforge.embed-sidecar  (LLM)   aiforge-file-indexer.timer (30m)  graph_rag queries
+com.aiforge.graph-runner (orch.)   aiforge-reindex-daily.timer (02:00)
+com.aiforge.caffeinate             aiforge-git-pull.timer  (10m — AIForgeCrew)
+com.aiforge.pg-tunnel  (bridge)    aiforge-repo-pull.timer (5m — every ~/codeRepo + claude-memory)
+                                   lm-tunnel.service (ssh -L to MS LM Studio)
+                                   postgresql (aiforge db, pgvector+pg_trgm+pgcrypto)
+                                   neo4j (docker, 4G heap, vector indexes)
+```
+
+- **No rsync anywhere.** All source comes from GitHub. `~/.claude/memory`
+  lives at `github.com/Manikanta-Reddy-Pasala/claude-memory` (private);
+  NUC + MS clone it, laptop pushes.
+- **Bridges:** Mac Studio `com.aiforge.pg-tunnel` ssh `-L 5433:5432` to
+  NUC Postgres (macOS Sequoia launchd sandbox workaround). NUC
+  `lm-tunnel.service` ssh `-L 1235:1234` to MS LM Studio.
+
 ## Services and ports
 
-| Port | What | Owner |
-|------|------|-------|
-| 1234 | LM Studio (local inference) | `lms server` |
-| 5432 | Postgres + pgvector | homebrew postgresql |
-| 8764 | bge-m3 embed sidecar | launchd `com.aiforge.embed-sidecar` (or equivalent) |
-| 8765 | bge-reranker-v2-m3 sidecar | launchd `com.aiforge.rerank-sidecar` (or equivalent) |
-| — | Graph-runner tick (60 s) | launchd `com.aiforge.graph-runner` |
-| — | Watchdogs (pg, git-pull, file-indexer, daily reindex) | launchd |
+| Port | What | Host | Owner |
+|------|------|------|-------|
+| 1234 | LM Studio | Mac Studio | `lms server` |
+| 1235 | LM Studio (tunnel) | NUC localhost | systemd `lm-tunnel.service` |
+| 5432 | Postgres (aiforge) | NUC | system postgresql |
+| 5433 | Postgres (tunnel) | MS localhost | launchd `com.aiforge.pg-tunnel` |
+| 7474 | Neo4j HTTP | NUC | docker `neo4j-aiforge` |
+| 7687 | Neo4j Bolt | NUC | docker `neo4j-aiforge` |
+| 8799 | FastAPI | NUC | systemd `aiforge-api.service` |
+| 8764 | bge-m3 embed sidecar | Mac Studio | launchd `com.aiforge.embed-sidecar` |
+| — | Graph-runner tick (60 s) | Mac Studio | launchd `com.aiforge.graph-runner` |
+| — | NUC timers | NUC | systemd `aiforge-*.timer` |
 
 ---
 
@@ -181,16 +210,17 @@ The plist polls every 60 seconds. The first tick after ticket creation will clai
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `AIFORGE_DSN` | `postgresql://manikanta@127.0.0.1:5432/aiforge` | Postgres DSN (tickets + memories + checkpoints) |
-| `AIFORGE_LM_BASE_URL` | `http://127.0.0.1:1234/v1` | LM Studio OpenAI-compat endpoint |
+| `AIFORGE_DSN` | `postgresql://aiforge:aiforgepass@127.0.0.1:5433/aiforge` (MS via pg-tunnel) / `postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge` (NUC direct) | Postgres DSN (tickets + memories + checkpoints) |
+| `AIFORGE_LM_BASE_URL` | `http://127.0.0.1:1234/v1` (MS) / `http://127.0.0.1:1235/v1` (NUC via lm-tunnel) | LM Studio OpenAI-compat endpoint |
 | `AIFORGE_LM_API_KEY` | `lm-studio` | API key (LM Studio accepts any value) |
-| `AIFORGE_SUPERVISOR_MODEL` | `gemma-4-26b-a4b-it` (plist) / `gemma-3-12b-it` (config.py default) | Dead for current rule-based supervisor_node; still set for future use |
-| `AIFORGE_FEEDBACK_MODEL` | `gemma-4-26b-a4b-it` (plist) / `openai/gpt-oss-20b` (config.py default) | Feedback verdict model (single-shot) |
-| `AIFORGE_LEARNER_MODEL` | `openai/gpt-oss-20b` | Learner model (set in plist) |
-| `AIFORGE_DOER_MODEL` | `qwen3-coder-next` | Doer model (config.py default) |
-| `AIFORGE_PLANNER_MODEL` | `openai/gpt-oss-20b` | Planner model (config.py default) |
-| `AIFORGE_EMBED_URL` | `http://127.0.0.1:8764` | bge-m3 embed sidecar |
-| `AIFORGE_RERANK_URL` | `http://127.0.0.1:8765` | bge-reranker-v2-m3 sidecar |
+| `AIFORGE_SUPERVISOR_MODEL` | `qwen3.6-35b-a3b` | Supervisor LLM (rule-based routing, model used for tie-break) |
+| `AIFORGE_PLANNER_MODEL` | `qwen3.6-35b-a3b` | Planner LLM |
+| `AIFORGE_PLANNER_BACKEND` | `code` | `code` \| `toolcalling` — smolagents backend |
+| `AIFORGE_DOER_MODEL` | `qwen3-coder-next` | Doer LLM (code-focused) |
+| `AIFORGE_FEEDBACK_MODEL` | `qwen3.6-35b-a3b` | Feedback verdict LLM |
+| `AIFORGE_LEARNER_MODEL` | `qwen3.6-35b-a3b` | Learner LLM |
+| `AIFORGE_NEO4J_URI` | `bolt://127.0.0.1:7687` | Neo4j (NUC-local) for graph-RAG |
+| `AIFORGE_EMBED_URL` | `http://127.0.0.1:8764` | bge-m3 embed sidecar (MS) |
 | `AIFORGE_TICK_MAX_WALL` | `2400` | Max wall seconds per graph invocation |
 | `AIFORGE_MEMGUARD_DISABLE` | unset | Set to `1` to bypass RAM guard |
 

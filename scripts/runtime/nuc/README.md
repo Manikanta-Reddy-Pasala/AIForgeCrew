@@ -11,12 +11,12 @@ com.aiforge.lmstudio      (LLM)    aiforge-api.service      (FastAPI:8799)
 com.aiforge.embed-sidecar (LLM)    aiforge-file-indexer.*   (timer 30m)
 com.aiforge.graph-runner  (orch)   aiforge-reindex-daily.*  (timer 02:00)
 com.aiforge.caffeinate             aiforge-git-pull.*       (timer 10m)
-com.aiforge.pg-tunnel     (bridge)
-com.aiforge.repo-sync     (rsync→NUC every 5m)
+com.aiforge.pg-tunnel     (bridge) aiforge-repo-pull.*      (timer 5m, git pull)
 ```
 
-The pg-tunnel + repo-sync + reverse NUC→Mac ssh tunnel (`lm-tunnel.service`
-on NUC) are the only cross-host glue.
+The pg-tunnel (MS→NUC postgres loopback) and reverse NUC→MS ssh tunnel
+(`lm-tunnel.service` on NUC, exposes MS LM Studio as NUC:1235) are the
+only cross-host glue. No rsync anywhere; code comes from GitHub.
 
 ## Install
 

@@ -22,8 +22,8 @@ help:
 	@echo "  status             tickets + agents + health"
 	@echo "  logs-tail          stream orchestrator ndjson logs (all roles)"
 	@echo "  health             /api/health on Mac Studio"
-	@echo "  sync-memory        rsync CLAUDE.md + ~/.claude/memory → Mac Studio + reindex"
-	@echo "  reindex-memory     reindex-only (no rsync) — after commits land on Mac Studio"
+	@echo "  sync-memory        commit + push ~/.claude/memory to the shared github repo"
+	@echo "  reindex-memory     pull memory on NUC + rebuild its affected wings"
 	@echo "  index-all          bulk re-index all ~/codeRepo trees into T4"
 	@echo "  kill-all           launchctl bootout every com.aiforge.* agent"
 
