@@ -23,6 +23,8 @@
         <string>/Users/manikanta/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>AIFORGE_DSN</key>
         <string>postgresql://aiforge:aiforgepass@127.0.0.1:5433/aiforge</string>
+        <key>AIFORGE_PGMEM_DSN</key>
+        <string>host=127.0.0.1 port=5433 dbname=aiforge user=aiforge password=aiforgepass</string>
     </dict>
 </dict>
 </plist>
