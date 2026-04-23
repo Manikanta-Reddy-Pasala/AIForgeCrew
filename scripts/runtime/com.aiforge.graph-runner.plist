@@ -17,6 +17,8 @@
   <dict>
     <key>PATH</key>
     <string>/Users/manikanta/.local/bin:/Users/manikanta/.lmstudio/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>AIFORGE_DSN</key>
+    <string>postgresql://aiforge:aiforgepass@192.168.70.191:5432/aiforge</string>
     <key>AIFORGE_SUPERVISOR_MODEL</key>
     <string>qwen3.6-35b-a3b</string>
     <key>AIFORGE_PLANNER_MODEL</key>
