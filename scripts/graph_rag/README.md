@@ -128,3 +128,43 @@ structural questions in one Cypher query:
 
 Next step: feed these query results into the Planner's context bundle
 instead of `aiforge-deep-context` grep output.
+
+## Hybrid semantic + structural queries (vector layer)
+
+`embed_nodes.py` computes 768-dim embeddings for every Method and Class
+via LM Studio's `text-embedding-nomic-embed-text-v1.5` and stores them on
+the nodes. Two Neo4j native vector indexes are created:
+
+- `method_embedding_vec` on `Method.embedding`
+- `class_embedding_vec` on `Class.embedding`
+
+Text used for each method embedding combines the signature, return type,
+annotations, javadoc, and the first ~1.8KB of the body — so semantic
+similarity reflects intent, not just identifier names.
+
+```bash
+# One-time ssh tunnel since LM Studio only binds to 127.0.0.1 on Mac Studio:
+ssh -f -N -L 1235:localhost:1234 manikanta@192.168.70.185
+
+.venv/bin/python scripts/graph_rag/embed_nodes.py --lm http://127.0.0.1:1235/v1
+```
+
+Throughput observed: ~60 methods/s, ~70 classes/s. Full PosClientBackend
+(4,144 methods + 1,135 classes) embeds in ~90s.
+
+### Semantic query
+
+`semantic.py` takes a natural-language question, embeds it with the same
+model, finds the top-K closest Methods/Classes, and then expands the
+graph neighbourhood (CALLS hops, EXPOSES, READS/WRITES). That's the
+"graph-along-with-vector" traversal: vector picks the entry nodes,
+Cypher walks the structural edges.
+
+```bash
+scripts/graph_rag/semantic.py --topk 3 --hops 2 \\
+    "stock transfer complete validation"
+```
+
+Returns each method with score, layer, endpoints exposed, Mongo ops,
+javadoc, first lines of body, and reachable callees within N hops —
+ready to drop into an LLM's context window.
