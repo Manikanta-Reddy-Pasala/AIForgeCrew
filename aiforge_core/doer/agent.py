@@ -169,14 +169,25 @@ def build_doer_agent(
     import inspect as _inspect_lm
     _lm_params = set(_inspect_lm.signature(LiteLLMModel.__init__).parameters)
     _model_id_key = "model_id" if "model_id" in _lm_params else "model"
-    # LiteLLM needs a provider prefix for custom OpenAI-compat endpoints (LM Studio).
-    model_id = llm_config.model
-    if "/" not in model_id:
-        model_id = f"openai/{model_id}"
+    # agent_config resolves provider+model+base_url per role from the
+    # persisted JSON (UI Settings page) or env override. Legacy callers
+    # that pass llm_config directly are honored by falling back.
+    try:
+        from aiforge_core.runtime import agent_config as _acfg
+        k = _acfg.resolve_litellm("doer")
+        model_id = k["model_id"]
+        api_base = k["api_base"]
+        api_key = k["api_key"]
+    except Exception:
+        model_id = llm_config.model
+        if "/" not in model_id:
+            model_id = f"openai/{model_id}"
+        api_base = llm_config.base_url
+        api_key = llm_config.api_key
     model = LiteLLMModel(**{
         _model_id_key: model_id,
-        "api_base": llm_config.base_url,
-        "api_key": llm_config.api_key,
+        "api_base": api_base,
+        "api_key": api_key,
         "max_tokens": 524288,
         # Harmless on non-reasoning models; required on Qwen3.6 family so
         # message.content actually gets populated instead of reasoning_content.

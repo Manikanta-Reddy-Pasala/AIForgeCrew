@@ -20,6 +20,7 @@ const Memory       = lazy(() => import('./views/Memory'));
 const Chat         = lazy(() => import('./views/Chat'));
 const Tools        = lazy(() => import('./views/Tools'));
 const Kanban       = lazy(() => import('./views/Kanban'));
+const Settings     = lazy(() => import('./views/Settings'));
 
 function RouteFallback() {
   return (
@@ -69,6 +70,12 @@ const NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { to: '/agents',  label: 'Agents',     icon: 'Agents' },
       { to: '/logs',    label: 'Live logs',  icon: 'Logs' },
+    ],
+  },
+  {
+    group: 'Configure',
+    items: [
+      { to: '/settings', label: 'Settings', icon: 'Tool' },
     ],
   },
 ];
@@ -181,6 +188,7 @@ function Shell() {
             <Route path="/logs" element={<Logs />} />
             <Route path="/logs/:role" element={<Logs />} />
             <Route path="/memory" element={<Memory />} />
+            <Route path="/settings" element={<Settings />} />
           </Routes>
         </Suspense>
       </main>

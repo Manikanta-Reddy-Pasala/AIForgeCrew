@@ -1048,6 +1048,11 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 .filter-bar label.field { flex-direction: row; align-items: center; gap: var(--s-2); }
 .filter-bar label.field select { min-width: 120px; }
 
+/* Settings: 2-up field row for provider + model */
+.field-row { display: grid; grid-template-columns: 1fr 2fr; gap: var(--s-3); }
+.field-row label.field { width: 100%; }
+@media (max-width: 640px) { .field-row { grid-template-columns: 1fr; } }
+
 /* ========================================================================
    UTILITIES
    ======================================================================== */

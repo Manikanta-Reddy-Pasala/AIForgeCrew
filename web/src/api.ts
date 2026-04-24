@@ -50,6 +50,13 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, top_k: topK, role: 'planner' }),
   }),
+  agentConfig:    () => j<any>('/config/agents'),
+  setAgentConfig: (role: string, provider: string, model: string) =>
+    j<any>(`/config/agents/${role}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, model }),
+    }),
 };
 
 export function logStreamURL(role: string): string {

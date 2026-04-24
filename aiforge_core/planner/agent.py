@@ -102,16 +102,27 @@ def build_planner_agent(
     _lm_params = set(_inspect_lm.signature(LiteLLMModel.__init__).parameters)
     _model_id_key = "model_id" if "model_id" in _lm_params else "model"
 
-    model_id = llm_config.model
-    if "/" not in model_id:
-        model_id = f"openai/{model_id}"
+    # Prefer persisted agent_config (UI Settings page); fall back to
+    # llm_config that the caller wired for back-compat.
+    try:
+        from aiforge_core.runtime import agent_config as _acfg
+        k = _acfg.resolve_litellm("planner")
+        model_id = k["model_id"]
+        api_base = k["api_base"]
+        api_key = k["api_key"]
+    except Exception:
+        model_id = llm_config.model
+        if "/" not in model_id:
+            model_id = f"openai/{model_id}"
+        api_base = llm_config.base_url
+        api_key = llm_config.api_key
 
     # Qwen3.6 ships as a reasoning model; content field stays empty unless we
     # tell LM Studio to disable the thinking trace via chat_template_kwargs.
     model = LiteLLMModel(**{
         _model_id_key: model_id,
-        "api_base": llm_config.base_url,
-        "api_key": llm_config.api_key,
+        "api_base": api_base,
+        "api_key": api_key,
         "max_tokens": 524288,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     })

@@ -477,6 +477,37 @@ def stream_role_log(role: str):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+# ─────────────────────────── Agent model config ─────────────────────────
+
+from . import agent_config as _acfg
+
+
+@app.get("/api/config/agents")
+def config_agents_list() -> dict:
+    """Per-agent provider + model map. UI Settings page calls this."""
+    return {
+        "roles": _acfg.load_all(),
+        "providers": {
+            k: {"label": v["label"], "default_model": v["default_model"]}
+            for k, v in _acfg.PROVIDERS.items()
+        },
+    }
+
+
+class _AgentConfigBody(BaseModel):
+    provider: str = Field(..., description="One of agent_config.PROVIDERS keys")
+    model: str = Field(..., description="Model identifier for the provider")
+
+
+@app.put("/api/config/agents/{role}")
+def config_agents_set(role: str, body: _AgentConfigBody) -> dict:
+    try:
+        cfg = _acfg.set_role(role, body.provider, body.model)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"role": role, **cfg}
+
+
 # ─────────────────────────── Chat ask (LLM synthesis) ───────────────────
 #
 # /api/chat/ask is the "smart" chat endpoint: gather from all memory
@@ -726,15 +757,13 @@ def _chat_agent_answer(query: str) -> dict:
     from aiforge_core.mcp_graph import graph_rag_tools
     from aiforge_core.planner.tools import make_search_memory
 
-    llm_model = _os.environ.get(
-        "AIFORGE_CHAT_MODEL",
-        _os.environ.get("AIFORGE_PLANNER_MODEL", "gpt-oss-120b"),
-    )
-    model_id = llm_model if "/" in llm_model else f"openai/{llm_model}"
+    # Per-agent provider+model lookup via agent_config (persisted JSON).
+    # Env overrides still win inside resolve_litellm when set.
+    kwargs = _acfg.resolve_litellm("chat")
     model = LiteLLMModel(
-        model_id=model_id,
-        api_base=_cfg.LM_STUDIO_BASE_URL,
-        api_key=_cfg.LM_STUDIO_API_KEY,
+        model_id=kwargs["model_id"],
+        api_base=kwargs["api_base"],
+        api_key=kwargs["api_key"],
         max_tokens=16384,
         temperature=0.1,
     )
