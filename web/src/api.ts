@@ -37,6 +37,14 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tool, args }),
     }),
+  chatRetain: (p: {
+    query: string; answer: string; worked: boolean;
+    topic?: string; hit_refs?: string[];
+  }) => j<any>('/chat/retain', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(p),
+  }),
 };
 
 export function logStreamURL(role: string): string {

@@ -4,21 +4,26 @@ import { api } from '../api';
 type Turn = {
   role: 'user' | 'system';
   text: string;
+  // context on system turns
+  queryRef?: string;
   hits?: any[];
   meta?: string;
+  summary?: string;
+  saved?: { worked: boolean; id?: number | string } | null;
 };
 
-// Chat = memory-grounded Q&A against the AIForge Neo4j. Every user turn
-// fires both `memory.search` (vector + BM25 over T1-T4) and the
-// graph_rag MCP `related_memories` tool so we get tiered hits. Results
-// render as a chat message with inline snippets the operator can click
-// to open the source ticket / repo.
+// Chat = memory-grounded Q&A against AIForge Neo4j. Every user turn
+// fires memory.search (vector + BM25 over T1-T4) AND graph_rag MCP
+// `related_memories` for tiered context. Each system reply gets a
+// "Did this work?" footer — operator confirms (or rejects) and the
+// Q+A is persisted as a T3 `patterns/<topic>` memory for next time.
 export default function Chat() {
   const [turns, setTurns] = useState<Turn[]>([
     {
       role: 'system',
-      text: 'Hi — ask a question about any ticket, repo, or past decision. '
-          + 'I pull from Neo4j T1-T4 memory and the graph_rag MCP.',
+      text: 'Hi — ask about any ticket, repo, or past decision. '
+          + 'I pull from Neo4j T1-T4 memory and the graph_rag MCP. '
+          + 'When a reply helps, click ✓ and I\'ll save it as a flow for next time.',
     },
   ]);
   const [input, setInput] = useState('');
@@ -35,16 +40,19 @@ export default function Chat() {
         api.memorySearch(q, 'planner', 12),
         api.mcpTool('related_memories', { query: q, top_k: 6 }).catch(() => null),
       ]);
-      const mcpHits = mcp?.result?.content?.[0]?.text
-        ? safeJson(mcp.result.content[0].text)
-        : null;
+      const mcpText = mcp?.result?.content?.[0]?.text || '';
+      const mcpHits = mcpText ? safeJson(mcpText) : null;
+      const summary = buildSummary(q, hits, mcpHits);
       setTurns(t => [
         ...t,
         {
           role: 'system',
           text: `${hits.length} memory hits + ${mcpHits ? 'MCP related' : 'no-MCP'}.`,
+          queryRef: q,
           hits,
           meta: mcpHits ? JSON.stringify(mcpHits).slice(0, 1200) : '',
+          summary,
+          saved: null,
         },
       ]);
     } catch (e: any) {
@@ -54,6 +62,29 @@ export default function Chat() {
       ]);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function retain(i: number, worked: boolean) {
+    const turn = turns[i];
+    if (!turn.queryRef || !turn.summary) return;
+    const topic = inferTopic(turn.queryRef);
+    const hitRefs = (turn.hits || [])
+      .slice(0, 5)
+      .map((h: any) => h.wing || h.source || String(h.id || ''))
+      .filter(Boolean);
+    try {
+      const r = await api.chatRetain({
+        query: turn.queryRef,
+        answer: turn.summary,
+        worked,
+        topic,
+        hit_refs: hitRefs,
+      });
+      setTurns(t => t.map((x, j) =>
+        j === i ? { ...x, saved: { worked, id: r.id } } : x));
+    } catch (e: any) {
+      alert('retain failed: ' + e.message);
     }
   }
 
@@ -68,6 +99,17 @@ export default function Chat() {
               marginRight: '.5rem',
             }}>{t.role}</span>
             <span>{t.text}</span>
+
+            {t.summary && (
+              <div style={{
+                marginTop: '.4rem', padding: '.4rem .6rem',
+                background: '#1f2a3d', borderLeft: '3px solid #4299e1',
+                fontSize: '.85rem',
+              }}>
+                <strong>Summary:</strong> {t.summary}
+              </div>
+            )}
+
             {t.hits && t.hits.length > 0 && (
               <ul style={{ marginTop: '.5rem', paddingLeft: '1rem' }}>
                 {t.hits.slice(0, 8).map((h: any, j: number) => (
@@ -78,6 +120,7 @@ export default function Chat() {
                 ))}
               </ul>
             )}
+
             {t.meta && (
               <details>
                 <summary className="muted small">MCP related_memories</summary>
@@ -86,6 +129,24 @@ export default function Chat() {
                   overflow: 'auto', maxHeight: '200px',
                 }}>{t.meta}</pre>
               </details>
+            )}
+
+            {t.queryRef && t.saved == null && (
+              <div style={{ marginTop: '.5rem' }} className="small muted">
+                Did this help?{' '}
+                <button onClick={() => retain(i, true)}
+                        style={{ marginRight: '.3rem' }}>✓ Worked</button>
+                <button onClick={() => retain(i, false)}>✘ Didn't help</button>
+              </div>
+            )}
+            {t.saved && (
+              <div className="small" style={{
+                marginTop: '.5rem',
+                color: t.saved.worked ? '#68d391' : '#fbd38d',
+              }}>
+                Saved as T3 {t.saved.worked ? 'pattern' : 'anti-pattern'} (id {t.saved.id}).
+                Will surface on related queries.
+              </div>
             )}
           </div>
         ))}
@@ -108,6 +169,41 @@ export default function Chat() {
       </div>
     </>
   );
+}
+
+// Build a one-line summary from the hits. Planner-style: cite top tier
+// + wing + snippet, lets future memory.search re-hit this exact flow.
+function buildSummary(q: string, hits: any[], mcpHits: any): string {
+  const top = (hits || []).slice(0, 3).map((h: any) => {
+    const snip = (h.text || '').replace(/\s+/g, ' ').slice(0, 120);
+    return `[${h.tier}:${h.wing}] ${snip}`;
+  });
+  const parts = [`Answered via memory hits for "${q.slice(0, 80)}".`];
+  if (top.length) parts.push('Top: ' + top.join(' | '));
+  if (mcpHits) {
+    const mcpTop = Array.isArray(mcpHits) ? mcpHits[0] : mcpHits;
+    if (mcpTop) parts.push(
+      'MCP: ' + String(JSON.stringify(mcpTop)).slice(0, 160));
+  }
+  return parts.join(' ');
+}
+
+// Derive a short topic slug for T3 wing. Falls back to 'general'.
+function inferTopic(q: string): string {
+  const keywords: Record<string, string> = {
+    'pagination|batchSize|limit': 'pagination',
+    'memory|neo4j|mcp':           'memory',
+    'sync|nats|pushToRemote':     'sync',
+    'readme|doc(s|ument)':        'docs',
+    'compile|mvn|build':          'build',
+    'deploy|k8s|kubernetes':      'deploy',
+    'sales|invoice|balance':      'finance-flow',
+  };
+  const ql = q.toLowerCase();
+  for (const pat of Object.keys(keywords)) {
+    if (new RegExp(pat).test(ql)) return keywords[pat];
+  }
+  return 'general';
 }
 
 function safeJson(s: string): any {

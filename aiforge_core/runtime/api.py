@@ -476,6 +476,59 @@ def stream_role_log(role: str):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+# ─────────────────────────── Chat flow retention ────────────────────────
+#
+# When the operator confirms a chat answer worked, persist it as a T3
+# skill so the next similar query hits it via `memory.search` /
+# `related_memories`. Building the "flow library" automatically.
+
+
+class _ChatRetainBody(BaseModel):
+    query: str = Field(..., description="Operator's original question")
+    answer: str = Field(..., description="Short summary of what worked")
+    worked: bool = Field(True, description="False = negative lesson, still useful")
+    topic: str = Field("general", description="Short topic slug, e.g. 'pagination'")
+    hit_refs: list[str] = Field(
+        default_factory=list,
+        description="Optional list of memory ids or ticket identifiers used",
+    )
+
+
+@app.post("/api/chat/retain", status_code=201)
+def chat_retain(body: _ChatRetainBody) -> dict:
+    """Persist a chat Q+A into T3 memory (`patterns/<topic>`).
+
+    We write both the positive and the negative case — a validated
+    non-answer is still useful ("tried X, didn't help for Y"). The
+    learner-style format keeps it short: one-line summary, one-line
+    query echo, hit refs inline.
+    """
+    from .memory import Memory
+    topic = (body.topic or "general").strip().lower().replace(" ", "-")[:40]
+    marker = "✔ worked" if body.worked else "✘ did not help"
+    text = (
+        f"Chat flow · {topic} · {marker}\n"
+        f"Q: {body.query[:400]}\n"
+        f"A: {body.answer[:800]}"
+    )
+    if body.hit_refs:
+        text += "\nrefs: " + ", ".join(body.hit_refs[:10])
+    mem = Memory()
+    rid = mem.retain_fact(
+        text=text, tier="t3",
+        wing=f"patterns/{topic}",
+        kind="chat_flow",
+        source="chat-ui",
+        metadata={
+            "topic": topic,
+            "worked": body.worked,
+            "hit_refs": body.hit_refs[:10],
+        },
+    )
+    return {"id": rid, "tier": "t3", "wing": f"patterns/{topic}",
+            "worked": body.worked}
+
+
 # ─────────────────────────── MCP bridge ─────────────────────────────────
 #
 # Exposes the graph_rag MCP tools over HTTP so the React dashboard can
