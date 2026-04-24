@@ -477,6 +477,70 @@ def stream_role_log(role: str):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+# ─────────────────────────── Ticket trace SSE ───────────────────────────
+#
+# Live tail of the graph-runner master log, filtered by ticket identifier.
+# The UI /trace/:id view subscribes and renders Step/Action/Observation as
+# it arrives so ops can watch a run in progress and decide whether to
+# intervene (cancel ticket, swap model, add hint).
+
+
+@app.get("/api/trace/{identifier}/stream")
+def stream_ticket_trace(identifier: str):
+    """Tail scripts/graph-runner.log on the orchestrator host, stream the
+    lines that pertain to this ticket (plus current Step header/footer
+    between ticket events). Client reassembles into ordered step cards.
+    """
+    # graph-runner.log lives on Mac Studio. The NUC api is reverse-tailing
+    # via SSH. We call `ssh ... tail -Fn500 ...` lazily to avoid a chained
+    # process if the client closes early.
+    import subprocess
+    host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "manikanta@192.168.70.185")
+    log = os.environ.get(
+        "AIFORGE_GRAPH_RUNNER_LOG",
+        "/Users/manikanta/.aiforge/logs/graph-runner.log",
+    )
+
+    async def gen():
+        # Open long-lived ssh tail as subprocess, relay stdout to SSE.
+        proc = await asyncio.create_subprocess_exec(
+            "ssh", "-o", "ConnectTimeout=5", host,
+            f"tail -Fn200 {log}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        in_step_block = False
+        in_ticket_context = False
+        try:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    await asyncio.sleep(0.5)
+                    continue
+                raw = line.decode("utf-8", "replace").rstrip("\n")
+
+                # Identify scope — lines mentioning our ticket flip the
+                # context ON; a new graph_runner.start for another ticket
+                # flips it OFF.
+                if identifier in raw:
+                    in_ticket_context = True
+                elif '"event":"graph_runner.start"' in raw and identifier not in raw:
+                    in_ticket_context = False
+
+                # Always stream Step dividers + durations while we're in
+                # context, plus JSON-structured event lines.
+                if in_ticket_context or ("Step " in raw and in_ticket_context):
+                    yield f"data: {json.dumps({'line': raw})}\n\n"
+                # Heartbeat every ~30 lines to keep connection alive.
+        except asyncio.CancelledError:
+            pass
+        finally:
+            try: proc.kill()
+            except Exception: pass
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 # ─────────────────────────── Agent model config ─────────────────────────
 
 from . import agent_config as _acfg

@@ -21,6 +21,7 @@ const Chat         = lazy(() => import('./views/Chat'));
 const Tools        = lazy(() => import('./views/Tools'));
 const Kanban       = lazy(() => import('./views/Kanban'));
 const Settings     = lazy(() => import('./views/Settings'));
+const Trace        = lazy(() => import('./views/Trace'));
 
 function RouteFallback() {
   return (
@@ -189,6 +190,7 @@ function Shell() {
             <Route path="/logs/:role" element={<Logs />} />
             <Route path="/memory" element={<Memory />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/trace/:id" element={<Trace />} />
           </Routes>
         </Suspense>
       </main>

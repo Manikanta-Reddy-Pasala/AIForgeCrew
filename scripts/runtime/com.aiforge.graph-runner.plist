@@ -30,21 +30,21 @@
     <key>AIFORGE_NEO4J_PASSWORD</key>
     <string>password</string>
     <key>AIFORGE_SUPERVISOR_MODEL</key>
-    <string>gpt-oss-120b</string>
+    <string>glm-4.7-flash</string>
     <key>AIFORGE_PLANNER_MODEL</key>
-    <string>gpt-oss-120b</string>
+    <string>glm-4.7-flash</string>
     <key>AIFORGE_PLANNER_BACKEND</key>
     <string>code</string>
     <key>AIFORGE_DOER_MODEL</key>
-    <string>gpt-oss-120b</string>
+    <string>glm-4.7-flash</string>
     <key>AIFORGE_DOER_BACKEND</key>
     <string>toolcalling</string>
     <key>AIFORGE_FEEDBACK_MODEL</key>
-    <string>gpt-oss-120b</string>
+    <string>glm-4.7-flash</string>
     <key>AIFORGE_LEARNER_MODEL</key>
-    <string>gpt-oss-120b</string>
+    <string>glm-4.7-flash</string>
     <key>AIFORGE_CHAT_MODEL</key>
-    <string>gpt-oss-120b</string>
+    <string>glm-4.7-flash</string>
     <key>AIFORGE_GRAPH_MCP_ENABLED</key>
     <string>1</string>
     <key>AIFORGE_GRAPH_MCP_BIN</key>

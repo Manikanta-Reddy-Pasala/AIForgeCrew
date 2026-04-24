@@ -23,7 +23,7 @@ PATH="$HOME/.lmstudio/bin:$PATH"
 TARGET_CTX=32768   # 128K was too RAM-heavy on 96GB unified memory (14% free);
                    # 32K fits comfortably and covers every ticket we file.
 TARGET_TTL=43200
-MODELS=(gpt-oss-120b)
+MODELS=(glm-4.7-flash)
 INTERVAL=60
 
 log() { printf '%s lms-pin: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"; }
@@ -35,7 +35,8 @@ ensure_pinned() {
   # right spec for `lms load`.
   local load_spec="$name"
   case "$name" in
-    gpt-oss-120b) load_spec="openai/gpt-oss-120b" ;;
+    gpt-oss-120b)   load_spec="openai/gpt-oss-120b" ;;
+    glm-4.7-flash)  load_spec="zai-org/glm-4.7-flash" ;;
   esac
   local row ctx
   row=$(lms ps 2>/dev/null | awk -v n="$name" '$1 == n { print $0 }')
