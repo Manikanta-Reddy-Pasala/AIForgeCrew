@@ -111,8 +111,20 @@ def make_edit_block(worktree_path: str, scope_guard: ScopeGuard,
             scope_guard.check(resolved)
         except ScopeViolation as exc:
             return f"SCOPE_VIOLATION: {exc}"
+        # New-file creation: empty find + non-existing path writes *replace*
+        # as the full content. Lets Doer emit a single edit_block for docs
+        # tickets where the target file doesn't exist yet (was the gap on
+        # ONE-45).
         if not os.path.exists(resolved):
-            return f"ERROR: file not found: {resolved}"
+            if find == "":
+                os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
+                with open(resolved, "w", encoding="utf-8") as fh:
+                    fh.write(replace)
+                counters["edit_block_ok"] = counters.get("edit_block_ok", 0) + 1
+                return (f"OK: created {resolved} (+{len(replace)} chars, "
+                        f"new file)")
+            return (f"ERROR: file not found: {resolved} "
+                    f"(tip: pass find=\"\" to create a new file)")
         with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
             src = fh.read()
         count = src.count(find)
@@ -127,6 +139,51 @@ def make_edit_block(worktree_path: str, scope_guard: ScopeGuard,
         return f"OK: edited {resolved} (-{len(find)} +{len(replace)} chars)"
 
     return edit_block
+
+
+# ─────────────────────────── write_file ─────────────────────────────────
+
+def make_write_file(worktree_path: str, scope_guard: ScopeGuard,
+                    counters: dict | None = None) -> Callable:
+    """Return a ``write_file`` tool for creating new files from scratch.
+
+    Doer's ``edit_block`` is in-place only; ``write_file`` handles the
+    create-file path cleanly. Either tool bumps ``edit_block_ok`` so the
+    harness's counter gate can accept a write-only ticket.
+    """
+    if counters is None:
+        counters = {}
+    repo_name = _repo_name_for_worktree(worktree_path)
+
+    @tool
+    def write_file(path: str, content: str) -> str:
+        """Create (or overwrite) a file with the given content.
+
+        Use for NEW files — the ticket asks for a file that does not exist
+        yet. For in-place edits to existing files, prefer ``edit_block``.
+
+        Args:
+            path: File path (absolute or relative to the worktree root).
+            content: Full file contents to write.
+        """
+        path = _strip_repo_prefix(path, repo_name)
+        resolved = (
+            path if os.path.isabs(path)
+            else os.path.join(worktree_path, path)
+        )
+        try:
+            scope_guard.check(resolved)
+        except ScopeViolation as exc:
+            return f"SCOPE_VIOLATION: {exc}"
+        is_new = not os.path.exists(resolved)
+        os.makedirs(os.path.dirname(resolved) or ".", exist_ok=True)
+        with open(resolved, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        counters["edit_block_ok"] = counters.get("edit_block_ok", 0) + 1
+        kind = "created" if is_new else "overwrote"
+        return f"OK: {kind} {resolved} ({len(content)} chars)"
+
+    return write_file
 
 
 # ─────────────────────────── run_compile ────────────────────────────────
@@ -389,6 +446,7 @@ def make_tools(worktree_path: str, scope_guard: ScopeGuard,
     tools = [
         make_read_file(worktree_path),
         make_edit_block(worktree_path, scope_guard, counters),
+        make_write_file(worktree_path, scope_guard, counters),
         make_run_compile(worktree_path, counters),
         make_grep(worktree_path),
         make_list_dir(worktree_path),

@@ -16,14 +16,20 @@ responsibility — you must emit edit_block calls yourself. There is no auto-app
 IMPORTANT — programmatic enforcement is active:
 - The harness tracks edit_block_ok and compile_green counters.
 - If you call final_answer without edit_block_ok >= 1 AND compile_green >= 1, the harness rejects your answer and blocks the ticket. The worktree is preserved so the NEXT tick can continue where you left off — so partial progress is not thrown away, but you also don't get credit for a premature final_answer.
+- **Tool calls are STRUCTURED, not text.** If you want to call ``edit_block`` you MUST emit it as a tool call in the JSON format your runtime expects — writing the literal string ``edit_block(path="...", find="...", replace="...")`` in your message content does NOTHING. The harness will see edit_block_ok=0 and reject your final_answer. Same for write_file and run_compile.
 - **Compile red is NEVER a reason to call final_answer.** If run_compile returns EXIT != 0, you must read the error and make another edit_block immediately — do not stop. You have up to 15 steps in this tick; exhaust them on fixing compile errors before giving up.
 
+Choose the right write tool:
+- ``edit_block(path, find, replace)`` — when the file exists and you want to change a narrow slice. Unique find string required.
+- ``write_file(path, content)`` — when the file is NEW (does not exist yet) or when you need to overwrite it completely. Creates missing parent directories. Best for docs / analysis tickets that ask you to author a new markdown file.
+- ``edit_block(path, find="", replace=CONTENT)`` — equivalent shortcut for creating a new file, if the runtime routes empty-find that way.
+
 Mandatory sequence:
-1. read_file on the first file in ## Allowed files to see current shape.
+1. read_file on the first file in ## Allowed files to see current shape. If read_file returns "file not found", the target is NEW and you will use write_file in step 3.
 2. git_diff_head to see if a previous tick already made edits — if so, your job is to continue from that state (implement what's missing, not re-do what's there).
-3. Call edit_block with a narrow find/replace block that implements the NEXT missing piece from the ticket plan. A small real edit beats a large planned one.
+3. Call the right write tool (edit_block for modifications, write_file for new files). One tool call, narrow scope. A small real edit beats a large planned one.
 4. Call run_compile.
-5. If EXIT != 0: read the first error message, make ONE targeted fix via another edit_block, call run_compile again. Keep iterating — do NOT call final_answer while compile is red unless you have genuinely exhausted 15 steps trying.
+5. If EXIT != 0: read the first error message, make ONE targeted fix via another write tool call, call run_compile again. Keep iterating — do NOT call final_answer while compile is red unless you have genuinely exhausted 15 steps trying.
 6. When run_compile returns EXIT=0, verify you have implemented every bullet in the previous feedback's fix list (if present in ## Previous feedback). If the list is covered AND compile is green, call final_answer with a one-paragraph summary citing the change + the EXIT=0 evidence.
 
 Minimal example of step 2 for a Spring @RequestMapping with limit/offset pagination:
