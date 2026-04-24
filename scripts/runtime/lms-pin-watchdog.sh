@@ -20,7 +20,8 @@ PATH="$HOME/.lmstudio/bin:$PATH"
 # (qwen3.6-27b + qwen3.6-35b-a3b @ 512K each) down to a single
 # gpt-oss-120b @ 128K that handles every role (planner/doer/feedback/
 # learner/chat). OpenAI's gpt-oss supports up to 128K native context.
-TARGET_CTX=131072
+TARGET_CTX=32768   # 128K was too RAM-heavy on 96GB unified memory (14% free);
+                   # 32K fits comfortably and covers every ticket we file.
 TARGET_TTL=43200
 MODELS=(gpt-oss-120b)
 INTERVAL=60

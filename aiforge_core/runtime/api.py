@@ -714,16 +714,130 @@ def _call_llm_chat(prompt: str) -> str:
     return (msg.get("reasoning_content") or "").strip() or "(empty reply)"
 
 
+def _chat_agent_answer(query: str) -> dict:
+    """Run a smolagents CodeAgent with the full 25-tool graph_rag MCP
+    set. Model decides which tools to call (sym_lookup, impact,
+    cross_repo_flow, caller_chain, ...) — no pre-fetch heuristics.
+    """
+    import os as _os
+    _os.environ.setdefault("AIFORGE_GRAPH_MCP_ENABLED", "1")
+
+    from smolagents import CodeAgent, LiteLLMModel
+    from aiforge_core.mcp_graph import graph_rag_tools
+    from aiforge_core.planner.tools import make_search_memory
+
+    llm_model = _os.environ.get(
+        "AIFORGE_CHAT_MODEL",
+        _os.environ.get("AIFORGE_PLANNER_MODEL", "gpt-oss-120b"),
+    )
+    model_id = llm_model if "/" in llm_model else f"openai/{llm_model}"
+    model = LiteLLMModel(
+        model_id=model_id,
+        api_base=_cfg.LM_STUDIO_BASE_URL,
+        api_key=_cfg.LM_STUDIO_API_KEY,
+        max_tokens=16384,
+        temperature=0.1,
+    )
+
+    ctx = {"ticket": None, "worktree_root": "~/codeRepo",
+           "store": None, "log": None}
+    tools = [make_search_memory(ctx)]
+    try:
+        tools.extend(graph_rag_tools())
+    except Exception as exc:
+        return {"answer": f"MCP load failed: {exc}", "trace": []}
+
+    _CHAT_AGENT_PREAMBLE = """You are the AIForge chat agent. The
+operator asked a question about our OneShell codebase / past
+tickets / decisions. You have live access to the Neo4j graph, T1-T4
+memory, and 25 graph_rag MCP tools (sym_lookup, impact,
+cross_repo_flow, caller_chain, callee_chain, read_source,
+ticket_brief, related_memories, find_doc, list_services, list_repos,
+list_endpoints, graph_neighborhood, data_lineage, build_plan,
+test_plan, kube_status, etc). Use them.
+
+Rules:
+- Call 1-4 tools that actually relate to the query. Do not call
+  everything. Start narrow (sym_lookup / ticket_brief /
+  related_memories), expand only if the first hit is thin.
+- Cite file:line when you quote code and [ticket-id] when you quote
+  a ticket.
+- If the tools return nothing useful, say so in one line; do not
+  hallucinate file paths or symbols.
+
+Reply format: 1-2 line direct answer, then a short bullet list of the
+concrete evidence you used (tool → what it returned → conclusion).
+"""
+
+    agent = CodeAgent(
+        tools=tools,
+        model=model,
+        max_steps=8,
+        additional_authorized_imports=["json", "re"],
+    )
+    task = f"{_CHAT_AGENT_PREAMBLE}\n\n## Question\n{query}"
+    try:
+        raw = agent.run(task)
+    except Exception as exc:
+        return {"answer": f"agent error: {exc}", "trace": []}
+
+    # smolagents agent.run returns the final_answer payload (may be
+    # str or dict). Stringify safely.
+    answer = raw if isinstance(raw, str) else json.dumps(raw, default=str)
+    tools_called: list[dict] = []
+    try:
+        for step in getattr(agent, "memory", None).steps if hasattr(agent, "memory") else []:
+            for tc in getattr(step, "tool_calls", []) or []:
+                tools_called.append({
+                    "tool": getattr(tc, "name", "?"),
+                    "args": getattr(tc, "arguments", {}) or {},
+                })
+    except Exception:
+        pass
+    return {"answer": answer, "trace": tools_called}
+
+
 @app.post("/api/chat/ask")
 def chat_ask(body: _ChatAskBody) -> dict:
-    """LLM-synthesized answer grounded in Neo4j memory + MCP tool calls.
+    """LLM answer grounded in Neo4j memory + live MCP tool access.
 
-    Pre-pass: normalize the query (typos + grammar) so BM25 + vector
-    retrieval actually hit, then collect context, then synthesize an
-    answer. Both the raw and normalized query are returned so the UI
-    can show the interpreted form.
+    Runs a smolagents CodeAgent loop — the model picks which of the
+    25 graph_rag MCP tools to call (sym_lookup, impact, ticket_brief,
+    ...) instead of the old heuristic pre-fetch. Normalize pass still
+    cleans typos before the agent sees the query.
     """
     normalized = _normalize_query(body.query)
+
+    use_agent = os.environ.get("AIFORGE_CHAT_AGENT", "1") == "1"
+    if use_agent:
+        try:
+            agent_out = _chat_agent_answer(normalized)
+        except Exception as exc:
+            raise HTTPException(502, f"Chat agent failed: {exc}")
+        # Pull a compact hit list from memory.search for drawer display.
+        from .memory import Memory
+        try:
+            hits = Memory().search(normalized, role=body.role, top_k=body.top_k)
+        except Exception:
+            hits = []
+        return {
+            "query": body.query,
+            "normalized": normalized if normalized != body.query else None,
+            "answer": agent_out["answer"],
+            "tiers_used": sorted({
+                getattr(h, "tier", None) or
+                (h.get("tier") if isinstance(h, dict) else "?")
+                for h in hits
+            }),
+            "hits": [
+                {"tier": getattr(h, "tier", None) or (h.get("tier") if isinstance(h, dict) else "?"),
+                 "wing": getattr(h, "wing", None) or (h.get("wing") if isinstance(h, dict) else "?"),
+                 "text": (getattr(h, "text", None) or (h.get("text") if isinstance(h, dict) else ""))[:200]}
+                for h in hits[:10]
+            ],
+            "tools_called": agent_out.get("trace") or [],
+        }
+
     ctx = _collect_chat_context(normalized, body.role, body.top_k)
     prompt = _build_chat_prompt(normalized, ctx)
     try:
