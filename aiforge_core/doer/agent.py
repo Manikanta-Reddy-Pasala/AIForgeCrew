@@ -163,13 +163,16 @@ def build_doer_agent(
     # delivered via the task string passed to .run().
     import inspect as _inspect
     _params = set(_inspect.signature(AgentCls.__init__).parameters)
-    # max_steps 12: tight enough to avoid tool-call grammar drift on long
-    # multi-turn runs; enough room to do 3 edits + 3 compile attempts +
-    # final_answer.
+    # max_steps 20: analysis/docs tickets can need 4-6 exploratory reads
+    # before the first write; 12 wasn't enough and CodeAgent spent all
+    # steps on grep/read then called final_answer without writing
+    # (observed on ONE-45 cross-repo analysis). AIFORGE_DOER_MAX_STEPS
+    # overrides per run.
+    max_steps = int(os.environ.get("AIFORGE_DOER_MAX_STEPS", "20"))
     _kwargs: dict = {
         "tools": tools,
         "model": model,
-        "max_steps": 12,
+        "max_steps": max_steps,
     }
     if "num_retries" in _params:
         _kwargs["num_retries"] = 2
