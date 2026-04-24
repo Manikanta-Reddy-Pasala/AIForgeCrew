@@ -191,6 +191,72 @@ def _parse_verdict(text: str) -> dict:
             "fixlist": []}
 
 
+_H2_HEADER_RX = None  # lazy compiled in _already_implemented
+
+
+def _already_implemented(ticket_body: str, worktree_path: str | None) -> tuple[bool, str]:
+    """When the diff is empty, check whether the target file already
+    satisfies every H2 heading mentioned in the ticket's acceptance
+    criteria. This catches the legitimate case where a prior run landed
+    the edits (or they were already in place) and avoids an infinite
+    retry loop on a feature that is actually done.
+
+    Returns ``(satisfied, target_file_path)``. ``satisfied`` is True only
+    when every ``## Xxx`` heading listed in the ticket's acceptance
+    criteria appears verbatim in the file.
+    """
+    import re
+    global _H2_HEADER_RX
+    if _H2_HEADER_RX is None:
+        _H2_HEADER_RX = re.compile(r"`?##\s+(\w[\w\s-]*?)`?\b", re.I)
+
+    # Find the first file under ## Files.
+    fm = re.search(r"##\s*Files\s*\n((?:[-*]\s*[^\n]+\n?)+)", ticket_body, re.I)
+    if not fm or not worktree_path:
+        return False, ""
+    files: list[str] = []
+    for line in fm.group(1).splitlines():
+        line = line.strip()
+        if line.startswith(("-", "*")):
+            files.append(line.lstrip("-* ").strip())
+    if not files:
+        return False, ""
+
+    # Harvest H2 section names from the acceptance block (skip fences).
+    accept_block = ticket_body
+    required = {h.strip() for h in _H2_HEADER_RX.findall(accept_block)
+                if h.strip().lower() not in {"files", "acceptance",
+                                             "acceptance criteria"}}
+    if not required:
+        return False, ""
+
+    target = files[0]
+    # Strip repo-name prefix: paths like "TallyConnector/README.md" live
+    # at README.md inside a worktree rooted at that repo.
+    import os as _os
+    wt_parts = _os.path.abspath(worktree_path).split(_os.sep)
+    if ".aiforge-worktrees" in wt_parts:
+        idx = wt_parts.index(".aiforge-worktrees")
+        if idx >= 1:
+            repo = wt_parts[idx - 1]
+            if target.startswith(repo + "/"):
+                target = target[len(repo) + 1:]
+    target_abs = target if _os.path.isabs(target) else _os.path.join(
+        worktree_path, target)
+    try:
+        with open(target_abs, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except OSError:
+        return False, target
+
+    # Every required heading must appear as its own ## line in the file.
+    for name in required:
+        pat = re.compile(r"^##\s+" + re.escape(name) + r"\b", re.M | re.I)
+        if not pat.search(content):
+            return False, target
+    return True, target
+
+
 def feedback_node(state: AgentState) -> AgentState:
     ticket_id = state["ticket_id"]
     ticket = tickets_mod.get(ticket_id)
@@ -203,6 +269,46 @@ def feedback_node(state: AgentState) -> AgentState:
     t0 = time.time()
     diff = _git_diff(worktree)
     body = (ticket.body or "")[:8000]
+
+    # Short-circuit: diff empty but target file already satisfies every
+    # required H2 heading. Skip the LLM call — returning fail here would
+    # blocked-loop on a feature that is actually done.
+    diff_is_empty = (
+        not diff or
+        diff.startswith("(no diff") or
+        "(no diff" in diff[:80]
+    )
+    if diff_is_empty:
+        ok, target = _already_implemented(body, worktree)
+        if ok:
+            summary = {
+                "stop_reason": "verdict", "has_commented": True,
+                "turns": 0, "wall_s": round(time.time() - t0, 2),
+                "verdict": "pass",
+                "reason": f"already implemented in {target} "
+                          f"(all required ## sections present).",
+            }
+            tickets_mod.add_event(
+                ticket_id, "feedback", "comment",
+                body=f"verdict=pass\nreason={summary['reason']}",
+                metadata={"feedback_verdict": "pass",
+                          "feedback_reason": summary["reason"],
+                          "already_implemented": True},
+            )
+            fresh = tickets_mod.get(ticket_id)
+            updated_ticket = dict(fresh.__dict__) if fresh else state["ticket"]
+            return {
+                **state,
+                "role": "feedback",
+                "ticket": updated_ticket,
+                "worktree_path": worktree,
+                "stop_reason": "verdict",
+                "verdict": "pass",
+                "feedback_fixlist": None,
+                "feedback_fail_count": state.get("feedback_fail_count") or 0,
+                "tool_results": state.get("tool_results", []) + [summary],
+            }
+
     prompt = FEEDBACK_PROMPT.format(body=body, diff=diff[:12000])
 
     try:

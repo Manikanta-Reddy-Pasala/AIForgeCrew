@@ -103,14 +103,87 @@ def _find_spring_boot_main(repo: Path) -> bool:
     return False
 
 
+_PARENT_BLOCK_RX = re.compile(r"<parent>(.*?)</parent>", re.S)
+_RELATIVE_PATH_RX = re.compile(r"<relativePath>\s*([^<]+?)\s*</relativePath>")
+_PARENT_ARTIFACT_RX = re.compile(r"<artifactId>\s*([^<]+?)\s*</artifactId>")
+
+
+def _resolve_parent_pom(pom_path: Path) -> str:
+    """Return merged XML from a pom and any local parent poms it references.
+
+    Walks up the parent chain (max 3 hops) so services that inherit their
+    Java version or spring-boot-starter-parent from an internal multi-module
+    root get the right detection. Resolution order per hop:
+
+    1. ``<relativePath>`` in the ``<parent>`` block (explicit path).
+    2. Default Maven fallback ``../pom.xml`` (only when that file exists).
+    3. Sibling repo by ``<artifactId>`` — looks for ``~/codeRepo/<artifactId>/
+       pom.xml``. Catches the OneShell layout where each service has its
+       own repo and references ``oneshell-commons`` as parent without a
+       relativePath.
+    """
+    chain = [pom_path]
+    seen = {pom_path.resolve()}
+    cur = pom_path
+    code_root = CODE_ROOT
+    for _ in range(3):
+        try:
+            txt = cur.read_text(errors="ignore")[:20_000]
+        except Exception:
+            break
+        pm = _PARENT_BLOCK_RX.search(txt)
+        if not pm:
+            break
+        parent_block = pm.group(1)
+        nxt: Path | None = None
+
+        rm = _RELATIVE_PATH_RX.search(parent_block)
+        if rm:
+            rel = rm.group(1).strip()
+            cand = (cur.parent / rel).resolve()
+            if cand.is_dir():
+                cand = cand / "pom.xml"
+            if cand.exists():
+                nxt = cand
+
+        if nxt is None:
+            default_parent = (cur.parent / ".." / "pom.xml").resolve()
+            if default_parent.exists():
+                nxt = default_parent
+
+        if nxt is None:
+            am = _PARENT_ARTIFACT_RX.search(parent_block)
+            if am:
+                sibling = code_root / am.group(1).strip() / "pom.xml"
+                if sibling.exists():
+                    nxt = sibling.resolve()
+
+        if nxt is None or nxt in seen or not nxt.exists():
+            break
+        chain.append(nxt)
+        seen.add(nxt)
+        cur = nxt
+
+    combined: list[str] = []
+    for p in chain:
+        try:
+            combined.append(p.read_text(errors="ignore")[:40_000])
+        except Exception:
+            pass
+    return "\n".join(combined)
+
+
 def _detect_java(repo: Path) -> tuple[list[str], str, str]:
     pom = repo / "pom.xml"
     if not pom.exists():
         return [], "", ""
     try:
-        xml = pom.read_text(errors="ignore")[:40_000]
+        xml_self = pom.read_text(errors="ignore")[:40_000]
     except Exception:
         return [], "", ""
+    # Walk any local parent poms so versions inherited through a
+    # multi-module root get found.
+    xml = _resolve_parent_pom(pom)
     stack = ["Java"]
     jm = _JAVA_VERSION_RX.search(xml)
     if jm:
@@ -136,9 +209,11 @@ def _detect_java(repo: Path) -> tuple[list[str], str, str]:
     stack.append("Maven")
 
     compile_cmd = "mvn -q -DskipTests compile"
-    # Library vs application: <packaging>pom</packaging> AND no
-    # @SpringBootApplication means pure multi-module parent or lib.
-    packaging_pom = "<packaging>pom</packaging>" in xml
+    # Library vs application: use the SELF pom for packaging — a parent
+    # POM with packaging=pom is standard for multi-module parents, so the
+    # merged xml always flags that. Only the self-pom tells us whether
+    # THIS repo is a library or an app.
+    packaging_pom = "<packaging>pom</packaging>" in xml_self
     is_app = bool(has_starter or sb_version) or _find_spring_boot_main(repo)
     is_lib = packaging_pom or not is_app
     entry_cmd = (

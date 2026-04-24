@@ -18,10 +18,42 @@ from smolagents import tool
 from .scope_guard import ScopeGuard, ScopeViolation
 
 
+def _repo_name_for_worktree(worktree_path: str) -> str:
+    """Extract the repo directory name that backs a worktree path.
+
+    Worktrees live at ``<repo>/.aiforge-worktrees/<ticket>``; the directory
+    just above ``.aiforge-worktrees`` is the repo name. Returns empty when
+    the path doesn't follow that layout.
+    """
+    parts = os.path.abspath(worktree_path).split(os.sep)
+    if ".aiforge-worktrees" in parts:
+        idx = parts.index(".aiforge-worktrees")
+        if idx >= 1:
+            return parts[idx - 1]
+    return ""
+
+
+def _strip_repo_prefix(path: str, repo_name: str) -> str:
+    """Drop a leading ``<repo_name>/`` from *path* if present.
+
+    Planner-written ``## Files`` sections use repo-qualified paths like
+    ``TallyConnector/README.md`` but the worktree root IS the repo, so the
+    literal form double-joins. Normalize before resolving.
+    """
+    if not repo_name:
+        return path
+    prefix = repo_name + "/"
+    if not os.path.isabs(path) and path.startswith(prefix):
+        return path[len(prefix):]
+    return path
+
+
 # ─────────────────────────── read_file ──────────────────────────────────
 
 def make_read_file(worktree_path: str) -> Callable:
     """Return a ``read_file`` tool bound to *worktree_path*."""
+
+    repo_name = _repo_name_for_worktree(worktree_path)
 
     @tool
     def read_file(path: str) -> str:
@@ -30,6 +62,7 @@ def make_read_file(worktree_path: str) -> Callable:
         Args:
             path: File path (absolute or relative to the worktree root).
         """
+        path = _strip_repo_prefix(path, repo_name)
         resolved = (
             path if os.path.isabs(path)
             else os.path.join(worktree_path, path)
@@ -56,6 +89,7 @@ def make_edit_block(worktree_path: str, scope_guard: ScopeGuard,
     """
     if counters is None:
         counters = {}
+    repo_name = _repo_name_for_worktree(worktree_path)
 
     @tool
     def edit_block(path: str, find: str, replace: str) -> str:
@@ -68,6 +102,7 @@ def make_edit_block(worktree_path: str, scope_guard: ScopeGuard,
             find: Exact text to locate.  Must match uniquely.
             replace: Replacement text.
         """
+        path = _strip_repo_prefix(path, repo_name)
         resolved = (
             path if os.path.isabs(path)
             else os.path.join(worktree_path, path)
@@ -136,6 +171,8 @@ def make_run_compile(worktree_path: str, counters: dict | None = None) -> Callab
 def make_grep(worktree_path: str) -> Callable:
     """Return a ``grep`` tool bound to *worktree_path*."""
 
+    repo_name = _repo_name_for_worktree(worktree_path)
+
     @tool
     def grep(pattern: str, path: str = "src/main/java") -> str:
         """Search for *pattern* (ripgrep regex) under *path* in the worktree.
@@ -144,6 +181,7 @@ def make_grep(worktree_path: str) -> Callable:
             pattern: Ripgrep regex pattern.
             path: Sub-path relative to the worktree root (default: src/main/java).
         """
+        path = _strip_repo_prefix(path, repo_name)
         target = (
             path if os.path.isabs(path)
             else os.path.join(worktree_path, path)
@@ -172,6 +210,8 @@ def make_grep(worktree_path: str) -> Callable:
 def make_list_dir(worktree_path: str) -> Callable:
     """Return a ``list_dir`` tool bound to *worktree_path*."""
 
+    repo_name = _repo_name_for_worktree(worktree_path)
+
     @tool
     def list_dir(path: str = ".") -> str:
         """List directory contents relative to the worktree root.
@@ -179,6 +219,7 @@ def make_list_dir(worktree_path: str) -> Callable:
         Args:
             path: Directory path (relative to worktree or absolute).
         """
+        path = _strip_repo_prefix(path, repo_name)
         target = (
             path if os.path.isabs(path)
             else os.path.join(worktree_path, path)
