@@ -10,6 +10,58 @@ from aiforge_core.runtime import tickets as tickets_mod
 from aiforge_core.runtime.logging_setup import emit, get_logger
 
 
+def _commit_and_push_worktree(
+    worktree_path: str | None, ticket_identifier: str, log
+) -> None:
+    """Commit uncommitted Doer edits on a pass verdict and push the branch.
+
+    The Doer modifies files via ``edit_block`` but never issues a commit.
+    Before cleanup, persist the work so the branch on origin shows the diff
+    that Feedback approved — otherwise the worktree_cleaned step wipes all
+    changes (they were only in the worktree's working tree).
+    """
+    if not worktree_path or not os.path.isdir(worktree_path):
+        return
+    try:
+        # Only commit if there is actually something to commit.
+        status_proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=15, check=False,
+        )
+        if not (status_proc.stdout or "").strip():
+            emit(log, "graph_runner.commit_skipped",
+                 reason="worktree clean", path=worktree_path)
+            return
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        msg = f"aiforge: {ticket_identifier} doer edits (verdict=pass)"
+        commit_proc = subprocess.run(
+            ["git", "commit", "-m", msg],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        if commit_proc.returncode != 0:
+            emit(log, "graph_runner.commit_failed",
+                 stderr=(commit_proc.stderr or "")[:300])
+            return
+        push_proc = subprocess.run(
+            ["git", "push", "-u", "origin", "HEAD"],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=60, check=False,
+        )
+        emit(log, "graph_runner.pushed",
+             branch_pushed=push_proc.returncode == 0,
+             push_err=(push_proc.stderr or "")[:200]
+                     if push_proc.returncode else None)
+    except Exception as exc:
+        emit(log, "graph_runner.commit_exception",
+             error=str(exc)[:200])
+
+
 def _cleanup_worktree(worktree_path: str | None, log) -> None:
     """Remove the worktree + local branch reference on terminal states.
 
@@ -102,6 +154,11 @@ def run_graph(ticket_id: int) -> int:
             tickets_mod.update_status(ticket_id, new_status)
             # Terminal state — clean up the worktree so .aiforge-worktrees/
             # doesn't balloon. Remote branch stays for review.
+            if new_status == "done":
+                _commit_and_push_worktree(
+                    final_state.get("worktree_path"),
+                    ticket.identifier, log,
+                )
             if new_status in ("done", "blocked"):
                 _cleanup_worktree(final_state.get("worktree_path"), log)
 

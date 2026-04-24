@@ -53,11 +53,16 @@ def _recent_events_text(ticket_id: int, limit: int = 6) -> str:
 
 
 def _call_llm(prompt: str) -> str:
+    # Qwen3.6 is a reasoning model. `enable_thinking=false` routes the
+    # answer into `content` instead of burning the budget on
+    # `reasoning_content`. Large max_tokens is a defensive cap — LM Studio
+    # returns 400 if the prompt + expected output exceeds context.
     payload = json.dumps({
         "model": LEARNER_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 256,
+        "max_tokens": 524288,
         "temperature": 0.0,
+        "chat_template_kwargs": {"enable_thinking": False},
     }).encode()
     req = urllib.request.Request(
         f"{LM_STUDIO_BASE_URL}/chat/completions",
@@ -68,9 +73,13 @@ def _call_llm(prompt: str) -> str:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=90) as resp:
+    with urllib.request.urlopen(req, timeout=180) as resp:
         body = json.loads(resp.read())
-    return (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
+    content = (msg.get("content") or "").strip()
+    if content:
+        return content
+    return (msg.get("reasoning_content") or "").strip()
 
 
 def _parse(text: str) -> dict:
