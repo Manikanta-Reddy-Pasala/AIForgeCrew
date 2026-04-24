@@ -50,9 +50,13 @@ def parse_allowed_files(body: str) -> set[str]:
                 stripped = line.strip().lstrip("-*").lstrip()
                 if not stripped or stripped.startswith("#"):
                     break
-                # Capture first path-like token (contains / or . but not spaces)
+                # Capture first path-like token (contains / or . but not
+                # spaces). Accept glob segments (``**``, ``*.ext``) so
+                # directory allowlists like ``foo/bar/**`` round-trip.
                 match = re.match(
-                    r"`?([\w./-]+\.[A-Za-z0-9]+|[\w./-]+/[\w./-]+)(?::\d+)?",
+                    r"`?([\w./*+-]+?\.\*?[A-Za-z0-9]*"
+                    r"|[\w./*+-]+/[\w./*+-]+"
+                    r"|[\w./-]+/\*\*)(?::\d+)?",
                     stripped,
                 )
                 if match:
@@ -70,9 +74,13 @@ class ScopeGuard:
     def check(self, path: str) -> None:
         """Raise :class:`ScopeViolation` if *path* is not in the allowlist.
 
-        Matches by suffix (allows both full repo-relative path and basename).
-        When the allowlist is empty, all paths are permitted (no ## Files
-        section present in ticket → no scope constraint).
+        Three match modes per allowlist entry:
+
+        1. Literal file: ``abs_path.endswith(entry)`` or basename match.
+        2. Directory glob ``foo/bar/**`` or ``foo/bar/*.java``: strip the
+           trailing ``/**`` / ``/*.ext`` and do a substring match on the
+           directory path, optionally filtered by extension.
+        3. Empty allowlist: no constraint, permit all.
         """
         if not self.allowed:
             return
@@ -82,6 +90,23 @@ class ScopeGuard:
             entry = entry.strip()
             if not entry:
                 continue
+
+            # Glob forms: '<prefix>/**', '<prefix>/**/*.ext', '<prefix>/*.ext'.
+            # Strip the glob tail and check prefix containment + extension.
+            m = re.match(r"^(.+?)/\*\*(?:/\*(\.[A-Za-z0-9]+))?$", entry)
+            if m:
+                prefix, ext = m.group(1), m.group(2)
+                if prefix in abs_path and (not ext or abs_path.endswith(ext)):
+                    return
+                continue
+            m = re.match(r"^(.+?)/\*(\.[A-Za-z0-9]+)$", entry)
+            if m:
+                prefix, ext = m.group(1), m.group(2)
+                parent = os.path.dirname(abs_path)
+                if prefix in parent and abs_path.endswith(ext):
+                    return
+                continue
+
             if abs_path.endswith(entry) or base == os.path.basename(entry):
                 return
         raise ScopeViolation(path, self.allowed)
