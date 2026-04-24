@@ -1,134 +1,179 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { api } from '../api';
+import { Icon } from '../icons';
+import {
+  statusClass, priorityClass, durationCell, durationTitle, relTime,
+} from '../util';
 
 const ROLES = ['', 'supervisor', 'planner', 'doer', 'feedback', 'learner'];
 const STATUSES = ['', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'];
+const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 
 export default function Tickets() {
-  const [rows, setRows] = useState<any[]>([]);
+  const qc = useQueryClient();
   const [role, setRole] = useState('');
   const [status, setStatus] = useState('');
+  const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState({
     title: '', body: '', assignee_role: 'planner', priority: 'medium',
   });
 
-  async function load() {
-    const qs: Record<string, string> = {};
-    if (role) qs.role = role;
-    if (status) qs.status = status;
-    setRows(await api.tickets(qs));
-  }
+  const { data: rows = [], isLoading } = useQuery({
+    queryKey: ['tickets', role, status],
+    queryFn: () => {
+      const qs: Record<string, string> = {};
+      if (role) qs.role = role;
+      if (status) qs.status = status;
+      return api.tickets(qs);
+    },
+  });
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [role, status]);
+  const visible = rows.filter((t: any) => {
+    if (!search.trim()) return true;
+    const needle = search.toLowerCase();
+    return `${t.identifier} ${t.title}`.toLowerCase().includes(needle);
+  });
 
   async function submit() {
-    await api.create(draft);
-    setDraft({ title: '', body: '', assignee_role: 'planner', priority: 'medium' });
-    setCreating(false);
-    load();
+    if (!draft.title.trim()) return;
+    try {
+      await api.create(draft);
+      toast.success(`Created: ${draft.title}`);
+      setDraft({ title: '', body: '', assignee_role: 'planner', priority: 'medium' });
+      setCreating(false);
+      qc.invalidateQueries({ queryKey: ['tickets'] });
+    } catch (e: any) {
+      toast.error(`Create failed: ${e.message}`);
+    }
   }
 
   return (
     <>
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: '.75rem' }}>
-        <h1>Tickets</h1>
-        <button onClick={() => setCreating(!creating)}>
-          {creating ? 'Cancel' : 'New ticket'}
-        </button>
+      <div className="page-header">
+        <div>
+          <h1>Tickets</h1>
+          <div className="subtitle">
+            {visible.length.toLocaleString()} shown
+            {rows.length !== visible.length ? ` of ${rows.length.toLocaleString()}` : ''}
+          </div>
+        </div>
+        <div className="row">
+          <button onClick={() => setCreating(c => !c)}>
+            {creating ? <><Icon.X size={14} /> Cancel</> : <><Icon.Plus size={14} /> New ticket</>}
+          </button>
+        </div>
       </div>
 
       {creating && (
-        <div className="card">
-          <h2>New ticket</h2>
-          <div className="row">
-            <input placeholder="title" value={draft.title}
-                   onChange={e => setDraft({ ...draft, title: e.target.value })}
-                   style={{ flex: 1 }} />
-            <select value={draft.assignee_role}
-                    onChange={e => setDraft({ ...draft, assignee_role: e.target.value })}>
-              {ROLES.filter(Boolean).map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
-            <select value={draft.priority}
-                    onChange={e => setDraft({ ...draft, priority: e.target.value })}>
-              {['low', 'medium', 'high', 'urgent'].map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <textarea placeholder="body" rows={5} value={draft.body}
-                    onChange={e => setDraft({ ...draft, body: e.target.value })}
-                    style={{ width: '100%', marginTop: '.5rem' }} />
-          <div style={{ marginTop: '.5rem' }}>
-            <button onClick={submit} disabled={!draft.title}>Create</button>
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header"><h2>New ticket</h2></div>
+          <div className="stack">
+            <label className="field">
+              Title
+              <input
+                placeholder="Short, descriptive summary"
+                value={draft.title}
+                onChange={e => setDraft({ ...draft, title: e.target.value })}
+                autoFocus
+              />
+            </label>
+            <div className="grid grid-3">
+              <label className="field">
+                Assignee
+                <select value={draft.assignee_role} onChange={e => setDraft({ ...draft, assignee_role: e.target.value })}>
+                  {ROLES.filter(Boolean).map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+              </label>
+              <label className="field">
+                Priority
+                <select value={draft.priority} onChange={e => setDraft({ ...draft, priority: e.target.value })}>
+                  {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </label>
+              <div />
+            </div>
+            <label className="field">
+              Body
+              <textarea
+                rows={6}
+                placeholder="Context, acceptance, hints…"
+                value={draft.body}
+                onChange={e => setDraft({ ...draft, body: e.target.value })}
+              />
+            </label>
+            <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <button className="ghost" onClick={() => setCreating(false)}>Cancel</button>
+              <button onClick={submit} disabled={!draft.title.trim()}>
+                <Icon.Check size={14} /> Create ticket
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="card">
-        <div className="row" style={{ marginBottom: '.5rem' }}>
-          <label>Role:{' '}
-            <select value={role} onChange={e => setRole(e.target.value)}>
-              {ROLES.map(r => <option key={r} value={r}>{r || 'any'}</option>)}
-            </select>
-          </label>
-          <label>Status:{' '}
-            <select value={status} onChange={e => setStatus(e.target.value)}>
-              {STATUSES.map(s => <option key={s} value={s}>{s || 'any'}</option>)}
-            </select>
-          </label>
-          <span className="muted small">{rows.length} shown</span>
+      <div className="filter-bar">
+        <div className="input-search" style={{ flex: 1, minWidth: 220 }}>
+          <Icon.Search size={14} />
+          <input placeholder="search id or title…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        <table>
-          <thead><tr><th>ID</th><th>Status</th><th>Priority</th><th>Assignee</th><th>Title</th><th>Duration</th><th>Updated</th></tr></thead>
-          <tbody>
-            {rows.map(t => (
-              <tr key={t.id}>
-                <td><Link to={`/tickets/${t.identifier}`}>{t.identifier}</Link></td>
-                <td><span className={`chip ${statusClass(t.status)}`}>{t.status}</span></td>
-                <td className="small muted">{t.priority}</td>
-                <td className="muted small">{t.assignee_role || '—'}</td>
-                <td>{t.title}</td>
-                <td className="small muted" title={durationTitle(t)}>{durationCell(t)}</td>
-                <td className="small muted">{t.updated_at?.slice(0, 19).replace('T', ' ')}</td>
+        <label className="field">
+          Role
+          <select value={role} onChange={e => setRole(e.target.value)}>
+            {ROLES.map(r => <option key={r} value={r}>{r || 'any'}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          Status
+          <select value={status} onChange={e => setStatus(e.target.value)}>
+            {STATUSES.map(s => <option key={s} value={s}>{s || 'any'}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        {isLoading ? (
+          <div className="empty"><div className="skeleton" style={{ width: 200, height: 16 }} /></div>
+        ) : visible.length === 0 ? (
+          <div className="empty">
+            <div className="empty-icon"><Icon.Filter size={18} /></div>
+            <div style={{ color: 'var(--fg-0)', fontWeight: 500 }}>No tickets match</div>
+            <div>Adjust filters or create a new one.</div>
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Assignee</th>
+                <th>Title</th>
+                <th>Duration</th>
+                <th>Updated</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {visible.map((t: any) => (
+                <tr key={t.id}>
+                  <td><Link to={`/tickets/${t.identifier}`} className="identifier-badge">{t.identifier}</Link></td>
+                  <td><span className={`chip ${statusClass(t.status)}`}>{t.status.replace('_', ' ')}</span></td>
+                  <td><span className={`chip ${priorityClass(t.priority)}`}>{t.priority}</span></td>
+                  <td className="small muted">{t.assignee_role || '—'}</td>
+                  <td style={{ maxWidth: 420, color: 'var(--fg-0)' }}>
+                    <Link to={`/tickets/${t.identifier}`} style={{ color: 'inherit' }}>{t.title}</Link>
+                  </td>
+                  <td className="small mono muted nowrap" title={durationTitle(t)}>{durationCell(t)}</td>
+                  <td className="small muted nowrap" title={t.updated_at}>{relTime(t.updated_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </>
   );
-}
-
-function statusClass(s: string) {
-  if (s === 'done') return 'ok';
-  if (s === 'blocked' || s === 'cancelled') return 'err';
-  if (s === 'in_progress' || s === 'in_review') return 'active';
-  return '';
-}
-
-const TERMINAL = new Set(['done', 'cancelled']);
-
-export function formatDuration(sec: number | null | undefined): string {
-  if (sec == null || !isFinite(sec) || sec < 0) return '—';
-  const s = Math.round(sec);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60), rs = s % 60;
-  if (m < 60) return rs ? `${m}m ${rs}s` : `${m}m`;
-  const h = Math.floor(m / 60), rm = m % 60;
-  if (h < 24) return rm ? `${h}h ${rm}m` : `${h}h`;
-  const d = Math.floor(h / 24), rh = h % 24;
-  return rh ? `${d}d ${rh}h` : `${d}d`;
-}
-
-export function durationCell(t: any): string {
-  if (!t.started_at) return t.status === 'todo' ? '—' : '…';
-  const live = !TERMINAL.has(t.status);
-  return live ? `${formatDuration(t.duration_s)} ⏱` : formatDuration(t.duration_s);
-}
-
-export function durationTitle(t: any): string {
-  if (!t.started_at) return 'never entered in_progress';
-  const live = !TERMINAL.has(t.status);
-  const base = `started ${t.started_at.slice(0, 19).replace('T', ' ')}`;
-  return live ? `${base} (running)` : `${base} → ${t.completed_at?.slice(0, 19).replace('T', ' ') || 'end'}`;
 }

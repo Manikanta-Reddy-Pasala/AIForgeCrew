@@ -1,107 +1,151 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { api } from '../api';
-import { durationCell, durationTitle } from './Tickets';
+import { Icon } from '../icons';
+import {
+  statusClass, priorityClass, durationCell, durationTitle, relTime,
+} from '../util';
+
+const TRANSITIONS = ['todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'];
 
 export default function TicketDetail() {
   const { id = '' } = useParams();
-  const [data, setData] = useState<any>(null);
+  const qc = useQueryClient();
   const [comment, setComment] = useState('');
 
-  async function load() { setData(await api.ticket(id)); }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+  const { data, isLoading } = useQuery({
+    queryKey: ['ticket', id],
+    queryFn: () => api.ticket(id),
+    enabled: !!id,
+  });
 
-  if (!data) return <p className="muted">loading…</p>;
+  if (isLoading || !data) {
+    return (
+      <div className="stack">
+        <div className="skeleton" style={{ width: 220, height: 24 }} />
+        <div className="skeleton" style={{ width: '100%', height: 120 }} />
+      </div>
+    );
+  }
+
   const t = data.ticket;
 
   async function postComment() {
     if (!comment.trim()) return;
-    await api.comment(id, comment);
-    setComment('');
-    load();
+    try {
+      await api.comment(id, comment);
+      toast.success('Comment posted');
+      setComment('');
+      qc.invalidateQueries({ queryKey: ['ticket', id] });
+    } catch (e: any) { toast.error(e.message); }
   }
 
   async function setStatus(s: string) {
-    await api.patch(id, { status: s });
-    load();
+    try {
+      await api.patch(id, { status: s });
+      toast.success(`Moved to ${s.replace('_', ' ')}`);
+      qc.invalidateQueries({ queryKey: ['ticket', id] });
+      qc.invalidateQueries({ queryKey: ['tickets'] });
+    } catch (e: any) { toast.error(e.message); }
   }
 
   return (
     <>
-      <div className="row" style={{ justifyContent: 'space-between' }}>
-        <h1>{t.identifier} · {t.title}</h1>
-        <span className={`chip ${statusClass(t.status)}`}>{t.status}</span>
-      </div>
-      <div className="row small muted" style={{ marginBottom: '1rem' }}>
-        <span>assignee: {t.assignee_role || '—'}</span>
-        <span>priority: {t.priority}</span>
-        <span title={durationTitle(t)}>duration: {durationCell(t)}</span>
-        {t.branch && <span>branch: <code>{t.branch}</code></span>}
-        {t.parent_id && <span>parent: #{t.parent_id}</span>}
-      </div>
-
-      <div className="card">
-        <h2>Body</h2>
-        <pre>{t.body || '(empty)'}</pre>
-      </div>
-
-      {data.children?.length > 0 && (
-        <div className="card">
-          <h2>Children ({data.children.length})</h2>
-          <table>
-            <thead><tr><th>ID</th><th>Status</th><th>Assignee</th><th>Title</th><th>Duration</th></tr></thead>
-            <tbody>
-              {data.children.map((c: any) => (
-                <tr key={c.id}>
-                  <td><Link to={`/tickets/${c.identifier}`}>{c.identifier}</Link></td>
-                  <td><span className={`chip ${statusClass(c.status)}`}>{c.status}</span></td>
-                  <td className="muted small">{c.assignee_role || '—'}</td>
-                  <td>{c.title}</td>
-                  <td className="small muted" title={durationTitle(c)}>{durationCell(c)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="detail-header">
+        <div className="detail-title-row">
+          <span className="identifier-badge mono" style={{ fontSize: 13 }}>{t.identifier}</span>
+          <h1 style={{ flex: 1 }}>{t.title}</h1>
+          <span className={`chip ${statusClass(t.status)}`}>{t.status.replace('_', ' ')}</span>
+          <span className={`chip ${priorityClass(t.priority)}`}>{t.priority}</span>
         </div>
-      )}
+        <div className="detail-meta">
+          <span><strong>Assignee</strong> {t.assignee_role || '—'}</span>
+          <span title={durationTitle(t)}><strong>Duration</strong> {durationCell(t)}</span>
+          <span><strong>Updated</strong> {relTime(t.updated_at)}</span>
+          {t.branch && <span><strong>Branch</strong> <code>{t.branch}</code></span>}
+          {t.parent_id && <span><strong>Parent</strong> #{t.parent_id}</span>}
+        </div>
+      </div>
 
-      <div className="card">
-        <h2>Events ({data.events.length})</h2>
-        <div className="event-log">
-          {data.events.map((e: any) => (
-            <div key={e.id} className="event-row">
-              <span className="ts">{e.created_at?.slice(11, 19)}</span>
-              <span className="role">{e.agent_role || 'system'}</span>
-              <span className="kind">{e.kind}</span>
-              <span>{(e.body || '').slice(0, 500)}</span>
+      <div className="grid grid-2" style={{ alignItems: 'start' }}>
+        <div className="stack">
+          <div className="card">
+            <div className="card-header"><h2>Body</h2></div>
+            {t.body
+              ? <pre style={{ whiteSpace: 'pre-wrap' }}>{t.body}</pre>
+              : <div className="muted small">(empty)</div>}
+          </div>
+
+          {data.children?.length > 0 && (
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+              <div className="card-header" style={{ padding: '16px 20px 0' }}>
+                <h2>Children ({data.children.length})</h2>
+              </div>
+              <table>
+                <thead><tr><th>ID</th><th>Status</th><th>Assignee</th><th>Title</th><th>Duration</th></tr></thead>
+                <tbody>
+                  {data.children.map((c: any) => (
+                    <tr key={c.id}>
+                      <td><Link to={`/tickets/${c.identifier}`} className="identifier-badge">{c.identifier}</Link></td>
+                      <td><span className={`chip ${statusClass(c.status)}`}>{c.status.replace('_', ' ')}</span></td>
+                      <td className="muted small">{c.assignee_role || '—'}</td>
+                      <td>{c.title}</td>
+                      <td className="small mono muted" title={durationTitle(c)}>{durationCell(c)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
-        </div>
-      </div>
+          )}
 
-      <div className="card">
-        <h2>Add comment</h2>
-        <textarea rows={4} value={comment} onChange={e => setComment(e.target.value)}
-                  style={{ width: '100%' }} placeholder="human comment…" />
-        <div className="row" style={{ marginTop: '.5rem' }}>
-          <button onClick={postComment}>Post</button>
-          <div style={{ flex: 1 }} />
-          {['todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled']
-            .filter(s => s !== t.status)
-            .map(s => (
-              <button key={s} className="ghost" onClick={() => setStatus(s)}>
-                → {s}
-              </button>
-            ))}
+          <div className="card">
+            <div className="card-header"><h2>Events ({data.events.length})</h2></div>
+            <div className="event-log">
+              {data.events.length === 0 && <div className="empty">No events yet.</div>}
+              {data.events.map((e: any) => (
+                <div key={e.id} className="event-row">
+                  <span className="ts">{(e.created_at || '').slice(11, 19)}</span>
+                  <span className="role">{e.agent_role || 'system'}</span>
+                  <span className="kind">{e.kind}</span>
+                  {e.body && <div className="event-body">{String(e.body).slice(0, 800)}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="stack">
+          <div className="card">
+            <div className="card-header"><h2>Transition</h2></div>
+            <div className="row" style={{ gap: 6 }}>
+              {TRANSITIONS.filter(s => s !== t.status).map(s => (
+                <button key={s} className="ghost sm" onClick={() => setStatus(s)}>
+                  → {s.replace('_', ' ')}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-header"><h2>Comment</h2></div>
+            <div className="stack">
+              <textarea
+                rows={4}
+                value={comment}
+                onChange={e => setComment(e.target.value)}
+                placeholder="Leave a comment for the crew…"
+              />
+              <div className="row" style={{ justifyContent: 'flex-end' }}>
+                <button onClick={postComment} disabled={!comment.trim()}>
+                  <Icon.Send size={14} /> Post comment
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </>
   );
-}
-
-function statusClass(s: string) {
-  if (s === 'done') return 'ok';
-  if (s === 'blocked' || s === 'cancelled') return 'err';
-  if (s === 'in_progress' || s === 'in_review') return 'active';
-  return '';
 }

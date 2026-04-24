@@ -1,152 +1,226 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { JsonView, darkStyles } from 'react-json-view-lite';
+import 'react-json-view-lite/dist/index.css';
 import { api } from '../api';
+import { Icon } from '../icons';
 
-// Argument specs per tool. Keep tight — operator doesn't need to
-// guess which fields each tool takes. Extend as we add tools.
-type ArgSpec = { name: string; placeholder?: string; required?: boolean };
-const TOOLS: Record<string, { desc: string; args: ArgSpec[] }> = {
-  sym_lookup: {
-    desc: 'Find declarations + call sites of a symbol across indexed repos.',
+type ArgSpec = { name: string; placeholder?: string; required?: boolean; numeric?: boolean };
+type Tool = { name: string; desc: string; category: string; args: ArgSpec[] };
+
+const CATEGORIES = ['Graph', 'Code', 'Kubernetes', 'Memory', 'Tickets', 'Docs'] as const;
+
+const TOOLS: Tool[] = [
+  // Graph / symbol
+  { name: 'sym_lookup', category: 'Code', desc: 'Find declarations + call sites of a symbol across indexed repos.',
     args: [
       { name: 'name', placeholder: 'e.g. MessageRetryService', required: true },
       { name: 'repo', placeholder: 'optional repo filter' },
-    ],
-  },
-  list_repos: { desc: 'List every repo indexed in Neo4j.', args: [] },
-  list_services: { desc: 'List Spring/Flask services + their endpoints.', args: [] },
-  list_endpoints: {
-    desc: 'Enumerate HTTP endpoints.',
-    args: [{ name: 'repo', placeholder: 'optional repo filter' }],
-  },
-  graph_neighborhood: {
-    desc: 'Graph walk around a symbol.',
-    args: [
-      { name: 'symbol', placeholder: 'qualified symbol', required: true },
-      { name: 'depth', placeholder: '1-3' },
-    ],
-  },
-  caller_chain: {
-    desc: 'Who calls this symbol (transitive).',
-    args: [{ name: 'symbol', placeholder: 'qualified symbol', required: true }],
-  },
-  callee_chain: {
-    desc: 'What this symbol calls.',
-    args: [{ name: 'symbol', placeholder: 'qualified symbol', required: true }],
-  },
-  read_source: {
-    desc: 'Read a source file (with optional line range).',
+    ] },
+  { name: 'list_repos', category: 'Code', desc: 'List every repo indexed in Neo4j.', args: [] },
+  { name: 'list_services', category: 'Code', desc: 'List Spring/Flask services + their endpoints.', args: [] },
+  { name: 'list_endpoints', category: 'Code', desc: 'Enumerate HTTP endpoints.',
+    args: [{ name: 'repo', placeholder: 'optional repo filter' }] },
+  { name: 'read_source', category: 'Code', desc: 'Read a source file (with optional line range).',
     args: [
       { name: 'path', placeholder: 'repo/src/.../File.java', required: true },
-      { name: 'start_line', placeholder: '1' },
-      { name: 'end_line', placeholder: '80' },
-    ],
-  },
-  impact: {
-    desc: 'Blast-radius of changing a symbol.',
-    args: [{ name: 'symbol', placeholder: 'qualified symbol', required: true }],
-  },
-  cross_repo_flow: {
-    desc: 'Trace a request flow across repos.',
-    args: [{ name: 'entry_symbol', placeholder: 'Controller method' }],
-  },
-  related_memories: {
-    desc: 'Pull memory hits related to a free-text query.',
+      { name: 'start_line', placeholder: '1', numeric: true },
+      { name: 'end_line', placeholder: '80', numeric: true },
+    ] },
+
+  // Graph walk
+  { name: 'graph_neighborhood', category: 'Graph', desc: 'Graph walk around a symbol.',
+    args: [
+      { name: 'symbol', placeholder: 'qualified symbol', required: true },
+      { name: 'depth', placeholder: '1-3', numeric: true },
+    ] },
+  { name: 'caller_chain', category: 'Graph', desc: 'Who calls this symbol (transitive).',
+    args: [{ name: 'symbol', placeholder: 'qualified symbol', required: true }] },
+  { name: 'callee_chain', category: 'Graph', desc: 'What this symbol calls.',
+    args: [{ name: 'symbol', placeholder: 'qualified symbol', required: true }] },
+  { name: 'impact', category: 'Graph', desc: 'Blast-radius of changing a symbol.',
+    args: [{ name: 'symbol', placeholder: 'qualified symbol', required: true }] },
+  { name: 'cross_repo_flow', category: 'Graph', desc: 'Trace a request flow across repos.',
+    args: [{ name: 'entry_symbol', placeholder: 'Controller method' }] },
+
+  // Memory
+  { name: 'related_memories', category: 'Memory', desc: 'Pull memory hits related to a free-text query.',
     args: [
       { name: 'query', placeholder: 'e.g. pagination pos backend', required: true },
-      { name: 'top_k', placeholder: '6' },
-    ],
-  },
-  ticket_brief: {
-    desc: 'Concise brief of a ticket (title, body, last status).',
-    args: [{ name: 'identifier', placeholder: 'ONE-46', required: true }],
-  },
-  ticket_fetch: {
-    desc: 'Full ticket payload by identifier.',
-    args: [{ name: 'identifier', placeholder: 'ONE-46', required: true }],
-  },
-  kube_status: { desc: 'Summary of deployed pods.', args: [] },
-  find_doc: {
-    desc: 'Full-text search across docs + CLAUDE.md.',
-    args: [{ name: 'query', placeholder: 'search text', required: true }],
-  },
-};
+      { name: 'top_k', placeholder: '6', numeric: true },
+    ] },
+
+  // Tickets
+  { name: 'ticket_brief', category: 'Tickets', desc: 'Concise brief of a ticket (title, body, last status).',
+    args: [{ name: 'identifier', placeholder: 'ONE-46', required: true }] },
+  { name: 'ticket_fetch', category: 'Tickets', desc: 'Full ticket payload by identifier.',
+    args: [{ name: 'identifier', placeholder: 'ONE-46', required: true }] },
+
+  // Kubernetes
+  { name: 'kube_status', category: 'Kubernetes', desc: 'Summary of deployed pods.', args: [] },
+
+  // Docs
+  { name: 'find_doc', category: 'Docs', desc: 'Full-text search across docs + CLAUDE.md.',
+    args: [{ name: 'query', placeholder: 'search text', required: true }] },
+];
 
 export default function Tools() {
-  const names = Object.keys(TOOLS);
-  const [tool, setTool] = useState(names[0]);
+  const [active, setActive] = useState<string>(TOOLS[0].name);
   const [args, setArgs] = useState<Record<string, string>>({});
   const [result, setResult] = useState<any>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [railSearch, setRailSearch] = useState('');
+
+  const tool = TOOLS.find(t => t.name === active) || TOOLS[0];
+
+  const railGrouped = useMemo(() => {
+    const s = railSearch.trim().toLowerCase();
+    const by: Record<string, Tool[]> = {};
+    for (const t of TOOLS) {
+      if (s && !`${t.name} ${t.desc}`.toLowerCase().includes(s)) continue;
+      (by[t.category] ??= []).push(t);
+    }
+    return by;
+  }, [railSearch]);
 
   async function run() {
-    setBusy(true);
-    setErr(null);
-    setResult(null);
+    setBusy(true); setErr(null); setResult(null);
     try {
-      // Coerce numeric strings; drop empty.
-      const payload: Record<string, any> = {};
-      for (const k of Object.keys(args)) {
-        const v = args[k];
-        if (v === undefined || v === '') continue;
-        if (/^-?\d+$/.test(v)) payload[k] = parseInt(v, 10);
-        else payload[k] = v;
+      // validate required
+      for (const a of tool.args) {
+        if (a.required && !(args[a.name] || '').trim()) {
+          throw new Error(`Missing required: ${a.name}`);
+        }
       }
-      const r = await api.mcpTool(tool, payload);
+      const payload: Record<string, any> = {};
+      for (const a of tool.args) {
+        const v = (args[a.name] || '').trim();
+        if (!v) continue;
+        if (a.numeric && /^-?\d+$/.test(v)) payload[a.name] = parseInt(v, 10);
+        else payload[a.name] = v;
+      }
+      const r = await api.mcpTool(tool.name, payload);
       setResult(r.result);
+      toast.success(`${tool.name} ran`);
     } catch (e: any) {
       setErr(e.message || String(e));
+      toast.error(`${tool.name}: ${e.message || e}`);
     } finally {
       setBusy(false);
     }
   }
 
-  const spec = TOOLS[tool];
+  function selectTool(name: string) {
+    setActive(name);
+    setArgs({});
+    setResult(null);
+    setErr(null);
+  }
+
   return (
     <>
-      <h1>MCP Tools</h1>
-      <p className="muted small">
-        Invoke graph_rag MCP tools directly against Neo4j. Same tools
-        the Planner + Doer agents use mid-run.
-      </p>
-
-      <div className="card">
-        <div className="row" style={{ gap: '.5rem', marginBottom: '.5rem' }}>
-          <label>Tool:{' '}
-            <select value={tool} onChange={e => {
-              setTool(e.target.value);
-              setArgs({});
-              setResult(null);
-              setErr(null);
-            }}>
-              {names.map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </label>
-          <span className="small muted">{spec.desc}</span>
+      <div className="page-header">
+        <div>
+          <h1>MCP tools</h1>
+          <div className="subtitle">Invoke `graph_rag` and helper MCPs directly — the same surface the Planner + Doer agents use.</div>
         </div>
-        {spec.args.map(a => (
-          <div key={a.name} style={{ marginBottom: '.4rem' }}>
-            <input
-              placeholder={`${a.name}${a.required ? ' *' : ''}: ${a.placeholder || ''}`}
-              value={args[a.name] || ''}
-              onChange={e => setArgs(s => ({ ...s, [a.name]: e.target.value }))}
-              style={{ width: '100%' }}
-            />
-          </div>
-        ))}
-        <button onClick={run} disabled={busy}>{busy ? 'Running…' : 'Run'}</button>
       </div>
 
-      {err && <div className="card" style={{ color: '#f56565' }}>Error: {err}</div>}
-      {result && (
-        <div className="card">
-          <h2>Result</h2>
-          <pre className="small" style={{
-            background: '#1a1a1a', padding: '.5rem',
-            overflow: 'auto', maxHeight: '60vh',
-          }}>{JSON.stringify(result, null, 2)}</pre>
-        </div>
-      )}
+      <div className="tools-shell">
+        <aside className="tools-rail">
+          <div className="input-search" style={{ margin: 4, marginBottom: 8 }}>
+            <Icon.Search size={14} />
+            <input placeholder="filter tools…" value={railSearch} onChange={e => setRailSearch(e.target.value)} />
+          </div>
+          {CATEGORIES.map(cat => {
+            const items = railGrouped[cat] || [];
+            if (items.length === 0) return null;
+            return (
+              <div key={cat}>
+                <div className="tool-group-label">{cat}</div>
+                {items.map(t => (
+                  <div
+                    key={t.name}
+                    className={`tool-item ${active === t.name ? 'on' : ''}`}
+                    onClick={() => selectTool(t.name)}
+                  >
+                    <span className="tool-name">{t.name}</span>
+                    <span className="tool-desc">{t.desc}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </aside>
+
+        <section className="stack">
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <div className="row" style={{ gap: 8 }}>
+                  <span className="chip">{tool.category}</span>
+                  <h2 className="mono" style={{ fontSize: 16 }}>{tool.name}</h2>
+                </div>
+                <div className="subtitle" style={{ marginTop: 4 }}>{tool.desc}</div>
+              </div>
+              <button onClick={run} disabled={busy}>
+                {busy ? 'Running…' : <><Icon.Sparkles size={14} /> Invoke</>}
+              </button>
+            </div>
+
+            {tool.args.length === 0 ? (
+              <div className="muted small">This tool takes no arguments.</div>
+            ) : (
+              <div className="stack">
+                {tool.args.map(a => (
+                  <label className="field" key={a.name}>
+                    <span>
+                      {a.name}
+                      {a.required && <span style={{ color: 'var(--err)', marginLeft: 4 }}>*</span>}
+                      {a.numeric && <span className="muted" style={{ marginLeft: 6 }}>int</span>}
+                    </span>
+                    <input
+                      placeholder={a.placeholder}
+                      value={args[a.name] || ''}
+                      onChange={e => setArgs(s => ({ ...s, [a.name]: e.target.value }))}
+                      onKeyDown={e => { if (e.key === 'Enter' && !busy) run(); }}
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {err && (
+            <div className="card" style={{ borderColor: 'var(--err)' }}>
+              <div className="row"><span className="chip err">Error</span><span className="small">{err}</span></div>
+            </div>
+          )}
+
+          {result && (
+            <div className="card">
+              <div className="card-header">
+                <h2>Result</h2>
+                <button className="ghost sm" onClick={() => {
+                  navigator.clipboard.writeText(JSON.stringify(result, null, 2));
+                  toast.success('Result copied to clipboard');
+                }}>Copy JSON</button>
+              </div>
+              <div className="tool-result">
+                <JsonView
+                  data={result}
+                  shouldExpandNode={(level) => level < 2}
+                  style={{
+                    ...darkStyles,
+                    container: 'json-view',
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
     </>
   );
 }

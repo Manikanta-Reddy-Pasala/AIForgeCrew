@@ -1,122 +1,218 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent,
+  PointerSensor, useSensor, useSensors, useDroppable, closestCorners,
+} from '@dnd-kit/core';
+import { useDraggable } from '@dnd-kit/core';
+import { toast } from 'sonner';
 import { api } from '../api';
+import { Icon } from '../icons';
+import { priorityClass, relTime } from '../util';
 
-const COLUMNS = [
-  { key: 'todo',         title: 'To do' },
-  { key: 'in_progress',  title: 'In progress' },
-  { key: 'in_review',    title: 'In review' },
-  { key: 'blocked',      title: 'Blocked' },
-  { key: 'done',         title: 'Done' },
-  { key: 'cancelled',    title: 'Cancelled' },
+const COLUMNS: { key: string; title: string; color: string }[] = [
+  { key: 'todo',        title: 'To do',        color: '#8892a0' },
+  { key: 'in_progress', title: 'In progress',  color: '#6aa6ff' },
+  { key: 'in_review',   title: 'In review',    color: '#a48bff' },
+  { key: 'blocked',     title: 'Blocked',      color: '#f0883e' },
+  { key: 'done',        title: 'Done',         color: '#3fb950' },
+  { key: 'cancelled',   title: 'Cancelled',    color: '#5a6472' },
 ];
 
-const PRIORITY_COLOR: Record<string, string> = {
-  urgent: '#e53e3e',
-  high:   '#dd6b20',
-  medium: '#4299e1',
-  low:    '#718096',
-};
+const PRIO_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
 
 export default function Kanban() {
-  const [rows, setRows] = useState<any[]>([]);
+  const qc = useQueryClient();
   const [q, setQ] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [overCol, setOverCol] = useState<string | null>(null);
+  // Local optimistic status overrides keyed by ticket id
+  const [optimistic, setOptimistic] = useState<Record<string | number, string>>({});
 
-  async function load() {
-    setRows(await api.tickets({ limit: '200' }));
-  }
-  useEffect(() => { load(); }, []);
+  const { data = [], refetch, isFetching } = useQuery({
+    queryKey: ['tickets', 'kanban'],
+    queryFn: () => api.tickets({ limit: '400' }),
+  });
 
   const grouped = useMemo(() => {
     const g: Record<string, any[]> = {};
     for (const c of COLUMNS) g[c.key] = [];
     const qq = q.trim().toLowerCase();
-    for (const t of rows) {
+    for (const t of data) {
+      if (roleFilter && t.assignee_role !== roleFilter) continue;
       if (qq) {
-        const hay = `${t.identifier} ${t.title} ${t.project}`.toLowerCase();
+        const hay = `${t.identifier} ${t.title} ${t.project || ''}`.toLowerCase();
         if (!hay.includes(qq)) continue;
       }
-      (g[t.status] || (g[t.status] = [])).push(t);
+      const st = optimistic[t.id] || t.status;
+      (g[st] ??= []).push({ ...t, status: st });
     }
-    // Within a column: priority first, then updated_at desc
-    const prio: Record<string, number> = {
-      urgent: 0, high: 1, medium: 2, low: 3,
-    };
     for (const k of Object.keys(g)) {
       g[k].sort((a, b) =>
-        (prio[a.priority] ?? 9) - (prio[b.priority] ?? 9) ||
+        (PRIO_ORDER[a.priority] ?? 9) - (PRIO_ORDER[b.priority] ?? 9) ||
         (b.updated_at || '').localeCompare(a.updated_at || ''));
     }
     return g;
-  }, [rows, q]);
+  }, [data, q, roleFilter, optimistic]);
 
-  async function setStatus(t: any, status: string) {
-    await api.patch(t.identifier, { status });
-    load();
+  const roles = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of data) if (t.assignee_role) s.add(t.assignee_role);
+    return ['', ...Array.from(s).sort()];
+  }, [data]);
+
+  const active = useMemo(
+    () => data.find((t: any) => String(t.id) === activeId) || null,
+    [data, activeId],
+  );
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  function onDragStart(e: DragStartEvent) {
+    setActiveId(String(e.active.id));
+  }
+  function onDragOver(e: DragOverEvent) {
+    const overId = e.over?.id ? String(e.over.id) : null;
+    if (!overId) { setOverCol(null); return; }
+    const colKey = overId.startsWith('col:') ? overId.slice(4) : null;
+    setOverCol(colKey);
+  }
+  async function onDragEnd(e: DragEndEvent) {
+    const id = String(e.active.id);
+    const overId = e.over?.id ? String(e.over.id) : null;
+    setActiveId(null); setOverCol(null);
+    if (!overId) return;
+    const colKey = overId.startsWith('col:') ? overId.slice(4) : null;
+    if (!colKey) return;
+    const t = data.find((x: any) => String(x.id) === id);
+    if (!t) return;
+    const curStatus = optimistic[t.id] || t.status;
+    if (curStatus === colKey) return;
+
+    // optimistic
+    setOptimistic(s => ({ ...s, [t.id]: colKey }));
+    try {
+      await api.patch(t.identifier, { status: colKey });
+      toast.success(`${t.identifier} → ${colKey.replace('_', ' ')}`);
+      qc.invalidateQueries({ queryKey: ['tickets'] });
+    } catch (err: any) {
+      setOptimistic(s => {
+        const { [t.id]: _, ...rest } = s;
+        return rest;
+      });
+      toast.error(`Move failed: ${err.message || err}`);
+    }
   }
 
   return (
     <>
-      <div className="row" style={{
-        justifyContent: 'space-between', marginBottom: '.75rem',
-      }}>
-        <h1>Board</h1>
-        <div className="row" style={{ gap: '.5rem' }}>
-          <input placeholder="filter…" value={q}
-                 onChange={e => setQ(e.target.value)} />
-          <button onClick={load}>Refresh</button>
+      <div className="page-header">
+        <div>
+          <h1>Board</h1>
+          <div className="subtitle">Drag cards between lanes to transition ticket status.</div>
+        </div>
+        <div className="row">
+          <div className="input-search" style={{ minWidth: 220 }}>
+            <Icon.Search size={14} />
+            <input placeholder="filter tickets…" value={q} onChange={e => setQ(e.target.value)} />
+          </div>
+          <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} style={{ width: 150 }}>
+            {roles.map(r => <option key={r} value={r}>{r || 'all roles'}</option>)}
+          </select>
+          <button className="ghost" onClick={() => refetch()} disabled={isFetching}>
+            <Icon.Refresh size={14} /> Refresh
+          </button>
         </div>
       </div>
 
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: `repeat(${COLUMNS.length}, minmax(200px, 1fr))`,
-        gap: '.5rem',
-      }}>
-        {COLUMNS.map(c => (
-          <div key={c.key} className="card" style={{ minHeight: '60vh' }}>
-            <div style={{
-              display: 'flex', justifyContent: 'space-between',
-              alignItems: 'center', marginBottom: '.5rem',
-            }}>
-              <strong>{c.title}</strong>
-              <span className="muted small">{grouped[c.key]?.length || 0}</span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '.4rem' }}>
-              {(grouped[c.key] || []).map(t => (
-                <div key={t.id} style={{
-                  background: '#2d3748', padding: '.5rem',
-                  borderLeft: `3px solid ${PRIORITY_COLOR[t.priority] || '#4a5568'}`,
-                  borderRadius: 4,
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <Link to={`/tickets/${t.identifier}`} className="small">
-                      {t.identifier}
-                    </Link>
-                    <span className="small muted">{t.assignee_role || '—'}</span>
-                  </div>
-                  <div style={{ fontSize: '.85rem', margin: '.3rem 0' }}>
-                    {t.title}
-                  </div>
-                  <div className="row" style={{ gap: '.2rem', marginTop: '.3rem' }}>
-                    {COLUMNS
-                      .filter(x => x.key !== t.status)
-                      .slice(0, 4)
-                      .map(x => (
-                        <button key={x.key}
-                                onClick={() => setStatus(t, x.key)}
-                                className="small"
-                                style={{ fontSize: '.7rem', padding: '.15rem .4rem' }}>
-                          → {x.title}
-                        </button>
-                      ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCorners}
+        onDragStart={onDragStart}
+        onDragOver={onDragOver}
+        onDragEnd={onDragEnd}
+      >
+        <div className="kanban-board">
+          {COLUMNS.map(col => (
+            <Column
+              key={col.key}
+              col={col}
+              tickets={grouped[col.key] || []}
+              over={overCol === col.key}
+            />
+          ))}
+        </div>
+        <DragOverlay dropAnimation={null}>
+          {active ? <TicketCard t={active} className="drag-overlay" /> : null}
+        </DragOverlay>
+      </DndContext>
     </>
+  );
+}
+
+function Column({
+  col, tickets, over,
+}: {
+  col: { key: string; title: string; color: string };
+  tickets: any[];
+  over: boolean;
+}) {
+  const { setNodeRef } = useDroppable({ id: `col:${col.key}` });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`kanban-col${over ? ' is-over' : ''}`}
+      style={{ ['--col-accent' as any]: col.color }}
+    >
+      <div className="kanban-col-header">
+        <span>{col.title}</span>
+        <span className="count">{tickets.length}</span>
+      </div>
+      <div className="kanban-col-body">
+        {tickets.length === 0 ? (
+          <div className="empty" style={{ padding: '24px 8px' }}>
+            <div className="xs">Empty</div>
+          </div>
+        ) : tickets.map(t => <DraggableCard key={t.id} t={t} />)}
+      </div>
+    </div>
+  );
+}
+
+function DraggableCard({ t }: { t: any }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: String(t.id) });
+  return (
+    <div ref={setNodeRef} {...attributes} {...listeners}>
+      <TicketCard t={t} dragging={isDragging} />
+    </div>
+  );
+}
+
+function TicketCard({
+  t, dragging = false, className = '',
+}: {
+  t: any; dragging?: boolean; className?: string;
+}) {
+  return (
+    <div className={`ticket-card ${priorityClass(t.priority)} ${dragging ? 'dragging' : ''} ${className}`}>
+      <div className="tc-top">
+        <Link to={`/tickets/${t.identifier}`} className="identifier-badge" onClick={e => e.stopPropagation()}>
+          {t.identifier}
+        </Link>
+        <span className={`chip sm ${priorityClass(t.priority)}`}>{t.priority}</span>
+      </div>
+      <div className="tc-title">{t.title}</div>
+      <div className="tc-meta">
+        <div className="row tight">
+          {t.assignee_role && <span className="chip sm">{t.assignee_role}</span>}
+          {Array.isArray(t.labels) && t.labels.slice(0, 3).map((l: string) => (
+            <span key={l} className="chip sm">{l}</span>
+          ))}
+        </div>
+        <span className="xs muted nowrap" title={t.updated_at}>{relTime(t.updated_at)}</span>
+      </div>
+    </div>
   );
 }

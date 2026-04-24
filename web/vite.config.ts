@@ -13,4 +13,18 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // Keep a single bundle simple, but split heavy chart & dnd libs so
+    // the initial JS parse cost is lower on pages that don't need them.
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          recharts: ['recharts'],
+          dnd: ['@dnd-kit/core', '@dnd-kit/sortable', '@dnd-kit/utilities'],
+          query: ['@tanstack/react-query'],
+        },
+      },
+    },
+  },
 });
