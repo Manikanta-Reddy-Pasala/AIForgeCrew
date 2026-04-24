@@ -747,6 +747,56 @@ def _chat_agent_answer(query: str) -> dict:
     except Exception as exc:
         return {"answer": f"MCP load failed: {exc}", "trace": []}
 
+    # OneShell ops MCP servers (mongo / k8s / tekton / tally) expose
+    # their tools over streamable-http on :8810-:8813. smolagents
+    # ToolCollection.from_mcp is a context manager — keep every MCP
+    # alive for the duration of the agent.run() call via an ExitStack.
+    # Per-server failures are soft.
+    from contextlib import ExitStack
+    from smolagents import ToolCollection
+
+    ops_servers = {
+        "oneshell_mongo":  _os.environ.get("AIFORGE_MCP_MONGO",  "http://127.0.0.1:8810/mcp"),
+        "oneshell_k8s":    _os.environ.get("AIFORGE_MCP_K8S",    "http://127.0.0.1:8811/mcp"),
+        "oneshell_tekton": _os.environ.get("AIFORGE_MCP_TEKTON", "http://127.0.0.1:8812/mcp"),
+        "oneshell_tally":  _os.environ.get("AIFORGE_MCP_TALLY",  "http://127.0.0.1:8813/mcp"),
+    }
+    stack = ExitStack()
+    loaded: list[str] = []
+    # Seed seen-set with names already claimed by graph_rag + search_memory
+    # so an ops-server tool with the same name (list_services,
+    # find_business, ...) doesn't duplicate. Ops tools also get a short
+    # prefix when they'd clash, so the model can still reach them.
+    seen: dict[str, str] = {getattr(t, "name", str(i)): "core"
+                            for i, t in enumerate(tools)}
+    for name, url in ops_servers.items():
+        prefix = name.replace("oneshell_", "") + "_"
+        try:
+            tc = stack.enter_context(ToolCollection.from_mcp(
+                {"url": url}, trust_remote_code=True,
+            ))
+            kept = 0
+            for t in tc.tools:
+                tname = getattr(t, "name", None) or ""
+                if tname in seen:
+                    # Rename to avoid smolagents "duplicate tool name" error.
+                    newname = prefix + tname
+                    if newname in seen:
+                        continue
+                    try:
+                        t.name = newname
+                    except Exception:
+                        continue
+                    tname = newname
+                seen[tname] = name
+                tools.append(t)
+                kept += 1
+            loaded.append(f"{name}:{kept}")
+        except Exception as exc:
+            print(f"[chat_agent] skipped {name} at {url}: {exc}")
+    if loaded:
+        print(f"[chat_agent] ops MCPs loaded: {loaded}, total tools={len(tools)}")
+
     _CHAT_AGENT_PREAMBLE = """You are the AIForge chat agent. The
 operator asked a question about our OneShell codebase / past
 tickets / decisions. You have live access to the Neo4j graph, T1-T4
@@ -777,9 +827,15 @@ concrete evidence you used (tool → what it returned → conclusion).
     )
     task = f"{_CHAT_AGENT_PREAMBLE}\n\n## Question\n{query}"
     try:
+        # Keep the MCP session open while the agent is running.
         raw = agent.run(task)
     except Exception as exc:
+        stack.close()
         return {"answer": f"agent error: {exc}", "trace": []}
+    finally:
+        # Ensure MCP clients close even on success.
+        try: stack.close()
+        except Exception: pass
 
     # smolagents agent.run returns the final_answer payload (may be
     # str or dict). Stringify safely.
