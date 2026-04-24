@@ -24,6 +24,11 @@ ticket with the information the Doer needs in order to write the code itself:
   - known compile pitfalls from memory (so the Doer avoids past mistakes)
 
 Required completion checklist — ALL must hold before you call final_answer:
+  [X] lookup_repo called with the ticket's `project` field FIRST. The result gives
+      you the authoritative stack, entry command, compile gate, ports, and Dockerfile
+      presence from the (:Repo) catalog. Use these values — do NOT invent versions
+      from the ticket body. If the ticket says "Java 17" but lookup_repo says
+      "Java 24", trust the catalog (the pom.xml is ground truth).
   [X] search_memory called at least once to retrieve prior facts + past ticket digests.
   [X] grep_repos called at least once to locate target file(s) in ~/codeRepo.
   [X] read_file called on each candidate to confirm it is the right target.

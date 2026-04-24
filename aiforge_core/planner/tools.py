@@ -49,6 +49,57 @@ _TS_SIG_RE = re.compile(
 )
 
 
+# ─────────────────────────── lookup_repo ────────────────────────────────
+
+def make_lookup_repo(ctx: dict) -> Callable:
+    """Return a ``lookup_repo`` tool backed by the Neo4j :Repo catalog.
+
+    The repo_catalog indexer writes one ``(:Repo)`` per directory under
+    ``~/codeRepo`` with language, stack, entry_cmd, compile_cmd, ports
+    and a README overview. Planner MUST call this before writing a plan
+    — it grounds the Stack / Run sections in the actual repo config
+    instead of copying the ticket's (often stale) template values.
+    """
+
+    @tool
+    def lookup_repo(name: str) -> str:
+        """Fetch stack + run command + ports for a repo by name.
+
+        Args:
+            name: Repo directory name, e.g. "PosClientBackend" or
+                "oneshell-commons". Case-sensitive; matches the folder
+                under ~/codeRepo.
+
+        Returns:
+            Multi-line text with the repo's detected facts, or a short
+            "not indexed" notice if the catalog has no entry (trigger
+            a manual re-index with the repo-indexer CLI).
+        """
+        try:
+            from aiforge_core.rag.repo_catalog import lookup_repo as _lookup
+            row = _lookup(name)
+        except Exception as exc:
+            return f"ERROR: lookup_repo failed: {exc}"
+        if row is None:
+            return (f"lookup_repo: '{name}' not indexed. Either the folder "
+                    f"is missing, not a supported language, or the indexer "
+                    f"has not run yet.")
+        stack = ", ".join(row.get("stack") or []) or "unknown"
+        ports = ", ".join(str(p) for p in (row.get("ports") or [])) or "n/a"
+        return (
+            f"Repo: {row['name']} ({row['lang']})\n"
+            f"Path: {row['path']}\n"
+            f"Stack: {stack}\n"
+            f"Entry: {row['entry_cmd']}\n"
+            f"Compile gate: {row['compile_cmd']}\n"
+            f"Ports: {ports}\n"
+            f"Dockerfile: {'yes' if row['dockerfile'] else 'no'}\n"
+            f"Overview: {row['overview'] or '(no overview in README)'}"
+        )
+
+    return lookup_repo
+
+
 # ─────────────────────────── search_memory ──────────────────────────────
 
 def make_search_memory(ctx: dict) -> Callable:
@@ -392,6 +443,7 @@ def make_tools(ctx: dict) -> list:
     ``FinalAnswerTool`` automatically.
     """
     tools = [
+        make_lookup_repo(ctx),
         make_search_memory(ctx),
         make_grep_repos(ctx),
         make_list_repos(ctx),
