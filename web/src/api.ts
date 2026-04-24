@@ -31,6 +31,12 @@ export const api = {
   memoryStats:  () => j<any>('/memory/stats'),
   memorySearch: (q: string, role = 'planner', topK = 12) =>
     j<any[]>(`/memory/search?q=${encodeURIComponent(q)}&role=${role}&top_k=${topK}`),
+  mcpTool:  (tool: string, args: Record<string, any> = {}) =>
+    j<any>('/mcp/tool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool, args }),
+    }),
 };
 
 export function logStreamURL(role: string): string {

@@ -476,6 +476,99 @@ def stream_role_log(role: str):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+# ─────────────────────────── MCP bridge ─────────────────────────────────
+#
+# Exposes the graph_rag MCP tools over HTTP so the React dashboard can
+# fire sym_lookup / impact / cross_repo_flow / related_memories / etc.
+# without needing its own stdio MCP client. Spawns the
+# ``aiforge-graph-mcp`` console script per call and speaks JSON-RPC via
+# subprocess stdin/stdout. Tool allowlist prevents arbitrary-method abuse.
+
+_MCP_ALLOWED_TOOLS = {
+    "sym_lookup", "list_repos", "list_services", "list_endpoints",
+    "list_integrations", "graph_neighborhood", "caller_chain",
+    "callee_chain", "read_source", "impact", "cross_repo_flow",
+    "data_lineage", "build_plan", "test_plan", "kube_status",
+    "kube_describe", "kube_image_tag", "kube_config", "find_doc",
+    "related_memories", "ticket_fetch", "ticket_brief",
+}
+
+
+class _McpCallBody(BaseModel):
+    tool: str = Field(..., description="Tool name from graph_rag MCP allowlist")
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/api/mcp/tool")
+async def mcp_tool_call(body: _McpCallBody) -> dict:
+    if body.tool not in _MCP_ALLOWED_TOOLS:
+        raise HTTPException(400, f"tool '{body.tool}' not in allowlist")
+    cmd = [
+        os.environ.get("AIFORGE_MCP_BIN",
+                       "/home/mani/AIForgeCrew/.venv/bin/aiforge-graph-mcp"),
+    ]
+    env = {
+        **os.environ,
+        "AIFORGE_NEO4J_URI": os.environ.get(
+            "AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
+        "AIFORGE_NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
+        "AIFORGE_NEO4J_PASSWORD": os.environ.get(
+            "AIFORGE_NEO4J_PASSWORD", "password"),
+        "AIFORGE_DSN": os.environ.get(
+            "AIFORGE_DSN",
+            "postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge"),
+    }
+
+    # JSON-RPC dance: initialize → tools/call → shutdown.
+    init_req = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05",
+                           "capabilities": {"tools": {}},
+                           "clientInfo": {"name": "aiforge-ui",
+                                          "version": "0.1"}}}
+    init_notify = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    tool_req = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": body.tool, "arguments": body.args}}
+    payload = (
+        json.dumps(init_req) + "\n" +
+        json.dumps(init_notify) + "\n" +
+        json.dumps(tool_req) + "\n"
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, env=env,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(
+            proc.communicate(payload.encode()), timeout=30,
+        )
+    except asyncio.TimeoutError:
+        try: proc.kill()
+        except Exception: pass
+        raise HTTPException(504, "MCP server timed out")
+    except FileNotFoundError:
+        raise HTTPException(503, f"MCP binary not found: {cmd[0]}")
+
+    # Scan stdout line by line for the JSON-RPC response to id=2.
+    result: dict | None = None
+    for line in out.splitlines():
+        try:
+            msg = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(msg, dict) and msg.get("id") == 2:
+            result = msg
+            break
+    if result is None:
+        raise HTTPException(
+            500, f"MCP call produced no response. stderr={err[:400]!r}",
+        )
+    if "error" in result:
+        raise HTTPException(400, f"MCP error: {result['error']}")
+    return {"tool": body.tool, "result": result.get("result")}
+
+
 # ─────────────────────────── Static UI ──────────────────────────────────
 # If the Vite production build exists, serve it at /ui/ and redirect "/" to it.
 _DIST = os.path.abspath(os.path.join(
