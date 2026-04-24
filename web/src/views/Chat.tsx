@@ -24,35 +24,38 @@ function uid() { return Math.random().toString(36).slice(2, 10); }
 // Each system reply has a "did this help?" footer that persists the Q+A
 // as a T3 `patterns/<topic>` memory via /chat/retain.
 export default function Chat() {
-  const [turns, setTurns] = useState<Turn[]>([
-    {
-      id: uid(),
-      role: 'system',
-      text: 'Hi — ask about any ticket, repo, or past decision. I pull from Neo4j T1–T4 memory and the `graph_rag` MCP. When a reply helps, tap **Worked** and I will save it as a flow for next time.',
-      createdAt: Date.now(),
-    },
-  ]);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [drawerTurn, setDrawerTurn] = useState<Turn | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // history rehydration (localStorage)
+  // History rehydration from localStorage. Chat UI state is ephemeral
+  // by policy — drop turns older than 7 days on load. Actual memory +
+  // confirmed flows live in Neo4j (T1-T3) and are unaffected.
   useEffect(() => {
+    const CHAT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
     try {
       const raw = localStorage.getItem('aiforge.chat.history');
-      if (raw) {
-        const saved = JSON.parse(raw) as Turn[];
-        if (Array.isArray(saved) && saved.length > 0) setTurns(saved);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Turn[];
+      if (!Array.isArray(saved)) return;
+      const cutoff = Date.now() - CHAT_TTL_MS;
+      const fresh = saved.filter(t => (t.createdAt || 0) >= cutoff);
+      if (fresh.length > 0) setTurns(fresh);
+      if (fresh.length !== saved.length) {
+        localStorage.setItem('aiforge.chat.history', JSON.stringify(fresh));
       }
     } catch { /* ignore */ }
   }, []);
   useEffect(() => {
     try {
-      // keep only last 60 turns to avoid unbounded growth
+      // Keep last 60 turns and stamp the save so the TTL trim on
+      // reload has a stable clock to reason about.
       const toSave = turns.slice(-60);
       localStorage.setItem('aiforge.chat.history', JSON.stringify(toSave));
+      localStorage.setItem('aiforge.chat.saved_at', String(Date.now()));
     } catch { /* ignore */ }
   }, [turns]);
 
@@ -62,13 +65,9 @@ export default function Chat() {
   }, [turns, busy]);
 
   function resetChat() {
-    setTurns([{
-      id: uid(),
-      role: 'system',
-      text: 'Cleared. Ask away.',
-      createdAt: Date.now(),
-    }]);
+    setTurns([]);
     setDrawerTurn(null);
+    try { localStorage.removeItem('aiforge.chat.history'); } catch { /* ignore */ }
   }
 
   async function send() {

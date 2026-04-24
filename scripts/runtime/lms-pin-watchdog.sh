@@ -16,20 +16,31 @@
 
 set -u
 PATH="$HOME/.lmstudio/bin:$PATH"
-TARGET_CTX=524288
+# Pin the active local LLM. As of 2026-04-24 we consolidated from
+# (qwen3.6-27b + qwen3.6-35b-a3b @ 512K each) down to a single
+# gpt-oss-120b @ 128K that handles every role (planner/doer/feedback/
+# learner/chat). OpenAI's gpt-oss supports up to 128K native context.
+TARGET_CTX=131072
 TARGET_TTL=43200
-MODELS=(qwen3.6-27b qwen3.6-35b-a3b)
+MODELS=(gpt-oss-120b)
 INTERVAL=60
 
 log() { printf '%s lms-pin: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 
 ensure_pinned() {
   local name=$1
+  # gpt-oss-120b lives under openai/gpt-oss-120b in the LM Studio
+  # registry but runs with bare identifier gpt-oss-120b. Resolve the
+  # right spec for `lms load`.
+  local load_spec="$name"
+  case "$name" in
+    gpt-oss-120b) load_spec="openai/gpt-oss-120b" ;;
+  esac
   local row ctx
   row=$(lms ps 2>/dev/null | awk -v n="$name" '$1 == n { print $0 }')
   if [ -z "$row" ]; then
     log "$name not loaded — loading at $TARGET_CTX"
-    lms load "$name" --context-length "$TARGET_CTX" --ttl "$TARGET_TTL" \
+    lms load "$load_spec" --context-length "$TARGET_CTX" --ttl "$TARGET_TTL" \
       --identifier "$name" >/dev/null 2>&1 &
     return
   fi
@@ -42,7 +53,7 @@ ensure_pinned() {
     log "$name ctx=$ctx != $TARGET_CTX — re-pinning"
     lms unload "$name" >/dev/null 2>&1 || true
     sleep 2
-    lms load "$name" --context-length "$TARGET_CTX" --ttl "$TARGET_TTL" \
+    lms load "$load_spec" --context-length "$TARGET_CTX" --ttl "$TARGET_TTL" \
       --identifier "$name" >/dev/null 2>&1 &
   fi
 }

@@ -156,9 +156,6 @@ function Sidebar() {
           })}
         </div>
       ))}
-      <div className="sidebar-footer">
-        <span>agent ops v0.2</span>
-      </div>
     </aside>
   );
 }

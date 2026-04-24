@@ -1,48 +1,48 @@
 /* =========================================================================
-   AIForge design system — dark agent-ops console.
+   AIForge design system — light agent-ops console.
    Tokens first; everything downstream references --token-*.
    ========================================================================= */
 
 :root {
-  /* Surfaces */
-  --bg-0: #0a0d12;           /* page background, deepest */
-  --bg-1: #0f141b;           /* app shell */
-  --bg-2: #141a23;           /* card surface */
-  --bg-3: #1a212c;           /* elevated / hover */
-  --bg-4: #222a37;           /* active / selected */
-  --bg-code: #0b0f15;        /* code blocks */
+  /* Surfaces (light) */
+  --bg-0: #f4f6f9;           /* page background, deepest */
+  --bg-1: #ffffff;           /* app shell */
+  --bg-2: #ffffff;           /* card surface */
+  --bg-3: #f3f5f8;           /* elevated / hover */
+  --bg-4: #e8edf3;           /* active / selected */
+  --bg-code: #f6f8fa;        /* code blocks */
 
-  /* Ink */
-  --fg-0: #e6edf3;           /* primary text */
-  --fg-1: #b8c2cf;           /* body */
-  --fg-2: #8892a0;           /* muted */
-  --fg-3: #5a6472;           /* disabled */
+  /* Ink (dark on light) */
+  --fg-0: #1d2332;           /* primary text */
+  --fg-1: #3a4252;           /* body */
+  --fg-2: #5f6878;           /* muted */
+  --fg-3: #98a1b3;           /* disabled */
 
-  /* Borders */
-  --border-0: #1e2632;
-  --border-1: #2a3343;
-  --border-2: #3a4455;
+  /* Borders (gently visible on white) */
+  --border-0: #eceff4;
+  --border-1: #d9dee6;
+  --border-2: #c2c9d4;
 
   /* Accents — single hue family + semantic */
-  --accent: #6aa6ff;
-  --accent-strong: #4d90ff;
-  --accent-soft: rgba(106,166,255,.12);
-  --accent-ring: rgba(106,166,255,.35);
+  --accent: #1f6feb;
+  --accent-strong: #0d5de0;
+  --accent-soft: rgba(31,111,235,.10);
+  --accent-ring: rgba(31,111,235,.30);
 
-  --ok: #3fb950;
-  --ok-soft: rgba(63,185,80,.14);
-  --warn: #e3b341;
-  --warn-soft: rgba(227,179,65,.14);
-  --err: #f85149;
-  --err-soft: rgba(248,81,73,.14);
-  --info: #6aa6ff;
-  --info-soft: rgba(106,166,255,.14);
+  --ok: #198754;
+  --ok-soft: rgba(25,135,84,.12);
+  --warn: #c7851a;
+  --warn-soft: rgba(199,133,26,.14);
+  --err: #d1242f;
+  --err-soft: rgba(209,36,47,.10);
+  --info: #1f6feb;
+  --info-soft: rgba(31,111,235,.10);
 
   /* Priority */
-  --prio-urgent: #ff6b6b;
-  --prio-high:   #f0883e;
-  --prio-medium: #6aa6ff;
-  --prio-low:    #8892a0;
+  --prio-urgent: #d1242f;
+  --prio-high:   #c7851a;
+  --prio-medium: #1f6feb;
+  --prio-low:    #6e7684;
 
   /* Radius */
   --r-sm: 4px;
@@ -77,9 +77,9 @@
   --lh-body: 1.5;
 
   /* Shadow */
-  --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
-  --shadow-md: 0 4px 12px rgba(0,0,0,.5);
-  --shadow-lg: 0 10px 30px rgba(0,0,0,.6);
+  --shadow-sm: 0 1px 2px rgba(31,40,64,.06);
+  --shadow-md: 0 4px 12px rgba(31,40,64,.08);
+  --shadow-lg: 0 10px 30px rgba(31,40,64,.12);
 
   /* Layout */
   --sidebar-w: 228px;
@@ -91,7 +91,7 @@
   --dur-fast: 120ms;
   --dur: 200ms;
 
-  color-scheme: dark;
+  color-scheme: light;
   font-family: var(--font-sans);
   font-size: var(--fs-base);
   line-height: var(--lh-body);
@@ -169,11 +169,11 @@ img, svg { display: block; max-width: 100%; }
   border-radius: var(--r-md);
   background: linear-gradient(135deg, var(--accent) 0%, #8b5cf6 100%);
   display: grid; place-items: center;
-  color: var(--bg-0);
+  color: #ffffff;
   font-weight: 800;
   font-size: var(--fs-sm);
   flex-shrink: 0;
-  box-shadow: 0 2px 8px rgba(106,166,255,.4);
+  box-shadow: 0 2px 8px rgba(31,111,235,.25);
 }
 .sidebar .brand-text { white-space: nowrap; overflow: hidden; }
 .shell.collapsed .sidebar .brand-text,
