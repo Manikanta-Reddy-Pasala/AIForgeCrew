@@ -1,6 +1,12 @@
 [Unit]
 Description=AIForge memory repo pull + incremental graph reindex
 After=network-online.target
+# Guard: only fire when the memory repo actually exists. Without this
+# the oneshot unit fails every 5 min on hosts where the memory repo
+# was never provisioned (observed on NUC 2026-04-24 after reboot —
+# /srv/memory-repo absent, service spammed "Changing to requested
+# working directory failed").
+ConditionPathExists=/srv/memory-repo/.git
 
 [Service]
 Type=oneshot
