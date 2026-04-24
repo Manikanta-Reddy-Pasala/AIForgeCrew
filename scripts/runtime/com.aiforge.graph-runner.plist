@@ -38,7 +38,7 @@
     <key>AIFORGE_DOER_MODEL</key>
     <string>gpt-oss-120b</string>
     <key>AIFORGE_DOER_BACKEND</key>
-    <string>code</string>
+    <string>toolcalling</string>
     <key>AIFORGE_FEEDBACK_MODEL</key>
     <string>gpt-oss-120b</string>
     <key>AIFORGE_LEARNER_MODEL</key>
