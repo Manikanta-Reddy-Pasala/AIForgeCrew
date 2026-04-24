@@ -66,17 +66,30 @@ def _git_diff(worktree_path: str | None) -> str:
             if "/" in ref:
                 base_ref = "origin/" + ref.rsplit("/", 1)[1]
 
+        # Build-artifact pathspecs to exclude — Maven's flatten plugin
+        # writes .flattened-pom.xml during `mvn compile`, Spring writes
+        # target/, Python writes __pycache__/ + *.pyc, etc. These land in
+        # the diff even though the Doer never touched them, producing
+        # spurious scope_violation verdicts.
+        exclude_pathspecs = [
+            ":(exclude).flattened-pom.xml",
+            ":(exclude,glob)**/.flattened-pom.xml",
+            ":(exclude,glob)**/target/**",
+            ":(exclude,glob)**/__pycache__/**",
+            ":(exclude,glob)**/*.pyc",
+            ":(exclude,glob).aiforge-worktrees/**",
+        ]
         # Committed changes ahead of base + uncommitted tree.
         diffs: list[str] = []
         proc1 = subprocess.run(
-            ["git", "diff", f"{base_ref}...HEAD"],
+            ["git", "diff", f"{base_ref}...HEAD", "--", *exclude_pathspecs],
             cwd=worktree_path, capture_output=True, text=True,
             timeout=30, check=False,
         )
         if proc1.stdout:
             diffs.append(proc1.stdout)
         proc2 = subprocess.run(
-            ["git", "diff", "HEAD"],
+            ["git", "diff", "HEAD", "--", *exclude_pathspecs],
             cwd=worktree_path, capture_output=True, text=True,
             timeout=30, check=False,
         )
