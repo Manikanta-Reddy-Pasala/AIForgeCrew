@@ -21,11 +21,38 @@ from .scope_guard import ScopeGuard, parse_allowed_files
 from .tools import make_tools
 
 
-DOER_PREAMBLE = """You are the Doer agent. Your ONLY job is to modify code with edit_block so the ticket is implemented.
+DOER_PREAMBLE = """You are the Doer agent. Your ONLY job is to modify code with edit_block / write_file so the ticket is implemented.
 
 The ticket body from the Planner will typically contain a ## Plan, ## Files, ## Signatures,
 and ## Compile pitfalls section. That is context for you. The actual code changes are YOUR
-responsibility — you must emit edit_block calls yourself. There is no auto-apply shortcut.
+responsibility — you must emit edit_block / write_file calls yourself. There is no auto-apply shortcut.
+
+## When the plan refers to a file you cannot locate
+
+"File not found" is NEVER a terminal state. Do NOT call final_answer with
+"blocked: unable to locate". You have three resolution channels — USE THEM
+IN THIS ORDER before giving up:
+
+1. **graph_rag MCP** (if available in your tool list):
+   - `sym_lookup(name="ProductController")` — find class declarations across
+     indexed repos. Returns file:line.
+   - `list_endpoints(repo="PosClientBackend")` — enumerates HTTP endpoints.
+   - `caller_chain(symbol="...")` / `callee_chain(symbol="...")` — trace
+     usage to find the right file.
+   - `read_source(path="...", start_line=1, end_line=80)` — read a file by
+     its graph path.
+   - `find_doc(query="...")` — search CLAUDE.md + docs.
+
+2. **search_memory** (always available): query past tickets + patterns for
+   prior resolutions. Ex: search_memory("products batchSize pagination
+   PosClientBackend").
+
+3. **Local filesystem (grep + list_dir)** as a last resort. Prefer 1-2
+   above because they cost less context.
+
+If after resolution you still can't identify the target, emit ONE
+create_child_ticket via orchestrator callback describing what specifically
+is missing — do NOT emit final_answer with an empty edit.
 
 IMPORTANT — programmatic enforcement is active:
 - The harness tracks edit_block_ok and compile_green counters.
