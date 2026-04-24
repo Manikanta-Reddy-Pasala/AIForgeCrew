@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -474,6 +475,278 @@ def stream_role_log(role: str):
             return
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ─────────────────────────── Chat ask (LLM synthesis) ───────────────────
+#
+# /api/chat/ask is the "smart" chat endpoint: gather from all memory
+# tiers + targeted MCP calls + have the LLM synthesize an answer,
+# instead of dumping raw hits to the UI. The client sees one natural-
+# language answer plus the tools/hits that sourced it.
+
+
+_CHAT_SYSTEM = """You are the AIForge chat agent. The operator asks
+questions about our OneShell codebase / past tickets / decisions. You
+answer ONLY from the supplied ``## Context`` block — do NOT invent
+file paths, symbols, versions, or commit shas the context doesn't
+mention.
+
+Output shape:
+- 1-2 line direct answer up top.
+- Then a short bullet list of the specific context rows you used
+  (cite by [tier] and wing or ticket identifier).
+- If the context is too thin to answer, say so in one line and
+  suggest which MCP tool the operator should run (sym_lookup,
+  cross_repo_flow, ticket_brief, etc.). No apology, no filler.
+"""
+
+
+class _ChatAskBody(BaseModel):
+    query: str = Field(..., description="The operator's free-text question")
+    top_k: int = Field(12, description="Memory hits per role")
+    role: str = Field("planner", description="Retrieval policy role")
+
+
+_TICKET_RE = re.compile(r"\b(ONE-\d+)\b", re.I)
+_CLASS_RE = re.compile(r"\b([A-Z][A-Za-z0-9]{3,})\b")
+_REPO_RE = re.compile(r"\b(Pos[A-Z][A-Za-z]+|oneshell-[a-z-]+|MongoDbService|"
+                      r"GatewayService|BusinessService|TallyConnector|"
+                      r"EmailService|NotificationService|Gst[A-Z][A-Za-z]*|"
+                      r"VendorIntegrationService|WhatsappApiService|"
+                      r"Scheduler|QuartzScheduler|StoreIntelligence)\b")
+
+
+def _call_mcp_sync(tool: str, args: dict, timeout: int = 15) -> dict | None:
+    """Synchronous one-shot MCP invocation from inside a sync handler."""
+    if tool not in _MCP_ALLOWED_TOOLS:
+        return None
+    import subprocess
+    cmd = [os.environ.get(
+        "AIFORGE_MCP_BIN",
+        "/home/mani/AIForgeCrew/.venv/bin/aiforge-graph-mcp",
+    )]
+    payload = "\n".join(json.dumps(m) for m in [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "clientInfo": {"name": "aiforge-ui", "version": "0.1"}}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": tool, "arguments": args}},
+    ]) + "\n"
+    try:
+        proc = subprocess.run(
+            cmd, input=payload.encode(), capture_output=True,
+            timeout=timeout, check=False,
+        )
+    except Exception:
+        return None
+    for line in (proc.stdout or b"").splitlines():
+        try:
+            msg = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(msg, dict) and msg.get("id") == 2:
+            if "error" in msg:
+                return None
+            return msg.get("result") or {}
+    return None
+
+
+_NORMALIZE_SYSTEM = """You are a query normalizer. The user will send one
+short question that may contain typos, bad grammar, or missing articles.
+Rewrite it as ONE clean English line that preserves intent, expands
+obvious acronyms (pos → pos client backend, wg → wireguard), and fixes
+typos. Do NOT answer the question. Do NOT add anything beyond the
+rewritten query. Max 200 chars."""
+
+
+def _normalize_query(query: str) -> str:
+    """Tiny LLM pass that cleans typos + grammar so retrieval (BM25 and
+    vector) actually hits. Falls back to the raw query on any failure.
+
+    Skipped for queries already clean-ish (length < 12 chars, OR only
+    one word) to avoid burning a call on trivial inputs.
+    """
+    q = query.strip()
+    if len(q) < 12 or " " not in q:
+        return q
+    import urllib.request
+    try:
+        payload = json.dumps({
+            "model": os.environ.get(
+                "AIFORGE_CHAT_NORMALIZE_MODEL",
+                os.environ.get("AIFORGE_PLANNER_MODEL", "qwen3.6-27b"),
+            ),
+            "messages": [
+                {"role": "system", "content": _NORMALIZE_SYSTEM},
+                {"role": "user", "content": q[:600]},
+            ],
+            "max_tokens": 128,
+            "temperature": 0.0,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }).encode()
+        req = urllib.request.Request(
+            f"{LM_STUDIO_BASE_URL}/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {_cfg.LM_STUDIO_API_KEY}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+        content = ((body.get("choices") or [{}])[0]
+                   .get("message", {}).get("content") or "").strip()
+        if not content:
+            return q
+        # Strip any stray quoting / leading labels from the model.
+        content = content.strip('"\' ')
+        for prefix in ("normalized:", "query:", "rewritten:"):
+            if content.lower().startswith(prefix):
+                content = content[len(prefix):].strip()
+        return content[:300] or q
+    except Exception:
+        return q
+
+
+def _collect_chat_context(query: str, role: str, top_k: int) -> dict:
+    """Gather memory hits + targeted MCP calls based on what the query mentions."""
+    from .memory import Memory
+    mem = Memory()
+    hits = mem.search(query, role=role, top_k=top_k)
+
+    mcp_results: list[dict] = []
+
+    # If the query mentions a ticket (ONE-xx), pull its brief.
+    for m in _TICKET_RE.finditer(query):
+        r = _call_mcp_sync("ticket_brief", {"identifier": m.group(1)})
+        if r:
+            mcp_results.append({"tool": "ticket_brief",
+                                "args": {"identifier": m.group(1)},
+                                "result": _extract_text(r)})
+            break  # one ticket brief is enough
+
+    # If it looks like a class / symbol name (CamelCase word), try sym_lookup.
+    syms: set[str] = set()
+    for m in _CLASS_RE.finditer(query):
+        syms.add(m.group(1))
+    for s in list(syms)[:2]:  # cap at 2 to keep context small
+        r = _call_mcp_sync("sym_lookup", {"name": s})
+        if r:
+            mcp_results.append({"tool": "sym_lookup",
+                                "args": {"name": s},
+                                "result": _extract_text(r)})
+
+    # If a known repo name appears, fetch its brief metadata via list_repos
+    # (cheap — one call covers all, filter in LLM).
+    if _REPO_RE.search(query) and not mcp_results:
+        r = _call_mcp_sync("list_repos", {})
+        if r:
+            mcp_results.append({"tool": "list_repos",
+                                "args": {},
+                                "result": _extract_text(r)[:4000]})
+
+    # Always pull related_memories — captures non-obvious overlaps.
+    r = _call_mcp_sync("related_memories", {"query": query, "top_k": 6})
+    if r:
+        mcp_results.append({"tool": "related_memories",
+                            "args": {"query": query, "top_k": 6},
+                            "result": _extract_text(r)[:2000]})
+
+    return {"hits": hits, "mcp": mcp_results}
+
+
+def _extract_text(mcp_result: dict) -> str:
+    """Pull the ``content[0].text`` field from a standard MCP tool response."""
+    try:
+        return mcp_result["content"][0]["text"]
+    except Exception:
+        return json.dumps(mcp_result)[:4000]
+
+
+def _build_chat_prompt(query: str, ctx: dict) -> str:
+    lines = ["## Context\n", "### Memory hits\n"]
+    for h in ctx["hits"][:16]:
+        # h may be SearchResult dataclass or dict
+        tier = getattr(h, "tier", None) or (h.get("tier") if isinstance(h, dict) else "?")
+        wing = getattr(h, "wing", None) or (h.get("wing") if isinstance(h, dict) else "?")
+        text = getattr(h, "text", None) or (h.get("text") if isinstance(h, dict) else "")
+        lines.append(f"- [{tier} {wing}] {text[:260]}")
+    if ctx["mcp"]:
+        lines.append("\n### MCP tool output\n")
+        for m in ctx["mcp"]:
+            lines.append(f"- tool={m['tool']} args={m['args']}:")
+            for row in m["result"].splitlines()[:40]:
+                lines.append("    " + row[:200])
+    lines.append(f"\n## Question\n{query}")
+    return "\n".join(lines)
+
+
+def _call_llm_chat(prompt: str) -> str:
+    """One-shot LLM call against LM Studio for chat synthesis."""
+    import urllib.request
+    payload = json.dumps({
+        "model": os.environ.get(
+            "AIFORGE_CHAT_MODEL",
+            os.environ.get("AIFORGE_PLANNER_MODEL", "qwen3.6-27b"),
+        ),
+        "messages": [
+            {"role": "system", "content": _CHAT_SYSTEM},
+            {"role": "user", "content": prompt[:30_000]},
+        ],
+        "max_tokens": 2048,
+        "temperature": 0.1,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }).encode()
+    req = urllib.request.Request(
+        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {_cfg.LM_STUDIO_API_KEY}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        body = json.loads(resp.read())
+    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
+    content = (msg.get("content") or "").strip()
+    if content:
+        return content
+    return (msg.get("reasoning_content") or "").strip() or "(empty reply)"
+
+
+@app.post("/api/chat/ask")
+def chat_ask(body: _ChatAskBody) -> dict:
+    """LLM-synthesized answer grounded in Neo4j memory + MCP tool calls.
+
+    Pre-pass: normalize the query (typos + grammar) so BM25 + vector
+    retrieval actually hit, then collect context, then synthesize an
+    answer. Both the raw and normalized query are returned so the UI
+    can show the interpreted form.
+    """
+    normalized = _normalize_query(body.query)
+    ctx = _collect_chat_context(normalized, body.role, body.top_k)
+    prompt = _build_chat_prompt(normalized, ctx)
+    try:
+        answer = _call_llm_chat(prompt)
+    except Exception as exc:
+        raise HTTPException(502, f"LLM call failed: {exc}")
+    return {
+        "query": body.query,
+        "normalized": normalized if normalized != body.query else None,
+        "answer": answer,
+        "tiers_used": sorted({getattr(h, "tier", None) or
+                              (h.get("tier") if isinstance(h, dict) else "?")
+                              for h in ctx["hits"]}),
+        "hits": [
+            {"tier": getattr(h, "tier", None) or (h.get("tier") if isinstance(h, dict) else "?"),
+             "wing": getattr(h, "wing", None) or (h.get("wing") if isinstance(h, dict) else "?"),
+             "text": (getattr(h, "text", None) or (h.get("text") if isinstance(h, dict) else ""))[:200]}
+            for h in ctx["hits"][:10]
+        ],
+        "tools_called": [
+            {"tool": m["tool"], "args": m["args"]} for m in ctx["mcp"]
+        ],
+    }
 
 
 # ─────────────────────────── Chat flow retention ────────────────────────

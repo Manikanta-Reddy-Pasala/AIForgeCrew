@@ -45,6 +45,11 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(p),
   }),
+  chatAsk: (query: string, topK = 12) => j<any>('/chat/ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, top_k: topK, role: 'planner' }),
+  }),
 };
 
 export function logStreamURL(role: string): string {

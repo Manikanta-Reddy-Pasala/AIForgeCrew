@@ -36,22 +36,27 @@ export default function Chat() {
     setTurns(t => [...t, { role: 'user', text: q }]);
     setBusy(true);
     try {
-      const [hits, mcp] = await Promise.all([
-        api.memorySearch(q, 'planner', 12),
-        api.mcpTool('related_memories', { query: q, top_k: 6 }).catch(() => null),
-      ]);
-      const mcpText = mcp?.result?.content?.[0]?.text || '';
-      const mcpHits = mcpText ? safeJson(mcpText) : null;
-      const summary = buildSummary(q, hits, mcpHits);
+      // /api/chat/ask builds the context bundle (memory hits across
+      // all tiers + targeted MCP tool calls) and runs the LLM against
+      // it, returning a synthesized answer. UI renders the answer as
+      // the primary response; hits + tools are folded into details.
+      const res = await api.chatAsk(q, 16);
+      const toolsSummary = (res.tools_called || []).map((t: any) => t.tool).join(', ')
+        || 'none';
+      const metaBits = [
+        `tiers: ${(res.tiers_used || []).join(',') || '—'}`,
+        `tools: ${toolsSummary}`,
+      ];
+      if (res.normalized) metaBits.unshift(`understood as: "${res.normalized}"`);
       setTurns(t => [
         ...t,
         {
           role: 'system',
-          text: `${hits.length} memory hits + ${mcpHits ? 'MCP related' : 'no-MCP'}.`,
-          queryRef: q,
-          hits,
-          meta: mcpHits ? JSON.stringify(mcpHits).slice(0, 1200) : '',
-          summary,
+          text: res.answer || '(no answer)',
+          queryRef: res.normalized || q,
+          hits: res.hits || [],
+          meta: metaBits.join(' · '),
+          summary: (res.answer || '').split('\n').slice(0, 2).join(' ').slice(0, 300),
           saved: null,
         },
       ]);
@@ -122,13 +127,9 @@ export default function Chat() {
             )}
 
             {t.meta && (
-              <details>
-                <summary className="muted small">MCP related_memories</summary>
-                <pre className="small" style={{
-                  background: '#1a1a1a', padding: '.5rem',
-                  overflow: 'auto', maxHeight: '200px',
-                }}>{t.meta}</pre>
-              </details>
+              <div className="small muted" style={{ marginTop: '.3rem' }}>
+                {t.meta}
+              </div>
             )}
 
             {t.queryRef && t.saved == null && (
