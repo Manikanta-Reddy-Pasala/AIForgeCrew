@@ -459,4 +459,13 @@ def make_tools(worktree_path: str, scope_guard: ScopeGuard,
         tools.extend(graph_rag_tools())
     except Exception:
         pass
+    # Opt-in web search — AIFORGE_WEB_SEARCH_ENABLED=1. Gives Doer a
+    # fallback when the ticket references an external library/API spec
+    # not found locally. Off by default (cost + distraction risk).
+    if os.environ.get("AIFORGE_WEB_SEARCH_ENABLED", "0") == "1":
+        try:
+            from smolagents import DuckDuckGoSearchTool, VisitWebpageTool
+            tools.extend([DuckDuckGoSearchTool(), VisitWebpageTool()])
+        except Exception:
+            pass
     return tools

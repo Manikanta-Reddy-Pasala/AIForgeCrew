@@ -461,4 +461,14 @@ def make_tools(ctx: dict) -> list:
         tools.extend(graph_rag_tools())
     except Exception:
         pass
+    # Opt-in web search (AIFORGE_WEB_SEARCH_ENABLED=1). Useful when the
+    # ticket references an external library / RFC / vendor API spec that
+    # is NOT in the repo or memory. Off by default so routine repo tickets
+    # don't burn tokens on unrelated web queries.
+    if os.environ.get("AIFORGE_WEB_SEARCH_ENABLED", "0") == "1":
+        try:
+            from smolagents import DuckDuckGoSearchTool, VisitWebpageTool
+            tools.extend([DuckDuckGoSearchTool(), VisitWebpageTool()])
+        except Exception:
+            pass
     return tools
