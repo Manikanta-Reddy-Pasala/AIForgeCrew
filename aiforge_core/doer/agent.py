@@ -1,7 +1,21 @@
-"""Factory for the smolagents ToolCallingAgent used by the Doer role."""
+"""Factory for the smolagents agent used by the Doer role.
+
+Backend is selected by ``AIFORGE_DOER_BACKEND``:
+
+- ``code`` (default, recommended) → CodeAgent. Matches the Planner's
+  backend. Qwen3.6 emits tool calls as Python code which CodeAgent
+  executes natively. This was the real fix for ONE-45 — the model kept
+  writing ``edit_block(path=..., find=...)`` as a literal string inside
+  final_answer because ToolCallingAgent expects structured JSON tool
+  calls, not Python syntax.
+- ``toolcalling`` → ToolCallingAgent. Works for models that natively
+  emit function-calling JSON (GPT-4, Claude). Kept as fallback.
+"""
 from __future__ import annotations
 
-from smolagents import LiteLLMModel, ToolCallingAgent
+import os
+
+from smolagents import CodeAgent, LiteLLMModel, MultiStepAgent, ToolCallingAgent
 
 from .scope_guard import ScopeGuard, parse_allowed_files
 from .tools import make_tools
@@ -85,6 +99,17 @@ def build_task_prompt(
     )
 
 
+def _agent_class(backend: str) -> type[MultiStepAgent]:
+    """Pick the smolagents agent class for the given backend flag."""
+    if backend == "toolcalling":
+        return ToolCallingAgent
+    if backend == "code":
+        return CodeAgent
+    raise ValueError(
+        f"AIFORGE_DOER_BACKEND={backend!r}; expected 'code' or 'toolcalling'"
+    )
+
+
 def build_doer_agent(
     ticket: object,
     worktree_path: str,
@@ -93,8 +118,10 @@ def build_doer_agent(
     counters: dict | None = None,
     prior_verdict: str | None = None,
     prior_fixlist: str | None = None,
-) -> tuple[ToolCallingAgent, str]:
-    """Build a :class:`~smolagents.ToolCallingAgent` for one Doer tick.
+) -> tuple[MultiStepAgent, str]:
+    """Build a smolagents MultiStepAgent (Code or ToolCalling) for one Doer tick.
+
+    Backend is selected via ``AIFORGE_DOER_BACKEND`` (default: ``code``).
 
     If *counters* is provided, edit_block and run_compile will bump it so
     the caller can verify real work happened before accepting final_answer.
@@ -129,14 +156,16 @@ def build_doer_agent(
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     })
 
-    # smolagents ToolCallingAgent 1.24 has no `system_prompt` kwarg; full
-    # context is delivered via the task string passed to .run().
+    backend = os.environ.get("AIFORGE_DOER_BACKEND", "code").lower()
+    AgentCls = _agent_class(backend)
+
+    # smolagents agents 1.24 have no `system_prompt` kwarg; full context is
+    # delivered via the task string passed to .run().
     import inspect as _inspect
-    _params = set(_inspect.signature(ToolCallingAgent.__init__).parameters)
-    # max_steps 12: tight enough to avoid qwen3-coder-next's tool-call grammar
-    # drift on long multi-turn runs (ONE-16 tick 2: agent emitted raw
-    # <tool_call> text as prose at step ~14). Enough room to do 3 edits +
-    # 3 compile attempts + final_answer.
+    _params = set(_inspect.signature(AgentCls.__init__).parameters)
+    # max_steps 12: tight enough to avoid tool-call grammar drift on long
+    # multi-turn runs; enough room to do 3 edits + 3 compile attempts +
+    # final_answer.
     _kwargs: dict = {
         "tools": tools,
         "model": model,
@@ -145,10 +174,17 @@ def build_doer_agent(
     if "num_retries" in _params:
         _kwargs["num_retries"] = 2
     # planning_interval forces the agent to pause and replan every N steps,
-    # which helps qwen-coder avoid the read→compile→final_answer shortcut.
+    # which helps Qwen avoid the read→compile→final_answer shortcut.
     if "planning_interval" in _params:
         _kwargs["planning_interval"] = 4
-    agent = ToolCallingAgent(**_kwargs)
+    # CodeAgent-specific: restrict Python imports so the model can't sidestep
+    # the scope_guard by calling open() / subprocess directly. Our @tool
+    # functions already cover every FS op it should need.
+    if AgentCls is CodeAgent and "additional_authorized_imports" in _params:
+        _kwargs["additional_authorized_imports"] = [
+            "pathlib", "re", "json", "textwrap",
+        ]
+    agent = AgentCls(**_kwargs)
     task_prompt = build_task_prompt(
         ticket, context_bundle, allowed,
         prior_verdict=prior_verdict, prior_fixlist=prior_fixlist,
