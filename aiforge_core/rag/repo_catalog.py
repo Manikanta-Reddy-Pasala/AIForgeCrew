@@ -56,12 +56,51 @@ class RepoFacts:
 
 # ─────────────── detectors ───────────────
 
-_JAVA_VERSION_RX = re.compile(r"<java\.version>\s*([^<]+?)\s*</java\.version>")
-_SPRING_BOOT_RX = re.compile(
+_JAVA_VERSION_RX = re.compile(
+    r"<(?:java\.version|maven\.compiler\.(?:source|target|release))>\s*"
+    r"([^<]+?)\s*</"
+)
+_SPRING_BOOT_PARENT_RX = re.compile(
     r"<artifactId>\s*spring-boot-starter-parent\s*</artifactId>\s*"
     r"<version>\s*([^<]+?)\s*</version>",
     re.S,
 )
+# spring-boot-dependencies BOM in dependencyManagement — catches projects
+# that use a multi-module parent but still import the BOM directly.
+_SPRING_BOOT_BOM_RX = re.compile(
+    r"<artifactId>\s*spring-boot-dependencies\s*</artifactId>\s*"
+    r"<version>\s*([^<]+?)\s*</version>",
+    re.S,
+)
+# Any spring-boot-starter-* dep proves Spring Boot is in play even when
+# the version is inherited from a multi-module parent and thus absent
+# from this pom.xml.
+_SPRING_BOOT_STARTER_RX = re.compile(
+    r"<artifactId>\s*spring-boot-starter[-\w]*\s*</artifactId>"
+)
+_WEBFLUX_RX = re.compile(r"spring-boot-starter-webflux")
+_SPRING_BOOT_MAIN_RX = re.compile(
+    r"@SpringBootApplication\b|SpringApplication\.run\("
+)
+
+
+def _find_spring_boot_main(repo: Path) -> bool:
+    """Scan src/main for a @SpringBootApplication class."""
+    src = repo / "src" / "main" / "java"
+    if not src.is_dir():
+        return False
+    # Bounded walk: at most 200 files, 60KB each — cheap grep.
+    count = 0
+    for p in src.rglob("*.java"):
+        count += 1
+        if count > 200:
+            break
+        try:
+            if _SPRING_BOOT_MAIN_RX.search(p.read_text(errors="ignore")[:60_000]):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _detect_java(repo: Path) -> tuple[list[str], str, str]:
@@ -69,20 +108,39 @@ def _detect_java(repo: Path) -> tuple[list[str], str, str]:
     if not pom.exists():
         return [], "", ""
     try:
-        xml = pom.read_text(errors="ignore")[:20_000]
+        xml = pom.read_text(errors="ignore")[:40_000]
     except Exception:
         return [], "", ""
     stack = ["Java"]
     jm = _JAVA_VERSION_RX.search(xml)
     if jm:
         stack[0] = f"Java {jm.group(1)}"
-    sm = _SPRING_BOOT_RX.search(xml)
-    if sm:
-        stack.append(f"Spring Boot {sm.group(1)}")
+
+    # Spring Boot version resolution — check (in order): starter-parent,
+    # dependencies BOM, then fall back to "starter-* present" detection.
+    sm = _SPRING_BOOT_PARENT_RX.search(xml) or _SPRING_BOOT_BOM_RX.search(xml)
+    sb_version = sm.group(1) if sm else ""
+    has_starter = bool(_SPRING_BOOT_STARTER_RX.search(xml))
+    if sb_version:
+        label = "Spring Boot " + sb_version
+        if _WEBFLUX_RX.search(xml):
+            label += " WebFlux"
+        stack.append(label)
+    elif has_starter:
+        # Version inherited from a multi-module parent we cannot see; still
+        # label the service so Planner/Doer know it's a Spring Boot app.
+        label = "Spring Boot"
+        if _WEBFLUX_RX.search(xml):
+            label += " WebFlux"
+        stack.append(label)
     stack.append("Maven")
+
     compile_cmd = "mvn -q -DskipTests compile"
-    # spring-boot vs library heuristic: packaging=pom OR no spring-boot parent
-    is_lib = ("<packaging>pom</packaging>" in xml or not sm)
+    # Library vs application: <packaging>pom</packaging> AND no
+    # @SpringBootApplication means pure multi-module parent or lib.
+    packaging_pom = "<packaging>pom</packaging>" in xml
+    is_app = bool(has_starter or sb_version) or _find_spring_boot_main(repo)
+    is_lib = packaging_pom or not is_app
     entry_cmd = (
         "./mvnw clean install -DskipTests" if is_lib
         else "./mvnw spring-boot:run"
