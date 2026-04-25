@@ -52,24 +52,15 @@ from aiforge_core.runtime import tickets as tickets_mod
 from aiforge_core.runtime.logging_setup import emit
 
 from .scope_guard import ScopeGuard, ScopeViolation, parse_allowed_files
+from .ga_compat import (
+    GA_COMPAT_VERSION, ParentShim, ga_dir, ga_sha,
+    import_ga, load_tools_schema,
+)
 
 
-# ─── GenericAgent path resolution ──────────────────────────────────────
-# GA lives at /home/mani/genericagent on the NUC and
-# /Users/manikanta/genericagent on the Mac Studio. The deployment env
-# overrides via AIFORGE_GA_DIR.
 def _ga_dir() -> str:
-    p = os.environ.get("AIFORGE_GA_DIR", "")
-    if p and os.path.isdir(p):
-        return p
-    for cand in ("/home/mani/genericagent",
-                 "/Users/manikanta/genericagent",
-                 os.path.expanduser("~/genericagent")):
-        if os.path.isdir(cand):
-            return cand
-    raise RuntimeError(
-        "GenericAgent dir not found; set AIFORGE_GA_DIR to override"
-    )
+    """Backwards-compat wrapper. Use ga_compat.ga_dir() in new code."""
+    return ga_dir()
 
 
 # Tools the Doer is forbidden from calling per agents.yaml. Filtered out
@@ -79,6 +70,13 @@ _FORBIDDEN_GA_TOOLS = {
     "start_long_term_update",
     "web_scan",
     "web_execute_js",
+    # update_working_checkpoint is handy on long sessions but adds ~900
+    # chars of tool description to every turn. Drop for the doer — its
+    # work is short-horizon (read → patch → compile → done). Re-enable
+    # via AIFORGE_DOER_KEEP_CHECKPOINT=1 if a long-running fixture needs
+    # the scratchpad.
+    *(set() if os.environ.get("AIFORGE_DOER_KEEP_CHECKPOINT") == "1"
+      else {"update_working_checkpoint"}),
 }
 
 
@@ -143,20 +141,16 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
     )
 
 
-class _ParentShim:
-    """Thin object that satisfies GenericAgentHandler's ``self.parent`` deps."""
-
-    def __init__(self, task_dir: str) -> None:
-        self.task_dir = task_dir
-        self.verbose = False
-        self._turn_end_hooks: dict = {}
+# _ParentShim retained as alias for backwards-compat with any external
+# caller; new code should import ParentShim from ga_compat directly.
+_ParentShim = ParentShim
 
 
 def _make_handler_class():
     """Lazy-import GA at call time so module import doesn't require GA on path."""
-    sys.path.insert(0, _ga_dir())
-    from agent_loop import StepOutcome  # type: ignore
-    from ga import GenericAgentHandler  # type: ignore
+    ga = import_ga()
+    StepOutcome = ga["StepOutcome"]
+    GenericAgentHandler = ga["GenericAgentHandler"]
 
     class AiForgeDoerHandler(GenericAgentHandler):  # type: ignore[misc]
         """Subclass that wires AIForge ScopeGuard + tool deny-list into GA."""
@@ -278,13 +272,9 @@ def _doer_llm_config() -> dict:
     }
 
 
-def _load_tools_schema(ga_dir: str) -> list[dict]:
-    schema_path = Path(ga_dir) / "assets" / "tools_schema.json"
-    raw = json.loads(schema_path.read_text())
-    return [
-        t for t in raw
-        if t.get("function", {}).get("name") not in _FORBIDDEN_GA_TOOLS
-    ]
+def _load_tools_schema(ga_dir: str | None = None) -> list[dict]:
+    """Backwards-compat wrapper. Delegates to ga_compat.load_tools_schema."""
+    return load_tools_schema(filter_drop=_FORBIDDEN_GA_TOOLS)
 
 
 def run_doer_via_ga(
@@ -303,14 +293,13 @@ def run_doer_via_ga(
     identifier = getattr(ticket, "identifier", "?")
     ticket_id = getattr(ticket, "id", None)
 
-    # GA imports — done here so module import is cheap.
-    ga_dir = _ga_dir()
-    sys.path.insert(0, ga_dir)
+    # All GA symbols come through ga_compat — single point of upgrade.
     try:
-        from agent_loop import agent_runner_loop  # type: ignore
-        from llmcore import LLMSession, ToolClient  # type: ignore
+        ga = import_ga()
     except Exception as exc:
-        emit(log, "ga_runner.import_failed", ticket=identifier, err=str(exc)[:200])
+        emit(log, "ga_runner.import_failed", ticket=identifier,
+             err=str(exc)[:200], ga_compat=GA_COMPAT_VERSION,
+             ga_sha=ga_sha())
         return {
             "stop_reason": "exception",
             "has_commented": False,
@@ -318,6 +307,10 @@ def run_doer_via_ga(
             "wall_s": round(time.time() - t_start, 2),
             "summary": f"GA import failed: {exc}",
         }
+    agent_runner_loop = ga["agent_runner_loop"]
+    LLMSession = ga["LLMSession"]
+    ToolClient = ga["ToolClient"]
+    _ga_path = ga_dir()
 
     HandlerCls, StepOutcome = _make_handler_class()
 
@@ -327,7 +320,7 @@ def run_doer_via_ga(
     scope_guard = ScopeGuard(allowed)
 
     # GA needs a per-task scratch dir for parent.task_dir reads (_keyinfo, _intervene).
-    task_dir = os.path.join(ga_dir, "temp", f"aiforge-{identifier}-{int(t_start)}")
+    task_dir = os.path.join(_ga_path, "temp", f"aiforge-{identifier}-{int(t_start)}")
     os.makedirs(task_dir, exist_ok=True)
     parent = _ParentShim(task_dir=task_dir)
 
@@ -340,7 +333,7 @@ def run_doer_via_ga(
     session = LLMSession(cfg=cfg)
     client = ToolClient(session)
 
-    tools_schema = _load_tools_schema(ga_dir)
+    tools_schema = _load_tools_schema()
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
     chunks: list[str] = []
     turn_count = 0
