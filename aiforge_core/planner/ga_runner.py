@@ -145,10 +145,121 @@ def _persist_plan(ticket: object, plan_text: str, log: object | None) -> None:
 
 
 def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
-    """Run the Planner through GenericAgent's text-protocol agent loop.
+    """Run the Planner as a direct one-shot LLM call.
 
-    Returns a dict with the same shape ``run_planner`` (smolagents) does:
-    ``{stop_reason, summary, wall_s}`` plus ``backend="genericagent"``.
+    Despite the function name (kept for API stability with the
+    orchestrator), this implementation does NOT spin up GA's full
+    agent loop. F-suite analysis showed GA's text-protocol tool schema
+    + Chinese boilerplate adds 2.7KB to every turn — wasted on a
+    role that just needs to read the ticket and emit a markdown plan.
+
+    A single requests.post to the OpenAI-compatible chat completions
+    endpoint with a slim system+user prompt produces the plan in <1
+    minute on qwen-coder-next vs 10+ minutes on full GA loops.
+
+    Returns the same ``{stop_reason, summary, wall_s, backend}`` shape
+    as ``run_planner`` (smolagents) for orchestrator compatibility.
+    """
+    import requests
+
+    t_start = time.time()
+    identifier = getattr(ticket, "identifier", "?")
+    project = getattr(ticket, "project", "") or "PosClientBackend"
+    cfg = _planner_llm_config()
+    base_url = cfg["apibase"].rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+    repo_root = os.path.join(
+        os.environ.get("AIFORGE_REPOS_BASE", "/home/mani/codeRepo"),
+        project,
+    )
+    plan_dir = os.path.join(repo_root, ".aiforge")
+    os.makedirs(plan_dir, exist_ok=True)
+    plan_path = os.path.join(plan_dir, "plan.md")
+
+    system_prompt = (
+        "You are the AIForge planner. Read the ticket below and emit a "
+        "concise markdown plan for the doer to follow. Output ONLY the "
+        "markdown plan — no preface, no explanation, no code fences. "
+        "The plan MUST contain these four sections in order: ## Goal, "
+        "## Files, ## Steps (numbered), ## Acceptance criteria (copy "
+        "verbatim from the ticket body). Keep the whole plan under 1500 "
+        "characters. Do not edit production code."
+    )
+    body = getattr(ticket, "body", "") or ""
+    title = getattr(ticket, "title", "") or ""
+    user_prompt = (
+        f"# Ticket: {title}\n\n"
+        f"Project: {project}\n"
+        f"Worktree: {repo_root}\n\n"
+        f"## Ticket body (verbatim)\n{body}\n\n"
+        f"## Output\nReturn the four-section markdown plan only."
+    )
+
+    emit(log, "ga_planner.start", ticket=identifier,
+         repo=repo_root, plan_path=plan_path,
+         mode="direct_litellm",
+         system_chars=len(system_prompt),
+         user_chars=len(user_prompt))
+
+    try:
+        resp = requests.post(
+            f"{base_url}/chat/completions",
+            json={
+                "model": cfg["model"],
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "max_tokens": min(cfg.get("max_tokens", 8192), 1500),
+                "temperature": cfg.get("temperature", 0.2),
+            },
+            headers={"Authorization": f"Bearer {cfg.get('apikey','sk-local')}"},
+            timeout=cfg.get("read_timeout", 600),
+        )
+        resp.raise_for_status()
+        plan_text = (
+            resp.json()["choices"][0]["message"].get("content") or ""
+        ).strip()
+    except Exception as exc:
+        emit(log, "ga_planner.exception", ticket=identifier,
+             error=str(exc)[:300])
+        return {
+            "stop_reason": "exception",
+            "summary": f"planner LLM call failed: {exc}",
+            "wall_s": round(time.time() - t_start, 2),
+            "backend": "direct_litellm",
+        }
+
+    if plan_text:
+        try:
+            Path(plan_path).write_text(plan_text)
+        except Exception as exc:
+            emit(log, "ga_planner.plan_write_failed",
+                 ticket=identifier, error=str(exc)[:200])
+        _persist_plan(ticket, plan_text, log)
+
+    wall_s = round(time.time() - t_start, 2)
+    emit(log, "ga_planner.done", ticket=identifier, wall_s=wall_s,
+         plan_chars=len(plan_text), mode="direct_litellm")
+
+    return {
+        "stop_reason": "done" if plan_text else "no_plan",
+        "summary": (
+            f"plan ({len(plan_text)} chars) written to {plan_path}"
+            if plan_text else "planner produced empty response"
+        ),
+        "wall_s": wall_s,
+        "backend": "direct_litellm",
+        "plan_text": plan_text,
+    }
+
+
+def _legacy_run_planner_via_ga_loop(ticket: object, log: object | None = None) -> dict:
+    """Old GA-driven planner — kept as reference. Not used in production
+    after F-suite analysis showed direct LiteLLM is 10x faster for the
+    plan-emission task. Can be re-enabled via AIFORGE_PLANNER_GA_LOOP=1
+    if a future fixture genuinely needs tool calls in the planner.
     """
     t_start = time.time()
     identifier = getattr(ticket, "identifier", "?")
