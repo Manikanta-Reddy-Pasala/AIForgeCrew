@@ -126,8 +126,20 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"{body}\n\n"
         f"## Allowed files (write-tool ScopeGuard)\n{allowed_block}\n\n"
         f"## Planner notes\n{plan_text or '(none)'}\n\n"
-        f"Verify with `cd {worktree_path} && mvn -DskipTests compile` and "
-        f"include the final BUILD result in your last summary tag."
+        f"## REQUIRED workflow — DO NOT SKIP STEPS\n"
+        f"1. file_read EACH file under '## Allowed files' (absolute path "
+        f"   under `{worktree_path}`).\n"
+        f"2. file_patch the change required by the acceptance criteria. "
+        f"   You MUST emit at least one successful file_patch (or "
+        f"   file_write) call before finishing — the harness rejects "
+        f"   runs with edit_block_ok=0.\n"
+        f"3. code_run `cd {worktree_path} && mvn -DskipTests compile` "
+        f"   only AFTER the patch lands.\n"
+        f"4. End with a single `<summary>` tag that names the modified "
+        f"   file and quotes the BUILD line.\n\n"
+        f"Running mvn before editing is a NO-OP — the original code "
+        f"already compiles. The objective is to ADD the change "
+        f"specified in the acceptance criteria."
     )
 
 
