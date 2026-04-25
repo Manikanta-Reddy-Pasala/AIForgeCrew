@@ -170,10 +170,17 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
 
 
 def _resolve_cache_dir(root: Path) -> Path:
-    """Honor AIFORGE_AIDER_CACHE_DIR; default to repo root."""
+    """Honor AIFORGE_AIDER_CACHE_DIR; default to repo root.
+
+    When AIFORGE_AIDER_CACHE_DIR is set, return a per-repo subdir
+    (``<override>/<repo_name>``) so multiple repos don't collide on a
+    single Aider tags-cache. AIForge never writes Aider artifacts into
+    canonical repo trees by default — cache lives under
+    ~/.aiforge/aider-cache/<repo_name>/ on production NUC.
+    """
     override = os.environ.get("AIFORGE_AIDER_CACHE_DIR", "").strip()
     if override:
-        return Path(override).expanduser()
+        return Path(override).expanduser() / Path(root).name
     return Path(root)
 
 
