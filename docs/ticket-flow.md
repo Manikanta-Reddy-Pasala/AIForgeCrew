@@ -1,109 +1,243 @@
-# What happens when a ticket arrives
+# Ticket Flow
 
-Ticket enters with `status=todo`. Within 60 s the graph-runner picks it up
-and walks it through the LangGraph state machine on Mac Studio.
+End-to-end visual: from `curl POST /api/tickets` to PR-on-GitHub.
 
-```
-      POST /api/tickets  →  NUC Postgres (tickets)
-                            status=todo
-                                │
-       (graph-runner cron, 60 s — launchd on Mac Studio)
-                                │
-                                ▼
-                  ┌──────── supervisor_node ────────┐
-                  │  rule-based routing (no LLM)    │
-                  └────┬───────────────┬────────────┘
-                       │ planner       │ doer
-                       ▼               ▼
-       ┌────── planner_node ──────┐   (only if ticket already has ## Files)
-       │  smolagents CodeAgent    │
-       │  tools:                  │
-       │   · search_memory        │  (hybrid: vector + BM25 + rerank)
-       │   · grep_repos           │  (~/codeRepo/*)
-       │   · read_file            │
-       │   · extract_signatures   │
-       │   · write_plan           │  ← mutates ticket body (## Files, Plan,
-       │   · create_child_ticket  │     Signatures, Compile pitfalls)
-       │   · ticket_brief (MCP)   │     (via NUC graph-rag neighbourhood)
-       │  model: qwen3.6-27b      │
-       └──────────┬───────────────┘
-                  │  ticket body enriched
-                  ▼
-       ┌────── doer_node ──────────┐
-       │  smolagents ToolCallingAgent              │
-       │  max_steps = 12                           │
-       │  tools:                                   │
-       │   · read_file / grep / list_dir           │
-       │   · edit_block (scope-guarded)            │
-       │   · run_compile (mvn -q -DskipTests)      │
-       │   · run_shell (narrow allowlist)          │
-       │  model: qwen3.6-35b-a3b@8bit              │
-       │                                           │
-       │  Checklist gate before final_answer:      │
-       │    edit_block_ok ≥ N   (N = numbered      │
-       │    acceptance items in ticket body)       │
-       │    compile_green ≥ 1                      │
-       └──────────┬────────────────────────────────┘
-                  │ compile green + diff non-empty
-                  ▼
-            git commit → force-with-lease push →
-            gh pr create (on aiforge/<ticket>)
-                  │
-                  ▼
-       ┌────── feedback_node ──────┐
-       │  single-shot LLM verdict on the diff       │
-       │  prompt: ticket body + git diff HEAD~1     │
-       │  must return JSON { verdict, reason,       │
-       │                     fixlist }              │
-       │  verdict ∈ {pass, fail, scope_violation}   │
-       │  max_feedback_fails = 2 → doer retry      │
-       │  model: qwen3.6-27b, enable_thinking:false│
-       └──────────┬────────────────────────────────┘
-              pass │                │ fail
-                   ▼                ▼
-           ┌── learner_node ──┐   back to doer
-           │  LLM digest      │   (up to 2 retries
-           │  → T1 memory     │    within the same
-           │  in Postgres     │    graph invocation)
-           │  model: 27b      │
-           └────────┬─────────┘
-                    │
-                    ▼
-            status=done, worktree cleaned
-            memory digested, PR live
+## High-level flow
+
+```mermaid
+flowchart TD
+    A[User / Architect<br/>curl POST /api/tickets]:::ext --> B[NUC FastAPI :8799<br/>insert into Postgres]
+    B --> C[adk_runner.service<br/>poll every 12s<br/>claim_next_any]
+    C --> D[ADK SequentialAgent<br/>build session]
+    D --> E[Planner agent<br/>direct LiteLLM]
+    E -->|plan.md w/ checkboxes| F[LoopAgent max 4]
+    F --> G[Doer agent<br/>GA loop + plan mode]
+    G --> H[Feedback agent<br/>direct LiteLLM]
+    H -->|verdict=fail<br/>fail_count<4| F
+    H -->|verdict=pass| I[Learner agent<br/>direct LiteLLM]
+    H -->|verdict=fail<br/>fail_count>=4| K[blocked]
+    I --> J[git commit + push + gh pr create]
+    J --> Z[done<br/>PR open]:::ok
+    K --> Z2[blocked]:::fail
+    classDef ext fill:#fffbe6,stroke:#aa8800
+    classDef ok fill:#dcfce7,stroke:#16a34a
+    classDef fail fill:#fee2e2,stroke:#dc2626
 ```
 
-## Where each artifact lives
+## Detailed sequence (one ticket, happy path)
 
-| Artifact | Host |
-|---|---|
-| Ticket row | NUC Postgres `tickets` |
-| Plan (ticket body enrichment) | NUC Postgres |
-| Worktree (`~/codeRepo/<repo>/.aiforge-worktrees/<ident>`) | **Mac Studio** |
-| LLM calls | Mac Studio LM Studio :1234 (both roles) |
-| Memory digest (T1) | NUC Postgres `memories` |
-| Commit + branch + PR | GitHub |
-| Graph-RAG context used by Planner | NUC Neo4j |
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant API as NUC API :8799
+    participant PG as Postgres :5432
+    participant RUN as adk-runner (NUC)
+    participant N4J as Neo4j :7687
+    participant P as Planner (Qwen3.6-27B :1235)
+    participant D as Doer (qwen-coder-next :1234)
+    participant FB as Feedback (LiteLLM)
+    participant L as Learner (LiteLLM)
+    participant GH as GitHub
 
-## Key safety gates
+    U->>API: POST /api/tickets {title, body}
+    API->>PG: INSERT row, status=todo
+    API-->>U: 201 {identifier: ONE-N}
 
-- **Scope guard** — `parse_allowed_files(body)` restricts Doer's `edit_block`
-  to paths declared in `## Files`.
-- **Worktree isolation** — every parent ticket gets a dedicated git
-  worktree; ticket failures never touch the repo's main working tree.
-- **Acceptance-item counter** — Doer must produce ≥ N `edit_block` calls
-  for an N-item ticket. Premature `final_answer` rejected.
-- **Verdict parser** — brace-depth scan + regex fallback; empty / non-JSON
-  replies still get a usable verdict+reason instead of blocking.
-- **force-with-lease push** — safe for agent-owned branches; prevents
-  "branch behind" errors on retry.
+    Note over RUN: systemd Restart=always<br/>polls every ~12s
 
-## Status transitions
+    RUN->>PG: claim_next_any() FOR UPDATE SKIP LOCKED
+    PG-->>RUN: ONE-N row, status->in_progress
+    RUN->>N4J: CREATE (:Session)-[:OF_TICKET]->(:Ticket)
+
+    Note over RUN,P: ADK SequentialAgent runs sub_agents in order
+
+    RUN->>N4J: search L2 facts (vector + fulltext)
+    RUN->>N4J: search L3 SOPs by ticket labels
+    RUN->>P: prompt = system + facts + ticket
+    P-->>RUN: plan.md (## Goal / ## Files / ## Steps [ ] / ## Acceptance)
+    RUN->>RUN: write <worktree>/.aiforge/plan.md
+    RUN->>N4J: mirror :Turn for planner
+
+    Note over RUN,D: LoopAgent (max 4 iter)
+
+    loop until verdict=pass or fail_count >= 4
+        RUN->>RUN: git worktree add (if first iter)
+        RUN->>N4J: top-8 :Fact ABOUT subticket files (hybrid)
+        RUN->>N4J: Aider RepoMap digest from L5 :File/:Symbol
+        RUN->>D: prompt = doer system + facts + RepoMap + plan.md
+        Note over D: enter_plan_mode(plan.md)<br/>GA tracks [ ]/[x] in file
+        D->>D: file_read, file_patch, code_run mvn
+        D->>RUN: chunks streamed, :Turn mirrored each turn
+        D-->>RUN: final_answer + counters {edits, compile_green}
+        RUN->>FB: prompt = ticket + diff + counters
+        FB-->>RUN: verdict
+    end
+
+    alt verdict=pass
+        RUN->>L: prompt = ticket + plan + diff + verdict
+        L-->>RUN: distilled fact text
+        RUN->>N4J: CREATE (:Fact {source: 'aiforge_learner'})-[:ABOUT]->(:Ticket)
+        RUN->>RUN: git commit -m "ONE-N: <title>"
+        RUN->>GH: git push + gh pr create
+        GH-->>RUN: PR url
+        RUN->>PG: UPDATE status=done, completed_at
+    else verdict=fail (escalated)
+        RUN->>PG: UPDATE status=blocked
+        Note over RUN: worktree cleaned, no PR
+    end
+
+    RUN->>N4J: UPDATE :Session SET ended_at, outcome
+    RUN->>RUN: exit (systemd respawns, polls next ticket)
+```
+
+## Memory touch-points
+
+```mermaid
+flowchart LR
+    subgraph N4J[NUC Neo4j]
+        L0[L0 :MetaSop]
+        L2[L2 :Fact<br/>vector+fulltext]
+        L3[L3 :Sop]
+        L4[L4 :Session+:Turn]
+        L5[L5 :File+:Symbol]
+    end
+    subgraph Hot[Doer host]
+        AID[Aider SQLite cache]
+    end
+    subgraph S[ADK Session]
+        L1[L1 working state]
+    end
+
+    Planner -->|read top-8| L2
+    Planner -->|read by labels| L3
+    Doer -->|read top-8 scoped| L2
+    Doer -->|RepoMap digest| AID
+    AID -.refresh.-> L5
+    Doer -->|graph_lookup tool| L5
+    Doer -->|ask_explorer recall| L4
+    Feedback -->|read top-3| L2
+    Learner -->|read SOP| L0
+    Learner -->|write :Fact| L2
+
+    PlannerTurn[every Planner turn] --> L4
+    DoerTurn[every Doer turn] --> L4
+    FbTurn[every Feedback turn] --> L4
+    LeTurn[every Learner turn] --> L4
+
+    L1 -.auto-mirror.-> L4
+```
+
+## Optimization touch-points (where context shrinks)
+
+```mermaid
+flowchart TD
+    A[ticket body 1KB] --> B[Planner prompt]
+    B --> B1[+ top-8 L2 facts ~2KB]
+    B --> B2[+ matching L3 SOPs ~1KB]
+    B --> P[Planner LiteLLM call<br/>~4KB total]
+    P --> PLAN[plan.md ~1KB<br/>checkbox-driven]
+
+    PLAN --> D[Doer prompt]
+    D --> D1[+ top-8 scoped facts ~2KB]
+    D --> D2[+ Aider RepoMap digest ~1.5KB]
+    D --> D3[+ allowed-files list]
+    D --> GA[GA loop<br/>tool schema 2.7KB INJECTED ONCE<br/>auto_save_tokens compacts on subsequent turns]
+    GA --> GA2[GA_LANG=en<br/>English protocol]
+    GA --> GA3[update_working_checkpoint dropped<br/>~900 chars saved/turn]
+
+    D --> ASK[ask_explorer for big-context exploration<br/>spawns child GA process<br/>doer's own context stays clean]
+
+    style B1 fill:#dbeafe
+    style B2 fill:#dbeafe
+    style D1 fill:#dbeafe
+    style D2 fill:#dbeafe
+    style ASK fill:#fef3c7
+    style GA fill:#dcfce7
+    style GA2 fill:#dcfce7
+    style GA3 fill:#dcfce7
+```
+
+## Failure paths
+
+```mermaid
+stateDiagram-v2
+    [*] --> todo: ticket created
+    todo --> in_progress: claimed by adk-runner
+    in_progress --> doer_running: planner emitted plan.md
+    doer_running --> feedback_running: doer final_answer
+    doer_running --> doer_running: compile_fail<2 retries
+    feedback_running --> doer_running: verdict=fail, fail_count<4
+    feedback_running --> learner_running: verdict=pass
+    feedback_running --> blocked: verdict=fail, fail_count>=4
+    feedback_running --> blocked: verdict=scope_violation
+    doer_running --> blocked: max_turns or max_wall exceeded
+    learner_running --> done: :Fact written, PR opened
+    blocked --> [*]
+    done --> [*]
+```
+
+## Live intervention (steer a running agent)
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant API as NUC API :8799
+    participant TD as task_dir/_intervene
+    participant Agent as Live Doer
+
+    Op->>API: POST /api/tickets/ONE-N/intervene<br/>{kind:"intervene", body:"focus on src/main"}
+    API->>TD: write _intervene file
+    Note over Agent: turn_end_callback polls task_dir
+    Agent->>TD: consume_file(_intervene)
+    TD-->>Agent: hint string
+    Agent->>Agent: prepend hint to next user prompt
+    Note over Agent: continues with steered context
+```
+
+## File / dir touchpoints during one run
 
 ```
-todo → in_progress → (done | blocked | cancelled)
+NUC
+├── /home/mani/codeRepo/PosClientBackend
+│   ├── .aiforge/plan.md                     <- planner writes
+│   └── .aiforge-worktrees/ONE-N/             <- doer's git worktree
+│       └── src/main/java/.../X.java          <- doer edits
+├── /home/mani/genericagent/temp/aiforge-ONE-N-<ts>/
+│   ├── _intervene                            <- intervention API writes
+│   ├── _keyinfo                              <- intervention API writes
+│   └── _stop                                 <- intervention API writes
+├── /home/mani/.aiforge/logs/graph-runner.err  <- all agent traces
+├── Postgres                                   <- ticket row + events
+└── Neo4j                                      <- :Session, :Turn, :Fact
 ```
 
-- `done` on verdict=pass
-- `blocked` on verdict=fail after retries, scope_violation, or loop_detect
-- `cancelled` only by human PATCH
+## What runs where (host map)
+
+```mermaid
+flowchart LR
+    subgraph LAP[Laptop]
+        OP[Operator<br/>SSH client only]
+    end
+    subgraph MS[Mac Studio 192.168.70.185]
+        DOER[mlx_lm.server :1234<br/>Qwen3-Coder-Next]
+        PLAN[mlx_lm.server :1235<br/>Qwen3.6-27B]
+    end
+    subgraph NUC[NUC 192.168.70.191 / 10.10.10.2]
+        API[FastAPI :8799]
+        RUNNER[adk-runner<br/>systemd Restart=always]
+        PG[Postgres :5432]
+        N4J[Neo4j :7687]
+        GA[GenericAgent]
+        AID[Aider lib]
+        GFY[Graphify cron]
+        REPOS[~/codeRepo/*]
+    end
+
+    OP --SSH--> NUC
+    RUNNER --HTTP--> DOER
+    RUNNER --HTTP--> PLAN
+    RUNNER --asyncpg--> PG
+    RUNNER --bolt--> N4J
+    GFY -.nightly.-> N4J
+```

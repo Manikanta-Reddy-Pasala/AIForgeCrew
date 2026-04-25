@@ -197,6 +197,9 @@ scripts/
 
 | Read | For |
 |---|---|
+| [`docs/ticket-flow.md`](./docs/ticket-flow.md) | Visual end-to-end flow (mermaid diagrams) |
+| [`docs/agents.md`](./docs/agents.md) | Five agents + ADK orchestrator wiring |
+| [`docs/memory.md`](./docs/memory.md) | 5-layer memory model + per-agent access |
 | [`docs/architecture.md`](./docs/architecture.md) | Topology + per-agent rules |
 | [`docs/stack.md`](./docs/stack.md) | Tooling reference |
 | [`docs/agent-rules.md`](./docs/agent-rules.md) | Per-agent rules + 3-layer enforcement |
