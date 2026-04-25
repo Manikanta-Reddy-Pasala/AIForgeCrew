@@ -1,0 +1,265 @@
+"""GenericAgent text-protocol adapter for the Planner role.
+
+Mirrors ``aiforge_core.doer.ga_runner`` but targets the planner model
+(``Qwen3.6-27B-UD-MLX-4bit`` on ``http://127.0.0.1:1235/v1``) and a
+planner-specific tool schema. Used when ``AIFORGE_PLANNER_BACKEND=
+genericagent`` (or when ``agents.yaml`` declares
+``backend: genericagent_text_protocol`` for the planner role).
+
+Why GA for the planner:
+- mlx_lm 0.31 native ``tool_calls`` serialization bug applies to BOTH
+  models on MS. Smolagents CodeAgent times out at 1200s on the 27B
+  model; GA's text-protocol session sidesteps the bug.
+- Planner needs to read repos + write a plan markdown — a small subset
+  of GA's atomic tools covers it: ``file_read`` + ``code_run`` (for
+  grep/find/lookup) + ``file_write`` (for the plan).
+
+The plan is persisted to Postgres via ``aiforge_core.runtime.tickets.
+update_plan`` after the GA loop returns. The model writes the plan
+content into ``<task_dir>/plan.md`` via GA's ``file_write`` tool; the
+adapter reads it back and pushes to the ticket.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+from aiforge_core.runtime import tickets as tickets_mod
+from aiforge_core.runtime.logging_setup import emit
+
+
+_FORBIDDEN_GA_TOOLS = {
+    "ask_user",
+    "start_long_term_update",
+    "web_scan",
+    "web_execute_js",
+}
+
+
+def _ga_dir() -> str:
+    p = os.environ.get("AIFORGE_GA_DIR", "")
+    if p and os.path.isdir(p):
+        return p
+    for cand in (
+        "/home/mani/genericagent",
+        "/Users/manikanta/genericagent",
+        os.path.expanduser("~/genericagent"),
+    ):
+        if os.path.isdir(cand):
+            return cand
+    raise RuntimeError(
+        "GenericAgent dir not found; set AIFORGE_GA_DIR to override"
+    )
+
+
+def _planner_llm_config() -> dict:
+    """Text-protocol cfg for GA's LLMSession on the PLANNER port.
+
+    Matches ``oai_planner_config`` in ``mykey.py`` on the NUC. The cfg
+    dict overrides whatever GA reads from its own mykey at import time.
+    """
+    base_url = os.environ.get(
+        "AIFORGE_PLANNER_BASE_URL", "http://127.0.0.1:1235"
+    )
+    model = os.environ.get(
+        "AIFORGE_PLANNER_MODEL",
+        "/Users/manikanta/.lmstudio/models/unsloth/Qwen3.6-27B-UD-MLX-4bit",
+    )
+    return {
+        "name": "mlx-planner",
+        "apikey": os.environ.get("AIFORGE_PLANNER_API_KEY", "sk-local"),
+        "apibase": base_url.rstrip("/").rstrip("/v1"),
+        "model": model,
+        "api_mode": "chat_completions",
+        "max_retries": 2,
+        "connect_timeout": 10,
+        "read_timeout": 240,
+        "context_win": int(os.environ.get("AIFORGE_PLANNER_CTX", "60000")),
+        "max_tokens": int(os.environ.get("AIFORGE_PLANNER_MAX_TOKENS", "8192")),
+        "temperature": float(os.environ.get("AIFORGE_PLANNER_TEMP", "0.2")),
+    }
+
+
+def _load_tools_schema(ga_dir: str) -> list[dict]:
+    schema_path = Path(ga_dir) / "assets" / "tools_schema.json"
+    raw = json.loads(schema_path.read_text())
+    keep = {"file_read", "code_run", "file_write", "update_working_checkpoint"}
+    return [
+        t for t in raw
+        if t.get("function", {}).get("name") in keep
+        and t.get("function", {}).get("name") not in _FORBIDDEN_GA_TOOLS
+    ]
+
+
+def _build_planner_prompt(ticket: object, repo_root: str) -> str:
+    body = getattr(ticket, "body", "") or ""
+    title = getattr(ticket, "title", "") or ""
+    project = getattr(ticket, "project", "") or ""
+    return (
+        f"# Planner task: {title}\n\n"
+        f"## Project\n{project}\n\n"
+        f"## Working dir\n{repo_root}\n\n"
+        f"## Ticket body\n{body}\n\n"
+        f"## Your job\n"
+        f"Read enough of the codebase to write a concise plan for the doer. "
+        f"The plan must include:\n"
+        f"- ## Goal: 1-2 lines restating the objective\n"
+        f"- ## Files: bullet list of file paths the doer will edit\n"
+        f"- ## Steps: numbered list of edits\n"
+        f"- ## Acceptance criteria: copy from the ticket body\n\n"
+        f"## Tools\n"
+        f"- file_read <path>: read a file\n"
+        f"- code_run <bash>: run a shell command (rg, find, ls, cat) "
+        f"  starting with `cd {repo_root} &&`\n"
+        f"- file_write <path>: write the final plan to "
+        f"  {repo_root}/.aiforge/plan.md when ready\n\n"
+        f"## Done condition\n"
+        f"After file_write succeeds for the plan, end the run with no further "
+        f"tool calls. Do not call ask_user. Do not write code edits — that "
+        f"is the doer's job. Keep the plan under 2KB."
+    )
+
+
+def _persist_plan(ticket: object, plan_text: str, log: object | None) -> None:
+    """Persist the plan as a ticket event so it lives in Postgres
+    and shows up in the API. The doer also reads the plan from the
+    worktree's `.aiforge/plan.md` directly, so persistence is best-
+    effort — failures don't block the run."""
+    ticket_id = getattr(ticket, "id", None)
+    if ticket_id is None:
+        return
+    try:
+        tickets_mod.add_event(
+            ticket_id, "planner", "plan_written",
+            plan_text[:8000],
+        )
+        emit(log, "ga_planner.plan_persisted",
+             ticket_id=ticket_id, chars=len(plan_text))
+    except Exception as exc:
+        emit(log, "ga_planner.persist_failed",
+             ticket_id=ticket_id, error=str(exc)[:200])
+
+
+def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
+    """Run the Planner through GenericAgent's text-protocol agent loop.
+
+    Returns a dict with the same shape ``run_planner`` (smolagents) does:
+    ``{stop_reason, summary, wall_s}`` plus ``backend="genericagent"``.
+    """
+    t_start = time.time()
+    identifier = getattr(ticket, "identifier", "?")
+    project = getattr(ticket, "project", "") or "PosClientBackend"
+
+    ga_dir = _ga_dir()
+    sys.path.insert(0, ga_dir)
+    try:
+        from agent_loop import agent_runner_loop, exhaust  # type: ignore
+        from llmcore import LLMSession, ToolClient  # type: ignore
+        from ga import GenericAgentHandler  # type: ignore
+    except Exception as exc:
+        emit(log, "ga_planner.import_failed", ticket=identifier,
+             error=str(exc)[:200])
+        return {
+            "stop_reason": "exception",
+            "summary": f"GA import failed: {exc}",
+            "wall_s": round(time.time() - t_start, 2),
+            "backend": "genericagent",
+        }
+
+    repo_root = os.path.join(
+        os.environ.get("AIFORGE_REPOS_BASE", "/home/mani/codeRepo"),
+        project,
+    )
+    if not os.path.isdir(repo_root):
+        emit(log, "ga_planner.repo_missing", ticket=identifier, repo=repo_root)
+        return {
+            "stop_reason": "exception",
+            "summary": f"repo not found: {repo_root}",
+            "wall_s": round(time.time() - t_start, 2),
+            "backend": "genericagent",
+        }
+
+    plan_dir = os.path.join(repo_root, ".aiforge")
+    os.makedirs(plan_dir, exist_ok=True)
+    plan_path = os.path.join(plan_dir, "plan.md")
+    if os.path.exists(plan_path):
+        os.remove(plan_path)
+
+    cfg = _planner_llm_config()
+    session = LLMSession(cfg=cfg)
+    client = ToolClient(session)
+    tools_schema = _load_tools_schema(ga_dir)
+
+    task_dir = os.path.join(
+        ga_dir, "temp",
+        f"aiforge-planner-{identifier}-{int(t_start)}",
+    )
+    os.makedirs(task_dir, exist_ok=True)
+
+    class _ParentShim:
+        def __init__(self, td: str) -> None:
+            self.task_dir = td
+            self.verbose = False
+            self._turn_end_hooks: dict = {}
+
+    parent = _ParentShim(task_dir)
+    handler = GenericAgentHandler(parent, [], repo_root)
+
+    system_prompt = (
+        "You are the AIForge planner. Read the codebase and produce a "
+        "concise markdown plan for the doer to follow. You do not edit "
+        "production code. End the run after writing the plan to the path "
+        "the user gives you. Do not call ask_user."
+    )
+    user_input = _build_planner_prompt(ticket, repo_root)
+
+    max_turns = int(os.environ.get("AIFORGE_PLANNER_MAX_TURNS", "20"))
+    emit(log, "ga_planner.start", ticket=identifier,
+         max_turns=max_turns, repo=repo_root, plan_path=plan_path)
+
+    try:
+        gen = agent_runner_loop(
+            client, system_prompt, user_input,
+            handler, tools_schema,
+            max_turns=max_turns, verbose=False,
+        )
+        result = exhaust(gen)
+    except Exception as exc:
+        emit(log, "ga_planner.exception", ticket=identifier,
+             error=str(exc)[:300])
+        return {
+            "stop_reason": "exception",
+            "summary": f"GA loop failed: {exc}",
+            "wall_s": round(time.time() - t_start, 2),
+            "backend": "genericagent",
+        }
+
+    plan_text = ""
+    if os.path.exists(plan_path):
+        try:
+            plan_text = Path(plan_path).read_text()
+        except Exception:
+            plan_text = ""
+    if plan_text:
+        _persist_plan(ticket, plan_text, log)
+
+    wall_s = round(time.time() - t_start, 2)
+    emit(log, "ga_planner.done", ticket=identifier,
+         wall_s=wall_s, plan_chars=len(plan_text),
+         loop_result=str(result)[:120])
+
+    summary = (
+        f"GA planner wrote {len(plan_text)} chars to {plan_path}"
+        if plan_text else "GA planner produced no plan"
+    )
+    return {
+        "stop_reason": "done" if plan_text else "no_plan",
+        "summary": summary,
+        "wall_s": wall_s,
+        "backend": "genericagent",
+        "plan_text": plan_text,
+    }

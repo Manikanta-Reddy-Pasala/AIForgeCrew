@@ -89,7 +89,7 @@ agents:
     identity:
       runtime: adk_agent_with_ga
       model: Qwen3.6-27B-MLX-4bit
-      backend: codeagent_smolagents
+      backend: genericagent_text_protocol
       base_url: http://127.0.0.1:1235/v1
       ctx_window: 64000
     contract:

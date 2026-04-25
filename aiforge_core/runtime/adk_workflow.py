@@ -190,9 +190,20 @@ class AiForgePlannerAgent(BaseAgent):
         max_wall_s = contract.contract.max_wall_s if contract else 600
 
         emit(log, "adk.planner.start",
-             ticket=ticket.identifier, max_wall_s=max_wall_s)
+             ticket=ticket.identifier, max_wall_s=max_wall_s,
+             backend=os.environ.get("AIFORGE_PLANNER_BACKEND", "smolagents"))
 
-        from aiforge_core.planner import run_planner
+        # Backend dispatch: env > agents.yaml > smolagents default.
+        backend = os.environ.get("AIFORGE_PLANNER_BACKEND")
+        if not backend and contract is not None:
+            decl = (contract.identity.backend or "").lower()
+            if decl in ("genericagent_text_protocol", "genericagent"):
+                backend = "genericagent"
+        if backend == "genericagent":
+            from aiforge_core.planner.ga_runner import run_planner_via_ga
+            run_planner = run_planner_via_ga
+        else:
+            from aiforge_core.planner import run_planner
 
         loop = asyncio.get_event_loop()
         t_start = time.time()
