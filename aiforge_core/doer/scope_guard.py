@@ -34,8 +34,16 @@ def parse_allowed_files(body: str) -> set[str]:
     if "\\n" in body and "\n" not in body:
         body = body.replace("\\n", "\n")
     lower = body.lower()
-    # Accept both "## files" and "## allowed files"
-    for header in ("## allowed files", "## files"):
+    # Accept "## files", "## allowed files", "## file to edit",
+    # "## file", "## files to edit". First matching header wins.
+    headers = (
+        "## allowed files",
+        "## files to edit",
+        "## file to edit",
+        "## files",
+        "## file",
+    )
+    for header in headers:
         idx = lower.find(header)
         if idx >= 0:
             nl = body.find("\n", idx)
