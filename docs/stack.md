@@ -1,27 +1,27 @@
-# Stack (what + why) — v5
+# Stack (what + why)
 
-## v4 → v5 changes
+## Core stack
 
-- **LM Studio → `mlx_lm.server`** (direct). Two instances managed by `launchd`:
-  `com.aiforge.mlx-doer` on `:1234` and `com.aiforge.mlx-planner` on `:1235`.
-  No GUI, no electron, no model-juggling daemon — one MLX process per role,
-  pinned to a single weight, restart-on-crash via launchd.
-- **smolagents → GenericAgent (Doer only).** Doer now runs
+- **`mlx_lm.server`** (direct). Two instances managed by `launchd` on Mac
+  Studio: `com.aiforge.mlx-doer` on `:1234` and `com.aiforge.mlx-planner` on
+  `:1235`. One MLX process per role, pinned to a single weight, restart-on-
+  crash via launchd.
+- **GenericAgent** for the Doer. Runs
   [lsdefine/GenericAgent](https://github.com/lsdefine/GenericAgent)'s
-  `agent_runner_loop` (text-protocol, not OpenAI native tool_calls) wrapped
-  inside a custom `BaseAgent` subclass. Planner stays on smolagents
-  `CodeAgent` until EVAL-1b says otherwise.
-- **LangGraph → Google ADK** (`google-adk` PyPI). `BaseAgent` subclasses +
+  `agent_runner_loop` (text-protocol, not OpenAI native `tool_calls`) wrapped
+  inside a custom ADK `BaseAgent` subclass. Pinned via SHA in
+  `.aiforge/ga-version.lock`. Single import seam at
+  `aiforge_core/doer/ga_compat.py`.
+- **Direct LiteLLM** for Planner, Feedback, Learner — single-shot HTTP
+  chat completions, no agent loop.
+- **Google ADK** (`google-adk==1.31.1`). `BaseAgent` subclasses +
   `SequentialAgent` orchestrator. `BasePlugin` for cross-cutting hooks
-  (Neo4j fact mirror, OpenTelemetry spans, telemetry counters).
-- **LangGraph PostgresSaver → ADK `DatabaseSessionService`**
-  (`postgresql+asyncpg://…`). Same Postgres, different writer; sessions live
-  in ADK-native tables.
-- **LlamaIndex pgvector → dropped.** Vectors moved to Neo4j native vector
-  index on `:Fact.embedding`. Single Cypher does hybrid retrieval.
-- **+aider-chat** PyPI — `RepoMap` for the per-call code-context digest in
+  (Neo4j fact mirror, OpenTelemetry spans).
+- **`DatabaseSessionService`** (`postgresql+asyncpg://…`) — ADK-native
+  session persistence, Postgres-backed.
+- **aider-chat** PyPI — `RepoMap` for the per-call code-context digest in
   the Doer system prompt.
-- **+graphifyy** PyPI — nightly three-pass codebase graph builder
+- **graphifyy** PyPI — nightly three-pass codebase graph builder
   (AST + Whisper + Claude subagents) → `graph.json` → Neo4j mirror.
 - **+neo4j** Python driver — direct Cypher client used by ADK plugins,
   ingest scripts, and query tools.
@@ -44,7 +44,7 @@
 | **GenericAgent** | github.com/lsdefine/GenericAgent (vendored at `~/genericagent/`) | Doer tool loop. We embed `agent_runner_loop` inside our `BaseAgent` subclass and use the text-protocol path (`<tool>…</tool>` blocks) via `LLMSession` / `NativeToolClient` — avoids the mlx_lm 0.31 native-tool serialization bug. |
 | **smolagents** | `smolagents>=1.14` | Planner runs `CodeAgent` (kept until EVAL-1b). |
 | **LiteLLM** | `litellm>=1.55` | Uniform OpenAI-shaped client to MLX servers. Used by Planner (via smolagents), Feedback, and Learner. **Not** used by Doer. |
-| **nomic-embed-text-v1.5** | served by an MLX-embedding sidecar | 768-d embeddings. Same model as v4; only the host changed. |
+| **nomic-embed-text-v1.5** | served by an MLX-embedding sidecar | 768-d embeddings. |
 
 ### Agent orchestration + plugins
 
@@ -64,7 +64,7 @@
 | **graphifyy** | `graphifyy>=0.2` | Three-pass codebase graph builder (AST + Whisper transcript + Claude subagents). Nightly cron on NUC produces `graph.json` (NetworkX). A loader script imports it into Neo4j as `:File` / `:Symbol` / `:CALLS` mirror. Supports `graphify clone <repo>` and `graphify merge-graphs` for cross-repo overlays. |
 | **neo4j (driver)** | `neo4j>=5.26` | Direct Cypher client. Used by ADK plugins (fact mirror), ingest scripts (graphify loader, JavaParser/ts-morph/libcst pipelines), and the query tools exposed to Doer. |
 
-### Code parsers (→ graph, unchanged from v4)
+### Code parsers (→ graph)
 
 | Tool | What for |
 |---|---|
@@ -74,7 +74,7 @@
 | **SCIP indexers** | Cross-language symbol + ref index (used by graphify pass 1) |
 | **tree-sitter-java** | Older fast-path parser; kept for incremental updates |
 
-> v5 note: parsers still feed Neo4j directly for the canonical graph.
+> Parsers feed Neo4j directly for the canonical graph.
 > Aider RepoMap and Graphify are *additive* — they produce overlays
 > (per-call digest, nightly mirror) that ride alongside the canonical
 > ingest, not replace it.
@@ -83,7 +83,7 @@
 
 | Tool | What for |
 |---|---|
-| **Neo4j 5.26 Community + APOC + genai** | One DB does graph, vector (native `:Fact.embedding` index), and BM25 fulltext. **No GDS.** Already running on NUC; unchanged from v4. |
+| **Neo4j 5.26 Community + APOC + genai** | One DB does graph, vector (native `:Fact.embedding` index), and BM25 fulltext. **No GDS.** Already running on NUC. |
 | **PostgreSQL 16 + pgvector + pg_trgm + pgcrypto** | Tickets, events, ADK sessions, audit log. `pgvector` retained because some legacy event payloads still index by embedding; the live retrieval path moved to Neo4j. |
 
 ### Runtime + plumbing

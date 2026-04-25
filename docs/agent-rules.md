@@ -1,4 +1,4 @@
-# Agent Rules — AIForgeCrew v5
+# Agent Rules — AIForgeCrew
 
 Companion document to [`aiforge_core/agents.yaml`](../aiforge_core/agents.yaml).
 This file explains *why* each per-role contract exists, *where* it is enforced,
@@ -47,7 +47,7 @@ Any write outside the allowlist is rejected at call time and surfaces as
 
 F7c showed Planners producing test subtickets that read "add tests for X" and
 nothing else. The Doer would then either skip tests or invent a test harness
-that didn't match the existing project layout. The v4 fix recipe — Planner
+that didn't match the existing project layout. The fix recipe — Planner
 must inject a test-skeleton-template reference into every test subticket — is
 now mandatory and lives in §4 below.
 
@@ -112,7 +112,7 @@ verdict from Feedback rather than as Doer self-termination — see §8.
 > `test_skeleton_ref` pointing to a template under
 > `docs/test-skeleton-templates/`.
 
-This was the F7c v4 fix recipe. Without a skeleton, Doer either:
+This was the F7c fix recipe. Without a skeleton, Doer either:
 
 - skips writing tests entirely, or
 - invents a JUnit / pytest layout that doesn't match the surrounding project.
@@ -240,6 +240,6 @@ allowlist, so an unrepaired subticket is a dead-end.
 - `aiforge_core/doer/acceptance_gate.py` — compile/test gate that drives §8.1
 - `aiforge_core/graph/edges.py` — verdict routing between roles
 - `docs/test-skeleton-templates/` — TODO; see §4
-- `docs/architecture.md` — system-level overview of the v5 pipeline
+- `docs/architecture.md` — system-level overview of the pipeline
 - F1–F7 eval fixtures under `evals/fixtures/` — empirical motivation for the
   rules in §1

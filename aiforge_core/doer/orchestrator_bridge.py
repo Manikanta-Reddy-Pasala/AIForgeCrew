@@ -98,6 +98,61 @@ def _run(cmd: list[str], cwd: str, timeout: int = 60) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
+_TITLE_PREFIX_RX = re.compile(
+    r"^\s*\[(?:V\d+[-_].*?|EVAL[-_].*?|ADK[-_].*?|GA[-_].*?|"
+    r"FULL[-_].*?|FINAL[-_].*?|RETRY[-_].*?|TEST[-_].*?|"
+    r"GO[-_]LIVE.*?|SMOKE.*?|TMP.*?|WIP.*?)\]\s*",
+    re.IGNORECASE,
+)
+
+
+def _clean_pr_title(raw: str) -> str:
+    """Strip eval prefixes like [V5-ADK-FINAL], [EVAL-...] etc.
+
+    Tickets get throwaway tags during testing. The PR title should be
+    the actual change description, not the eval label.
+    """
+    if not raw:
+        return ""
+    s = raw.strip()
+    while True:
+        m = _TITLE_PREFIX_RX.match(s)
+        if not m:
+            break
+        s = s[m.end():].strip()
+    return s.strip() or raw.strip()
+
+
+def _extract_acceptance(body: str) -> str:
+    """Pull the ## Acceptance criteria block from the ticket body.
+
+    Returns the section content trimmed; falls back to "_(see ticket
+    body)_" when no header found. Caps at 1500 chars so PRs stay
+    skimmable.
+    """
+    if not body:
+        return "_(see ticket body)_"
+    if "\\n" in body and "\n" not in body:
+        body = body.replace("\\n", "\n")
+    lower = body.lower()
+    headers = ("## acceptance criteria", "## acceptance")
+    for h in headers:
+        idx = lower.find(h)
+        if idx < 0:
+            continue
+        nl = body.find("\n", idx)
+        if nl < 0:
+            continue
+        section = body[nl + 1:]
+        end = section.find("\n## ")
+        if end >= 0:
+            section = section[:end]
+        section = section.strip()
+        if section:
+            return section[:1500]
+    return "_(see ticket body)_"
+
+
 def _git_commit_push_pr(
     ticket: object,
     worktree_path: str,
@@ -112,18 +167,21 @@ def _git_commit_push_pr(
     """
     result = {"commit_sha": None, "pushed": False, "pr_url": None}
     identifier = getattr(ticket, "identifier", "ticket")  # type: ignore[attr-defined]
-    title = getattr(ticket, "title", "") or identifier  # type: ignore[attr-defined]
+    raw_title = getattr(ticket, "title", "") or identifier  # type: ignore[attr-defined]
     branch = getattr(ticket, "branch", None)  # type: ignore[attr-defined]
+    body = getattr(ticket, "body", "") or ""  # type: ignore[attr-defined]
+
+    title = _clean_pr_title(raw_title)
+    acceptance_block = _extract_acceptance(body)
 
     # 1) commit
     try:
         _run(["git", "add", "-A"], cwd=worktree_path, timeout=30)
         msg = (
-            f"aiforge({identifier}): {title}\n\n"
-            f"{summary_text[:2000].strip()}\n\n"
-            f"Changed files:\n" + "\n".join(f"- {p}" for p in changed_files[:30]) +
-            "\n\n"
-            "Co-Authored-By: AIForge Doer (smolagents) <noreply@aiforge.local>"
+            f"{title}\n\n"
+            f"Ticket: {identifier}\n\n"
+            f"Files changed:\n" + "\n".join(f"- {p}" for p in changed_files[:30]) +
+            "\n"
         )
         rc, out, err = _run(
             ["git", "commit", "-m", msg],
@@ -180,13 +238,15 @@ def _git_commit_push_pr(
         return result
 
     try:
-        pr_title = f"aiforge({identifier}): {title}"[:120]
+        pr_title = f"{identifier}: {title}"[:120]
+        files_block = "\n".join(f"- `{p}`" for p in changed_files[:30]) or "_(no files)_"
         pr_body = (
-            f"**Ticket:** {identifier}\n\n"
-            f"**Summary:**\n{summary_text[:4000].strip()}\n\n"
-            f"**Files:**\n" + "\n".join(f"- `{p}`" for p in changed_files[:30]) +
-            f"\n\n---\nAutomated PR by AIForge Doer (smolagents).\n"
-            f"Branch: `{branch}`"
+            f"## Ticket\n{identifier}\n\n"
+            f"## What\n{title}\n\n"
+            f"## Files changed\n{files_block}\n\n"
+            f"## Acceptance criteria\n{acceptance_block}\n\n"
+            f"---\n"
+            f"Automated PR by AIForgeCrew. Branch: `{branch}`"
         )
         rc, pr_url, err = _run(
             ["gh", "pr", "create",

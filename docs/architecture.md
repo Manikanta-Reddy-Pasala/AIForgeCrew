@@ -1,21 +1,22 @@
-# Architecture (2 machines, v5 — 2026-04-25)
+# Architecture
 
-Two hosts, one laptop for dev. Same physical layout as v4; the runtime stack underneath is rebuilt.
+Two hosts, one laptop for dev.
 
-## What changed v4 → v5
+## Stack at a glance
 
-| Layer | v4 (2026-04-24) | v5 (this doc) |
-|---|---|---|
-| Orchestrator | LangGraph state machine, custom checkpointer | Google ADK (`adk-python`) — `BaseAgent` subclasses, `SequentialAgent` workflow, `BasePlugin.on_event_callback` for auto-remember, `DatabaseSessionService` Postgres-backed sessions |
-| Inner agent loop | smolagents `CodeAgent` / `ToolCallingAgent` | GenericAgent (`lsdefine/GenericAgent`) text-protocol session, embedded via custom `BaseAgent` calling `agent_runner_loop` |
-| LLM serving | LM Studio app (single instance, multi-JIT) | `mlx_lm.server` direct, two pinned instances (doer :1234, planner :1235), launchd-managed |
-| Code map | `~/.claude/memory` markdown + ad-hoc grep | Aider RepoMap (PageRank tree-sitter digest, hot path) + Graphify nightly graph.json (cold/cross-repo) |
-| Graph ingest | manual `file-indexer` python | Tree-sitter direct AST → `:File`/`:Symbol`/`:CALLS`/`:IMPORTS` (25 langs) |
-| Memory injection | one flat `:Fact` recall step | 5 GA-style layers (L0…L5), each with a defined storage + injection rule |
-| Ranking | external Python reranker over pgvector | Native Neo4j Cypher fusing vector index + Lucene fulltext + 2-hop graph boost — single query, no GDS |
-| Roles | planner / doer / feedback / learner (smolagents-flavoured) | Architect (Claude Code, ext) → Planner → Doer → Feedback → Learner, each with explicit tool allowlist + max-turn cap |
+| Layer | Component |
+|---|---|
+| Orchestrator | Google ADK (`adk-python`) — `BaseAgent` subclasses, `SequentialAgent` + `LoopAgent`, `BasePlugin.on_event_callback` for auto-remember, `DatabaseSessionService` Postgres-backed sessions |
+| Doer agent loop | GenericAgent (`lsdefine/GenericAgent`) text-protocol session, embedded via custom `BaseAgent` calling `agent_runner_loop`, pinned via `.aiforge/ga-version.lock` |
+| Planner / Feedback / Learner | direct LiteLLM single-shot, no agent loop |
+| LLM serving | `mlx_lm.server`, two pinned instances (doer `:1234`, planner `:1235`), launchd-managed |
+| Code map | Aider RepoMap (PageRank tree-sitter digest, hot path) + Graphify nightly `graph.json` (cold/cross-repo) |
+| Graph ingest | Tree-sitter direct AST → `:File`/`:Symbol`/`:CALLS`/`:IMPORTS` (25 langs) |
+| Memory | 5 GA-style layers (L0…L5) all in Neo4j, each with a defined storage + injection rule |
+| Ranking | Native Neo4j Cypher fusing vector index + Lucene fulltext + 2-hop graph boost — single query, no GDS |
+| Roles | Architect (Claude Code, ext) → Planner → Doer → Feedback → Learner, each with explicit tool allowlist + max-turn cap |
 
-Smolagents tool_calls JSON parsing is dead — `mlx_lm` 0.31 emits malformed `tool_calls` in 8-bit mode. GA's text-protocol session ("Action: …\nObservation: …") sidesteps it entirely.
+GenericAgent's text-protocol session sidesteps `mlx_lm`'s native `tool_calls` serialization bug (0.31.x emits empty `message.tool_calls` despite `finish_reason="tool_calls"`).
 
 ## Topology
 
@@ -137,7 +138,7 @@ No GDS, no PageRank step, no external reranker. Escalation rule: if eval precisi
 
 ## Cross-host bridges
 
-Same as v4: only ssh tunnels.
+SSH tunnels only.
 
 - `com.aiforge.pg-tunnel` (MS): `ssh -L 127.0.0.1:5433:127.0.0.1:5432 mani@10.10.10.2` — ADK `DatabaseSessionService` and the API hit Postgres via MS-loopback.
 - `com.aiforge.neo4j-tunnel` (MS): `ssh -L 127.0.0.1:7688:127.0.0.1:7687 mani@10.10.10.2` — `recall_facts` and `cypher_query` hit Neo4j via MS-loopback (Sequoia LAN sandbox again).
@@ -160,7 +161,7 @@ NUC nightly 02:00:
 
 Aider RepoMap is built **on the MS, in the Doer process**, on first call per worktree, and cached in `~/.aider/cache.db` keyed by file mtime. The 1.5K-token digest is recomputed only when files in the sub-ticket scope change. It is **not** mirrored to Neo4j — Neo4j gets the full Graphify dump nightly; Aider is the hot path for the current sub-ticket.
 
-## File map (where v5 components live)
+## File map (where components live)
 
 | Component | Path |
 |---|---|
