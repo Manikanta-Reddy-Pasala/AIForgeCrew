@@ -1,0 +1,47 @@
+{
+  "_comment": "Doer = Qwen3.6-35B-A3B (MoE 35B/3B active, top SWE 30B-class), thinking OFF, temp 0.05, top_p 0.92. Planner = Qwen3-30B-A3B-Thinking-2507 (best ranked thinker MLX in 30B class), thinking ON, temp 0.6.",
+  "agent_config": {
+    "doer": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/Qwen3.6-35B-A3B-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "feedback": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/Qwen3.6-35B-A3B-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "learner": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/Qwen3.6-35B-A3B-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "supervisor": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/Qwen3.6-35B-A3B-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "chat": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/Qwen3.6-35B-A3B-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "planner": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-30B-A3B-Thinking-2507-MLX-4bit",
+      "base_url": "http://127.0.0.1:1235/v1"
+    }
+  },
+  "runtime_env": {
+    "AIFORGE_DOER_BASE_URL": "http://127.0.0.1:1234",
+    "AIFORGE_DOER_MODEL": "/Users/manikanta/.lmstudio/models/mlx-community/Qwen3.6-35B-A3B-4bit",
+    "AIFORGE_DOER_TEMP": "0.0",
+    "AIFORGE_DOER_TOP_P": "0.95",
+    "AIFORGE_DOER_THINK": "0",
+    "AIFORGE_PLANNER_BASE_URL": "http://127.0.0.1:1235",
+    "AIFORGE_PLANNER_MODEL": "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-30B-A3B-Thinking-2507-MLX-4bit",
+    "AIFORGE_PLANNER_TEMP": "0.6",
+    "AIFORGE_PLANNER_TOP_P": "0.95",
+    "AIFORGE_PLANNER_THINK": "1"
+  }
+}
