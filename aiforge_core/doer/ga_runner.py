@@ -84,6 +84,36 @@ _FORBIDDEN_GA_TOOLS = {
 _EDIT_TOOLS = {"file_patch", "file_write"}
 
 
+# Custom tool schema for ask_explorer — spawns a read-only GA subagent
+# (uses GA's --bg flag pattern, commit bc5d1ea). Injected into the
+# doer's tools_schema at run_doer_via_ga time.
+_ASK_EXPLORER_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "ask_explorer",
+        "description": (
+            "Spawn a read-only sub-agent to answer a focused exploration "
+            "question about the codebase. Returns the sub-agent's final "
+            "summary. Use when you need to scan many files without "
+            "bloating your own context."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "Single concrete question; the sub-agent has "
+                        "file_read + code_run only and answers in <30 turns."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
+
 _DOER_GA_PREAMBLE = """You are the AIForge Doer agent operating through GenericAgent.
 
 You MUST modify code so the ticket is implemented. You only get credit when:
@@ -201,6 +231,66 @@ def _make_handler_class():
                 {"status": "error", "msg": "memory updates are the Learner's job"},
                 next_prompt=("Do not call start_long_term_update. Continue editing "
                              "until compile is green, then stop."),
+            )
+
+        def do_ask_explorer(self, args, response):  # type: ignore[override]
+            """Spawn a read-only GA subprocess to answer a focused
+            question. Uses GA's `agentmain.py --task <name> --bg --input
+            <q>` pattern (commit bc5d1ea). Polls output*.txt for
+            [ROUND END] sentinel and returns the result.
+            """
+            import subprocess
+            question = (args.get("question") or "").strip()
+            if not question:
+                yield "[ask_explorer] empty question, skipping.\n"
+                return StepOutcome(
+                    {"status": "error", "msg": "question required"},
+                    next_prompt="ask_explorer needs a `question` argument.",
+                )
+            ga_path = ga_dir()
+            sub_id = f"explorer-{int(time.time()*1000)}"
+            sub_dir = os.path.join(ga_path, "temp", sub_id)
+            os.makedirs(sub_dir, exist_ok=True)
+            yield f"[ask_explorer] spawning sub-agent {sub_id}\n"
+            try:
+                subprocess.run(
+                    [sys.executable, os.path.join(ga_path, "agentmain.py"),
+                     "--task", sub_id, "--bg", "--input", question,
+                     "--llm_no", "0", "--verbose=False"],
+                    cwd=ga_path,
+                    timeout=15,
+                    capture_output=True,
+                    env={**os.environ, "GA_LANG": "en"},
+                )
+            except Exception as exc:
+                yield f"[ask_explorer] spawn failed: {exc}\n"
+                return StepOutcome(
+                    {"status": "error", "msg": f"spawn failed: {exc}"},
+                    next_prompt="ask_explorer process failed to start.",
+                )
+            # Poll for ROUND END sentinel; cap at 5 min wall.
+            out_path = os.path.join(sub_dir, "output.txt")
+            deadline = time.time() + 300
+            while time.time() < deadline:
+                time.sleep(5)
+                if os.path.exists(out_path):
+                    text = ""
+                    try:
+                        text = open(out_path, encoding="utf-8").read()
+                    except Exception:
+                        text = ""
+                    if "[ROUND END]" in text:
+                        # Strip the protocol-end sentinel; cap at 4KB.
+                        answer = text.split("[ROUND END]")[0][-4000:]
+                        yield f"[ask_explorer] sub-agent finished\n"
+                        return StepOutcome(
+                            {"status": "ok", "answer": answer},
+                            next_prompt=None,
+                        )
+            yield "[ask_explorer] sub-agent timeout (5 min)\n"
+            return StepOutcome(
+                {"status": "timeout", "msg": "explorer timed out"},
+                next_prompt="ask_explorer did not return in 5 minutes.",
             )
 
         def do_file_patch(self, args, response):  # type: ignore[override]
@@ -350,6 +440,9 @@ def run_doer_via_ga(
     client = ToolClient(session)
 
     tools_schema = _load_tools_schema()
+    # Inject ask_explorer (custom tool, not in GA's stock schema).
+    if os.environ.get("AIFORGE_DOER_ASK_EXPLORER", "1") == "1":
+        tools_schema = list(tools_schema) + [_ASK_EXPLORER_SCHEMA]
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
     if plan_mode_active:
         user_input += (

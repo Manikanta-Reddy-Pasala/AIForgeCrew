@@ -326,6 +326,83 @@ def add_comment(identifier: str, payload: CommentCreate) -> dict:
     return {"event_id": eid}
 
 
+# ─────────── Live agent intervention (GA _stop / _keyinfo / _intervene) ────
+# Uses GA's task-intervention mechanism (commit 62ac73c). Harness writes
+# control files into the running agent's task_dir; GA's turn_end_callback
+# polls them and applies. Lets us steer or stop a live agent without
+# restarting the runtime.
+import glob as _glob_mod  # local alias to avoid leaking name
+
+
+def _resolve_active_task_dirs(identifier: str) -> list[str]:
+    """Return GA temp dirs that match a running agent for this ticket."""
+    ga_root_candidates = (
+        os.environ.get("AIFORGE_GA_DIR", ""),
+        "/home/mani/genericagent",
+        "/Users/manikanta/genericagent",
+        os.path.expanduser("~/genericagent"),
+    )
+    for root in ga_root_candidates:
+        if root and os.path.isdir(root):
+            base = os.path.join(root, "temp")
+            return sorted(_glob_mod.glob(
+                os.path.join(base, f"aiforge-{identifier}-*")
+            )) + sorted(_glob_mod.glob(
+                os.path.join(base, f"aiforge-planner-{identifier}-*")
+            ))
+    return []
+
+
+@app.post("/api/tickets/{identifier}/intervene")
+def intervene(identifier: str, payload: dict) -> dict:
+    """Inject a runtime instruction into a running agent.
+
+    payload shape: ``{"kind": "stop|keyinfo|intervene", "body": "..."}``
+    - stop: write `_stop` (empty) — the agent halts at next turn.
+    - keyinfo: write `_keyinfo` with the body — the agent merges it into
+      working memory's key_info.
+    - intervene: write `_intervene` with the body — the agent prepends
+      the body to its next user prompt.
+
+    See GA ga.py:539-542. No-op (404) if no active agent for the ticket.
+    """
+    kind = (payload.get("kind") or "").strip()
+    body = payload.get("body", "")
+    if kind not in ("stop", "keyinfo", "intervene"):
+        raise HTTPException(400, "kind must be one of: stop, keyinfo, intervene")
+    targets = _resolve_active_task_dirs(identifier)
+    if not targets:
+        raise HTTPException(404, f"no active agent task dir for {identifier}")
+    fname = f"_{kind}"
+    written: list[str] = []
+    for d in targets:
+        try:
+            with open(os.path.join(d, fname), "w", encoding="utf-8") as fh:
+                fh.write(body if kind != "stop" else "")
+            written.append(d)
+        except Exception:
+            continue
+    return {"written": written, "kind": kind}
+
+
+@app.post("/api/runtime/session_param")
+def session_param(payload: dict) -> dict:
+    """Per-role LLM param tuning at runtime (GA /session.key=value, commit
+    127a4e6). Updates the agent_config so the NEXT agent run picks new
+    values. Doesn't affect a currently-running agent.
+
+    payload: ``{"role": "doer|planner|...", "key": "temperature|max_tokens|...", "value": "..."}``
+    """
+    role = (payload.get("role") or "").strip()
+    key = (payload.get("key") or "").strip()
+    value = payload.get("value")
+    if not role or not key or value is None:
+        raise HTTPException(400, "role, key, value required")
+    env_var = f"AIFORGE_{role.upper()}_{key.upper()}"
+    os.environ[env_var] = str(value)
+    return {"set": env_var, "value": str(value)}
+
+
 # ─────────────────────────── Metrics ────────────────────────────────────
 @app.get("/api/metrics")
 def metrics() -> dict:
