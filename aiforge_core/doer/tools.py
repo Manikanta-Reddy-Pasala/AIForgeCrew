@@ -561,6 +561,80 @@ def make_apply_implementation(worktree_path: str, scope_guard: ScopeGuard,
     return apply_implementation
 
 
+# ─────────────────────────── ask_explorer (sub-agent) ──────────────────
+
+def make_ask_explorer(worktree_path: str) -> Callable:
+    """Return an ``ask_explorer`` tool that spawns a small ToolCallingAgent
+    on the planner model. The sub-agent has read-only tools (grep,
+    read_file, list_dir) and returns a short summary string. Lets the
+    main Doer offload "find me where X is defined and how it's used"
+    investigations without paying for the verbose tool chatter in its
+    own context.
+
+    Pattern from opencode `explore` and Claude Code's Haiku explorer:
+    the doer asks a question, the explorer drives its own loop, returns
+    distilled answer text only.
+    """
+    from smolagents import LiteLLMModel, ToolCallingAgent
+
+    explorer_base_url = (
+        os.environ.get("AIFORGE_EXPLORER_BASE_URL")
+        or os.environ.get("AIFORGE_PLANNER_BASE_URL")
+        or "http://127.0.0.1:1235/v1"
+    )
+    explorer_model = (
+        os.environ.get("AIFORGE_EXPLORER_MODEL")
+        or os.environ.get("AIFORGE_PLANNER_MODEL")
+        or "openai/gpt-oss-120b"
+    )
+    if not any(explorer_model.startswith(p) for p in
+               ("openai/", "anthropic/", "ollama/")):
+        explorer_model = f"openai/{explorer_model}"
+
+    @tool
+    def ask_explorer(question: str) -> str:
+        """Ask a focused codebase-investigation question. The explorer
+        runs its own grep/read loop and returns a short answer. Use this
+        instead of grepping+reading 5 files yourself.
+
+        Args:
+            question: Natural-language question. Be specific about
+                files, symbols, or behaviour you want explained.
+        """
+        model = LiteLLMModel(
+            model_id=explorer_model,
+            api_base=explorer_base_url,
+            api_key=os.environ.get("LM_STUDIO_API_KEY", "lm-studio"),
+            max_tokens=4096,
+            temperature=0.2,
+        )
+        # Read-only sub-agent: grep + read_file + list_dir only.
+        sub_tools = [
+            make_grep(worktree_path),
+            make_read_file(worktree_path),
+            make_list_dir(worktree_path),
+        ]
+        sub = ToolCallingAgent(
+            tools=sub_tools,
+            model=model,
+            max_steps=int(os.environ.get("AIFORGE_EXPLORER_MAX_STEPS", "8")),
+        )
+        try:
+            answer = sub.run(
+                f"Investigate this question against the worktree at "
+                f"{worktree_path}. Use grep + read_file + list_dir to find "
+                f"the answer, then call final_answer with a 3-8 sentence "
+                f"summary. Do not list every match — synthesize.\n\n"
+                f"Question: {question}"
+            )
+        except Exception as exc:
+            return f"ERROR: explorer failed: {exc}"
+        # ToolCallingAgent.run returns the final_answer string directly.
+        return str(answer)[:6000]
+
+    return ask_explorer
+
+
 # ─────────────────────────── final_answer ───────────────────────────────
 
 @tool
@@ -604,16 +678,30 @@ def make_tools(worktree_path: str, scope_guard: ScopeGuard,
     ]
     # Opt-in: expose graph_rag MCP tools to the Doer when
     # AIFORGE_GRAPH_MCP_ENABLED=1. Doer can then call sym_lookup, impact,
-    # cross_repo_flow, etc. for richer context.
-    try:
-        from aiforge_core.mcp_graph import graph_rag_tools
-        _existing = {getattr(t, "name", None) for t in tools}
-        for gt in graph_rag_tools():
-            if getattr(gt, "name", None) in _existing:
-                continue
-            tools.append(gt)
-    except Exception:
-        pass
+    # cross_repo_flow, etc. for richer context. Default OFF for the
+    # context-strategy eval (tracks A,B,X1,X3 run without it).
+    if os.environ.get("AIFORGE_GRAPH_MCP_ENABLED", "0") == "1":
+        try:
+            from aiforge_core.mcp_graph import graph_rag_tools
+            _existing = {getattr(t, "name", None) for t in tools}
+            for gt in graph_rag_tools():
+                if getattr(gt, "name", None) in _existing:
+                    continue
+                tools.append(gt)
+        except Exception:
+            pass
+    # Opt-in: explorer sub-agent. Spawns a small ToolCallingAgent on
+    # mlx-planner with grep + read_file + list_dir; doer calls
+    # ask_explorer("how does PosController.save() handle MDC?") and
+    # gets a focused summary back instead of grep'ing+reading itself.
+    # Track A condition. AIFORGE_EXPLORER_ENABLED=1.
+    if os.environ.get("AIFORGE_EXPLORER_ENABLED", "0") == "1":
+        try:
+            tools.append(make_ask_explorer(worktree_path))
+        except Exception as exc:
+            # Don't kill agent construction if explorer setup fails;
+            # main doer toolset still works.
+            pass
     # Opt-in web search — AIFORGE_WEB_SEARCH_ENABLED=1. Gives Doer a
     # fallback when the ticket references an external library/API spec
     # not found locally. Off by default (cost + distraction risk).
