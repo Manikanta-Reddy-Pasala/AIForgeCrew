@@ -107,7 +107,7 @@ def start_service(worktree: str, log: object | None = None,
     cmd = ["mvn", "spring-boot:run", "-DskipTests", "-q",
            "-Dspring-boot.run.fork=false"]
     emit(log, "spring_boot_runner.start", worktree=worktree, port=port,
-         log=log_path)
+         log_path=log_path)
     try:
         proc = subprocess.Popen(
             cmd, cwd=worktree, env=env,
