@@ -184,14 +184,40 @@ def run_integration(worktree: str, log: object | None = None,
     emit(log, "integration.endpoint_discovered",
          path=path, controller=controller, business_id=business_id)
 
-    # When smoke against a running service is requested, expect base_url to
-    # already serve the new code (operator pre-deploys, or another step
-    # spawned mvn spring-boot:run). For now we just curl what's there.
+    # 2a) Optionally spawn the doer's branch as a real Spring Boot
+    # service. Only the service we're building runs locally — Mongo,
+    # Redis, NATS, and the other Spring backends are reached via the
+    # aiforge-qa-portforward systemd service (kubectl port-forwards
+    # against the QA cluster). Toggle: AIFORGE_TEST_INTEGRATION_LIVE=1.
+    live = os.environ.get("AIFORGE_TEST_INTEGRATION_LIVE", "0") == "1"
+    spring_proc = None
+    if live:
+        from aiforge_core.test.spring_boot_runner import (
+            start_service, stop_service,
+        )
+        spring_proc, sb_res = start_service(worktree, log=log, port=8090)
+        result.notes.append(
+            f"spring_boot startup_s={sb_res.startup_s} "
+            f"health_ok={sb_res.health_ok} note={sb_res.note}"
+        )
+        if not sb_res.health_ok:
+            # Don't curl a service that didn't come up — record the
+            # diagnostic and bail. stop_service still runs in the
+            # `finally` to clean up the half-started process.
+            stop_service(spring_proc, log=log)
+            result.smoke_ran = False
+            result.test_green = False
+            result.duration_s = round(time.time() - t0, 2)
+            return result
+
     rc, stdout, stderr = _run(
         ["curl", "-s", "-o", "-", "-w", "\n%{http_code}",
          "-m", "20", url],
         timeout=30,
     )
+    if live and spring_proc is not None:
+        from aiforge_core.test.spring_boot_runner import stop_service
+        stop_service(spring_proc, log=log)
     result.smoke_ran = True
     body = (stdout or "")
     code = 0
