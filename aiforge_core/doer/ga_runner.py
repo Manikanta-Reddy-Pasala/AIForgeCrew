@@ -329,12 +329,36 @@ def run_doer_via_ga(
                          counters=counters, last_history=[],
                          cwd=worktree_path)
 
+    # GA plan mode — when the planner produced a checkbox plan, point
+    # GA's plan-mode at it. GA tracks `[ ]`/`[x]` checkboxes in the
+    # plan file, blocks premature "task complete" claims, auto-exits
+    # when all boxes are checked. See ga.py:417-484.
+    plan_md_path = os.path.join(worktree_path, ".aiforge", "plan.md")
+    plan_mode_active = False
+    if os.path.isfile(plan_md_path):
+        try:
+            handler.enter_plan_mode(plan_md_path)
+            plan_mode_active = True
+            emit(log, "ga_runner.plan_mode_on",
+                 ticket=identifier, plan_path=plan_md_path)
+        except Exception as exc:
+            emit(log, "ga_runner.plan_mode_skip",
+                 ticket=identifier, error=str(exc)[:200])
+
     cfg = _doer_llm_config()
     session = LLMSession(cfg=cfg)
     client = ToolClient(session)
 
     tools_schema = _load_tools_schema()
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
+    if plan_mode_active:
+        user_input += (
+            f"\n\n## Plan mode\nGA plan-mode is active. Pace yourself "
+            f"by the checkboxes in {plan_md_path}. After each step "
+            f"completes, edit the plan file in-place and replace `[ ]` "
+            f"with `[x]` for that step. Plan mode exits automatically "
+            f"when all boxes are checked."
+        )
     chunks: list[str] = []
     turn_count = 0
 
