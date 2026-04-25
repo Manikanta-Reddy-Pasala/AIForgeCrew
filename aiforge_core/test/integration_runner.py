@@ -208,7 +208,22 @@ def run_integration(worktree: str, log: object | None = None,
          pass_=result.smoke_pass)
 
     unit_ok = (not result.unit_tests_ran) or result.unit_tests_pass
-    result.test_green = unit_ok and result.smoke_pass
+    # Diff-only mode (AIFORGE_TEST_INTEGRATION_DIFF_ONLY=1): when the
+    # smoke target is unreachable (code==0), accept "endpoint exists in
+    # diff" as proof. Useful when PosClientBackend isn't running on the
+    # gate host — still catches ONE-7-style controller-skip via the
+    # required @GetMapping check above; just skips the live HTTP probe.
+    diff_only = (
+        os.environ.get("AIFORGE_TEST_INTEGRATION_DIFF_ONLY", "0") == "1"
+    )
+    if diff_only and result.smoke_status_code == 0:
+        result.notes.append(
+            "diff-only mode: endpoint present in diff, live smoke skipped "
+            "(target unreachable)"
+        )
+        result.test_green = unit_ok
+    else:
+        result.test_green = unit_ok and result.smoke_pass
     result.duration_s = round(time.time() - t0, 2)
     return result
 
