@@ -3,27 +3,27 @@
   "agent_config": {
     "doer": {
       "provider": "local",
-      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/gemma-4-31B-it-GGUF",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit",
       "base_url": "http://127.0.0.1:1234/v1"
     },
     "feedback": {
       "provider": "local",
-      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/gemma-4-31B-it-GGUF",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit",
       "base_url": "http://127.0.0.1:1234/v1"
     },
     "learner": {
       "provider": "local",
-      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/gemma-4-31B-it-GGUF",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit",
       "base_url": "http://127.0.0.1:1234/v1"
     },
     "supervisor": {
       "provider": "local",
-      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/gemma-4-31B-it-GGUF",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit",
       "base_url": "http://127.0.0.1:1234/v1"
     },
     "chat": {
       "provider": "local",
-      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/gemma-4-31B-it-GGUF",
+      "model": "/Users/manikanta/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit",
       "base_url": "http://127.0.0.1:1234/v1"
     },
     "planner": {
@@ -34,7 +34,7 @@
   },
   "runtime_env": {
     "AIFORGE_DOER_BASE_URL": "http://127.0.0.1:1234",
-    "AIFORGE_DOER_MODEL": "/Users/manikanta/.lmstudio/models/lmstudio-community/gemma-4-31B-it-GGUF",
+    "AIFORGE_DOER_MODEL": "/Users/manikanta/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit",
     "AIFORGE_DOER_TEMP": "0.05",
     "AIFORGE_DOER_TOP_P": "0.92",
     "AIFORGE_DOER_THINK": "1",
