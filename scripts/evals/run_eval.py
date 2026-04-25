@@ -35,8 +35,14 @@ FIXTURES_DIR = REPO_ROOT / "evals" / "fixtures"
 RESULTS_DIR = REPO_ROOT / "evals" / "results"
 DEFAULT_API = os.environ.get("AIFORGE_EVAL_API", "http://192.168.70.185:8799")
 
-TERMINAL_STATUSES = {"done", "DONE", "error", "ERROR", "failed", "FAILED",
-                     "cancelled", "canceled", "CANCELLED", "CANCELED"}
+TERMINAL_STATUSES = {
+    "done", "DONE", "completed", "COMPLETED",
+    "error", "ERROR", "failed", "FAILED",
+    "cancelled", "canceled", "CANCELLED", "CANCELED",
+    # blocked = supervisor halted retries (e.g. feedback verdict=fail, max
+    # rounds hit). It's terminal for our eval — no further work happens.
+    "blocked", "BLOCKED",
+}
 
 
 def _load_fixture(fid: str) -> dict:
@@ -115,19 +121,48 @@ def _compute_metrics(trace_events: list[dict],
         "describe_repo", "graph_query", "raw_cypher", "ddl",
     }
 
+    total_dur_ms = 0
+    estimated_prompt_chars = 0
+    estimated_completion_chars = 0
     for ev in trace_events:
-        ai = ev.get("aiforge") or ev.get("extra", {}).get("aiforge", {}) or {}
-        # Top-level event may carry aiforge differently across log formats.
-        if not ai and isinstance(ev, dict) and "messages" in ev:
-            ai = ev
+        # Events arrive with aiforge fields at top level (logging_setup
+        # flattens them); older formats nest under "aiforge". Try both.
+        ai = ev.get("aiforge") or ev
         if ev.get("event") != "llm.call":
             continue
         llm_call_count += 1
-        usage = (ai.get("usage") or {}) or {}
-        if isinstance(usage, dict):
+        total_dur_ms += int(ai.get("dur_ms") or 0)
+        usage = ai.get("usage")
+        if isinstance(usage, dict) and usage:
             prompt_toks += int(usage.get("prompt_tokens") or 0)
             completion_toks += int(usage.get("completion_tokens") or 0)
             total_toks += int(usage.get("total_tokens") or 0)
+        else:
+            # mlx_lm doesn't report usage. Fall back to char-length /4
+            # estimate for relative-comparison purposes. (Absolute numbers
+            # are off by ~10-20% vs tiktoken but cross-track ratios stay
+            # meaningful.)
+            for m in (ai.get("messages") or []):
+                content = m.get("content") if isinstance(m, dict) else None
+                if isinstance(content, str):
+                    estimated_prompt_chars += len(content)
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict):
+                            t = part.get("text") or ""
+                            if isinstance(t, str):
+                                estimated_prompt_chars += len(t)
+            resp_obj = ai.get("response") or {}
+            resp_content = resp_obj.get("content") if isinstance(resp_obj, dict) else None
+            if isinstance(resp_content, str):
+                estimated_completion_chars += len(resp_content)
+            tcalls_resp = resp_obj.get("tool_calls") if isinstance(resp_obj, dict) else None
+            if isinstance(tcalls_resp, list):
+                for tc in tcalls_resp:
+                    if isinstance(tc, dict):
+                        args = (tc.get("function") or {}).get("arguments") or ""
+                        if isinstance(args, str):
+                            estimated_completion_chars += len(args)
         # Tool call detection: response.tool_calls is a list of dicts.
         resp = ai.get("response") or {}
         tcalls = resp.get("tool_calls") if isinstance(resp, dict) else None
@@ -148,6 +183,11 @@ def _compute_metrics(trace_events: list[dict],
                 graph_rag_calls += 1
             elif name == "ask_explorer":
                 explorer_calls += 1
+    # Apply char-based fallback when no native usage was reported.
+    if total_toks == 0 and estimated_prompt_chars > 0:
+        prompt_toks = estimated_prompt_chars // 4
+        completion_toks = estimated_completion_chars // 4
+        total_toks = prompt_toks + completion_toks
 
     final_status = ticket["status"]
     final_answer_reached = any(
@@ -166,9 +206,11 @@ def _compute_metrics(trace_events: list[dict],
         "compile_pass": bool(compile_pass),
         "wall_clock_s": round(wall_clock_s, 1),
         "llm_call_count": llm_call_count,
+        "llm_total_dur_ms": total_dur_ms,
         "prompt_tokens": prompt_toks,
         "completion_tokens": completion_toks,
         "total_tokens": total_toks or (prompt_toks + completion_toks),
+        "tokens_estimated": estimated_prompt_chars > 0,
         "tool_call_distribution": dict(sorted(
             tool_call_counts.items(), key=lambda kv: -kv[1])),
         "read_file_calls": read_file_calls,

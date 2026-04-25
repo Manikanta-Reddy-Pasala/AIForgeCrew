@@ -1,31 +1,30 @@
 id: F3
-name: "Multi-class Java refactor (compile-gated)"
+name: "Multi-class extract: BusinessProductValidationService"
 project: PosClientBackend
 assignee_role: developer
 priority: medium
 labels: [eval, context-strategy]
 max_turns: 40
-title: "Extract ProductPriceCalculator from BusinessProductsController"
+title: "Extract BusinessProductValidationService from BusinessProductsController"
 body: |
   ## Goal
-  Pull pricing logic out of `BusinessProductsController.java` into a new `ProductPriceCalculator` service class. Behavior must be identical.
+  Pull the per-request validation calls that `BusinessProductsController` makes against `serialProductValidationService` into a thin new `BusinessProductValidationService` Spring bean. Behaviour must be identical.
 
   ## Why
-  Pricing math is being duplicated across controllers. Centralize it.
+  Validation is being invoked inline from controller methods. We want to centralize it so other callers can reuse the same checks.
 
   ## Acceptance criteria
-  1. New file: `PosClientBackend/src/main/java/com/pos/backend/service/ProductPriceCalculator.java` annotated `@Service`.
-  2. The three private methods on `BusinessProductsController` that compute price (`calculateBasePrice`, `applyTaxBreakup`, `applyDiscount` — or their actual names; locate them) are MOVED to the new class as public methods, signatures unchanged.
-  3. `BusinessProductsController` now constructor-injects `ProductPriceCalculator` and delegates to it. No inline duplication left.
-  4. All call sites within `BusinessProductsController` updated.
-  5. `mvn -pl PosClientBackend compile` passes.
-  6. `mvn -pl PosClientBackend test -Dtest='*Product*'` passes (existing tests unchanged).
+  1. Create a new file `src/main/java/com/pos/backend/feature/businessProduct/BusinessProductValidationService.java`. Annotate it `@Service` (`org.springframework.stereotype.Service`) with `@AllArgsConstructor`. It must constructor-inject the existing `SerialProductValidationService` (do NOT instantiate it manually).
+  2. Move every call site that goes `serialProductValidationService.<method>(...)` from `BusinessProductsController.java` into a method on the new class, and have the controller delegate via the new service.
+  3. Replace the `private final SerialProductValidationService serialProductValidationService;` field in `BusinessProductsController` with `private final BusinessProductValidationService businessProductValidationService;` (Lombok `@AllArgsConstructor` already generates the constructor — no manual constructor edit needed).
+  4. No behaviour change. The exact same `serialProductValidationService` methods must run, with the same arguments, in the same order, on every code path.
+  5. `mvn -pl PosClientBackend -DskipTests compile` must pass.
 
-  ## Files (start here, may need more)
-  - PosClientBackend/src/main/java/com/pos/backend/controller/BusinessProductsController.java
-  - PosClientBackend/src/main/java/com/pos/backend/service/ProductPriceCalculator.java (new)
+  ## Files
+  - PosClientBackend/src/main/java/com/pos/backend/feature/businessProduct/BusinessProductsController.java
+  - PosClientBackend/src/main/java/com/pos/backend/feature/businessProduct/BusinessProductValidationService.java (new)
 expected:
   files_modified_min: 2
   files_modified_must_include:
-    - "PosClientBackend/src/main/java/com/pos/backend/service/ProductPriceCalculator.java"
-    - "PosClientBackend/src/main/java/com/pos/backend/controller/BusinessProductsController.java"
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/businessProduct/BusinessProductValidationService.java"
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/businessProduct/BusinessProductsController.java"

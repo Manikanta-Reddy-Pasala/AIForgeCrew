@@ -5,23 +5,21 @@ assignee_role: developer
 priority: medium
 labels: [eval, context-strategy]
 max_turns: 25
-title: "Add request-correlation MDC to PosController"
+title: "Add entry log to every public handler in SaleController"
 body: |
   ## Goal
-  Inject an MDC-based requestId into every request handled by `PosController` so log lines can be grouped by request.
-
-  ## Context
-  We already do this in `BusinessController.java` — see the `try { MDC.put("requestId", ...) } finally { MDC.clear() }` block at the top of each handler. Mirror that pattern.
+  Every public handler method on `SaleController` must log a single line at entry naming the method.
 
   ## Acceptance criteria
-  1. `PosController.java`: every public handler method puts `requestId = UUID.randomUUID().toString()` into MDC at entry and calls `MDC.clear()` in a finally block.
-  2. No new dependencies. Use `org.slf4j.MDC` (already imported elsewhere).
-  3. `mvn -pl PosClientBackend compile` passes.
-  4. No other files modified.
+  1. For every `public` method that returns `Mono<…>` or `Flux<…>` in `src/main/java/com/pos/backend/feature/sales/SaleController.java`, add a `log.info("[SaleController.<methodName>] called")` as the first statement of the method body.
+  2. Use the existing `log` field — the class already has `@Slf4j` from Lombok, so `log` is in scope. Do NOT add a new logger.
+  3. Do not change any method signature, return type, parameter, or other behaviour.
+  4. Do not modify any other file.
+  5. `mvn -pl PosClientBackend -DskipTests compile` must pass after the change.
 
-  ## Files
-  - PosClientBackend/src/main/java/com/pos/backend/controller/PosController.java
+  ## File to edit
+  - PosClientBackend/src/main/java/com/pos/backend/feature/sales/SaleController.java
 expected:
   files_modified_max: 1
   files_modified_must_include:
-    - "PosClientBackend/src/main/java/com/pos/backend/controller/PosController.java"
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/sales/SaleController.java"
