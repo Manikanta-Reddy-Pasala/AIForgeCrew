@@ -77,21 +77,28 @@ def _enumerate_repo_files(root: Path, exclude: set[str],
 
 
 # ──────── Graphify / tree-sitter neighbour symbols (graph hop) ─────────
+# Match by suffix — the indexer stores absolute paths from whatever
+# host did the scan (Mac Studio: `/Users/manikanta/...`; NUC reindex:
+# `/home/mani/...`). Doer passes either rel or abs paths, so we use
+# ENDS WITH on the repo-relative tail.
+#
+# Rel names come from `treesitter_ingest` (CALLS, DEFINES) and the
+# Graphify mirror (additional CALLS/IMPORTS). DEFINES_METHOD doesn't
+# exist; checked actual rel inventory before listing here.
 _NEIGHBOURS_CYPHER = """
 UNWIND $paths AS path
-OPTIONAL MATCH (f:File {path: path})
-OPTIONAL MATCH (s:Symbol {file_path: path})
-WITH collect(DISTINCT f) AS files, collect(DISTINCT s) AS syms
+OPTIONAL MATCH (s:Symbol)
+WHERE s.file_path ENDS WITH path
+WITH collect(DISTINCT s) AS syms
 UNWIND syms AS center
-OPTIONAL MATCH (center)-[r:CALLS|IMPORTS|EXTENDS|IMPLEMENTS|DEFINES_METHOD]-(other:Symbol)
+OPTIONAL MATCH (center)-[r:CALLS|IMPORTS|EXTENDS|IMPLEMENTS|DEFINES]-(other:Symbol)
 WHERE other <> center
-WITH center, type(r) AS rel, other
 RETURN DISTINCT
   center.fqn AS from_fqn,
-  rel,
+  type(r) AS rel,
   other.fqn AS to_fqn,
   other.kind AS kind,
-  coalesce(other.signature, '') AS sig
+  coalesce(other.return_type, '') + ' ' + coalesce(other.simple, '') AS sig
 LIMIT $limit
 """
 
@@ -116,14 +123,22 @@ def graph_neighbours(file_paths: list[str], limit: int = 30) -> str:
     uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
     user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
     pw = os.environ.get("AIFORGE_NEO4J_PASSWORD", "password")
-    # Strip absolute prefix; Neo4j stores repo-relative paths.
-    rel_paths: list[str] = []
+    # Reduce to the repo-relative tail. The indexer keeps the host-side
+    # absolute path; matching by ENDS WITH on the relative suffix is
+    # both fast (suffix index for Symbol.file_path is implicit on small
+    # corpora) and host-agnostic.
+    suffix_paths: set[str] = set()
     for p in file_paths:
-        if "PosClientBackend/" in p:
-            rel_paths.append(p[p.index("PosClientBackend/") + len("PosClientBackend/"):])
+        # Drop everything before "src/main/" or first repo marker.
+        for marker in ("src/main/", "src/test/"):
+            idx = p.find(marker)
+            if idx >= 0:
+                suffix_paths.add(p[idx:])
+                break
         else:
-            rel_paths.append(p)
-    rel_paths = list({*rel_paths, *file_paths})[:20]
+            # Fall back to the relative path as-is.
+            suffix_paths.add(p)
+    rel_paths = list(suffix_paths)[:20]
     rows: list[dict] = []
     try:
         drv = GraphDatabase.driver(uri, auth=(user, pw))
