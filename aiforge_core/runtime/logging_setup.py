@@ -83,8 +83,14 @@ def get_logger(role: str, *, ticket: str | None = None) -> Logger:
     return logger
 
 
-def emit(log: Logger, event: str, **fields) -> None:
-    """Emit a structured event on an already-configured role logger."""
+def emit(log: Logger | None, event: str, **fields) -> None:
+    """Emit a structured event on an already-configured role logger.
+
+    ``log`` may be ``None`` — silently no-op so callers can be invoked
+    from tests / smoke scripts without standing up a logger first.
+    """
+    if log is None:
+        return
     ctx = {
         "role": getattr(log, "_aiforge_role", None),
         "ticket": getattr(log, "_aiforge_ticket", None),

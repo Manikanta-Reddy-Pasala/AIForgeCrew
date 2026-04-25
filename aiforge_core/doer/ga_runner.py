@@ -620,24 +620,36 @@ def run_doer_via_ga(
             "counters": counters,
         }
 
-    # Commit / push are handled by run_smolagents_doer's _git_commit_push_pr
-    # in the original orchestrator path. We borrow that helper rather than
-    # duplicating it.
+    # Commit ONLY here. Push + PR are deferred to the AiForgePublishAgent
+    # so the deterministic feedback gate (and integration smoke) can
+    # veto a doomed change before it lands on origin. Setting
+    # AIFORGE_PUBLISH_BYPASS_GATE=1 reverts to the legacy atomic path
+    # for emergency manual flows.
+    bypass = os.environ.get("AIFORGE_PUBLISH_BYPASS_GATE", "0") == "1"
+    pub: dict = {"commit_sha": None, "pushed": False, "pr_url": None}
     try:
-        from .orchestrator_bridge import _git_commit_push_pr
-        pub = _git_commit_push_pr(
-            ticket, worktree_path, final_summary, changed_files, log,
-        )
+        if bypass:
+            from .orchestrator_bridge import _git_commit_push_pr
+            pub = _git_commit_push_pr(
+                ticket, worktree_path, final_summary, changed_files, log,
+            )
+        else:
+            from .orchestrator_bridge import _git_commit_only
+            commit_res = _git_commit_only(
+                ticket, worktree_path, changed_files, log,
+            )
+            pub.update(commit_res)
+            emit(log, "ga_runner.publish_deferred", ticket=identifier,
+                 commit_sha=pub.get("commit_sha"))
     except Exception as exc:
         emit(log, "ga_runner.publish_failed", ticket=identifier, err=str(exc)[:200])
-        pub = {"commit_sha": None, "pushed": False, "pr_url": None}
 
     if ticket_id is not None:
         comment_body = (final_summary or "(no summary)")[:3500]
         if pub.get("pr_url"):
             comment_body = f"{comment_body}\n\nPR: {pub['pr_url']}"
         elif pub.get("commit_sha"):
-            comment_body = f"{comment_body}\n\nCommit: {pub['commit_sha']}"
+            comment_body = f"{comment_body}\n\nCommit: {pub['commit_sha']} (push pending gate)"
         tickets_mod.add_event(
             ticket_id, "doer", "comment",
             body=comment_body[:4000],

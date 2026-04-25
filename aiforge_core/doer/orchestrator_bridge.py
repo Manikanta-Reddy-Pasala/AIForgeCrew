@@ -153,6 +153,126 @@ def _extract_acceptance(body: str) -> str:
     return "_(see ticket body)_"
 
 
+def _git_commit_only(
+    ticket: object,
+    worktree_path: str,
+    changed_files: list[str],
+    log: object,
+) -> dict:
+    """Commit local diff into the worktree branch only — no push, no PR.
+
+    Returns ``{"commit_sha": <12-char hex or None>}``. Used by the GA
+    runner so the feedback gate has a chance to veto before publishing.
+    """
+    result = {"commit_sha": None}
+    identifier = getattr(ticket, "identifier", "ticket")  # type: ignore[attr-defined]
+    raw_title = getattr(ticket, "title", "") or identifier  # type: ignore[attr-defined]
+    title = _clean_pr_title(raw_title)
+    try:
+        _run(["git", "add", "-A"], cwd=worktree_path, timeout=30)
+        msg = (
+            f"{title}\n\n"
+            f"Ticket: {identifier}\n\n"
+            f"Files changed:\n" + "\n".join(f"- {p}" for p in changed_files[:30]) +
+            "\n"
+        )
+        rc, out, err = _run(
+            ["git", "commit", "-m", msg],
+            cwd=worktree_path, timeout=60,
+        )
+        if rc != 0:
+            emit(log, "doer.commit.failed", ticket=identifier,
+                 err=(err or out)[-200:])
+            return result
+        sha_rc, sha_out, _ = _run(
+            ["git", "rev-parse", "HEAD"], cwd=worktree_path, timeout=10,
+        )
+        commit_sha = sha_out.strip()[:12] if sha_rc == 0 else None
+        result["commit_sha"] = commit_sha
+        emit(log, "doer.commit.ok", ticket=identifier, sha=commit_sha,
+             files=len(changed_files))
+    except Exception as exc:
+        emit(log, "doer.commit.exception", ticket=identifier, err=str(exc)[:200])
+    return result
+
+
+def _git_push_pr(
+    ticket: object,
+    worktree_path: str,
+    summary_text: str,
+    changed_files: list[str],
+    log: object,
+) -> dict:
+    """Push the already-committed branch and open a PR (GitHub only).
+
+    Returns ``{"pushed": bool, "pr_url": str|None}``. Idempotent — caller
+    only invokes this after the feedback gate verdict is pass. Skipping
+    the commit step (it's already in the prior commit on HEAD).
+    """
+    result = {"pushed": False, "pr_url": None}
+    identifier = getattr(ticket, "identifier", "ticket")  # type: ignore[attr-defined]
+    raw_title = getattr(ticket, "title", "") or identifier  # type: ignore[attr-defined]
+    branch = getattr(ticket, "branch", None)  # type: ignore[attr-defined]
+    body = getattr(ticket, "body", "") or ""  # type: ignore[attr-defined]
+    title = _clean_pr_title(raw_title)
+    acceptance_block = _extract_acceptance(body)
+
+    if not branch:
+        emit(log, "doer.push.skipped", ticket=identifier, reason="no_branch")
+        return result
+    try:
+        rc, _, err = _run(
+            ["git", "push", "--force-with-lease", "-u", "origin", branch],
+            cwd=worktree_path, timeout=180,
+        )
+        if rc != 0:
+            emit(log, "doer.push.failed", ticket=identifier, err=err[-200:])
+            return result
+        result["pushed"] = True
+        emit(log, "doer.push.ok", ticket=identifier, branch=branch)
+    except Exception as exc:
+        emit(log, "doer.push.exception", ticket=identifier, err=str(exc)[:200])
+        return result
+
+    if not shutil.which("gh"):
+        emit(log, "doer.pr.skipped", ticket=identifier, reason="gh_missing")
+        return result
+    rc, origin_url, _ = _run(
+        ["git", "remote", "get-url", "origin"], cwd=worktree_path, timeout=10,
+    )
+    origin_url = origin_url.strip()
+    if rc != 0 or not re.search(r"github\.com", origin_url):
+        emit(log, "doer.pr.skipped", ticket=identifier,
+             reason="origin_not_github", origin=origin_url[:80])
+        return result
+    try:
+        pr_title = f"{identifier}: {title}"[:120]
+        files_block = "\n".join(f"- `{p}`" for p in changed_files[:30]) or "_(no files)_"
+        pr_body = (
+            f"## Ticket\n{identifier}\n\n"
+            f"## What\n{title}\n\n"
+            f"## Files changed\n{files_block}\n\n"
+            f"## Acceptance criteria\n{acceptance_block}\n\n"
+            f"---\n"
+            f"Automated PR by AIForgeCrew. Branch: `{branch}`"
+        )
+        rc, pr_url, err = _run(
+            ["gh", "pr", "create",
+             "--title", pr_title,
+             "--body", pr_body,
+             "--head", branch],
+            cwd=worktree_path, timeout=120,
+        )
+        if rc != 0:
+            emit(log, "doer.pr.failed", ticket=identifier, err=(err or pr_url)[-300:])
+            return result
+        result["pr_url"] = pr_url.strip()
+        emit(log, "doer.pr.ok", ticket=identifier, url=result["pr_url"])
+    except Exception as exc:
+        emit(log, "doer.pr.exception", ticket=identifier, err=str(exc)[:200])
+    return result
+
+
 def _git_commit_push_pr(
     ticket: object,
     worktree_path: str,
@@ -160,10 +280,10 @@ def _git_commit_push_pr(
     changed_files: list[str],
     log: object,
 ) -> dict:
-    """Commit the diff, push the branch, open a PR if the origin is GitHub.
-
-    Returns a dict with keys: commit_sha, pushed, pr_url — each may be None
-    if that step was skipped or failed (fail-soft).
+    """Legacy: commit + push + PR atomically. Kept for callers that
+    still want the all-in-one path. New code should use
+    ``_git_commit_only`` followed by ``_git_push_pr`` so the feedback
+    gate can veto between commit and publish.
     """
     result = {"commit_sha": None, "pushed": False, "pr_url": None}
     identifier = getattr(ticket, "identifier", "ticket")  # type: ignore[attr-defined]

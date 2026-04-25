@@ -164,6 +164,35 @@ def _ticket_from_state(state: dict) -> tickets_mod.Ticket | None:
     return tickets_mod.get(int(tid))
 
 
+# Markers that indicate a ticket SHOULD result in a curl-able HTTP
+# endpoint. When any of these appear in title or body, the workflow
+# auto-enables the IntegrationTestAgent and the feedback gate demands
+# test_green ≥ 1 — closing the ONE-7-style hole where the doer commits
+# only a repository method and skips the controller.
+_ENDPOINT_TICKET_MARKERS = (
+    "@getmapping", "@postmapping", "@putmapping", "@deletemapping",
+    "@requestmapping", "endpoint reachable",
+    "get /v1/", "get /api/", "post /v1/", "post /api/",
+    "expose a new get endpoint", "expose a new post endpoint",
+    "new api", "new endpoint", "rest endpoint",
+    "/v1/api/", "controller method",
+)
+
+
+def _ticket_needs_endpoint_smoke(ticket: tickets_mod.Ticket) -> bool:
+    """True when ticket text describes endpoint creation/modification.
+
+    Conservative — false positives just add a smoke step (cheap), false
+    negatives let bad doer commits through (expensive). Markers chosen
+    to match how product/PM phrases new-API tickets.
+    """
+    haystack = " ".join([
+        (ticket.title or ""),
+        (ticket.body or ""),
+    ]).lower()
+    return any(m in haystack for m in _ENDPOINT_TICKET_MARKERS)
+
+
 # ─────────────────────────── Planner agent ──────────────────────────────
 class AiForgePlannerAgent(BaseAgent):
     """ADK wrapper around the existing smolagents Planner.
@@ -352,6 +381,21 @@ class AiForgeDoerAgent(BaseAgent):
         if "compile" in stop_reason or stop_reason == "scope_violation":
             compile_fail_count += 1
 
+        # Record the changed files so the publish agent can build a
+        # PR description without reaching back into git.
+        changed_files: list[str] = []
+        if worktree and summary.get("commit_sha"):
+            try:
+                from aiforge_core.doer.orchestrator_bridge import _run as _bridge_run
+                rc, out, _ = _bridge_run(
+                    ["git", "diff", "--name-only", "HEAD~1..HEAD"],
+                    cwd=worktree, timeout=15,
+                )
+                if rc == 0:
+                    changed_files = [p.strip() for p in out.splitlines() if p.strip()]
+            except Exception:
+                changed_files = []
+
         state_delta: dict[str, Any] = {
             S_WORKTREE: worktree,
             S_LAST_DOER_SUMMARY: summary.get("summary", "")[:2000],
@@ -360,6 +404,7 @@ class AiForgeDoerAgent(BaseAgent):
             "aiforge.doer.counters": summary.get("counters") or {},
             "aiforge.doer.commit_sha": summary.get("commit_sha"),
             "aiforge.doer.pr_url": summary.get("pr_url"),
+            "aiforge.doer.changed_files": changed_files,
         }
 
         text = summary.get("summary") or f"[doer] stop_reason={stop_reason}"
@@ -526,6 +571,110 @@ def _parse_verdict(text: str) -> dict:
             "fixlist": []}
 
 
+class AiForgeIntegrationTestAgent(BaseAgent):
+    """Run unit tests + smoke the new endpoint with real MCP-discovered data.
+
+    Sits between Doer and Feedback in the doer_chain loop. Reads the
+    doer's commit, discovers any new @GetMapping endpoint via diff,
+    fetches a real ``businessId`` from oneshell-mongo-qa MCP, curls
+    the endpoint against AIFORGE_TEST_BASE_URL (default
+    http://127.0.0.1:8090), and writes test_green into session state
+    for the deterministic feedback gate to consider.
+
+    Gated by AIFORGE_TEST_INTEGRATION=1 so existing flows aren't
+    affected when the QA service isn't running.
+    """
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        state = ctx.session.state
+        ticket = _ticket_from_state(state)
+        log = get_logger("adk.integration")
+        if ticket is None:
+            yield _yield_text_event(
+                self.name, "[integration] no ticket in state",
+                ctx.invocation_id,
+            )
+            return
+        worktree = state.get(S_WORKTREE)
+        if not worktree:
+            emit(log, "adk.integration.skipped",
+                 ticket=ticket.identifier, reason="no_worktree")
+            yield _yield_text_event(
+                self.name, "[integration] skipped: no worktree",
+                ctx.invocation_id,
+            )
+            return
+        explicit_flag = os.environ.get(
+            "AIFORGE_TEST_INTEGRATION", "0"
+        ) == "1"
+        endpoint_ticket = _ticket_needs_endpoint_smoke(ticket)
+        if not (explicit_flag or endpoint_ticket):
+            emit(log, "adk.integration.skipped",
+                 ticket=ticket.identifier,
+                 reason="non_endpoint_ticket")
+            yield _yield_text_event(
+                self.name,
+                "[integration] skipped: not an endpoint ticket",
+                ctx.invocation_id,
+            )
+            return
+        from aiforge_core.test.integration_runner import run_integration
+        emit(log, "adk.integration.start",
+             ticket=ticket.identifier, worktree=worktree)
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(
+                None, run_integration, worktree, log,
+            )
+        except Exception as exc:  # noqa: BLE001
+            emit(log, "adk.integration.exception",
+                 ticket=ticket.identifier, error=str(exc)[:300])
+            yield _yield_text_event(
+                self.name, f"[integration] exception: {exc}",
+                ctx.invocation_id,
+            )
+            return
+
+        emit(log, "adk.integration.done",
+             ticket=ticket.identifier,
+             test_green=result.test_green,
+             unit_pass=result.unit_tests_pass,
+             smoke_pass=result.smoke_pass,
+             smoke_status=result.smoke_status_code,
+             endpoint=result.smoke_endpoint,
+             business_id=result.business_id,
+             duration_s=result.duration_s)
+
+        existing = state.get("aiforge.doer.counters") or {}
+        merged = dict(existing)
+        merged["test_green"] = 1 if result.test_green else 0
+        merged["smoke_status"] = result.smoke_status_code
+        state_delta = {
+            "aiforge.doer.counters": merged,
+            "aiforge.test.endpoint": result.smoke_endpoint,
+            "aiforge.test.business_id": result.business_id,
+            "aiforge.test.body": result.smoke_body_excerpt,
+            "aiforge.test.notes": "; ".join(result.notes)[:400],
+        }
+        text = (
+            f"[integration] test_green={result.test_green} "
+            f"smoke={result.smoke_status_code} url={result.smoke_endpoint} "
+            f"business_id={result.business_id or '(none)'} "
+            f"unit_ran={result.unit_tests_ran}"
+        )
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=genai_types.Content(
+                role="model",
+                parts=[genai_types.Part(text=text)],
+            ),
+            actions=EventActions(state_delta=state_delta),
+        )
+
+
 class AiForgeFeedbackAgent(BaseAgent):
     """Single-shot LiteLLM verdict on the doer's diff.
 
@@ -572,22 +721,55 @@ class AiForgeFeedbackAgent(BaseAgent):
         except Exception:
             pass
 
+        # When IntegrationTestAgent ran, test_green gates pass too.
+        # Required when either:
+        #  (a) AIFORGE_TEST_INTEGRATION=1 was set explicitly, OR
+        #  (b) the ticket auto-flags as endpoint work (body mentions
+        #      "@GetMapping", "GET /…", "endpoint reachable at", etc.)
+        # — auto-flag prevents silent doer skips like ONE-7 where the
+        # repo method got added but the controller was never wired up.
+        test_green_raw = counters.get("test_green")
+        endpoint_ticket = _ticket_needs_endpoint_smoke(ticket)
+        explicit_flag = os.environ.get(
+            "AIFORGE_TEST_INTEGRATION", "0"
+        ) == "1"
+        test_green_required = (
+            (explicit_flag or endpoint_ticket)
+            and test_green_raw is not None
+        )
+        # If the integration agent never even ran but the ticket needs
+        # one (endpoint_ticket=True, agent absent), force a fail rather
+        # than rubber-stamping. The doer_chain rebuild step ensures the
+        # agent is present whenever endpoint_ticket fires; this branch
+        # is the safety net for misconfigured runs.
+        if endpoint_ticket and test_green_raw is None:
+            test_green_required = True
+        test_green = int(test_green_raw or 0)
         if scope_violations > 0:
             verdict = "scope_violation"
             reason = (f"ScopeGuard rejected {scope_violations} write(s)")
             fixlist: list[str] = []
-        elif edit_block_ok >= 1 and compile_green >= 1:
+        elif edit_block_ok >= 1 and compile_green >= 1 and (
+            not test_green_required or test_green >= 1
+        ):
             verdict = "pass"
             reason = (
                 f"compile_green={compile_green} edit_block_ok={edit_block_ok} "
-                f"commit={commit_sha or 'none'}"
+                f"test_green={test_green} commit={commit_sha or 'none'}"
             )
             fixlist = []
         else:
             verdict = "fail"
+            missing: list[str] = []
+            if edit_block_ok < 1:
+                missing.append("≥1 successful edit")
+            if compile_green < 1:
+                missing.append("compile-green run")
+            if test_green_required and test_green < 1:
+                missing.append("integration test green")
             reason = (
                 f"edit_block_ok={edit_block_ok} compile_green={compile_green} "
-                f"— doer must produce ≥1 successful edit AND a compile-green run"
+                f"test_green={test_green} — missing: {', '.join(missing)}"
             )
             fixlist = []
 
@@ -659,18 +841,146 @@ class AiForgeFeedbackAgent(BaseAgent):
         )
 
 
+# ─────────────────────────── Publish agent ─────────────────────────────
+class AiForgePublishAgent(BaseAgent):
+    """Push the doer's commit + open a PR — gated on feedback verdict.
+
+    Runs AFTER the doer_chain LoopAgent exits. Reads the final feedback
+    verdict from session state and only publishes when verdict==pass.
+    On scope_violation / fail it leaves the local commit in the
+    worktree (operator can inspect, push manually, or scrap).
+
+    Closes the loophole where ONE-7 pushed PR #107 with no controller
+    and no smoke test ever running — the gate had no veto power because
+    the GA runner published atomically before the gate ran.
+    """
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        state = ctx.session.state
+        ticket = _ticket_from_state(state)
+        log = get_logger("adk.publish")
+        if ticket is None:
+            yield _yield_text_event(
+                self.name, "[publish] no ticket in state",
+                ctx.invocation_id,
+            )
+            return
+        verdict = state.get(S_VERDICT, "fail")
+        worktree = state.get(S_WORKTREE)
+        commit_sha = state.get("aiforge.doer.commit_sha")
+        if verdict != "pass":
+            emit(log, "adk.publish.skipped",
+                 ticket=ticket.identifier, verdict=verdict,
+                 commit_sha=commit_sha)
+            tickets_mod.add_event(
+                ticket.id, "publish", "comment",
+                body=(f"Publish skipped — feedback verdict={verdict}. "
+                      f"Local commit {commit_sha or '(none)'} left in "
+                      f"worktree {worktree or '(unknown)'} for inspection."),
+                metadata={"verdict": verdict, "commit_sha": commit_sha},
+            )
+            yield _yield_text_event(
+                self.name, f"[publish] skipped — verdict={verdict}",
+                ctx.invocation_id,
+            )
+            return
+        if not worktree or not commit_sha:
+            emit(log, "adk.publish.no_commit",
+                 ticket=ticket.identifier,
+                 worktree=worktree, commit_sha=commit_sha)
+            yield _yield_text_event(
+                self.name, "[publish] no worktree/commit to push",
+                ctx.invocation_id,
+            )
+            return
+        # Reuse the existing helper. Get the changed files list from
+        # session state if available, else recompute via git.
+        changed_files = state.get("aiforge.doer.changed_files") or []
+        if not changed_files:
+            try:
+                from aiforge_core.doer.orchestrator_bridge import _run as _bridge_run
+                rc, out, _ = _bridge_run(
+                    ["git", "diff", "--name-only", "HEAD~1..HEAD"],
+                    cwd=worktree, timeout=15,
+                )
+                if rc == 0:
+                    changed_files = [p.strip() for p in out.splitlines() if p.strip()]
+            except Exception:
+                changed_files = []
+        from aiforge_core.doer.orchestrator_bridge import _git_push_pr
+        emit(log, "adk.publish.start",
+             ticket=ticket.identifier, commit_sha=commit_sha,
+             files=len(changed_files))
+        loop = asyncio.get_event_loop()
+        try:
+            res = await loop.run_in_executor(
+                None, _git_push_pr,
+                ticket, worktree, "", changed_files, log,
+            )
+        except Exception as exc:  # noqa: BLE001
+            emit(log, "adk.publish.exception",
+                 ticket=ticket.identifier, error=str(exc)[:300])
+            yield _yield_text_event(
+                self.name, f"[publish] exception: {exc}",
+                ctx.invocation_id,
+            )
+            return
+        emit(log, "adk.publish.done",
+             ticket=ticket.identifier,
+             pushed=res.get("pushed"),
+             pr_url=res.get("pr_url"))
+        comment = (
+            f"Published commit {commit_sha} → "
+            f"pushed={res.get('pushed')} pr={res.get('pr_url') or '(none)'}"
+        )
+        tickets_mod.add_event(
+            ticket.id, "publish", "comment",
+            body=comment,
+            metadata={
+                "verdict": verdict,
+                "commit_sha": commit_sha,
+                "pushed": res.get("pushed"),
+                "pr_url": res.get("pr_url"),
+            },
+        )
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=genai_types.Content(
+                role="model",
+                parts=[genai_types.Part(text=comment)],
+            ),
+            actions=EventActions(state_delta={
+                "aiforge.publish.pushed": bool(res.get("pushed")),
+                "aiforge.publish.pr_url": res.get("pr_url"),
+            }),
+        )
+
+
 # ─────────────────────────── Learner agent ──────────────────────────────
 _LEARNER_PROMPT = """You are the Learner. Extract one durable :Fact from the work done on this ticket.
 
+Rules:
+- Ground every claim in the actual diff below. If the diff has no controller
+  changes, do NOT claim an endpoint was added. If the diff is only a repo
+  method, say "added repository method X" — nothing more.
+- Use past tense. State what was actually committed, not what was planned.
+- If the diff is empty, set digest to "no diff committed".
+
 ## Ticket
 {body}
+
+## Actual diff (committed to branch)
+{diff}
 
 ## Most recent events
 {events}
 
 Respond with a JSON object ONLY. No prose before or after.
 Keys:
-- digest: one short line (<= 200 chars) summarizing what was learned / shipped.
+- digest: one short line (<= 200 chars) grounded in the diff above.
 - keywords: array of up to 5 short keywords.
 
 Your JSON:
@@ -796,7 +1106,18 @@ class AiForgeLearnerAgent(BaseAgent):
 
         body = (ticket.body or "")[:4000]
         events_text = _recent_events_text(ticket.id)[:4000]
-        prompt = _LEARNER_PROMPT.format(body=body, events=events_text)
+        worktree = state.get(S_WORKTREE)
+        diff_text = ""
+        if worktree:
+            try:
+                diff_text = _git_diff(worktree)[:6000]
+            except Exception:
+                diff_text = ""
+        if not diff_text:
+            diff_text = "(no diff available)"
+        prompt = _LEARNER_PROMPT.format(
+            body=body, diff=diff_text, events=events_text,
+        )
 
         loop = asyncio.get_event_loop()
         try:
@@ -879,15 +1200,24 @@ def build_aiforge_workflow(
     planner = AiForgePlannerAgent(name="planner")
     doer = AiForgeDoerAgent(name="doer")
     feedback = AiForgeFeedbackAgent(name="feedback")
+    publish = AiForgePublishAgent(name="publish")
+    # Always include integration agent — it self-skips unless the
+    # ticket auto-flags as endpoint work or AIFORGE_TEST_INTEGRATION=1.
+    # AIFORGE_TEST_INTEGRATION_DISABLE=1 forces it off (kill switch
+    # for the rare ticket where smoke is genuinely impossible).
+    sub_agents: list[BaseAgent] = [doer]
+    if os.environ.get("AIFORGE_TEST_INTEGRATION_DISABLE", "0") != "1":
+        sub_agents.append(AiForgeIntegrationTestAgent(name="integration"))
+    sub_agents.append(feedback)
     doer_loop = LoopAgent(
         name="doer_chain",
-        sub_agents=[doer, feedback],
+        sub_agents=sub_agents,
         max_iterations=MAX_FEEDBACK_FAILS,
     )
     learner = AiForgeLearnerAgent(name="learner")
     workflow = SequentialAgent(
         name="aiforge",
-        sub_agents=[planner, doer_loop, learner],
+        sub_agents=[planner, doer_loop, publish, learner],
     )
 
     plugins: list[BasePlugin] = []
