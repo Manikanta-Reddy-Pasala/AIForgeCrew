@@ -59,6 +59,9 @@ from .ga_compat import (
 from aiforge_core.memory.neo4j_facts import (
     set_fetch_context, clear_fetch_context, fetch_facts_text,
 )
+from aiforge_core.memory.code_context import (
+    aider_digest, graph_neighbours,
+)
 
 
 def _ga_dir() -> str:
@@ -147,15 +150,37 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
                       allowed: set[str]) -> str:
     body = getattr(ticket, "body", "") or ""
     title = getattr(ticket, "title", "") or ""
+    allowed_list = sorted(allowed)
     allowed_block = (
-        "\n".join(f"- {p}" for p in sorted(allowed))
+        "\n".join(f"- {p}" for p in allowed_list)
         if allowed else "(no scope constraint)"
+    )
+    # Aider RepoMap digest — PageRank tree-sitter signatures (~1024 tok).
+    aider_block = aider_digest(
+        worktree_path,
+        chat_files=allowed_list,
+        token_budget=int(os.environ.get("AIFORGE_AIDER_REPOMAP_TOKENS", "1024")),
+    )
+    aider_section = (
+        f"## Code map (Aider RepoMap, ranked by PageRank)\n{aider_block}\n\n"
+        if aider_block else ""
+    )
+    # Graphify + tree-sitter Cypher — neighbour symbols of allowed files.
+    neighbours_block = graph_neighbours(
+        allowed_list,
+        limit=int(os.environ.get("AIFORGE_DOER_NEIGHBOURS_LIMIT", "30")),
+    )
+    neighbours_section = (
+        f"## Neighbour symbols (Neo4j: Graphify + tree-sitter)\n"
+        f"{neighbours_block}\n\n" if neighbours_block else ""
     )
     return (
         f"## Worktree\n`{worktree_path}` — every command must run there.\n\n"
         f"## Ticket\n{title}\n\n"
         f"{body}\n\n"
         f"## Allowed files (write-tool ScopeGuard)\n{allowed_block}\n\n"
+        f"{aider_section}"
+        f"{neighbours_section}"
         f"## Planner notes\n{plan_text or '(none)'}\n\n"
         f"## REQUIRED workflow — DO NOT SKIP STEPS\n"
         f"1. file_read EACH file under '## Allowed files' (absolute path "
