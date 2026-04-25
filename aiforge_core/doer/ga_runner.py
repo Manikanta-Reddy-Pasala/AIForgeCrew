@@ -56,6 +56,9 @@ from .ga_compat import (
     GA_COMPAT_VERSION, ParentShim, ga_dir, ga_sha,
     import_ga, load_tools_schema,
 )
+from aiforge_core.memory.neo4j_facts import (
+    set_fetch_context, clear_fetch_context, fetch_facts_text,
+)
 
 
 def _ga_dir() -> str:
@@ -454,6 +457,47 @@ def run_doer_via_ga(
         )
     chunks: list[str] = []
     turn_count = 0
+
+    # Hybrid memory: monkey-patch GA's get_global_memory so it returns
+    # filesystem text + Neo4j L2 facts (top-K, scoped to ticket + files).
+    # GA reads the patched function on every call to system-prompt build
+    # AND every 10-turn re-injection (ga.py:533).
+    set_fetch_context(
+        ticket_id=identifier,
+        role="doer",
+        file_paths=sorted(allowed),
+        query_text=" ".join(sorted(allowed)) + " " + (
+            getattr(ticket, "title", "") or ""
+        ),
+    )
+    try:
+        import ga as _ga_mod  # type: ignore
+        if not getattr(_ga_mod, "_aiforge_patched", False):
+            _orig_get = _ga_mod.get_global_memory
+
+            def _hybrid_get_global_memory():
+                base = ""
+                try:
+                    base = _orig_get() or ""
+                except Exception:
+                    base = ""
+                try:
+                    extra = fetch_facts_text(
+                        k=int(os.environ.get("AIFORGE_DOER_FACTS_K", "5"))
+                    )
+                except Exception:
+                    extra = ""
+                if not extra:
+                    return base
+                return f"{base}\n\n{extra}\n"
+
+            _ga_mod.get_global_memory = _hybrid_get_global_memory  # type: ignore
+            _ga_mod._aiforge_patched = True  # type: ignore
+            emit(log, "ga_runner.memory_patched",
+                 ticket=identifier, mode="hybrid_fs_plus_neo4j")
+    except Exception as exc:
+        emit(log, "ga_runner.memory_patch_skipped",
+             ticket=identifier, error=str(exc)[:200])
 
     emit(log, "ga_runner.start", ticket=identifier, max_turns=max_turns,
          allowed_count=len(allowed))
