@@ -1,0 +1,27 @@
+id: F1
+name: "Single-file logger add"
+project: PosClientBackend
+assignee_role: developer
+priority: medium
+labels: [eval, context-strategy]
+max_turns: 25
+title: "Add request-correlation MDC to PosController"
+body: |
+  ## Goal
+  Inject an MDC-based requestId into every request handled by `PosController` so log lines can be grouped by request.
+
+  ## Context
+  We already do this in `BusinessController.java` — see the `try { MDC.put("requestId", ...) } finally { MDC.clear() }` block at the top of each handler. Mirror that pattern.
+
+  ## Acceptance criteria
+  1. `PosController.java`: every public handler method puts `requestId = UUID.randomUUID().toString()` into MDC at entry and calls `MDC.clear()` in a finally block.
+  2. No new dependencies. Use `org.slf4j.MDC` (already imported elsewhere).
+  3. `mvn -pl PosClientBackend compile` passes.
+  4. No other files modified.
+
+  ## Files
+  - PosClientBackend/src/main/java/com/pos/backend/controller/PosController.java
+expected:
+  files_modified_max: 1
+  files_modified_must_include:
+    - "PosClientBackend/src/main/java/com/pos/backend/controller/PosController.java"

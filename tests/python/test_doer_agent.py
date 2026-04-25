@@ -207,3 +207,69 @@ class TestCompileFailPropagates:
             output = run_compile()
 
         assert "EXIT=0" in output
+
+
+# ─────────────────────────── 5. result_shrink_helpers ──────────────────
+
+class TestResultShrinkHelpers:
+    """GA-style tool-result compaction (auto-shrink + line cap)."""
+
+    def test_cap_lines_under_threshold_unchanged(self) -> None:
+        from aiforge_core.doer.tools import _cap_lines
+
+        text = "a\nb\nc"
+        assert _cap_lines(text, max_lines=10) == text
+
+    def test_cap_lines_over_threshold_truncates(self) -> None:
+        from aiforge_core.doer.tools import _cap_lines
+
+        text = "\n".join(str(i) for i in range(20))
+        out = _cap_lines(text, max_lines=5, hint="use offset")
+        assert out.startswith("0\n1\n2\n3\n4")
+        assert "15 more lines" in out
+        assert "use offset" in out
+
+    def test_shrink_fenced_blocks_short_unchanged(self) -> None:
+        from aiforge_core.doer.tools import _shrink_fenced_blocks
+
+        text = "before\n```py\nx = 1\ny = 2\n```\nafter"
+        assert _shrink_fenced_blocks(text) == text
+
+    def test_shrink_fenced_blocks_long_truncates(self) -> None:
+        from aiforge_core.doer.tools import _shrink_fenced_blocks
+
+        body_lines = [f"line{i}" for i in range(20)]
+        text = "head\n```java\n" + "\n".join(body_lines) + "\n```\ntail"
+        out = _shrink_fenced_blocks(text)
+        assert "line0" in out
+        assert "line4" in out  # 5-line preview keeps 0..4
+        assert "line19" not in out
+        assert "(20 lines)" in out
+        assert "```java" in out  # language tag preserved
+
+    def test_read_file_caps_at_800_lines(self, tmp_path: Path) -> None:
+        from aiforge_core.doer.tools import make_read_file
+
+        big = tmp_path / "Huge.java"
+        big.write_text("\n".join(f"// line {i}" for i in range(2000)))
+        read_file = make_read_file(str(tmp_path))
+        out = read_file(path="Huge.java")
+        assert "// line 0" in out
+        assert "// line 799" in out
+        assert "// line 1999" not in out
+        assert "more lines" in out
+        assert "offset/limit" in out
+
+    def test_grep_caps_at_120_lines(self, tmp_path: Path) -> None:
+        from aiforge_core.doer.tools import make_grep
+
+        # ripgrep must be installed for this test (it is in dev env).
+        for i in range(300):
+            (tmp_path / f"f{i}.txt").write_text("MARKER\n")
+        grep = make_grep(str(tmp_path))
+        out = grep(pattern="MARKER", path=".")
+        if "ERROR: rg" in out:
+            pytest.skip("ripgrep not installed")
+        line_count = len(out.splitlines())
+        # Capped at 120 + 1 truncation marker line.
+        assert line_count <= 122, out

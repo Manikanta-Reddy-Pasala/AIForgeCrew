@@ -1,0 +1,31 @@
+id: F3
+name: "Multi-class Java refactor (compile-gated)"
+project: PosClientBackend
+assignee_role: developer
+priority: medium
+labels: [eval, context-strategy]
+max_turns: 40
+title: "Extract ProductPriceCalculator from BusinessProductsController"
+body: |
+  ## Goal
+  Pull pricing logic out of `BusinessProductsController.java` into a new `ProductPriceCalculator` service class. Behavior must be identical.
+
+  ## Why
+  Pricing math is being duplicated across controllers. Centralize it.
+
+  ## Acceptance criteria
+  1. New file: `PosClientBackend/src/main/java/com/pos/backend/service/ProductPriceCalculator.java` annotated `@Service`.
+  2. The three private methods on `BusinessProductsController` that compute price (`calculateBasePrice`, `applyTaxBreakup`, `applyDiscount` — or their actual names; locate them) are MOVED to the new class as public methods, signatures unchanged.
+  3. `BusinessProductsController` now constructor-injects `ProductPriceCalculator` and delegates to it. No inline duplication left.
+  4. All call sites within `BusinessProductsController` updated.
+  5. `mvn -pl PosClientBackend compile` passes.
+  6. `mvn -pl PosClientBackend test -Dtest='*Product*'` passes (existing tests unchanged).
+
+  ## Files (start here, may need more)
+  - PosClientBackend/src/main/java/com/pos/backend/controller/BusinessProductsController.java
+  - PosClientBackend/src/main/java/com/pos/backend/service/ProductPriceCalculator.java (new)
+expected:
+  files_modified_min: 2
+  files_modified_must_include:
+    - "PosClientBackend/src/main/java/com/pos/backend/service/ProductPriceCalculator.java"
+    - "PosClientBackend/src/main/java/com/pos/backend/controller/BusinessProductsController.java"

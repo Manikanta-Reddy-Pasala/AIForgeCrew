@@ -10,12 +10,60 @@ each agent invocation gets its own correctly-bound copies.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Callable
 
 from smolagents import tool
 
 from .scope_guard import ScopeGuard, ScopeViolation
+
+
+# Hard caps applied to every tool result before returning to the LLM.
+# Lifted from GenericAgent's _shrink_code idea: long fenced blocks in tool
+# output (compile dumps with embedded code, apply_implementation reports
+# echoing find/replace, grep hits in heavily-commented files) push prompt
+# tokens up by ~20-30% on multi-step tickets. Shrinking the body of
+# fenced ``` ``` blocks past 6 lines to a 5-line preview keeps the
+# semantic signal (which file / which symbol) without the boilerplate.
+
+_FENCED_BLOCK_RX = re.compile(r"```[\s\S]*?```")
+
+
+def _shrink_fenced_blocks(text: str, preview_lines: int = 5) -> str:
+    """Replace bodies of fenced code blocks longer than 6 lines with a
+    short preview + line count. No-op on already-short blocks. Leaves the
+    fence language tag intact so the model still sees what kind of code it
+    was looking at.
+    """
+    def _shrink(m: re.Match) -> str:
+        block = m.group(0)
+        lines = block.split("\n")
+        if len(lines) < 3:
+            return block
+        lang = lines[0].replace("```", "").strip()
+        body = lines[1:-1]
+        if len(body) <= 6:
+            return block
+        head = "\n".join(body[:preview_lines])
+        return f"```{lang}\n{head}\n  ... ({len(body)} lines)\n```"
+    return _FENCED_BLOCK_RX.sub(_shrink, text)
+
+
+def _cap_lines(text: str, max_lines: int, hint: str = "") -> str:
+    """Return *text* unchanged if ≤ max_lines; otherwise keep the first
+    max_lines and append a truncation marker. Optional *hint* tells the
+    model what to do next (e.g. "use offset/limit").
+    """
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    kept = "\n".join(lines[:max_lines])
+    suffix = f"\n…[truncated, {len(lines) - max_lines} more lines."
+    if hint:
+        suffix += f" {hint}"
+    suffix += "]"
+    return kept + suffix
 
 
 def _repo_name_for_worktree(worktree_path: str) -> str:
@@ -51,16 +99,33 @@ def _strip_repo_prefix(path: str, repo_name: str) -> str:
 # ─────────────────────────── read_file ──────────────────────────────────
 
 def make_read_file(worktree_path: str) -> Callable:
-    """Return a ``read_file`` tool bound to *worktree_path*."""
+    """Return a ``read_file`` tool bound to *worktree_path*.
+
+    Includes:
+      * ``offset`` / ``limit`` line-range args for targeted reads.
+      * A per-tick read cache: re-reading the same file (with the same
+        range) returns a short stub instead of re-dumping the body. This
+        is the biggest single ctx win — empirically 3× re-reads of a
+        387-line Java file added ~60KB per step (ONE-51 step 19 had 612k
+        input tokens; ~30% was redundant file content).
+    """
 
     repo_name = _repo_name_for_worktree(worktree_path)
+    # Cache: key = (resolved_path, offset, limit) → step_seq
+    seen: dict[tuple[str, int, int], int] = {}
 
     @tool
-    def read_file(path: str) -> str:
-        """Read a UTF-8 file.  Absolute or worktree-relative path.
+    def read_file(
+        path: str,
+        offset: int = 0,
+        limit: int = 0,
+    ) -> str:
+        """Read a UTF-8 file. Re-reads return a stub (saves context).
 
         Args:
             path: File path (absolute or relative to the worktree root).
+            offset: 1-based starting line. ``0`` means start of file.
+            limit: Max lines to return. ``0`` means whole file.
         """
         path = _strip_repo_prefix(path, repo_name)
         resolved = (
@@ -69,11 +134,48 @@ def make_read_file(worktree_path: str) -> Callable:
         )
         try:
             with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
-                return fh.read()
+                full = fh.read()
         except FileNotFoundError:
             return f"ERROR: file not found: {resolved}"
         except OSError as exc:
             return f"ERROR: {exc}"
+
+        if offset > 0 or limit > 0:
+            lines = full.splitlines()
+            start = max(0, offset - 1) if offset > 0 else 0
+            end = start + limit if limit > 0 else len(lines)
+            sliced = lines[start:end]
+            content = "\n".join(sliced)
+            header = (
+                f"# {resolved} lines {start + 1}-{start + len(sliced)} "
+                f"of {len(lines)}\n"
+            )
+        else:
+            content = full
+            header = ""
+
+        key = (resolved, offset, limit)
+        if key in seen:
+            return (
+                f"[file unchanged since previous read this tick — "
+                f"{resolved}{' lines '+str(offset)+'-'+str(offset+limit-1) if limit else ''}. "
+                f"Use offset/limit if you need a different slice, or "
+                f"trust the prior observation.]"
+            )
+        seen[key] = len(seen) + 1
+        # Hard caps: never return more than 60KB or 800 lines on first read.
+        # Lines cap is the GA-style win — large Java files balloon from
+        # commented sections we never need; force the agent to ask for a
+        # slice via offset/limit rather than scrolling for free.
+        body = (header + content)
+        body = _cap_lines(body, max_lines=800,
+                          hint="Pass offset/limit to read a specific slice.")
+        if len(body) > 60000:
+            body = body[:60000] + (
+                f"\n…[truncated, file is {len(content)} chars total. "
+                "Pass offset/limit to read a specific slice.]"
+            )
+        return body
 
     return read_file
 
@@ -129,9 +231,43 @@ def make_edit_block(worktree_path: str, scope_guard: ScopeGuard,
             src = fh.read()
         count = src.count(find)
         if count == 0:
-            return f"ERROR: find string not found in {resolved}"
+            # Structured miss hint — helps model self-correct instead of
+            # blindly retrying slight variations. Uses difflib to find
+            # near-matches in the file so the model sees the actual
+            # whitespace / signature it should target.
+            import difflib
+            first_line = (find.splitlines() or [find])[0].strip()[:120]
+            candidates: list[str] = []
+            if first_line:
+                matches = difflib.get_close_matches(
+                    first_line, src.splitlines(), n=3, cutoff=0.55,
+                )
+                candidates = [m.strip()[:200] for m in matches]
+            hint = ""
+            if candidates:
+                hint = (
+                    "\nNear-matches actually in the file (copy verbatim, "
+                    "preserve leading whitespace + tabs):\n  - "
+                    + "\n  - ".join(candidates)
+                )
+            return (f"ERROR: find string not found in {resolved}. The file "
+                    f"has {src.count(chr(10)) + 1} lines.{hint}")
         if count > 1:
-            return f"ERROR: find string matches {count} times in {resolved}; make it unique"
+            # Show each occurrence with a line-number breadcrumb so the
+            # model can pick a unique surrounding context.
+            lines = src.splitlines()
+            hits: list[int] = []
+            needle_head = find.splitlines()[0] if find.splitlines() else find
+            for i, line in enumerate(lines, 1):
+                if needle_head and needle_head in line:
+                    hits.append(i)
+                if len(hits) >= 5:
+                    break
+            loc = ", ".join(f"line {n}" for n in hits) or "multiple"
+            return (f"ERROR: find string matches {count} times in {resolved} "
+                    f"(at {loc}). Add surrounding context so the match is "
+                    f"unique — include a preceding comment, imports block, "
+                    f"or method signature.")
         new_src = src.replace(find, replace, 1)
         with open(resolved, "w", encoding="utf-8") as fh:
             fh.write(new_src)
@@ -218,6 +354,16 @@ def make_run_compile(worktree_path: str, counters: dict | None = None) -> Callab
         tail = "\n".join(combined.splitlines()[-40:])
         if proc.returncode == 0:
             counters["compile_green"] = counters.get("compile_green", 0) + 1
+            counters.pop("last_compile_error", None)
+        else:
+            # Stash error so the orchestrator/feedback can surface it as a
+            # fixlist hint in the next Doer tick. Clipped to 6KB so it
+            # fits in a single chat turn.
+            err_lines = [
+                ln for ln in combined.splitlines()
+                if "ERROR" in ln or "error:" in ln or "cannot find" in ln
+            ][:30]
+            counters["last_compile_error"] = "\n".join(err_lines)[:6000]
         return f"EXIT={proc.returncode}\n{tail}"
 
     return run_compile
@@ -257,7 +403,12 @@ def make_grep(worktree_path: str) -> Callable:
         out = proc.stdout.decode("utf-8", "replace")
         if proc.returncode == 1 and not out:
             return "(no matches)"
-        return out[:8000]
+        # Cap by line count too (GA-style) — heavily commented Java repos
+        # produce 200+ matches on common identifiers; agent never needs
+        # them all and they crowd the context.
+        out = _cap_lines(out[:8000], max_lines=120,
+                         hint="Narrow the pattern or scope to a sub-path.")
+        return out
 
     return grep
 
@@ -456,7 +607,11 @@ def make_tools(worktree_path: str, scope_guard: ScopeGuard,
     # cross_repo_flow, etc. for richer context.
     try:
         from aiforge_core.mcp_graph import graph_rag_tools
-        tools.extend(graph_rag_tools())
+        _existing = {getattr(t, "name", None) for t in tools}
+        for gt in graph_rag_tools():
+            if getattr(gt, "name", None) in _existing:
+                continue
+            tools.append(gt)
     except Exception:
         pass
     # Opt-in web search — AIFORGE_WEB_SEARCH_ENABLED=1. Gives Doer a
