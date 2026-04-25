@@ -251,6 +251,19 @@ def get_ticket(identifier: str) -> dict:
     }
 
 
+def _derive_branch(identifier: str, title: str) -> str:
+    """Derive an `aiforge/<id>-<slug>` branch name from ticket id + title.
+
+    Slug: lowercase title, non-alnum → `-`, collapse repeats, trim to 40
+    chars. Doer's git-push step expects ticket.branch != None to push +
+    open a PR. If the API caller didn't provide one, this fills it in.
+    """
+    import re as _re
+    raw = (title or "").lower()
+    slug = _re.sub(r"[^a-z0-9]+", "-", raw).strip("-")[:40].rstrip("-")
+    return f"aiforge/{identifier}{('-' + slug) if slug else ''}"
+
+
 @app.post("/api/tickets", status_code=201)
 def create_ticket(payload: TicketCreate) -> dict:
     parent_id = None
@@ -270,6 +283,18 @@ def create_ticket(payload: TicketCreate) -> dict:
         project=payload.project, labels=payload.labels,
         metadata=md or None,
     )
+    if not t.branch:
+        t.branch = _derive_branch(t.identifier, t.title)
+        try:
+            with tickets_mod._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE tickets SET branch=%s WHERE id=%s",
+                        (t.branch, t.id),
+                    )
+                conn.commit()
+        except Exception:
+            pass
     return _ticket_row_out({
         "id": t.id, "identifier": t.identifier, "title": t.title,
         "body": t.body, "status": t.status, "priority": t.priority,
