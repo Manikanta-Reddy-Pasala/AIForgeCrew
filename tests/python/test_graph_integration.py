@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aiforge_core.graph.state import AgentState
+from aiforge_core.legacy.graph.state import AgentState
 
 
 # ─────────────────────────── Ticket stub ────────────────────────────────
@@ -81,29 +81,29 @@ def _patch_node_internals(ticket: _FakeTicket):
         return state
 
     patches = [
-        patch("aiforge_core.graph.nodes.supervisor.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.supervisor._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
-        patch("aiforge_core.graph.nodes.planner.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.planner.inject_context", side_effect=_fake_inject_context),
+        patch("aiforge_core.legacy.graph.nodes.supervisor.tickets_mod.get", side_effect=_fake_get),
+        patch("aiforge_core.legacy.graph.nodes.supervisor._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
+        patch("aiforge_core.legacy.graph.nodes.planner.tickets_mod.get", side_effect=_fake_get),
+        patch("aiforge_core.legacy.graph.nodes.planner.inject_context", side_effect=_fake_inject_context),
         patch("aiforge_core.planner.run_planner", side_effect=_fake_run_planner),
-        patch("aiforge_core.graph.nodes.doer.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.doer._run_tool_loop", side_effect=_fake_run_tool_loop),
-        patch("aiforge_core.graph.nodes.doer._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
-        patch("aiforge_core.graph.nodes.doer.inject_context", side_effect=_fake_inject_context),
+        patch("aiforge_core.legacy.graph.nodes.doer.tickets_mod.get", side_effect=_fake_get),
+        patch("aiforge_core.legacy.graph.nodes.doer._run_tool_loop", side_effect=_fake_run_tool_loop),
+        patch("aiforge_core.legacy.graph.nodes.doer._ensure_branch_and_worktree", side_effect=_fake_ensure_worktree),
+        patch("aiforge_core.legacy.graph.nodes.doer.inject_context", side_effect=_fake_inject_context),
         patch("aiforge_core.doer.run_smolagents_doer", side_effect=_fake_run_smolagents_doer),
-        patch("aiforge_core.graph.nodes.feedback.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.feedback.tickets_mod.add_event", side_effect=_fake_add_event),
-        patch("aiforge_core.graph.nodes.feedback._git_diff", side_effect=lambda wt: "(fake diff)"),
+        patch("aiforge_core.legacy.graph.nodes.feedback.tickets_mod.get", side_effect=_fake_get),
+        patch("aiforge_core.legacy.graph.nodes.feedback.tickets_mod.add_event", side_effect=_fake_add_event),
+        patch("aiforge_core.legacy.graph.nodes.feedback._git_diff", side_effect=lambda wt: "(fake diff)"),
         patch(
-            "aiforge_core.graph.nodes.feedback._call_llm",
+            "aiforge_core.legacy.graph.nodes.feedback._call_llm",
             side_effect=lambda prompt: '{"verdict": "pass", "reason": "ok", "fixlist": []}',
         ),
-        patch("aiforge_core.graph.nodes.learner.tickets_mod.get", side_effect=_fake_get),
-        patch("aiforge_core.graph.nodes.learner.tickets_mod.add_event", side_effect=_fake_add_event),
-        patch("aiforge_core.graph.nodes.learner.tickets_mod.comments", return_value=[]),
-        patch("aiforge_core.graph.nodes.learner._write_t1_memory", side_effect=_fake_write_t1),
+        patch("aiforge_core.legacy.graph.nodes.learner.tickets_mod.get", side_effect=_fake_get),
+        patch("aiforge_core.legacy.graph.nodes.learner.tickets_mod.add_event", side_effect=_fake_add_event),
+        patch("aiforge_core.legacy.graph.nodes.learner.tickets_mod.comments", return_value=[]),
+        patch("aiforge_core.legacy.graph.nodes.learner._write_t1_memory", side_effect=_fake_write_t1),
         patch(
-            "aiforge_core.graph.nodes.learner._call_llm",
+            "aiforge_core.legacy.graph.nodes.learner._call_llm",
             side_effect=lambda prompt: '{"digest": "ok", "keywords": []}',
         ),
     ]
@@ -121,7 +121,7 @@ class TestFullPipelineHappyPath:
 
         # Suppress checkpointer: empty DSN causes build_graph to skip it.
         with patch.dict("os.environ", {"AIFORGE_DSN": ""}):
-            from aiforge_core.graph.graph import build_graph
+            from aiforge_core.legacy.graph.graph import build_graph
             graph = build_graph()
 
         initial_state: AgentState = {
@@ -159,22 +159,22 @@ class TestFullPipelineHappyPath:
         for p in all_patches:
             ctx.enter_context(p)
         ctx.enter_context(
-            patch("aiforge_core.graph.nodes.supervisor.get_logger", return_value=fake_log)
+            patch("aiforge_core.legacy.graph.nodes.supervisor.get_logger", return_value=fake_log)
         )
         ctx.enter_context(
-            patch("aiforge_core.graph.nodes.learner.get_logger", return_value=fake_log)
+            patch("aiforge_core.legacy.graph.nodes.learner.get_logger", return_value=fake_log)
         )
         ctx.enter_context(
-            patch("aiforge_core.graph.nodes.planner.get_logger", return_value=fake_log)
+            patch("aiforge_core.legacy.graph.nodes.planner.get_logger", return_value=fake_log)
         )
         ctx.enter_context(
-            patch("aiforge_core.graph.nodes.doer.get_logger", return_value=fake_log)
+            patch("aiforge_core.legacy.graph.nodes.doer.get_logger", return_value=fake_log)
         )
         ctx.enter_context(
-            patch("aiforge_core.graph.nodes.feedback.get_logger", return_value=fake_log)
+            patch("aiforge_core.legacy.graph.nodes.feedback.get_logger", return_value=fake_log)
         )
         ctx.enter_context(
-            patch("aiforge_core.graph.nodes.doer.role_cfg_get",
+            patch("aiforge_core.legacy.graph.nodes.doer.role_cfg_get",
                   return_value=MagicMock(name="doer"))
         )
 

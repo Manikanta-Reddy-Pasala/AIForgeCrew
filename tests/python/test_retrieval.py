@@ -1,4 +1,4 @@
-from aiforge_core.retrieval import rrf_fuse, Hit, ROLE_POLICIES
+from aiforge_core.legacy.retrieval import rrf_fuse, Hit, ROLE_POLICIES
 
 
 def test_rrf_fuse_reinforces_agreed():

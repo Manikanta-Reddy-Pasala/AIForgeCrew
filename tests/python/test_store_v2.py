@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(not _pg_available(),
 
 @pytest.fixture
 def store():
-    from aiforge_core.store_v2 import Store
+    from aiforge_core.legacy.store_v2 import Store
     s = Store(dsn=DSN)
     s.ensure_schema()
     # start clean

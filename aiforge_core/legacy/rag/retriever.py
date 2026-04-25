@@ -12,8 +12,8 @@ import os
 import urllib.request
 from typing import Any
 
-from aiforge_core.retrieval import Hit, ROLE_POLICIES, rrf_fuse
-from aiforge_core.store_v2 import Store
+from aiforge_core.legacy.retrieval import Hit, ROLE_POLICIES, rrf_fuse
+from aiforge_core.legacy.store_v2 import Store
 
 
 log = logging.getLogger("aiforge.rag.retriever")

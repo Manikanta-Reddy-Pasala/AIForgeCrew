@@ -1,0 +1,874 @@
+"""Google ADK workflow replacing the LangGraph orchestrator.
+
+This module wires the existing AIForgeCrew agents (planner, doer,
+feedback, learner) into a Google ADK ``SequentialAgent`` containing a
+``LoopAgent`` for the doer/feedback retry cycle. Each AIForge role is
+expressed as a thin ``BaseAgent`` subclass whose ``_run_async_impl``
+delegates to the production implementation that LangGraph used to call:
+
+    * planner — ``aiforge_core.planner.runner.run_planner``
+    * doer    — ``aiforge_core.doer.orchestrator_bridge.run_smolagents_doer``
+                (which already routes to GenericAgent when
+                ``AIFORGE_DOER_BACKEND=genericagent``)
+    * feedback — single-shot LiteLLM call (port of ``feedback_node``)
+    * learner — single-shot LiteLLM call + Neo4j ``:Fact`` write
+                (port of ``learner_node``)
+
+Cross-cutting concerns are handled by ``Neo4jMirrorPlugin`` which mirrors
+every ADK ``Event`` to a ``:Turn`` node linked to the ticket's
+``:Session`` node.
+
+The Phase 11 cleanup will delete ``aiforge_core/graph/*`` once this
+runner is the only production path. Until then, both modules co-exist —
+this file does NOT import any langgraph symbols.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import time
+import urllib.request
+from dataclasses import dataclass
+from typing import Any, AsyncGenerator
+
+from google.adk.agents import BaseAgent, LoopAgent, SequentialAgent
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event, EventActions
+from google.adk.plugins import BasePlugin
+from google.adk.runners import Runner
+from google.adk.sessions import DatabaseSessionService, InMemorySessionService
+from google.genai import types as genai_types
+
+from aiforge_core.agents import AgentContract, load_agents
+from aiforge_core.runtime import tickets as tickets_mod
+from aiforge_core.runtime.config import (
+    AIFORGE_DSN,
+    FEEDBACK_MODEL,
+    LEARNER_MODEL,
+    LM_STUDIO_API_KEY,
+    LM_STUDIO_BASE_URL,
+)
+from aiforge_core.runtime.logging_setup import emit, get_logger
+
+
+# ─────────────────────────── Module constants ───────────────────────────
+# Mirrors aiforge_core.graph.edges.MAX_FEEDBACK_FAILS — the LoopAgent's
+# max_iterations is the number of (doer, feedback) pairs allowed before
+# the feedback verdict is forced to fail terminal.
+MAX_FEEDBACK_FAILS = 4
+
+# State keys the agents read/write through ``ctx.session.state``. Keep
+# these short — DatabaseSessionService persists them as JSON in Postgres.
+S_TICKET_ID = "aiforge.ticket_id"
+S_WORKTREE = "aiforge.worktree_path"
+S_VERDICT = "aiforge.verdict"
+S_FIXLIST = "aiforge.feedback_fixlist"
+S_FAIL_COUNT = "aiforge.feedback_fail_count"
+S_COMPILE_FAIL_COUNT = "aiforge.compile_fail_count"
+S_PLAN_DONE = "aiforge.plan_done"
+S_LAST_DOER_SUMMARY = "aiforge.last_doer_summary"
+
+
+# ─────────────────────────── Plugin ─────────────────────────────────────
+class Neo4jMirrorPlugin(BasePlugin):
+    """Mirror every ADK Event onto Neo4j as a ``:Turn`` node linked to
+    the ticket's ``:Session`` node.
+
+    Fail-soft: a Neo4j outage must not break the workflow.
+    Reuses the legacy driver from ``aiforge_core.legacy.rag.neo4j_memory``
+    so we don't multiply connection pools.
+    """
+
+    name: str = "neo4j_mirror"
+
+    def __init__(self) -> None:
+        super().__init__(name=self.name)
+        self._log = get_logger("adk.neo4j_mirror")
+
+    async def on_event_callback(
+        self,
+        *,
+        invocation_context: InvocationContext,
+        event: Event,
+    ) -> Event | None:
+        try:
+            from aiforge_core.legacy.rag.neo4j_memory import _get_driver
+            ticket_id = invocation_context.session.state.get(S_TICKET_ID)
+            session_id = invocation_context.session.id
+            payload = {
+                "session_id": session_id,
+                "ticket_id": ticket_id,
+                "author": event.author,
+                "invocation_id": event.invocation_id,
+                "event_id": event.id,
+                "timestamp": event.timestamp,
+                "partial": bool(event.partial),
+                "summary": _event_text_summary(event)[:1500],
+            }
+            cy = (
+                "MERGE (s:Session {id: $session_id}) "
+                "ON CREATE SET s.created_at = timestamp(), s.ticket_id = $ticket_id "
+                "CREATE (t:Turn {"
+                "  event_id: $event_id, author: $author, "
+                "  invocation_id: $invocation_id, summary: $summary, "
+                "  ts: $timestamp, partial: $partial"
+                "}) "
+                "MERGE (s)-[:HAS_TURN]->(t)"
+            )
+            drv = _get_driver()
+            with drv.session() as s:
+                s.run(cy, **payload)
+        except Exception as exc:
+            emit(self._log, "neo4j_mirror.error", error=str(exc)[:200])
+        return None  # never suppress the event
+
+
+def _event_text_summary(event: Event) -> str:
+    """Best-effort one-line summary of an ADK Event."""
+    if event.content is not None and getattr(event.content, "parts", None):
+        chunks: list[str] = []
+        for p in event.content.parts:
+            txt = getattr(p, "text", None)
+            if txt:
+                chunks.append(txt)
+        if chunks:
+            return " ".join(chunks).replace("\n", " ")
+    return ""
+
+
+# ─────────────────────────── Helpers ────────────────────────────────────
+def _yield_text_event(author: str, text: str, invocation_id: str) -> Event:
+    """Build an ADK Event whose content is a single text part."""
+    return Event(
+        invocation_id=invocation_id,
+        author=author,
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text=text)],
+        ),
+    )
+
+
+def _load_contract(role: str) -> AgentContract | None:
+    try:
+        return load_agents().get(role)
+    except Exception:
+        return None
+
+
+def _ticket_from_state(state: dict) -> tickets_mod.Ticket | None:
+    tid = state.get(S_TICKET_ID)
+    if tid is None:
+        return None
+    return tickets_mod.get(int(tid))
+
+
+# ─────────────────────────── Planner agent ──────────────────────────────
+class AiForgePlannerAgent(BaseAgent):
+    """ADK wrapper around the existing smolagents Planner.
+
+    Reads ``ticket_id`` from ``ctx.session.state`` and runs the smolagents
+    CodeAgent inside a worker thread (smolagents.run is sync). Yields one
+    text Event with the planner's summary.
+    """
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        state = ctx.session.state
+        ticket = _ticket_from_state(state)
+        log = get_logger("adk.planner")
+        if ticket is None:
+            yield _yield_text_event(
+                self.name, "[planner] no ticket in state",
+                ctx.invocation_id,
+            )
+            return
+
+        contract = _load_contract("planner")
+        max_wall_s = contract.contract.max_wall_s if contract else 600
+
+        emit(log, "adk.planner.start",
+             ticket=ticket.identifier, max_wall_s=max_wall_s)
+
+        from aiforge_core.planner import run_planner
+
+        loop = asyncio.get_event_loop()
+        t_start = time.time()
+        try:
+            summary = await asyncio.wait_for(
+                loop.run_in_executor(None, run_planner, ticket, log),
+                timeout=max_wall_s,
+            )
+        except asyncio.TimeoutError:
+            emit(log, "adk.planner.timeout", ticket=ticket.identifier,
+                 wall_s=round(time.time() - t_start, 2))
+            yield _yield_text_event(
+                self.name,
+                f"[planner] timeout after {max_wall_s}s",
+                ctx.invocation_id,
+            )
+            return
+        except Exception as exc:
+            emit(log, "adk.planner.exception",
+                 ticket=ticket.identifier, error=str(exc)[:300])
+            yield _yield_text_event(
+                self.name,
+                f"[planner] exception: {exc}",
+                ctx.invocation_id,
+            )
+            return
+
+        state[S_PLAN_DONE] = True
+        emit(log, "adk.planner.done",
+             ticket=ticket.identifier,
+             stop_reason=summary.get("stop_reason"),
+             wall_s=summary.get("wall_s"))
+
+        text = summary.get("summary") or "(planner ran)"
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=genai_types.Content(
+                role="model",
+                parts=[genai_types.Part(text=text[:4000])],
+            ),
+            actions=EventActions(
+                state_delta={S_PLAN_DONE: True},
+            ),
+        )
+
+
+# ─────────────────────────── Doer agent ─────────────────────────────────
+class AiForgeDoerAgent(BaseAgent):
+    """ADK wrapper around the doer bridge.
+
+    Routes via ``run_smolagents_doer`` — which dispatches to GenericAgent
+    when ``AIFORGE_DOER_BACKEND=genericagent`` (the production setting on
+    the NUC). Honours ``feedback_fixlist`` from prior loop iterations.
+    """
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        state = ctx.session.state
+        ticket = _ticket_from_state(state)
+        log = get_logger("adk.doer")
+        if ticket is None:
+            yield _yield_text_event(
+                self.name, "[doer] no ticket in state",
+                ctx.invocation_id,
+            )
+            return
+
+        from aiforge_core.runtime.orchestrator import _ensure_branch_and_worktree
+        worktree = state.get(S_WORKTREE) or _ensure_branch_and_worktree(ticket)
+        if not worktree:
+            emit(log, "adk.doer.no_worktree", ticket=ticket.identifier)
+            yield Event(
+                invocation_id=ctx.invocation_id,
+                author=self.name,
+                content=genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part(text="[doer] no worktree available")],
+                ),
+                actions=EventActions(
+                    escalate=True,
+                    state_delta={S_VERDICT: "blocked"},
+                ),
+            )
+            return
+
+        prior_verdict = state.get(S_VERDICT)
+        prior_fixlist = state.get(S_FIXLIST) or ""
+
+        contract = _load_contract("doer")
+        max_wall_s = contract.contract.max_wall_s if contract else 700
+
+        emit(log, "adk.doer.start", ticket=ticket.identifier,
+             worktree=worktree, prior_verdict=prior_verdict)
+
+        from aiforge_core.doer import run_smolagents_doer
+
+        loop = asyncio.get_event_loop()
+        try:
+            summary = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: run_smolagents_doer(
+                        ticket, worktree, log,
+                        prior_verdict=prior_verdict,
+                        prior_fixlist=prior_fixlist or None,
+                    ),
+                ),
+                timeout=max_wall_s,
+            )
+        except asyncio.TimeoutError:
+            emit(log, "adk.doer.timeout", ticket=ticket.identifier)
+            yield Event(
+                invocation_id=ctx.invocation_id,
+                author=self.name,
+                content=genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part(text=f"[doer] timeout after {max_wall_s}s")],
+                ),
+                actions=EventActions(
+                    escalate=True,
+                    state_delta={S_VERDICT: "fail"},
+                ),
+            )
+            return
+        except Exception as exc:
+            emit(log, "adk.doer.exception",
+                 ticket=ticket.identifier, error=str(exc)[:300])
+            yield Event(
+                invocation_id=ctx.invocation_id,
+                author=self.name,
+                content=genai_types.Content(
+                    role="model",
+                    parts=[genai_types.Part(text=f"[doer] exception: {exc}")],
+                ),
+                actions=EventActions(
+                    escalate=True,
+                    state_delta={S_VERDICT: "fail"},
+                ),
+            )
+            return
+
+        compile_fail_count = state.get(S_COMPILE_FAIL_COUNT, 0)
+        stop_reason = summary.get("stop_reason", "")
+        if "compile" in stop_reason or stop_reason == "scope_violation":
+            compile_fail_count += 1
+
+        state_delta: dict[str, Any] = {
+            S_WORKTREE: worktree,
+            S_LAST_DOER_SUMMARY: summary.get("summary", "")[:2000],
+            S_COMPILE_FAIL_COUNT: compile_fail_count,
+        }
+
+        text = summary.get("summary") or f"[doer] stop_reason={stop_reason}"
+
+        actions = EventActions(state_delta=state_delta)
+        # If compile_fail_count tripped the cap or the doer hit
+        # scope_violation, terminate the loop.
+        if compile_fail_count >= 2 or stop_reason == "scope_violation":
+            state_delta[S_VERDICT] = (
+                "scope_violation" if stop_reason == "scope_violation" else "fail"
+            )
+            actions = EventActions(escalate=True, state_delta=state_delta)
+            emit(log, "adk.doer.escalate", ticket=ticket.identifier,
+                 stop_reason=stop_reason,
+                 compile_fail_count=compile_fail_count)
+
+        emit(log, "adk.doer.done", ticket=ticket.identifier,
+             stop_reason=stop_reason, turns=summary.get("turns"),
+             wall_s=summary.get("wall_s"))
+
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=genai_types.Content(
+                role="model",
+                parts=[genai_types.Part(text=text[:4000])],
+            ),
+            actions=actions,
+        )
+
+
+# ─────────────────────────── Feedback agent ─────────────────────────────
+def _git_diff(worktree_path: str | None) -> str:
+    """Return the diff the doer produced. Mirrors the helper in
+    ``aiforge_core.graph.nodes.feedback`` so we keep the exact behaviour
+    LangGraph had."""
+    if not worktree_path:
+        return ""
+    import subprocess
+    try:
+        base_proc = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+        base_ref = "origin/master"
+        if base_proc.returncode == 0:
+            ref = base_proc.stdout.strip()
+            if "/" in ref:
+                base_ref = "origin/" + ref.rsplit("/", 1)[1]
+        exclude_pathspecs = [
+            ":(exclude).flattened-pom.xml",
+            ":(exclude,glob)**/.flattened-pom.xml",
+            ":(exclude,glob)**/target/**",
+            ":(exclude,glob)**/__pycache__/**",
+            ":(exclude,glob)**/*.pyc",
+            ":(exclude,glob).aiforge-worktrees/**",
+        ]
+        diffs: list[str] = []
+        proc1 = subprocess.run(
+            ["git", "diff", f"{base_ref}...HEAD", "--", *exclude_pathspecs],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        if proc1.stdout:
+            diffs.append(proc1.stdout)
+        proc2 = subprocess.run(
+            ["git", "diff", "HEAD", "--", *exclude_pathspecs],
+            cwd=worktree_path, capture_output=True, text=True,
+            timeout=30, check=False,
+        )
+        if proc2.stdout:
+            diffs.append(proc2.stdout)
+        combined = "\n".join(diffs) if diffs else "(no diff — Doer made no changes)"
+        return combined[:15000]
+    except Exception as exc:
+        return f"(git diff failed: {exc})"
+
+
+_FEEDBACK_PROMPT = """You are the Feedback agent. Judge whether the Doer's diff implements the ticket.
+
+## Ticket
+{body}
+
+## Diff (git diff origin/main...HEAD)
+```
+{diff}
+```
+
+Rules:
+- Respond with a JSON object ONLY. No prose before or after.
+- Keys: verdict (one of "pass"|"fail"|"scope_violation"), reason (<= 200 chars), fixlist (optional, array of <= 5 short strings).
+- "pass" when the diff implements the acceptance criteria AND compile was green.
+- "fail" when the diff misses a criterion or introduces a bug. Populate fixlist with specific asks.
+- "scope_violation" when the diff touches files outside the ## Files allowlist.
+
+Your JSON:
+"""
+
+
+def _call_feedback_llm(prompt: str) -> str:
+    payload = json.dumps({
+        "model": FEEDBACK_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 524288,
+        "temperature": 0.0,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }).encode()
+    req = urllib.request.Request(
+        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LM_STUDIO_API_KEY}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        body = json.loads(resp.read())
+    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
+    content = (msg.get("content") or "").strip()
+    if content:
+        return content
+    return (msg.get("reasoning_content") or "").strip()
+
+
+def _parse_verdict(text: str) -> dict:
+    if not text:
+        return {"verdict": "fail", "reason": "empty verdict", "fixlist": []}
+    raw = text.strip()
+    if raw.startswith("```"):
+        fenced = raw.split("```")
+        if len(fenced) >= 3:
+            raw = fenced[1].lstrip("json").lstrip("JSON").strip()
+    depth = 0
+    start = -1
+    for i, ch in enumerate(raw):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    obj = json.loads(raw[start:i + 1])
+                    if isinstance(obj, dict) and "verdict" in obj:
+                        obj.setdefault("reason", "")
+                        obj.setdefault("fixlist", [])
+                        return obj
+                except Exception:
+                    pass
+                start = -1
+    import re as _re
+    vm = _re.search(r"verdict\s*[:=]\s*\"?(pass|fail|scope_violation)", raw, _re.I)
+    if vm:
+        verdict = vm.group(1).lower()
+        rm = _re.search(r"reason\s*[:=]\s*\"?([^\"\n]{3,300})", raw, _re.I)
+        reason = (rm.group(1).strip().rstrip("\",.") if rm else
+                  raw[:300].replace("\n", " "))
+        return {"verdict": verdict, "reason": reason, "fixlist": []}
+    return {"verdict": "fail",
+            "reason": f"could not parse verdict JSON (got: {raw[:140]!r})",
+            "fixlist": []}
+
+
+class AiForgeFeedbackAgent(BaseAgent):
+    """Single-shot LiteLLM verdict on the doer's diff.
+
+    Tools: forbidden=ALL (per agents.yaml). One LLM call per turn.
+    Emits ``escalate`` to break the LoopAgent on pass / scope_violation
+    or after MAX_FEEDBACK_FAILS consecutive fails.
+    """
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        state = ctx.session.state
+        ticket = _ticket_from_state(state)
+        log = get_logger("adk.feedback")
+        if ticket is None:
+            yield _yield_text_event(
+                self.name, "[feedback] no ticket in state",
+                ctx.invocation_id,
+            )
+            return
+
+        worktree = state.get(S_WORKTREE)
+        diff = _git_diff(worktree)
+        body = (ticket.body or "")[:8000]
+        prompt = _FEEDBACK_PROMPT.format(body=body, diff=diff[:12000])
+
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(None, _call_feedback_llm, prompt)
+            verdict_obj = _parse_verdict(raw)
+        except Exception as exc:
+            verdict_obj = {"verdict": "fail",
+                           "reason": f"llm error: {exc}",
+                           "fixlist": []}
+
+        verdict = verdict_obj.get("verdict") or "fail"
+        if verdict not in ("pass", "fail", "scope_violation"):
+            verdict = "fail"
+        reason = (verdict_obj.get("reason") or "")[:500]
+        fixlist = verdict_obj.get("fixlist") or []
+        fixlist_str = "\n".join(f"- {x}" for x in fixlist[:5]) if fixlist else ""
+
+        tickets_mod.add_event(
+            ticket.id, "feedback", "comment",
+            body=f"verdict={verdict}\nreason={reason}\n{fixlist_str}",
+            metadata={"feedback_verdict": verdict,
+                      "feedback_reason": reason,
+                      "via": "adk_workflow"},
+        )
+
+        fail_count = int(state.get(S_FAIL_COUNT, 0) or 0)
+        if verdict == "fail":
+            fail_count += 1
+
+        state_delta: dict[str, Any] = {
+            S_VERDICT: verdict,
+            S_FIXLIST: fixlist_str or None,
+            S_FAIL_COUNT: fail_count,
+        }
+
+        # The LoopAgent breaks on escalate=True. We escalate when:
+        #  - verdict is pass            → fall through to learner
+        #  - verdict is scope_violation → terminal, skip learner
+        #  - feedback_fail_count >= cap → terminal, skip learner
+        should_escalate = (
+            verdict == "pass"
+            or verdict == "scope_violation"
+            or fail_count >= MAX_FEEDBACK_FAILS
+        )
+
+        emit(log, "adk.feedback.verdict",
+             ticket=ticket.identifier,
+             verdict=verdict, fail_count=fail_count,
+             escalating=should_escalate)
+
+        actions = EventActions(state_delta=state_delta)
+        if should_escalate:
+            actions = EventActions(escalate=True, state_delta=state_delta)
+
+        yield Event(
+            invocation_id=ctx.invocation_id,
+            author=self.name,
+            content=genai_types.Content(
+                role="model",
+                parts=[genai_types.Part(
+                    text=f"verdict={verdict}\nreason={reason}\n{fixlist_str}",
+                )],
+            ),
+            actions=actions,
+        )
+
+
+# ─────────────────────────── Learner agent ──────────────────────────────
+_LEARNER_PROMPT = """You are the Learner. Extract one durable :Fact from the work done on this ticket.
+
+## Ticket
+{body}
+
+## Most recent events
+{events}
+
+Respond with a JSON object ONLY. No prose before or after.
+Keys:
+- digest: one short line (<= 200 chars) summarizing what was learned / shipped.
+- keywords: array of up to 5 short keywords.
+
+Your JSON:
+"""
+
+
+def _call_learner_llm(prompt: str) -> str:
+    payload = json.dumps({
+        "model": LEARNER_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 524288,
+        "temperature": 0.0,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }).encode()
+    req = urllib.request.Request(
+        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LM_STUDIO_API_KEY}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        body = json.loads(resp.read())
+    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
+    content = (msg.get("content") or "").strip()
+    if content:
+        return content
+    return (msg.get("reasoning_content") or "").strip()
+
+
+def _parse_learner(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = "\n".join(text.splitlines()[1:-1]) if text.count("```") >= 2 else text.strip("`")
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except Exception:
+            pass
+    return {"digest": text[:200], "keywords": []}
+
+
+def _recent_events_text(ticket_id: int, limit: int = 6) -> str:
+    events = tickets_mod.comments(ticket_id, limit=limit)
+    if not events:
+        return "(no prior events)"
+    lines = []
+    for e in events:
+        kind = e.get("kind") or "?"
+        role = e.get("agent_role") or "?"
+        body = (e.get("body") or "").replace("\n", " ")[:300]
+        lines.append(f"[{role}] ({kind}) {body}")
+    return "\n".join(lines)
+
+
+def _write_fact_to_neo4j(
+    ticket: tickets_mod.Ticket, digest: str, keywords: list[str], log
+) -> None:
+    """Write a :Fact node anchored to the ticket. Per agents.yaml the
+    Learner is the ONLY role allowed to write :Fact, and only on
+    verdict=pass. Fail-soft so a Neo4j outage cannot drop the ticket.
+    """
+    try:
+        from aiforge_core.legacy.rag.neo4j_memory import _get_driver
+        cy = (
+            "MERGE (f:Fact {id: $fact_id}) "
+            "ON CREATE SET f.text = $text, f.created_at = timestamp(), "
+            "              f.ticket = $ticket, f.keywords = $keywords "
+            "WITH f "
+            "MERGE (t:Ticket {identifier: $ticket}) "
+            "MERGE (f)-[:ABOUT]->(t)"
+        )
+        params = {
+            "fact_id": f"{ticket.identifier}:fact",
+            "text": digest,
+            "ticket": ticket.identifier,
+            "keywords": list(keywords or [])[:5],
+        }
+        with _get_driver().session() as s:
+            s.run(cy, **params)
+        emit(log, "adk.learner.fact_written",
+             ticket=ticket.identifier, fact_id=params["fact_id"])
+    except Exception as exc:
+        emit(log, "adk.learner.fact_write_failed",
+             ticket=ticket.identifier, error=str(exc)[:200])
+
+
+class AiForgeLearnerAgent(BaseAgent):
+    """Single-shot Learner — runs only when feedback verdict is pass.
+
+    Per agents.yaml the Learner has no model tools; the ``write_fact``
+    operation is a server-side action invoked here directly against
+    Neo4j after the model returns a digest JSON.
+    """
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        state = ctx.session.state
+        ticket = _ticket_from_state(state)
+        log = get_logger("adk.learner")
+        if ticket is None:
+            yield _yield_text_event(
+                self.name, "[learner] no ticket in state",
+                ctx.invocation_id,
+            )
+            return
+
+        verdict = state.get(S_VERDICT)
+        if verdict != "pass":
+            emit(log, "adk.learner.skipped",
+                 ticket=ticket.identifier, verdict=verdict)
+            yield _yield_text_event(
+                self.name,
+                f"[learner] skipped (verdict={verdict!r})",
+                ctx.invocation_id,
+            )
+            return
+
+        body = (ticket.body or "")[:4000]
+        events_text = _recent_events_text(ticket.id)[:4000]
+        prompt = _LEARNER_PROMPT.format(body=body, events=events_text)
+
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(None, _call_learner_llm, prompt)
+            parsed = _parse_learner(raw)
+        except Exception as exc:
+            emit(log, "adk.learner.llm_error",
+                 ticket=ticket.identifier, error=str(exc)[:200])
+            parsed = {"digest": f"learner llm error: {exc}", "keywords": []}
+
+        digest = (parsed.get("digest") or "")[:200] or "(empty)"
+        keywords = parsed.get("keywords") or []
+
+        _write_fact_to_neo4j(ticket, digest, keywords, log)
+
+        tickets_mod.add_event(
+            ticket.id, "learner", "comment",
+            body=f"DIGEST: {digest}\nkeywords: {', '.join(keywords[:5])}",
+            metadata={"source": "adk_learner_single_shot",
+                      "via": "adk_workflow"},
+        )
+
+        emit(log, "adk.learner.done",
+             ticket=ticket.identifier, digest_chars=len(digest))
+
+        yield _yield_text_event(
+            self.name,
+            f"DIGEST: {digest}\nkeywords: {', '.join(keywords[:5])}",
+            ctx.invocation_id,
+        )
+
+
+# ─────────────────────────── Workflow factory ───────────────────────────
+@dataclass
+class WorkflowBundle:
+    """Container returned by :func:`build_aiforge_workflow`."""
+    runner: Runner
+    workflow: SequentialAgent
+    session_service: Any
+    plugins: list[BasePlugin]
+
+
+def _build_session_service():
+    """Use DatabaseSessionService against aiforge Postgres if asyncpg is
+    available; otherwise fall back to InMemorySessionService so the
+    workflow still runs (smoke testing).
+    """
+    dsn_async = AIFORGE_DSN.replace(
+        "postgresql://", "postgresql+asyncpg://", 1,
+    ) if AIFORGE_DSN.startswith("postgresql://") else AIFORGE_DSN
+    try:
+        return DatabaseSessionService(db_url=dsn_async)
+    except Exception:
+        # asyncpg/sqlalchemy not installed — fall back so the smoke
+        # path is not blocked. Production NUC ships asyncpg via
+        # google-adk's transitive deps.
+        return InMemorySessionService()
+
+
+def build_aiforge_workflow(
+    *,
+    enable_neo4j_mirror: bool = True,
+) -> WorkflowBundle:
+    """Build the full AIForge ADK workflow.
+
+    The structure is:
+
+        SequentialAgent("aiforge")
+          ├─ AiForgePlannerAgent("planner")
+          ├─ LoopAgent("doer_chain", max_iterations=MAX_FEEDBACK_FAILS)
+          │    ├─ AiForgeDoerAgent("doer")
+          │    └─ AiForgeFeedbackAgent("feedback")
+          └─ AiForgeLearnerAgent("learner")
+
+    The LoopAgent breaks early when any sub-agent yields an Event whose
+    ``actions.escalate`` is True. Feedback escalates on
+    pass / scope_violation / fail_count >= cap. Doer escalates only on
+    compile_fail_count >= 2 or scope_violation.
+    """
+    planner = AiForgePlannerAgent(name="planner")
+    doer = AiForgeDoerAgent(name="doer")
+    feedback = AiForgeFeedbackAgent(name="feedback")
+    doer_loop = LoopAgent(
+        name="doer_chain",
+        sub_agents=[doer, feedback],
+        max_iterations=MAX_FEEDBACK_FAILS,
+    )
+    learner = AiForgeLearnerAgent(name="learner")
+    workflow = SequentialAgent(
+        name="aiforge",
+        sub_agents=[planner, doer_loop, learner],
+    )
+
+    plugins: list[BasePlugin] = []
+    if enable_neo4j_mirror:
+        plugins.append(Neo4jMirrorPlugin())
+
+    session_service = _build_session_service()
+    runner = Runner(
+        app_name="aiforge",
+        agent=workflow,
+        session_service=session_service,
+        plugins=plugins,
+        auto_create_session=True,
+    )
+    return WorkflowBundle(
+        runner=runner,
+        workflow=workflow,
+        session_service=session_service,
+        plugins=plugins,
+    )
+
+
+__all__ = [
+    "AiForgePlannerAgent",
+    "AiForgeDoerAgent",
+    "AiForgeFeedbackAgent",
+    "AiForgeLearnerAgent",
+    "Neo4jMirrorPlugin",
+    "WorkflowBundle",
+    "build_aiforge_workflow",
+    "MAX_FEEDBACK_FAILS",
+    "S_TICKET_ID",
+    "S_WORKTREE",
+    "S_VERDICT",
+    "S_FIXLIST",
+    "S_FAIL_COUNT",
+    "S_COMPILE_FAIL_COUNT",
+    "S_PLAN_DONE",
+    "S_LAST_DOER_SUMMARY",
+]

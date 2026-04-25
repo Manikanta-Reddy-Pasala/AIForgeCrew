@@ -8,7 +8,7 @@ def retrieve_context(state: AgentState, role: str) -> list[dict]:
     query = f"{ticket.get('title', '')}\n{(ticket.get('body') or '')[:1000]}"
 
     try:
-        from aiforge_core.rag.retriever import retrieve_for_role_li
+        from aiforge_core.legacy.rag.retriever import retrieve_for_role_li
         hits = retrieve_for_role_li(None, role, query, ticket.get("parent_id"))
         return [{"role": "system", "content": f"[RAG context]\n{h}"} for h in hits[:5]]
     except Exception:

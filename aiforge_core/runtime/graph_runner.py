@@ -4,8 +4,8 @@ import os
 import subprocess
 import time
 
-from aiforge_core.graph import build_graph
-from aiforge_core.graph.state import AgentState
+from aiforge_core.legacy.graph import build_graph
+from aiforge_core.legacy.graph.state import AgentState
 from aiforge_core.runtime import tickets as tickets_mod
 from aiforge_core.runtime.logging_setup import emit, get_logger
 

@@ -928,7 +928,7 @@ def _chat_agent_answer(query: str) -> dict:
     _os.environ.setdefault("AIFORGE_GRAPH_MCP_ENABLED", "1")
 
     from smolagents import CodeAgent, LiteLLMModel
-    from aiforge_core.mcp_graph import graph_rag_tools
+    from aiforge_core.legacy.mcp_graph import graph_rag_tools
     from aiforge_core.planner.tools import make_search_memory
 
     # Per-agent provider+model lookup via agent_config (persisted JSON).

@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from aiforge_core.runtime.config import AIFORGE_DSN, WORKTREE_ROOT
-from aiforge_core.store_v2 import Store
+from aiforge_core.legacy.store_v2 import Store
 
 log = logging.getLogger("file-indexer")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -342,7 +342,7 @@ def index_repo(store: Store, repo_name: str, repo_root: Path, *, full: bool) -> 
             # Reuse upsert_code_chunk — it sets tier=t4 and wing=code/<repo>.
             # We manually insert to use the `feature/<repo>` wing instead.
             from aiforge_core import embedder as embed_mod
-            from aiforge_core.store_v2 import _vec_literal
+            from aiforge_core.legacy.store_v2 import _vec_literal
             import json as _json
             vec = embed_mod.embed(text)
             with psycopg.connect(AIFORGE_DSN, connect_timeout=5) as conn, conn.cursor() as cur:

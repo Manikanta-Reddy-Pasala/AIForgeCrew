@@ -36,7 +36,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from aiforge_core.retrieval import Hit, ROLE_POLICIES, rrf_fuse
+from aiforge_core.legacy.retrieval import Hit, ROLE_POLICIES, rrf_fuse
 
 log = logging.getLogger("aiforge.rag.neo4j_memory")
 

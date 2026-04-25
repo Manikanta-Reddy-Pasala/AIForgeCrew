@@ -32,7 +32,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from aiforge_core.rag.neo4j_memory import _get_driver, MemoryRow, retain_fact
+from aiforge_core.legacy.rag.neo4j_memory import _get_driver, MemoryRow, retain_fact
 
 log = logging.getLogger("aiforge.repo_catalog")
 

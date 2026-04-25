@@ -44,7 +44,7 @@ def ingest_chunk(
     from llama_index.core.node_parser import SimpleNodeParser
 
     if index is None:
-        from aiforge_core.rag.index import build_index
+        from aiforge_core.legacy.rag.index import build_index
 
         resolved_dsn = dsn or os.environ.get(
             "AIFORGE_PGMEM_DSN", "host=127.0.0.1 port=5432 dbname=aiforge"

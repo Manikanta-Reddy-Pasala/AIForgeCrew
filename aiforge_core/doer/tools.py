@@ -682,7 +682,7 @@ def make_tools(worktree_path: str, scope_guard: ScopeGuard,
     # context-strategy eval (tracks A,B,X1,X3 run without it).
     if os.environ.get("AIFORGE_GRAPH_MCP_ENABLED", "0") == "1":
         try:
-            from aiforge_core.mcp_graph import graph_rag_tools
+            from aiforge_core.legacy.mcp_graph import graph_rag_tools
             _existing = {getattr(t, "name", None) for t in tools}
             for gt in graph_rag_tools():
                 if getattr(gt, "name", None) in _existing:

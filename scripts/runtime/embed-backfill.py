@@ -18,7 +18,7 @@ import time
 import psycopg
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from aiforge_core.embed import embed_batch
+from aiforge_core.legacy.embed import embed_batch
 from aiforge_core.runtime.config import AIFORGE_DSN
 
 

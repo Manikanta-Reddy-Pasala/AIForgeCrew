@@ -76,7 +76,7 @@ def make_lookup_repo(ctx: dict) -> Callable:
             a manual re-index with the repo-indexer CLI).
         """
         try:
-            from aiforge_core.rag.repo_catalog import lookup_repo as _lookup
+            from aiforge_core.legacy.rag.repo_catalog import lookup_repo as _lookup
             row = _lookup(name)
         except Exception as exc:
             return f"ERROR: lookup_repo failed: {exc}"
@@ -115,7 +115,7 @@ def make_search_memory(ctx: dict) -> Callable:
             top_k: Maximum number of results to return.
         """
         try:
-            from aiforge_core.rag.retriever import retrieve_for_role_li
+            from aiforge_core.legacy.rag.retriever import retrieve_for_role_li
 
             ticket = ctx["ticket"]
             parent_id = getattr(ticket, "parent_id", None)
@@ -457,7 +457,7 @@ def make_tools(ctx: dict) -> list:
     # sym_lookup / impact / cross_repo_flow / ticket_brief etc. so it can
     # build plans from the Neo4j graph instead of grep alone.
     try:
-        from aiforge_core.mcp_graph import graph_rag_tools
+        from aiforge_core.legacy.mcp_graph import graph_rag_tools
         _existing = {getattr(t, "name", None) for t in tools}
         for gt in graph_rag_tools():
             if getattr(gt, "name", None) in _existing:

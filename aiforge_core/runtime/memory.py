@@ -16,8 +16,8 @@ from typing import Iterable
 
 import os
 
-from aiforge_core.store_v2 import Store
-from aiforge_core.retrieval import Hit
+from aiforge_core.legacy.store_v2 import Store
+from aiforge_core.legacy.retrieval import Hit
 
 _BACKEND = os.environ.get("AIFORGE_MEMORY_BACKEND", "postgres").lower()
 
@@ -41,7 +41,7 @@ class Memory:
         if self._backend == "neo4j":
             # Neo4j-backed memory (Option A). Store stays only for pieces
             # that still need pg (e.g. memory_proposals curation queue).
-            from aiforge_core.rag.neo4j_memory import ensure_schema
+            from aiforge_core.legacy.rag.neo4j_memory import ensure_schema
             ensure_schema()
             self._store = None
         else:
@@ -70,7 +70,7 @@ class Memory:
         try:
             # Route via the package-level symbol so
             # AIFORGE_MEMORY_BACKEND=neo4j swaps the implementation.
-            from aiforge_core.rag import retrieve_for_role_li
+            from aiforge_core.legacy.rag import retrieve_for_role_li
             hits: list[Hit] = retrieve_for_role_li(
                 self._store, role=role, query=query, parent_id=parent_id,
             )
@@ -153,7 +153,7 @@ class Memory:
 
         # Neo4j backend: route directly to the :Memory writer.
         if self._backend == "neo4j":
-            from aiforge_core.rag.neo4j_memory import MemoryRow, retain_fact as n4j_retain
+            from aiforge_core.legacy.rag.neo4j_memory import MemoryRow, retain_fact as n4j_retain
             fact_id = n4j_retain(MemoryRow(
                 tier=tier, wing=wing, text=text[:10_000],
                 kind=kind, source=source,
@@ -200,7 +200,7 @@ def _maybe_embed(store: Store, row_id: int, text: str) -> None:
     """Embed + update `embedding` column. Swallows errors — retain is
     write-forward; embedding backfill is idempotent."""
     try:
-        from aiforge_core.embed import embed
+        from aiforge_core.legacy.embed import embed
         vec = embed(text[:8000])
         with store._connect() as c, c.cursor() as cur:
             cur.execute(

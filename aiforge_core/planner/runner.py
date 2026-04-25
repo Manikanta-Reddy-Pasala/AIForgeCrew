@@ -1,6 +1,6 @@
 """Bridge between the graph node and the smolagents Planner agent.
 
-``run_planner`` is called from aiforge_core.graph.nodes.planner.planner_node.
+``run_planner`` is called from aiforge_core.legacy.graph.nodes.planner.planner_node.
 Unlike the Doer, the Planner does not clone a worktree — it reads across
 WORKTREE_ROOT in place.
 """

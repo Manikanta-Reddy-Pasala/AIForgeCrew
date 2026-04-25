@@ -16,8 +16,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from aiforge_core.store_v2 import Store
-from aiforge_core.rag import reindex_repo
+from aiforge_core.legacy.store_v2 import Store
+from aiforge_core.legacy.rag import reindex_repo
 
 
 JOBS = [
