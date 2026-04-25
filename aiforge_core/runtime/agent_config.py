@@ -126,12 +126,27 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     prov = PROVIDERS.get(row["provider"]) or PROVIDERS["local"]
     prefix = prov["litellm_prefix"]
     model = row["model"]
-    if "/" not in model:
+    # Always add LiteLLM provider prefix unless caller already supplied one.
+    # mlx-lm expects the full filesystem path as ``model`` — those paths have
+    # ``/`` separators, so the old "if '/' not in model" check skipped them
+    # and LiteLLM raised "LLM Provider NOT provided". Detect known prefixes
+    # (openai, anthropic, ...) instead.
+    KNOWN_PREFIXES = (
+        "openai/", "anthropic/", "azure/", "ollama/", "huggingface/",
+        "mistral/", "groq/", "cohere/", "bedrock/",
+    )
+    if not any(model.startswith(p) for p in KNOWN_PREFIXES):
         model = f"{prefix}/{model}"
     base_url = prov.get("base_url")
     if row["provider"] == "local":
-        base_url = os.environ.get(
-            "AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
+        # Per-role override → global override → default. Lets us run
+        # one mlx-lm server per role on different ports (planner=1235,
+        # doer=1234) since mlx-lm only serves one model per process.
+        base_url = (
+            os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
+            or os.environ.get("AIFORGE_LM_BASE_URL")
+            or "http://127.0.0.1:1234/v1"
+        )
     api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
     return {
         "model_id": model, "api_base": base_url, "api_key": api_key,
