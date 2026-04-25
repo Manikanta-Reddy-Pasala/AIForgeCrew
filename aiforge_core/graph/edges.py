@@ -30,7 +30,9 @@ def after_doer(state: AgentState) -> str:
     return "feedback_node"
 
 
-MAX_FEEDBACK_FAILS = 2
+MAX_FEEDBACK_FAILS = 4  # was 2 — observed ONE-52: 1 tick to find target +
+                        # 1 tick to attempt edit + 1 tick to fix compile
+                        # error needs >=3 retries. 4 leaves headroom.
 
 
 def after_feedback(state: AgentState) -> str:

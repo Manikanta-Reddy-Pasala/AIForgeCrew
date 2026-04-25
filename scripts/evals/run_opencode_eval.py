@@ -149,12 +149,26 @@ def _git_diff_stat(host: str, worktree: str) -> dict:
 
 
 def _try_compile(host: str, worktree: str, project: str) -> dict:
+    """Worktree IS the project root — `mvn -pl <project>` would fail
+    with 'Could not find the selected project in the reactor'."""
     cp = _ssh(host,
-              f"cd {worktree} && mvn -q -DskipTests -pl {project} compile 2>&1 | tail -8",
-              timeout=600)
+              f"cd {worktree} && mvn -q -DskipTests compile 2>&1; echo MVN_EXIT=$?",
+              timeout=900)
     out = cp.stdout
-    return {"compile_pass": "BUILD FAILURE" not in out and cp.returncode == 0,
-            "tail": out[-1500:]}
+    mvn_exit = -1
+    for line in out.splitlines():
+        if line.startswith("MVN_EXIT="):
+            try:
+                mvn_exit = int(line.split("=", 1)[1])
+            except ValueError:
+                pass
+    # `mvn -q` suppresses BUILD SUCCESS on green. MVN_EXIT echo is the
+    # authoritative signal; failures still print BUILD FAILURE.
+    return {
+        "compile_pass": mvn_exit == 0 and "BUILD FAILURE" not in out,
+        "mvn_exit": mvn_exit,
+        "tail": out[-2000:],
+    }
 
 
 def _cleanup_worktree(host: str, project: str, worktree: str,

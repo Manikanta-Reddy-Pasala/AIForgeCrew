@@ -1,0 +1,290 @@
+# =============================================================================
+# AIForgeCrew v5 — Per-Agent Contracts
+# =============================================================================
+#
+# This YAML is consumed by `aiforge_core/agents.py:load_agents()` and enforced
+# by ADK plugins + custom GA (Generic Agent) handlers at runtime.
+#
+# Enforcement layers (defense-in-depth):
+#   1. ADK side       — per-agent `tools=[...]` filter is applied when the
+#                       agent is constructed; the model literally never sees
+#                       forbidden tool schemas.
+#   2. GA handler     — `tool_before_callback` rejects any forbidden tool name
+#                       even if the model hallucinates one (e.g. via shell).
+#   3. Harness        — pre-flight asserts no forbidden tool name appears in
+#                       the recorded trace events; failure fails the run.
+#
+# Changes to allowed/forbidden lists take effect on graph-runner restart only.
+# Schema is versioned via `schema_version` at the top of this file. Bump it
+# whenever a backwards-incompatible field is added or semantics change.
+#
+# See `docs/agent-rules.md` for the prose explanation of each constraint and
+# the F1–F7 eval findings that motivated them.
+# =============================================================================
+
+schema_version: 1
+
+agents:
+
+  # ---------------------------------------------------------------------------
+  # 1. ARCHITECT
+  # ---------------------------------------------------------------------------
+  # External Claude Code instance run by the human operator. Drives ticket
+  # creation via the Postgres ticket API. Never edits code itself.
+  # ---------------------------------------------------------------------------
+  architect:
+    identity:
+      runtime: external_claude_code
+      model: claude-opus-4-7
+      backend: direct_litellm        # n/a — external; recorded for trace symmetry
+      base_url: https://api.anthropic.com
+      ctx_window: 1000000
+    contract:
+      inputs:
+        - human_intent
+        - repo_index
+        - memory_search_results
+      outputs:
+        - parent_ticket
+        - design_notes
+        - acceptance_criteria
+      max_turns: 50
+      max_wall_s: 3600
+    tools:
+      allowed:
+        - graph_lookup
+        - search_memory
+        - read_file
+        - list_dir
+        - grep_repos
+        - lookup_repo
+        - create_parent_ticket
+        - update_ticket
+      forbidden:
+        - edit_block
+        - write_file
+        - file_patch
+        - run_compile
+        - file_write
+        - code_run
+    memory:
+      read_scope: full
+      write_scope: none
+    rule: >
+      Architect designs and writes tickets. Architect never edits code, never
+      runs commands, and never writes memory.
+    termination_contract:
+      - parent_ticket persisted to Postgres with status=READY
+      - acceptance_criteria attached as JSON to the ticket row
+      - human operator explicitly closes the architect turn
+
+  # ---------------------------------------------------------------------------
+  # 2. PLANNER
+  # ---------------------------------------------------------------------------
+  # smolagents CodeAgent on Qwen3.6-27B (EVAL-1 winner, 2026-04-23). Reads the
+  # parent ticket and emits a plan + N child subtickets. EVAL-1b will revisit
+  # whether to migrate to ADK — keep backend swappable.
+  # ---------------------------------------------------------------------------
+  planner:
+    identity:
+      runtime: adk_agent_with_ga
+      model: Qwen3.6-27B-MLX-4bit
+      backend: codeagent_smolagents
+      base_url: http://127.0.0.1:1235/v1
+      ctx_window: 64000
+    contract:
+      inputs:
+        - parent_ticket
+        - acceptance_criteria
+        - repo_index
+        - memory_search_results
+      outputs:
+        - plan_md
+        - child_subtickets
+        - scope_allowlist_globs
+        - test_skeleton_refs
+      max_turns: 25
+      max_wall_s: 600
+    tools:
+      allowed:
+        - graph_lookup
+        - search_memory
+        - read_file
+        - list_dir
+        - grep_repos
+        - lookup_repo
+        - write_plan
+        - create_child_ticket
+        - recall_similar_flows
+      forbidden:
+        - edit_block
+        - write_file
+        - file_patch
+        - run_compile
+        - ask_user
+        - code_run
+    memory:
+      read_scope: full
+      write_scope: none
+    rule: >
+      Planner reads everything, writes a plan and child subtickets, and never
+      touches source files. Every test subticket MUST inject a test skeleton
+      template reference (see docs/agent-rules.md §4).
+    termination_contract:
+      - plan_md persisted under docs/plans/<ticket_id>.md
+      - ">=1 child_subticket created per acceptance criterion"
+      - each child_subticket carries a non-empty scope_allowlist_globs
+      - test subtickets reference a template in docs/test-skeleton-templates/
+
+  # ---------------------------------------------------------------------------
+  # 3. DOER
+  # ---------------------------------------------------------------------------
+  # ADK agent with a custom GenericAgent text-protocol handler over
+  # qwen-coder-next on the local MLX runtime. Single subticket per Doer turn,
+  # ScopeGuard enforces subticket allowlist globs. Compile + tests must be
+  # green before the agent claims done.
+  # ---------------------------------------------------------------------------
+  doer:
+    identity:
+      runtime: adk_agent_with_ga
+      model: Qwen3-Coder-Next-MLX-4bit
+      backend: genericagent_text_protocol
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
+    contract:
+      inputs:
+        - child_subticket
+        - scope_allowlist_globs
+        - test_skeleton_ref
+        - scoped_memory_facts
+      outputs:
+        - file_diffs
+        - compile_status
+        - test_status
+        - turn_log
+      max_turns: 40
+      max_wall_s: 700
+    tools:
+      allowed:
+        - file_read
+        - file_write
+        - file_patch
+        - code_run                  # shell — ScopeGuard wraps this
+        - grep
+        - list_dir
+        - ask_explorer              # delegate read-only repo questions
+      forbidden:
+        - ask_user
+        - start_long_term_update
+        - create_child_ticket
+        - write_fact
+        - write_plan
+    memory:
+      read_scope: scoped            # only :Fact ABOUT files in allowlist globs
+      write_scope: none
+    rule: >
+      Doer edits files inside its allowlist globs, runs compile + tests, and
+      stops when green or after 2 consecutive compile failures (escalate to
+      Feedback with verdict=fail). Doer never asks the user, never creates
+      tickets, and never writes memory.
+    termination_contract:
+      - all writes resolve to paths inside scope_allowlist_globs
+      - compile_status=green AND test_status=green, OR
+      - 2 consecutive compile failures → halt with verdict=fail, OR
+      - max_turns or max_wall_s exceeded → halt with verdict=fail
+
+  # ---------------------------------------------------------------------------
+  # 4. FEEDBACK
+  # ---------------------------------------------------------------------------
+  # ADK agent with direct LiteLLM provider — no agent loop, single completion.
+  # Inspects Doer's turn_log + diff + test output, emits a verdict.
+  # ---------------------------------------------------------------------------
+  feedback:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: qwen-coder-next
+      backend: direct_litellm
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
+    contract:
+      inputs:
+        - doer_turn_log
+        - file_diffs
+        - compile_status
+        - test_status
+        - scope_allowlist_globs
+      outputs:
+        - verdict                   # one of: pass | fail | scope_violation
+        - rationale
+      max_turns: 1
+      max_wall_s: 60
+    tools:
+      allowed: []
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      Feedback is a pure judge. No tools, single turn, single JSON verdict.
+      `scope_violation` outranks `fail` — if any write touched a path outside
+      the allowlist, verdict MUST be scope_violation regardless of test color.
+    termination_contract:
+      - verdict ∈ {pass, fail, scope_violation} emitted as valid JSON
+      - rationale is a non-empty string citing specific evidence
+
+  # ---------------------------------------------------------------------------
+  # 5. LEARNER
+  # ---------------------------------------------------------------------------
+  # ADK agent with direct LiteLLM, runs ONLY when feedback.verdict=pass.
+  # Extracts durable :Fact rows from the successful turn. Tool-less from the
+  # model's perspective — the `write_fact` call is a server-side ADK plugin
+  # that fires after the model returns its JSON output.
+  # ---------------------------------------------------------------------------
+  learner:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: qwen-coder-next
+      backend: direct_litellm
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
+    contract:
+      inputs:
+        - parent_ticket
+        - child_subticket
+        - file_diffs
+        - feedback_verdict          # MUST be "pass" or learner is skipped
+      outputs:
+        - facts_json                # [{text, about: [...], tags: [...]}]
+      max_turns: 1
+      max_wall_s: 60
+    tools:
+      allowed: []                   # write_fact is server-side, not a model tool
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: ":Fact"          # only on verdict=pass; enforced by plugin
+    rule: >
+      Learner runs only when feedback verdict is pass. It emits a strict JSON
+      array of :Fact candidates; the ADK write-fact plugin persists them
+      after schema validation. Learner never touches source files.
+    termination_contract:
+      - feedback_verdict == "pass" (otherwise learner is skipped entirely)
+      - "facts_json validates against schema [{text, about: [path|fqn|ticket], tags}]"
+      - server-side write_fact plugin acks each row, or learner re-runs once
+
+# =============================================================================
+# Cross-cutting invariants (informational — enforced in code, not parsed here)
+# =============================================================================
+#
+# - Every turn for every agent emits a :Turn node via ADK BasePlugin.on_event_callback.
+#   This is non-opt-out and not represented in the per-agent block above.
+#
+# - Only Learner writes :Fact, only on verdict=pass. Doer NEVER writes memory.
+#   This is enforced by the ADK plugin layer, not by Doer's tool list alone.
+#
+# - The forbidden keyword `ALL` means: no tool calls of any kind are permitted.
+#   The GA handler short-circuits any tool_use block to an error message.
+#
+# =============================================================================

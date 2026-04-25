@@ -1,0 +1,37 @@
+id: F5
+name: "New REST endpoint with derived repository query"
+project: PosClientBackend
+assignee_role: developer
+priority: medium
+labels: [eval, context-strategy, memory-recall, new-api]
+max_turns: 30
+title: "Add GET /business/{businessId} endpoint to PaymentInController"
+body: |
+  ## Goal
+  Add a new GET endpoint to `PaymentInController` that returns every PaymentIn for a given business, plus the supporting repository method using Spring Data MongoDB's derived-query naming convention.
+
+  ## Acceptance criteria
+  1. In `src/main/java/com/pos/backend/feature/paymentin/PaymentInRepository.java`, add a method:
+     `reactor.core.publisher.Flux<com.oneshell.commons.client.model.v1.PaymentIn> findByBusinessId(String businessId);`
+     Spring Data will auto-implement this from the method name — do NOT write a body, do NOT add `@Query`.
+  2. In `src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java`, add a new public method:
+     - Annotated `@GetMapping("/business/{businessId}")`
+     - Signature: `public reactor.core.publisher.Flux<com.oneshell.commons.client.model.v1.PaymentIn> findByBusinessId(@org.springframework.web.bind.annotation.PathVariable String businessId)`
+     - Body must start with: `log.info("[PaymentInController.findByBusinessId] called, businessId={}", businessId);`
+     - Then return `paymentInRepository.findByBusinessId(businessId);` (use the existing field name as it appears in the constructor-injected fields — read the file first to confirm).
+  3. Use existing imports where possible. Add minimal new imports only if a fully-qualified name is not already imported.
+  4. Do not modify any other method or any other file. Do not introduce a `@Service` class.
+  5. `mvn -DskipTests compile` must pass.
+
+  ## Files
+  - PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/PaymentInRepository.java
+  - PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java
+
+  ## Hints (read these before editing)
+  - PaymentInController is annotated `@RestController`, `@RequestMapping("/v1/api/paymentIn")`, `@AllArgsConstructor`, `@Slf4j` — so `log` and the injected repository field are already available.
+  - Existing endpoints in the same controller (save, delete, getCollectionsSummary) show the import + style conventions you should follow.
+expected:
+  files_modified_min: 2
+  files_modified_must_include:
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/PaymentInRepository.java"
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java"

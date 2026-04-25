@@ -27,11 +27,33 @@ def doer_node(state: AgentState) -> AgentState:
     if worktree is not None:
         from aiforge_core.doer import run_smolagents_doer
         # Forward prior feedback so Doer can continue from the last tick's state
-        # instead of re-planning from scratch (2026-04-23).
+        # instead of re-planning from scratch (2026-04-23). Also surface the
+        # last compile error from the prior Doer tick (stashed by run_compile
+        # tool in counters['last_compile_error']) so the model sees the exact
+        # error to fix instead of guessing.
+        prior_fixlist = state.get("feedback_fixlist") or ""
+        last_compile_err = ""
+        try:
+            evs = tickets_mod.comments(ticket_id, limit=50)
+            for ev in reversed(evs):
+                if ev.get("kind") == "error":
+                    md = ev.get("metadata") or {}
+                    if md.get("stop_reason") == "checklist_fail":
+                        last_compile_err = md.get("compile_error") or ""
+                        if last_compile_err:
+                            break
+        except Exception:
+            pass
+        if last_compile_err:
+            prior_fixlist = (
+                f"COMPILE FAILED on previous tick — first fix this:\n"
+                f"```\n{last_compile_err}\n```\n\n"
+                + (prior_fixlist if prior_fixlist else "")
+            )
         summary = run_smolagents_doer(
             ticket, worktree, log,
-            prior_verdict=state.get("verdict"),
-            prior_fixlist=state.get("feedback_fixlist"),
+            prior_verdict=state.get("verdict") or ("fail" if last_compile_err else None),
+            prior_fixlist=prior_fixlist or None,
         )
     else:
         summary = _run_tool_loop(rc, ticket, worktree, log)

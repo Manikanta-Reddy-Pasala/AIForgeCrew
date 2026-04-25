@@ -206,6 +206,31 @@ def _git_commit_push_pr(
     return result
 
 
+def _doer_backend() -> str:
+    """Resolve which Doer execution backend to use.
+
+    Priority:
+      1. ``AIFORGE_DOER_BACKEND`` env var — explicit override (``smolagents``,
+         ``genericagent``, ``code``, ``toolcalling``).  ``genericagent``
+         routes through ``run_doer_via_ga``.  Anything else is treated as
+         a smolagents agent-class flag (the existing behaviour).
+      2. ``agents.yaml`` ``doer.identity.backend`` — falls through here when
+         the env var is unset.  ``genericagent_text_protocol`` selects GA.
+      3. Default: ``code`` (smolagents CodeAgent).
+    """
+    env = os.environ.get("AIFORGE_DOER_BACKEND", "").strip().lower()
+    if env:
+        return env
+    try:
+        from aiforge_core.agents import load_agents
+        backend = (load_agents()["doer"].identity or {}).get("backend", "")
+        if backend == "genericagent_text_protocol":
+            return "genericagent"
+    except Exception:
+        pass
+    return "code"
+
+
 def run_smolagents_doer(
     ticket: object,
     worktree_path: str,
@@ -213,7 +238,10 @@ def run_smolagents_doer(
     prior_verdict: str | None = None,
     prior_fixlist: str | None = None,
 ) -> dict:
-    """Run the smolagents ToolCallingAgent for one Doer tick.
+    """Run one Doer tick. Despite the name, dispatches to the configured
+    backend (smolagents CodeAgent, smolagents ToolCallingAgent, or
+    GenericAgent text-protocol) based on ``AIFORGE_DOER_BACKEND`` /
+    ``agents.yaml``.
 
     On compile-green + final_answer, commits the diff on the ticket's
     branch, pushes to origin, and opens a GitHub PR (if the origin
@@ -223,6 +251,27 @@ def run_smolagents_doer(
     are forwarded into the agent's task prompt so Doer can continue from
     where the last tick left off.
     """
+    backend = _doer_backend()
+    if backend == "genericagent":
+        from .ga_runner import run_doer_via_ga
+        # Pack the prior fixlist into the plan_text so GA sees it without
+        # forking the prompt builder.
+        plan_bits = []
+        if prior_verdict == "fail" and (prior_fixlist or "").strip():
+            plan_bits.append(
+                "## Previous feedback (fix list)\n" + prior_fixlist.strip()
+            )
+        plan_text = "\n\n".join(plan_bits)
+        max_turns = int(os.environ.get("AIFORGE_DOER_MAX_TURNS", "30"))
+        emit(log, "doer.backend.selected", backend="genericagent",
+             ticket=getattr(ticket, "identifier", "?"))
+        return run_doer_via_ga(
+            ticket, worktree_path, plan_text=plan_text,
+            max_turns=max_turns, log=log,
+        )
+
+    emit(log, "doer.backend.selected", backend="smolagents",
+         ticket=getattr(ticket, "identifier", "?"))
     t_start = time.time()
     ticket_id = ticket.id  # type: ignore[attr-defined]
     role_name = "doer"
@@ -280,14 +329,17 @@ def run_smolagents_doer(
             emit(log, "smolagents.checklist_fail", ticket=ticket.identifier,  # type: ignore[attr-defined]
                  summary_chars=len(summary_text),
                  counters=counters, required_items=required_items)
+            compile_err = counters.get("last_compile_error", "")
+            err_block = f"\n\nLast compile error:\n{compile_err}" if compile_err else ""
             tickets.add_event(
                 ticket_id, role_name, "error",
                 body=(f"final_answer called but checklist not met "
                       f"(edit_block_ok={edits_ok} < required={min_edits}, "
                       f"compile_green={compile_ok}).\n\n"
-                      f"Agent summary: {summary_text[:1500]}"),
+                      f"Agent summary: {summary_text[:1500]}{err_block}"),
                 metadata={"stop_reason": "checklist_fail", "counters": counters,
-                          "required_items": required_items},
+                          "required_items": required_items,
+                          "compile_error": compile_err[:1500] if compile_err else ""},
             )
             # Preserve the worktree diff — the feedback→doer retry should
             # continue from this state instead of starting from pristine

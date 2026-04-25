@@ -126,6 +126,11 @@ def build_planner_agent(
         "max_tokens": 524288,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     })
+    from aiforge_core.runtime.llm_trace import attach_trace
+    attach_trace(
+        model, ctx["log"], role="planner",
+        ticket=getattr(ticket, "identifier", None),
+    )
 
     backend = os.environ.get("AIFORGE_PLANNER_BACKEND", "code").strip().lower()
     agent_cls = _agent_class(backend)

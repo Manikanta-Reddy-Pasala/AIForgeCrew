@@ -1,21 +1,22 @@
 id: F1
-name: "Single-file logger add"
+name: "Single-method log add"
 project: PosClientBackend
 assignee_role: developer
 priority: medium
 labels: [eval, context-strategy]
-max_turns: 25
-title: "Add entry log to every public handler in SaleController"
+max_turns: 20
+title: "Add entry log to SaleController.save()"
 body: |
   ## Goal
-  Every public handler method on `SaleController` must log a single line at entry naming the method.
+  Add one log line at the start of the `save` method on `SaleController`.
 
   ## Acceptance criteria
-  1. For every `public` method that returns `Mono<…>` or `Flux<…>` in `src/main/java/com/pos/backend/feature/sales/SaleController.java`, add a `log.info("[SaleController.<methodName>] called")` as the first statement of the method body.
-  2. Use the existing `log` field — the class already has `@Slf4j` from Lombok, so `log` is in scope. Do NOT add a new logger.
-  3. Do not change any method signature, return type, parameter, or other behaviour.
-  4. Do not modify any other file.
-  5. `mvn -pl PosClientBackend -DskipTests compile` must pass after the change.
+  1. In `src/main/java/com/pos/backend/feature/sales/SaleController.java`, the `save` method body must start with `log.info("[SaleController.save] called");`. Use the existing `log` field — `@Slf4j` already adds it.
+
+  ## Notes
+  - Do not add new imports. Lombok's `@Slf4j` already supplies `log`.
+  - Do not modify any other method or any other file.
+  - `mvn -pl PosClientBackend -DskipTests compile` must pass.
 
   ## File to edit
   - PosClientBackend/src/main/java/com/pos/backend/feature/sales/SaleController.java

@@ -1,0 +1,30 @@
+{
+  "track": "X2",
+  "fixture_id": "F5",
+  "fixture_name": "New REST endpoint with derived repository query",
+  "seq": 1,
+  "run_id": "F5-01-3ba731",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 58.0,
+    "steps": 8,
+    "tool_use_count": 10,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 467,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "file_read": 6,
+      "code_run": 2,
+      "file_patch": 2
+    },
+    "round_end_seen": true
+  },
+  "diff_stat": {
+    "raw": "M src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java\n M src/main/java/com/pos/backend/feature/paymentin/PaymentInRepository.java\n---\n .../java/com/pos/backend/feature/paymentin/PaymentInController.java | 6 ++++++\n .../java/com/pos/backend/feature/paymentin/PaymentInRepository.java | 1 +\n 2 files changed, 7 insertions(+)"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "stdout_tail": "a.directExpenses\" to \"DirectExpense rawMaterialData.directExpenses\".\n[WARNING] /private/tmp/ga-eval/F5-01-3ba731/src/main/java/com/pos/backend/feature/businessProduct/ProductMapper.java:[44,21] Unmapped target property: \"additionalPropertyList\". Mapping from Collection element \"MongoAdditionalPropertyGroup additionalPropertyGroupList\" to \"AdditionalPropertyGroup additionalPropertyGroupList\".\n[WARNING] /private/tmp/ga-eval/F5-01-3ba731/src/main/java/com/pos/backend/feature/businessProduct/ProductMapper.java:[44,21] Unmapped target properties: \"stockReOrderQty, isOutOfStock, isStockReOrderQtyReached, isSyncedToServer\".\n[WARNING] /private/tmp/ga-eval/F5-01-3ba731/src/main/java/com/pos/backend/config/MongoInitializer.java:[73,25] ensureIndex(org.springframework.data.mongodb.core.index.IndexDefinition) in org.springframework.data.mongodb.core.index.ReactiveIndexOperations has been deprecated and marked for removal\n[WARNING] /private/tmp/ga-eval/F5-01-3ba731/src/main/java/com/pos/backend/config/MongoInitializer.java:[82,82] ensureIndex(org.springframework.data.mongodb.core.index.IndexDefinition) in org.springframework.data.mongodb.core.index.ReactiveIndexOperations has been deprecated and marked for removal\n[WARNING] /private/tmp/ga-eval/F5-01-3ba731/src/main/java/com/pos/backend/config/RestTemplateConfig.java:[34,29] org.springframework.http.converter.yaml.MappingJackson2YamlHttpMessageConverter in org.springframework.http.converter.yaml has been deprecated and marked for removal\n",
+  "stderr_tail": "",
+  "output_len": 1868
+}

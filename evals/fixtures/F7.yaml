@@ -1,0 +1,97 @@
+id: F7
+name: "Full Spring stack: controller + service iface + impl + DI + test"
+project: PosClientBackend
+assignee_role: developer
+priority: medium
+labels: [eval, context-strategy, memory-recall, new-api, multi-file, test]
+max_turns: 50
+title: "Implement POST /v1/api/paymentIn/quickEntry across full Spring stack with unit test"
+body: |
+  ## Goal
+  Add a new POST endpoint that creates a PaymentIn from a slim DTO. Implement a full layered Spring slice: DTO + service interface + service impl + controller wiring + unit test.
+
+  ## Acceptance criteria
+
+  1. **New DTO** `src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java`
+     - Package `com.pos.backend.feature.paymentin`
+     - Annotated `@lombok.Data`
+     - Fields:
+       - `private String businessId;` annotated `@jakarta.validation.constraints.NotBlank`
+       - `private String partyId;` annotated `@jakarta.validation.constraints.NotBlank`
+       - `private Double amount;` annotated `@jakarta.validation.constraints.NotNull`
+       - `private String paymentMode;` annotated `@jakarta.validation.constraints.NotBlank`
+
+  2. **New service interface** `src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java`
+     - Package `com.pos.backend.feature.paymentin`
+     - `public interface QuickPaymentInService { reactor.core.publisher.Mono<com.oneshell.commons.client.model.v1.PaymentIn> create(QuickPaymentInRequest request); }`
+
+  3. **New service impl** `src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImpl.java`
+     - Package `com.pos.backend.feature.paymentin`
+     - Annotated `@org.springframework.stereotype.Service`, `@lombok.AllArgsConstructor`, `@lombok.extern.slf4j.Slf4j`
+     - `implements QuickPaymentInService`
+     - Two private final fields (in this order so Lombok constructor matches):
+       - `PaymentInRepository paymentInRepository;`
+       - `PaymentInMapper paymentInMapper;`
+     - Implements `create(...)`:
+       - First line: `log.info("[QuickPaymentInServiceImpl.create] called, businessId={}", request.getBusinessId());`
+       - Build a `PaymentIn` via no-arg constructor + setters (set businessId, partyId, amount, paymentMode — read the PaymentIn model file or grep its setters in the existing codebase to confirm names).
+       - Convert `PaymentIn` → `PaymentInDao` via `paymentInMapper.toDao(...)` because PaymentInRepository persists DAO entities (`extends ReactiveMongoRepository<PaymentInDao, String>`).
+       - Persist via `paymentInRepository.save(dao)` which returns `Mono<PaymentInDao>`.
+       - Convert back via `.map(paymentInMapper::toDto)` so the method returns `Mono<PaymentIn>` matching the interface.
+     - This mirrors how existing endpoints in `PaymentInController` interact with the repository through the `PaymentInMapper`. Read `PaymentInMapper.java` and one existing endpoint that touches the repository to confirm the pattern before writing this file.
+
+  4. **Modify controller** `src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java`
+     - Add `private final QuickPaymentInService quickPaymentInService;` field alongside existing fields. Lombok `@AllArgsConstructor` picks it up — no manual constructor edit.
+     - Add new endpoint method:
+       ```
+       @PostMapping("/quickEntry")
+       public Mono<ResponseEntity<PaymentIn>> quickEntry(
+               @org.springframework.validation.annotation.Validated
+               @RequestBody QuickPaymentInRequest request) {
+           log.info("[PaymentInController.quickEntry] called, businessId={}", request.getBusinessId());
+           return quickPaymentInService.create(request).map(ResponseEntity::ok);
+       }
+       ```
+
+  5. **New test** `src/test/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImplTest.java`
+     - Package `com.pos.backend.feature.paymentin`
+     - Use JUnit 5 (`org.junit.jupiter.api.Test`, `@DisplayName`) and AssertJ (`org.assertj.core.api.Assertions.assertThat`).
+     - The test class must compile using only types already on the classpath. Spring Boot's `spring-boot-starter-test` is available transitively.
+     - Two tests:
+       - `void create_invokesRepositorySave()` — manually instantiates `QuickPaymentInServiceImpl` with an inline anonymous-class implementation of `PaymentInRepository` whose `save(...)` records the input and returns `Mono.just(...)`. Calls `service.create(req).block()`. Asserts the recorded PaymentIn carries `request.getBusinessId()`.
+       - `void serviceImpl_isAnnotatedAsService()` — uses `assertThat(QuickPaymentInServiceImpl.class.isAnnotationPresent(org.springframework.stereotype.Service.class)).isTrue()`.
+     - If any anonymous-class method on PaymentInRepository must return something, return `Mono.empty()` / `Flux.empty()` / `null` minimally so it compiles.
+     - Goal: test class compiles via `mvn -DskipTests test-compile` AND mvn -DskipTests compile passes for main.
+
+  6. Do NOT modify any other production file. No existing endpoint may be touched.
+
+  7. `mvn -DskipTests compile` must pass.
+  8. `mvn -DskipTests test-compile` must pass (so the test class is at least reachable by the compiler).
+
+  ## Files
+  - PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java (new)
+  - PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java (new)
+  - PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImpl.java (new)
+  - PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java (modify)
+  - PosClientBackend/src/test/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImplTest.java (new)
+
+  ## Hints
+  - PaymentInController is `@RestController @RequestMapping("/v1/api/paymentIn") @AllArgsConstructor @Slf4j`.
+  - PaymentInRepository extends `ReactiveMongoRepository<PaymentInDao, String>` — `.save(...)` returns `Mono<PaymentInDao>`. Use `PaymentInMapper.toDto(PaymentInDao)` to get `Mono<PaymentIn>` after save (and `toDao(PaymentIn)` before save).
+  - `PaymentIn` (DTO) is `com.oneshell.commons.client.model.v1.PaymentIn`. `PaymentInDao` (entity) is `com.oneshell.commons.server.model.v1.PaymentInDao`. Both have Lombok-generated setters/getters.
+  - PaymentInMapper is `@Mapper(componentModel = "spring")` so Spring will inject it as a bean — declare a `private final PaymentInMapper paymentInMapper;` field, Lombok wires it.
+  - Precedent test layout at `src/test/java/com/oneshell/mongodb/feature/product/ProductServiceImplTest.java` — match its imports for JUnit 5 + AssertJ.
+
+  ## Anti-patterns — DO NOT do these
+  - **Do not call `ask_user`.** All information needed is discoverable in the codebase. If a type or symbol is unclear, `grep` existing usages or `file_read` related files. Existing PaymentInController endpoints, PaymentInMapper, PaymentInRepository, and PaymentInWorkflow show the patterns.
+  - Do not invent new mapper methods — only `toDao(PaymentIn)` and `toDto(PaymentInDao)` exist.
+  - Do not modify PaymentInWorkflow, PaymentInMapper, or PaymentInRepository (other than the additions specified above — and PaymentInRepository is NOT modified at all in this fixture).
+  - Do not call `start_long_term_update`.
+expected:
+  files_modified_min: 4
+  files_modified_must_include:
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java"
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java"
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImpl.java"
+    - "PosClientBackend/src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java"
+    - "PosClientBackend/src/test/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImplTest.java"

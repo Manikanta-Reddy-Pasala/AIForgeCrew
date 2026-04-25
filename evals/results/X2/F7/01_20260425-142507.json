@@ -1,0 +1,30 @@
+{
+  "track": "X2",
+  "fixture_id": "F7",
+  "fixture_name": "Full Spring stack: controller + service iface + impl + DI + test",
+  "seq": 1,
+  "run_id": "F7-01-c30327",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 82.9,
+    "steps": 13,
+    "tool_use_count": 12,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 705,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "code_run": 7,
+      "file_read": 3,
+      "file_write": 2
+    },
+    "round_end_seen": true
+  },
+  "diff_stat": {
+    "raw": "---"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "stdout_tail": "in org.springframework.data.mongodb.core.index.ReactiveIndexOperations has been deprecated and marked for removal\n[WARNING] /private/tmp/ga-eval/F7-01-c30327/src/main/java/com/pos/backend/config/MongoInitializer.java:[82,82] ensureIndex(org.springframework.data.mongodb.core.index.IndexDefinition) in org.springframework.data.mongodb.core.index.ReactiveIndexOperations has been deprecated and marked for removal\n[WARNING] /private/tmp/ga-eval/F7-01-c30327/src/main/java/com/pos/backend/config/RestTemplateConfig.java:[34,29] org.springframework.http.converter.yaml.MappingJackson2YamlHttpMessageConverter in org.springframework.http.converter.yaml has been deprecated and marked for removal\n[WARNING] /private/tmp/ga-eval/F7-01-c30327/src/main/java/com/pos/backend/config/duplicate/ObjectIdDuplicateCleanup.java:[169,17] ensureIndex(org.springframework.data.mongodb.core.index.IndexDefinition) in org.springframework.data.mongodb.core.index.ReactiveIndexOperations has been deprecated and marked for removal\n[WARNING] /private/tmp/ga-eval/F7-01-c30327/src/main/java/com/pos/backend/saga/repository/SagaTransactionDocument.java:[57,38] expireAfterSeconds() in org.springframework.data.mongodb.core.index.Indexed has been deprecated and marked for removal\n[WARNING] /private/tmp/ga-eval/F7-01-c30327/src/main/java/com/pos/backend/saga/repository/SagaTransactionDocument.java:[57,38] expireAfterSeconds() in org.springframework.data.mongodb.core.index.Indexed has been deprecated and marked for removal\n",
+  "stderr_tail": "",
+  "output_len": 2823
+}

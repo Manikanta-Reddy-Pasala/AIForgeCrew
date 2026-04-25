@@ -1,0 +1,23 @@
+{
+  "track": "Z",
+  "fixture_id": "F1",
+  "fixture_name": "Single-file logger add",
+  "ticket_identifier": "ONE-57",
+  "seq": 1,
+  "metrics": {
+    "final_status": "blocked",
+    "final_answer_reached": false,
+    "compile_pass": true,
+    "wall_clock_s": 393.4,
+    "llm_call_count": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "tool_call_distribution": {},
+    "read_file_calls": 0,
+    "grep_calls": 0,
+    "graph_rag_calls": 0,
+    "explorer_calls": 0
+  },
+  "trace_event_count": 0
+}

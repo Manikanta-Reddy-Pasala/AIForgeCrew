@@ -1,0 +1,36 @@
+{
+  "track": "X2",
+  "fixture_id": "F7b",
+  "fixture_name": "F7 split \u2014 service impl + controller wiring (2 files)",
+  "seq": 2,
+  "run_id": "CHAIN-F7a-e4b3c3-F7b",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 321.0,
+    "steps": 35,
+    "tool_use_count": 34,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 2092,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "code_run": 18,
+      "file_read": 13,
+      "file_write": 2,
+      "file_patch": 1
+    },
+    "round_end_seen": true,
+    "expected_files_present": true,
+    "expected_files_missing": [],
+    "task_pass": true
+  },
+  "diff_stat": {
+    "raw": "M src/main/java/com/pos/backend/feature/paymentin/PaymentInMapper.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImpl.java\n---\n .../java/com/pos/backend/feature/paymentin/PaymentInMapper.java    | 7 +++++++\n 1 file changed, 7 insertions(+)"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "test_compile_pass": null,
+  "test_compile_tail": "",
+  "stdout_tail": "pos/backend/feature/aiAssistant/AiAssistantController.java: Some input files use unchecked or unsafe operations.\n[INFO] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/aiAssistant/AiAssistantController.java: Recompile with -Xlint:unchecked for details.\n[INFO] ------------------------------------------------------------------------\n[INFO] BUILD SUCCESS\n[INFO] ------------------------------------------------------------------------\n[INFO] Total time:  9.802 s\n[INFO] Finished at: 2026-04-25T15:44:58+04:00\n[INFO] ------------------------------------------------------------------------\nFull prompt length: 12585 chars\n[Debug] Current context: 74968 chars, 23 messages.\n[Cache] input=16650 cached=13456\ncode run output:\n    public PaymentIn toPaymentIn(QuickPaymentInRequest request) {\n        if ( request == null ) {\n            return null;\n        }\n\n        PaymentIn.PaymentInBuilder<?, ?> paymentIn = PaymentIn.builder();\n\n        paymentIn.businessId( request.getBusinessId() );\n        paymentIn.customerId( request.getPartyId() );\n        if ( request.getAmount() != null ) {\n            paymentIn.total( request.getAmount() );\nFull prompt length: 8930 chars\n[Debug] Current context: 85426 chars, 25 messages.\n[Cut] 85426 -> 78273\n[Debug] Trimmed context, current: 49231 chars, 13 messages.\n[Cache] input=10934 cached=0\ncode run output:\n-rw-r--r--  1 manikanta  wheel  533 Apr 25 15:39 src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java\n",
+  "stderr_tail": "",
+  "output_len": 8369
+}

@@ -20,10 +20,10 @@ PATH="$HOME/.lmstudio/bin:$PATH"
 # (qwen3.6-27b + qwen3.6-35b-a3b @ 512K each) down to a single
 # gpt-oss-120b @ 128K that handles every role (planner/doer/feedback/
 # learner/chat). OpenAI's gpt-oss supports up to 128K native context.
-TARGET_CTX=32768   # 128K was too RAM-heavy on 96GB unified memory (14% free);
-                   # 32K fits comfortably and covers every ticket we file.
+TARGET_CTX=65536    # qwen-coder-next (Qwen3-Coder-Next MLX 80B @ 4bit,
+                    # ~45GB weights). 64K ctx safe, fits 96GB headroom.
 TARGET_TTL=43200
-MODELS=(glm-4.7-flash)
+MODELS=(qwen-coder-next)
 INTERVAL=60
 
 log() { printf '%s lms-pin: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"; }
@@ -35,8 +35,10 @@ ensure_pinned() {
   # right spec for `lms load`.
   local load_spec="$name"
   case "$name" in
-    gpt-oss-120b)   load_spec="openai/gpt-oss-120b" ;;
-    glm-4.7-flash)  load_spec="zai-org/glm-4.7-flash" ;;
+    gpt-oss-120b)        load_spec="openai/gpt-oss-120b" ;;
+    glm-4.7-flash)       load_spec="zai-org/glm-4.7-flash" ;;
+    gemma-4-31b-it-mlx)  load_spec="lmstudio-community/gemma-4-31B-it-MLX-8bit" ;;
+    qwen-coder-next)     load_spec="qwen/qwen3-coder-next" ;;
   esac
   local row ctx
   row=$(lms ps 2>/dev/null | awk -v n="$name" '$1 == n { print $0 }')

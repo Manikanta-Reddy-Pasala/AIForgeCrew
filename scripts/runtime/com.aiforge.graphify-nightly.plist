@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aiforge.graphify-nightly</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/manikanta/AIForgeCrew/scripts/runtime/graphify-nightly.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/manikanta/.local/bin:/Users/manikanta/.lmstudio/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>REPOS_DIR</key>
+    <string>/Users/manikanta/codeRepo</string>
+    <key>OUT_DIR</key>
+    <string>/Users/manikanta/.aiforge/graphify-out</string>
+    <key>GRAPHIFY_BIN</key>
+    <string>/Users/manikanta/.local/bin/graphify</string>
+    <key>AIFORGE_VENV</key>
+    <string>/Users/manikanta/AIForgeCrew/.venv</string>
+    <key>AIFORGE_REPO</key>
+    <string>/Users/manikanta/AIForgeCrew</string>
+    <key>LOG_DIR</key>
+    <string>/Users/manikanta/.aiforge/logs</string>
+    <key>AIFORGE_NEO4J_URI</key>
+    <string>bolt://127.0.0.1:7688</string>
+    <key>AIFORGE_NEO4J_USER</key>
+    <string>neo4j</string>
+    <key>AIFORGE_NEO4J_PASSWORD</key>
+    <string>password</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>2</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/manikanta/.aiforge/logs/graphify-nightly.out</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/manikanta/.aiforge/logs/graphify-nightly.err</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/manikanta/AIForgeCrew</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>Nice</key>
+  <integer>10</integer>
+</dict>
+</plist>

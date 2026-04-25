@@ -1,0 +1,31 @@
+{
+  "track": "X2",
+  "fixture_id": "F6",
+  "fixture_name": "New POST endpoint with DTO + service + validation",
+  "seq": 1,
+  "run_id": "F6-01-c4b309",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 352.5,
+    "steps": 38,
+    "tool_use_count": 38,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 2094,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "code_run": 18,
+      "file_read": 10,
+      "file_write": 6,
+      "file_patch": 4
+    },
+    "round_end_seen": true
+  },
+  "diff_stat": {
+    "raw": "M src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java\n---\n .../com/pos/backend/feature/paymentin/PaymentInController.java | 10 ++++++++++\n 1 file changed, 10 insertions(+)"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "stdout_tail": "ava:    private final PaymentInMapper paymentInMapper;\nsrc/main/java/com/pos/backend/feature/messageprocessor/TransactionMessageHandlers.java:import com.pos.backend.feature.paymentin.PaymentInMapper;\nsrc/main/java/com/pos/backend/feature/messageprocessor/TransactionMessageHandlers.java:import com.pos.backend.feature.paymentin.PaymentInMapper;\nsrc/main/java/com/pos/backend/feature/messageprocessor/TransactionMessageHandlers.java:    private final PaymentInMapper paymentInMapper;\nFull prompt length: 4350 chars\n[Debug] Current context: 79323 chars, 23 messages.\n[Cache] input=17756 cached=16773\nFull prompt length: 6852 chars\n[Debug] Current context: 86963 chars, 25 messages.\n[Cut] 86963 -> 69024\n[Debug] Trimmed context, current: 49121 chars, 19 messages.\n[Cache] input=11081 cached=0\ncode run output:\n                        this::savePaymentInToDatabase,\n                        5,\n                        500)\n\n                // Step 4: Sequential - Update balance\n                .sequential(\"UPDATE_BALANCE\",\n                        this::updateBalance,\n                        3,\n                        200)\n\n                // Step 5: Sequential - Save/Update Transaction\n                .sequential(\"SAVE_TRANSACTION\",\n                        this::saveOrUpdateTransaction)\n\n                // Step 6: Sequential - Sync to remote server\n                .sequential(\"SYNC_TO_REMOTE\",\n                        this::syncToRemote,\n                        7,\n                        2000)\n\n",
+  "stderr_tail": "",
+  "output_len": 8378
+}

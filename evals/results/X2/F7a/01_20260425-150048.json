@@ -1,0 +1,35 @@
+{
+  "track": "X2",
+  "fixture_id": "F7a",
+  "fixture_name": "F7 split \u2014 DTO + service interface (2 files)",
+  "seq": 1,
+  "run_id": "CHAIN-F7a-a61dbb-F7a",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 82.8,
+    "steps": 14,
+    "tool_use_count": 13,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 613,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "code_run": 6,
+      "file_read": 4,
+      "file_write": 3
+    },
+    "round_end_seen": true,
+    "expected_files_present": true,
+    "expected_files_missing": [],
+    "task_pass": true
+  },
+  "diff_stat": {
+    "raw": "?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java\n---"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "test_compile_pass": null,
+  "test_compile_tail": "",
+  "stdout_tail": "vate/tmp/ga-eval/CHAIN-F7a-a61dbb/src/main/java/com/pos/backend/feature/parties/PartiesMapper.java:[15,20] Unmapped target properties: \"deleted, placeOfSupplyName, tallySync\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-a61dbb/src/main/java/com/pos/backend/feature/parties/PartiesMapper.java:[22,13] Unmapped target properties: \"legalPincode, legalCity, legalState, legalCountry\". Mapping from Collection element \"AdditionalAddressList additionalAddress\" to \"AdditionalAddress additionalAddressList\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-a61dbb/src/main/java/com/pos/backend/feature/parties/PartiesMapper.java:[22,13] Unmapped target properties: \"tallySynced, employeeId\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-a61dbb/src/main/java/com/pos/backend/feature/expenses/ExpensesMapper.java:[32,17] Unmapped target properties: \"calculatedBalance, imageUrl\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-a61dbb/src/main/java/com/pos/backend/feature/directManufacture/ManufactureStockQtyRequestMapper.java:[25,32] Unmapped target properties: \"deleted, serialWarehouseData\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-a61dbb/src/main/java/com/pos/backend/feature/paymentin/PaymentInMapper.java:[19,18] Unmapped target properties: \"shareLink, shareCode, deletedEmployeeName, deletedEmployeePhoneNumber, calculatedBalance, tallySync, tallyMappingName\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-a61dbb/src/main/java/com/pos/backend/feature/paymentin/PaymentInMapper.java:[23,15] Unmapped target property: \"tcsId\".\n",
+  "stderr_tail": "",
+  "output_len": 2453
+}

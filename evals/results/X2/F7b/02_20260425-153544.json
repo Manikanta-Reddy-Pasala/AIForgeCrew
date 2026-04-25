@@ -1,0 +1,36 @@
+{
+  "track": "X2",
+  "fixture_id": "F7b",
+  "fixture_name": "F7 split \u2014 service impl + controller wiring (2 files)",
+  "seq": 2,
+  "run_id": "CHAIN-F7a-ce8678-F7b",
+  "metrics": {
+    "compile_pass": false,
+    "wall_clock_s": 905.0,
+    "steps": 44,
+    "tool_use_count": 43,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 2252,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "code_run": 21,
+      "file_read": 15,
+      "file_write": 4,
+      "file_patch": 3
+    },
+    "round_end_seen": false,
+    "expected_files_present": true,
+    "expected_files_missing": [],
+    "task_pass": false
+  },
+  "diff_stat": {
+    "raw": "M src/main/java/com/pos/backend/feature/paymentin/PaymentInController.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImpl.java\n---\n .../feature/paymentin/PaymentInController.java     | 46 ++++++++++++++++++++++\n 1 file changed, 46 insertions(+)"
+  },
+  "compile_tail": "R]   location: variable paymentDao of type com.oneshell.commons.server.model.v1.PaymentInDao\n[ERROR] /private/tmp/ga-eval/CHAIN-F7a-ce8678/src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImpl.java:[26,19] cannot find symbol\n[ERROR]   symbol:   method setPaymentMode(java.lang.String)\n[ERROR]   location: variable paymentDao of type com.oneshell.commons.server.model.v1.PaymentInDao\n[ERROR] -> [Help 1]\n[ERROR] \n[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n[ERROR] \n[ERROR] For more information about the errors and possible solutions, please read the following articles:\n[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException\nMVN_EXIT=1\n",
+  "test_compile_pass": null,
+  "test_compile_tail": "",
+  "stdout_tail": "      updaterMap = new HashMap<>();\nsrc/main/java/com/pos/backend/feature/updatebalanceandstock/UpdateBalanceAndStockService.java-            // Chain properly instead of fire-and-forget subscribe()\nFull prompt length: 13208 chars\n[Debug] Current context: 77851 chars, 21 messages.\n[Cache] input=17048 cached=14136\ncode run output:\nsrc/main/java/com/pos/backend/feature/generictable/GenericTableServiceImpl.java:                                            String paymentType = TxnFilterTypeUtil.getPaymentType(paymentInDao.getPaymentType());\nsrc/main/java/com/pos/backend/feature/generictable/GenericTableServiceImpl.java:                                            paymentInDao.setPaymentType(paymentType);\nFull prompt length: 3664 chars\n[Debug] Current context: 83604 chars, 23 messages.\n[Cache] input=18387 cached=17047\ncode run output:\nsrc/main/java/com/pos/backend/feature/generictable/GenericTableServiceImpl.java:                                            paymentInDao.setPaymentType(paymentType);\nFull prompt length: 9245 chars\n[Debug] Current context: 94149 chars, 25 messages.\n[Cut] 94149 -> 74754\n[Debug] Trimmed context, current: 44412 chars, 13 messages.\nTraceback (most recent call last):\n  File \"/Users/manikanta/GenericAgent/agentmain.py\", line 212, in <module>\n    while 'done' not in (item := dq.get(timeout=120)): \n  File \"/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/queue.py\", line 179, in get\n    raise Empty\n_queue.Empty\n",
+  "stderr_tail": "",
+  "output_len": 9009
+}

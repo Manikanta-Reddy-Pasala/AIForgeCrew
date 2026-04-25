@@ -1,0 +1,35 @@
+{
+  "track": "X2",
+  "fixture_id": "F7a",
+  "fixture_name": "F7 split \u2014 DTO + service interface (2 files)",
+  "seq": 1,
+  "run_id": "CHAIN-F7a-e4b3c3-F7a",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 99.3,
+    "steps": 15,
+    "tool_use_count": 14,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 728,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "code_run": 6,
+      "file_read": 5,
+      "file_write": 3
+    },
+    "round_end_seen": true,
+    "expected_files_present": true,
+    "expected_files_missing": [],
+    "task_pass": true
+  },
+  "diff_stat": {
+    "raw": "?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java\n---"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "test_compile_pass": null,
+  "test_compile_tail": "",
+  "stdout_tail": "tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/paymentout/PaymentOutMapper.java:[23,16] Unmapped target property: \"tcsId\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/deliverychallan/DeliveryChallanMapper.java:[30,24] Unmapped target properties: \"place_of_supply, placeOfSupplyName, deleted, eWayErrorMessage\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/deliverychallan/DeliveryChallanMapper.java:[39,21] Unmapped target property: \"eWayErrorMessage\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/warehouse/StockTransferMapper.java:[21,19] Unmapped target properties: \"sourceBusinessCity, destinationBusinessCity\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/approval/TransactionApprovalMapper.java:[18,28] Unmapped target properties: \"ApprovedBy, ApprovedByName\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/approval/TransactionApprovalMapper.java:[21,25] Unmapped target properties: \"ApprovedBy, ApprovedByName\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/purchaseOrder/PurchaseOrderMapper.java:[23,22] Unmapped target property: \"syncedToServer\".\n[WARNING] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/purchaseOrder/PurchaseOrderMapper.java:[29,19] Unmapped target property: \"isSyncedToServer\".\n",
+  "stderr_tail": "",
+  "output_len": 2914
+}

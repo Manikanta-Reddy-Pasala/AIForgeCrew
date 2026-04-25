@@ -1,0 +1,31 @@
+{
+  "track": "X2",
+  "fixture_id": "F1",
+  "fixture_name": "Single-method log add",
+  "seq": 1,
+  "run_id": "F1-01-99cf9d",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 124.7,
+    "steps": 14,
+    "tool_use_count": 14,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 735,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "code_run": 7,
+      "file_read": 5,
+      "file_patch": 1,
+      "ask_user": 1
+    },
+    "round_end_seen": true
+  },
+  "diff_stat": {
+    "raw": "M src/main/java/com/pos/backend/feature/sales/SaleController.java\n---\n src/main/java/com/pos/backend/feature/sales/SaleController.java | 1 +\n 1 file changed, 1 insertion(+)"
+  },
+  "compile_tail": "[ERROR] [ERROR] Could not find the selected project in the reactor: PosClientBackend @ \n[ERROR] Could not find the selected project in the reactor: PosClientBackend -> [Help 1]\n[ERROR] \n[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n[ERROR] Re-run Maven using the -X switch to enable full debug logging.\n[ERROR] \n[ERROR] For more information about the errors and possible solutions, please read the following articles:\n[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MavenExecutionException\n",
+  "stdout_tail": "urchasereturn/PurchasesReturnMapper.java:[32,24] Unmapped target properties: \"isRoundoff, subTotal, shareLink, shareCode, calculatedStock, calculatedBalance, imageUrl, eInvoiceErrorMessage, eWayErrorMessage\".\n[WARNING] /private/tmp/ga-eval/F1-01-99cf9d/src/main/java/com/pos/backend/feature/purchasereturn/PurchasesReturnMapper.java:[56,21] Unmapped target properties: \"billDate, eInvoiceErrorMessage, eWayErrorMessage, generateEinvoice\".\n[WARNING] /private/tmp/ga-eval/F1-01-99cf9d/src/main/java/com/pos/backend/feature/purchase/PurchasesMapper.java:[29,19] Unmapped target properties: \"createdTimeMilliSec, payableAmount, ewayBillNo, shareLink, shareCode, vehicleNo, deletedEmployeeName, deletedEmployeePhoneNumber, calculatedStock, calculatedBalance, imageUrl\".\n[WARNING] /private/tmp/ga-eval/F1-01-99cf9d/src/main/java/com/pos/backend/feature/alltransactions/AllTxnMapper.java:[24,28] Unmapped target property: \"txnFilterType\".\n[WARNING] /private/tmp/ga-eval/F1-01-99cf9d/src/main/java/com/pos/backend/feature/alltransactions/AllTxnMapper.java:[32,21] Unmapped target property: \"item_list\".\n[WARNING] /private/tmp/ga-eval/F1-01-99cf9d/src/main/java/com/pos/backend/feature/deliverychallan/DeliveryChallanMapper.java:[30,24] Unmapped target properties: \"place_of_supply, placeOfSupplyName, deleted, eWayErrorMessage\".\n[WARNING] /private/tmp/ga-eval/F1-01-99cf9d/src/main/java/com/pos/backend/feature/deliverychallan/DeliveryChallanMapper.java:[39,21] Unmapped target property: \"eWayErrorMessage\".\n",
+  "stderr_tail": "",
+  "output_len": 2940
+}

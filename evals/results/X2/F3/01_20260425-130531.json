@@ -1,0 +1,33 @@
+{
+  "track": "X2",
+  "fixture_id": "F3",
+  "fixture_name": "Multi-class extract: BusinessProductValidationService",
+  "seq": 1,
+  "run_id": "F3-01-972b23",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 175.8,
+    "steps": 21,
+    "tool_use_count": 23,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 1206,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "file_read": 11,
+      "code_run": 6,
+      "file_patch": 3,
+      "file_write": 2,
+      "start_long_term_update": 1
+    },
+    "round_end_seen": true,
+    "compile_pass_corrected_post_hoc": "MVN_EXIT=0; -q hid BUILD SUCCESS"
+  },
+  "diff_stat": {
+    "raw": "M src/main/java/com/pos/backend/feature/businessProduct/BusinessProductsController.java\n?? src/main/java/com/pos/backend/feature/businessProduct/BusinessProductValidationService.java\n---\n .../backend/feature/businessProduct/BusinessProductsController.java | 6 +++---\n 1 file changed, 3 insertions(+), 3 deletions(-)"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "stdout_tail": "vate/tmp/ga-eval/F3-01-972b23/src/main/java/com/pos/backend/feature/businessProduct/ProductMapper.java:[31,31] Unmapped target property: \"additionalPropertiesList\". Mapping from Collection element \"AdditionalPropertyGroup additionalPropertyGroupList\" to \"MongoAdditionalPropertyGroup additionalPropertyGroupList\".\n[WARNING] /private/tmp/ga-eval/F3-01-972b23/src/main/java/com/pos/backend/feature/businessProduct/ProductMapper.java:[31,31] Unmapped target properties: \"location, businessOrAdv, category, nameAutoComplete, latitude, longitude, actualDiscount, discountSlab, effectivePrice, businessName, tagProperties, valuedProperties, startsFrom, minimumQuantity, numberOfLikes, totalCustomerClicks, dailyCustomerClicks, dailyCustomerImpressions, totalCustomerImpressions, availableQuantity, minOrderQuantity, showAddToCartButton, oneShellHomeDelivery, additionalPropertyGroups, mainPropertiesAvailable, selfPickUpEnabled, variableImageBaseProperty, propertyImageUrls, additionalPropertiesAvailable, outOfStock, selfOrderActualPrice, selfOrderOfferPrice, selfOrderActualDiscount, selfOrderDiscountSlab, selfOrderEffectivePrice, mode, sortId, sortOrder, reOrderStockQty, clickCollectAvailable, roomMrp, roomOfferPrice, hotelOrderEnabled, defaultBatchQty, onlineBusinessEnabled, stockReOrderQtyReached, createdTimeMilliSec, variableProductProperties, likedCustomerList, shareCode, shareLink, properties, batchNumber, batchNumberType, batchProduct, syncedToServer, serialProduct, rateData, onlineLink\".\n",
+  "stderr_tail": "",
+  "output_len": 4827
+}

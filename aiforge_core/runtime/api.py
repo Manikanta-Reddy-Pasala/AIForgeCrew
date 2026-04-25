@@ -487,51 +487,133 @@ def stream_role_log(role: str):
 
 @app.get("/api/trace/{identifier}/stream")
 def stream_ticket_trace(identifier: str):
-    """Tail scripts/graph-runner.log on the orchestrator host, stream the
-    lines that pertain to this ticket (plus current Step header/footer
-    between ticket events). Client reassembles into ordered step cards.
+    """Tail graph-runner logs on the orchestrator host + stream lines for
+    this ticket. Merges the smolagents stdout stream (``graph-runner.log``)
+    with the structured NDJSON stream (``graph-runner.err``) so the client
+    sees Step/Action/Observation AND ``llm.call`` / agent ndjson events
+    (including raw prompt + completion) interleaved in time order.
     """
-    # graph-runner.log lives on Mac Studio. The NUC api is reverse-tailing
-    # via SSH. We call `ssh ... tail -Fn500 ...` lazily to avoid a chained
-    # process if the client closes early.
-    import subprocess
-    host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "manikanta@192.168.70.185")
+    host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "").strip()
     log = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_LOG",
         "/Users/manikanta/.aiforge/logs/graph-runner.log",
     )
+    err = os.environ.get(
+        "AIFORGE_GRAPH_RUNNER_ERR",
+        "/Users/manikanta/.aiforge/logs/graph-runner.err",
+    )
 
     async def gen():
-        # Open long-lived ssh tail as subprocess, relay stdout to SSE.
-        proc = await asyncio.create_subprocess_exec(
-            "ssh", "-o", "ConnectTimeout=5", host,
-            f"tail -Fn200 {log}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        in_step_block = False
-        in_ticket_context = False
+        # One tail per file; interleave via a queue so either stream
+        # can deliver a line as soon as it arrives. Run tail locally unless
+        # AIFORGE_GRAPH_RUNNER_HOST is set — the api now runs on the same
+        # host as the graph-runner, so ssh-to-self was the previous bug.
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def pump(path: str) -> None:
+            if host:
+                proc = await asyncio.create_subprocess_exec(
+                    "ssh", "-o", "ConnectTimeout=5", host,
+                    f"tail -Fn500 {path}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    "tail", "-Fn500", path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            try:
+                while True:
+                    line = await proc.stdout.readline()
+                    if not line:
+                        await asyncio.sleep(0.3)
+                        continue
+                    await queue.put(line.decode("utf-8", "replace").rstrip("\n"))
+            finally:
+                try: proc.kill()
+                except Exception: pass
+                await queue.put(None)
+
+        tasks = [
+            asyncio.create_task(pump(log)),
+            asyncio.create_task(pump(err)),
+        ]
+        in_ctx = False
+        try:
+            while True:
+                raw = await queue.get()
+                if raw is None:
+                    break
+
+                # Scope management via structured NDJSON events
+                if '"event": "graph_runner.start"' in raw or \
+                   '"event":"graph_runner.start"' in raw:
+                    in_ctx = (f'"{identifier}"' in raw)
+                elif ('"event": "graph_runner.done"' in raw or
+                      '"event":"graph_runner.done"' in raw) and \
+                     f'"{identifier}"' in raw:
+                    yield f"data: {json.dumps({'line': raw})}\n\n"
+                    in_ctx = False
+                    continue
+
+                if in_ctx:
+                    yield f"data: {json.dumps({'line': raw})}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            for t in tasks:
+                t.cancel()
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ─────────────────────────── LLM call trace ─────────────────────────────
+#
+# Per-ticket stream of just the ``llm.call`` NDJSON events — full chat
+# messages sent to the model + full response content + token usage +
+# wall time. Use this when you want to see exactly what each Planner /
+# Doer tick said to the LLM and what came back, without the smolagents
+# stdout noise.
+
+
+@app.get("/api/llm-trace/{identifier}/stream")
+def stream_llm_trace(identifier: str):
+    err = os.environ.get(
+        "AIFORGE_GRAPH_RUNNER_ERR",
+        "/Users/manikanta/.aiforge/logs/graph-runner.err",
+    )
+    host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "").strip()
+
+    async def gen():
+        if host:
+            proc = await asyncio.create_subprocess_exec(
+                "ssh", "-o", "ConnectTimeout=5", host,
+                f"tail -Fn2000 {err}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                "tail", "-Fn2000", err,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        needle_event = '"event": "llm.call"'
+        needle_event_compact = '"event":"llm.call"'
+        needle_ticket = f'"ticket": "{identifier}"'
+        needle_ticket_compact = f'"ticket":"{identifier}"'
         try:
             while True:
                 line = await proc.stdout.readline()
                 if not line:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                     continue
                 raw = line.decode("utf-8", "replace").rstrip("\n")
-
-                # Identify scope — lines mentioning our ticket flip the
-                # context ON; a new graph_runner.start for another ticket
-                # flips it OFF.
-                if identifier in raw:
-                    in_ticket_context = True
-                elif '"event":"graph_runner.start"' in raw and identifier not in raw:
-                    in_ticket_context = False
-
-                # Always stream Step dividers + durations while we're in
-                # context, plus JSON-structured event lines.
-                if in_ticket_context or ("Step " in raw and in_ticket_context):
-                    yield f"data: {json.dumps({'line': raw})}\n\n"
-                # Heartbeat every ~30 lines to keep connection alive.
+                if (needle_event in raw or needle_event_compact in raw) and \
+                   (needle_ticket in raw or needle_ticket_compact in raw):
+                    yield f"data: {raw}\n\n"
         except asyncio.CancelledError:
             pass
         finally:
@@ -539,6 +621,34 @@ def stream_ticket_trace(identifier: str):
             except Exception: pass
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/llm-trace/{identifier}")
+def list_llm_trace(identifier: str, limit: int = 50):
+    """Non-streaming: return the last N ``llm.call`` events for this ticket
+    as a JSON list. Easier to inspect in a browser / curl | jq."""
+    err = os.environ.get(
+        "AIFORGE_GRAPH_RUNNER_ERR",
+        "/Users/manikanta/.aiforge/logs/graph-runner.err",
+    )
+    needle_event = '"event": "llm.call"'
+    needle_event_compact = '"event":"llm.call"'
+    needle_ticket = f'"ticket": "{identifier}"'
+    needle_ticket_compact = f'"ticket":"{identifier}"'
+    events: list[dict] = []
+    try:
+        with open(err, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if (needle_event in line or needle_event_compact in line) and \
+                   (needle_ticket in line or needle_ticket_compact in line):
+                    try:
+                        events.append(json.loads(line))
+                    except Exception:
+                        continue
+    except FileNotFoundError:
+        return {"events": [], "count": 0, "error": f"{err} not found"}
+    events = events[-limit:]
+    return {"events": events, "count": len(events)}
 
 
 # ─────────────────────────── Agent model config ─────────────────────────

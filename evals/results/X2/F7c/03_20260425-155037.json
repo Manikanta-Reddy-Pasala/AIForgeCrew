@@ -1,0 +1,37 @@
+{
+  "track": "X2",
+  "fixture_id": "F7c",
+  "fixture_name": "F7 split \u2014 unit test for QuickPaymentInServiceImpl (1 file, skeleton-driven)",
+  "seq": 3,
+  "run_id": "CHAIN-F7a-e4b3c3-F7c",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 271.0,
+    "steps": 21,
+    "tool_use_count": 20,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 1104,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "file_read": 8,
+      "code_run": 6,
+      "file_write": 4,
+      "bad_json": 1,
+      "file_patch": 1
+    },
+    "round_end_seen": true,
+    "expected_files_present": true,
+    "expected_files_missing": [],
+    "task_pass": true
+  },
+  "diff_stat": {
+    "raw": "M .flattened-pom.xml\n M pom.xml\n M src/main/java/com/pos/backend/feature/paymentin/PaymentInMapper.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInRequest.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInService.java\n?? src/main/java/com/pos/backend/feature/paymentin/QuickPaymentInServiceImpl.java\n?? src/test/\n---\n .flattened-pom.xml                                                 | 5 +++++\n pom.xml                                                            | 7 +++++++\n .../java/com/pos/backend/feature/paymentin/PaymentInMapper.java    | 7 +++++++\n 3 files changed, 19 insertions(+)"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "test_compile_pass": true,
+  "test_compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "stdout_tail": "terSeconds() in org.springframework.data.mongodb.core.index.Indexed has been deprecated and marked for removal\n[INFO] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/exception/GlobalExceptionHandler.java: Some input files use or override a deprecated API.\n[INFO] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/exception/GlobalExceptionHandler.java: Recompile with -Xlint:deprecation for details.\n[INFO] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/aiAssistant/AiAssistantController.java: Some input files use unchecked or unsafe operations.\n[INFO] /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/main/java/com/pos/backend/feature/aiAssistant/AiAssistantController.java: Recompile with -Xlint:unchecked for details.\n[INFO] \n[INFO] --- resources:3.3.1:testResources (default-testResources) @ PosClientBackend ---\n[INFO] skip non existing resourceDirectory /private/tmp/ga-eval/CHAIN-F7a-e4b3c3/src/test/resources\n[INFO] \n[INFO] --- compiler:3.14.1:testCompile (default-testCompile) @ PosClientBackend ---\n[INFO] Recompiling the module because of changed dependency.\n[INFO] Compiling 1 source file with javac [debug parameters release 24] to target/test-classes\n[INFO] \n[INFO] --- surefire:3.5.4:test (default-test) @ PosClientBackend ---\n[WARNING]  Parameter 'systemProperties' is deprecated: Use systemPropertyVariables instead.\n[INFO] Using auto detected provider org.apache.maven.surefire.junitplatform.JUnitPlatformProvider\n[INFO] \n",
+  "stderr_tail": "",
+  "output_len": 4419
+}

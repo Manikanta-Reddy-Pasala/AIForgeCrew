@@ -14,11 +14,85 @@ Backend is selected by ``AIFORGE_DOER_BACKEND``:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from smolagents import CodeAgent, LiteLLMModel, MultiStepAgent, ToolCallingAgent
 
 from .scope_guard import ScopeGuard, parse_allowed_files
 from .tools import make_tools
+
+
+# ─────────────────────────── Repo map (Aider) ───────────────────────────
+# Source-file extensions Aider's tree-sitter pack actually understands.
+# Anything outside this set won't produce ranked tags, so don't bloat
+# other_files with binaries / lockfiles / build outputs.
+_REPO_MAP_EXTS = {
+    ".py", ".java", ".kt", ".kts", ".js", ".jsx", ".ts", ".tsx",
+    ".go", ".rs", ".rb", ".php", ".cs", ".c", ".h", ".cc", ".cpp", ".hpp",
+    ".swift", ".scala", ".sh", ".bash", ".zsh", ".sql", ".graphql",
+    ".yaml", ".yml", ".toml", ".md",
+}
+_REPO_MAP_EXCLUDE_DIRS = {
+    ".git", ".aider.tags.cache.v4", "node_modules", "target", "build",
+    "dist", "__pycache__", ".venv", "venv", ".idea", ".vscode",
+    "vendor", "Pods", "DerivedData",
+}
+
+
+def _enumerate_repo_files(root: Path, hard_cap: int = 4000) -> list[str]:
+    """Walk *root* and return source files (absolute paths). Stops at
+    ``hard_cap`` to keep RepoMap construction bounded."""
+    out: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [d for d in dirnames if d not in _REPO_MAP_EXCLUDE_DIRS]
+        for f in filenames:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in _REPO_MAP_EXTS:
+                out.append(os.path.join(dirpath, f))
+                if len(out) >= hard_cap:
+                    return out
+    return out
+
+
+def _build_repo_map_section(worktree_path: str, allowed: set[str]) -> str:
+    """Render the Aider RepoMap section for the Doer prompt, or "" when
+    disabled / unavailable. Never raises — all errors swallowed inside
+    ``render_repo_map``."""
+    if os.environ.get("AIFORGE_AIDER_REPOMAP_ENABLED", "").strip() != "1":
+        return ""
+    try:
+        from aiforge_core.index.aider_map import (
+            AiderMapConfig,
+            render_repo_map,
+        )
+    except Exception:
+        return ""
+    root = Path(worktree_path)
+    if not root.is_dir():
+        return ""
+    # Resolve allowed files to absolute under the worktree where possible.
+    chat_files: list[str] = []
+    for entry in sorted(allowed):
+        cand = entry if os.path.isabs(entry) else str(root / entry)
+        if os.path.exists(cand):
+            chat_files.append(cand)
+    chat_set = set(chat_files)
+    other_files = [p for p in _enumerate_repo_files(root) if p not in chat_set]
+    map_tokens = int(os.environ.get("AIFORGE_AIDER_REPOMAP_TOKENS", "1024"))
+    digest = render_repo_map(
+        AiderMapConfig(
+            root=root,
+            chat_files=chat_files,
+            other_files=other_files,
+            map_tokens=map_tokens,
+        )
+    )
+    if not digest.strip():
+        return ""
+    return (
+        "\n\n## Code map (top-K ranked by Aider RepoMap)\n"
+        f"{digest.rstrip()}\n"
+    )
 
 
 DOER_PREAMBLE = """You are the Doer agent. Your ONLY job is to modify code with edit_block / write_file so the ticket is implemented.
@@ -92,6 +166,10 @@ Hard rules:
 - If compile is still red after you have genuinely tried 5+ distinct edit_block fixes (not the same one in a loop), THEN and only then call final_answer with "blocked: compile red after N attempts — " followed by the specific error.
 
 DO NOT just read and claim done. The only acceptable path to final_answer (without "blocked:") is: edit_block → compile green → all feedback-fixlist bullets addressed → final_answer.
+
+**Acceptance gate is active.** Before calling final_answer, the harness scans every file in ## Allowed files and checks that the identifier tokens of each ## Acceptance bullet are present. If any bullet has <50% of its tokens in the file content, final_answer is rejected and you must keep editing. Symptoms of a partial edit (e.g. you added imports but forgot the field declaration, or added the field but forgot the call site) will be caught here. Use a separate edit_block per acceptance bullet — do not bundle multiple bullets into one edit unless they overlap textually.
+
+After every run_compile EXIT=0, run read_file on the target path and explicitly verify each acceptance bullet appears in the new content. Only call final_answer once you can point to the line for every bullet.
 """
 
 
@@ -184,15 +262,27 @@ def build_doer_agent(
             model_id = f"openai/{model_id}"
         api_base = llm_config.base_url
         api_key = llm_config.api_key
+    # Lower temperature = more deterministic tool-call emission. Coder
+    # models drift into "thinking out loud" content at default 0.7,
+    # which burns steps without firing edit_block. AIFORGE_DOER_TEMP
+    # overrides per run.
+    _temp = float(os.environ.get("AIFORGE_DOER_TEMP", "0.2"))
     model = LiteLLMModel(**{
         _model_id_key: model_id,
         "api_base": api_base,
         "api_key": api_key,
         "max_tokens": 524288,
+        "temperature": _temp,
         # Harmless on non-reasoning models; required on Qwen3.6 family so
         # message.content actually gets populated instead of reasoning_content.
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     })
+    from aiforge_core.runtime.llm_trace import attach_trace
+    from aiforge_core.runtime.logging_setup import get_logger
+    attach_trace(
+        model, get_logger("doer"), role="doer",
+        ticket=getattr(ticket, "identifier", None),
+    )
 
     backend = os.environ.get("AIFORGE_DOER_BACKEND", "code").lower()
     AgentCls = _agent_class(backend)
@@ -214,10 +304,35 @@ def build_doer_agent(
     }
     if "num_retries" in _params:
         _kwargs["num_retries"] = 2
-    # planning_interval forces the agent to pause and replan every N steps,
-    # which helps Qwen avoid the read→compile→final_answer shortcut.
+    # planning_interval forces the agent to pause and replan every N
+    # steps. Each replan emits a 10K-char "facts survey + plan" assistant
+    # turn that bloats ctx fast (ONE-51 step 19: 6 replans = ~60KB on a
+    # single step). Scale by ticket complexity:
+    #   * single allowed-files entry → planning_interval=None (no replan)
+    #   * 2-3 entries                 → 4 (default)
+    #   * 4+ entries                  → 2 (multi-file, replan often)
+    # AIFORGE_DOER_PLANNING_INTERVAL overrides per run (use ``none`` to
+    # disable explicitly).
     if "planning_interval" in _params:
-        _kwargs["planning_interval"] = 4
+        env_pi = os.environ.get("AIFORGE_DOER_PLANNING_INTERVAL", "").strip().lower()
+        if env_pi == "none":
+            pi = None
+        elif env_pi.isdigit():
+            pi = int(env_pi)
+        else:
+            n_files = len(allowed)
+            pi = None if n_files <= 1 else (4 if n_files <= 3 else 2)
+        if pi is not None:
+            _kwargs["planning_interval"] = pi
+    # Acceptance gate — final_answer is rejected unless every bullet from
+    # the ticket's ## Acceptance section has its identifier tokens present
+    # in the allowed-files blob. Forces the model to actually implement
+    # each item, not just compile-green a partial edit.
+    if "final_answer_checks" in _params:
+        from .acceptance_gate import make_acceptance_check
+        _check = make_acceptance_check(body, worktree_path, allowed)
+        if _check is not None:
+            _kwargs["final_answer_checks"] = [_check]
     # CodeAgent-specific: restrict Python imports so the model can't sidestep
     # the scope_guard by calling open() / subprocess directly. Our @tool
     # functions already cover every FS op it should need.
@@ -226,8 +341,10 @@ def build_doer_agent(
             "pathlib", "re", "json", "textwrap",
         ]
     agent = AgentCls(**_kwargs)
+    repo_map_section = _build_repo_map_section(worktree_path, allowed)
+    enriched_bundle = (context_bundle or "") + repo_map_section
     task_prompt = build_task_prompt(
-        ticket, context_bundle, allowed,
+        ticket, enriched_bundle, allowed,
         prior_verdict=prior_verdict, prior_fixlist=prior_fixlist,
     )
     return agent, task_prompt

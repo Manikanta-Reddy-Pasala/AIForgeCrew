@@ -458,7 +458,14 @@ def make_tools(ctx: dict) -> list:
     # build plans from the Neo4j graph instead of grep alone.
     try:
         from aiforge_core.mcp_graph import graph_rag_tools
-        tools.extend(graph_rag_tools())
+        _existing = {getattr(t, "name", None) for t in tools}
+        for gt in graph_rag_tools():
+            if getattr(gt, "name", None) in _existing:
+                # Prefer local tool (scoped to WORKTREE_ROOT) over MCP
+                # duplicate (e.g. list_repos lives in both). smolagents
+                # rejects duplicate names outright.
+                continue
+            tools.append(gt)
     except Exception:
         pass
     # Opt-in web search (AIFORGE_WEB_SEARCH_ENABLED=1). Useful when the

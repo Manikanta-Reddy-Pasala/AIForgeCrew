@@ -1,0 +1,24 @@
+{
+  "track": "X1",
+  "fixture_id": "F1",
+  "fixture_name": "Single-method log add",
+  "seq": 1,
+  "run_id": "F1-01-c04b50",
+  "status": "ABORTED_INFINITE_LOOP",
+  "metrics": {
+    "compile_pass": false,
+    "wall_clock_s": 720.0,
+    "steps": 269,
+    "tool_use_count": 0,
+    "prompt_tokens": 1,
+    "completion_tokens": 56,
+    "total_tokens": 10818,
+    "cache_read_tokens": 10761,
+    "cache_write_tokens": 0,
+    "tool_call_distribution": {},
+    "finish_reason": null,
+    "final_text": ""
+  },
+  "diagnosis": "opencode + Qwen3-Coder-Next-MLX-4bit produced 269 step_start/step_finish events but ZERO tool_use and ZERO text events. Model emitted unparseable output every turn (cached input=1, output=56 identical). opencode kept re-asking the same prompt. Killed at 720s before 900s timeout. Conclusion: this model cannot drive opencode's native tool-calling protocol via mlx_lm.",
+  "trace_event_count": 538
+}

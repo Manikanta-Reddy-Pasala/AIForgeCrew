@@ -1,0 +1,30 @@
+{
+  "track": "X2",
+  "fixture_id": "F7",
+  "fixture_name": "Full Spring stack: controller + service iface + impl + DI + test",
+  "seq": 1,
+  "run_id": "F7-01-1981dd",
+  "metrics": {
+    "compile_pass": true,
+    "wall_clock_s": 116.2,
+    "steps": 15,
+    "tool_use_count": 15,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 810,
+    "tokens_estimated": true,
+    "tool_call_distribution": {
+      "code_run": 7,
+      "file_read": 7,
+      "ask_user": 1
+    },
+    "round_end_seen": true
+  },
+  "diff_stat": {
+    "raw": "---"
+  },
+  "compile_tail": "WARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\nMVN_EXIT=0\n",
+  "stdout_tail": "Backend ---\n[INFO] Recompiling the module because of changed source code.\n[INFO] Compiling 1007 source files with javac [debug parameters release 24] to target/classes\nWARNING: A terminally deprecated method in sun.misc.Unsafe has been called\nWARNING: sun.misc.Unsafe::objectFieldOffset has been called by lombok.permit.Permit\nWARNING: Please consider reporting this to the maintainers of class lombok.permit.Permit\nWARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release\n[WARNING] /private/tmp/ga-eval/F7-01-1981dd/src/main/java/com/pos/backend/model/BulkTransactionSyncRuleRequest.java:[64,21] @Builder will ignore the initializing expression entirely. If you want the initializing expression to serve as default, add @Builder.Default. If it is not supposed to be settable during building, make the field final.\n[WARNING] /private/tmp/ga-eval/F7-01-1981dd/src/main/java/com/pos/backend/model/barChart/BarChart.java:[19,34] @Builder will ignore the initializing expression entirely. If you want the initializing expression to serve as default, add @Builder.Default. If it is not supposed to be settable during building, make the field final.\n[WARNING] /private/tmp/ga-eval/F7-01-1981dd/src/main/java/com/pos/backend/model/gstr1/GSTR1MergedData.java:[15,25] @Builder will ignore the initializing expression entirely. If you want the initializing expression to serve as default, add @Builder.Default. If it is not supposed to be settable during building, make the field final.\n",
+  "stderr_tail": "",
+  "output_len": 3243
+}
