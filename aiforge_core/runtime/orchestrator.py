@@ -249,8 +249,16 @@ def _ensure_branch_and_worktree(ticket: tickets.Ticket) -> str | None:
     worktree_path = os.path.join(repo_dir, ".aiforge-worktrees", parent_ident)
     if not os.path.isdir(worktree_path):
         os.makedirs(os.path.dirname(worktree_path), exist_ok=True)
-        subprocess.run(["git", "fetch", "origin"], cwd=repo_dir, check=False,
-                       capture_output=True)
+        # Hard timeout — when the systemd unit's environment lacks
+        # interactive credential helpers, git-remote-https can wedge
+        # indefinitely on auth (silently in pipe_read). 60s is plenty
+        # for an incremental fetch; the worktree falls back to the
+        # already-fetched origin/master.
+        try:
+            subprocess.run(["git", "fetch", "origin"], cwd=repo_dir,
+                           check=False, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            pass
         # Detect the repo's default branch dynamically (master vs main).
         default_branch = _detect_default_branch(repo_dir)
         base = f"origin/{default_branch}"

@@ -179,6 +179,37 @@ _ENDPOINT_TICKET_MARKERS = (
 )
 
 
+def _emit_stage_event(
+    ticket_id: int,
+    stage: str,
+    t_start: float,
+    extra: dict | None = None,
+) -> None:
+    """Write a per-stage timing breadcrumb into ticket events.
+
+    The ticket UI / API renders events chronologically — these give
+    operators a wall-clock view of where each ticket spent its time
+    (planner / doer turns / integration smoke / feedback verdict /
+    publish push / learner fact write).
+    """
+    duration_s = round(time.time() - t_start, 2)
+    extra = dict(extra or {})
+    body = f"{stage} done in {duration_s}s"
+    if extra:
+        body += " | " + ", ".join(
+            f"{k}={v}" for k, v in extra.items() if v is not None
+        )
+    try:
+        tickets_mod.add_event(
+            ticket_id, stage, "stage_done",
+            body=body[:1000],
+            metadata={"stage": stage, "duration_s": duration_s, **extra},
+        )
+    except Exception:
+        # Telemetry is best-effort; never fail the agent on logging.
+        pass
+
+
 def _ticket_needs_endpoint_smoke(ticket: tickets_mod.Ticket) -> bool:
     """True when ticket text describes endpoint creation/modification.
 
@@ -205,6 +236,7 @@ class AiForgePlannerAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
+        t_stage_start = time.time()
         state = ctx.session.state
         ticket = _ticket_from_state(state)
         log = get_logger("adk.planner")
@@ -265,6 +297,13 @@ class AiForgePlannerAgent(BaseAgent):
              ticket=ticket.identifier,
              stop_reason=summary.get("stop_reason"),
              wall_s=summary.get("wall_s"))
+        _emit_stage_event(
+            ticket.id, "planner", t_stage_start,
+            extra={
+                "stop_reason": summary.get("stop_reason"),
+                "plan_chars": summary.get("plan_chars"),
+            },
+        )
 
         text = summary.get("summary") or "(planner ran)"
         yield Event(
@@ -292,6 +331,7 @@ class AiForgeDoerAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
+        t_stage_start = time.time()
         state = ctx.session.state
         ticket = _ticket_from_state(state)
         log = get_logger("adk.doer")
@@ -424,6 +464,17 @@ class AiForgeDoerAgent(BaseAgent):
         emit(log, "adk.doer.done", ticket=ticket.identifier,
              stop_reason=stop_reason, turns=summary.get("turns"),
              wall_s=summary.get("wall_s"))
+        _emit_stage_event(
+            ticket.id, "doer", t_stage_start,
+            extra={
+                "stop_reason": stop_reason,
+                "turns": summary.get("turns"),
+                "edits": (summary.get("counters") or {}).get("edit_block_ok"),
+                "compile_green": (summary.get("counters") or {}).get("compile_green"),
+                "files_changed": len(changed_files),
+                "commit_sha": summary.get("commit_sha"),
+            },
+        )
 
         yield Event(
             invocation_id=ctx.invocation_id,
@@ -588,6 +639,7 @@ class AiForgeIntegrationTestAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
+        t_stage_start = time.time()
         state = ctx.session.state
         ticket = _ticket_from_state(state)
         log = get_logger("adk.integration")
@@ -646,6 +698,15 @@ class AiForgeIntegrationTestAgent(BaseAgent):
              endpoint=result.smoke_endpoint,
              business_id=result.business_id,
              duration_s=result.duration_s)
+        _emit_stage_event(
+            ticket.id, "integration", t_stage_start,
+            extra={
+                "test_green": result.test_green,
+                "smoke_status": result.smoke_status_code,
+                "endpoint": result.smoke_endpoint or None,
+                "business_id": result.business_id or None,
+            },
+        )
 
         existing = state.get("aiforge.doer.counters") or {}
         merged = dict(existing)
@@ -686,6 +747,7 @@ class AiForgeFeedbackAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
+        t_stage_start = time.time()
         state = ctx.session.state
         ticket = _ticket_from_state(state)
         log = get_logger("adk.feedback")
@@ -823,6 +885,17 @@ class AiForgeFeedbackAgent(BaseAgent):
              ticket=ticket.identifier,
              verdict=verdict, fail_count=fail_count,
              escalating=should_escalate)
+        _emit_stage_event(
+            ticket.id, "feedback", t_stage_start,
+            extra={
+                "verdict": verdict,
+                "fail_count": fail_count,
+                "compile_green": compile_green,
+                "edit_block_ok": edit_block_ok,
+                "test_green": test_green,
+                "test_required": test_green_required,
+            },
+        )
 
         actions = EventActions(state_delta=state_delta)
         if should_escalate:
@@ -858,6 +931,7 @@ class AiForgePublishAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
+        t_stage_start = time.time()
         state = ctx.session.state
         ticket = _ticket_from_state(state)
         log = get_logger("adk.publish")
@@ -880,6 +954,10 @@ class AiForgePublishAgent(BaseAgent):
                       f"Local commit {commit_sha or '(none)'} left in "
                       f"worktree {worktree or '(unknown)'} for inspection."),
                 metadata={"verdict": verdict, "commit_sha": commit_sha},
+            )
+            _emit_stage_event(
+                ticket.id, "publish", t_stage_start,
+                extra={"skipped": True, "verdict": verdict},
             )
             yield _yield_text_event(
                 self.name, f"[publish] skipped — verdict={verdict}",
@@ -931,6 +1009,14 @@ class AiForgePublishAgent(BaseAgent):
              ticket=ticket.identifier,
              pushed=res.get("pushed"),
              pr_url=res.get("pr_url"))
+        _emit_stage_event(
+            ticket.id, "publish", t_stage_start,
+            extra={
+                "pushed": res.get("pushed"),
+                "pr_url": res.get("pr_url"),
+                "commit_sha": commit_sha,
+            },
+        )
         comment = (
             f"Published commit {commit_sha} → "
             f"pushed={res.get('pushed')} pr={res.get('pr_url') or '(none)'}"
@@ -1083,6 +1169,7 @@ class AiForgeLearnerAgent(BaseAgent):
     async def _run_async_impl(
         self, ctx: InvocationContext
     ) -> AsyncGenerator[Event, None]:
+        t_stage_start = time.time()
         state = ctx.session.state
         ticket = _ticket_from_state(state)
         log = get_logger("adk.learner")
@@ -1097,6 +1184,10 @@ class AiForgeLearnerAgent(BaseAgent):
         if verdict != "pass":
             emit(log, "adk.learner.skipped",
                  ticket=ticket.identifier, verdict=verdict)
+            _emit_stage_event(
+                ticket.id, "learner", t_stage_start,
+                extra={"skipped": True, "verdict": verdict},
+            )
             yield _yield_text_event(
                 self.name,
                 f"[learner] skipped (verdict={verdict!r})",
@@ -1142,6 +1233,10 @@ class AiForgeLearnerAgent(BaseAgent):
 
         emit(log, "adk.learner.done",
              ticket=ticket.identifier, digest_chars=len(digest))
+        _emit_stage_event(
+            ticket.id, "learner", t_stage_start,
+            extra={"digest_chars": len(digest), "verdict": verdict},
+        )
 
         yield _yield_text_event(
             self.name,

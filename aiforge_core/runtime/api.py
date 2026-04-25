@@ -244,10 +244,28 @@ def get_ticket(identifier: str) -> dict:
             (ticket_id,),
         )
         children = [_ticket_row_out(r) for r in cur.fetchall()]
+    # Per-stage timeline — one row per agent that emitted a stage_done
+    # event. Lets the UI render an inline timing breakdown without
+    # parsing every event payload. Order = chronological.
+    timings: list[dict] = []
+    for ev in events:
+        if ev.get("kind") != "stage_done":
+            continue
+        meta = ev.get("metadata") or {}
+        timings.append({
+            "stage": meta.get("stage") or ev.get("role"),
+            "duration_s": meta.get("duration_s"),
+            "at": ev.get("created_at"),
+            "extra": {
+                k: v for k, v in meta.items()
+                if k not in ("stage", "duration_s")
+            },
+        })
     return {
         "ticket": _ticket_row_out(t),
         "events": events,
         "children": children,
+        "timings": timings,
     }
 
 
