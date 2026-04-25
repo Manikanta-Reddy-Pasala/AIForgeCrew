@@ -218,24 +218,54 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
          user_chars=len(user_prompt))
 
     try:
+        # Token budget: when thinking is enabled, the model spends a
+        # large chunk on reasoning before emitting any plan content.
+        # Old cap of 1500 starved the response → empty plan.
+        thinking_on = bool(cfg.get("chat_template_kwargs", {}).get(
+            "enable_thinking"
+        ))
+        budget = cfg.get("max_tokens", 8192)
+        if not thinking_on:
+            budget = min(budget, 1500)
+        body = {
+            "model": cfg["model"],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": budget,
+            "temperature": cfg.get("temperature", 0.2),
+        }
+        if cfg.get("chat_template_kwargs"):
+            body["chat_template_kwargs"] = cfg["chat_template_kwargs"]
+        if cfg.get("top_p"):
+            body["top_p"] = cfg["top_p"]
         resp = requests.post(
             f"{base_url}/chat/completions",
-            json={
-                "model": cfg["model"],
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "max_tokens": min(cfg.get("max_tokens", 8192), 1500),
-                "temperature": cfg.get("temperature", 0.2),
-            },
+            json=body,
             headers={"Authorization": f"Bearer {cfg.get('apikey','sk-local')}"},
             timeout=cfg.get("read_timeout", 600),
         )
         resp.raise_for_status()
-        plan_text = (
-            resp.json()["choices"][0]["message"].get("content") or ""
-        ).strip()
+        msg = resp.json()["choices"][0]["message"]
+        # Different stacks expose the post-thinking text via different
+        # fields. mlx_lm's gemma stack uses 'reasoning' for the trace +
+        # 'content' for the answer. Qwen3.x with --enable-thinking uses
+        # 'reasoning_content'. LM Studio passes through whatever the
+        # underlying chat template emits. Prefer 'content' first, fall
+        # back so we never lose the answer when the field name shifts.
+        plan_text = (msg.get("content") or "").strip()
+        if not plan_text:
+            plan_text = (msg.get("reasoning_content") or "").strip()
+        if not plan_text:
+            # Strip <think>…</think> wrappers that some templates emit
+            # inline in 'content' when thinking-mode is on.
+            raw = (msg.get("reasoning") or "").strip()
+            if raw:
+                import re as _re
+                cleaned = _re.sub(r"<think>.*?</think>", "", raw,
+                                  flags=_re.DOTALL).strip()
+                plan_text = cleaned or raw
     except Exception as exc:
         emit(log, "ga_planner.exception", ticket=identifier,
              error=str(exc)[:300])
