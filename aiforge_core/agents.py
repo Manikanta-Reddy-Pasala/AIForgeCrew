@@ -279,7 +279,13 @@ def tools_schema_for_role(
     forbidden = set(c.tools.forbidden)
     filtered: list[dict] = []
     for entry in full_schema:
-        name = entry.get("name") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str):
+            fn = entry.get("function") if entry.get("type") == "function" else None
+            if isinstance(fn, dict):
+                name = fn.get("name")
         if not isinstance(name, str):
             continue
         if name in forbidden:

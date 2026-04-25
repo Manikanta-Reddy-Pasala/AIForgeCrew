@@ -104,7 +104,7 @@ agents:
         - scope_allowlist_globs
         - test_skeleton_refs
       max_turns: 25
-      max_wall_s: 600
+      max_wall_s: 1200
     tools:
       allowed:
         - graph_lookup
@@ -169,16 +169,16 @@ agents:
         - file_read
         - file_write
         - file_patch
-        - code_run                  # shell — ScopeGuard wraps this
-        - grep
-        - list_dir
-        - ask_explorer              # delegate read-only repo questions
+        - code_run                  # shell — ScopeGuard wraps this; covers grep/ls/find
+        - update_working_checkpoint # save mid-run state
       forbidden:
         - ask_user
         - start_long_term_update
         - create_child_ticket
         - write_fact
         - write_plan
+        - web_scan
+        - web_execute_js
     memory:
       read_scope: scoped            # only :Fact ABOUT files in allowlist globs
       write_scope: none
