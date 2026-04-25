@@ -356,6 +356,10 @@ class AiForgeDoerAgent(BaseAgent):
             S_WORKTREE: worktree,
             S_LAST_DOER_SUMMARY: summary.get("summary", "")[:2000],
             S_COMPILE_FAIL_COUNT: compile_fail_count,
+            # Counters are the deterministic feedback gate's input.
+            "aiforge.doer.counters": summary.get("counters") or {},
+            "aiforge.doer.commit_sha": summary.get("commit_sha"),
+            "aiforge.doer.pr_url": summary.get("pr_url"),
         }
 
         text = summary.get("summary") or f"[doer] stop_reason={stop_reason}"
@@ -544,24 +548,65 @@ class AiForgeFeedbackAgent(BaseAgent):
             return
 
         worktree = state.get(S_WORKTREE)
-        diff = _git_diff(worktree)
-        body = (ticket.body or "")[:8000]
-        prompt = _FEEDBACK_PROMPT.format(body=body, diff=diff[:12000])
-
-        loop = asyncio.get_event_loop()
+        # ─── Deterministic verdict (gate, not judge) ───────────────────
+        # Earlier feedback used an LLM to read the diff blind without
+        # being told whether compile passed. It would fail/scope_violation
+        # spuriously on perfectly-correct work (ONE-1, ONE-2, ONE-3 all
+        # had clean Java + green compile + scope-respected writes but
+        # got blocked). Replaced with a deterministic gate:
+        #   pass  ⇔ compile_green ≥ 1 AND edit_block_ok ≥ 1 AND no
+        #            scope violations from the GA handler
+        #   scope_violation ⇔ ScopeGuard rejected ≥ 1 write attempt
+        #   fail  ⇔ otherwise (no edits, no compile, or model exited early)
+        # Set AIFORGE_FEEDBACK_LLM=1 to fall back to LLM judge.
+        counters = state.get("aiforge.doer.counters") or {}
+        compile_green = int(counters.get("compile_green", 0) or 0)
+        edit_block_ok = int(counters.get("edit_block_ok", 0) or 0)
+        scope_violations = int(
+            counters.get("scope_violation_count", 0) or 0
+        )
+        commit_sha = state.get("aiforge.doer.commit_sha")
+        diff_for_log = ""
         try:
-            raw = await loop.run_in_executor(None, _call_feedback_llm, prompt)
-            verdict_obj = _parse_verdict(raw)
-        except Exception as exc:
-            verdict_obj = {"verdict": "fail",
-                           "reason": f"llm error: {exc}",
-                           "fixlist": []}
+            diff_for_log = _git_diff(worktree)[:1500]
+        except Exception:
+            pass
 
-        verdict = verdict_obj.get("verdict") or "fail"
-        if verdict not in ("pass", "fail", "scope_violation"):
+        if scope_violations > 0:
+            verdict = "scope_violation"
+            reason = (f"ScopeGuard rejected {scope_violations} write(s)")
+            fixlist: list[str] = []
+        elif edit_block_ok >= 1 and compile_green >= 1:
+            verdict = "pass"
+            reason = (
+                f"compile_green={compile_green} edit_block_ok={edit_block_ok} "
+                f"commit={commit_sha or 'none'}"
+            )
+            fixlist = []
+        else:
             verdict = "fail"
-        reason = (verdict_obj.get("reason") or "")[:500]
-        fixlist = verdict_obj.get("fixlist") or []
+            reason = (
+                f"edit_block_ok={edit_block_ok} compile_green={compile_green} "
+                f"— doer must produce ≥1 successful edit AND a compile-green run"
+            )
+            fixlist = []
+
+        # Optional: keep the LLM judge as advisory when explicitly enabled.
+        if os.environ.get("AIFORGE_FEEDBACK_LLM") == "1":
+            try:
+                body = (ticket.body or "")[:8000]
+                prompt = _FEEDBACK_PROMPT.format(
+                    body=body, diff=diff_for_log[:12000]
+                )
+                loop = asyncio.get_event_loop()
+                raw = await loop.run_in_executor(
+                    None, _call_feedback_llm, prompt
+                )
+                advisory = _parse_verdict(raw)
+                reason = f"{reason} | llm_advisory={advisory.get('verdict')}: {advisory.get('reason','')[:120]}"
+            except Exception:
+                pass
+
         fixlist_str = "\n".join(f"- {x}" for x in fixlist[:5]) if fixlist else ""
 
         tickets_mod.add_event(
