@@ -1,0 +1,50 @@
+{
+  "_comment": "Baseline profile that was live through ONE-1 .. ONE-9. Doer = Qwen3-Coder-Next on :1234, Planner = Qwen3.6-27B on :1235, both temp=0.2, no thinking mode.",
+  "agent_config": {
+    "doer": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "feedback": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "learner": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "supervisor": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "chat": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+      "base_url": "http://127.0.0.1:1234/v1"
+    },
+    "planner": {
+      "provider": "local",
+      "model": "/Users/manikanta/.lmstudio/models/unsloth/Qwen3.6-27B-UD-MLX-4bit",
+      "base_url": "http://127.0.0.1:1235/v1"
+    }
+  },
+  "runtime_env": {
+    "AIFORGE_DOER_BASE_URL": "http://127.0.0.1:1234",
+    "AIFORGE_DOER_MODEL": "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+    "AIFORGE_DOER_TEMP": "0.2",
+    "AIFORGE_PLANNER_BASE_URL": "http://127.0.0.1:1235",
+    "AIFORGE_PLANNER_MODEL": "/Users/manikanta/.lmstudio/models/unsloth/Qwen3.6-27B-UD-MLX-4bit",
+    "AIFORGE_PLANNER_TEMP": "0.2"
+  },
+  "runtime_env_remove": [
+    "AIFORGE_DOER_THINK",
+    "AIFORGE_DOER_TOP_P",
+    "AIFORGE_DOER_TOP_K",
+    "AIFORGE_PLANNER_THINK",
+    "AIFORGE_PLANNER_TOP_P"
+  ]
+}

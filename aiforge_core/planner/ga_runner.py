@@ -69,7 +69,7 @@ def _planner_llm_config() -> dict:
         "AIFORGE_PLANNER_MODEL",
         "/Users/manikanta/.lmstudio/models/unsloth/Qwen3.6-27B-UD-MLX-4bit",
     )
-    return {
+    cfg: dict = {
         "name": "mlx-planner",
         "apikey": os.environ.get("AIFORGE_PLANNER_API_KEY", "sk-local"),
         "apibase": base_url.rstrip("/").rstrip("/v1"),
@@ -82,6 +82,11 @@ def _planner_llm_config() -> dict:
         "max_tokens": int(os.environ.get("AIFORGE_PLANNER_MAX_TOKENS", "8192")),
         "temperature": float(os.environ.get("AIFORGE_PLANNER_TEMP", "0.2")),
     }
+    if os.environ.get("AIFORGE_PLANNER_TOP_P"):
+        cfg["top_p"] = float(os.environ["AIFORGE_PLANNER_TOP_P"])
+    if os.environ.get("AIFORGE_PLANNER_THINK", "0") == "1":
+        cfg["chat_template_kwargs"] = {"enable_thinking": True}
+    return cfg
 
 
 def _load_tools_schema(ga_dir: str) -> list[dict]:

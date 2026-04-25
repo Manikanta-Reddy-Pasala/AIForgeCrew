@@ -375,7 +375,7 @@ def _doer_llm_config() -> dict:
         "AIFORGE_DOER_MODEL",
         "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
     )
-    return {
+    cfg: dict = {
         "name": "mlx-doer",
         "apikey": os.environ.get("AIFORGE_DOER_API_KEY", "sk-local"),
         "apibase": base_url.rstrip("/").rstrip("/v1"),
@@ -388,6 +388,19 @@ def _doer_llm_config() -> dict:
         "max_tokens": int(os.environ.get("AIFORGE_DOER_MAX_TOKENS", "8192")),
         "temperature": float(os.environ.get("AIFORGE_DOER_TEMP", "0.2")),
     }
+    # Optional knobs — only added when explicitly set so we don't push
+    # model-specific keys onto a model that doesn't accept them.
+    if os.environ.get("AIFORGE_DOER_TOP_P"):
+        cfg["top_p"] = float(os.environ["AIFORGE_DOER_TOP_P"])
+    if os.environ.get("AIFORGE_DOER_TOP_K"):
+        cfg["top_k"] = int(os.environ["AIFORGE_DOER_TOP_K"])
+    # Thinking-mode toggle for models that support it (Gemma 4, Qwen3.x
+    # with --enable-thinking, etc.). LM Studio forwards
+    # chat_template_kwargs onto the underlying chat template.
+    if os.environ.get("AIFORGE_DOER_THINK", "0") == "1":
+        cfg["chat_template_kwargs"] = {"enable_thinking": True}
+    return cfg
+
 
 
 def _load_tools_schema(ga_dir: str | None = None) -> list[dict]:
