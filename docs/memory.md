@@ -4,8 +4,10 @@ How AIForgeCrew remembers things and how each agent uses memory.
 
 ## TL;DR
 
-Five layers, all but L1 stored in **NUC Neo4j**. Each layer has a single
-purpose and one explicit injection rule. No layer overlaps another.
+Six memory sources fused into the Doer prompt. Five canonical layers
+all but L1 stored in **NUC Neo4j**, plus two code-index helpers that
+sit in front of L5 (Aider RepoMap and Graphify graph neighbours). Each
+source has a single purpose and an explicit injection rule.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -36,6 +38,27 @@ purpose and one explicit injection rule. No layer overlaps another.
 | **L3** SOPs | Neo4j `:Sop` | Task-shape playbooks (e.g. "extract service from controller") | Planner conditional on ticket type | Hand-curated |
 | **L4** Sessions | Neo4j `:Session` + `:Turn` | Every agent turn ever fired (auto-remember) | `recall_similar_flows` tool | ADK plugin every turn |
 | **L5** Code | Neo4j `:File` + `:Symbol` (+ Aider SQLite hot cache) | AST + call graph + Graphify community structure | Doer system prompt always | Tree-sitter ingest + nightly Graphify |
+
+## What the Doer actually sees per turn (the full stack)
+
+When `agent_runner_loop` builds the prompt, eight sources land in the
+context window. In order of injection:
+
+| # | Source | Where from | Size |
+|---|--------|------------|------|
+| 1 | Ticket body | Postgres `tickets.body` | ~0.5–2 KB |
+| 2 | `## Allowed files` | Parsed from ticket body via `parse_allowed_files` | small |
+| 3 | **Aider RepoMap digest** | `aiforge_core/memory/code_context.py:aider_digest` — calls `aider.repomap.RepoMap` against the worktree, PageRank-ranked tree-sitter tags | ~1024 tok budget |
+| 4 | **Graphify + tree-sitter neighbours** | `code_context.py:graph_neighbours` — Cypher against Neo4j `:File`/`:Symbol`/`:CALLS`/`:IMPORTS`/`:EXTENDS`/`:IMPLEMENTS`/`:DEFINES_METHOD` edges (≤30 lines) | ~1–3 KB |
+| 5 | Planner notes (`plan.md`) | `<worktree>/.aiforge/plan.md` | ~1 KB |
+| 6 | GA filesystem memory | `~/genericagent/memory/global_mem_insight.txt` + `assets/insight_fixed_structure_en.txt` (read by GA's `get_global_memory()`) | ~3 KB |
+| 7 | **Neo4j L2 facts (top-K)** | `aiforge_core/memory/neo4j_facts.py:fetch_facts_text` — fulltext BM25 + 2-hop graph boost, concatenated onto GA filesystem memory by monkey-patch | ~1 KB |
+| 8 | Required-workflow checklist | static text in `_build_user_input` | small |
+
+Items 6+7 are fused by the `get_global_memory` monkey-patch — GA reads
+filesystem first, then we append Neo4j facts. Both stay live. Item 3
+(Aider) is the **hot path** — runs in-process every Doer call. Items
+4+7 are Cypher round-trips to NUC Neo4j.
 
 ## How each agent uses memory
 

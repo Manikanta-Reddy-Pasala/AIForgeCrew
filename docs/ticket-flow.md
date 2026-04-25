@@ -100,22 +100,29 @@ flowchart LR
         L2[L2 :Fact<br/>vector+fulltext]
         L3[L3 :Sop]
         L4[L4 :Session+:Turn]
-        L5[L5 :File+:Symbol]
+        L5[L5 :File+:Symbol<br/>tree-sitter + Graphify]
     end
-    subgraph Hot[Doer host]
-        AID[Aider SQLite cache]
+    subgraph Hot[Doer host - in-process]
+        AID[Aider RepoMap<br/>PageRank tree-sitter tags<br/>SQLite cache]
+        GA_FS[GA filesystem<br/>global_mem_insight.txt<br/>+ insight_fixed_structure_en]
     end
     subgraph S[ADK Session]
         L1[L1 working state]
     end
 
-    Planner -->|read top-8| L2
+    Planner -->|read top-8 fact| L2
     Planner -->|read by labels| L3
-    Doer -->|read top-8 scoped| L2
-    Doer -->|RepoMap digest| AID
-    AID -.refresh.-> L5
-    Doer -->|graph_lookup tool| L5
-    Doer -->|ask_explorer recall| L4
+
+    Doer -->|aider_digest hot path| AID
+    Doer -->|graph_neighbours Cypher| L5
+    Doer -->|fetch_facts_text top-K| L2
+    Doer -->|GA get_global_memory| GA_FS
+    Doer -->|ask_explorer subagent| L4
+
+    AID -.recompute on file change.-> L5
+    GFY[Graphify nightly] -.mirror INFERRED edges.-> L5
+    TS[tree-sitter ingest] -.deterministic AST.-> L5
+
     Feedback -->|read top-3| L2
     Learner -->|read SOP| L0
     Learner -->|write :Fact| L2
@@ -126,6 +133,26 @@ flowchart LR
     LeTurn[every Learner turn] --> L4
 
     L1 -.auto-mirror.-> L4
+```
+
+### Doer's eight context sources, in order
+
+```mermaid
+flowchart TD
+    classDef hot fill:#dcfce7,stroke:#16a34a
+    classDef neo fill:#dbeafe,stroke:#2563eb
+    classDef fs fill:#fef3c7,stroke:#a16207
+    classDef tx fill:#f3e8ff,stroke:#7c3aed
+
+    P[Doer prompt]:::tx
+    P --> S1[1. Ticket body<br/>Postgres]:::tx
+    P --> S2[2. Allowed files<br/>parsed from body]:::tx
+    P --> S3[3. Aider RepoMap digest<br/>PageRank tree-sitter, hot path]:::hot
+    P --> S4[4. Neo4j neighbour symbols<br/>Cypher CALLS/IMPORTS/EXTENDS]:::neo
+    P --> S5[5. plan.md<br/>worktree/.aiforge]:::fs
+    P --> S6[6. GA filesystem memory<br/>global_mem_insight.txt]:::fs
+    P --> S7[7. Neo4j L2 :Fact top-K<br/>fulltext + graph hop boost]:::neo
+    P --> S8[8. REQUIRED workflow checklist]:::tx
 ```
 
 ## Optimization touch-points (where context shrinks)
