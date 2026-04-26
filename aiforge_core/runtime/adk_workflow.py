@@ -1304,17 +1304,27 @@ def build_aiforge_workflow(
     The structure is:
 
         SequentialAgent("aiforge")
+          ├─ AiForgeIntentAgent("intent")            ← stage 0 (NEW)
           ├─ AiForgePlannerAgent("planner")
           ├─ LoopAgent("doer_chain", max_iterations=MAX_FEEDBACK_FAILS)
           │    ├─ AiForgeDoerAgent("doer")
+          │    ├─ AiForgeIntegrationTestAgent("integration")  (gated)
           │    └─ AiForgeFeedbackAgent("feedback")
+          ├─ AiForgePublishAgent("publish")
           └─ AiForgeLearnerAgent("learner")
+
+    Intent runs first — translates plain-language ticket body into a
+    structured EnrichedTicket and persists it to ticket.metadata.
+    Downstream stages READ that metadata; they no longer re-classify.
+    Idempotent: cached enrichment is reused.
 
     The LoopAgent breaks early when any sub-agent yields an Event whose
     ``actions.escalate`` is True. Feedback escalates on
     pass / scope_violation / fail_count >= cap. Doer escalates only on
     compile_fail_count >= 2 or scope_violation.
     """
+    from aiforge_core.intent.agent import AiForgeIntentAgent
+    intent = AiForgeIntentAgent(name="intent")
     planner = AiForgePlannerAgent(name="planner")
     doer = AiForgeDoerAgent(name="doer")
     feedback = AiForgeFeedbackAgent(name="feedback")
@@ -1335,7 +1345,7 @@ def build_aiforge_workflow(
     learner = AiForgeLearnerAgent(name="learner")
     workflow = SequentialAgent(
         name="aiforge",
-        sub_agents=[planner, doer_loop, publish, learner],
+        sub_agents=[intent, planner, doer_loop, publish, learner],
     )
 
     plugins: list[BasePlugin] = []

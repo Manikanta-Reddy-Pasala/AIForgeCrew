@@ -256,24 +256,81 @@ class UnifiedContext:
 
     def for_planner(self, ticket: object, *,
                     token_budget: int = 4000) -> ContextBundle:
+        cached = _from_cached(ticket)
+        if cached is not None:
+            return cached
+        return self._fresh_for_ticket(ticket, token_budget=token_budget)
+
+    def for_doer(self, ticket: object, *,
+                 token_budget: int = 4500) -> ContextBundle:
+        cached = _from_cached(ticket)
+        if cached is not None:
+            return cached
+        return self._fresh_for_ticket(ticket, token_budget=token_budget)
+
+    def _fresh_for_ticket(self, ticket: object, *,
+                          token_budget: int) -> ContextBundle:
+        """Full fanout — used when ticket has no cached enrichment.
+        IntentAgent stage 0 normally populates the cache; this is the
+        backstop for tickets that bypass the workflow (legacy tests,
+        manual ad-hoc runs, etc)."""
         from aiforge_core.intent.classifier import classify
         text = (
             f"{getattr(ticket, 'title', '')}\n"
             f"{getattr(ticket, 'body', '')}"
         )
         intent = classify(text)
-        # Override repo_hint with ticket's known project field.
         proj = getattr(ticket, "project", None)
         if proj and not intent.repo_hint:
             intent.repo_hint = proj
         return self.for_intent(intent, token_budget=token_budget)
 
-    def for_doer(self, ticket: object, *,
-                 token_budget: int = 4500) -> ContextBundle:
-        return self.for_planner(ticket, token_budget=token_budget)
-
 
 # ───────── helpers ────────────────────────────────────────────────
+
+
+def _from_cached(ticket: object) -> ContextBundle | None:
+    """Build a ContextBundle from ``ticket.metadata.enrichment`` written
+    by AiForgeIntentAgent. Returns ``None`` when no cached enrichment
+    is present (caller falls back to full fanout)."""
+    md = getattr(ticket, "metadata", None) or {}
+    if not isinstance(md, dict):
+        return None
+    enr = md.get("enrichment")
+    if not isinstance(enr, dict) or not enr.get("intent"):
+        return None
+    intent_d = enr.get("intent") or {}
+    # Rehydrate Intent dataclass without re-importing classifier eagerly.
+    from aiforge_core.intent.classifier import Intent
+    intent = Intent(
+        action=intent_d.get("action") or "investigate",  # type: ignore[arg-type]
+        entity=intent_d.get("entity") or "",
+        reference_pattern=intent_d.get("reference_pattern") or "",
+        repo_hint=intent_d.get("repo_hint") or "",
+        keywords=list(intent_d.get("keywords") or []),
+        raw_text=getattr(ticket, "body", "") or "",
+    )
+    bundle = ContextBundle(
+        intent=intent,
+        repo=enr.get("repo") or "",
+        focal_files=list(enr.get("focal_files") or []),
+        reference_files=list(enr.get("reference_files") or []),
+        similar_tickets=list(enr.get("similar_tickets") or []),
+        t3_recipes=list(enr.get("t3_recipes") or []),
+        commands=dict(enr.get("commands") or {}),
+        acceptance=list(enr.get("acceptance") or []),
+        sources_used=list(enr.get("sources_used") or []) + ["cache"],
+        errors=list(enr.get("errors") or []),
+    )
+    if bundle.similar_tickets:
+        bundle.similar_tickets_text = "\n".join(
+            f"- **{s.get('identifier','?')}** ({s.get('status','?')}) — "
+            f"{(s.get('title','') or '')[:90]}"
+            for s in bundle.similar_tickets
+        )
+    if bundle.t3_recipes:
+        bundle.t3_text = "\n".join(f"- {r}" for r in bundle.t3_recipes)
+    return bundle
 
 
 def _resolve_repo(intent: "Intent") -> str:
