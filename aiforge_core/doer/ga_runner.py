@@ -84,6 +84,40 @@ if os.environ.get("AIFORGE_DOER_KEEP_CHECKPOINT") != "1":
 _EDIT_TOOLS = {"file_patch", "file_write"}
 
 
+# Custom tool schema for web_search — Gemini 2.5-flash grounded search.
+# Calls https://generativelanguage.googleapis.com with `googleSearch` tool
+# enabled; Gemini returns a curated answer + citations the Doer can use
+# to fix unknown-API errors. Needs AIFORGE_GOOGLE_API_KEY env.
+_WEB_SEARCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Run a Google-grounded web search via Gemini 2.5-flash. "
+            "Returns Gemini's curated answer + top citation URLs. "
+            "Use for unknown-API recovery: when 'cannot find symbol "
+            "X' compile errors point at a class you don't recognize, "
+            "search the official docs and patch with the right API."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Concise search query. Best results: include "
+                        "the framework + version + specific API. "
+                        "e.g. 'Spring Data MongoDB Aggregation.group "
+                        "with sum and count Java example'"
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
 # Custom tool schema for ask_explorer — spawns a read-only GA subagent
 # (uses GA's --bg flag pattern, commit bc5d1ea). Injected into the
 # doer's tools_schema at run_doer_via_ga time.
@@ -139,10 +173,14 @@ Hard rules:
   that list are blocked by the harness ScopeGuard.
 - code_run is for `mvn compile` ONLY (and only AFTER you've patched).
   No find / grep / ls / cat — read files via file_read instead.
-- web_scan and web_search ARE allowed when you hit an unknown API
-  (e.g. compile error 'cannot find symbol Expressions') — fetch the
-  Spring / Java doc, find the right call, then patch. Don't loop on
-  the same wrong API.
+- web_search (Gemini grounded) IS the preferred lookup tool for
+  unknown-API errors. Pass a precise query like
+  'Spring Data MongoDB Aggregation.group sum count Java example' —
+  Gemini answers with the right API + citation URLs. Use this on
+  every 'cannot find symbol' / 'method not found' / 'incompatible
+  types' compile error you don't immediately recognize.
+- web_scan is the fallback for fetching a specific docs page when
+  web_search citations point you at one. Don't loop on a wrong API.
 - start_long_term_update IS allowed for one-line patterns you hit
   repeatedly (e.g. 'Spring Mongo grouping uses Aggregation.group not
   Expressions.wrap'). Future tickets benefit from your memory.
@@ -383,6 +421,79 @@ def _make_handler_class():
                     )
             yield from super().do_code_run(args, response)
 
+        def do_web_search(self, args, response):  # type: ignore[override]
+            """Gemini 2.5-flash grounded search. Returns curated answer
+            text + citation URLs so the Doer can fix unknown-API
+            compile errors without burning turns guessing.
+            """
+            import urllib.request as _ur
+            import urllib.error as _ue
+            query = (args.get("query") or "").strip()
+            if not query:
+                yield "[web_search] empty query, skipping.\n"
+                return StepOutcome(
+                    {"status": "error", "msg": "query required"},
+                    next_prompt="web_search needs a `query` argument.",
+                )
+            api_key = os.environ.get("AIFORGE_GOOGLE_API_KEY", "")
+            if not api_key:
+                yield ("[web_search] no AIFORGE_GOOGLE_API_KEY set; "
+                       "skipping.\n")
+                return StepOutcome(
+                    {"status": "error", "msg": "missing api key"},
+                    next_prompt=("web_search disabled (no API key). "
+                                 "Use ask_explorer instead."),
+                )
+            payload = json.dumps({
+                "contents": [{"parts": [{"text": query}]}],
+                "tools": [{"googleSearch": {}}],
+            }).encode()
+            url = ("https://generativelanguage.googleapis.com/v1beta/"
+                   "models/gemini-2.5-flash:generateContent")
+            req = _ur.Request(
+                url, data=payload, method="POST",
+                headers={"Content-Type": "application/json",
+                         "X-goog-api-key": api_key},
+            )
+            yield f"[web_search] grounded query: {query[:200]}\n"
+            try:
+                with _ur.urlopen(req, timeout=30) as resp:
+                    body = resp.read()
+            except (_ue.URLError, _ue.HTTPError) as exc:
+                yield f"[web_search] network error: {exc}\n"
+                return StepOutcome(
+                    {"status": "error", "msg": str(exc)[:200]},
+                    next_prompt="web_search failed; try ask_explorer.",
+                )
+            try:
+                data = json.loads(body)
+            except Exception as exc:
+                return StepOutcome(
+                    {"status": "error", "msg": f"bad response: {exc}"},
+                    next_prompt="web_search returned non-JSON.",
+                )
+            cand = (data.get("candidates") or [{}])[0]
+            parts = cand.get("content", {}).get("parts", [])
+            answer = "\n".join(p.get("text", "") for p in parts).strip()
+            grounding = cand.get("groundingMetadata", {})
+            chunks = grounding.get("groundingChunks", [])[:5]
+            cites = []
+            for ch in chunks:
+                w = ch.get("web") or {}
+                title = (w.get("title") or "")[:120]
+                uri = w.get("uri") or ""
+                if uri:
+                    cites.append(f"- {title} | {uri}")
+            result_blob = answer[:4000]
+            if cites:
+                result_blob += "\n\nCitations:\n" + "\n".join(cites)
+            yield (result_blob[:200] + "...\n") if len(result_blob) > 200 else result_blob + "\n"
+            return StepOutcome(
+                result_blob,
+                next_prompt=("Web answer above. Apply the correct API "
+                             "in your next file_patch."),
+            )
+
         def do_ask_explorer(self, args, response):  # type: ignore[override]
             """Spawn a read-only GA subprocess to answer a focused
             question. Uses GA's `agentmain.py --task <name> --bg --input
@@ -616,6 +727,11 @@ def run_doer_via_ga(
     # Inject ask_explorer (custom tool, not in GA's stock schema).
     if os.environ.get("AIFORGE_DOER_ASK_EXPLORER", "1") == "1":
         tools_schema = list(tools_schema) + [_ASK_EXPLORER_SCHEMA]
+    # Inject web_search backed by Gemini grounded search. Only enable
+    # when AIFORGE_GOOGLE_API_KEY is present in the environment so
+    # offline / no-key deployments don't advertise a tool that 401s.
+    if os.environ.get("AIFORGE_GOOGLE_API_KEY"):
+        tools_schema = list(tools_schema) + [_WEB_SEARCH_SCHEMA]
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
     if plan_mode_active:
         user_input += (
