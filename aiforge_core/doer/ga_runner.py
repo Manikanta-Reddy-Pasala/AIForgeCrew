@@ -817,31 +817,31 @@ def run_doer_via_ga(
             emit(log, "ga_runner.plan_mode_skip",
                  ticket=identifier, error=str(exc)[:200])
 
-    # Build LM session — primary mlx-lm + Gemini fallback chain via
-    # GA's MixinSession. Falls back per call when primary errors and
-    # springs back after a configurable cool-off (5 min default).
+    # Pick session class based on backend:
+    #   local mlx-lm → LLMSession (text-protocol; mlx_lm 0.31 drops
+    #     native tool_calls so we read inline <tool>...</tool>)
+    #   cloud (Gemini/OpenAI/Anthropic) → NativeOAISession (native
+    #     message.tool_calls; cloud APIs always emit them)
     from .ga_tools import llm_config as _llm_cfg
     cfg = _llm_cfg.primary_cfg()
-    fb = _llm_cfg.fallback_cfg()
-    if fb is not None and os.environ.get("AIFORGE_DOER_FALLBACK", "1") == "1":
-        try:
-            from llmcore import MixinSession  # type: ignore
-            primary = LLMSession(cfg=cfg)
-            fallback = LLMSession(cfg=fb)
-            session = MixinSession(
-                [primary, fallback],
-                cfg={"max_retries": 1, "spring_back": 300,
-                     "llm_nos": [primary.name, fallback.name]},
-            )
-            emit(log, "ga_runner.fallback_chain",
-                 ticket=identifier,
-                 primary=cfg["model"], fallback=fb["model"])
-        except Exception as exc:
-            emit(log, "ga_runner.fallback_skip",
-                 ticket=identifier, error=str(exc)[:200])
-            session = LLMSession(cfg=cfg)
-    else:
-        session = LLMSession(cfg=cfg)
+    primary_is_cloud = cfg.get("name", "").startswith(("gemini", "openai", "anthropic"))
+    NativeOAISession = None
+    try:
+        from llmcore import NativeOAISession as _NOS  # type: ignore
+        NativeOAISession = _NOS
+    except Exception:
+        NativeOAISession = None
+
+    def _build_session(c: dict, is_cloud: bool):
+        if is_cloud and NativeOAISession is not None:
+            return NativeOAISession(cfg=c)
+        return LLMSession(cfg=c)
+
+    primary_session = _build_session(cfg, primary_is_cloud)
+    session = primary_session
+    emit(log, "ga_runner.session_built", ticket=identifier,
+         backend=cfg.get("name", "?"),
+         class_=primary_session.__class__.__name__)
     client = ToolClient(session)
 
     tools_schema = _load_tools_schema()
