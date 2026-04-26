@@ -127,22 +127,43 @@ You MUST modify code so the ticket is implemented. You only get credit when:
   2. `mvn -DskipTests compile` exits 0 inside the worktree.
   3. Every Acceptance bullet's identifier appears in the new file content.
 
+==== CRITICAL — FILE-EDITING IS THE PRIMARY TOOL ====
+The Planner has already identified the files you need. They are listed
+verbatim under `## Allowed files`. Trust the list. Open those files with
+file_read and edit them with file_patch / file_write. That's the job.
+
+Do NOT use `code_run` to grep / find / ls / locate files. Those discovery
+commands burn turns and produce nothing the harness scores. file_read
+the allowed paths directly. If a path appears wrong, ask_explorer once
+(see tool list); do not fall into a grep/find loop.
+
+If after turn 3 you still have edit_block_ok=0 you are off-track. STOP
+exploring. file_read your allowed files. file_patch the change.
+
 Hard rules:
-- Edit ONLY files listed in the ## Allowed files section. Writes outside that list
-  are blocked by the harness ScopeGuard.
-- Do NOT call `ask_user`. Do NOT call `start_long_term_update`. Do NOT call any
-  web tool. The harness will reject those calls.
-- Use file_patch for narrow diffs (preferred). Use file_write only for new files
-  or full rewrites.
-- After each edit, run `mvn -DskipTests compile` via code_run inside the
-  worktree. If compile fails, read the error and make ONE more file_patch.
-- Do NOT call final-answer / no_tool until compile is green. Re-edit and recompile.
+- Edit ONLY files listed in the ## Allowed files section. Writes outside
+  that list are blocked by the harness ScopeGuard.
+- Do NOT call `ask_user`. Do NOT call `start_long_term_update`. Do NOT
+  call any web tool. The harness will reject those calls.
+- code_run is for `mvn compile` ONLY (and only AFTER you've patched).
+  No find / grep / ls / cat — read files via file_read instead.
+- Use file_patch for narrow diffs (preferred). Use file_write only for
+  brand-new files or full rewrites.
+- After each edit, run `mvn -DskipTests compile` via code_run inside
+  the worktree. If compile fails, read the error and make ONE more
+  file_patch. Do NOT loop the same edit twice.
+- Do NOT emit `<summary>` until compile is green AND at least one
+  file_patch has succeeded.
 
-Work in the provided worktree path. Every code_run command must `cd <worktree>` first.
+Work in the provided worktree path. Every code_run command must
+`cd <worktree>` first.
 
-When the task is complete (compile green + acceptance verified), reply with a
-single message containing a `<summary>` tag that names the modified file and
-quotes the BUILD SUCCESS line, then stop calling tools.
+Standard fast workflow (do this exactly):
+  1. file_read each entry under `## Allowed files`.
+  2. file_patch the change required by the acceptance criteria.
+  3. code_run `cd <worktree> && mvn -DskipTests compile`.
+  4. On BUILD SUCCESS: emit `<summary>BUILD SUCCESS — <files patched></summary>` and STOP.
+  5. On BUILD FAILURE: read the compile error, file_patch the fix, recompile. Repeat at most twice.
 """
 
 
@@ -183,19 +204,24 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"{neighbours_section}"
         f"## Planner notes\n{plan_text or '(none)'}\n\n"
         f"## REQUIRED workflow — DO NOT SKIP STEPS\n"
-        f"1. file_read EACH file under '## Allowed files' (absolute path "
-        f"   under `{worktree_path}`).\n"
-        f"2. file_patch the change required by the acceptance criteria. "
-        f"   You MUST emit at least one successful file_patch (or "
-        f"   file_write) call before finishing — the harness rejects "
-        f"   runs with edit_block_ok=0.\n"
+        f"1. **file_read EACH file under '## Allowed files'** "
+        f"(absolute paths under `{worktree_path}`). Do NOT grep/find — "
+        f"the file list is final.\n"
+        f"2. **file_patch the change required by the acceptance criteria.** "
+        f"You MUST emit at least one successful file_patch (or "
+        f"file_write) call. The harness rejects runs with "
+        f"edit_block_ok=0. Aim to land the first patch by turn 3.\n"
         f"3. code_run `cd {worktree_path} && mvn -DskipTests compile` "
-        f"   only AFTER the patch lands.\n"
-        f"4. End with a single `<summary>` tag that names the modified "
-        f"   file and quotes the BUILD line.\n\n"
-        f"Running mvn before editing is a NO-OP — the original code "
-        f"already compiles. The objective is to ADD the change "
-        f"specified in the acceptance criteria."
+        f"AFTER the patch lands. mvn before editing is a NO-OP "
+        f"(original tree already compiles).\n"
+        f"4. End with a single `<summary>` tag naming the modified "
+        f"file(s) and quoting the BUILD SUCCESS line.\n\n"
+        f"## ANTI-PATTERNS — these waste turns and earn no credit\n"
+        f"- Running `find` / `grep` / `ls` via code_run. The Planner "
+        f"already supplied paths. file_read them.\n"
+        f"- Reading the same file twice. Cache it.\n"
+        f"- Running mvn before any patch lands.\n"
+        f"- Emitting <summary> with edit_block_ok=0."
     )
 
 
