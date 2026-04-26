@@ -340,21 +340,33 @@ def create_ticket(payload: TicketCreate) -> dict:
                     "repo_hint": et.intent.repo_hint,
                     "keywords": et.intent.keywords,
                 },
+                "repo": et.repo,                     # ← was missing
                 "focal_files": et.allowed_files[:12],
                 "reference_files": et.reference_files[:6],
                 "similar_tickets": et.similar_tickets[:5],
+                "t3_recipes": et.t3_recipes[:6],     # ← was missing
                 "commands": et.commands,
                 "acceptance": et.acceptance[:10],
                 "sources_used": et.sources_used,
+                "errors": et.errors,                 # ← was missing
             }
             md["enrichment"] = enrichment_meta
         except Exception as exc:
             md["enrichment_error"] = str(exc)[:300]
+    # Project resolution priority: explicit POST field > UC-resolved
+    # repo > intent.repo_hint. Was: explicit > repo_hint only (missed
+    # the body-text repo resolver entirely so PosClientBackend
+    # fallback fired).
+    resolved_project = (
+        payload.project
+        or enrichment_meta.get("repo")
+        or enrichment_meta.get("intent", {}).get("repo_hint")
+    )
     t = tickets_mod.create(
         title=payload.title, body=enriched_body,
         assignee_role=assignee,
         priority=payload.priority, parent_id=parent_id,
-        project=payload.project or enrichment_meta.get("intent", {}).get("repo_hint"),
+        project=resolved_project,
         labels=payload.labels,
         metadata=md or None,
     )
