@@ -196,12 +196,17 @@ class UnifiedContext:
             except Exception as exc:
                 bundle.errors.append(f"standards: {exc}")
 
-        # 5. Similar past tickets (Postgres text search on title+body).
-        # Key off entity (single token) — full search_query is too long
-        # for an ILIKE %...% match.
+        # 5. Similar past tickets — semantic via bge-m3 cosine.
+        # ILIKE prefilters to ≤60 candidates by entity/keywords;
+        # embed + cosine ranks them. Threshold 0.3 drops noise so an
+        # 'add Districts' ticket no longer ranks above an unrelated
+        # past ticket just because both had the word 'add'.
         try:
             sim_key = intent.entity or intent.reference_pattern or ""
-            sims = _similar_tickets(sim_key, intent.keywords[:3], limit=5)
+            sims = _similar_tickets(
+                sim_key, intent.keywords[:3], limit=5,
+                query_text=intent.raw_text or intent.search_query(),
+            )
             if sims:
                 bundle.similar_tickets = sims
                 bundle.similar_tickets_text = "\n".join(
@@ -558,19 +563,35 @@ def _grep_pattern_files(worktree: str, pattern: str, *,
 
 
 def _similar_tickets(primary: str, extra_keys: list[str] | None = None,
-                     *, limit: int = 5) -> list[dict]:
-    """Postgres ILIKE on title+body. Per-keyword OR query so any single
-    matching token surfaces the ticket. Past blocked/done both useful."""
+                     *, limit: int = 5,
+                     query_text: str | None = None) -> list[dict]:
+    """Semantic similarity over Postgres tickets.
+
+    Pipeline:
+      1. ILIKE prefilter on entity + keywords → narrow N → ≤ 60 cands.
+         Keeps embed cost bounded; avoids cosine over thousands of rows.
+      2. Embed query + each candidate's `title || body`.
+         bge-m3 1024-d via the AIFORGE_EMBED_URL sidecar.
+      3. Cosine similarity. Sort desc. Return top K with `score`.
+
+    Replaces the old `ANY ILIKE OR` ranker which surfaced lexically-
+    overlapping but semantically-unrelated tickets ('add Districts' vs
+    'add storeRegions' shared 'add'/'collection' but were different
+    work). KISS: 60-row in-process embedding loop, no pgvector needed.
+
+    Soft-fail to no-op (empty list) when sidecar is down — avoids
+    crashing UC for tickets that simply have no similarity context.
+    """
     keys = [k for k in [primary, *(extra_keys or [])] if k and k.strip()]
-    keys = list(dict.fromkeys(keys))[:5]   # de-dupe, cap
+    keys = list(dict.fromkeys(keys))[:5]
     if not keys:
         return []
     try:
         from aiforge_core.runtime import tickets as _t
     except Exception:
         return []
-    clauses = []
-    params: list = []
+    # 1. ILIKE prefilter — wide net, narrowed to 60 most recent.
+    clauses, params = [], []
     for k in keys:
         pat = f"%{k.replace('%', '')[:60]}%"
         clauses.append("title ILIKE %s")
@@ -578,19 +599,65 @@ def _similar_tickets(primary: str, extra_keys: list[str] | None = None,
         params.extend([pat, pat])
     where = " OR ".join(clauses)
     sql = (
-        "SELECT identifier, title, status, "
+        "SELECT identifier, title, body, status, "
         "       to_char(updated_at,'YYYY-MM-DD') AS updated "
         f"FROM tickets WHERE {where} "
-        "ORDER BY updated_at DESC LIMIT %s"
+        "ORDER BY updated_at DESC LIMIT 60"
     )
-    params.append(limit)
+    candidates: list[dict] = []
     try:
         with _t._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             cols = [c.name for c in cur.description]
-            return [dict(zip(cols, r)) for r in cur.fetchall()]
+            candidates = [dict(zip(cols, r)) for r in cur.fetchall()]
     except Exception:
         return []
+    if not candidates:
+        return []
+    # 2. Embed + cosine. KISS: drop tickets we can't embed (e.g. empty body).
+    qtext = (query_text or " ".join(keys))[:1000]
+    try:
+        from aiforge_core.legacy.embed import embed_batch
+        cand_texts = [
+            ((c.get("title") or "") + "\n" + (c.get("body") or ""))[:1500]
+            for c in candidates
+        ]
+        # Single batch call — query first, then candidates.
+        all_vecs = embed_batch([qtext] + cand_texts)
+        if not all_vecs or len(all_vecs) != len(cand_texts) + 1:
+            raise RuntimeError("embed_batch returned wrong shape")
+        qv = all_vecs[0]
+        cvs = all_vecs[1:]
+    except Exception:
+        # Sidecar down or empty input — fall back to recency-only order
+        # of the ILIKE prefilter so callers still get something.
+        return [
+            {"identifier": c.get("identifier"),
+             "title": c.get("title"),
+             "status": c.get("status"),
+             "updated": c.get("updated"),
+             "score": 0.0}
+            for c in candidates[:limit]
+        ]
+    # Pure-Python cosine — small N (<= 60), no numpy dependency.
+    def _cos(a, b) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        na = sum(x * x for x in a) ** 0.5
+        nb = sum(y * y for y in b) ** 0.5
+        return (dot / (na * nb)) if na and nb else 0.0
+    scored = []
+    for c, cv in zip(candidates, cvs):
+        scored.append({
+            "identifier": c.get("identifier"),
+            "title": c.get("title"),
+            "status": c.get("status"),
+            "updated": c.get("updated"),
+            "score": _cos(qv, cv),
+        })
+    # 3. Drop near-zero matches (true noise) — threshold KISS = 0.3.
+    scored = [s for s in scored if s["score"] >= 0.3]
+    scored.sort(key=lambda s: -s["score"])
+    return scored[:limit]
 
 
 def _t3_recipes(query: str, *, limit: int = 4) -> list[str]:
