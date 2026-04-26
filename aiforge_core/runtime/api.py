@@ -1003,9 +1003,11 @@ def _normalize_query(query: str) -> str:
     if len(q) < 12 or " " not in q:
         return q
     import urllib.request
+    from .llm_picker import pick as _pick
+    ep = _pick("chat")
     try:
-        payload = json.dumps({
-            "model": os.environ.get(
+        body_payload: dict = {
+            "model": ep.model if ep.backend == "gemini" else os.environ.get(
                 "AIFORGE_CHAT_NORMALIZE_MODEL",
                 os.environ.get("AIFORGE_PLANNER_MODEL", "qwen3.6-27b"),
             ),
@@ -1015,13 +1017,15 @@ def _normalize_query(query: str) -> str:
             ],
             "max_tokens": 128,
             "temperature": 0.0,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }).encode()
+        }
+        if ep.backend == "local":
+            body_payload["chat_template_kwargs"] = {"enable_thinking": False}
+        payload = json.dumps(body_payload).encode()
         req = urllib.request.Request(
-            f"{LM_STUDIO_BASE_URL}/chat/completions",
+            f"{ep.base_url.rstrip('/')}/chat/completions",
             data=payload,
             headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {_cfg.LM_STUDIO_API_KEY}"},
+                     "Authorization": f"Bearer {ep.api_key}"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -1114,10 +1118,12 @@ def _build_chat_prompt(query: str, ctx: dict) -> str:
 
 
 def _call_llm_chat(prompt: str) -> str:
-    """One-shot LLM call against LM Studio for chat synthesis."""
+    """One-shot LLM call for chat synthesis. Routes via llm_picker."""
     import urllib.request
-    payload = json.dumps({
-        "model": os.environ.get(
+    from .llm_picker import pick as _pick
+    ep = _pick("chat")
+    body_payload: dict = {
+        "model": ep.model if ep.backend == "gemini" else os.environ.get(
             "AIFORGE_CHAT_MODEL",
             os.environ.get("AIFORGE_PLANNER_MODEL", "qwen3.6-27b"),
         ),
@@ -1127,13 +1133,15 @@ def _call_llm_chat(prompt: str) -> str:
         ],
         "max_tokens": 2048,
         "temperature": 0.1,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }).encode()
+    }
+    if ep.backend == "local":
+        body_payload["chat_template_kwargs"] = {"enable_thinking": False}
+    payload = json.dumps(body_payload).encode()
     req = urllib.request.Request(
-        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
         headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {_cfg.LM_STUDIO_API_KEY}"},
+                 "Authorization": f"Bearer {ep.api_key}"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
