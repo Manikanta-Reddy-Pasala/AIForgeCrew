@@ -485,10 +485,16 @@ def _persist_env(key: str, value: str) -> None:
         f.write("\n".join(lines) + "\n")
 
 
-@app.get("/api/runtime/doer_backend")
-def get_doer_backend() -> dict:
-    """Current Doer LLM backend choice. 'local' = mlx-lm, 'gemini' = cloud."""
-    value = os.environ.get("AIFORGE_DOER_PRIMARY_BACKEND", "local").lower()
+@app.get("/api/runtime/llm_backend")
+def get_llm_backend() -> dict:
+    """Active LLM backend for ALL agents (planner / doer / feedback /
+    learner / chat). 'local' = mlx-lm primary + Gemini fallback.
+    'gemini' = Gemini-Flash primary + mlx-lm fallback."""
+    value = (
+        os.environ.get("AIFORGE_PRIMARY_BACKEND")
+        or os.environ.get("AIFORGE_DOER_PRIMARY_BACKEND")
+        or "local"
+    ).lower()
     return {
         "backend": value if value in ("local", "gemini") else "local",
         "options": ["local", "gemini"],
@@ -496,9 +502,9 @@ def get_doer_backend() -> dict:
     }
 
 
-@app.put("/api/runtime/doer_backend")
-def set_doer_backend(payload: dict) -> dict:
-    """Switch Doer between local mlx-lm and cloud Gemini-Flash.
+@app.put("/api/runtime/llm_backend")
+def set_llm_backend(payload: dict) -> dict:
+    """Flip the active LLM backend for every agent.
 
     Affects runs started AFTER this call. graph-runner picks up the
     new value next poll-cycle restart (~10-15s).
@@ -510,9 +516,22 @@ def set_doer_backend(payload: dict) -> dict:
         raise HTTPException(
             400, "AIFORGE_GOOGLE_API_KEY not set; gemini backend unavailable"
         )
-    os.environ["AIFORGE_DOER_PRIMARY_BACKEND"] = backend
-    _persist_env("AIFORGE_DOER_PRIMARY_BACKEND", backend)
+    os.environ["AIFORGE_PRIMARY_BACKEND"] = backend
+    _persist_env("AIFORGE_PRIMARY_BACKEND", backend)
+    # Drop the legacy doer-only key so it doesn't shadow the global flag.
+    os.environ.pop("AIFORGE_DOER_PRIMARY_BACKEND", None)
     return {"backend": backend, "persisted": True}
+
+
+# Legacy-compat aliases — keep older callers working until UI ships.
+@app.get("/api/runtime/doer_backend")
+def get_doer_backend_alias() -> dict:
+    return get_llm_backend()
+
+
+@app.put("/api/runtime/doer_backend")
+def set_doer_backend_alias(payload: dict) -> dict:
+    return set_llm_backend(payload)
 
 
 @app.post("/api/runtime/session_param")

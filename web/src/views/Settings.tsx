@@ -53,7 +53,7 @@ export default function Settings() {
   const [geminiAvailable, setGeminiAvailable] = useState<boolean>(false);
   const [doerBackendBusy, setDoerBackendBusy] = useState(false);
   useEffect(() => {
-    fetch('/api/runtime/doer_backend')
+    fetch('/api/runtime/llm_backend')
       .then(r => r.json())
       .then(d => {
         setDoerBackend(d.backend || 'local');
@@ -64,7 +64,7 @@ export default function Settings() {
   async function changeDoerBackend(next: string) {
     setDoerBackendBusy(true);
     try {
-      const r = await fetch('/api/runtime/doer_backend', {
+      const r = await fetch('/api/runtime/llm_backend', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ backend: next }),
@@ -97,12 +97,14 @@ export default function Settings() {
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <h2 style={{ fontSize: 14 }}>Doer backend</h2>
+        <h2 style={{ fontSize: 14 }}>LLM backend (all agents)</h2>
         <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
-          Switch the active Doer LLM. <code>local</code> uses
-          <code> mlx-lm</code> on Mac Studio (current Coder-Next).
-          <code> gemini</code> uses cloud Gemini-Flash via Google AI
-          Studio (free tier). Changes apply to runs started after the switch.
+          Flips planner / doer / feedback / learner / chat at once.
+          <code> local</code> = mlx-lm on Mac Studio with Gemini-Flash
+          as fallback when the local model errors.
+          <code> gemini</code> = Gemini-Flash primary, mlx-lm as
+          fallback. Use to A/B compare cloud vs local. Changes apply
+          to runs started after the switch.
         </div>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <label className="small muted">Backend</label>

@@ -57,21 +57,31 @@ def _ga_dir() -> str:
 
 
 def _planner_llm_config() -> dict:
-    """Text-protocol cfg for GA's LLMSession on the PLANNER port.
+    """Text-protocol cfg for GA's LLMSession on the planner.
 
-    Matches ``oai_planner_config`` in ``mykey.py`` on the NUC. The cfg
-    dict overrides whatever GA reads from its own mykey at import time.
+    Honours global AIFORGE_PRIMARY_BACKEND so a Settings flip
+    swaps every agent at once. Falls through to per-role
+    AIFORGE_PLANNER_* vars when backend=local.
     """
-    base_url = os.environ.get(
-        "AIFORGE_PLANNER_BASE_URL", "http://127.0.0.1:1235"
-    )
-    model = os.environ.get(
-        "AIFORGE_PLANNER_MODEL",
-        "/Users/manikanta/.lmstudio/models/unsloth/Qwen3.6-27B-UD-MLX-4bit",
-    )
+    from aiforge_core.runtime.llm_picker import pick as _pick
+    ep = _pick("planner")
+    if ep.backend == "gemini":
+        base_url = ep.base_url.rstrip("/").rstrip("/v1")
+        model = ep.model
+        api_key = ep.api_key
+    else:
+        base_url = os.environ.get(
+            "AIFORGE_PLANNER_BASE_URL", "http://127.0.0.1:1235"
+        )
+        model = os.environ.get(
+            "AIFORGE_PLANNER_MODEL",
+            "/Users/manikanta/.lmstudio/models/unsloth/Qwen3.6-27B-UD-MLX-4bit",
+        )
+        api_key = os.environ.get("AIFORGE_PLANNER_API_KEY", "sk-local")
     cfg: dict = {
-        "name": "mlx-planner",
-        "apikey": os.environ.get("AIFORGE_PLANNER_API_KEY", "sk-local"),
+        "name": ("gemini-planner" if ep.backend == "gemini"
+                 else "mlx-planner"),
+        "apikey": api_key,
         "apibase": base_url.rstrip("/").rstrip("/v1"),
         "model": model,
         "api_mode": "chat_completions",

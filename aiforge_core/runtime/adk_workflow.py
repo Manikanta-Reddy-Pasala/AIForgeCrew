@@ -557,19 +557,23 @@ Your JSON:
 
 
 def _call_feedback_llm(prompt: str) -> str:
-    payload = json.dumps({
-        "model": FEEDBACK_MODEL,
+    from aiforge_core.runtime.llm_picker import pick as _pick
+    ep = _pick("feedback")
+    body_payload: dict = {
+        "model": ep.model if ep.backend == "gemini" else FEEDBACK_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 524288,
+        "max_tokens": 16384 if ep.backend == "gemini" else 524288,
         "temperature": 0.0,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }).encode()
+    }
+    if ep.backend == "local":
+        body_payload["chat_template_kwargs"] = {"enable_thinking": False}
+    payload = json.dumps(body_payload).encode()
     req = urllib.request.Request(
-        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {LM_STUDIO_API_KEY}",
+            "Authorization": f"Bearer {ep.api_key}",
         },
         method="POST",
     )
@@ -1116,19 +1120,23 @@ Your JSON:
 
 
 def _call_learner_llm(prompt: str) -> str:
-    payload = json.dumps({
-        "model": LEARNER_MODEL,
+    from aiforge_core.runtime.llm_picker import pick as _pick
+    ep = _pick("learner")
+    body_payload: dict = {
+        "model": ep.model if ep.backend == "gemini" else LEARNER_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 524288,
+        "max_tokens": 16384 if ep.backend == "gemini" else 524288,
         "temperature": 0.0,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }).encode()
+    }
+    if ep.backend == "local":
+        body_payload["chat_template_kwargs"] = {"enable_thinking": False}
+    payload = json.dumps(body_payload).encode()
     req = urllib.request.Request(
-        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {LM_STUDIO_API_KEY}",
+            "Authorization": f"Bearer {ep.api_key}",
         },
         method="POST",
     )

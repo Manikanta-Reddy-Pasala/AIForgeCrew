@@ -18,14 +18,15 @@ import os
 
 
 def primary_cfg() -> dict:
-    """Active doer backend.
+    """Active doer backend, gated by global AIFORGE_PRIMARY_BACKEND.
 
-    AIFORGE_DOER_PRIMARY_BACKEND=local (default) → mlx-lm.
-    AIFORGE_DOER_PRIMARY_BACKEND=gemini → cloud Gemini-Flash.
-    Settings UI flips this env value via the runtime session_param API.
+    Honours the same flag every other agent honours (Planner /
+    Feedback / Learner / Chat) so flipping Settings → 'gemini'
+    flips them all at once.
     """
-    backend = os.environ.get("AIFORGE_DOER_PRIMARY_BACKEND", "local").lower()
-    if backend == "gemini":
+    from aiforge_core.runtime.llm_picker import pick as _pick
+    ep = _pick("doer")
+    if ep.backend == "gemini":
         cloud = fallback_cfg()
         if cloud is not None:
             cloud["max_retries"] = 2
