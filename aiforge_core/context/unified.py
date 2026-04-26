@@ -316,31 +316,11 @@ class UnifiedContext:
 # ───────── data cleaning ──────────────────────────────────────────
 # All sources funnel through these helpers before the bundle is
 # rendered. Goal: dedupe across sources, drop noise paths, normalise
-# scores so cross-source ranking is meaningful.
-
-_NOISE_DIR_TOKENS = (
-    "/target/", "/build/", "/node_modules/", "/dist/", "/.git/",
-    "/.aider.tags.cache.v4/", "/.idea/", "/.vscode/", "/__pycache__/",
-    "/.aiforge-worktrees/",
-)
-_NOISE_EXT = (
-    ".pyc", ".class", ".so", ".dll", ".dylib", ".jar", ".war",
-    ".lock", ".min.js", ".map",
-)
-
-
-def _is_noise_path(p: str) -> bool:
-    if not p:
-        return True
-    pl = p.lower()
-    if any(t in pl for t in _NOISE_DIR_TOKENS):
-        return True
-    if any(pl.endswith(e) for e in _NOISE_EXT):
-        return True
-    # Drop "flattened-pom" generated artefacts.
-    if "flattened-pom" in pl:
-        return True
-    return False
+# scores so cross-source ranking is meaningful. Noise filter is the
+# shared aiforge_core.index.noise module — same definition the
+# indexers use, so what's invisible to the index is invisible at
+# query time too (and vice-versa, defense in depth).
+from aiforge_core.index.noise import is_noise_path as _is_noise_path
 
 
 def _dedupe_paths(paths: list[str]) -> list[str]:

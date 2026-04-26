@@ -88,6 +88,34 @@ def _cmd_docs_ingest(args) -> int:
     return 0
 
 
+def _cmd_index_purge_noise(args) -> int:
+    """Drop pre-existing :Symbol/:Chunk/:File/:Memory nodes whose
+    file_path matches the shared noise filter (target/, build/,
+    node_modules/, .pyc/.class/.jar/...). One-shot cleanup; the
+    indexers already skip these going forward."""
+    from aiforge_core.index.noise import EXCLUDE_DIR_TOKENS, PURGE_CYPHER
+    try:
+        from aiforge_core.legacy.rag.neo4j_memory import _get_driver
+    except Exception as exc:
+        print(json.dumps({"error": f"neo4j driver: {exc}"})); return 0
+    tokens = list(EXCLUDE_DIR_TOKENS)
+    if args.dry_run:
+        print(json.dumps({
+            "dry_run": True, "tokens": tokens,
+            "cypher": PURGE_CYPHER.strip(),
+        }))
+        return 0
+    out: list[dict] = []
+    with _get_driver().session() as s:
+        for r in s.run(PURGE_CYPHER, tokens=tokens):
+            out.append({"token": r["tok"], "purged": int(r["purged"])})
+    print(json.dumps({
+        "purged_total": sum(r["purged"] for r in out),
+        "by_token": out,
+    }))
+    return 0
+
+
 def _cmd_cost_snapshot(args) -> int:
     from aiforge_core.runtime import cost
     print(json.dumps(cost.snapshot(args.ticket)))
@@ -112,6 +140,12 @@ def main(argv: list[str] | None = None) -> int:
     mk = idx_sub.add_parser("merkle")
     mk.add_argument("path")
     mk.set_defaults(func=_cmd_index_merkle)
+    pn = idx_sub.add_parser("purge-noise",
+                            help="drop pre-indexed noise from Neo4j "
+                                 "(target/, build/, .pyc, etc.)")
+    pn.add_argument("--dry-run", action="store_true",
+                    help="print tokens + Cypher, do not delete")
+    pn.set_defaults(func=_cmd_index_purge_noise)
 
     docs = sub.add_parser("docs")
     docs_sub = docs.add_subparsers(dest="action", required=True)

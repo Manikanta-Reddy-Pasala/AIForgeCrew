@@ -52,21 +52,23 @@ def aider_digest(worktree: str, chat_files: list[str],
 
 
 _REPO_MAP_EXTS = (".java", ".py", ".ts", ".tsx", ".js", ".kt", ".go")
-_REPO_MAP_EXCLUDE = {
-    ".git", ".aider.tags.cache.v4", "target", "build",
-    "node_modules", ".idea", ".vscode", "__pycache__",
-}
 
 
 def _enumerate_repo_files(root: Path, exclude: set[str],
                           cap: int = 4000) -> list[str]:
+    """Walk worktree, return code files. Noise dirs/extensions filtered
+    via the shared ``aiforge_core.index.noise`` module — single source
+    of truth across all indexers + retrievers."""
+    from aiforge_core.index.noise import prune_dirnames, is_noise_path
     out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _REPO_MAP_EXCLUDE]
+        prune_dirnames(dirnames)   # in-place prune for noise dirs
         for f in filenames:
             if not f.endswith(_REPO_MAP_EXTS):
                 continue
             full = os.path.join(dirpath, f)
+            if is_noise_path(full):
+                continue
             rel = os.path.relpath(full, root)
             if rel in exclude:
                 continue

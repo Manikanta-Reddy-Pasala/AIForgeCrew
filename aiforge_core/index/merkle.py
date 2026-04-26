@@ -30,11 +30,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-_PRUNE = frozenset({
-    ".git", "node_modules", "target", "build", "dist", ".venv",
-    "venv", "__pycache__", ".aider.tags.cache.v4",
-    ".pytest_cache", ".mypy_cache", "out", ".idea", ".vscode",
-})
+from aiforge_core.index.noise import EXCLUDE_DIRS as _PRUNE  # shared filter
 
 _ALLOWED_EXTS = frozenset({
     ".java", ".py", ".ts", ".tsx", ".js", ".jsx", ".kt", ".go",

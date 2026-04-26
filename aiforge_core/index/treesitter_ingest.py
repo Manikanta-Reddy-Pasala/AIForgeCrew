@@ -58,10 +58,7 @@ LARGE_FILE_LINE_THRESHOLD = 10_000
 #: or vendored). 4 MiB of Java is essentially never hand-written.
 HARD_FILE_BYTE_LIMIT = 4 * 1024 * 1024
 
-DEFAULT_EXCLUDE_DIRS = frozenset(
-    {".git", "target", "build", "out", "node_modules", ".idea", ".gradle",
-     "generated", "generated-sources", ".mvn"}
-)
+from aiforge_core.index.noise import EXCLUDE_DIRS as DEFAULT_EXCLUDE_DIRS  # shared filter
 
 LOG_EVERY_N_FILES = 50
 
