@@ -84,17 +84,17 @@ export default function TicketDetail() {
         <Link to={`/trace/${id}`} className="ghost sm" style={{
           padding: '4px 10px', border: '1px solid var(--border-1)', borderRadius: 4,
         }}>
-          <Icon.Activity size={14} /> Live trace
+          <Icon.Logs size={14} /> Live trace
         </Link>
         <Link to={`/llm-trace/${id}`} className="ghost sm" style={{
           padding: '4px 10px', border: '1px solid var(--border-1)', borderRadius: 4,
         }}>
-          <Icon.MessageSquare size={14} /> LLM history
+          <Icon.Chat size={14} /> LLM history
         </Link>
         <Link to={`/workflow?ticket=${id}`} className="ghost sm" style={{
           padding: '4px 10px', border: '1px solid var(--border-1)', borderRadius: 4,
         }}>
-          <Icon.Settings size={14} /> Workflow overlay
+          <Icon.GitBranch size={14} /> Workflow overlay
         </Link>
       </div>
 
