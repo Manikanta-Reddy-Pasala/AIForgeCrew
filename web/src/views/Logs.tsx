@@ -18,16 +18,24 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { logStreamURL } from '../api';
 import { Icon } from '../icons';
 
-const ROLES = ['supervisor', 'planner', 'doer', 'feedback', 'learner'] as const;
+const ROLES = [
+  'intent', 'supervisor', 'planner', 'doer',
+  'feedback', 'learner', 'publish', 'integration',
+  'adk_runner',
+] as const;
 type Role = typeof ROLES[number];
 type RoleSelection = 'ALL' | Role;
 
 const ROLE_COLOR: Record<Role, string> = {
-  supervisor: '#a78bfa',
-  planner:    '#60a5fa',
-  doer:       '#34d399',
-  feedback:   '#fbbf24',
-  learner:    '#f472b6',
+  intent:      '#22d3ee',
+  supervisor:  '#a78bfa',
+  planner:     '#60a5fa',
+  doer:        '#34d399',
+  feedback:    '#fbbf24',
+  learner:     '#f472b6',
+  publish:     '#84cc16',
+  integration: '#f97316',
+  adk_runner:  '#94a3b8',
 };
 
 type LogLine = {

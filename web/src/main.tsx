@@ -22,6 +22,7 @@ const Tools        = lazy(() => import('./views/Tools'));
 const Kanban       = lazy(() => import('./views/Kanban'));
 const Settings     = lazy(() => import('./views/Settings'));
 const Trace        = lazy(() => import('./views/Trace'));
+const LlmTrace     = lazy(() => import('./views/LlmTrace'));
 const WorkflowGraph = lazy(() => import('./views/WorkflowGraph'));
 const Perf          = lazy(() => import('./views/Perf'));
 
@@ -197,6 +198,7 @@ function Shell() {
             <Route path="/memory" element={<Memory />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/trace/:id" element={<Trace />} />
+            <Route path="/llm-trace/:id" element={<LlmTrace />} />
             <Route path="/workflow" element={<WorkflowGraph />} />
             <Route path="/perf"     element={<Perf />} />
           </Routes>
