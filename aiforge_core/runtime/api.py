@@ -1393,6 +1393,17 @@ def _call_graph_mcp_sync(tool: str, args: dict) -> str:
         "AIFORGE_NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
         "AIFORGE_NEO4J_PASSWORD": os.environ.get(
             "AIFORGE_NEO4J_PASSWORD", "password"),
+        # graph_rag/cypher_lib reads NEO4J_URI / NEO4J_USER / NEO4J_PASS
+        # (no AIFORGE_ prefix); mirror so the subprocess can connect.
+        "NEO4J_URI": os.environ.get(
+            "AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
+        "NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
+        "NEO4J_PASS": os.environ.get(
+            "AIFORGE_NEO4J_PASSWORD", "password"),
+        # Embed sidecar — graph_mcp defaults to :1235/v1 (planner LLM
+        # port) which 404s. Force the real sidecar URL for this run.
+        "EMBED_URL": os.environ.get(
+            "EMBED_URL", "http://127.0.0.1:8764"),
         "AIFORGE_DSN": os.environ.get(
             "AIFORGE_DSN",
             "postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge"),
@@ -1966,6 +1977,17 @@ async def mcp_tool_call(body: _McpCallBody) -> dict:
         "AIFORGE_NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
         "AIFORGE_NEO4J_PASSWORD": os.environ.get(
             "AIFORGE_NEO4J_PASSWORD", "password"),
+        # graph_rag/cypher_lib reads NEO4J_URI / NEO4J_USER / NEO4J_PASS
+        # (no AIFORGE_ prefix); mirror so the subprocess can connect.
+        "NEO4J_URI": os.environ.get(
+            "AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
+        "NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
+        "NEO4J_PASS": os.environ.get(
+            "AIFORGE_NEO4J_PASSWORD", "password"),
+        # Embed sidecar — graph_mcp defaults to :1235/v1 (planner LLM
+        # port) which 404s. Force the real sidecar URL for this run.
+        "EMBED_URL": os.environ.get(
+            "EMBED_URL", "http://127.0.0.1:8764"),
         "AIFORGE_DSN": os.environ.get(
             "AIFORGE_DSN",
             "postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge"),

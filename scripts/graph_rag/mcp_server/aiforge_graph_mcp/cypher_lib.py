@@ -40,8 +40,14 @@ def session():
 
 
 def embed(text: str) -> list[float]:
-    """Call OpenAI /v1/embeddings (LM Studio compatible) first, fall back to
-    TEI /embed if that fails. Both shapes handled."""
+    """Try multiple embedding endpoints + payload shapes:
+      1. OpenAI /v1/embeddings (LM Studio compatible)
+      2. AIForge bge-m3 sidecar /embed with {"text": ..} (returns
+         {"embedding": [..]})
+      3. TEI /embed with {"inputs": ..} (HF text-embeddings-inference)
+    First success wins.
+    """
+    # 1. OpenAI compat
     try:
         r = httpx.post(
             f"{EMBED_URL}/embeddings",
@@ -55,6 +61,21 @@ def embed(text: str) -> list[float]:
             return j["data"][0]["embedding"]
     except Exception:
         pass
+    # 2. AIForge sidecar shape
+    try:
+        r = httpx.post(f"{EMBED_URL}/embed", json={"text": text}, timeout=30)
+        r.raise_for_status()
+        j = r.json()
+        if isinstance(j, dict):
+            if "embedding" in j:
+                return j["embedding"]
+            if "vector" in j:
+                return j["vector"]
+            if "vectors" in j and j["vectors"]:
+                return j["vectors"][0]
+    except Exception:
+        pass
+    # 3. TEI shape
     r = httpx.post(f"{EMBED_URL}/embed", json={"inputs": text}, timeout=30)
     r.raise_for_status()
     j = r.json()

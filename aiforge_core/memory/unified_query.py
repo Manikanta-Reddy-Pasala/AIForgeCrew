@@ -78,10 +78,14 @@ def query(
         except Exception as exc:
             errors.append(f"ticket: {exc}")
 
-    # 3) related_memories
+    # 3) related_memories — schema requires `key` (a repo/symbol/etc).
+    # Use auto_ticket OR extracted symbol when available; otherwise
+    # use the raw text.
     try:
-        rows = _mcp_call("related_memories",
-                         {"query": text, "top_k": limit})
+        related_key = auto_ticket or (
+            _extract_symbol(text) if _looks_like_symbol(text) else text
+        )
+        rows = _mcp_call("related_memories", {"key": related_key})
         if rows:
             used.append("related")
             raw_hits.extend(
@@ -91,10 +95,13 @@ def query(
     except Exception as exc:
         errors.append(f"related: {exc}")
 
-    # 4) sym_lookup — only when query looks like a code symbol token
+    # 4) sym_lookup — schema requires `query` (free-text).
     if _looks_like_symbol(text):
         try:
-            rows = _mcp_call("sym_lookup", {"name": _extract_symbol(text)})
+            rows = _mcp_call("sym_lookup", {
+                "query": _extract_symbol(text),
+                "k": min(limit, 10),
+            })
             if rows:
                 used.append("symbol")
                 raw_hits.extend(
@@ -104,9 +111,9 @@ def query(
         except Exception as exc:
             errors.append(f"symbol: {exc}")
 
-    # 5) find_doc — markdown / SOP search
+    # 5) find_doc — schema uses `k` not `top_k`.
     try:
-        rows = _mcp_call("find_doc", {"query": text, "top_k": 3})
+        rows = _mcp_call("find_doc", {"query": text, "k": 3})
         if rows:
             used.append("doc")
             raw_hits.extend(
