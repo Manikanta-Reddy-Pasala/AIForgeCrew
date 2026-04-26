@@ -46,6 +46,12 @@ def primary_cfg() -> dict:
         "apibase": base_url.rstrip("/").rstrip("/v1"),
         "model": model,
         "api_mode": "chat_completions",
+        # SSE streaming sometimes drops `tool_calls` chunks for
+        # smaller models / cloud relays — same root as the chat
+        # 0-tool issue we hit before. Force non-stream so the
+        # response comes back as one JSON blob with structured
+        # tool_calls intact. Override via AIFORGE_DOER_STREAM=1.
+        "stream": os.environ.get("AIFORGE_DOER_STREAM", "0") == "1",
         "max_retries": 2,
         "connect_timeout": 10,
         "read_timeout": 180,

@@ -121,6 +121,7 @@ ticket id
   │    │
   │    ├─ tool_before_callback ─► plan_mode guard, deny-list, perf t0
   │    ├─ do_<tool>             ─► see tools.md
+  │    │     └─ exit_plan_mode  ─► auto-seeds todos checklist from plan
   │    ├─ tool_after_callback   ─► perf emit_step
   │    └─ post_edit/post_compile hooks ─► .aiforge/hooks.yml
   │

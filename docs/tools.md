@@ -45,8 +45,8 @@ handler thin-wraps in `do_<tool>`.
 
 | Tool | File | What |
 |---|---|---|
-| `enter_plan_mode` / `exit_plan_mode` | `plan_mode.py` | Read-only think gate · blocks writes until exit |
-| `todo_write` / `todo_check` | `todos.py` | In-loop checklist · pretty render injected into prompt |
+| `enter_plan_mode` / `exit_plan_mode` | `plan_mode.py` | Read-only think gate · blocks writes until exit · **`exit_plan_mode` auto-parses numbered/bulleted plan into checklist via `todos.write`** |
+| `todo_write` / `todo_check` | `todos.py` | In-loop checklist · pretty render injected into prompt · auto-seeded by `exit_plan_mode` |
 
 ## Sub-agent
 

@@ -71,6 +71,7 @@ no Python plugins.
 |---|---|---|
 | Secret-scan pre_commit | `AIFORGE_DOER_SECRET_SCAN=0` to disable | gitleaks → trufflehog → regex heuristic chain · `block:true` |
 | Perf step recorder | `AIFORGE_PERF_NDJSON=0` to disable ndjson | aggregator always on |
+| Plan-mode → todo seed | `AIFORGE_DOER_PLAN_MODE=0` disables plan_mode entirely | `exit_plan_mode(plan=...)` parses numbered/bulleted lines, auto-fills `todos.write` so model sees live checklist as it works |
 
 ## Environment exposed to hooks
 

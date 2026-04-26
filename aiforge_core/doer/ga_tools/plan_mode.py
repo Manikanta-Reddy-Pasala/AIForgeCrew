@@ -99,7 +99,42 @@ def enter(handler: object, reason: str = "") -> str:
 
 
 def exit_(handler: object, plan: str) -> str:
-    """Unlock writes; stash plan text on handler for downstream tools."""
+    """Unlock writes + auto-seed the in-loop checklist.
+
+    The plan text is split on numbered lines (``1. …`` / ``2. …`` /
+    ``- …``) and fed into ``todos.write`` so the model has a live
+    checklist it can flip with ``todo_check`` as work progresses.
+    KISS — if parse fails, fall back to a single 'execute plan' item.
+    """
     handler._plan_mode_active = False  # type: ignore[attr-defined]
     handler._plan_mode_plan = (plan or "")[:4000]  # type: ignore[attr-defined]
-    return f"[plan_mode] exited. Plan ({len(plan)} chars) recorded; writes unlocked."
+    summary = f"[plan_mode] exited. Plan ({len(plan)} chars) recorded; writes unlocked."
+
+    try:
+        from . import todos as _td
+        items = _parse_plan_steps(plan)
+        if items:
+            _td.write(handler, items)
+            summary += f"\n[plan_mode] seeded checklist with {len(items)} item(s)."
+    except Exception:
+        pass
+    return summary
+
+
+def _parse_plan_steps(plan: str) -> list[dict]:
+    """Lift numbered/bulleted lines into checklist items.
+
+    KISS regex pass — first match wins per line.
+    """
+    import re as _re
+    out: list[dict] = []
+    if not plan:
+        return out
+    pattern = _re.compile(r"^\s*(?:\d+[.)]|-|\*)\s+(.+?)\s*$")
+    for raw in plan.splitlines():
+        m = pattern.match(raw)
+        if m:
+            out.append({"text": m.group(1)[:200], "status": "pending"})
+        if len(out) >= 30:
+            break
+    return out

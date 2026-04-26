@@ -80,8 +80,10 @@ plan + allowed_files
    ▼
 GA agent_runner_loop  (max 40 turns / 25 min)
    │
-   ├─ optional: enter_plan_mode → read-only think → exit_plan_mode
-   ├─ optional: todo_write breakdown
+   ├─ optional: enter_plan_mode → read-only think → exit_plan_mode(plan)
+   │              └─► auto-seeds checklist via todos.write (numbered
+   │                  /bulleted lines parsed into items)
+   ├─ todo_check flips item status as work progresses
    │
    ├─ READ:  file_read · glob · grep · batch · ask_explorer
    ├─ EDIT:  file_patch · bulk_edit · java_refactor (Plan Mode gates these)
