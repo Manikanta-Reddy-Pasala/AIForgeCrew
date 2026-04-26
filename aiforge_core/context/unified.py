@@ -244,6 +244,30 @@ class UnifiedContext:
                 if ref_token in os.path.basename(p).lower()
             ][:5]
 
+        # ── Cleaning pass ─────────────────────────────────────────
+        # Dedupe across sources, drop noise paths (target/, .pyc,
+        # build artefacts), normalise hit scores, dedupe near-
+        # duplicate content. Bundle is THE prompt input — noise here
+        # = wasted tokens for every downstream agent.
+        bundle.focal_files = _dedupe_paths(bundle.focal_files)[:8]
+        bundle.reference_files = _dedupe_paths(bundle.reference_files)[:5]
+
+        # Dedupe similar_tickets by identifier (Postgres ILIKE +
+        # cached enrichment can both surface the same row).
+        seen_t: set[str] = set()
+        deduped_sims: list[dict] = []
+        for s in bundle.similar_tickets:
+            ident = s.get("identifier") or ""
+            if ident and ident in seen_t:
+                continue
+            if ident:
+                seen_t.add(ident)
+            deduped_sims.append(s)
+        bundle.similar_tickets = deduped_sims[:5]
+
+        # Sources_used dedup so render footer reads cleanly.
+        bundle.sources_used = list(dict.fromkeys(bundle.sources_used))
+
         return bundle
 
     # Convenience wrappers ──────────────────────────────────────────
@@ -287,6 +311,97 @@ class UnifiedContext:
 
 
 # ───────── helpers ────────────────────────────────────────────────
+
+
+# ───────── data cleaning ──────────────────────────────────────────
+# All sources funnel through these helpers before the bundle is
+# rendered. Goal: dedupe across sources, drop noise paths, normalise
+# scores so cross-source ranking is meaningful.
+
+_NOISE_DIR_TOKENS = (
+    "/target/", "/build/", "/node_modules/", "/dist/", "/.git/",
+    "/.aider.tags.cache.v4/", "/.idea/", "/.vscode/", "/__pycache__/",
+    "/.aiforge-worktrees/",
+)
+_NOISE_EXT = (
+    ".pyc", ".class", ".so", ".dll", ".dylib", ".jar", ".war",
+    ".lock", ".min.js", ".map",
+)
+
+
+def _is_noise_path(p: str) -> bool:
+    if not p:
+        return True
+    pl = p.lower()
+    if any(t in pl for t in _NOISE_DIR_TOKENS):
+        return True
+    if any(pl.endswith(e) for e in _NOISE_EXT):
+        return True
+    # Drop "flattened-pom" generated artefacts.
+    if "flattened-pom" in pl:
+        return True
+    return False
+
+
+def _dedupe_paths(paths: list[str]) -> list[str]:
+    """Stable order-preserving dedup. Treats absolute and repo-relative
+    paths as the same entry (suffix match) to collapse the case where
+    aider returns absolute paths and graph returns repo-relative."""
+    seen_basenames: set[str] = set()
+    out: list[str] = []
+    for p in paths:
+        if not p or _is_noise_path(p):
+            continue
+        # Use basename + parent dir as identity to avoid the
+        # `/abs/.../foo.java` vs `src/.../foo.java` double-count.
+        parts = p.replace("\\", "/").split("/")
+        key = "/".join(parts[-2:]) if len(parts) >= 2 else p
+        if key in seen_basenames:
+            continue
+        seen_basenames.add(key)
+        out.append(p)
+    return out
+
+
+def _normalise_hits(hits: list[dict], *, source_weights: dict[str, float]) -> list[dict]:
+    """Score-normalise across sources so cross-source top-K is fair.
+
+    Per-source: rescale scores to [0,1] then multiply by configured
+    weight. Drop content-duplicates (first 240 chars equal — KISS
+    fingerprint that catches near-duplicates from related vs sym
+    vs memory hits without an embedding pass)."""
+    by_source: dict[str, list[dict]] = {}
+    for h in hits:
+        by_source.setdefault(h.get("source") or "?", []).append(h)
+    out: list[dict] = []
+    seen_fp: set[str] = set()
+    for src, group in by_source.items():
+        weight = source_weights.get(src, 1.0)
+        scores = [float(g.get("score") or 0.0) for g in group]
+        max_s = max(scores) if scores else 1.0
+        max_s = max_s if max_s > 0 else 1.0
+        for h, s in zip(group, scores):
+            h2 = dict(h)
+            h2["score"] = (s / max_s) * weight
+            txt = (h2.get("text") or "")[:240].strip()
+            fp = txt.lower()
+            if fp and fp in seen_fp:
+                continue
+            if fp:
+                seen_fp.add(fp)
+            out.append(h2)
+    out.sort(key=lambda x: -float(x.get("score") or 0))
+    return out
+
+
+_DEFAULT_SOURCE_WEIGHTS = {
+    "memory": 1.0, "ticket": 1.2, "related": 0.8, "symbol": 0.9,
+    "doc": 0.6, "external": 0.4,
+    "aider_repomap": 1.0, "graph_neighbours": 0.9,
+    "t3_patterns": 0.85, "similar_tickets": 0.7,
+    "repo_doc": 0.5, "claude_memory": 0.4,
+    "cache": 1.0,
+}
 
 
 def _from_cached(ticket: object) -> ContextBundle | None:

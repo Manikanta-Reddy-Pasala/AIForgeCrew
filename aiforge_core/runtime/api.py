@@ -1559,6 +1559,25 @@ def _chat_via_ga_inner(query: str) -> dict:
     except Exception as exc:
         return {"answer": f"GA import failed: {exc}", "trace": []}
 
+    # Auto-prefetch UnifiedContext for the query so the chat agent
+    # starts with the same bundle the planner/doer would get. Was
+    # opt-in (LLM had to call unified_memory_query tool); now seeded
+    # into the user message so the model never flies blind on
+    # turn 1. Disable: AIFORGE_CHAT_AUTOCONTEXT=0.
+    if os.environ.get("AIFORGE_CHAT_AUTOCONTEXT", "1") == "1":
+        try:
+            from aiforge_core.context import UnifiedContext as _UC
+            _bundle = _UC().for_chat(query, token_budget=2500)
+            _rendered = _bundle.render()
+            if _rendered:
+                query = (
+                    f"## Auto-prefetched context (UnifiedContext)\n"
+                    f"{_rendered}\n\n"
+                    f"## User question\n{query}"
+                )
+        except Exception:
+            pass
+
     LLMSession = ga["LLMSession"]
     ToolClient = ga["ToolClient"]
     agent_runner_loop = ga["agent_runner_loop"]
