@@ -1,8 +1,0 @@
-{
-  "identifier": "F7",
-  "id": "F7",
-  "title": "Full chain: User CRUD endpoint + DTO + Service + Repo + Test",
-  "body": "Add `GET /users/{id}` Spring Boot endpoint returning `UserDto`. Wire UserController → UserService → UserRepository (in-memory map). DTO carries id (Long) + name (String). Add `UserServiceTest.findById_returnsDto` happy path.\n\n## Allowed files\n- src/main/java/com/example/UserController.java\n- src/main/java/com/example/UserService.java\n- src/main/java/com/example/UserRepository.java\n- src/main/java/com/example/UserDto.java\n- src/test/java/com/example/UserServiceTest.java\n",
-  "project": "F7-fixture",
-  "repo_path": "evals/fixtures/F7/repo"
-}

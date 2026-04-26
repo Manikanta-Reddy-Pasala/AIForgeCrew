@@ -550,7 +550,12 @@ _REGISTRATION_RE = re.compile(
     r"|\benum\s+\w+"                 # enum declarations
     r"|@\w+\s*\("                    # annotation with values (e.g. @Topic({"x"}))
     r"|=\s*\{"                       # array literal opener
-    r"|\bRegister\(|\bregister\(",   # generic register fns
+    r"|\bRegister\(|\bregister\("    # generic register fns
+    # Lone string-literal in a multi-line collection literal — the
+    # common Java/Kotlin idiom is `Set.of(\n  "X",\n  "Y"\n)` so the
+    # line containing the actual token is JUST the quoted string +
+    # optional comma. Treat that as a registration line too.
+    r"|^\s*\"[^\"]+\"\s*,?\s*$",
 )
 _WIRING_RE = re.compile(
     r"\.equals\(\s*\""

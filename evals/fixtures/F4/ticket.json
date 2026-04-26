@@ -1,8 +1,0 @@
-{
-  "identifier": "F4",
-  "id": "F4",
-  "title": "Add /ping Spring Boot endpoint returning {status:'ok'}",
-  "body": "Add a Spring Boot REST controller exposing `GET /ping` returning JSON `{\"status\":\"ok\"}`. Provide @RestController class. Application class already exists.\n\n## Allowed files\n- src/main/java/com/example/PingController.java\n- src/main/java/com/example/Application.java\n",
-  "project": "F4-fixture",
-  "repo_path": "evals/fixtures/F4/repo"
-}

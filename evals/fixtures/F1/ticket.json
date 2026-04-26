@@ -1,8 +1,0 @@
-{
-  "identifier": "F1",
-  "id": "F1",
-  "title": "Add hello() method to PingController",
-  "body": "Add a public method `hello()` returning the literal string `\"hello\"` to the existing PingController class.\n\n## Allowed files\n- src/main/java/com/example/PingController.java\n",
-  "project": "F1-fixture",
-  "repo_path": "evals/fixtures/F1/repo"
-}

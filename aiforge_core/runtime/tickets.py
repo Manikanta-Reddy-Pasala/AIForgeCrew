@@ -61,11 +61,84 @@ class Ticket:
         )
 
 
+# Schema bootstrap — was an external migration file (db/migrations/
+# 2026-04-21-tickets.sql). Folded in-process so first connection
+# self-creates the tables, indexes, and updated_at trigger. KISS:
+# all CREATE statements are IF NOT EXISTS, idempotent on every boot.
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS tickets (
+  id            bigserial PRIMARY KEY,
+  identifier    text UNIQUE NOT NULL,
+  title         text NOT NULL,
+  body          text NOT NULL DEFAULT '',
+  status        text NOT NULL DEFAULT 'todo',
+  priority      text NOT NULL DEFAULT 'medium',
+  assignee_role text,
+  parent_id     bigint REFERENCES tickets(id) ON DELETE CASCADE,
+  branch        text,
+  project       text,
+  labels        text[] NOT NULL DEFAULT '{}',
+  metadata      jsonb  NOT NULL DEFAULT '{}'::jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  completed_at  timestamptz
+);
+CREATE INDEX IF NOT EXISTS tickets_assignee_status ON tickets(assignee_role, status);
+CREATE INDEX IF NOT EXISTS tickets_parent ON tickets(parent_id);
+CREATE INDEX IF NOT EXISTS tickets_status ON tickets(status);
+
+CREATE TABLE IF NOT EXISTS ticket_events (
+  id         bigserial PRIMARY KEY,
+  ticket_id  bigint NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  agent_role text,
+  kind       text NOT NULL,
+  body       text,
+  metadata   jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ticket_events_ticket_ts ON ticket_events(ticket_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ticket_events_kind ON ticket_events(kind);
+
+CREATE TABLE IF NOT EXISTS ticket_counter (
+  singleton boolean PRIMARY KEY DEFAULT TRUE,
+  next_n    bigint  NOT NULL
+);
+INSERT INTO ticket_counter (singleton, next_n) VALUES (TRUE, 100)
+  ON CONFLICT DO NOTHING;
+
+CREATE OR REPLACE FUNCTION tickets_touch_updated_at() RETURNS trigger
+  LANGUAGE plpgsql AS $$
+BEGIN NEW.updated_at := now(); RETURN NEW; END $$;
+
+DROP TRIGGER IF EXISTS tickets_updated_at ON tickets;
+CREATE TRIGGER tickets_updated_at BEFORE UPDATE ON tickets
+  FOR EACH ROW EXECUTE FUNCTION tickets_touch_updated_at();
+"""
+
+_SCHEMA_BOOTSTRAPPED = False
+
+
+def _ensure_schema(c: psycopg.Connection) -> None:
+    """Run schema bootstrap once per process. Failures are best-effort
+    (caller likely lacks DDL grant when running under aiforge_ro)."""
+    global _SCHEMA_BOOTSTRAPPED
+    if _SCHEMA_BOOTSTRAPPED:
+        return
+    try:
+        with c.cursor() as cur:
+            cur.execute(_SCHEMA_SQL)
+        c.commit()
+    except Exception:
+        c.rollback()
+    _SCHEMA_BOOTSTRAPPED = True
+
+
 @contextmanager
 def _conn() -> Iterator[psycopg.Connection]:
     c = psycopg.connect(AIFORGE_DSN, autocommit=False, connect_timeout=5,
                         options="-c statement_timeout=15000")
     try:
+        _ensure_schema(c)
         yield c
     finally:
         c.close()

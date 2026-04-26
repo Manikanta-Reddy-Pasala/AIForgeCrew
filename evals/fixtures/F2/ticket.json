@@ -1,8 +1,0 @@
-{
-  "identifier": "F2",
-  "id": "F2",
-  "title": "Add greeting() to Greeter and call from Main",
-  "body": "Add a public method `greeting(String name)` on `Greeter` returning `\"Hello, \" + name + \"!\"`. Wire `Main.main` to call `greeting(\"world\")` and print the result.\n\n## Allowed files\n- src/main/java/com/example/Greeter.java\n- src/main/java/com/example/Main.java\n",
-  "project": "F2-fixture",
-  "repo_path": "evals/fixtures/F2/repo"
-}

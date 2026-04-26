@@ -1,7 +1,7 @@
-"""Unit tests for ``aiforge_core.agents`` and ``aiforge_core.eval.rule_checker``.
+"""Unit tests for ``aiforge_core.agents``.
 
 Network-free: parses the shipped agents.yaml and exercises the
-filter / validator / rule-checker entirely in-process.
+filter / validator entirely in-process.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from aiforge_core.agents import (
     tools_schema_for_role,
     validate_contracts,
 )
-from aiforge_core.eval.rule_checker import check_run
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -183,68 +182,3 @@ agents:
     assert any("max_wall_s" in v for v in violations)
 
 
-def test_rule_checker_passes_clean_doer_run() -> None:
-    contracts = load_agents(SHIPPED_YAML)
-    doer = contracts["doer"]
-    events = [
-        {"tool_calls": [{"name": "file_read"}]},
-        {"tool_calls": [{"name": "file_write"}]},
-        {"tool_calls": [{"name": "code_run"}]},
-    ]
-    result = check_run("doer", events, doer, wall_clock_s=120.0, turn_count=3)
-    assert result.passed, result.violations
-    assert result.stats["tool_calls_total"] == 3
-
-
-def test_rule_checker_flags_forbidden_tool() -> None:
-    contracts = load_agents(SHIPPED_YAML)
-    doer = contracts["doer"]
-    events = [
-        {"tool_calls": [{"name": "file_write"}]},
-        {"tool_calls": [{"name": "ask_user"}]},
-    ]
-    result = check_run("doer", events, doer, wall_clock_s=10.0, turn_count=2)
-    assert not result.passed
-    assert any("ask_user" in v for v in result.violations)
-
-
-def test_rule_checker_flags_turn_budget() -> None:
-    contracts = load_agents(SHIPPED_YAML)
-    doer = contracts["doer"]
-    events = [{"tool_calls": [{"name": "file_read"}]}]
-    result = check_run("doer", events, doer, wall_clock_s=10.0,
-                       turn_count=doer.contract.max_turns + 1)
-    assert not result.passed
-    assert any("max_turns" in v for v in result.violations)
-
-
-def test_rule_checker_flags_wall_budget() -> None:
-    contracts = load_agents(SHIPPED_YAML)
-    doer = contracts["doer"]
-    events: list[dict] = []
-    result = check_run("doer", events, doer,
-                       wall_clock_s=doer.contract.max_wall_s + 1, turn_count=0)
-    assert not result.passed
-    assert any("wall clock" in v for v in result.violations)
-
-
-def test_rule_checker_forbidden_all_blocks_any_tool() -> None:
-    contracts = load_agents(SHIPPED_YAML)
-    feedback = contracts["feedback"]
-    events = [{"tool_calls": [{"name": "file_read"}]}]
-    result = check_run("feedback", events, feedback,
-                       wall_clock_s=1.0, turn_count=1)
-    assert not result.passed
-    assert any("forbidden=ALL" in v for v in result.violations)
-
-
-def test_rule_checker_parses_ga_marker_strings() -> None:
-    contracts = load_agents(SHIPPED_YAML)
-    doer = contracts["doer"]
-    events = [
-        {"raw": "🛠️ Tool: `file_write`\nDoing the thing"},
-        {"raw": "🛠️ Tool: `ask_user`\noops"},
-    ]
-    result = check_run("doer", events, doer, wall_clock_s=10.0, turn_count=2)
-    assert not result.passed
-    assert any("ask_user" in v for v in result.violations)

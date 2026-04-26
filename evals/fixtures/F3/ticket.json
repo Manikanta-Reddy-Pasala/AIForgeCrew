@@ -1,8 +1,0 @@
-{
-  "identifier": "F3",
-  "id": "F3",
-  "title": "Add factorial(int n) + JUnit test",
-  "body": "Add `public static long factorial(int n)` on `MathUtils` (n<=20). 0!=1. Negative input throws IllegalArgumentException. Add `MathUtilsTest.factorial_*` JUnit cases.\n\n## Allowed files\n- src/main/java/com/example/MathUtils.java\n- src/test/java/com/example/MathUtilsTest.java\n",
-  "project": "F3-fixture",
-  "repo_path": "evals/fixtures/F3/repo"
-}

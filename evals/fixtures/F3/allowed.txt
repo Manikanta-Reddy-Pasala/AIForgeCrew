@@ -1,2 +1,0 @@
-src/main/java/com/example/MathUtils.java
-src/test/java/com/example/MathUtilsTest.java

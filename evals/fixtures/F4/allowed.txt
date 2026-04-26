@@ -1,2 +1,0 @@
-src/main/java/com/example/PingController.java
-src/main/java/com/example/Application.java

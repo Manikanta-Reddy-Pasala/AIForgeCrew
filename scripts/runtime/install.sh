@@ -20,8 +20,8 @@ LMS=$HOME/.lmstudio/bin/lms
 [[ -d "$REPO" ]] || { echo "no $REPO — git pull first" >&2; exit 1; }
 [[ -x "$VENV/bin/python" ]] || { echo "no $VENV — run scripts/install-aiforge.sh first" >&2; exit 1; }
 
-echo ">>> 1/5 applying aiforge schema"
-"$PSQL" -h 127.0.0.1 -U manikanta aiforge -f "$REPO/db/migrations/2026-04-21-tickets.sql"
+echo ">>> 1/5 schema bootstrap is in-process (aiforge_core.runtime.tickets._ensure_schema)"
+echo "    no migration file applied — first connection from aiforge-api creates tables."
 
 echo ">>> 2/5 installing python deps (via uv)"
 cd "$REPO" && /opt/homebrew/bin/uv pip install --python "$VENV/bin/python" \
