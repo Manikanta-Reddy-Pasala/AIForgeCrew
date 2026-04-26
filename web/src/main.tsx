@@ -70,8 +70,9 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Observe',
     items: [
-      { to: '/agents',  label: 'Agents',     icon: 'Agents' },
-      { to: '/logs',    label: 'Live logs',  icon: 'Logs' },
+      { to: '/agents',   label: 'Agents',     icon: 'Agents' },
+      { to: '/workflow', label: 'Workflow',   icon: 'Tool' },
+      { to: '/logs',     label: 'Live logs',  icon: 'Logs' },
     ],
   },
   {
@@ -83,14 +84,15 @@ const NAV: { group: string; items: NavItem[] }[] = [
 ];
 
 const TITLE_MAP: Record<string, string> = {
-  '/':        'Dashboard',
-  '/board':   'Board',
-  '/tickets': 'Tickets',
-  '/chat':    'Chat',
-  '/tools':   'MCP Tools',
-  '/memory':  'Memory',
-  '/agents':  'Agents',
-  '/logs':    'Live logs',
+  '/':         'Dashboard',
+  '/board':    'Board',
+  '/tickets':  'Tickets',
+  '/chat':     'Chat',
+  '/tools':    'MCP Tools',
+  '/memory':   'Memory',
+  '/agents':   'Agents',
+  '/workflow': 'Workflow',
+  '/logs':     'Live logs',
 };
 
 function useTitle(pathname: string): string {

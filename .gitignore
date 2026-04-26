@@ -59,3 +59,4 @@ web/node_modules/
 # Graphify intermediates
 graphify-out/cache/
 graphify-out/*.log
+graphify-out/

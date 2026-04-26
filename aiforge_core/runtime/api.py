@@ -1518,8 +1518,12 @@ def _chat_via_ga_inner(query: str) -> dict:
             self.max_turns = 12
             self.current_turn = 0
 
-        def _record(self, name: str, args: dict) -> None:
-            captured["trace"].append({"tool": name, "args": args})
+        def _record(self, name: str, args: dict, *,
+                    data: str | None = None) -> None:
+            captured["trace"].append({
+                "tool": name, "args": args,
+                "last_data": data,
+            })
 
         def do_unified_memory_query(self, args, response):
             from aiforge_core.memory.unified_query import query as _uq, render as _ur
@@ -1527,43 +1531,39 @@ def _chat_via_ga_inner(query: str) -> dict:
             ticket = (args.get("ticket") or None) or None
             role = args.get("role") or "sr_developer"
             limit = int(args.get("limit") or 8)
-            self._record("unified_memory_query",
-                         {"query": q, "ticket": ticket,
-                          "role": role, "limit": limit})
             try:
                 result = _uq(q, ticket=ticket, role=role, limit=limit)
+                rendered = _ur(result)
             except Exception as exc:
-                yield ""
-                return StepOutcome(
-                    data=f"unified_memory_query error: {exc}",
-                    next_prompt="continue", should_exit=False,
-                )
+                rendered = f"unified_memory_query error: {exc}"
+            self._record("unified_memory_query",
+                         {"query": q, "ticket": ticket,
+                          "role": role, "limit": limit},
+                         data=rendered)
             yield ""
             return StepOutcome(
-                data=_ur(result), next_prompt="continue", should_exit=False,
+                data=rendered, next_prompt="continue", should_exit=False,
             )
 
         def do_search_memory(self, args, response):
             q = (args.get("query") or "").strip()
             role = args.get("role") or "sr_developer"
             top_k = int(args.get("top_k") or 5)
-            self._record("search_memory", {"query": q, "role": role, "top_k": top_k})
             try:
                 hits = mem.search(q, role=role, top_k=top_k)
+                lines = [
+                    f"[{h.tier}/{h.wing}] {h.text[:300].replace(chr(10), ' ')}"
+                    for h in hits
+                ] or ["no hits"]
+                blob = "\n".join(lines)
             except Exception as exc:
-                yield ""
-                return StepOutcome(
-                    data=f"search_memory error: {exc}",
-                    next_prompt="continue",
-                    should_exit=False,
-                )
-            lines = [
-                f"[{h.tier}/{h.wing}] {h.text[:300].replace(chr(10), ' ')}"
-                for h in hits
-            ] or ["no hits"]
+                blob = f"search_memory error: {exc}"
+            self._record("search_memory",
+                         {"query": q, "role": role, "top_k": top_k},
+                         data=blob)
             yield ""
             return StepOutcome(
-                data="\n".join(lines), next_prompt="continue", should_exit=False,
+                data=blob, next_prompt="continue", should_exit=False,
             )
 
         def do_final_answer(self, args, response):
@@ -1595,12 +1595,12 @@ def _chat_via_ga_inner(query: str) -> dict:
 
             def _gen(args, response):
                 clean = {k: v for k, v in args.items() if k != "_index"}
-                handler_self._record(tname, clean)
                 if origin[0] == "graph":
                     result = _call_graph_mcp_sync(origin[1], clean)
                 else:
                     from .mcp_http import call_tool as _ops_call
                     result = _ops_call(origin[1], origin[2], clean)
+                handler_self._record(tname, clean, data=result)
                 yield ""
                 return StepOutcome(
                     data=result, next_prompt="continue", should_exit=False,
@@ -1650,11 +1650,27 @@ def _chat_via_ga_inner(query: str) -> dict:
         return {"answer": f"GA loop error: {exc}", "trace": captured["trace"]}
 
     if not captured["answer"]:
-        # Fallback: scrape the model's last assistant text from the
-        # GA session history. Models on Ollama Cloud sometimes call
-        # tools and reply prose without ever invoking final_answer.
-        # Better to surface what the model said than emit an error
-        # stub that the auto-retain path then refuses.
+        # Fallback A: prefer the LAST successful tool result.
+        # When max_turns trips after a useful tool call, the model
+        # often slips into "未知工具 no_tool" cycles whose assistant
+        # text is hallucinated commentary on the GA placeholder. The
+        # tool_result content is the actual data the model was
+        # supposed to summarise — surface that instead.
+        last_result = None
+        for entry in reversed(captured.get("trace") or []):
+            tool = entry.get("tool")
+            if tool in (None, "no_tool", "final_answer"):
+                continue
+            data = entry.get("last_data")
+            if isinstance(data, str) and data.strip():
+                last_result = (
+                    f"[partial · {tool}]\n{data[:1800]}"
+                )
+                break
+        if last_result:
+            captured["answer"] = last_result
+    if not captured["answer"]:
+        # Fallback B: scrape last assistant text from GA session.
         try:
             for msg in reversed(getattr(session, "history", []) or []):
                 if msg.get("role") != "assistant":
@@ -1668,6 +1684,9 @@ def _chat_via_ga_inner(query: str) -> dict:
                         if isinstance(blk, dict) and blk.get("type") == "text":
                             text += blk.get("text") or ""
                 text = (text or "").strip()
+                # Skip hallucinated commentary on GA placeholder.
+                if "未知工具" in text or text.startswith("<thinking>"):
+                    continue
                 if text and not text.startswith("!!!Error:"):
                     captured["answer"] = text[:2000]
                     break
@@ -1965,9 +1984,22 @@ def workflow_topology(ticket: str | None = None) -> dict:
 
 # ─────────────────────────── Cost dashboard ────────────────────────────
 @app.get("/api/runtime/cost")
-def runtime_cost(ticket: str | None = None) -> dict:
-    """USD totals (per-ticket if ?ticket=X, otherwise global+all)."""
+def runtime_cost(
+    ticket: str | None = None,
+    group_by: str | None = None,
+    days_back: int = 30,
+) -> dict:
+    """USD totals.
+
+    Without params: in-memory global + per-ticket map.
+    ``?ticket=X`` returns single ticket counters.
+    ``?group_by=day|role|model|ticket`` runs SQL rollup over
+    ``llm_costs`` for the last ``days_back`` days.
+    """
     from . import cost as _cost
+    if group_by:
+        return {"group_by": group_by, "days_back": days_back,
+                "rows": _cost.rollup(group_by, days_back=days_back)}
     return _cost.snapshot(ticket)
 
 

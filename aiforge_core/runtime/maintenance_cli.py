@@ -17,7 +17,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+
+
+def _load_runtime_env() -> None:
+    """Source ``~/.aiforge/runtime.env`` so cron jobs without
+    systemd's EnvironmentFile see the same DSN/keys the live
+    service uses.
+
+    KISS: shell-style ``KEY=VALUE`` parsing, no quoting magic.
+    Existing env values WIN — explicit wrapper exports stay
+    authoritative.
+    """
+    path = os.path.expanduser(
+        os.environ.get("AIFORGE_RUNTIME_ENV", "~/.aiforge/runtime.env"),
+    )
+    if not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+
+_load_runtime_env()
 
 
 def _cmd_memory_decay(args) -> int:

@@ -119,6 +119,46 @@ def snapshot(ticket: Optional[str] = None) -> dict:
         return {"global": dict(_GLOBAL), "tickets": dict(_TOTALS)}
 
 
+def rollup(group_by: str = "day", *, days_back: int = 30) -> list[dict]:
+    """SQL rollup over the ``llm_costs`` table.
+
+    ``group_by`` ∈ {"day", "role", "model", "ticket"} — KISS, one
+    GROUP BY clause per call. Returns ``[{key, calls, prompt_tokens,
+    completion_tokens, cost_usd}, ...]``. Empty list when the
+    table doesn't exist yet (cost tracking off / never fired).
+    """
+    if group_by not in ("day", "role", "model", "ticket"):
+        raise ValueError(f"group_by must be day|role|model|ticket")
+    expr = {
+        "day":    "to_char(date_trunc('day', created_at), 'YYYY-MM-DD')",
+        "role":   "COALESCE(role, '?')",
+        "model":  "COALESCE(model, '?')",
+        "ticket": "COALESCE(ticket, '?')",
+    }[group_by]
+    sql = (
+        f"SELECT {expr} AS key, "
+        " COUNT(*) AS calls,"
+        " COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,"
+        " COALESCE(SUM(completion_tokens), 0) AS completion_tokens,"
+        " COALESCE(SUM(cost_usd), 0)::float AS cost_usd "
+        " FROM llm_costs "
+        " WHERE created_at > NOW() - (%s || ' days')::interval "
+        f"GROUP BY {expr} "
+        " ORDER BY cost_usd DESC "
+        " LIMIT 200"
+    )
+    try:
+        import psycopg
+        from .config import AIFORGE_DSN
+        with psycopg.connect(AIFORGE_DSN, connect_timeout=2) as c, \
+             c.cursor() as cur:
+            cur.execute(sql, (str(days_back),))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
 # ───────── helpers ─────────────────────────────────────────────────
 
 

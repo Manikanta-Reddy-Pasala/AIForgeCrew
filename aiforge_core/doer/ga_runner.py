@@ -318,10 +318,37 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         + "\n".join(f"- {p}" for p in sorted(ro_set))
         + "\n\n"
     ) if ro_set else ""
+    # Per-project standards (Neo4j :Repo + worktree YAML) — render
+    # the manifest into the prompt so the model sees lint/test/
+    # forbidden_patterns/conventions directly. KISS: one block.
+    standards_section = ""
+    try:
+        from aiforge_core.runtime import repo_standards as _rs
+        _repo_name = os.path.basename(os.path.normpath(worktree_path))
+        _std = _rs.get(_repo_name, worktree=worktree_path)
+        standards_section = (
+            f"## Project standards (auto-loaded from Neo4j :Repo)\n"
+            f"```\n{_rs.render(_std)}\n```\n\n"
+        )
+        if _std.forbidden_patterns:
+            standards_section += (
+                "**Forbidden patterns** — do NOT introduce these:\n"
+                + "\n".join(f"  - `{p}`" for p in _std.forbidden_patterns[:20])
+                + "\n\n"
+            )
+        if _std.acceptance_criteria:
+            standards_section += (
+                "**Acceptance criteria**:\n"
+                + "\n".join(f"  - {a}" for a in _std.acceptance_criteria[:20])
+                + "\n\n"
+            )
+    except Exception:
+        pass
     return (
         f"## Worktree\n`{worktree_path}` — every command must run there.\n\n"
         f"## Ticket\n{title}\n\n"
         f"{body}\n\n"
+        f"{standards_section}"
         f"{conventions_section}"
         f"## Allowed files (write-tool ScopeGuard)\n{allowed_block}\n\n"
         f"{readonly_section}"

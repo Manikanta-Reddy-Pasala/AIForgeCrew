@@ -134,6 +134,21 @@ INDEXES: tuple[_IndexSpec, ...] = (
         ),
     ),
     _IndexSpec(
+        # Code-chunk vector NN — backs index/symbol_embed.
+        # find_similar_code(). Falls back to keyword search when
+        # the index is missing, so adding this is non-breaking.
+        name="symbol_embedding",
+        kind="VECTOR",
+        cypher=(
+            "CREATE VECTOR INDEX symbol_embedding IF NOT EXISTS "
+            "FOR (s:Symbol) ON (s.embedding) "
+            "OPTIONS {indexConfig: {"
+            f"  `vector.dimensions`: {FACT_EMBEDDING_DIM}, "
+            f"  `vector.similarity_function`: '{FACT_EMBEDDING_SIMILARITY}' "
+            "}}"
+        ),
+    ),
+    _IndexSpec(
         name="symbol_file_path",
         kind="RANGE",
         cypher=(
