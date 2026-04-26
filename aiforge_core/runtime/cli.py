@@ -29,7 +29,17 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from . import tickets
-from .orchestrator import tick as orchestrator_tick
+
+
+def _orchestrator_tick(*a, **kw):
+    """Lazy import — only `aiforge ticket tick` needs it, and the
+    orchestrator module pulls in heavy ADK + LiteLLM deps that we don't
+    want to require for trace/logs/show subcommands."""
+    from .orchestrator import tick as _tick   # type: ignore
+    return _tick(*a, **kw)
+
+
+orchestrator_tick = _orchestrator_tick
 
 
 def _api_base() -> str:
