@@ -175,7 +175,7 @@ class ParentShim:
     a random handler call site.
     """
 
-    __slots__ = ("task_dir", "verbose", "_turn_end_hooks")
+    __slots__ = ("task_dir", "verbose", "_turn_end_hooks", "_aiforge_ticket")
 
     def __init__(self, task_dir: str, verbose: bool = False) -> None:
         self.task_dir = task_dir
