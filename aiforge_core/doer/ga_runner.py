@@ -605,6 +605,50 @@ def run_doer_via_ga(
             getattr(ticket, "title", "") or ""
         ),
     )
+    # Monkey-patch llmcore.tryparse to be lenient on raw newlines + literal
+    # control chars inside JSON string values. Coder-Next emits Anthropic
+    # tool_use JSON with raw \n inside old_content / new_content — strict
+    # json.loads rejects, GA logs '[Warn] Failed to parse tool_use JSON',
+    # file_patch never executes, edit_block_ok stays 0 forever.
+    try:
+        import llmcore as _llmcore  # type: ignore
+        if not getattr(_llmcore, "_aiforge_tryparse_patched", False):
+            import json as _json
+            _orig_tryparse = _llmcore.tryparse
+
+            def _lenient_tryparse(json_str: str):
+                try:
+                    return _json.loads(json_str, strict=False)
+                except Exception:
+                    pass
+                # Repair raw newlines / tabs inside double-quoted string
+                # values so json.loads can swallow them.
+                import re as _re
+                def _esc(m: _re.Match) -> str:
+                    s = m.group(0)
+                    return (s.replace("\\", "\\\\")
+                             .replace("\n", "\\n")
+                             .replace("\r", "\\r")
+                             .replace("\t", "\\t"))
+                # Match contents of every "..." pair. Tolerates already-
+                # escaped quotes inside strings.
+                fixed = _re.sub(
+                    r'"((?:[^"\\]|\\.)*)"',
+                    lambda m: '"' + _esc(m.group(1)) + '"',
+                    json_str, flags=_re.DOTALL,
+                )
+                try:
+                    return _json.loads(fixed, strict=False)
+                except Exception:
+                    return _orig_tryparse(json_str)
+
+            _llmcore.tryparse = _lenient_tryparse
+            _llmcore._aiforge_tryparse_patched = True
+            emit(log, "ga_runner.tryparse_patched", ticket=identifier)
+    except Exception as exc:
+        emit(log, "ga_runner.tryparse_patch_skipped",
+             ticket=identifier, error=str(exc)[:200])
+
     try:
         import ga as _ga_mod  # type: ignore
         if not getattr(_ga_mod, "_aiforge_patched", False):
