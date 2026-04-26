@@ -131,8 +131,24 @@ def _build_url_with_test_data(path: str, base: str) -> tuple[str, str]:
         if business_id:
             path = re.sub(r"\{businessId\}", business_id, path,
                           flags=re.IGNORECASE)
-    # Any remaining {placeholder} → use a literal "test" so the URL parses.
-    path = _PATH_VAR_RX.sub("test", path)
+    # Substitute remaining {placeholder} with a realistic value based on the
+    # name. Endpoints frequently take dates / months / years / counters as
+    # path vars; a literal "test" makes the controller throw a parse error
+    # before the endpoint logic even runs, hiding real failures.
+    def _smart_sub(m: re.Match) -> str:
+        name = m.group(1).lower()
+        if "yyyymm" in name or ("month" in name and "year" not in name):
+            return "202604"
+        if "yyyy" in name or "year" in name:
+            return "2026"
+        if "date" in name or "day" in name:
+            return "2026-04-25"
+        if "id" in name:
+            return business_id or "0"
+        if name in ("limit", "offset", "page", "size", "count"):
+            return "10"
+        return "test"
+    path = _PATH_VAR_RX.sub(_smart_sub, path)
     if not path.startswith("/"):
         path = "/" + path
     return base.rstrip("/") + path, business_id

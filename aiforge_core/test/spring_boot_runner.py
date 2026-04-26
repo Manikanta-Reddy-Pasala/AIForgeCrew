@@ -77,6 +77,25 @@ def _wait_for_health(base_url: str, timeout_s: int = 180,
     return False, time.time() - t0
 
 
+def _to_nested(flat: dict) -> dict:
+    """Convert {"a.b.c": v} → {"a":{"b":{"c": v}}}.
+
+    Spring Boot 4.x parses SPRING_APPLICATION_JSON as a JSON object;
+    flat dot-notation keys are taken at face value (not exploded into
+    a nested map), so they don't bind to ``${a.b.c}`` placeholders.
+    Build the nested form and let Spring's tree-walk match the yaml
+    layout exactly.
+    """
+    out: dict = {}
+    for key, val in flat.items():
+        node = out
+        parts = key.split(".")
+        for p in parts[:-1]:
+            node = node.setdefault(p, {})
+        node[parts[-1]] = val
+    return out
+
+
 def start_service(worktree: str, log: object | None = None,
                   port: int = 8090,
                   startup_timeout_s: int = 240) -> tuple[subprocess.Popen | None, SpringRunResult]:
@@ -90,11 +109,11 @@ def start_service(worktree: str, log: object | None = None,
     ``(popen, result)`` — ``popen`` is None on launch failure.
     """
     res = SpringRunResult()
-    sa_json = dict(_HOST_OVERRIDES)
-    sa_json["server.port"] = port
+    flat = dict(_HOST_OVERRIDES)
+    flat["server.port"] = port
     env = os.environ.copy()
     env["SPRING_PROFILES_ACTIVE"] = "qa"
-    env["SPRING_APPLICATION_JSON"] = json.dumps(sa_json)
+    env["SPRING_APPLICATION_JSON"] = json.dumps(_to_nested(flat))
     env["JAVA_TOOL_OPTIONS"] = "-Xmx2g -Xms512m -XX:+UseG1GC"
 
     log_path = os.path.join(
