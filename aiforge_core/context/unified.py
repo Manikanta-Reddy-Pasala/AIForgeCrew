@@ -235,9 +235,28 @@ class UnifiedContext:
             bundle.operator_memory_text = op
             bundle.sources_used.append("claude_memory")
 
-        # Reference files = focal_files filtered by the
-        # reference_pattern token (e.g. "businessProducts")
-        if intent.reference_pattern and bundle.focal_files:
+        # Reference-pattern grep — when the ticket says "like
+        # businessProducts" the doer's job is to mirror those files.
+        # Find them by literal token search inside the resolved
+        # worktree (deterministic, repo-scoped). Surfaces files even
+        # when the entity itself ('storeRegions') doesn't exist
+        # anywhere yet — the typical "add new collection" shape.
+        if worktree and intent.reference_pattern:
+            ref_files = _grep_pattern_files(worktree,
+                                            intent.reference_pattern,
+                                            max_files=6)
+            if ref_files:
+                bundle.reference_files = ref_files
+                # Promote ref files to the FRONT of focal_files so the
+                # downstream prompt sees them first. They are the most
+                # actionable signal.
+                merged = list(dict.fromkeys(ref_files + bundle.focal_files))
+                bundle.focal_files = merged[:8]
+                bundle.sources_used.append("ref_pattern_grep")
+        # Fallback: filter focal_files by reference token in basename
+        # (older heuristic — still useful when grep finds nothing).
+        if (intent.reference_pattern and bundle.focal_files
+                and not bundle.reference_files):
             ref_token = intent.reference_pattern.lower()
             bundle.reference_files = [
                 p for p in bundle.focal_files
@@ -429,18 +448,36 @@ def _from_cached(ticket: object) -> ContextBundle | None:
 
 
 def _resolve_repo(intent: "Intent") -> str:
-    """Best-guess repo name. Prefer explicit hint; else scan keywords
-    against existing worktree dirs."""
+    """Resolve worktree dir name from intent.
+
+    Order:
+      1. Explicit hint (already validated by ticket POST or planner).
+      2. Scan intent.raw_text (the user's actual ticket body) for any
+         worktree dir name. Match LONGEST first so 'mongoEventListner'
+         beats 'mongo'. Body wins because the user typed it
+         literally — keywords are derived and noisier.
+      3. Fall back to entity / ref / keywords (old behaviour).
+    """
     hint = (intent.repo_hint or "").strip()
     if hint:
         return hint
     try:
-        candidates = {
-            d for d in os.listdir(WORKTREE_ROOT)
-            if os.path.isdir(os.path.join(WORKTREE_ROOT, d))
-        }
+        candidates = sorted(
+            (d for d in os.listdir(WORKTREE_ROOT)
+             if os.path.isdir(os.path.join(WORKTREE_ROOT, d))
+             and not d.startswith(".")),
+            key=len, reverse=True,   # longest first
+        )
     except FileNotFoundError:
-        candidates = set()
+        return ""
+    body = (intent.raw_text or "").lower()
+    for c in candidates:
+        # Word-boundary-ish: surround by non-letter so we don't match
+        # 'mongo' inside 'mongoEventListner' before the longer name
+        # gets a chance.
+        cl = c.lower()
+        if cl in body:
+            return c
     haystack = " ".join([intent.entity, intent.reference_pattern,
                          *intent.keywords]).lower()
     for c in candidates:
@@ -458,7 +495,15 @@ _SRC_HINT_RE = re.compile(r"src/(?:main|test)/[\w/.-]+\.(?:java|py|ts|tsx|js|kt|
 
 
 def _extract_focal_files(hits: list[dict], worktree: str) -> list[str]:
-    """Pull plausible file paths out of unified_query hits."""
+    """Pull plausible file paths out of unified_query hits.
+
+    REPO-SCOPED: only returns paths that resolve to a real file under
+    the resolved ``worktree``. Cross-repo paths are dropped — a hit
+    for `src/.../oneshell/.../ProductServiceImpl.java` will never
+    surface in a `mongoEventListner` bundle just because the path
+    string happened to appear in some past ticket event."""
+    if not worktree:
+        return []
     out: list[str] = []
     seen: set[str] = set()
     for h in hits:
@@ -467,13 +512,48 @@ def _extract_focal_files(hits: list[dict], worktree: str) -> list[str]:
             if m in seen:
                 continue
             seen.add(m)
-            # Resolve under worktree if it exists; else keep relative.
-            if worktree:
-                full = os.path.join(worktree, m)
-                if os.path.isfile(full):
-                    out.append(full)
-                    continue
-            out.append(m)
+            full = os.path.join(worktree, m)
+            if os.path.isfile(full):
+                out.append(full)
+    return out
+
+
+def _grep_pattern_files(worktree: str, pattern: str, *,
+                        max_files: int = 6) -> list[str]:
+    """Grep the worktree for files literally containing ``pattern``.
+
+    Used when the ticket's reference_pattern (e.g. 'businessProducts')
+    points at code that already exists — the doer needs to mirror
+    those files. Far more reliable than regex-mining unified_query
+    hits because the file MUST actually contain the token. Drops
+    noise paths via the shared filter."""
+    if not worktree or not pattern.strip() or len(pattern) < 3:
+        return []
+    import subprocess
+    try:
+        # ripgrep is on every aiforge host; -l = files-with-matches,
+        # -i = case-insensitive (but we'd rather match exactly so skip)
+        # --max-count=1 short-circuits per file.
+        proc = subprocess.run(
+            ["rg", "-l", "--max-count=1",
+             "--type-add=code:*.{java,py,ts,tsx,js,kt,go}",
+             "--type=code", pattern, worktree],
+            capture_output=True, text=True, timeout=20,
+        )
+        if proc.returncode not in (0, 1):
+            return []
+        paths = [
+            p.strip() for p in (proc.stdout or "").splitlines() if p.strip()
+        ]
+    except Exception:
+        return []
+    out: list[str] = []
+    for p in paths:
+        if _is_noise_path(p):
+            continue
+        out.append(p)
+        if len(out) >= max_files:
+            break
     return out
 
 
