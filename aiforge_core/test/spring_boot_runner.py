@@ -36,6 +36,7 @@ _HOST_OVERRIDES: dict[str, dict] = {
         "oneshell?ssl=false&authSource=admin&directConnection=true"
     ),
     "nats.local.url": "nats://127.0.0.1:4222",
+    "nats.remote.url": "nats://127.0.0.1:4222",
     "mongoDbService.contact-point": "http://127.0.0.1:8080",
     "posService.contact-point": "http://127.0.0.1:8081",
     "gatewayService.contact-point": "http://127.0.0.1:9090",
