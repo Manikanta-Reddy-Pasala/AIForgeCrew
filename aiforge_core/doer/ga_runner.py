@@ -408,6 +408,15 @@ def _make_handler_class():
                 # GA's protocol — the actual do_<tool> method still runs.
                 # Override do_ask_user / do_start_long_term_update below
                 # for hard rejection.
+            # Plan Mode write-tool guard. When active, write tools are
+            # short-circuited via a per-handler reject flag the do_*
+            # method consults. tool_before_callback can't itself return
+            # a StepOutcome, so we stash a bool the writer methods read
+            # and bail on.
+            from .ga_tools import plan_mode as _pm
+            if _pm.is_active(self) and tool_name in _pm.WRITE_TOOLS:
+                self._plan_mode_reject_next = True  # type: ignore[attr-defined]
+                yield _pm.reject_message(tool_name) + "\n"
             return None
 
         # ask_user no longer blocks — it pushes a question into the
@@ -604,6 +613,14 @@ def _make_handler_class():
             -- <path>``. Counters bump per landed edit (mirrors
             single-call file_patch semantics).
             """
+            if getattr(self, "_plan_mode_reject_next", False):
+                self._plan_mode_reject_next = False
+                from .ga_tools import plan_mode as _pm
+                yield ""
+                return StepOutcome(
+                    {"status": "error", "msg": "blocked by plan_mode"},
+                    next_prompt=_pm.reject_message("bulk_edit"),
+                )
             from .ga_tools import bulk_edit as _bulk
             edits = args.get("edits") or []
 
@@ -633,6 +650,14 @@ def _make_handler_class():
 
         def do_java_refactor(self, args, response):  # type: ignore[override]
             """Run an OpenRewrite recipe via mvn rewrite:run."""
+            if getattr(self, "_plan_mode_reject_next", False):
+                self._plan_mode_reject_next = False
+                from .ga_tools import plan_mode as _pm
+                yield ""
+                return StepOutcome(
+                    {"status": "error", "msg": "blocked by plan_mode"},
+                    next_prompt=_pm.reject_message("java_refactor"),
+                )
             from .ga_tools import java_refactor as _jr
             blob = _jr.handle(self.cwd, args)
             yield blob[:600] + ("\n" if not blob.endswith("\n") else "")
@@ -676,6 +701,96 @@ def _make_handler_class():
             return StepOutcome(
                 blob,
                 next_prompt=self._get_anchor_prompt(skip=False),
+            )
+
+        # ─── Plan Mode (Claude-Code-style think-before-edit) ─────
+        def do_enter_plan_mode(self, args, response):  # type: ignore[override]
+            from .ga_tools import plan_mode as _pm
+            blob = _pm.enter(self, args.get("reason") or "")
+            yield blob + "\n"
+            return StepOutcome(
+                blob,
+                next_prompt=("Plan Mode is active. Use read-only tools "
+                             "(file_read / glob / grep / ask_explorer) to "
+                             "investigate. Call exit_plan_mode(plan=...) "
+                             "to unlock writes."),
+            )
+
+        def do_exit_plan_mode(self, args, response):  # type: ignore[override]
+            from .ga_tools import plan_mode as _pm
+            blob = _pm.exit_(self, args.get("plan") or "")
+            yield blob + "\n"
+            return StepOutcome(
+                blob,
+                next_prompt=self._get_anchor_prompt(skip=False),
+            )
+
+        # ─── TodoWrite checklist ────────────────────────────────
+        def do_todo_write(self, args, response):  # type: ignore[override]
+            from .ga_tools import todos as _td
+            blob = _td.write(self, args.get("items") or [])
+            yield blob + "\n"
+            return StepOutcome(
+                blob,
+                next_prompt="Checklist updated. Continue with the next pending item.",
+            )
+
+        def do_todo_check(self, args, response):  # type: ignore[override]
+            from .ga_tools import todos as _td
+            blob = _td.check(
+                self,
+                int(args.get("id") or 0),
+                str(args.get("status") or "pending"),
+            )
+            yield blob + "\n"
+            return StepOutcome(
+                blob,
+                next_prompt="Checklist updated. Move to next pending item.",
+            )
+
+        # ─── Sub-agent dispatch (isolated context) ──────────────
+        def do_dispatch_subagent(self, args, response):  # type: ignore[override]
+            from .ga_tools import subagent as _sa
+            from .ga_tools import llm_config as _llm_cfg
+            ga = import_ga()
+            task = (args.get("task") or "").strip()
+            if not task:
+                yield "[subagent] empty task\n"
+                return StepOutcome(
+                    {"status": "error", "msg": "task required"},
+                    next_prompt="dispatch_subagent needs a task string.",
+                )
+            # Cap one dispatch per parent turn to prevent runaway fan-out.
+            if getattr(self, "_subagent_this_turn", -1) == self.current_turn:
+                yield "[subagent] already used this turn — wait one turn\n"
+                return StepOutcome(
+                    {"status": "error", "msg": "1 dispatch per turn"},
+                    next_prompt="dispatch_subagent already fired this turn.",
+                )
+            self._subagent_this_turn = self.current_turn  # type: ignore[attr-defined]
+
+            class _SubHandler:
+                _done_hooks: list = []
+                max_turns = 0
+                current_turn = 0
+
+                def __getattr__(self, name):
+                    raise AttributeError(name)
+
+            answer = _sa.run_subagent(
+                task=task,
+                parent_cfg=_llm_cfg.primary_cfg(),
+                full_tools_schema=tools_schema,
+                allowed_tools=args.get("allowed_tools"),
+                max_turns=int(args.get("max_turns") or 8),
+                spawn_session=lambda c: ga["LLMSession"](cfg=c),
+                handler_cls=_SubHandler,
+                runner=ga["agent_runner_loop"],
+            )
+            yield f"[subagent] {len(answer)} chars returned\n"
+            return StepOutcome(
+                answer,
+                next_prompt="Sub-agent answer above. Continue your own task.",
             )
 
         def _spawn_one_explorer(self, question: str) -> str:
@@ -762,6 +877,15 @@ def _make_handler_class():
             )
 
         def do_file_patch(self, args, response):  # type: ignore[override]
+            # Plan Mode write-guard short-circuit.
+            if getattr(self, "_plan_mode_reject_next", False):
+                self._plan_mode_reject_next = False
+                from .ga_tools import plan_mode as _pm
+                yield ""
+                return StepOutcome(
+                    {"status": "error", "msg": "blocked by plan_mode"},
+                    next_prompt=_pm.reject_message("file_patch"),
+                )
             outcome_gen = super().do_file_patch(args, response)
             outcome = yield from outcome_gen
             success = (
@@ -781,16 +905,91 @@ def _make_handler_class():
                     yield verify[:1500] + (
                         "\n" if not verify.endswith("\n") else ""
                     )
+                # Post-edit hooks (.aiforge/hooks.yml). Errors logged
+                # to next_prompt only when block:true + non-zero exit.
+                self._run_event_hooks("post_edit", outcome)
             return outcome
 
         def do_file_write(self, args, response):  # type: ignore[override]
+            if getattr(self, "_plan_mode_reject_next", False):
+                self._plan_mode_reject_next = False
+                from .ga_tools import plan_mode as _pm
+                yield ""
+                return StepOutcome(
+                    {"status": "error", "msg": "blocked by plan_mode"},
+                    next_prompt=_pm.reject_message("file_write"),
+                )
             outcome_gen = super().do_file_write(args, response)
             outcome = yield from outcome_gen
             if isinstance(outcome.data, dict) and outcome.data.get("status") == "success":
                 self._counters["edit_block_ok"] = (
                     self._counters.get("edit_block_ok", 0) + 1
                 )
+                self._run_event_hooks("post_edit", outcome)
             return outcome
+
+        # ─── Ops-MCP dynamic dispatch ───────────────────────────
+        def __getattr__(self, name):
+            """Route do_ops_<server>_<tool> → mcp_http.call_tool.
+
+            GenericAgentHandler defines do_<concrete_tool> at class
+            level; dynamic dispatch only fires for tool names not
+            otherwise resolved (Python attribute lookup order). KISS:
+            we only handle the ``do_ops_`` namespace here so we never
+            shadow GA's stock methods.
+            """
+            if not name.startswith("do_ops_"):
+                raise AttributeError(name)
+            ops_map = self.__dict__.get("_ops_name_map") or {}
+            tname = name[3:]
+            if tname not in ops_map:
+                raise AttributeError(name)
+            url, raw_tool = ops_map[tname]
+            handler_self = self
+
+            def _gen(args, response):
+                from aiforge_core.runtime.mcp_http import call_tool as _ops_call
+                clean = {k: v for k, v in args.items() if k != "_index"}
+                yield f"[ops_mcp] {raw_tool}({clean})\n"
+                result = _ops_call(url, raw_tool, clean)
+                return StepOutcome(
+                    result[:6000],
+                    next_prompt=handler_self._get_anchor_prompt(skip=False),
+                )
+            return _gen
+
+        # ─── Post-event hooks dispatcher (Claude-Code-style) ────
+        def _run_event_hooks(self, event: str, outcome) -> None:
+            """Run .aiforge/hooks.yml entries matching ``event``.
+
+            Best-effort: errors logged via outcome.next_prompt suffix
+            when block=true. Disabled unless AIFORGE_DOER_HOOKS=1.
+            """
+            if os.environ.get("AIFORGE_DOER_HOOKS", "0") != "1":
+                return
+            cached = getattr(self, "_aiforge_hooks_cfg", None)
+            if cached is None:
+                from .ga_tools import hooks as _hk
+                cached = _hk.load(self.cwd)
+                self._aiforge_hooks_cfg = cached  # type: ignore[attr-defined]
+            if not cached:
+                return
+            from .ga_tools import hooks as _hk
+            results = _hk.run_for_event(cached, event, cwd=self.cwd)
+            blob = _hk.render(results)
+            if blob:
+                # Append summary to outcome.next_prompt so the model
+                # sees what fired without changing data shape.
+                blocked = _hk.first_blocked(results)
+                if blocked is not None:
+                    suffix = (
+                        f"\n\n{blob}\n\n[hooks] BLOCK — fix the failing "
+                        f"hook before continuing."
+                    )
+                else:
+                    suffix = f"\n\n{blob}"
+                if outcome.next_prompt is not None:
+                    outcome.next_prompt = outcome.next_prompt + suffix
 
         def do_code_run(self, args, response):  # type: ignore[override]
             # Detect mvn compile invocations and bump the compile counter
@@ -807,6 +1006,7 @@ def _make_handler_class():
                     self._counters["compile_green"] = (
                         self._counters.get("compile_green", 0) + 1
                     )
+                    self._run_event_hooks("post_compile", outcome)
                 elif "BUILD FAILURE" in text or "[ERROR]" in text:
                     self._counters["last_compile_error"] = text[-1500:]
             return outcome
@@ -951,6 +1151,34 @@ def run_doer_via_ga(
          class_=session.__class__.__name__)
     client = ToolClient(session)
 
+    # Auto-compaction (AIFORGE_DOER_COMPACT=1). Wraps session.raw_ask
+    # so we trim middle history middle-out before each LLM round-trip
+    # whenever estimated tokens cross 0.8 * context_win. KISS: no LLM
+    # summary call — single [SUMMARY] line elision marker.
+    if os.environ.get("AIFORGE_DOER_COMPACT", "0") == "1":
+        from .ga_tools import compaction as _cmp
+        _orig_raw_ask = session.raw_ask
+
+        def _compacting_raw_ask(messages, *a, **kw):
+            new_history, did = _cmp.maybe_compact(
+                session.history, session.context_win,
+                threshold=float(os.environ.get(
+                    "AIFORGE_DOER_COMPACT_THRESHOLD", "0.8")),
+                keep_head=int(os.environ.get(
+                    "AIFORGE_DOER_COMPACT_KEEP_HEAD", "2")),
+                keep_tail=int(os.environ.get(
+                    "AIFORGE_DOER_COMPACT_KEEP_TAIL", "6")),
+            )
+            if did:
+                session.history = new_history
+                emit(log, "ga_runner.compacted",
+                     ticket=identifier,
+                     msg_count=len(new_history))
+            # raw_ask returns a generator — pass it through verbatim.
+            return _orig_raw_ask(messages, *a, **kw)
+
+        session.raw_ask = _compacting_raw_ask  # type: ignore[assignment]
+
     tools_schema = _load_tools_schema()
     # Inject ask_explorer (custom tool, not in GA's stock schema).
     if os.environ.get("AIFORGE_DOER_ASK_EXPLORER", "1") == "1":
@@ -968,6 +1196,13 @@ def run_doer_via_ga(
     from .ga_tools.lint import SCHEMA as _LINT_SCHEMA
     from .ga_tools.tests import SCHEMA as _TESTS_SCHEMA
     from .ga_tools.undo import SCHEMA as _UNDO_SCHEMA
+    from .ga_tools.plan_mode import (
+        SCHEMA_ENTER as _PM_ENTER, SCHEMA_EXIT as _PM_EXIT,
+    )
+    from .ga_tools.todos import (
+        SCHEMA_WRITE as _TODO_WRITE, SCHEMA_CHECK as _TODO_CHECK,
+    )
+    from .ga_tools.subagent import SCHEMA as _SUBAGENT_SCHEMA
     if os.environ.get("AIFORGE_GOOGLE_API_KEY"):
         tools_schema = list(tools_schema) + [_WS_SCHEMA]
     # Always add local utilities — no API key needed.
@@ -976,12 +1211,57 @@ def run_doer_via_ga(
         _BULK_EDIT_SCHEMA, _JR_SCHEMA,
         _LINT_SCHEMA, _TESTS_SCHEMA, _UNDO_SCHEMA,
     ]
+    # Phase-A KISS gaps: each behind its own env flag so we can
+    # bisect regressions per feature.
+    if os.environ.get("AIFORGE_DOER_PLAN_MODE", "0") == "1":
+        tools_schema = list(tools_schema) + [_PM_ENTER, _PM_EXIT]
+    if os.environ.get("AIFORGE_DOER_TODOS", "0") == "1":
+        tools_schema = list(tools_schema) + [_TODO_WRITE, _TODO_CHECK]
+    if os.environ.get("AIFORGE_DOER_SUBAGENT", "0") == "1":
+        tools_schema = list(tools_schema) + [_SUBAGENT_SCHEMA]
+
+    # Ops MCP tools (mongo / k8s / tekton / tally) — Doer can probe
+    # SA / DB state when fixing tickets. Discovered once per process;
+    # toggle via AIFORGE_DOER_OPS_MCP=1.
+    ops_name_map: dict = {}
+    if os.environ.get("AIFORGE_DOER_OPS_MCP", "0") == "1":
+        try:
+            from aiforge_core.runtime.mcp_http import (
+                all_tools_with_origin, render_schema_for_openai,
+            )
+            discovered = all_tools_with_origin()
+            ops_schemas, ops_name_map = render_schema_for_openai(
+                discovered, prefix="ops_",
+            )
+            if ops_schemas:
+                tools_schema = list(tools_schema) + ops_schemas
+                emit(log, "ga_runner.ops_mcp_loaded",
+                     ticket=identifier, count=len(ops_schemas))
+        except Exception as exc:
+            emit(log, "ga_runner.ops_mcp_failed",
+                 ticket=identifier, err=str(exc)[:200])
+    handler._ops_name_map = ops_name_map  # type: ignore[attr-defined]
     # Per-repo defaults from .aiforge/aiforge.conf.yml (lift to env).
     try:
         from .ga_tools import repo_config as _rc
         _rc.apply_to_env(_rc.load(worktree_path))
     except Exception:
         pass
+    # Centralised standards catalogue (Neo4j :Repo + worktree YAML)
+    # — single source for build/test/lint/format/security commands.
+    # Lifted to env so legacy ga_tools that read AIFORGE_*_CMD pick
+    # them up without code change. apply_to_env() preserves existing
+    # env values so operator overrides still win.
+    try:
+        from aiforge_core.runtime import repo_standards as _rs
+        _repo_name = os.path.basename(os.path.normpath(worktree_path))
+        _std = _rs.get(_repo_name, worktree=worktree_path)
+        _rs.apply_to_env(_std)
+        emit(log, "ga_runner.standards_loaded",
+             ticket=identifier, repo=_repo_name, source=_std.source)
+    except Exception as exc:
+        emit(log, "ga_runner.standards_failed",
+             ticket=identifier, err=str(exc)[:200])
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
     if plan_mode_active:
         user_input += (

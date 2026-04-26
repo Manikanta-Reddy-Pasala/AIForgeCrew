@@ -65,8 +65,19 @@ def fallback(role: str) -> Endpoint | None:
 
 
 def list_providers() -> list[dict]:
-    """Snapshot of the registry, for the Settings UI."""
-    return [
-        {"name": name, "available": prov.is_available()}
-        for name, prov in _providers.PROVIDERS.items()
-    ]
+    """Snapshot of the registry, for the Settings UI.
+
+    Providers with ``hidden = True`` are filtered out unless
+    ``AIFORGE_SHOW_<NAME>=1`` is set — keeps Gemini code in the
+    registry (rate limiter, web_search) but off the primary-backend
+    selector while ops standardise on Ollama Cloud.
+    """
+    out: list[dict] = []
+    for name, prov in _providers.PROVIDERS.items():
+        hidden = bool(getattr(prov, "hidden", False))
+        if hidden and os.environ.get(
+            f"AIFORGE_SHOW_{name.upper()}", ""
+        ).strip().lower() not in ("1", "true", "yes"):
+            continue
+        out.append({"name": name, "available": prov.is_available()})
+    return out

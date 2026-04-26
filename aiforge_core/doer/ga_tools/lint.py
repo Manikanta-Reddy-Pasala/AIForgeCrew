@@ -56,9 +56,21 @@ _DEFAULT_LINT_CMD_BY_LANG = {
 def _resolve_command(worktree: str, override: str) -> str:
     if override:
         return override
-    env = os.environ.get("AIFORGE_DOER_LINT_CMD")
+    env = (
+        os.environ.get("AIFORGE_DOER_LINT_CMD")
+        or os.environ.get("AIFORGE_LINT_CMD")
+    )
     if env:
         return env
+    # Centralised standards catalogue (Neo4j :Repo + worktree YAML).
+    try:
+        from aiforge_core.runtime import repo_standards as _rs
+        repo_name = os.path.basename(os.path.normpath(worktree))
+        std = _rs.get(repo_name, worktree=worktree)
+        if std.lint_cmd:
+            return std.lint_cmd
+    except Exception:
+        pass
     # Sniff worktree for known lang.
     if os.path.isfile(os.path.join(worktree, "pom.xml")):
         return _DEFAULT_LINT_CMD_BY_LANG["java"]

@@ -20,6 +20,10 @@ _DEFAULT_MODEL = "gemini-2.5-flash"
 
 class GeminiProvider:
     name = "gemini"
+    # Hidden from Settings UI / primary-backend selector. Code stays
+    # available so internal callers (web_search tool, doer fallback)
+    # keep working. Flip `AIFORGE_SHOW_GEMINI=1` to surface again.
+    hidden = True
 
     def is_available(self) -> bool:
         return bool(os.environ.get("AIFORGE_GOOGLE_API_KEY"))

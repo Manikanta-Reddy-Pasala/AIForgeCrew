@@ -32,7 +32,7 @@ def aider_digest(worktree: str, chat_files: list[str],
         return ""
     try:
         from aiforge_core.index.aider_map import (
-            AiderMapConfig, render_repo_map,
+            AiderMapConfig, render_repo_map_cached as render_repo_map,
         )
     except Exception:
         return ""

@@ -48,6 +48,11 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 _DEFAULT: dict[str, dict[str, str]] = {
     role: {"provider": "local", "model": "gpt-oss-120b"} for role in _ROLES
 }
+# Chat ships on Ollama Cloud by default — local mlx-lm is too slow for
+# the live Q+A flow and gemini is parked behind a hidden flag while we
+# standardise on Ollama. Flip via the Settings UI or
+# AIFORGE_CHAT_PROVIDER env.
+_DEFAULT["chat"] = {"provider": "ollama_cloud", "model": "llama3.1:70b"}
 
 
 def _path() -> Path:

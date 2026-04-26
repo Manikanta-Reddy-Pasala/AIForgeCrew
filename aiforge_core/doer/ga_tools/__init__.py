@@ -12,14 +12,16 @@ Plus shared helpers:
 - ``read_tracker.ReadTracker``: per-run read cache + line numbering.
 """
 from . import (
-    aider_blocks, bash, batch, bulk_edit, conventions, edit_verify,
-    glob, grep, java_refactor, lint, llm_config, read_tracker,
-    readonly, repo_config, tests, tokens, undo, web_search,
+    aider_blocks, bash, batch, bulk_edit, compaction, conventions,
+    edit_verify, glob, grep, hooks, java_refactor, lint, llm_config,
+    plan_mode, read_tracker, readonly, repo_config, sandbox, secrets,
+    subagent, tests, todos, tokens, undo, web_search,
 )
 
 __all__ = [
-    "aider_blocks", "bash", "batch", "bulk_edit", "conventions",
-    "edit_verify", "glob", "grep", "java_refactor", "lint",
-    "llm_config", "read_tracker", "readonly", "repo_config",
-    "tests", "tokens", "undo", "web_search",
+    "aider_blocks", "bash", "batch", "bulk_edit", "compaction",
+    "conventions", "edit_verify", "glob", "grep", "hooks",
+    "java_refactor", "lint", "llm_config", "plan_mode", "read_tracker",
+    "readonly", "repo_config", "sandbox", "secrets", "subagent",
+    "tests", "todos", "tokens", "undo", "web_search",
 ]

@@ -464,6 +464,19 @@ class AiForgeDoerAgent(BaseAgent):
         emit(log, "adk.doer.done", ticket=ticket.identifier,
              stop_reason=stop_reason, turns=summary.get("turns"),
              wall_s=summary.get("wall_s"))
+
+        # Continuous-learning: distill outcome → T3 fact (best-effort).
+        try:
+            from aiforge_core.runtime.doer_learner import distill as _distill
+            _distill(ticket, {
+                **(summary.get("counters") or {}),
+                "stop_reason": stop_reason,
+                "summary": summary.get("summary") or "",
+                "files_touched": list(changed_files or []),
+            })
+        except Exception as exc:
+            emit(log, "adk.doer.learner_failed",
+                 ticket=ticket.identifier, err=str(exc)[:200])
         _emit_stage_event(
             ticket.id, "doer", t_stage_start,
             extra={

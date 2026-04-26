@@ -52,9 +52,20 @@ _DEFAULT_TEST_CMD_BY_LANG = {
 def _resolve_command(worktree: str, override: str) -> str:
     if override:
         return override
-    env = os.environ.get("AIFORGE_DOER_TEST_CMD")
+    env = (
+        os.environ.get("AIFORGE_DOER_TEST_CMD")
+        or os.environ.get("AIFORGE_TEST_CMD")
+    )
     if env:
         return env
+    try:
+        from aiforge_core.runtime import repo_standards as _rs
+        repo_name = os.path.basename(os.path.normpath(worktree))
+        std = _rs.get(repo_name, worktree=worktree)
+        if std.test_cmd:
+            return std.test_cmd
+    except Exception:
+        pass
     if os.path.isfile(os.path.join(worktree, "pom.xml")):
         return _DEFAULT_TEST_CMD_BY_LANG["java"]
     if os.path.isfile(os.path.join(worktree, "pyproject.toml")):

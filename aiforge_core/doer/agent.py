@@ -63,7 +63,7 @@ def _build_repo_map_section(worktree_path: str, allowed: set[str]) -> str:
     try:
         from aiforge_core.index.aider_map import (
             AiderMapConfig,
-            render_repo_map,
+            render_repo_map_cached as render_repo_map,
         )
     except Exception:
         return ""

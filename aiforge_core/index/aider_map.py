@@ -166,6 +166,75 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
     return digest
 
 
+# ─────────────────────────── Mtime cache wrapper ───────────────────────
+#
+# RepoMap rebuild cost is dominated by tree-sitter parsing. When the
+# Doer fires twice on the same worktree without any file changes we
+# burn ~300-800ms on identical output. Cache key = (root, git_head,
+# frozenset(path:mtime) of chat_files + first 200 other_files). Hit =
+# return prior digest verbatim, log cache_hit=1. Toggle via
+# AIFORGE_AIDER_MAP_CACHE=0 (default on).
+
+_MAP_CACHE: dict[tuple, str] = {}
+_MAP_CACHE_MAX = 16
+
+
+def render_repo_map_cached(cfg: AiderMapConfig) -> str:
+    """Memoised :func:`render_repo_map` keyed on focus-file mtimes.
+
+    Falls back to uncached render on cache lookup error. Bypassed
+    entirely when ``AIFORGE_AIDER_MAP_CACHE=0``.
+    """
+    if os.environ.get("AIFORGE_AIDER_MAP_CACHE", "1") != "1":
+        return render_repo_map(cfg)
+
+    key = _cache_key(cfg)
+    if key is None:
+        return render_repo_map(cfg)
+
+    hit = _MAP_CACHE.get(key)
+    log = get_logger("doer")
+    if hit is not None:
+        emit(log, "aider_repomap.cache_hit", digest_chars=len(hit))
+        return hit
+
+    digest = render_repo_map(cfg)
+    if digest:
+        if len(_MAP_CACHE) >= _MAP_CACHE_MAX:
+            _MAP_CACHE.pop(next(iter(_MAP_CACHE)))
+        _MAP_CACHE[key] = digest
+    return digest
+
+
+def _cache_key(cfg: AiderMapConfig) -> tuple | None:
+    """Build hash key from worktree HEAD + focus-file mtimes.
+
+    Returns None on git/stat errors so caller treats it as a miss.
+    """
+    try:
+        import subprocess as _sp
+        head = _sp.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(cfg.root), capture_output=True, text=True,
+            timeout=2, check=False,
+        ).stdout.strip()
+    except Exception:
+        head = ""
+
+    paths = list(cfg.chat_files) + list(cfg.other_files)[:200]
+    fp: list[tuple[str, int]] = []
+    for rel in paths:
+        try:
+            full = cfg.root / rel if not os.path.isabs(rel) else Path(rel)
+            mtime_ns = full.stat().st_mtime_ns
+            fp.append((rel, mtime_ns))
+        except Exception:
+            continue
+    if not fp:
+        return None
+    return (str(cfg.root), head, cfg.map_tokens, frozenset(fp))
+
+
 # ─────────────────────────── Internals ─────────────────────────────────
 
 
