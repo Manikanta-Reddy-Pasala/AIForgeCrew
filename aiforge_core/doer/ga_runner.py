@@ -160,13 +160,30 @@ The Planner has already identified the files you need. They are listed
 verbatim under `## Allowed files`. Trust the list. Open those files with
 file_read and edit them with file_patch / file_write. That's the job.
 
-Do NOT use `code_run` to grep / find / ls / locate files. Those discovery
-commands burn turns and produce nothing the harness scores. file_read
-the allowed paths directly. If a path appears wrong, ask_explorer once
-(see tool list); do not fall into a grep/find loop.
-
 If after turn 3 you still have edit_block_ok=0 you are off-track. STOP
 exploring. file_read your allowed files. file_patch the change.
+
+==== TOOL CHEAT SHEET ====
+- file_read PATH       → returns line-numbered content; cached per run.
+                         Don't re-request the same file.
+- file_patch / file_write → make the edit. file_patch returns a diff
+                         block AFTER the edit so you can verify it
+                         landed correctly.
+- glob PATTERN         → fast file listing (ripgrep). e.g.
+                         '**/*Controller.java'.
+- grep REGEX [glob]    → search file contents (ripgrep). Returns
+                         path:line:content rows. Use this BEFORE
+                         ask_explorer — it's instant.
+- bash COMMAND         → persistent shell session. cwd survives
+                         across calls. Use for mvn / git / curl.
+                         Default 60s, max 600s.
+- web_search QUERY     → Gemini-grounded search. Use on
+                         'cannot find symbol' errors.
+- ask_explorer Q       → spawn read-only sub-agent for broad
+                         exploration. Slower than grep; use when
+                         you need narrative context.
+- ask_user QUESTION    → escalate to operator (logs question on
+                         the ticket). Last resort.
 
 Hard rules:
 - Edit ONLY files listed in the ## Allowed files section. Writes outside
@@ -422,77 +439,60 @@ def _make_handler_class():
             yield from super().do_code_run(args, response)
 
         def do_web_search(self, args, response):  # type: ignore[override]
-            """Gemini 2.5-flash grounded search. Returns curated answer
-            text + citation URLs so the Doer can fix unknown-API
-            compile errors without burning turns guessing.
-            """
-            import urllib.request as _ur
-            import urllib.error as _ue
-            query = (args.get("query") or "").strip()
-            if not query:
-                yield "[web_search] empty query, skipping.\n"
+            """Thin wrapper — pure logic in tools.web_search.handle()."""
+            from .ga_tools import web_search as _ws
+            yield f"[web_search] {(args.get('query') or '')[:200]}\n"
+            blob = _ws.handle(args)
+            if blob.startswith("[web_search]"):
                 return StepOutcome(
-                    {"status": "error", "msg": "query required"},
-                    next_prompt="web_search needs a `query` argument.",
-                )
-            api_key = os.environ.get("AIFORGE_GOOGLE_API_KEY", "")
-            if not api_key:
-                yield ("[web_search] no AIFORGE_GOOGLE_API_KEY set; "
-                       "skipping.\n")
-                return StepOutcome(
-                    {"status": "error", "msg": "missing api key"},
-                    next_prompt=("web_search disabled (no API key). "
-                                 "Use ask_explorer instead."),
-                )
-            payload = json.dumps({
-                "contents": [{"parts": [{"text": query}]}],
-                "tools": [{"googleSearch": {}}],
-            }).encode()
-            url = ("https://generativelanguage.googleapis.com/v1beta/"
-                   "models/gemini-2.5-flash:generateContent")
-            req = _ur.Request(
-                url, data=payload, method="POST",
-                headers={"Content-Type": "application/json",
-                         "X-goog-api-key": api_key},
-            )
-            yield f"[web_search] grounded query: {query[:200]}\n"
-            try:
-                with _ur.urlopen(req, timeout=30) as resp:
-                    body = resp.read()
-            except (_ue.URLError, _ue.HTTPError) as exc:
-                yield f"[web_search] network error: {exc}\n"
-                return StepOutcome(
-                    {"status": "error", "msg": str(exc)[:200]},
+                    {"status": "error", "msg": blob},
                     next_prompt="web_search failed; try ask_explorer.",
                 )
-            try:
-                data = json.loads(body)
-            except Exception as exc:
-                return StepOutcome(
-                    {"status": "error", "msg": f"bad response: {exc}"},
-                    next_prompt="web_search returned non-JSON.",
-                )
-            cand = (data.get("candidates") or [{}])[0]
-            parts = cand.get("content", {}).get("parts", [])
-            answer = "\n".join(p.get("text", "") for p in parts).strip()
-            grounding = cand.get("groundingMetadata", {})
-            chunks = grounding.get("groundingChunks", [])[:5]
-            cites = []
-            for ch in chunks:
-                w = ch.get("web") or {}
-                title = (w.get("title") or "")[:120]
-                uri = w.get("uri") or ""
-                if uri:
-                    cites.append(f"- {title} | {uri}")
-            result_blob = answer[:4000]
-            if cites:
-                result_blob += "\n\nCitations:\n" + "\n".join(cites)
-            yield (result_blob[:200] + "...\n") if len(result_blob) > 200 else result_blob + "\n"
             return StepOutcome(
-                result_blob,
+                blob,
                 next_prompt=("Web answer above. Apply the correct API "
                              "in your next file_patch."),
             )
+
+        def do_file_read(self, args, response):  # type: ignore[override]
+            """Wrap GA file_read with line numbers + per-run cache.
+
+            ReadTracker stashed on handler._aiforge_reader.
+            """
+            from .ga_tools.read_tracker import ReadTracker
+            reader = getattr(self, "_aiforge_reader", None)
+            if reader is None:
+                reader = ReadTracker()
+                self._aiforge_reader = reader  # type: ignore[attr-defined]
+            abs_path = self._get_abs_path(args.get("path", ""))
+            blob = reader.read(abs_path)
+            yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(blob, next_prompt=None)
+
+        def do_glob(self, args, response):  # type: ignore[override]
+            """List files by pattern. Pure logic in tools.glob."""
+            from .ga_tools import glob as _glob
+            blob = _glob.handle(self.cwd, args)
+            yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(blob, next_prompt=None)
+
+        def do_grep(self, args, response):  # type: ignore[override]
+            """Search content via ripgrep. Pure logic in tools.grep."""
+            from .ga_tools import grep as _grep
+            blob = _grep.handle(self.cwd, args)
+            yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(blob, next_prompt=None)
+
+        def do_bash(self, args, response):  # type: ignore[override]
+            """Persistent bash session. State held on handler._aiforge_shell."""
+            from .ga_tools import bash as _bash
+            shell = getattr(self, "_aiforge_shell", None)
+            if shell is None:
+                shell = _bash.PersistentShell(cwd=self.cwd)
+                self._aiforge_shell = shell  # type: ignore[attr-defined]
+            blob = _bash.handle(shell, args)
+            yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(blob, next_prompt=None)
 
         def do_ask_explorer(self, args, response):  # type: ignore[override]
             """Spawn a read-only GA subprocess to answer a focused
@@ -557,12 +557,23 @@ def _make_handler_class():
         def do_file_patch(self, args, response):  # type: ignore[override]
             outcome_gen = super().do_file_patch(args, response)
             outcome = yield from outcome_gen
-            if isinstance(outcome.data, dict) and outcome.data.get("status") in (
-                "success", "ok",
-            ):
+            success = (
+                isinstance(outcome.data, dict)
+                and outcome.data.get("status") in ("success", "ok")
+            )
+            if success:
                 self._counters["edit_block_ok"] = (
                     self._counters.get("edit_block_ok", 0) + 1
                 )
+                # Append edit-verify diff so the model sees the
+                # actual change that landed (Claude Edit-style).
+                from .ga_tools import edit_verify as _ev
+                abs_path = self._get_abs_path(args.get("path", ""))
+                verify = _ev.banner_for(abs_path, self.cwd)
+                if verify:
+                    yield verify[:1500] + (
+                        "\n" if not verify.endswith("\n") else ""
+                    )
             return outcome
 
         def do_file_write(self, args, response):  # type: ignore[override]
@@ -719,8 +730,31 @@ def run_doer_via_ga(
             emit(log, "ga_runner.plan_mode_skip",
                  ticket=identifier, error=str(exc)[:200])
 
-    cfg = _doer_llm_config()
-    session = LLMSession(cfg=cfg)
+    # Build LM session — primary mlx-lm + Gemini fallback chain via
+    # GA's MixinSession. Falls back per call when primary errors and
+    # springs back after a configurable cool-off (5 min default).
+    from .ga_tools import llm_config as _llm_cfg
+    cfg = _llm_cfg.primary_cfg()
+    fb = _llm_cfg.fallback_cfg()
+    if fb is not None and os.environ.get("AIFORGE_DOER_FALLBACK", "1") == "1":
+        try:
+            from llmcore import MixinSession  # type: ignore
+            primary = LLMSession(cfg=cfg)
+            fallback = LLMSession(cfg=fb)
+            session = MixinSession(
+                [primary, fallback],
+                cfg={"max_retries": 1, "spring_back": 300,
+                     "llm_nos": [primary.name, fallback.name]},
+            )
+            emit(log, "ga_runner.fallback_chain",
+                 ticket=identifier,
+                 primary=cfg["model"], fallback=fb["model"])
+        except Exception as exc:
+            emit(log, "ga_runner.fallback_skip",
+                 ticket=identifier, error=str(exc)[:200])
+            session = LLMSession(cfg=cfg)
+    else:
+        session = LLMSession(cfg=cfg)
     client = ToolClient(session)
 
     tools_schema = _load_tools_schema()
@@ -730,8 +764,14 @@ def run_doer_via_ga(
     # Inject web_search backed by Gemini grounded search. Only enable
     # when AIFORGE_GOOGLE_API_KEY is present in the environment so
     # offline / no-key deployments don't advertise a tool that 401s.
+    from .ga_tools.web_search import SCHEMA as _WS_SCHEMA
+    from .ga_tools.glob import SCHEMA as _GLOB_SCHEMA
+    from .ga_tools.grep import SCHEMA as _GREP_SCHEMA
+    from .ga_tools.bash import SCHEMA as _BASH_SCHEMA
     if os.environ.get("AIFORGE_GOOGLE_API_KEY"):
-        tools_schema = list(tools_schema) + [_WEB_SEARCH_SCHEMA]
+        tools_schema = list(tools_schema) + [_WS_SCHEMA]
+    # Always add Glob / Grep / Bash — fast file ops, no API key needed.
+    tools_schema = list(tools_schema) + [_GLOB_SCHEMA, _GREP_SCHEMA, _BASH_SCHEMA]
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
     if plan_mode_active:
         user_input += (
