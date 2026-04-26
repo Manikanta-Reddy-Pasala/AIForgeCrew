@@ -425,6 +425,27 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
                 cleaned = _re.sub(r"<think>.*?</think>", "", raw,
                                   flags=_re.DOTALL).strip()
                 plan_text = cleaned or raw
+        # Trim any visible chain-of-thought preamble. Qwen3.6 / gemma
+        # emit "Here's a thinking process: ..." straight into content
+        # when reasoning channel isn't separated by the chat template.
+        # The actual plan always starts with `## Goal` (system prompt
+        # rule). Find it and drop everything before.
+        if plan_text and "## Goal" in plan_text:
+            plan_text = plan_text[plan_text.index("## Goal"):].strip()
+        # And cut anything after the four canonical sections close —
+        # models often append "Self-Correction" / "Generating." prose.
+        if plan_text:
+            import re as _re2
+            # Keep up to (but not past) the LAST `## Acceptance criteria`
+            # block; truncate at the next non-section heading or
+            # "Self-Correction" / "Generating." marker.
+            tail_match = _re2.search(
+                r"\n\n(?:Self-Correction|Generating\.|"
+                r"\*\*\*|---|## (?!Goal|Files|Steps|Acceptance))",
+                plan_text,
+            )
+            if tail_match:
+                plan_text = plan_text[:tail_match.start()].strip()
     except Exception as exc:
         emit(log, "ga_planner.exception", ticket=identifier,
              error=str(exc)[:300])
