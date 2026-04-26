@@ -1,192 +1,149 @@
 # Architecture
 
-Two hosts, one laptop for dev.
-
-## Stack at a glance
-
-| Layer | Component |
-|---|---|
-| Orchestrator | Google ADK (`adk-python`) — `BaseAgent` subclasses, `SequentialAgent` + `LoopAgent`, `BasePlugin.on_event_callback` for auto-remember, `DatabaseSessionService` Postgres-backed sessions |
-| Doer agent loop | GenericAgent (`lsdefine/GenericAgent`) text-protocol session, embedded via custom `BaseAgent` calling `agent_runner_loop`, pinned via `.aiforge/ga-version.lock` |
-| Planner / Feedback / Learner | direct LiteLLM single-shot, no agent loop |
-| LLM serving | `mlx_lm.server`, two pinned instances (doer `:1234`, planner `:1235`), launchd-managed |
-| Code map | Aider RepoMap (PageRank tree-sitter digest, hot path) + Graphify nightly `graph.json` (cold/cross-repo) |
-| Graph ingest | Tree-sitter direct AST → `:File`/`:Symbol`/`:CALLS`/`:IMPORTS` (25 langs) |
-| Memory | 5 GA-style layers (L0…L5) all in Neo4j, each with a defined storage + injection rule |
-| Ranking | Native Neo4j Cypher fusing vector index + Lucene fulltext + 2-hop graph boost — single query, no GDS |
-| Roles | Architect (Claude Code, ext) → Planner → Doer → Feedback → Learner, each with explicit tool allowlist + max-turn cap |
-
-GenericAgent's text-protocol session sidesteps `mlx_lm`'s native `tool_calls` serialization bug (0.31.x emits empty `message.tool_calls` despite `finish_reason="tool_calls"`).
-
-## Topology
+## End-to-end flow
 
 ```
-Mac Studio  192.168.70.185                 NUC  192.168.70.191 (static)
-(LLM + agents, 96 GB unified)              (storage + services, 30 GB RAM)
-─────────────────────────────              ────────────────────────────────
-mlx_lm.server  :1234  doer                 Postgres 16            :5432
-  qwen-coder-next-mlx-4bit          22 GB    aiforge db (tickets, memories,
-mlx_lm.server  :1235  planner                ADK sessions, checkpoints)
-  Qwen3.6-27B-UD-MLX-4bit           18 GB
-nomic-embed-text-v1.5  (768d)               Neo4j 5.26 Community  :7474/:7687
-  served via mlx_lm /v1/embeddings           - vector idx :Fact.embedding (768, cos)
-                                             - fulltext idx :Fact.text (Lucene)
-ADK runtime (Python 3.12)                    - :File / :Symbol / :CALLS / :IMPORTS
-  SequentialAgent
-    Architect (ext)                         oneshell-mcp servers
-    Planner   (BaseAgent → GA loop)           QA   :8810-8813
-    Doer      (BaseAgent → GA loop)           prod :8820-8823
-    Feedback  (LiteLLM, 1 turn)
-    Learner   (LiteLLM, 1 turn)              systemd --user timers
-  AiForgeHandler(GenericAgentHandler)         ├─ repo-pull         5 min
-    _get_abs_path  → ScopeGuard               ├─ memory-pull       5 min
-    tool_before    → forbidden tools          ├─ git-pull         10 min
-    turn_end       → Neo4j L4 mirror          ├─ markdown-ingest  30 min
-    do_ask_explorer (RAG fallback)            └─ reindex-daily    02:00
-                                               (graphify clone + load)
-Aider RepoMap (lib, in-process)
-  SQLite cache  ~/.aider/cache.db            lm-tunnel.service
-  injects ~1.5K tok digest into Doer           ssh -L 1235→MS:1234
-                                               ssh -L 1236→MS:1235
-Graphify CLI  (graphifyy from PyPI)
-  nightly:  graphify scan → graph.json       Direct LAN 10.10.10.1 ↔ .2
-            loader → NUC Neo4j               ~0.6 ms RTT, 1 GbE
-
-launchd                                      Postgres tunnel back-channel:
-  com.aiforge.mlx-doer.plist                   MS opens ssh -L 5433→NUC:5432
-  com.aiforge.mlx-planner.plist                MS opens ssh -L 7688→NUC:7687
-  com.aiforge.adk-runner.plist                 (macOS Sequoia sandboxes raw LAN
-  caffeinate (wake lock)                        connect(); loopback works)
-  pg-tunnel (5433→NUC:5432)
-  neo4j-tunnel (7688→NUC:7687)
+ticket ─► Architect ─► Planner ─► Doer ⇄ Feedback ─► Integration ─► Publish ─► Learner
+                                                                                  │
+                                                                                  ▼
+                                                                          Neo4j memory (T1..T5)
 ```
 
-## Who owns what
+## Hosts
 
-| Concern | Host | Component |
-|---|---|---|
-| Doer LLM inference | Mac Studio | `mlx_lm.server :1234` qwen-coder-next-mlx-4bit |
-| Planner LLM inference | Mac Studio | `mlx_lm.server :1235` Qwen3.6-27B-UD-MLX-4bit |
-| Embeddings (768d, nomic) | Mac Studio | `mlx_lm.server` `/v1/embeddings` |
-| ADK orchestrator (SequentialAgent) | Mac Studio | `aiforge_core/runtime/adk_runner.py` |
-| Inner agent loop (text-protocol) | Mac Studio | GenericAgent `agent_runner_loop` via `aiforge_core/doer/agent.py`, `aiforge_core/planner/agent.py` |
-| ScopeGuard / forbidden tools | Mac Studio | `AiForgeHandler` overrides in `aiforge_core/doer/handler.py` |
-| Aider RepoMap (hot code digest) | Mac Studio | `aiforge_core/index/aider_map.py` (lib in-process), SQLite at `~/.aider/cache.db` |
-| Graphify CLI (cold graph build) | Mac Studio | `graphify scan` → `graph.json`; loader at `aiforge_core/index/graphify_loader.py` writes to NUC Neo4j |
-| Tree-sitter ingest (incremental) | Mac Studio | `aiforge_core/index/treesitter_ingest.py` (post-merge hook) |
-| Java repo worktrees + `mvn compile` | Mac Studio | per-ticket worktree under `~/codeRepo-worktrees/` |
-| Acceptance gate | Mac Studio | `aiforge_core/doer/acceptance_gate.py` |
-| Postgres (tickets, memories, ADK sessions, checkpoints) | NUC | `aiforge` db, `DatabaseSessionService("postgresql+asyncpg://…")` |
-| Neo4j (graph + vector + fulltext) | NUC | single DB, all 5 memory layers' Neo4j-resident parts |
-| oneshell-mcp servers (8 instances, QA + prod) | NUC | `:8810-8813` QA, `:8820-8823` prod |
-| Markdown ingest crons | NUC | systemd `--user` timers (migrated from MS launchd) |
-| Git pulls (`~/codeRepo/*`, `~/.claude/memory`) | NUC | `aiforge-repo-pull.timer` |
+```
+laptop  ─ssh─►  nuc :8799 (api) ──┬── postgres 16  (tickets, events, costs, hitl_pending)
+                                  ├── neo4j 5.26   (memory, repos, symbols, embeddings)
+                                  ├── graph-runner (ADK 1.31.1 sequential)
+                                  ├── embed sidecar :8764 (bge-m3 ONNX)
+                                  └── ops MCPs    :8810 mongo · :8811 k8s · :8812 tekton · :8813 tally
 
-## Roles & per-agent rules
-
-Each role is a separate ADK `BaseAgent` subclass. The pipeline is one `SequentialAgent` per ticket; sub-tickets fan out to a parallel Doer wave when independent.
-
-| Role | Model | Backend | Max turns | Max wall | Tool allowlist | Memory scope |
-|---|---|---|---|---|---|---|
-| Architect | Claude Code (laptop, external) | n/a | n/a | n/a | writes tickets only, never edits code | reads L2/L3, writes tickets to Postgres |
-| Planner | Qwen3.6-27B :1235 | GA text-protocol (CodeAgent-style until EVAL-1b) | 12 | 8 min | `read_file`, `ask_explorer`, `cypher_query`, `recall_similar_flows`; emits sub-tickets ≤ 3 files; **no code edit, no ask_user** | L2 facts + L3 SOPs auto-injected into system prompt |
-| Doer | qwen-coder-next :1234 | GA text-protocol | 40 | 25 min | `read_file`, `edit_block`, `apply_patch`, `run_tests`, `ask_explorer`; **scope-guarded ≤ 3 files per sub-ticket; no ask_user, no start_long_term_update** | L2 + L5 (Aider digest) auto-injected; L4 recall via tool |
-| Feedback | qwen-coder-next | direct LiteLLM | 1 | 60 s | none — verdict only | reads doer turn output + acceptance-gate result |
-| Learner | qwen-coder-next | direct LiteLLM | 1 | 60 s | writes `:Fact` only via ADK `on_event_callback` hook; **no free-form output** | reads full session, writes L2 |
-
-Forbidden-tool enforcement is in `AiForgeHandler.tool_before_callback`. ScopeGuard rejects writes outside the sub-ticket's declared file list inside `_get_abs_path`. Both raise back into the GA loop as observations, so the model self-corrects rather than crashing.
-
-## Memory layers (5, GA convention)
-
-| GA layer | Storage | Neo4j label | Auto-injected? | Tool to read |
-|---|---|---|---|---|
-| L0 META-SOP | NUC Neo4j | `:MetaSop` | Learner only (when proposing new SOP) | `recall_meta_sop` |
-| L1 working memory | ADK Session, in-mem on MS, mirrored to L4 on turn-end | n/a | current agent only | implicit (session state) |
-| L2 global facts | NUC Neo4j | `:Fact` (768d vector + fulltext) | Doer + Planner system prompts (top-K hybrid) | `recall_facts(query)` |
-| L3 task SOPs | NUC Neo4j | `:Sop` | Planner only, conditional on ticket type tag | `recall_sop(tag)` |
-| L4 raw sessions (auto-remember) | NUC Neo4j | `:Session` ←[:HAS_TURN]→ `:Turn` | not injected — recall on demand | `recall_similar_flows(query)` |
-| L5 code structure | NUC Neo4j (`:File`/`:Symbol`/`:CALLS`/`:IMPORTS`) + Aider SQLite hot cache + Graphify `graph.json` mirror | various | Doer **always** (Aider 1.5K-tok digest) | `cypher_query(…)` for cross-file traversal |
-
-Auto-remember is the `BasePlugin.on_event_callback` on the runner: every `Event` (turn end, tool call, tool result) gets persisted as a `:Turn` under the current `:Session`. Cost is one Cypher MERGE per event, batched. `aiforge_core/runtime/auto_remember_plugin.py`.
-
-## Ranking (one Cypher query, no separate ranker)
-
-The `recall_facts(query)` tool runs:
-
-```cypher
-CALL db.index.vector.queryNodes('fact_embedding', $k, $qVec)  YIELD node AS f, score AS vScore
-WITH collect({f:f, v:vScore}) AS vHits
-CALL db.index.fulltext.queryNodes('fact_text',     $qText)    YIELD node AS f, score AS tScore
-WITH vHits, collect({f:f, t:tScore}) AS tHits
-// fuse
-UNWIND vHits + tHits AS h
-WITH h.f AS f,
-     coalesce(max(h.v),0) * 0.7 AS vs,
-     coalesce(max(h.t),0) * 0.3 AS ts
-// 2-hop boost if fact ABOUT current ticket
-OPTIONAL MATCH (f)-[:ABOUT*1..2]-(t:Ticket {id:$ticketId})
-WITH f, vs + ts + (CASE WHEN t IS NULL THEN 0 ELSE 0.2 END) AS score
-RETURN f.text AS text, score
-ORDER BY score DESC LIMIT $k
+mac studio :1234  ◄─ llm ──  doer    (mlx-lm Qwen3-Coder-Next)
+mac studio :1235  ◄─ llm ──  planner (mlx-lm Qwen3.6-27B)
+ollama cloud      ◄─ llm ──  chat    (qwen3-coder-next default)
 ```
 
-- Vector: native Neo4j 5 vector index, cosine, dim 768 — weight **0.7**
-- Keyword: Lucene fulltext index on `:Fact.text` — weight **0.3**
-- Graph hop: +**0.2** if `:Fact -[:ABOUT*1..2]- :Ticket{id=current}`
+## Agents (5 roles + chat)
 
-No GDS, no PageRank step, no external reranker. Escalation rule: if eval precision drops below 0.7 on the F-suite, add a cross-encoder rerank stage; not before. Lives in `aiforge_core/recall/hybrid.py`.
+| Role | Backend | Model | Max turns | Wall cap | Tools |
+|---|---|---|---|---|---|
+| **Architect** | Claude Code (laptop, ext) | n/a | n/a | n/a | writes tickets only |
+| **Planner** | smolagents CodeAgent (or GA via flag) | Qwen3.6-27B :1235 | 12 | 8 min | read_file, ask_explorer, lookup_repo, write_plan |
+| **Doer** | GA text-protocol | qwen-coder-next :1234 | 40 | 25 min | 25 ga_tools — see [tools.md](tools.md) |
+| **Feedback** | LLM | shared | 6 | 2 min | targeted_fixlist, retry verdict |
+| **Learner** | LLM | shared | 4 | 2 min | distill, retain_fact |
+| **Chat** | GA + ollama_cloud | qwen3-coder-next | 12 | 1 min | unified_memory_query · ops MCPs · graph_rag MCP · final_answer |
 
-## Cross-host bridges
+## Workflow graph
 
-SSH tunnels only.
+```
+            ┌────────┐    ┌────────┐    ┌──────────┐
+START ─────►│Planner │───►│  Doer  │───►│ Feedback │
+            └────────┘    └────┬───┘    └────┬─────┘
+                               ▲             │
+                               └─loop (compile_red)─┘
+                                             │ (compile_green)
+                                             ▼
+                                    ┌─────────────┐    ┌──────────┐
+                                    │ Integration │───►│ Publish  │
+                                    └─────────────┘    └────┬─────┘
+                                                            ▼
+                                                       ┌─────────┐
+                                                       │ Learner │ ─► T3 fact
+                                                       └─────────┘
+```
 
-- `com.aiforge.pg-tunnel` (MS): `ssh -L 127.0.0.1:5433:127.0.0.1:5432 mani@10.10.10.2` — ADK `DatabaseSessionService` and the API hit Postgres via MS-loopback.
-- `com.aiforge.neo4j-tunnel` (MS): `ssh -L 127.0.0.1:7688:127.0.0.1:7687 mani@10.10.10.2` — `recall_facts` and `cypher_query` hit Neo4j via MS-loopback (Sequoia LAN sandbox again).
-- `lm-tunnel.service` (NUC): `ssh -L 127.0.0.1:1235:127.0.0.1:1234 manikanta@10.10.10.1` plus `:1236→:1235` — NUC-side scripts (markdown ingest, eval harness) reach MS mlx_lm via NUC-loopback.
+Live SSE view: `/ui/workflow?ticket=ONE-99`. Solid green = forward · dotted grey = loop.
 
 ## Data flow
 
-GitHub is source of truth. Both hosts `git pull` directly. Zero rsync between hosts.
+```
+operator ─► POST /api/tickets ─► postgres `tickets`
+                                     │
+                                     ▼
+                                graph-runner picks
+                                     │
+                ┌────────────────────┼────────────────────┐
+                ▼                    ▼                    ▼
+            Planner               Doer               Feedback
+            ▼                    ▼                    ▼
+        plan.md          file_patch+verify       targeted_fixlist
+            │                    │                    │
+            └─► neo4j ◄──────────┴── ndjson ──────────┘
+                              ↓
+                         hooks emit_step
+                              ↓
+                     ~/.aiforge/perf.ndjson
+                              ↓
+                     /api/runtime/perf
+```
+
+## Layered stores
 
 ```
-GitHub ──pull──> NUC:~/codeRepo/*           every 5 min (systemd timer)
-GitHub ──pull──> MS:~/codeRepo-worktrees/*  per-ticket, on demand
-laptop ──push──> GitHub (AIForgeCrew)       both hosts pull every 10 min
-
-NUC nightly 02:00:
-  graphify clone <each repo>
-  graphify scan → graph.json
-  graphify_loader.py → Neo4j (:File / :Symbol / :CALLS / :IMPORTS, MERGE-by-id)
+postgres ── tickets · events · llm_costs · hitl_pending
+neo4j   ── :Memory (T1..T4) · :Symbol+embedding (T5) · :Repo standards · :File · :Fact
+sqlite  ── ~/.aiforge/merkle/<repo>.db (file→folder→root sha256 tree)
+sqlite  ── ~/.aiforge/docs/<lib>.db    (external library chunks + bge-m3 vectors)
+ndjson  ── ~/.aiforge/perf.ndjson      (per-step wall_ms)
 ```
 
-Aider RepoMap is built **on the MS, in the Doer process**, on first call per worktree, and cached in `~/.aider/cache.db` keyed by file mtime. The 1.5K-token digest is recomputed only when files in the sub-ticket scope change. It is **not** mirrored to Neo4j — Neo4j gets the full Graphify dump nightly; Aider is the hot path for the current sub-ticket.
+## Hot path — chat
 
-## File map (where components live)
+```
+HTTP POST /api/chat/ask
+  │
+  ├─ otel.span("chat.via_ga")
+  │
+  ├─ GA LLMSession (cache_markers wired)  ──►  ollama cloud
+  │
+  ├─ unified_memory_query  ──►  neo4j hybrid + ticket_brief + sym_lookup + find_doc + docs_index
+  ├─ ops_<server>_<tool>   ──►  mongo/k8s/tekton/tally MCP
+  │
+  ├─ final_answer | fallback (last tool_result) | fallback (assistant text)
+  │
+  ├─ hooks.emit_step  ──►  ~/.aiforge/perf.ndjson + /api/runtime/perf
+  ├─ cost.record_call ──►  postgres llm_costs
+  └─ Memory.retain_fact (auto) ──►  neo4j T3 patterns/chat-auto
+```
 
-| Component | Path |
-|---|---|
-| ADK runner / SequentialAgent wiring | `aiforge_core/runtime/adk_runner.py` |
-| Auto-remember plugin (L4) | `aiforge_core/runtime/auto_remember_plugin.py` |
-| Planner BaseAgent + GA bridge | `aiforge_core/planner/agent.py` |
-| Planner tools (recall_sop, etc.) | `aiforge_core/planner/tools.py` |
-| Doer BaseAgent + GA bridge | `aiforge_core/doer/agent.py` |
-| Doer GA handler (ScopeGuard, Neo4j mirror, ask_explorer) | `aiforge_core/doer/handler.py` |
-| Acceptance gate | `aiforge_core/doer/acceptance_gate.py` |
-| Orchestrator bridge (sub-ticket fan-out) | `aiforge_core/doer/orchestrator_bridge.py` |
-| Hybrid recall (vector + fulltext + graph) | `aiforge_core/recall/hybrid.py` |
-| Aider RepoMap wrapper | `aiforge_core/index/aider_map.py` |
-| Graphify loader (graph.json → Neo4j) | `aiforge_core/index/graphify_loader.py` |
-| Tree-sitter incremental ingest | `aiforge_core/index/treesitter_ingest.py` |
-| FastAPI surface | `aiforge_core/runtime/api.py` |
-| Per-agent config (allowlists, caps) | `aiforge_core/agents.yaml` |
-| launchd plists (mlx_lm + ADK + tunnels) | `scripts/runtime/com.aiforge.*.plist` |
-| Eval fixtures (F1, F3, …) | `evals/fixtures/` |
+## Hot path — doer
 
-## Boundary rules (still enforced)
+```
+ticket id
+  │
+  ├─ ScopeGuard(allowed_files)
+  ├─ Aider RepoMap (mtime-cached)
+  ├─ Graphify neighbours (Neo4j hop)
+  ├─ repo_standards (Neo4j :Repo + worktree YAML → env + prompt block)
+  │
+  ├─ GA agent_runner_loop
+  │    │
+  │    ├─ tool_before_callback ─► plan_mode guard, deny-list, perf t0
+  │    ├─ do_<tool>             ─► see tools.md
+  │    ├─ tool_after_callback   ─► perf emit_step
+  │    └─ post_edit/post_compile hooks ─► .aiforge/hooks.yml
+  │
+  ├─ doer_learner.distill ─► neo4j T3 patterns/doer-success|failure
+  ├─ feedback verdict      ─► loop or escalate
+  └─ integration.smoke + publish.gh_pr
+```
 
-1. **Architect never edits code.** Tickets in Postgres only. Enforced socially + by the agent allowlist (no edit tools).
-2. **Doer scope ≤ 3 files**, declared in the sub-ticket. ScopeGuard in `_get_abs_path` is the chokepoint. Glob entries (`foo/bar/**`, `foo/*.ext`) supported per commit `57e1e7c`.
-3. **No ask_user from Planner or Doer.** Both have `ask_explorer` (RAG over Neo4j) instead. Forbidden in `tool_before_callback`.
-4. **No long-term memory writes from Doer.** Only Learner writes `:Fact`, and only via the ADK on-event hook — never as a free-form tool call.
-5. **Single MLX model per port.** Don't multiplex; the launchd plist pins exactly one model per `mlx_lm.server` instance. Idle-unload disabled (`--ttl 43200` lesson from EVAL-3).
-6. **All inter-host I/O is ssh-tunneled loopback.** No raw LAN connect from macOS apps.
+## Code layout
+
+See [tools.md](tools.md) for the full ga_tools catalogue · [hooks.md](hooks.md) for event taxonomy.
+
+```
+aiforge_core/
+├── runtime/        ── api · otel · cost · mentions · hitl · workflow_topology
+│                     repo_standards · doer_learner · maintenance_cli
+├── doer/
+│   ├── ga_runner.py       ── GA agent_runner_loop bridge
+│   └── ga_tools/          ── 24 KISS modules (one concern per file)
+├── memory/         ── unified_query · decay · pattern_miner · schema
+├── index/          ── aider_map · merkle · symbol_embed · docs_index
+├── llm/
+│   ├── client.py    · router.py · rate_limiter.py · cache_markers.py
+│   └── providers/   ── local · anthropic · openai · gemini (hidden) · ollama_cloud
+└── planner/         ── smolagents CodeAgent (default) | GA fallback
+```

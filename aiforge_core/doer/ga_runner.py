@@ -444,6 +444,38 @@ def _make_handler_class():
             if _pm.is_active(self) and tool_name in _pm.WRITE_TOOLS:
                 self._plan_mode_reject_next = True  # type: ignore[attr-defined]
                 yield _pm.reject_message(tool_name) + "\n"
+            # Perf recorder — start wall-clock for this dispatch.
+            # tool_after_callback emits the step.
+            import time as _t
+            self._aiforge_tool_t0 = _t.time()  # type: ignore[attr-defined]
+            self._aiforge_tool_name = tool_name  # type: ignore[attr-defined]
+            return None
+
+        def tool_after_callback(self, tool_name, args, response, ret):
+            """Record per-tool wall_ms via hooks.emit_step. KISS:
+            classify the event from tool_name into search / file_read
+            / file_write / tool buckets so /api/runtime/perf shows
+            useful aggregates without tagging every do_*."""
+            import time as _t
+            t0 = getattr(self, "_aiforge_tool_t0", None)
+            if t0 is None:
+                return None
+            wall_ms = int((_t.time() - t0) * 1000)
+            from .ga_tools import hooks as _hk
+            event = "post_tool"
+            if tool_name in ("glob", "grep", "search_memory",
+                             "unified_memory_query"):
+                event = "post_search"
+            elif tool_name == "file_read":
+                event = "post_file_read"
+            elif tool_name in ("file_write", "file_patch", "bulk_edit"):
+                event = "post_file_write"
+            try:
+                _hk.emit_step(event=event, name=tool_name,
+                              wall_ms=wall_ms,
+                              extra={"args_keys": list(args.keys())})
+            except Exception:
+                pass
             return None
 
         # ask_user no longer blocks — it pushes a question into the

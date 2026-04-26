@@ -1,205 +1,131 @@
-# Agents & ADK Orchestrator
+# Agents
 
-Five roles. ADK `SequentialAgent` runs them in order. `LoopAgent` retries
-the doer/feedback inner loop up to 4 times.
-
-## The five roles
+## Five roles + chat
 
 ```
-                   Architect (external Claude Code)
-                            │
-                            │  writes ticket via API
-                            ▼
-                  ┌─────────────────────┐
-                  │      Planner        │  direct LiteLLM, 1 shot
-                  │   ↓ plan.md         │
-                  └─────────────────────┘
-                            │
-                            ▼
-              ┌─── LoopAgent (max 4 iter) ───┐
-              │                              │
-              │     Doer  ──→  Feedback      │  doer = GA loop, fb = LiteLLM 1 shot
-              │      (GA)         (LiteLLM)  │
-              │                              │
-              └──────────────────────────────┘
-                            │
-                            ▼
-                   ┌─────────────────────┐
-                   │      Learner        │  direct LiteLLM, 1 shot, writes :Fact
-                   └─────────────────────┘
-                            │
-                            ▼
-                   commit → push → PR
+                        ticket
+                          │
+                          ▼
+┌────────────┐    ┌─────────────┐    ┌──────────┐    ┌───────────┐    ┌──────────────┐    ┌─────────┐
+│ Architect  │───►│   Planner   │───►│   Doer   │───►│ Feedback  │───►│ Integration  │───►│ Learner │
+│ (Claude    │    │ smolagents  │    │ GA loop  │    │ verdict   │    │ smoke runner │    │ distill │
+│  Code, ext)│    │ + write_plan│    │ + tools  │    │ + retry   │    │ + gh_pr      │    │ → memory│
+└────────────┘    └─────────────┘    └──────────┘    └───────────┘    └──────────────┘    └─────────┘
+                                          │ ◄────────────┘
+                                          │ loop on compile_red
+                                          ▼
+                                     hooks · perf · cost
 ```
 
-## Per-agent contracts
+## Per-role contract
 
-Source of truth: `aiforge_core/agents.yaml`. Loader: `aiforge_core/agents.py`.
+| Role | Tools | Memory access | Writes | Max wall | Backend |
+|---|---|---|---|---|---|
+| **Architect** | none (external) | reads L2/L3 | tickets only | n/a | Claude Code |
+| **Planner** | lookup_repo, search_memory, grep_repos, read_file, extract_signatures, write_plan, create_child_ticket | T2 facts auto-injected, T3 SOPs | plan.md, child tickets | 8 min | smolagents CodeAgent · `AIFORGE_PLANNER_BACKEND=genericagent` swaps |
+| **Doer** | 25 ga_tools (see tools.md) | T2 + T5 (Aider) auto, T4 via tool | files in scope only (ScopeGuard) | 25 min | GA text-protocol |
+| **Feedback** | targeted_fixlist | reads doer counters + last_compile_error | retry verdict | 2 min | LLM |
+| **Learner** | distill, retain_fact | reads doer outcome | T3 facts | 2 min | LLM |
+| **Chat** | unified_memory_query, ops_<*>, graph_rag MCP allowlist, final_answer | T1..T5 + external docs | T3 chat_qa fact (auto-retain) | 1 min | GA · ollama_cloud default |
 
-| Role | Backend | Model | Max turns | Max wall |
-|---|---|---|---|---|
-| Architect | external | Claude Code (laptop) | n/a | n/a |
-| Planner | direct LiteLLM | Qwen3.6-27B (`:1235`) | 1 (single completion) | 1200 s |
-| Doer | GenericAgent text-protocol loop | Qwen3-Coder-Next (`:1234`) | 30 | 700 s |
-| Feedback | direct LiteLLM | Qwen3-Coder-Next | 1 | 60 s |
-| Learner | direct LiteLLM + plugin write | Qwen3-Coder-Next | 1 | 60 s |
+## Tool taxonomy (25 ga_tools)
 
-## What each role does
-
-### Architect (external)
-Submits a ticket. Doesn't run inside ADK.
-
-```bash
-curl -X POST http://10.10.10.2:8799/api/tickets -d '{"title":...,"body":..."}'
 ```
+EDIT          ── file_patch · file_write · bulk_edit · java_refactor
+READ          ── file_read · glob · grep · batch
+SHELL         ── bash · code_run (mvn-capped, sandbox-wrappable)
+SEARCH        ── search_memory · unified_memory_query · ask_explorer · web_search
+PLAN          ── enter_plan_mode · exit_plan_mode · todo_write · todo_check
+SUB-AGENT     ── dispatch_subagent (isolated GA loop, summary-only return)
+QUALITY       ── lint · tests · undo · edit_verify
+SAFETY        ── secrets (pre_commit) · sandbox (firejail/docker)
+ANALYSIS      ── conventions · readonly · tokens · repo_config
+HOOKS         ── post_edit · post_compile · post_test · pre_commit · pre/post_tool · pre/post_search · pre/post_llm
+OPS MCPs      ── ops_mongo_* · ops_k8s_* · ops_tekton_* · ops_tally_*  (102 tools/tier)
+```
+
+## Decision matrix — backend per role
+
+| Decision | Why |
+|---|---|
+| Planner = smolagents CodeAgent | EVAL-1 (2026-04-23): wrote plan 3/3 vs ToolCallingAgent 1/3 |
+| Doer = GA text-protocol | mlx-lm 0.31 drops native tool_calls; text-protocol JSON-block parse works |
+| Chat = GA + ollama_cloud | Cloud streams `reasoning` chunks; GA `stream=False` cfg avoids SSE re-assembly bug |
+| Feedback = LLM (no agent) | Single decision per turn; agent overhead unwarranted |
+| Learner = templated + LLM | Deterministic distill template; LLM only for prose summary |
+
+## Per-agent activity
 
 ### Planner
-- **Input**: ticket title + body + auto-injected L2 facts + L3 SOPs.
-- **Action**: emits a markdown plan with `[ ]` checkboxes to
-  `<worktree>/.aiforge/plan.md`.
-- **No tools.** Single LiteLLM call. Model has 1500-token output budget.
-- **Output schema**:
-  ```
-  ## Goal
-  ## Files
-  ## Steps
-  - [ ] step 1
-  - [ ] step 2
-  ## Acceptance criteria
-  ```
+
+```
+ticket body ──► lookup_repo(project)       (Neo4j :Repo)
+            ──► search_memory(title)       (T2 + T3 hits)
+            ──► grep_repos(symbol)         (ripgrep across ~/codeRepo)
+            ──► read_file(candidates)      (confirm targets)
+            ──► extract_signatures(target) (method sigs)
+            ──► write_plan(files, steps, signatures, pitfalls)
+            ──► final_answer
+```
 
 ### Doer
-- **Input**: ticket body + plan.md + worktree path + auto-injected L2
-  facts + Aider RepoMap digest + L5 graph_lookup on demand.
-- **Action**: enters GA plan mode against `plan.md`; works through the
-  checkbox list, marking `[x]` as steps complete. Plan mode auto-exits
-  when all boxes drained.
-- **Tools (filtered subset of GA's 9)**: `file_read`, `file_write`,
-  `file_patch`, `code_run`, `ask_explorer`. ScopeGuard blocks writes
-  outside ticket allowlist.
-- **Forbidden**: `ask_user`, `start_long_term_update`,
-  `web_scan`, `web_execute_js`. Three-layer enforcement (ADK schema
-  filter, GA `tool_before_callback` reject, harness pre-flight assert).
-- **Stop condition**: compile green AND every acceptance bullet
-  reflected in the diff, OR 2 consecutive compile failures.
-
-### Feedback
-- **Input**: ticket body + diff + compile result + plan.md.
-- **Action**: emits a verdict: `pass`, `fail`, or `scope_violation`.
-- **No tools.** Single LiteLLM call. JSON output.
-
-### Learner
-- **Triggered**: only when feedback says `pass`.
-- **Action**: distills "what worked here" into 1–3 sentences. ADK
-  plugin writes the result as a `:Fact` node in Neo4j with vector
-  embedding.
-- **No tools.** Single LiteLLM call.
-
-## ADK orchestrator wiring
-
-The pipeline is one `SequentialAgent` containing four agents (planner +
-loop + learner). The loop wraps doer + feedback for retry.
-
-```python
-# aiforge_core/runtime/adk_workflow.py (sketch)
-planner   = AiForgePlannerAgent(name="planner")
-doer_loop = LoopAgent(
-    name="doer_chain",
-    sub_agents=[
-        AiForgeDoerAgent(name="doer"),
-        AiForgeFeedbackAgent(name="feedback"),
-    ],
-    max_iterations=4,
-)
-learner   = AiForgeLearnerAgent(name="learner")
-
-workflow = SequentialAgent(
-    name="aiforge",
-    sub_agents=[planner, doer_loop, learner],
-)
-
-runner = Runner(
-    agent=workflow,
-    session_service=DatabaseSessionService(
-        db_url="postgresql+asyncpg://...",  # NUC Postgres
-    ),
-    plugins=[Neo4jMirrorPlugin()],          # auto-write :Turn per Event
-)
-```
-
-## How agents talk to each other
-
-ADK `Session.state` is the shared memory. Each agent writes a few keys
-on completion:
 
 ```
-S_PLAN_DONE         True after planner finishes
-S_LAST_DOER_SUMMARY one-line summary doer emits at end
-S_FAIL_COUNT        feedback.fail counter (drives LoopAgent escalation)
-S_COMPILE_FAIL_COUNT consecutive compile failures
+plan + allowed_files
+   │
+   ├─ standards prompt block (Neo4j :Repo)
+   ├─ Aider RepoMap (PageRank, mtime-cache)
+   ├─ Graphify neighbour symbols
+   │
+   ▼
+GA agent_runner_loop  (max 40 turns / 25 min)
+   │
+   ├─ optional: enter_plan_mode → read-only think → exit_plan_mode
+   ├─ optional: todo_write breakdown
+   │
+   ├─ READ:  file_read · glob · grep · batch · ask_explorer
+   ├─ EDIT:  file_patch · bulk_edit · java_refactor (Plan Mode gates these)
+   ├─ TEST:  code_run (mvn cap=2) · tests · lint
+   ├─ DELEGATE: dispatch_subagent (isolated)
+   │
+   └─ on landed edit: post_edit hook (.aiforge/hooks.yml + builtin secrets pre_commit)
+   └─ on BUILD SUCCESS: post_compile hook
+   └─ counters bumped: edit_block_ok, compile_green
 ```
 
-The next agent reads from `ctx.session.state`. No file passing, no
-out-of-band channels.
+### Chat
 
-## Backend dispatch
+```
+POST /api/chat/ask
+   │
+   ├─ normalize query
+   ├─ GA loop (max 12 turns)
+   │    │
+   │    ├─ unified_memory_query  (preferred, 6 sources merged)
+   │    ├─ search_memory | ticket_brief | sym_lookup | find_doc | ops_<*>
+   │    └─ final_answer
+   │
+   ├─ fallback A: last successful tool_result text
+   ├─ fallback B: last assistant text (skip 未知工具/<thinking>)
+   ├─ Memory.retain_fact(t3, patterns/chat-auto, kind=chat_qa)
+   ├─ cost.record_call
+   └─ return {answer, hits, tools_called, auto_retained_id}
+```
 
-`aiforge_core/doer/orchestrator_bridge.py` reads `AIFORGE_DOER_BACKEND`
-env (or `agents.yaml` declaration) and routes to either:
+## Env knobs per agent
 
-- `run_doer_via_ga` — GenericAgent text-protocol loop (production)
-- `run_smolagents_doer` — legacy smolagents path (fallback)
-
-Same pattern in `aiforge_core/runtime/adk_workflow.py:AiForgePlannerAgent`
-for the planner role.
-
-## Auto-remember (per turn)
-
-`Neo4jMirrorPlugin.on_event_callback` fires for every ADK Event before
-it's persisted to the session service. Writes a `:Turn` node into Neo4j
-linked to the active `:Session` and `:Ticket`. Cannot be opted out.
-
-## Per-agent rules — three-layer enforcement
-
-| Layer | Where | What |
+| Knob | Default | Effect |
 |---|---|---|
-| 1. Structural filter | ADK | Per-agent `tools=[...]` list — model never sees forbidden tools |
-| 2. Runtime reject | GA handler `tool_before_callback` | Catches the model if it hallucinates a forbidden tool by name |
-| 3. Harness assert | `aiforge_core/eval/rule_checker.py` | Post-run scan of trace events; fails the run if a forbidden tool name appears |
-
-All three layers consume the same `agents.yaml`. Drift impossible.
-
-## Live agent control
-
-Two API endpoints can steer a running agent without restart:
-
-```bash
-# Halt a runaway agent
-curl -X POST .../tickets/<id>/intervene \
-     -d '{"kind":"stop"}'
-
-# Inject a hint into the next user prompt
-curl -X POST .../tickets/<id>/intervene \
-     -d '{"kind":"intervene","body":"focus on src/main, skip tests"}'
-
-# Update working memory key_info
-curl -X POST .../tickets/<id>/intervene \
-     -d '{"kind":"keyinfo","body":"PaymentInDao has setReceiptNumber not setPaymentNumber"}'
-
-# Lower temperature for next agent run
-curl -X POST .../runtime/session_param \
-     -d '{"role":"doer","key":"temperature","value":0.05}'
-```
-
-The first three write GA's `_stop` / `_intervene` / `_keyinfo` files
-into the live agent's task_dir; GA's `turn_end_callback` polls them.
-
-## Pointers
-
-- Workflow definition: `aiforge_core/runtime/adk_workflow.py`
-- Daemon entry point: `aiforge_core/runtime/adk_runner.py`
-- Per-agent contracts: `aiforge_core/agents.yaml`
-- Doer GA adapter: `aiforge_core/doer/ga_runner.py` + `ga_compat.py`
-- Planner adapter: `aiforge_core/planner/ga_runner.py`
-- Backend dispatch: `aiforge_core/doer/orchestrator_bridge.py`
-- API endpoints: `aiforge_core/runtime/api.py`
+| `AIFORGE_PLANNER_BACKEND` | `code` | `code` (smolagents CodeAgent) · `toolcalling` (smolagents TC) · `genericagent` (GA text-protocol) |
+| `AIFORGE_DOER_PLAN_MODE` | 0 | enter/exit_plan_mode tools |
+| `AIFORGE_DOER_TODOS` | 0 | todo_write/todo_check |
+| `AIFORGE_DOER_SUBAGENT` | 0 | dispatch_subagent |
+| `AIFORGE_DOER_HOOKS` | 0 | .aiforge/hooks.yml + builtin secret-scan |
+| `AIFORGE_DOER_COMPACT` | 0 | middle-out history elision near 0.8×ctx |
+| `AIFORGE_DOER_SANDBOX` | off | firejail / docker |
+| `AIFORGE_DOER_OPS_MCP` | 0 | ops MCPs in Doer |
+| `AIFORGE_CHAT_OPS_MCP` | 1 | ops MCPs in Chat |
+| `AIFORGE_DOER_AUTOLEARN` | 1 | distill on Doer done |
+| `AIFORGE_CHAT_AUTORETAIN` | 1 | retain_fact on Chat answer |
+| `AIFORGE_PERF_NDJSON` | 1 | append per-step wall_ms to ~/.aiforge/perf.ndjson |
+| `AIFORGE_OTEL_ENABLED` | 0 | OpenTelemetry export to OTLP |

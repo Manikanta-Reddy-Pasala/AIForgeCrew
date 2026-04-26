@@ -1,0 +1,12 @@
+{
+  "compile_green": true,
+  "edit_block_min": 1,
+  "files_must_change": [
+    "src/main/java/com/example/PingController.java"
+  ],
+  "must_contain": [
+    {"file": "src/main/java/com/example/PingController.java",
+     "snippet": "hello"}
+  ],
+  "max_turns": 20
+}

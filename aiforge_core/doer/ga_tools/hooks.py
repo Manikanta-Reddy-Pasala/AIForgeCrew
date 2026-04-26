@@ -27,7 +27,20 @@ from typing import Iterable
 
 
 _VALID_EVENTS = frozenset({
+    # Edit / build / test cycle
     "post_edit", "post_compile", "post_test", "pre_commit",
+    # Tool dispatch (every do_<tool> goes through here)
+    "pre_tool",  "post_tool",
+    # File I/O specialisations (KISS shorthand for pre_tool gates
+    # that only fire on file_read / file_patch / file_write)
+    "pre_file_read",  "post_file_read",
+    "pre_file_write", "post_file_write",
+    # Search ops (glob / grep / search_memory / unified_memory_query)
+    "pre_search",  "post_search",
+    # LLM round-trip (wraps every session.raw_ask call)
+    "pre_llm",   "post_llm",
+    # Agent lifecycle
+    "agent_start", "agent_end",
 })
 
 
@@ -81,44 +94,130 @@ def load(worktree: str) -> list[dict]:
 
 def run_for_event(
     hooks: Iterable[dict], event: str, *, cwd: str,
+    payload: dict | None = None,
 ) -> list[dict]:
     """Run every matching hook for ``event``. Returns per-hook results.
 
-    Each result: ``{run, exit, stdout_tail, stderr_tail, blocked}``.
+    ``payload`` (optional) is exposed to the hook as
+    ``AIFORGE_HOOK_PAYLOAD`` env var (JSON-encoded). Tool / file path /
+    LLM-tokens etc. live there so a custom hook can inspect what's
+    happening without parsing logs.
+
+    Result: ``{run, exit, stdout_tail, stderr_tail, blocked, wall_ms}``.
     Pure logic — caller decides what to inject into the next prompt.
     """
+    import time as _t
+    import json as _j
     out: list[dict] = []
+    payload_env = _j.dumps(payload or {}, default=str)[:4000]
     for h in hooks:
         if h["event"] != event:
             continue
+        t0 = _t.time()
         try:
             cp = subprocess.run(
                 h["run"], shell=True, cwd=cwd,
                 capture_output=True, timeout=h["timeout"], check=False,
-                env={**os.environ, "AIFORGE_HOOK_EVENT": event},
+                env={
+                    **os.environ,
+                    "AIFORGE_HOOK_EVENT":   event,
+                    "AIFORGE_HOOK_PAYLOAD": payload_env,
+                },
             )
             stdout = (cp.stdout or b"").decode("utf-8", "replace")[-1000:]
             stderr = (cp.stderr or b"").decode("utf-8", "replace")[-1000:]
             out.append({
-                "run": h["run"],
-                "exit": cp.returncode,
+                "event":  event,
+                "run":    h["run"],
+                "exit":   cp.returncode,
                 "stdout_tail": stdout,
                 "stderr_tail": stderr,
-                "blocked": bool(h["block"] and cp.returncode != 0),
+                "blocked":     bool(h["block"] and cp.returncode != 0),
+                "wall_ms":     int((_t.time() - t0) * 1000),
             })
         except subprocess.TimeoutExpired:
             out.append({
-                "run": h["run"], "exit": -1,
+                "event": event, "run": h["run"], "exit": -1,
                 "stdout_tail": "", "stderr_tail": "(timeout)",
                 "blocked": bool(h["block"]),
+                "wall_ms": int((_t.time() - t0) * 1000),
             })
         except Exception as exc:
             out.append({
-                "run": h["run"], "exit": -2,
+                "event": event, "run": h["run"], "exit": -2,
                 "stdout_tail": "", "stderr_tail": str(exc)[:400],
                 "blocked": bool(h["block"]),
+                "wall_ms": int((_t.time() - t0) * 1000),
             })
     return out
+
+
+# ───────── Performance recorder (always-on, KISS in-memory) ────────
+
+
+_PERF: dict[str, dict] = {}
+
+
+def record_step(
+    *, event: str, name: str, wall_ms: int,
+    extra: dict | None = None,
+) -> None:
+    """Record one step duration for the current run.
+
+    KISS aggregator: no histograms, just count + total + max per
+    (event, name). Reset per Doer run via :func:`reset_perf`.
+    """
+    key = f"{event}:{name}"
+    row = _PERF.setdefault(key, {
+        "event": event, "name": name,
+        "count": 0, "total_ms": 0, "max_ms": 0,
+    })
+    row["count"] += 1
+    row["total_ms"] += int(wall_ms)
+    if wall_ms > row["max_ms"]:
+        row["max_ms"] = int(wall_ms)
+    if extra:
+        row.setdefault("extra", []).append(extra)
+
+
+def perf_snapshot() -> list[dict]:
+    """Sorted by total wall-clock spent. Used by /api/runtime/perf."""
+    rows = list(_PERF.values())
+    rows.sort(key=lambda r: -r["total_ms"])
+    return rows
+
+
+def reset_perf() -> None:
+    _PERF.clear()
+
+
+# ───────── Always-on builtin: perf telemetry ───────────────────────
+
+
+def emit_step(
+    *, event: str, name: str, wall_ms: int,
+    extra: dict | None = None,
+) -> None:
+    """Record + (optionally) append to ``~/.aiforge/perf.ndjson`` so
+    cron / grafana can scrape it. Best-effort — never raises."""
+    record_step(event=event, name=name, wall_ms=wall_ms, extra=extra)
+    if os.environ.get("AIFORGE_PERF_NDJSON", "1") != "1":
+        return
+    try:
+        import json as _j
+        path = os.path.expanduser(
+            os.environ.get("AIFORGE_PERF_NDJSON_PATH",
+                           "~/.aiforge/perf.ndjson"),
+        )
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(_j.dumps({
+                "event": event, "name": name,
+                "wall_ms": wall_ms,
+                "extra": extra or {},
+            }) + "\n")
+    except Exception:
+        pass
 
 
 def render(results: list[dict]) -> str:

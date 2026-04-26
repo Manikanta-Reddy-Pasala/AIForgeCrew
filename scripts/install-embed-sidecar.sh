@@ -27,4 +27,10 @@ snapshot_download('aapot/bge-m3-onnx', local_dir='$MODEL_DIR')
 fi
 
 cd "$SIDECAR_DIR"
+# --no-run = setup only (used by systemd ExecStartPre). Default
+# behaviour kept (interactive shell run) for legacy callers.
+if [[ "${1:-}" == "--no-run" ]]; then
+  echo "[install-embed-sidecar] setup done; not exec'ing uvicorn (--no-run)"
+  exit 0
+fi
 exec "$VENV/bin/uvicorn" app:app --host 127.0.0.1 --port 8764

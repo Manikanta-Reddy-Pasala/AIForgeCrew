@@ -1519,36 +1519,55 @@ def _chat_via_ga_inner(query: str) -> dict:
             self.current_turn = 0
 
         def _record(self, name: str, args: dict, *,
-                    data: str | None = None) -> None:
+                    data: str | None = None,
+                    wall_ms: int | None = None) -> None:
             captured["trace"].append({
                 "tool": name, "args": args,
                 "last_data": data,
+                "wall_ms": wall_ms,
             })
+            if wall_ms is not None:
+                try:
+                    from aiforge_core.doer.ga_tools import hooks as _hk
+                    event = "post_tool"
+                    if name in ("search_memory", "unified_memory_query",
+                                "find_doc", "related_memories"):
+                        event = "post_search"
+                    _hk.emit_step(event=event, name=name,
+                                  wall_ms=wall_ms,
+                                  extra={"role": "chat"})
+                except Exception:
+                    pass
 
         def do_unified_memory_query(self, args, response):
+            import time as _t
             from aiforge_core.memory.unified_query import query as _uq, render as _ur
             q = (args.get("query") or "").strip()
             ticket = (args.get("ticket") or None) or None
             role = args.get("role") or "sr_developer"
             limit = int(args.get("limit") or 8)
+            t0 = _t.time()
             try:
                 result = _uq(q, ticket=ticket, role=role, limit=limit)
                 rendered = _ur(result)
             except Exception as exc:
                 rendered = f"unified_memory_query error: {exc}"
+            wall_ms = int((_t.time() - t0) * 1000)
             self._record("unified_memory_query",
                          {"query": q, "ticket": ticket,
                           "role": role, "limit": limit},
-                         data=rendered)
+                         data=rendered, wall_ms=wall_ms)
             yield ""
             return StepOutcome(
                 data=rendered, next_prompt="continue", should_exit=False,
             )
 
         def do_search_memory(self, args, response):
+            import time as _t
             q = (args.get("query") or "").strip()
             role = args.get("role") or "sr_developer"
             top_k = int(args.get("top_k") or 5)
+            t0 = _t.time()
             try:
                 hits = mem.search(q, role=role, top_k=top_k)
                 lines = [
@@ -1558,9 +1577,10 @@ def _chat_via_ga_inner(query: str) -> dict:
                 blob = "\n".join(lines)
             except Exception as exc:
                 blob = f"search_memory error: {exc}"
+            wall_ms = int((_t.time() - t0) * 1000)
             self._record("search_memory",
                          {"query": q, "role": role, "top_k": top_k},
-                         data=blob)
+                         data=blob, wall_ms=wall_ms)
             yield ""
             return StepOutcome(
                 data=blob, next_prompt="continue", should_exit=False,
@@ -1594,13 +1614,17 @@ def _chat_via_ga_inner(query: str) -> dict:
             handler_self = self
 
             def _gen(args, response):
+                import time as _t
                 clean = {k: v for k, v in args.items() if k != "_index"}
+                t0 = _t.time()
                 if origin[0] == "graph":
                     result = _call_graph_mcp_sync(origin[1], clean)
                 else:
                     from .mcp_http import call_tool as _ops_call
                     result = _ops_call(origin[1], origin[2], clean)
-                handler_self._record(tname, clean, data=result)
+                wall_ms = int((_t.time() - t0) * 1000)
+                handler_self._record(tname, clean, data=result,
+                                     wall_ms=wall_ms)
                 yield ""
                 return StepOutcome(
                     data=result, next_prompt="continue", should_exit=False,
@@ -1974,6 +1998,22 @@ async def mcp_tool_call(body: _McpCallBody) -> dict:
 
 
 # ─────────────────────────── Workflow topology (DAG view) ──────────────
+@app.get("/api/runtime/perf")
+def runtime_perf(reset: bool = False) -> dict:
+    """Per-step perf snapshot — one row per (event, name) pair.
+
+    Wall-clock totals + counts + max for every tool dispatch, file
+    op, search, and LLM round-trip recorded by hooks.emit_step.
+    Pass ``?reset=true`` to zero the in-memory aggregator
+    (ndjson stream is unaffected).
+    """
+    from aiforge_core.doer.ga_tools import hooks as _hk
+    snap = _hk.perf_snapshot()
+    if reset:
+        _hk.reset_perf()
+    return {"rows": snap, "reset": bool(reset)}
+
+
 @app.get("/api/workflow/topology")
 def workflow_topology(ticket: str | None = None) -> dict:
     """DAG snapshot for the UI graph view. Optional ?ticket=X overlays

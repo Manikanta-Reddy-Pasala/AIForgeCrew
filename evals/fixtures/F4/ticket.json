@@ -1,0 +1,8 @@
+{
+  "identifier": "F4",
+  "id": "F4",
+  "title": "Eval fixture F4 placeholder",
+  "body": "Placeholder fixture. Real ticket body to be authored before enabling this in CI.\n\n## Allowed files\n(see allowed.txt)\n",
+  "project": "F4-fixture",
+  "repo_path": "evals/fixtures/F4/repo"
+}
