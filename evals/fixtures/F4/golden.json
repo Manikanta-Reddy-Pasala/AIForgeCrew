@@ -1,8 +1,13 @@
 {
-  "compile_green": false,
-  "edit_block_min": 0,
-  "files_must_change": [],
-  "must_contain": [],
-  "max_turns": 20,
-  "_note": "STUB — author the real golden before unflagging in CI"
+  "compile_green": true,
+  "edit_block_min": 1,
+  "files_must_change": [
+    "src/main/java/com/example/PingController.java"
+  ],
+  "must_contain": [
+    {"file": "src/main/java/com/example/PingController.java", "snippet": "@RestController"},
+    {"file": "src/main/java/com/example/PingController.java", "snippet": "/ping"},
+    {"file": "src/main/java/com/example/PingController.java", "snippet": "ok"}
+  ],
+  "max_turns": 35
 }

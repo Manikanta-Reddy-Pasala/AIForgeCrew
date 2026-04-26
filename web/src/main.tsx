@@ -23,6 +23,7 @@ const Kanban       = lazy(() => import('./views/Kanban'));
 const Settings     = lazy(() => import('./views/Settings'));
 const Trace        = lazy(() => import('./views/Trace'));
 const WorkflowGraph = lazy(() => import('./views/WorkflowGraph'));
+const Perf          = lazy(() => import('./views/Perf'));
 
 function RouteFallback() {
   return (
@@ -72,6 +73,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { to: '/agents',   label: 'Agents',     icon: 'Agents' },
       { to: '/workflow', label: 'Workflow',   icon: 'Tool' },
+      { to: '/perf',     label: 'Perf',       icon: 'Tool' },
       { to: '/logs',     label: 'Live logs',  icon: 'Logs' },
     ],
   },
@@ -92,6 +94,7 @@ const TITLE_MAP: Record<string, string> = {
   '/memory':   'Memory',
   '/agents':   'Agents',
   '/workflow': 'Workflow',
+  '/perf':     'Perf',
   '/logs':     'Live logs',
 };
 
@@ -195,6 +198,7 @@ function Shell() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/trace/:id" element={<Trace />} />
             <Route path="/workflow" element={<WorkflowGraph />} />
+            <Route path="/perf"     element={<Perf />} />
           </Routes>
         </Suspense>
       </main>

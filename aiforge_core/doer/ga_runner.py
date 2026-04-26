@@ -478,16 +478,58 @@ def _make_handler_class():
                 pass
             return None
 
-        # ask_user no longer blocks — it pushes a question into the
-        # ticket as a 'doer_question' event and ends the run with a
-        # special stop_reason so the orchestrator can mark the ticket
-        # 'awaiting_user' instead of 'blocked'. Operator answers via
-        # the ticket comment thread; resubmit picks the answer up via
-        # planner.
+        # ask_user has TWO paths:
+        #   v1 (default): push 'doer_question' ticket event, end run
+        #     with awaiting_user, operator replies via ticket comment,
+        #     planner picks up the answer on resubmit.
+        #   v2 (AIFORGE_DOER_HITL_V2=1): hitl.request_input — pending
+        #     row goes to Postgres hitl_pending so the dispatcher
+        #     poll can resume the same session via hitl.resume(...)
+        #     instead of restarting the Doer from scratch.
         def do_ask_user(self, args, response):  # type: ignore[override]
             question = (args.get("question") or "").strip()
             candidates = args.get("candidates") or []
             ticket_obj = getattr(self.parent, "_aiforge_ticket", None)
+            ticket_identifier = (
+                getattr(ticket_obj, "identifier", "?") if ticket_obj else "?"
+            )
+
+            # HITL v2 path — park via hitl.request_input.
+            if os.environ.get("AIFORGE_DOER_HITL_V2", "0") == "1":
+                try:
+                    from aiforge_core.runtime import hitl as _hitl
+                    msg = (
+                        f"Doer needs operator input:\n\n{question}\n\n"
+                        + (f"Suggested options: {candidates}\n"
+                           if candidates else "")
+                        + "Reply with `aiforge:answer:<your answer>`."
+                    )
+                    snapshot = {
+                        "ticket": ticket_identifier,
+                        "cwd":    self.cwd,
+                        "turn":   getattr(self, "current_turn", 0),
+                        "candidates": candidates,
+                    }
+                    pending = _hitl.request_input(
+                        msg, ticket=ticket_identifier, snapshot=snapshot,
+                    )
+                    yield (f"[Doer harness] ask_user parked HITL "
+                           f"(pending {pending.id}).\n")
+                    return StepOutcome(
+                        {"status": "awaiting_user_hitl",
+                         "pending_id": pending.id,
+                         "msg": "parked via hitl.request_input"},
+                        next_prompt=(
+                            "Pending operator answer. Stop here — output "
+                            "a <summary> reflecting the open question, "
+                            "then end. Dispatcher will resume this run "
+                            "when an answer lands."
+                        ),
+                    )
+                except Exception as exc:
+                    yield f"[Doer harness] hitl_v2 failed: {exc}; falling back to v1\n"
+
+            # v1 path (default) — ticket-comment-then-resubmit.
             if ticket_obj is not None:
                 try:
                     body = (
@@ -1213,7 +1255,7 @@ def run_doer_via_ga(
     try:
         from aiforge_core.llm import cache_markers as _cm
         _provider_name = cfg.get("name", "").split("-")[0] or "openai"
-        _cm.apply_to_session(session, provider=_provider_name)
+        _cm.apply_to_session(session, provider=_provider_name, role="doer")
     except Exception as _exc:
         emit(log, "ga_runner.cache_markers_skipped",
              ticket=identifier, err=str(_exc)[:200])

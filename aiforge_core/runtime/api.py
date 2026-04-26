@@ -1649,7 +1649,7 @@ def _chat_via_ga_inner(query: str) -> dict:
             from aiforge_core.runtime import agent_config as _acfg
             _provider = _acfg.get("chat").get("provider", "local")
             from aiforge_core.llm import cache_markers as _cm
-            _cm.apply_to_session(session, provider=_provider)
+            _cm.apply_to_session(session, provider=_provider, role="chat")
         except Exception as _exc:
             print(f"[chat] cache_markers wiring skipped: {_exc}")
         client = ToolClient(session)

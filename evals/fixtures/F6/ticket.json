@@ -1,8 +1,8 @@
 {
   "identifier": "F6",
   "id": "F6",
-  "title": "Eval fixture F6 placeholder",
-  "body": "Placeholder fixture. Real ticket body to be authored before enabling this in CI.\n\n## Allowed files\n(see allowed.txt)\n",
+  "title": "Bugfix: Counter.increment() off by one",
+  "body": "`Counter.increment()` increments by 2 instead of 1. Fix it.\n\n## Allowed files\n- src/main/java/com/example/Counter.java\n",
   "project": "F6-fixture",
   "repo_path": "evals/fixtures/F6/repo"
 }

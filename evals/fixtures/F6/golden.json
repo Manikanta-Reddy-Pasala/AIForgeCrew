@@ -1,8 +1,14 @@
 {
-  "compile_green": false,
-  "edit_block_min": 0,
-  "files_must_change": [],
-  "must_contain": [],
-  "max_turns": 20,
-  "_note": "STUB — author the real golden before unflagging in CI"
+  "compile_green": true,
+  "edit_block_min": 1,
+  "files_must_change": [
+    "src/main/java/com/example/Counter.java"
+  ],
+  "must_contain": [
+    {"file": "src/main/java/com/example/Counter.java", "snippet": "value++"}
+  ],
+  "must_not_contain": [
+    {"file": "src/main/java/com/example/Counter.java", "snippet": "value += 2"}
+  ],
+  "max_turns": 20
 }

@@ -1,8 +1,14 @@
 {
-  "compile_green": false,
-  "edit_block_min": 0,
-  "files_must_change": [],
-  "must_contain": [],
-  "max_turns": 20,
-  "_note": "STUB — author the real golden before unflagging in CI"
+  "compile_green": true,
+  "edit_block_min": 2,
+  "files_must_change": [
+    "src/main/java/com/example/MathUtils.java",
+    "src/test/java/com/example/MathUtilsTest.java"
+  ],
+  "must_contain": [
+    {"file": "src/main/java/com/example/MathUtils.java", "snippet": "factorial"},
+    {"file": "src/main/java/com/example/MathUtils.java", "snippet": "IllegalArgumentException"},
+    {"file": "src/test/java/com/example/MathUtilsTest.java", "snippet": "@Test"}
+  ],
+  "max_turns": 30
 }

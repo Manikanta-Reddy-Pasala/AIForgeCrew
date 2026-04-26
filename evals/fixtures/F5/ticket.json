@@ -1,8 +1,8 @@
 {
   "identifier": "F5",
   "id": "F5",
-  "title": "Eval fixture F5 placeholder",
-  "body": "Placeholder fixture. Real ticket body to be authored before enabling this in CI.\n\n## Allowed files\n(see allowed.txt)\n",
+  "title": "Refactor: extract sumOf helper from Stats.average",
+  "body": "`Stats.average` inlines the sum loop. Extract sum logic into `private static long sumOf(int[] arr)`. Behaviour identical.\n\n## Allowed files\n- src/main/java/com/example/Stats.java\n",
   "project": "F5-fixture",
   "repo_path": "evals/fixtures/F5/repo"
 }

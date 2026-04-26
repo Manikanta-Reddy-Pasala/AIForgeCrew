@@ -1,1 +1,2 @@
-src/main/java/com/example/Placeholder.java
+src/main/java/com/example/Greeter.java
+src/main/java/com/example/Main.java

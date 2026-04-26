@@ -46,12 +46,14 @@ def stamp(
     return list(messages)
 
 
-def apply_to_session(session: object, *, provider: str) -> None:
-    """Monkey-patch ``session.raw_ask`` to stamp cache markers on the
-    outgoing messages list. KISS — wraps the existing generator so the
-    rest of the GA pipeline is untouched.
+def apply_to_session(session: object, *, provider: str,
+                     role: str = "?") -> None:
+    """Monkey-patch ``session.raw_ask`` to:
+      1. Stamp provider-aware cache markers on outgoing messages.
+      2. Emit pre_llm + post_llm hook events with wall_ms + token
+         delta so /api/runtime/perf shows LLM round-trip latency.
 
-    Idempotent: a second call detects our marker and skips re-wrap.
+    KISS: wraps the existing generator. Idempotent (skips re-wrap).
     """
     if not is_enabled():
         return
@@ -61,14 +63,57 @@ def apply_to_session(session: object, *, provider: str) -> None:
     model = getattr(session, "model", "")
 
     def _wrapped(messages, *a, **kw):
+        import time as _t
         try:
             messages = stamp(list(messages), model=model, provider=provider)
         except Exception:
             pass
-        return orig(messages, *a, **kw)
+        # pre_llm event — record_step only (no wall_ms yet).
+        try:
+            from aiforge_core.doer.ga_tools import hooks as _hk
+            _hk.emit_step(event="pre_llm", name=f"{provider}:{model}",
+                          wall_ms=0,
+                          extra={"role": role,
+                                 "msg_count": len(messages or [])})
+        except Exception:
+            pass
+        t0 = _t.time()
+        # raw_ask returns a generator — wrap so the post_llm event
+        # fires after the model finishes streaming, capturing wall_ms.
+        try:
+            gen = orig(messages, *a, **kw)
+        except Exception as exc:
+            _post_llm(role, provider, model, t0, exc=str(exc)[:200])
+            raise
+
+        def _drain():
+            try:
+                value = yield from gen
+            except Exception as exc:
+                _post_llm(role, provider, model, t0, exc=str(exc)[:200])
+                raise
+            _post_llm(role, provider, model, t0)
+            return value
+        return _drain()
 
     session.raw_ask = _wrapped  # type: ignore[assignment]
     session._aiforge_cache_wrapped = True  # type: ignore[attr-defined]
+
+
+def _post_llm(role: str, provider: str, model: str, t0: float,
+              *, exc: str | None = None) -> None:
+    import time as _t
+    try:
+        from aiforge_core.doer.ga_tools import hooks as _hk
+        wall_ms = int((_t.time() - t0) * 1000)
+        _hk.emit_step(
+            event="post_llm",
+            name=f"{provider}:{model}",
+            wall_ms=wall_ms,
+            extra={"role": role, **({"err": exc} if exc else {})},
+        )
+    except Exception:
+        pass
 
 
 def cache_key_for(model: str, role: str) -> str:

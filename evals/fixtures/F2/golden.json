@@ -1,8 +1,13 @@
 {
-  "compile_green": false,
-  "edit_block_min": 0,
-  "files_must_change": [],
-  "must_contain": [],
-  "max_turns": 20,
-  "_note": "STUB — author the real golden before unflagging in CI"
+  "compile_green": true,
+  "edit_block_min": 2,
+  "files_must_change": [
+    "src/main/java/com/example/Greeter.java",
+    "src/main/java/com/example/Main.java"
+  ],
+  "must_contain": [
+    {"file": "src/main/java/com/example/Greeter.java", "snippet": "greeting"},
+    {"file": "src/main/java/com/example/Main.java", "snippet": "greeting"}
+  ],
+  "max_turns": 25
 }
