@@ -196,9 +196,12 @@ class UnifiedContext:
             except Exception as exc:
                 bundle.errors.append(f"standards: {exc}")
 
-        # 5. Similar past tickets (Postgres text search on title+body)
+        # 5. Similar past tickets (Postgres text search on title+body).
+        # Key off entity (single token) — full search_query is too long
+        # for an ILIKE %...% match.
         try:
-            sims = _similar_tickets(intent.search_query(), limit=5)
+            sim_key = intent.entity or intent.reference_pattern or ""
+            sims = _similar_tickets(sim_key, intent.keywords[:3], limit=5)
             if sims:
                 bundle.similar_tickets = sims
                 bundle.similar_tickets_text = "\n".join(
@@ -322,28 +325,36 @@ def _extract_focal_files(hits: list[dict], worktree: str) -> list[str]:
     return out
 
 
-def _similar_tickets(query: str, *, limit: int = 5) -> list[dict]:
-    """Postgres ILIKE on title+body. Cheap and dependency-free.
-
-    Drops resolved=True bias — past blocked/done both useful.
-    """
-    if not query.strip():
+def _similar_tickets(primary: str, extra_keys: list[str] | None = None,
+                     *, limit: int = 5) -> list[dict]:
+    """Postgres ILIKE on title+body. Per-keyword OR query so any single
+    matching token surfaces the ticket. Past blocked/done both useful."""
+    keys = [k for k in [primary, *(extra_keys or [])] if k and k.strip()]
+    keys = list(dict.fromkeys(keys))[:5]   # de-dupe, cap
+    if not keys:
         return []
     try:
         from aiforge_core.runtime import tickets as _t
     except Exception:
         return []
-    pat = f"%{query[:80].replace('%', '')}%"
+    clauses = []
+    params: list = []
+    for k in keys:
+        pat = f"%{k.replace('%', '')[:60]}%"
+        clauses.append("title ILIKE %s")
+        clauses.append("body ILIKE %s")
+        params.extend([pat, pat])
+    where = " OR ".join(clauses)
     sql = (
         "SELECT identifier, title, status, "
         "       to_char(updated_at,'YYYY-MM-DD') AS updated "
-        "FROM tickets "
-        "WHERE title ILIKE %s OR body ILIKE %s "
+        f"FROM tickets WHERE {where} "
         "ORDER BY updated_at DESC LIMIT %s"
     )
+    params.append(limit)
     try:
         with _t._conn() as conn, conn.cursor() as cur:
-            cur.execute(sql, (pat, pat, limit))
+            cur.execute(sql, params)
             cols = [c.name for c in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
     except Exception:
