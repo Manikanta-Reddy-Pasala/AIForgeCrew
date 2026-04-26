@@ -395,10 +395,17 @@ def _doer_llm_config() -> dict:
     if os.environ.get("AIFORGE_DOER_TOP_K"):
         cfg["top_k"] = int(os.environ["AIFORGE_DOER_TOP_K"])
     # Thinking-mode toggle for models that support it (Gemma 4, Qwen3.x
-    # with --enable-thinking, etc.). LM Studio forwards
-    # chat_template_kwargs onto the underlying chat template.
-    if os.environ.get("AIFORGE_DOER_THINK", "0") == "1":
+    # with --enable-thinking, etc.). chat_template_kwargs flow through
+    # to the underlying chat template. Note: Gemma 4's default chat
+    # template has thinking ON — so AIFORGE_DOER_THINK=0 has to send
+    # an explicit `enable_thinking: false` rather than just omitting
+    # the kwarg (which is the right behaviour for non-thinking models
+    # but a silent NOOP on Gemma 4).
+    think_env = os.environ.get("AIFORGE_DOER_THINK")
+    if think_env == "1":
         cfg["chat_template_kwargs"] = {"enable_thinking": True}
+    elif think_env == "0":
+        cfg["chat_template_kwargs"] = {"enable_thinking": False}
     return cfg
 
 

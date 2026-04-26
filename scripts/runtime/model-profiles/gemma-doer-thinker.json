@@ -37,7 +37,7 @@
     "AIFORGE_DOER_MODEL": "/Users/manikanta/.lmstudio/models/mlx-community/gemma-4-31b-it-4bit",
     "AIFORGE_DOER_TEMP": "0.05",
     "AIFORGE_DOER_TOP_P": "0.92",
-    "AIFORGE_DOER_THINK": "1",
+    "AIFORGE_DOER_THINK": "0",
     "AIFORGE_PLANNER_BASE_URL": "http://127.0.0.1:1235",
     "AIFORGE_PLANNER_MODEL": "/Users/manikanta/.lmstudio/models/unsloth/Qwen3.6-27B-UD-MLX-4bit",
     "AIFORGE_PLANNER_TEMP": "0.3",

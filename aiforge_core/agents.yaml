@@ -163,7 +163,7 @@ agents:
         - test_status
         - turn_log
       max_turns: 40
-      max_wall_s: 700
+      max_wall_s: 1500
     tools:
       allowed:
         - file_read
