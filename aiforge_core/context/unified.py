@@ -90,12 +90,12 @@ class ContextBundle:
             )
         if self.focal_files:
             out.append(
-                "## Focal files (start here)\n"
+                "## Edit targets (write here — pattern enumerated in this file)\n"
                 + "\n".join(f"- {p}" for p in self.focal_files[:12])
             )
         if self.reference_files:
             out.append(
-                "## Reference files (mirror this pattern)\n"
+                "## Reference files (READ ONLY — do NOT edit; mention only)\n"
                 + "\n".join(f"- {p}" for p in self.reference_files[:8])
             )
         section("Project standards", self.standards_text)
@@ -242,26 +242,34 @@ class UnifiedContext:
             bundle.operator_memory_text = op
             bundle.sources_used.append("claude_memory")
 
-        # Reference-pattern grep — when the ticket says "like
-        # businessProducts" the doer's job is to mirror those files.
-        # Find them by literal token search inside the resolved
-        # worktree (deterministic, repo-scoped). Surfaces files even
-        # when the entity itself ('storeRegions') doesn't exist
-        # anywhere yet — the typical "add new collection" shape.
+        # Reference-pattern split — when the ticket says "like
+        # businessProducts", classify every file mentioning that token
+        # into EDIT TARGETS (where the pattern is enumerated in a
+        # collection literal / case / annotation — i.e. doer adds a
+        # sibling entry) vs REFERENCE-ONLY (passing mentions in
+        # imports, comments, calls — read-only context).
+        # Match-count heuristic, no AST. Detail in _classify_ref_files.
         if worktree and intent.reference_pattern:
-            ref_files = _grep_pattern_files(worktree,
-                                            intent.reference_pattern,
-                                            max_files=6)
-            if ref_files:
-                bundle.reference_files = ref_files
-                # Promote ref files to the FRONT of focal_files so the
-                # downstream prompt sees them first. They are the most
-                # actionable signal.
-                merged = list(dict.fromkeys(ref_files + bundle.focal_files))
-                bundle.focal_files = merged[:8]
-                bundle.sources_used.append("ref_pattern_grep")
-        # Fallback: filter focal_files by reference token in basename
-        # (older heuristic — still useful when grep finds nothing).
+            edits, refs = _classify_ref_files(
+                worktree, intent.reference_pattern, max_files=8,
+            )
+            if edits or refs:
+                # Edit targets become the *new* focal_files — the
+                # ScopeGuard write allowlist. Anything else stays in
+                # reference_files (read-only). Existing focal_files
+                # extracted from unified_query hits get pushed into
+                # reference too (they came from semantic search, not
+                # the literal-pattern enumeration check).
+                old_focal = bundle.focal_files or []
+                bundle.focal_files = edits[:4]
+                ref_combined = list(dict.fromkeys(refs + old_focal))
+                bundle.reference_files = [
+                    p for p in ref_combined if p not in bundle.focal_files
+                ][:6]
+                bundle.sources_used.append("ref_pattern_split")
+        # Fallback: when no reference_pattern OR splitter found
+        # nothing, keep the old basename-based reference filter so
+        # bundles still surface SOMETHING.
         if (intent.reference_pattern and bundle.focal_files
                 and not bundle.reference_files):
             ref_token = intent.reference_pattern.lower()
@@ -528,43 +536,105 @@ def _extract_focal_files(hits: list[dict], worktree: str) -> list[str]:
     return out
 
 
-def _grep_pattern_files(worktree: str, pattern: str, *,
-                        max_files: int = 6) -> list[str]:
-    """Grep the worktree for files literally containing ``pattern``.
+# ─── Reference-pattern → edit-targets vs reference-only splitter ───
+# Per-line classifier. No AST, no LLM — pattern set covers the literal-
+# collection idioms used in Java/Python/TS/Go for "this is where
+# entries are enumerated", which is what makes a file an EDIT TARGET
+# (the doer adds a new entry next to the reference one) rather than
+# a passing reference (import / comment / random method call).
 
-    Used when the ticket's reference_pattern (e.g. 'businessProducts')
-    points at code that already exists — the doer needs to mirror
-    those files. Far more reliable than regex-mining unified_query
-    hits because the file MUST actually contain the token. Drops
-    noise paths via the shared filter."""
+_REGISTRATION_RE = re.compile(
+    r"\b(?:Set|List|Map|Arrays|Collections|ImmutableSet|ImmutableList|"
+    r"ImmutableMap)\.(?:of|asList|copyOf)\b"
+    r"|case\s+\"[^\"]*\"\s*:"        # case "X":
+    r"|\benum\s+\w+"                 # enum declarations
+    r"|@\w+\s*\("                    # annotation with values (e.g. @Topic({"x"}))
+    r"|=\s*\{"                       # array literal opener
+    r"|\bRegister\(|\bregister\(",   # generic register fns
+)
+_WIRING_RE = re.compile(
+    r"\.equals\(\s*\""
+    r"|\bif\s*\(\s*\""
+    r"|\bcontains\(\s*\""
+    r"|\bswitch\s*\("
+    r"|@(?:Get|Post|Put|Delete|Request)Mapping\s*\("
+)
+_NOISE_LINE_RE = re.compile(
+    r"^\s*(?:import\b|//|/\*|\*\s|#\s|@param\b|@see\b|@throws\b)"
+)
+
+
+def _classify_ref_files(worktree: str, pattern: str, *,
+                        max_files: int = 8) -> tuple[list[str], list[str]]:
+    """Split files containing ``pattern`` into (edit_targets, reference).
+
+    Per-file score = 5×REGISTRATION + 2×WIRING + 1×CALL + 0×NOISE
+    (where each axis is the count of lines matching that classifier).
+
+    edit_targets : score ≥ 5 — file enumerates / registers the pattern;
+                   doer should add a new entry adjacent to the existing
+                   one. Top 4 by score.
+    reference    : score < 5 — file mentions pattern in passing
+                   (import, comment, signature). Top (max_files - 4) by
+                   score, kept for read-only context.
+
+    Empty (worktree=None / pattern=empty / ripgrep absent) returns
+    ``([], [])`` — caller falls back to whatever it had."""
     if not worktree or not pattern.strip() or len(pattern) < 3:
-        return []
+        return [], []
     import subprocess
     try:
-        # ripgrep is on every aiforge host; -l = files-with-matches,
-        # -i = case-insensitive (but we'd rather match exactly so skip)
-        # --max-count=1 short-circuits per file.
+        # -n: line numbers · --no-heading: one path per line · -F: literal
         proc = subprocess.run(
-            ["rg", "-l", "--max-count=1",
+            ["rg", "-n", "-F", "--no-heading",
              "--type-add=code:*.{java,py,ts,tsx,js,kt,go}",
              "--type=code", pattern, worktree],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=25,
         )
         if proc.returncode not in (0, 1):
-            return []
-        paths = [
-            p.strip() for p in (proc.stdout or "").splitlines() if p.strip()
-        ]
+            return [], []
     except Exception:
-        return []
-    out: list[str] = []
-    for p in paths:
-        if _is_noise_path(p):
+        return [], []
+
+    per_file: dict[str, dict[str, int]] = {}
+    for raw in (proc.stdout or "").splitlines():
+        # Format: path:lineno:content
+        try:
+            path, _ln, content = raw.split(":", 2)
+        except ValueError:
             continue
-        out.append(p)
-        if len(out) >= max_files:
-            break
-    return out
+        if _is_noise_path(path):
+            continue
+        bucket = per_file.setdefault(path, {
+            "registration": 0, "wiring": 0, "call": 0, "noise": 0,
+            "score": 0, "lines": 0,
+        })
+        bucket["lines"] += 1
+        if _NOISE_LINE_RE.match(content):
+            bucket["noise"] += 1
+            continue
+        if _REGISTRATION_RE.search(content):
+            bucket["registration"] += 1
+            continue
+        if _WIRING_RE.search(content):
+            bucket["wiring"] += 1
+            continue
+        bucket["call"] += 1
+
+    for path, b in per_file.items():
+        b["score"] = 5 * b["registration"] + 2 * b["wiring"] + 1 * b["call"]
+
+    ranked = sorted(per_file.items(), key=lambda kv: -kv[1]["score"])
+
+    EDIT_THRESHOLD = 5
+    edit_targets: list[str] = []
+    reference: list[str] = []
+    for path, b in ranked:
+        if b["score"] >= EDIT_THRESHOLD and len(edit_targets) < 4:
+            edit_targets.append(path)
+        elif len(reference) < max(0, max_files - len(edit_targets)):
+            reference.append(path)
+    return edit_targets, reference
 
 
 def _similar_tickets(primary: str, extra_keys: list[str] | None = None,
