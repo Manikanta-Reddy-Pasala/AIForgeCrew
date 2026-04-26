@@ -149,21 +149,29 @@ Hard rules:
   No find / grep / ls / cat — read files via file_read instead.
 - Use file_patch for narrow diffs (preferred). Use file_write only for
   brand-new files or full rewrites.
-- After each edit, run `mvn -DskipTests compile` via code_run inside
-  the worktree. If compile fails, read the error and make ONE more
-  file_patch. Do NOT loop the same edit twice.
-- Do NOT emit `<summary>` until compile is green AND at least one
-  file_patch has succeeded.
+- Compile ONCE at the very end, AFTER every patch is applied — not
+  after each individual file_patch. Doing mvn between edits doubles
+  wall-clock (mvn full compile = 60-180s). The harness only checks
+  the LAST compile for green/red.
+- If the final compile fails, read the error and fix in ONE more
+  file_patch + ONE more compile. Maximum two compile calls per run.
+- Do NOT emit `<summary>` until the final compile is green AND at
+  least one file_patch has succeeded.
 
 Work in the provided worktree path. Every code_run command must
 `cd <worktree>` first.
 
 Standard fast workflow (do this exactly):
   1. file_read each entry under `## Allowed files`.
-  2. file_patch the change required by the acceptance criteria.
-  3. code_run `cd <worktree> && mvn -DskipTests compile`.
+  2. file_patch ALL the changes required by the acceptance criteria
+     (often across multiple files: controller + service + repo).
+     Apply every patch BEFORE compiling.
+  3. ONE code_run `cd <worktree> && mvn -DskipTests compile` — only
+     after every file_patch is in. mvn is the most expensive call;
+     do it as few times as possible.
   4. On BUILD SUCCESS: emit `<summary>BUILD SUCCESS — <files patched></summary>` and STOP.
-  5. On BUILD FAILURE: read the compile error, file_patch the fix, recompile. Repeat at most twice.
+  5. On BUILD FAILURE: read the compile error, ONE more file_patch
+     to fix it, ONE more mvn compile. Hard cap: two mvn compiles per run.
 """
 
 
@@ -221,6 +229,9 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"already supplied paths. file_read them.\n"
         f"- Reading the same file twice. Cache it.\n"
         f"- Running mvn before any patch lands.\n"
+        f"- Running mvn between every individual file_patch. Apply "
+        f"  ALL patches first, then ONE compile. mvn is 60-180s per run.\n"
+        f"- More than two mvn compile calls in a single run.\n"
         f"- Emitting <summary> with edit_block_ok=0."
     )
 
@@ -286,6 +297,46 @@ def _make_handler_class():
                 next_prompt=("Do not call start_long_term_update. Continue editing "
                              "until compile is green, then stop."),
             )
+
+        def do_code_run(self, args, response):  # type: ignore[override]
+            """Wrap GA's code_run so we cap mvn invocations to 2 per ticket
+            (apply-all-patches + retry-on-fail) and refuse grep/find/ls
+            shell scripts the prompt forbids. Caps stop the doer
+            burning 2-4 minutes per redundant mvn cycle."""
+            script = (args.get("script") or "")
+            low = script.lower()
+            # Refuse `find` / `grep` / `ls` / `locate` / `cat` shell scripts —
+            # the prompt directs the model to use file_read for files the
+            # Planner already enumerated.
+            for forbidden in (" grep ", " find ", " ls ", " locate ", " cat "):
+                if forbidden in (" " + low + " "):
+                    if "mvn" not in low:  # mvn output may pipe through grep
+                        yield ("[Doer harness] code_run rejected — "
+                               "no shell discovery (grep/find/ls/cat). "
+                               "Use file_read on the allowed paths.\n")
+                        return StepOutcome(
+                            {"status": "error",
+                             "msg": "shell discovery forbidden; use file_read"},
+                            next_prompt=("Use file_read on each allowed file. "
+                                         "Do not grep/find/ls/cat from code_run."),
+                        )
+            if "mvn" in low:
+                self._counters["mvn_runs"] = (
+                    self._counters.get("mvn_runs", 0) + 1
+                )
+                if self._counters["mvn_runs"] > 2:
+                    yield ("[Doer harness] mvn cap hit (2 compiles max). "
+                           "Stop running mvn — finalize edits or summary.\n")
+                    return StepOutcome(
+                        {"status": "error",
+                         "msg": "mvn cap exceeded (2 per ticket)"},
+                        next_prompt=("You've already run mvn twice. Either "
+                                     "the build is green and you should "
+                                     "<summary>, or your patches are wrong "
+                                     "and need a different approach. Do not "
+                                     "compile again."),
+                    )
+            yield from super().do_code_run(args, response)
 
         def do_ask_explorer(self, args, response):  # type: ignore[override]
             """Spawn a read-only GA subprocess to answer a focused
