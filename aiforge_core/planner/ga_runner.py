@@ -426,44 +426,52 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
                                   flags=_re.DOTALL).strip()
                 plan_text = cleaned or raw
         # Trim any visible chain-of-thought preamble. Qwen3.6 / gemma
-        # emit "Here's a thinking process: ..." straight into content
-        # when reasoning channel isn't separated by the chat template.
-        # The actual plan starts with a real ## Goal HEADER followed
-        # by content on the next line. Match that pattern, NOT the
-        # first occurrence of '## Goal' (which often appears inside
-        # the model's constraint-list quoting block as `## Goal`).
+        # emit "Here's a thinking process: ..." into content when the
+        # reasoning channel isn't separated by the chat template.
+        # First-`## Goal` matching is unreliable because the model
+        # quotes the section names in its own constraint enumeration.
+        # Instead: find the canonical 4-section block by matching a
+        # sequence of all four headers in order. Last such match wins
+        # (the real plan, not its draft).
         if plan_text:
             import re as _re_p
-            # Real header: ## Goal at line start, optionally with
-            # backticks, followed by newline + non-empty content line
-            # that doesn't itself look like another constraint quote.
-            m = _re_p.search(
-                r"(?:^|\n)`?##\s*Goal`?\s*\n(?!`)",
-                plan_text,
+            canonical = _re_p.compile(
+                r"^[ \t]*##\s*Goal[ \t]*\n"
+                r"[\s\S]*?"
+                r"^[ \t]*##\s*Files[ \t]*\n"
+                r"[\s\S]*?"
+                r"^[ \t]*##\s*Steps[ \t]*\n"
+                r"[\s\S]*?"
+                r"^[ \t]*##\s*Acceptance",
+                _re_p.MULTILINE,
             )
-            if m:
-                # Anchor at the literal '## Goal' inside the match —
-                # drop any leading backtick to keep the section clean.
-                start = m.start()
-                # Skip leading whitespace / backtick to land on '##'.
-                while start < len(plan_text) and plan_text[start] in (
-                        "\n", "`", " ", "\t"):
-                    start += 1
-                plan_text = plan_text[start:].strip()
-        # And cut anything after the four canonical sections close —
-        # models often append "Self-Correction" / "Generating." prose.
+            matches = list(canonical.finditer(plan_text))
+            if matches:
+                start = matches[-1].start()
+                # Backtrack to the start of the line containing '## Goal'
+                # then dedent leading whitespace from each canonical
+                # header (model often indents inside its draft block).
+                line_start = plan_text.rfind("\n", 0, start) + 1
+                plan_text = plan_text[line_start:].strip()
+                plan_text = _re_p.sub(
+                    r"^[ \t]+(##\s*(?:Goal|Files|Steps|Acceptance"
+                    r"\s*criteria))",
+                    r"\1", plan_text, flags=_re_p.MULTILINE,
+                )
+        # Cut anything after the four canonical sections close — models
+        # often append "Self-Correction" / "Refined Steps" / "Check
+        # Constraints" prose AFTER the plan.
         if plan_text:
             import re as _re2
             tail_match = _re2.search(
                 r"\n\n(?:Self-Correction|Generating\.|Refined Steps|"
-                r"\*\*\*|---|`?\d+\.\s+\*\*Check Constraints"
-                r"|## (?!Goal|Files|Steps|Acceptance))",
+                r"\*\*\*|---|\d+\.\s+\*\*(?:Check|Self|Final)|"
+                r"## (?!Goal|Files|Steps|Acceptance))",
                 plan_text,
             )
             if tail_match:
                 plan_text = plan_text[:tail_match.start()].strip()
-        # Final defensive strip: remove stray backticks around section
-        # headers (`## Goal` → ## Goal) so plan_mode.py parses cleanly.
+        # Defensive: strip stray backticks around section headers.
         if plan_text:
             import re as _re3
             plan_text = _re3.sub(
