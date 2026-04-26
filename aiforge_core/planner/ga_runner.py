@@ -428,24 +428,48 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
         # Trim any visible chain-of-thought preamble. Qwen3.6 / gemma
         # emit "Here's a thinking process: ..." straight into content
         # when reasoning channel isn't separated by the chat template.
-        # The actual plan always starts with `## Goal` (system prompt
-        # rule). Find it and drop everything before.
-        if plan_text and "## Goal" in plan_text:
-            plan_text = plan_text[plan_text.index("## Goal"):].strip()
+        # The actual plan starts with a real ## Goal HEADER followed
+        # by content on the next line. Match that pattern, NOT the
+        # first occurrence of '## Goal' (which often appears inside
+        # the model's constraint-list quoting block as `## Goal`).
+        if plan_text:
+            import re as _re_p
+            # Real header: ## Goal at line start, optionally with
+            # backticks, followed by newline + non-empty content line
+            # that doesn't itself look like another constraint quote.
+            m = _re_p.search(
+                r"(?:^|\n)`?##\s*Goal`?\s*\n(?!`)",
+                plan_text,
+            )
+            if m:
+                # Anchor at the literal '## Goal' inside the match —
+                # drop any leading backtick to keep the section clean.
+                start = m.start()
+                # Skip leading whitespace / backtick to land on '##'.
+                while start < len(plan_text) and plan_text[start] in (
+                        "\n", "`", " ", "\t"):
+                    start += 1
+                plan_text = plan_text[start:].strip()
         # And cut anything after the four canonical sections close —
         # models often append "Self-Correction" / "Generating." prose.
         if plan_text:
             import re as _re2
-            # Keep up to (but not past) the LAST `## Acceptance criteria`
-            # block; truncate at the next non-section heading or
-            # "Self-Correction" / "Generating." marker.
             tail_match = _re2.search(
-                r"\n\n(?:Self-Correction|Generating\.|"
-                r"\*\*\*|---|## (?!Goal|Files|Steps|Acceptance))",
+                r"\n\n(?:Self-Correction|Generating\.|Refined Steps|"
+                r"\*\*\*|---|`?\d+\.\s+\*\*Check Constraints"
+                r"|## (?!Goal|Files|Steps|Acceptance))",
                 plan_text,
             )
             if tail_match:
                 plan_text = plan_text[:tail_match.start()].strip()
+        # Final defensive strip: remove stray backticks around section
+        # headers (`## Goal` → ## Goal) so plan_mode.py parses cleanly.
+        if plan_text:
+            import re as _re3
+            plan_text = _re3.sub(
+                r"`(##\s*(?:Goal|Files|Steps|Acceptance criteria))`",
+                r"\1", plan_text,
+            )
     except Exception as exc:
         emit(log, "ga_planner.exception", ticket=identifier,
              error=str(exc)[:300])
