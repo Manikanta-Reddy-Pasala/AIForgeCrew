@@ -186,7 +186,14 @@ def _memory_search(text: str, *, role: str | None, top_k: int) -> list[dict]:
 
 
 def _ticket_brief(identifier: str) -> dict | None:
-    res = _mcp_call("ticket_brief", {"ticket_id": identifier})
+    """Fetch ticket brief. Tries local Postgres first (canonical),
+    falls back to graph_mcp ticket_brief (Linear/Jira proxy) when
+    not found locally.
+    """
+    local = _ticket_local(identifier)
+    if local:
+        return local
+    res = _mcp_call("ticket_brief", {"id": identifier})
     if not res:
         return None
     rows = _unpack_mcp_rows(res)
@@ -195,6 +202,49 @@ def _ticket_brief(identifier: str) -> dict | None:
     first = rows[0]
     first.setdefault("score", 1.0)
     return first
+
+
+def _ticket_local(identifier: str) -> dict | None:
+    """Direct read from local Postgres tickets + recent events.
+    Bypasses graph_mcp's external-provider assumption."""
+    try:
+        import psycopg
+        from aiforge_core.runtime.config import AIFORGE_DSN
+        from psycopg.rows import dict_row
+        with psycopg.connect(AIFORGE_DSN, connect_timeout=2,
+                             row_factory=dict_row) as c, c.cursor() as cur:
+            cur.execute(
+                "SELECT id, identifier, title, status, body, "
+                "       to_char(created_at,'YYYY-MM-DD HH24:MI') AS created, "
+                "       to_char(updated_at,'YYYY-MM-DD HH24:MI') AS updated "
+                "FROM tickets WHERE identifier = %s LIMIT 1",
+                (identifier,),
+            )
+            t = cur.fetchone()
+            if not t:
+                return None
+            cur.execute(
+                "SELECT agent_role, kind, body, "
+                "       to_char(created_at,'HH24:MI:SS') AS ts "
+                "FROM ticket_events WHERE ticket_id = %s "
+                "ORDER BY created_at DESC LIMIT 8",
+                (t["id"],),
+            )
+            ev = cur.fetchall() or []
+        ev_lines = "\n".join(
+            f"  [{(e['ts'] or '?'):8s} {(e['agent_role'] or '?'):10s} {(e['kind'] or '?'):16s}] "
+            f"{((e['body'] or '')[:140]).replace(chr(10),' ')}"
+            for e in ev
+        )
+        text = (
+            f"{t['identifier']} · {t['status']} · {t['title']}\n"
+            f"Created: {t['created']} · Updated: {t['updated']}\n\n"
+            f"Body:\n{(t['body'] or '')[:600]}\n\n"
+            f"Recent events:\n{ev_lines or '(none)'}"
+        )
+        return {"text": text, "score": 1.0, "source_uri": f"ticket:{identifier}"}
+    except Exception:
+        return None
 
 
 def _mcp_call(tool: str, args: dict) -> Any:

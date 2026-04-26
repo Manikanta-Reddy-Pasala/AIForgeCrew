@@ -1111,10 +1111,10 @@ def _collect_chat_context(query: str, role: str, top_k: int) -> dict:
 
     # If the query mentions a ticket (ONE-xx), pull its brief.
     for m in _TICKET_RE.finditer(query):
-        r = _call_mcp_sync("ticket_brief", {"identifier": m.group(1)})
+        r = _call_mcp_sync("ticket_brief", {"id": m.group(1)})
         if r:
             mcp_results.append({"tool": "ticket_brief",
-                                "args": {"identifier": m.group(1)},
+                                "args": {"id": m.group(1)},
                                 "result": _extract_text(r)})
             break  # one ticket brief is enough
 
@@ -1297,8 +1297,12 @@ _CHAT_TOOLS_SCHEMA = [
 # rest. Keeping the schema thin saves prompt tokens at chat scale.
 _GRAPH_MCP_SCHEMAS: list[dict] = [
     {"name": "sym_lookup", "args": ["name", "kind", "repo"]},
-    {"name": "ticket_brief", "args": ["ticket_id"]},
-    {"name": "ticket_fetch", "args": ["ticket_id"]},
+    # graph_rag ticket tools require `id` (not `ticket_id`) per their
+    # input_schema. Mismatch caused chat to get "Input validation
+    # error: 'id' is a required property" on every ticket-specific
+    # query. Keep `text` arg on ticket_brief for ad-hoc problem briefs.
+    {"name": "ticket_brief", "args": ["id", "text"]},
+    {"name": "ticket_fetch", "args": ["id"]},
     {"name": "related_memories", "args": ["query", "top_k"]},
     {"name": "find_doc", "args": ["query", "top_k"]},
     {"name": "read_source", "args": ["path", "start_line", "end_line"]},
@@ -1617,11 +1621,31 @@ def _chat_via_ga_inner(query: str) -> dict:
                 import time as _t
                 clean = {k: v for k, v in args.items() if k != "_index"}
                 t0 = _t.time()
-                if origin[0] == "graph":
-                    result = _call_graph_mcp_sync(origin[1], clean)
-                else:
-                    from .mcp_http import call_tool as _ops_call
-                    result = _ops_call(origin[1], origin[2], clean)
+                # Local-first ticket fetch — graph_mcp's ticket_brief
+                # / ticket_fetch hit external Linear/Jira providers
+                # which fail with DNS errors on NUC. Our tickets live
+                # in local Postgres; surface them direct.
+                result = None
+                if (origin[0] == "graph"
+                        and origin[1] in ("ticket_brief", "ticket_fetch")):
+                    ident = (clean.get("id") or clean.get("ticket_id")
+                             or clean.get("identifier") or "").strip()
+                    if ident:
+                        try:
+                            from aiforge_core.memory.unified_query import (
+                                _ticket_local as _tl,
+                            )
+                            local = _tl(ident)
+                            if local:
+                                result = local.get("text") or json.dumps(local)
+                        except Exception:
+                            result = None
+                if result is None:
+                    if origin[0] == "graph":
+                        result = _call_graph_mcp_sync(origin[1], clean)
+                    else:
+                        from .mcp_http import call_tool as _ops_call
+                        result = _ops_call(origin[1], origin[2], clean)
                 wall_ms = int((_t.time() - t0) * 1000)
                 handler_self._record(tname, clean, data=result,
                                      wall_ms=wall_ms)
