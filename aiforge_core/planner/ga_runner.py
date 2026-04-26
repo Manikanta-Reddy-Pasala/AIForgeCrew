@@ -110,6 +110,82 @@ def _load_tools_schema(ga_dir: str) -> list[dict]:
     ]
 
 
+def _extract_pattern_snippets(files: list[str], pattern: str, *,
+                              context_before: int = 3,
+                              context_after: int = 10,
+                              max_per_file: int = 2,
+                              max_total_chars: int = 6000) -> str:
+    """Return ripgrep-with-context snippets so the planner sees REAL
+    code examples — not just file paths. For each edit_target, the
+    top 2 occurrences of ``pattern`` get printed with surrounding
+    lines (`-B 3 -A 10`). Capped at ~6K chars total so we don't
+    blow the prompt.
+
+    Empty pattern or empty files → returns ''."""
+    if not files or not pattern.strip() or len(pattern) < 3:
+        return ""
+    pattern = pattern.strip().rstrip(".,;:!?\"'`)]}>")
+    import subprocess
+    chunks: list[str] = []
+    total = 0
+    for path in files[:4]:
+        if not os.path.isfile(path):
+            continue
+        try:
+            proc = subprocess.run(
+                ["rg", "-F", "-n",
+                 f"-B{context_before}", f"-A{context_after}",
+                 f"--max-count={max_per_file}",
+                 pattern, path],
+                capture_output=True, text=True, timeout=8,
+            )
+            if proc.returncode not in (0, 1):
+                continue
+            out = (proc.stdout or "").strip()
+            if not out:
+                continue
+        except Exception:
+            continue
+        rel = os.path.basename(path)
+        block = f"--- {rel} (showing `{pattern}` in context) ---\n{out}\n"
+        if total + len(block) > max_total_chars:
+            break
+        chunks.append(block)
+        total += len(block)
+    return "\n".join(chunks)
+
+
+def _resolve_project(ticket: object) -> str:
+    """Resolve repo/project name in priority order:
+
+      1. ticket.metadata.enrichment.repo  — set by IntentLayer at POST
+         time from the actual ticket body (longest-name body match,
+         most reliable signal we have).
+      2. ticket.project                   — explicit operator override.
+      3. ticket.metadata.enrichment.intent.repo_hint — LLM guess.
+      4. fallback: empty string → caller logs ga_planner.repo_missing
+         and bails (better than silently dispatching to the wrong repo).
+
+    Was previously hardcoded to 'PosClientBackend' which silently sent
+    every empty-project ticket to the wrong worktree (ONE-59 storeRegions
+    /mongoEventListner ended up routed to PosClientBackend)."""
+    md = getattr(ticket, "metadata", None) or {}
+    enr = md.get("enrichment") if isinstance(md, dict) else None
+    if isinstance(enr, dict):
+        repo = (enr.get("repo") or "").strip()
+        if repo:
+            return repo
+    project = (getattr(ticket, "project", None) or "").strip()
+    if project:
+        return project
+    if isinstance(enr, dict):
+        intent = enr.get("intent") or {}
+        hint = (intent.get("repo_hint") or "").strip()
+        if hint:
+            return hint
+    return ""
+
+
 def _build_planner_prompt(ticket: object, repo_root: str) -> str:
     body = getattr(ticket, "body", "") or ""
     title = getattr(ticket, "title", "") or ""
@@ -179,7 +255,7 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
 
     t_start = time.time()
     identifier = getattr(ticket, "identifier", "?")
-    project = getattr(ticket, "project", "") or "PosClientBackend"
+    project = _resolve_project(ticket)
     cfg = _planner_llm_config()
     base_url = cfg["apibase"].rstrip("/")
     if not base_url.endswith("/v1"):
@@ -193,32 +269,88 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
     plan_path = os.path.join(plan_dir, "plan.md")
 
     system_prompt = (
-        "You are the AIForge planner. Read the ticket and emit a "
-        "concise markdown plan for the doer to follow.\n\n"
-        "Output ONLY the markdown plan — no preface, no fences, no "
-        "explanation.\n\n"
-        "The plan MUST follow this exact shape so GenericAgent's plan-"
-        "mode can track it:\n\n"
-        "## Goal\n<1-2 lines>\n\n"
-        "## Files\n- <repo-relative path>\n\n"
+        "You are the AIForge planner.\n\n"
+        "RULES — failure to follow these = invalid plan, doer rejects:\n"
+        "  1. Output STARTS literally with `## Goal` — no preface, no\n"
+        "     `Here's a thinking process`, no fences, no commentary.\n"
+        "  2. Use the `## Files` block VERBATIM from the user prompt's\n"
+        "     '## Edit targets' section — do NOT invent paths, do NOT\n"
+        "     swap to other repos. The IntentLayer already classified\n"
+        "     them; trust the list.\n"
+        "  3. ≤ 1500 chars total.\n"
+        "  4. No prose outside the four section bodies.\n\n"
+        "Required shape (copy literally, fill the bracketed slots):\n\n"
+        "## Goal\n<1-2 lines naming the entity + outcome>\n\n"
+        "## Files\n- <copy each line from ## Edit targets>\n\n"
         "## Steps\n"
         "- [ ] step 1: concrete action with file path\n"
         "- [ ] step 2: ...\n"
-        "- [ ] step N: run mvn -DskipTests compile from worktree\n\n"
-        "## Acceptance criteria\n<copy verbatim from ticket body>\n\n"
-        "Each step must be a single line starting with `- [ ]`. The "
-        "doer marks steps `[x]` as it completes them; plan-mode auto-"
-        "exits when all steps are checked. Keep total under 1500 "
-        "characters."
+        "- [ ] step N: run `mvn -DskipTests compile` from worktree\n\n"
+        "## Acceptance criteria\n<copy verbatim from ticket body>\n"
     )
     body = getattr(ticket, "body", "") or ""
     title = getattr(ticket, "title", "") or ""
+
+    # Pull edit_targets + reference_files out of metadata.enrichment
+    # written by IntentLayer at POST time — these are repo-scoped and
+    # already noise-filtered. Hand them to the planner verbatim so it
+    # cannot guess the wrong repo.
+    md = getattr(ticket, "metadata", None) or {}
+    enr = md.get("enrichment") if isinstance(md, dict) else None
+    edit_targets: list[str] = []
+    reference_files: list[str] = []
+    intent_block = "(no enrichment)"
+    snippets_block = ""
+    if isinstance(enr, dict):
+        edit_targets = list(enr.get("focal_files") or [])
+        reference_files = list(enr.get("reference_files") or [])
+        intent = enr.get("intent") or {}
+        intent_block = (
+            f"action: {intent.get('action','?')} · "
+            f"entity: {intent.get('entity','?')!r} · "
+            f"reference_pattern: {intent.get('reference_pattern','?')!r} · "
+            f"keywords: {', '.join(intent.get('keywords') or [])[:200]}"
+        )
+        # Real code snippets — show the planner the surrounding 13 lines
+        # of each `reference_pattern` occurrence in the edit_targets.
+        # Far stronger signal than a bare list of paths because the
+        # model SEES exactly what idiom it must mirror.
+        ref_pattern = (intent.get("reference_pattern") or "").strip()
+        if ref_pattern and edit_targets:
+            snippets_block = _extract_pattern_snippets(
+                edit_targets, ref_pattern,
+                context_before=3, context_after=10,
+                max_per_file=2, max_total_chars=6000,
+            )
+    edit_block = (
+        "\n".join(f"- {p}" for p in edit_targets[:6])
+        if edit_targets else "(none — planner must derive)"
+    )
+    ref_block = (
+        "\n".join(f"- {p}" for p in reference_files[:6])
+        if reference_files else "(none)"
+    )
+    snippets_section = (
+        f"## Reference snippets (mirror this idiom for the new entity)\n"
+        f"```\n{snippets_block}\n```\n\n"
+        if snippets_block else ""
+    )
     user_prompt = (
         f"# Ticket: {title}\n\n"
         f"Project: {project}\n"
         f"Worktree: {repo_root}\n\n"
+        f"## Intent (auto-resolved)\n{intent_block}\n\n"
         f"## Ticket body (verbatim)\n{body}\n\n"
-        f"## Output\nReturn the four-section markdown plan only."
+        f"## Edit targets (write here — the doer's allow-list)\n"
+        f"{edit_block}\n\n"
+        f"## Reference files (READ ONLY — context only)\n{ref_block}\n\n"
+        f"{snippets_section}"
+        f"## Output\n"
+        f"Return the four-section markdown plan ONLY. Start with `## Goal`. "
+        f"For each edit_target, write a step that says EXACTLY where to add "
+        f"the new entry by mirroring the snippet above (e.g. 'add "
+        f"\"storeRegions\" to UPDATE_SUPPORTED_COLLECTIONS Set on line 86 "
+        f"of DebeziumChangeEventConsumer.java')."
     )
 
     emit(log, "ga_planner.start", ticket=identifier,
@@ -318,7 +450,7 @@ def _legacy_run_planner_via_ga_loop(ticket: object, log: object | None = None) -
     """
     t_start = time.time()
     identifier = getattr(ticket, "identifier", "?")
-    project = getattr(ticket, "project", "") or "PosClientBackend"
+    project = _resolve_project(ticket)
 
     ga_dir = _ga_dir()
     sys.path.insert(0, ga_dir)
