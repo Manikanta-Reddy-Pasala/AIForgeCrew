@@ -303,14 +303,27 @@ def _make_handler_class():
             (apply-all-patches + retry-on-fail) and refuse grep/find/ls
             shell scripts the prompt forbids. Caps stop the doer
             burning 2-4 minutes per redundant mvn cycle."""
-            script = (args.get("script") or "")
-            low = script.lower()
+            # GA reads code from args.code OR args.script OR extracts a
+            # ```...``` block from the response. Mirror that order so
+            # our gating sees what GA will actually run.
+            code = args.get("code") or args.get("script") or ""
+            if not code and response:
+                # Quick fallback: scan the response for the LAST fenced
+                # block. We don't need surgical extraction — substring
+                # match against our forbidden tokens is enough.
+                code = response
+            low = (code or "").lower()
             # Refuse `find` / `grep` / `ls` / `locate` / `cat` shell scripts —
             # the prompt directs the model to use file_read for files the
-            # Planner already enumerated.
-            for forbidden in (" grep ", " find ", " ls ", " locate ", " cat "):
-                if forbidden in (" " + low + " "):
-                    if "mvn" not in low:  # mvn output may pipe through grep
+            # Planner already enumerated. mvn output piped through `grep`
+            # is OK so we keep `mvn` an escape hatch.
+            for forbidden in ("grep ", "find ", "ls ", "locate ", "cat "):
+                # Match at line start or after whitespace/`;`/`&&`/`|` —
+                # avoids matching against random words like "false" or
+                # "Class" containing the substring.
+                import re as _re
+                if _re.search(rf"(?:^|[\s;|&]){_re.escape(forbidden)}", low):
+                    if "mvn" not in low:
                         yield ("[Doer harness] code_run rejected — "
                                "no shell discovery (grep/find/ls/cat). "
                                "Use file_read on the allowed paths.\n")
