@@ -175,8 +175,26 @@ If after turn 3 you still have edit_block_ok=0 you are off-track. STOP
 exploring. file_read your allowed files. file_patch the change.
 
 ==== TOOL CHEAT SHEET ====
+
+** PARALLELISM (mandatory — Claude CLI / Cursor style) **
+When you need to read OR explore N files, do ALL of them in ONE turn:
+  - batch calls=[{tool: file_read, args: {...}}, {tool: file_read, ...},
+                  {tool: glob, ...}, {tool: grep, ...}]
+                       → fans out read-side tools concurrently. ONE turn
+                         = N parallel reads. NEVER read files one-per-turn
+                         when the ticket already lists them under
+                         '## Edit targets' or '## Reference files'.
+  - bulk_edit edits=[…]  → as below, but for writes.
+  - dispatch_subagent multi=[…] → up to 4 read-only explorers in parallel
+                         when you need narrative answers across the repo.
+
+Do NOT serialize: one file_read per turn = wasted context. The first
+LLM turn after task receipt should be a single `batch` covering every
+file under '## Edit targets' AND '## Reference files'.
+
 - file_read PATH       → returns line-numbered content; cached per run.
-                         Don't re-request the same file.
+                         Don't re-request the same file. Prefer batch
+                         when reading multiple.
 - file_patch / file_write → make ONE edit. file_patch returns a diff
                          block AFTER the edit so you can verify it
                          landed correctly.
