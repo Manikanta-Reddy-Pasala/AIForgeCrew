@@ -106,14 +106,34 @@ class AiForgeIntentAgent(BaseAgent):
                      .get("force_intent_refresh"))
         existing = None if force else _existing_enrichment(ticket)
         if existing:
+            i = existing.get("intent", {})
             emit(log, "adk.intent.cached",
                  ticket=ticket.identifier,
-                 entity=existing.get("intent", {}).get("entity"))
+                 entity=i.get("entity"))
+            tickets_mod.add_event(
+                ticket.id, "intent", "stage_done",
+                body=(f"intent done in {round(time.time() - t_stage_start, 2)}s "
+                      f"(cached) | action={i.get('action')} "
+                      f"entity={i.get('entity')!r} "
+                      f"ref={i.get('reference_pattern')!r} "
+                      f"focal_files={len(existing.get('focal_files') or [])} "
+                      f"similar={len(existing.get('similar_tickets') or [])} "
+                      f"t3={len(existing.get('t3_recipes') or [])} "
+                      f"sources={','.join(existing.get('sources_used') or [])}"),
+                metadata={
+                    "stage": "intent",
+                    "duration_s": round(time.time() - t_stage_start, 2),
+                    "cached": True,
+                    "action": i.get("action"),
+                    "entity": i.get("entity"),
+                    "sources_used": existing.get("sources_used") or [],
+                },
+            )
             yield _yield(
                 self.name,
                 f"[intent] cached enrichment "
-                f"(action={existing.get('intent', {}).get('action')}, "
-                f"entity={existing.get('intent', {}).get('entity')}, "
+                f"(action={i.get('action')}, "
+                f"entity={i.get('entity')}, "
                 f"sources={', '.join(existing.get('sources_used') or [])})",
                 ctx.invocation_id,
                 EventActions(state_delta={

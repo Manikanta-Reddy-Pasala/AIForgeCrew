@@ -774,11 +774,30 @@ def memory_search(q: str = Query(..., min_length=2),
 
 
 # ─────────────────────────── Logs SSE ───────────────────────────────────
+# Recognised log files (newest naming first). When no orchestrator-<role>
+# exists, fall back to the ADK-prefixed file (current convention) and
+# finally the master adk_runner stream so the UI never tails an empty
+# legacy file.
+def _resolve_role_log(role: str) -> str:
+    candidates = [
+        os.path.join(LOG_DIR, f"orchestrator-adk.{role}.ndjson"),
+        os.path.join(LOG_DIR, f"orchestrator-{role}.ndjson"),
+        os.path.join(LOG_DIR, "orchestrator-adk_runner.ndjson"),
+    ]
+    for p in candidates:
+        if os.path.exists(p) and os.path.getsize(p) > 0:
+            return p
+    return candidates[0]   # let the tailer wait for the primary to appear
+
+
+_EXTRA_LOG_ROLES = {"intent", "publish", "integration", "adk_runner"}
+
+
 @app.get("/api/logs/{role}/stream")
 def stream_role_log(role: str):
-    if role not in ROLES:
+    if role not in ROLES and role not in _EXTRA_LOG_ROLES:
         raise HTTPException(404, f"unknown role {role!r}")
-    path = os.path.join(LOG_DIR, f"orchestrator-{role}.ndjson")
+    path = _resolve_role_log(role)
 
     async def gen():
         last_size = 0
@@ -826,11 +845,11 @@ def stream_ticket_trace(identifier: str):
     host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "").strip()
     log = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_LOG",
-        "/Users/manikanta/.aiforge/logs/graph-runner.log",
+        os.path.expanduser("~/.aiforge/logs/graph-runner.log"),
     )
     err = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_ERR",
-        "/Users/manikanta/.aiforge/logs/graph-runner.err",
+        os.path.expanduser("~/.aiforge/logs/graph-runner.err"),
     )
 
     async def gen():
@@ -877,12 +896,24 @@ def stream_ticket_trace(identifier: str):
                 if raw is None:
                     break
 
-                # Scope management via structured NDJSON events
-                if '"event": "graph_runner.start"' in raw or \
-                   '"event":"graph_runner.start"' in raw:
+                # Scope management via structured NDJSON events. Accept
+                # both legacy (graph_runner.*) and current (adk_runner.*)
+                # event names so older + newer runs both stream cleanly.
+                _START_MARKERS = (
+                    '"event": "graph_runner.start"',
+                    '"event":"graph_runner.start"',
+                    '"event": "adk_runner.start"',
+                    '"event":"adk_runner.start"',
+                )
+                _DONE_MARKERS = (
+                    '"event": "graph_runner.done"',
+                    '"event":"graph_runner.done"',
+                    '"event": "adk_runner.done"',
+                    '"event":"adk_runner.done"',
+                )
+                if any(m in raw for m in _START_MARKERS):
                     in_ctx = (f'"{identifier}"' in raw)
-                elif ('"event": "graph_runner.done"' in raw or
-                      '"event":"graph_runner.done"' in raw) and \
+                elif any(m in raw for m in _DONE_MARKERS) and \
                      f'"{identifier}"' in raw:
                     yield f"data: {json.dumps({'line': raw})}\n\n"
                     in_ctx = False
@@ -912,7 +943,7 @@ def stream_ticket_trace(identifier: str):
 def stream_llm_trace(identifier: str):
     err = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_ERR",
-        "/Users/manikanta/.aiforge/logs/graph-runner.err",
+        os.path.expanduser("~/.aiforge/logs/graph-runner.err"),
     )
     host = os.environ.get("AIFORGE_GRAPH_RUNNER_HOST", "").strip()
 
@@ -959,7 +990,7 @@ def list_llm_trace(identifier: str, limit: int = 50):
     as a JSON list. Easier to inspect in a browser / curl | jq."""
     err = os.environ.get(
         "AIFORGE_GRAPH_RUNNER_ERR",
-        "/Users/manikanta/.aiforge/logs/graph-runner.err",
+        os.path.expanduser("~/.aiforge/logs/graph-runner.err"),
     )
     needle_event = '"event": "llm.call"'
     needle_event_compact = '"event":"llm.call"'
