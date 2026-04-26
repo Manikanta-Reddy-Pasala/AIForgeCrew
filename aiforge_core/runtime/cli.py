@@ -7,15 +7,33 @@ Subcommands:
     ticket comment <ONE-<n>> --body "..."
     ticket status <ONE-<n>> --status done
     ticket tick <role>                # manual single tick
+    ticket trace <ONE-<n>> [--follow] [--lines 200]
+                                       # live tail of orchestrator log scoped
+                                       # to ticket — same data the UI shows
+    ticket llm-trace <ONE-<n>> [--follow] [--limit 10]
+                                       # full chat history per agent: messages
+                                       # sent to LLM + response text
+    ticket logs <role> [--follow] [--lines 200]
+                                       # tail of per-role ndjson log
+                                       # role: intent|planner|doer|feedback|
+                                       #       learner|publish|integration|adk_runner
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 from . import tickets
 from .orchestrator import tick as orchestrator_tick
+
+
+def _api_base() -> str:
+    return os.environ.get("AIFORGE_API_BASE", "http://localhost:8799").rstrip("/")
 
 
 def _cmd_create(args) -> int:
@@ -136,8 +154,136 @@ def main() -> int:
     tk.add_argument("role", choices=ALL_ROLES)
     tk.set_defaults(func=_cmd_tick)
 
+    tr = sub.add_parser("trace",
+                        help="live SSE tail of the ticket's full agent log")
+    tr.add_argument("identifier")
+    tr.add_argument("--follow", action="store_true",
+                    help="stream forever (default: print initial backlog and exit)")
+    tr.add_argument("--lines", type=int, default=200,
+                    help="initial backlog size when --follow is unset")
+    tr.set_defaults(func=_cmd_trace)
+
+    lt = sub.add_parser("llm-trace",
+                        help="per-agent LLM chat history for a ticket "
+                             "(messages sent + response, dur_ms)")
+    lt.add_argument("identifier")
+    lt.add_argument("--follow", action="store_true")
+    lt.add_argument("--limit", type=int, default=10,
+                    help="non-stream: last N llm.call events")
+    lt.add_argument("--full", action="store_true",
+                    help="print every message body in full (default: heads only)")
+    lt.set_defaults(func=_cmd_llm_trace)
+
+    lg = sub.add_parser("logs", help="live tail per-role ndjson log")
+    lg.add_argument("role",
+                    choices=["intent", "planner", "doer", "feedback",
+                             "learner", "publish", "integration",
+                             "adk_runner"])
+    lg.add_argument("--follow", action="store_true")
+    lg.add_argument("--lines", type=int, default=200)
+    lg.set_defaults(func=_cmd_role_logs)
+
     args = p.parse_args()
     return args.func(args)
+
+
+def _cmd_trace(args) -> int:
+    url = f"{_api_base()}/api/trace/{args.identifier}/stream"
+    return _stream_sse(url, args.follow, args.lines)
+
+
+def _cmd_llm_trace(args) -> int:
+    if args.follow:
+        url = f"{_api_base()}/api/llm-trace/{args.identifier}/stream"
+        return _stream_sse(url, True, 0, render=_render_llm_call,
+                           full=args.full)
+    qs = urlencode({"limit": args.limit})
+    url = f"{_api_base()}/api/llm-trace/{args.identifier}?{qs}"
+    try:
+        with urlopen(url, timeout=10) as r:
+            data = json.loads(r.read())
+    except Exception as exc:
+        print(f"error fetching {url}: {exc}", file=sys.stderr); return 2
+    if data.get("error"):
+        print(f"server error: {data['error']}", file=sys.stderr); return 2
+    events = data.get("events") or []
+    if not events:
+        print(f"(no llm.call events for {args.identifier})")
+        return 0
+    print(f"=== {len(events)} llm.call events for {args.identifier} ===")
+    for i, ev in enumerate(events, 1):
+        print(_render_llm_call(ev, full=args.full, prefix=f"#{i}"))
+    return 0
+
+
+def _cmd_role_logs(args) -> int:
+    url = f"{_api_base()}/api/logs/{args.role}/stream"
+    return _stream_sse(url, args.follow, args.lines)
+
+
+def _stream_sse(url: str, follow: bool, lines_cap: int,
+                *, render=None, **render_kw) -> int:
+    """Tail an SSE endpoint. When follow=False, print the first lines_cap
+    events then exit; when follow=True, stream until ctrl-c."""
+    try:
+        r = urlopen(url, timeout=300)
+    except Exception as exc:
+        print(f"error connecting {url}: {exc}", file=sys.stderr); return 2
+    n = 0
+    try:
+        while True:
+            line = r.readline()
+            if not line:
+                if follow:
+                    time.sleep(0.5); continue
+                break
+            line = line.decode("utf-8", "replace").rstrip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload:
+                continue
+            try:
+                obj = json.loads(payload)
+            except Exception:
+                obj = {"line": payload}
+            if render:
+                print(render(obj, **render_kw))
+            else:
+                # default: print the inner 'line' or whole payload
+                print(obj.get("line") or json.dumps(obj))
+            n += 1
+            if not follow and n >= lines_cap:
+                break
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def _render_llm_call(obj: dict, *, full: bool = False,
+                     prefix: str = "") -> str:
+    """Compact one-call summary. Honours --full to dump message bodies."""
+    role = obj.get("agent_role") or "?"
+    dur = obj.get("dur_ms")
+    err = obj.get("error")
+    msgs = obj.get("messages") or []
+    resp = obj.get("response") or ""
+    head = (
+        f"{prefix} agent={role} dur_ms={dur} "
+        f"msgs={len(msgs)} resp_chars={len(resp)}"
+    )
+    if err:
+        head += f" ERR={err[:160]}"
+    if not full:
+        return head
+    parts = [head]
+    for m in msgs:
+        r = m.get("role") or "?"
+        c = m.get("content") or ""
+        parts.append(f"  → {r}: {c[:1200]}")
+    if resp:
+        parts.append(f"  ← assistant: {resp[:2000]}")
+    return "\n".join(parts)
 
 
 if __name__ == "__main__":

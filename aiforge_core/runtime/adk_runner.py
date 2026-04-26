@@ -188,6 +188,11 @@ def run_adk(ticket_id: int) -> int:
     emit(log, "adk_runner.start",
          ticket=ticket.identifier, title=ticket.title)
 
+    # Stash current ticket id in env so cache_markers._emit_llm_call
+    # can stamp every llm.call event with the correct ticket — the
+    # /api/llm-trace/{id} endpoint scopes by this field.
+    os.environ["AIFORGE_CURRENT_TICKET"] = ticket.identifier
+
     try:
         final_state = asyncio.run(_run_workflow_async(ticket, log))
     except Exception as exc:

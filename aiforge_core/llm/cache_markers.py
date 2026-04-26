@@ -153,6 +153,10 @@ def apply_to_session(session: object, *, provider: str,
                                  "msg_count": len(messages or [])})
         except Exception:
             pass
+        # Snapshot the outgoing messages so the post-call ``llm.call``
+        # event can include them (full chat history) for the UI's
+        # /api/llm-trace endpoint.
+        _msgs_snapshot = list(messages or [])
         t0 = _t.time()
         # raw_ask returns a generator — wrap so the post_llm event
         # fires after the model finishes streaming, capturing wall_ms.
@@ -169,6 +173,9 @@ def apply_to_session(session: object, *, provider: str,
             except Exception as exc:
                 _post_llm(role, provider, model, t0,
                           exc=str(exc)[:200], session=session)
+                _emit_llm_call(role, provider, model, t0,
+                               messages=_msgs_snapshot, response=None,
+                               error=str(exc)[:300])
                 raise
             # Synthesise tool_use blocks from text-protocol tags
             # (`<tool_use>{...}</tool_use>`) when the model emits
@@ -186,6 +193,8 @@ def apply_to_session(session: object, *, provider: str,
                 pass
             _post_llm(role, provider, model, t0, session=session,
                       content_blocks=value)
+            _emit_llm_call(role, provider, model, t0,
+                           messages=_msgs_snapshot, response=value)
             return value
         return _drain()
 
@@ -231,6 +240,61 @@ def _post_llm(role: str, provider: str, model: str, t0: float,
             wall_ms=wall_ms,
             extra=extra,
         )
+    except Exception:
+        pass
+
+
+def _emit_llm_call(role: str, provider: str, model: str, t0: float,
+                   *, messages, response, error: str | None = None) -> None:
+    """Emit a structured ``llm.call`` log line. Picked up by the
+    ``/api/llm-trace/{id}`` endpoint via graph-runner.err so the UI
+    can replay full chat history per ticket. KISS: bound message body
+    to keep one NDJSON line manageable."""
+    if os.environ.get("AIFORGE_LLM_TRACE", "1") != "1":
+        return
+    import time as _t
+    try:
+        from aiforge_core.runtime.logging_setup import get_logger
+        logger = get_logger(f"llm.{role}")
+        # Best-effort ticket id resolution from current task context.
+        ticket = os.environ.get("AIFORGE_CURRENT_TICKET") or None
+        plain_msgs = []
+        for m in (messages or []):
+            if isinstance(m, dict):
+                content = m.get("content")
+                if isinstance(content, list):
+                    parts = []
+                    for c in content:
+                        if isinstance(c, dict):
+                            parts.append(c.get("text") or c.get("content") or "")
+                    content = "\n".join(p for p in parts if p)[:8000]
+                elif isinstance(content, str):
+                    content = content[:8000]
+                plain_msgs.append({
+                    "role": m.get("role"),
+                    "content": content,
+                })
+        # Compact response — capture text content blocks only.
+        resp_text = ""
+        if isinstance(response, list):
+            for blk in response:
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    resp_text += blk.get("text") or ""
+        elif isinstance(response, str):
+            resp_text = response
+        resp_text = resp_text[:8000]
+        payload = {
+            "agent_role": role,
+            "ticket": ticket,
+            "model": model,
+            "provider": provider,
+            "dur_ms": int((_t.time() - t0) * 1000),
+            "messages": plain_msgs,
+            "response": resp_text,
+        }
+        if error:
+            payload["error"] = error
+        logger.info("llm.call", extra={"aiforge": payload})
     except Exception:
         pass
 
