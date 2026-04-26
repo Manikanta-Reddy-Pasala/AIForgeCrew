@@ -132,7 +132,8 @@ class UnifiedContext:
     """One stop shop. Stateless per call (cheap to instantiate)."""
 
     def for_intent(self, intent: "Intent", *, role: str = "sr_developer",
-                   token_budget: int = 4000) -> ContextBundle:
+                   token_budget: int = 4000,
+                   exclude_identifier: str | None = None) -> ContextBundle:
         bundle = ContextBundle(intent=intent)
         # Repo guess + worktree path (used by repo_map, standards, doc)
         repo = _resolve_repo(intent)
@@ -206,6 +207,7 @@ class UnifiedContext:
             sims = _similar_tickets(
                 sim_key, intent.keywords[:3], limit=5,
                 query_text=intent.raw_text or intent.search_query(),
+                exclude_identifier=exclude_identifier,
             )
             if sims:
                 bundle.similar_tickets = sims
@@ -331,7 +333,10 @@ class UnifiedContext:
         proj = getattr(ticket, "project", None)
         if proj and not intent.repo_hint:
             intent.repo_hint = proj
-        return self.for_intent(intent, token_budget=token_budget)
+        return self.for_intent(
+            intent, token_budget=token_budget,
+            exclude_identifier=getattr(ticket, "identifier", None),
+        )
 
 
 # ───────── helpers ────────────────────────────────────────────────
@@ -564,7 +569,8 @@ def _grep_pattern_files(worktree: str, pattern: str, *,
 
 def _similar_tickets(primary: str, extra_keys: list[str] | None = None,
                      *, limit: int = 5,
-                     query_text: str | None = None) -> list[dict]:
+                     query_text: str | None = None,
+                     exclude_identifier: str | None = None) -> list[dict]:
     """Semantic similarity over Postgres tickets.
 
     Pipeline:
@@ -647,8 +653,11 @@ def _similar_tickets(primary: str, extra_keys: list[str] | None = None,
         return (dot / (na * nb)) if na and nb else 0.0
     scored = []
     for c, cv in zip(candidates, cvs):
+        ident = c.get("identifier")
+        if exclude_identifier and ident == exclude_identifier:
+            continue                               # drop self-match
         scored.append({
-            "identifier": c.get("identifier"),
+            "identifier": ident,
             "title": c.get("title"),
             "status": c.get("status"),
             "updated": c.get("updated"),
