@@ -58,15 +58,20 @@ _KNOWN_TOOL_TAGS = frozenset({
 
 def _extract_text_tool_use(content_blocks: list) -> list[dict]:
     """Scan text content for tool-call XML-ish tags and synthesise
-    proper ``tool_use`` blocks. Two patterns supported:
+    proper ``tool_use`` blocks. Three patterns supported:
 
     1. ``<tool_use>{"name":..,"arguments":..}</tool_use>``
        Generic GA text-protocol envelope.
     2. ``<file_read>{"path":..}</file_read>``
        Bare tag where the element name IS the tool name (Qwen3-
        Coder-Next on mlx-lm emits this when fed our 25-tool schema).
+    3. ``<file_read><path>X</path><show_linenos>true</show_linenos></file_read>``
+       Nested XML where each child element is one tool argument
+       (Qwen3-Coder-Next variant when no JSON example seeded the
+       prompt — model defaults to nested XML, common in Anthropic
+       tool-use docs).
 
-    Pattern 2 only fires for tag names in :data:`_KNOWN_TOOL_TAGS`
+    Patterns 2/3 only fire for tag names in :data:`_KNOWN_TOOL_TAGS`
     so random `<thinking>` / `<summary>` blocks aren't mis-parsed.
     """
     import re as _re, json as _json
@@ -75,6 +80,18 @@ def _extract_text_tool_use(content_blocks: list) -> list[dict]:
     )
     pat_bare = _re.compile(
         r"<([a-z_][a-z0-9_]*)>\s*(\{.*?\})\s*</\1>", _re.DOTALL,
+    )
+    # Pattern 3 — nested XML. Outer tag = tool name, inner tags = args.
+    # Greedy DOTALL match; ``[^<]*`` arg value (no nested elements
+    # supported — KISS, model rarely emits multi-line arg bodies).
+    pat_nested = _re.compile(
+        r"<([a-z_][a-z0-9_]*)>"
+        r"((?:\s*<[a-z_][a-z0-9_]*>[^<]*</[a-z_][a-z0-9_]*>\s*)+)"
+        r"</\1>",
+        _re.DOTALL,
+    )
+    pat_inner = _re.compile(
+        r"<([a-z_][a-z0-9_]*)>([^<]*)</\1>", _re.DOTALL,
     )
 
     out: list[dict] = []
@@ -104,7 +121,7 @@ def _extract_text_tool_use(content_blocks: list) -> list[dict]:
                     "input": args if isinstance(args, dict) else {},
                 })
 
-        # Pattern 2 — bare tag with known tool name
+        # Pattern 2 — bare tag with known tool name + JSON args.
         for m in pat_bare.finditer(text):
             tag = m.group(1)
             if tag not in _KNOWN_TOOL_TAGS:
@@ -119,6 +136,43 @@ def _extract_text_tool_use(content_blocks: list) -> list[dict]:
                 "name": tag,
                 "input": args if isinstance(args, dict) else {},
             })
+
+        # Pattern 3 — nested XML <tool><arg>val</arg></tool>.
+        # Skip ranges already matched by pattern 2 (bare-with-JSON)
+        # to avoid double emission. Track consumed ranges via simple
+        # set of start offsets.
+        consumed_starts = {m.start() for m in pat_bare.finditer(text)}
+        for m in pat_nested.finditer(text):
+            if m.start() in consumed_starts:
+                continue
+            tag = m.group(1)
+            if tag not in _KNOWN_TOOL_TAGS:
+                continue
+            inner = m.group(2)
+            args: dict = {}
+            for im in pat_inner.finditer(inner):
+                k = im.group(1)
+                v = im.group(2).strip()
+                # Coerce simple types — true/false/numbers — so the
+                # downstream tool sees correct Python types.
+                vl = v.lower()
+                if vl in ("true", "false"):
+                    args[k] = (vl == "true")
+                else:
+                    try:
+                        args[k] = int(v)
+                    except ValueError:
+                        try:
+                            args[k] = float(v)
+                        except ValueError:
+                            args[k] = v
+            if args:
+                out.append({
+                    "type": "tool_use",
+                    "id": f"xml_{abs(hash(m.group(0))) & 0xfffff:x}",
+                    "name": tag,
+                    "input": args,
+                })
     return out
 
 

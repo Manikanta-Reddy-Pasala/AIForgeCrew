@@ -382,13 +382,30 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
             body["chat_template_kwargs"] = cfg["chat_template_kwargs"]
         if cfg.get("top_p"):
             body["top_p"] = cfg["top_p"]
-        resp = requests.post(
-            f"{base_url}/chat/completions",
-            json=body,
-            headers={"Authorization": f"Bearer {cfg.get('apikey','sk-local')}"},
-            timeout=cfg.get("read_timeout", 600),
-        )
-        resp.raise_for_status()
+        # mlx-lm.server occasionally drops the first request when the
+        # model is cold (RemoteDisconnected at ~400ms). Retry up to 3x
+        # with exponential backoff. Total worst-case wait = 7s before
+        # we give up and emit ga_planner.exception.
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    f"{base_url}/chat/completions",
+                    json=body,
+                    headers={"Authorization": f"Bearer {cfg.get('apikey','sk-local')}"},
+                    timeout=cfg.get("read_timeout", 600),
+                )
+                resp.raise_for_status()
+                last_exc = None
+                break
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError) as exc:
+                last_exc = exc
+                emit(log, "ga_planner.lm_retry", ticket=identifier,
+                     attempt=attempt + 1, error=str(exc)[:120])
+                time.sleep(1 + attempt * 2)        # 1s, 3s, 5s
+        if last_exc is not None:
+            raise last_exc
         msg = resp.json()["choices"][0]["message"]
         # Different stacks expose the post-thinking text via different
         # fields. mlx_lm's gemma stack uses 'reasoning' for the trace +

@@ -1238,9 +1238,30 @@ def run_doer_via_ga(
 
     HandlerCls, StepOutcome = _make_handler_class()
 
-    # Allowlist + scope guard for write tools.
+    # Allowlist + scope guard for write tools. Resolution priority:
+    #   1. body's '## Allowed files' block (planner-written, explicit)
+    #   2. ticket.metadata.enrichment.focal_files (IntentLayer, repo-
+    #      scoped, splitter-vetted edit_targets)
+    # Was: body only — when the planner crashed (e.g. LM Studio
+    # disconnected), allowed=∅ → doer flew blind → 0 edits → blocked.
     body = getattr(ticket, "body", "") or ""
     allowed = parse_allowed_files(body)
+    if not allowed:
+        md = getattr(ticket, "metadata", None) or {}
+        enr = md.get("enrichment") if isinstance(md, dict) else None
+        if isinstance(enr, dict):
+            focal = enr.get("focal_files") or []
+            # Resolve to absolute paths under the worktree so ScopeGuard
+            # comparisons match the doer's _get_abs_path resolutions.
+            for p in focal[:6]:
+                if not isinstance(p, str):
+                    continue
+                if os.path.isabs(p) and os.path.isfile(p):
+                    allowed.add(p)
+                else:
+                    cand = os.path.join(worktree_path, p)
+                    if os.path.isfile(cand):
+                        allowed.add(cand)
     scope_guard = ScopeGuard(allowed)
 
     # GA needs a per-task scratch dir for parent.task_dir reads (_keyinfo, _intervene).
