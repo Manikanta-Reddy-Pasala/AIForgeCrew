@@ -557,33 +557,13 @@ Your JSON:
 
 
 def _call_feedback_llm(prompt: str) -> str:
-    from aiforge_core.runtime.llm_picker import pick as _pick
-    ep = _pick("feedback")
-    body_payload: dict = {
-        "model": ep.model if ep.backend == "gemini" else FEEDBACK_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 16384 if ep.backend == "gemini" else 524288,
-        "temperature": 0.0,
-    }
-    if ep.backend == "local":
-        body_payload["chat_template_kwargs"] = {"enable_thinking": False}
-    payload = json.dumps(body_payload).encode()
-    req = urllib.request.Request(
-        f"{ep.base_url.rstrip('/')}/chat/completions",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {ep.api_key}",
-        },
-        method="POST",
+    from aiforge_core.llm import complete as _complete
+    return _complete(
+        "feedback",
+        [{"role": "user", "content": prompt}],
+        max_tokens=16384,
+        temperature=0.0,
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        body = json.loads(resp.read())
-    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
-    content = (msg.get("content") or "").strip()
-    if content:
-        return content
-    return (msg.get("reasoning_content") or "").strip()
 
 
 def _parse_verdict(text: str) -> dict:
@@ -1120,33 +1100,13 @@ Your JSON:
 
 
 def _call_learner_llm(prompt: str) -> str:
-    from aiforge_core.runtime.llm_picker import pick as _pick
-    ep = _pick("learner")
-    body_payload: dict = {
-        "model": ep.model if ep.backend == "gemini" else LEARNER_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 16384 if ep.backend == "gemini" else 524288,
-        "temperature": 0.0,
-    }
-    if ep.backend == "local":
-        body_payload["chat_template_kwargs"] = {"enable_thinking": False}
-    payload = json.dumps(body_payload).encode()
-    req = urllib.request.Request(
-        f"{ep.base_url.rstrip('/')}/chat/completions",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {ep.api_key}",
-        },
-        method="POST",
+    from aiforge_core.llm import complete as _complete
+    return _complete(
+        "learner",
+        [{"role": "user", "content": prompt}],
+        max_tokens=16384,
+        temperature=0.0,
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        body = json.loads(resp.read())
-    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
-    content = (msg.get("content") or "").strip()
-    if content:
-        return content
-    return (msg.get("reasoning_content") or "").strip()
 
 
 def _parse_learner(text: str) -> dict:

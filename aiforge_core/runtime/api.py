@@ -487,18 +487,23 @@ def _persist_env(key: str, value: str) -> None:
 
 @app.get("/api/runtime/llm_backend")
 def get_llm_backend() -> dict:
-    """Active LLM backend for ALL agents (planner / doer / feedback /
-    learner / chat). 'local' = mlx-lm primary + Gemini fallback.
-    'gemini' = Gemini-Flash primary + mlx-lm fallback."""
+    """Active LLM backend for all agents + the provider registry."""
+    from aiforge_core.llm import list_providers as _list
+    providers = _list()
+    avail_names = [p["name"] for p in providers if p["available"]]
     value = (
         os.environ.get("AIFORGE_PRIMARY_BACKEND")
         or os.environ.get("AIFORGE_DOER_PRIMARY_BACKEND")
         or "local"
     ).lower()
+    if value not in avail_names:
+        value = "local"
     return {
-        "backend": value if value in ("local", "gemini") else "local",
-        "options": ["local", "gemini"],
-        "gemini_available": bool(os.environ.get("AIFORGE_GOOGLE_API_KEY")),
+        "backend": value,
+        "options": avail_names,
+        "providers": providers,
+        # Legacy field for old UI builds; same as 'gemini' in options.
+        "gemini_available": "gemini" in avail_names,
     }
 
 
@@ -509,12 +514,12 @@ def set_llm_backend(payload: dict) -> dict:
     Affects runs started AFTER this call. graph-runner picks up the
     new value next poll-cycle restart (~10-15s).
     """
+    from aiforge_core.llm import list_providers as _list
+    avail = {p["name"] for p in _list() if p["available"]}
     backend = (payload.get("backend") or "").strip().lower()
-    if backend not in ("local", "gemini"):
-        raise HTTPException(400, "backend must be 'local' or 'gemini'")
-    if backend == "gemini" and not os.environ.get("AIFORGE_GOOGLE_API_KEY"):
+    if backend not in avail:
         raise HTTPException(
-            400, "AIFORGE_GOOGLE_API_KEY not set; gemini backend unavailable"
+            400, f"backend must be one of {sorted(avail)}; got {backend!r}"
         )
     os.environ["AIFORGE_PRIMARY_BACKEND"] = backend
     _persist_env("AIFORGE_PRIMARY_BACKEND", backend)
@@ -1002,44 +1007,25 @@ def _normalize_query(query: str) -> str:
     q = query.strip()
     if len(q) < 12 or " " not in q:
         return q
-    import urllib.request
-    from .llm_picker import pick as _pick
-    ep = _pick("chat")
+    from aiforge_core.llm import complete as _complete
     try:
-        body_payload: dict = {
-            "model": ep.model if ep.backend == "gemini" else os.environ.get(
-                "AIFORGE_CHAT_NORMALIZE_MODEL",
-                os.environ.get("AIFORGE_PLANNER_MODEL", "qwen3.6-27b"),
-            ),
-            "messages": [
+        result = _complete(
+            "chat",
+            [
                 {"role": "system", "content": _NORMALIZE_SYSTEM},
                 {"role": "user", "content": q[:600]},
             ],
-            "max_tokens": 128,
-            "temperature": 0.0,
-        }
-        if ep.backend == "local":
-            body_payload["chat_template_kwargs"] = {"enable_thinking": False}
-        payload = json.dumps(body_payload).encode()
-        req = urllib.request.Request(
-            f"{ep.base_url.rstrip('/')}/chat/completions",
-            data=payload,
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {ep.api_key}"},
-            method="POST",
+            max_tokens=128, temperature=0.0,
+            timeout_s=30,
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read())
-        content = ((body.get("choices") or [{}])[0]
-                   .get("message", {}).get("content") or "").strip()
-        if not content:
+        if not result:
             return q
-        # Strip any stray quoting / leading labels from the model.
-        content = content.strip('"\' ')
+        # Strip stray quoting / leading labels.
+        result = result.strip().strip('"\' ')
         for prefix in ("normalized:", "query:", "rewritten:"):
-            if content.lower().startswith(prefix):
-                content = content[len(prefix):].strip()
-        return content[:300] or q
+            if result.lower().startswith(prefix):
+                result = result[len(prefix):].strip()
+        return result[:300] or q
     except Exception:
         return q
 
@@ -1118,39 +1104,16 @@ def _build_chat_prompt(query: str, ctx: dict) -> str:
 
 
 def _call_llm_chat(prompt: str) -> str:
-    """One-shot LLM call for chat synthesis. Routes via llm_picker."""
-    import urllib.request
-    from .llm_picker import pick as _pick
-    ep = _pick("chat")
-    body_payload: dict = {
-        "model": ep.model if ep.backend == "gemini" else os.environ.get(
-            "AIFORGE_CHAT_MODEL",
-            os.environ.get("AIFORGE_PLANNER_MODEL", "qwen3.6-27b"),
-        ),
-        "messages": [
+    """One-shot LLM call for chat synthesis. Routes via llm.complete()."""
+    from aiforge_core.llm import complete as _complete
+    return _complete(
+        "chat",
+        [
             {"role": "system", "content": _CHAT_SYSTEM},
             {"role": "user", "content": prompt[:30_000]},
         ],
-        "max_tokens": 2048,
-        "temperature": 0.1,
-    }
-    if ep.backend == "local":
-        body_payload["chat_template_kwargs"] = {"enable_thinking": False}
-    payload = json.dumps(body_payload).encode()
-    req = urllib.request.Request(
-        f"{ep.base_url.rstrip('/')}/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json",
-                 "Authorization": f"Bearer {ep.api_key}"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        body = json.loads(resp.read())
-    msg = (body.get("choices") or [{}])[0].get("message", {}) or {}
-    content = (msg.get("content") or "").strip()
-    if content:
-        return content
-    return (msg.get("reasoning_content") or "").strip() or "(empty reply)"
+        max_tokens=2048, temperature=0.1, timeout_s=120,
+    ) or "(empty reply)"
 
 
 def _chat_agent_answer(query: str) -> dict:
