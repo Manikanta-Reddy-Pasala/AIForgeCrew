@@ -16,7 +16,9 @@ K="kubectl --kubeconfig=$KCFG --insecure-skip-tls-verify"
 
 declare -a TARGETS=(
   # ns:resource:local_port:remote_port   — name reflects what Spring expects
-  "mongodb:svc/qa-cluster-mongos:27017:27017"
+  # NOTE: mongos :27017 is held by a separate, persistent kubectl pf
+  # (started outside this service); do not double-bind here or our whole
+  # bag exits on EADDRINUSE.
   "default:svc/dragonfly:6379:6379"
   "pos:svc/nats-server:4222:4222"
   "default:svc/mongodbservice:8080:8080"
