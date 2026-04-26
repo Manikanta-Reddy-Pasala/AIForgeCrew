@@ -126,10 +126,11 @@ _ASK_EXPLORER_SCHEMA = {
     "function": {
         "name": "ask_explorer",
         "description": (
-            "Spawn a read-only sub-agent to answer a focused exploration "
-            "question about the codebase. Returns the sub-agent's final "
-            "summary. Use when you need to scan many files without "
-            "bloating your own context."
+            "Spawn read-only sub-agent(s) to answer focused exploration "
+            "questions about the codebase. Pass `question` (single) "
+            "OR `questions` (list) — list spawns up to 4 sub-agents "
+            "concurrently and returns joined summaries. Use when you "
+            "need to scan files without bloating your own context."
         ),
         "parameters": {
             "type": "object",
@@ -137,12 +138,22 @@ _ASK_EXPLORER_SCHEMA = {
                 "question": {
                     "type": "string",
                     "description": (
-                        "Single concrete question; the sub-agent has "
-                        "file_read + code_run only and answers in <30 turns."
+                        "Single concrete question; sub-agent answers "
+                        "in <30 turns."
+                    ),
+                },
+                "questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Up to 4 questions. Spawned in parallel — "
+                        "use for fan-out exploration "
+                        "(e.g. 'find Mongo aggregation examples', "
+                        "'find Spring Mongo group syntax', "
+                        "'find @GetMapping path conventions')."
                     ),
                 },
             },
-            "required": ["question"],
         },
     },
 }
@@ -241,20 +252,33 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         "\n".join(f"- {p}" for p in allowed_list)
         if allowed else "(no scope constraint)"
     )
-    # Aider RepoMap digest — PageRank tree-sitter signatures (~1024 tok).
-    aider_block = aider_digest(
-        worktree_path,
-        chat_files=allowed_list,
-        token_budget=int(os.environ.get("AIFORGE_AIDER_REPOMAP_TOKENS", "1024")),
-    )
+    # Parallel context fetch — Aider RepoMap (CPU/disk-heavy, ~16s
+    # cold) and Graphify graph_neighbours (Neo4j round-trip, ~1s)
+    # run concurrently. Saves ~15s on every doer start.
+    import concurrent.futures as _cf
+    aider_block = ""
+    neighbours_block = ""
+    with _cf.ThreadPoolExecutor(max_workers=2) as _ex:
+        _aider_fut = _ex.submit(
+            aider_digest, worktree_path,
+            chat_files=allowed_list,
+            token_budget=int(os.environ.get("AIFORGE_AIDER_REPOMAP_TOKENS", "1024")),
+        )
+        _neighbours_fut = _ex.submit(
+            graph_neighbours, allowed_list,
+            limit=int(os.environ.get("AIFORGE_DOER_NEIGHBOURS_LIMIT", "30")),
+        )
+        try:
+            aider_block = _aider_fut.result(timeout=60) or ""
+        except Exception:
+            aider_block = ""
+        try:
+            neighbours_block = _neighbours_fut.result(timeout=15) or ""
+        except Exception:
+            neighbours_block = ""
     aider_section = (
         f"## Code map (Aider RepoMap, ranked by PageRank)\n{aider_block}\n\n"
         if aider_block else ""
-    )
-    # Graphify + tree-sitter Cypher — neighbour symbols of allowed files.
-    neighbours_block = graph_neighbours(
-        allowed_list,
-        limit=int(os.environ.get("AIFORGE_DOER_NEIGHBOURS_LIMIT", "30")),
     )
     neighbours_section = (
         f"## Neighbour symbols (Neo4j: Graphify + tree-sitter)\n"
@@ -483,6 +507,46 @@ def _make_handler_class():
             yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
             return StepOutcome(blob, next_prompt=None)
 
+        def do_batch(self, args, response):  # type: ignore[override]
+            """Fan out read-side tools in parallel via ga_tools.batch.
+
+            Sub-calls are dispatched via a closure that mirrors the
+            single-tool yields, returning the final string blob each
+            tool produced.
+            """
+            from .ga_tools import batch as _batch
+            from .ga_tools import (
+                glob as _glob, grep as _grep, web_search as _ws,
+            )
+            from .ga_tools.read_tracker import ReadTracker
+
+            reader = getattr(self, "_aiforge_reader", None)
+            if reader is None:
+                reader = ReadTracker()
+                self._aiforge_reader = reader  # type: ignore[attr-defined]
+
+            def _dispatch(tool_name: str, sub_args: dict) -> str:
+                if tool_name == "glob":
+                    return _glob.handle(self.cwd, sub_args)
+                if tool_name == "grep":
+                    return _grep.handle(self.cwd, sub_args)
+                if tool_name == "file_read":
+                    abs_path = self._get_abs_path(sub_args.get("path", ""))
+                    return reader.read(abs_path)
+                if tool_name == "web_search":
+                    return _ws.handle(sub_args)
+                if tool_name == "ask_explorer":
+                    q = (sub_args.get("question") or "").strip()
+                    if not q:
+                        return "[ask_explorer] empty question"
+                    return self._spawn_one_explorer(q)
+                return f"[batch] unknown tool {tool_name!r}"
+
+            calls = args.get("calls") or []
+            yield f"[batch] {len(calls)} sub-call(s) parallel\n"
+            blob = _batch.handle(_dispatch, calls)
+            return StepOutcome(blob, next_prompt=None)
+
         def do_bash(self, args, response):  # type: ignore[override]
             """Persistent bash session. State held on handler._aiforge_shell."""
             from .ga_tools import bash as _bash
@@ -494,28 +558,17 @@ def _make_handler_class():
             yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
             return StepOutcome(blob, next_prompt=None)
 
-        def do_ask_explorer(self, args, response):  # type: ignore[override]
-            """Spawn a read-only GA subprocess to answer a focused
-            question. Uses GA's `agentmain.py --task <name> --bg --input
-            <q>` pattern (commit bc5d1ea). Polls output*.txt for
-            [ROUND END] sentinel and returns the result.
-            """
-            import subprocess
-            question = (args.get("question") or "").strip()
-            if not question:
-                yield "[ask_explorer] empty question, skipping.\n"
-                return StepOutcome(
-                    {"status": "error", "msg": "question required"},
-                    next_prompt="ask_explorer needs a `question` argument.",
-                )
+        def _spawn_one_explorer(self, question: str) -> str:
+            """Run a single explorer sub-agent; return text answer."""
+            import subprocess as _sp
             ga_path = ga_dir()
-            sub_id = f"explorer-{int(time.time()*1000)}"
+            sub_id = f"explorer-{int(time.time() * 1000)}-{abs(hash(question)) & 0xfffff:x}"
             sub_dir = os.path.join(ga_path, "temp", sub_id)
             os.makedirs(sub_dir, exist_ok=True)
-            yield f"[ask_explorer] spawning sub-agent {sub_id}\n"
             try:
-                subprocess.run(
-                    [sys.executable, os.path.join(ga_path, "agentmain.py"),
+                _sp.run(
+                    [sys.executable,
+                     os.path.join(ga_path, "agentmain.py"),
                      "--task", sub_id, "--bg", "--input", question,
                      "--llm_no", "0", "--verbose=False"],
                     cwd=ga_path,
@@ -524,34 +577,68 @@ def _make_handler_class():
                     env={**os.environ, "GA_LANG": "en"},
                 )
             except Exception as exc:
-                yield f"[ask_explorer] spawn failed: {exc}\n"
-                return StepOutcome(
-                    {"status": "error", "msg": f"spawn failed: {exc}"},
-                    next_prompt="ask_explorer process failed to start.",
-                )
-            # Poll for ROUND END sentinel; cap at 5 min wall.
+                return f"[ask_explorer:{sub_id}] spawn failed: {exc}"
             out_path = os.path.join(sub_dir, "output.txt")
             deadline = time.time() + 300
             while time.time() < deadline:
                 time.sleep(5)
                 if os.path.exists(out_path):
-                    text = ""
                     try:
                         text = open(out_path, encoding="utf-8").read()
                     except Exception:
                         text = ""
                     if "[ROUND END]" in text:
-                        # Strip the protocol-end sentinel; cap at 4KB.
-                        answer = text.split("[ROUND END]")[0][-4000:]
-                        yield f"[ask_explorer] sub-agent finished\n"
-                        return StepOutcome(
-                            {"status": "ok", "answer": answer},
-                            next_prompt=None,
-                        )
-            yield "[ask_explorer] sub-agent timeout (5 min)\n"
+                        return text.split("[ROUND END]")[0][-4000:]
+            return f"[ask_explorer:{sub_id}] timeout (5 min)"
+
+        def do_ask_explorer(self, args, response):  # type: ignore[override]
+            """Spawn one OR many read-only sub-agents in parallel.
+
+            Single mode: ``args.question`` (str).
+            Parallel mode: ``args.questions`` (list[str]) — fans out
+            up to 4 sub-agents via ThreadPoolExecutor and returns
+            joined answers in input order.
+            """
+            import concurrent.futures as _cf
+            single = (args.get("question") or "").strip()
+            multi_raw = args.get("questions") or []
+            multi = [
+                q.strip() for q in multi_raw if isinstance(q, str) and q.strip()
+            ]
+            if single:
+                multi = [single] + multi
+            multi = multi[:4]  # cap parallelism
+            if not multi:
+                yield "[ask_explorer] no question(s) given.\n"
+                return StepOutcome(
+                    {"status": "error", "msg": "question required"},
+                    next_prompt="ask_explorer needs `question` or `questions`.",
+                )
+            yield f"[ask_explorer] spawning {len(multi)} sub-agent(s)\n"
+            if len(multi) == 1:
+                answer = self._spawn_one_explorer(multi[0])
+                yield f"[ask_explorer] done\n"
+                return StepOutcome(
+                    {"status": "ok", "answer": answer},
+                    next_prompt=None,
+                )
+            # Parallel mode — bounded by len(multi).
+            answers: list[str] = [""] * len(multi)
+            with _cf.ThreadPoolExecutor(max_workers=len(multi)) as ex:
+                futures = {
+                    ex.submit(self._spawn_one_explorer, q): i
+                    for i, q in enumerate(multi)
+                }
+                for fut in _cf.as_completed(futures):
+                    answers[futures[fut]] = fut.result()
+            joined = "\n\n".join(
+                f"=== [{i}] {q[:80]} ===\n{a}"
+                for i, (q, a) in enumerate(zip(multi, answers))
+            )
+            yield f"[ask_explorer] {len(multi)} sub-agents finished\n"
             return StepOutcome(
-                {"status": "timeout", "msg": "explorer timed out"},
-                next_prompt="ask_explorer did not return in 5 minutes.",
+                {"status": "ok", "answers": answers, "joined": joined[:8000]},
+                next_prompt=None,
             )
 
         def do_file_patch(self, args, response):  # type: ignore[override]
@@ -768,10 +855,13 @@ def run_doer_via_ga(
     from .ga_tools.glob import SCHEMA as _GLOB_SCHEMA
     from .ga_tools.grep import SCHEMA as _GREP_SCHEMA
     from .ga_tools.bash import SCHEMA as _BASH_SCHEMA
+    from .ga_tools.batch import SCHEMA as _BATCH_SCHEMA
     if os.environ.get("AIFORGE_GOOGLE_API_KEY"):
         tools_schema = list(tools_schema) + [_WS_SCHEMA]
-    # Always add Glob / Grep / Bash — fast file ops, no API key needed.
-    tools_schema = list(tools_schema) + [_GLOB_SCHEMA, _GREP_SCHEMA, _BASH_SCHEMA]
+    # Always add Glob / Grep / Bash / Batch — fast ops, no API key needed.
+    tools_schema = list(tools_schema) + [
+        _GLOB_SCHEMA, _GREP_SCHEMA, _BASH_SCHEMA, _BATCH_SCHEMA,
+    ]
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
     if plan_mode_active:
         user_input += (
