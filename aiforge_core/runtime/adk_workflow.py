@@ -833,7 +833,49 @@ class AiForgeFeedbackAgent(BaseAgent):
                 f"edit_block_ok={edit_block_ok} compile_green={compile_green} "
                 f"test_green={test_green} — missing: {', '.join(missing)}"
             )
+            # Build a targeted fixlist from the doer counters so the next
+            # attempt has concrete instructions, not just verdict=fail.
             fixlist = []
+            last_compile_error = (counters.get("last_compile_error") or "")[-1500:]
+            if edit_block_ok == 0 and compile_green >= 1:
+                fixlist.append(
+                    "You ran mvn compile but didn't file_patch anything. "
+                    "STOP running mvn. file_read every entry under "
+                    "## Allowed files, then file_patch the changes."
+                )
+            if edit_block_ok == 0 and compile_green == 0:
+                fixlist.append(
+                    "Zero edits, zero compiles. Open each Allowed file "
+                    "with file_read, then file_patch the change required "
+                    "by acceptance criteria #1. Do this in turn 1-3."
+                )
+            if "cannot find symbol" in last_compile_error.lower():
+                fixlist.append(
+                    "Compile error: 'cannot find symbol'. The API you used "
+                    "doesn't exist. Use web_search with a query like "
+                    "'<framework> <ClassName> Java example' to find the "
+                    "right API, or ask_explorer 'show me an example of "
+                    "<API> in this repo'. Patch with the correct call."
+                )
+            if "incompatible types" in last_compile_error.lower():
+                fixlist.append(
+                    "Compile error: 'incompatible types'. The argument "
+                    "types don't match. Re-read the method signature in "
+                    "the offending file and adjust your call."
+                )
+            if "package " in last_compile_error.lower() and "does not exist" in last_compile_error.lower():
+                fixlist.append(
+                    "Compile error: 'package does not exist'. Wrong import "
+                    "path. ask_explorer 'where is <ClassName> defined?' "
+                    "and use the actual package."
+                )
+            if test_green_required and test_green < 1 and edit_block_ok >= 1:
+                fixlist.append(
+                    "Integration smoke needs a new @GetMapping in the "
+                    "controller PLUS the supporting service/repo wiring. "
+                    "Verify the controller path matches acceptance #1 "
+                    "exactly (no typos in /v1/api/...)."
+                )
 
         # Optional: keep the LLM judge as advisory when explicitly enabled.
         if os.environ.get("AIFORGE_FEEDBACK_LLM") == "1":
