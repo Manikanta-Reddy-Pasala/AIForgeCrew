@@ -1251,17 +1251,40 @@ def run_doer_via_ga(
         enr = md.get("enrichment") if isinstance(md, dict) else None
         if isinstance(enr, dict):
             focal = enr.get("focal_files") or []
-            # Resolve to absolute paths under the worktree so ScopeGuard
-            # comparisons match the doer's _get_abs_path resolutions.
+            # CRITICAL: focal_files come from IntentLayer as absolute
+            # paths under the MASTER worktree. The doer runs in a
+            # per-ticket sibling worktree. We MUST translate every
+            # path so ScopeGuard accepts only the worktree copy AND
+            # the system prompt shows the worktree path (otherwise
+            # the model writes to the master tree → no commit on the
+            # feature branch → publish skipped → master leak).
             for p in focal[:6]:
                 if not isinstance(p, str):
                     continue
-                if os.path.isabs(p) and os.path.isfile(p):
-                    allowed.add(p)
+                resolved: str | None = None
+                if os.path.isabs(p):
+                    # Translate master abs → worktree abs by stripping
+                    # the AIFORGE_REPOS_BASE/<project>/ prefix.
+                    base_repo = os.path.dirname(worktree_path.rstrip("/"))
+                    # worktree_path = .../X/.aiforge-worktrees/ONE-N
+                    # base_repo    = .../X/.aiforge-worktrees
+                    # We need .../X — go up one more.
+                    repo_root = os.path.dirname(base_repo)
+                    if repo_root and p.startswith(repo_root + "/"):
+                        rel = p[len(repo_root) + 1:]
+                        cand = os.path.join(worktree_path, rel)
+                        if os.path.isfile(cand):
+                            resolved = cand
+                    if resolved is None and os.path.isfile(p):
+                        # Path is abs but not under repo_root — last
+                        # resort, allow as-is (rare edge case).
+                        resolved = p
                 else:
                     cand = os.path.join(worktree_path, p)
                     if os.path.isfile(cand):
-                        allowed.add(cand)
+                        resolved = cand
+                if resolved:
+                    allowed.add(resolved)
     scope_guard = ScopeGuard(allowed)
 
     # GA needs a per-task scratch dir for parent.task_dir reads (_keyinfo, _intervene).
