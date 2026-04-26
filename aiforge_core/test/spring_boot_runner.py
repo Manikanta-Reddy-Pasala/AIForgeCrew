@@ -115,7 +115,14 @@ def start_service(worktree: str, log: object | None = None,
     env = os.environ.copy()
     env["SPRING_PROFILES_ACTIVE"] = "qa"
     env["SPRING_APPLICATION_JSON"] = json.dumps(_to_nested(flat))
-    env["JAVA_TOOL_OPTIONS"] = "-Xmx2g -Xms512m -XX:+UseG1GC"
+    # Hard heap caps so stacked retries can't blow past ~3GB total
+    # (mvn 0.5G + spring-boot JVM 1.5G + transient compile ~0.5G).
+    # The smoke endpoint is one curl — no need for the QA-prod 4G heap.
+    env["JAVA_TOOL_OPTIONS"] = (
+        "-Xmx1500m -Xms256m -XX:+UseG1GC "
+        "-XX:MaxMetaspaceSize=256m -XX:+ExitOnOutOfMemoryError"
+    )
+    env["MAVEN_OPTS"] = "-Xmx512m -Xms128m"
 
     log_path = os.path.join(
         os.environ.get("AIFORGE_HOME", "/home/mani/.aiforge"),

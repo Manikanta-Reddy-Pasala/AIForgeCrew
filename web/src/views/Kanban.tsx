@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DndContext, DragEndEvent, DragOverEvent, DragOverlay, DragStartEvent,
@@ -183,10 +183,10 @@ function Column({
 
 function DraggableCard({ t }: { t: any }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: String(t.id) });
+  const navigate = useNavigate();
   // Track drag distance so a click that didn't move (>4px) opens the
   // detail page; a real drag does not. Pure pointer-onClick wouldn't
   // know if the user dragged or clicked, so we measure ourselves.
-  const startRef = (typeof window !== 'undefined') ? (window as any) : null;
   let dragStart = { x: 0, y: 0 };
   return (
     <div
@@ -198,7 +198,9 @@ function DraggableCard({ t }: { t: any }) {
         const dx = Math.abs((e.clientX || 0) - dragStart.x);
         const dy = Math.abs((e.clientY || 0) - dragStart.y);
         if (dx + dy < 4 && !isDragging) {
-          window.location.href = `/tickets/${t.identifier}`;
+          // Use react-router navigate so the /ui basename applies.
+          // window.location.href would bypass it and 404.
+          navigate(`/tickets/${t.identifier}`);
         }
       }}
       style={{ cursor: 'pointer' }}
