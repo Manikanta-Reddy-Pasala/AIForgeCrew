@@ -198,6 +198,12 @@ exploring. file_read your allowed files. file_patch the change.
 - bash COMMAND         → persistent shell session. cwd survives
                          across calls. Use for mvn / git / curl.
                          Default 60s, max 600s.
+- lint                 → run configured lint command (mvn checkstyle / ruff /
+                         tsc), returns errors. Use after compile is green.
+- tests                → run unit tests (mvn test / pytest), returns
+                         JUnit failures. Use when ticket touches behaviour.
+- undo {mode,path}     → roll back ONE file (mode=last_edit) or the
+                         last commit (mode=last_commit). Escape hatch.
 - web_search QUERY     → Gemini-grounded search. Use on
                          'cannot find symbol' errors.
 - ask_explorer Q       → spawn read-only sub-agent for broad
@@ -294,11 +300,31 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"## Neighbour symbols (Neo4j: Graphify + tree-sitter)\n"
         f"{neighbours_block}\n\n" if neighbours_block else ""
     )
+    # Per-repo conventions — Aider's CONVENTIONS.md analogue at
+    # .aiforge/CONVENTIONS.md.
+    try:
+        from .ga_tools import conventions as _conv
+        conventions_section = _conv.section_for_prompt(worktree_path)
+    except Exception:
+        conventions_section = ""
+    # Read-only files list (Aider --read-only analogue).
+    try:
+        from .ga_tools import readonly as _ro
+        ro_set = _ro.collect(worktree_path, body)
+    except Exception:
+        ro_set = set()
+    readonly_section = (
+        "## Read-only files (visible, do NOT edit)\n"
+        + "\n".join(f"- {p}" for p in sorted(ro_set))
+        + "\n\n"
+    ) if ro_set else ""
     return (
         f"## Worktree\n`{worktree_path}` — every command must run there.\n\n"
         f"## Ticket\n{title}\n\n"
         f"{body}\n\n"
+        f"{conventions_section}"
         f"## Allowed files (write-tool ScopeGuard)\n{allowed_block}\n\n"
+        f"{readonly_section}"
         f"{aider_section}"
         f"{neighbours_section}"
         f"## Planner notes\n{plan_text or '(none)'}\n\n"
@@ -614,6 +640,30 @@ def _make_handler_class():
                 blob, next_prompt=self._get_anchor_prompt(skip=False),
             )
 
+        def do_lint(self, args, response):  # type: ignore[override]
+            from .ga_tools import lint as _lint
+            blob = _lint.handle(self.cwd, args)
+            yield blob[:600] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(
+                blob, next_prompt=self._get_anchor_prompt(skip=False),
+            )
+
+        def do_tests(self, args, response):  # type: ignore[override]
+            from .ga_tools import tests as _tests
+            blob = _tests.handle(self.cwd, args)
+            yield blob[:600] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(
+                blob, next_prompt=self._get_anchor_prompt(skip=False),
+            )
+
+        def do_undo(self, args, response):  # type: ignore[override]
+            from .ga_tools import undo as _undo
+            blob = _undo.handle(self.cwd, args)
+            yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(
+                blob, next_prompt=self._get_anchor_prompt(skip=False),
+            )
+
         def do_bash(self, args, response):  # type: ignore[override]
             """Persistent bash session. State held on handler._aiforge_shell."""
             from .ga_tools import bash as _bash
@@ -915,14 +965,23 @@ def run_doer_via_ga(
     from .ga_tools.batch import SCHEMA as _BATCH_SCHEMA
     from .ga_tools.bulk_edit import SCHEMA as _BULK_EDIT_SCHEMA
     from .ga_tools.java_refactor import SCHEMA as _JR_SCHEMA
+    from .ga_tools.lint import SCHEMA as _LINT_SCHEMA
+    from .ga_tools.tests import SCHEMA as _TESTS_SCHEMA
+    from .ga_tools.undo import SCHEMA as _UNDO_SCHEMA
     if os.environ.get("AIFORGE_GOOGLE_API_KEY"):
         tools_schema = list(tools_schema) + [_WS_SCHEMA]
-    # Always add Glob / Grep / Bash / Batch / BulkEdit / JavaRefactor —
-    # local utilities, no API key needed.
+    # Always add local utilities — no API key needed.
     tools_schema = list(tools_schema) + [
         _GLOB_SCHEMA, _GREP_SCHEMA, _BASH_SCHEMA, _BATCH_SCHEMA,
         _BULK_EDIT_SCHEMA, _JR_SCHEMA,
+        _LINT_SCHEMA, _TESTS_SCHEMA, _UNDO_SCHEMA,
     ]
+    # Per-repo defaults from .aiforge/aiforge.conf.yml (lift to env).
+    try:
+        from .ga_tools import repo_config as _rc
+        _rc.apply_to_env(_rc.load(worktree_path))
+    except Exception:
+        pass
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
     if plan_mode_active:
         user_input += (

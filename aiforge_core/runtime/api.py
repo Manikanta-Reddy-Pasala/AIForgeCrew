@@ -485,6 +485,15 @@ def _persist_env(key: str, value: str) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+@app.get("/api/runtime/token_usage")
+def token_usage(ticket: str | None = None) -> dict:
+    """Token totals per role per ticket since runtime start."""
+    from aiforge_core.doer.ga_tools import tokens as _tk
+    if ticket:
+        return _tk.snapshot_for_ticket(ticket)
+    return {"all": _tk.snapshot_all()}
+
+
 @app.get("/api/runtime/rate_limits")
 def get_rate_limits() -> dict:
     """Active rate-limit config + bucket state per provider.

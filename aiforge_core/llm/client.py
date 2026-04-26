@@ -92,6 +92,23 @@ def _extract_text(resp_body: dict) -> str:
     return (msg.get("reasoning_content") or "").strip()
 
 
+def _record_usage(role: str, resp_body: dict) -> None:
+    """Push token counts into ga_tools.tokens registry. Best-effort."""
+    try:
+        from aiforge_core.doer.ga_tools import tokens as _tk
+        import os as _os
+        usage = (resp_body or {}).get("usage") or {}
+        ticket = _os.environ.get("AIFORGE_CURRENT_TICKET", "")
+        _tk.note(
+            ticket or None,
+            role,
+            int(usage.get("prompt_tokens", 0) or 0),
+            int(usage.get("completion_tokens", 0) or 0),
+        )
+    except Exception:
+        pass
+
+
 def complete(role: str, messages: list[dict], *,
              temperature: float | None = None,
              max_tokens: int | None = None,
@@ -108,7 +125,9 @@ def complete(role: str, messages: list[dict], *,
         primary, messages, temperature, max_tokens, top_p, extras,
     )
     try:
-        return _extract_text(_post(primary, payload, timeout_s))
+        body = _post(primary, payload, timeout_s)
+        _record_usage(role, body)
+        return _extract_text(body)
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
         fb = fallback(role)
         if fb is None:
@@ -118,6 +137,8 @@ def complete(role: str, messages: list[dict], *,
             fb, messages, temperature, max_tokens, top_p, extras,
         )
         try:
-            return _extract_text(_post(fb, fb_payload, timeout_s))
+            body = _post(fb, fb_payload, timeout_s)
+            _record_usage(role, body)
+            return _extract_text(body)
         except Exception:
             raise exc  # surface the primary error, fallback also broken
