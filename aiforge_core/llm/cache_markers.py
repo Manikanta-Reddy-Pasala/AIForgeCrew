@@ -46,6 +46,48 @@ def stamp(
     return list(messages)
 
 
+def _extract_text_tool_use(content_blocks: list) -> list[dict]:
+    """Scan text content for `<tool_use>{...}</tool_use>` tags and
+    synthesise proper ``tool_use`` blocks. KISS: regex pass over
+    every text block; JSON-decode the inner payload; soft-fail per
+    tag. Returns the list of NEW tool_use blocks (does not mutate).
+
+    Some models (Qwen3-Coder-Next on mlx-lm) emit text-protocol
+    tags instead of native OpenAI tool_calls. GA expects native;
+    without this synthesis, ``tool_use_count`` stays 0 forever.
+    """
+    import re as _re, json as _json
+    pattern = _re.compile(
+        r"<tool_use>\s*(\{.*?\})\s*</tool_use>", _re.DOTALL,
+    )
+    out: list[dict] = []
+    for blk in content_blocks or []:
+        if not isinstance(blk, dict) or blk.get("type") != "text":
+            continue
+        text = blk.get("text") or ""
+        if "<tool_use>" not in text:
+            continue
+        for m in pattern.finditer(text):
+            try:
+                payload = _json.loads(m.group(1))
+            except Exception:
+                continue
+            name = payload.get("name") or payload.get("tool")
+            args = (payload.get("arguments")
+                    or payload.get("args")
+                    or payload.get("input")
+                    or {})
+            if not name:
+                continue
+            out.append({
+                "type": "tool_use",
+                "id": f"text_{abs(hash(m.group(0))) & 0xfffff:x}",
+                "name": name,
+                "input": args if isinstance(args, dict) else {},
+            })
+    return out
+
+
 def apply_to_session(session: object, *, provider: str,
                      role: str = "?") -> None:
     """Monkey-patch ``session.raw_ask`` to:
@@ -83,16 +125,33 @@ def apply_to_session(session: object, *, provider: str,
         try:
             gen = orig(messages, *a, **kw)
         except Exception as exc:
-            _post_llm(role, provider, model, t0, exc=str(exc)[:200])
+            _post_llm(role, provider, model, t0, exc=str(exc)[:200],
+                      session=session)
             raise
 
         def _drain():
             try:
                 value = yield from gen
             except Exception as exc:
-                _post_llm(role, provider, model, t0, exc=str(exc)[:200])
+                _post_llm(role, provider, model, t0,
+                          exc=str(exc)[:200], session=session)
                 raise
-            _post_llm(role, provider, model, t0)
+            # Synthesise tool_use blocks from text-protocol tags
+            # (`<tool_use>{...}</tool_use>`) when the model emits
+            # them instead of native OpenAI tool_calls. Idempotent:
+            # only fires when no native tool_use blocks present.
+            try:
+                if value and not any(
+                    isinstance(b, dict) and b.get("type") == "tool_use"
+                    for b in value
+                ):
+                    synth = _extract_text_tool_use(value)
+                    if synth:
+                        value = list(value) + synth
+            except Exception:
+                pass
+            _post_llm(role, provider, model, t0, session=session,
+                      content_blocks=value)
             return value
         return _drain()
 
@@ -101,16 +160,42 @@ def apply_to_session(session: object, *, provider: str,
 
 
 def _post_llm(role: str, provider: str, model: str, t0: float,
-              *, exc: str | None = None) -> None:
+              *, exc: str | None = None,
+              session: object | None = None,
+              content_blocks=None) -> None:
     import time as _t
     try:
         from aiforge_core.doer.ga_tools import hooks as _hk
         wall_ms = int((_t.time() - t0) * 1000)
+        extra = {"role": role}
+        if exc:
+            extra["err"] = exc
+        # Diagnostic: capture tool_use count + first text head from
+        # content_blocks returned by raw_ask. Always captured when
+        # AIFORGE_DEBUG_LLM=1; cheap (one list scan).
+        if (content_blocks is not None
+                and os.environ.get("AIFORGE_DEBUG_LLM", "0") == "1"):
+            try:
+                tool_use = 0
+                text_head = ""
+                for blk in content_blocks or []:
+                    if not isinstance(blk, dict):
+                        continue
+                    bt = blk.get("type")
+                    if bt == "tool_use":
+                        tool_use += 1
+                    elif bt == "text" and not text_head:
+                        text_head = (blk.get("text") or "")[:300]
+                extra["tool_use_count"] = tool_use
+                extra["resp_head"] = text_head
+                extra["block_count"] = len(content_blocks or [])
+            except Exception:
+                pass
         _hk.emit_step(
             event="post_llm",
             name=f"{provider}:{model}",
             wall_ms=wall_ms,
-            extra={"role": role, **({"err": exc} if exc else {})},
+            extra=extra,
         )
     except Exception:
         pass
