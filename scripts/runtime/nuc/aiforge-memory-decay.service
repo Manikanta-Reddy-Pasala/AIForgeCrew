@@ -1,0 +1,11 @@
+[Unit]
+Description=AIForge memory decay (archive stale facts)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/mani/AIForgeCrew
+EnvironmentFile=/home/mani/.aiforge/runtime.env
+ExecStart=/home/mani/AIForgeCrew/.venv/bin/python -m aiforge_core.runtime.maintenance_cli memory decay
+StandardOutput=journal
+StandardError=journal

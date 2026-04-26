@@ -46,6 +46,31 @@ def stamp(
     return list(messages)
 
 
+def apply_to_session(session: object, *, provider: str) -> None:
+    """Monkey-patch ``session.raw_ask`` to stamp cache markers on the
+    outgoing messages list. KISS — wraps the existing generator so the
+    rest of the GA pipeline is untouched.
+
+    Idempotent: a second call detects our marker and skips re-wrap.
+    """
+    if not is_enabled():
+        return
+    if getattr(session, "_aiforge_cache_wrapped", False):
+        return
+    orig = session.raw_ask  # type: ignore[attr-defined]
+    model = getattr(session, "model", "")
+
+    def _wrapped(messages, *a, **kw):
+        try:
+            messages = stamp(list(messages), model=model, provider=provider)
+        except Exception:
+            pass
+        return orig(messages, *a, **kw)
+
+    session.raw_ask = _wrapped  # type: ignore[assignment]
+    session._aiforge_cache_wrapped = True  # type: ignore[attr-defined]
+
+
 def cache_key_for(model: str, role: str) -> str:
     """Stable key per (role, model) — used by OpenAI Responses API
     `prompt_cache_key` param. Two distinct roles never share cache."""

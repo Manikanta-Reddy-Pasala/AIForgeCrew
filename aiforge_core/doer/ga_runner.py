@@ -1149,6 +1149,15 @@ def run_doer_via_ga(
     emit(log, "ga_runner.session_built", ticket=identifier,
          backend=cfg.get("name", "?"),
          class_=session.__class__.__name__)
+    # Provider-aware prompt-cache markers (Anthropic ephemeral / OpenAI
+    # prefix-cache). Best-effort, idempotent.
+    try:
+        from aiforge_core.llm import cache_markers as _cm
+        _provider_name = cfg.get("name", "").split("-")[0] or "openai"
+        _cm.apply_to_session(session, provider=_provider_name)
+    except Exception as _exc:
+        emit(log, "ga_runner.cache_markers_skipped",
+             ticket=identifier, err=str(_exc)[:200])
     client = ToolClient(session)
 
     # Auto-compaction (AIFORGE_DOER_COMPACT=1). Wraps session.raw_ask

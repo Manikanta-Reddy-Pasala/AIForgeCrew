@@ -1,0 +1,11 @@
+[Unit]
+Description=AIForge symbol embeddings backfill
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/mani/AIForgeCrew
+EnvironmentFile=/home/mani/.aiforge/runtime.env
+ExecStart=/home/mani/AIForgeCrew/.venv/bin/python -m aiforge_core.runtime.maintenance_cli index symbols --batch 500
+StandardOutput=journal
+StandardError=journal

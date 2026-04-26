@@ -1,211 +1,223 @@
 # AIForgeCrew
 
-Local autonomous coding pipeline. Submit a Java/Python/TS ticket via API; the pipeline plans, edits, compiles, validates, learns, and opens a PR. All inference runs on local `mlx_lm` models. No cloud APIs.
-
-## Verified end-to-end
-
-`ONE-75` — full pipeline pass at 264s wall, all 5 agents fired, PR opened.
+Autonomous code-fix pipeline. Ticket in → PR out.
 
 ```
-verdict=pass  duration=264s
-per_agent={planner: 1, doer: 4, feedback: 4, learner: 1}
-edits=1  compile_green=1  files_changed=1
-PR: https://github.com/OneShellSolutions/PosClientBackend/pull/104
+ticket ──► Planner ──► Doer ⇄ Feedback ──► Integration ──► Publish ──► Learner
+                                                                         │
+                                                                         ▼
+                                                                      memory
 ```
+
+## Features
+
+| Layer | Wins |
+|---|---|
+| **Chat** | GA loop · ops MCPs (mongo/k8s/tekton/tally) · unified memory query · auto-learn Q+A |
+| **Doer** | Plan Mode · TodoWrite · Sub-agents · Hooks · Auto-compaction · Sandbox · Secret-scan |
+| **Memory** | Neo4j 5-tier · Aider RepoMap · mtime cache · auto-distill · decay · pattern-mining |
+| **LLM** | Local mlx-lm · Anthropic · OpenAI · Ollama Cloud · per-role + global routing · rate-limiter · prompt-cache |
+| **Tools** | 25 ga_tools · 102 ops MCPs/tier · 22 graph_rag MCP · external docs index |
+| **Obs** | OpenTelemetry · cost $/turn · per-ticket rollup · DAG topology view |
 
 ## Topology
 
-Three-host split. Laptop drives, MS serves models, NUC runs everything else.
-
-| Host | Address | Role | Services |
-|---|---|---|---|
-| Laptop | — | Orchestrator | SSH client only |
-| Mac Studio | `192.168.70.185` | Models only | `mlx_lm` Doer `:1234`, Planner `:1235`, `caffeinate` |
-| NUC | `mani@10.10.10.2` (10G link) | Everything else | Postgres 16, Neo4j 5.26 (Docker), `aiforge-api.service`, `aiforge-graph-runner.service`, GenericAgent, Aider, Graphify, source repos, ingest crons |
-
 ```
-Laptop ─SSH──> NUC :8799 (api)
-                  │ ticket claim
-                  ▼
-              graph-runner (ADK SequentialAgent)
-                  ├─ planner (direct LiteLLM → MS :1235)
-                  ├─ LoopAgent[doer (GA), feedback (LiteLLM)] → MS :1234
-                  └─ learner (LiteLLM → :Fact in NUC Neo4j)
+laptop ──ssh──► nuc :8799 (api)
+                  │
+                  ├── postgres 16    (tickets, events, costs)
+                  ├── neo4j 5.26     (memory, repos, symbols)
+                  ├── graph-runner   (ADK 1.31.1 sequential)
+                  └── ops MCPs       :8810 mongo · :8811 k8s · :8812 tekton · :8813 tally
+                          │
+mac studio :1234 ◄───llm──┤ doer (mlx-lm)
+mac studio :1235 ◄───llm──┤ planner (mlx-lm)
+ollama cloud ◄──────llm───┘ chat (qwen3-coder-next default)
 ```
 
-| Port | Host | What |
-|---|---|---|
-| `1234` | MS | `mlx_lm` Doer (Qwen3-Coder-Next-MLX-4bit) |
-| `1235` | MS | `mlx_lm` Planner (Qwen3.6-27B-UD-MLX-4bit) |
-| `5432` | NUC | Postgres |
-| `7474` / `7687` | NUC | Neo4j HTTP / bolt |
-| `8799` | NUC | FastAPI (tickets + intervention + memory) |
+## Memory
 
-## Stack
+```
+T1 episodic ── ticket events
+T2 canon    ── repo facts, ground truth
+T3 patterns ── chat Q+A, doer outcomes, auto-promoted
+T4 code     ── markdown ingests, source snippets
+T5 symbols  ── :Symbol embeddings (vector NN)
 
-| Component | Notes |
+         ┌──── unified_memory_query (one tool, 6 sources)
+chat  ──►├──── search_memory  (hybrid)
+         ├──── ticket_brief
+         ├──── related_memories
+         ├──── sym_lookup / find_similar_code
+         ├──── find_doc
+         └──── docs_index (external libs)
+```
+
+Lifecycle:
+
+```
+write ──► retain_fact ──► neo4j  ──► search hits++
+                                  │
+                                  ├── decay   (>90d, hit_count=0 → archived)
+                                  └── miner   (3+ similar → T3 pattern)
+```
+
+## Security audit
+
+| Surface | Control |
 |---|---|
-| **ADK 1.31.1** | Google Agent Development Kit. `SequentialAgent` + `LoopAgent`. `DatabaseSessionService` (Postgres). |
-| **GenericAgent** (pinned `cd0ce4d`) | Doer's text-protocol agent loop. Sidesteps `mlx_lm` 0.31 native `tool_calls` bug. |
-| **Aider RepoMap** | Hot-path code digest in Doer system prompt every call (PageRank-ranked tree-sitter signatures, 1024 tok budget). |
-| **Graphify** (`graphifyy`) | Nightly NetworkX graph build → mirror to Neo4j. 25 languages via tree-sitter. |
-| **5-layer Neo4j memory** | L0 `:MetaSop`, L2 `:Fact` (vector + fulltext), L3 `:Sop`, L4 `:Session` + `:Turn`, L5 `:File` + `:Symbol`. L1 = ADK Session in-mem. |
-| **Postgres 16** | Tickets, ticket events, ADK sessions. |
+| `code_run` shell | `firejail` / `docker` sandbox · `AIFORGE_DOER_SANDBOX=firejail\|docker` |
+| Secrets in commits | `gitleaks` / `trufflehog` / regex heuristic · builtin `pre_commit` hook · `block:true` |
+| Doer scope | `ScopeGuard` against allowed-files allowlist (`_get_abs_path` chokepoint) |
+| Forbidden tools | `tool_before_callback` deny-list per role |
+| Plan Mode | Read-only think before writes unlock |
+| Ops MCPs | QA tier default · `ALLOW_PROD` env gate |
+| Tool args | `code_run` rejects shell discovery (`grep`/`find`/`ls`/`cat`); `mvn` capped at 2/ticket |
+| Path traversal | All file reads via `_get_abs_path` resolved against worktree |
+| Memory access | Role policy (sr_developer/sr_arch/qa) per-tier wing filter |
+| LLM secrets | API keys via `runtime.env` only · never in code/commits |
+| Neo4j auth | bolt password from env · localhost-only port |
+| Postgres | `DSN` env, no embedded creds in source |
 
-## GA features wired
+Rails:
 
-| Feature | How AIForge uses it |
-|---|---|
-| Plan mode (`enter_plan_mode` + checkboxes) | Planner emits `## Steps\n- [ ] step 1`; Doer enters plan mode against `<worktree>/.aiforge/plan.md`; auto-exits when boxes drain. |
-| Sub-agent (`--bg`) | `ask_explorer` doer tool spawns a read-only GA subprocess for focused exploration without bloating context. |
-| Task intervention (`_stop` / `_keyinfo` / `_intervene`) | `POST /api/tickets/<id>/intervene` writes control files into the live agent's `task_dir`. |
-| Runtime param tuning | `POST /api/runtime/session_param` sets `AIFORGE_<ROLE>_<KEY>` env for next agent run. |
-| English protocol | `GA_LANG=en` strips Chinese boilerplate from tool-instruction injection. |
-| `auto_save_tokens` | Compact `Tools: still active` re-injection saves ~3KB/turn after first. |
-| Fuzzy `file_read` suggestions | Auto-prompts nearby paths on miss. |
-| `fold_turns` + larger `context_win` | Auto-folds long histories. |
-| Multi `code_run` per turn | Multiple shell calls in one turn. |
-
-GA upgrade hardening: single import seam at `aiforge_core/doer/ga_compat.py`. SHA pin in `.aiforge/ga-version.lock`. See [`docs/ga-integration.md`](./docs/ga-integration.md).
-
-## Per-agent rules
-
-Locked in `aiforge_core/agents.yaml`. Five roles: `architect`, `planner`, `doer`, `feedback`, `learner`. Each declares model, backend, tools, `max_turns`, memory scope, termination contract.
-
-Three-layer enforcement: ADK structural filter, GA handler reject, harness pre-flight assert. Loader/validator at `aiforge_core/agents.py`.
-
-| Agent | Backend | Model |
-|---|---|---|
-| Architect | external | Claude Code (this laptop) |
-| Planner | direct LiteLLM | Qwen3.6-27B `:1235` |
-| Doer | GA text-protocol | Qwen3-Coder-Next `:1234` |
-| Feedback | direct LiteLLM single-shot | Qwen3-Coder-Next |
-| Learner | direct LiteLLM single-shot + Neo4j `:Fact` plugin | Qwen3-Coder-Next |
-
-## Memory layout
-
-| Layer | Role | Storage |
-|---|---|---|
-| L0 META | meta-procedures | NUC Neo4j `:MetaSop` |
-| L1 working | per-session | ADK Session (in-mem) |
-| L2 facts | global verified | NUC Neo4j `:Fact` + vector + fulltext |
-| L3 SOPs | task-specific | NUC Neo4j `:Sop` |
-| L4 sessions | every turn auto-remember | NUC Neo4j `:Session` + `:Turn` |
-| L5 code | AST + Aider + Graphify | NUC Neo4j `:File` + `:Symbol` (+ Aider SQLite hot cache) |
-
-## Quick start
-
-Submit:
-```bash
-curl -X POST http://10.10.10.2:8799/api/tickets \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Add log to MyController.save",
-       "body":"## Files\n- repo/path/MyController.java\n## Acceptance\n1. log.info...",
-       "assignee_role":"developer",
-       "project":"PosClientBackend"}'
+```
+ticket ─► [scope_guard] ─► [plan_mode] ─► [tool_before_callback] ─► do_<tool>
+                                                                       │
+                            [hooks pre_commit] ◄── secret_scan ◄───────┘
 ```
 
-Watch:
-```bash
-curl -s http://10.10.10.2:8799/api/tickets/<id>
-tail -f /home/mani/.aiforge/logs/graph-runner.err   # on NUC
-```
-
-Pull facts (Neo4j Cypher at `bolt://10.10.10.2:7687`):
-```cypher
-MATCH (f:Fact) WHERE f.ticket_id = $id RETURN f ORDER BY f.created_at DESC
-```
-
-Steer a live agent:
-```bash
-curl -X POST http://10.10.10.2:8799/api/tickets/<id>/intervene \
-  -d '{"kind":"intervene","body":"focus on src/main only, skip tests"}'
-```
-
-Tune model param mid-run for next-tick:
-```bash
-curl -X POST http://10.10.10.2:8799/api/runtime/session_param \
-  -d '{"role":"doer","key":"temperature","value":0.05}'
-```
-
-## Repo layout
+## Design — KISS
 
 ```
 aiforge_core/
-  agents.yaml                  per-agent contracts (source of truth)
-  agents.py                    loader + validator
-  doer/
-    ga_runner.py               GenericAgent text-protocol path
-    ga_compat.py               single import seam for GA upgrades
-    orchestrator_bridge.py     backend dispatch
-    scope_guard.py             write-allowlist parser
-    acceptance_gate.py
-  planner/
-    ga_runner.py               direct-LiteLLM checkbox-plan emitter
-    agent.py                   smolagents fallback (legacy)
-  index/
-    aider_map.py               Aider RepoMap wrapper
-    graphify_loader.py         NetworkX → Neo4j mirror
-    treesitter_ingest.py       direct AST → Neo4j
-  memory/
-    schema.py                  Neo4j constraints + vector + fulltext indexes
-    cypher_templates.py        lookup_symbol, find_callers, find_definition
-  eval/
-    rule_checker.py            agents.yaml rule enforcement
-  runtime/
-    adk_runner.py              ADK ticket-claim daemon
-    adk_workflow.py            SequentialAgent[Planner, LoopAgent[Doer,Feedback], Learner]
-    api.py                     FastAPI :8799 (tickets + intervention + memory)
-    agent_config.py            role → model + base_url
-  legacy/                      v4 modules (LangGraph + RAG); pending removal
-docs/
-  architecture.md              topology + per-agent rules
-  stack.md                     stack reference
-  agent-rules.md               per-agent rules + 3-layer enforcement
-  ga-integration.md            GA upgrade checklist + SHA pin protocol
-evals/
-  fixtures/F1..F7c.yaml        Java Spring Boot test fixtures
-  results/                     run JSONs
-scripts/
-  evals/
-    run_genericagent_eval.py   GA chain harness
-    run_eval.py                ticket harness
-    run_planner_eval.py        EVAL-1b scaffold (planner backend comparison)
-    report.py                  aggregator
-  runtime/
-    com.aiforge.mlx-doer.plist     MS launchd
-    com.aiforge.mlx-planner.plist  MS launchd
-    graphify-nightly.sh            cron
-    ga-pin.sh                      GA SHA pin / check / show
-.aiforge/
-  ga-version.lock              pinned GA SHA + date
+├── runtime/        ─── orchestrator, api, otel, cost, mentions, hitl
+│   ├── api.py      ─── FastAPI routes
+│   ├── otel.py     ─── one entry, no-op when disabled
+│   ├── cost.py     ─── $/Mtok rate table + postgres rollup
+│   ├── memory.py   ─── neo4j adapter
+│   ├── repo_standards.py ─── per-project build/test/lint manifest
+│   ├── workflow_topology.py ─── DAG snapshot for UI
+│   └── adk_workflow.py ─── ADK 1.31.1 SequentialAgent
+│
+├── doer/
+│   ├── ga_runner.py ── GA agent_runner_loop bridge
+│   └── ga_tools/    ── one file per concern (24 modules):
+│        plan_mode · todos · subagent · hooks · compaction · sandbox
+│        secrets · bash · batch · bulk_edit · edit_verify · glob · grep
+│        java_refactor · lint · tests · undo · web_search · ...
+│
+├── memory/
+│   ├── unified_query.py  ── one tool, 6 sources, ranked
+│   ├── decay.py          ── archive stale facts
+│   └── pattern_miner.py  ── 3+ similar → T3 pattern
+│
+├── index/
+│   ├── aider_map.py    ── tree-sitter + PageRank, mtime cache
+│   ├── merkle.py       ── file→folder→root sha256, persistent
+│   ├── symbol_embed.py ── :Symbol vector NN
+│   └── docs_index.py   ── external lib chunks (sqlite + bge-m3)
+│
+├── llm/
+│   ├── client.py        ── one complete() entry
+│   ├── router.py        ── role → provider, fallback chain
+│   ├── cache_markers.py ── anthropic ephemeral / openai prefix / gemini stub
+│   ├── rate_limiter.py  ── per-provider token bucket
+│   └── providers/       ── local · anthropic · openai · gemini (hidden) · ollama_cloud
+│
+└── planner/         ── smolagents CodeAgent (EVAL-1 winner)
+    └── ga_runner.py ── parallel GA-based planner (AIFORGE_PLANNER_BACKEND=genericagent)
 ```
 
-## Operational
+Rules followed everywhere:
 
-| Action | Command |
+- one file per concern
+- exports `SCHEMA` + `handle()` for every tool
+- env-flag gated; default-off until smoke
+- thin wrapper in `do_<tool>`, pure logic in module
+- best-effort persist; soft fail; never crash agent loop
+- no LLM call in distillers / decay / miner — deterministic templates
+
+## Workflow viz
+
+```
+            ┌────────┐    ┌────────┐    ┌──────────┐
+START ─────►│Planner │───►│  Doer  │───►│ Feedback │
+            └────────┘    └────┬───┘    └────┬─────┘
+                               ▲             │
+                               └─loop (compile_red)─┘
+                                             │ (compile_green)
+                                             ▼
+                                    ┌─────────────┐    ┌──────────┐
+                                    │ Integration │───►│ Publish  │
+                                    └─────────────┘    └────┬─────┘
+                                                            ▼
+                                                       ┌─────────┐
+                                                       │ Learner │ ─► T3 fact
+                                                       └─────────┘
+```
+
+Solid edge = forward · dotted edge = feedback loop. Live view at `/ui/workflow?ticket=ONE-99`.
+
+## Endpoints
+
+| Path | What |
 |---|---|
-| Restart ADK runner (NUC) | `systemctl --user restart aiforge-graph-runner.service` |
-| Restart `mlx_lm` Doer (MS) | `launchctl kickstart -k gui/501/com.aiforge.mlx-doer` |
-| Restart `mlx_lm` Planner (MS) | `launchctl kickstart -k gui/501/com.aiforge.mlx-planner` |
-| Tail logs | `tail -f /home/mani/.aiforge/logs/graph-runner.err` |
-| Pin GA SHA | `./scripts/runtime/ga-pin.sh` |
-| Verify GA pin | `./scripts/runtime/ga-pin.sh --check` |
-| Run eval chain | `.venv/bin/python scripts/evals/run_genericagent_eval.py --chain F7a,F7b,F7c` |
+| `POST /api/chat/ask` | GA-backed chat, auto-retain |
+| `POST /api/tickets` | Submit work |
+| `GET  /api/agents` | Per-role config |
+| `GET  /api/runtime/llm_backend` | Active provider + registry |
+| `GET  /api/runtime/cost?ticket=X` | $/Mtok rollup |
+| `GET  /api/repo/standards?name=X` | Per-project manifest |
+| `GET  /api/workflow/topology?ticket=X` | DAG snapshot |
+| `PUT  /api/config/agents/{role}` | Swap provider/model |
 
-## Docs
+## Bring-up
 
-| Read | For |
-|---|---|
-| [`docs/ticket-flow.md`](./docs/ticket-flow.md) | Visual end-to-end flow (mermaid diagrams) |
-| [`docs/agents.md`](./docs/agents.md) | Five agents + ADK orchestrator wiring |
-| [`docs/memory.md`](./docs/memory.md) | 5-layer memory model + per-agent access |
-| [`docs/architecture.md`](./docs/architecture.md) | Topology + per-agent rules |
-| [`docs/stack.md`](./docs/stack.md) | Tooling reference |
-| [`docs/agent-rules.md`](./docs/agent-rules.md) | Per-agent rules + 3-layer enforcement |
-| [`docs/ga-integration.md`](./docs/ga-integration.md) | GA upgrade checklist + SHA pin protocol |
-| [`docs/runbook.md`](./docs/runbook.md) | Ops runbook |
+```
+# NUC
+cd ~/AIForgeCrew && uv sync
+systemctl --user start aiforge-api    # :8799
+systemctl --user start aiforge-graph-runner
 
-## License
+# UI
+cd web && npm install && npm run build  # served at :8799/ui
+```
 
-MIT
+## Env knobs
+
+```
+AIFORGE_PRIMARY_BACKEND        local|anthropic|openai|ollama_cloud
+AIFORGE_<ROLE>_PROVIDER        per-role override
+AIFORGE_<ROLE>_MODEL           per-role model id
+AIFORGE_DOER_PLAN_MODE         1 = think-before-edit
+AIFORGE_DOER_TODOS             1 = in-loop checklist
+AIFORGE_DOER_SUBAGENT          1 = isolated sub-agent dispatch
+AIFORGE_DOER_HOOKS             1 = .aiforge/hooks.yml + secret-scan
+AIFORGE_DOER_COMPACT           1 = middle-out history elision
+AIFORGE_DOER_SANDBOX           firejail|docker
+AIFORGE_DOER_OPS_MCP           1 = ops MCPs in doer
+AIFORGE_CHAT_OPS_MCP           1 = ops MCPs in chat (default)
+AIFORGE_AIDER_MAP_CACHE        1 = mtime-keyed RepoMap cache (default)
+AIFORGE_OTEL_ENABLED           1 = OpenTelemetry export
+AIFORGE_PROMPT_CACHE           1 = provider cache hints (default)
+AIFORGE_MEMORY_BACKEND         postgres|neo4j (default neo4j)
+```
+
+## Status
+
+```
+phase A    chat replatform + GA migration       SHIPPED
+phase A    Aider/CC gap modules (8)             SHIPPED
+phase A    ops MCPs in chat + doer              SHIPPED
+phase A    unified memory query                 SHIPPED
+phase A    repo_standards Neo4j catalogue       SHIPPED
+phase A    otel + cost + cache + sandbox + sec  SHIPPED (env-gated)
+phase A    auto-learn + decay + pattern-mining  SHIPPED
+phase A    @-mentions + external docs index     SHIPPED
+phase A    code-chunk embeddings + Merkle tree  SHIPPED
+phase A    workflow viz UI                      SHIPPED
+phase B    ADK 2.0.0b1 sidecar                  SKELETON (scripts/runtime/adk2-sidecar)
+phase B    HITL request_input resume            STUB → ADK 2.0
+phase B    smolagents drop                      KEEP for Planner (EVAL-1 winner)
+```

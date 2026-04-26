@@ -22,6 +22,7 @@ const Tools        = lazy(() => import('./views/Tools'));
 const Kanban       = lazy(() => import('./views/Kanban'));
 const Settings     = lazy(() => import('./views/Settings'));
 const Trace        = lazy(() => import('./views/Trace'));
+const WorkflowGraph = lazy(() => import('./views/WorkflowGraph'));
 
 function RouteFallback() {
   return (
@@ -191,6 +192,7 @@ function Shell() {
             <Route path="/memory" element={<Memory />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/trace/:id" element={<Trace />} />
+            <Route path="/workflow" element={<WorkflowGraph />} />
           </Routes>
         </Suspense>
       </main>

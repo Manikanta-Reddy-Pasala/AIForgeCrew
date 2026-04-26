@@ -52,6 +52,16 @@ app.add_middleware(
 )
 
 
+# ─────────────────────────── Boot-time wiring ───────────────────────────
+# OpenTelemetry — no-op when AIFORGE_OTEL_ENABLED != "1" (see otel.py).
+# Initialised once at module load so every request inherits the tracer.
+try:
+    from . import otel as _otel
+    _otel.setup()
+except Exception as _exc:
+    print(f"[boot] otel setup skipped: {_exc}")
+
+
 # ─────────────────────────── Helpers ────────────────────────────────────
 def _db():
     return psycopg.connect(AIFORGE_DSN, row_factory=dict_row, connect_timeout=5,
@@ -1463,6 +1473,12 @@ def _chat_via_ga(query: str) -> dict:
 
     Returns ``{answer, trace}`` matching the old smolagents shape.
     """
+    from . import otel as _otel
+    with _otel.span("chat.via_ga", role="chat", query_len=len(query)):
+        return _chat_via_ga_inner(query)
+
+
+def _chat_via_ga_inner(query: str) -> dict:
     from aiforge_core.doer.ga_compat import import_ga, ParentShim
     try:
         ga = import_ga()
@@ -1602,6 +1618,16 @@ def _chat_via_ga(query: str) -> dict:
     cfg = _chat_ga_cfg()
     try:
         session = LLMSession(cfg=cfg)
+        # Stamp provider-aware prompt-cache markers on outgoing
+        # messages — Anthropic ephemeral, OpenAI prefix-cache,
+        # Gemini stub. Idempotent.
+        try:
+            from aiforge_core.runtime import agent_config as _acfg
+            _provider = _acfg.get("chat").get("provider", "local")
+            from aiforge_core.llm import cache_markers as _cm
+            _cm.apply_to_session(session, provider=_provider)
+        except Exception as _exc:
+            print(f"[chat] cache_markers wiring skipped: {_exc}")
         client = ToolClient(session)
     except Exception as exc:
         return {"answer": f"LLM session build failed: {exc}", "trace": []}
@@ -1651,6 +1677,22 @@ def _chat_via_ga(query: str) -> dict:
         captured["answer"] = (
             "(no final_answer emitted — model exhausted turns or stalled)"
         )
+    # Cost accounting — best-effort. GA's BaseSession exposes total
+    # tokens via per-session counters when present (older GA versions
+    # don't, hence the getattr fallback).
+    try:
+        from . import cost as _cost
+        prompt_tokens = int(getattr(session, "total_prompt_tokens", 0) or 0)
+        completion_tokens = int(
+            getattr(session, "total_completion_tokens", 0) or 0,
+        )
+        _cost.record_call(
+            role="chat", ticket=None, model=cfg["model"],
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+    except Exception:
+        pass
     return {"answer": captured["answer"], "trace": captured["trace"]}
 
 

@@ -1,0 +1,10 @@
+[Unit]
+Description=AIForge pattern miner nightly
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+Unit=aiforge-pattern-miner.service
+
+[Install]
+WantedBy=timers.target

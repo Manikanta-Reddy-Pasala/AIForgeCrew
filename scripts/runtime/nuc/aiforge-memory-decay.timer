@@ -1,0 +1,10 @@
+[Unit]
+Description=AIForge memory decay nightly
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=aiforge-memory-decay.service
+
+[Install]
+WantedBy=timers.target
