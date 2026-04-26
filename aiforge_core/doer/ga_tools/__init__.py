@@ -11,9 +11,12 @@ Plus shared helpers:
 - ``edit_verify``: post-patch git-diff display.
 - ``read_tracker.ReadTracker``: per-run read cache + line numbering.
 """
-from . import bash, edit_verify, glob, grep, llm_config, read_tracker, web_search
+from . import (
+    bash, batch, bulk_edit, edit_verify, glob, grep,
+    java_refactor, llm_config, read_tracker, web_search,
+)
 
 __all__ = [
-    "bash", "edit_verify", "glob", "grep",
-    "llm_config", "read_tracker", "web_search",
+    "bash", "batch", "bulk_edit", "edit_verify", "glob", "grep",
+    "java_refactor", "llm_config", "read_tracker", "web_search",
 ]

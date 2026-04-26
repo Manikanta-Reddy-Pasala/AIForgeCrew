@@ -177,9 +177,19 @@ exploring. file_read your allowed files. file_patch the change.
 ==== TOOL CHEAT SHEET ====
 - file_read PATH       → returns line-numbered content; cached per run.
                          Don't re-request the same file.
-- file_patch / file_write → make the edit. file_patch returns a diff
+- file_patch / file_write → make ONE edit. file_patch returns a diff
                          block AFTER the edit so you can verify it
                          landed correctly.
+- bulk_edit edits=[...]→ apply N file edits atomically in ONE turn.
+                         Use when ticket touches several files
+                         (controller + service + repo + DTO). Any
+                         single failure rolls the whole batch back
+                         to git HEAD. 4-5 turns → 1 turn.
+- java_refactor recipe → invoke an OpenRewrite recipe via mvn
+                         (e.g. ChangePackage, RenameMethod,
+                         RemoveUnusedImports, OrderImports). Cheaper
+                         than hand-patching every import; recipe
+                         engine knows Java syntax.
 - glob PATTERN         → fast file listing (ripgrep). e.g.
                          '**/*Controller.java'.
 - grep REGEX [glob]    → search file contents (ripgrep). Returns
@@ -559,6 +569,51 @@ def _make_handler_class():
                 next_prompt=self._get_anchor_prompt(skip=False),
             )
 
+        def do_bulk_edit(self, args, response):  # type: ignore[override]
+            """Apply N file_patch edits atomically — Aider-style.
+
+            Iterates ``edits`` calling super().do_file_patch one
+            at a time; on the first failure, rolls back every file
+            already touched in this batch via ``git checkout HEAD
+            -- <path>``. Counters bump per landed edit (mirrors
+            single-call file_patch semantics).
+            """
+            from .ga_tools import bulk_edit as _bulk
+            edits = args.get("edits") or []
+
+            def _apply_one(edit: dict) -> dict:
+                gen = self.do_file_patch({
+                    "path": edit["path"],
+                    "old_content": edit["old_content"],
+                    "new_content": edit["new_content"],
+                }, response)
+                outcome = None
+                try:
+                    while True:
+                        next(gen)
+                except StopIteration as e:
+                    outcome = e.value
+                if outcome is None or outcome.data is None:
+                    return {"status": "error", "msg": "no outcome"}
+                if isinstance(outcome.data, dict):
+                    return outcome.data
+                return {"status": "success", "msg": str(outcome.data)[:200]}
+
+            blob = _bulk.handle(self.cwd, edits, _apply_one)
+            yield blob[:600] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(
+                blob, next_prompt=self._get_anchor_prompt(skip=False),
+            )
+
+        def do_java_refactor(self, args, response):  # type: ignore[override]
+            """Run an OpenRewrite recipe via mvn rewrite:run."""
+            from .ga_tools import java_refactor as _jr
+            blob = _jr.handle(self.cwd, args)
+            yield blob[:600] + ("\n" if not blob.endswith("\n") else "")
+            return StepOutcome(
+                blob, next_prompt=self._get_anchor_prompt(skip=False),
+            )
+
         def do_bash(self, args, response):  # type: ignore[override]
             """Persistent bash session. State held on handler._aiforge_shell."""
             from .ga_tools import bash as _bash
@@ -858,11 +913,15 @@ def run_doer_via_ga(
     from .ga_tools.grep import SCHEMA as _GREP_SCHEMA
     from .ga_tools.bash import SCHEMA as _BASH_SCHEMA
     from .ga_tools.batch import SCHEMA as _BATCH_SCHEMA
+    from .ga_tools.bulk_edit import SCHEMA as _BULK_EDIT_SCHEMA
+    from .ga_tools.java_refactor import SCHEMA as _JR_SCHEMA
     if os.environ.get("AIFORGE_GOOGLE_API_KEY"):
         tools_schema = list(tools_schema) + [_WS_SCHEMA]
-    # Always add Glob / Grep / Bash / Batch — fast ops, no API key needed.
+    # Always add Glob / Grep / Bash / Batch / BulkEdit / JavaRefactor —
+    # local utilities, no API key needed.
     tools_schema = list(tools_schema) + [
         _GLOB_SCHEMA, _GREP_SCHEMA, _BASH_SCHEMA, _BATCH_SCHEMA,
+        _BULK_EDIT_SCHEMA, _JR_SCHEMA,
     ]
     user_input = _build_user_input(ticket, plan_text, worktree_path, allowed)
     if plan_mode_active:
