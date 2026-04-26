@@ -23,6 +23,9 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }),
+  delete:   (id: string) => j<any>(`/tickets/${id}`, {
+    method: 'DELETE',
+  }),
   comment:  (id: string, body: string) => j<any>(`/tickets/${id}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

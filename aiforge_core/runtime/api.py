@@ -77,10 +77,12 @@ def _ticket_row_out(r: dict) -> dict:
         if end_ts.tzinfo is None:
             end_ts = end_ts.replace(tzinfo=timezone.utc)
         duration_s = max(0.0, (end_ts - started).total_seconds())
+    active_role = r.get("active_role")
     return {
         "id": r["id"], "identifier": r["identifier"], "title": r["title"],
         "body": r["body"], "status": r["status"], "priority": r["priority"],
         "assignee_role": _cfg.canonical_role(r["assignee_role"]) if r.get("assignee_role") else None,
+        "active_role": active_role,
         "parent_id": r["parent_id"],
         "branch": r["branch"], "project": r["project"],
         "labels": list(r["labels"] or []),
@@ -202,11 +204,22 @@ def list_tickets(role: str | None = Query(None),
         clauses.append("parent_id = (SELECT id FROM tickets WHERE identifier=%s)")
         params.append(parent)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    # Subquery: derive `active_role` = the role of the most-recent agent
+    # event on this ticket. Falls back to NULL when no agent has fired
+    # yet (so the UI still has assignee_role to show). Distinct from the
+    # static `assignee_role` (which is auto-set to "supervisor" by the
+    # routing default and never gets overwritten).
+    active_role_expr = (
+        "(SELECT agent_role FROM ticket_events "
+        " WHERE ticket_id=tickets.id AND agent_role IS NOT NULL "
+        " ORDER BY created_at DESC LIMIT 1) AS active_role"
+    )
     q = (
         "SELECT tickets.*, "
         "(SELECT MIN(created_at) FROM ticket_events "
         " WHERE ticket_id=tickets.id AND kind='status_change' AND body='in_progress'"
-        ") AS started_at "
+        ") AS started_at, "
+        f"{active_role_expr} "
         f"FROM tickets{where} ORDER BY id DESC LIMIT %s"
     )
     params.append(limit)
@@ -223,9 +236,15 @@ def get_ticket(identifier: str) -> dict:
         " WHERE ticket_id=tickets.id AND kind='status_change' AND body='in_progress'"
         ") AS started_at"
     )
+    _active_role_expr = (
+        "(SELECT agent_role FROM ticket_events "
+        " WHERE ticket_id=tickets.id AND agent_role IS NOT NULL "
+        " ORDER BY created_at DESC LIMIT 1) AS active_role"
+    )
     with _db() as c, c.cursor() as cur:
         cur.execute(
-            f"SELECT tickets.*, {_started_expr} FROM tickets WHERE identifier=%s",
+            f"SELECT tickets.*, {_started_expr}, {_active_role_expr} "
+            f"FROM tickets WHERE identifier=%s",
             (identifier,),
         )
         t = cur.fetchone()
@@ -239,8 +258,8 @@ def get_ticket(identifier: str) -> dict:
         )
         events = [_event_row_out(r) for r in cur.fetchall()]
         cur.execute(
-            f"SELECT tickets.*, {_started_expr} FROM tickets "
-            "WHERE parent_id=%s ORDER BY created_at ASC",
+            f"SELECT tickets.*, {_started_expr}, {_active_role_expr} "
+            "FROM tickets WHERE parent_id=%s ORDER BY created_at ASC",
             (ticket_id,),
         )
         children = [_ticket_row_out(r) for r in cur.fetchall()]
@@ -367,6 +386,21 @@ def add_comment(identifier: str, payload: CommentCreate) -> dict:
         raise HTTPException(404, f"ticket {identifier} not found")
     eid = tickets_mod.add_comment(t.id, payload.author, payload.body)
     return {"event_id": eid}
+
+
+@app.delete("/api/tickets/{identifier}", status_code=204)
+def delete_ticket(identifier: str) -> None:
+    """Delete a ticket and its events. Worktree, branch, and any open PR
+    are deliberately NOT touched — operator handles those out-of-band
+    so a typo doesn't nuke pushed code. Returns 404 if no such ticket."""
+    t = tickets_mod.get(identifier)
+    if t is None:
+        raise HTTPException(404, f"ticket {identifier} not found")
+    with _db() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM ticket_events WHERE ticket_id=%s", (t.id,))
+        cur.execute("DELETE FROM tickets WHERE id=%s", (t.id,))
+        c.commit()
+    return None
 
 
 # ─────────── Live agent intervention (GA _stop / _keyinfo / _intervene) ────

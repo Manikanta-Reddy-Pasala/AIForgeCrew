@@ -122,7 +122,7 @@ export default function Settings() {
       <div className="card" style={{ marginTop: 16 }}>
         <h2 style={{ fontSize: 14 }}>Providers</h2>
         <ul className="small muted" style={{ marginTop: 6, paddingLeft: 18 }}>
-          <li><code>local</code> — LM Studio on Mac Studio (reachable via <code>http://127.0.0.1:1234/v1</code> locally or <code>:1235</code> tunnel on NUC).</li>
+          <li><code>local</code> — mlx-lm on Mac Studio (reachable via <code>http://127.0.0.1:1234/v1</code> through SSH tunnel on NUC).</li>
           <li><code>anthropic</code> — Claude via LiteLLM. Requires <code>ANTHROPIC_API_KEY</code> in the server env.</li>
           <li><code>ollama_cloud</code> — Ollama Cloud. Requires <code>OLLAMA_CLOUD_API_KEY</code>.</li>
         </ul>

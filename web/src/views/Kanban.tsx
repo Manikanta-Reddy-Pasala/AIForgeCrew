@@ -183,8 +183,26 @@ function Column({
 
 function DraggableCard({ t }: { t: any }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: String(t.id) });
+  // Track drag distance so a click that didn't move (>4px) opens the
+  // detail page; a real drag does not. Pure pointer-onClick wouldn't
+  // know if the user dragged or clicked, so we measure ourselves.
+  const startRef = (typeof window !== 'undefined') ? (window as any) : null;
+  let dragStart = { x: 0, y: 0 };
   return (
-    <div ref={setNodeRef} {...attributes} {...listeners}>
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      onPointerDown={e => { dragStart = { x: e.clientX, y: e.clientY }; (listeners as any)?.onPointerDown?.(e); }}
+      onClick={(e: any) => {
+        const dx = Math.abs((e.clientX || 0) - dragStart.x);
+        const dy = Math.abs((e.clientY || 0) - dragStart.y);
+        if (dx + dy < 4 && !isDragging) {
+          window.location.href = `/tickets/${t.identifier}`;
+        }
+      }}
+      style={{ cursor: 'pointer' }}
+    >
       <TicketCard t={t} dragging={isDragging} />
     </div>
   );
@@ -206,7 +224,11 @@ function TicketCard({
       <div className="tc-title">{t.title}</div>
       <div className="tc-meta">
         <div className="row tight">
-          {t.assignee_role && <span className="chip sm">{t.assignee_role}</span>}
+          {(t.active_role || t.assignee_role) && (
+            <span className="chip sm" title={t.active_role ? 'last active stage' : 'assignee'}>
+              {t.active_role || t.assignee_role}
+            </span>
+          )}
           {Array.isArray(t.labels) && t.labels.slice(0, 3).map((l: string) => (
             <span key={l} className="chip sm">{l}</span>
           ))}

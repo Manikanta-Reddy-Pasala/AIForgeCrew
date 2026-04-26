@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { api } from '../api';
@@ -13,6 +13,7 @@ const TRANSITIONS = ['todo', 'in_progress', 'in_review', 'done', 'blocked', 'can
 export default function TicketDetail() {
   const { id = '' } = useParams();
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [comment, setComment] = useState('');
 
   const { data, isLoading } = useQuery({
@@ -51,6 +52,16 @@ export default function TicketDetail() {
     } catch (e: any) { toast.error(e.message); }
   }
 
+  async function deleteTicket() {
+    if (!window.confirm(`Delete ${t.identifier} permanently? Events, child tickets, and PRs are NOT removed.`)) return;
+    try {
+      await api.delete(id);
+      toast.success(`Deleted ${t.identifier}`);
+      qc.invalidateQueries({ queryKey: ['tickets'] });
+      navigate('/');
+    } catch (e: any) { toast.error(e.message); }
+  }
+
   return (
     <>
       <div className="detail-header">
@@ -61,7 +72,7 @@ export default function TicketDetail() {
           <span className={`chip ${priorityClass(t.priority)}`}>{t.priority}</span>
         </div>
         <div className="detail-meta">
-          <span><strong>Assignee</strong> {t.assignee_role || '—'}</span>
+          <span title="last active agent stage"><strong>Active</strong> {t.active_role || t.assignee_role || '—'}</span>
           <span title={durationTitle(t)}><strong>Duration</strong> {durationCell(t)}</span>
           <span><strong>Updated</strong> {relTime(t.updated_at)}</span>
           {t.branch && <span><strong>Branch</strong> <code>{t.branch}</code></span>}
@@ -119,12 +130,23 @@ export default function TicketDetail() {
         <div className="stack">
           <div className="card">
             <div className="card-header"><h2>Transition</h2></div>
-            <div className="row" style={{ gap: 6 }}>
-              {TRANSITIONS.filter(s => s !== t.status).map(s => (
-                <button key={s} className="ghost sm" onClick={() => setStatus(s)}>
-                  → {s.replace('_', ' ')}
-                </button>
-              ))}
+            <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+              <label className="small muted">Move to</label>
+              <select
+                value={t.status}
+                onChange={e => {
+                  const s = e.target.value;
+                  if (s !== t.status) setStatus(s);
+                }}
+                style={{ minWidth: 160 }}
+              >
+                {TRANSITIONS.map(s => (
+                  <option key={s} value={s}>{s.replace('_', ' ')}</option>
+                ))}
+              </select>
+              <button className="ghost sm danger" onClick={deleteTicket} style={{ marginLeft: 'auto' }}>
+                <Icon.Trash size={14} /> Delete
+              </button>
             </div>
           </div>
 

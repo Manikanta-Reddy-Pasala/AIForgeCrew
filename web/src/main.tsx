@@ -121,7 +121,7 @@ function TopBar({ onToggleSidebar }: { onToggleSidebar: () => void }) {
       <div className="topbar-spacer" />
       <div className="topbar-health">
         <HealthPill label="Postgres"  on={!!health?.postgres} />
-        <HealthPill label="LM Studio" on={!!health?.lm_studio} />
+        <HealthPill label="mlx-lm" on={!!health?.lm_studio} />
       </div>
     </div>
   );

@@ -45,4 +45,5 @@ export const Icon = {
   GitBranch: (p: P) => <Svg {...p}><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="8" r="2.5" /><path d="M6 9v6M18 10c0 4-5 4-5 7" /></Svg>,
   Filter: (p: P) => <Svg {...p}><path d="M22 3H2l8 10v7l4 2v-9l8-10Z" /></Svg>,
   PanelLeft: (p: P) => <Svg {...p}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /></Svg>,
+  Trash: (p: P) => <Svg {...p}><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></Svg>,
 };
