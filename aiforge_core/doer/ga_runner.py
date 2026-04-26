@@ -1480,11 +1480,19 @@ def run_doer_via_ga(
             initial_user_content=None,
         )
         for chunk in gen:
-            chunks.append(str(chunk))
+            s = str(chunk)
+            chunks.append(s)
             # GA emits "LLM Running (Turn N) ..." at the top of every turn.
-            m = re.search(r"LLM Running \(Turn (\d+)\)", str(chunk))
+            m = re.search(r"LLM Running \(Turn (\d+)\)", s)
             if m:
                 turn_count = max(turn_count, int(m.group(1)))
+            # Diagnostic — surface every turn boundary + tool dispatch
+            # + early-exit signals so we can see WHY GA stops at turn 1.
+            # Toggle off via AIFORGE_DEBUG_DOER=0.
+            if os.environ.get("AIFORGE_DEBUG_DOER", "1") == "1":
+                if "未知工具" in s or "Tool:" in s or "RESULT" in s:
+                    emit(log, "ga_runner.chunk", ticket=identifier,
+                         turn=turn_count, head=s[:200])
         final_summary = "".join(chunks[-12:])[-3500:]
     except ScopeViolation as exc:
         emit(log, "ga_runner.scope_violation", ticket=identifier, path=exc.path)

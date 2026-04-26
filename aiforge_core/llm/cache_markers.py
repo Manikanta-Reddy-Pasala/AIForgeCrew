@@ -46,43 +46,77 @@ def stamp(
     return list(messages)
 
 
-def _extract_text_tool_use(content_blocks: list) -> list[dict]:
-    """Scan text content for `<tool_use>{...}</tool_use>` tags and
-    synthesise proper ``tool_use`` blocks. KISS: regex pass over
-    every text block; JSON-decode the inner payload; soft-fail per
-    tag. Returns the list of NEW tool_use blocks (does not mutate).
+_KNOWN_TOOL_TAGS = frozenset({
+    "file_read", "file_write", "file_patch", "bulk_edit",
+    "java_refactor", "code_run", "bash", "glob", "grep", "batch",
+    "lint", "tests", "undo", "web_search", "ask_explorer",
+    "ask_user", "search_memory", "unified_memory_query",
+    "todo_write", "todo_check", "enter_plan_mode", "exit_plan_mode",
+    "dispatch_subagent",
+})
 
-    Some models (Qwen3-Coder-Next on mlx-lm) emit text-protocol
-    tags instead of native OpenAI tool_calls. GA expects native;
-    without this synthesis, ``tool_use_count`` stays 0 forever.
+
+def _extract_text_tool_use(content_blocks: list) -> list[dict]:
+    """Scan text content for tool-call XML-ish tags and synthesise
+    proper ``tool_use`` blocks. Two patterns supported:
+
+    1. ``<tool_use>{"name":..,"arguments":..}</tool_use>``
+       Generic GA text-protocol envelope.
+    2. ``<file_read>{"path":..}</file_read>``
+       Bare tag where the element name IS the tool name (Qwen3-
+       Coder-Next on mlx-lm emits this when fed our 25-tool schema).
+
+    Pattern 2 only fires for tag names in :data:`_KNOWN_TOOL_TAGS`
+    so random `<thinking>` / `<summary>` blocks aren't mis-parsed.
     """
     import re as _re, json as _json
-    pattern = _re.compile(
+    pat_envelope = _re.compile(
         r"<tool_use>\s*(\{.*?\})\s*</tool_use>", _re.DOTALL,
     )
+    pat_bare = _re.compile(
+        r"<([a-z_][a-z0-9_]*)>\s*(\{.*?\})\s*</\1>", _re.DOTALL,
+    )
+
     out: list[dict] = []
     for blk in content_blocks or []:
         if not isinstance(blk, dict) or blk.get("type") != "text":
             continue
         text = blk.get("text") or ""
-        if "<tool_use>" not in text:
-            continue
-        for m in pattern.finditer(text):
-            try:
-                payload = _json.loads(m.group(1))
-            except Exception:
+
+        # Pattern 1 — envelope
+        if "<tool_use>" in text:
+            for m in pat_envelope.finditer(text):
+                try:
+                    payload = _json.loads(m.group(1))
+                except Exception:
+                    continue
+                name = payload.get("name") or payload.get("tool")
+                args = (payload.get("arguments")
+                        or payload.get("args")
+                        or payload.get("input")
+                        or {})
+                if not name:
+                    continue
+                out.append({
+                    "type": "tool_use",
+                    "id": f"text_{abs(hash(m.group(0))) & 0xfffff:x}",
+                    "name": name,
+                    "input": args if isinstance(args, dict) else {},
+                })
+
+        # Pattern 2 — bare tag with known tool name
+        for m in pat_bare.finditer(text):
+            tag = m.group(1)
+            if tag not in _KNOWN_TOOL_TAGS:
                 continue
-            name = payload.get("name") or payload.get("tool")
-            args = (payload.get("arguments")
-                    or payload.get("args")
-                    or payload.get("input")
-                    or {})
-            if not name:
+            try:
+                args = _json.loads(m.group(2))
+            except Exception:
                 continue
             out.append({
                 "type": "tool_use",
-                "id": f"text_{abs(hash(m.group(0))) & 0xfffff:x}",
-                "name": name,
+                "id": f"bare_{abs(hash(m.group(0))) & 0xfffff:x}",
+                "name": tag,
                 "input": args if isinstance(args, dict) else {},
             })
     return out
