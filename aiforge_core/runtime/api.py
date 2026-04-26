@@ -485,6 +485,58 @@ def _persist_env(key: str, value: str) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+@app.get("/api/runtime/rate_limits")
+def get_rate_limits() -> dict:
+    """Active rate-limit config + bucket state per provider.
+
+    UI uses this to render bucket gauges and the limit-edit form.
+    """
+    from aiforge_core.llm import list_providers as _list, rl_state as _state
+    from aiforge_core.llm import providers as _providers
+    out: list[dict] = []
+    for entry in _list():
+        name = entry["name"]
+        prov = _providers.get(name)
+        declared = prov.rate_limits() if prov is not None else None
+        rpm_env = os.environ.get(f"AIFORGE_{name.upper()}_RPM")
+        tpm_env = os.environ.get(f"AIFORGE_{name.upper()}_TPM")
+        rec = {
+            "provider": name,
+            "available": entry["available"],
+            "declared": declared,
+            "effective_rpm": float(rpm_env) if rpm_env else (declared or {}).get("rpm", 0),
+            "effective_tpm": float(tpm_env) if tpm_env else (declared or {}).get("tpm", 0),
+            "env_override_rpm": rpm_env,
+            "env_override_tpm": tpm_env,
+            "state": _state(name),
+        }
+        out.append(rec)
+    return {"providers": out, "max_wait_s": int(os.environ.get("AIFORGE_LLM_MAX_WAIT_S", 120))}
+
+
+@app.put("/api/runtime/rate_limits")
+def set_rate_limit(payload: dict) -> dict:
+    """Tighten/loosen a provider's RPM or TPM at runtime.
+
+    payload: ``{"provider": "gemini", "rpm": 30, "tpm": 500000}``.
+    Either field optional; sets ``AIFORGE_<PROVIDER>_RPM/_TPM`` env
+    + persists to runtime.env.
+    """
+    provider = (payload.get("provider") or "").strip().lower()
+    if not provider:
+        raise HTTPException(400, "provider required")
+    written: dict = {}
+    for key in ("rpm", "tpm"):
+        v = payload.get(key)
+        if v is None:
+            continue
+        env_name = f"AIFORGE_{provider.upper()}_{key.upper()}"
+        os.environ[env_name] = str(v)
+        _persist_env(env_name, str(v))
+        written[key] = v
+    return {"provider": provider, "set": written}
+
+
 @app.get("/api/runtime/llm_backend")
 def get_llm_backend() -> dict:
     """Active LLM backend for all agents + the provider registry."""

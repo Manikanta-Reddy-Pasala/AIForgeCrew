@@ -23,9 +23,11 @@ then to ``"local"``.
 from .types import Endpoint, Provider
 from .router import resolve, fallback, list_providers
 from .client import complete
+from .rate_limiter import acquire as rl_acquire, state as rl_state
 
 __all__ = [
     "Endpoint", "Provider",
     "resolve", "fallback", "list_providers",
     "complete",
+    "rl_acquire", "rl_state",
 ]

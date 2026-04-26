@@ -23,6 +23,10 @@ class LocalMlxProvider:
         # Treat as always-available; runtime errors propagate to caller.
         return True
 
+    def rate_limits(self) -> dict | None:
+        # Local model — no rate limit. Caller short-circuits acquire().
+        return None
+
     def endpoint(self, role: str) -> Endpoint:
         role_up = role.upper()
         base_url = (

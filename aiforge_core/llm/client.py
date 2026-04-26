@@ -18,6 +18,8 @@ import urllib.request
 
 from .router import resolve, fallback
 from .types import Endpoint
+from . import providers as _providers
+from . import rate_limiter as _rl
 
 
 def _build_body(ep: Endpoint, messages: list[dict],
@@ -42,7 +44,25 @@ def _build_body(ep: Endpoint, messages: list[dict],
     return json.dumps(body).encode()
 
 
+def _estimate_tokens(payload: bytes) -> int:
+    """Rough token estimate from payload bytes — 4 chars ≈ 1 token.
+
+    Good-enough budget for the limiter; the API's exact accounting
+    happens server-side.
+    """
+    return max(1, len(payload) // 4)
+
+
 def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
+    # Rate-limit acquire BEFORE the post — blocks until budget allows.
+    prov = _providers.get(ep.provider)
+    declared = prov.rate_limits() if prov is not None else None
+    _rl.acquire(
+        ep.provider,
+        declared=declared,
+        tokens_estimate=_estimate_tokens(payload),
+        max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)),
+    )
     req = urllib.request.Request(
         f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
@@ -54,6 +74,14 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
     )
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         return json.loads(resp.read())
+
+
+def _int_env(name: str, default: int) -> int:
+    import os as _os
+    try:
+        return int(_os.environ.get(name, default))
+    except ValueError:
+        return default
 
 
 def _extract_text(resp_body: dict) -> str:

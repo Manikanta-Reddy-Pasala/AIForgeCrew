@@ -24,6 +24,12 @@ class GeminiProvider:
     def is_available(self) -> bool:
         return bool(os.environ.get("AIFORGE_GOOGLE_API_KEY"))
 
+    def rate_limits(self) -> dict | None:
+        # Free-tier (gemini-2.5-flash): 5 RPM, 250K TPM.
+        # Operator override via AIFORGE_GEMINI_RPM /
+        # AIFORGE_GEMINI_TPM env when on paid tier.
+        return {"rpm": 5, "tpm": 250_000}
+
     def endpoint(self, role: str) -> Endpoint:
         role_up = role.upper()
         model = (

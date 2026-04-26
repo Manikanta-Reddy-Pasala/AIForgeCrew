@@ -22,6 +22,10 @@ class OpenAIProvider:
     def is_available(self) -> bool:
         return bool(os.environ.get("OPENAI_API_KEY"))
 
+    def rate_limits(self) -> dict | None:
+        # Tier-1 defaults; raise via env per your usage tier.
+        return {"rpm": 500, "tpm": 200_000}
+
     def endpoint(self, role: str) -> Endpoint:
         role_up = role.upper()
         base_url = (

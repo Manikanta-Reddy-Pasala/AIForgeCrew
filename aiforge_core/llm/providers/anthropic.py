@@ -27,6 +27,11 @@ class AnthropicProvider:
     def is_available(self) -> bool:
         return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
+    def rate_limits(self) -> dict | None:
+        # Anthropic paid tier — generous defaults; tighten via
+        # AIFORGE_ANTHROPIC_RPM / _TPM env if your tier is lower.
+        return {"rpm": 50, "tpm": 100_000}
+
     def endpoint(self, role: str) -> Endpoint:
         role_up = role.upper()
         model = (

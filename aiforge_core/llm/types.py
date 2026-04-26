@@ -43,3 +43,10 @@ class Provider(Protocol):
 
     def endpoint(self, role: str) -> Endpoint:
         """Build an :class:`Endpoint` for the given agent role."""
+
+    def rate_limits(self) -> dict | None:
+        """Declared limits for the rate limiter. Return ``None`` for
+        unlimited (e.g. local mlx-lm). Otherwise return a dict with
+        any of: ``rpm`` (requests/min), ``tpm`` (tokens/min). Env
+        ``AIFORGE_<NAME>_RPM`` / ``_TPM`` overrides at runtime.
+        """
