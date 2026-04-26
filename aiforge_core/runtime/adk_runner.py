@@ -204,9 +204,26 @@ def run_adk(ticket_id: int) -> int:
     worktree = final_state.get(S_WORKTREE)
     fail_count = int(final_state.get(S_FAIL_COUNT, 0) or 0)
 
-    # Map final ADK state → ticket status, mirroring graph_runner's logic.
+    # Map final ADK state → ticket status. If the doer ever asked the
+    # operator a question via ask_user, escalate to in_review instead
+    # of blocked so the ticket shows up on the human-attention board.
+    awaiting_user = False
+    try:
+        with tickets_mod._conn() as _c:
+            with _c.cursor() as _cur:
+                _cur.execute(
+                    "SELECT 1 FROM ticket_events "
+                    "WHERE ticket_id=%s AND kind='doer_question' LIMIT 1",
+                    (ticket_id,),
+                )
+                awaiting_user = _cur.fetchone() is not None
+    except Exception:
+        awaiting_user = False
+
     if verdict == "pass":
         new_status = "done"
+    elif awaiting_user:
+        new_status = "in_review"  # operator answers question on the ticket
     elif verdict in ("scope_violation", "fail"):
         new_status = "blocked"
     elif fail_count > 0:

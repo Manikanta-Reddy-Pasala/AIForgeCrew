@@ -70,20 +70,14 @@ def _ga_dir() -> str:
 
 
 # Tools the Doer is forbidden from calling per agents.yaml. Filtered out
-# of the schema and rejected by tool_before_callback as a second layer.
-_FORBIDDEN_GA_TOOLS = {
-    "ask_user",
-    "start_long_term_update",
-    "web_scan",
-    "web_execute_js",
-    # update_working_checkpoint is handy on long sessions but adds ~900
-    # chars of tool description to every turn. Drop for the doer — its
-    # work is short-horizon (read → patch → compile → done). Re-enable
-    # via AIFORGE_DOER_KEEP_CHECKPOINT=1 if a long-running fixture needs
-    # the scratchpad.
-    *(set() if os.environ.get("AIFORGE_DOER_KEEP_CHECKPOINT") == "1"
-      else {"update_working_checkpoint"}),
-}
+# Doer now has the full GA tool surface. ask_user goes through our
+# ticket-comment escalation path (do_ask_user override below) instead
+# of blocking on stdin. start_long_term_update / web_scan /
+# web_execute_js are enabled — let the model self-recover via memory
+# notes + Spring docs lookups when it hits unknown APIs.
+_FORBIDDEN_GA_TOOLS: set[str] = set()
+if os.environ.get("AIFORGE_DOER_KEEP_CHECKPOINT") != "1":
+    _FORBIDDEN_GA_TOOLS.add("update_working_checkpoint")
 
 
 # Dispatch markers we count as "real work" for the edit_block_ok counter.
@@ -143,10 +137,18 @@ exploring. file_read your allowed files. file_patch the change.
 Hard rules:
 - Edit ONLY files listed in the ## Allowed files section. Writes outside
   that list are blocked by the harness ScopeGuard.
-- Do NOT call `ask_user`. Do NOT call `start_long_term_update`. Do NOT
-  call any web tool. The harness will reject those calls.
 - code_run is for `mvn compile` ONLY (and only AFTER you've patched).
   No find / grep / ls / cat — read files via file_read instead.
+- web_scan and web_search ARE allowed when you hit an unknown API
+  (e.g. compile error 'cannot find symbol Expressions') — fetch the
+  Spring / Java doc, find the right call, then patch. Don't loop on
+  the same wrong API.
+- start_long_term_update IS allowed for one-line patterns you hit
+  repeatedly (e.g. 'Spring Mongo grouping uses Aggregation.group not
+  Expressions.wrap'). Future tickets benefit from your memory.
+- ask_user IS allowed when you've truly exhausted options. It logs
+  the question to the ticket — operator answers and resubmits. Use
+  it sparingly; prefer ask_explorer + web_scan first.
 - Use file_patch for narrow diffs (preferred). Use file_write only for
   brand-new files or full rewrites.
 - Compile ONCE at the very end, AFTER every patch is applied — not
@@ -224,6 +226,18 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"(original tree already compiles).\n"
         f"4. End with a single `<summary>` tag naming the modified "
         f"file(s) and quoting the BUILD SUCCESS line.\n\n"
+        f"## RECOVERY — when you hit a compile error\n"
+        f"1. READ the error carefully. 'cannot find symbol' = wrong "
+        f"API, NOT a missing import most of the time.\n"
+        f"2. ask_explorer 'show me example usage of <ClassName> in "
+        f"this repo' — copy the working pattern.\n"
+        f"3. If repo has no example, web_scan the official docs URL "
+        f"(e.g. docs.spring.io / javadoc.io). Find the right method "
+        f"signature.\n"
+        f"4. Patch with the correct API. ONE more compile.\n"
+        f"5. Truly stuck (e.g. acceptance contradicts existing API)? "
+        f"   Call ask_user with a specific question — it logs to the "
+        f"   ticket for the operator.\n\n"
         f"## ANTI-PATTERNS — these waste turns and earn no credit\n"
         f"- Running `find` / `grep` / `ls` via code_run. The Planner "
         f"already supplied paths. file_read them.\n"
@@ -281,21 +295,39 @@ def _make_handler_class():
                 # for hard rejection.
             return None
 
-        # Hard rejection for forbidden tools — overrides GA's do_* methods.
+        # ask_user no longer blocks — it pushes a question into the
+        # ticket as a 'doer_question' event and ends the run with a
+        # special stop_reason so the orchestrator can mark the ticket
+        # 'awaiting_user' instead of 'blocked'. Operator answers via
+        # the ticket comment thread; resubmit picks the answer up via
+        # planner.
         def do_ask_user(self, args, response):  # type: ignore[override]
-            yield "[Doer harness] ask_user is forbidden — re-attempt the edit.\n"
+            question = (args.get("question") or "").strip()
+            candidates = args.get("candidates") or []
+            ticket_obj = getattr(self.parent, "_aiforge_ticket", None)
+            if ticket_obj is not None:
+                try:
+                    body = (
+                        f"Doer needs operator input:\n\n{question}\n\n"
+                        + (f"Suggested options: {candidates}\n" if candidates else "")
+                        + "Reply on this ticket and resubmit."
+                    )
+                    tickets_mod.add_event(
+                        ticket_obj.id, "doer", "doer_question",
+                        body=body[:4000],
+                        metadata={"question": question[:1000],
+                                  "candidates": candidates},
+                    )
+                except Exception:
+                    pass
+            yield (f"[Doer harness] ask_user logged on ticket. "
+                   f"Question: {question[:200]}\n")
             return StepOutcome(
-                {"status": "error", "msg": "ask_user forbidden for Doer"},
-                next_prompt=("Do not call ask_user. Use file_read / file_patch / "
-                             "code_run to make progress on the ticket."),
-            )
-
-        def do_start_long_term_update(self, args, response):  # type: ignore[override]
-            yield "[Doer harness] start_long_term_update is forbidden.\n"
-            return StepOutcome(
-                {"status": "error", "msg": "memory updates are the Learner's job"},
-                next_prompt=("Do not call start_long_term_update. Continue editing "
-                             "until compile is green, then stop."),
+                {"status": "awaiting_user",
+                 "msg": "question logged on ticket"},
+                next_prompt=("Operator notified via ticket comment. "
+                             "Stop here — output a <summary> reflecting "
+                             "the open question, then end."),
             )
 
         def do_code_run(self, args, response):  # type: ignore[override]
@@ -553,6 +585,9 @@ def run_doer_via_ga(
     parent = _ParentShim(task_dir=task_dir)
 
     counters = {"edit_block_ok": 0, "compile_green": 0}
+    # Stash the ticket on the GA parent so do_ask_user can post the
+    # question back as a ticket event instead of blocking on stdin.
+    parent._aiforge_ticket = ticket  # type: ignore[attr-defined]
     handler = HandlerCls(parent, scope_guard=scope_guard,
                          counters=counters, last_history=[],
                          cwd=worktree_path)
