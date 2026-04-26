@@ -322,13 +322,39 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
                 context_before=3, context_after=10,
                 max_per_file=2, max_total_chars=6000,
             )
+    # CRITICAL: enrichment.focal_files are absolute paths under the
+    # MASTER worktree (e.g. /home/mani/codeRepo/X/src/...). The doer
+    # runs in the per-ticket sibling worktree (e.g. .../X/.aiforge-
+    # worktrees/ONE-62/src/...). If we emit master paths in ## Files,
+    # the doer's file_patch lands on master → no commit on the
+    # feature branch → publish skipped → no PR. Always rewrite to
+    # worktree-relative so plan ## Files joins to the right tree.
+    base_repo = os.path.join(
+        os.environ.get("AIFORGE_REPOS_BASE", "/home/mani/codeRepo"),
+        project,
+    )
+
+    def _to_worktree_rel(p: str) -> str:
+        if not isinstance(p, str):
+            return ""
+        # Strip the master-worktree prefix; if not under that prefix,
+        # leave the path alone (caller may have already passed
+        # worktree-relative).
+        if p.startswith(base_repo + "/"):
+            return p[len(base_repo) + 1:]
+        if p.startswith(base_repo):
+            return p[len(base_repo):].lstrip("/")
+        return p
+
+    edit_targets_rel = [_to_worktree_rel(p) for p in edit_targets if p]
+    reference_files_rel = [_to_worktree_rel(p) for p in reference_files if p]
     edit_block = (
-        "\n".join(f"- {p}" for p in edit_targets[:6])
-        if edit_targets else "(none — planner must derive)"
+        "\n".join(f"- {p}" for p in edit_targets_rel[:6])
+        if edit_targets_rel else "(none — planner must derive)"
     )
     ref_block = (
-        "\n".join(f"- {p}" for p in reference_files[:6])
-        if reference_files else "(none)"
+        "\n".join(f"- {p}" for p in reference_files_rel[:6])
+        if reference_files_rel else "(none)"
     )
     snippets_section = (
         f"## Reference snippets (mirror this idiom for the new entity)\n"
