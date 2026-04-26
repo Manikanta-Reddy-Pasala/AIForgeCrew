@@ -187,7 +187,10 @@ def _heuristic_intent(text: str) -> Intent:
     ref = ""
     m = re.search(r"\b(?:like|similar to|mirror|same as|reference[d]? table)\s+`?([A-Za-z][\w/.-]+)`?", text)
     if m:
-        ref = m.group(1)
+        # Strip trailing sentence punctuation — the regex's [\w/.-]+
+        # is greedy on '.' so `businessProducts.` survives. ripgrep
+        # -F treats that period literally and finds nothing.
+        ref = m.group(1).rstrip(".,;:!?")
     # Token-rich keywords: words with mixed case OR underscores OR len >= 7.
     # Preserve source order — first occurrence in text wins (so "add X
     # like Y" picks X as the entity, not Y).

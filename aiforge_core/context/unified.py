@@ -582,6 +582,12 @@ def _classify_ref_files(worktree: str, pattern: str, *,
     ``([], [])`` — caller falls back to whatever it had."""
     if not worktree or not pattern.strip() or len(pattern) < 3:
         return [], []
+    # Strip sentence punctuation that the LLM/heuristic classifier
+    # often leaves on the reference token (e.g. 'businessProducts.').
+    # ripgrep -F is literal so any extra char kills the match.
+    pattern = pattern.strip().rstrip(".,;:!?\"'`)]}>")
+    if len(pattern) < 3:
+        return [], []
     import subprocess
     try:
         # -n: line numbers · --no-heading: one path per line · -F: literal
