@@ -491,21 +491,30 @@ def _make_handler_class():
             abs_path = self._get_abs_path(args.get("path", ""))
             blob = reader.read(abs_path)
             yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
-            return StepOutcome(blob, next_prompt=None)
+            return StepOutcome(
+                blob,
+                next_prompt=self._get_anchor_prompt(skip=False),
+            )
 
         def do_glob(self, args, response):  # type: ignore[override]
             """List files by pattern. Pure logic in tools.glob."""
             from .ga_tools import glob as _glob
             blob = _glob.handle(self.cwd, args)
             yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
-            return StepOutcome(blob, next_prompt=None)
+            return StepOutcome(
+                blob,
+                next_prompt=self._get_anchor_prompt(skip=False),
+            )
 
         def do_grep(self, args, response):  # type: ignore[override]
             """Search content via ripgrep. Pure logic in tools.grep."""
             from .ga_tools import grep as _grep
             blob = _grep.handle(self.cwd, args)
             yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
-            return StepOutcome(blob, next_prompt=None)
+            return StepOutcome(
+                blob,
+                next_prompt=self._get_anchor_prompt(skip=False),
+            )
 
         def do_batch(self, args, response):  # type: ignore[override]
             """Fan out read-side tools in parallel via ga_tools.batch.
@@ -545,7 +554,10 @@ def _make_handler_class():
             calls = args.get("calls") or []
             yield f"[batch] {len(calls)} sub-call(s) parallel\n"
             blob = _batch.handle(_dispatch, calls)
-            return StepOutcome(blob, next_prompt=None)
+            return StepOutcome(
+                blob,
+                next_prompt=self._get_anchor_prompt(skip=False),
+            )
 
         def do_bash(self, args, response):  # type: ignore[override]
             """Persistent bash session. State held on handler._aiforge_shell."""
@@ -556,7 +568,10 @@ def _make_handler_class():
                 self._aiforge_shell = shell  # type: ignore[attr-defined]
             blob = _bash.handle(shell, args)
             yield blob[:400] + ("\n" if not blob.endswith("\n") else "")
-            return StepOutcome(blob, next_prompt=None)
+            return StepOutcome(
+                blob,
+                next_prompt=self._get_anchor_prompt(skip=False),
+            )
 
         def _spawn_one_explorer(self, question: str) -> str:
             """Run a single explorer sub-agent; return text answer."""
