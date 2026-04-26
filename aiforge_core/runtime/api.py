@@ -323,11 +323,39 @@ def create_ticket(payload: TicketCreate) -> dict:
     if payload.max_turns is not None:
         md["max_turns"] = int(payload.max_turns)
     assignee = _cfg.canonical_role(payload.assignee_role) if payload.assignee_role else None
+    # IntentLayer — translate plain language at INGRESS so every
+    # downstream agent (planner, doer) sees enriched body + metadata.
+    # AIFORGE_INTENT_ENRICH=0 disables (offline / debugging).
+    enriched_body = payload.body
+    enrichment_meta: dict = {}
+    if os.environ.get("AIFORGE_INTENT_ENRICH", "1") == "1" and payload.body.strip():
+        try:
+            from aiforge_core.intent import enrich as _enrich
+            et = _enrich(payload.body)
+            enrichment_meta = {
+                "intent": {
+                    "action": et.intent.action,
+                    "entity": et.intent.entity,
+                    "reference_pattern": et.intent.reference_pattern,
+                    "repo_hint": et.intent.repo_hint,
+                    "keywords": et.intent.keywords,
+                },
+                "focal_files": et.allowed_files[:12],
+                "reference_files": et.reference_files[:6],
+                "similar_tickets": et.similar_tickets[:5],
+                "commands": et.commands,
+                "acceptance": et.acceptance[:10],
+                "sources_used": et.sources_used,
+            }
+            md["enrichment"] = enrichment_meta
+        except Exception as exc:
+            md["enrichment_error"] = str(exc)[:300]
     t = tickets_mod.create(
-        title=payload.title, body=payload.body,
+        title=payload.title, body=enriched_body,
         assignee_role=assignee,
         priority=payload.priority, parent_id=parent_id,
-        project=payload.project, labels=payload.labels,
+        project=payload.project or enrichment_meta.get("intent", {}).get("repo_hint"),
+        labels=payload.labels,
         metadata=md or None,
     )
     if not t.branch:
@@ -1556,21 +1584,26 @@ def _chat_via_ga_inner(query: str) -> dict:
 
         def do_unified_memory_query(self, args, response):
             import time as _t
-            from aiforge_core.memory.unified_query import query as _uq, render as _ur
             q = (args.get("query") or "").strip()
-            ticket = (args.get("ticket") or None) or None
             role = args.get("role") or "sr_developer"
             limit = int(args.get("limit") or 8)
             t0 = _t.time()
             try:
-                result = _uq(q, ticket=ticket, role=role, limit=limit)
-                rendered = _ur(result)
+                # Route through UnifiedContext — the single read API
+                # spanning 8 sources (T1..T5 + standards + repo doc +
+                # operator memory). Replaces the older single-source
+                # unified_query call so chat sees the same bundle the
+                # planner/doer get.
+                from aiforge_core.context import UnifiedContext
+                bundle = UnifiedContext().for_chat(
+                    q, role=role, token_budget=max(2000, limit * 250),
+                )
+                rendered = bundle.render() or "[unified_context] no hits"
             except Exception as exc:
                 rendered = f"unified_memory_query error: {exc}"
             wall_ms = int((_t.time() - t0) * 1000)
             self._record("unified_memory_query",
-                         {"query": q, "ticket": ticket,
-                          "role": role, "limit": limit},
+                         {"query": q, "role": role, "limit": limit},
                          data=rendered, wall_ms=wall_ms)
             yield ""
             return StepOutcome(

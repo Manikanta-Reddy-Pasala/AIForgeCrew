@@ -344,10 +344,26 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
             )
     except Exception:
         pass
+    # UnifiedContext — single read API across all 8 sources. Keyed off
+    # ticket TEXT (not allowed_files), so empty allowed_list no longer
+    # collapses context. Best-effort.
+    unified_section = ""
+    try:
+        from aiforge_core.context import UnifiedContext as _UC
+        _bundle = _UC().for_doer(ticket, token_budget=4500)
+        _rendered = _bundle.render()
+        if _rendered:
+            unified_section = (
+                "## Auto-context (UnifiedContext — ticket-text keyed)\n"
+                f"{_rendered}\n\n"
+            )
+    except Exception:
+        unified_section = ""
     return (
         f"## Worktree\n`{worktree_path}` — every command must run there.\n\n"
         f"## Ticket\n{title}\n\n"
         f"{body}\n\n"
+        f"{unified_section}"
         f"{standards_section}"
         f"{conventions_section}"
         f"## Allowed files (write-tool ScopeGuard)\n{allowed_block}\n\n"

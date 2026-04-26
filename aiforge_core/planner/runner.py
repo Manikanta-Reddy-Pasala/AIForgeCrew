@@ -42,13 +42,22 @@ def run_planner(ticket: object, log: object) -> dict:
     t_start = time.time()
     ticket_id = ticket.id  # type: ignore[attr-defined]
 
-    # Build a shallow context bundle from the ticket body for now.
-    # A deeper deep-context call (like the Doer does) could be added here
-    # but requires the external aiforge-deep-context script; skip for resilience.
-    context_bundle = (
-        f"Project: {getattr(ticket, 'project', None) or 'unknown'}\n"
-        f"Title: {getattr(ticket, 'title', '')}\n"
-    )
+    # UnifiedContext — single source of context for ALL agents. Keyed
+    # off ticket text so even raw plain-language tickets get the
+    # focal_files / similar_tickets / T3 recipes / repo standards
+    # they need before deciding scope.
+    try:
+        from aiforge_core.context import UnifiedContext as _UC
+        _bundle = _UC().for_planner(ticket, token_budget=4000)
+        context_bundle = _bundle.render() or (
+            f"Project: {getattr(ticket, 'project', None) or 'unknown'}\n"
+            f"Title: {getattr(ticket, 'title', '')}\n"
+        )
+    except Exception:
+        context_bundle = (
+            f"Project: {getattr(ticket, 'project', None) or 'unknown'}\n"
+            f"Title: {getattr(ticket, 'title', '')}\n"
+        )
 
     llm_config = _LLMConfig(
         base_url=LM_STUDIO_BASE_URL,
