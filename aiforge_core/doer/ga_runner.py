@@ -817,31 +817,18 @@ def run_doer_via_ga(
             emit(log, "ga_runner.plan_mode_skip",
                  ticket=identifier, error=str(exc)[:200])
 
-    # Pick session class based on backend:
-    #   local mlx-lm → LLMSession (text-protocol; mlx_lm 0.31 drops
-    #     native tool_calls so we read inline <tool>...</tool>)
-    #   cloud (Gemini/OpenAI/Anthropic) → NativeOAISession (native
-    #     message.tool_calls; cloud APIs always emit them)
+    # All backends use LLMSession (GA's text-protocol path). ToolClient
+    # is wired for text-protocol — passing tools array via system
+    # prompt and reading `<tool_use>{...}</tool_use>` blocks from the
+    # model's response. Both mlx-lm 0.31 (which drops native tool_calls)
+    # and cloud APIs (Gemini/OpenAI) follow the text format reliably
+    # when their system prompt instructs them to.
     from .ga_tools import llm_config as _llm_cfg
     cfg = _llm_cfg.primary_cfg()
-    primary_is_cloud = cfg.get("name", "").startswith(("gemini", "openai", "anthropic"))
-    NativeOAISession = None
-    try:
-        from llmcore import NativeOAISession as _NOS  # type: ignore
-        NativeOAISession = _NOS
-    except Exception:
-        NativeOAISession = None
-
-    def _build_session(c: dict, is_cloud: bool):
-        if is_cloud and NativeOAISession is not None:
-            return NativeOAISession(cfg=c)
-        return LLMSession(cfg=c)
-
-    primary_session = _build_session(cfg, primary_is_cloud)
-    session = primary_session
+    session = LLMSession(cfg=cfg)
     emit(log, "ga_runner.session_built", ticket=identifier,
          backend=cfg.get("name", "?"),
-         class_=primary_session.__class__.__name__)
+         class_=session.__class__.__name__)
     client = ToolClient(session)
 
     tools_schema = _load_tools_schema()
