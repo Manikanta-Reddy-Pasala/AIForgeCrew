@@ -18,7 +18,20 @@ import os
 
 
 def primary_cfg() -> dict:
-    """Local mlx-lm Coder-Next on the Doer port."""
+    """Active doer backend.
+
+    AIFORGE_DOER_PRIMARY_BACKEND=local (default) → mlx-lm.
+    AIFORGE_DOER_PRIMARY_BACKEND=gemini → cloud Gemini-Flash.
+    Settings UI flips this env value via the runtime session_param API.
+    """
+    backend = os.environ.get("AIFORGE_DOER_PRIMARY_BACKEND", "local").lower()
+    if backend == "gemini":
+        cloud = fallback_cfg()
+        if cloud is not None:
+            cloud["max_retries"] = 2
+            cloud["name"] = "gemini-primary"
+            return cloud
+        # Key missing — silent-fall back to local rather than crash.
     base_url = os.environ.get(
         "AIFORGE_DOER_BASE_URL", "http://127.0.0.1:1234"
     )

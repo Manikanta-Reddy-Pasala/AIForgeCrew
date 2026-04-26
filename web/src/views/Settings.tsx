@@ -47,6 +47,39 @@ export default function Settings() {
   const roleOrder = ['supervisor', 'planner', 'doer', 'feedback', 'learner', 'chat'];
   const provKeys = Object.keys(providers);
 
+  // Doer backend toggle: local mlx-lm ↔ cloud Gemini-Flash. Hits a
+  // dedicated runtime endpoint (separate from per-role provider).
+  const [doerBackend, setDoerBackend] = useState<string>('local');
+  const [geminiAvailable, setGeminiAvailable] = useState<boolean>(false);
+  const [doerBackendBusy, setDoerBackendBusy] = useState(false);
+  useEffect(() => {
+    fetch('/api/runtime/doer_backend')
+      .then(r => r.json())
+      .then(d => {
+        setDoerBackend(d.backend || 'local');
+        setGeminiAvailable(!!d.gemini_available);
+      })
+      .catch(() => {});
+  }, []);
+  async function changeDoerBackend(next: string) {
+    setDoerBackendBusy(true);
+    try {
+      const r = await fetch('/api/runtime/doer_backend', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend: next }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      setDoerBackend(d.backend);
+      toast.success(`Doer backend → ${d.backend}`);
+    } catch (e: any) {
+      toast.error(`Switch failed: ${e.message}`);
+    } finally {
+      setDoerBackendBusy(false);
+    }
+  }
+
   return (
     <>
       <div className="page-header">
@@ -61,6 +94,31 @@ export default function Settings() {
         <button className="ghost" onClick={load}>
           <Icon.Refresh size={14} /> Reload
         </button>
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <h2 style={{ fontSize: 14 }}>Doer backend</h2>
+        <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
+          Switch the active Doer LLM. <code>local</code> uses
+          <code> mlx-lm</code> on Mac Studio (current Coder-Next).
+          <code> gemini</code> uses cloud Gemini-Flash via Google AI
+          Studio (free tier). Changes apply to runs started after the switch.
+        </div>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <label className="small muted">Backend</label>
+          <select
+            value={doerBackend}
+            onChange={e => changeDoerBackend(e.target.value)}
+            disabled={doerBackendBusy}
+            style={{ minWidth: 180 }}
+          >
+            <option value="local">local (mlx-lm)</option>
+            <option value="gemini" disabled={!geminiAvailable}>
+              gemini (cloud Flash){!geminiAvailable && ' — no API key'}
+            </option>
+          </select>
+          {doerBackendBusy && <span className="small muted">switching…</span>}
+        </div>
       </div>
 
       <div className="stack" style={{ gap: 12 }}>

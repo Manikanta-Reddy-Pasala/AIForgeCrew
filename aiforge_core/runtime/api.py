@@ -462,6 +462,59 @@ def intervene(identifier: str, payload: dict) -> dict:
     return {"written": written, "kind": kind}
 
 
+_RUNTIME_ENV_PATH = os.path.expanduser(
+    os.environ.get("AIFORGE_RUNTIME_ENV", "~/.aiforge/runtime.env")
+)
+
+
+def _persist_env(key: str, value: str) -> None:
+    """Upsert ``key=value`` into runtime.env so graph-runner picks it up
+    on next poll-cycle restart. KISS: line-replace; preserves order."""
+    if not os.path.isfile(_RUNTIME_ENV_PATH):
+        return
+    lines = open(_RUNTIME_ENV_PATH).read().splitlines()
+    found = False
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={value}")
+    with open(_RUNTIME_ENV_PATH, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+@app.get("/api/runtime/doer_backend")
+def get_doer_backend() -> dict:
+    """Current Doer LLM backend choice. 'local' = mlx-lm, 'gemini' = cloud."""
+    value = os.environ.get("AIFORGE_DOER_PRIMARY_BACKEND", "local").lower()
+    return {
+        "backend": value if value in ("local", "gemini") else "local",
+        "options": ["local", "gemini"],
+        "gemini_available": bool(os.environ.get("AIFORGE_GOOGLE_API_KEY")),
+    }
+
+
+@app.put("/api/runtime/doer_backend")
+def set_doer_backend(payload: dict) -> dict:
+    """Switch Doer between local mlx-lm and cloud Gemini-Flash.
+
+    Affects runs started AFTER this call. graph-runner picks up the
+    new value next poll-cycle restart (~10-15s).
+    """
+    backend = (payload.get("backend") or "").strip().lower()
+    if backend not in ("local", "gemini"):
+        raise HTTPException(400, "backend must be 'local' or 'gemini'")
+    if backend == "gemini" and not os.environ.get("AIFORGE_GOOGLE_API_KEY"):
+        raise HTTPException(
+            400, "AIFORGE_GOOGLE_API_KEY not set; gemini backend unavailable"
+        )
+    os.environ["AIFORGE_DOER_PRIMARY_BACKEND"] = backend
+    _persist_env("AIFORGE_DOER_PRIMARY_BACKEND", backend)
+    return {"backend": backend, "persisted": True}
+
+
 @app.post("/api/runtime/session_param")
 def session_param(payload: dict) -> dict:
     """Per-role LLM param tuning at runtime (GA /session.key=value, commit
