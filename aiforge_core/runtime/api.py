@@ -1982,6 +1982,26 @@ def workflow_topology(ticket: str | None = None) -> dict:
     return _wt.snapshot(ticket)
 
 
+@app.get("/api/workflow/stream")
+def workflow_stream(ticket: str | None = None,
+                    interval: int = 3) -> StreamingResponse:
+    """SSE topology refresh. Emits one snapshot every ``interval``
+    seconds (clamped 1..30). UI ``EventSource`` consumes for live
+    DAG status. Disconnect-safe — generator exits when client closes.
+    """
+    from . import workflow_topology as _wt
+    interval = max(1, min(int(interval or 3), 30))
+
+    def _gen():
+        import time as _t
+        while True:
+            snap = _wt.snapshot(ticket)
+            yield f"data: {json.dumps(snap)}\n\n"
+            _t.sleep(interval)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
 # ─────────────────────────── Cost dashboard ────────────────────────────
 @app.get("/api/runtime/cost")
 def runtime_cost(

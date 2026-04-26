@@ -38,18 +38,25 @@ def backfill(repo: str | None = None, *, batch: int = 200) -> dict:
         return {"scanned": 0, "embedded": 0, "skipped": 0,
                 "errors": ["embed sidecar unavailable"]}
 
+    # AIForge :Symbol schema (graphify + tree-sitter): fqn, simple,
+    # kind, repo, file_path, return_type, param_types, modifiers,
+    # start_line, end_line. No 'body' / 'signature' fields — we
+    # synthesise both from the available scalars + (optional) on-disk
+    # slice between start_line/end_line.
     cy_select = (
         "MATCH (s:Symbol) "
         + ("WHERE s.repo = $repo AND s.embedding IS NULL "
            if repo else "WHERE s.embedding IS NULL ")
-        + "RETURN s.qname AS qname, s.kind AS kind, s.body AS body, "
-        "       s.signature AS signature "
+        + "RETURN s.fqn AS fqn, s.simple AS simple, s.kind AS kind, "
+        "       s.return_type AS return_type, s.param_types AS param_types, "
+        "       s.repo AS repo, s.file_path AS file_path, "
+        "       s.start_line AS start_line, s.end_line AS end_line "
         "LIMIT $batch"
     )
     cy_update = (
-        "MATCH (s:Symbol {qname: $qname}) "
+        "MATCH (s:Symbol {fqn: $fqn}) "
         "SET s.embedding = $vec, s.embedded_at = datetime() "
-        "RETURN s.qname"
+        "RETURN s.fqn"
     )
 
     out = {"scanned": 0, "embedded": 0, "skipped": 0, "errors": []}
@@ -58,18 +65,31 @@ def backfill(repo: str | None = None, *, batch: int = 200) -> dict:
             rows = list(sess.run(cy_select, repo=repo, batch=batch))
             out["scanned"] = len(rows)
             for r in rows:
-                qname = r["qname"]
-                text = _build_text(qname, r.get("kind"),
-                                   r.get("signature"), r.get("body"))
+                fqn = r["fqn"]
+                text = _build_text(
+                    fqn,
+                    simple=r.get("simple"),
+                    kind=r.get("kind"),
+                    return_type=r.get("return_type"),
+                    param_types=r.get("param_types"),
+                    file_path=r.get("file_path"),
+                    start_line=r.get("start_line"),
+                    end_line=r.get("end_line"),
+                )
                 if not text:
                     out["skipped"] += 1
                     continue
                 try:
                     vec = list(embed(text))
                 except Exception as exc:
-                    out["errors"].append(f"embed {qname}: {exc}")
+                    out["errors"].append(f"embed {fqn}: {str(exc)[:80]}")
+                    if len(out["errors"]) >= 5:
+                        # Sidecar likely down — bail early instead of
+                        # logging 200× the same connection-refused.
+                        out["errors"].append("...truncated, sidecar down")
+                        break
                     continue
-                sess.run(cy_update, qname=qname, vec=vec).consume()
+                sess.run(cy_update, fqn=fqn, vec=vec).consume()
                 out["embedded"] += 1
     except Exception as exc:
         out["errors"].append(f"neo4j: {exc}")
@@ -101,8 +121,10 @@ def find_similar_code(
         "CALL db.index.vector.queryNodes('symbol_embedding', $k, $vec) "
         "YIELD node, score "
         + ("WHERE node.repo = $repo " if repo else "")
-        + "RETURN node.qname AS qname, node.repo AS repo, "
-        "       node.kind AS kind, node.signature AS signature, score "
+        + "RETURN node.fqn AS fqn, node.repo AS repo, "
+        "       node.kind AS kind, node.return_type AS return_type, "
+        "       node.file_path AS file_path, node.start_line AS line, "
+        "       score "
         "ORDER BY score DESC"
     )
     try:
@@ -123,10 +145,11 @@ def _fallback_keyword(
         return []
     cy = (
         "MATCH (s:Symbol) "
-        "WHERE toLower(s.qname) CONTAINS toLower($q) "
+        "WHERE toLower(s.fqn) CONTAINS toLower($q) "
         + ("AND s.repo = $repo " if repo else "")
-        + "RETURN s.qname AS qname, s.repo AS repo, s.kind AS kind, "
-        "       s.signature AS signature, 0.5 AS score "
+        + "RETURN s.fqn AS fqn, s.repo AS repo, s.kind AS kind, "
+        "       s.return_type AS return_type, s.file_path AS file_path, "
+        "       s.start_line AS line, 0.5 AS score "
         "LIMIT $k"
     )
     try:
@@ -138,12 +161,32 @@ def _fallback_keyword(
         return []
 
 
-def _build_text(qname, kind, signature, body) -> str:
-    parts = [str(qname or "")]
+def _build_text(
+    fqn, *, simple=None, kind=None, return_type=None,
+    param_types=None, file_path=None,
+    start_line=None, end_line=None,
+) -> str:
+    """Synthesise embedding text from available :Symbol scalars +
+    optional on-disk source slice. KISS: when start_line/end_line
+    point at a real file, splice the body in. Capped at 800 chars
+    so embedding cost stays bounded."""
+    parts: list[str] = [str(fqn or simple or "")]
     if kind:
         parts.append(f"({kind})")
-    if signature:
-        parts.append(str(signature))
+    if return_type:
+        parts.append(f"-> {return_type}")
+    if param_types:
+        parts.append(f"({', '.join(map(str, param_types))})")
+    body = ""
+    if file_path and start_line:
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            lo = max(0, int(start_line) - 1)
+            hi = min(len(lines), int(end_line or start_line) + 1)
+            body = "".join(lines[lo:hi])[:800]
+        except Exception:
+            body = ""
     if body:
-        parts.append(str(body)[:800])
+        parts.append(body)
     return " ".join(p for p in parts if p).strip()

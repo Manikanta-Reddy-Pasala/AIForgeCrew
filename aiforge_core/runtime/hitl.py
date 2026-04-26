@@ -81,6 +81,101 @@ def find_answer(ticket: str, *, age_max_s: int = 86400) -> str | None:
 
 def mark_resolved(pending_id: str) -> None:
     _PENDING.pop(pending_id, None)
+    try:
+        import psycopg
+        from .config import AIFORGE_DSN
+        with psycopg.connect(AIFORGE_DSN, connect_timeout=2) as c, \
+             c.cursor() as cur:
+            cur.execute(
+                "UPDATE hitl_pending SET resolved_at = now() "
+                "WHERE id = %s",
+                (pending_id,),
+            )
+            c.commit()
+    except Exception:
+        pass
+
+
+def list_pending(*, ticket: str | None = None) -> list[dict]:
+    """Return open HITL requests. Used by the dispatcher poll."""
+    out: list[dict] = []
+    try:
+        import psycopg
+        from .config import AIFORGE_DSN
+        sql = (
+            "SELECT id, ticket, message, snapshot, "
+            "       extract(epoch from created_at) AS created_epoch "
+            "  FROM hitl_pending "
+            " WHERE resolved_at IS NULL "
+            + ("  AND ticket = %s " if ticket else "")
+            + " ORDER BY created_at"
+        )
+        params = (ticket,) if ticket else ()
+        with psycopg.connect(AIFORGE_DSN, connect_timeout=2) as c, \
+             c.cursor() as cur:
+            cur.execute(sql, params)
+            for row in cur.fetchall():
+                out.append({
+                    "id": row[0], "ticket": row[1], "message": row[2],
+                    "snapshot": row[3] or {},
+                    "created_at": float(row[4]),
+                })
+    except Exception:
+        pass
+    return out
+
+
+def resume(
+    pending_id: str,
+    *,
+    runner: object | None = None,
+) -> dict:
+    """Resume a parked HITL request once an answer landed.
+
+    Workflow:
+      1. Look up answer via ``find_answer(ticket, ...)``.
+      2. If present, hand the snapshot + answer to ``runner`` callback
+         and mark the row resolved.
+      3. If absent, return ``{status: "waiting"}`` so the dispatcher
+         can poll again next tick.
+
+    Caller-provided ``runner(snapshot, answer) -> outcome`` is the
+    re-entry point — typically ``run_doer_via_ga`` or
+    ``run_planner_via_ga`` rebuilt from the stashed snapshot.
+    KISS: this module only sequences; doesn't know about GA internals.
+    """
+    pending = _PENDING.get(pending_id)
+    if pending is None:
+        # Hot-cache miss — try Postgres.
+        for row in list_pending():
+            if row["id"] == pending_id:
+                pending = Pending(
+                    id=row["id"], ticket=row["ticket"],
+                    message=row["message"],
+                    created_at=row["created_at"],
+                    snapshot=row["snapshot"],
+                )
+                _PENDING[pending_id] = pending
+                break
+    if pending is None:
+        return {"status": "unknown_id"}
+
+    answer = find_answer(pending.ticket)
+    if answer is None:
+        return {"status": "waiting", "ticket": pending.ticket}
+
+    if runner is None:
+        return {"status": "ready",
+                "ticket": pending.ticket,
+                "answer": answer,
+                "snapshot": pending.snapshot or {}}
+
+    try:
+        outcome = runner(pending.snapshot or {}, answer)
+    except Exception as exc:
+        return {"status": "runner_error", "err": str(exc)[:300]}
+    mark_resolved(pending_id)
+    return {"status": "resumed", "outcome": outcome}
 
 
 # ───────── helpers ────────────────────────────────────────────────

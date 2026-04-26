@@ -35,8 +35,29 @@ export default function WorkflowGraph() {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    const url = `/api/workflow/topology${ticket ? `?ticket=${ticket}` : ''}`;
-    fetch(url).then(r => r.json()).then(setTopo).catch(e => setErr(String(e)));
+    // SSE live refresh — server pushes a fresh snapshot every 3s
+    // (per-ticket overlay reflects newest ticket_event status).
+    // Falls back to one-shot fetch on EventSource error.
+    const url = `/api/workflow/stream${ticket ? `?ticket=${ticket}` : ''}`;
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource(url);
+      es.onmessage = (ev) => {
+        try { setTopo(JSON.parse(ev.data)); }
+        catch (e) { setErr(String(e)); }
+      };
+      es.onerror = () => {
+        es?.close();
+        const fallback = `/api/workflow/topology${ticket ? `?ticket=${ticket}` : ''}`;
+        fetch(fallback).then(r => r.json()).then(setTopo)
+          .catch(e => setErr(String(e)));
+      };
+    } catch (e) {
+      const fallback = `/api/workflow/topology${ticket ? `?ticket=${ticket}` : ''}`;
+      fetch(fallback).then(r => r.json()).then(setTopo)
+        .catch(e2 => setErr(String(e2)));
+    }
+    return () => { es?.close(); };
   }, [ticket]);
 
   if (err) return <div className="p-4 text-red-400">Topology error: {err}</div>;
