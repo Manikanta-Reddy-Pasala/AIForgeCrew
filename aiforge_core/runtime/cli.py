@@ -56,6 +56,38 @@ def _cmd_create(args) -> int:
     return 0
 
 
+def _cmd_classify(args) -> int:
+    """Interactive classifier — agent asks clarifying questions until
+    all intent fields are confidently resolved. Operator answers are
+    persisted to <repo>/.aiforge/synonyms.yml so the same phrasing
+    next time hits the cache, no question asked.
+
+    Output: final Intent as JSON (use with `aiforge ticket create
+    --body ... --project <repo>` to actually file)."""
+    from aiforge_core.intent.interactive import classify_with_clarification
+    text = args.text
+    if not text and not sys.stdin.isatty():
+        text = sys.stdin.read().strip()
+    if not text:
+        print("usage: aiforge ticket classify '<natural language text>'",
+              file=sys.stderr)
+        return 2
+    intent = classify_with_clarification(
+        text, repo=args.repo,
+        auto_persist=not args.no_persist,
+        max_rounds=args.max_rounds,
+    )
+    print()
+    print(json.dumps({
+        "action": intent.action,
+        "entity": intent.entity,
+        "reference_pattern": intent.reference_pattern,
+        "repo_hint": intent.repo_hint,
+        "keywords": intent.keywords,
+    }, indent=2))
+    return 0
+
+
 def _cmd_list(args) -> int:
     import psycopg
     from psycopg.rows import dict_row
@@ -163,6 +195,23 @@ def main() -> int:
     tk = sub.add_parser("tick")
     tk.add_argument("role", choices=ALL_ROLES)
     tk.set_defaults(func=_cmd_tick)
+
+    cf = sub.add_parser("classify",
+                        help="interactive classifier — agent asks "
+                             "clarifying questions, persists answers "
+                             "to synonyms.yml so they're learned for "
+                             "next time")
+    cf.add_argument("text", nargs="?", default="",
+                    help="natural language ticket text (or pipe via stdin)")
+    cf.add_argument("--repo",
+                    help="target repo (controls synonyms.yml location). "
+                         "Without this, mappings go to the global file.")
+    cf.add_argument("--max-rounds", type=int, default=3, dest="max_rounds",
+                    help="max clarification rounds before giving up "
+                         "(default 3)")
+    cf.add_argument("--no-persist", action="store_true",
+                    help="don't write learned mappings to synonyms.yml")
+    cf.set_defaults(func=_cmd_classify)
 
     tr = sub.add_parser("trace",
                         help="live SSE tail of the ticket's full agent log")
