@@ -79,18 +79,31 @@ def _cursor_retrieval(text: str, worktree: str, *, top_k: int) -> list[str]:
     uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
     user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
     pw = os.environ.get("AIFORGE_NEO4J_PASSWORD", "password")
+    # Use the indexes that ACTUALLY exist on this Neo4j: method_embedding_vec
+    # + class_embedding_vec. There's no :Symbol vector index — symbols have
+    # embeddings but aren't indexed. Method+Class cover the right surface
+    # (every Java/Kotlin/Py method + every class) and feed file_path
+    # through to the caller.
     cy = (
-        "CALL db.index.vector.queryNodes('symbol_embedding_vec', $k, $vec) "
+        "CALL db.index.vector.queryNodes('method_embedding_vec', $k, $vec) "
         "YIELD node, score "
         "RETURN coalesce(node.file_path, node.file, '') AS path, "
         "       coalesce(node.simple, node.fqn, '')[..200] AS name, "
-        "       score ORDER BY score DESC"
+        "       score, 'method' AS kind ORDER BY score DESC "
+        "UNION ALL "
+        "CALL db.index.vector.queryNodes('class_embedding_vec', $k, $vec) "
+        "YIELD node, score "
+        "RETURN coalesce(node.file_path, node.file, '') AS path, "
+        "       coalesce(node.simple, node.fqn, '')[..200] AS name, "
+        "       score, 'class' AS kind ORDER BY score DESC"
     )
     rows = []
     try:
         drv = GraphDatabase.driver(uri, auth=(user, pw))
         with drv.session() as s:
             rows = s.run(cy, k=top_k * 4, vec=qvec).data()
+        # Re-sort by raw score across both result sets.
+        rows.sort(key=lambda r: -float(r.get("score") or 0))
         drv.close()
     except Exception:
         return []
