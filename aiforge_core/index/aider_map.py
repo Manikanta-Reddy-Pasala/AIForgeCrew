@@ -65,6 +65,13 @@ class AiderMapConfig:
     map_tokens: int = 1024
     cache_dir: Optional[Path] = None
     refresh: str = "auto"
+    # NEW: user_text feeds aider's mentioned_idents / mentioned_fnames
+    # extraction → PageRank personalization. This is the mechanism aider
+    # uses to know "the user said 'ProductController' so rank pages
+    # around that node high". We were not passing it; PageRank fell back
+    # to uniform personalisation and returned generic top-K instead of
+    # query-specific.
+    user_text: str = ""
 
 
 def render_repo_map(cfg: AiderMapConfig) -> str:
@@ -139,7 +146,44 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
                 verbose=False,
                 refresh=cfg.refresh,
             )
-            result = rm.get_repo_map(chat_files, other_files)
+            # Replicate aider's get_ident_mentions + get_file_mentions
+            # extraction. Both are pure functions of the user text;
+            # we just need the same word-tokenize + filename match
+            # logic as base_coder.py:get_ident_mentions /
+            # get_file_mentions.
+            mentioned_idents: set[str] = set()
+            mentioned_fnames: set[str] = set()
+            user_text = (cfg.user_text or "").strip()
+            if user_text:
+                import re as _re
+                mentioned_idents = set(
+                    w for w in _re.split(r"\W+", user_text)
+                    if w and len(w) >= 3
+                )
+                # Basename match against the worktree's relative files.
+                words = set(
+                    w.rstrip(",.!;:?").strip("\"'`*_")
+                    for w in user_text.split()
+                )
+                rel_files = [
+                    os.path.relpath(p, str(cfg.root))
+                    for p in (chat_files + other_files)
+                ]
+                fname_to_rel: dict[str, list[str]] = {}
+                for rel in rel_files:
+                    if rel in words:
+                        mentioned_fnames.add(rel)
+                    bn = os.path.basename(rel)
+                    if any(c in bn for c in "/._-"):
+                        fname_to_rel.setdefault(bn, []).append(rel)
+                for bn, rels in fname_to_rel.items():
+                    if len(rels) == 1 and bn in words:
+                        mentioned_fnames.add(rels[0])
+            result = rm.get_repo_map(
+                chat_files, other_files,
+                mentioned_fnames=mentioned_fnames or None,
+                mentioned_idents=mentioned_idents or None,
+            )
         digest = result or ""
     except Exception as exc:
         emit(

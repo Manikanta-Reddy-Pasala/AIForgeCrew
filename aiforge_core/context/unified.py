@@ -173,13 +173,17 @@ class UnifiedContext:
             except Exception as exc:
                 bundle.errors.append(f"semantic_focal: {exc}")
 
-        # 2. RepoMap — keyed off focal_files (now non-empty)
-        if worktree and bundle.focal_files:
+        # 2. RepoMap — aider's PageRank personalised by mentioned_idents
+        # / mentioned_fnames extracted from intent.raw_text. Aider's own
+        # algorithm (get_ident_mentions + get_file_mentions). Pass the
+        # raw user text so the digest centres on what they actually said.
+        if worktree:
             try:
                 from aiforge_core.memory.code_context import aider_digest
                 bundle.repo_map_text = aider_digest(
                     worktree, chat_files=bundle.focal_files,
                     token_budget=min(1024, token_budget // 4),
+                    user_text=intent.raw_text or intent.search_query(),
                 )
                 if bundle.repo_map_text:
                     bundle.sources_used.append("aider_repomap")

@@ -292,11 +292,16 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
     import concurrent.futures as _cf
     aider_block = ""
     neighbours_block = ""
+    _user_text = (
+        f"{getattr(ticket, 'title', '') or ''}\n"
+        f"{getattr(ticket, 'body', '') or ''}"
+    )
     with _cf.ThreadPoolExecutor(max_workers=2) as _ex:
         _aider_fut = _ex.submit(
             aider_digest, worktree_path,
             chat_files=allowed_list,
             token_budget=int(os.environ.get("AIFORGE_AIDER_REPOMAP_TOKENS", "1024")),
+            user_text=_user_text,
         )
         _neighbours_fut = _ex.submit(
             graph_neighbours, allowed_list,

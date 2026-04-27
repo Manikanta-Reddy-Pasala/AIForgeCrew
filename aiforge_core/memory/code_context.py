@@ -22,8 +22,15 @@ from typing import Any
 
 # ─────────────── Aider RepoMap (process-local, hot path) ────────────────
 def aider_digest(worktree: str, chat_files: list[str],
-                 token_budget: int = 1024) -> str:
+                 token_budget: int = 1024,
+                 user_text: str = "") -> str:
     """Run Aider's RepoMap on the worktree and return its ranked digest.
+
+    ``user_text`` is the raw natural-language request — aider extracts
+    `mentioned_idents` (every word) and `mentioned_fnames` (basename
+    matches against the repo) from it and uses them as PageRank
+    personalisation. Without it the digest is generic top-K; with it
+    the digest centres on what the user actually asked about.
 
     Returns "" on any error (Aider not installed, repo too small, etc).
     Caller injects the result verbatim into the Doer system prompt.
@@ -43,6 +50,7 @@ def aider_digest(worktree: str, chat_files: list[str],
         chat_files=chat_files,
         other_files=other,
         map_tokens=token_budget,
+        user_text=user_text,
     )
     try:
         digest = render_repo_map(cfg) or ""
