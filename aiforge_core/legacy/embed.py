@@ -40,9 +40,21 @@ def embed(text: str) -> list[float]:
     return resp["embedding"]
 
 
-def embed_batch(texts: list[str]) -> list[list[float]]:
-    """Return list of 1024-d embeddings. Preserves input order."""
+def embed_batch(texts: list[str], *, chunk_size: int = 16) -> list[list[float]]:
+    """Return list of 1024-d embeddings. Preserves input order.
+
+    Chunks at the client to keep individual HTTP calls bounded (~15s
+    each on CPU). Single 61-doc batch was timing out at the urllib
+    socket layer even at 180s; chunked it completes in ~30s wall
+    with predictable per-chunk timeouts."""
     if not texts:
         return []
-    resp = _post("/embed_batch", {"texts": list(texts)})
-    return resp["embeddings"]
+    if len(texts) <= chunk_size:
+        resp = _post("/embed_batch", {"texts": list(texts)})
+        return resp["embeddings"]
+    out: list[list[float]] = []
+    for i in range(0, len(texts), chunk_size):
+        chunk = list(texts[i:i + chunk_size])
+        resp = _post("/embed_batch", {"texts": chunk})
+        out.extend(resp["embeddings"])
+    return out
