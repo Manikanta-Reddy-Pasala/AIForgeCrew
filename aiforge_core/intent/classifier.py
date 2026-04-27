@@ -183,14 +183,30 @@ def _heuristic_intent(text: str) -> Intent:
         if re.search(rf"\b{verb}\b", low):
             action = mapped                           # type: ignore[assignment]
             break
-    # crude reference pattern via "like X" / "similar to X" / "mirror X"
+    # Reference pattern detection. Catches the common phrasings:
+    #   "like X" / "similar to X" / "same as X"
+    #   "mirror X" / "mirroring X"
+    #   "reference X" / "reference table X" / "reference template X" /
+    #       "reference pattern X"
+    #   "use [the] existing X" / "use X as template" / "use X as the
+    #       reference"
+    #   "X feature as template" / "X feature as reference"
+    # Then strip trailing punctuation (regex is greedy on .)
     ref = ""
-    m = re.search(r"\b(?:like|similar to|mirror|same as|reference[d]? table)\s+`?([A-Za-z][\w/.-]+)`?", text)
-    if m:
-        # Strip trailing sentence punctuation — the regex's [\w/.-]+
-        # is greedy on '.' so `businessProducts.` survives. ripgrep
-        # -F treats that period literally and finds nothing.
-        ref = m.group(1).rstrip(".,;:!?")
+    ref_patterns = [
+        r"\b(?:like|similar to|same as|mirror(?:ing)?)\s+(?:the\s+)?(?:existing\s+)?`?([A-Za-z][\w/.-]+)`?",
+        r"\breference(?:\s+(?:table|template|pattern))?\s*[:=-]?\s*`?([A-Za-z][\w/.-]+)`?",
+        r"\buse\s+(?:the\s+)?(?:existing\s+)?`?([A-Za-z][\w/.-]+)`?\s+(?:feature|service|module|repo|repository)?\s*(?:as\s+(?:the\s+)?(?:reference|template|example))",
+        r"`?([A-Za-z][\w/.-]+)`?\s+feature\s+as\s+(?:the\s+)?(?:reference|template|example)",
+    ]
+    for pat in ref_patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            cand = m.group(1).rstrip(".,;:!?")
+            # Skip generic placeholder words.
+            if cand.lower() not in {"the", "a", "an", "this", "that", "it"}:
+                ref = cand
+                break
     # Token-rich keywords: words with mixed case OR underscores OR len >= 7.
     # Preserve source order — first occurrence in text wins (so "add X
     # like Y" picks X as the entity, not Y).
@@ -205,12 +221,47 @@ def _heuristic_intent(text: str) -> Intent:
         kws.append(t)
         if len(kws) >= 10:
             break
-    # Entity = first keyword that is NOT the reference pattern.
+    # Entity heuristic — prefer the noun that's the ACTION TARGET.
+    #
+    #   1. Look for the verb (action word) and grab the noun-like
+    #      token right after it: "add storeRegions" → storeRegions,
+    #      "create vendorZones" → vendorZones.
+    #   2. Fall back to the first token that is NOT a generic
+    #      protocol/format keyword (REST, API, JSON, HTTP, ...) AND
+    #      not the reference pattern.
+    #   3. Final fallback: first keyword.
     entity = ""
-    for k in kws:
-        if k != ref:
+    _NOISE_ENTITY = {
+        "REST", "API", "APIs", "JSON", "HTTP", "HTTPS", "URL",
+        "GET", "POST", "PUT", "DELETE", "PATCH", "CRUD",
+        "controller", "service", "repository", "DTO", "endpoint",
+        "endpoints", "feature", "module",
+    }
+    if action in _VERB_HINTS.values() or action in _VERB_HINTS:
+        # Find first occurrence of any verb hint, then take the next
+        # token-rich word.
+        for verb, mapped in _VERB_HINTS.items():
+            if mapped != action:
+                continue
+            m = re.search(
+                rf"\b{verb}\s+(?:the\s+|a\s+|an\s+|new\s+|some\s+)*"
+                r"(?:\d+\s+(?:new\s+|more\s+)?)?"
+                r"`?([A-Za-z][\w]{2,})`?",
+                text, re.IGNORECASE,
+            )
+            if m:
+                cand = m.group(1)
+                if cand not in _NOISE_ENTITY and cand != ref:
+                    entity = cand
+                    break
+    if not entity:
+        for k in kws:
+            if k in _NOISE_ENTITY or k == ref:
+                continue
             entity = k
             break
+    if not entity and kws:
+        entity = kws[0]
     return Intent(
         action=action,
         entity=entity,

@@ -13,7 +13,16 @@ SIDECAR_URL = os.environ.get("AIFORGE_EMBED_URL", "http://127.0.0.1:8764")
 DIM = 1024
 
 
-def _post(path: str, body: dict, timeout: float = 20.0) -> dict:
+def _post(path: str, body: dict, timeout: float | None = None) -> dict:
+    """POST to the embed sidecar. Auto-scales timeout with batch size:
+    a 60-doc batch on CPU takes ~30-90s; the old 20s default fired
+    fallback paths in unified_query._similar_tickets (cosines came
+    back as 0.000 for every row).
+    """
+    if timeout is None:
+        n = len(body.get("texts") or []) if path == "/embed_batch" else 1
+        # Linear scale: 5s base + 1.5s per doc, capped at 180s.
+        timeout = min(180.0, 5.0 + 1.5 * max(1, n))
     req = urllib.request.Request(
         f"{SIDECAR_URL}{path}",
         data=json.dumps(body).encode(),
