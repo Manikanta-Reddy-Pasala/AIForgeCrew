@@ -84,18 +84,17 @@ def _cursor_retrieval(text: str, worktree: str, *, top_k: int) -> list[str]:
     # embeddings but aren't indexed. Method+Class cover the right surface
     # (every Java/Kotlin/Py method + every class) and feed file_path
     # through to the caller.
+    # method_embedding_vec is the live index (3088 methods embedded);
+    # class_embedding_vec exists but has 0 entries so UNION ALL fails
+    # on the empty side. Stick to methods until the class backfill
+    # cron lands.
     cy = (
         "CALL db.index.vector.queryNodes('method_embedding_vec', $k, $vec) "
         "YIELD node, score "
         "RETURN coalesce(node.file_path, node.file, '') AS path, "
         "       coalesce(node.simple, node.fqn, '')[..200] AS name, "
-        "       score, 'method' AS kind ORDER BY score DESC "
-        "UNION ALL "
-        "CALL db.index.vector.queryNodes('class_embedding_vec', $k, $vec) "
-        "YIELD node, score "
-        "RETURN coalesce(node.file_path, node.file, '') AS path, "
-        "       coalesce(node.simple, node.fqn, '')[..200] AS name, "
-        "       score, 'class' AS kind ORDER BY score DESC"
+        "       score "
+        "ORDER BY score DESC"
     )
     rows = []
     try:

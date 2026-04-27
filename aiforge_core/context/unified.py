@@ -598,21 +598,14 @@ def _semantic_focal_files(worktree: str, query: str, *,
     uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
     user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
     pw = os.environ.get("AIFORGE_NEO4J_PASSWORD", "password")
-    # Use method_embedding_vec + class_embedding_vec — :Symbol has
-    # embeddings but no vector index. Method+Class cover the same
-    # search surface and DO have indexes. UNION ALL across both, then
-    # re-sort client-side because Cypher UNION ALL doesn't preserve
-    # global ordering.
+    # Method-only — class_embedding_vec exists but has 0 entries,
+    # UNION ALL fails on the empty side.
     cy = (
         "CALL db.index.vector.queryNodes('method_embedding_vec', "
         "$k, $vec) YIELD node, score "
         "RETURN coalesce(node.file_path, node.file, '') AS path, "
         "       score "
-        "UNION ALL "
-        "CALL db.index.vector.queryNodes('class_embedding_vec', "
-        "$k, $vec) YIELD node, score "
-        "RETURN coalesce(node.file_path, node.file, '') AS path, "
-        "       score"
+        "ORDER BY score DESC"
     )
     paths: list[str] = []
     seen: set[str] = set()
