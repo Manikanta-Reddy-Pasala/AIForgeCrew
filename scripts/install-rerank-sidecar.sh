@@ -14,21 +14,15 @@ echo "[rerank] venv: $VENV"
 "$VENV/bin/pip" install --quiet --upgrade pip wheel
 "$VENV/bin/pip" install --quiet -r "$SVC_DIR/requirements.txt"
 
-if [[ ! -f "$MODEL_DIR/model.onnx" ]]; then
-  echo "[rerank] downloading bge-reranker-v2-m3 ONNX (~600MB)…"
+if [[ ! -d "$MODEL_DIR" ]] || [[ ! -f "$MODEL_DIR/config.json" ]]; then
+  echo "[rerank] downloading BAAI/bge-reranker-v2-m3 (~568MB PyTorch)…"
   mkdir -p "$MODEL_DIR"
   "$VENV/bin/python" - <<PY
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id="BAAI/bge-reranker-v2-m3",
-    allow_patterns=["onnx/model.onnx", "tokenizer*", "special_tokens_map.json", "sentencepiece.bpe.model"],
     local_dir="$MODEL_DIR",
 )
-import os, shutil
-src = os.path.join("$MODEL_DIR", "onnx", "model.onnx")
-dst = os.path.join("$MODEL_DIR", "model.onnx")
-if os.path.isfile(src) and not os.path.isfile(dst):
-    shutil.move(src, dst)
 PY
 fi
 
