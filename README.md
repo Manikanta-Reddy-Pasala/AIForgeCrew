@@ -430,3 +430,223 @@ None failed because the model didn't know the code. Every failure was a prompt-s
 5. PR diff history        (~3 h)     — "how did we last add a collection"
 6. (only after all of 1-5) consider LoRA on doer  — domain adaptation
 ```
+
+---
+
+## Ranking & Retrieval Pipeline (deep dive)
+
+This is the most critical part of the system — what the model sees on every turn is decided here. Same algorithm runs for chat, planner, doer.
+
+### End-to-end flow
+
+```
+natural-language input  ── IntentLayer.classify ──►  Intent
+                                                       │
+                                  synonyms.yml expand ─┤  (per-repo jargon → code FQNs)
+                                                       │
+                                                       ▼
+                              ┌──────────────────────────────────────────┐
+                              │  fan-out (parallel, soft-fail per src)   │
+                              └──┬───┬───┬───┬───┬───┬───┬───┬──────────┘
+                                 │   │   │   │   │   │   │   │
+            unified_query 6 src  │   │   │   │   │   │   │   │
+                ↓                │   │   │   │   │   │   │   │
+   ┌──── memory T2 facts ────────┘   │   │   │   │   │   │   │
+   │ ┌── ticket brief (T1)  ─────────┘   │   │   │   │   │   │
+   │ │ ┌─ related sym (T5) ─────────────┘   │   │   │   │   │
+   │ │ │ ┌ symbol vector (T5) ─────────────┘   │   │   │   │
+   │ │ │ │  doc/find_doc (T4) ────────────────┘   │   │   │
+   │ │ │ │  external lib docs ────────────────────┘   │   │
+   │ │ │ │                                            │   │
+   │ │ │ │  Aider RepoMap (T4/T5 PageRank) ───────────┘   │
+   │ │ │ │  graph_neighbours (T5 edges) ──────────────────┘
+   │ │ │ │  T3 :Pattern recipes (Memory.search tier='t3')
+   │ │ │ │  similar_tickets (Postgres + bge-m3 cosine)
+   │ │ │ │  repo_doc (CLAUDE.md / README.md tail)
+   │ │ │ │  claude_memory (~/.claude/memory grep)
+   ▼ ▼ ▼ ▼
+ raw_hits                       (Each hit: {text, source, score, source_uri})
+   │
+   ▼
+[A] Per-source score normalisation
+       score' = (raw_score / max(raw_scores_in_source)) × source_weight
+   │
+   ▼
+[B] Content dedup (240-char prefix fingerprint, lowercased)
+       drops near-duplicate text from memory + related + symbol
+   │
+   ▼
+[C] Path dedup (basename+parent identity)
+       collapses /abs/.../X.java vs src/.../X.java
+   │
+   ▼
+[D] Noise filter (target/, build/, *.class, *.pyc, .aiforge-worktrees/)
+   │
+   ▼
+sort by score desc → take top 30
+   │
+   ▼
+[E] Cross-encoder rerank (bge-reranker-v2-m3)
+       POST :8765/rerank {query, texts:[…30]}  →  scores:[…30]
+       blend: final = 0.7×rerank + 0.3×source_normalised
+   │
+   ▼
+[F] take top-K (chat:5, planner:8, doer:12 by default)
+   │
+   ▼
+ContextBundle.render() → prompt section
+```
+
+### Source catalogue (12 sources, with native score + weight)
+
+| # | Source | Backend | Native score | Weight | Lookup mode |
+|---|---|---|---|---|---|
+| 1 | `memory` | Postgres `memories` table, hybrid (BM25 + bge-m3) | float [0,1] | 1.0 | `Memory().search(text, role, top_k)` |
+| 2 | `ticket` | Postgres `tickets` (canonical row) + ticket_events tail | constant 1.0 | 1.2 | direct `id` lookup OR auto-detected `ONE-\d+` regex |
+| 3 | `related` | graph_rag MCP `related_memories` | float | 0.8 | Cypher hop on `:Memory` graph |
+| 4 | `symbol` | graph_rag MCP `sym_lookup` | float | 0.9 | Neo4j `:Symbol` vector index (bge-m3 1024-d cosine) |
+| 5 | `doc` | graph_rag MCP `find_doc` | float | 0.6 | Neo4j fulltext on `:Memory.text` markdown wing |
+| 6 | `external` | sqlite `docs_index` | float | 0.4 | bge-m3 vector over external lib docs (spring/react/mongo/...) |
+| 7 | `aider_repomap` | Aider tree-sitter PageRank | rank position | 1.0 | local in-process call, mtime-cached, focal_files seeded |
+| 8 | `graph_neighbours` | Neo4j `:Symbol` CALLS/IMPORTS/EXTENDS | edge count | 0.9 | Cypher 1-hop expansion from focal_files |
+| 9 | `t3_patterns` | `Memory.search` filtered to `tier='t3'` | float [0,1] | 0.85 | learner-written + auto-promoted recipes |
+| 10 | `similar_tickets` | Postgres tickets + bge-m3 cosine | cosine [0,1] | 0.7 | ILIKE prefilter (60 cands) → embed_batch → cosine |
+| 11 | `repo_doc` | filesystem read of `CLAUDE.md` / `README.md` | constant 1.0 | 0.5 | first 1500 chars from worktree root |
+| 12 | `claude_memory` | grep `~/.claude/memory/*.md` | line count | 0.4 | regex over operator memory |
+
+### Step-by-step ranking math
+
+#### [A] Per-source normalisation
+
+```python
+# aiforge_core/context/unified.py:_normalise_hits
+for src, hits_in_src in groupby(raw_hits, key="source"):
+    max_s = max(h["score"] for h in hits_in_src) or 1.0
+    weight = _DEFAULT_SOURCE_WEIGHTS[src]
+    for h in hits_in_src:
+        h["score"] = (h["score"] / max_s) × weight
+```
+
+Effect: every source's hits get rescaled to `[0, weight]`. The weight is the prior — ticket_brief (1.2) outranks external lib docs (0.4) even when the external doc has a "better" raw cosine, because the canonical ticket is more authoritative for a ticket-shaped question.
+
+Worked example — query *"add storeRegions sync"*:
+
+```
+raw_hits before normalise:
+  symbol      DebeziumChangeEventConsumer       0.91
+  symbol      TransactionSyncRulesServiceImpl   0.88
+  symbol      Random.nextInt                    0.42
+  memory      "add Parties in line 86 of ..."   0.74
+  doc         spring docs intro                 0.65
+  external    mongodb-docs aggregation          0.81
+
+after normalise (max in source × source_weight):
+  symbol/0.91 → 1.00 × 0.9 = 0.900    DebeziumChangeEventConsumer
+  symbol/0.88 → 0.97 × 0.9 = 0.870    TransactionSyncRulesServiceImpl
+  symbol/0.42 → 0.46 × 0.9 = 0.415    Random.nextInt           ← still ranked low
+  memory/0.74 → 1.00 × 1.0 = 1.000    "add Parties..."
+  doc/0.65   → 1.00 × 0.6 = 0.600    spring docs
+  external/0.81→ 1.00 × 0.4 = 0.400  mongodb-docs aggregation  ← weight pushes down
+```
+
+#### [B] Content dedup
+
+```python
+fingerprint = text[:240].lower().strip()
+if fingerprint in seen: drop
+```
+
+Catches near-duplicates: same fact from `memory` + `related` + `symbol` collapsing to one hit. Avoids the LLM seeing the same paragraph 3× and wasting context.
+
+#### [C] Path dedup
+
+```python
+key = "/".join(parts[-2:])  # parent_dir/basename
+```
+
+`/home/mani/codeRepo/X/src/.../Foo.java` and `src/.../Foo.java` both produce `feature/Foo.java` and dedupe correctly.
+
+#### [D] Noise filter
+
+`aiforge_core/index/noise.py` — single source of truth used by indexers AND retrievers. Drops:
+
+- dirs: `target`, `build`, `out`, `dist`, `node_modules`, `vendor`, `.gradle`, `.mvn`, `.aiforge-worktrees`, `__pycache__`, ...
+- extensions: `.pyc`, `.class`, `.jar`, `.so`, `.lock`, `.min.js`, `.png`, ...
+
+Defense in depth — what's invisible to ingest is invisible to retrieval, and vice versa.
+
+#### [E] Cross-encoder rerank
+
+```python
+# aiforge_core/memory/unified_query.py:_rerank_top
+top_30 = sorted_hits[:30]
+scores = POST :8765/rerank {query: full_text, texts: [h.text[:1500] for h in top_30]}
+for h, s in zip(top_30, scores):
+    h["score"] = 0.7 × s + 0.3 × h["score"]      # blend
+sorted_hits = sorted(top_30, by score desc) + sorted_hits[30:]
+```
+
+The blend is the critical design choice:
+
+- **0.7×rerank** — cross-encoder sees query+text together, captures full semantic match. Dominates the score.
+- **0.3×source_weighted** — preserves the prior (T2 fact > generic memory > external doc). Stops a high-scoring but low-trust hit from beating a canonical fact at near-tie.
+
+Without the blend (pure rerank): a noisy generic hit scoring 0.95 would beat a T2 canonical fact scoring 0.90. With the blend: `0.7×0.95 + 0.3×0.5 = 0.815` vs `0.7×0.90 + 0.3×1.2 = 0.99` — fact wins.
+
+Sidecar absent / unreachable → step E is a no-op, ranking falls back to A-D order.
+
+#### [F] Top-K take
+
+| Caller | K | Why |
+|---|---|---|
+| chat | 5 | render budget ~3K tokens; chat answers tend short |
+| planner | 8 | needs more breadth to write the right plan |
+| doer | 12 | edit_targets + reference_files + memory hits + commands all displayed |
+
+### Synonyms expansion (how it composes with ranking)
+
+```
+ticket body: "change the sync rules to propagate parent business changes"
+                                ↓
+             classify() → entity='propagate', keywords=['sync','rules','parent']
+                                ↓
+             expand from <repo>/.aiforge/synonyms.yml:
+               'sync rules' → TransactionSyncRulesServiceImpl
+               'propagate'  → applyRulesForBusiness performFullGenericSync
+               'parent business' → fromBusinessId
+                                ↓
+             intent.keywords now includes the 5 added FQNs
+                                ↓
+             fan-out queries every source with the expanded query
+                                ↓
+             symbol vector search hits the actual code (not just the user's phrase)
+                                ↓
+             reranker re-orders by full natural-language match
+```
+
+Synonyms multiply the recall (more queries → more candidates) without harming precision (rerank filters noise). A miss in synonyms.yml = unchanged from baseline; a hit = recall lift on jargon-heavy bodies.
+
+### Failure modes and what happens
+
+| Failure | Effect on ranking |
+|---|---|
+| bge-m3 sidecar down | sources 1, 4, 6, 10 silently no-op; lexical (memory ILIKE, ripgrep) still works |
+| bge-reranker sidecar down | step E skipped, ranking falls back to source-weighted normalised order |
+| Neo4j down | sources 3, 4, 5, 8, 9 no-op; sources 1, 6, 11, 12 still work |
+| Postgres down | sources 1, 2, 10 no-op; sources 6, 7, 8, 11, 12 still work |
+| synonyms.yml missing | classifier output unchanged, no expansion |
+| empty query | early return `{hits: [], used_sources: [], errors: []}` — never crashes |
+
+Soft-fail is mandatory at every layer. The pipeline reports what it used (`bundle.sources_used`) so the prompt downstream knows whether retrieval was full-stack or degraded.
+
+### Tuning knobs
+
+| Env | Default | Purpose |
+|---|---|---|
+| `AIFORGE_UMEM_WEIGHT_<SOURCE>` | per-source default | override any `_DEFAULT_WEIGHTS` entry at runtime |
+| `AIFORGE_RERANK_URL` | `http://127.0.0.1:8765` | cross-encoder endpoint |
+| `AIFORGE_RERANK_DISABLE` | `0` | force step E off (debugging) |
+| `AIFORGE_AIDER_REPOMAP_TOKENS` | `1024` | budget for source #7 |
+| `AIFORGE_DOER_NEIGHBOURS_LIMIT` | `30` | max edges from source #8 |
+
+Source weights are deliberately not in a yaml — they're config-as-code so a misnamed key fails fast at import. Override per-source via env when A/B testing the prior.
