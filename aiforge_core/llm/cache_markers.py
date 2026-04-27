@@ -153,19 +153,35 @@ def _extract_text_tool_use(content_blocks: list) -> list[dict]:
             for im in pat_inner.finditer(inner):
                 k = im.group(1)
                 v = im.group(2).strip()
-                # Coerce simple types — true/false/numbers — so the
-                # downstream tool sees correct Python types.
+                # Coerce types so the downstream tool sees correct
+                # Python objects, not strings:
+                #   "true"/"false" → bool
+                #   integer / float → numeric
+                #   JSON array / object → parsed list/dict
+                #   anything else → string
                 vl = v.lower()
                 if vl in ("true", "false"):
                     args[k] = (vl == "true")
-                else:
+                    continue
+                # JSON literal? (do_batch crashes with 'str has no
+                # attribute get' when calls=[{...}] arrives as text.)
+                if v and v[0] in "[{":
                     try:
-                        args[k] = int(v)
-                    except ValueError:
-                        try:
-                            args[k] = float(v)
-                        except ValueError:
-                            args[k] = v
+                        args[k] = _json.loads(v)
+                        continue
+                    except Exception:
+                        pass
+                try:
+                    args[k] = int(v)
+                    continue
+                except ValueError:
+                    pass
+                try:
+                    args[k] = float(v)
+                    continue
+                except ValueError:
+                    pass
+                args[k] = v
             if args:
                 out.append({
                     "type": "tool_use",

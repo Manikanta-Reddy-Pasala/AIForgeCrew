@@ -737,6 +737,21 @@ def _make_handler_class():
                 return f"[batch] unknown tool {tool_name!r}"
 
             calls = args.get("calls") or []
+            # Defensive: when the model emits XML-style
+            # <batch><calls>[{...}]</calls></batch>, the synth path
+            # used to forward `calls` as a JSON STRING. Parse here
+            # too so we never crash with 'str has no attribute get'.
+            if isinstance(calls, str):
+                try:
+                    import json as _j
+                    calls = _j.loads(calls)
+                except Exception:
+                    yield f"[batch] could not parse calls={calls[:80]!r}\n"
+                    calls = []
+            if not isinstance(calls, list):
+                calls = []
+            # Each call must be a dict {tool, args}; drop anything else.
+            calls = [c for c in calls if isinstance(c, dict)]
             yield f"[batch] {len(calls)} sub-call(s) parallel\n"
             blob = _batch.handle(_dispatch, calls)
             return StepOutcome(
