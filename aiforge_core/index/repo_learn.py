@@ -129,14 +129,28 @@ def _llm_summarise(file_path: str, content: str, *,
                     {"role": "user", "content": user},
                 ],
                 "temperature": 0.0,
-                "max_tokens": 600,
+                # Bumped — Qwen3.6 thinking-mode chews ~400 tokens
+                # before emitting the JSON. With 600 we hit
+                # finish_reason=length and content stays empty.
+                "max_tokens": 1500,
                 "response_format": {"type": "json_object"},
+                # Try to suppress thinking on stacks that honour it.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             headers={"Authorization": f"Bearer {LM_STUDIO_API_KEY}"},
             timeout=timeout,
         )
         r.raise_for_status()
-        body = r.json()["choices"][0]["message"]["content"].strip()
+        msg = r.json()["choices"][0]["message"]
+        body = (msg.get("content") or "").strip()
+        # Fallback: mlx-lm puts post-thinking text into 'reasoning'
+        # when content stayed empty. Strip <think>…</think> wrappers.
+        if not body:
+            raw = (msg.get("reasoning") or "").strip()
+            if raw:
+                body = re.sub(
+                    r"<think>.*?</think>", "", raw, flags=re.DOTALL,
+                ).strip() or raw
         if body.startswith("```"):
             body = re.sub(r"^```\w*\n?|\n?```$", "", body, flags=re.M).strip()
         i, j = body.find("{"), body.rfind("}")
