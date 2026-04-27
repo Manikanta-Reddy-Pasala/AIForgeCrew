@@ -227,6 +227,11 @@ AIFORGE_CLAUDE_MEMORY_DIR      operator memory grep root (default ~/.claude/memo
 AIFORGE_AIDER_REPOMAP_TOKENS   default 1024
 AIFORGE_DOER_NEIGHBOURS_LIMIT  default 30
 
+# Retrieval (rerank + synonyms)
+AIFORGE_RERANK_URL             http://127.0.0.1:8765 (cross-encoder sidecar)
+AIFORGE_RERANK_DISABLE         1 = skip rerank pass even if sidecar live
+AIFORGE_REPOS_BASE             /home/mani/codeRepo (root for synonyms.yml lookup)
+
 # Doer behaviour
 AIFORGE_DOER_PLAN_MODE         1 = think-before-edit (default)
 AIFORGE_DOER_TODOS             1 = in-loop checklist
@@ -337,16 +342,70 @@ The combination is what makes natural-language work without training. Lexical al
 
 ### Concrete gaps to close (cheap wins, no training)
 
-| Gap | Fix | Effort |
-|---|---|---|
-| No cross-encoder rerank | drop `bge-reranker-m3` between unified_query top-30 → top-5; env: `AIFORGE_RERANKER_URL` | ~30 min |
-| Synonym map per-repo | `<repo>/.aiforge/synonyms.yml`; IntentLayer expands query terms before vector search | ~30 min |
-| `.md / .adoc / runbook` not embedded | run `aiforge-maint docs ingest <repo> --library <repo>` (already plumbed) | one-shot |
-| Cross-repo CALLS edge | extend `treesitter_ingest` to walk all `WORKTREE_ROOT/*` repos; resolve external FQNs | ~2 h |
-| Symbol embed staleness | drop cron from 15min → 5min for active repos | env |
-| PR diff history not searchable | nightly `git log --patch` → `:Diff` nodes embedded | ~3 h |
+| Gap | Fix | Effort | Status |
+|---|---|---|---|
+| No cross-encoder rerank | drop `bge-reranker-v2-m3` between unified_query top-30 → top-5; env: `AIFORGE_RERANK_URL` | ~30 min | ✅ shipped (a027ac7) |
+| Synonym map per-repo | `<repo>/.aiforge/synonyms.yml`; IntentLayer expands query terms before vector search | ~30 min | ✅ shipped (e745fcc) |
+| `.md / .adoc / runbook` not embedded | run `aiforge-maint docs ingest <repo> --library <repo>` (already plumbed) | one-shot | pending |
+| Cross-repo CALLS edge | extend `treesitter_ingest` to walk all `WORKTREE_ROOT/*` repos; resolve external FQNs | ~2 h | pending |
+| Symbol embed staleness | drop cron from 15min → 5min for active repos | env | pending |
+| PR diff history not searchable | nightly `git log --patch` → `:Diff` nodes embedded | ~3 h | pending |
 
-Each is a retrieval-side change. None needs a model change. None needs new infra (sidecar + Neo4j + Postgres already there).
+Each is a retrieval-side change. None needs a model change. None needs new infra beyond the rerank sidecar (Neo4j + Postgres + bge-m3 + bge-reranker now all present).
+
+### Synonyms file format (`<repo>/.aiforge/synonyms.yml`)
+
+```yaml
+# Per-repo natural-language → code-identifier mapping. One pair per line.
+# LHS = case-insensitive substring matched against the ticket body.
+# RHS = space-separated tokens appended to intent.keywords.
+
+sync rules:           TransactionSyncRulesServiceImpl
+event listener:       DebeziumChangeEventConsumer
+manual sync:          SyncDocumentController SyncOpsController
+parent business:      fromBusinessId
+propagate:            applyRulesForBusiness performFullGenericSync
+```
+
+Lookup order (first match wins, multiple files merge):
+  1. `<repo>/.aiforge/synonyms.yml`
+  2. `$AIFORGE_REPOS_BASE/.aiforge-global/synonyms.yml`
+  3. `~/.aiforge/synonyms.yml`
+
+Expansion is best-effort — missing files / parse errors are silently ignored.
+
+### Rerank sidecar (services/rerank_sidecar)
+
+Cross-encoder service backing `unified_query`'s rerank pass.
+
+```
+model:    BAAI/bge-reranker-v2-m3 (PyTorch, ~568 MB, FP16 by default)
+runtime:  FlagEmbedding
+endpoint: POST :8765/rerank   {query, texts:[…]} → {scores:[…]}
+unit:     aiforge-rerank-sidecar.service (systemd --user)
+install:  scripts/install-rerank-sidecar.sh   (idempotent venv + model download)
+```
+
+Score blending in `unified_query`:
+```
+final = 0.7 × rerank_score + 0.3 × source_weighted_original
+```
+
+The 0.3 source-weight retention preserves per-source priors (T2 fact > generic memory hit) so the rerank only reorders near-ties — it doesn't trump strong canonical hits. Sidecar absent / unreachable → no-op, original ranking stands.
+
+### Acceptance-aware feedback gate (commit 37f6dad)
+
+Three ticket shapes, three gates:
+
+| Ticket shape | Detected by | Gate |
+|---|---|---|
+| Code edit (default) | none of the below | `edit_block_ok ≥ 1 AND compile_green ≥ 1` |
+| Audit / report | body contains `audit-only`, `no production code changes`, `investigate only`, `report only`, `documentation only`, `do not change production code` | `compile_green ≥ 1` only — edit_block_ok skipped |
+| Doc creation (NEW file) | title/body contains README/CHANGELOG/CONTRIBUTING/SECURITY/LICENSE/CODE_OF_CONDUCT AND intent.action ∈ add/edit/create/doc | `file_write OR diff has changes` (catches GA counter accounting bug) |
+
+Doc-creation tickets also rewrite the planner's `## Files` block to a single canonical filename at repo root and inject a `## Doc-creation mode` section telling the doer to use `file_write` (not file_patch) and skip mvn compile.
+
+These three rules unblock the audit + readme ticket classes that had been hitting `edit_block_ok=0` failures despite the doer doing the right thing.
 
 ### Why we don't fine-tune yet
 
