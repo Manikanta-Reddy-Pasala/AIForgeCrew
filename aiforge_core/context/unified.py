@@ -875,15 +875,29 @@ def _t3_recipes(query: str, *, limit: int = 4) -> list[str]:
 
 
 def _repo_doc(worktree: str) -> str:
-    """Return CLAUDE.md tail (preferred) else README.md tail. ~1.5K chars."""
-    for fn in ("CLAUDE.md", "README.md", ".aiforge/CONVENTIONS.md"):
+    """Return repo doc tail. Lookup order:
+      1. .aiforge/REPO_NOTES.md  — auto-generated structured contract
+         (controllers, services, kafka/nats topics, mongo collections,
+         build commands). Most useful for the agent because it lists
+         the actual code surface.
+      2. CLAUDE.md               — operator-curated long-form notes.
+      3. README.md               — generic project intro.
+      4. .aiforge/CONVENTIONS.md — Aider-style coding conventions.
+    First match wins, ~3K chars (REPO_NOTES tend to be longer than
+    plain README tails)."""
+    for fn, cap in (
+        (".aiforge/REPO_NOTES.md", 3000),
+        ("CLAUDE.md", 1500),
+        ("README.md", 1500),
+        (".aiforge/CONVENTIONS.md", 1500),
+    ):
         path = os.path.join(worktree, fn)
         if os.path.isfile(path):
             try:
                 txt = Path(path).read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
-            return f"[{fn}]\n{txt[:1500]}"
+            return f"[{fn}]\n{txt[:cap]}"
     return ""
 
 
