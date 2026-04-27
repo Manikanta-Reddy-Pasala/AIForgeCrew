@@ -233,6 +233,11 @@ def enrich(text: str, *, role: str = "sr_developer",
     EnrichedTicket. Best-effort — never raises; populates ``errors``.
     """
     intent = classify(text)
+    # Per-repo synonym expansion. Maps user jargon → code identifiers
+    # ('billing module' → 'TransactionSyncRulesServiceImpl') so vector
+    # + lexical search hit the right symbols. Best-effort, no-op when
+    # repo or synonyms.yml absent.
+    intent = _expand_synonyms(intent)
     title = _derive_title(text, intent)
     errors: list[str] = []
     bundle = None
@@ -262,6 +267,68 @@ def enrich(text: str, *, role: str = "sr_developer",
         repo=bundle.repo,
         sources_used=bundle.sources_used,
         errors=errors + bundle.errors,
+    )
+
+
+def _expand_synonyms(intent: Intent) -> Intent:
+    """Append synonym values to intent.keywords + entity/ref when the
+    raw_text matches a key in <repo>/.aiforge/synonyms.yml.
+
+    File format (KISS):
+        # comments allowed
+        billing module: TransactionSyncRulesServiceImpl
+        purge dups:     same-biz businessProducts dedup
+        legal flag:     compliance
+        login flow:     AuthFilter doFilter
+
+    LHS = lowercased phrase from natural-language input. RHS = one or
+    more space-separated tokens injected as keywords. Match is
+    substring (case-insensitive) on LHS in raw_text. Multiple matches
+    accumulate.
+    """
+    import os
+    repo = (intent.repo_hint or "").strip()
+    candidates: list[str] = []
+    base = os.environ.get("AIFORGE_REPOS_BASE", "/home/mani/codeRepo")
+    if repo:
+        candidates.append(os.path.join(base, repo, ".aiforge", "synonyms.yml"))
+    # Global fallback — applies to all repos.
+    candidates.append(os.path.join(base, ".aiforge-global", "synonyms.yml"))
+    candidates.append(os.path.expanduser("~/.aiforge/synonyms.yml"))
+    raw_low = (intent.raw_text or "").lower()
+    if not raw_low:
+        return intent
+    new_keywords = list(intent.keywords)
+    matched_count = 0
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            for line in open(path, "r", encoding="utf-8", errors="replace"):
+                line = line.split("#", 1)[0].rstrip()
+                if not line or ":" not in line:
+                    continue
+                lhs, rhs = line.split(":", 1)
+                lhs = lhs.strip().lower()
+                rhs = rhs.strip()
+                if not lhs or not rhs:
+                    continue
+                if lhs in raw_low:
+                    matched_count += 1
+                    for tok in rhs.split():
+                        if tok and tok not in new_keywords:
+                            new_keywords.append(tok)
+        except Exception:
+            continue
+    if matched_count == 0:
+        return intent
+    return Intent(
+        action=intent.action,
+        entity=intent.entity,
+        reference_pattern=intent.reference_pattern,
+        repo_hint=intent.repo_hint,
+        keywords=new_keywords[:12],
+        raw_text=intent.raw_text,
     )
 
 

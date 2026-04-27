@@ -1,0 +1,20 @@
+[Unit]
+Description=AIForge rerank sidecar (bge-reranker-v2-m3 ONNX on :8765)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mani/AIForgeCrew/services/rerank_sidecar
+EnvironmentFile=/home/mani/.aiforge/runtime.env
+Environment=BGE_RERANKER_DIR=/home/mani/.aiforge/models/bge-reranker-v2-m3
+# Install script downloads ~600MB ONNX model on first boot only.
+TimeoutStartSec=900
+ExecStartPre=/bin/bash -lc '/home/mani/AIForgeCrew/scripts/install-rerank-sidecar.sh --no-run ; true'
+ExecStart=/home/mani/.aiforge/venv-rerank/bin/uvicorn app:app --host 127.0.0.1 --port 8765
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
