@@ -1,5 +1,9 @@
 fastapi>=0.111
 uvicorn>=0.30
+# transformers 5.x removed XLMRobertaTokenizer.prepare_for_model which
+# FlagEmbedding 1.4.x still calls. Pin to 4.x until upstream catches
+# up. See journalctl: AttributeError on first /rerank call otherwise.
+transformers>=4.40,<5
 FlagEmbedding>=1.3
 torch>=2.2
 pydantic>=2.7
