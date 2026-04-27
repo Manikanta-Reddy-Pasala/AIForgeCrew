@@ -156,6 +156,23 @@ class UnifiedContext:
         except Exception as exc:
             bundle.errors.append(f"unified_query: {exc}")
 
+        # 1b. Cursor-style semantic fallback. When regex-mined focal
+        # files are empty (extraction failed OR symbol hits didn't
+        # render paths in their rendered text), embed the raw natural-
+        # language query and hit Neo4j's :Symbol vector index
+        # directly. Each hit IS a file_path, no parsing needed.
+        if worktree and not bundle.focal_files:
+            try:
+                semantic = _semantic_focal_files(
+                    worktree, intent.raw_text or intent.search_query(),
+                    top_k=8,
+                )
+                if semantic:
+                    bundle.focal_files = semantic
+                    bundle.sources_used.append("semantic_focal")
+            except Exception as exc:
+                bundle.errors.append(f"semantic_focal: {exc}")
+
         # 2. RepoMap — keyed off focal_files (now non-empty)
         if worktree and bundle.focal_files:
             try:
@@ -516,16 +533,31 @@ def _extract_focal_files(hits: list[dict], worktree: str) -> list[str]:
     """Pull plausible file paths out of unified_query hits.
 
     REPO-SCOPED: only returns paths that resolve to a real file under
-    the resolved ``worktree``. Cross-repo paths are dropped — a hit
-    for `src/.../oneshell/.../ProductServiceImpl.java` will never
-    surface in a `mongoEventListner` bundle just because the path
-    string happened to appear in some past ticket event."""
+    the resolved ``worktree``. Cross-repo paths are dropped."""
     if not worktree:
         return []
     out: list[str] = []
     seen: set[str] = set()
+    # Prefer structured fields (file_path, file, path, source_uri) over
+    # regex-mining the rendered text — many hit shapes embed the path
+    # in the JSON response but don't include 'src/...' verbatim in the
+    # rendered .text field.
+    structured_keys = ("file_path", "file", "path", "source_uri", "uri")
     for h in hits:
-        text = (h.get("text") or "") + " " + (h.get("source_uri") or "")
+        # Structured first.
+        for k in structured_keys:
+            v = h.get(k)
+            if not isinstance(v, str) or not v:
+                continue
+            for m in _SRC_HINT_RE.findall(v):
+                if m in seen:
+                    continue
+                seen.add(m)
+                full = os.path.join(worktree, m)
+                if os.path.isfile(full):
+                    out.append(full)
+        # Fall back to text scan.
+        text = (h.get("text") or "")
         for m in _SRC_HINT_RE.findall(text):
             if m in seen:
                 continue
@@ -534,6 +566,67 @@ def _extract_focal_files(hits: list[dict], worktree: str) -> list[str]:
             if os.path.isfile(full):
                 out.append(full)
     return out
+
+
+def _semantic_focal_files(worktree: str, query: str, *,
+                          top_k: int = 8) -> list[str]:
+    """Cursor-style fallback — when regex/grep returned no focal_files,
+    embed the FULL natural-language query and ask Neo4j for the top-K
+    :Symbol nodes by cosine similarity, then dedupe to file paths.
+
+    Skips silently when:
+      - bge-m3 sidecar unreachable
+      - Neo4j unreachable / vector index absent
+      - no symbol vectors backfilled yet for this repo
+    Returns paths under the resolved ``worktree`` only.
+    """
+    if not worktree or not query.strip():
+        return []
+    try:
+        from aiforge_core.legacy.embed import embed
+        from neo4j import GraphDatabase                  # type: ignore
+    except Exception:
+        return []
+    try:
+        qvec = embed(query[:1500])
+    except Exception:
+        return []
+    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
+    pw = os.environ.get("AIFORGE_NEO4J_PASSWORD", "password")
+    cy = (
+        "CALL db.index.vector.queryNodes('symbol_embedding_vec', "
+        "$k, $vec) YIELD node, score "
+        "RETURN coalesce(node.file_path, node.file, '') AS path, "
+        "       score "
+        "ORDER BY score DESC"
+    )
+    paths: list[str] = []
+    seen: set[str] = set()
+    try:
+        drv = GraphDatabase.driver(uri, auth=(user, pw))
+        with drv.session() as s:
+            for r in s.run(cy, k=top_k * 4, vec=qvec).data():
+                p = r.get("path") or ""
+                if not p or _is_noise_path(p):
+                    continue
+                # Reduce abs path → repo-relative (suffix match).
+                if "src/main/" in p:
+                    p = p[p.index("src/main/"):]
+                elif "src/test/" in p:
+                    p = p[p.index("src/test/"):]
+                if p in seen:
+                    continue
+                seen.add(p)
+                full = os.path.join(worktree, p)
+                if os.path.isfile(full):
+                    paths.append(full)
+                if len(paths) >= top_k:
+                    break
+        drv.close()
+    except Exception:
+        return []
+    return paths
 
 
 # ─── Reference-pattern → edit-targets vs reference-only splitter ───

@@ -51,9 +51,30 @@ class Intent:
     raw_text: str = ""
 
     def search_query(self) -> str:
-        """Best query string for retrieval — entity + ref + keywords."""
-        parts = [self.entity, self.reference_pattern, *self.keywords[:6]]
-        return " ".join(p for p in parts if p).strip() or self.raw_text[:200]
+        """Best query string for retrieval.
+
+        Cursor / Claude Code / Aider all feed the FULL user prompt to
+        their retriever — they don't rebuild a curated subset from
+        extracted fields. The model+reranker decide what's relevant.
+
+        We do the same: take the raw text (the user's actual words)
+        and append synonym-expanded keywords for recall lift on
+        domain jargon. Extracted entity/ref are kept as METADATA for
+        prompt display, but the retrieval query is the user's
+        natural language, not a regex'd skeleton.
+        """
+        # Raw text first — preserves the model's full phrasing for the
+        # cross-encoder reranker to match against.
+        base = (self.raw_text or "").strip()
+        # Append synonym-expanded keywords AT THE END so dense vector
+        # similarity weights the natural prose more than the FQNs;
+        # lexical/BM25 still hits the FQNs through the keyword tail.
+        added = [k for k in self.keywords if k and k not in base]
+        if added:
+            base = base + "\n\nKeywords: " + " ".join(added[:8])
+        # Cap at ~2000 chars — bge-m3 truncates at 512 tokens (~2K
+        # chars) anyway; saves the embed sidecar a copy.
+        return base[:2000] or self.raw_text[:200]
 
 
 @dataclass
