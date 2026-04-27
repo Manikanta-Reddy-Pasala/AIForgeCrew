@@ -273,3 +273,101 @@ aiforge_core/
 ```
 
 Single doc — this file. `agents.yaml` is the only other prose source (per-agent allowed/forbidden tools, memory scopes, termination contracts).
+
+---
+
+## Retrieval & Grounding
+
+How we make a natural-language ticket land on the right code without fine-tuning the model. Two layers stacked, both KISS.
+
+### Layer 1 — Retrieval (no training, already wired)
+
+```
+natural-language input
+    │
+    ▼
+IntentLayer.classify()      Qwen 3.6 27B JSON-strict → action / entity /
+                            reference_pattern / repo_hint / keywords
+    │
+    ▼
+UnifiedContext.for_intent() fans out 8 sources, soft-fail per-source:
+
+  ┌─ T1 :Episode      per-stage events            (write: api stage hooks)
+  │                   "what did past tickets say"
+  │
+  ├─ T2 :Fact         canon facts, ground truth   (write: learner / chat retain)
+  │                   "billing module = TransactionSyncRulesServiceImpl"
+  │
+  ├─ T3 :Pattern      learned recipes             (write: learner + pattern_miner)
+  │                   "table-add tickets need 3 edits at consumer + rules + topic"
+  │
+  ├─ T4 :Chunk        code chunks + md ingests    (write: graphify; bge-m3 1024-d)
+  │                   per-method bodies + per-section markdown
+  │
+  ├─ T5 :Symbol       tree-sitter + Graphify      (write: treesitter_ingest +
+  │                   FQN, signatures, CALLS edges  graphify; ENDS WITH file_path)
+  │
+  ├─ :Repo standards  manifest                    (build/test/lint/conventions)
+  │
+  ├─ Aider RepoMap    PageRank tag digest         (process-local, mtime-cached)
+  │
+  └─ ripgrep -F + ctx exact lexical hits          (used by ref_pattern_split)
+
+         │
+         ▼
+ContextBundle.render() → Markdown block injected into:
+  - chat agent's first user message  (auto-prefetch)
+  - planner.user_prompt              (## Edit targets, ## Reference snippets)
+  - doer prompt                      (## Auto-context, ## Allowed files)
+```
+
+Input flows through all 8 sources, results are score-normalised, deduped on basename+parent, noise-filtered (target/, node_modules/, *.class, ...).
+
+### Layer 2 — Hybrid lexical + semantic + graph
+
+Three shapes of retrieval, each catches what the other misses.
+
+| Shape | What it's good at | We have | Missing |
+|---|---|---|---|
+| **Lexical (BM25 / ripgrep)** | exact symbol names, literal strings (`businessProducts`), specific error messages | ripgrep + Postgres ILIKE | `pg_trgm` GIN index for fuzzy substring (e.g. typos) |
+| **Dense (bge-m3 1024-d)** | natural-language → conceptually-related code; "how does login work" → `AuthFilter.doFilter` | T4 :Chunk + T5 :Symbol embeddings | cross-encoder rerank (bge-reranker-m3) on top-30 → top-5 |
+| **Graph hop** | "what calls X" / "what reads collection Y" | 1-hop CALLS / IMPORTS / READS / WRITES | 2-hop expansion ("X→Y→Z") + Graphify INFERRED edges as a separate retrieval call |
+
+The combination is what makes natural-language work without training. Lexical alone misses synonyms. Dense alone hallucinates near-misses. Graph alone has no entry point until you've found a symbol. Stacking all three covers the failure modes of each.
+
+### Concrete gaps to close (cheap wins, no training)
+
+| Gap | Fix | Effort |
+|---|---|---|
+| No cross-encoder rerank | drop `bge-reranker-m3` between unified_query top-30 → top-5; env: `AIFORGE_RERANKER_URL` | ~30 min |
+| Synonym map per-repo | `<repo>/.aiforge/synonyms.yml`; IntentLayer expands query terms before vector search | ~30 min |
+| `.md / .adoc / runbook` not embedded | run `aiforge-maint docs ingest <repo> --library <repo>` (already plumbed) | one-shot |
+| Cross-repo CALLS edge | extend `treesitter_ingest` to walk all `WORKTREE_ROOT/*` repos; resolve external FQNs | ~2 h |
+| Symbol embed staleness | drop cron from 15min → 5min for active repos | env |
+| PR diff history not searchable | nightly `git log --patch` → `:Diff` nodes embedded | ~3 h |
+
+Each is a retrieval-side change. None needs a model change. None needs new infra (sidecar + Neo4j + Postgres already there).
+
+### Why we don't fine-tune yet
+
+Failure post-mortem on this session's 14 tickets:
+
+| Bucket | Failure cause | Retrieval fix? |
+|---|---|---|
+| 5 done | n/a | n/a |
+| 6 blocked | hardcoded gate (audit/doc) + path translation bug | code fix, not model |
+| 6 cancelled | operator re-fire dups | UX, not model |
+| 1 in-review | counter accounting bug | code fix |
+
+None failed because the model didn't know the code. Every failure was a prompt-shape or gate bug. Retrieval has at least another 60% of the headroom before fine-tuning becomes the cheapest move.
+
+### Order of operations if pushing further
+
+```
+1. ship reranker          (~30 min)  — biggest quality jump per hour
+2. ship synonyms.yml      (~30 min)  — per-repo jargon mapping
+3. ingest md docs         (1 cron)   — surfaces operator notes
+4. cross-repo graph       (~2 h)     — multi-service ticket support
+5. PR diff history        (~3 h)     — "how did we last add a collection"
+6. (only after all of 1-5) consider LoRA on doer  — domain adaptation
+```
