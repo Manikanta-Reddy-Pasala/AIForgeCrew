@@ -56,6 +56,14 @@ def _cmd_create(args) -> int:
     return 0
 
 
+def _cmd_retrieval_eval(args) -> int:
+    """A/B compare cursor-style vs aider-style retrieval."""
+    from aiforge_core.intent.compare_retrieval import compare, render_comparison
+    result = compare(args.text, args.repo, top_k=args.top_k)
+    print(render_comparison(result))
+    return 0
+
+
 def _cmd_classify(args) -> int:
     """Interactive classifier — agent asks clarifying questions until
     all intent fields are confidently resolved. Operator answers are
@@ -195,6 +203,14 @@ def main() -> int:
     tk = sub.add_parser("tick")
     tk.add_argument("role", choices=ALL_ROLES)
     tk.set_defaults(func=_cmd_tick)
+
+    re_ = sub.add_parser("retrieval-eval",
+                         help="A/B compare cursor-style vs aider-style "
+                              "retrieval on the same query")
+    re_.add_argument("text", help="natural language query")
+    re_.add_argument("--repo", required=True, help="repo name under WORKTREE_ROOT")
+    re_.add_argument("--top-k", type=int, default=8, dest="top_k")
+    re_.set_defaults(func=_cmd_retrieval_eval)
 
     cf = sub.add_parser("classify",
                         help="interactive classifier — agent asks "
