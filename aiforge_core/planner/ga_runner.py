@@ -155,6 +155,38 @@ def _extract_pattern_snippets(files: list[str], pattern: str, *,
     return "\n".join(chunks)
 
 
+_DOC_FILENAMES = {
+    "readme":       "README.md",
+    "changelog":    "CHANGELOG.md",
+    "contributing": "CONTRIBUTING.md",
+    "security":     "SECURITY.md",
+    "license":      "LICENSE",
+    "code_of_conduct": "CODE_OF_CONDUCT.md",
+}
+
+
+def _doc_creation_target(ticket: object, intent: dict) -> str | None:
+    """When the ticket asks for a NEW doc file at repo root (README,
+    CHANGELOG, …), return the canonical filename. Else None.
+
+    Detected via title/body string match (cheap, deterministic) AND
+    the intent.action being 'add' / 'edit' (model already classified
+    it as creation/edit work). Doc tickets need a file_write to
+    a NEW file — calling planner's ref_pattern_grep against e.g.
+    Java sources returns wrong targets, which is what blocked
+    ONE-65/67/69/71."""
+    action = (intent.get("action") or "").lower()
+    if action not in ("add", "edit", "create", "doc"):
+        return None
+    title = (getattr(ticket, "title", "") or "").lower()
+    body = (getattr(ticket, "body", "") or "").lower()
+    haystack = title + "\n" + body
+    for marker, filename in _DOC_FILENAMES.items():
+        if marker in haystack:
+            return filename
+    return None
+
+
 def _resolve_project(ticket: object) -> str:
     """Resolve repo/project name in priority order:
 
@@ -301,6 +333,7 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
     reference_files: list[str] = []
     intent_block = "(no enrichment)"
     snippets_block = ""
+    doc_creation_target: str | None = None
     if isinstance(enr, dict):
         edit_targets = list(enr.get("focal_files") or [])
         reference_files = list(enr.get("reference_files") or [])
@@ -311,17 +344,29 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
             f"reference_pattern: {intent.get('reference_pattern','?')!r} · "
             f"keywords: {', '.join(intent.get('keywords') or [])[:200]}"
         )
-        # Real code snippets — show the planner the surrounding 13 lines
-        # of each `reference_pattern` occurrence in the edit_targets.
-        # Far stronger signal than a bare list of paths because the
-        # model SEES exactly what idiom it must mirror.
-        ref_pattern = (intent.get("reference_pattern") or "").strip()
-        if ref_pattern and edit_targets:
-            snippets_block = _extract_pattern_snippets(
-                edit_targets, ref_pattern,
-                context_before=3, context_after=10,
-                max_per_file=2, max_total_chars=6000,
-            )
+        # Doc-creation shortcut. When the user asks 'add README' /
+        # 'create CHANGELOG' / 'write CONTRIBUTING', edit_targets came
+        # from ref_pattern_grep over Java sources (wrong shape). The
+        # right move is a NEW file at repo root + drive doer to use
+        # file_write, not file_patch. Override edit_targets with the
+        # canonical doc filename only (no Java leakage).
+        doc_creation_target = _doc_creation_target(ticket, intent)
+        if doc_creation_target:
+            edit_targets = [doc_creation_target]
+            reference_files = []
+            snippets_block = ""   # no code snippet — the file is new
+        else:
+            # Real code snippets — show the planner the surrounding 13
+            # lines of each `reference_pattern` occurrence in the
+            # edit_targets. Far stronger signal than a bare list of
+            # paths because the model SEES the idiom it must mirror.
+            ref_pattern = (intent.get("reference_pattern") or "").strip()
+            if ref_pattern and edit_targets:
+                snippets_block = _extract_pattern_snippets(
+                    edit_targets, ref_pattern,
+                    context_before=3, context_after=10,
+                    max_per_file=2, max_total_chars=6000,
+                )
     # CRITICAL: enrichment.focal_files are absolute paths under the
     # MASTER worktree (e.g. /home/mani/codeRepo/X/src/...). The doer
     # runs in the per-ticket sibling worktree (e.g. .../X/.aiforge-
@@ -361,6 +406,18 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
         f"```\n{snippets_block}\n```\n\n"
         if snippets_block else ""
     )
+    # Doc-creation tickets need a different doer playbook: file_write
+    # to a NEW file (no file_patch — the file doesn't exist yet); skip
+    # mvn compile (irrelevant for markdown). Inject a hint so the plan
+    # tells the doer this explicitly.
+    doc_hint_section = (
+        f"## Doc-creation mode (NEW file)\n"
+        f"This ticket creates a new documentation file. The doer MUST:\n"
+        f"  1. Use `file_write` (NOT file_patch — the file is new).\n"
+        f"  2. Skip `mvn -DskipTests compile` (markdown, no Java change).\n"
+        f"  3. Cover sections: overview, build/run, tests, deploy.\n\n"
+        if doc_creation_target else ""
+    )
     user_prompt = (
         f"# Ticket: {title}\n\n"
         f"Project: {project}\n"
@@ -371,6 +428,7 @@ def run_planner_via_ga(ticket: object, log: object | None = None) -> dict:
         f"{edit_block}\n\n"
         f"## Reference files (READ ONLY — context only)\n{ref_block}\n\n"
         f"{snippets_section}"
+        f"{doc_hint_section}"
         f"## Output\n"
         f"Return the four-section markdown plan ONLY. Start with `## Goal`. "
         f"For each edit_target, write a step that says EXACTLY where to add "

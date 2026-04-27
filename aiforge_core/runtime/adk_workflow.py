@@ -224,6 +224,53 @@ def _ticket_needs_endpoint_smoke(ticket: tickets_mod.Ticket) -> bool:
     return any(m in haystack for m in _ENDPOINT_TICKET_MARKERS)
 
 
+# Audit / report / documentation tickets have no edit-block to verify
+# (the deliverable is a markdown file or a write-up, not a code patch).
+# Hardcoding edit_block_ok ≥ 1 was rejecting them: ONE-78 (audit) ran
+# 4 turns, did the analysis correctly, but feedback gate failed it.
+_AUDIT_MARKERS = (
+    "audit-only", "audit only",
+    "do not change production code", "do not change prod code",
+    "no production code changes", "no code changes",
+    "investigate only", "research only",
+    "report-only", "report only",
+    "write-up only", "writeup only",
+    "documentation only", "docs only",
+)
+
+
+def _ticket_is_audit(ticket: tickets_mod.Ticket) -> bool:
+    """True when ticket explicitly opts out of code edits.
+
+    Match is conservative — only triggered by markers an operator
+    deliberately puts in the body (or that an audit-shape title carries
+    by convention). False positives would relax the gate, so the bar
+    has to be high.
+    """
+    haystack = " ".join([
+        (ticket.title or ""),
+        (ticket.body or ""),
+    ]).lower()
+    return any(m in haystack for m in _AUDIT_MARKERS)
+
+
+def _ticket_is_doc_creation(ticket: tickets_mod.Ticket) -> bool:
+    """True when ticket asks for a NEW doc file (README, CHANGELOG,
+    CONTRIBUTING, …) rather than a code patch. The doer succeeds via
+    file_write, not file_patch; gate must accept either."""
+    title = (ticket.title or "").lower()
+    body = (ticket.body or "").lower()
+    haystack = title + "\n" + body
+    if "readme" not in haystack and "changelog" not in haystack \
+            and "contributing" not in haystack \
+            and "security.md" not in haystack \
+            and "license" not in haystack:
+        return False
+    # Must look like a creation task, not a fix to existing docs.
+    add_terms = ("add ", "create ", "write ", "generate ", "draft ")
+    return any(t in haystack for t in add_terms)
+
+
 # ─────────────────────────── Planner agent ──────────────────────────────
 class AiForgePlannerAgent(BaseAgent):
     """ADK wrapper around the existing smolagents Planner.
@@ -804,24 +851,49 @@ class AiForgeFeedbackAgent(BaseAgent):
         if endpoint_ticket and test_green_raw is None:
             test_green_required = True
         test_green = int(test_green_raw or 0)
+        # Acceptance-aware gate. Audit/report tickets opt out of
+        # edit_block_ok requirement entirely (deliverable is analysis,
+        # not a code patch). Doc-creation tickets accept file_write
+        # (which the GA harness DOES count toward edit_block_ok, but
+        # it doesn't always — fall back to checking the diff).
+        is_audit = _ticket_is_audit(ticket)
+        is_doc_create = _ticket_is_doc_creation(ticket)
+        # When the doer wrote ANY file in the worktree, treat as edit.
+        # Catches the GA file_write counter accounting bug seen on
+        # ONE-64 where M files were present but edit_block_ok stayed 0.
+        diff_has_changes = bool(diff_for_log.strip()) and \
+            "(no diff" not in diff_for_log[:80].lower()
+        edit_satisfied = (
+            edit_block_ok >= 1
+            or (is_audit)                        # audit: no edits required
+            or (is_doc_create and diff_has_changes)  # doc: any file wrote
+            or (diff_has_changes and edit_block_ok == 0
+                and counters.get("file_write_count", 0) >= 1)
+        )
+
         if scope_violations > 0:
             verdict = "scope_violation"
             reason = (f"ScopeGuard rejected {scope_violations} write(s)")
             fixlist: list[str] = []
-        elif edit_block_ok >= 1 and compile_green >= 1 and (
+        elif edit_satisfied and compile_green >= 1 and (
             not test_green_required or test_green >= 1
         ):
             verdict = "pass"
             reason = (
                 f"compile_green={compile_green} edit_block_ok={edit_block_ok} "
-                f"test_green={test_green} commit={commit_sha or 'none'}"
+                f"test_green={test_green} "
+                f"audit={is_audit} doc_create={is_doc_create} "
+                f"commit={commit_sha or 'none'}"
             )
             fixlist = []
         else:
             verdict = "fail"
             missing: list[str] = []
-            if edit_block_ok < 1:
-                missing.append("≥1 successful edit")
+            if not edit_satisfied:
+                if is_doc_create:
+                    missing.append("≥1 file_write to create the doc")
+                else:
+                    missing.append("≥1 successful edit")
             if compile_green < 1:
                 missing.append("compile-green run")
             if test_green_required and test_green < 1:
