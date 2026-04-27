@@ -10,7 +10,9 @@ NO_RUN="0"
 [[ "${1:-}" == "--no-run" ]] && NO_RUN="1"
 
 echo "[rerank] venv: $VENV"
-[[ -x "$VENV/bin/python" ]] || /opt/homebrew/bin/uv venv "$VENV" --python 3.12 || python3 -m venv "$VENV"
+# Use python3 -m venv (always ships pip) — uv venv skips pip by default
+# which broke the next pip install step on NUC (Linux, no uv installed).
+[[ -x "$VENV/bin/pip" ]] || python3 -m venv "$VENV"
 "$VENV/bin/pip" install --quiet --upgrade pip wheel
 "$VENV/bin/pip" install --quiet -r "$SVC_DIR/requirements.txt"
 
