@@ -116,6 +116,17 @@ def _cmd_index_purge_noise(args) -> int:
     return 0
 
 
+def _cmd_repo_notes(args) -> int:
+    from aiforge_core.index.repo_notes import generate_repo_notes
+    try:
+        path = generate_repo_notes(args.repo)
+    except Exception as exc:
+        print(json.dumps({"repo": args.repo, "error": str(exc)[:300]}))
+        return 0
+    print(json.dumps({"repo": args.repo, "wrote": path}))
+    return 0
+
+
 def _cmd_cost_snapshot(args) -> int:
     from aiforge_core.runtime import cost
     print(json.dumps(cost.snapshot(args.ticket)))
@@ -146,6 +157,15 @@ def main(argv: list[str] | None = None) -> int:
     pn.add_argument("--dry-run", action="store_true",
                     help="print tokens + Cypher, do not delete")
     pn.set_defaults(func=_cmd_index_purge_noise)
+
+    rn = sub.add_parser("repo")
+    rn_sub = rn.add_subparsers(dest="action", required=True)
+    nt = rn_sub.add_parser("notes",
+                           help="auto-generate <repo>/.aiforge/REPO_NOTES.md "
+                                "from worktree scan (controllers, services, "
+                                "kafka/nats, collections, build cmds)")
+    nt.add_argument("repo")
+    nt.set_defaults(func=_cmd_repo_notes)
 
     docs = sub.add_parser("docs")
     docs_sub = docs.add_subparsers(dest="action", required=True)
