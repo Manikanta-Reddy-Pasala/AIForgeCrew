@@ -127,6 +127,20 @@ def _cmd_repo_notes(args) -> int:
     return 0
 
 
+def _cmd_repo_learn(args) -> int:
+    from aiforge_core.index.repo_learn import learn_repo
+    kinds = [k.strip() for k in (args.kinds or "").split(",") if k.strip()]
+    try:
+        result = learn_repo(
+            args.repo, kinds=kinds or None,
+            limit=args.limit, sleep_s=args.sleep_s,
+        )
+    except Exception as exc:
+        result = {"repo": args.repo, "error": str(exc)[:400]}
+    print(json.dumps(result))
+    return 0
+
+
 def _cmd_cost_snapshot(args) -> int:
     from aiforge_core.runtime import cost
     print(json.dumps(cost.snapshot(args.ticket)))
@@ -166,6 +180,19 @@ def main(argv: list[str] | None = None) -> int:
                                 "kafka/nats, collections, build cmds)")
     nt.add_argument("repo")
     nt.set_defaults(func=_cmd_repo_notes)
+
+    lr = rn_sub.add_parser("learn",
+                           help="LLM-summarise every controller/service/"
+                                "repository file in the repo and persist "
+                                "to T2 memory (idempotent via sha1)")
+    lr.add_argument("repo")
+    lr.add_argument("--kinds", default="controller,service,service_impl,repository",
+                    help="comma-separated subset of kinds to process")
+    lr.add_argument("--limit", type=int, default=None,
+                    help="max files per run (chunk via cron)")
+    lr.add_argument("--sleep", type=float, default=0.0, dest="sleep_s",
+                    help="seconds between LLM calls (rate limit)")
+    lr.set_defaults(func=_cmd_repo_learn)
 
     docs = sub.add_parser("docs")
     docs_sub = docs.add_subparsers(dest="action", required=True)
