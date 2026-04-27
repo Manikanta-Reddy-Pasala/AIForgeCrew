@@ -639,6 +639,38 @@ Synonyms multiply the recall (more queries → more candidates) without harming 
 
 Soft-fail is mandatory at every layer. The pipeline reports what it used (`bundle.sources_used`) so the prompt downstream knows whether retrieval was full-stack or degraded.
 
+### A/B verdict: Cursor vs Aider retrieval
+
+Tested both approaches on real PosClientBackend and mongoEventListner
+queries (commit ce31f73). Tool: `aiforge ticket retrieval-eval`.
+
+| Test | Cursor (vector + reranker) | Aider (PageRank + mentions) |
+|---|---|---|
+| "Add 3 REST APIs to PosClientBackend mirroring product feature" | **0 hits** | 8 hits — BusinessProductsController, TransactionSyncRule(Service+Impl), WarehouseController |
+| "Add storeRegions collection event listening to mongoEventListner" | **0 hits** | 8 hits — TransactionSyncRulesService, DebeziumEventParser |
+| Latency | ~400ms | ~1000ms |
+
+**Aider wins today** because:
+- Operates on tree-sitter tags computed at query time over the
+  worktree — no backfill cron required.
+- aider's `mentioned_idents` (every word of user text via
+  `re.split(r"\W+", text)`) + `mentioned_fnames` (basename match
+  against repo) feed PageRank personalisation. The graph centres
+  on what the user said, ranks neighbours by edge structure.
+
+**Cursor approach blocked on**: per-repo method/class embedding backfill.
+Today only `oneshell-business` has 3088 method embeddings; PosClientBackend
+and mongoEventListner have 0. The 15-min `aiforge-symbol-embed.timer`
+will populate the rest over ~8 hours.
+
+**Decision**: aider is now the primary retriever (UnifiedContext source
+#7 with `user_text` plumbed end-to-end). Cursor-style stays as an
+opportunistic fallback — `_semantic_focal_files` runs only when the
+focal_files extraction returns empty AND a vector index has entries
+for the target repo. When backfill catches up across repos, cursor
+becomes a true second-stage retriever; until then it's a no-op for
+most repos.
+
 ### Tuning knobs
 
 | Env | Default | Purpose |
