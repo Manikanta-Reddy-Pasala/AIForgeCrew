@@ -65,7 +65,16 @@ def summarize(
     if parsed2 is not None:
         return parsed2
 
-    raise RepoSummaryError("LLM returned invalid JSON twice")
+    # Both attempts failed — surface raw bodies (truncated) so the
+    # operator can see whether it's JSON-truncation, context-overflow,
+    # or model-formatting drift.
+    snippet1 = raw[-400:] if raw else "<empty>"
+    snippet2 = raw2[-400:] if raw2 else "<empty>"
+    raise RepoSummaryError(
+        f"LLM returned invalid JSON twice (repo={repo_name}). "
+        f"attempt1 tail: {snippet1!r}; "
+        f"attempt2 tail: {snippet2!r}"
+    )
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -118,7 +127,7 @@ def _call_llm(pack_text: str, *, system: str = "", user: str = "") -> str:
             {"role": "user", "content": user},
         ],
         temperature=0.0,
-        max_tokens=4000,
+        max_tokens=int(os.environ.get("AIFORGE_CODEMEM_REPO_SUMMARY_MAX_TOKENS", "8000")),
         response_format={"type": "json_object"},
     )
     return resp.choices[0].message.content or ""
