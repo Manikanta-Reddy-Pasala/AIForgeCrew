@@ -87,3 +87,25 @@ def test_one_retry_then_succeed(tmp_path) -> None:
     with patch.object(se, "_call_llm", side_effect=["bad", _llm_ok()]):
         services = se.extract_services("pack", repo_path=repo, repo_name="m")
     assert len(services) == 2
+
+
+def test_override_file_glob_expands(tmp_path) -> None:
+    """`file_glob` in services.yaml expands to actual files at merge time."""
+    repo = tmp_path / "repo"
+    shutil.copytree(MULTI_REPO, repo)
+    (repo / ".aiforge").mkdir()
+    (repo / ".aiforge" / "services.yaml").write_text(
+        "services:\n"
+        "  - name: api\n"
+        "    description: glob-based\n"
+        "    role: api\n"
+        "    file_glob: api/**/*.py\n"
+    )
+    with patch.object(se, "_call_llm", return_value=_llm_ok()):
+        services = se.extract_services("pack", repo_path=repo, repo_name="m")
+    api = next(s for s in services if s.name == "api")
+    assert api.source == "manual"
+    # All 3 .py files under api/ should be picked up
+    assert any("main.py" in f for f in api.files)
+    assert any("routes.py" in f for f in api.files)
+    assert any("__init__.py" in f for f in api.files)

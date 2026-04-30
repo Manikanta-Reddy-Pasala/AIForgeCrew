@@ -123,18 +123,31 @@ def _merge_overrides(
     if not isinstance(overrides, list):
         return drafts
 
+    repo_root = Path(repo_path).resolve()
     by_name: dict[str, ServiceDraft] = {d.name: d for d in drafts}
     for o in overrides:
         if not isinstance(o, dict) or not o.get("name"):
             continue
         port = o.get("port")
+
+        # Files: literal list OR file_glob (glob expanded against repo_root).
+        files = [str(x) for x in (o.get("files") or [])]
+        glob = o.get("file_glob")
+        if glob:
+            for pattern in (glob if isinstance(glob, list) else [glob]):
+                for p in repo_root.glob(str(pattern)):
+                    if p.is_file():
+                        rel = str(p.relative_to(repo_root))
+                        if rel not in files:
+                            files.append(rel)
+
         by_name[str(o["name"])] = ServiceDraft(
             name=str(o["name"]),
             description=str(o.get("description", "")),
             role=str(o.get("role", "")),
             tech_stack=[str(x) for x in (o.get("tech_stack") or [])],
             port=int(port) if isinstance(port, int) else None,
-            files=[str(x) for x in (o.get("files") or [])],
+            files=files,
             source="manual",
         )
     return list(by_name.values())
