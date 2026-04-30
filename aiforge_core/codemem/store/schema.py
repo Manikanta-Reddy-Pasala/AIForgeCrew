@@ -22,6 +22,16 @@ _INDEX_STATEMENTS: list[str] = [
     # Fulltext over runbook_md so queries like "how do I run X" hit it
     "CREATE FULLTEXT INDEX codemem_repo_runbook_ft IF NOT EXISTS "
     "FOR (r:Repo) ON EACH [r.runbook_md, r.conventions_md]",
+    # Service composite uniqueness on (repo, name).
+    # NODE KEY is Enterprise-only; IS UNIQUE works on Community.
+    "CREATE CONSTRAINT codemem_service_unique IF NOT EXISTS "
+    "FOR (s:Service) REQUIRE (s.repo, s.name) IS UNIQUE",
+    # B-tree index on (repo, role) for "list services by role" stats
+    "CREATE INDEX codemem_service_role IF NOT EXISTS "
+    "FOR (s:Service) ON (s.repo, s.role)",
+    # File composite uniqueness on (repo, path).
+    "CREATE CONSTRAINT codemem_file_unique IF NOT EXISTS "
+    "FOR (f:File) REQUIRE (f.repo, f.path) IS UNIQUE",
 ]
 
 
