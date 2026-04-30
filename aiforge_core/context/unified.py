@@ -149,7 +149,7 @@ class UnifiedContext:
         # Soft-fail; the rest of the aggregator continues regardless.
         if os.environ.get("AIFORGE_CODEMEM_QUERY") == "1" and repo:
             try:
-                from aiforge_core.codemem.api.read import context_bundle_for
+                from aiforge_memory.api.read import context_bundle_for
                 cm_text = context_bundle_for(
                     intent.raw_text or intent.search_query(),
                     repo=repo, role=role,

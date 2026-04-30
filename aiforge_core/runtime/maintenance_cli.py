@@ -148,7 +148,7 @@ def _cmd_cost_snapshot(args) -> int:
 
 
 def _cmd_codemem_ingest(args) -> int:
-    from aiforge_core.codemem.api.cli import _cmd_ingest as _ing
+    from aiforge_memory.api.cli import _cmd_ingest as _ing
     return _ing(args)
 
 

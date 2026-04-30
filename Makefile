@@ -1,7 +1,5 @@
 .PHONY: help install test ui deploy pull kill-all \
-        index-all status logs-tail health sync-memory reindex-memory \
-        test-codemem-L1 test-codemem-L2 test-codemem-L3 test-codemem-L4 \
-        test-codemem-L5 test-codemem-L6 test-codemem-L7 test-codemem-all
+        index-all status logs-tail health sync-memory reindex-memory
 
 # SSH targets.
 #   MS_HOST: Mac Studio — runs graph-runner + LM Studio + embed sidecar
@@ -43,30 +41,6 @@ deploy:
 	git push origin main
 	ssh $(MS_HOST)  'cd ~/AIForgeCrew && git pull'
 	ssh $(NUC_HOST) 'cd ~/AIForgeCrew && git pull && systemctl --user restart aiforge-api'
-
-test-codemem-L1:
-	.venv/bin/pytest aiforge_core/codemem/tests/L1_repo_node/ -v
-
-test-codemem-L2:
-	.venv/bin/pytest aiforge_core/codemem/tests/L2_service_extract/ -v
-
-test-codemem-L3:
-	.venv/bin/pytest aiforge_core/codemem/tests/L3_file_summary/ -v
-
-test-codemem-L4:
-	.venv/bin/pytest aiforge_core/codemem/tests/L4_symbols/ -v
-
-test-codemem-L5:
-	.venv/bin/pytest aiforge_core/codemem/tests/L5_chunks_vectors/ -v
-
-test-codemem-L6:
-	.venv/bin/pytest aiforge_core/codemem/tests/L6_translator/ -v
-
-test-codemem-L7:
-	.venv/bin/pytest aiforge_core/codemem/tests/L7_bundle/ -v
-
-test-codemem-all:
-	.venv/bin/pytest aiforge_core/codemem/tests/ -v
 
 pull:
 	ssh $(MS_HOST)  'cd ~/AIForgeCrew && git pull'

@@ -29,13 +29,8 @@ dependencies = [
   "langgraph-checkpoint-postgres>=2.0.0",
   # Phase 9 — Google ADK orchestrator (replaces LangGraph)
   "google-adk==1.31.1",
-  # codemem (plan 1+) — Neo4j store driver
-  "neo4j>=5.20",
-  # codemem plan 2 — services.yaml operator override
-  "PyYAML>=6.0",
-  # codemem plan 3 — tree-sitter symbol extraction
-  "tree-sitter>=0.25",
-  "tree-sitter-language-pack>=0.13",
+  # AiForgeMemory — extracted code-memory subsystem (was aiforge_core.codemem)
+  "aiforge-memory @ git+https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git@main",
 ]
 
 [project.optional-dependencies]
@@ -55,7 +50,7 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/python", "aiforge_core/codemem/tests"]
+testpaths = ["tests/python"]
 addopts = "-ra"
 markers = [
     "live_sidecar: requires embed/rerank sidecars running",
@@ -63,6 +58,3 @@ markers = [
     "live_llm: requires planner LLM at AIFORGE_INTENT_LM_URL",
     "live_repomix: requires `repomix` binary on PATH",
 ]
-
-[project.scripts]
-aiforge-codemem = "aiforge_core.codemem.api.cli:main"
