@@ -33,6 +33,9 @@ dependencies = [
   "neo4j>=5.20",
   # codemem plan 2 — services.yaml operator override
   "PyYAML>=6.0",
+  # codemem plan 3 — tree-sitter symbol extraction
+  "tree-sitter>=0.25",
+  "tree-sitter-language-pack>=0.13",
 ]
 
 [project.optional-dependencies]

@@ -34,6 +34,15 @@ _INDEX_STATEMENTS: list[str] = [
     # After Step 10 of the migration plan, the _v2 suffix is dropped.
     "CREATE CONSTRAINT codemem_file_unique IF NOT EXISTS "
     "FOR (f:File_v2) REQUIRE (f.repo, f.path) IS UNIQUE",
+    # Symbol composite uniqueness on (repo, fqname). Same _v2 reason as File.
+    "CREATE CONSTRAINT codemem_symbol_unique IF NOT EXISTS "
+    "FOR (s:Symbol_v2) REQUIRE (s.repo, s.fqname) IS UNIQUE",
+    # Symbol kind index — useful for "all classes in repo" queries
+    "CREATE INDEX codemem_symbol_kind IF NOT EXISTS "
+    "FOR (s:Symbol_v2) ON (s.repo, s.kind)",
+    # Fulltext over Symbol signatures so NL query can hit "send method"
+    "CREATE FULLTEXT INDEX codemem_symbol_signature_ft IF NOT EXISTS "
+    "FOR (s:Symbol_v2) ON EACH [s.signature, s.fqname, s.doc_first_line]",
 ]
 
 
