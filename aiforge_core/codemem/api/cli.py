@@ -50,7 +50,7 @@ def _cmd_services(args: argparse.Namespace) -> int:
     with drv.session() as s:
         rows = list(s.run(
             "MATCH (r:Repo {name:$n})-[:OWNS_SERVICE]->(s:Service) "
-            "OPTIONAL MATCH (s)-[:CONTAINS_FILE]->(f:File) "
+            "OPTIONAL MATCH (s)-[:CONTAINS_FILE]->(f:File_v2) "
             "WITH s, count(f) AS file_count "
             "RETURN s.name AS name, s.role AS role, s.port AS port, "
             "       s.source AS source, s.tech_stack AS tech_stack, "
