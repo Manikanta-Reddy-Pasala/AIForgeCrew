@@ -31,6 +31,8 @@ dependencies = [
   "google-adk==1.31.1",
   # codemem (plan 1+) — Neo4j store driver
   "neo4j>=5.20",
+  # codemem plan 2 — services.yaml operator override
+  "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
