@@ -1,0 +1,18 @@
+{
+  "services": [
+    {
+      "name": "api",
+      "role": "api",
+      "port": 8080,
+      "source": "llm",
+      "files_count": 3
+    },
+    {
+      "name": "worker",
+      "role": "consumer",
+      "port": null,
+      "source": "llm",
+      "files_count": 3
+    }
+  ]
+}

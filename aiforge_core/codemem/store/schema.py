@@ -29,9 +29,11 @@ _INDEX_STATEMENTS: list[str] = [
     # B-tree index on (repo, role) for "list services by role" stats
     "CREATE INDEX codemem_service_role IF NOT EXISTS "
     "FOR (s:Service) ON (s.repo, s.role)",
-    # File composite uniqueness on (repo, path).
+    # File composite uniqueness on (repo, path) — namespaced as File_v2
+    # because legacy graphify owns a global :File.path UNIQUE constraint.
+    # After Step 10 of the migration plan, the _v2 suffix is dropped.
     "CREATE CONSTRAINT codemem_file_unique IF NOT EXISTS "
-    "FOR (f:File) REQUIRE (f.repo, f.path) IS UNIQUE",
+    "FOR (f:File_v2) REQUIRE (f.repo, f.path) IS UNIQUE",
 ]
 
 

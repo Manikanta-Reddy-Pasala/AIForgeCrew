@@ -47,7 +47,7 @@ def test_file_node_key_exists(driver) -> None:
     with driver.session() as s:
         rows = list(s.run(
             "SHOW CONSTRAINTS YIELD name, labelsOrTypes, properties, type "
-            "WHERE 'File' IN labelsOrTypes "
+            "WHERE 'File_v2' IN labelsOrTypes "
             "  AND properties = ['repo', 'path']"
         ))
     assert len(rows) == 1

@@ -34,7 +34,7 @@ MERGE (r)-[:OWNS_SERVICE]->(s)
 """
 
 _UPSERT_FILE_EDGE = """
-MERGE (f:File {repo: $repo, path: $path})
+MERGE (f:File_v2 {repo: $repo, path: $path})
 ON CREATE SET f.schema_version = 'codemem-v1'
 WITH f
 MATCH (s:Service {repo: $repo, name: $name})
@@ -43,7 +43,7 @@ MERGE (s)-[:CONTAINS_FILE]->(f)
 
 # Drop CONTAINS_FILE edges to files no longer in the service's file list.
 _PRUNE_STALE_EDGES = """
-MATCH (s:Service {repo: $repo, name: $name})-[r:CONTAINS_FILE]->(f:File)
+MATCH (s:Service {repo: $repo, name: $name})-[r:CONTAINS_FILE]->(f:File_v2)
 WHERE NOT f.path IN $files
 DELETE r
 """
