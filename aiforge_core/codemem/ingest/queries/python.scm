@@ -27,9 +27,13 @@
   (function_definition
     name: (identifier) @function.name) @function.def)
 
-; from X import Y
+; from X import Y  (absolute)
 (import_from_statement
   module_name: (dotted_name) @import.from)
+
+; from .X import Y  (relative — capture the inner dotted_name)
+(import_from_statement
+  module_name: (relative_import (dotted_name) @import.from))
 
 ; import X
 (import_statement
