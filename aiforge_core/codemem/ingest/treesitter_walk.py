@@ -113,32 +113,32 @@ def _parse_into(wf: WalkedFile, source: bytes, lang: str) -> None:
         return
     query = Query(language, query_text)
     cursor = QueryCursor(query)
-    captures = cursor.captures(tree.root_node)
 
-    # captures: dict[name, list[Node]]
-    classes: list[tuple[str, object]] = []  # (name, def_node)
+    classes: list[tuple[str, object]] = []
     methods: list[tuple[str, object]] = []
     functions: list[tuple[str, object]] = []
     imports: list[str] = []
 
-    # Pull captures first
-    class_defs = captures.get("class.def", [])
-    class_names = captures.get("class.name", [])
-    method_defs = captures.get("method.def", [])
-    method_names = captures.get("method.name", [])
-    func_defs = captures.get("function.def", [])
-    func_names = captures.get("function.name", [])
-    import_modules = captures.get("import.module", []) + captures.get("import.from", [])
-
-    # Pair name+def by their relative order under the same parent
-    for (n, d) in zip(class_names, class_defs):
-        classes.append((_text(n, source), d))
-    for (n, d) in zip(method_names, method_defs):
-        methods.append((_text(n, source), d))
-    for (n, d) in zip(func_names, func_defs):
-        functions.append((_text(n, source), d))
-    for n in import_modules:
-        imports.append(_text(n, source))
+    # `matches()` preserves per-pattern groupings, so name + def of the
+    # same match always belong to the same node — robust against the
+    # capture-ordering quirks of `captures()`.
+    for _match_id, caps in cursor.matches(tree.root_node):
+        # caps: dict[capture_name, list[Node]]
+        if "class.def" in caps and "class.name" in caps:
+            for d, n in zip(caps["class.def"], caps["class.name"]):
+                classes.append((_text(n, source), d))
+        elif "method.def" in caps and "method.name" in caps:
+            for d, n in zip(caps["method.def"], caps["method.name"]):
+                methods.append((_text(n, source), d))
+        elif "function.def" in caps and "function.name" in caps:
+            for d, n in zip(caps["function.def"], caps["function.name"]):
+                functions.append((_text(n, source), d))
+        elif "import.module" in caps:
+            for n in caps["import.module"]:
+                imports.append(_text(n, source))
+        elif "import.from" in caps:
+            for n in caps["import.from"]:
+                imports.append(_text(n, source))
 
     # Build owning-class index for methods (by line ranges)
     class_ranges: list[tuple[int, int, str]] = []
