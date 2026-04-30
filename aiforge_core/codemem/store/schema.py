@@ -43,6 +43,14 @@ _INDEX_STATEMENTS: list[str] = [
     # Fulltext over Symbol signatures so NL query can hit "send method"
     "CREATE FULLTEXT INDEX codemem_symbol_signature_ft IF NOT EXISTS "
     "FOR (s:Symbol_v2) ON EACH [s.signature, s.fqname, s.doc_first_line]",
+    # Chunk_v2 — keyed on globally unique id (file_path + offset)
+    "CREATE CONSTRAINT codemem_chunk_unique IF NOT EXISTS "
+    "FOR (c:Chunk_v2) REQUIRE c.id IS UNIQUE",
+    # Vector index for top-K retrieval (bge-m3 1024d cosine)
+    "CREATE VECTOR INDEX codemem_chunk_embed IF NOT EXISTS "
+    "FOR (c:Chunk_v2) ON c.embed_vec "
+    "OPTIONS {indexConfig: {`vector.dimensions`: 1024, "
+    "                        `vector.similarity_function`: 'cosine'}}",
 ]
 
 

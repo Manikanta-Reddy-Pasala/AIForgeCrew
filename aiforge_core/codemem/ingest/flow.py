@@ -21,10 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aiforge_core.codemem.ingest import (
-    edges, file_summary, pack_repo, repo_summary, service_extract, treesitter_walk,
+    edges, embed, file_summary, pack_repo, repo_summary, service_extract,
+    treesitter_walk,
 )
 from aiforge_core.codemem.store import (
-    file_summary_writer, repo_writer, service_writer,
+    chunk_writer, file_summary_writer, repo_writer, service_writer,
     state_db as sdb, symbol_writer,
 )
 
@@ -42,6 +43,7 @@ class IngestResult:
     calls_count: int = 0
     summaries_updated: int = 0
     summaries_skipped: int = 0
+    chunks_count: int = 0
 
 
 def ingest_repo(
@@ -54,6 +56,7 @@ def ingest_repo(
     skip_services: bool = False,
     skip_symbols: bool = False,
     skip_summaries: bool = False,
+    skip_chunks: bool = False,
 ) -> IngestResult:
     text, sha = pack_repo.pack(repo_path)
     prev = sdb.get_repo_pack_sha(state_conn, repo=repo_name)
@@ -116,6 +119,18 @@ def ingest_repo(
         summaries_updated = sumcounts["updated"]
         summaries_skipped = sumcounts["skipped"]
 
+    # Stage 7 — chunk embeddings
+    chunks_count = 0
+    if not skip_chunks and walked:
+        chunks = embed.chunk_and_embed(
+            walked, repo=repo_name, repo_root=repo_path,
+        )
+        if chunks:
+            ccounts = chunk_writer.upsert_chunks(
+                driver, repo=repo_name, chunks=chunks,
+            )
+            chunks_count = ccounts["chunks"]
+
     sdb.set_repo_pack_sha(state_conn, repo=repo_name, pack_sha=sha)
     return IngestResult(
         status="indexed", pack_sha=sha, repo=repo_name,
@@ -127,4 +142,5 @@ def ingest_repo(
         calls_count=calls_count,
         summaries_updated=summaries_updated,
         summaries_skipped=summaries_skipped,
+        chunks_count=chunks_count,
     )
