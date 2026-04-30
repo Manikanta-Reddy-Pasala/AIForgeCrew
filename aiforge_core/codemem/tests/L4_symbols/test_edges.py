@@ -73,3 +73,12 @@ def test_no_self_calls_emitted() -> None:
     )
     for e in call_edges:
         assert e.caller_fqname != e.callee_fqname
+
+
+def test_maven_path_strip_for_java_imports() -> None:
+    """`com.foo.Bar` should resolve under src/main/java/ prefix."""
+    cands = edges._import_candidates("com.example.PaymentService")
+    assert "com/example/PaymentService.java" in cands
+    assert "src/main/java/com/example/PaymentService.java" in cands
+    assert "src/test/java/com/example/PaymentService.java" in cands
+    assert "src/main/kotlin/com/example/PaymentService.kt" in cands

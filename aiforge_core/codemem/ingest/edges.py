@@ -155,6 +155,14 @@ def _resolve_imports_to_files(
     return matched
 
 
+_JAVA_PATH_PREFIXES = (
+    "src/main/java/",
+    "src/test/java/",
+    "src/main/kotlin/",
+    "src/test/kotlin/",
+)
+
+
 def _import_candidates(imp: str, *, importer_dir: str = "") -> list[str]:
     out: list[str] = []
     if imp.startswith("./") or imp.startswith("../"):
@@ -165,9 +173,16 @@ def _import_candidates(imp: str, *, importer_dir: str = "") -> list[str]:
                     f"{prefix}{base}/index.ts"])
     elif "." in imp:
         parts = imp.split(".")
-        out.append("/".join(parts) + ".py")
-        out.append("/".join(parts) + "/__init__.py")
-        out.append("/".join(parts) + ".java")
+        joined = "/".join(parts)
+        # Python style — bare
+        out.append(joined + ".py")
+        out.append(joined + "/__init__.py")
+        # Java/Kotlin — bare and Maven/Gradle-prefixed
+        out.append(joined + ".java")
+        out.append(joined + ".kt")
+        for prefix in _JAVA_PATH_PREFIXES:
+            out.append(prefix + joined + ".java")
+            out.append(prefix + joined + ".kt")
     else:
         # Bare name — try sibling of importer first (Python relative import)
         if importer_dir:

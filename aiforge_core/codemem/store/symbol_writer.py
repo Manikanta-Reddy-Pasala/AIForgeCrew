@@ -143,17 +143,38 @@ def upsert_call_edges(
     return counts
 
 
+_JAVA_PATH_PREFIXES = (
+    "src/main/java/",
+    "src/test/java/",
+    "src/main/kotlin/",
+    "src/test/kotlin/",
+)
+
+
 def _resolve_import_to_file(imp: str, file_paths: set[str]) -> str | None:
-    """Best-effort: same heuristic as edges._import_candidates."""
+    """Best-effort: same heuristic as edges._import_candidates.
+
+    Java/Kotlin imports use FQ package names (`com.foo.Bar`) that need
+    to be matched against Maven/Gradle paths like
+    `src/main/java/com/foo/Bar.java`. We try the bare path first, then
+    each well-known src prefix.
+    """
     cands: list[str] = []
     if imp.startswith("./") or imp.startswith("../"):
         base = imp.lstrip("./")
         cands.extend([f"{base}.ts", f"{base}.tsx", f"{base}/index.ts"])
     elif "." in imp:
         parts = imp.split(".")
-        cands.append("/".join(parts) + ".py")
-        cands.append("/".join(parts) + "/__init__.py")
-        cands.append("/".join(parts) + ".java")
+        joined = "/".join(parts)
+        # Python style — bare
+        cands.append(joined + ".py")
+        cands.append(joined + "/__init__.py")
+        # Java/Kotlin — bare and Maven-prefixed
+        cands.append(joined + ".java")
+        cands.append(joined + ".kt")
+        for prefix in _JAVA_PATH_PREFIXES:
+            cands.append(prefix + joined + ".java")
+            cands.append(prefix + joined + ".kt")
     else:
         cands.extend([f"{imp}.py", f"{imp}.java", f"{imp}.ts"])
     for c in cands:
