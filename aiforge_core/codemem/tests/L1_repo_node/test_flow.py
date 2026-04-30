@@ -27,7 +27,7 @@ def test_flow_first_run_calls_pack_summary_writer(tmp_path) -> None:
          patch("aiforge_core.codemem.ingest.flow.repo_writer.upsert_repo") as w:
         result = flow.ingest_repo(
             repo_name="rA", repo_path=str(FIX / "tiny_repo"),
-            driver=fake_driver, state_conn=state,
+            driver=fake_driver, state_conn=state, skip_services=True,
         )
     assert result.status == "indexed"
     assert result.pack_sha == "sha-AAA"
@@ -69,7 +69,7 @@ def test_flow_force_reingests_even_when_sha_same(tmp_path) -> None:
          patch("aiforge_core.codemem.ingest.flow.repo_writer.upsert_repo") as w:
         result = flow.ingest_repo(
             repo_name="rC", repo_path=str(FIX / "tiny_repo"),
-            driver=fake_driver, state_conn=state, force=True,
+            driver=fake_driver, state_conn=state, force=True, skip_services=True,
         )
     assert result.status == "indexed"
     s.assert_called_once()

@@ -75,6 +75,7 @@ def test_l1_gate(driver, tmp_path) -> None:
             repo_path=str(FIX / "tiny_repo"),
             driver=driver,
             state_conn=state,
+            skip_services=True,
         )
     assert result.status == "indexed"
 
@@ -112,11 +113,13 @@ def test_l1_gate_idempotent(driver, tmp_path) -> None:
             repo_name="tiny_repo_test",
             repo_path=str(FIX / "tiny_repo"),
             driver=driver, state_conn=state,
+            skip_services=True,
         )
         second = flow.ingest_repo(
             repo_name="tiny_repo_test",
             repo_path=str(FIX / "tiny_repo"),
             driver=driver, state_conn=state,
+            skip_services=True,
         )
     assert first.status == "indexed"
     assert second.status == "skipped_unchanged"
