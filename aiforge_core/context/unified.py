@@ -66,6 +66,7 @@ class ContextBundle:
     repo_doc_text: str = ""           # CLAUDE.md / README.md tail
     operator_memory_text: str = ""    # ~/.claude/memory hits
     memory_hits_text: str = ""        # unified_query render
+    codemem_text: str = ""            # codemem.query rendered bundle (new path)
     commands: dict[str, str] = field(default_factory=dict)
     acceptance: list[str] = field(default_factory=list)
     sources_used: list[str] = field(default_factory=list)
@@ -98,6 +99,10 @@ class ContextBundle:
                 "## Reference files (READ ONLY — do NOT edit; mention only)\n"
                 + "\n".join(f"- {p}" for p in self.reference_files[:8])
             )
+        # codemem block goes near the top — it carries the most
+        # surgical anchors (services + summarized files + symbols).
+        section("Codemem (4-level: Repo→Service→File_v2→Symbol_v2)",
+                self.codemem_text)
         section("Project standards", self.standards_text)
         section("Code map (Aider RepoMap)", self.repo_map_text)
         section("Neighbour symbols (Graphify + tree-sitter)",
@@ -139,6 +144,22 @@ class UnifiedContext:
         repo = _resolve_repo(intent)
         bundle.repo = repo
         worktree = _worktree_for(repo) if repo else ""
+
+        # codemem — additive source, opt-in via AIFORGE_CODEMEM_QUERY=1.
+        # Soft-fail; the rest of the aggregator continues regardless.
+        if os.environ.get("AIFORGE_CODEMEM_QUERY") == "1" and repo:
+            try:
+                from aiforge_core.codemem.api.read import context_bundle_for
+                cm_text = context_bundle_for(
+                    intent.raw_text or intent.search_query(),
+                    repo=repo, role=role,
+                    token_budget=max(1000, token_budget // 2),
+                )
+                if cm_text:
+                    bundle.codemem_text = cm_text
+                    bundle.sources_used.append("codemem")
+            except Exception as exc:
+                bundle.errors.append(f"codemem: {exc}")
 
         # 1. Symbol vector + ticket + doc + external + related (the
         #    aggregator). Provides ranked text hits + ticket brief.
