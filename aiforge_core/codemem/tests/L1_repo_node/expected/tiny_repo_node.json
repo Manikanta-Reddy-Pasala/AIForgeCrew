@@ -1,0 +1,10 @@
+{
+  "name": "tiny_repo_test",
+  "lang_primary": "python",
+  "build_cmd": "make build",
+  "test_cmd": "make test",
+  "lint_cmd": "",
+  "run_cmd": "make run",
+  "portforward_cmds": ["kubectl port-forward svc/tiny-repo 8080:8080 -n default"],
+  "schema_version": "codemem-v1"
+}
