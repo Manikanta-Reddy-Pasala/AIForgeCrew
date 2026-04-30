@@ -1,6 +1,6 @@
 .PHONY: help install test ui deploy pull kill-all \
         index-all status logs-tail health sync-memory reindex-memory \
-        test-codemem-L1 test-codemem-L2 test-codemem-L4 test-codemem-all
+        test-codemem-L1 test-codemem-L2 test-codemem-L3 test-codemem-L4 test-codemem-all
 
 # SSH targets.
 #   MS_HOST: Mac Studio — runs graph-runner + LM Studio + embed sidecar
@@ -48,6 +48,9 @@ test-codemem-L1:
 
 test-codemem-L2:
 	.venv/bin/pytest aiforge_core/codemem/tests/L2_service_extract/ -v
+
+test-codemem-L3:
+	.venv/bin/pytest aiforge_core/codemem/tests/L3_file_summary/ -v
 
 test-codemem-L4:
 	.venv/bin/pytest aiforge_core/codemem/tests/L4_symbols/ -v

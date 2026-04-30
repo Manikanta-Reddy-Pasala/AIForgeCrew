@@ -21,10 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aiforge_core.codemem.ingest import (
-    edges, pack_repo, repo_summary, service_extract, treesitter_walk,
+    edges, file_summary, pack_repo, repo_summary, service_extract, treesitter_walk,
 )
 from aiforge_core.codemem.store import (
-    repo_writer, service_writer, state_db as sdb, symbol_writer,
+    file_summary_writer, repo_writer, service_writer,
+    state_db as sdb, symbol_writer,
 )
 
 
@@ -39,6 +40,8 @@ class IngestResult:
     symbols_count: int = 0
     imports_count: int = 0
     calls_count: int = 0
+    summaries_updated: int = 0
+    summaries_skipped: int = 0
 
 
 def ingest_repo(
@@ -50,6 +53,7 @@ def ingest_repo(
     force: bool = False,
     skip_services: bool = False,
     skip_symbols: bool = False,
+    skip_summaries: bool = False,
 ) -> IngestResult:
     text, sha = pack_repo.pack(repo_path)
     prev = sdb.get_repo_pack_sha(state_conn, repo=repo_name)
@@ -81,6 +85,7 @@ def ingest_repo(
 
     # Stage 4+5 — symbols + edges
     files_count = symbols_count = imports_count = calls_count = 0
+    walked: list = []
     if not skip_symbols:
         walked = treesitter_walk.walk_repo(repo_path, repo=repo_name)
         scounts = symbol_writer.upsert_files_and_symbols(
@@ -99,6 +104,18 @@ def ingest_repo(
         )
         calls_count = ccounts["calls"]
 
+    # Stage 6 — file summaries
+    summaries_updated = summaries_skipped = 0
+    if not skip_summaries and walked:
+        summaries = file_summary.summarize_files(
+            walked, repo=repo_name, repo_root=repo_path,
+        )
+        sumcounts = file_summary_writer.write_summaries(
+            driver, repo=repo_name, summaries=summaries,
+        )
+        summaries_updated = sumcounts["updated"]
+        summaries_skipped = sumcounts["skipped"]
+
     sdb.set_repo_pack_sha(state_conn, repo=repo_name, pack_sha=sha)
     return IngestResult(
         status="indexed", pack_sha=sha, repo=repo_name,
@@ -108,4 +125,6 @@ def ingest_repo(
         symbols_count=symbols_count,
         imports_count=imports_count,
         calls_count=calls_count,
+        summaries_updated=summaries_updated,
+        summaries_skipped=summaries_skipped,
     )
