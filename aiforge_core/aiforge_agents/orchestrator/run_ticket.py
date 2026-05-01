@@ -119,6 +119,14 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(u_dur * 1000),
     )
 
+    # Process short-circuit: trial-balance reconciliation runs a
+    # deterministic Python pipeline instead of the full LLM cascade.
+    # The full pipeline still runs afterwards (Tester / Architect get
+    # to comment) but Planner/Doer/Validator stages are skipped.
+    tb_outcome = _maybe_run_trial_balance(
+        ticket_id=ticket_id, repo=repo, title=title, body=body,
+    )
+
     # Pull allowed file paths from AiForgeMemory once — Planner will
     # be constrained to pick from these.
     allowed_files = _fetch_allowed_files(
@@ -248,7 +256,15 @@ def run(*, repo: str, title: str, body: str,
     val_dur = 0.0
     doer_attempts = 0
     per_step_outcomes: list[dict[str, Any]] = []
-    if grounding.get("resolved"):
+    if tb_outcome is not None:
+        doer_outcome = tb_outcome
+        validation = {
+            "artifact_type": "validation",
+            "decision": ("block" if tb_outcome.get("buckets", {}).get("large", 0) > 0
+                         else "approve"),
+            "reason": "trial_balance_process",
+        }
+    elif grounding.get("resolved"):
         write_steps = [
             s for s in (plan.get("steps") or [])
             if s.get("action") in ("edit", "create")
@@ -624,6 +640,60 @@ def _filter_plan_targets(
     out = dict(plan)
     out["steps"] = kept
     return out, dropped
+
+
+def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
+                             title: str, body: str) -> dict | None:
+    """If the ticket has tally + oneshell attachments AND `trial-balance`
+    in title/body/labels, run the deterministic reconciliation and
+    return a doer-outcome-shaped dict. Else None.
+    """
+    text = (title + " " + body).lower()
+    if "trial" not in text and "trial-balance" not in text:
+        return None
+    atts = learner.attachments_for(ticket_id)
+    by_role: dict[str, dict] = {}
+    for a in atts:
+        by_role.setdefault(a["role"], a)
+    if "tally" not in by_role or "oneshell" not in by_role:
+        return None
+    try:
+        from aiforge_core.aiforge_agents.processes import trial_balance as tb
+        from pathlib import Path
+        env = "prod" if "prod" in text else "qa"
+        t_rows = tb.parse_tally(Path(by_role["tally"]["file_path"]))
+        o_rows = tb.parse_oneshell(Path(by_role["oneshell"]["file_path"]))
+        rec = tb.reconcile(t_rows, o_rows, env=env)
+        md = tb.render_markdown(rec)
+        return {
+            "artifact_type": "doer_outcome",
+            "process": "trial_balance",
+            "env": env,
+            "udiff": md,                          # treated as the "diff" for UI
+            "target": "trial-balance-report.md",
+            "tally_total": rec.tally_total,
+            "oneshell_total": rec.oneshell_total,
+            "gap": rec.gap,
+            "buckets": {
+                "match": len(rec.matched),
+                "diff":  len(rec.diff),
+                "large": len(rec.large),
+                "tally_only":    len(rec.tally_only),
+                "oneshell_only": len(rec.oneshell_only),
+            },
+            "applied": False,
+            "problems": [],
+            "blocked_by_detectors": False,
+        }
+    except Exception as exc:
+        return {
+            "artifact_type": "doer_outcome",
+            "process": "trial_balance",
+            "error": f"validator_failed: {exc}",
+            "applied": False,
+            "problems": [],
+            "udiff": "",
+        }
 
 
 def _guess_task_class(title: str, body: str) -> str:

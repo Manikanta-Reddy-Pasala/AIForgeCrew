@@ -140,6 +140,23 @@ CREATE TABLE IF NOT EXISTS aiforge_agents_failures (
 );
 CREATE INDEX IF NOT EXISTS idx_aaf_repo_task
     ON aiforge_agents_failures(repo, task_class);
+
+-- Attachments — file paths a ticket carries (Tally export, OneShell
+-- export, screenshots, …). Filename pattern + role drives routing
+-- (e.g. trial-balance reconciliation needs role=tally + role=oneshell).
+CREATE TABLE IF NOT EXISTS aiforge_agents_attachments (
+    id              bigserial PRIMARY KEY,
+    ticket_id       text,
+    filename        text,
+    file_path       text,
+    role            text,           -- tally | oneshell | screenshot | other
+    content_type    text,
+    bytes           bigint,
+    created_at      timestamptz DEFAULT now(),
+    UNIQUE (ticket_id, filename)
+);
+CREATE INDEX IF NOT EXISTS idx_aatt_ticket
+    ON aiforge_agents_attachments(ticket_id);
 """
 
 
@@ -391,3 +408,69 @@ def top_failures_for(*, repo: str, task_class: str,
         return []
     finally:
         conn.close()
+
+
+# ─────────── Attachments (P5 — file-driven workflows) ───────────────
+
+def add_attachment(*, ticket_id: str, filename: str, file_path: str,
+                   role: str = "other", content_type: str = "",
+                   bytes_: int = 0) -> bool:
+    """Idempotent insert. Re-attaching same filename updates role/path."""
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO aiforge_agents_attachments "
+                "(ticket_id, filename, file_path, role, content_type, bytes) "
+                "VALUES (%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (ticket_id, filename) DO UPDATE SET "
+                "  file_path = EXCLUDED.file_path, "
+                "  role = EXCLUDED.role, "
+                "  content_type = EXCLUDED.content_type, "
+                "  bytes = EXCLUDED.bytes",
+                (ticket_id, filename, file_path, role,
+                 content_type, bytes_),
+            )
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def attachments_for(ticket_id: str) -> list[dict]:
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT filename, file_path, role, content_type, bytes "
+                "FROM aiforge_agents_attachments "
+                "WHERE ticket_id = %s ORDER BY id",
+                (ticket_id,),
+            )
+            rows = cur.fetchall()
+        return [
+            {"filename": r[0], "file_path": r[1], "role": r[2],
+             "content_type": r[3], "bytes": r[4]}
+            for r in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def detect_attachment_role(filename: str) -> str:
+    """Cheap pattern-match — see process docs for the contract."""
+    low = (filename or "").lower()
+    if "tally" in low:
+        return "tally"
+    if "oneshell" in low:
+        return "oneshell"
+    if low.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+        return "screenshot"
+    return "other"

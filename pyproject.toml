@@ -38,6 +38,11 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.4",
 ]
+xlsx = ["openpyxl>=3.1"]
+
+[project.scripts]
+aiforge-agents-run = "aiforge_core.aiforge_agents.orchestrator.run_ticket:main"
+aiforge-agents-tb  = "aiforge_core.aiforge_agents.processes.trial_balance:main"
 
 [tool.setuptools.packages.find]
 include = ["aiforge_core*"]
