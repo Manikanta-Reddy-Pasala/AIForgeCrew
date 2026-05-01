@@ -106,6 +106,18 @@ def test_hallucinated_import_wildcard_strips_dot_star() -> None:
     assert det.check("+ import org.springframework.web.bind.annotation.*;") == []
 
 
+def test_extract_imports_handles_static_imports() -> None:
+    """`import static ...;` must capture the FQN, not the `static` keyword."""
+    diff = (
+        "+ import static org.junit.jupiter.api.Assertions.assertEquals;\n"
+        "+ import static org.mockito.Mockito.*;\n"
+    )
+    found = d.extract_imports(diff)
+    assert "static" not in found
+    assert "org.junit.jupiter.api.Assertions.assertEquals" in found
+    assert "org.mockito.Mockito" in found
+
+
 def test_hallucinated_import_plan_create_sibling_passes() -> None:
     """Imports of files being created in this same plan are not hallucinated."""
     det = d.HallucinatedImportDetector(

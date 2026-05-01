@@ -66,12 +66,18 @@ class LoopDetector:
 
 # ─────────── F-001 — hallucinated-import detector ──────────────────────
 
-# Java/Kotlin: `import com.foo.Bar;`
+# Java/Kotlin: `import com.foo.Bar;` or `import static com.foo.Bar.baz;`
 # Python:  `from foo import bar` / `import foo`
 # TS:      `import { x } from "./foo"` / `import foo from "foo"`
+#
+# `static` is the Java static-import keyword and must NOT be captured
+# as the import target — caught explicitly via `(?:static\s+)?` in the
+# Java/Kotlin patterns. Otherwise a line like
+#     import static org.junit.jupiter.api.Assertions.*;
+# captured `static` as the FQN and the F-001 detector falsely flagged it.
 _IMPORT_PATTERNS = {
-    "java":       re.compile(r"^\s*import\s+([\w.]+)(?:\.\*)?;", re.MULTILINE),
-    "kotlin":     re.compile(r"^\s*import\s+([\w.]+)(?:\.\*)?", re.MULTILINE),
+    "java":       re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)(?:\.\*)?;", re.MULTILINE),
+    "kotlin":     re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)(?:\.\*)?", re.MULTILINE),
     "python_imp": re.compile(r"^\s*import\s+([\w.]+)", re.MULTILINE),
     "python_frm": re.compile(r"^\s*from\s+([\w.]+)\s+import", re.MULTILINE),
     "typescript": re.compile(r"^\s*import\s+(?:[^\"']+\s+from\s+)?[\"']([^\"']+)[\"']",
