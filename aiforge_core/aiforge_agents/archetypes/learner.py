@@ -28,13 +28,17 @@ class Learner(BaseArchetype):
         doer_out = ctx.get("doer_outcome") or {}
         validation = ctx.get("validation") or {}
 
-        # task_class = first action of plan, used for procedural pattern key
+        # task_class = feature dir name (second-to-last segment), or
+        # the file basename for top-level targets (e.g. README.md), or
+        # "unknown" when there is no target at all.
         steps = plan.get("steps") or []
-        task_class = (
-            (doer_out.get("target") or "")
-            .split("/")[-2]   # second-to-last path segment ≈ feature dir
-            if doer_out.get("target") else "unknown"
-        ) or "unknown"
+        target = doer_out.get("target") or ""
+        if target:
+            parts = [p for p in target.split("/") if p]
+            task_class = parts[-2] if len(parts) >= 2 else parts[-1]
+        else:
+            task_class = "unknown"
+        task_class = task_class or "unknown"
 
         tool_sequence = [s.get("action", "") for s in steps if s.get("action")]
         success = (
