@@ -27,7 +27,7 @@ archetypes:
     prompt_version: v1
 
   grounder:
-    model: qwen2.5-3b-instruct       # tiny ambig-resolver only
+    model: ""                        # rule-based; LLM not used
     temperature: 0.0
     grammar: ground.json
     max_tokens: 1024
@@ -49,7 +49,7 @@ archetypes:
     prompt_version: v1
 
   tester:
-    model: qwen2.5-coder-14b
+    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.1
     top_p: 0.9
     grammar: tests.json
