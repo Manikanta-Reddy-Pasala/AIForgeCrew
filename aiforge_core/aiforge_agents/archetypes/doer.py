@@ -79,8 +79,15 @@ def _git_apply_diff(
     if ap.returncode != 0:
         return False, branch, f"apply: {ap.stderr.strip()[:300]}"
 
-    # Stage + commit, but never include our own scratch dir.
-    _run(["git", "add", "-A", ":(exclude).aiforge"])
+    # Stage + commit, but never include our own scratch dirs.
+    _run([
+        "git", "add", "-A",
+        ":(exclude).aiforge",
+        ":(exclude).aiforge-worktrees",
+        ":(exclude)graphify-out",
+        ":(exclude).idea",
+        ":(exclude).vscode",
+    ])
     cm = _run([
         "git", "commit", "-m",
         f"aiforge({ticket_id}): apply Doer-generated diff",

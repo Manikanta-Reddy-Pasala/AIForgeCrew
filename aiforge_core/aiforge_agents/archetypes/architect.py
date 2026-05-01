@@ -59,17 +59,20 @@ class Architect(BaseArchetype):
         mr_title = str(out.get("mr_title", ""))[:70]
         mr_body = str(out.get("mr_body", ""))
 
-        # Optional: actually open the PR via `gh` if approved + branch
-        # exists + caller asked for it (ctx['open_mr']=True).
+        # Open PR whenever a real diff has been applied to a branch and
+        # the caller asked for it. Architect comments still flow back
+        # via mr_body — review feedback belongs IN the PR, not as a gate.
         mr_url = ""
-        if (decision == "approve" and ctx.get("open_mr")
+        if (ctx.get("open_mr")
                 and doer.get("applied")
-                and doer.get("applied_branch")):
+                and doer.get("applied_branch")
+                and decision != "reject"):
             mr_url = _open_github_pr(
                 repo_path=ctx.get("repo_path", ""),
                 branch=doer.get("applied_branch", ""),
                 title=mr_title or "aiforge: code change",
                 body=mr_body,
+                draft=(decision == "request_changes"),
             )
 
         return {
@@ -84,12 +87,13 @@ class Architect(BaseArchetype):
 
 def _open_github_pr(
     *, repo_path: str, branch: str, title: str, body: str,
+    draft: bool = False,
 ) -> str:
     """Push branch + invoke `gh pr create`. Returns PR URL or "" on fail.
 
     Best-effort: requires `gh` CLI authenticated for the repo, branch
     already committed (Doer apply path does that), and remote=origin.
-    """
+    Picks up the repo's default branch automatically (master vs main)."""
     import subprocess
     from pathlib import Path
 
@@ -102,16 +106,31 @@ def _open_github_pr(
             timeout=60,
         )
 
+    # Determine the actual default branch — falls back to "main".
+    base = "main"
+    sb = _run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"])
+    if sb.returncode == 0:
+        ref = sb.stdout.strip().split("/")[-1]
+        if ref:
+            base = ref
     push = _run(["git", "push", "-u", "origin", branch])
     if push.returncode != 0:
         return ""
-    pr = _run([
+    args = [
         "gh", "pr", "create",
         "--title", title,
         "--body", body,
-        "--base", "main",
+        "--base", base,
         "--head", branch,
-    ])
+    ]
+    if draft:
+        args.append("--draft")
+    pr = _run(args)
     if pr.returncode != 0:
         return ""
-    return (pr.stdout or "").strip().splitlines()[-1] if pr.stdout else ""
+    # `gh pr create` prints the PR URL on the last line of stdout.
+    out = (pr.stdout or "").strip()
+    for line in reversed(out.splitlines()):
+        if line.startswith("http"):
+            return line
+    return out
