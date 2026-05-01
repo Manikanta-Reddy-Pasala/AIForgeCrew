@@ -173,6 +173,8 @@ def run(*, repo: str, title: str, body: str,
         "failed" if breakers.tripped
         else ("blocked" if not grounding.get("resolved") else "done")
     )
+    # Slim Understanding for UI (drop bulky context_md)
+    u_slim = {k: v for k, v in understanding.items() if k != "context_md"}
     _update_ticket_status(ticket_id, final_status, metadata={
         "runtime": "aiforge_agents",
         "stages_s": {
@@ -184,7 +186,11 @@ def run(*, repo: str, title: str, body: str,
         "latency_s": round(total, 2),
         "verdict": verdict.get("verdict"),
         "grounded": grounding.get("resolved"),
-        "unresolved_refs": len(grounding.get("unresolved_refs") or []),
+        "unresolved_refs": grounding.get("unresolved_refs", []),
+        "understanding": u_slim,
+        "plan": plan,
+        "verifier": verdict,
+        "grounding": grounding,
     })
 
     return {
