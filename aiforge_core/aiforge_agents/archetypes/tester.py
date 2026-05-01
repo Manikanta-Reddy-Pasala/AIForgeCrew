@@ -14,5 +14,35 @@ class Tester(BaseArchetype):
     name: str = "tester"
 
     def run(self, *, ctx: dict[str, Any]) -> dict[str, Any]:
-        return {"artifact_type": "test_plan",
-                "tests": [], "coverage_target": 0.8}
+        """Generate failing-test cases from Plan + Understanding.
+        Output JSON list of test specs: {name, target_class, target_method,
+        scenario, expected, framework}."""
+        from aiforge_core.aiforge_agents.runtime import llm_client
+
+        understanding = ctx.get("understanding", {})
+        plan = ctx.get("plan", {})
+
+        system = (
+            "You write failing test specs for a code-change ticket. "
+            "Output strict JSON: {tests:[{name, target_class, target_method, "
+            "scenario, expected, framework}], coverage_target}. "
+            "framework ∈ {junit5, pytest, jest, mockito}. "
+            "Each test must target a real class/method from the Plan. "
+            "Tests should fail BEFORE the change is applied (TDD)."
+        )
+        user = f"# Understanding\n{understanding}\n\n# Plan\n{plan}\n"
+        out = llm_client.call_json(
+            model=self.model or "qwen2.5-coder-14b",
+            system=system, user=user,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens or 3000,
+        )
+        if out is None:
+            return {"artifact_type": "test_plan",
+                    "tests": [], "coverage_target": 0.8,
+                    "error": "llm_invalid_json"}
+        return {
+            "artifact_type": "test_plan",
+            "tests": list(out.get("tests") or []),
+            "coverage_target": float(out.get("coverage_target", 0.8)),
+        }

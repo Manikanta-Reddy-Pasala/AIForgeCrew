@@ -23,7 +23,8 @@ def test_build_planner_picks_up_defaults() -> None:
 
 def test_build_doer_picks_up_defaults() -> None:
     d = registry.build("doer")
-    assert d.model == "qwen3-coder-next"
+    # Bundled default points at Qwen-Coder-Next on Mac Studio LM Studio
+    assert "Qwen3-Coder-Next" in d.model
     assert d.grammar == "udiff.gbnf"
     assert d.temperature == 0.2
     assert d.repetition_penalty == 1.05

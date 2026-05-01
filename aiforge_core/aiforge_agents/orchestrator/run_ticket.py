@@ -200,6 +200,40 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(val_dur * 1000),
     )
 
+    # Stage T — Tester (TDD test specs)
+    breakers.begin_agent("tester")
+    t_agent = registry.build("tester", repo_path=None)
+    t_agent.repo = repo; t_agent.ticket_id = ticket_id
+    t_t0 = time.time()
+    test_plan = t_agent.run(ctx={"understanding": understanding, "plan": plan})
+    t_dur = time.time() - t_t0
+    breakers.check_agent("tester")
+    learner.record_audit(
+        ticket_id=ticket_id, agent_role="tester",
+        event_type="agent_completed",
+        payload={"tests": len(test_plan.get("tests") or [])},
+        duration_ms=int(t_dur * 1000),
+    )
+
+    # Stage A — Architect (review + MR draft)
+    breakers.begin_agent("architect")
+    a_agent = registry.build("architect", repo_path=None)
+    a_agent.repo = repo; a_agent.ticket_id = ticket_id
+    a_t0 = time.time()
+    review = a_agent.run(ctx={
+        "understanding": understanding, "plan": plan,
+        "doer_outcome": doer_outcome, "validation": validation,
+    })
+    a_dur = time.time() - a_t0
+    breakers.check_agent("architect")
+    learner.record_audit(
+        ticket_id=ticket_id, agent_role="architect",
+        event_type="agent_completed",
+        payload={"decision": review.get("decision"),
+                 "mr_title": review.get("mr_title")},
+        duration_ms=int(a_dur * 1000),
+    )
+
     # Stage L — Learner (writes episodic + procedural; heuristic)
     breakers.begin_agent("learner")
     l_agent = registry.build("learner", repo_path=None)
@@ -209,6 +243,7 @@ def run(*, repo: str, title: str, body: str,
         "ticket_id": ticket_id, "repo": repo, "plan": plan,
         "verifier_verdict": verdict, "grounding": grounding,
         "doer_outcome": doer_outcome, "validation": validation,
+        "test_plan": test_plan, "review": review,
     })
     l_dur = time.time() - l_t0
     breakers.check_agent("learner")
@@ -243,6 +278,8 @@ def run(*, repo: str, title: str, body: str,
             "grounder":     round(g_dur, 2),
             "doer":         round(d_dur, 2),
             "validator":    round(val_dur, 2),
+            "tester":       round(t_dur, 2),
+            "architect":    round(a_dur, 2),
             "learner":      round(l_dur, 2),
         },
         "latency_s": round(total, 2),
@@ -255,6 +292,8 @@ def run(*, repo: str, title: str, body: str,
         "grounding": grounding,
         "doer": doer_outcome,
         "validation": validation,
+        "test_plan": test_plan,
+        "review": review,
         "learning": learning,
     })
 
@@ -268,6 +307,8 @@ def run(*, repo: str, title: str, body: str,
         "grounding": grounding,
         "doer_outcome": doer_outcome,
         "validation": validation,
+        "test_plan": test_plan,
+        "review": review,
         "learning": learning,
         "latency_s": round(total, 2),
         "stages": {
@@ -277,6 +318,8 @@ def run(*, repo: str, title: str, body: str,
             "grounder_s":     round(g_dur, 2),
             "doer_s":         round(d_dur, 2),
             "validator_s":    round(val_dur, 2),
+            "tester_s":       round(t_dur, 2),
+            "architect_s":    round(a_dur, 2),
             "learner_s":      round(l_dur, 2),
         },
         "circuit_breaker_tripped": breakers.tripped,
