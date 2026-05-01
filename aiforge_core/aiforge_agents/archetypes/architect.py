@@ -50,13 +50,13 @@ class Architect(BaseArchetype):
         user = (
             f"{failures_block}"
             f"# Understanding\n{u_slim}\n\n# Plan\n{plan}\n\n"
-            f"# Diff\n```\n{ph.compact(doer.get('udiff') or '', head=4000, tail=2000)}\n```\n"
+            f"# Diff\n```\n{ph.compact(doer.get('udiff') or '', head=12000, tail=4000)}\n```\n"
         )
         out = llm_client.call_json(
             model=self.model or "deepseek-r1-distill-32b",
             system=system, user=user,
             temperature=self.temperature,
-            max_tokens=self.max_tokens or 3000,
+            max_tokens=self.max_tokens or 12000,
         )
         if out is None:
             return {"artifact_type": "review",

@@ -20,9 +20,10 @@ class Planner(BaseArchetype):
 
         understanding = ctx.get("understanding", {})
         ctx_md = understanding.get("context_md", "")
-        # Compact heavy context_md for small local models. Keeps the
-        # most-likely-relevant top hits + summary tail.
-        ctx_md = ph.compact(ctx_md, head=1500, tail=1500)
+        # Compact heavy context_md. With a 128K-token window we can
+        # afford generous head/tail; just enough trimming to keep the
+        # output budget unmolested.
+        ctx_md = ph.compact(ctx_md, head=4000, tail=2000)
         allowed_files = ctx.get("allowed_files") or []
         skills_hint = ctx.get("skills_hint") or []
         failures_hint = ctx.get("failures_hint") or []
@@ -41,7 +42,7 @@ class Planner(BaseArchetype):
             allowed_block = (
                 "# Allowed file paths (use ONLY these for action=read|edit|test|run; "
                 "for action=create, use a path that matches one of these directories)\n"
-                + "\n".join(f"- {p}" for p in allowed_files[:40])
+                + "\n".join(f"- {p}" for p in allowed_files[:80])
                 + "\n"
             )
         failures_block = ph.render_failures_block(failures_hint)
@@ -103,7 +104,7 @@ class Planner(BaseArchetype):
             model=self.model or "deepseek-r1-distill-32b",
             system=system, user=user,
             temperature=self.temperature,
-            max_tokens=self.max_tokens or 6000,
+            max_tokens=self.max_tokens or 24000,
         )
         if out is None:
             return {"artifact_type": "plan",

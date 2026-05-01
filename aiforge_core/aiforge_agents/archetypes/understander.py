@@ -54,7 +54,7 @@ class Understander(BaseArchetype):
             model=self.model or "qwen2.5-14b-instruct",
             system=system, user=user,
             temperature=self.temperature,
-            max_tokens=self.max_tokens or 2048,
+            max_tokens=self.max_tokens or 8000,
         )
         if out is None:
             return {"artifact_type": "understanding",

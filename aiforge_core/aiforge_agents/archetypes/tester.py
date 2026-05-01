@@ -49,7 +49,7 @@ class Tester(BaseArchetype):
             model=self.model or "qwen2.5-coder-14b",
             system=system, user=user,
             temperature=self.temperature,
-            max_tokens=self.max_tokens or 3000,
+            max_tokens=self.max_tokens or 12000,
         )
         if out is None:
             return {"artifact_type": "test_plan",

@@ -2,13 +2,16 @@
 # (global) or <repo>/.aiforge/agents.yaml (per-repo).
 # Lookup order: per-repo > global > this file > BaseArchetype field defaults.
 
+# Mac Studio Qwen3-Coder-Next-MLX-4bit runs with a 128–256K context
+# window. We give every stage a generous output budget so JSON envelopes
+# / udiffs / review bodies are never truncated. Inputs always fit.
 archetypes:
   understander:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.3
     top_p: 0.9
     grammar: understanding.json
-    max_tokens: 4096
+    max_tokens: 8000
     prompt_version: v1
 
   planner:
@@ -16,16 +19,15 @@ archetypes:
     temperature: 0.3
     top_p: 0.9
     grammar: plan.gbnf
-    # 12-step plans + json_object response_format need room. Was 6000;
-    # at 12 steps the JSON envelope alone can hit 4-5k.
-    max_tokens: 10000
+    # 12-step plans easily emit 8–10k JSON; give 24k headroom.
+    max_tokens: 24000
     prompt_version: v1
 
   verifier:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.0
     grammar: verify.json
-    max_tokens: 2048
+    max_tokens: 4000
     prompt_version: v1
 
   grounder:
@@ -41,10 +43,9 @@ archetypes:
     top_p: 0.95
     repetition_penalty: 1.05
     grammar: udiff.gbnf
-    # 8000 fits a ~200-line README or a 100-line Java class with comfort.
-    # If we still see truncation on bigger files, bump again or add
-    # multi-step Doer that emits one file per LLM call.
-    max_tokens: 12000
+    # 24k fits a 500-line Java class or a long README. Hardly hit even
+    # so. If we add multi-class single-step generation later, bump.
+    max_tokens: 24000
     prompt_version: v1
 
   validator:
@@ -58,24 +59,24 @@ archetypes:
     temperature: 0.1
     top_p: 0.9
     grammar: tests.json
-    max_tokens: 4000
+    max_tokens: 12000
     prompt_version: v1
 
   architect:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.0
     grammar: review.json
-    max_tokens: 4000
+    max_tokens: 12000
     prompt_version: v1
 
   coordinator:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.2
-    max_tokens: 4096
+    max_tokens: 8000
     prompt_version: v1
 
   learner:
     model: ""                        # heuristic by default; override for distillation
     temperature: 0.0
-    max_tokens: 2048
+    max_tokens: 4000
     prompt_version: v1

@@ -45,7 +45,7 @@ class Verifier(BaseArchetype):
             model=self.model or "qwen2.5-14b-instruct",
             system=system, user=user,
             temperature=self.temperature,
-            max_tokens=self.max_tokens or 1024,
+            max_tokens=self.max_tokens or 4000,
         )
         if out is None:
             # Safer fail: invalid JSON should NOT auto-pass. Mark as repair.

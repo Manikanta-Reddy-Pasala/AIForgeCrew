@@ -285,13 +285,13 @@ class Doer(BaseArchetype):
                 f"# Step\n{step}\n\n"
                 f"# Target file: {target_rel}\n"
                 f"{siblings_block}"
-                f"```\n{ph.compact(file_text, head=4000, tail=2000)}\n```\n"
+                f"```\n{ph.compact(file_text, head=12000, tail=4000)}\n```\n"
             )
         raw = llm_client.call_text(
             model=self.model or "qwen3-coder-next",
             system=system, user=user,
             temperature=self.temperature or 0.2,
-            max_tokens=self.max_tokens or 8000,
+            max_tokens=self.max_tokens or 24000,
         )
         # Extract diff fenced block
         import re
