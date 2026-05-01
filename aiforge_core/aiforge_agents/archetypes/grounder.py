@@ -58,12 +58,28 @@ class Grounder(BaseArchetype):
                         continue
                     tgt_norm = _norm(tgt)
 
-                    # `create` action: target is a NEW file. Walk
-                    # parent dirs until one exists in the graph. Allows
-                    # fresh feature packages under existing source roots
-                    # (e.g. new `feature/storeregion/` under `feature/`)
-                    # AND fresh test packages under `src/test/java/` even
-                    # when the target test subdir has no current files.
+                    # `create` action: target is a NEW file.
+                    if action == "create":
+                        # First: refuse if the file already exists. Plan
+                        # should use action=edit for that.
+                        existing = s.run(
+                            "MATCH (f:File_v2 {repo: $repo}) "
+                            "WHERE f.path = $p OR f.path ENDS WITH $suf "
+                            "RETURN f.path AS p LIMIT 1",
+                            repo=repo, p=tgt_norm,
+                            suf="/" + tgt_norm.split("/")[-1],
+                        ).single()
+                        if existing is not None:
+                            unresolved.append({
+                                "step_id": st.get("id"),
+                                "target": tgt,
+                                "action": action,
+                                "reason": "file_already_exists_use_edit",
+                            })
+                            continue
+                    # Walk parent dirs until one exists in the graph.
+                    # Allows fresh feature packages under existing source
+                    # roots and fresh test packages under src/test/java/.
                     if action == "create":
                         parts = tgt_norm.split("/")
                         if len(parts) < 2:
