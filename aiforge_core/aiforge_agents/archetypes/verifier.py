@@ -40,8 +40,12 @@ class Verifier(BaseArchetype):
             max_tokens=self.max_tokens or 2048,
         )
         if out is None:
+            # Safer fail: invalid JSON should NOT auto-pass. Mark as repair.
             return {"artifact_type": "verifier_verdict",
-                    "verdict": "pass", "issues": [], "revised_plan": None,
+                    "verdict": "repair", "issues": [
+                        {"step_id": 0, "kind": "verifier_error",
+                         "message": "verifier returned invalid JSON"},
+                    ], "revised_plan": None,
                     "error": "llm_invalid_json"}
         return {
             "artifact_type": "verifier_verdict",

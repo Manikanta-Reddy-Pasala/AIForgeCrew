@@ -19,18 +19,49 @@ class Planner(BaseArchetype):
 
         understanding = ctx.get("understanding", {})
         ctx_md = understanding.get("context_md", "")
+        allowed_files = ctx.get("allowed_files") or []
+        previous_plan = ctx.get("previous_plan") or {}
+        unresolved   = ctx.get("unresolved_refs") or []
+
+        # Strict allowlist seeding the prompt — Planner must pick from here
+        # OR explicitly mark step as `action: create` for a NEW file with
+        # a path that follows the repo's package convention.
+        allowed_block = ""
+        if allowed_files:
+            allowed_block = (
+                "# Allowed file paths (use ONLY these for action=read|edit|test|run; "
+                "for action=create, use a path that matches one of these directories)\n"
+                + "\n".join(f"- {p}" for p in allowed_files[:80])
+                + "\n"
+            )
+        replan_block = ""
+        if previous_plan and unresolved:
+            replan_block = (
+                "# Previous attempt was BLOCKED by Grounder — these refs did not resolve.\n"
+                "# Replace them with real paths from `# Allowed file paths` above, "
+                "or change action=create with a real package path.\n"
+                + "\n".join(
+                    f"- step {u.get('step_id')}: target was `{u.get('target')}` "
+                    f"(action={u.get('action')})"
+                    for u in unresolved
+                ) + "\n"
+            )
 
         system = (
             "You generate a plan to satisfy the ticket. Output strict JSON "
             "with fields: steps (array), expected_token_budget (int). "
-            "Each step has: id, action (one of read|edit|test|run), "
+            "Each step has: id, action (read|edit|test|run|create), "
             "target (file path or symbol), inputs, expected (post-condition), "
             "depends_on (array of step ids). Max 7 steps. "
-            "Steps must reference real files/symbols from the code-graph "
-            "context — never invent paths."
+            "STRICT RULE: every read|edit|test|run target MUST appear in the "
+            "allowed file list. For action=create, target must be a NEW path "
+            "whose parent directory matches a package shown in the allowed list. "
+            "Never invent arbitrary paths."
         )
         user = (
             f"# Understanding\n{understanding}\n\n"
+            f"{allowed_block}"
+            f"{replan_block}"
             f"# Code-graph context\n{ctx_md}\n"
         )
         out = llm_client.call_json(

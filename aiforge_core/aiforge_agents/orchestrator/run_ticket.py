@@ -112,24 +112,60 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(u_dur * 1000),
     )
 
-    # Stage P — Planner
-    breakers.begin_agent("planner")
-    p_agent = registry.build("planner", repo_path=None)
-    p_agent.repo = repo
-    p_agent.ticket_id = ticket_id
+    # Pull allowed file paths from AiForgeMemory once — Planner will
+    # be constrained to pick from these.
+    allowed_files = _fetch_allowed_files(
+        repo=repo, query=f"{title}\n{body}", k=80,
+    )
+
+    # Stage P — Planner (with REPLAN loop on grounder failure)
     p_t0 = time.time()
-    plan = p_agent.run(ctx={"understanding": understanding,
-                            "title": title, "body": body, "repo": repo})
-    p_dur = time.time() - p_t0
-    breakers.check_agent("planner")
+    plan: dict[str, Any] = {}
+    grounding: dict[str, Any] = {}
+    plan_attempts = 0
+    g_dur = 0.0
+    while plan_attempts < 3:
+        plan_attempts += 1
+        breakers.begin_agent("planner")
+        p_agent = registry.build("planner", repo_path=None)
+        p_agent.repo = repo; p_agent.ticket_id = ticket_id
+        plan = p_agent.run(ctx={
+            "understanding": understanding,
+            "title": title, "body": body, "repo": repo,
+            "allowed_files": allowed_files,
+            "previous_plan": plan if plan_attempts > 1 else None,
+            "unresolved_refs": grounding.get("unresolved_refs", []),
+        })
+        breakers.check_agent("planner")
+
+        # Grounder check
+        breakers.begin_agent("grounder")
+        g_agent = registry.build("grounder", repo_path=None)
+        g_agent.repo = repo; g_agent.ticket_id = ticket_id
+        g_t0_inner = time.time()
+        grounding = g_agent.run(ctx={"plan": plan, "repo": repo})
+        g_dur += time.time() - g_t0_inner
+        breakers.check_agent("grounder")
+        if grounding.get("resolved"):
+            break
+    p_dur = time.time() - p_t0 - g_dur  # pure planner time
     learner.record_audit(
         ticket_id=ticket_id, agent_role="planner",
         event_type="agent_completed",
-        payload={"steps": len(plan.get("steps") or [])},
+        payload={"steps": len(plan.get("steps") or []),
+                 "attempts": plan_attempts},
         duration_ms=int(p_dur * 1000),
     )
+    learner.record_audit(
+        ticket_id=ticket_id, agent_role="grounder",
+        event_type="agent_completed",
+        payload={"resolved": grounding.get("resolved"),
+                 "unresolved_count": len(grounding.get("unresolved_refs") or []),
+                 "plan_attempts": plan_attempts},
+        duration_ms=int(g_dur * 1000),
+    )
 
-    # Stage V — Verifier
+    # Stage V — Verifier (after final plan)
     breakers.begin_agent("verifier")
     v_agent = registry.build("verifier", repo_path=None)
     v_agent.repo = repo; v_agent.ticket_id = ticket_id
@@ -145,21 +181,7 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(v_dur * 1000),
     )
 
-    # Stage G — Grounder (rule-based, queries Neo4j)
-    breakers.begin_agent("grounder")
-    g_agent = registry.build("grounder", repo_path=None)
-    g_agent.repo = repo; g_agent.ticket_id = ticket_id
-    g_t0 = time.time()
-    grounding = g_agent.run(ctx={"plan": plan, "repo": repo})
-    g_dur = time.time() - g_t0
-    breakers.check_agent("grounder")
-    learner.record_audit(
-        ticket_id=ticket_id, agent_role="grounder",
-        event_type="agent_completed",
-        payload={"resolved": grounding.get("resolved"),
-                 "unresolved_count": len(grounding.get("unresolved_refs") or [])},
-        duration_ms=int(g_dur * 1000),
-    )
+    # Grounder + REPLAN loop already done above.
 
     # Stage D — Doer (only when grounded; otherwise REPLAN per recovery)
     doer_outcome: dict[str, Any] = {"skipped": True, "reason": "not_grounded"}
@@ -337,6 +359,73 @@ def _resolve_repo_path(repo_name: str) -> str:
     )
     p = Path(root) / repo_name
     return str(p) if p.is_dir() else ""
+
+
+def _fetch_allowed_files(*, repo: str, query: str, k: int = 80) -> list[str]:
+    """Pull top-K relevant File_v2 paths from AiForgeMemory for this query.
+    Vector + fulltext hybrid via translator. Used to constrain Planner output."""
+    try:
+        import os
+        from neo4j import GraphDatabase
+        from aiforge_memory.query.translator import (
+            _embed_query, _vector_topk, _fulltext_symbols,
+        )
+    except Exception:
+        return []
+
+    try:
+        drv = GraphDatabase.driver(
+            os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
+            auth=(
+                os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
+                os.environ.get("AIFORGE_NEO4J_PASSWORD", "password"),
+            ),
+        )
+    except Exception:
+        return []
+
+    files: list[str] = []
+    try:
+        # Vector hits
+        try:
+            vec = _embed_query(query)
+            for r in _vector_topk(drv, repo=repo, vec=vec, k=k):
+                fp = r.get("file_path")
+                if fp and fp not in files:
+                    files.append(fp)
+        except Exception:
+            pass
+
+        # Fulltext hits
+        try:
+            _, ft_files = _fulltext_symbols(drv, repo=repo, text=query, k=k)
+            for fp in ft_files:
+                if fp not in files:
+                    files.append(fp)
+        except Exception:
+            pass
+
+        # Top-N from each Service's CONTAINS_FILE (always include service files)
+        try:
+            with drv.session() as s:
+                rows = list(s.run(
+                    "MATCH (:Service {repo:$repo})-[:CONTAINS_FILE]->(f:File_v2) "
+                    "RETURN f.path AS p LIMIT $k",
+                    repo=repo, k=k,
+                ))
+            for r in rows:
+                p = r["p"]
+                if p and p not in files:
+                    files.append(p)
+        except Exception:
+            pass
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
+
+    return files[:k]
 
 
 def main(argv: list[str] | None = None) -> int:
