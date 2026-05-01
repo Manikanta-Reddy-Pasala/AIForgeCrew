@@ -46,13 +46,38 @@ class Grounder(BaseArchetype):
             with drv.session() as s:
                 for st in steps:
                     tgt = (st.get("target") or "").strip()
-                    if not tgt or st.get("action") == "search":
+                    action = (st.get("action") or "").lower()
+                    if not tgt or action in {"search", "run"}:
                         continue
                     # Strip worktree prefix if any
                     if "/src/" in tgt:
                         tgt_norm = tgt[tgt.find("src/"):]
                     else:
                         tgt_norm = tgt
+
+                    # `create` action: target is a NEW file. Validate
+                    # only that the parent directory exists (any file
+                    # currently inside that dir is OK).
+                    if action == "create":
+                        parent = "/".join(tgt_norm.split("/")[:-1])
+                        if not parent:
+                            continue
+                        row = s.run(
+                            "MATCH (f:File_v2 {repo: $repo}) "
+                            "WHERE f.path STARTS WITH $prefix "
+                            "RETURN f.path AS p LIMIT 1",
+                            repo=repo, prefix=parent + "/",
+                        ).single()
+                        if row is None:
+                            unresolved.append({
+                                "step_id": st.get("id"),
+                                "target": tgt,
+                                "action": action,
+                                "reason": "parent_dir_missing",
+                            })
+                        continue
+
+                    # read|edit|test: file must exist
                     row = s.run(
                         "MATCH (f:File_v2 {repo: $repo}) "
                         "WHERE f.path = $p OR f.path ENDS WITH $suffix "
@@ -64,7 +89,8 @@ class Grounder(BaseArchetype):
                         unresolved.append({
                             "step_id": st.get("id"),
                             "target": tgt,
-                            "action": st.get("action"),
+                            "action": action,
+                            "reason": "file_missing",
                         })
         finally:
             try:
