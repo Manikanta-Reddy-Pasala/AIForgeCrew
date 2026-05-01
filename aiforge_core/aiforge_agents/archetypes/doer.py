@@ -35,18 +35,20 @@ class Doer(BaseArchetype):
         ticket_id = ctx.get("ticket_id", self.ticket_id)
         apply = bool(ctx.get("apply", False))
 
-        # Pick first edit step
-        edit_steps = [s for s in (plan.get("steps") or [])
-                      if s.get("action") == "edit"]
-        if not edit_steps:
+        # Pick first write step (edit OR create — both produce code)
+        write_steps = [s for s in (plan.get("steps") or [])
+                       if s.get("action") in ("edit", "create")]
+        if not write_steps:
             return {"artifact_type": "doer_outcome",
-                    "skipped": True, "reason": "no_edit_step"}
-        step = edit_steps[0]
+                    "skipped": True, "reason": "no_write_step"}
+        step = write_steps[0]
         target_rel = step.get("target", "")
+        action = step.get("action", "edit")
 
-        # Read target file (best-effort — may fail if path hallucinated)
+        # Read target file for `edit`; for `create`, file_text is empty
+        # and we ask LLM to generate the full file.
         file_text = ""
-        if repo_path and target_rel:
+        if action == "edit" and repo_path and target_rel:
             try:
                 file_text = (Path(repo_path) / target_rel).read_text()
             except OSError as exc:
@@ -57,20 +59,35 @@ class Doer(BaseArchetype):
                         "target": target_rel}
 
         # LLM — generate udiff
-        system = (
-            "You produce a unified diff (udiff) that satisfies the step. "
-            "Output ONE fenced block: ```diff\\n--- a/<path>\\n+++ b/<path>\\n"
-            "@@ -<start>,<count> +<start>,<count> @@\\n<context/+/->...\\n``` "
-            "Context lines (starting with single space) MUST exactly match "
-            "lines in the supplied source. Never invent imports — only use "
-            "imports already present in the file or its package. "
-            "Keep diff minimal."
-        )
-        user = (
-            f"# Step\n{step}\n\n"
-            f"# Target file: {target_rel}\n"
-            f"```\n{file_text[:10_000]}\n```\n"
-        )
+        if action == "create":
+            system = (
+                "You produce a unified diff (udiff) that CREATES a new file. "
+                "Output ONE fenced block: ```diff\\n--- /dev/null\\n+++ b/<path>\\n"
+                "@@ -0,0 +1,<count> @@\\n+<line>\\n+<line>\\n...\\n``` "
+                "Every line of the new file is a `+` line. "
+                "Use only imports valid for the project's package conventions. "
+                "Match the source language of the target path."
+            )
+            user = (
+                f"# Step (create new file)\n{step}\n\n"
+                f"# Target path: {target_rel}\n"
+                f"# Plan context\n{plan.get('steps')}\n"
+            )
+        else:
+            system = (
+                "You produce a unified diff (udiff) that satisfies the step. "
+                "Output ONE fenced block: ```diff\\n--- a/<path>\\n+++ b/<path>\\n"
+                "@@ -<start>,<count> +<start>,<count> @@\\n<context/+/->...\\n``` "
+                "Context lines (starting with single space) MUST exactly match "
+                "lines in the supplied source. Never invent imports — only use "
+                "imports already present in the file or its package. "
+                "Keep diff minimal."
+            )
+            user = (
+                f"# Step\n{step}\n\n"
+                f"# Target file: {target_rel}\n"
+                f"```\n{file_text[:10_000]}\n```\n"
+            )
         raw = llm_client.call_text(
             model=self.model or "qwen3-coder-next",
             system=system, user=user,
@@ -89,7 +106,8 @@ class Doer(BaseArchetype):
         for hit in imp_det.check(udiff):
             problems.append({"mode": hit.mode.id, "evidence": hit.evidence})
 
-        if file_text:
+        # Diff hash check only valid for `edit` (existing file content)
+        if action == "edit" and file_text:
             hash_hit = detectors.DiffContextHashDetector.check(
                 udiff=udiff, file_text=file_text,
             )
@@ -111,6 +129,7 @@ class Doer(BaseArchetype):
         return {
             "artifact_type": "doer_outcome",
             "step_id": step.get("id"),
+            "action": action,
             "target": target_rel,
             "udiff": udiff[:4000],   # truncate for storage
             "problems": problems,

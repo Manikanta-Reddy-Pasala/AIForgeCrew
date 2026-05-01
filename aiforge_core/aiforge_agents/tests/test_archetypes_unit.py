@@ -9,11 +9,11 @@ from aiforge_core.aiforge_agents import registry
 
 # ─────────── Doer ─────────────────────────────────────────────────────
 
-def test_doer_skips_when_no_edit_step() -> None:
+def test_doer_skips_when_no_write_step() -> None:
     d = registry.build("doer")
     out = d.run(ctx={"plan": {"steps": [{"action": "read"}]}})
     assert out["skipped"] is True
-    assert out["reason"] == "no_edit_step"
+    assert out["reason"] == "no_write_step"
 
 
 def test_doer_calls_llm_and_runs_detectors(tmp_path) -> None:
