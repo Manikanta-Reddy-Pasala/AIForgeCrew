@@ -27,6 +27,7 @@ class Learner(BaseArchetype):
         grounding = ctx.get("grounding") or {}
         doer_out = ctx.get("doer_outcome") or {}
         validation = ctx.get("validation") or {}
+        review = ctx.get("review") or {}
 
         # task_class = feature dir name (second-to-last segment), or
         # the file basename for top-level targets (e.g. README.md), or
@@ -41,10 +42,14 @@ class Learner(BaseArchetype):
         task_class = task_class or "unknown"
 
         tool_sequence = [s.get("action", "") for s in steps if s.get("action")]
+        # Authoritative success signals — Architect approval is final.
+        # Verifier `pass` is rare on local-LLM stack (often falls back to
+        # `repair` on JSON truncation); not a hard requirement for success
+        # so long as validation/review both clear.
         success = (
-            verdict.get("verdict") == "pass"
-            and grounding.get("resolved", False)
+            grounding.get("resolved", False)
             and validation.get("decision") == "approve"
+            and review.get("decision") == "approve"
         )
 
         outcome = "success" if success else (

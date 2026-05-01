@@ -58,25 +58,31 @@ class Grounder(BaseArchetype):
                         continue
                     tgt_norm = _norm(tgt)
 
-                    # `create` action: target is a NEW file. Validate
-                    # only that the parent directory exists OR that the
-                    # *grandparent* exists (allowing a fresh feature
-                    # package to be created under an existing tree).
+                    # `create` action: target is a NEW file. Walk
+                    # parent dirs until one exists in the graph. Allows
+                    # fresh feature packages under existing source roots
+                    # (e.g. new `feature/storeregion/` under `feature/`)
+                    # AND fresh test packages under `src/test/java/` even
+                    # when the target test subdir has no current files.
                     if action == "create":
                         parts = tgt_norm.split("/")
-                        parent = "/".join(parts[:-1])
-                        grandparent = "/".join(parts[:-2])
-                        if not parent:
+                        if len(parts) < 2:
+                            # top-level files (README.md etc.) auto-pass
+                            created_so_far.add(tgt_norm)
                             continue
-                        # Parent OR grandparent has any file? Pass.
+                        # Try progressively shallower ancestor dirs.
+                        ancestors = [
+                            "/".join(parts[:i]) + "/"
+                            for i in range(len(parts) - 1, 0, -1)
+                        ]
+                        # Any ancestor with at least one indexed file
+                        # in the same repo counts as resolvable parent.
                         row = s.run(
+                            "UNWIND $prefixes AS prefix "
                             "MATCH (f:File_v2 {repo: $repo}) "
-                            "WHERE f.path STARTS WITH $p "
-                            "   OR f.path STARTS WITH $g "
-                            "RETURN f.path AS p LIMIT 1",
-                            repo=repo,
-                            p=parent + "/",
-                            g=(grandparent + "/") if grandparent else "__none__/",
+                            "WHERE f.path STARTS WITH prefix "
+                            "RETURN prefix LIMIT 1",
+                            repo=repo, prefixes=ancestors,
                         ).single()
                         if row is None:
                             unresolved.append({

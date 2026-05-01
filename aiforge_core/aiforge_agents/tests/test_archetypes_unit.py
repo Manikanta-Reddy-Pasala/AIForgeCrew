@@ -158,6 +158,7 @@ def test_learner_writes_episodic_and_procedural() -> None:
             "doer_outcome": {"target": "src/main/feature/X.java",
                              "problems": []},
             "validation": {"decision": "approve"},
+            "review": {"decision": "approve"},
         })
     assert out["outcome"] == "success"
     assert out["task_class"] == "feature"

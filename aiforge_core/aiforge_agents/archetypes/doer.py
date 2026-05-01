@@ -82,6 +82,20 @@ class Doer(BaseArchetype):
                         "step_id": step.get("id"),
                         "target": target_rel}
 
+        # Pre-compute plan-create FQN list so we can show the model
+        # exactly which sibling classes it can rely on. Same set the
+        # detector uses for whitelisting — keeps prompt + check aligned.
+        plan_create_fqns = _plan_create_fqns(plan)
+        siblings_block = ""
+        if plan_create_fqns:
+            siblings_block = (
+                "# Sibling classes being created in this same plan — "
+                "you MAY import these even though they don't yet exist in graph. "
+                "Use EXACT FQNs (no sub-package guessing):\n"
+                + "\n".join(f"- {fq}" for fq in sorted(plan_create_fqns))
+                + "\n"
+            )
+
         # LLM — generate udiff
         if action == "create":
             system = (
@@ -89,12 +103,22 @@ class Doer(BaseArchetype):
                 "Output ONE fenced block: ```diff\\n--- /dev/null\\n+++ b/<path>\\n"
                 "@@ -0,0 +1,<count> @@\\n+<line>\\n+<line>\\n...\\n``` "
                 "Every line of the new file is a `+` line. "
-                "Use only imports valid for the project's package conventions. "
+                "STRICT IMPORT RULES: only use (a) standard libraries "
+                "(java.*, javax.*, jakarta.*, org.springframework.*, lombok.*, "
+                "io.swagger.*, com.fasterxml.*, org.slf4j.*, org.junit.*); "
+                "(b) classes from the # Sibling classes list below; "
+                "(c) classes already in the same package as the target. "
+                "Never invent sub-packages (e.g. `.dto.X`, `.service.X`) "
+                "that are not in the sibling list. "
+                "If a DTO is needed but not in the sibling list, declare "
+                "it as a static nested class inside the new file instead "
+                "of importing from a non-existent sub-package. "
                 "Match the source language of the target path."
             )
             user = (
                 f"# Step (create new file)\n{step}\n\n"
                 f"# Target path: {target_rel}\n"
+                f"{siblings_block}"
                 f"# Plan context\n{plan.get('steps')}\n"
             )
         else:
@@ -104,12 +128,14 @@ class Doer(BaseArchetype):
                 "@@ -<start>,<count> +<start>,<count> @@\\n<context/+/->...\\n``` "
                 "Context lines (starting with single space) MUST exactly match "
                 "lines in the supplied source. Never invent imports — only use "
-                "imports already present in the file or its package. "
+                "imports already present in the file or its package, plus "
+                "classes from the # Sibling classes list when shown. "
                 "Keep diff minimal."
             )
             user = (
                 f"# Step\n{step}\n\n"
                 f"# Target file: {target_rel}\n"
+                f"{siblings_block}"
                 f"```\n{file_text[:10_000]}\n```\n"
             )
         raw = llm_client.call_text(
@@ -123,12 +149,8 @@ class Doer(BaseArchetype):
         m = re.search(r"```diff\s*\n(.*?)```", raw, re.DOTALL)
         udiff = m.group(1) if m else raw
 
-        # Detectors
+        # Detectors — plan_create_fqns already computed above for prompt
         problems: list[dict] = []
-
-        # Build set of FQNs being created elsewhere in this plan so the
-        # import detector does not false-positive on sibling-file refs.
-        plan_create_fqns = _plan_create_fqns(plan)
 
         # Optional Neo4j driver for graph-resolved imports
         try:

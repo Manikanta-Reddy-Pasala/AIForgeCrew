@@ -19,25 +19,33 @@ class Verifier(BaseArchetype):
         plan = ctx.get("plan", {})
         understanding = ctx.get("understanding", {})
 
+        # Trim heavy fields — context_md can be 4–8k tokens and is not
+        # needed for the critic call. Without it max_tokens=2048 was
+        # overflowing on big plans, yielding truncated/invalid JSON.
+        u_slim = {k: v for k, v in (understanding or {}).items()
+                  if k != "context_md"}
+
         system = (
             "You are a critic. Given an Understanding and a Plan, decide "
-            "if the plan is sound. Output strict JSON: "
-            "{verdict, issues[], revised_plan}. "
-            "verdict ∈ {pass, repair, reject}. "
-            "issues[] = list of {step_id, kind, message}. "
-            "If verdict == 'repair', supply revised_plan (same shape as input plan). "
-            "Reject if plan references invented files or steps don't address "
-            "the Understanding's problem statement."
+            "if the plan is sound. Output STRICT JSON, no prose: "
+            "{\"verdict\":\"pass|repair|reject\",\"issues\":[...]}. "
+            "issues[] = list of {step_id:int, kind:str, message:str}. "
+            "Reject if plan references files explicitly invented "
+            "(non-existent under repo root) or steps fail to address the "
+            "problem statement. Repair if plan is on track but a step "
+            "needs adjustment. Pass if plan is sound. "
+            "Do NOT include a revised_plan — orchestrator handles repair "
+            "via REPLAN. Keep issues[] short (≤3)."
         )
         user = (
-            f"# Understanding\n{understanding}\n\n"
+            f"# Understanding\n{u_slim}\n\n"
             f"# Plan\n{plan}\n"
         )
         out = llm_client.call_json(
             model=self.model or "qwen2.5-14b-instruct",
             system=system, user=user,
             temperature=self.temperature,
-            max_tokens=self.max_tokens or 2048,
+            max_tokens=self.max_tokens or 1024,
         )
         if out is None:
             # Safer fail: invalid JSON should NOT auto-pass. Mark as repair.
