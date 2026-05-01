@@ -11,5 +11,6 @@ from . import (  # noqa: F401
     planner,
     tester,
     understander,
+    validator,
     verifier,
 )
