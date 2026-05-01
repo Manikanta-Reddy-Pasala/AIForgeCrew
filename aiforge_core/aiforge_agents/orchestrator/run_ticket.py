@@ -136,6 +136,12 @@ def run(*, repo: str, title: str, body: str,
             "previous_plan": plan if plan_attempts > 1 else None,
             "unresolved_refs": grounding.get("unresolved_refs", []),
         })
+        # Post-Planner allowlist filter — drop read/edit/test/run steps
+        # whose target is not in allowed_files. Planner sometimes
+        # invents convention-style names ("BusinessProductsServiceImpl")
+        # that don't actually exist in the repo. Order is preserved;
+        # `create` and `search` actions are exempt (validated by Grounder).
+        plan = _filter_plan_targets(plan, allowed_files)
         breakers.check_agent("planner")
 
         # Grounder check
@@ -349,6 +355,48 @@ def run(*, repo: str, title: str, body: str,
         "circuit_breaker_tripped": breakers.tripped,
         "circuit_breaker_reason":  breakers.state.reason,
     }
+
+
+def _filter_plan_targets(plan: dict[str, Any],
+                         allowed: list[str]) -> dict[str, Any]:
+    """Drop read|edit|test|run steps whose `target` is not in `allowed`.
+
+    Match is exact OR ends-with-basename so worktree-stripped vs not
+    forms both match. `create` and `search` actions are kept verbatim —
+    Grounder validates them separately.
+    """
+    if not allowed:
+        return plan
+    allowed_set = set(allowed)
+    allowed_basenames = {p.rsplit("/", 1)[-1] for p in allowed}
+    kept: list[dict[str, Any]] = []
+    for st in (plan.get("steps") or []):
+        action = (st.get("action") or "").lower()
+        if action in ("create", "search"):
+            kept.append(st)
+            continue
+        tgt = (st.get("target") or "").strip()
+        if not tgt:
+            kept.append(st)
+            continue
+        # Exact match against any allowed path
+        if tgt in allowed_set:
+            kept.append(st)
+            continue
+        # Suffix match — handles worktree prefix or canonical-vs-relative
+        bn = tgt.rsplit("/", 1)[-1]
+        if bn in allowed_basenames:
+            # Rewrite to the canonical allowed path
+            for ap in allowed:
+                if ap.endswith("/" + bn) or ap == bn:
+                    st = {**st, "target": ap}
+                    kept.append(st)
+                    break
+            continue
+        # Drop hallucinated reference (Planner invented this filename)
+    out = dict(plan)
+    out["steps"] = kept
+    return out
 
 
 def _resolve_repo_path(repo_name: str) -> str:

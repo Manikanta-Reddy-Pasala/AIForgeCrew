@@ -5,6 +5,40 @@ from unittest.mock import patch, MagicMock
 
 import aiforge_core.aiforge_agents.archetypes  # noqa: F401
 from aiforge_core.aiforge_agents import registry
+from aiforge_core.aiforge_agents.orchestrator.run_ticket import (
+    _filter_plan_targets,
+)
+
+
+# ─────────── Plan-target filter ────────────────────────────────────────
+
+def test_filter_plan_targets_drops_invented_read() -> None:
+    allowed = ["src/main/java/A.java", "src/main/java/B.java"]
+    plan = {"steps": [
+        {"id": 1, "action": "read", "target": "src/main/java/A.java"},
+        {"id": 2, "action": "read", "target": "src/main/java/INVENTED.java"},
+        {"id": 3, "action": "create", "target": "src/main/java/C.java"},
+    ]}
+    out = _filter_plan_targets(plan, allowed)
+    targets = [s["target"] for s in out["steps"]]
+    assert "src/main/java/A.java" in targets
+    assert "src/main/java/INVENTED.java" not in targets
+    assert "src/main/java/C.java" in targets   # create is exempt
+
+
+def test_filter_plan_targets_basename_rewrite() -> None:
+    """Ends-with-basename match rewrites to canonical allowed path."""
+    allowed = ["src/main/java/com/x/Y.java"]
+    plan = {"steps": [
+        {"id": 1, "action": "read", "target": "Y.java"},
+    ]}
+    out = _filter_plan_targets(plan, allowed)
+    assert out["steps"][0]["target"] == "src/main/java/com/x/Y.java"
+
+
+def test_filter_plan_targets_empty_allowed_no_op() -> None:
+    plan = {"steps": [{"id": 1, "action": "read", "target": "x.java"}]}
+    assert _filter_plan_targets(plan, []) == plan
 
 
 # ─────────── Doer ─────────────────────────────────────────────────────
