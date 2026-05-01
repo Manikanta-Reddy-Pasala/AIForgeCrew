@@ -173,13 +173,24 @@ def run(*, repo: str, title: str, body: str,
         g_dur += time.time() - g_t0_inner
         breakers.check_agent("grounder")
 
-        # Force REPLAN if filter shrank the plan substantially — even
-        # if Grounder is happy. Dropped reads = blind spots for Doer.
+        # Force REPLAN if (a) Planner returned no steps (LLM failure),
+        # or (b) the post-Planner filter shrank the plan substantially,
+        # or (c) Grounder rejected anything. Dropped reads = blind
+        # spots for Doer.
         kept_steps = len(plan.get("steps") or [])
         total_steps = kept_steps + len(dropped_refs)
         shrink_ratio = (
             len(dropped_refs) / total_steps if total_steps else 0.0
         )
+        if kept_steps == 0:
+            # Surface as a synthetic unresolved so the Planner replans
+            # with a clear "you returned empty" hint.
+            grounding["resolved"] = False
+            grounding["unresolved_refs"] = [{
+                "step_id": 0, "target": "(empty plan)",
+                "action": "plan", "reason": "planner_returned_no_steps",
+            }]
+            continue
         if grounding.get("resolved") and shrink_ratio < 0.5:
             break
         # Surface dropped refs back to Planner as if they were unresolved.

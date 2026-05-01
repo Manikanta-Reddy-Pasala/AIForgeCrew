@@ -16,7 +16,9 @@ archetypes:
     temperature: 0.3
     top_p: 0.9
     grammar: plan.gbnf
-    max_tokens: 6000
+    # 12-step plans + json_object response_format need room. Was 6000;
+    # at 12 steps the JSON envelope alone can hit 4-5k.
+    max_tokens: 10000
     prompt_version: v1
 
   verifier:

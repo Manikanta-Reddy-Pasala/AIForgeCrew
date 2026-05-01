@@ -34,10 +34,14 @@ class Planner(BaseArchetype):
         # a path that follows the repo's package convention.
         allowed_block = ""
         if allowed_files:
+            # Show top 40 to the model — full 80 still flow through the
+            # post-Planner allowlist filter. 80 lines × 60 chars was
+            # crowding small-model context window and pushing the JSON
+            # output toward truncation.
             allowed_block = (
                 "# Allowed file paths (use ONLY these for action=read|edit|test|run; "
                 "for action=create, use a path that matches one of these directories)\n"
-                + "\n".join(f"- {p}" for p in allowed_files[:80])
+                + "\n".join(f"- {p}" for p in allowed_files[:40])
                 + "\n"
             )
         failures_block = ph.render_failures_block(failures_hint)
