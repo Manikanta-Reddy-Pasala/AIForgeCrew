@@ -70,6 +70,38 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(p_dur * 1000),
     )
 
+    # Stage V — Verifier
+    breakers.begin_agent("verifier")
+    v_agent = registry.build("verifier", repo_path=None)
+    v_agent.repo = repo; v_agent.ticket_id = ticket_id
+    v_t0 = time.time()
+    verdict = v_agent.run(ctx={"understanding": understanding, "plan": plan})
+    v_dur = time.time() - v_t0
+    breakers.check_agent("verifier")
+    learner.record_audit(
+        ticket_id=ticket_id, agent_role="verifier",
+        event_type="agent_completed",
+        payload={"verdict": verdict.get("verdict"),
+                 "issue_count": len(verdict.get("issues") or [])},
+        duration_ms=int(v_dur * 1000),
+    )
+
+    # Stage G — Grounder (rule-based, queries Neo4j)
+    breakers.begin_agent("grounder")
+    g_agent = registry.build("grounder", repo_path=None)
+    g_agent.repo = repo; g_agent.ticket_id = ticket_id
+    g_t0 = time.time()
+    grounding = g_agent.run(ctx={"plan": plan, "repo": repo})
+    g_dur = time.time() - g_t0
+    breakers.check_agent("grounder")
+    learner.record_audit(
+        ticket_id=ticket_id, agent_role="grounder",
+        event_type="agent_completed",
+        payload={"resolved": grounding.get("resolved"),
+                 "unresolved_count": len(grounding.get("unresolved_refs") or [])},
+        duration_ms=int(g_dur * 1000),
+    )
+
     total = time.time() - t0
     learner.record_episodic(
         ticket_id=ticket_id, stage="plan", agent_role="orchestrator",
@@ -84,10 +116,14 @@ def run(*, repo: str, title: str, body: str,
         "title": title,
         "understanding": understanding,
         "plan": plan,
+        "verifier_verdict": verdict,
+        "grounding": grounding,
         "latency_s": round(total, 2),
         "stages": {
             "understander_s": round(u_dur, 2),
             "planner_s":      round(p_dur, 2),
+            "verifier_s":     round(v_dur, 2),
+            "grounder_s":     round(g_dur, 2),
         },
         "circuit_breaker_tripped": breakers.tripped,
         "circuit_breaker_reason":  breakers.state.reason,

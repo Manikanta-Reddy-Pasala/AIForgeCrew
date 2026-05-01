@@ -14,5 +14,60 @@ class Grounder(BaseArchetype):
     name: str = "grounder"
 
     def run(self, *, ctx: dict[str, Any]) -> dict[str, Any]:
+        """Rule-based: each plan step's `target` must exist in
+        the AiForgeMemory File_v2 graph for this repo. No LLM."""
+        import os
+        from neo4j import GraphDatabase
+
+        plan = ctx.get("plan", {})
+        repo = ctx.get("repo", self.repo)
+        steps = plan.get("steps") or []
+
+        unresolved: list[dict[str, Any]] = []
+        try:
+            drv = GraphDatabase.driver(
+                os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
+                auth=(
+                    os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
+                    os.environ.get("AIFORGE_NEO4J_PASSWORD", "password"),
+                ),
+            )
+        except Exception as exc:
+            return {"artifact_type": "grounding",
+                    "resolved": False,
+                    "unresolved_refs": [],
+                    "error": f"neo4j_driver: {exc}"}
+
+        try:
+            with drv.session() as s:
+                for st in steps:
+                    tgt = (st.get("target") or "").strip()
+                    if not tgt or st.get("action") == "search":
+                        continue
+                    # Strip worktree prefix if any
+                    if "/src/" in tgt:
+                        tgt_norm = tgt[tgt.find("src/"):]
+                    else:
+                        tgt_norm = tgt
+                    row = s.run(
+                        "MATCH (f:File_v2 {repo: $repo}) "
+                        "WHERE f.path = $p OR f.path ENDS WITH $suffix "
+                        "RETURN f.path AS p LIMIT 1",
+                        repo=repo, p=tgt_norm,
+                        suffix="/" + tgt_norm.split("/")[-1],
+                    ).single()
+                    if row is None:
+                        unresolved.append({
+                            "step_id": st.get("id"),
+                            "target": tgt,
+                            "action": st.get("action"),
+                        })
+        finally:
+            try:
+                drv.close()
+            except Exception:
+                pass
+
         return {"artifact_type": "grounding",
-                "resolved": True, "unresolved_refs": []}
+                "resolved": len(unresolved) == 0,
+                "unresolved_refs": unresolved}

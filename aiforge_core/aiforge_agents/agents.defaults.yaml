@@ -20,7 +20,7 @@ archetypes:
     prompt_version: v1
 
   verifier:
-    model: qwen2.5-14b-instruct
+    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.0
     grammar: verify.json
     max_tokens: 2048
