@@ -57,11 +57,18 @@ def _git_apply_diff(
     patch_file.parent.mkdir(parents=True, exist_ok=True)
     patch_file.write_text(udiff)
 
-    chk = _run(["git", "apply", "--check", str(patch_file)])
+    # `--recount` rebuilds incorrect hunk line counts that LLMs emit
+    # routinely (off-by-one or wrong total). `--ignore-whitespace`
+    # tolerates indentation drift. Reject only on real conflicts.
+    apply_args = [
+        "git", "apply", "--recount", "--ignore-whitespace",
+        "--whitespace=nowarn",
+    ]
+    chk = _run([*apply_args, "--check", str(patch_file)])
     if chk.returncode != 0:
         return False, branch, f"apply_check: {chk.stderr.strip()[:300]}"
 
-    ap = _run(["git", "apply", str(patch_file)])
+    ap = _run([*apply_args, str(patch_file)])
     if ap.returncode != 0:
         return False, branch, f"apply: {ap.stderr.strip()[:300]}"
 
