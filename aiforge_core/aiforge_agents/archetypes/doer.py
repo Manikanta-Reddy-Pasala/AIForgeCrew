@@ -35,12 +35,17 @@ def _git_apply_diff(
             timeout=30, **kw,
         )
 
-    # Refuse on dirty tree
+    # Refuse on dirty tree — but ignore our own scratch dir, which the
+    # Doer itself just wrote into when it saved the proposal artifact.
     st = _run(["git", "status", "--porcelain"])
     if st.returncode != 0:
         return False, "", f"git_status: {st.stderr.strip()}"
-    if st.stdout.strip():
-        return False, "", "dirty_worktree"
+    significant = [
+        ln for ln in st.stdout.splitlines()
+        if ln.strip() and ".aiforge/" not in ln
+    ]
+    if significant:
+        return False, "", "dirty_worktree: " + significant[0][:120]
 
     # Switch to / create the ticket branch
     sw = _run(["git", "checkout", "-B", branch])
@@ -60,8 +65,8 @@ def _git_apply_diff(
     if ap.returncode != 0:
         return False, branch, f"apply: {ap.stderr.strip()[:300]}"
 
-    # Stage + commit so subsequent attempts start clean
-    _run(["git", "add", "-A"])
+    # Stage + commit, but never include our own scratch dir.
+    _run(["git", "add", "-A", ":(exclude).aiforge"])
     cm = _run([
         "git", "commit", "-m",
         f"aiforge({ticket_id}): apply Doer-generated diff",

@@ -60,7 +60,7 @@ def test_doer_git_apply_dirty_worktree_refuses(tmp_path) -> None:
         repo_path=str(tmp_path), ticket_id="TKT", udiff="x",
     )
     assert applied is False
-    assert err == "dirty_worktree"
+    assert err.startswith("dirty_worktree")
 
 
 def test_doer_git_apply_creates_branch(tmp_path) -> None:
