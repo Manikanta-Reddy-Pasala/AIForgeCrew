@@ -85,6 +85,12 @@ _IMPORT_PATTERNS = {
 }
 
 
+# Reserved keywords / syntax tokens that occasionally get captured by
+# the regex fallbacks but are NOT actual import targets. Filter out
+# explicitly so F-001 doesn't false-positive.
+_NOT_IMPORTS: frozenset[str] = frozenset({"static", "type", "as"})
+
+
 def extract_imports(text: str) -> set[str]:
     """All import targets found in the diff/file content.
 
@@ -97,7 +103,10 @@ def extract_imports(text: str) -> set[str]:
     out: set[str] = set()
     for pat in _IMPORT_PATTERNS.values():
         for m in pat.finditer(cleaned):
-            out.add(m.group(1))
+            tok = m.group(1)
+            if tok in _NOT_IMPORTS:
+                continue
+            out.add(tok)
     return out
 
 
