@@ -48,6 +48,38 @@ Optional ticket label: `env=qa` or `env=prod` (default `qa`).
 | `closingBalance` | decimal | DR positive, CR negative |
 | `businessId` | str | scoped business |
 
+## Stage 1 — File validation (always runs first)
+
+Before anything else, both files are passed through `validate_file()`:
+
+| check | failure mode |
+|---|---|
+| file exists | `file not found: <path>` |
+| not empty | `empty file` |
+| readable as csv/xlsx/xls | `unreadable: <reason>` |
+| has at least one data row | `no data rows` |
+| required name column present (Particulars/Account/Name/Ledger for Tally; accountName/name/account/ledger for OneShell) | `missing any-of name column: …` |
+| numeric column parses on first 50 rows | warning only |
+
+CLI: `--strict` exits 2 on any validation error. Default = continue
+with a printed warning.
+
+## Stage 2 — Live OneShell from MongoDB (3-way mode)
+
+When `--validate-with-mongo` is set (or the orchestrator detects a
+business-id pattern in the ticket), the validator also pulls live
+OneShell rows from `chartOfAccounts` keyed by `businessId`.
+Connection priority:
+
+1. `AIFORGE_MONGODB_SERVICE_URL` — HTTP gateway (production rule:
+   never bypass MongoDbService).
+2. `AIFORGE_MONGO_URI` — direct pymongo URI for QA convenience.
+3. `mongodb://localhost:27017/oneshell` fallback for dev.
+
+Best-effort: any failure (network, auth, schema) silently falls back
+to plain 2-way file-vs-file recon. The CLI prints `WARN mongo fetch
+errored: …` so the operator sees what happened.
+
 ## Reconciliation algorithm
 
 ```
@@ -94,6 +126,19 @@ the gap is `2 × value`, not zero.
 5. **Empty rows** — Tally exports often have summary rows with bold
    account names and no numbers; drop rows where all balance fields
    are blank.
+
+## 3-way mode adds two more recons
+
+When DB rows are available, `reconcile_3way()` runs all three pairs:
+
+| pair | catches |
+|---|---|
+| File ↔ DB | export drift — the file the operator uploaded doesn't match live DB |
+| Tally ↔ File | classic recon, what the auditor sees |
+| Tally ↔ DB | live truth check, ignores any export bug |
+
+Each pair gets its own bucket counts + per-row CSV
+(`<env>-<business>-{file-vs-db|tally-vs-file|tally-vs-db}.csv`).
 
 ## Outputs
 
