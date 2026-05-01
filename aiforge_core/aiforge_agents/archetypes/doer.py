@@ -40,9 +40,16 @@ def _git_apply_diff(
     st = _run(["git", "status", "--porcelain"])
     if st.returncode != 0:
         return False, "", f"git_status: {st.stderr.strip()}"
+    # Ignore our own scratch dirs + common per-machine clutter — these
+    # never belong in a PR diff and shouldn't gate apply.
+    _SKIP_PATTERNS = (
+        ".aiforge/", ".aiforge-worktrees/",
+        "graphify-out/", ".idea/", ".vscode/", ".DS_Store",
+    )
     significant = [
         ln for ln in st.stdout.splitlines()
-        if ln.strip() and ".aiforge/" not in ln
+        if ln.strip()
+        and not any(pat in ln for pat in _SKIP_PATTERNS)
     ]
     if significant:
         return False, "", "dirty_worktree: " + significant[0][:120]
