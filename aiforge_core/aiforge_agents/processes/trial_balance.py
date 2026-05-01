@@ -451,6 +451,293 @@ _MATCH_TOLERANCE = 1.00
 _DIFF_TOLERANCE = 100.00
 
 
+# ─────────── totals + drill-down (top-down workflow) ────────────────
+
+@dataclass
+class Totals:
+    source: str
+    total_ob: float = 0.0
+    total_dr: float = 0.0
+    total_cr: float = 0.0
+    total_cb: float = 0.0
+    row_count: int = 0
+
+
+def compute_totals(rows: list[TBRow], *, source: str) -> Totals:
+    t = Totals(source=source, row_count=len(rows))
+    for r in rows:
+        t.total_ob += r.opening
+        t.total_dr += r.debit
+        t.total_cr += r.credit
+        t.total_cb += r.closing
+    t.total_ob = round(t.total_ob, 2)
+    t.total_dr = round(t.total_dr, 2)
+    t.total_cr = round(t.total_cr, 2)
+    t.total_cb = round(t.total_cb, 2)
+    return t
+
+
+@dataclass
+class TotalsCompare:
+    a: Totals
+    b: Totals
+    delta_ob: float = 0.0
+    delta_dr: float = 0.0
+    delta_cr: float = 0.0
+    delta_cb: float = 0.0
+    matched: bool = False
+    dimensions_diverged: list[str] = field(default_factory=list)
+
+
+def compare_totals(a: Totals, b: Totals,
+                   tol: float = _MATCH_TOLERANCE) -> TotalsCompare:
+    out = TotalsCompare(a=a, b=b)
+    out.delta_ob = round(a.total_ob - b.total_ob, 2)
+    out.delta_dr = round(a.total_dr - b.total_dr, 2)
+    out.delta_cr = round(a.total_cr - b.total_cr, 2)
+    out.delta_cb = round(a.total_cb - b.total_cb, 2)
+    for dim, dv in (("OB", out.delta_ob), ("DR", out.delta_dr),
+                    ("CR", out.delta_cr), ("CB", out.delta_cb)):
+        if abs(dv) > tol:
+            out.dimensions_diverged.append(dim)
+    out.matched = not out.dimensions_diverged
+    return out
+
+
+# Per-account drill-down — runs ONLY when top-line totals diverge.
+
+@dataclass
+class AccountDiagnosis:
+    key: str               # account code or normalised name
+    name: str              # display name (Tally or OneShell)
+    tally: TBRow | None = None
+    file: TBRow | None = None
+    db: TBRow | None = None
+    api: TBRow | None = None
+    delta_dr: float = 0.0  # tally.dr - oneshell-best.dr
+    delta_cr: float = 0.0
+    delta_ob: float = 0.0
+    delta_cb: float = 0.0
+    diagnoses: list[str] = field(default_factory=list)
+
+
+def drill_down_per_account(
+    *,
+    tally: list[TBRow],
+    file_rows: list[TBRow] | None = None,
+    db_rows: list[TBRow] | None = None,
+    api_rows: list[TBRow] | None = None,
+    tol: float = _DIFF_TOLERANCE,
+) -> list[AccountDiagnosis]:
+    """For each unique account across all sources, compare DR/CR/OB/CB
+    and emit a diagnosis explaining where + why the divergence is."""
+    by_t = {_key(r): r for r in (tally or [])}
+    by_f = {_key(r): r for r in (file_rows or [])}
+    by_d = {_key(r): r for r in (db_rows or [])}
+    by_a = {_key(r): r for r in (api_rows or [])}
+
+    keys = sorted(set(by_t) | set(by_f) | set(by_d) | set(by_a))
+    out: list[AccountDiagnosis] = []
+    for k in keys:
+        t = by_t.get(k)
+        f = by_f.get(k)
+        d = by_d.get(k)
+        a = by_a.get(k)
+        # Pick best OneShell representative (priority: api > db > file)
+        o_best = a or d or f
+        diag = AccountDiagnosis(
+            key=k,
+            name=(t.name if t else (o_best.name if o_best else k)),
+            tally=t, file=f, db=d, api=a,
+        )
+        if t and o_best:
+            diag.delta_dr = round(t.debit - o_best.debit, 2)
+            diag.delta_cr = round(t.credit - o_best.credit, 2)
+            diag.delta_ob = round(t.opening - o_best.opening, 2)
+            diag.delta_cb = round(t.closing - o_best.closing, 2)
+
+        # Diagnoses
+        if t and not (f or d or a):
+            diag.diagnoses.append(
+                "tally_only — account exists in Tally but missing in "
+                "OneShell (missing master record OR business mis-routed)"
+            )
+        elif (f or d or a) and not t:
+            diag.diagnoses.append(
+                "oneshell_only — account exists in OneShell but missing "
+                "in Tally export (forgot to map / Tally suspense)"
+            )
+        if t and o_best:
+            if abs(diag.delta_ob) > tol:
+                diag.diagnoses.append(
+                    f"opening_balance_mismatch — Tally ₹{t.opening:,.2f} "
+                    f"vs OneShell ₹{o_best.opening:,.2f} (likely OB "
+                    "migration / FY-start lag)"
+                )
+            if abs(diag.delta_dr) > tol and abs(diag.delta_cr) <= tol:
+                diag.diagnoses.append(
+                    "debit_only_drift — same credits, debit side "
+                    "diverges (missing DR transactions in OneShell or "
+                    "extra DR in Tally)"
+                )
+            if abs(diag.delta_cr) > tol and abs(diag.delta_dr) <= tol:
+                diag.diagnoses.append(
+                    "credit_only_drift — same debits, credit side "
+                    "diverges (missing CR transactions in OneShell or "
+                    "extra CR in Tally)"
+                )
+            if abs(diag.delta_dr) > tol and abs(diag.delta_cr) > tol:
+                diag.diagnoses.append(
+                    "both_sides_drift — both DR and CR differ (account "
+                    "may have new transactions in one system not yet in "
+                    "the other)"
+                )
+            if d and a and abs(d.closing - a.closing) > tol:
+                diag.diagnoses.append(
+                    f"db_vs_api_drift — chartOfAccounts CB ₹{d.closing:,.2f}"
+                    f" disagrees with /trialBalance API ₹{a.closing:,.2f} "
+                    "(stale cache / async aggregation lag)"
+                )
+            if f and a and abs(f.closing - a.closing) > tol:
+                diag.diagnoses.append(
+                    f"file_vs_api_drift — uploaded file CB ₹{f.closing:,.2f}"
+                    f" disagrees with live API ₹{a.closing:,.2f} (export "
+                    "was generated against an older snapshot)"
+                )
+        if not diag.diagnoses:
+            diag.diagnoses.append("ok — totals within tolerance")
+        out.append(diag)
+    return out
+
+
+@dataclass
+class FullReport:
+    env: str
+    business_id: str
+    totals: dict[str, Totals] = field(default_factory=dict)
+    pair_compares: dict[str, TotalsCompare] = field(default_factory=dict)
+    drill: list[AccountDiagnosis] = field(default_factory=list)
+    has_top_line_mismatch: bool = False
+
+
+def verify(
+    *,
+    tally: list[TBRow],
+    file_rows: list[TBRow],
+    db_rows: list[TBRow] | None = None,
+    api_rows: list[TBRow] | None = None,
+    env: str = "qa",
+    business_id: str = "",
+) -> FullReport:
+    """Full top-down verification:
+
+       1. compute totals (DR, CR, OB, CB) for every source
+       2. compare each pair of sources at the totals level
+       3. if any pair diverges → drill down per-account with diagnoses
+    """
+    rep = FullReport(env=env, business_id=business_id)
+    rep.totals["tally"] = compute_totals(tally, source="tally")
+    rep.totals["file"] = compute_totals(file_rows, source="file")
+    if db_rows is not None:
+        rep.totals["db"] = compute_totals(db_rows, source="db")
+    if api_rows is not None:
+        rep.totals["api"] = compute_totals(api_rows, source="api")
+
+    pairs = [("tally", "file")]
+    if api_rows is not None:
+        pairs.append(("tally", "api"))
+        pairs.append(("file", "api"))
+    if db_rows is not None:
+        pairs.append(("tally", "db"))
+        pairs.append(("file", "db"))
+        if api_rows is not None:
+            pairs.append(("api", "db"))
+
+    for a, b in pairs:
+        if a in rep.totals and b in rep.totals:
+            cmp = compare_totals(rep.totals[a], rep.totals[b])
+            rep.pair_compares[f"{a}_vs_{b}"] = cmp
+            if not cmp.matched:
+                rep.has_top_line_mismatch = True
+
+    if rep.has_top_line_mismatch:
+        rep.drill = drill_down_per_account(
+            tally=tally, file_rows=file_rows,
+            db_rows=db_rows, api_rows=api_rows,
+        )
+    return rep
+
+
+def render_verify_report(rep: FullReport) -> str:
+    parts: list[str] = [
+        f"# Trial-Balance Verification ({rep.env})",
+        "",
+        f"Business: `{rep.business_id or '-'}`",
+        "",
+        "## Totals",
+        "",
+        "| source | rows | OB | DR | CR | CB |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for name in ("tally", "file", "db", "api"):
+        t = rep.totals.get(name)
+        if not t:
+            continue
+        parts.append(
+            f"| **{name}** | {t.row_count} | "
+            f"₹{t.total_ob:,.2f} | ₹{t.total_dr:,.2f} | "
+            f"₹{t.total_cr:,.2f} | ₹{t.total_cb:,.2f} |"
+        )
+    parts.append("")
+    parts.append("## Pairwise totals comparison")
+    parts.append("")
+    parts.append("| pair | ΔOB | ΔDR | ΔCR | ΔCB | match |")
+    parts.append("|---|---:|---:|---:|---:|:--:|")
+    for k, c in rep.pair_compares.items():
+        parts.append(
+            f"| {k} | ₹{c.delta_ob:,.2f} | ₹{c.delta_dr:,.2f} | "
+            f"₹{c.delta_cr:,.2f} | ₹{c.delta_cb:,.2f} | "
+            f"{'✓' if c.matched else '✗ ' + ','.join(c.dimensions_diverged)} |"
+        )
+    parts.append("")
+    if not rep.has_top_line_mismatch:
+        parts.append(
+            "**All totals within ₹1 tolerance — no drill-down needed.**"
+        )
+        return "\n".join(parts) + "\n"
+    parts.append(
+        "**Top-line mismatch detected — drilling down per account "
+        "(only flagged accounts shown).**"
+    )
+    parts.append("")
+    parts.append("## Per-account diagnoses")
+    parts.append("")
+    parts.append("| account | code | sources | ΔOB | ΔDR | ΔCR | ΔCB | diagnosis |")
+    parts.append("|---|---|---|---:|---:|---:|---:|---|")
+    for d in rep.drill:
+        if d.diagnoses == ["ok — totals within tolerance"]:
+            continue
+        sources = []
+        if d.tally:
+            sources.append("T")
+        if d.file:
+            sources.append("F")
+        if d.db:
+            sources.append("D")
+        if d.api:
+            sources.append("A")
+        code = (d.tally.code if d.tally else "") or \
+               (d.file.code if d.file else "") or \
+               (d.db.code if d.db else "")
+        parts.append(
+            f"| {d.name[:50]} | {code} | {''.join(sources)} | "
+            f"₹{d.delta_ob:,.2f} | ₹{d.delta_dr:,.2f} | "
+            f"₹{d.delta_cr:,.2f} | ₹{d.delta_cb:,.2f} | "
+            f"{'; '.join(d.diagnoses)[:200]} |"
+        )
+    return "\n".join(parts) + "\n"
+
+
 def _key(row: TBRow) -> str:
     return row.code.strip().lower() if row.code else normalise_name(row.name)
 
@@ -662,7 +949,16 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = Path(a.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 3. reconcile
+    # 3a. Top-down verify — totals first, then drill-down per account
+    rep = verify(
+        tally=t_rows, file_rows=o_file,
+        db_rows=o_db or None, api_rows=None,
+        env=a.env, business_id=a.business,
+    )
+    print()
+    print(render_verify_report(rep))
+
+    # 3b. Reconcile (kept for backwards-compat + per-row CSVs)
     if o_db:
         three = reconcile_3way(
             t_rows, o_file, o_db, env=a.env, business_id=a.business,

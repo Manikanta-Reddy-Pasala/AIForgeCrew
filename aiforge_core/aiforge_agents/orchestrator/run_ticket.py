@@ -718,11 +718,24 @@ def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
                     )
                 except Exception:
                     o_db = []
+        # Top-down verify: compare totals first, drill down only on mismatch
+        rep = tb.verify(
+            tally=t_rows, file_rows=o_file,
+            db_rows=o_db or None, api_rows=None,
+            env=env, business_id=bid,
+        )
+        md = tb.render_verify_report(rep)
+        # Build a flat-keyed view of top-line totals for the UI
+        totals_view = {
+            src: {"OB": t.total_ob, "DR": t.total_dr,
+                  "CR": t.total_cr, "CB": t.total_cb,
+                  "rows": t.row_count}
+            for src, t in rep.totals.items()
+        }
         if o_db:
             three = tb.reconcile_3way(
                 t_rows, o_file, o_db, env=env, business_id=bid,
             )
-            md = tb.render_markdown_3way(three)
             any_large = any([
                 three.file_vs_db.large,
                 three.tally_vs_file.large,
@@ -731,10 +744,14 @@ def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
             return {
                 "artifact_type": "doer_outcome",
                 "process": "trial_balance",
-                "mode": "3way",
+                "mode": "3way+verify",
                 "env": env,
                 "udiff": md,
                 "target": "trial-balance-report.md",
+                "totals": totals_view,
+                "top_line_mismatch": rep.has_top_line_mismatch,
+                "drilled_accounts": len([d for d in rep.drill
+                                         if d.diagnoses != ["ok — totals within tolerance"]]),
                 "file_vs_db_gap": three.file_vs_db.gap,
                 "tally_vs_file_gap": three.tally_vs_file.gap,
                 "tally_vs_db_gap":  three.tally_vs_db.gap,
@@ -745,18 +762,21 @@ def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
                 },
                 "applied": False,
                 "problems": [],
-                "blocked_by_detectors": any_large,
+                "blocked_by_detectors": (any_large or rep.has_top_line_mismatch),
             }
-        # Plain 2-way fallback
+        # 2-way fallback when no live DB rows
         rec = tb.reconcile(t_rows, o_file, env=env, business_id=bid)
-        md = tb.render_markdown(rec)
         return {
             "artifact_type": "doer_outcome",
             "process": "trial_balance",
-            "mode": "2way",
+            "mode": "2way+verify",
             "env": env,
-            "udiff": md,
+            "udiff": md,                      # already from verify()
             "target": "trial-balance-report.md",
+            "totals": totals_view,
+            "top_line_mismatch": rep.has_top_line_mismatch,
+            "drilled_accounts": len([d for d in rep.drill
+                                     if d.diagnoses != ["ok — totals within tolerance"]]),
             "tally_total": rec.tally_total,
             "oneshell_total": rec.oneshell_total,
             "gap": rec.gap,
@@ -769,7 +789,7 @@ def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
             },
             "applied": False,
             "problems": [],
-            "blocked_by_detectors": False,
+            "blocked_by_detectors": rep.has_top_line_mismatch,
         }
     except Exception as exc:
         return {

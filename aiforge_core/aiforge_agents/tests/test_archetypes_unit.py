@@ -238,6 +238,62 @@ def test_trial_balance_to_decimal_handles_paren_and_cr() -> None:
     assert tb.to_decimal("not-a-number") == 0.0
 
 
+def test_trial_balance_compute_totals() -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    rows = [tb.TBRow(opening=100, debit=50, credit=20, closing=130),
+            tb.TBRow(opening=200, debit=10, credit=5, closing=205)]
+    t = tb.compute_totals(rows, source="tally")
+    assert t.total_ob == 300.0
+    assert t.total_dr == 60.0
+    assert t.total_cr == 25.0
+    assert t.total_cb == 335.0
+    assert t.row_count == 2
+
+
+def test_trial_balance_compare_totals_match() -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    a = tb.Totals(source="a", total_ob=100, total_dr=50, total_cr=30, total_cb=120)
+    b = tb.Totals(source="b", total_ob=100, total_dr=50, total_cr=30, total_cb=120)
+    cmp = tb.compare_totals(a, b)
+    assert cmp.matched is True
+    assert cmp.dimensions_diverged == []
+
+
+def test_trial_balance_compare_totals_diverge() -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    a = tb.Totals(source="a", total_ob=100, total_dr=50, total_cr=20, total_cb=130)
+    b = tb.Totals(source="b", total_ob=100, total_dr=70, total_cr=20, total_cb=150)
+    cmp = tb.compare_totals(a, b)
+    assert cmp.matched is False
+    assert "DR" in cmp.dimensions_diverged
+    assert "CB" in cmp.dimensions_diverged
+
+
+def test_trial_balance_drill_down_diagnoses() -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    t = [tb.TBRow(code="1310", name="ACME", opening=0, debit=250000,
+                  credit=200000, closing=50000),
+         tb.TBRow(code="9999", name="Suspense", opening=0, debit=0,
+                  credit=2500, closing=-2500)]
+    f = [tb.TBRow(code="1310", name="ACME", opening=0, debit=250000,
+                  credit=199500, closing=50500)]
+    out = tb.drill_down_per_account(tally=t, file_rows=f)
+    by_key = {d.key: d for d in out}
+    assert "credit_only_drift" in by_key["1310"].diagnoses[0]
+    assert by_key["9999"].diagnoses[0].startswith("tally_only")
+
+
+def test_trial_balance_verify_no_mismatch_skips_drill() -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    t = [tb.TBRow(code="1100", name="Cash", opening=100, debit=10,
+                  credit=5, closing=105)]
+    f = [tb.TBRow(code="1100", name="Cash", opening=100, debit=10,
+                  credit=5, closing=105)]
+    rep = tb.verify(tally=t, file_rows=f)
+    assert rep.has_top_line_mismatch is False
+    assert rep.drill == []
+
+
 def test_trial_balance_reconcile_buckets(tmp_path) -> None:
     from aiforge_core.aiforge_agents.processes import trial_balance as tb
     t = [tb.TBRow(code="1100", name="Cash", closing=1000.0),
