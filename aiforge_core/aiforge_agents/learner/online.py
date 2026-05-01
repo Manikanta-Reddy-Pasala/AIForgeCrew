@@ -122,6 +122,24 @@ CREATE TABLE IF NOT EXISTS aiforge_agents_skills (
 );
 CREATE INDEX IF NOT EXISTS idx_aas_repo_task
     ON aiforge_agents_skills(repo, task_class);
+
+-- Failure patterns: agents recall these on similar tasks to avoid
+-- repeating mistakes. Indexed by (repo, task_class, mode) so a fresh
+-- ticket can pull "what bit us last time" cheaply.
+CREATE TABLE IF NOT EXISTS aiforge_agents_failures (
+    id              bigserial PRIMARY KEY,
+    repo            text,
+    task_class      text,
+    mode            text,        -- F-001, truncated_output, parent_dir_missing …
+    evidence        text,        -- short, human-readable
+    lesson          text,        -- "next time, do X instead of Y"
+    seen_count      int  DEFAULT 1,
+    last_seen       timestamptz DEFAULT now(),
+    created_at      timestamptz DEFAULT now(),
+    UNIQUE (repo, task_class, mode, evidence)
+);
+CREATE INDEX IF NOT EXISTS idx_aaf_repo_task
+    ON aiforge_agents_failures(repo, task_class);
 """
 
 
@@ -307,6 +325,66 @@ def top_skills_for(*, repo: str, task_class: str,
         return [
             {"name": r[0], "summary": r[1], "body_md": r[2],
              "success_count": r[3], "failure_count": r[4]}
+            for r in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+# ─────────── Failure patterns (P3 — auto-correct) ──────────────────
+
+def record_failure(*, repo: str, task_class: str, mode: str,
+                   evidence: str, lesson: str = "") -> bool:
+    """Upsert a failure pattern. Counter increments on duplicates so
+    chronic failures bubble to the top of `top_failures_for`."""
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO aiforge_agents_failures "
+                "(repo, task_class, mode, evidence, lesson) "
+                "VALUES (%s,%s,%s,%s,%s) "
+                "ON CONFLICT (repo, task_class, mode, evidence) DO UPDATE SET "
+                "  seen_count = aiforge_agents_failures.seen_count + 1, "
+                "  last_seen = now(), "
+                "  lesson = CASE WHEN EXCLUDED.lesson <> '' "
+                "                THEN EXCLUDED.lesson "
+                "                ELSE aiforge_agents_failures.lesson END",
+                (repo, task_class, mode, evidence[:200], lesson[:500]),
+            )
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def top_failures_for(*, repo: str, task_class: str,
+                     k: int = 5) -> list[dict]:
+    """Return top-k chronic failures for this repo + task_class.
+    Used to inject "do not repeat these mistakes" hints into agent
+    prompts on similar future tickets."""
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT mode, evidence, lesson, seen_count, last_seen "
+                "FROM aiforge_agents_failures "
+                "WHERE repo = %s AND task_class = %s "
+                "ORDER BY seen_count DESC, last_seen DESC "
+                "LIMIT %s",
+                (repo, task_class, k),
+            )
+            rows = cur.fetchall()
+        return [
+            {"mode": r[0], "evidence": r[1], "lesson": r[2],
+             "seen_count": r[3]}
             for r in rows
         ]
     except Exception:

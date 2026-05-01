@@ -112,6 +112,42 @@ class Learner(BaseArchetype):
                 success=False,
             )
 
+        # Auto-correct: distill every failure mode into a recallable
+        # lesson. Future tickets of the same task_class will see these
+        # in their Planner/Doer prompts.
+        for prob in (doer_out.get("problems") or []):
+            mode = str(prob.get("mode", ""))
+            evid = str(prob.get("evidence", ""))[:200]
+            lesson = ""
+            if mode == "F-001":
+                lesson = (
+                    f"Earlier ticket emitted import `{evid}` that did not "
+                    "exist. Restrict imports to stdlib + plan_create_fqns "
+                    "+ existing graph classes; never invent sub-packages."
+                )
+            elif mode == "F-003":
+                lesson = (
+                    "Diff context lines did not match target file. "
+                    "Quote source verbatim from the supplied file body."
+                )
+            online.record_failure(
+                repo=repo, task_class=task_class,
+                mode=mode, evidence=evid, lesson=lesson,
+            )
+        # Apply errors are also failures worth memorising
+        ae = doer_out.get("apply_error") or ""
+        if ae:
+            mode = ae.split(":", 1)[0].strip()
+            online.record_failure(
+                repo=repo, task_class=task_class, mode=mode,
+                evidence=ae[:200],
+                lesson=(
+                    "Doer udiff failed to apply. Match the exact udiff "
+                    "format: `--- /dev/null` for new files, accurate "
+                    "@@ hunk counts (recount-friendly), no truncation."
+                ),
+            )
+
         return {
             "artifact_type": "learning",
             "outcome": outcome,

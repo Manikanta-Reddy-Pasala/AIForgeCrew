@@ -8,6 +8,22 @@ from typing import Any
 from aiforge_core.aiforge_agents.base import BaseArchetype
 from aiforge_core.aiforge_agents.registry import register
 
+def _compact(text: str, *, head: int = 1500, tail: int = 1500) -> str:
+    """Token-budget-friendly compaction: keep first head chars + last
+    tail chars, replace middle with `... [N chars elided] ...`.
+
+    Deterministic and free — no extra LLM call. Good enough for code
+    context where the most useful bits are at the top (semantic top-K)
+    and the bottom (runbook / sources)."""
+    if not text or len(text) <= head + tail + 64:
+        return text
+    return (
+        text[:head]
+        + f"\n\n... [{len(text) - head - tail} chars elided] ...\n\n"
+        + text[-tail:]
+    )
+
+
 @register("planner")
 @dataclass
 class Planner(BaseArchetype):
@@ -19,8 +35,13 @@ class Planner(BaseArchetype):
 
         understanding = ctx.get("understanding", {})
         ctx_md = understanding.get("context_md", "")
+        # Compact heavy context_md for small local models. Keep header
+        # + first/last 1500 chars and drop the middle. Cheap, deterministic,
+        # and preserves the most-likely-relevant top hits + summary tail.
+        ctx_md = _compact(ctx_md, head=1500, tail=1500)
         allowed_files = ctx.get("allowed_files") or []
         skills_hint = ctx.get("skills_hint") or []
+        failures_hint = ctx.get("failures_hint") or []
         previous_plan = ctx.get("previous_plan") or {}
         unresolved   = ctx.get("unresolved_refs") or []
 
@@ -35,6 +56,17 @@ class Planner(BaseArchetype):
                 + "\n".join(f"- {p}" for p in allowed_files[:80])
                 + "\n"
             )
+        failures_block = ""
+        if failures_hint:
+            lines = ["# Mistakes from prior similar tickets — DO NOT REPEAT:"]
+            for f in failures_hint[:5]:
+                lines.append(
+                    f"- [{f.get('mode')}] {f.get('evidence','')[:120]}"
+                )
+                if f.get("lesson"):
+                    lines.append(f"  → {f.get('lesson')[:200]}")
+            failures_block = "\n".join(lines) + "\n"
+
         skills_block = ""
         if skills_hint:
             skill_lines = ["# Skills (recipes that worked on similar tasks here):"]
@@ -65,14 +97,24 @@ class Planner(BaseArchetype):
             "with fields: steps (array), expected_token_budget (int). "
             "Each step has: id, action (read|edit|test|run|create), "
             "target (file path or symbol), inputs, expected (post-condition), "
-            "depends_on (array of step ids). Max 7 steps. "
-            "STRICT RULE: every read|edit|test|run target MUST appear in the "
-            "allowed file list. For action=create, target must be a NEW path "
-            "whose parent directory matches a package shown in the allowed list. "
-            "Never invent arbitrary paths."
+            "depends_on (array of step ids). Max 7 steps.\n"
+            "\n"
+            "GRANULARITY: this system runs on a small local model. Prefer "
+            "MANY SMALL steps over a few big ones — each `create` step "
+            "should produce ONE file (entity OR controller OR service OR "
+            "repository OR test), not multiple files at once. Splitting a "
+            "feature into 5 single-file create steps is BETTER than 2 "
+            "multi-file create steps; each step is then a single bounded "
+            "LLM call which fits in our token budget.\n"
+            "\n"
+            "STRICT RULE: every read|edit|test|run target MUST appear in "
+            "the allowed file list. For action=create, target must be a "
+            "NEW path whose parent directory matches a package shown in "
+            "the allowed list. Never invent arbitrary paths."
         )
         user = (
             f"# Understanding\n{understanding}\n\n"
+            f"{failures_block}"
             f"{skills_block}"
             f"{allowed_block}"
             f"{replan_block}"

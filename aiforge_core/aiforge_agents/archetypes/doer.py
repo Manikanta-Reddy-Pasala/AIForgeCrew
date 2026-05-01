@@ -144,13 +144,18 @@ class Doer(BaseArchetype):
         ticket_id = ctx.get("ticket_id", self.ticket_id)
         apply = bool(ctx.get("apply", False))
 
-        # Pick first write step (edit OR create — both produce code)
-        write_steps = [s for s in (plan.get("steps") or [])
-                       if s.get("action") in ("edit", "create")]
-        if not write_steps:
-            return {"artifact_type": "doer_outcome",
-                    "skipped": True, "reason": "no_write_step"}
-        step = write_steps[0]
+        # Caller can pin a specific step (multi-step orchestration);
+        # otherwise pick the first edit/create step in the plan.
+        target_step = ctx.get("target_step")
+        if target_step:
+            step = target_step
+        else:
+            write_steps = [s for s in (plan.get("steps") or [])
+                           if s.get("action") in ("edit", "create")]
+            if not write_steps:
+                return {"artifact_type": "doer_outcome",
+                        "skipped": True, "reason": "no_write_step"}
+            step = write_steps[0]
         target_rel = step.get("target", "")
         action = step.get("action", "edit")
 

@@ -125,11 +125,16 @@ def run(*, repo: str, title: str, body: str,
         repo=repo, query=f"{title}\n{body}", k=80,
     )
 
-    # Pull top skills the Learner has promoted for this repo + a
-    # rough task_class guess (first matching keyword).
+    # Pull top skills + chronic failure patterns the Learner has
+    # accumulated for this repo + task_class. Both are surfaced to
+    # the Planner / Doer prompts so the system auto-corrects on
+    # repeat mistakes.
     task_class_guess = _guess_task_class(title, body)
     skills_hint = learner.top_skills_for(
         repo=repo, task_class=task_class_guess, k=3,
+    )
+    failures_hint = learner.top_failures_for(
+        repo=repo, task_class=task_class_guess, k=5,
     )
 
     # Stage P — Planner (with REPLAN loop on grounder failure)
@@ -148,6 +153,7 @@ def run(*, repo: str, title: str, body: str,
             "title": title, "body": body, "repo": repo,
             "allowed_files": allowed_files,
             "skills_hint": skills_hint,
+            "failures_hint": failures_hint,
             "previous_plan": plan if plan_attempts > 1 else None,
             "unresolved_refs": grounding.get("unresolved_refs", []),
         })
@@ -215,72 +221,101 @@ def run(*, repo: str, title: str, body: str,
 
     # Grounder + REPLAN loop already done above.
 
-    # Stage D — Doer + Validator CRITIC loop. Up to 2 attempts: pass 1
-    # writes a fresh udiff, pass 2 receives Validator detector hits +
-    # any Architect comments from a prior architect pass and revises.
+    # Stage D — Multi-step Doer + Validator CRITIC loop.
+    #
+    # For each create/edit step in the plan, run a dedicated Doer call.
+    # The local model is small; one-LLM-call-per-file caps token risk
+    # and stops a single truncation from killing the whole patch set.
+    # All udiffs commit onto the same `aiforge/<ticket>` branch via
+    # the apply path (each Doer call appends one commit).
+    #
+    # Per-step CRITIC: if Validator blocks a single file, retry that
+    # file once with feedback before moving on.
     doer_outcome: dict[str, Any] = {"skipped": True, "reason": "not_grounded"}
     validation: dict[str, Any] = {"decision": "skip", "reason": "no_doer"}
     d_dur = 0.0
     val_dur = 0.0
     doer_attempts = 0
+    per_step_outcomes: list[dict[str, Any]] = []
     if grounding.get("resolved"):
-        previous_udiff = ""
-        previous_problems: list = []
-        previous_arch_comments: list = []
-        while doer_attempts < 2:
-            doer_attempts += 1
-            breakers.begin_agent("doer")
-            d_agent = registry.build("doer", repo_path=None)
-            d_agent.repo = repo; d_agent.ticket_id = ticket_id
-            d_t0 = time.time()
-            doer_outcome = d_agent.run(ctx={
-                "plan": plan, "repo": repo,
-                "repo_path": _resolve_repo_path(repo),
-                "ticket_id": ticket_id,
-                "apply": apply,
-                "previous_udiff": previous_udiff,
-                "detector_problems": previous_problems,
-                "architect_comments": previous_arch_comments,
-            })
-            d_dur += time.time() - d_t0
-            breakers.check_agent("doer")
-            learner.record_audit(
-                ticket_id=ticket_id, agent_role="doer",
-                event_type="agent_completed",
-                payload={
-                    "problems": len(doer_outcome.get("problems") or []),
-                    "blocked": doer_outcome.get(
-                        "blocked_by_detectors", False),
-                    "attempt": doer_attempts,
-                },
-                duration_ms=int(d_dur * 1000),
-            )
+        write_steps = [
+            s for s in (plan.get("steps") or [])
+            if s.get("action") in ("edit", "create")
+        ]
+        if not write_steps:
+            doer_outcome = {"skipped": True, "reason": "no_write_step"}
+        for st in write_steps:
+            previous_udiff = ""
+            previous_problems: list = []
+            for attempt in range(2):  # CRITIC retry per step
+                doer_attempts += 1
+                breakers.begin_agent("doer")
+                d_agent = registry.build("doer", repo_path=None)
+                d_agent.repo = repo; d_agent.ticket_id = ticket_id
+                d_t0 = time.time()
+                step_outcome = d_agent.run(ctx={
+                    "plan": plan, "repo": repo,
+                    "repo_path": _resolve_repo_path(repo),
+                    "ticket_id": ticket_id,
+                    "apply": apply,
+                    "target_step": st,
+                    "previous_udiff": previous_udiff,
+                    "detector_problems": previous_problems,
+                })
+                d_dur += time.time() - d_t0
+                breakers.check_agent("doer")
+                learner.record_audit(
+                    ticket_id=ticket_id, agent_role="doer",
+                    event_type="agent_completed",
+                    payload={
+                        "step_id": st.get("id"),
+                        "step_target": st.get("target"),
+                        "problems": len(step_outcome.get("problems") or []),
+                        "applied": step_outcome.get("applied"),
+                        "attempt": attempt + 1,
+                    },
+                    duration_ms=int(d_dur * 1000),
+                )
 
-            # Stage Vd — Validator (post-condition check)
-            breakers.begin_agent("validator")
-            val_agent = registry.build("validator", repo_path=None)
-            val_agent.repo = repo; val_agent.ticket_id = ticket_id
-            val_t0 = time.time()
-            validation = val_agent.run(ctx={"doer_outcome": doer_outcome})
-            val_dur += time.time() - val_t0
-            breakers.check_agent("validator")
-            learner.record_audit(
-                ticket_id=ticket_id, agent_role="validator",
-                event_type="agent_completed",
-                payload={"decision": validation.get("decision"),
-                         "attempt": doer_attempts},
-                duration_ms=int(val_dur * 1000),
-            )
+                # Per-step Validator
+                breakers.begin_agent("validator")
+                val_agent = registry.build("validator", repo_path=None)
+                val_agent.repo = repo; val_agent.ticket_id = ticket_id
+                val_t0 = time.time()
+                step_validation = val_agent.run(
+                    ctx={"doer_outcome": step_outcome},
+                )
+                val_dur += time.time() - val_t0
+                breakers.check_agent("validator")
 
-            # Validator approved? Stop the loop, let Architect see it.
-            if validation.get("decision") == "approve":
-                break
-            # Validator skipped (no diff produced)? Stop — retry won't help.
-            if validation.get("decision") == "skip":
-                break
-            # Validator blocked → retry with feedback.
-            previous_udiff = (doer_outcome.get("udiff") or "")
-            previous_problems = list(doer_outcome.get("problems") or [])
+                if step_validation.get("decision") == "approve":
+                    per_step_outcomes.append({
+                        "step": st, "outcome": step_outcome,
+                        "validation": step_validation,
+                    })
+                    break
+                if step_validation.get("decision") == "skip":
+                    per_step_outcomes.append({
+                        "step": st, "outcome": step_outcome,
+                        "validation": step_validation,
+                    })
+                    break
+                # Validator blocked → retry once with feedback
+                previous_udiff = step_outcome.get("udiff") or ""
+                previous_problems = list(
+                    step_outcome.get("problems") or [])
+            else:
+                # All retries exhausted — keep last outcome
+                per_step_outcomes.append({
+                    "step": st, "outcome": step_outcome,
+                    "validation": step_validation,
+                })
+
+        # Aggregate the per-step results into a single doer_outcome /
+        # validation pair so downstream stages and metadata stay flat.
+        if per_step_outcomes:
+            doer_outcome = _aggregate_doer_outcomes(per_step_outcomes)
+            validation = _aggregate_validation(per_step_outcomes)
 
     # Stage T — Tester (TDD test specs)
     breakers.begin_agent("tester")
@@ -457,6 +492,80 @@ def run(*, repo: str, title: str, body: str,
         "circuit_breaker_tripped": breakers.tripped,
         "circuit_breaker_reason":  breakers.state.reason,
     }
+
+
+def _aggregate_doer_outcomes(
+    per_step: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Merge per-step Doer outcomes into one doer_outcome dict.
+
+    Concatenates udiffs (delimited), unions problems, picks last
+    branch/applied state. Useful for downstream Validator/Architect
+    that still expect a single `doer_outcome`."""
+    udiffs: list[str] = []
+    problems: list[dict[str, Any]] = []
+    targets: list[str] = []
+    applied_any = False
+    applied_branch = ""
+    apply_errors: list[str] = []
+    for entry in per_step:
+        out = entry.get("outcome") or {}
+        if out.get("udiff"):
+            udiffs.append(
+                f"### step {entry['step'].get('id')} "
+                f"({entry['step'].get('action')}) "
+                f"-> {entry['step'].get('target')}\n"
+                + out["udiff"]
+            )
+        problems.extend(out.get("problems") or [])
+        if out.get("target"):
+            targets.append(out["target"])
+        if out.get("applied"):
+            applied_any = True
+        if out.get("applied_branch"):
+            applied_branch = out["applied_branch"]
+        if out.get("apply_error"):
+            apply_errors.append(
+                f"{entry['step'].get('target')}: {out['apply_error']}"
+            )
+    return {
+        "artifact_type": "doer_outcome",
+        "step_count": len(per_step),
+        "target": targets[0] if targets else "",
+        "targets": targets,
+        "udiff": ("\n\n".join(udiffs))[:8000],
+        "problems": problems,
+        "applied": applied_any,
+        "applied_branch": applied_branch,
+        "apply_error": "; ".join(apply_errors) if apply_errors else "",
+        "blocked_by_detectors": len(problems) > 0,
+        "tests_green": False,
+    }
+
+
+def _aggregate_validation(
+    per_step: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Validator decision rollup — block if any step blocked, skip if
+    all skipped, approve otherwise."""
+    decisions = [
+        (e.get("validation") or {}).get("decision", "skip")
+        for e in per_step
+    ]
+    if any(d == "block" for d in decisions):
+        return {"artifact_type": "validation",
+                "decision": "block",
+                "reason": "step_blocked",
+                "step_decisions": decisions}
+    if all(d == "skip" for d in decisions):
+        return {"artifact_type": "validation",
+                "decision": "skip",
+                "reason": "all_skipped",
+                "step_decisions": decisions}
+    return {"artifact_type": "validation",
+            "decision": "approve",
+            "reason": "all_approved",
+            "step_decisions": decisions}
 
 
 def _filter_plan_targets(
