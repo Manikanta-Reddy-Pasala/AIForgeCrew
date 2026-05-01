@@ -54,24 +54,30 @@ def _git_apply_diff(
     if significant:
         return False, "", "dirty_worktree: " + significant[0][:120]
 
-    # Determine the upstream default branch so each ticket branches
-    # from a clean baseline (master/main) instead of stacking on the
-    # previous ticket's branch.
+    # Determine the upstream default branch so the FIRST apply for a
+    # given ticket branches from a clean baseline (master/main).
     base = "main"
     sb = _run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"])
     if sb.returncode == 0:
         ref = sb.stdout.strip().split("/")[-1]
         if ref:
             base = ref
-    # Switch to base, then create/reset the ticket branch from there.
-    # `-B` repositions an existing ticket branch, so re-runs are
-    # idempotent and never inherit a stale prior-run state.
-    co_base = _run(["git", "checkout", base])
-    if co_base.returncode != 0:
-        # Best-effort fall-through — if checkout fails the next checkout
-        # will also fail and we surface the error from there.
-        pass
-    sw = _run(["git", "checkout", "-B", branch, base])
+
+    # Branch policy:
+    #   - if `aiforge/<ticket>` already exists locally, just check it
+    #     out — multi-step Doer stacks commits onto the same branch.
+    #   - otherwise create it from `base` so we don't inherit any
+    #     stale state from another ticket.
+    branch_exists = _run(
+        ["git", "rev-parse", "--verify", "--quiet", branch],
+    ).returncode == 0
+    if branch_exists:
+        sw = _run(["git", "checkout", branch])
+    else:
+        co_base = _run(["git", "checkout", base])
+        if co_base.returncode != 0:
+            pass  # fall through; next checkout surfaces the error
+        sw = _run(["git", "checkout", "-B", branch, base])
     if sw.returncode != 0:
         return False, "", f"checkout: {sw.stderr.strip()}"
 
