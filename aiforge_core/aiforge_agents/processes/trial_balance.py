@@ -147,8 +147,13 @@ def validate_file(path: str | Path, *, expected: str = "") -> FileValidation:
 
     if expected and fv.detected_kind != "unknown" \
             and fv.detected_kind != expected:
-        fv.errors.append(
-            f"detected kind={fv.detected_kind} but expected={expected}"
+        # Tally-shaped OneShell files are common (chartOfAccounts
+        # exports preserve the Tally column layout). Treat the
+        # mismatch as a warning when the file LOOKS like trial-
+        # balance data — keeps the pipeline running on real exports.
+        fv.warnings.append(
+            f"detected kind={fv.detected_kind} but expected={expected} — "
+            "treating as Tally-shaped variant"
         )
     kind = expected or fv.detected_kind
     required = (
@@ -195,8 +200,88 @@ def validate_file(path: str | Path, *, expected: str = "") -> FileValidation:
     return fv
 
 
+# Tokens that signal "this row is the header" — Tally + OneShell variants.
+_HEADER_TOKENS: frozenset[str] = frozenset({
+    "particulars", "account", "accountname", "ledger", "name",
+    "opening", "openingbalance", "ob",
+    "debit", "dr", "credit", "cr",
+    "closing", "closingbalance", "cb",
+    "group", "parent", "parentname",
+    "code", "accountcode",
+})
+
+
+def _row_header_hits(row: tuple) -> int:
+    cells = [str(c or "").strip().lower().replace(" ", "")
+             for c in row if c]
+    return sum(1 for c in cells if c in _HEADER_TOKENS)
+
+
+def _detect_header_row(rows: list[tuple]) -> tuple[int, list[str]]:
+    """Scan first ~12 rows. Find the contiguous block of "header-like"
+    rows (any row that has at least 1 known TB token) and merge them
+    column-wise.
+
+    Real Tally exports stack 3 rows of header: row N has `Particulars`
+    in col 0, row N+1 has `Opening / Transactions / Closing` spanning
+    several cols, row N+2 has `Balance / Debit / Credit / Balance`.
+    Merging the three columnar gives proper field names like
+    `Opening Balance`, `Transactions Debit`, `Closing Balance`,
+    `Particulars`.
+
+    Returns (data_start_row_idx, merged_header_cells). Fallback to
+    row 0 when nothing matches."""
+    scan = min(12, len(rows))
+    if scan == 0:
+        return 0, []
+    # Per-row score
+    scores = [_row_header_hits(rows[i]) for i in range(scan)]
+    # Pick the first row with score >= 2 OR a contiguous block of rows
+    # that together have >= 3 hits. Then extend forward while next row
+    # has >= 1 hit and is non-data-looking.
+    start = -1
+    for i in range(scan):
+        if scores[i] >= 2:
+            start = i
+            break
+    if start == -1:
+        # Try block-merge: find first row with hits, walk forward
+        for i in range(scan):
+            if scores[i] >= 1:
+                start = i
+                break
+    if start == -1:
+        return 1, [str(c or "").strip() for c in rows[0]]
+    # Extend BACKWARD too — Tally puts `Particulars` (1 hit) one row
+    # above the `Opening / Transactions / Closing` (3 hits) row.
+    while start - 1 >= 0 and scores[start - 1] >= 1:
+        start -= 1
+    # Extend the block forward — accept any row with hits >= 1.
+    end = start
+    for j in range(start + 1, scan):
+        if scores[j] >= 1:
+            end = j
+        else:
+            break
+    width = max(len(r) for r in rows[start:end + 1])
+    merged: list[str] = []
+    for col in range(width):
+        parts: list[str] = []
+        for r in rows[start:end + 1]:
+            if col < len(r):
+                v = str(r[col] or "").strip()
+                if v and v.lower() not in {p.lower() for p in parts}:
+                    parts.append(v)
+        merged.append(" ".join(parts).strip())
+    return end + 1, merged
+
+
 def _read_table(path: Path) -> list[dict[str, Any]]:
     """Read .csv/.xlsx/.xls into list of {column: value}.
+
+    Auto-detects the header row inside the first 25 rows so real Tally
+    exports (with title + date-range banner above the column header)
+    parse without manual --header-row.
 
     .xlsx / .xls require the optional `openpyxl` / `xlrd` deps; if
     either is missing the file must be saved as CSV first.
@@ -204,7 +289,17 @@ def _read_table(path: Path) -> list[dict[str, Any]]:
     suf = path.suffix.lower()
     if suf == ".csv":
         with open(path, "r", encoding="utf-8-sig") as f:
-            return list(csv.DictReader(f))
+            raw_rows = [tuple(row) for row in csv.reader(f)]
+        if not raw_rows:
+            return []
+        data_start, header = _detect_header_row(raw_rows)
+        out: list[dict[str, Any]] = []
+        for row in raw_rows[data_start:]:
+            out.append({
+                header[i]: row[i] if i < len(row) else ""
+                for i in range(len(header))
+            })
+        return out
     if suf in (".xlsx", ".xlsm"):
         try:
             from openpyxl import load_workbook
@@ -215,10 +310,13 @@ def _read_table(path: Path) -> list[dict[str, Any]]:
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
             return []
-        header = [str(c or "").strip() for c in rows[0]]
+        data_start, header = _detect_header_row(rows)
         out: list[dict[str, Any]] = []
-        for row in rows[1:]:
-            out.append({header[i]: row[i] if i < len(row) else "" for i in range(len(header))})
+        for row in rows[data_start:]:
+            out.append({
+                header[i]: row[i] if i < len(row) else ""
+                for i in range(len(header))
+            })
         return out
     if suf == ".xls":
         try:
@@ -238,12 +336,27 @@ def _read_table(path: Path) -> list[dict[str, Any]]:
 
 
 def _pick(d: dict[str, Any], *keys: str) -> Any:
-    """First non-empty value for any of the given (case-insensitive) keys."""
-    lower = {k.lower(): k for k in d.keys()}
+    """First non-empty value for any of the given keys.
+
+    Match priority:
+      1. exact case-insensitive
+      2. case-insensitive substring contains (so `_pick("debit")` lands
+         on `Transactions Debit`)
+    """
+    real_keys = {k.lower(): k for k in d.keys()}
+    # Pass 1: exact
     for k in keys:
-        real = lower.get(k.lower())
+        real = real_keys.get(k.lower())
         if real and d.get(real) not in (None, ""):
             return d[real]
+    # Pass 2: substring (longest needle wins to disambiguate
+    # "credit" vs "transactions credit" vs "closing balance" vs "balance")
+    needles = sorted(keys, key=len, reverse=True)
+    for needle in needles:
+        nl = needle.lower()
+        for col_low, real in real_keys.items():
+            if nl in col_low and d.get(real) not in (None, ""):
+                return d[real]
     return ""
 
 
@@ -410,18 +523,24 @@ def _doc_to_tbrow(doc: dict) -> TBRow:
 
 
 def parse_oneshell(path: Path) -> list[TBRow]:
+    """Tolerant OneShell parser. Accepts both:
+      - Native OneShell schema (accountName / accountCode / closingBalance …)
+      - Tally-shaped exports (Particulars / Opening Balance / Closing Balance …)
+        which is what `chartOfAccounts` exports look like in practice.
+    """
     rows = _read_table(path)
     out: list[TBRow] = []
     for r in rows:
-        name = str(_pick(r, "accountName", "name", "Account", "ledger") or "").strip()
+        name = str(_pick(r, "accountName", "name", "particulars",
+                         "account", "ledger") or "").strip()
         if not name:
             continue
-        parent = str(_pick(r, "parentName", "parent") or "").strip()
+        parent = str(_pick(r, "parentName", "parent", "group") or "").strip()
         code = str(_pick(r, "accountCode", "code") or "").strip()
-        ob = to_decimal(_pick(r, "openingBalance", "opening"))
-        dr = to_decimal(_pick(r, "periodDebit", "debit", "Dr"))
-        cr = to_decimal(_pick(r, "periodCredit", "credit", "Cr"))
-        cb = to_decimal(_pick(r, "closingBalance", "closing"))
+        ob = to_decimal(_pick(r, "openingBalance", "opening", "ob"))
+        dr = to_decimal(_pick(r, "periodDebit", "debit", "dr"))
+        cr = to_decimal(_pick(r, "periodCredit", "credit", "cr"))
+        cb = to_decimal(_pick(r, "closingBalance", "closing", "cb"))
         if all(v == 0.0 for v in (ob, dr, cr, cb)):
             continue
         out.append(TBRow(
