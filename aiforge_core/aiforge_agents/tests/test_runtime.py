@@ -6,7 +6,19 @@ from aiforge_core.aiforge_agents.runtime import agent_runner, tool_registry
 
 
 def test_run_archetype_calls_run() -> None:
-    out = agent_runner.run_archetype("understander", ctx={})
+    from unittest.mock import patch
+    fake = {
+        "problem": "test", "knowns": [], "unknowns": [],
+        "risks": [], "ambiguities": [],
+    }
+    with patch(
+        "aiforge_core.aiforge_agents.runtime.llm_client.call_json",
+        return_value=fake,
+    ), patch(
+        "aiforge_core.aiforge_agents.memory.code_context.query",
+        return_value="ctx_md",
+    ):
+        out = agent_runner.run_archetype("understander", ctx={})
     assert out["artifact_type"] == "understanding"
 
 
