@@ -27,14 +27,22 @@ def register(name: str) -> Callable[[type], type]:
     return _wrap
 
 
-def build(name: str, **ctx):
-    """Instantiate archetype `name` with ctx. KeyError if unknown."""
+def build(name: str, *, repo_path=None, **ctx):
+    """Instantiate archetype `name`. Pulls model/sampling/grammar from
+    config (per-repo agents.yaml > global ~/.aiforge/agents.yaml >
+    bundled defaults). KeyError if unknown."""
     if name not in _REG:
         raise KeyError(
             f"archetype '{name}' not registered. "
             f"known: {sorted(_REG)}"
         )
-    return _REG[name](**ctx)
+    inst = _REG[name](**ctx)
+    # Layered config: defaults < global < per-repo override.
+    from aiforge_core.aiforge_agents import config as agent_cfg
+    from aiforge_core.aiforge_agents import defaults as agent_defaults
+    agent_defaults.load(name).merge_into(inst)
+    agent_cfg.load(name, repo_path=repo_path).merge_into(inst)
+    return inst
 
 
 def known() -> list[str]:

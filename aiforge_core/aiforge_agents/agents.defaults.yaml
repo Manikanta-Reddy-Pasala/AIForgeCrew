@@ -1,0 +1,70 @@
+# Bundled archetype defaults. Override via ~/.aiforge/agents.yaml
+# (global) or <repo>/.aiforge/agents.yaml (per-repo).
+# Lookup order: per-repo > global > this file > BaseArchetype field defaults.
+
+archetypes:
+  understander:
+    model: qwen2.5-14b-instruct
+    temperature: 0.3
+    top_p: 0.9
+    grammar: understanding.json
+    max_tokens: 4096
+    prompt_version: v1
+
+  planner:
+    model: deepseek-r1-distill-32b   # reasoning model
+    temperature: 0.3
+    top_p: 0.9
+    grammar: plan.gbnf
+    max_tokens: 6000
+    prompt_version: v1
+
+  verifier:
+    model: qwen2.5-14b-instruct
+    temperature: 0.0
+    grammar: verify.json
+    max_tokens: 2048
+    prompt_version: v1
+
+  grounder:
+    model: qwen2.5-3b-instruct       # tiny ambig-resolver only
+    temperature: 0.0
+    grammar: ground.json
+    max_tokens: 1024
+    prompt_version: v1
+
+  doer:
+    model: qwen3-coder-next
+    temperature: 0.2
+    top_p: 0.95
+    repetition_penalty: 1.05
+    grammar: udiff.gbnf
+    max_tokens: 8000
+    prompt_version: v1
+
+  tester:
+    model: qwen2.5-coder-14b
+    temperature: 0.1
+    top_p: 0.9
+    grammar: tests.json
+    max_tokens: 4000
+    prompt_version: v1
+
+  architect:
+    model: deepseek-r1-distill-32b
+    temperature: 0.0
+    grammar: review.json
+    max_tokens: 4000
+    prompt_version: v1
+
+  coordinator:
+    model: qwen2.5-14b-instruct
+    temperature: 0.2
+    max_tokens: 4096
+    prompt_version: v1
+
+  learner:
+    model: ""                        # heuristic by default; override for distillation
+    temperature: 0.0
+    max_tokens: 2048
+    prompt_version: v1

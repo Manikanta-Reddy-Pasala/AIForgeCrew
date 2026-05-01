@@ -8,13 +8,10 @@ from typing import Any
 from aiforge_core.aiforge_agents.base import BaseArchetype
 from aiforge_core.aiforge_agents.registry import register
 
-
 @register("coordinator")
 @dataclass
 class Coordinator(BaseArchetype):
     name: str = "coordinator"
-    model: str = "qwen2.5-14b-instruct"
-    temperature: float = 0.2
 
     def run(self, *, ctx: dict[str, Any]) -> dict[str, Any]:
         return {"artifact_type": "coordination",
