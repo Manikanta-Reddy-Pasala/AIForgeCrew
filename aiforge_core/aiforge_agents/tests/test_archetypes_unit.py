@@ -163,6 +163,35 @@ def test_render_failures_block_custom_header() -> None:
     assert out.startswith("# CUSTOM")
 
 
+# ─────────── web_fetch (URL auto-learn) ───────────────────────────────
+
+def test_extract_urls_finds_http_https() -> None:
+    from aiforge_core.aiforge_agents.runtime import web_fetch as wf
+    urls = wf.extract_urls(
+        "see https://example.com/docs and http://api.dev/v1, plus "
+        "an irrelevant ftp://nope and a duplicate https://example.com/docs."
+    )
+    assert urls == ["https://example.com/docs", "http://api.dev/v1"]
+
+
+def test_extract_urls_strips_trailing_punct() -> None:
+    from aiforge_core.aiforge_agents.runtime import web_fetch as wf
+    assert wf.extract_urls("see https://example.com/x.") == [
+        "https://example.com/x",
+    ]
+
+
+def test_extract_urls_empty_input() -> None:
+    from aiforge_core.aiforge_agents.runtime import web_fetch as wf
+    assert wf.extract_urls("") == []
+    assert wf.extract_urls("no urls here at all") == []
+
+
+def test_fetch_and_summarise_no_urls_returns_empty() -> None:
+    from aiforge_core.aiforge_agents.runtime import web_fetch as wf
+    assert wf.fetch_and_summarise([]) == ""
+
+
 # ─────────── Doer ─────────────────────────────────────────────────────
 
 def test_doer_skips_when_no_write_step() -> None:

@@ -15,6 +15,7 @@ class Understander(BaseArchetype):
 
     def run(self, *, ctx: dict[str, Any]) -> dict[str, Any]:
         from aiforge_core.aiforge_agents.runtime import llm_client
+        from aiforge_core.aiforge_agents.runtime import web_fetch
         from aiforge_core.aiforge_agents.memory import code_context
 
         title = ctx.get("title", "")
@@ -26,6 +27,18 @@ class Understander(BaseArchetype):
             ctx_md = code_context.query(f"{title}\n\n{body}", repo=repo)
         except Exception as exc:
             ctx_md = f"(context query failed: {exc})"
+
+        # Auto-learn from any URLs in the ticket — fetch each page,
+        # summarise via LLM, append to context_md as a dedicated section
+        # so Planner/Doer/Tester all see the same external knowledge.
+        try:
+            urls = web_fetch.extract_urls(f"{title}\n{body}")
+            if urls:
+                ext_md = web_fetch.fetch_and_summarise(urls)
+                if ext_md:
+                    ctx_md = (ctx_md or "") + "\n\n" + ext_md
+        except Exception:
+            pass
 
         system = (
             "You analyze a software ticket and produce a structured understanding. "
