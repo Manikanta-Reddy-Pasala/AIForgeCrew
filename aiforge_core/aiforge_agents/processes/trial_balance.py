@@ -273,21 +273,70 @@ def parse_tally(path: Path) -> list[TBRow]:
 
 # ─────────── live OneShell DB fetcher ─────────────────────────────────
 
+def fetch_oneshell_via_api(
+    *, business_id: str, env: str = "qa",
+    from_date: str = "", to_date: str = "",
+    financial_year: int | None = None,
+) -> list[TBRow]:
+    """Pull OneShell trial-balance rows by calling PosClientBackend's
+    `/trialBalance` REST endpoint. This is the AUTHORITATIVE source —
+    PCB computes TB on-demand from transactions; chartOfAccounts in
+    Mongo only holds opening balances.
+
+    Endpoint base via env var:
+      AIFORGE_PCB_API_BASE  (default http://localhost:8090/v1/api)
+
+    Two endpoints supported:
+      - /trialBalance?businessId=...&fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD
+      - /trialBalance/financialYear?businessId=...&financialYear=2025
+    """
+    import os
+    import httpx
+    base = os.environ.get(
+        "AIFORGE_PCB_API_BASE", "http://localhost:8090/v1/api",
+    ).rstrip("/")
+    params: dict[str, Any] = {"businessId": business_id}
+    if financial_year:
+        url = base + "/trialBalance/financialYear"
+        params["financialYear"] = financial_year
+    else:
+        url = base + "/trialBalance"
+        if from_date:
+            params["fromDate"] = from_date
+        if to_date:
+            params["toDate"] = to_date
+    r = httpx.get(url, params=params, timeout=60.0)
+    r.raise_for_status()
+    rows: list[TBRow] = []
+    for entry in r.json() or []:
+        rows.append(TBRow(
+            code=str(entry.get("code") or "").strip(),
+            name=str(entry.get("name") or "").strip(),
+            parent=str(entry.get("parentName") or "").strip(),
+            opening=to_decimal(entry.get("openingBalance")),
+            debit=to_decimal(entry.get("debit") or entry.get("periodDebit")),
+            credit=to_decimal(entry.get("credit") or entry.get("periodCredit")),
+            closing=to_decimal(entry.get("closingBalance")),
+        ))
+    return rows
+
+
 def fetch_oneshell_from_mongo(
     *, business_id: str, env: str = "qa",
     fy_start: str | None = None,
 ) -> list[TBRow]:
-    """Pull canonical OneShell trial-balance rows from MongoDB.
+    """Direct Mongo fallback when PCB API isn't reachable.
+
+    NOTE: chartOfAccounts only has openingBalance; closing/period are
+    computed from transactions. Use `fetch_oneshell_via_api()` for the
+    authoritative full trial balance. This fetcher is best-effort —
+    useful when only opening balances are needed (e.g., FY-start sanity
+    check).
 
     Connection priority:
-      1. AIFORGE_MONGO_URI env var (full URI)
-      2. AIFORGE_MONGODB_SERVICE_URL — HTTP gateway (CLAUDE.md mandates
-         MongoDbService for prod). Hits /v1/aggregate or /v1/find.
-      3. Fallback to mongodb://localhost:27017 (dev convenience).
-
-    Reads the `chartOfAccounts` collection scoped by businessId and
-    aggregates monthly closing-balance amounts from
-    `monthlyTrialBalanceAmounts` (or `monthlyClosingBalances` per env).
+      1. AIFORGE_MONGODB_SERVICE_URL — HTTP gateway (CLAUDE.md mandate).
+      2. AIFORGE_MONGO_URI — direct pymongo URI.
+      3. mongodb://localhost:27017/oneshell fallback.
     """
     import os
     rows: list[TBRow] = []

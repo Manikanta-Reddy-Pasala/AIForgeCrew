@@ -700,12 +700,24 @@ def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
             bid = m.group(0)
         o_db: list = []
         if bid:
+            # Authoritative path: PCB's /trialBalance HTTP endpoint
+            # (computes from transactions). Falls back to direct Mongo
+            # which only has opening balances when PCB API unreachable.
+            import datetime as _dt
+            today = _dt.date.today()
+            fy_year = today.year + (1 if today.month >= 4 else 0)
             try:
-                o_db = tb.fetch_oneshell_from_mongo(
+                o_db = tb.fetch_oneshell_via_api(
                     business_id=bid, env=env,
+                    financial_year=fy_year,
                 )
             except Exception:
-                o_db = []
+                try:
+                    o_db = tb.fetch_oneshell_from_mongo(
+                        business_id=bid, env=env,
+                    )
+                except Exception:
+                    o_db = []
         if o_db:
             three = tb.reconcile_3way(
                 t_rows, o_file, o_db, env=env, business_id=bid,
