@@ -60,3 +60,4 @@ web/node_modules/
 graphify-out/cache/
 graphify-out/*.log
 graphify-out/
+.playwright-mcp/
