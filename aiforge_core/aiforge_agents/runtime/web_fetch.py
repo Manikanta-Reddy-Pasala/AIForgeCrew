@@ -90,14 +90,21 @@ def summarise(url: str, text: str, *, model: str = "",
         return text[:max_chars]
 
 
-def fetch_and_summarise(urls: Iterable[str]) -> str:
-    """For each URL, fetch + summarise + render as a markdown block.
-
-    Empty input or all-failed fetches return ''. Caller can drop the
-    block into Understander's prompt directly.
+def fetch_and_summarise(urls: Iterable[str], *,
+                        ticket_id: str = "",
+                        repo: str = "") -> str:
+    """For each URL: cache-or-fetch + summarise + render markdown block,
+    AND persist into Neo4j as WebDoc_v2 with -[:CITED_BY]-> Ticket
+    (best-effort). Cache hits skip both fetch and LLM, killing repeat
+    cost across tickets that reference the same URL.
     """
     chunks: list[str] = []
     for u in list(urls)[:5]:  # cap to 5 URLs per ticket
+        cached = _load_webdoc(u)
+        if cached:
+            chunks.append(f"### {u}\n{cached}")
+            _link_webdoc(u, ticket_id=ticket_id, repo=repo)
+            continue
         text = fetch_text(u)
         if not text:
             continue
@@ -105,6 +112,97 @@ def fetch_and_summarise(urls: Iterable[str]) -> str:
         if not summary:
             continue
         chunks.append(f"### {u}\n{summary}")
+        _save_webdoc(u, summary=summary, raw=text)
+        _link_webdoc(u, ticket_id=ticket_id, repo=repo)
     if not chunks:
         return ""
     return "## External references (auto-fetched)\n\n" + "\n\n".join(chunks) + "\n"
+
+
+# ─────────── Neo4j cache (best-effort) ────────────────────────────────
+
+def _driver():
+    import os
+    try:
+        from neo4j import GraphDatabase
+    except Exception:
+        return None
+    try:
+        return GraphDatabase.driver(
+            os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
+            auth=(
+                os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
+                os.environ.get("AIFORGE_NEO4J_PASSWORD", "password"),
+            ),
+        )
+    except Exception:
+        return None
+
+
+def _load_webdoc(url: str) -> str:
+    drv = _driver()
+    if drv is None:
+        return ""
+    try:
+        with drv.session() as s:
+            row = s.run(
+                "MATCH (d:WebDoc_v2 {url: $u}) "
+                "WHERE d.fetched_at > datetime() - duration('P14D') "
+                "RETURN d.summary AS s LIMIT 1",
+                u=url,
+            ).single()
+            return row["s"] if row else ""
+    except Exception:
+        return ""
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
+
+
+def _save_webdoc(url: str, *, summary: str, raw: str) -> None:
+    drv = _driver()
+    if drv is None:
+        return
+    try:
+        with drv.session() as s:
+            s.run(
+                "MERGE (d:WebDoc_v2 {url: $u}) "
+                "SET d.summary = $sum, "
+                "    d.raw_excerpt = $raw, "
+                "    d.fetched_at = datetime(), "
+                "    d.schema_version = 'codemem-v1'",
+                u=url, sum=summary[:4000], raw=raw[:8000],
+            )
+    except Exception:
+        pass
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
+
+
+def _link_webdoc(url: str, *, ticket_id: str, repo: str) -> None:
+    if not ticket_id:
+        return
+    drv = _driver()
+    if drv is None:
+        return
+    try:
+        with drv.session() as s:
+            s.run(
+                "MATCH (d:WebDoc_v2 {url: $u}) "
+                "MERGE (t:Ticket {identifier: $tid}) "
+                "ON CREATE SET t.repo = $repo, t.created_at = datetime() "
+                "MERGE (d)-[:CITED_BY]->(t)",
+                u=url, tid=ticket_id, repo=repo or "",
+            )
+    except Exception:
+        pass
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass

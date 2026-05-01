@@ -34,7 +34,11 @@ class Understander(BaseArchetype):
         try:
             urls = web_fetch.extract_urls(f"{title}\n{body}")
             if urls:
-                ext_md = web_fetch.fetch_and_summarise(urls)
+                ext_md = web_fetch.fetch_and_summarise(
+                    urls,
+                    ticket_id=ctx.get("ticket_id", self.ticket_id) or "",
+                    repo=repo,
+                )
                 if ext_md:
                     ctx_md = (ctx_md or "") + "\n\n" + ext_md
         except Exception:

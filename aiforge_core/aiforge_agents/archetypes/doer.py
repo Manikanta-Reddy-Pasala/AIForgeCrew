@@ -8,6 +8,81 @@ from typing import Any
 from aiforge_core.aiforge_agents.base import BaseArchetype
 from aiforge_core.aiforge_agents.registry import register
 
+def memory_lookup(*, repo: str, query: str, k: int = 8) -> list[dict]:
+    """Active mid-task retrieval — agents call this when they hit an
+    unknown reference (a class/method/concept they need but can't find
+    in the seeded context).
+
+    Returns top-k {file_path, fqname, signature} hits combining vector +
+    fulltext + 1-hop graph expansion. Idempotent + side-effect-free.
+
+    Public entry point for the runtime/tool_registry.
+    """
+    try:
+        import os
+        from neo4j import GraphDatabase
+        from aiforge_memory.query.translator import (
+            _embed_query, _vector_topk, _fulltext_symbols,
+            _expand_one_hop, _rrf_fuse,
+        )
+    except Exception:
+        return []
+    try:
+        drv = GraphDatabase.driver(
+            os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
+            auth=(
+                os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
+                os.environ.get("AIFORGE_NEO4J_PASSWORD", "password"),
+            ),
+        )
+    except Exception:
+        return []
+    try:
+        try:
+            vec = _embed_query(query)
+            vec_files = [
+                r.get("file_path") for r in _vector_topk(drv, repo=repo, vec=vec, k=k * 3)
+                if r.get("file_path")
+            ]
+        except Exception:
+            vec_files = []
+        try:
+            ft_syms, ft_files = _fulltext_symbols(
+                drv, repo=repo, text=query, k=k * 3,
+            )
+        except Exception:
+            ft_syms, ft_files = [], []
+        files = _rrf_fuse(ranked_lists=[vec_files, ft_files])[:k]
+        try:
+            files = files + _expand_one_hop(drv, repo=repo, files=files[:3])
+        except Exception:
+            pass
+        out: list[dict] = []
+        seen = set()
+        with drv.session() as s:
+            for fp in files[:k]:
+                if fp in seen:
+                    continue
+                seen.add(fp)
+                row = s.run(
+                    "MATCH (f:File_v2 {repo:$r, path:$p})-[:DEFINES]->(sym:Symbol_v2) "
+                    "RETURN sym.fqname AS fq, sym.signature AS sig "
+                    "LIMIT 5",
+                    r=repo, p=fp,
+                ).data()
+                out.append({
+                    "file_path": fp,
+                    "symbols": [{"fqname": r["fq"], "signature": r["sig"]}
+                                for r in row],
+                })
+        return out
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
+
+
 def _git_apply_diff(
     *, repo_path: str, ticket_id: str, udiff: str,
 ) -> tuple[bool, str, str]:
