@@ -95,15 +95,50 @@ def extract_imports(text: str) -> set[str]:
     return out
 
 
+# Stdlib + ubiquitous-framework prefixes — always pass.
+# Anything from these prefixes is treated as a known import without
+# graph or manifest lookup. Keep tight (avoid blanket `com.`/`org.`).
+_STDLIB_IMPORT_PREFIXES: tuple[str, ...] = (
+    # Java / Kotlin runtime
+    "java.", "javax.", "jakarta.", "kotlin.", "kotlinx.",
+    # Spring family
+    "org.springframework.",
+    # Reactive
+    "reactor.", "io.reactivex.", "rx.",
+    # Logging
+    "org.slf4j.", "ch.qos.logback.", "org.apache.logging.",
+    # Jackson / serialization
+    "com.fasterxml.jackson.", "com.google.gson.",
+    # Lombok
+    "lombok.",
+    # Swagger / OpenAPI
+    "io.swagger.", "springfox.",
+    # Apache commons + core
+    "org.apache.", "org.eclipse.",
+    # JUnit / Mockito / AssertJ
+    "org.junit.", "org.mockito.", "org.assertj.", "org.hamcrest.",
+    # Mongo / NATS / Redis client SDKs
+    "com.mongodb.", "io.nats.", "io.lettuce.", "redis.clients.",
+    # Google + Guava
+    "com.google.common.", "com.google.protobuf.",
+)
+
+
 @dataclass
 class HallucinatedImportDetector:
     """Imports must resolve in AiForgeMemory IMPORTS graph OR be in
-    a known package manifest (pom/maven, package.json, requirements.txt).
+    a known package manifest (pom/maven, package.json, requirements.txt)
+    OR be a sibling created elsewhere in the same plan.
     Otherwise = hallucination = block before applying.
     """
     repo: str = ""
     driver: Any = None      # neo4j driver, can be None for unit tests
     known_packages: set[str] = field(default_factory=set)
+    # FQNs (e.g. com.pos.backend.feature.ledger.LedgerCategoryService)
+    # being created elsewhere in this plan — treat as known to avoid
+    # false positives when a Doer-emitted file imports a sibling that
+    # another plan step is going to create.
+    plan_create_fqns: set[str] = field(default_factory=set)
 
     def check(self, diff_text: str) -> list[ft.FailureMatch]:
         imports = extract_imports(diff_text)
@@ -124,23 +159,32 @@ class HallucinatedImportDetector:
         ]
 
     def _is_known(self, imp: str) -> bool:
-        # Standard library & built-ins always pass.
-        if imp.startswith(("java.", "javax.", "jakarta.", "kotlin.")):
+        # Standard library & ubiquitous-framework prefixes
+        if imp.startswith(_STDLIB_IMPORT_PREFIXES):
             return True
         if imp.startswith("std::") or imp in {"os", "sys", "json", "re", "time"}:
             return True
+        # Sibling files being created in this same plan
+        if imp in self.plan_create_fqns:
+            return True
+        # Wildcard / package-only import where any sibling in the
+        # package is being created in this plan
+        for fqn in self.plan_create_fqns:
+            if fqn.startswith(imp + ".") or imp.startswith(fqn + "."):
+                return True
         # Operator-supplied manifest hits
         for pkg in self.known_packages:
             if imp == pkg or imp.startswith(pkg + ".") or imp.startswith(pkg + "/"):
                 return True
-        # Graph-resolved
+        # Graph-resolved — class FQN ENDS WITH /Class.java path suffix
         if self.driver is None:
             return False
         with self.driver.session() as s:
+            needle = imp.replace(".", "/") + ".java"
             row = s.run(
-                "MATCH (f:File_v2 {repo:$repo})-[:IMPORTS]->(g:File_v2) "
-                "WHERE g.path CONTAINS $needle RETURN g.path LIMIT 1",
-                repo=self.repo, needle=imp.replace(".", "/"),
+                "MATCH (f:File_v2 {repo:$repo}) "
+                "WHERE f.path ENDS WITH $needle RETURN f.path LIMIT 1",
+                repo=self.repo, needle="/" + needle.split("/")[-1],
             ).single()
         return row is not None
 

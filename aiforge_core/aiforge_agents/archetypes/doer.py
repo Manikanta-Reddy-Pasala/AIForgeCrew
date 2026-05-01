@@ -8,6 +8,30 @@ from typing import Any
 from aiforge_core.aiforge_agents.base import BaseArchetype
 from aiforge_core.aiforge_agents.registry import register
 
+def _plan_create_fqns(plan: dict[str, Any]) -> set[str]:
+    """Derive Java/Kotlin FQNs from action=create steps.
+
+    Path `src/main/java/com/pos/backend/feature/ledger/LedgerCategoryService.java`
+    → FQN `com.pos.backend.feature.ledger.LedgerCategoryService`.
+    """
+    out: set[str] = set()
+    for step in (plan.get("steps") or []):
+        if step.get("action") != "create":
+            continue
+        tgt = (step.get("target") or "").strip()
+        if not tgt or not tgt.endswith((".java", ".kt")):
+            continue
+        for prefix in ("src/main/java/", "src/test/java/",
+                       "src/main/kotlin/", "src/test/kotlin/"):
+            i = tgt.find(prefix)
+            if i != -1:
+                rel = tgt[i + len(prefix):]
+                fqn = rel.rsplit(".", 1)[0].replace("/", ".")
+                out.add(fqn)
+                break
+    return out
+
+
 @register("doer")
 @dataclass
 class Doer(BaseArchetype):
@@ -102,9 +126,35 @@ class Doer(BaseArchetype):
         # Detectors
         problems: list[dict] = []
 
-        imp_det = detectors.HallucinatedImportDetector(repo=repo, driver=None)
+        # Build set of FQNs being created elsewhere in this plan so the
+        # import detector does not false-positive on sibling-file refs.
+        plan_create_fqns = _plan_create_fqns(plan)
+
+        # Optional Neo4j driver for graph-resolved imports
+        try:
+            import os
+            from neo4j import GraphDatabase
+            n4j = GraphDatabase.driver(
+                os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
+                auth=(
+                    os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
+                    os.environ.get("AIFORGE_NEO4J_PASSWORD", "password"),
+                ),
+            )
+        except Exception:
+            n4j = None
+
+        imp_det = detectors.HallucinatedImportDetector(
+            repo=repo, driver=n4j,
+            plan_create_fqns=plan_create_fqns,
+        )
         for hit in imp_det.check(udiff):
             problems.append({"mode": hit.mode.id, "evidence": hit.evidence})
+        if n4j is not None:
+            try:
+                n4j.close()
+            except Exception:
+                pass
 
         # Diff hash check only valid for `edit` (existing file content)
         if action == "edit" and file_text:

@@ -42,6 +42,13 @@ class Grounder(BaseArchetype):
                     "unresolved_refs": [],
                     "error": f"neo4j_driver: {exc}"}
 
+        # Order-aware: targets created by earlier steps in this same
+        # plan are valid for later steps' read|edit|test references.
+        created_so_far: set[str] = set()
+
+        def _norm(p: str) -> str:
+            return p[p.find("src/"):] if "/src/" in p else p
+
         try:
             with drv.session() as s:
                 for st in steps:
@@ -49,24 +56,27 @@ class Grounder(BaseArchetype):
                     action = (st.get("action") or "").lower()
                     if not tgt or action in {"search", "run"}:
                         continue
-                    # Strip worktree prefix if any
-                    if "/src/" in tgt:
-                        tgt_norm = tgt[tgt.find("src/"):]
-                    else:
-                        tgt_norm = tgt
+                    tgt_norm = _norm(tgt)
 
                     # `create` action: target is a NEW file. Validate
-                    # only that the parent directory exists (any file
-                    # currently inside that dir is OK).
+                    # only that the parent directory exists OR that the
+                    # *grandparent* exists (allowing a fresh feature
+                    # package to be created under an existing tree).
                     if action == "create":
-                        parent = "/".join(tgt_norm.split("/")[:-1])
+                        parts = tgt_norm.split("/")
+                        parent = "/".join(parts[:-1])
+                        grandparent = "/".join(parts[:-2])
                         if not parent:
                             continue
+                        # Parent OR grandparent has any file? Pass.
                         row = s.run(
                             "MATCH (f:File_v2 {repo: $repo}) "
-                            "WHERE f.path STARTS WITH $prefix "
+                            "WHERE f.path STARTS WITH $p "
+                            "   OR f.path STARTS WITH $g "
                             "RETURN f.path AS p LIMIT 1",
-                            repo=repo, prefix=parent + "/",
+                            repo=repo,
+                            p=parent + "/",
+                            g=(grandparent + "/") if grandparent else "__none__/",
                         ).single()
                         if row is None:
                             unresolved.append({
@@ -75,9 +85,14 @@ class Grounder(BaseArchetype):
                                 "action": action,
                                 "reason": "parent_dir_missing",
                             })
+                        else:
+                            created_so_far.add(tgt_norm)
                         continue
 
-                    # read|edit|test: file must exist
+                    # read|edit|test: file must exist (or be created
+                    # earlier in this same plan).
+                    if tgt_norm in created_so_far:
+                        continue
                     row = s.run(
                         "MATCH (f:File_v2 {repo: $repo}) "
                         "WHERE f.path = $p OR f.path ENDS WITH $suffix "

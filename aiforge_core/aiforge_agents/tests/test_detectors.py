@@ -86,6 +86,42 @@ def test_hallucinated_import_graph_resolves() -> None:
     assert hits == []
 
 
+def test_hallucinated_import_spring_lombok_swagger_pass() -> None:
+    """Standard frameworks must not be flagged as hallucinations."""
+    det = d.HallucinatedImportDetector(repo="r", driver=None)
+    diff = (
+        "+ import org.springframework.web.bind.annotation.RestController;\n"
+        "+ import org.springframework.http.ResponseEntity;\n"
+        "+ import lombok.RequiredArgsConstructor;\n"
+        "+ import io.swagger.v3.oas.annotations.tags.Tag;\n"
+        "+ import com.fasterxml.jackson.annotation.JsonProperty;\n"
+        "+ import org.slf4j.Logger;\n"
+    )
+    assert det.check(diff) == []
+
+
+def test_hallucinated_import_wildcard_strips_dot_star() -> None:
+    """`import org.springframework.web.bind.annotation.*;` must pass."""
+    det = d.HallucinatedImportDetector(repo="r", driver=None)
+    assert det.check("+ import org.springframework.web.bind.annotation.*;") == []
+
+
+def test_hallucinated_import_plan_create_sibling_passes() -> None:
+    """Imports of files being created in this same plan are not hallucinated."""
+    det = d.HallucinatedImportDetector(
+        repo="r", driver=None,
+        plan_create_fqns={
+            "com.pos.backend.feature.ledger.LedgerCategoryService",
+            "com.pos.backend.feature.ledger.LedgerCategoryDto",
+        },
+    )
+    diff = (
+        "+ import com.pos.backend.feature.ledger.LedgerCategoryService;\n"
+        "+ import com.pos.backend.feature.ledger.LedgerCategoryDto;\n"
+    )
+    assert det.check(diff) == []
+
+
 # ─────────── HallucinatedSymbol ──────────────────────────────────────
 
 def test_hallucinated_symbol_jdk_passes() -> None:

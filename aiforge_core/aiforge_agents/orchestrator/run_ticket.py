@@ -308,6 +308,8 @@ def run(*, repo: str, title: str, body: str,
         "verdict": verdict.get("verdict"),
         "grounded": grounding.get("resolved"),
         "unresolved_refs": grounding.get("unresolved_refs", []),
+        "allowed_files_count": len(allowed_files),
+        "allowed_files": allowed_files[:40],
         "understanding": u_slim,
         "plan": plan,
         "verifier": verdict,
@@ -384,23 +386,33 @@ def _fetch_allowed_files(*, repo: str, query: str, k: int = 80) -> list[str]:
     except Exception:
         return []
 
+    def _ok(p: str) -> bool:
+        """Drop noise: prior agent worktree dirs and dotfiles outside src."""
+        if not p:
+            return False
+        if ".aiforge-worktrees/" in p:
+            return False
+        if p.startswith(".aiforge/"):
+            return False
+        return True
+
     files: list[str] = []
     try:
         # Vector hits
         try:
             vec = _embed_query(query)
-            for r in _vector_topk(drv, repo=repo, vec=vec, k=k):
+            for r in _vector_topk(drv, repo=repo, vec=vec, k=k * 3):
                 fp = r.get("file_path")
-                if fp and fp not in files:
+                if _ok(fp) and fp not in files:
                     files.append(fp)
         except Exception:
             pass
 
         # Fulltext hits
         try:
-            _, ft_files = _fulltext_symbols(drv, repo=repo, text=query, k=k)
+            _, ft_files = _fulltext_symbols(drv, repo=repo, text=query, k=k * 3)
             for fp in ft_files:
-                if fp not in files:
+                if _ok(fp) and fp not in files:
                     files.append(fp)
         except Exception:
             pass
@@ -411,11 +423,11 @@ def _fetch_allowed_files(*, repo: str, query: str, k: int = 80) -> list[str]:
                 rows = list(s.run(
                     "MATCH (:Service {repo:$repo})-[:CONTAINS_FILE]->(f:File_v2) "
                     "RETURN f.path AS p LIMIT $k",
-                    repo=repo, k=k,
+                    repo=repo, k=k * 3,
                 ))
             for r in rows:
                 p = r["p"]
-                if p and p not in files:
+                if _ok(p) and p not in files:
                     files.append(p)
         except Exception:
             pass
