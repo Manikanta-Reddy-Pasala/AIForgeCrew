@@ -161,6 +161,65 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(g_dur * 1000),
     )
 
+    # Stage D — Doer (only when grounded; otherwise REPLAN per recovery)
+    doer_outcome: dict[str, Any] = {"skipped": True, "reason": "not_grounded"}
+    d_dur = 0.0
+    if grounding.get("resolved"):
+        breakers.begin_agent("doer")
+        d_agent = registry.build("doer", repo_path=None)
+        d_agent.repo = repo; d_agent.ticket_id = ticket_id
+        d_t0 = time.time()
+        doer_outcome = d_agent.run(ctx={
+            "plan": plan, "repo": repo,
+            "repo_path": _resolve_repo_path(repo),
+            "ticket_id": ticket_id,
+        })
+        d_dur = time.time() - d_t0
+        breakers.check_agent("doer")
+        learner.record_audit(
+            ticket_id=ticket_id, agent_role="doer",
+            event_type="agent_completed",
+            payload={"problems": len(doer_outcome.get("problems") or []),
+                     "blocked": doer_outcome.get("blocked_by_detectors", False)},
+            duration_ms=int(d_dur * 1000),
+        )
+
+    # Stage Vd — Validator (basic post-condition check)
+    breakers.begin_agent("validator")
+    val_agent = registry.build("validator", repo_path=None)
+    val_agent.repo = repo; val_agent.ticket_id = ticket_id
+    val_t0 = time.time()
+    validation = val_agent.run(ctx={"doer_outcome": doer_outcome})
+    val_dur = time.time() - val_t0
+    breakers.check_agent("validator")
+    learner.record_audit(
+        ticket_id=ticket_id, agent_role="validator",
+        event_type="agent_completed",
+        payload={"decision": validation.get("decision"),
+                 "checks": validation.get("checks")},
+        duration_ms=int(val_dur * 1000),
+    )
+
+    # Stage L — Learner (writes episodic + procedural; heuristic)
+    breakers.begin_agent("learner")
+    l_agent = registry.build("learner", repo_path=None)
+    l_agent.repo = repo; l_agent.ticket_id = ticket_id
+    l_t0 = time.time()
+    learning = l_agent.run(ctx={
+        "ticket_id": ticket_id, "repo": repo, "plan": plan,
+        "verifier_verdict": verdict, "grounding": grounding,
+        "doer_outcome": doer_outcome, "validation": validation,
+    })
+    l_dur = time.time() - l_t0
+    breakers.check_agent("learner")
+    learner.record_audit(
+        ticket_id=ticket_id, agent_role="learner",
+        event_type="agent_completed",
+        payload={"outcome": learning.get("outcome"),
+                 "task_class": learning.get("task_class")},
+        duration_ms=int(l_dur * 1000),
+    )
+
     total = time.time() - t0
     learner.record_episodic(
         ticket_id=ticket_id, stage="plan", agent_role="orchestrator",
@@ -170,10 +229,10 @@ def run(*, repo: str, title: str, body: str,
     )
 
     final_status = (
-        "failed" if breakers.tripped
-        else ("blocked" if not grounding.get("resolved") else "done")
+        "failed"  if breakers.tripped
+        else "blocked" if not grounding.get("resolved")
+        else ("approved" if validation.get("decision") == "approve" else "blocked")
     )
-    # Slim Understanding for UI (drop bulky context_md)
     u_slim = {k: v for k, v in understanding.items() if k != "context_md"}
     _update_ticket_status(ticket_id, final_status, metadata={
         "runtime": "aiforge_agents",
@@ -182,6 +241,9 @@ def run(*, repo: str, title: str, body: str,
             "planner":      round(p_dur, 2),
             "verifier":     round(v_dur, 2),
             "grounder":     round(g_dur, 2),
+            "doer":         round(d_dur, 2),
+            "validator":    round(val_dur, 2),
+            "learner":      round(l_dur, 2),
         },
         "latency_s": round(total, 2),
         "verdict": verdict.get("verdict"),
@@ -191,6 +253,9 @@ def run(*, repo: str, title: str, body: str,
         "plan": plan,
         "verifier": verdict,
         "grounding": grounding,
+        "doer": doer_outcome,
+        "validation": validation,
+        "learning": learning,
     })
 
     return {
@@ -201,16 +266,34 @@ def run(*, repo: str, title: str, body: str,
         "plan": plan,
         "verifier_verdict": verdict,
         "grounding": grounding,
+        "doer_outcome": doer_outcome,
+        "validation": validation,
+        "learning": learning,
         "latency_s": round(total, 2),
         "stages": {
             "understander_s": round(u_dur, 2),
             "planner_s":      round(p_dur, 2),
             "verifier_s":     round(v_dur, 2),
             "grounder_s":     round(g_dur, 2),
+            "doer_s":         round(d_dur, 2),
+            "validator_s":    round(val_dur, 2),
+            "learner_s":      round(l_dur, 2),
         },
         "circuit_breaker_tripped": breakers.tripped,
         "circuit_breaker_reason":  breakers.state.reason,
     }
+
+
+def _resolve_repo_path(repo_name: str) -> str:
+    """Best-effort: $AIFORGE_WORKTREE_ROOT/<repo_name> if it exists."""
+    import os
+    from pathlib import Path
+    root = os.environ.get(
+        "AIFORGE_WORKTREE_ROOT",
+        os.path.expanduser("~/codeRepo"),
+    )
+    p = Path(root) / repo_name
+    return str(p) if p.is_dir() else ""
 
 
 def main(argv: list[str] | None = None) -> int:

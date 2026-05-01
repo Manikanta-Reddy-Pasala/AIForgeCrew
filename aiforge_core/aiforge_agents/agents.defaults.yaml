@@ -34,12 +34,18 @@ archetypes:
     prompt_version: v1
 
   doer:
-    model: qwen3-coder-next
+    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.2
     top_p: 0.95
     repetition_penalty: 1.05
     grammar: udiff.gbnf
-    max_tokens: 8000
+    max_tokens: 6000
+    prompt_version: v1
+
+  validator:
+    model: ""           # heuristic-only in P1; LLM optional later
+    temperature: 0.0
+    max_tokens: 1024
     prompt_version: v1
 
   tester:
