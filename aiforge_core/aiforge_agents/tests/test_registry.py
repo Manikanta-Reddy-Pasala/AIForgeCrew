@@ -16,7 +16,8 @@ def test_all_archetypes_registered() -> None:
 def test_build_planner_picks_up_defaults() -> None:
     p = registry.build("planner")
     assert p.name == "planner"
-    assert p.model == "deepseek-r1-distill-32b"
+    # Bundled default points at the loaded Qwen-Coder-Next on Mac Studio
+    assert "Qwen3-Coder-Next" in p.model
     assert p.grammar == "plan.gbnf"
     assert p.temperature == 0.3
 

@@ -4,7 +4,7 @@
 
 archetypes:
   understander:
-    model: qwen2.5-14b-instruct
+    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.3
     top_p: 0.9
     grammar: understanding.json
@@ -12,7 +12,7 @@ archetypes:
     prompt_version: v1
 
   planner:
-    model: deepseek-r1-distill-32b   # reasoning model
+    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit   # reasoning model
     temperature: 0.3
     top_p: 0.9
     grammar: plan.gbnf
@@ -57,14 +57,14 @@ archetypes:
     prompt_version: v1
 
   architect:
-    model: deepseek-r1-distill-32b
+    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.0
     grammar: review.json
     max_tokens: 4000
     prompt_version: v1
 
   coordinator:
-    model: qwen2.5-14b-instruct
+    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.2
     max_tokens: 4096
     prompt_version: v1

@@ -13,6 +13,10 @@ from aiforge_core.aiforge_agents.registry import register
 class Grounder(BaseArchetype):
     name: str = "grounder"
 
+    # Grounder is rule-based; uses no LLM. Override default to "".
+    def __post_init__(self) -> None:
+        self.model = ""
+
     def run(self, *, ctx: dict[str, Any]) -> dict[str, Any]:
         """Rule-based: each plan step's `target` must exist in
         the AiForgeMemory File_v2 graph for this repo. No LLM."""
