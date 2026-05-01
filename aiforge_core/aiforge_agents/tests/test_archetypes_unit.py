@@ -192,6 +192,67 @@ def test_fetch_and_summarise_no_urls_returns_empty() -> None:
     assert wf.fetch_and_summarise([]) == ""
 
 
+# ─────────── Trial-balance validator ─────────────────────────────────
+
+def test_trial_balance_validate_file_missing(tmp_path) -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    fv = tb.validate_file(tmp_path / "nope.csv", expected="tally")
+    assert fv.ok is False
+    assert any("not found" in e for e in fv.errors)
+
+
+def test_trial_balance_validate_file_empty(tmp_path) -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    p = tmp_path / "empty.csv"
+    p.write_text("")
+    fv = tb.validate_file(p, expected="tally")
+    assert fv.ok is False
+    assert "empty file" in fv.errors
+
+
+def test_trial_balance_validate_file_bad_schema(tmp_path) -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    p = tmp_path / "bad-oneshell.csv"
+    p.write_text("colA,colB\n1,2\n")
+    fv = tb.validate_file(p, expected="oneshell")
+    assert fv.ok is False
+    assert any("missing any-of name column" in e for e in fv.errors)
+
+
+def test_trial_balance_validate_file_ok(tmp_path) -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    p = tmp_path / "tally.csv"
+    p.write_text("Particulars,Closing Balance\nCash,100.50\nBank,2000\n")
+    fv = tb.validate_file(p, expected="tally")
+    assert fv.ok is True, fv.errors
+    assert fv.row_count == 2
+    assert fv.detected_kind == "tally"
+
+
+def test_trial_balance_to_decimal_handles_paren_and_cr() -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    assert tb.to_decimal("(1,000.00)") == -1000.0
+    assert tb.to_decimal("500.00 CR") == -500.0
+    assert tb.to_decimal("500.00 DR") == 500.0
+    assert tb.to_decimal("") == 0.0
+    assert tb.to_decimal("not-a-number") == 0.0
+
+
+def test_trial_balance_reconcile_buckets(tmp_path) -> None:
+    from aiforge_core.aiforge_agents.processes import trial_balance as tb
+    t = [tb.TBRow(code="1100", name="Cash", closing=1000.0),
+         tb.TBRow(code="1200", name="Bank", closing=500.0),
+         tb.TBRow(code="9999", name="Suspense", closing=99.0)]
+    o = [tb.TBRow(code="1100", name="Cash", closing=1000.50),   # match
+         tb.TBRow(code="1200", name="Bank", closing=550.0)]      # diff
+    rec = tb.reconcile(t, o)
+    assert len(rec.matched) == 1
+    assert len(rec.diff) == 1
+    assert len(rec.large) == 0
+    assert len(rec.tally_only) == 1   # Suspense
+    assert rec.tally_only[0]["name"] == "Suspense"
+
+
 # ─────────── Doer ─────────────────────────────────────────────────────
 
 def test_doer_skips_when_no_write_step() -> None:

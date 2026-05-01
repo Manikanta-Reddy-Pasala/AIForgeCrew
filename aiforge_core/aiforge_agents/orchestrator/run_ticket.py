@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import uuid
@@ -661,15 +662,88 @@ def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
         from aiforge_core.aiforge_agents.processes import trial_balance as tb
         from pathlib import Path
         env = "prod" if "prod" in text else "qa"
+        # Stage 1: validate files first — clear schema feedback
+        fv_t = tb.validate_file(by_role["tally"]["file_path"], expected="tally")
+        fv_o = tb.validate_file(by_role["oneshell"]["file_path"], expected="oneshell")
+        validation_errors = []
+        for fv in (fv_t, fv_o):
+            for e in fv.errors:
+                validation_errors.append(f"{Path(fv.path).name}: {e}")
+        if validation_errors:
+            return {
+                "artifact_type": "doer_outcome",
+                "process": "trial_balance",
+                "env": env,
+                "applied": False,
+                "udiff": "",
+                "target": "trial-balance-report.md",
+                "problems": [{"mode": "file_validation",
+                              "evidence": e} for e in validation_errors],
+                "blocked_by_detectors": True,
+                "file_validation": {
+                    "tally": {"ok": fv_t.ok, "errors": fv_t.errors,
+                              "warnings": fv_t.warnings,
+                              "rows": fv_t.row_count},
+                    "oneshell": {"ok": fv_o.ok, "errors": fv_o.errors,
+                                 "warnings": fv_o.warnings,
+                                 "rows": fv_o.row_count},
+                },
+            }
+        # Stage 2: parse + optional Mongo fetch
         t_rows = tb.parse_tally(Path(by_role["tally"]["file_path"]))
-        o_rows = tb.parse_oneshell(Path(by_role["oneshell"]["file_path"]))
-        rec = tb.reconcile(t_rows, o_rows, env=env)
+        o_file = tb.parse_oneshell(Path(by_role["oneshell"]["file_path"]))
+        # Try to pull live OneShell rows from Mongo for a 3-way recon.
+        # Best-effort: if Mongo isn't reachable, fall back to 2-way.
+        bid = ""
+        m = re.search(r"\bb\d{14,}\b", text)  # business id heuristic
+        if m:
+            bid = m.group(0)
+        o_db: list = []
+        if bid:
+            try:
+                o_db = tb.fetch_oneshell_from_mongo(
+                    business_id=bid, env=env,
+                )
+            except Exception:
+                o_db = []
+        if o_db:
+            three = tb.reconcile_3way(
+                t_rows, o_file, o_db, env=env, business_id=bid,
+            )
+            md = tb.render_markdown_3way(three)
+            any_large = any([
+                three.file_vs_db.large,
+                three.tally_vs_file.large,
+                three.tally_vs_db.large,
+            ])
+            return {
+                "artifact_type": "doer_outcome",
+                "process": "trial_balance",
+                "mode": "3way",
+                "env": env,
+                "udiff": md,
+                "target": "trial-balance-report.md",
+                "file_vs_db_gap": three.file_vs_db.gap,
+                "tally_vs_file_gap": three.tally_vs_file.gap,
+                "tally_vs_db_gap":  three.tally_vs_db.gap,
+                "buckets": {
+                    "tally_vs_db_match": len(three.tally_vs_db.matched),
+                    "tally_vs_db_large": len(three.tally_vs_db.large),
+                    "file_vs_db_large":  len(three.file_vs_db.large),
+                },
+                "applied": False,
+                "problems": [],
+                "blocked_by_detectors": any_large,
+            }
+        # Plain 2-way fallback
+        rec = tb.reconcile(t_rows, o_file, env=env, business_id=bid)
         md = tb.render_markdown(rec)
         return {
             "artifact_type": "doer_outcome",
             "process": "trial_balance",
+            "mode": "2way",
             "env": env,
-            "udiff": md,                          # treated as the "diff" for UI
+            "udiff": md,
             "target": "trial-balance-report.md",
             "tally_total": rec.tally_total,
             "oneshell_total": rec.oneshell_total,

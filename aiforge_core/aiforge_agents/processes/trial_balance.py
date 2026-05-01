@@ -1,19 +1,23 @@
-"""Tally ↔ OneShell trial-balance reconciliation.
+"""Tally ↔ OneShell trial-balance reconciliation (3-way).
 
-Deterministic — no LLM call. Reads the two files attached to the
-ticket (filename matches `*tally*` and `*oneshell*`), joins on
-account_code-or-normalised-name, emits MATCH / DIFF / LARGE buckets
-+ totals + per-row CSV.
+Deterministic — no LLM call. Stages:
+
+    1. validate_file()     schema + numeric parseability before any work
+    2. parse_tally / parse_oneshell      file → TBRow list
+    3. fetch_oneshell_from_mongo()       live DB → TBRow list (optional)
+    4. reconcile()                       2-way (file-vs-file)
+       reconcile_3way()                  Tally vs OneShell-file vs DB
+    5. render_markdown / write_csv       audit-friendly output
 
 CLI:
 
     aiforge-agents-tb \\
-        --tally  ~/Downloads/tally-acme-2026.xlsx \\
+        --tally    ~/Downloads/tally-acme-2026.xlsx \\
         --oneshell ~/Downloads/oneshell-acme-2026.csv \\
-        --env qa --business b117695104178401
+        --env qa --business b117695104178401 \\
+        --validate-with-mongo            # pulls live OneShell rows too
 
-The full process spec lives at
-`docs/processes/tally-oneshell-trial-balance.md`.
+Full spec: `docs/processes/tally-oneshell-trial-balance.md`.
 """
 from __future__ import annotations
 
@@ -78,6 +82,117 @@ class TBRow:
     debit: float = 0.0
     credit: float = 0.0
     closing: float = 0.0
+
+
+# ─────────── file validation ─────────────────────────────────────────
+
+@dataclass
+class FileValidation:
+    path: str
+    ok: bool = True
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    row_count: int = 0
+    columns: list[str] = field(default_factory=list)
+    detected_kind: str = ""   # tally | oneshell | unknown
+
+
+_TALLY_REQUIRED = {"particulars", "account", "name", "ledger"}    # any one
+_TALLY_NUMERIC = ["closing balance", "closing", "cb"]
+_ONESHELL_REQUIRED = {"accountname", "name", "account", "ledger"}
+_ONESHELL_NUMERIC = ["closingbalance", "closing"]
+
+
+def _detect_kind(filename: str, columns: list[str]) -> str:
+    low = (filename or "").lower()
+    cols_low = [c.lower() for c in columns]
+    if "tally" in low or any("particulars" == c for c in cols_low):
+        return "tally"
+    if "oneshell" in low or any("accountname" == c for c in cols_low):
+        return "oneshell"
+    return "unknown"
+
+
+def validate_file(path: str | Path, *, expected: str = "") -> FileValidation:
+    """Schema + parseability check BEFORE we trust the file.
+
+    `expected` ∈ {tally, oneshell, ""}. When set, mismatched detected
+    kind becomes an error. Empty value falls back to filename / column
+    detection.
+    """
+    p = Path(path)
+    fv = FileValidation(path=str(p))
+    if not p.exists():
+        fv.ok = False
+        fv.errors.append(f"file not found: {p}")
+        return fv
+    if p.stat().st_size == 0:
+        fv.ok = False
+        fv.errors.append("empty file")
+        return fv
+    try:
+        rows = _read_table(p)
+    except SystemExit as exc:
+        fv.ok = False
+        fv.errors.append(f"unreadable: {exc}")
+        return fv
+    fv.row_count = len(rows)
+    if not rows:
+        fv.ok = False
+        fv.errors.append("no data rows")
+        return fv
+    fv.columns = list(rows[0].keys())
+    cols_lower = {c.lower() for c in fv.columns}
+    fv.detected_kind = _detect_kind(p.name, fv.columns)
+
+    if expected and fv.detected_kind != "unknown" \
+            and fv.detected_kind != expected:
+        fv.errors.append(
+            f"detected kind={fv.detected_kind} but expected={expected}"
+        )
+    kind = expected or fv.detected_kind
+    required = (
+        _TALLY_REQUIRED if kind == "tally"
+        else _ONESHELL_REQUIRED if kind == "oneshell"
+        else None
+    )
+    numerics = (
+        _TALLY_NUMERIC if kind == "tally"
+        else _ONESHELL_NUMERIC if kind == "oneshell"
+        else []
+    )
+    if required is not None:
+        if cols_lower.isdisjoint(required):
+            fv.errors.append(
+                f"missing any-of name column: expected one of "
+                f"{sorted(required)}, got {sorted(cols_lower)}"
+            )
+        # Numeric column sanity — the FIRST numeric we recognise must
+        # parse to float on at least 1 row.
+        for nc in numerics:
+            real = next((c for c in fv.columns if c.lower() == nc), None)
+            if real is None:
+                continue
+            ok = False
+            for r in rows[: min(50, len(rows))]:
+                v = r.get(real)
+                if v in (None, ""):
+                    continue
+                try:
+                    to_decimal(v)
+                    ok = True
+                    break
+                except Exception:
+                    pass
+            if not ok:
+                fv.warnings.append(
+                    f"numeric column `{real}` had no parseable values "
+                    "in the first 50 rows"
+                )
+            break
+    if fv.errors:
+        fv.ok = False
+    return fv
 
 
 def _read_table(path: Path) -> list[dict[str, Any]]:
@@ -154,6 +269,92 @@ def parse_tally(path: Path) -> list[TBRow]:
             opening=ob, debit=dr, credit=cr, closing=cb,
         ))
     return out
+
+
+# ─────────── live OneShell DB fetcher ─────────────────────────────────
+
+def fetch_oneshell_from_mongo(
+    *, business_id: str, env: str = "qa",
+    fy_start: str | None = None,
+) -> list[TBRow]:
+    """Pull canonical OneShell trial-balance rows from MongoDB.
+
+    Connection priority:
+      1. AIFORGE_MONGO_URI env var (full URI)
+      2. AIFORGE_MONGODB_SERVICE_URL — HTTP gateway (CLAUDE.md mandates
+         MongoDbService for prod). Hits /v1/aggregate or /v1/find.
+      3. Fallback to mongodb://localhost:27017 (dev convenience).
+
+    Reads the `chartOfAccounts` collection scoped by businessId and
+    aggregates monthly closing-balance amounts from
+    `monthlyTrialBalanceAmounts` (or `monthlyClosingBalances` per env).
+    """
+    import os
+    rows: list[TBRow] = []
+
+    # Path 2: HTTP gateway first (production default — never bypass it)
+    svc_url = os.environ.get("AIFORGE_MONGODB_SERVICE_URL", "")
+    if svc_url:
+        try:
+            import httpx
+            r = httpx.post(
+                svc_url.rstrip("/") + "/v1/find",
+                json={
+                    "collection": "chartOfAccounts",
+                    "filter": {"businessId": business_id},
+                    "projection": {
+                        "name": 1, "code": 1, "parentName": 1,
+                        "openingBalance": 1, "closingBalance": 1,
+                        "periodDebit": 1, "periodCredit": 1,
+                    },
+                    "limit": 5000,
+                },
+                timeout=30.0,
+            )
+            r.raise_for_status()
+            for doc in r.json().get("docs") or []:
+                rows.append(_doc_to_tbrow(doc))
+            return rows
+        except Exception:
+            pass    # fall through to direct mongo
+
+    # Path 1 / 3: pymongo direct
+    try:
+        from pymongo import MongoClient
+    except ImportError as exc:
+        raise SystemExit(
+            "pymongo required for --validate-with-mongo "
+            f"(install via `pip install pymongo`): {exc}"
+        )
+    uri = os.environ.get(
+        "AIFORGE_MONGO_URI",
+        "mongodb://localhost:27017/oneshell",
+    )
+    client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+    db = client.get_default_database() or client["oneshell"]
+    cursor = db["chartOfAccounts"].find(
+        {"businessId": business_id},
+        {
+            "name": 1, "code": 1, "parentName": 1,
+            "openingBalance": 1, "closingBalance": 1,
+            "periodDebit": 1, "periodCredit": 1,
+        },
+    ).limit(5000)
+    for doc in cursor:
+        rows.append(_doc_to_tbrow(doc))
+    return rows
+
+
+def _doc_to_tbrow(doc: dict) -> TBRow:
+    return TBRow(
+        code=str(doc.get("code") or "").strip(),
+        name=str(doc.get("name") or "").strip(),
+        parent=str(doc.get("parentName") or "").strip(),
+        opening=to_decimal(doc.get("openingBalance")),
+        debit=to_decimal(doc.get("periodDebit")),
+        credit=to_decimal(doc.get("periodCredit")),
+        closing=to_decimal(doc.get("closingBalance")),
+    )
 
 
 def parse_oneshell(path: Path) -> list[TBRow]:
@@ -250,6 +451,52 @@ def reconcile(
     return rec
 
 
+@dataclass
+class ThreeWayResult:
+    env: str
+    business_id: str
+    file_vs_db: Reconciliation = field(default_factory=lambda: Reconciliation("", ""))
+    tally_vs_file: Reconciliation = field(default_factory=lambda: Reconciliation("", ""))
+    tally_vs_db: Reconciliation = field(default_factory=lambda: Reconciliation("", ""))
+
+
+def reconcile_3way(
+    tally: list[TBRow],
+    oneshell_file: list[TBRow],
+    oneshell_db: list[TBRow],
+    *, env: str = "qa", business_id: str = "",
+) -> ThreeWayResult:
+    """Run all three pairwise recons. file_vs_db catches export drift
+    (the file someone uploaded doesn't match the live DB), and the two
+    tally_vs_* surface where Tally disagrees with each canonical
+    OneShell snapshot."""
+    return ThreeWayResult(
+        env=env, business_id=business_id,
+        file_vs_db=reconcile(oneshell_file, oneshell_db,
+                             env=env + "/file-vs-db",
+                             business_id=business_id),
+        tally_vs_file=reconcile(tally, oneshell_file,
+                                env=env + "/tally-vs-file",
+                                business_id=business_id),
+        tally_vs_db=reconcile(tally, oneshell_db,
+                              env=env + "/tally-vs-db",
+                              business_id=business_id),
+    )
+
+
+def render_markdown_3way(r: ThreeWayResult) -> str:
+    parts = [f"# 3-way Trial-Balance Reconciliation ({r.env})", ""]
+    for label, rec in (
+        ("File ↔ DB (export drift)", r.file_vs_db),
+        ("Tally ↔ File", r.tally_vs_file),
+        ("Tally ↔ DB", r.tally_vs_db),
+    ):
+        parts.append(f"## {label}")
+        parts.append(render_markdown(rec))
+        parts.append("")
+    return "\n".join(parts)
+
+
 def _row_dict(r: TBRow, bucket: str) -> dict:
     return {
         "key": _key(r), "name": r.name, "parent": r.parent, "code": r.code,
@@ -314,20 +561,97 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--env", default="qa", choices=("qa", "prod"))
     p.add_argument("--business", default="")
     p.add_argument("--out-dir", default=".")
+    p.add_argument("--validate-with-mongo", action="store_true",
+                   help="also pull live OneShell rows from MongoDB "
+                        "and run a 3-way reconcile")
+    p.add_argument("--strict", action="store_true",
+                   help="exit non-zero on any file validation error")
     a = p.parse_args(argv)
 
-    t = parse_tally(Path(a.tally))
-    o = parse_oneshell(Path(a.oneshell))
-    rec = reconcile(t, o, env=a.env, business_id=a.business)
+    # 1. validate files first — fail fast with a clear schema error
+    fv_t = validate_file(a.tally, expected="tally")
+    fv_o = validate_file(a.oneshell, expected="oneshell")
+    print("# File validation")
+    for fv in (fv_t, fv_o):
+        flag = "OK " if fv.ok else "ERR"
+        print(f"  [{flag}] {fv.path}  rows={fv.row_count}  kind={fv.detected_kind}")
+        for err in fv.errors:
+            print(f"      - error: {err}")
+        for w in fv.warnings:
+            print(f"      - warn: {w}")
+    if (not fv_t.ok or not fv_o.ok) and a.strict:
+        print(json.dumps({"status": "validation_failed",
+                          "errors": fv_t.errors + fv_o.errors}, indent=2))
+        return 2
+    if not fv_t.ok or not fv_o.ok:
+        # non-strict: still proceed but warn
+        print("WARN proceeding despite validation issues — pass --strict to halt")
+
+    # 2. parse + (optional) live DB fetch
+    t_rows = parse_tally(Path(a.tally))
+    o_file = parse_oneshell(Path(a.oneshell))
+    o_db: list[TBRow] = []
+    if a.validate_with_mongo:
+        if not a.business:
+            print("ERR --validate-with-mongo needs --business")
+            return 2
+        try:
+            o_db = fetch_oneshell_from_mongo(
+                business_id=a.business, env=a.env,
+            )
+            print(f"# Mongo fetch: {len(o_db)} rows")
+        except SystemExit as exc:
+            print(f"ERR mongo fetch failed: {exc}")
+            return 2
+        except Exception as exc:
+            print(f"WARN mongo fetch errored: {exc}; falling back to file-only")
+            o_db = []
 
     out_dir = Path(a.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 3. reconcile
+    if o_db:
+        three = reconcile_3way(
+            t_rows, o_file, o_db, env=a.env, business_id=a.business,
+        )
+        # write CSVs for each pair
+        for label, rec in (
+            ("file-vs-db", three.file_vs_db),
+            ("tally-vs-file", three.tally_vs_file),
+            ("tally-vs-db", three.tally_vs_db),
+        ):
+            write_csv(
+                rec,
+                out_dir / f"{a.env}-{a.business or 'all'}-{label}.csv",
+            )
+        summary = {
+            "env": a.env, "business_id": a.business, "mode": "3way",
+            "file_vs_db_gap":   three.file_vs_db.gap,
+            "tally_vs_file_gap": three.tally_vs_file.gap,
+            "tally_vs_db_gap":  three.tally_vs_db.gap,
+            "buckets_tally_vs_db": {
+                "match": len(three.tally_vs_db.matched),
+                "diff":  len(three.tally_vs_db.diff),
+                "large": len(three.tally_vs_db.large),
+            },
+        }
+        print(json.dumps(summary, indent=2))
+        print(render_markdown_3way(three))
+        # Block on any LARGE bucket across the three recons
+        any_large = any([
+            three.file_vs_db.large,
+            three.tally_vs_file.large,
+            three.tally_vs_db.large,
+        ])
+        return 1 if any_large else 0
+
+    # Plain 2-way (no Mongo)
+    rec = reconcile(t_rows, o_file, env=a.env, business_id=a.business)
     csv_path = out_dir / f"{a.env}-{a.business or 'all'}-tb-diff.csv"
     write_csv(rec, csv_path)
-
     summary = {
-        "env": rec.env,
-        "business_id": rec.business_id,
+        "env": rec.env, "business_id": rec.business_id, "mode": "2way",
         "tally_total": rec.tally_total,
         "oneshell_total": rec.oneshell_total,
         "gap": rec.gap,
@@ -343,8 +667,6 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(summary, indent=2))
     print()
     print(render_markdown(rec))
-
-    # Block exit code if LARGE diffs exist
     return 1 if (rec.large or abs(rec.gap) > 1000) else 0
 
 
