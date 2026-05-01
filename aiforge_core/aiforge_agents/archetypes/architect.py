@@ -55,11 +55,63 @@ class Architect(BaseArchetype):
                     "comments": ["llm_invalid_json"],
                     "mr_title": "", "mr_body": "",
                     "mr_url": ""}
+        decision = str(out.get("decision", "request_changes"))
+        mr_title = str(out.get("mr_title", ""))[:70]
+        mr_body = str(out.get("mr_body", ""))
+
+        # Optional: actually open the PR via `gh` if approved + branch
+        # exists + caller asked for it (ctx['open_mr']=True).
+        mr_url = ""
+        if (decision == "approve" and ctx.get("open_mr")
+                and doer.get("applied")
+                and doer.get("applied_branch")):
+            mr_url = _open_github_pr(
+                repo_path=ctx.get("repo_path", ""),
+                branch=doer.get("applied_branch", ""),
+                title=mr_title or "aiforge: code change",
+                body=mr_body,
+            )
+
         return {
             "artifact_type": "review",
-            "decision": str(out.get("decision", "request_changes")),
+            "decision": decision,
             "comments": list(out.get("comments") or []),
-            "mr_title":  str(out.get("mr_title", ""))[:70],
-            "mr_body":   str(out.get("mr_body",  "")),
-            "mr_url":    "",  # actual gh pr create deferred
+            "mr_title":  mr_title,
+            "mr_body":   mr_body,
+            "mr_url":    mr_url,
         }
+
+
+def _open_github_pr(
+    *, repo_path: str, branch: str, title: str, body: str,
+) -> str:
+    """Push branch + invoke `gh pr create`. Returns PR URL or "" on fail.
+
+    Best-effort: requires `gh` CLI authenticated for the repo, branch
+    already committed (Doer apply path does that), and remote=origin.
+    """
+    import subprocess
+    from pathlib import Path
+
+    if not repo_path or not branch or not Path(repo_path).is_dir():
+        return ""
+
+    def _run(args: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            args, cwd=repo_path, capture_output=True, text=True,
+            timeout=60,
+        )
+
+    push = _run(["git", "push", "-u", "origin", branch])
+    if push.returncode != 0:
+        return ""
+    pr = _run([
+        "gh", "pr", "create",
+        "--title", title,
+        "--body", body,
+        "--base", "main",
+        "--head", branch,
+    ])
+    if pr.returncode != 0:
+        return ""
+    return (pr.stdout or "").strip().splitlines()[-1] if pr.stdout else ""

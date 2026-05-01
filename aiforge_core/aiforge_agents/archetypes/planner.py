@@ -20,6 +20,7 @@ class Planner(BaseArchetype):
         understanding = ctx.get("understanding", {})
         ctx_md = understanding.get("context_md", "")
         allowed_files = ctx.get("allowed_files") or []
+        skills_hint = ctx.get("skills_hint") or []
         previous_plan = ctx.get("previous_plan") or {}
         unresolved   = ctx.get("unresolved_refs") or []
 
@@ -34,6 +35,18 @@ class Planner(BaseArchetype):
                 + "\n".join(f"- {p}" for p in allowed_files[:80])
                 + "\n"
             )
+        skills_block = ""
+        if skills_hint:
+            skill_lines = ["# Skills (recipes that worked on similar tasks here):"]
+            for s in skills_hint[:3]:
+                wins = s.get("success_count", 0)
+                losses = s.get("failure_count", 0)
+                skill_lines.append(
+                    f"- **{s.get('name','?')}** "
+                    f"(✓{wins}/✗{losses}): {s.get('summary','')}"
+                )
+            skills_block = "\n".join(skill_lines) + "\n"
+
         replan_block = ""
         if previous_plan and unresolved:
             replan_block = (
@@ -60,6 +73,7 @@ class Planner(BaseArchetype):
         )
         user = (
             f"# Understanding\n{understanding}\n\n"
+            f"{skills_block}"
             f"{allowed_block}"
             f"{replan_block}"
             f"# Code-graph context\n{ctx_md}\n"

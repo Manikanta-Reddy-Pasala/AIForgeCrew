@@ -81,6 +81,37 @@ class Learner(BaseArchetype):
             tool_sequence=tool_sequence, success=success,
         )
 
+        # Skill promotion: when this run succeeded, distill the recipe
+        # so future similar tickets can recall it. Skill name = first
+        # action of plan + task_class. Body = compact tool sequence.
+        if success and tool_sequence:
+            skill_name = f"{tool_sequence[0]}_{task_class}"[:60]
+            skill_summary = (
+                f"Tool sequence {tool_sequence} succeeded for "
+                f"task_class={task_class} (architect-approved)."
+            )
+            skill_body = (
+                f"## Task class\n`{task_class}`\n\n"
+                f"## Tool sequence\n{tool_sequence}\n\n"
+                f"## Plan steps\n{len(steps)}\n\n"
+                f"## Outcome\n- detectors: {len(doer_out.get('problems') or [])}\n"
+                f"- target: `{doer_out.get('target','?')}`\n"
+            )
+            online.promote_skill(
+                repo=repo, task_class=task_class, name=skill_name,
+                summary=skill_summary, body_md=skill_body,
+                success=True,
+            )
+        elif tool_sequence:
+            # Track failures too so net-success ranking is meaningful.
+            online.promote_skill(
+                repo=repo, task_class=task_class,
+                name=f"{tool_sequence[0]}_{task_class}"[:60],
+                summary=f"Failed run: {outcome}",
+                body_md="(failure recorded)",
+                success=False,
+            )
+
         return {
             "artifact_type": "learning",
             "outcome": outcome,

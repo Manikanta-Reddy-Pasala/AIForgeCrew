@@ -19,11 +19,13 @@ def test_filter_plan_targets_drops_invented_read() -> None:
         {"id": 2, "action": "read", "target": "src/main/java/INVENTED.java"},
         {"id": 3, "action": "create", "target": "src/main/java/C.java"},
     ]}
-    out = _filter_plan_targets(plan, allowed)
+    out, dropped = _filter_plan_targets(plan, allowed)
     targets = [s["target"] for s in out["steps"]]
     assert "src/main/java/A.java" in targets
     assert "src/main/java/INVENTED.java" not in targets
     assert "src/main/java/C.java" in targets   # create is exempt
+    assert len(dropped) == 1
+    assert dropped[0]["target"] == "src/main/java/INVENTED.java"
 
 
 def test_filter_plan_targets_basename_rewrite() -> None:
@@ -32,13 +34,90 @@ def test_filter_plan_targets_basename_rewrite() -> None:
     plan = {"steps": [
         {"id": 1, "action": "read", "target": "Y.java"},
     ]}
-    out = _filter_plan_targets(plan, allowed)
+    out, dropped = _filter_plan_targets(plan, allowed)
     assert out["steps"][0]["target"] == "src/main/java/com/x/Y.java"
+    assert dropped == []
 
 
 def test_filter_plan_targets_empty_allowed_no_op() -> None:
     plan = {"steps": [{"id": 1, "action": "read", "target": "x.java"}]}
-    assert _filter_plan_targets(plan, []) == plan
+    out, dropped = _filter_plan_targets(plan, [])
+    assert out == plan
+    assert dropped == []
+
+
+# ─────────── Doer apply path (P2) ──────────────────────────────────────
+
+def test_doer_git_apply_dirty_worktree_refuses(tmp_path) -> None:
+    from aiforge_core.aiforge_agents.archetypes.doer import _git_apply_diff
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
+    subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=str(tmp_path))
+    subprocess.run(["git", "config", "user.name", "a"], cwd=str(tmp_path))
+    (tmp_path / "f.txt").write_text("hello\n")
+    # Don't commit → dirty tree
+    applied, branch, err = _git_apply_diff(
+        repo_path=str(tmp_path), ticket_id="TKT", udiff="x",
+    )
+    assert applied is False
+    assert err == "dirty_worktree"
+
+
+def test_doer_git_apply_creates_branch(tmp_path) -> None:
+    from aiforge_core.aiforge_agents.archetypes.doer import _git_apply_diff
+    import subprocess
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(tmp_path), check=True)
+    subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=str(tmp_path))
+    subprocess.run(["git", "config", "user.name", "a"], cwd=str(tmp_path))
+    (tmp_path / "f.txt").write_text("hello\n")
+    subprocess.run(["git", "add", "."], cwd=str(tmp_path), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(tmp_path), check=True)
+
+    udiff = (
+        "--- a/f.txt\n"
+        "+++ b/f.txt\n"
+        "@@ -1 +1,2 @@\n"
+        " hello\n"
+        "+world\n"
+    )
+    applied, branch, err = _git_apply_diff(
+        repo_path=str(tmp_path), ticket_id="TKT-9", udiff=udiff,
+    )
+    assert applied is True, f"err={err}"
+    assert branch == "aiforge/TKT-9"
+    head = subprocess.run(
+        ["git", "log", "-1", "--format=%s"],
+        cwd=str(tmp_path), capture_output=True, text=True,
+    ).stdout
+    assert "TKT-9" in head
+
+
+# ─────────── Skills ──────────────────────────────────────────────────
+
+def test_top_skills_for_dbless_returns_empty() -> None:
+    from aiforge_core.aiforge_agents.learner import online
+    # Force connection failure path — bogus DSN
+    import os
+    saved = os.environ.get("AIFORGE_DSN", "")
+    os.environ["AIFORGE_DSN"] = "postgresql://nouser@localhost:1/none"
+    online._DSN = os.environ["AIFORGE_DSN"]  # type: ignore[attr-defined]
+    try:
+        out = online.top_skills_for(repo="r", task_class="x", k=3)
+        assert out == []
+    finally:
+        if saved:
+            os.environ["AIFORGE_DSN"] = saved
+            online._DSN = saved  # type: ignore[attr-defined]
+
+
+def test_guess_task_class_keywords() -> None:
+    from aiforge_core.aiforge_agents.orchestrator.run_ticket import (
+        _guess_task_class,
+    )
+    assert _guess_task_class("Add README.md", "") == "readme"
+    assert _guess_task_class("Add CRUD APIs for ledger", "") == "feature"
+    assert _guess_task_class("Add JWT login flow", "") == "auth"
+    assert _guess_task_class("Random title", "") == "unknown"
 
 
 # ─────────── Doer ─────────────────────────────────────────────────────

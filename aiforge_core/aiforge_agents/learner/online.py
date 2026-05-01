@@ -104,6 +104,24 @@ CREATE TABLE IF NOT EXISTS aiforge_agents_audit (
     created_at      timestamptz DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_aaaud_ticket ON aiforge_agents_audit(ticket_id);
+
+-- Skills: Learner-promoted recipes that turned out to win across
+-- multiple tickets. Surfaced to Planner / Doer via context bundles.
+CREATE TABLE IF NOT EXISTS aiforge_agents_skills (
+    id              bigserial PRIMARY KEY,
+    repo            text,
+    task_class      text,
+    name            text,
+    summary         text,
+    body_md         text,
+    success_count   int  DEFAULT 0,
+    failure_count   int  DEFAULT 0,
+    last_used       timestamptz,
+    created_at      timestamptz DEFAULT now(),
+    UNIQUE (repo, task_class, name)
+);
+CREATE INDEX IF NOT EXISTS idx_aas_repo_task
+    ON aiforge_agents_skills(repo, task_class);
 """
 
 
@@ -232,5 +250,66 @@ def record_audit(*, ticket_id: str, agent_role: str, event_type: str,
         return True
     except Exception:
         return False
+    finally:
+        conn.close()
+
+
+# ─────────── Skills (P2) ─────────────────────────────────────────────
+
+def promote_skill(*, repo: str, task_class: str, name: str,
+                  summary: str, body_md: str, success: bool) -> bool:
+    """Upsert a skill row. On conflict, increment counters + bump
+    last_used. The Planner pulls these via `top_skills_for`."""
+    conn = _conn()
+    if conn is None:
+        return False
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO aiforge_agents_skills "
+                "(repo, task_class, name, summary, body_md, "
+                " success_count, failure_count, last_used) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s, now()) "
+                "ON CONFLICT (repo, task_class, name) DO UPDATE SET "
+                "  success_count = aiforge_agents_skills.success_count + EXCLUDED.success_count, "
+                "  failure_count = aiforge_agents_skills.failure_count + EXCLUDED.failure_count, "
+                "  body_md = EXCLUDED.body_md, "
+                "  summary = EXCLUDED.summary, "
+                "  last_used = now()",
+                (repo, task_class, name, summary, body_md,
+                 1 if success else 0, 0 if success else 1),
+            )
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def top_skills_for(*, repo: str, task_class: str,
+                   k: int = 3) -> list[dict]:
+    """Return up to k skills ordered by net success. Used by Planner /
+    Doer prompts to recall winning recipes for similar tasks."""
+    conn = _conn()
+    if conn is None:
+        return []
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, summary, body_md, success_count, failure_count "
+                "FROM aiforge_agents_skills "
+                "WHERE repo = %s AND task_class = %s "
+                "ORDER BY (success_count - failure_count) DESC, last_used DESC "
+                "LIMIT %s",
+                (repo, task_class, k),
+            )
+            rows = cur.fetchall()
+        return [
+            {"name": r[0], "summary": r[1], "body_md": r[2],
+             "success_count": r[3], "failure_count": r[4]}
+            for r in rows
+        ]
+    except Exception:
+        return []
     finally:
         conn.close()

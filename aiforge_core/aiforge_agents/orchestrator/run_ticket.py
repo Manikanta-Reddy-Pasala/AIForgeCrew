@@ -82,10 +82,17 @@ def _update_ticket_status(ticket_id: str, status: str,
 
 
 def run(*, repo: str, title: str, body: str,
-        ticket_id: str | None = None) -> dict[str, Any]:
+        ticket_id: str | None = None,
+        apply: bool | None = None,
+        open_mr: bool | None = None) -> dict[str, Any]:
+    import os as _os
     ticket_id = ticket_id or f"TKT-{uuid.uuid4().hex[:8].upper()}"
     breakers = cb_mod.CircuitBreakers()
     t0 = time.time()
+    if apply is None:
+        apply = _os.environ.get("AIFORGE_AGENTS_APPLY", "0") not in ("0", "false", "")
+    if open_mr is None:
+        open_mr = _os.environ.get("AIFORGE_AGENTS_OPEN_MR", "0") not in ("0", "false", "")
 
     learner.migrate()
     _insert_ticket_row(ticket_id, title=title, body=body,
@@ -118,6 +125,13 @@ def run(*, repo: str, title: str, body: str,
         repo=repo, query=f"{title}\n{body}", k=80,
     )
 
+    # Pull top skills the Learner has promoted for this repo + a
+    # rough task_class guess (first matching keyword).
+    task_class_guess = _guess_task_class(title, body)
+    skills_hint = learner.top_skills_for(
+        repo=repo, task_class=task_class_guess, k=3,
+    )
+
     # Stage P — Planner (with REPLAN loop on grounder failure)
     p_t0 = time.time()
     plan: dict[str, Any] = {}
@@ -133,15 +147,15 @@ def run(*, repo: str, title: str, body: str,
             "understanding": understanding,
             "title": title, "body": body, "repo": repo,
             "allowed_files": allowed_files,
+            "skills_hint": skills_hint,
             "previous_plan": plan if plan_attempts > 1 else None,
             "unresolved_refs": grounding.get("unresolved_refs", []),
         })
         # Post-Planner allowlist filter — drop read/edit/test/run steps
         # whose target is not in allowed_files. Planner sometimes
         # invents convention-style names ("BusinessProductsServiceImpl")
-        # that don't actually exist in the repo. Order is preserved;
-        # `create` and `search` actions are exempt (validated by Grounder).
-        plan = _filter_plan_targets(plan, allowed_files)
+        # that don't actually exist in the repo.
+        plan, dropped_refs = _filter_plan_targets(plan, allowed_files)
         breakers.check_agent("planner")
 
         # Grounder check
@@ -152,8 +166,20 @@ def run(*, repo: str, title: str, body: str,
         grounding = g_agent.run(ctx={"plan": plan, "repo": repo})
         g_dur += time.time() - g_t0_inner
         breakers.check_agent("grounder")
-        if grounding.get("resolved"):
+
+        # Force REPLAN if filter shrank the plan substantially — even
+        # if Grounder is happy. Dropped reads = blind spots for Doer.
+        kept_steps = len(plan.get("steps") or [])
+        total_steps = kept_steps + len(dropped_refs)
+        shrink_ratio = (
+            len(dropped_refs) / total_steps if total_steps else 0.0
+        )
+        if grounding.get("resolved") and shrink_ratio < 0.5:
             break
+        # Surface dropped refs back to Planner as if they were unresolved.
+        if dropped_refs and not grounding.get("unresolved_refs"):
+            grounding["unresolved_refs"] = dropped_refs
+            grounding["resolved"] = False
     p_dur = time.time() - p_t0 - g_dur  # pure planner time
     learner.record_audit(
         ticket_id=ticket_id, agent_role="planner",
@@ -189,44 +215,72 @@ def run(*, repo: str, title: str, body: str,
 
     # Grounder + REPLAN loop already done above.
 
-    # Stage D — Doer (only when grounded; otherwise REPLAN per recovery)
+    # Stage D — Doer + Validator CRITIC loop. Up to 2 attempts: pass 1
+    # writes a fresh udiff, pass 2 receives Validator detector hits +
+    # any Architect comments from a prior architect pass and revises.
     doer_outcome: dict[str, Any] = {"skipped": True, "reason": "not_grounded"}
+    validation: dict[str, Any] = {"decision": "skip", "reason": "no_doer"}
     d_dur = 0.0
+    val_dur = 0.0
+    doer_attempts = 0
     if grounding.get("resolved"):
-        breakers.begin_agent("doer")
-        d_agent = registry.build("doer", repo_path=None)
-        d_agent.repo = repo; d_agent.ticket_id = ticket_id
-        d_t0 = time.time()
-        doer_outcome = d_agent.run(ctx={
-            "plan": plan, "repo": repo,
-            "repo_path": _resolve_repo_path(repo),
-            "ticket_id": ticket_id,
-        })
-        d_dur = time.time() - d_t0
-        breakers.check_agent("doer")
-        learner.record_audit(
-            ticket_id=ticket_id, agent_role="doer",
-            event_type="agent_completed",
-            payload={"problems": len(doer_outcome.get("problems") or []),
-                     "blocked": doer_outcome.get("blocked_by_detectors", False)},
-            duration_ms=int(d_dur * 1000),
-        )
+        previous_udiff = ""
+        previous_problems: list = []
+        previous_arch_comments: list = []
+        while doer_attempts < 2:
+            doer_attempts += 1
+            breakers.begin_agent("doer")
+            d_agent = registry.build("doer", repo_path=None)
+            d_agent.repo = repo; d_agent.ticket_id = ticket_id
+            d_t0 = time.time()
+            doer_outcome = d_agent.run(ctx={
+                "plan": plan, "repo": repo,
+                "repo_path": _resolve_repo_path(repo),
+                "ticket_id": ticket_id,
+                "apply": apply,
+                "previous_udiff": previous_udiff,
+                "detector_problems": previous_problems,
+                "architect_comments": previous_arch_comments,
+            })
+            d_dur += time.time() - d_t0
+            breakers.check_agent("doer")
+            learner.record_audit(
+                ticket_id=ticket_id, agent_role="doer",
+                event_type="agent_completed",
+                payload={
+                    "problems": len(doer_outcome.get("problems") or []),
+                    "blocked": doer_outcome.get(
+                        "blocked_by_detectors", False),
+                    "attempt": doer_attempts,
+                },
+                duration_ms=int(d_dur * 1000),
+            )
 
-    # Stage Vd — Validator (basic post-condition check)
-    breakers.begin_agent("validator")
-    val_agent = registry.build("validator", repo_path=None)
-    val_agent.repo = repo; val_agent.ticket_id = ticket_id
-    val_t0 = time.time()
-    validation = val_agent.run(ctx={"doer_outcome": doer_outcome})
-    val_dur = time.time() - val_t0
-    breakers.check_agent("validator")
-    learner.record_audit(
-        ticket_id=ticket_id, agent_role="validator",
-        event_type="agent_completed",
-        payload={"decision": validation.get("decision"),
-                 "checks": validation.get("checks")},
-        duration_ms=int(val_dur * 1000),
-    )
+            # Stage Vd — Validator (post-condition check)
+            breakers.begin_agent("validator")
+            val_agent = registry.build("validator", repo_path=None)
+            val_agent.repo = repo; val_agent.ticket_id = ticket_id
+            val_t0 = time.time()
+            validation = val_agent.run(ctx={"doer_outcome": doer_outcome})
+            val_dur += time.time() - val_t0
+            breakers.check_agent("validator")
+            learner.record_audit(
+                ticket_id=ticket_id, agent_role="validator",
+                event_type="agent_completed",
+                payload={"decision": validation.get("decision"),
+                         "attempt": doer_attempts},
+                duration_ms=int(val_dur * 1000),
+            )
+
+            # Validator approved? Stop the loop, let Architect see it.
+            if validation.get("decision") == "approve":
+                break
+            # Validator skipped (no diff produced)? Stop — retry won't help.
+            if validation.get("decision") == "skip":
+                break
+            # Validator blocked → retry with feedback.
+            previous_udiff = (doer_outcome.get("udiff") or "")
+            previous_problems = list(doer_outcome.get("problems") or [])
 
     # Stage T — Tester (TDD test specs)
     breakers.begin_agent("tester")
@@ -243,7 +297,7 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(t_dur * 1000),
     )
 
-    # Stage A — Architect (review + MR draft)
+    # Stage A — Architect review + optional Doer-Architect retry.
     breakers.begin_agent("architect")
     a_agent = registry.build("architect", repo_path=None)
     a_agent.repo = repo; a_agent.ticket_id = ticket_id
@@ -251,14 +305,62 @@ def run(*, repo: str, title: str, body: str,
     review = a_agent.run(ctx={
         "understanding": understanding, "plan": plan,
         "doer_outcome": doer_outcome, "validation": validation,
+        "open_mr": open_mr,
+        "repo_path": _resolve_repo_path(repo),
     })
     a_dur = time.time() - a_t0
     breakers.check_agent("architect")
+
+    # Architect→Doer retry: if Architect requested changes AND we have a
+    # working udiff, run one more Doer pass with comments as feedback.
+    if (review.get("decision") == "request_changes"
+            and validation.get("decision") == "approve"
+            and doer_outcome.get("udiff")
+            and doer_attempts < 2):
+        comments = list(review.get("comments") or [])[:8]
+        breakers.begin_agent("doer")
+        d_agent = registry.build("doer", repo_path=None)
+        d_agent.repo = repo; d_agent.ticket_id = ticket_id
+        d_t0 = time.time()
+        doer_outcome = d_agent.run(ctx={
+            "plan": plan, "repo": repo,
+            "repo_path": _resolve_repo_path(repo),
+            "ticket_id": ticket_id,
+            "apply": apply,
+            "previous_udiff": doer_outcome.get("udiff", ""),
+            "detector_problems": doer_outcome.get("problems") or [],
+            "architect_comments": comments,
+        })
+        d_dur += time.time() - d_t0
+        doer_attempts += 1
+        breakers.check_agent("doer")
+
+        breakers.begin_agent("validator")
+        val_agent = registry.build("validator", repo_path=None)
+        val_agent.repo = repo; val_agent.ticket_id = ticket_id
+        val_t0 = time.time()
+        validation = val_agent.run(ctx={"doer_outcome": doer_outcome})
+        val_dur += time.time() - val_t0
+        breakers.check_agent("validator")
+
+        # Re-architect on the revised diff
+        breakers.begin_agent("architect")
+        a_t1 = time.time()
+        review = a_agent.run(ctx={
+            "understanding": understanding, "plan": plan,
+            "doer_outcome": doer_outcome, "validation": validation,
+            "open_mr": open_mr,
+            "repo_path": _resolve_repo_path(repo),
+        })
+        a_dur += time.time() - a_t1
+        breakers.check_agent("architect")
+
     learner.record_audit(
         ticket_id=ticket_id, agent_role="architect",
         event_type="agent_completed",
         payload={"decision": review.get("decision"),
-                 "mr_title": review.get("mr_title")},
+                 "mr_title": review.get("mr_title"),
+                 "doer_attempts": doer_attempts},
         duration_ms=int(a_dur * 1000),
     )
 
@@ -357,19 +459,20 @@ def run(*, repo: str, title: str, body: str,
     }
 
 
-def _filter_plan_targets(plan: dict[str, Any],
-                         allowed: list[str]) -> dict[str, Any]:
+def _filter_plan_targets(
+    plan: dict[str, Any], allowed: list[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Drop read|edit|test|run steps whose `target` is not in `allowed`.
 
-    Match is exact OR ends-with-basename so worktree-stripped vs not
-    forms both match. `create` and `search` actions are kept verbatim —
-    Grounder validates them separately.
+    Returns (filtered_plan, dropped_steps). `create` and `search`
+    actions are kept verbatim (Grounder validates them separately).
     """
     if not allowed:
-        return plan
+        return plan, []
     allowed_set = set(allowed)
     allowed_basenames = {p.rsplit("/", 1)[-1] for p in allowed}
     kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
     for st in (plan.get("steps") or []):
         action = (st.get("action") or "").lower()
         if action in ("create", "search"):
@@ -379,24 +482,41 @@ def _filter_plan_targets(plan: dict[str, Any],
         if not tgt:
             kept.append(st)
             continue
-        # Exact match against any allowed path
         if tgt in allowed_set:
             kept.append(st)
             continue
-        # Suffix match — handles worktree prefix or canonical-vs-relative
         bn = tgt.rsplit("/", 1)[-1]
         if bn in allowed_basenames:
-            # Rewrite to the canonical allowed path
             for ap in allowed:
                 if ap.endswith("/" + bn) or ap == bn:
-                    st = {**st, "target": ap}
-                    kept.append(st)
+                    kept.append({**st, "target": ap})
                     break
             continue
-        # Drop hallucinated reference (Planner invented this filename)
+        # Hallucinated reference — Planner invented this filename.
+        dropped.append({"step_id": st.get("id"), "target": tgt,
+                        "action": action, "reason": "not_in_allowlist"})
     out = dict(plan)
     out["steps"] = kept
-    return out
+    return out, dropped
+
+
+def _guess_task_class(title: str, body: str) -> str:
+    """Cheap keyword-based task_class for skill lookup. Same vocabulary
+    Learner derives from doer_outcome.target's feature dir name."""
+    text = (title + " " + body).lower()
+    cues = (
+        ("readme", "readme"), ("documentation", "readme"),
+        ("test", "test"), ("validation", "test"),
+        ("crud", "feature"), ("endpoint", "feature"),
+        ("api", "feature"), ("controller", "feature"),
+        ("sync", "datasync"), ("nats", "datasync"),
+        ("auth", "auth"), ("jwt", "auth"), ("login", "auth"),
+        ("ledger", "ledger"), ("sales", "sales"),
+    )
+    for kw, cls in cues:
+        if kw in text:
+            return cls
+    return "unknown"
 
 
 def _resolve_repo_path(repo_name: str) -> str:
