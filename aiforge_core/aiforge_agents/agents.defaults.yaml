@@ -39,7 +39,10 @@ archetypes:
     top_p: 0.95
     repetition_penalty: 1.05
     grammar: udiff.gbnf
-    max_tokens: 6000
+    # 8000 fits a ~200-line README or a 100-line Java class with comfort.
+    # If we still see truncation on bigger files, bump again or add
+    # multi-step Doer that emits one file per LLM call.
+    max_tokens: 12000
     prompt_version: v1
 
   validator:

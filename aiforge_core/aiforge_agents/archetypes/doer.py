@@ -254,12 +254,21 @@ class Doer(BaseArchetype):
             model=self.model or "qwen3-coder-next",
             system=system, user=user,
             temperature=self.temperature or 0.2,
-            max_tokens=self.max_tokens or 4000,
+            max_tokens=self.max_tokens or 8000,
         )
         # Extract diff fenced block
         import re
         m = re.search(r"```diff\s*\n(.*?)```", raw, re.DOTALL)
         udiff = m.group(1) if m else raw
+
+        # Truncation detection: if the closing ``` was never emitted,
+        # the udiff is incomplete and any apply will fail with corrupt
+        # patch. Surface it explicitly so the orchestrator's CRITIC
+        # retry can see "truncated_output" and try again.
+        truncated = (m is None and "```diff" in raw) or (
+            m is None and raw.lstrip().startswith(("--- ", "+++ ", "@@ "))
+            and not raw.rstrip().endswith(("\n", "}"))
+        )
 
         # Detectors — plan_create_fqns already computed above for prompt
         problems: list[dict] = []
@@ -316,7 +325,9 @@ class Doer(BaseArchetype):
         applied = False
         applied_branch = ""
         apply_error = ""
-        if (apply and repo_path and ticket_id
+        if truncated:
+            apply_error = "truncated_output"
+        elif (apply and repo_path and ticket_id
                 and udiff.strip()
                 and len(problems) == 0):
             applied, applied_branch, apply_error = _git_apply_diff(
