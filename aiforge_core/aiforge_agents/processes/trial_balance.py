@@ -331,7 +331,10 @@ def fetch_oneshell_from_mongo(
         "mongodb://localhost:27017/oneshell",
     )
     client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-    db = client.get_default_database() or client["oneshell"]
+    # pymongo ≥4 forbids truthiness on Database objects; check is None.
+    db = client.get_default_database()
+    if db is None:
+        db = client["oneshell"]
     cursor = db["chartOfAccounts"].find(
         {"businessId": business_id},
         {
