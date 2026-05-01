@@ -24,6 +24,63 @@ from aiforge_core.aiforge_agents.runtime import circuit_breakers as cb_mod
 from aiforge_core.aiforge_agents.learner import online as learner
 
 
+def _insert_ticket_row(ticket_id: str, *, title: str, body: str,
+                       repo: str, status: str) -> None:
+    """Mirror to existing tickets table so the UI sees us."""
+    import os
+    try:
+        import psycopg
+    except ImportError:
+        return
+    dsn = os.environ.get("AIFORGE_DSN")
+    if not dsn:
+        return
+    try:
+        with psycopg.connect(dsn) as c, c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO tickets "
+                "(identifier, title, body, status, priority, "
+                " assignee_role, project, labels, metadata) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (identifier) DO UPDATE SET "
+                "  status=EXCLUDED.status, updated_at=now()",
+                (ticket_id, title, body, status, "normal",
+                 "aiforge_agents", repo, ["aiforge_agents"],
+                 '{"runtime":"aiforge_agents","stages":4}'),
+            )
+    except Exception:
+        pass
+
+
+def _update_ticket_status(ticket_id: str, status: str,
+                          metadata: dict | None = None) -> None:
+    import json as _json
+    import os
+    try:
+        import psycopg
+    except ImportError:
+        return
+    dsn = os.environ.get("AIFORGE_DSN")
+    if not dsn:
+        return
+    try:
+        with psycopg.connect(dsn) as c, c.cursor() as cur:
+            if metadata is not None:
+                cur.execute(
+                    "UPDATE tickets SET status=%s, metadata=%s, "
+                    "  updated_at=now() WHERE identifier=%s",
+                    (status, _json.dumps(metadata), ticket_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE tickets SET status=%s, updated_at=now() "
+                    "WHERE identifier=%s",
+                    (status, ticket_id),
+                )
+    except Exception:
+        pass
+
+
 def run(*, repo: str, title: str, body: str,
         ticket_id: str | None = None) -> dict[str, Any]:
     ticket_id = ticket_id or f"TKT-{uuid.uuid4().hex[:8].upper()}"
@@ -31,6 +88,8 @@ def run(*, repo: str, title: str, body: str,
     t0 = time.time()
 
     learner.migrate()
+    _insert_ticket_row(ticket_id, title=title, body=body,
+                       repo=repo, status="processing")
     learner.record_audit(
         ticket_id=ticket_id, agent_role="orchestrator",
         event_type="ticket_started",
@@ -109,6 +168,24 @@ def run(*, repo: str, title: str, body: str,
         summary=f"P1 loop: U={u_dur:.1f}s P={p_dur:.1f}s total={total:.1f}s",
         artifacts={"understanding": understanding, "plan": plan},
     )
+
+    final_status = (
+        "failed" if breakers.tripped
+        else ("blocked" if not grounding.get("resolved") else "done")
+    )
+    _update_ticket_status(ticket_id, final_status, metadata={
+        "runtime": "aiforge_agents",
+        "stages_s": {
+            "understander": round(u_dur, 2),
+            "planner":      round(p_dur, 2),
+            "verifier":     round(v_dur, 2),
+            "grounder":     round(g_dur, 2),
+        },
+        "latency_s": round(total, 2),
+        "verdict": verdict.get("verdict"),
+        "grounded": grounding.get("resolved"),
+        "unresolved_refs": len(grounding.get("unresolved_refs") or []),
+    })
 
     return {
         "ticket_id": ticket_id,
