@@ -120,6 +120,49 @@ def test_guess_task_class_keywords() -> None:
     assert _guess_task_class("Random title", "") == "unknown"
 
 
+# ─────────── Prompt helpers (compaction + failure-recall) ─────────────
+
+def test_compact_short_text_unchanged() -> None:
+    from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
+    assert ph.compact("hello world") == "hello world"
+
+
+def test_compact_long_text_keeps_head_tail() -> None:
+    from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
+    text = "A" * 2000 + "B" * 5000 + "C" * 2000
+    out = ph.compact(text, head=100, tail=100)
+    assert out.startswith("A" * 100)
+    assert out.endswith("C" * 100)
+    assert "elided" in out
+
+
+def test_render_failures_block_empty() -> None:
+    from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
+    assert ph.render_failures_block(None) == ""
+    assert ph.render_failures_block([]) == ""
+
+
+def test_render_failures_block_renders_lessons() -> None:
+    from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
+    out = ph.render_failures_block([
+        {"mode": "F-001", "evidence": "com.bogus.X",
+         "lesson": "use stdlib only", "seen_count": 3},
+    ])
+    assert "F-001" in out
+    assert "×3" in out
+    assert "com.bogus.X" in out
+    assert "stdlib only" in out
+
+
+def test_render_failures_block_custom_header() -> None:
+    from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
+    out = ph.render_failures_block(
+        [{"mode": "x", "evidence": "y", "lesson": "z"}],
+        header="# CUSTOM",
+    )
+    assert out.startswith("# CUSTOM")
+
+
 # ─────────── Doer ─────────────────────────────────────────────────────
 
 def test_doer_skips_when_no_write_step() -> None:

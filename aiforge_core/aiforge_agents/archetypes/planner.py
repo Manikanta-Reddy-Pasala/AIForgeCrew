@@ -8,22 +8,6 @@ from typing import Any
 from aiforge_core.aiforge_agents.base import BaseArchetype
 from aiforge_core.aiforge_agents.registry import register
 
-def _compact(text: str, *, head: int = 1500, tail: int = 1500) -> str:
-    """Token-budget-friendly compaction: keep first head chars + last
-    tail chars, replace middle with `... [N chars elided] ...`.
-
-    Deterministic and free — no extra LLM call. Good enough for code
-    context where the most useful bits are at the top (semantic top-K)
-    and the bottom (runbook / sources)."""
-    if not text or len(text) <= head + tail + 64:
-        return text
-    return (
-        text[:head]
-        + f"\n\n... [{len(text) - head - tail} chars elided] ...\n\n"
-        + text[-tail:]
-    )
-
-
 @register("planner")
 @dataclass
 class Planner(BaseArchetype):
@@ -32,13 +16,13 @@ class Planner(BaseArchetype):
     def run(self, *, ctx: dict[str, Any]) -> dict[str, Any]:
         from aiforge_core.aiforge_agents.runtime import llm_client
         from aiforge_core.aiforge_agents.runtime import detectors
+        from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
 
         understanding = ctx.get("understanding", {})
         ctx_md = understanding.get("context_md", "")
-        # Compact heavy context_md for small local models. Keep header
-        # + first/last 1500 chars and drop the middle. Cheap, deterministic,
-        # and preserves the most-likely-relevant top hits + summary tail.
-        ctx_md = _compact(ctx_md, head=1500, tail=1500)
+        # Compact heavy context_md for small local models. Keeps the
+        # most-likely-relevant top hits + summary tail.
+        ctx_md = ph.compact(ctx_md, head=1500, tail=1500)
         allowed_files = ctx.get("allowed_files") or []
         skills_hint = ctx.get("skills_hint") or []
         failures_hint = ctx.get("failures_hint") or []
@@ -56,16 +40,7 @@ class Planner(BaseArchetype):
                 + "\n".join(f"- {p}" for p in allowed_files[:80])
                 + "\n"
             )
-        failures_block = ""
-        if failures_hint:
-            lines = ["# Mistakes from prior similar tickets — DO NOT REPEAT:"]
-            for f in failures_hint[:5]:
-                lines.append(
-                    f"- [{f.get('mode')}] {f.get('evidence','')[:120]}"
-                )
-                if f.get("lesson"):
-                    lines.append(f"  → {f.get('lesson')[:200]}")
-            failures_block = "\n".join(lines) + "\n"
+        failures_block = ph.render_failures_block(failures_hint)
 
         skills_block = ""
         if skills_hint:
@@ -97,7 +72,7 @@ class Planner(BaseArchetype):
             "with fields: steps (array), expected_token_budget (int). "
             "Each step has: id, action (read|edit|test|run|create), "
             "target (file path or symbol), inputs, expected (post-condition), "
-            "depends_on (array of step ids). Max 7 steps.\n"
+            "depends_on (array of step ids). Max 12 steps — use them.\n"
             "\n"
             "GRANULARITY: this system runs on a small local model. Prefer "
             "MANY SMALL steps over a few big ones — each `create` step "

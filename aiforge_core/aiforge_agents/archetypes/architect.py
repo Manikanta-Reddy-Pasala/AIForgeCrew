@@ -19,11 +19,19 @@ class Architect(BaseArchetype):
         If approve AND ctx['open_mr']=True AND a branch+diff is ready,
         invoke `gh pr create`. Else just emit MR title + body."""
         from aiforge_core.aiforge_agents.runtime import llm_client
+        from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
 
         understanding = ctx.get("understanding", {})
         plan = ctx.get("plan", {})
         doer = ctx.get("doer_outcome", {})
         validation = ctx.get("validation", {})
+        failures_hint = ctx.get("failures_hint") or []
+        u_slim = {k: v for k, v in (understanding or {}).items()
+                  if k != "context_md"}
+        failures_block = ph.render_failures_block(
+            failures_hint,
+            header="# Mistakes from prior reviews — flag if seen here:",
+        )
 
         if validation.get("decision") != "approve":
             return {"artifact_type": "review",
@@ -40,8 +48,9 @@ class Architect(BaseArchetype):
             "mr_title ≤ 70 chars. mr_body in markdown w/ ## Summary, ## Changes, ## Tests."
         )
         user = (
-            f"# Understanding\n{understanding}\n\n# Plan\n{plan}\n\n"
-            f"# Diff\n```\n{(doer.get('udiff') or '')[:3000]}\n```\n"
+            f"{failures_block}"
+            f"# Understanding\n{u_slim}\n\n# Plan\n{plan}\n\n"
+            f"# Diff\n```\n{ph.compact(doer.get('udiff') or '', head=4000, tail=2000)}\n```\n"
         )
         out = llm_client.call_json(
             model=self.model or "deepseek-r1-distill-32b",

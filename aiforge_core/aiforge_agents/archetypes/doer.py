@@ -54,8 +54,24 @@ def _git_apply_diff(
     if significant:
         return False, "", "dirty_worktree: " + significant[0][:120]
 
-    # Switch to / create the ticket branch
-    sw = _run(["git", "checkout", "-B", branch])
+    # Determine the upstream default branch so each ticket branches
+    # from a clean baseline (master/main) instead of stacking on the
+    # previous ticket's branch.
+    base = "main"
+    sb = _run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"])
+    if sb.returncode == 0:
+        ref = sb.stdout.strip().split("/")[-1]
+        if ref:
+            base = ref
+    # Switch to base, then create/reset the ticket branch from there.
+    # `-B` repositions an existing ticket branch, so re-runs are
+    # idempotent and never inherit a stale prior-run state.
+    co_base = _run(["git", "checkout", base])
+    if co_base.returncode != 0:
+        # Best-effort fall-through — if checkout fails the next checkout
+        # will also fail and we surface the error from there.
+        pass
+    sw = _run(["git", "checkout", "-B", branch, base])
     if sw.returncode != 0:
         return False, "", f"checkout: {sw.stderr.strip()}"
 
@@ -144,9 +160,11 @@ class Doer(BaseArchetype):
         from pathlib import Path
 
         from aiforge_core.aiforge_agents.runtime import detectors, llm_client
+        from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
 
         plan = ctx.get("plan", {})
         repo = ctx.get("repo", self.repo)
+        failures_hint = ctx.get("failures_hint") or []
         repo_path = ctx.get("repo_path", "")
         ticket_id = ctx.get("ticket_id", self.ticket_id)
         apply = bool(ctx.get("apply", False))
@@ -193,6 +211,11 @@ class Doer(BaseArchetype):
                 + "\n"
             )
 
+        # Failures-recall (auto-correct across tickets) — same data
+        # the Planner sees, also handed to Doer so it doesn't emit the
+        # same hallucinated import / sub-package twice.
+        failures_block = ph.render_failures_block(failures_hint)
+
         # CRITIC feedback block — surface prior-attempt issues so Doer
         # can fix them on retry. Caller passes previous_udiff +
         # detector_problems + architect_comments.
@@ -238,6 +261,7 @@ class Doer(BaseArchetype):
                 "Match the source language of the target path."
             )
             user = (
+                f"{failures_block}"
                 f"{critic_block}"
                 f"# Step (create new file)\n{step}\n\n"
                 f"# Target path: {target_rel}\n"
@@ -256,11 +280,12 @@ class Doer(BaseArchetype):
                 "Keep diff minimal."
             )
             user = (
+                f"{failures_block}"
                 f"{critic_block}"
                 f"# Step\n{step}\n\n"
                 f"# Target file: {target_rel}\n"
                 f"{siblings_block}"
-                f"```\n{file_text[:10_000]}\n```\n"
+                f"```\n{ph.compact(file_text, head=4000, tail=2000)}\n```\n"
             )
         raw = llm_client.call_text(
             model=self.model or "qwen3-coder-next",

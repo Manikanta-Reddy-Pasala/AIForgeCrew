@@ -18,9 +18,20 @@ class Tester(BaseArchetype):
         Output JSON list of test specs: {name, target_class, target_method,
         scenario, expected, framework}."""
         from aiforge_core.aiforge_agents.runtime import llm_client
+        from aiforge_core.aiforge_agents.runtime import prompt_helpers as ph
 
         understanding = ctx.get("understanding", {})
         plan = ctx.get("plan", {})
+        failures_hint = ctx.get("failures_hint") or []
+
+        # Strip context_md and compact whatever's left so the small
+        # local model has room for the test list itself.
+        u_slim = {k: v for k, v in (understanding or {}).items()
+                  if k != "context_md"}
+        failures_block = ph.render_failures_block(
+            failures_hint,
+            header="# Mistakes from prior tickets — write tests covering these:",
+        )
 
         system = (
             "You write failing test specs for a code-change ticket. "
@@ -30,7 +41,10 @@ class Tester(BaseArchetype):
             "Each test must target a real class/method from the Plan. "
             "Tests should fail BEFORE the change is applied (TDD)."
         )
-        user = f"# Understanding\n{understanding}\n\n# Plan\n{plan}\n"
+        user = (
+            f"{failures_block}"
+            f"# Understanding\n{u_slim}\n\n# Plan\n{plan}\n"
+        )
         out = llm_client.call_json(
             model=self.model or "qwen2.5-coder-14b",
             system=system, user=user,

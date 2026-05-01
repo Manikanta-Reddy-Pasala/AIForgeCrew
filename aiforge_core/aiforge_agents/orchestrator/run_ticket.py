@@ -261,6 +261,7 @@ def run(*, repo: str, title: str, body: str,
                     "target_step": st,
                     "previous_udiff": previous_udiff,
                     "detector_problems": previous_problems,
+                    "failures_hint": failures_hint,
                 })
                 d_dur += time.time() - d_t0
                 breakers.check_agent("doer")
@@ -322,7 +323,10 @@ def run(*, repo: str, title: str, body: str,
     t_agent = registry.build("tester", repo_path=None)
     t_agent.repo = repo; t_agent.ticket_id = ticket_id
     t_t0 = time.time()
-    test_plan = t_agent.run(ctx={"understanding": understanding, "plan": plan})
+    test_plan = t_agent.run(ctx={
+        "understanding": understanding, "plan": plan,
+        "failures_hint": failures_hint,
+    })
     t_dur = time.time() - t_t0
     breakers.check_agent("tester")
     learner.record_audit(
@@ -340,6 +344,7 @@ def run(*, repo: str, title: str, body: str,
     review = a_agent.run(ctx={
         "understanding": understanding, "plan": plan,
         "doer_outcome": doer_outcome, "validation": validation,
+        "failures_hint": failures_hint,
         "open_mr": open_mr,
         "repo_path": _resolve_repo_path(repo),
     })
@@ -384,6 +389,7 @@ def run(*, repo: str, title: str, body: str,
         review = a_agent.run(ctx={
             "understanding": understanding, "plan": plan,
             "doer_outcome": doer_outcome, "validation": validation,
+            "failures_hint": failures_hint,
             "open_mr": open_mr,
             "repo_path": _resolve_repo_path(repo),
         })

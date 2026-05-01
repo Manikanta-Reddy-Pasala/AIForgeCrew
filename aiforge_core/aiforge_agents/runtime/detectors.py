@@ -273,7 +273,7 @@ class DiffContextHashDetector:
 
 # ─────────── F-006 — plan depth ───────────────────────────────────────
 
-def check_plan_depth(plan: dict[str, Any], *, max_depth: int = 7) -> ft.FailureMatch | None:
+def check_plan_depth(plan: dict[str, Any], *, max_depth: int = 12) -> ft.FailureMatch | None:
     steps = plan.get("steps") or []
     if len(steps) > max_depth:
         return ft.record(

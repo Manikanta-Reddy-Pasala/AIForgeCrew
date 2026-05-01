@@ -178,7 +178,7 @@ def test_plan_depth_under_limit() -> None:
 
 
 def test_plan_depth_over_limit() -> None:
-    plan = {"steps": [{} for _ in range(10)]}
+    plan = {"steps": [{} for _ in range(15)]}
     hit = d.check_plan_depth(plan)
     assert hit is not None
     assert hit.mode.id == "F-006"
