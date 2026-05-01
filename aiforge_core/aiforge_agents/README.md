@@ -1,53 +1,52 @@
 # aiforge_agents — pluggable archetype pipeline
 
 9-stage agentic pipeline for ticket-driven code change. ADK-style
-archetype registry, single-LLM friendly, AiForgeMemory-grounded.
+archetype registry, single-LLM (Qwen3-Coder-Next on Mac Studio @ 256K
+context), AiForgeMemory-grounded, auto-learning across tickets.
 
 ```
-ticket  ─►  Understander  ─►  Planner  ⇄  Grounder  (REPLAN ≤ 3)
+ticket  ─►  Understander  ─►  Planner  ⇄  Grounder         (REPLAN ≤ 3)
                                 ▼
-                           Verifier
+                            Verifier
                                 ▼
-                            Doer  ──►  Validator
+                            Doer  ⇄  Validator             (CRITIC ≤ 2)
                                 ▼
                             Tester
                                 ▼
-                            Architect  ─►  Learner
+                            Architect  ⇄  Doer             (review-retry ≤ 1)
+                                ▼                       └► gh pr create
+                            Learner  ─►  skills + failures  (Postgres)
 ```
 
 Each stage is a `BaseArchetype` subclass registered via `@register("name")`
-in `archetypes/`. Configuration is 4-layer: ctx kwargs > per-repo
-`.aiforge/agents.yaml` > `~/.aiforge/agents.yaml` > bundled
-`agents.defaults.yaml`.
+in `archetypes/`. Configuration is 4-layer:
 
----
+> ctx kwargs > per-repo `.aiforge/agents.yaml` > `~/.aiforge/agents.yaml` > bundled `agents.defaults.yaml`
 
-## Stages
+## Per-stage docs
 
-| Stage | What it produces | Failure mode |
+| Stage | What it does | How it auto-learns |
 |---|---|---|
-| **Understander** | structured `understanding` (problem, knowns, unknowns, risks) + `context_md` from AiForgeMemory | `llm_invalid_json` → empty fields |
-| **Planner** | `plan.steps[]` (read/edit/test/run/create), allowlisted to AiForgeMemory file paths | depth>7 → `F-006` |
-| **Grounder** | resolves every step target against `File_v2` (graph). Order-aware: later steps can reference files earlier steps create | `unresolved_refs[]` triggers REPLAN ≤ 3× |
-| **Verifier** | `verdict ∈ {pass, repair, reject}` + `issues[]` post-grounding | invalid JSON → `repair` (safe default) |
-| **Doer** | unified diff for first edit/create step → `.aiforge/proposals/<ticket>.patch` | F-001 / F-003 detector blocks |
-| **Validator** | approve / block / skip on Doer outcome (looks at detector problems) | block on F-001 hallucinated imports |
-| **Tester** | TDD test specs (junit5 / pytest) | `llm_invalid_json` → `tests:[]` |
-| **Architect** | review decision + draft MR title/body | `request_changes` if validation blocked |
-| **Learner** | episodic + procedural rows in Postgres | always best-effort |
-
----
+| [Understander](docs/understander.md) | parses ticket + auto-fetches URLs + queries AiForgeMemory | reads enriched memory; web pages summarised inline |
+| [Planner](docs/planner.md) | many small single-file plan steps | `skills_hint` + `failures_hint` in prompt; REPLAN on Grounder fail |
+| [Grounder](docs/grounder.md) | rule-based path validation, order-aware | rejects feed Planner REPLAN + become Learner failures |
+| [Verifier](docs/verifier.md) | critic on plan-vs-Understanding | issues become Learner episodic rows |
+| [Doer](docs/doer.md) | one LLM call per file, git apply + commit | `failures_hint` in prompt; per-step CRITIC retry |
+| [Validator](docs/validator.md) | heuristic gate on Doer detector hits | hits roll up to `aiforge_agents_failures` |
+| [Tester](docs/tester.md) | TDD test specs | `failures_hint` biases tests toward bug-prone areas |
+| [Architect](docs/architect.md) | review + draft MR + `gh pr create` | `failures_hint` flags repeats; comments trigger Doer retry |
+| [Learner](docs/learner.md) | distil tickets to skills + failures | the **engine** of auto-correction |
 
 ## Detectors (failure-taxonomy ground truth)
 
-| Mode | Detector | What it catches |
+| Mode | Detector | Catches |
 |---|---|---|
-| F-001 | `HallucinatedImportDetector` | imports not in stdlib allowlist + not in graph + not a sibling being created in same plan |
+| F-001 | `HallucinatedImportDetector` | imports outside stdlib + graph + plan_create_fqns; filters Java `static`/`type` syntax tokens |
 | F-002 | `HallucinatedSymbolDetector` | symbols not in `Symbol_v2` and not under stdlib prefix |
 | F-003 | `DiffContextHashDetector` | unified-diff context lines that don't hash-match target file |
-| F-004/7/8/10 | `LoopDetector` | same output 3× consecutive (per ticket × step kind) |
-| F-006 | `check_plan_depth` | plan.steps > 7 |
-| F-009 | `check_token_budget` | actual_tokens > 2× expected |
+| F-004/7/8/10 | `LoopDetector` | same output 3× consecutive |
+| F-006 | `check_plan_depth` | plan steps > 12 |
+| F-009 | `check_token_budget` | actual tokens > 2× expected |
 
 **Stdlib allowlist** (F-001 pass without graph lookup):
 
@@ -57,18 +56,41 @@ org.springframework.* reactor.* io.reactivex.*
 org.slf4j.* ch.qos.logback.* org.apache.logging.*
 com.fasterxml.jackson.* com.google.gson.*
 lombok.* io.swagger.* springfox.*
-org.apache.* org.eclipse.*
 org.junit.* org.mockito.* org.assertj.* org.hamcrest.*
 com.mongodb.* io.nats.* io.lettuce.* redis.clients.*
 com.google.common.* com.google.protobuf.*
+org.apache.* org.eclipse.*
 ```
 
-Sibling-create FQNs (Java/Kotlin paths under `src/{main,test}/{java,kotlin}/`)
-are computed from the plan's `action=create` steps and treated as known —
-prevents false positives when one plan step imports a class another step
-is creating.
+## Auto-learning loop (cross-ticket auto-correction)
 
----
+```
+   ┌──────────────┐
+   │   Ticket N   │
+   └──────┬───────┘
+          ▼
+ understander → planner → … → architect → learner ─┐
+                                                   │
+                            ┌──────────────────────┘
+                            ▼
+                  Postgres: skills + failures
+                            │
+                            │  top_skills_for(repo, task_class)
+                            │  top_failures_for(repo, task_class)
+                            ▼
+   ┌──────────────┐
+   │  Ticket N+1  │  ← Planner / Doer / Tester / Architect prompts
+   └──────────────┘    embed both lists via render_failures_block()
+```
+
+Failure-recall headers are contextually framed:
+
+| Stage | Header |
+|---|---|
+| Planner | `# Mistakes from prior similar tickets — DO NOT REPEAT` |
+| Doer | `# Mistakes from prior similar tickets — DO NOT REPEAT` |
+| Tester | `# Mistakes from prior tickets — write tests covering these` |
+| Architect | `# Mistakes from prior reviews — flag if seen here` |
 
 ## Allowed-files seeding (prevents Planner hallucination)
 
@@ -79,44 +101,60 @@ allowlist. Sources combined:
 1. bge-m3 vector top-K via Cypher `codemem_chunk_embed`
 2. CamelCase-aware Lucene fulltext on `Symbol_v2.signature`
 3. Service `CONTAINS_FILE` neighbours
+4. Cross-encoder rerank on the top-30
+5. 1-hop graph expansion (IMPORTS in/out)
 
-`.aiforge-worktrees/**` and other dotfile paths are filtered out — prior
-agent worktree dirs were polluting the index and crowding out real
-source files (5040 → 1007 canonical files on PCB after purge).
-
-The set is also stored in ticket metadata as `allowed_files` (head 40 +
-count) for post-mortem visibility.
-
----
+`.aiforge-worktrees/**` and other dotfile paths are filtered out.
 
 ## REPLAN loop (Planner ⇄ Grounder)
 
 ```
 plan_attempts = 0
 while plan_attempts < 3:
-    plan = planner.run(ctx={
-        "understanding": ...,
-        "allowed_files": allowed_files,
-        "previous_plan": last_plan,
-        "unresolved_refs": grounder.unresolved_refs,
-    })
+    plan = planner.run(ctx={...})
+    plan, dropped = filter_plan_targets(plan, allowed_files)  # post-filter
     grounding = grounder.run(ctx={"plan": plan, "repo": repo})
-    if grounding.resolved: break
+    if kept_steps == 0:                # empty-plan REPLAN
+        force unresolved + retry
+    if grounding.resolved and shrink_ratio < 0.5:
+        break
     plan_attempts += 1
 ```
 
-The Planner prompt receives an explicit "BLOCKED — replace these refs"
-block listing the previous attempt's unresolved targets.
-
 Grounder leniencies:
 
-- `action=create` passes if **parent OR grandparent** dir exists
-  (allows fresh feature packages: `feature/storeregion/` under
-  existing `feature/`).
+- `action=create` rejected if file already exists in graph (suggest
+  `edit`); else passes if any ancestor dir has at least one indexed
+  file.
 - `action=read|edit|test` passes if the path appears as a `create`
   target earlier in the same plan (order-aware).
 
----
+## CRITIC loop (Doer ⇄ Validator)
+
+```
+for step in write_steps:
+    for attempt in range(2):
+        outcome = doer.run(ctx={..., target_step=step,
+                                previous_udiff=...,
+                                detector_problems=...})
+        v = validator.run(outcome)
+        if v.approve or v.skip: break
+        previous_udiff, previous_problems = outcome.udiff, outcome.problems
+```
+
+Architect→Doer retry: when validator approves but Architect requests
+changes, one more Doer pass receives the comments as feedback.
+
+## Multi-step Doer + git apply
+
+Each ticket gets one branch `aiforge/<ticket>`. Per step:
+
+- First step: branch from remote default (`master`/`main`) detected
+  via `git symbolic-ref refs/remotes/origin/HEAD`.
+- Subsequent steps: checkout the existing branch (commits stack).
+- `git apply --recount --ignore-whitespace --whitespace=nowarn`.
+- Commit with `:(exclude)` for `.aiforge`, `.aiforge-worktrees`,
+  `graphify-out`, `.idea`, `.vscode`.
 
 ## Configuration
 
@@ -126,34 +164,37 @@ archetypes:
   understander:
     model: /path/to/Qwen3-Coder-Next-MLX-4bit
     temperature: 0.3
-    max_tokens: 2048
+    max_tokens: 8000
   planner:
-    temperature: 0.2
-    max_tokens: 6000
-    grammar: plan.gbnf
+    temperature: 0.3
+    max_tokens: 24000
+  doer:
+    max_tokens: 24000
 ```
 
 Bundled `agents.defaults.yaml` ships sensible defaults so a fresh repo
 runs without any operator config.
 
----
-
 ## CLI
 
 ```bash
+# Understander → Planner → … → Learner, no apply, no PR
 python -m aiforge_core.aiforge_agents.orchestrator.run_ticket \
     --repo PosClientBackend \
     --title "Add ledgerCategory CRUD APIs" \
     --body  "Controller + Service + Impl + Repository ..."
+
+# Apply Doer diff to a ticket branch + open the GitHub PR
+AIFORGE_AGENTS_APPLY=1 \
+AIFORGE_AGENTS_OPEN_MR=1 \
+python -m aiforge_core.aiforge_agents.orchestrator.run_ticket \
+    --repo PosClientBackend --title "..." --body "..."
 ```
 
-Prints JSON with `understanding`, `plan`, `grounding`, `doer_outcome`,
-`validation`, `test_plan`, `review`, `learning`, `latency_s`.
-
-Postgres mirroring: orchestrator writes the same data into `tickets`
-(status + metadata) so the AIForgeCrew web UI shows the run.
-
----
+The orchestrator also mirrors every stage's outcome into the existing
+`tickets` table (status + metadata) so the AIForgeCrew web UI surfaces
+the run automatically (Body, Plan steps, Doer udiff, Architect MR with
+the GitHub PR link).
 
 ## Tests
 
@@ -161,33 +202,32 @@ Postgres mirroring: orchestrator writes the same data into `tickets`
 .venv/bin/python -m pytest aiforge_core/aiforge_agents/tests/ -q
 ```
 
-56/56 unit tests across registry, runtime, detectors, archetypes.
+73 unit tests across registry, runtime helpers, detectors, archetypes,
+prompt helpers, and web-fetch URL extraction.
 
 | File | Covers |
 |---|---|
-| `test_archetypes_unit.py` | Doer / Validator / Tester / Architect / Learner |
-| `test_detectors.py` | F-001 stdlib allowlist, sibling-create, wildcard imports, F-002, F-003 |
+| `test_archetypes_unit.py` | Doer / Validator / Tester / Architect / Learner / filter / git apply / skills / compaction / failures-block / web URL extract |
+| `test_detectors.py` | F-001 stdlib, sibling-create, wildcard, static-import filter, F-002, F-003, depth, budget |
 | `test_circuit_breakers.py` | wall-clock, retries, token budget, audit |
 | `test_failure_taxonomy.py` | mode registration + recovery actions |
 | `test_registry.py` | 4-layer config lookup |
-| `test_runtime.py` | LLM client mocks, memory mocks |
-
----
+| `test_runtime.py` | LLM client mocks |
 
 ## Recent changes (May 2026)
 
-- **F-001 stdlib allowlist** extended (Spring/Lombok/Swagger/Jackson/
-  JUnit/Mockito/Mongo/NATS) — was flagging every standard import.
-- **Plan-create FQN sibling awareness** — Doer-emitted imports of
-  files another plan step creates no longer false-positive.
-- **Order-aware Grounder** + grandparent-dir leniency — fresh
-  feature packages (e.g. `feature/storeregion/`) now resolve.
-- **Worktree filter in `_fetch_allowed_files`** — `.aiforge-worktrees/**`
-  paths dropped before allowlist seeding.
-- **Doer `action=create`** — new file generation supported alongside
-  `edit`; emits `--- /dev/null` udiff.
-- **Learner shallow-path fix** — `task_class` derivation no longer
-  crashes on top-level targets like `README.md`.
-- **AiForgeMemory translator** got hybrid retrieval (RRF + cross-encoder
-  rerank + CamelCase + synonym expansion + 1-hop graph) — see
-  `AiForgeMemory/README.md`.
+- Multi-step Doer (one LLM call per file) — branch stacks commits.
+- Auto-learn end-to-end: `aiforge_agents_failures` + `_skills`,
+  surfaced into Planner/Doer/Tester/Architect prompts.
+- Context compaction in every prompt via shared `runtime/prompt_helpers`.
+- Granular plans cap 7 → 12; post-Planner allowlist filter; empty-plan
+  REPLAN guard.
+- URL auto-learn (`runtime/web_fetch.py`) — Understander auto-summarises
+  any URL in title/body.
+- `git apply` with `--recount --ignore-whitespace`; auto base-branch
+  detection; `gh pr create --draft` on `request_changes`.
+- mlx_lm server bumped to `--max-tokens 32768`; model supports 256K
+  context natively (`max_position_embeddings: 262144`).
+- F-001 false-positives fixed: extended stdlib (Spring/Lombok/Swagger/
+  JUnit/Mockito/Mongo/NATS), Java `import static` syntax, sibling-FQN
+  awareness.
