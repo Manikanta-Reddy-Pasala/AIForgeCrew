@@ -321,10 +321,54 @@ def promote_skill(*, repo: str, task_class: str, name: str,
         conn.close()
 
 
+def _decay_params() -> tuple[float, float]:
+    """(half_life_days, cutoff_days) for skill/failure ranking.
+
+    Tunable via env:
+      AIFORGE_LEARNER_HALFLIFE_DAYS — half-life of recency weight (def 30)
+      AIFORGE_LEARNER_CUTOFF_DAYS   — drop entries older than this (def 180)
+    """
+    import os as _os
+    try:
+        half = float(_os.environ.get("AIFORGE_LEARNER_HALFLIFE_DAYS", "30"))
+    except ValueError:
+        half = 30.0
+    try:
+        cutoff = float(_os.environ.get("AIFORGE_LEARNER_CUTOFF_DAYS", "180"))
+    except ValueError:
+        cutoff = 180.0
+    # Defensive: zero/negative half-life would blow up the SQL; fall
+    # back to a 1-day floor so the query stays bounded.
+    return max(0.5, half), max(half, cutoff)
+
+
+def _decay_factor(age_seconds: float, half_life_days: float) -> float:
+    """Pure-python mirror of the SQL decay term — exposed so callers
+    that rank in memory (rare) get the same answer as Postgres.
+
+    factor = 0.5 ** (age_days / half_life_days)
+    half-life of 30d means a 30-day-old failure weighs half a fresh one,
+    a 60-day-old weighs a quarter, etc.
+    """
+    import math
+    if age_seconds < 0:
+        age_seconds = 0.0
+    if half_life_days <= 0:
+        return 1.0
+    age_days = age_seconds / 86400.0
+    return math.pow(0.5, age_days / half_life_days)
+
+
 def top_skills_for(*, repo: str, task_class: str,
                    k: int = 3) -> list[dict]:
-    """Return up to k skills ordered by net success. Used by Planner /
-    Doer prompts to recall winning recipes for similar tasks."""
+    """Return up to k skills ordered by **time-decayed** net success.
+
+    Skills that haven't been used in months should not crowd out fresh
+    wins. We multiply (success_count - failure_count) by a half-life
+    decay on `last_used`. Half-life + cutoff env-tunable via
+    :func:`_decay_params`.
+    """
+    half_days, cutoff_days = _decay_params()
     conn = _conn()
     if conn is None:
         return []
@@ -334,9 +378,17 @@ def top_skills_for(*, repo: str, task_class: str,
                 "SELECT name, summary, body_md, success_count, failure_count "
                 "FROM aiforge_agents_skills "
                 "WHERE repo = %s AND task_class = %s "
-                "ORDER BY (success_count - failure_count) DESC, last_used DESC "
+                "  AND (last_used IS NULL "
+                "       OR last_used > now() - (%s || ' days')::interval) "
+                "ORDER BY ((success_count - failure_count)::float "
+                "          * power(0.5, "
+                "             GREATEST(0, "
+                "               extract(epoch from "
+                "                 (now() - COALESCE(last_used, now())))"
+                "             ) / (%s::float * 86400.0))) DESC, "
+                "         last_used DESC NULLS LAST "
                 "LIMIT %s",
-                (repo, task_class, k),
+                (repo, task_class, cutoff_days, half_days, k),
             )
             rows = cur.fetchall()
         return [
@@ -382,9 +434,13 @@ def record_failure(*, repo: str, task_class: str, mode: str,
 
 def top_failures_for(*, repo: str, task_class: str,
                      k: int = 5) -> list[dict]:
-    """Return top-k chronic failures for this repo + task_class.
-    Used to inject "do not repeat these mistakes" hints into agent
-    prompts on similar future tickets."""
+    """Return top-k chronic failures, time-decayed.
+
+    Old failures should not haunt new tickets forever — we rank by
+    seen_count weighted by ``power(0.5, age_days / half_life)`` and drop
+    entries older than the cutoff entirely. Defaults: half-life 30d,
+    cutoff 180d (env-tunable via :func:`_decay_params`)."""
+    half_days, cutoff_days = _decay_params()
     conn = _conn()
     if conn is None:
         return []
@@ -394,9 +450,15 @@ def top_failures_for(*, repo: str, task_class: str,
                 "SELECT mode, evidence, lesson, seen_count, last_seen "
                 "FROM aiforge_agents_failures "
                 "WHERE repo = %s AND task_class = %s "
-                "ORDER BY seen_count DESC, last_seen DESC "
+                "  AND last_seen > now() - (%s || ' days')::interval "
+                "ORDER BY (seen_count::float "
+                "          * power(0.5, "
+                "             GREATEST(0, "
+                "               extract(epoch from (now() - last_seen))) "
+                "             / (%s::float * 86400.0))) DESC, "
+                "         last_seen DESC "
                 "LIMIT %s",
-                (repo, task_class, k),
+                (repo, task_class, cutoff_days, half_days, k),
             )
             rows = cur.fetchall()
         return [
