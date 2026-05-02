@@ -562,6 +562,13 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(t_dur * 1000),
     )
 
+    # Persist Tester specs to disk + register as ticket attachment so
+    # the Tester-runs-tests stage (and later forensic review) can pick
+    # them up. Best-effort: any IO/DB error is logged and swallowed.
+    _persist_tester_specs(
+        ticket_id=ticket_id, test_plan=test_plan, log=log,
+    )
+
     # Stage A — Architect review + optional Doer-Architect retry.
     breakers.begin_agent("architect")
     a_agent = registry.build("architect", repo_path=None)
@@ -1145,6 +1152,62 @@ def _guess_task_class(title: str, body: str) -> str:
         if kw in text:
             return cls
     return "unknown"
+
+
+def _persist_tester_specs(*, ticket_id: str, test_plan: dict, log) -> str:
+    """Write Tester output to ``~/.aiforge/runs/<ticket>/test_plan.json``
+    and register it as an attachment with role=tester_specs.
+
+    Returns the absolute path on success, "" on failure. Best-effort —
+    IO and DB errors are logged via the ticket NDJSON, never raised."""
+    import json as _json
+    import os as _os
+    from pathlib import Path
+
+    if not test_plan or not isinstance(test_plan, dict):
+        return ""
+    tests = list(test_plan.get("tests") or [])
+    try:
+        runs_root = Path(
+            _os.environ.get("AIFORGE_RUNS_DIR")
+            or _os.path.expanduser("~/.aiforge/runs"),
+        )
+        ticket_dir = runs_root / ticket_id
+        ticket_dir.mkdir(parents=True, exist_ok=True)
+        specs_path = ticket_dir / "test_plan.json"
+        specs_path.write_text(
+            _json.dumps(test_plan, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        size = specs_path.stat().st_size
+    except OSError as exc:
+        emit(log, "tester.specs_persist_failed", error=str(exc)[:200])
+        return ""
+
+    try:
+        learner.add_attachment(
+            ticket_id=ticket_id,
+            filename="test_plan.json",
+            file_path=str(specs_path),
+            role="tester_specs",
+            content_type="application/json",
+            bytes_=size,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # add_attachment already swallows DB errors; this is a paranoia
+        # belt-and-braces against unexpected typing issues. Disk write
+        # already succeeded — keep going.
+        emit(log, "tester.specs_attachment_failed", error=str(exc)[:200])
+
+    emit(log, "tester.specs_persisted",
+         path=str(specs_path), test_count=len(tests))
+    learner.record_audit(
+        ticket_id=ticket_id, agent_role="tester",
+        event_type="specs_persisted",
+        payload={"path": str(specs_path), "test_count": len(tests),
+                 "bytes": size},
+    )
+    return str(specs_path)
 
 
 def _resolve_repo_path(repo_name: str) -> str:
