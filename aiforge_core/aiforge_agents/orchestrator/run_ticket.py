@@ -389,6 +389,10 @@ def run(*, repo: str, title: str, body: str,
         if not write_steps:
             doer_outcome = {"skipped": True, "reason": "no_write_step"}
         repo_path_for_rollback = _resolve_repo_path(repo) if apply else ""
+        # CRITIC retry cap (bumps the per-step retry budget). Default 3:
+        # Doer's first attempt + 2 retries. A diminishing-returns guard
+        # below bails earlier if a retry produces no real progress.
+        critic_max = max(1, int(_os.environ.get("AIFORGE_CRITIC_MAX", "3")))
         for st in write_steps:
             previous_udiff = ""
             previous_problems: list = []
@@ -398,7 +402,8 @@ def run(*, repo: str, title: str, body: str,
                 repo_path_for_rollback, branch=f"aiforge/{ticket_id}",
             ) if repo_path_for_rollback else ""
             step_committed_sha = ""
-            for attempt in range(2):  # CRITIC retry per step
+            critic_bailed = False  # diminishing-returns flag
+            for attempt in range(critic_max):  # CRITIC retry per step
                 doer_attempts += 1
                 breakers.begin_agent("doer")
                 d_agent = registry.build("doer", repo_path=None)
@@ -470,52 +475,62 @@ def run(*, repo: str, title: str, body: str,
                         "validation": step_validation,
                     })
                     break
-                # Validator blocked → retry once with feedback
-                previous_udiff = step_outcome.get("udiff") or ""
-                previous_problems = list(
-                    step_outcome.get("problems") or [])
-            else:
-                # All retries exhausted — last attempt's commit (if any)
-                # is now poisoning the branch. Rollback to head_before_step
-                # so subsequent steps + the final PR don't carry it.
-                rolled_back = False
-                rollback_sha = ""
-                if (step_outcome.get("applied")
-                        and head_before_step
-                        and repo_path_for_rollback):
-                    cur = _git_head_sha(
-                        repo_path_for_rollback,
-                        branch=f"aiforge/{ticket_id}",
+                # Validator blocked → consider another retry.
+                cur_udiff = step_outcome.get("udiff") or ""
+                cur_problems = list(step_outcome.get("problems") or [])
+                # Diminishing-returns guard: if this attempt's udiff is
+                # byte-identical to the prior one, OR problem count grew
+                # despite feedback, retrying won't help. Bail now and
+                # keep the (still-blocked) outcome for aggregation.
+                no_progress = (
+                    attempt > 0 and (
+                        cur_udiff.strip() == previous_udiff.strip()
+                        or len(cur_problems) > len(previous_problems)
                     )
-                    if cur and cur != head_before_step:
-                        rolled_back = _git_reset_to(
-                            repo_path_for_rollback, head_before_step,
-                        )
-                        rollback_sha = head_before_step if rolled_back else ""
-                        if rolled_back:
-                            emit(log, "doer.step_rolled_back",
-                                 step_id=st.get("id"),
-                                 step_target=st.get("target"),
-                                 from_sha=cur[:8],
-                                 to_sha=head_before_step[:8])
-                            learner.record_audit(
-                                ticket_id=ticket_id, agent_role="doer",
-                                event_type="step_rolled_back",
-                                payload={
-                                    "step_id": st.get("id"),
-                                    "step_target": st.get("target"),
-                                    "from_sha": cur,
-                                    "to_sha": head_before_step,
-                                },
-                            )
-                        else:
-                            emit(log, "doer.step_rollback_failed",
-                                 step_id=st.get("id"),
-                                 step_target=st.get("target"))
-                step_outcome = dict(step_outcome)
-                step_outcome["rolled_back"] = rolled_back
-                if rollback_sha:
-                    step_outcome["rolled_back_to"] = rollback_sha
+                )
+                if no_progress:
+                    emit(log, "doer.critic_bail",
+                         step_id=st.get("id"),
+                         step_target=st.get("target"),
+                         attempt=attempt + 1,
+                         reason="diminishing_returns",
+                         prev_problems=len(previous_problems),
+                         cur_problems=len(cur_problems))
+                    learner.record_audit(
+                        ticket_id=ticket_id, agent_role="doer",
+                        event_type="critic_bailed",
+                        payload={
+                            "step_id": st.get("id"),
+                            "step_target": st.get("target"),
+                            "attempt": attempt + 1,
+                            "reason": "diminishing_returns",
+                        },
+                    )
+                    critic_bailed = True
+                    step_outcome = _maybe_rollback_step(
+                        step_outcome=step_outcome,
+                        head_before_step=head_before_step,
+                        repo_path=repo_path_for_rollback,
+                        ticket_id=ticket_id,
+                        step=st, log=log, learner_mod=learner,
+                    )
+                    per_step_outcomes.append({
+                        "step": st, "outcome": step_outcome,
+                        "validation": step_validation,
+                    })
+                    break
+                previous_udiff = cur_udiff
+                previous_problems = cur_problems
+            else:
+                # All retries exhausted — rollback last attempt's commit
+                # so subsequent steps + the final PR don't carry it.
+                step_outcome = _maybe_rollback_step(
+                    step_outcome=step_outcome,
+                    head_before_step=head_before_step,
+                    repo_path=repo_path_for_rollback,
+                    ticket_id=ticket_id,
+                    step=st, log=log, learner_mod=learner,
+                )
                 per_step_outcomes.append({
                     "step": st, "outcome": step_outcome,
                     "validation": step_validation,
@@ -1162,6 +1177,43 @@ def _git_head_sha(repo_path: str, branch: str) -> str:
     if out.returncode != 0:
         return ""
     return (out.stdout or "").strip()
+
+
+def _maybe_rollback_step(
+    *, step_outcome: dict, head_before_step: str,
+    repo_path: str, ticket_id: str,
+    step: dict, log, learner_mod,
+) -> dict:
+    """Rollback the step's commit if it was applied. Returns mutated copy
+    of ``step_outcome`` with rolled_back/rolled_back_to set."""
+    if not (step_outcome.get("applied")
+            and head_before_step
+            and repo_path):
+        return step_outcome
+    cur = _git_head_sha(repo_path, branch=f"aiforge/{ticket_id}")
+    if not cur or cur == head_before_step:
+        return step_outcome
+    ok = _git_reset_to(repo_path, head_before_step)
+    out = dict(step_outcome)
+    out["rolled_back"] = ok
+    if ok:
+        out["rolled_back_to"] = head_before_step
+        emit(log, "doer.step_rolled_back",
+             step_id=step.get("id"),
+             step_target=step.get("target"),
+             from_sha=cur[:8], to_sha=head_before_step[:8])
+        learner_mod.record_audit(
+            ticket_id=ticket_id, agent_role="doer",
+            event_type="step_rolled_back",
+            payload={"step_id": step.get("id"),
+                     "step_target": step.get("target"),
+                     "from_sha": cur, "to_sha": head_before_step},
+        )
+    else:
+        emit(log, "doer.step_rollback_failed",
+             step_id=step.get("id"),
+             step_target=step.get("target"))
+    return out
 
 
 def _git_reset_to(repo_path: str, sha: str) -> bool:
