@@ -204,17 +204,30 @@ def run(*, repo: str, title: str, body: str,
         repo=repo, task_class=task_class_guess, k=5,
     )
 
-    # Stage P — Planner (with REPLAN loop on grounder failure)
+    # Stage P — Planner (with REPLAN loop on grounder failure OR Verifier reject)
     p_t0 = time.time()
     plan: dict[str, Any] = {}
     grounding: dict[str, Any] = {}
+    verdict: dict[str, Any] = {}
     plan_attempts = 0
     g_dur = 0.0
+    v_dur = 0.0
+    verifier_issues_carry: list[dict] = []
     while plan_attempts < 3:
         plan_attempts += 1
         breakers.begin_agent("planner")
         p_agent = registry.build("planner", repo_path=None)
         p_agent.repo = repo; p_agent.ticket_id = ticket_id
+        # Carry verifier issues from prior attempt as additional unresolved
+        # entries — Planner's prompt already understands the format.
+        unresolved_for_planner = list(grounding.get("unresolved_refs", []))
+        for iss in verifier_issues_carry:
+            unresolved_for_planner.append({
+                "step_id": iss.get("step_id", 0),
+                "target": f"(verifier:{iss.get('kind','issue')})",
+                "action": "verify",
+                "reason": iss.get("message", "verifier_reject"),
+            })
         plan = p_agent.run(ctx={
             "understanding": understanding,
             "title": title, "body": body, "repo": repo,
@@ -222,7 +235,7 @@ def run(*, repo: str, title: str, body: str,
             "skills_hint": skills_hint,
             "failures_hint": failures_hint,
             "previous_plan": plan if plan_attempts > 1 else None,
-            "unresolved_refs": grounding.get("unresolved_refs", []),
+            "unresolved_refs": unresolved_for_planner,
         })
         # Post-Planner allowlist filter — drop read/edit/test/run steps
         # whose target is not in allowed_files. Planner sometimes
@@ -282,12 +295,31 @@ def run(*, repo: str, title: str, body: str,
                 continue
 
         if grounding.get("resolved") and shrink_ratio < 0.5:
+            # Plan is grounded — now ask Verifier for a critic pass.
+            # verdict=reject re-enters the loop with verifier issues
+            # as REPLAN hints. verdict in {pass, repair} is acceptable
+            # (repair is for orchestrator, not a re-plan signal).
+            breakers.begin_agent("verifier")
+            v_agent = registry.build("verifier", repo_path=None)
+            v_agent.repo = repo; v_agent.ticket_id = ticket_id
+            v_t0_inner = time.time()
+            verdict = v_agent.run(ctx={
+                "understanding": understanding, "plan": plan,
+            })
+            v_dur += time.time() - v_t0_inner
+            breakers.check_agent("verifier")
+            if str(verdict.get("verdict", "pass")).lower() == "reject":
+                verifier_issues_carry = list(
+                    verdict.get("issues") or [])[:3]
+                # Don't break — fall through to next plan_attempt.
+                continue
+            verifier_issues_carry = []
             break
         # Surface dropped refs back to Planner as if they were unresolved.
         if dropped_refs and not grounding.get("unresolved_refs"):
             grounding["unresolved_refs"] = dropped_refs
             grounding["resolved"] = False
-    p_dur = time.time() - p_t0 - g_dur  # pure planner time
+    p_dur = time.time() - p_t0 - g_dur - v_dur  # pure planner time
     learner.record_audit(
         ticket_id=ticket_id, agent_role="planner",
         event_type="agent_completed",
@@ -304,23 +336,26 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(g_dur * 1000),
     )
 
-    # Stage V — Verifier (after final plan)
-    breakers.begin_agent("verifier")
-    v_agent = registry.build("verifier", repo_path=None)
-    v_agent.repo = repo; v_agent.ticket_id = ticket_id
-    v_t0 = time.time()
-    verdict = v_agent.run(ctx={"understanding": understanding, "plan": plan})
-    v_dur = time.time() - v_t0
-    breakers.check_agent("verifier")
+    # Stage V — Verifier ran inside the REPLAN loop above. If the loop
+    # terminated without running it (e.g. empty plan), synthesise a
+    # neutral verdict so downstream code has a stable shape.
+    if not verdict:
+        verdict = {"artifact_type": "verifier_verdict",
+                   "verdict": "pass", "issues": [],
+                   "revised_plan": None,
+                   "skipped_reason": "no_grounded_plan"}
     learner.record_audit(
         ticket_id=ticket_id, agent_role="verifier",
         event_type="agent_completed",
         payload={"verdict": verdict.get("verdict"),
-                 "issue_count": len(verdict.get("issues") or [])},
+                 "issue_count": len(verdict.get("issues") or []),
+                 "plan_attempts": plan_attempts,
+                 "rejected_replans": len([
+                     1 for _ in range(plan_attempts - 1)
+                 ]) if str(verdict.get("verdict", "")).lower() != "reject"
+                 else plan_attempts - 1},
         duration_ms=int(v_dur * 1000),
     )
-
-    # Grounder + REPLAN loop already done above.
 
     # Stage D — Multi-step Doer + Validator CRITIC loop.
     #
