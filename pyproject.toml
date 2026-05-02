@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "AIForgeCrew — autonomous AI dev team orchestrator (single-Postgres runtime)"
 requires-python = ">=3.11"
 dependencies = [
+  # Core runtime — required for the new aiforge_agents pipeline + UI.
   "psycopg[binary]>=3.2",
   "pymongo>=4.6",
   "fastapi>=0.115",
@@ -16,20 +17,7 @@ dependencies = [
   "httpx>=0.27",
   "openai>=1.50",
   "numpy>=1.26",
-  # Phase 1 — smolagents Doer
-  "smolagents>=1.13",
   "litellm>=1.40",
-  # Phase 2 — LlamaIndex RAG
-  "llama-index-core>=0.12.0",
-  "llama-index-vector-stores-postgres>=0.3.0",
-  "llama-index-embeddings-openai>=0.3.0",
-  "llama-index-retrievers-bm25>=0.5.0",
-  # Phase 3 — LangGraph orchestrator (kept for back-compat; Phase 11 removes)
-  "langgraph>=0.3.0",
-  "langgraph-checkpoint-postgres>=2.0.0",
-  # Phase 9 — Google ADK orchestrator (replaces LangGraph)
-  "google-adk==1.31.1",
-  # AiForgeMemory — extracted code-memory subsystem (was aiforge_core.codemem)
   "aiforge-memory @ git+https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git@main",
 ]
 
@@ -39,6 +27,20 @@ dev = [
   "ruff>=0.4",
 ]
 xlsx = ["openpyxl>=3.1"]
+# Legacy stack — used only by deprecated runtime/api.py chat endpoint
+# + aiforge_core/{planner,doer,intent,context,legacy} packages. New
+# code MUST NOT import these. Install only when running the legacy
+# UI chat / GA workflow.
+legacy = [
+  "smolagents>=1.13",
+  "google-adk==1.31.1",
+  "langgraph>=0.3.0",
+  "langgraph-checkpoint-postgres>=2.0.0",
+  "llama-index-core>=0.12.0",
+  "llama-index-vector-stores-postgres>=0.3.0",
+  "llama-index-embeddings-openai>=0.3.0",
+  "llama-index-retrievers-bm25>=0.5.0",
+]
 
 [project.scripts]
 aiforge-agents-run = "aiforge_core.aiforge_agents.orchestrator.run_ticket:main"
