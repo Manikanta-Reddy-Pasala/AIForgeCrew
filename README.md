@@ -126,6 +126,27 @@ The learner runs after every Doer pass (`aiforge_core/runtime/doer_learner.py`) 
 
 ---
 
+## Two orchestrators (both supported)
+
+| Path | Surface | Purpose | Pipeline |
+|---|---|---|---|
+| `aiforge_core/runtime/adk_runner.py` | HTTP API + systemd `aiforge-graph-runner.service` | Production ticket flow | ADK `SequentialAgent[Planner, Loop[Doer,Feedback], Learner]` |
+| `aiforge_core/aiforge_agents/orchestrator/run_ticket.py` | `aiforge-agents-run` CLI | Experimental v0.4 cascade | 9 stages: Understander → Planner ⇄ Grounder (REPLAN ≤3) → Verifier → Doer ⇄ Validator (CRITIC ×2) → Tester → Architect → Learner |
+
+Both share infrastructure: pluggable LLM router with health probe + cloud auto-escalation (`aiforge_core/llm/`), recovery engine that consumes the F-001..F-012 failure taxonomy (`aiforge_core/aiforge_agents/runtime/recovery_engine.py`), and per-ticket NDJSON traces at `~/.aiforge/runs/<ticket>.ndjson`.
+
+## Recovery & Resilience
+
+| Layer | Module | Triggers |
+|---|---|---|
+| Circuit breakers | `aiforge_agents/runtime/circuit_breakers.py` | wall-clock per agent (doer 30min · others 10min · ticket 4hr); retries-per-step (5); token budget (2× expected); audit failures |
+| Failure taxonomy | `aiforge_agents/runtime/failure_taxonomy.py` | F-001 hallucinated import · F-002 hallucinated symbol · F-003 diff context mismatch · F-004/007/008/010 loop · F-005 unreachable plan step · F-006 plan depth · F-009 token budget · F-011 skill misapplication · F-012 memory contradiction. User-extensible at `~/.aiforge/failure_taxonomy.yaml` (F-013+) |
+| Detectors | `aiforge_agents/runtime/detectors.py` | Real ground-truth checks via Neo4j Symbol/Import graph + 3x-same-output loop hash + udiff context line hash |
+| Recovery engine | `aiforge_agents/runtime/recovery_engine.py` | Maps detector match → `Action` (BLOCK_AND_RETRY · REPLAN · REPLAN_SMALLER · SPLIT_TICKET · KGR_FALLBACK · DEMOTE_SKILL · QUARANTINE_MEMORY · ESCALATE_HUMAN). Repeat-escalation guard: same F-mode 3× → forced ESCALATE_HUMAN regardless of policy. |
+| LLM client | `aiforge_core/llm/client.py` | 3-tier retry chain — pre-flight cloud escalation when `est_tokens > local_ctx × 0.8`; fallback provider on transport error or empty/garbage 200-OK; cloud quality escalation on second failure |
+| Provider health | `aiforge_core/llm/health.py` | Cached `/v1/models` probe (30s TTL); router skips known-down providers automatically; envs: `AIFORGE_HEALTH_DISABLE`, `AIFORGE_HEALTH_TTL_S`, `AIFORGE_HEALTH_TIMEOUT_S` |
+| Cloud auto-escalation | `aiforge_core/llm/router.py:escalate()` | Reasons: `context_overflow` (token estimate vs local ctx), `quality` (forced cloud after empty/garbage), `timeout`, `breaker_close`. Pinnable via `AIFORGE_<ROLE>_CLOUD_PROVIDER` |
+
 ## Agents
 
 | Agent | Runtime | Model | Inputs (now) | Tools (allowlist) | Memory R/W |

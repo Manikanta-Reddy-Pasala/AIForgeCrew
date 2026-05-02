@@ -1,9 +1,20 @@
-"""Entry point for the Google ADK orchestrator.
+"""Production ADK orchestrator — the path the HTTP API talks to.
 
 Replaces ``aiforge_core.runtime.graph_runner`` (LangGraph). Single-shot
 mode: claim one ticket, run the ADK SequentialAgent against it, map the
 final session state to a ticket status, exit. systemd
 ``Restart=always RestartSec=10`` keeps it polling.
+
+Distinguished from :mod:`aiforge_core.aiforge_agents.orchestrator.run_ticket`,
+which is the **CLI / batch** 9-stage cascade (Understander → Learner)
+exposed via ``aiforge-agents-run``. Both share recovery + LLM infra:
+
+================================  ==============================  =====================================
+Path                              When                            Surface
+================================  ==============================  =====================================
+``runtime.adk_runner``            HTTP API ticket flow            5-agent ADK SequentialAgent
+``aiforge_agents.orchestrator``   ``aiforge-agents-run`` CLI      9-stage cascade w/ Grounder + Validator
+================================  ==============================  =====================================
 
 Invoke as:
 

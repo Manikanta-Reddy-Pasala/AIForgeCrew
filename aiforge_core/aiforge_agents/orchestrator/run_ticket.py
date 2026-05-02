@@ -1,4 +1,24 @@
-"""Minimal P1 orchestrator entry — runs Understander → Planner on a ticket.
+"""aiforge_agents v0.4 — 9-stage CLI orchestrator (Understander → Learner).
+
+This module is the **CLI / batch** entry point for the experimental
+9-stage cascade. It is *not* the production runtime — that lives in
+:mod:`aiforge_core.runtime.adk_runner` and is the path wired into the
+HTTP API + systemd ``aiforge-graph-runner.service``.
+
+When to use which:
+
+================================  ==============================  =====================================
+Path                              When                            Surface
+================================  ==============================  =====================================
+``runtime.adk_runner``            HTTP API ticket flow            5-agent ADK SequentialAgent
+``aiforge_agents.orchestrator``   ``aiforge-agents-run`` CLI      9-stage cascade w/ Grounder + Validator
+================================  ==============================  =====================================
+
+Both share infrastructure that was wired up in the recovery refactor:
+:mod:`aiforge_core.aiforge_agents.runtime.recovery_engine` (failure
+taxonomy → Action), :mod:`aiforge_core.llm` (escalation + health +
+fallback), and :func:`aiforge_core.runtime.logging_setup.get_run_logger`
+(per-ticket NDJSON trace).
 
 CLI:
     python -m aiforge_core.aiforge_agents.orchestrator.run_ticket \\
@@ -6,7 +26,8 @@ CLI:
         --title "Add pagination to /sales endpoint" \\
         --body  "Add page+size query params; default size=50; ..."
 
-Returns JSON to stdout with: ticket, understanding, plan, latency_s.
+Returns JSON to stdout with: ticket, understanding, plan, recovery, latency_s.
+Per-ticket structured trace is at ``~/.aiforge/runs/<ticket_id>.ndjson``.
 """
 from __future__ import annotations
 
@@ -23,19 +44,28 @@ import aiforge_core.aiforge_agents.archetypes  # noqa: F401
 from aiforge_core.aiforge_agents import registry
 from aiforge_core.aiforge_agents.runtime import circuit_breakers as cb_mod
 from aiforge_core.aiforge_agents.learner import online as learner
+from aiforge_core.runtime.logging_setup import emit, get_run_logger
 
 
 def _insert_ticket_row(ticket_id: str, *, title: str, body: str,
-                       repo: str, status: str) -> None:
-    """Mirror to existing tickets table so the UI sees us."""
+                       repo: str, status: str,
+                       log=None) -> bool:
+    """Mirror to existing tickets table so the UI sees us.
+
+    Returns True on persisted insert/update, False otherwise (psycopg
+    missing, no DSN, or DB error). Errors are logged to the per-ticket
+    NDJSON instead of being swallowed silently.
+    """
     import os
     try:
         import psycopg
     except ImportError:
-        return
+        emit(log, "ticket_db.skip", reason="psycopg_missing")
+        return False
     dsn = os.environ.get("AIFORGE_DSN")
     if not dsn:
-        return
+        emit(log, "ticket_db.skip", reason="no_dsn")
+        return False
     try:
         with psycopg.connect(dsn) as c, c.cursor() as cur:
             cur.execute(
@@ -49,21 +79,32 @@ def _insert_ticket_row(ticket_id: str, *, title: str, body: str,
                  "aiforge_agents", repo, ["aiforge_agents"],
                  '{"runtime":"aiforge_agents","stages":4}'),
             )
-    except Exception:
-        pass
+        emit(log, "ticket_db.insert", status=status)
+        return True
+    except (psycopg.Error, OSError) as exc:
+        emit(log, "ticket_db.insert_failed",
+             error=str(exc)[:300], type=type(exc).__name__)
+        return False
 
 
 def _update_ticket_status(ticket_id: str, status: str,
-                          metadata: dict | None = None) -> None:
+                          metadata: dict | None = None,
+                          log=None) -> bool:
+    """Update ticket status row. Returns True on persisted update.
+
+    Failures are logged with structured context — no silent pass.
+    """
     import json as _json
     import os
     try:
         import psycopg
     except ImportError:
-        return
+        emit(log, "ticket_db.skip", reason="psycopg_missing")
+        return False
     dsn = os.environ.get("AIFORGE_DSN")
     if not dsn:
-        return
+        emit(log, "ticket_db.skip", reason="no_dsn")
+        return False
     try:
         with psycopg.connect(dsn) as c, c.cursor() as cur:
             if metadata is not None:
@@ -78,8 +119,14 @@ def _update_ticket_status(ticket_id: str, status: str,
                     "WHERE identifier=%s",
                     (status, ticket_id),
                 )
-    except Exception:
-        pass
+        emit(log, "ticket_db.update", status=status,
+             has_metadata=metadata is not None)
+        return True
+    except (psycopg.Error, OSError) as exc:
+        emit(log, "ticket_db.update_failed",
+             error=str(exc)[:300], type=type(exc).__name__,
+             status=status)
+        return False
 
 
 def run(*, repo: str, title: str, body: str,
@@ -88,16 +135,23 @@ def run(*, repo: str, title: str, body: str,
         open_mr: bool | None = None) -> dict[str, Any]:
     import os as _os
     ticket_id = ticket_id or f"TKT-{uuid.uuid4().hex[:8].upper()}"
+    log = get_run_logger(ticket_id, role="orchestrator")
     breakers = cb_mod.CircuitBreakers()
+    from aiforge_core.aiforge_agents.runtime.recovery_engine import (
+        RecoveryEngine, Action,
+    )
+    recovery = RecoveryEngine(log=log, breakers=breakers, ticket_id=ticket_id)
     t0 = time.time()
     if apply is None:
         apply = _os.environ.get("AIFORGE_AGENTS_APPLY", "0") not in ("0", "false", "")
     if open_mr is None:
         open_mr = _os.environ.get("AIFORGE_AGENTS_OPEN_MR", "0") not in ("0", "false", "")
 
+    emit(log, "run.start", repo=repo, title=title[:120],
+         apply=apply, open_mr=open_mr)
     learner.migrate()
     _insert_ticket_row(ticket_id, title=title, body=body,
-                       repo=repo, status="processing")
+                       repo=repo, status="processing", log=log)
     learner.record_audit(
         ticket_id=ticket_id, agent_role="orchestrator",
         event_type="ticket_started",
@@ -131,7 +185,7 @@ def run(*, repo: str, title: str, body: str,
     # Pull allowed file paths from AiForgeMemory once — Planner will
     # be constrained to pick from these.
     allowed_files = _fetch_allowed_files(
-        repo=repo, query=f"{title}\n{body}", k=80,
+        repo=repo, query=f"{title}\n{body}", k=80, log=log,
     )
 
     # Pull top skills + chronic failure patterns the Learner has
@@ -200,6 +254,29 @@ def run(*, repo: str, title: str, body: str,
                 "action": "plan", "reason": "planner_returned_no_steps",
             }]
             continue
+
+        # Recovery engine — F-006 plan depth + repeat-replan escalation
+        depth_decision = recovery.plan_depth_check(
+            plan, stage="planner", attempt=plan_attempts,
+        )
+        if depth_decision is not None:
+            if depth_decision.action is Action.SPLIT_TICKET:
+                # Surface as unresolved so the planner re-attempts with
+                # a smaller scope on the next loop iteration. The
+                # engine has already logged the rationale.
+                grounding["resolved"] = False
+                grounding["unresolved_refs"] = (
+                    grounding.get("unresolved_refs") or []
+                ) + [{
+                    "target": "(plan too deep)",
+                    "action": "split",
+                    "reason": depth_decision.rationale,
+                    "mode_id": depth_decision.mode_id,
+                }]
+                if depth_decision.halt:
+                    break  # ESCALATE_HUMAN — breaker tripped
+                continue
+
         if grounding.get("resolved") and shrink_ratio < 0.5:
             break
         # Surface dropped refs back to Planner as if they were unresolved.
@@ -293,6 +370,19 @@ def run(*, repo: str, title: str, body: str,
                 })
                 d_dur += time.time() - d_t0
                 breakers.check_agent("doer")
+                # Recovery loop check: same Doer udiff 3x in a row for
+                # the same step → F-004, escalate via engine. Halts on
+                # ESCALATE_HUMAN.
+                step_key = f"doer:{st.get('id') or st.get('target') or 'step'}"
+                loop_decision = recovery.loop_check(
+                    key=step_key,
+                    output=step_outcome.get("udiff", "") or "(no_udiff)",
+                    stage="doer", attempt=attempt + 1,
+                )
+                if loop_decision is not None and loop_decision.halt:
+                    emit(log, "doer.loop_escalated",
+                         step_key=step_key, mode_id=loop_decision.mode_id)
+                    break
                 learner.record_audit(
                     ticket_id=ticket_id, agent_role="doer",
                     event_type="agent_completed",
@@ -343,7 +433,9 @@ def run(*, repo: str, title: str, body: str,
         # Aggregate the per-step results into a single doer_outcome /
         # validation pair so downstream stages and metadata stay flat.
         if per_step_outcomes:
-            doer_outcome = _aggregate_doer_outcomes(per_step_outcomes)
+            doer_outcome = _aggregate_doer_outcomes(
+                per_step_outcomes, ticket_id=ticket_id, log=log,
+            )
             validation = _aggregate_validation(per_step_outcomes)
 
     # Stage T — Tester (TDD test specs)
@@ -467,8 +559,12 @@ def run(*, repo: str, title: str, body: str,
         else "blocked" if not grounding.get("resolved")
         else ("approved" if validation.get("decision") == "approve" else "blocked")
     )
+    emit(log, "run.done", final_status=final_status,
+         latency_s=round(total, 2),
+         tripped=breakers.tripped,
+         tripped_reason=breakers.state.reason)
     u_slim = {k: v for k, v in understanding.items() if k != "context_md"}
-    _update_ticket_status(ticket_id, final_status, metadata={
+    _update_ticket_status(ticket_id, final_status, log=log, metadata={
         "runtime": "aiforge_agents",
         "stages_s": {
             "understander": round(u_dur, 2),
@@ -525,17 +621,35 @@ def run(*, repo: str, title: str, body: str,
         },
         "circuit_breaker_tripped": breakers.tripped,
         "circuit_breaker_reason":  breakers.state.reason,
+        "recovery": {
+            "decisions": [
+                {"action": d.action.value, "mode_id": d.mode_id,
+                 "rationale": d.rationale}
+                for d in recovery.history
+            ],
+            "counts": dict(recovery._counts),
+        },
     }
 
 
 def _aggregate_doer_outcomes(
     per_step: list[dict[str, Any]],
+    *, ticket_id: str = "", log=None,
 ) -> dict[str, Any]:
     """Merge per-step Doer outcomes into one doer_outcome dict.
 
     Concatenates udiffs (delimited), unions problems, picks last
     branch/applied state. Useful for downstream Validator/Architect
-    that still expect a single `doer_outcome`."""
+    that still expect a single `doer_outcome`.
+
+    Full diff is persisted to ``~/.aiforge/artifacts/<ticket>/full.diff``;
+    the in-memory ``udiff`` field is capped at 64 KiB (was 8 KiB) so
+    big multi-file PRs no longer lose their tail when LLMs serialise it.
+    The cap is overridable via ``AIFORGE_AGGREGATE_UDIFF_BYTES``.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
     udiffs: list[str] = []
     problems: list[dict[str, Any]] = []
     targets: list[str] = []
@@ -562,12 +676,37 @@ def _aggregate_doer_outcomes(
             apply_errors.append(
                 f"{entry['step'].get('target')}: {out['apply_error']}"
             )
+
+    full_udiff = "\n\n".join(udiffs)
+    try:
+        cap = int(_os.environ.get("AIFORGE_AGGREGATE_UDIFF_BYTES", "65536"))
+    except ValueError:
+        cap = 65536
+    truncated = len(full_udiff.encode("utf-8")) > cap
+    artifact_path = ""
+    if ticket_id and full_udiff:
+        try:
+            base = _Path(_os.path.expanduser(
+                "~/.aiforge/artifacts")) / ticket_id
+            base.mkdir(parents=True, exist_ok=True)
+            target = base / "full.diff"
+            target.write_text(full_udiff, encoding="utf-8")
+            artifact_path = str(target)
+            emit(log, "doer.full_diff_persisted",
+                 path=artifact_path, bytes=len(full_udiff))
+        except OSError as exc:
+            emit(log, "doer.full_diff_persist_failed",
+                 error=str(exc)[:200], type=type(exc).__name__)
+
     return {
         "artifact_type": "doer_outcome",
         "step_count": len(per_step),
         "target": targets[0] if targets else "",
         "targets": targets,
-        "udiff": ("\n\n".join(udiffs))[:8000],
+        "udiff": full_udiff[:cap],
+        "udiff_truncated": truncated,
+        "udiff_bytes": len(full_udiff.encode("utf-8")),
+        "udiff_artifact_path": artifact_path,
         "problems": problems,
         "applied": applied_any,
         "applied_branch": applied_branch,
@@ -791,13 +930,27 @@ def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
             "problems": [],
             "blocked_by_detectors": rep.has_top_line_mismatch,
         }
-    except Exception as exc:
+    except (ImportError, OSError, ValueError, KeyError) as exc:
+        # Specific failures only — don't swallow KeyboardInterrupt or
+        # SystemExit. Log structured error so the run trace shows root
+        # cause, not just a stringified message.
+        import logging as _logging
+        _logging.getLogger("aiforge.trial_balance").exception(
+            "trial_balance.process_failed",
+            extra={"aiforge": {"ticket": ticket_id, "repo": repo,
+                               "type": type(exc).__name__}},
+        )
         return {
             "artifact_type": "doer_outcome",
             "process": "trial_balance",
-            "error": f"validator_failed: {exc}",
+            "error": f"validator_failed: {type(exc).__name__}: {exc}",
+            "error_type": type(exc).__name__,
             "applied": False,
-            "problems": [],
+            "problems": [{
+                "mode": "trial_balance_exception",
+                "evidence": str(exc)[:500],
+                "exc_type": type(exc).__name__,
+            }],
             "udiff": "",
         }
 
@@ -833,16 +986,22 @@ def _resolve_repo_path(repo_name: str) -> str:
     return str(p) if p.is_dir() else ""
 
 
-def _fetch_allowed_files(*, repo: str, query: str, k: int = 80) -> list[str]:
+def _fetch_allowed_files(*, repo: str, query: str, k: int = 80,
+                         log=None) -> list[str]:
     """Pull top-K relevant File_v2 paths from AiForgeMemory for this query.
-    Vector + fulltext hybrid via translator. Used to constrain Planner output."""
+
+    Vector + fulltext hybrid via translator. Used to constrain Planner
+    output. Each backend (vector / fulltext / service) is best-effort —
+    failures are logged with source label so a degraded run is visible.
+    """
     try:
         import os
         from neo4j import GraphDatabase
         from aiforge_memory.query.translator import (
             _embed_query, _vector_topk, _fulltext_symbols,
         )
-    except Exception:
+    except ImportError as exc:
+        emit(log, "allowed_files.import_failed", error=str(exc)[:200])
         return []
 
     try:
@@ -853,7 +1012,9 @@ def _fetch_allowed_files(*, repo: str, query: str, k: int = 80) -> list[str]:
                 os.environ.get("AIFORGE_NEO4J_PASSWORD", "password"),
             ),
         )
-    except Exception:
+    except Exception as exc:  # neo4j driver raises a subclass tree
+        emit(log, "allowed_files.driver_failed",
+             error=str(exc)[:200], type=type(exc).__name__)
         return []
 
     def _ok(p: str) -> bool:
@@ -867,25 +1028,32 @@ def _fetch_allowed_files(*, repo: str, query: str, k: int = 80) -> list[str]:
         return True
 
     files: list[str] = []
+    sources_used: list[str] = []
     try:
         # Vector hits
         try:
             vec = _embed_query(query)
+            added = 0
             for r in _vector_topk(drv, repo=repo, vec=vec, k=k * 3):
                 fp = r.get("file_path")
                 if _ok(fp) and fp not in files:
-                    files.append(fp)
-        except Exception:
-            pass
+                    files.append(fp); added += 1
+            sources_used.append(f"vector:{added}")
+        except Exception as exc:
+            emit(log, "allowed_files.vector_failed",
+                 error=str(exc)[:200], type=type(exc).__name__)
 
         # Fulltext hits
         try:
             _, ft_files = _fulltext_symbols(drv, repo=repo, text=query, k=k * 3)
+            added = 0
             for fp in ft_files:
                 if _ok(fp) and fp not in files:
-                    files.append(fp)
-        except Exception:
-            pass
+                    files.append(fp); added += 1
+            sources_used.append(f"fulltext:{added}")
+        except Exception as exc:
+            emit(log, "allowed_files.fulltext_failed",
+                 error=str(exc)[:200], type=type(exc).__name__)
 
         # Top-N from each Service's CONTAINS_FILE (always include service files)
         try:
@@ -895,18 +1063,24 @@ def _fetch_allowed_files(*, repo: str, query: str, k: int = 80) -> list[str]:
                     "RETURN f.path AS p LIMIT $k",
                     repo=repo, k=k * 3,
                 ))
+            added = 0
             for r in rows:
                 p = r["p"]
                 if _ok(p) and p not in files:
-                    files.append(p)
-        except Exception:
-            pass
+                    files.append(p); added += 1
+            sources_used.append(f"service:{added}")
+        except Exception as exc:
+            emit(log, "allowed_files.service_failed",
+                 error=str(exc)[:200], type=type(exc).__name__)
     finally:
         try:
             drv.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            emit(log, "allowed_files.close_failed",
+                 error=str(exc)[:120])
 
+    emit(log, "allowed_files.done", repo=repo,
+         total=len(files), capped_at=k, sources=sources_used)
     return files[:k]
 
 

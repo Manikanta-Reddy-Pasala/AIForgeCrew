@@ -97,3 +97,31 @@ def emit(log: Logger | None, event: str, **fields) -> None:
     }
     ctx.update(fields)
     log.info(event, extra={"aiforge": ctx})
+
+
+def get_run_logger(ticket_id: str, *, role: str = "orchestrator") -> Logger:
+    """Per-ticket logger with dedicated NDJSON file at
+    ``~/.aiforge/runs/<ticket_id>.ndjson``.
+
+    Used by orchestrator + recovery + escalation so every run produces
+    one debuggable trace file. Stderr handler also fires (inherits from
+    role handler) so live tail works.
+    """
+    _configure_root()
+    runs_dir = Path(LOG_DIR).parent / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in ticket_id)
+    logger = logging.getLogger(f"aiforge.run.{safe}")
+    target = runs_dir / f"{safe}.ndjson"
+    has_target = any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", "") == str(target)
+        for h in logger.handlers
+    )
+    if not has_target:
+        fh = logging.FileHandler(str(target), encoding="utf-8")
+        fh.setFormatter(_JsonFormatter())
+        logger.addHandler(fh)
+    logger._aiforge_role = role  # type: ignore[attr-defined]
+    logger._aiforge_ticket = ticket_id  # type: ignore[attr-defined]
+    return logger

@@ -21,13 +21,15 @@ to ``AIFORGE_PRIMARY_BACKEND`` (legacy: ``AIFORGE_DOER_PRIMARY_BACKEND``)
 then to ``"local"``.
 """
 from .types import Endpoint, Provider
-from .router import resolve, fallback, list_providers
+from .router import resolve, fallback, escalate, list_providers
 from .client import complete
 from .rate_limiter import acquire as rl_acquire, state as rl_state
+from .health import is_up as health_up, snapshot as health_snapshot, invalidate as health_invalidate
 
 __all__ = [
     "Endpoint", "Provider",
-    "resolve", "fallback", "list_providers",
+    "resolve", "fallback", "escalate", "list_providers",
     "complete",
     "rl_acquire", "rl_state",
+    "health_up", "health_snapshot", "health_invalidate",
 ]
