@@ -388,9 +388,16 @@ def run(*, repo: str, title: str, body: str,
         ]
         if not write_steps:
             doer_outcome = {"skipped": True, "reason": "no_write_step"}
+        repo_path_for_rollback = _resolve_repo_path(repo) if apply else ""
         for st in write_steps:
             previous_udiff = ""
             previous_problems: list = []
+            # Capture branch HEAD before this step so we can rollback the
+            # commit if CRITIC retries exhaust and Validator still blocks.
+            head_before_step = _git_head_sha(
+                repo_path_for_rollback, branch=f"aiforge/{ticket_id}",
+            ) if repo_path_for_rollback else ""
+            step_committed_sha = ""
             for attempt in range(2):  # CRITIC retry per step
                 doer_attempts += 1
                 breakers.begin_agent("doer")
@@ -447,6 +454,11 @@ def run(*, repo: str, title: str, body: str,
                 breakers.check_agent("validator")
 
                 if step_validation.get("decision") == "approve":
+                    if step_outcome.get("applied"):
+                        step_committed_sha = _git_head_sha(
+                            repo_path_for_rollback,
+                            branch=f"aiforge/{ticket_id}",
+                        )
                     per_step_outcomes.append({
                         "step": st, "outcome": step_outcome,
                         "validation": step_validation,
@@ -463,7 +475,47 @@ def run(*, repo: str, title: str, body: str,
                 previous_problems = list(
                     step_outcome.get("problems") or [])
             else:
-                # All retries exhausted — keep last outcome
+                # All retries exhausted — last attempt's commit (if any)
+                # is now poisoning the branch. Rollback to head_before_step
+                # so subsequent steps + the final PR don't carry it.
+                rolled_back = False
+                rollback_sha = ""
+                if (step_outcome.get("applied")
+                        and head_before_step
+                        and repo_path_for_rollback):
+                    cur = _git_head_sha(
+                        repo_path_for_rollback,
+                        branch=f"aiforge/{ticket_id}",
+                    )
+                    if cur and cur != head_before_step:
+                        rolled_back = _git_reset_to(
+                            repo_path_for_rollback, head_before_step,
+                        )
+                        rollback_sha = head_before_step if rolled_back else ""
+                        if rolled_back:
+                            emit(log, "doer.step_rolled_back",
+                                 step_id=st.get("id"),
+                                 step_target=st.get("target"),
+                                 from_sha=cur[:8],
+                                 to_sha=head_before_step[:8])
+                            learner.record_audit(
+                                ticket_id=ticket_id, agent_role="doer",
+                                event_type="step_rolled_back",
+                                payload={
+                                    "step_id": st.get("id"),
+                                    "step_target": st.get("target"),
+                                    "from_sha": cur,
+                                    "to_sha": head_before_step,
+                                },
+                            )
+                        else:
+                            emit(log, "doer.step_rollback_failed",
+                                 step_id=st.get("id"),
+                                 step_target=st.get("target"))
+                step_outcome = dict(step_outcome)
+                step_outcome["rolled_back"] = rolled_back
+                if rollback_sha:
+                    step_outcome["rolled_back_to"] = rollback_sha
                 per_step_outcomes.append({
                     "step": st, "outcome": step_outcome,
                     "validation": step_validation,
@@ -1090,6 +1142,48 @@ def _resolve_repo_path(repo_name: str) -> str:
     )
     p = Path(root) / repo_name
     return str(p) if p.is_dir() else ""
+
+
+def _git_head_sha(repo_path: str, branch: str) -> str:
+    """Return current HEAD sha on ``branch`` or "" if unavailable."""
+    if not repo_path:
+        return ""
+    import subprocess
+    from pathlib import Path
+    if not Path(repo_path).is_dir():
+        return ""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path, capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if out.returncode != 0:
+        return ""
+    return (out.stdout or "").strip()
+
+
+def _git_reset_to(repo_path: str, sha: str) -> bool:
+    """Hard-reset the working tree to ``sha``. Returns True on success.
+
+    Used to drop a step's commit when CRITIC exhausts and Validator still
+    blocks. Only resets when ``sha`` is non-empty so we never accidentally
+    nuke uncommitted work."""
+    if not repo_path or not sha:
+        return False
+    import subprocess
+    from pathlib import Path
+    if not Path(repo_path).is_dir():
+        return False
+    try:
+        out = subprocess.run(
+            ["git", "reset", "--hard", sha],
+            cwd=repo_path, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0
 
 
 def _fetch_allowed_files(*, repo: str, query: str, k: int = 80,
