@@ -95,20 +95,63 @@ class Architect(BaseArchetype):
         }
 
 
+_TRANSIENT_GH_PHRASES: tuple[str, ...] = (
+    "rate limit", "could not resolve", "connection reset",
+    "connection refused", "operation timed out", "timeout",
+    "502 bad gateway", "503 service unavailable", "504 gateway",
+    "remote end hung up", "temporarily unavailable",
+    "i/o operation", "early eof", "ssh_exchange_identification",
+)
+
+_PR_EXISTS_PHRASES: tuple[str, ...] = (
+    "already exists", "a pull request for branch",
+)
+
+
+def _is_transient_gh_err(stderr: str) -> bool:
+    s = (stderr or "").lower()
+    return any(p in s for p in _TRANSIENT_GH_PHRASES)
+
+
+def _existing_pr_url(run_fn, branch: str) -> str:
+    """If a PR for ``branch`` already exists, return its URL. Else ""."""
+    pv = run_fn([
+        "gh", "pr", "view", branch, "--json", "url", "-q", ".url",
+    ])
+    if pv.returncode == 0:
+        url = (pv.stdout or "").strip()
+        if url.startswith("http"):
+            return url
+    return ""
+
+
 def _open_github_pr(
     *, repo_path: str, branch: str, title: str, body: str,
     draft: bool = False,
 ) -> str:
     """Push branch + invoke `gh pr create`. Returns PR URL or "" on fail.
 
+    Retries `git push` and `gh pr create` independently with exponential
+    backoff on transient errors (rate-limit, DNS, 5xx, conn reset). On
+    "PR already exists" we look up the existing PR via `gh pr view`
+    instead of failing — common when Architect retries on a branch that
+    already has an open PR.
+
     Best-effort: requires `gh` CLI authenticated for the repo, branch
     already committed (Doer apply path does that), and remote=origin.
     Picks up the repo's default branch automatically (master vs main)."""
+    import os as _os
+    import random as _random
     import subprocess
+    import time as _time
     from pathlib import Path
 
     if not repo_path or not branch or not Path(repo_path).is_dir():
         return ""
+
+    max_attempts = max(1, int(_os.environ.get("AIFORGE_GH_RETRY_MAX", "3")))
+    base = float(_os.environ.get("AIFORGE_GH_RETRY_BASE_S", "1.0"))
+    cap = float(_os.environ.get("AIFORGE_GH_RETRY_CAP_S", "10.0"))
 
     def _run(args: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -116,31 +159,53 @@ def _open_github_pr(
             timeout=60,
         )
 
+    def _backoff(attempt: int) -> float:
+        return min(cap, base * (2 ** (attempt - 1))) + _random.uniform(0, 0.3)
+
     # Determine the actual default branch — falls back to "main".
-    base = "main"
+    base_branch = "main"
     sb = _run(["git", "symbolic-ref", "refs/remotes/origin/HEAD"])
     if sb.returncode == 0:
         ref = sb.stdout.strip().split("/")[-1]
         if ref:
-            base = ref
-    push = _run(["git", "push", "-u", "origin", branch])
-    if push.returncode != 0:
+            base_branch = ref
+
+    # Stage 1: push with retry. Permanent failures (auth, non-fast-forward
+    # without --force, no-such-branch) abort immediately.
+    push_ok = False
+    for attempt in range(1, max_attempts + 1):
+        push = _run(["git", "push", "-u", "origin", branch])
+        if push.returncode == 0:
+            push_ok = True
+            break
+        if attempt >= max_attempts or not _is_transient_gh_err(push.stderr):
+            break
+        _time.sleep(_backoff(attempt))
+    if not push_ok:
         return ""
+
+    # Stage 2: gh pr create with retry. "Already exists" is a soft success.
     args = [
         "gh", "pr", "create",
         "--title", title,
         "--body", body,
-        "--base", base,
+        "--base", base_branch,
         "--head", branch,
     ]
     if draft:
         args.append("--draft")
-    pr = _run(args)
-    if pr.returncode != 0:
-        return ""
-    # `gh pr create` prints the PR URL on the last line of stdout.
-    out = (pr.stdout or "").strip()
-    for line in reversed(out.splitlines()):
-        if line.startswith("http"):
-            return line
-    return out
+    for attempt in range(1, max_attempts + 1):
+        pr = _run(args)
+        if pr.returncode == 0:
+            out = (pr.stdout or "").strip()
+            for line in reversed(out.splitlines()):
+                if line.startswith("http"):
+                    return line
+            return out
+        stderr_low = (pr.stderr or "").lower()
+        if any(p in stderr_low for p in _PR_EXISTS_PHRASES):
+            return _existing_pr_url(_run, branch)
+        if attempt >= max_attempts or not _is_transient_gh_err(pr.stderr):
+            return ""
+        _time.sleep(_backoff(attempt))
+    return ""
