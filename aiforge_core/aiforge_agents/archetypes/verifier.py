@@ -42,6 +42,7 @@ class Verifier(BaseArchetype):
             f"# Plan\n{plan}\n"
         )
         out = llm_client.call_json(
+            role=self.name,
             model=self.model or "qwen2.5-14b-instruct",
             system=system, user=user,
             temperature=self.temperature,

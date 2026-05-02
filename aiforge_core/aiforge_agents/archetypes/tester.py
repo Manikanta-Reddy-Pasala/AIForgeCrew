@@ -46,6 +46,7 @@ class Tester(BaseArchetype):
             f"# Understanding\n{u_slim}\n\n# Plan\n{plan}\n"
         )
         out = llm_client.call_json(
+            role=self.name,
             model=self.model or "qwen2.5-coder-14b",
             system=system, user=user,
             temperature=self.temperature,

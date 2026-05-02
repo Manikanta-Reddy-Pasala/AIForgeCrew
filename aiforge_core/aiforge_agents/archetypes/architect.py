@@ -53,6 +53,7 @@ class Architect(BaseArchetype):
             f"# Diff\n```\n{ph.compact(doer.get('udiff') or '', head=12000, tail=4000)}\n```\n"
         )
         out = llm_client.call_json(
+            role=self.name,
             model=self.model or "deepseek-r1-distill-32b",
             system=system, user=user,
             temperature=self.temperature,

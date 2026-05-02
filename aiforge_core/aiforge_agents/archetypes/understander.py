@@ -55,6 +55,7 @@ class Understander(BaseArchetype):
             f"# Code-graph context\n{ctx_md}\n"
         )
         out = llm_client.call_json(
+            role=self.name,
             model=self.model or "qwen2.5-14b-instruct",
             system=system, user=user,
             temperature=self.temperature,

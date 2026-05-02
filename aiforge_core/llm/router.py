@@ -2,22 +2,19 @@
 
 Resolution order (highest priority first):
 
-1. ``AIFORGE_<ROLE>_PROVIDER`` env var. Per-role override; e.g.
-   ``AIFORGE_DOER_PROVIDER=anthropic`` while everyone else stays
-   on local. Useful when the doer benefits from a stronger model
-   but the planner is fine on cheap local.
-2. ``AIFORGE_PRIMARY_BACKEND`` env var. Single global default;
-   set from the Settings UI.
-3. ``AIFORGE_DOER_PRIMARY_BACKEND`` legacy alias.
+1. ``AIFORGE_<ROLE>_PROVIDER`` env var — operator final-say override.
+2. ``agent_config.json`` per-role entry (Settings UI persists here).
+   Allows the UI to flip e.g. Architect to Anthropic while everything
+   else stays local.
+3. ``AIFORGE_PRIMARY_BACKEND`` env var (legacy global default).
 4. Hardcoded default ``"local"``.
 
-If the chosen provider isn't available (e.g. ``gemini`` selected
+If the chosen provider isn't available (e.g. ``anthropic`` selected
 but no API key), the router silently falls through to ``"local"``
-rather than crashing.
+rather than crashing. The chosen ``model`` overrides whatever the
+provider would default to — so per-archetype model pins also apply.
 
-:func:`fallback` returns the OTHER side for retry chains. Picks
-the first available provider that's neither the current primary
-nor the role's per-role override.
+:func:`fallback` returns the OTHER side for retry chains.
 """
 from __future__ import annotations
 
@@ -35,17 +32,47 @@ def _global_default() -> str:
     ).lower()
 
 
+def _agent_config_for(role: str) -> dict | None:
+    """Pull provider+model from agent_config.json for the given role.
+
+    The Settings UI writes here; without this hook the UI's selections
+    never reached the router. Best-effort: any IO error returns None
+    so the env var + global default still apply.
+    """
+    try:
+        from aiforge_core.runtime import agent_config as _acfg
+        full = _acfg.load_all()
+    except Exception:
+        return None
+    row = full.get(role)
+    if not isinstance(row, dict):
+        return None
+    if not row.get("provider"):
+        return None
+    return row
+
+
 def resolve(role: str) -> Endpoint:
     """Pick + build the endpoint for ``role``."""
+    cfg = _agent_config_for(role)
     name = (
         os.environ.get(f"AIFORGE_{role.upper()}_PROVIDER")
+        or (cfg.get("provider") if cfg else None)
         or _global_default()
     ).lower()
     prov = _providers.get(name)
     if prov is None or not prov.is_available():
         prov = _providers.get("local")
     assert prov is not None  # local always registers + is_available
-    return prov.endpoint(role)
+    ep = prov.endpoint(role)
+    # Override model if the agent_config entry pinned one.
+    if cfg and cfg.get("model") and ep is not None:
+        ep = Endpoint(
+            base_url=ep.base_url, api_key=ep.api_key,
+            model=cfg["model"], provider=ep.provider,
+            role=ep.role, extras=ep.extras,
+        )
+    return ep
 
 
 def fallback(role: str) -> Endpoint | None:

@@ -369,6 +369,7 @@ class Doer(BaseArchetype):
                 f"```\n{ph.compact(file_text, head=12000, tail=4000)}\n```\n"
             )
         raw = llm_client.call_text(
+            role=self.name,
             model=self.model or "qwen3-coder-next",
             system=system, user=user,
             temperature=self.temperature or 0.2,

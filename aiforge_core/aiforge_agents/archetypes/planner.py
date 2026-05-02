@@ -101,6 +101,7 @@ class Planner(BaseArchetype):
             f"# Code-graph context\n{ctx_md}\n"
         )
         out = llm_client.call_json(
+            role=self.name,
             model=self.model or "deepseek-r1-distill-32b",
             system=system, user=user,
             temperature=self.temperature,
