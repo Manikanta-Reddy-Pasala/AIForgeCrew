@@ -141,20 +141,25 @@ allowlist. Sources combined:
 
 `.aiforge-worktrees/**` and other dotfile paths are filtered out.
 
-## REPLAN loop (Planner ⇄ Grounder)
+## REPLAN loop (Planner ⇄ Grounder ⇄ Verifier)
 
 ```
 plan_attempts = 0
 while plan_attempts < 3:
-    plan = planner.run(ctx={...})
+    plan = planner.run(ctx={..., unresolved_refs=[*grounder, *verifier_issues]})
     plan, dropped = filter_plan_targets(plan, allowed_files)  # post-filter
     grounding = grounder.run(ctx={"plan": plan, "repo": repo})
     if kept_steps == 0:                # empty-plan REPLAN
         force unresolved + retry
     if grounding.resolved and shrink_ratio < 0.5:
-        break
+        verdict = verifier.run(ctx={...})       # critic on grounded plan
+        if verdict == "reject": carry issues, replan
+        else: break
     plan_attempts += 1
 ```
+
+Verifier sits inside the loop. `verdict=reject` carries issues forward
+as synthetic unresolved refs and re-invokes Planner. Cap 3 attempts.
 
 Grounder leniencies:
 
@@ -168,14 +173,25 @@ Grounder leniencies:
 
 ```
 for step in write_steps:
-    for attempt in range(2):
+    head_before_step = git rev-parse HEAD            # for rollback
+    for attempt in range(AIFORGE_CRITIC_MAX):  # default 3
         outcome = doer.run(ctx={..., target_step=step,
                                 previous_udiff=...,
                                 detector_problems=...})
         v = validator.run(outcome)
         if v.approve or v.skip: break
+        if udiff identical OR problem count grew:    # diminishing-returns
+            rollback to head_before_step; bail
         previous_udiff, previous_problems = outcome.udiff, outcome.problems
+    else:
+        rollback to head_before_step                 # full exhaust
 ```
+
+Cap env-tunable via `AIFORGE_CRITIC_MAX` (default 3). Diminishing-returns
+guard bails early when the next attempt's udiff is byte-identical or
+problem set grew. On terminal failure (CRITIC exhausted OR bail) the
+step's commit is `git reset --hard`-ed to `head_before_step` so the
+final PR carries only validator-approved commits.
 
 Architect→Doer retry: when validator approves but Architect requests
 changes, one more Doer pass receives the comments as feedback.
@@ -190,6 +206,77 @@ Each ticket gets one branch `aiforge/<ticket>`. Per step:
 - `git apply --recount --ignore-whitespace --whitespace=nowarn`.
 - Commit with `:(exclude)` for `.aiforge`, `.aiforge-worktrees`,
   `graphify-out`, `.idea`, `.vscode`.
+
+## Resilience knobs (env-tunable)
+
+| Var | Default | Purpose |
+|---|---|---|
+| `AIFORGE_CRITIC_MAX` | `3` | Per-step Doer attempts (Doer + retries) |
+| `AIFORGE_LLM_RETRY_MAX` | `3` | Per-endpoint LLM retries on 5xx/429/conn |
+| `AIFORGE_LLM_RETRY_BASE_S` | `0.5` | LLM backoff base seconds |
+| `AIFORGE_LLM_RETRY_CAP_S` | `8.0` | LLM backoff cap seconds |
+| `AIFORGE_GH_RETRY_MAX` | `3` | `git push` / `gh pr create` retries |
+| `AIFORGE_GH_RETRY_BASE_S` | `1.0` | gh backoff base |
+| `AIFORGE_GH_RETRY_CAP_S` | `10.0` | gh backoff cap |
+| `AIFORGE_LEARNER_HALFLIFE_DAYS` | `30` | Skill/failure decay half-life |
+| `AIFORGE_LEARNER_CUTOFF_DAYS` | `180` | Drop entries older than this |
+| `AIFORGE_RUN_TESTS` | `0` | Set `1` to actually run repo tests |
+| `AIFORGE_RUN_TESTS_TIMEOUT_S` | `600` | Test run timeout (Maven can be slow) |
+| `AIFORGE_RUNS_DIR` | `~/.aiforge/runs` | Trace + spec artifacts root |
+
+## Time-decayed skill / failure ranking
+
+Old failures should not haunt new tickets forever. `top_failures_for`
+and `top_skills_for` rank by:
+
+```
+score = seen_count * power(0.5, age_days / half_life_days)
+```
+
+Half-life 30d means a 30-day-old failure weighs half a fresh one,
+60-day-old weighs a quarter, etc. Entries older than `cutoff_days`
+are dropped entirely. SQL pushes the math down to Postgres; pure-python
+mirror in `_decay_factor` for in-memory ranking.
+
+## Tester actually runs tests (opt-in)
+
+After spec persistence, when `AIFORGE_RUN_TESTS=1` and the diff was
+applied + validator-approved, the orchestrator detects the framework
+and runs it:
+
+| Marker file | Framework | Command |
+|---|---|---|
+| `pom.xml` | maven | `mvn test -q -DskipITs=true` (or `./mvnw`) |
+| `build.gradle{,.kts}` | gradle | `gradle test --quiet` (or `./gradlew`) |
+| `package.json` | npm | `npm test --silent` |
+| `pyproject.toml` / `requirements.txt` | pytest | `pytest -q` |
+
+Tail-parses pass/fail counts, records `tester.tests_executed` audit,
+attaches results to `test_plan.execution`. Failure does not abort the
+pipeline — Architect already gates merge. HITL escalation fires on red.
+
+## HITL escalation
+
+When terminal failures stack up, the orchestrator sets ticket
+`status=needs_human`, writes `~/.aiforge/runs/<ticket>/hitl_request.md`,
+and returns a `hitl` block in the response. Trigger conditions (any):
+
+- circuit breaker tripped (LLM provider down)
+- Verifier still rejects after 3 REPLAN attempts
+- Grounder never resolved
+- Validator blocked AND >= 3 Doer attempts used
+- Architect rejected the diff
+- Tests actually executed AND failed
+
+The HITL markdown lists evidence + plan summary + Architect comments —
+ready for a human to pick up.
+
+## Tester specs persisted
+
+Each run writes `~/.aiforge/runs/<ticket>/test_plan.json` and registers
+it as an attachment with `role=tester_specs`. Survives process death,
+shows up in the UI's attachment list, becomes the input for #2's
+`AIFORGE_RUN_TESTS=1` execution stage.
 
 ## Configuration
 
@@ -237,8 +324,10 @@ the GitHub PR link).
 .venv/bin/python -m pytest aiforge_core/aiforge_agents/tests/ -q
 ```
 
-73 unit tests across registry, runtime helpers, detectors, archetypes,
-prompt helpers, and web-fetch URL extraction.
+201 unit tests across registry, runtime helpers, detectors, archetypes,
+prompt helpers, web-fetch URL extraction, transport retry, gh retry,
+verifier REPLAN, Doer rollback, CRITIC cap, learner decay, Tester
+specs persistence, Tester run framework + parsing, HITL classifier.
 
 | File | Covers |
 |---|---|
@@ -248,9 +337,41 @@ prompt helpers, and web-fetch URL extraction.
 | `test_failure_taxonomy.py` | mode registration + recovery actions |
 | `test_registry.py` | 4-layer config lookup |
 | `test_runtime.py` | LLM client mocks |
+| `test_llm_router_health.py` | Provider routing + health gating |
+| `test_llm_transport_retry.py` | 5xx/429/conn retry + Retry-After |
+| `test_architect_gh_retry.py` | gh push/PR retry + already-exists fallback |
+| `test_verifier_replan.py` | Verifier-reject → REPLAN; cap at 3 |
+| `test_doer_rollback.py` | git head/reset helpers + step rollback |
+| `test_critic_retry_cap.py` | CRITIC cap=3 + diminishing-returns guards |
+| `test_learner_decay.py` | half-life math; recent beats stale |
+| `test_tester_specs_persist.py` | test_plan.json write + attachment |
+| `test_tester_runs.py` | framework detect (mvn/gradle/npm/pytest) + parse |
+| `test_hitl_escalation.py` | classifier triggers + persistence |
+| `test_recovery_engine.py` | F-006 plan-depth + repeat-replan escalation |
+| `test_workflows.py` | trial-balance flow harness |
 
 ## Recent changes (May 2026)
 
+- Per-archetype provider routing wired end-to-end — Settings UI per-role
+  choice (provider + model) flows through the router.
+- LLM transport retry — per-endpoint exp backoff on 5xx/429/conn-reset
+  with Retry-After honored. Knobs: `AIFORGE_LLM_RETRY_*`.
+- Architect `git push` + `gh pr create` retry; "PR already exists" falls
+  back to `gh pr view` URL instead of returning empty.
+- Verifier moved INSIDE the REPLAN loop — `verdict=reject` carries issues
+  forward as synthetic unresolved refs and re-invokes the Planner.
+- Doer per-step rollback — failed steps `git reset --hard` back to
+  pre-step HEAD so PR carries only validator-approved commits.
+- CRITIC retry cap bumped 2 → 3 with diminishing-returns guard
+  (identical udiff or growing problem set bails early).
+- Time-decayed skill/failure ranking — `score = seen × 0.5^(age/half_life)`,
+  default half-life 30d, cutoff 180d. SQL push-down + python mirror.
+- Tester specs persisted to `~/.aiforge/runs/<ticket>/test_plan.json`
+  and registered as an attachment.
+- Tester actually runs `mvn test` / `gradle test` / `npm test` / `pytest`
+  when `AIFORGE_RUN_TESTS=1`. Framework auto-detect + tail-parse.
+- HITL escalation — terminal-failure stack triggers `status=needs_human`
+  + writes `hitl_request.md` for a human to pick up.
 - Multi-step Doer (one LLM call per file) — branch stacks commits.
 - Auto-learn end-to-end: `aiforge_agents_failures` + `_skills`,
   surfaced into Planner/Doer/Tester/Architect prompts.
