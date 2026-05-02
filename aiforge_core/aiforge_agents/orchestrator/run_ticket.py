@@ -702,10 +702,41 @@ def run(*, repo: str, title: str, body: str,
         else "blocked" if not grounding.get("resolved")
         else ("approved" if validation.get("decision") == "approve" else "blocked")
     )
+    # HITL escalation — when terminal failures stack up, mark the ticket
+    # for human review and drop a rendered request markdown alongside
+    # the trace. We escalate even when final_status is "approved" if
+    # tests failed, so a human can see the broken signal.
+    hitl_escalate, hitl_headline, hitl_evidence = _hitl_reason(
+        breakers=breakers, verdict=verdict, grounding=grounding,
+        validation=validation, review=review,
+        plan_attempts=plan_attempts, doer_attempts=doer_attempts,
+        test_run=test_run,
+    )
+    hitl_path = ""
+    if hitl_escalate:
+        final_status = "needs_human"
+        hitl_path = _persist_hitl_request(
+            ticket_id=ticket_id, headline=hitl_headline,
+            evidence=hitl_evidence, plan=plan,
+            review=review, validation=validation,
+            test_run=test_run if test_run else None, log=log,
+        )
+        emit(log, "hitl.escalated",
+             headline=hitl_headline,
+             evidence_count=len(hitl_evidence),
+             request_path=hitl_path)
+        learner.record_audit(
+            ticket_id=ticket_id, agent_role="orchestrator",
+            event_type="hitl_escalation",
+            payload={"headline": hitl_headline,
+                     "evidence": hitl_evidence,
+                     "request_path": hitl_path},
+        )
     emit(log, "run.done", final_status=final_status,
          latency_s=round(total, 2),
          tripped=breakers.tripped,
-         tripped_reason=breakers.state.reason)
+         tripped_reason=breakers.state.reason,
+         hitl=hitl_escalate)
     u_slim = {k: v for k, v in understanding.items() if k != "context_md"}
     _update_ticket_status(ticket_id, final_status, log=log, metadata={
         "runtime": "aiforge_agents",
@@ -750,6 +781,13 @@ def run(*, repo: str, title: str, body: str,
         "test_plan": test_plan,
         "review": review,
         "learning": learning,
+        "final_status": final_status,
+        "hitl": {
+            "escalated": hitl_escalate,
+            "headline": hitl_headline if hitl_escalate else "",
+            "evidence": hitl_evidence if hitl_escalate else [],
+            "request_path": hitl_path,
+        } if hitl_escalate else None,
         "latency_s": round(total, 2),
         "stages": {
             "understander_s": round(u_dur, 2),
@@ -1182,6 +1220,129 @@ def _guess_task_class(title: str, body: str) -> str:
         if kw in text:
             return cls
     return "unknown"
+
+
+def _hitl_reason(*, breakers, verdict: dict, grounding: dict,
+                 validation: dict, review: dict,
+                 plan_attempts: int, doer_attempts: int,
+                 test_run: dict | None) -> tuple[bool, str, list[str]]:
+    """Decide whether to escalate to a human + collect rationale.
+
+    Returns ``(escalate, headline, evidence)`` where evidence is a list
+    of short strings rendered into the HITL request markdown.
+
+    Escalation triggers (any):
+      - circuit breaker tripped (LLM unavailable / repeated panic)
+      - Verifier still rejects after the 3-attempt REPLAN cap
+      - Grounder never resolved (Planner couldn't anchor in real files)
+      - Validator blocked AND CRITIC retries already used >= 3 attempts
+      - Architect rejected the diff
+      - Tests actually ran AND failed
+    """
+    evidence: list[str] = []
+    headline = ""
+    if getattr(breakers, "tripped", False):
+        evidence.append(
+            f"Circuit breaker tripped: {getattr(breakers.state, 'reason', '?')}"
+        )
+        headline = "circuit_breaker"
+    if (str(verdict.get("verdict", "")).lower() == "reject"
+            and plan_attempts >= 3):
+        evidence.append(
+            f"Verifier rejected the plan after {plan_attempts} REPLAN attempts."
+        )
+        headline = headline or "verifier_persistent_reject"
+    if not grounding.get("resolved"):
+        unresolved = grounding.get("unresolved_refs") or []
+        evidence.append(
+            f"Grounder failed to resolve {len(unresolved)} reference(s); "
+            "Planner couldn't anchor in real files."
+        )
+        headline = headline or "grounder_unresolved"
+    if validation.get("decision") == "block" and doer_attempts >= 3:
+        evidence.append(
+            f"Validator blocked the diff after {doer_attempts} Doer attempts: "
+            f"{validation.get('reason', '?')}"
+        )
+        headline = headline or "validator_persistent_block"
+    if str(review.get("decision", "")).lower() == "reject":
+        evidence.append(
+            f"Architect rejected the diff: "
+            f"{(review.get('comments') or [''])[0][:200]}"
+        )
+        headline = headline or "architect_reject"
+    if test_run and not test_run.get("ok") and test_run.get("framework"):
+        evidence.append(
+            f"Test run failed ({test_run['framework']}): "
+            f"passed={test_run.get('passed', 0)} "
+            f"failed={test_run.get('failed', 0)} "
+            f"timed_out={test_run.get('timed_out', False)}"
+        )
+        headline = headline or "tests_failed"
+    return (bool(evidence), headline or "unknown", evidence)
+
+
+def _persist_hitl_request(*, ticket_id: str, headline: str,
+                          evidence: list[str], plan: dict,
+                          review: dict, validation: dict,
+                          test_run: dict | None, log) -> str:
+    """Write a human-readable HITL request alongside the run trace.
+
+    Returns absolute path on success, "" on IO failure. Best-effort —
+    never raised so HITL never makes a bad situation worse."""
+    import os as _os
+    from pathlib import Path
+
+    try:
+        runs_root = Path(
+            _os.environ.get("AIFORGE_RUNS_DIR")
+            or _os.path.expanduser("~/.aiforge/runs"),
+        )
+        ticket_dir = runs_root / ticket_id
+        ticket_dir.mkdir(parents=True, exist_ok=True)
+        req_path = ticket_dir / "hitl_request.md"
+        lines = [
+            f"# Human review requested — {ticket_id}",
+            "",
+            f"**Headline:** `{headline}`",
+            "",
+            "## Evidence",
+            "",
+        ]
+        lines += [f"- {e}" for e in evidence]
+        lines += [
+            "",
+            "## Snapshot",
+            "",
+            f"- plan steps: {len(plan.get('steps') or [])}",
+            f"- architect decision: `{review.get('decision', '?')}`",
+            f"- validator decision: `{validation.get('decision', '?')}`",
+        ]
+        if test_run:
+            lines.append(
+                f"- test run: framework=`{test_run.get('framework', '?')}` "
+                f"passed={test_run.get('passed', 0)} "
+                f"failed={test_run.get('failed', 0)}"
+            )
+        if review.get("comments"):
+            lines += ["", "## Architect comments", ""]
+            for c in (review.get("comments") or [])[:6]:
+                lines.append(f"- {str(c)[:300]}")
+        req_path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError as exc:
+        emit(log, "hitl.persist_failed", error=str(exc)[:200])
+        return ""
+
+    try:
+        learner.add_attachment(
+            ticket_id=ticket_id, filename="hitl_request.md",
+            file_path=str(req_path), role="hitl_request",
+            content_type="text/markdown",
+            bytes_=req_path.stat().st_size,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return str(req_path)
 
 
 def _detect_test_framework(repo_path: str) -> tuple[str, list[str]] | None:
