@@ -44,7 +44,11 @@ export default function Settings() {
     }
   }
 
-  const roleOrder = ['supervisor', 'planner', 'doer', 'feedback', 'learner', 'chat'];
+  // 9 archetype roles — order matches the pipeline flow.
+  const roleOrder = [
+    'understander', 'planner', 'verifier', 'grounder',
+    'doer', 'validator', 'tester', 'architect', 'learner',
+  ];
   const provKeys = Object.keys(providers);
 
   // Doer backend toggle: local mlx-lm ↔ cloud Gemini-Flash. Hits a

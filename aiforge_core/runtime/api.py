@@ -1144,9 +1144,18 @@ from . import agent_config as _acfg
 
 @app.get("/api/config/agents")
 def config_agents_list() -> dict:
-    """Per-agent provider + model map. UI Settings page calls this."""
+    """Per-archetype provider + model map. UI Settings calls this.
+
+    Surfaces only the 9 archetype roles
+    (understander/planner/verifier/grounder/doer/validator/tester/
+    architect/learner). Legacy 6-role aliases are kept in storage for
+    back-compat but hidden from the UI.
+    """
+    full = _acfg.load_all()
+    visible = {r: full[r] for r in _acfg._ARCHETYPES if r in full}
     return {
-        "roles": _acfg.load_all(),
+        "roles": visible,
+        "archetype_order": list(_acfg._ARCHETYPES),
         "providers": {
             k: {"label": v["label"], "default_model": v["default_model"]}
             for k, v in _acfg.PROVIDERS.items()

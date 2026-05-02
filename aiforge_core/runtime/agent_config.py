@@ -1,10 +1,18 @@
-"""Per-agent model + provider config, persisted to a JSON file.
+"""Per-archetype model + provider config, persisted to a JSON file.
 
-Ops can swap any role (supervisor/planner/doer/feedback/learner/chat)
-between local LM Studio, Anthropic Claude, or Ollama Cloud without a
-redeploy. Env vars still override for single-box debug runs.
+The 9 archetypes are the units the new pluggable pipeline operates on:
+  understander, planner, verifier, grounder, doer, validator,
+  tester, architect, learner
 
-Storage:  $AIFORGE_CONFIG_DIR/agent_config.json  (default ~/.aiforge).
+Each can be flipped between providers (local mlx_lm / Ollama Cloud /
+Anthropic Claude) without a redeploy. Env vars still override at read
+time so ops keeps a final-say escape hatch.
+
+The legacy 6-role names (supervisor/feedback/chat) are retained as
+aliases that map onto the closest archetype so existing API consumers
+keep working — they're hidden from the Settings UI.
+
+Storage: ``$AIFORGE_CONFIG_DIR/agent_config.json`` (default ``~/.aiforge``).
 """
 from __future__ import annotations
 
@@ -16,14 +24,32 @@ from typing import Any
 
 _LOCK = threading.Lock()
 
-_ROLES = ("supervisor", "planner", "doer", "feedback", "learner", "chat")
+# Pluggable archetype roles — what `aiforge_core.aiforge_agents` operates on.
+_ARCHETYPES = (
+    "understander", "planner", "verifier", "grounder",
+    "doer", "validator", "tester", "architect", "learner",
+)
+
+# Legacy 6-role keys retained for back-compat with older API consumers.
+# Each maps to the closest archetype on read.
+_LEGACY_ALIAS: dict[str, str] = {
+    "supervisor": "architect",
+    "feedback":   "validator",
+    "chat":       "doer",
+}
+_ROLES = _ARCHETYPES + tuple(_LEGACY_ALIAS.keys())
+
+# Local default — single Mac Studio model serves every archetype.
+_LOCAL_DEFAULT_MODEL = (
+    "/Users/manikanta/.lmstudio/models/lmstudio-community/"
+    "Qwen3-Coder-Next-MLX-4bit"
+)
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "local": {
-        "label": "LM Studio (local)",
-        # base_url overridden at read time from AIFORGE_LM_BASE_URL.
+        "label": "Local (mlx-lm on Mac Studio)",
         "litellm_prefix": "openai",
-        "default_model": "gpt-oss-120b",
+        "default_model": _LOCAL_DEFAULT_MODEL,
         "api_key_env": "LM_STUDIO_API_KEY",
         "api_key_default": "lm-studio",
     },
@@ -33,7 +59,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "default_model": "claude-sonnet-4-5",
         "api_key_env": "ANTHROPIC_API_KEY",
         "api_key_default": "",
-        "base_url": None,  # LiteLLM uses its native Anthropic handler.
+        "base_url": None,
     },
     "ollama_cloud": {
         "label": "Ollama Cloud",
@@ -46,7 +72,8 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 _DEFAULT: dict[str, dict[str, str]] = {
-    role: {"provider": "local", "model": "gpt-oss-120b"} for role in _ROLES
+    role: {"provider": "local", "model": _LOCAL_DEFAULT_MODEL}
+    for role in _ROLES
 }
 # Chat ships on Ollama Cloud by default — local mlx-lm is too slow for
 # the live Q+A flow and gemini is parked behind a hidden flag while we

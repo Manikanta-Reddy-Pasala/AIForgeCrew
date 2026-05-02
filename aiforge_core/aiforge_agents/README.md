@@ -1,8 +1,9 @@
 # aiforge_agents — pluggable archetype pipeline
 
 9-stage agentic pipeline for ticket-driven code change. ADK-style
-archetype registry, single-LLM (Qwen3-Coder-Next on Mac Studio @ 256K
-context), AiForgeMemory-grounded, auto-learning across tickets.
+archetype registry. AiForgeMemory-grounded. Auto-learning across
+tickets. **One local model** for everything — `Qwen3-Coder-Next-MLX-4bit`
+served by `mlx_lm` on Mac Studio at 256K context.
 
 ```
 ticket  ─►  Understander  ─►  Planner  ⇄  Grounder         (REPLAN ≤ 3)
@@ -22,6 +23,40 @@ Each stage is a `BaseArchetype` subclass registered via `@register("name")`
 in `archetypes/`. Configuration is 4-layer:
 
 > ctx kwargs > per-repo `.aiforge/agents.yaml` > `~/.aiforge/agents.yaml` > bundled `agents.defaults.yaml`
+
+## Provider per archetype
+
+Every archetype can run on a different provider. Edit live via the UI
+**Settings** page (`/ui/settings`) or via API:
+
+```bash
+curl http://localhost:8799/api/config/agents              # GET map
+curl -X PUT http://localhost:8799/api/config/agents/doer \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"ollama_cloud","model":"qwen3-coder-next"}'
+```
+
+Available providers: `local` (default — single Mac Studio model),
+`anthropic`, `ollama_cloud`. Add API keys to runtime env to enable
+the cloud ones. The 9 archetype keys are
+`understander | planner | verifier | grounder | doer | validator |
+tester | architect | learner`.
+
+## Robust against local-model quirks
+
+`runtime/llm_client.call_json` has a 5-stage tolerant JSON parser plus
+a single auto-retry with stricter prompt:
+
+1. strip 3+ backtick fences
+2. strict `json.loads`
+3. balanced `{...}` regex extract
+4. first `{` to last `}` slice
+5. retry once with stricter system prompt + temperature 0
+
+Local models (mlx-lm Qwen3-Coder, Ollama Cloud llama variants) routinely
+emit 4+ trailing backticks, prose around the JSON object, or markdown
+wrappers despite `response_format=json_object`. The parser handles all
+three; the retry handles the rest.
 
 ## Per-stage docs
 
