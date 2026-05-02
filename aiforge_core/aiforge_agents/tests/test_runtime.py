@@ -41,3 +41,63 @@ def test_tool_double_register_raises() -> None:
         @tool_registry.register("double_register_test")
         def _b() -> int:
             return 2
+
+
+# ─────────── Resilient JSON parse (local-model output) ────────────
+
+def test_resilient_json_parse_strict() -> None:
+    from aiforge_core.aiforge_agents.runtime.llm_client import (
+        _resilient_json_parse,
+    )
+    assert _resilient_json_parse('{"a": 1}') == {"a": 1}
+
+
+def test_resilient_json_parse_strips_3_backticks() -> None:
+    from aiforge_core.aiforge_agents.runtime.llm_client import (
+        _resilient_json_parse,
+    )
+    raw = '```json\n{"a": 1}\n```'
+    assert _resilient_json_parse(raw) == {"a": 1}
+
+
+def test_resilient_json_parse_strips_4_backticks() -> None:
+    from aiforge_core.aiforge_agents.runtime.llm_client import (
+        _resilient_json_parse,
+    )
+    raw = '````json\n{"a": 1}\n````'
+    assert _resilient_json_parse(raw) == {"a": 1}
+
+
+def test_resilient_json_parse_fence_with_prose() -> None:
+    from aiforge_core.aiforge_agents.runtime.llm_client import (
+        _resilient_json_parse,
+    )
+    raw = 'Sure, here is the answer:\n```json\n{"a": 1}\n```\nHope that helps!'
+    assert _resilient_json_parse(raw) == {"a": 1}
+
+
+def test_resilient_json_parse_no_fence_with_prose() -> None:
+    from aiforge_core.aiforge_agents.runtime.llm_client import (
+        _resilient_json_parse,
+    )
+    raw = 'My answer: {"a": 1, "b": "two"}. That is all.'
+    assert _resilient_json_parse(raw) == {"a": 1, "b": "two"}
+
+
+def test_resilient_json_parse_returns_none_on_garbage() -> None:
+    from aiforge_core.aiforge_agents.runtime.llm_client import (
+        _resilient_json_parse,
+    )
+    assert _resilient_json_parse("not json at all") is None
+    assert _resilient_json_parse("") is None
+    assert _resilient_json_parse(None) is None
+
+
+def test_resilient_json_parse_rejects_non_object() -> None:
+    """Lists / scalars are rejected — archetypes always expect an object."""
+    from aiforge_core.aiforge_agents.runtime.llm_client import (
+        _resilient_json_parse,
+    )
+    assert _resilient_json_parse('[1, 2, 3]') is None
+    assert _resilient_json_parse('"a string"') is None
+    assert _resilient_json_parse('42') is None

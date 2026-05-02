@@ -24,7 +24,55 @@ import re
 from aiforge_core.llm import complete as _complete
 
 
-_FENCE = re.compile(r"^```(?:json)?\s*\n?|\n?```\s*$", re.MULTILINE)
+# Strip code fences (3+ backticks). Local models occasionally emit
+# 4 trailing backticks because the response format directive
+# `response_format=json_object` collides with their training-set
+# bias toward fenced output.
+_FENCE = re.compile(r"^`{3,}(?:json)?\s*\n?|\n?`{3,}\s*$", re.MULTILINE)
+_JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _resilient_json_parse(raw: str | None) -> dict | None:
+    """Five-stage tolerant JSON parse for local-model output:
+
+    1. raw input → strip 3+ backtick fences → strip
+    2. json.loads on cleaned
+    3. fall back to largest balanced {...} block
+    4. fall back to "first { to last }" slice (catches nested fences)
+    5. give up and return None
+
+    Returns the parsed dict, or None if every fallback fails.
+    """
+    if not raw:
+        return None
+    cleaned = _FENCE.sub("", raw).strip()
+    if not cleaned:
+        return None
+    # 2. strict
+    try:
+        obj = json.loads(cleaned)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        pass
+    # 3. balanced object regex (greedy)
+    m = _JSON_OBJ_RE.search(cleaned)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            pass
+    # 4. first { to last }
+    if "{" in cleaned and "}" in cleaned:
+        first = cleaned.find("{")
+        last = cleaned.rfind("}")
+        if first != -1 and last > first:
+            try:
+                obj = json.loads(cleaned[first : last + 1])
+                return obj if isinstance(obj, dict) else None
+            except json.JSONDecodeError:
+                pass
+    return None
 
 
 def _role_for(model_hint: str | None) -> str:
@@ -70,12 +118,25 @@ def call_json(*, model: str | None = None,
               system: str, user: str,
               role: str | None = None,
               temperature: float = 0.0,
-              max_tokens: int = 4000) -> dict | None:
-    """Strict-JSON LLM call. Returns parsed dict, or ``None`` on parse fail.
+              max_tokens: int = 4000,
+              retry_on_invalid: bool = True) -> dict | None:
+    """Strict-JSON LLM call with local-model resilience.
 
-    Sends ``response_format={"type": "json_object"}`` via ``extras`` so
-    OpenAI-compat servers honour it; mlx-lm ignores it harmlessly. Also
-    strips Markdown fences from models that ignore the directive.
+    Pipeline:
+      1. Send with response_format=json_object (OpenAI honors, mlx-lm
+         ignores harmlessly).
+      2. Tolerant parse — strips 3+ backtick fences, falls back to
+         balanced {...} extract, then to first-{ / last-} slice.
+      3. On parse failure (and retry_on_invalid=True), retry ONCE with
+         a stricter system prompt that re-states the format constraint
+         and forbids prose. Tolerant parse again.
+      4. Returns the parsed dict, or None if both attempts fail.
+
+    Local models (Qwen3-Coder, mlx-lm) routinely emit:
+      - 4+ trailing backticks
+      - Stray prose around the JSON object
+      - Markdown wrapper despite json_object directive
+    The tolerant parser catches all three.
     """
     chosen_role = role or _role_for(model)
     raw = _complete(
@@ -88,10 +149,27 @@ def call_json(*, model: str | None = None,
         max_tokens=max_tokens,
         extras={"response_format": {"type": "json_object"}},
     )
-    cleaned = _FENCE.sub("", raw or "").strip()
-    if not cleaned:
+    parsed = _resilient_json_parse(raw)
+    if parsed is not None:
+        return parsed
+    if not retry_on_invalid:
         return None
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        return None
+    # Retry once with a stricter format reminder. Lower temperature
+    # to reduce creative drift on the retry.
+    strict_system = (
+        system
+        + "\n\nIMPORTANT: respond with a SINGLE JSON object on its own "
+        "line. No prose, no markdown fences, no explanation. The first "
+        "non-whitespace character must be `{`."
+    )
+    raw2 = _complete(
+        chosen_role,
+        messages=[
+            {"role": "system", "content": strict_system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.0,
+        max_tokens=max_tokens,
+        extras={"response_format": {"type": "json_object"}},
+    )
+    return _resilient_json_parse(raw2)
