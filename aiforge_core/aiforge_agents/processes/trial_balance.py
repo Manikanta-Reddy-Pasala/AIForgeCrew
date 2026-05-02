@@ -1137,5 +1137,205 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if (rec.large or abs(rec.gap) > 1000) else 0
 
 
+def run_workflow(ticket: dict, *, log=None) -> dict:
+    """Stable handler entry — invoked by the WorkflowRegistry dispatcher.
+
+    Reads ``ticket`` (a dict containing at minimum ``id``, ``identifier``,
+    ``title``, ``body`` and optional ``metadata``), pulls Tally + OneShell
+    attachments, runs the validate → parse → fetch-from-DB → verify
+    pipeline, and returns a doer-outcome-shaped dict that the
+    orchestrator hands to the Validator/Architect stages.
+
+    Soft-fails on any expected error (missing attachments, parse error,
+    DB unreachable) — never raises. The orchestrator decides downstream
+    routing based on ``blocked_by_detectors`` and ``problems``.
+    """
+    # Lazy import to avoid pulling the learner/persistence layer at
+    # module load time (the registry imports trial_balance at startup).
+    from aiforge_core.aiforge_agents.learner import online as _learner
+
+    ticket_id = ticket.get("identifier") or ticket.get("id") or ""
+    title = ticket.get("title") or ""
+    body = ticket.get("body") or ""
+    text = (title + " " + body).lower()
+
+    def _emit(event: str, **fields):
+        if log is not None:
+            try:
+                from aiforge_core.runtime.logging_setup import emit as _emit_evt
+                _emit_evt(log, event, ticket=ticket_id, **fields)
+            except Exception:
+                pass
+
+    atts = _learner.attachments_for(str(ticket_id))
+    by_role: dict[str, dict] = {}
+    for a in atts:
+        by_role.setdefault(a["role"], a)
+    missing = [r for r in ("tally", "oneshell") if r not in by_role]
+    if missing:
+        _emit("trial_balance.missing_attachments", missing=missing)
+        return {
+            "artifact_type": "doer_outcome",
+            "process": "trial_balance",
+            "applied": False,
+            "udiff": "",
+            "target": "trial-balance-report.md",
+            "problems": [{
+                "mode": "missing_attachment",
+                "evidence": f"required attachment role(s) missing: {missing}",
+            }],
+            "blocked_by_detectors": True,
+        }
+
+    env = "prod" if "prod" in text else "qa"
+    try:
+        fv_t = validate_file(by_role["tally"]["file_path"], expected="tally")
+        fv_o = validate_file(by_role["oneshell"]["file_path"], expected="oneshell")
+        validation_errors: list[str] = []
+        for fv in (fv_t, fv_o):
+            for e in fv.errors:
+                validation_errors.append(f"{Path(fv.path).name}: {e}")
+        if validation_errors:
+            _emit("trial_balance.validation_failed",
+                  errors=validation_errors[:5])
+            return {
+                "artifact_type": "doer_outcome",
+                "process": "trial_balance",
+                "env": env,
+                "applied": False,
+                "udiff": "",
+                "target": "trial-balance-report.md",
+                "problems": [{"mode": "file_validation",
+                              "evidence": e} for e in validation_errors],
+                "blocked_by_detectors": True,
+                "file_validation": {
+                    "tally": {"ok": fv_t.ok, "errors": fv_t.errors,
+                              "warnings": fv_t.warnings,
+                              "rows": fv_t.row_count},
+                    "oneshell": {"ok": fv_o.ok, "errors": fv_o.errors,
+                                 "warnings": fv_o.warnings,
+                                 "rows": fv_o.row_count},
+                },
+            }
+        t_rows = parse_tally(Path(by_role["tally"]["file_path"]))
+        o_file = parse_oneshell(Path(by_role["oneshell"]["file_path"]))
+        bid = ""
+        m = re.search(r"\bb\d{14,}\b", text)
+        if m:
+            bid = m.group(0)
+        o_db: list = []
+        if bid:
+            import datetime as _dt
+            today = _dt.date.today()
+            fy_year = today.year + (1 if today.month >= 4 else 0)
+            try:
+                o_db = fetch_oneshell_via_api(
+                    business_id=bid, env=env, financial_year=fy_year,
+                )
+            except (OSError, ValueError, KeyError) as exc:
+                _emit("trial_balance.api_unreachable",
+                      error=str(exc)[:200], business_id=bid)
+                try:
+                    o_db = fetch_oneshell_from_mongo(
+                        business_id=bid, env=env,
+                    )
+                except (OSError, ValueError, KeyError) as exc2:
+                    _emit("trial_balance.mongo_unreachable",
+                          error=str(exc2)[:200])
+                    o_db = []
+        rep = verify(
+            tally=t_rows, file_rows=o_file,
+            db_rows=o_db or None, api_rows=None,
+            env=env, business_id=bid,
+        )
+        md = render_verify_report(rep)
+        totals_view = {
+            src: {"OB": t.total_ob, "DR": t.total_dr,
+                  "CR": t.total_cr, "CB": t.total_cb,
+                  "rows": t.row_count}
+            for src, t in rep.totals.items()
+        }
+        if o_db:
+            three = reconcile_3way(
+                t_rows, o_file, o_db, env=env, business_id=bid,
+            )
+            any_large = any([
+                three.file_vs_db.large,
+                three.tally_vs_file.large,
+                three.tally_vs_db.large,
+            ])
+            _emit("trial_balance.three_way_done",
+                  large_buckets=any_large,
+                  top_line_mismatch=rep.has_top_line_mismatch)
+            return {
+                "artifact_type": "doer_outcome",
+                "process": "trial_balance",
+                "mode": "3way+verify",
+                "env": env,
+                "udiff": md,
+                "target": "trial-balance-report.md",
+                "totals": totals_view,
+                "top_line_mismatch": rep.has_top_line_mismatch,
+                "drilled_accounts": len([d for d in rep.drill
+                                         if d.diagnoses != ["ok — totals within tolerance"]]),
+                "file_vs_db_gap": three.file_vs_db.gap,
+                "tally_vs_file_gap": three.tally_vs_file.gap,
+                "tally_vs_db_gap":  three.tally_vs_db.gap,
+                "buckets": {
+                    "tally_vs_db_match": len(three.tally_vs_db.matched),
+                    "tally_vs_db_large": len(three.tally_vs_db.large),
+                    "file_vs_db_large":  len(three.file_vs_db.large),
+                },
+                "applied": False,
+                "problems": [],
+                "blocked_by_detectors": (any_large or rep.has_top_line_mismatch),
+            }
+        rec = reconcile(t_rows, o_file, env=env, business_id=bid)
+        _emit("trial_balance.two_way_done",
+              gap=rec.gap, large_count=len(rec.large),
+              top_line_mismatch=rep.has_top_line_mismatch)
+        return {
+            "artifact_type": "doer_outcome",
+            "process": "trial_balance",
+            "mode": "2way+verify",
+            "env": env,
+            "udiff": md,
+            "target": "trial-balance-report.md",
+            "totals": totals_view,
+            "top_line_mismatch": rep.has_top_line_mismatch,
+            "drilled_accounts": len([d for d in rep.drill
+                                     if d.diagnoses != ["ok — totals within tolerance"]]),
+            "tally_total": rec.tally_total,
+            "oneshell_total": rec.oneshell_total,
+            "gap": rec.gap,
+            "buckets": {
+                "match": len(rec.matched),
+                "diff":  len(rec.diff),
+                "large": len(rec.large),
+                "tally_only":    len(rec.tally_only),
+                "oneshell_only": len(rec.oneshell_only),
+            },
+            "applied": False,
+            "problems": [],
+            "blocked_by_detectors": rep.has_top_line_mismatch,
+        }
+    except (ImportError, OSError, ValueError, KeyError) as exc:
+        _emit("trial_balance.process_failed",
+              error=str(exc)[:200], type=type(exc).__name__)
+        return {
+            "artifact_type": "doer_outcome",
+            "process": "trial_balance",
+            "error": f"validator_failed: {type(exc).__name__}: {exc}",
+            "error_type": type(exc).__name__,
+            "applied": False,
+            "problems": [{
+                "mode": "trial_balance_exception",
+                "evidence": str(exc)[:500],
+                "exc_type": type(exc).__name__,
+            }],
+            "udiff": "",
+        }
+
+
 if __name__ == "__main__":
     sys.exit(main())

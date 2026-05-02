@@ -132,7 +132,9 @@ def _update_ticket_status(ticket_id: str, status: str,
 def run(*, repo: str, title: str, body: str,
         ticket_id: str | None = None,
         apply: bool | None = None,
-        open_mr: bool | None = None) -> dict[str, Any]:
+        open_mr: bool | None = None,
+        route: str = "code",
+        route_workflow: str | None = None) -> dict[str, Any]:
     import os as _os
     ticket_id = ticket_id or f"TKT-{uuid.uuid4().hex[:8].upper()}"
     log = get_run_logger(ticket_id, role="orchestrator")
@@ -174,12 +176,14 @@ def run(*, repo: str, title: str, body: str,
         duration_ms=int(u_dur * 1000),
     )
 
-    # Process short-circuit: trial-balance reconciliation runs a
-    # deterministic Python pipeline instead of the full LLM cascade.
-    # The full pipeline still runs afterwards (Tester / Architect get
-    # to comment) but Planner/Doer/Validator stages are skipped.
-    tb_outcome = _maybe_run_trial_balance(
+    # Workflow short-circuit: when route='workflow', dispatch the named
+    # handler from WorkflowRegistry instead of the generic LLM cascade.
+    # When route='code' (default) AND no workflow id pinned, the legacy
+    # keyword-sniff path is preserved for backwards compatibility with
+    # tickets created before route columns existed.
+    tb_outcome = _maybe_run_workflow(
         ticket_id=ticket_id, repo=repo, title=title, body=body,
+        route=route, route_workflow=route_workflow, log=log,
     )
 
     # Pull allowed file paths from AiForgeMemory once — Planner will
@@ -782,6 +786,73 @@ def _filter_plan_targets(
     return out, dropped
 
 
+def _maybe_run_workflow(*, ticket_id: str, repo: str,
+                        title: str, body: str,
+                        route: str = "code",
+                        route_workflow: str | None = None,
+                        log=None) -> dict | None:
+    """Registry-based workflow dispatch.
+
+    Order of resolution:
+      1. ``route == 'workflow'`` AND ``route_workflow`` set → dispatch
+         the named handler (preferred — chosen by detector or human
+         override at ticket POST time).
+      2. ``route == 'code'`` AND no workflow id → run the legacy keyword
+         sniff for backwards compatibility with tickets created before
+         the route columns existed.
+      3. Otherwise → return None (LLM cascade runs).
+
+    Returns the doer-outcome-shaped dict from the handler, or None.
+    """
+    from aiforge_core.workflows import REGISTRY, dispatch
+    if route == "workflow" and route_workflow:
+        spec = REGISTRY.get(route_workflow)
+        if spec is None:
+            emit(log, "workflow.unknown_id", route_workflow=route_workflow)
+            return {
+                "artifact_type": "doer_outcome",
+                "process": route_workflow,
+                "applied": False,
+                "udiff": "",
+                "problems": [{
+                    "mode": "workflow_unknown",
+                    "evidence": f"workflow {route_workflow!r} not registered",
+                }],
+                "blocked_by_detectors": True,
+            }
+        emit(log, "workflow.dispatch", workflow=route_workflow,
+             handler=spec.handler)
+        try:
+            ticket = {
+                "id": ticket_id, "identifier": ticket_id,
+                "title": title, "body": body, "repo": repo,
+            }
+            return dispatch(route_workflow, ticket, log=log)
+        except (ImportError, OSError, ValueError, KeyError) as exc:
+            emit(log, "workflow.dispatch_failed",
+                 workflow=route_workflow,
+                 error=str(exc)[:300], type=type(exc).__name__)
+            return {
+                "artifact_type": "doer_outcome",
+                "process": route_workflow,
+                "applied": False,
+                "udiff": "",
+                "problems": [{
+                    "mode": "workflow_dispatch_exception",
+                    "evidence": str(exc)[:500],
+                    "exc_type": type(exc).__name__,
+                }],
+                "blocked_by_detectors": True,
+            }
+
+    # Legacy keyword sniff — only runs when the ticket predates the
+    # route columns (route='code' default + no workflow id). Once the
+    # detector backfills route on every POST, this path stops firing.
+    return _maybe_run_trial_balance(
+        ticket_id=ticket_id, repo=repo, title=title, body=body,
+    )
+
+
 def _maybe_run_trial_balance(*, ticket_id: str, repo: str,
                              title: str, body: str) -> dict | None:
     """If the ticket has tally + oneshell attachments AND `trial-balance`
@@ -1090,8 +1161,32 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--title", required=True)
     p.add_argument("--body", default="")
     p.add_argument("--ticket-id")
+    p.add_argument(
+        "--route", choices=["code", "workflow", "auto"], default="auto",
+        help="'code' = LLM cascade, 'workflow' = named handler, "
+             "'auto' = run detector against title/body/attachments",
+    )
+    p.add_argument(
+        "--workflow",
+        help="Workflow id when --route=workflow (e.g. tally-trial-balance). "
+             "Ignored when --route=code/auto.",
+    )
     a = p.parse_args(argv)
-    out = run(repo=a.repo, title=a.title, body=a.body, ticket_id=a.ticket_id)
+
+    route = a.route
+    workflow_id = a.workflow
+    if route == "auto":
+        from aiforge_core.workflows import detect_route
+        # Attachments aren't known at CLI invocation time — feed empty
+        # list. The detector will still match keyword-only workflows
+        # and let the operator override with --route + --workflow.
+        decided = detect_route(title=a.title, body=a.body, attachments=[])
+        route = decided.kind
+        workflow_id = decided.workflow_id
+
+    out = run(repo=a.repo, title=a.title, body=a.body,
+              ticket_id=a.ticket_id,
+              route=route, route_workflow=workflow_id)
     print(json.dumps(out, indent=2, default=str))
     return 0 if not out["circuit_breaker_tripped"] else 1
 

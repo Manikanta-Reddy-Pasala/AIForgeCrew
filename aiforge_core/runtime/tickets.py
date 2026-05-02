@@ -47,6 +47,10 @@ class Ticket:
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+    route: str = "code"                       # 'code' or 'workflow'
+    route_workflow: str | None = None         # workflow id when route='workflow'
+    route_source: str = "auto"                # 'auto' or 'manual'
+    route_confidence: float | None = None     # 0..1; null = unscored
 
     @classmethod
     def from_row(cls, r: dict) -> "Ticket":
@@ -58,6 +62,10 @@ class Ticket:
             labels=list(r["labels"] or []), metadata=dict(r["metadata"] or {}),
             created_at=r["created_at"], updated_at=r["updated_at"],
             completed_at=r["completed_at"],
+            route=r.get("route") or "code",
+            route_workflow=r.get("route_workflow"),
+            route_source=r.get("route_source") or "auto",
+            route_confidence=r.get("route_confidence"),
         )
 
 
@@ -83,9 +91,20 @@ CREATE TABLE IF NOT EXISTS tickets (
   updated_at    timestamptz NOT NULL DEFAULT now(),
   completed_at  timestamptz
 );
+
+-- Route columns — added 2026-05-02. Tags whether a ticket runs the
+-- generic 9-stage code cascade ('code') or a registered named workflow
+-- ('workflow' + route_workflow id). route_source records whether the
+-- classifier auto-picked or a human overrode in the UI.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS route             text NOT NULL DEFAULT 'code';
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS route_workflow    text;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS route_source      text NOT NULL DEFAULT 'auto';
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS route_confidence  real;
+
 CREATE INDEX IF NOT EXISTS tickets_assignee_status ON tickets(assignee_role, status);
 CREATE INDEX IF NOT EXISTS tickets_parent ON tickets(parent_id);
 CREATE INDEX IF NOT EXISTS tickets_status ON tickets(status);
+CREATE INDEX IF NOT EXISTS tickets_route ON tickets(route, route_workflow);
 
 CREATE TABLE IF NOT EXISTS ticket_events (
   id         bigserial PRIMARY KEY,
@@ -205,9 +224,19 @@ def create(
     branch: str | None = None,
     metadata: dict | None = None,
     identifier: str | None = None,
+    route: str = "code",
+    route_workflow: str | None = None,
+    route_source: str = "auto",
+    route_confidence: float | None = None,
 ) -> Ticket:
     if priority not in VALID_PRIORITY:
         raise ValueError(f"bad priority {priority!r}")
+    if route not in ("code", "workflow"):
+        raise ValueError(f"bad route {route!r}; expected 'code' or 'workflow'")
+    if route == "workflow" and not route_workflow:
+        raise ValueError("route='workflow' requires route_workflow id")
+    if route_source not in ("auto", "manual"):
+        raise ValueError(f"bad route_source {route_source!r}")
     # Children inherit their parent's assignee if caller didn't pick — DON'T
     # send them through supervisor triage again.
     if parent_id is None:
@@ -223,17 +252,53 @@ def create(
             """
             INSERT INTO tickets
               (identifier, title, body, priority, assignee_role,
-               parent_id, project, labels, branch, metadata)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+               parent_id, project, labels, branch, metadata,
+               route, route_workflow, route_source, route_confidence)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s)
             RETURNING *;
             """,
             (ident, title, body, priority, assignee_role,
              parent_id, project, labels or [], branch,
-             json.dumps(metadata)),
+             json.dumps(metadata),
+             route, route_workflow, route_source, route_confidence),
         )
         row = cur.fetchone()
         c.commit()
     return Ticket.from_row(row)
+
+
+def update_route(
+    ident_or_id: str | int,
+    *,
+    route: str,
+    route_workflow: str | None = None,
+    route_source: str = "manual",
+    route_confidence: float | None = None,
+) -> Ticket | None:
+    """Override the route of an existing ticket. Used by the UI's
+    'override' action — defaults source to 'manual' so audits stay clean.
+    """
+    if route not in ("code", "workflow"):
+        raise ValueError(f"bad route {route!r}")
+    if route == "workflow" and not route_workflow:
+        raise ValueError("route='workflow' requires route_workflow id")
+    if route_source not in ("auto", "manual"):
+        raise ValueError(f"bad route_source {route_source!r}")
+    with _conn() as c, c.cursor(row_factory=dict_row) as cur:
+        if isinstance(ident_or_id, int):
+            where = "id=%s"
+        else:
+            where = "identifier=%s"
+        cur.execute(
+            f"UPDATE tickets SET route=%s, route_workflow=%s, "
+            f"  route_source=%s, route_confidence=%s "
+            f"WHERE {where} RETURNING *",
+            (route, route_workflow, route_source, route_confidence,
+             ident_or_id),
+        )
+        row = cur.fetchone()
+        c.commit()
+    return Ticket.from_row(row) if row else None
 
 
 def get(ident_or_id: str | int) -> Ticket | None:

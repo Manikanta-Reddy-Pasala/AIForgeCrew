@@ -102,6 +102,10 @@ def _ticket_row_out(r: dict) -> dict:
         "completed_at": completed.isoformat() if completed else None,
         "started_at": started.isoformat() if started else None,
         "duration_s": duration_s,
+        "route": r.get("route") or "code",
+        "route_workflow": r.get("route_workflow"),
+        "route_source": r.get("route_source") or "auto",
+        "route_confidence": r.get("route_confidence"),
     }
 
 
@@ -182,6 +186,25 @@ class TicketCreate(BaseModel):
     labels: list[str] = Field(default_factory=list)
     max_turns: int | None = None
     metadata: dict | None = None
+    # Route override — when set, skips auto-detection. Use this from
+    # the UI when the human picks "Workflow" + workflow_id manually.
+    route: str | None = None                    # 'code' | 'workflow' | None=auto
+    route_workflow: str | None = None           # required when route='workflow'
+    attachments: list[str] = Field(default_factory=list)  # attachment role names; feeds detector
+
+
+class RouteUpdate(BaseModel):
+    route: str                                  # 'code' | 'workflow'
+    route_workflow: str | None = None           # required when route='workflow'
+    route_source: str = "manual"                # default to manual for UI overrides
+    route_confidence: float | None = None
+
+
+class RoutePreview(BaseModel):
+    title: str = ""
+    body: str
+    attachments: list[str] = Field(default_factory=list)
+    intent: dict | None = None
 
 
 class TicketPatch(BaseModel):
@@ -362,6 +385,38 @@ def create_ticket(payload: TicketCreate) -> dict:
         or enrichment_meta.get("repo")
         or enrichment_meta.get("intent", {}).get("repo_hint")
     )
+
+    # Route resolution. UI may pin route+workflow manually OR ask the
+    # detector to pick. Manual choices flag route_source='manual' so
+    # audits stay clean. Auto picks set route_source='auto'.
+    route = "code"
+    route_workflow: str | None = None
+    route_source = "auto"
+    route_confidence: float | None = None
+    if payload.route in ("code", "workflow"):
+        route = payload.route
+        route_workflow = payload.route_workflow
+        route_source = "manual"
+        route_confidence = 1.0
+        if route == "workflow" and not route_workflow:
+            raise HTTPException(
+                400, "route='workflow' requires route_workflow id",
+            )
+    else:
+        try:
+            from aiforge_core.workflows import detect_route
+            decided = detect_route(
+                title=payload.title, body=payload.body,
+                attachments=payload.attachments,
+                intent=enrichment_meta.get("intent"),
+            )
+            route = decided.kind
+            route_workflow = decided.workflow_id
+            route_confidence = decided.confidence
+            md["route_rationale"] = decided.rationale
+        except Exception as exc:  # detector must never break ticket POST
+            md["route_error"] = str(exc)[:300]
+
     t = tickets_mod.create(
         title=payload.title, body=enriched_body,
         assignee_role=assignee,
@@ -369,6 +424,8 @@ def create_ticket(payload: TicketCreate) -> dict:
         project=resolved_project,
         labels=payload.labels,
         metadata=md or None,
+        route=route, route_workflow=route_workflow,
+        route_source=route_source, route_confidence=route_confidence,
     )
     if not t.branch:
         t.branch = _derive_branch(t.identifier, t.title)
@@ -389,6 +446,8 @@ def create_ticket(payload: TicketCreate) -> dict:
         "branch": t.branch, "project": t.project, "labels": t.labels,
         "metadata": t.metadata, "created_at": t.created_at,
         "updated_at": t.updated_at, "completed_at": t.completed_at,
+        "route": t.route, "route_workflow": t.route_workflow,
+        "route_source": t.route_source, "route_confidence": t.route_confidence,
     })
 
 
@@ -427,6 +486,60 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
                         params)
             c.commit()
     return get_ticket(identifier)
+
+
+@app.get("/api/workflows")
+def list_workflows() -> list[dict]:
+    """Public registry view — UI uses this to populate the workflow
+    dropdown on the new-ticket form."""
+    from aiforge_core.workflows import list_all
+    return [w.to_public_dict() for w in list_all()]
+
+
+@app.post("/api/workflows/preview")
+def workflow_preview(payload: RoutePreview) -> dict:
+    """Run the route detector against a candidate ticket WITHOUT
+    creating it. UI debounces this on body change to show the
+    detected workflow chip live."""
+    from aiforge_core.workflows.detector import preview
+    return preview(
+        body=payload.body, title=payload.title,
+        attachments=payload.attachments, intent=payload.intent,
+    )
+
+
+@app.put("/api/tickets/{identifier}/route")
+def override_route(identifier: str, payload: RouteUpdate) -> dict:
+    """Manual route override — UI 'override' link calls this. Sets
+    route_source='manual' by default so the audit trail distinguishes
+    operator overrides from auto-detected picks."""
+    if payload.route == "workflow":
+        from aiforge_core.workflows import get as _get_wf
+        if not payload.route_workflow:
+            raise HTTPException(400, "route='workflow' requires route_workflow")
+        if _get_wf(payload.route_workflow) is None:
+            raise HTTPException(
+                400, f"unknown workflow id: {payload.route_workflow!r}",
+            )
+    t = tickets_mod.update_route(
+        identifier,
+        route=payload.route,
+        route_workflow=payload.route_workflow,
+        route_source=payload.route_source,
+        route_confidence=payload.route_confidence,
+    )
+    if t is None:
+        raise HTTPException(404, f"ticket {identifier} not found")
+    return _ticket_row_out({
+        "id": t.id, "identifier": t.identifier, "title": t.title,
+        "body": t.body, "status": t.status, "priority": t.priority,
+        "assignee_role": t.assignee_role, "parent_id": t.parent_id,
+        "branch": t.branch, "project": t.project, "labels": t.labels,
+        "metadata": t.metadata, "created_at": t.created_at,
+        "updated_at": t.updated_at, "completed_at": t.completed_at,
+        "route": t.route, "route_workflow": t.route_workflow,
+        "route_source": t.route_source, "route_confidence": t.route_confidence,
+    })
 
 
 @app.post("/api/tickets/{identifier}/comments", status_code=201)

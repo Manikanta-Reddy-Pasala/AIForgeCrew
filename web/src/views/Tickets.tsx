@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { api } from '../api';
+import { api, type RoutePreview, type WorkflowSpec } from '../api';
 import { Icon } from '../icons';
 import {
   statusClass, priorityClass, durationCell, durationTitle, relTime,
@@ -12,15 +12,61 @@ const ROLES = ['', 'supervisor', 'planner', 'doer', 'feedback', 'learner'];
 const STATUSES = ['', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 
+type RouteMode = 'auto' | 'code' | 'workflow';
+
+interface Draft {
+  title: string;
+  body: string;
+  assignee_role: string;
+  priority: string;
+  route_mode: RouteMode;          // local UI state — translated on submit
+  route_workflow: string;         // selected workflow id (when mode='workflow')
+  attachments: string;            // comma-separated attachment role names
+}
+
+const FRESH_DRAFT: Draft = {
+  title: '', body: '', assignee_role: 'planner', priority: 'medium',
+  route_mode: 'auto', route_workflow: '', attachments: '',
+};
+
 export default function Tickets() {
   const qc = useQueryClient();
   const [role, setRole] = useState('');
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
-  const [draft, setDraft] = useState({
-    title: '', body: '', assignee_role: 'planner', priority: 'medium',
+  const [draft, setDraft] = useState<Draft>(FRESH_DRAFT);
+
+  // Workflow registry — pulled once, drives the override dropdown.
+  const { data: workflows = [] } = useQuery<WorkflowSpec[]>({
+    queryKey: ['workflows'],
+    queryFn: () => api.workflows(),
+    staleTime: 60_000,
   });
+
+  // Live route preview — debounced 350ms on body/attachments change.
+  const [preview, setPreview] = useState<RoutePreview | null>(null);
+  const previewKey = useMemo(
+    () => JSON.stringify({
+      body: draft.body, title: draft.title,
+      atts: draft.attachments,
+    }),
+    [draft.body, draft.title, draft.attachments],
+  );
+  useEffect(() => {
+    if (!creating || !draft.body.trim()) { setPreview(null); return; }
+    const handle = window.setTimeout(async () => {
+      try {
+        const atts = draft.attachments
+          .split(',').map(s => s.trim()).filter(Boolean);
+        const r = await api.workflowPreview(draft.body, {
+          title: draft.title, attachments: atts,
+        });
+        setPreview(r);
+      } catch { setPreview(null); }
+    }, 350);
+    return () => window.clearTimeout(handle);
+  }, [previewKey, creating]);
 
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ['tickets', role, status],
@@ -40,10 +86,31 @@ export default function Tickets() {
 
   async function submit() {
     if (!draft.title.trim()) return;
+    const atts = draft.attachments
+      .split(',').map(s => s.trim()).filter(Boolean);
+    // Translate UI mode → API payload.
+    //   'auto'     → omit route fields, server detector picks
+    //   'code'     → explicit code task, skips workflow detection
+    //   'workflow' → must include route_workflow id
+    const payload: Record<string, any> = {
+      title: draft.title, body: draft.body,
+      assignee_role: draft.assignee_role, priority: draft.priority,
+      attachments: atts,
+    };
+    if (draft.route_mode === 'code') {
+      payload.route = 'code';
+    } else if (draft.route_mode === 'workflow') {
+      if (!draft.route_workflow) {
+        toast.error('Pick a workflow id');
+        return;
+      }
+      payload.route = 'workflow';
+      payload.route_workflow = draft.route_workflow;
+    }
     try {
-      await api.create(draft);
+      await api.create(payload);
       toast.success(`Created: ${draft.title}`);
-      setDraft({ title: '', body: '', assignee_role: 'planner', priority: 'medium' });
+      setDraft(FRESH_DRAFT);
       setCreating(false);
       qc.invalidateQueries({ queryKey: ['tickets'] });
     } catch (e: any) {
@@ -105,6 +172,108 @@ export default function Tickets() {
                 onChange={e => setDraft({ ...draft, body: e.target.value })}
               />
             </label>
+
+            <label className="field">
+              Attachments (comma-separated role names)
+              <input
+                placeholder="e.g. tally, oneshell"
+                value={draft.attachments}
+                onChange={e => setDraft({ ...draft, attachments: e.target.value })}
+              />
+            </label>
+
+            <div className="field">
+              <div style={{ marginBottom: 6 }}>Route</div>
+              <div className="row" style={{ gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label className="row" style={{ gap: 4 }}>
+                  <input type="radio" name="route_mode"
+                    checked={draft.route_mode === 'auto'}
+                    onChange={() => setDraft({ ...draft, route_mode: 'auto' })} />
+                  Auto-detect
+                </label>
+                <label className="row" style={{ gap: 4 }}>
+                  <input type="radio" name="route_mode"
+                    checked={draft.route_mode === 'code'}
+                    onChange={() => setDraft({ ...draft, route_mode: 'code' })} />
+                  Code task
+                </label>
+                <label className="row" style={{ gap: 4 }}>
+                  <input type="radio" name="route_mode"
+                    checked={draft.route_mode === 'workflow'}
+                    onChange={() => setDraft({ ...draft, route_mode: 'workflow' })} />
+                  Workflow
+                </label>
+                {draft.route_mode === 'workflow' && (
+                  <select
+                    value={draft.route_workflow}
+                    onChange={e => setDraft({ ...draft, route_workflow: e.target.value })}
+                  >
+                    <option value="">— pick a workflow —</option>
+                    {workflows.map(w => (
+                      <option key={w.id} value={w.id}>{w.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {draft.route_mode === 'auto' && preview && (
+                <div className="card"
+                  style={{ marginTop: 8, padding: 8, fontSize: 12, opacity: 0.9 }}>
+                  <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
+                    <strong>Detected:</strong>
+                    {preview.chosen.kind === 'workflow' ? (
+                      <span>
+                        ⚙ <code>{preview.chosen.workflow_id}</code>
+                        <span style={{ marginLeft: 6, opacity: 0.7 }}>
+                          (conf {preview.chosen.confidence.toFixed(2)})
+                        </span>
+                      </span>
+                    ) : (
+                      <span>📝 code task</span>
+                    )}
+                  </div>
+                  {preview.chosen.rationale && (
+                    <div style={{ opacity: 0.7, marginTop: 4 }}>
+                      {preview.chosen.rationale}
+                    </div>
+                  )}
+                  {preview.candidates.length > 1 && (
+                    <details style={{ marginTop: 4 }}>
+                      <summary>{preview.candidates.length} candidates</summary>
+                      <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                        {preview.candidates.map(c => (
+                          <li key={c.workflow_id}>
+                            <code>{c.workflow_id}</code> — {c.score.toFixed(2)}{' '}
+                            {c.above_threshold ? '✓' : '⚠'} (
+                            {c.reasons.join(', ')})
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {draft.route_mode === 'workflow' && draft.route_workflow && (() => {
+                const spec = workflows.find(w => w.id === draft.route_workflow);
+                if (!spec) return null;
+                return (
+                  <div className="card"
+                    style={{ marginTop: 8, padding: 8, fontSize: 12, opacity: 0.9 }}>
+                    <div><strong>{spec.label}</strong></div>
+                    <div style={{ opacity: 0.7, marginTop: 4 }}>{spec.description}</div>
+                    {spec.required_attachments.length > 0 && (
+                      <div style={{ marginTop: 4 }}>
+                        Required attachments:{' '}
+                        {spec.required_attachments.map(a =>
+                          <code key={a} style={{ marginRight: 4 }}>{a}</code>)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button className="ghost" onClick={() => setCreating(false)}>Cancel</button>
               <button onClick={submit} disabled={!draft.title.trim()}>
