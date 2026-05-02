@@ -569,6 +569,36 @@ def run(*, repo: str, title: str, body: str,
         ticket_id=ticket_id, test_plan=test_plan, log=log,
     )
 
+    # Optional: actually invoke the repo's test runner. Opt-in via
+    # AIFORGE_RUN_TESTS=1 because mvn/gradle test on a real repo can
+    # take 30+ min and is irrelevant for plan-only / read-only routes.
+    test_run: dict[str, Any] = {}
+    if (apply and validation.get("decision") == "approve"
+            and _os.environ.get("AIFORGE_RUN_TESTS", "0")
+            not in ("0", "false", "")):
+        test_run = _run_repo_tests(
+            repo_path=_resolve_repo_path(repo),
+            ticket_id=ticket_id,
+            log=log,
+            timeout_s=int(_os.environ.get("AIFORGE_RUN_TESTS_TIMEOUT_S",
+                                          "600")),
+        )
+        if test_run:
+            learner.record_audit(
+                ticket_id=ticket_id, agent_role="tester",
+                event_type="tests_executed",
+                payload={
+                    "framework": test_run.get("framework"),
+                    "passed": test_run.get("passed", 0),
+                    "failed": test_run.get("failed", 0),
+                    "ok": test_run.get("ok", False),
+                    "duration_s": test_run.get("duration_s", 0),
+                    "timed_out": test_run.get("timed_out", False),
+                },
+                duration_ms=int(test_run.get("duration_s", 0) * 1000),
+            )
+            test_plan["execution"] = test_run
+
     # Stage A — Architect review + optional Doer-Architect retry.
     breakers.begin_agent("architect")
     a_agent = registry.build("architect", repo_path=None)
@@ -1152,6 +1182,137 @@ def _guess_task_class(title: str, body: str) -> str:
         if kw in text:
             return cls
     return "unknown"
+
+
+def _detect_test_framework(repo_path: str) -> tuple[str, list[str]] | None:
+    """Inspect ``repo_path`` and pick a test command.
+
+    Returns ``(framework_name, argv)`` or None if no obvious test runner
+    is wired up. Order matters — Maven first because Java repos can also
+    have `package.json` for tooling but their primary test runner is mvn.
+    """
+    from pathlib import Path
+    if not repo_path:
+        return None
+    root = Path(repo_path)
+    if not root.is_dir():
+        return None
+    if (root / "pom.xml").is_file():
+        # `-q` quiet, `-DskipITs` skip integration tests (long runners),
+        # `-Dmaven.javadoc.skip=true` cuts noise.
+        return ("maven", ["./mvnw", "test", "-q",
+                          "-DskipITs=true",
+                          "-Dmaven.javadoc.skip=true"]) \
+            if (root / "mvnw").is_file() else \
+            ("maven", ["mvn", "test", "-q",
+                       "-DskipITs=true",
+                       "-Dmaven.javadoc.skip=true"])
+    if (root / "build.gradle").is_file() or (root / "build.gradle.kts").is_file():
+        return ("gradle",
+                ["./gradlew", "test", "--quiet"]
+                if (root / "gradlew").is_file()
+                else ["gradle", "test", "--quiet"])
+    if (root / "package.json").is_file():
+        # `npm test --silent` so we don't drown in lifecycle noise.
+        return ("npm", ["npm", "test", "--silent"])
+    if (root / "pyproject.toml").is_file() or (root / "requirements.txt").is_file():
+        return ("pytest", ["pytest", "-q"])
+    return None
+
+
+def _summarise_test_run(framework: str, stdout: str, stderr: str,
+                        exit_code: int) -> dict:
+    """Best-effort pass/fail counts from each runner's tail output.
+
+    Pure regex/string-parse — no XML parsing, surefire report scraping,
+    or coverage merging. Good enough for the audit row + dashboard."""
+    import re
+    passed = failed = 0
+    if framework == "pytest":
+        # `=== 12 passed, 1 failed in 3.45s ===`
+        m_pass = re.search(r"(\d+)\s+passed", stdout)
+        m_fail = re.search(r"(\d+)\s+failed", stdout)
+        if m_pass:
+            passed = int(m_pass.group(1))
+        if m_fail:
+            failed = int(m_fail.group(1))
+    elif framework in ("maven", "gradle"):
+        # `Tests run: 12, Failures: 0, Errors: 0, Skipped: 0`
+        m = re.search(
+            r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)",
+            stdout,
+        )
+        if m:
+            run = int(m.group(1))
+            fails = int(m.group(2)) + int(m.group(3))
+            failed = fails
+            passed = max(0, run - fails)
+    elif framework == "npm":
+        # jest: "Tests:  12 passed, 1 failed, 13 total"
+        m_pass = re.search(r"(\d+)\s+passed", stdout + stderr)
+        m_fail = re.search(r"(\d+)\s+failed", stdout + stderr)
+        if m_pass:
+            passed = int(m_pass.group(1))
+        if m_fail:
+            failed = int(m_fail.group(1))
+    return {
+        "framework": framework,
+        "exit_code": exit_code,
+        "passed": passed,
+        "failed": failed,
+        "ok": exit_code == 0,
+    }
+
+
+def _run_repo_tests(*, repo_path: str, ticket_id: str, log,
+                    timeout_s: int = 300) -> dict:
+    """Detect framework + execute its test command. Returns a dict
+    suitable for audit + downstream gating. Empty dict if no runner."""
+    import os as _os
+    import subprocess
+    import time as _time
+
+    detected = _detect_test_framework(repo_path)
+    if detected is None:
+        emit(log, "tester.no_framework_detected", repo_path=repo_path)
+        return {}
+    framework, argv = detected
+    emit(log, "tester.run_started",
+         framework=framework, argv=" ".join(argv))
+    t0 = _time.time()
+    try:
+        proc = subprocess.run(
+            argv, cwd=repo_path, capture_output=True, text=True,
+            timeout=timeout_s,
+        )
+        timed_out = False
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        exit_code = proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        stdout = (exc.stdout or b"").decode("utf-8", "replace")
+        stderr = (exc.stderr or b"").decode("utf-8", "replace")
+        exit_code = -1
+        emit(log, "tester.run_timed_out",
+             framework=framework, timeout_s=timeout_s)
+    except (OSError, FileNotFoundError) as exc:
+        emit(log, "tester.run_spawn_failed",
+             framework=framework, error=str(exc)[:200])
+        return {"framework": framework, "exit_code": -2, "ok": False,
+                "error": str(exc)[:200]}
+    duration_s = round(_time.time() - t0, 3)
+    summary = _summarise_test_run(framework, stdout, stderr, exit_code)
+    summary["duration_s"] = duration_s
+    summary["timed_out"] = timed_out
+    summary["stdout_tail"] = stdout[-2000:]
+    summary["stderr_tail"] = stderr[-2000:]
+    emit(log, "tester.run_completed",
+         framework=framework, ok=summary["ok"],
+         passed=summary.get("passed", 0),
+         failed=summary.get("failed", 0),
+         duration_s=duration_s)
+    return summary
 
 
 def _persist_tester_specs(*, ticket_id: str, test_plan: dict, log) -> str:
