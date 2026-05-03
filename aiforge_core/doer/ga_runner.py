@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -159,11 +160,17 @@ _ASK_EXPLORER_SCHEMA = {
 }
 
 
-_DOER_GA_PREAMBLE = """You are the AIForge Doer agent operating through GenericAgent.
+# Template — ``{compile_cmd}`` is filled at session-build time from the
+# per-repo Standards manifest (Neo4j ``:Repo`` → worktree YAML →
+# per-lang default → auto-detect). KISS: no project-type if/else logic
+# in the prompt — the resolved string flows verbatim. Java repos get
+# ``mvn -q -DskipTests compile``; Python ``python -m compileall -q .``;
+# Node ``tsc --noEmit``; Go ``go build ./...``.
+_DOER_GA_PREAMBLE_TMPL = """You are the AIForge Doer agent operating through GenericAgent.
 
 You MUST modify code so the ticket is implemented. You only get credit when:
   1. At least one file_patch or file_write call against an allowed file.
-  2. `mvn -DskipTests compile` exits 0 inside the worktree.
+  2. `{compile_cmd}` exits 0 inside the worktree.
   3. Every Acceptance bullet's identifier appears in the new file content.
 
 ==== CRITICAL — FILE-EDITING IS THE PRIMARY TOOL ====
@@ -178,8 +185,8 @@ exploring. file_read your allowed files. file_patch the change.
 
 ** PARALLELISM (mandatory — Claude CLI / Cursor style) **
 When you need to read OR explore N files, do ALL of them in ONE turn:
-  - batch calls=[{tool: file_read, args: {...}}, {tool: file_read, ...},
-                  {tool: glob, ...}, {tool: grep, ...}]
+  - batch calls=[{{tool: file_read, args: {{...}}}}, {{tool: file_read, ...}},
+                  {{tool: glob, ...}}, {{tool: grep, ...}}]
                        → fans out read-side tools concurrently. ONE turn
                          = N parallel reads. NEVER read files one-per-turn
                          when the ticket already lists them under
@@ -203,24 +210,25 @@ file under '## Edit targets' AND '## Reference files'.
                          (controller + service + repo + DTO). Any
                          single failure rolls the whole batch back
                          to git HEAD. 4-5 turns → 1 turn.
-- java_refactor recipe → invoke an OpenRewrite recipe via mvn
-                         (e.g. ChangePackage, RenameMethod,
+- java_refactor recipe → invoke an OpenRewrite recipe (Java-only;
+                         ChangePackage, RenameMethod,
                          RemoveUnusedImports, OrderImports). Cheaper
                          than hand-patching every import; recipe
-                         engine knows Java syntax.
+                         engine knows Java syntax. Skip on non-Java repos.
 - glob PATTERN         → fast file listing (ripgrep). e.g.
                          '**/*Controller.java'.
 - grep REGEX [glob]    → search file contents (ripgrep). Returns
                          path:line:content rows. Use this BEFORE
                          ask_explorer — it's instant.
 - bash COMMAND         → persistent shell session. cwd survives
-                         across calls. Use for mvn / git / curl.
+                         across calls. Use for build / git / curl.
                          Default 60s, max 600s.
-- lint                 → run configured lint command (mvn checkstyle / ruff /
-                         tsc), returns errors. Use after compile is green.
-- tests                → run unit tests (mvn test / pytest), returns
-                         JUnit failures. Use when ticket touches behaviour.
-- undo {mode,path}     → roll back ONE file (mode=last_edit) or the
+- lint                 → run configured lint command (resolved per-repo
+                         from Standards), returns errors. Use after compile
+                         is green.
+- tests                → run unit tests (resolved per-repo from Standards),
+                         returns failures. Use when ticket touches behaviour.
+- undo {{mode,path}}     → roll back ONE file (mode=last_edit) or the
                          last commit (mode=last_commit). Escape hatch.
 - web_search QUERY     → Gemini-grounded search. Use on
                          'cannot find symbol' errors.
@@ -233,7 +241,8 @@ file under '## Edit targets' AND '## Reference files'.
 Hard rules:
 - Edit ONLY files listed in the ## Allowed files section. Writes outside
   that list are blocked by the harness ScopeGuard.
-- code_run is for `mvn compile` ONLY (and only AFTER you've patched).
+- code_run is for the configured compile command ONLY (`{compile_cmd}`)
+  and only AFTER you've patched.
   No find / grep / ls / cat — read files via file_read instead.
 - web_search (Gemini grounded) IS the preferred lookup tool for
   unknown-API errors. Pass a precise query like
@@ -252,9 +261,9 @@ Hard rules:
 - Use file_patch for narrow diffs (preferred). Use file_write only for
   brand-new files or full rewrites.
 - Compile ONCE at the very end, AFTER every patch is applied — not
-  after each individual file_patch. Doing mvn between edits doubles
-  wall-clock (mvn full compile = 60-180s). The harness only checks
-  the LAST compile for green/red.
+  after each individual file_patch. Doing the build between edits
+  doubles wall-clock (full builds can run 60-180s). The harness only
+  checks the LAST compile for green/red.
 - If the final compile fails, read the error and fix in ONE more
   file_patch + ONE more compile. Maximum two compile calls per run.
 - Do NOT emit `<summary>` until the final compile is green AND at
@@ -268,13 +277,42 @@ Standard fast workflow (do this exactly):
   2. file_patch ALL the changes required by the acceptance criteria
      (often across multiple files: controller + service + repo).
      Apply every patch BEFORE compiling.
-  3. ONE code_run `cd <worktree> && mvn -DskipTests compile` — only
-     after every file_patch is in. mvn is the most expensive call;
-     do it as few times as possible.
-  4. On BUILD SUCCESS: emit `<summary>BUILD SUCCESS — <files patched></summary>` and STOP.
-  5. On BUILD FAILURE: read the compile error, ONE more file_patch
-     to fix it, ONE more mvn compile. Hard cap: two mvn compiles per run.
+  3. ONE code_run `cd <worktree> && {compile_cmd}` — only
+     after every file_patch is in. The build is the most expensive
+     call; do it as few times as possible.
+  4. On success (EXIT 0): emit `<summary>BUILD SUCCESS — <files patched></summary>` and STOP.
+  5. On failure: read the compile error, ONE more file_patch to fix it,
+     ONE more compile. Hard cap: two compiles per run.
 """
+
+
+def _resolve_compile_cmd_for_prompt(worktree_path: str) -> str:
+    """Resolve the per-repo compile command for prompt templating.
+
+    Mirrors ``aiforge_core.doer.tools._resolve_compile_cmd`` resolution
+    order (env override → Standards manifest) but defaults to a friendly
+    "(no compile_cmd configured — gate skipped)" placeholder when no
+    command can be resolved. The Doer's ``run_compile`` tool returns a
+    WARN line in that case rather than blindly running mvn.
+    """
+    pinned = (os.environ.get("AIFORGE_COMPILE_CMD") or "").strip()
+    if pinned:
+        return pinned
+    try:
+        from aiforge_core.runtime import repo_standards as _rs
+        _repo_name = os.path.basename(os.path.normpath(worktree_path))
+        std = _rs.get(_repo_name, worktree=worktree_path)
+        if (std.compile_cmd or "").strip():
+            return std.compile_cmd.strip()
+    except Exception:
+        pass
+    return "(no compile_cmd configured — gate skipped)"
+
+
+def _render_doer_preamble(worktree_path: str) -> str:
+    """Render the Doer system prompt with the resolved compile command."""
+    compile_cmd = _resolve_compile_cmd_for_prompt(worktree_path)
+    return _DOER_GA_PREAMBLE_TMPL.format(compile_cmd=compile_cmd)
 
 
 def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
@@ -382,6 +420,10 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
             )
     except Exception:
         unified_section = ""
+    # Resolve the per-repo compile command so the workflow tells the
+    # model exactly what to run. No project-type if/else here — the
+    # string is whatever Standards (or AIFORGE_COMPILE_CMD env) said.
+    compile_cmd = _resolve_compile_cmd_for_prompt(worktree_path)
     return (
         f"## Worktree\n`{worktree_path}` — every command must run there.\n\n"
         f"## Ticket\n{title}\n\n"
@@ -402,8 +444,8 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"You MUST emit at least one successful file_patch (or "
         f"file_write) call. The harness rejects runs with "
         f"edit_block_ok=0. Aim to land the first patch by turn 3.\n"
-        f"3. code_run `cd {worktree_path} && mvn -DskipTests compile` "
-        f"AFTER the patch lands. mvn before editing is a NO-OP "
+        f"3. code_run `cd {worktree_path} && {compile_cmd}` "
+        f"AFTER the patch lands. Compile before editing is a NO-OP "
         f"(original tree already compiles).\n"
         f"4. End with a single `<summary>` tag naming the modified "
         f"file(s) and quoting the BUILD SUCCESS line.\n\n"
@@ -423,10 +465,10 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"- Running `find` / `grep` / `ls` via code_run. The Planner "
         f"already supplied paths. file_read them.\n"
         f"- Reading the same file twice. Cache it.\n"
-        f"- Running mvn before any patch lands.\n"
-        f"- Running mvn between every individual file_patch. Apply "
-        f"  ALL patches first, then ONE compile. mvn is 60-180s per run.\n"
-        f"- More than two mvn compile calls in a single run.\n"
+        f"- Running the compile before any patch lands.\n"
+        f"- Running compile between every individual file_patch. Apply "
+        f"  ALL patches first, then ONE compile. Full builds can run 60-180s.\n"
+        f"- More than two compile calls in a single run.\n"
         f"- Emitting <summary> with edit_block_ok=0."
     )
 
@@ -595,10 +637,18 @@ def _make_handler_class():
             )
 
         def do_code_run(self, args, response):  # type: ignore[override]
-            """Wrap GA's code_run so we cap mvn invocations to 2 per ticket
+            """Wrap GA's code_run so we cap compile invocations to 2 per ticket
             (apply-all-patches + retry-on-fail) and refuse grep/find/ls
             shell scripts the prompt forbids. Caps stop the doer
-            burning 2-4 minutes per redundant mvn cycle."""
+            burning 2-4 minutes per redundant build cycle.
+
+            "Compile" detection is per-repo: we resolve the configured
+            compile_cmd from Standards and look for its head token (e.g.
+            ``mvn`` for Java, ``python`` / ``compileall`` for Python,
+            ``tsc`` / ``npm`` for Node, ``go`` for Go) inside the script
+            body. Falls back to ``mvn`` when no compile_cmd is set so
+            existing Java repos behave unchanged.
+            """
             # GA reads code from args.code OR args.script OR extracts a
             # ```...``` block from the response. Mirror that order so
             # our gating sees what GA will actually run.
@@ -609,17 +659,26 @@ def _make_handler_class():
                 # match against our forbidden tokens is enough.
                 code = response
             low = (code or "").lower()
+            # Resolve the per-repo compile head token so non-Java repos
+            # don't silently bypass the cap. Empty token → cap disabled.
+            compile_cmd = _resolve_compile_cmd_for_prompt(self.cwd)
+            head_tok = ""
+            if compile_cmd and not compile_cmd.startswith("("):
+                try:
+                    head_tok = (shlex.split(compile_cmd) or [""])[0].lower()
+                except Exception:
+                    head_tok = compile_cmd.split()[0].lower() if compile_cmd else ""
             # Refuse `find` / `grep` / `ls` / `locate` / `cat` shell scripts —
             # the prompt directs the model to use file_read for files the
-            # Planner already enumerated. mvn output piped through `grep`
-            # is OK so we keep `mvn` an escape hatch.
+            # Planner already enumerated. compile output piped through `grep`
+            # is OK so we keep the head_tok an escape hatch.
             for forbidden in ("grep ", "find ", "ls ", "locate ", "cat "):
                 # Match at line start or after whitespace/`;`/`&&`/`|` —
                 # avoids matching against random words like "false" or
                 # "Class" containing the substring.
                 import re as _re
                 if _re.search(rf"(?:^|[\s;|&]){_re.escape(forbidden)}", low):
-                    if "mvn" not in low:
+                    if not head_tok or head_tok not in low:
                         yield ("[Doer harness] code_run rejected — "
                                "no shell discovery (grep/find/ls/cat). "
                                "Use file_read on the allowed paths.\n")
@@ -629,17 +688,17 @@ def _make_handler_class():
                             next_prompt=("Use file_read on each allowed file. "
                                          "Do not grep/find/ls/cat from code_run."),
                         )
-            if "mvn" in low:
-                self._counters["mvn_runs"] = (
-                    self._counters.get("mvn_runs", 0) + 1
+            if head_tok and head_tok in low:
+                self._counters["compile_runs"] = (
+                    self._counters.get("compile_runs", 0) + 1
                 )
-                if self._counters["mvn_runs"] > 2:
-                    yield ("[Doer harness] mvn cap hit (2 compiles max). "
-                           "Stop running mvn — finalize edits or summary.\n")
+                if self._counters["compile_runs"] > 2:
+                    yield ("[Doer harness] compile cap hit (2 compiles max). "
+                           "Stop running the build — finalize edits or summary.\n")
                     return StepOutcome(
                         {"status": "error",
-                         "msg": "mvn cap exceeded (2 per ticket)"},
-                        next_prompt=("You've already run mvn twice. Either "
+                         "msg": "compile cap exceeded (2 per ticket)"},
+                        next_prompt=("You've already compiled twice. Either "
                                      "the build is green and you should "
                                      "<summary>, or your patches are wrong "
                                      "and need a different approach. Do not "
@@ -1147,8 +1206,12 @@ def _make_handler_class():
                     outcome.next_prompt = outcome.next_prompt + suffix
 
         def do_code_run(self, args, response):  # type: ignore[override]
-            # Detect mvn compile invocations and bump the compile counter
-            # when the result content carries a BUILD SUCCESS line.
+            # Detect compile invocations (per-repo head token from
+            # Standards) and bump the compile counter when the result
+            # content carries a green-build marker. Java repos use
+            # 'BUILD SUCCESS' / 'BUILD FAILURE'; for non-Java we fall
+            # back to the process exit code surfaced by GA in the
+            # outcome text (``EXIT=0`` / ``EXIT=N``).
             outcome_gen = super().do_code_run(args, response)
             outcome = yield from outcome_gen
             text = ""
@@ -1156,13 +1219,31 @@ def _make_handler_class():
                 text = json.dumps(outcome.data, default=str)
             else:
                 text = str(outcome.data or "")
-            if "mvn" in (args.get("script") or "") + (args.get("code") or ""):
-                if "BUILD SUCCESS" in text and "BUILD FAILURE" not in text:
+            script_blob = (args.get("script") or "") + (args.get("code") or "")
+            compile_cmd = _resolve_compile_cmd_for_prompt(self.cwd)
+            head_tok = ""
+            if compile_cmd and not compile_cmd.startswith("("):
+                try:
+                    head_tok = (shlex.split(compile_cmd) or [""])[0]
+                except Exception:
+                    head_tok = compile_cmd.split()[0] if compile_cmd else ""
+            looks_like_compile = bool(head_tok) and head_tok in script_blob
+            if looks_like_compile:
+                green = (
+                    ("BUILD SUCCESS" in text and "BUILD FAILURE" not in text)
+                    or "EXIT=0" in text
+                )
+                red = (
+                    "BUILD FAILURE" in text
+                    or "[ERROR]" in text
+                    or re.search(r"EXIT=[1-9]", text) is not None
+                )
+                if green and not red:
                     self._counters["compile_green"] = (
                         self._counters.get("compile_green", 0) + 1
                     )
                     self._run_event_hooks("post_compile", outcome)
-                elif "BUILD FAILURE" in text or "[ERROR]" in text:
+                elif red:
                     self._counters["last_compile_error"] = text[-1500:]
             return outcome
 
@@ -1583,7 +1664,7 @@ def run_doer_via_ga(
     final_summary = ""
     try:
         gen = agent_runner_loop(
-            client, _DOER_GA_PREAMBLE, user_input, handler,
+            client, _render_doer_preamble(worktree_path), user_input, handler,
             tools_schema, max_turns=max_turns, verbose=False,
             initial_user_content=None,
         )
@@ -1634,18 +1715,64 @@ def run_doer_via_ga(
         }
 
     # Verify compile manually (cheap — GA may have run it but we want truth).
-    mvn_proc = subprocess.run(
-        ["mvn", "-q", "-DskipTests", "compile"],
-        cwd=worktree_path, capture_output=True, text=True, check=False,
-        timeout=900,
-    )
-    compile_pass = mvn_proc.returncode == 0
-    if compile_pass:
+    # Per-repo command from Standards; honours the env override pin.
+    # When no compile_cmd is configured AND no edits landed, we'd be
+    # running mvn on a non-Java tree and burning fail-iterations on a
+    # tooling mismatch (was the ONE-84 repro: Python repo → mvn → "no
+    # POM" → escalate). Skip-with-warn instead; the acceptance gate
+    # downstream still validates real correctness.
+    edits_so_far = counters.get("edit_block_ok", 0)
+    verify_cmd = _resolve_compile_cmd_for_prompt(worktree_path)
+    if verify_cmd.startswith("(") or not verify_cmd.strip():
+        emit(log, "ga_runner.compile_skip_no_cmd",
+             ticket=identifier,
+             reason="no compile_cmd configured for this repo")
+        compile_pass = True  # Skip-with-pass; acceptance gate vets correctness.
         counters["compile_green"] = max(1, counters.get("compile_green", 0))
-    else:
+        counters["compile_verify"] = "skipped: no compile_cmd"
+    elif edits_so_far < 1:
+        # No edits yet — running the build would be a NO-OP that masks
+        # the real issue (zero edits). Skip-with-fail so the checklist
+        # gate below produces a precise error.
+        emit(log, "ga_runner.compile_skip_no_edits",
+             ticket=identifier, edits=edits_so_far)
+        compile_pass = False
         counters["last_compile_error"] = (
-            (mvn_proc.stdout or "") + (mvn_proc.stderr or "")
-        )[-1500:]
+            "Skipped pre-publish compile: no edits landed in this run "
+            "(edit_block_ok=0). Doer needs to actually patch a file "
+            "before the build is meaningful."
+        )
+    else:
+        try:
+            verify_argv = shlex.split(verify_cmd)
+        except Exception:
+            verify_argv = verify_cmd.split()
+        try:
+            verify_proc = subprocess.run(
+                verify_argv,
+                cwd=worktree_path, capture_output=True, text=True, check=False,
+                timeout=900,
+            )
+            compile_pass = verify_proc.returncode == 0
+            if compile_pass:
+                counters["compile_green"] = max(1, counters.get("compile_green", 0))
+            else:
+                counters["last_compile_error"] = (
+                    (verify_proc.stdout or "") + (verify_proc.stderr or "")
+                )[-1500:]
+        except FileNotFoundError as exc:
+            emit(log, "ga_runner.compile_binary_missing",
+                 ticket=identifier, cmd=verify_cmd, err=str(exc)[:120])
+            compile_pass = False
+            counters["last_compile_error"] = (
+                f"Compile binary not found on PATH: {verify_argv[0]!r}. "
+                f"Configured compile_cmd: {verify_cmd!r}."
+            )
+        except subprocess.TimeoutExpired:
+            compile_pass = False
+            counters["last_compile_error"] = (
+                f"Compile timed out after 900s ({verify_cmd!r})"
+            )
 
     # Diff stat.
     diff_proc = subprocess.run(

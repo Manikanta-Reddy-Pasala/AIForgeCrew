@@ -11,12 +11,37 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from typing import Callable
 
 from smolagents import tool
 
 from .scope_guard import ScopeGuard, ScopeViolation
+
+
+def _resolve_compile_cmd(worktree_path: str) -> str:
+    """Return the configured compile command for *worktree_path* or ``""``.
+
+    Resolution order:
+      1. ``AIFORGE_COMPILE_CMD`` env var (operator pin / CI override)
+      2. ``aiforge_core.runtime.repo_standards.get(...).compile_cmd``
+         (Neo4j ``:Repo`` → worktree YAML → per-lang default → auto-detect)
+
+    Empty string means "no compile_cmd configured for this repo" — the
+    caller must NOT silently fall back to ``mvn``. Returning empty
+    keeps the Doer from dying pre-flight on Python/Node/Go repos.
+    """
+    pinned = (os.environ.get("AIFORGE_COMPILE_CMD") or "").strip()
+    if pinned:
+        return pinned
+    try:
+        from aiforge_core.runtime import repo_standards as _rs
+        repo_name = os.path.basename(os.path.normpath(worktree_path))
+        std = _rs.get(repo_name, worktree=worktree_path)
+        return (std.compile_cmd or "").strip()
+    except Exception:
+        return ""
 
 
 # Hard caps applied to every tool result before returning to the LLM.
@@ -327,6 +352,16 @@ def make_write_file(worktree_path: str, scope_guard: ScopeGuard,
 def make_run_compile(worktree_path: str, counters: dict | None = None) -> Callable:
     """Return a ``run_compile`` tool bound to *worktree_path*.
 
+    The actual compile command is resolved from the per-repo Standards
+    catalogue (Neo4j ``:Repo`` → worktree ``.aiforge/aiforge.conf.yml``
+    → per-lang default → auto-detect from marker files). There is NO
+    hardcoded ``mvn`` fallback — Java repos still get
+    ``mvn -q -DskipTests compile`` because that's the catalogued
+    java-default; Python/Node/Go repos get THEIR catalogued command;
+    repos with no detectable language skip the gate (warned tool result)
+    so the Doer can still attempt edits and have the harness validate
+    via acceptance criteria.
+
     On each compile that returns EXIT=0, bumps ``counters['compile_green']``.
     """
     if counters is None:
@@ -334,22 +369,54 @@ def make_run_compile(worktree_path: str, counters: dict | None = None) -> Callab
 
     @tool
     def run_compile() -> str:
-        """Run ``mvn -q -DskipTests compile`` in the worktree.
+        """Run the per-repo compile command in the worktree.
 
-        Returns EXIT=N followed by the last 40 lines of output.
+        The command comes from Standards (Neo4j ``:Repo`` row, worktree
+        ``.aiforge/aiforge.conf.yml``, per-lang default, or auto-detect
+        based on ``pom.xml`` / ``package.json`` / ``go.mod`` /
+        ``pyproject.toml``). For a Java repo this is typically
+        ``mvn -q -DskipTests compile``; for Python ``python -m
+        compileall -q .``; for Node ``tsc --noEmit``; for Go
+        ``go build ./...``.
+
+        Returns EXIT=N followed by the last 40 lines of output, or a
+        WARN line when no compile_cmd is configured (in which case the
+        gate is skipped and the harness falls back to acceptance-criteria
+        verification).
         """
+        compile_cmd = _resolve_compile_cmd(worktree_path)
+        if not compile_cmd:
+            # No language detected and no operator override — skip the
+            # gate rather than blindly running mvn. The acceptance gate
+            # in ga_runner / orchestrator_bridge still vets the result.
+            return (
+                "EXIT=0\n"
+                "[run_compile] WARN: no compile_cmd configured for this "
+                "repo. Skipping pre-flight compile check. Set "
+                "AIFORGE_COMPILE_CMD or add a 'compile_cmd:' entry to "
+                ".aiforge/aiforge.conf.yml in the worktree."
+            )
+        argv = shlex.split(compile_cmd)
+        if not argv:
+            return (
+                "EXIT=1\n[run_compile] ERROR: compile_cmd resolved to "
+                f"empty argv list ({compile_cmd!r})"
+            )
         try:
             proc = subprocess.run(
-                ["mvn", "-q", "-DskipTests", "compile"],
+                argv,
                 cwd=worktree_path,
                 capture_output=True,
                 timeout=300,
                 check=False,
             )
         except FileNotFoundError:
-            return "EXIT=1\nERROR: mvn not found on PATH"
+            return (
+                f"EXIT=1\nERROR: compile binary not found on PATH "
+                f"(tried: {argv[0]!r}; full cmd: {compile_cmd!r})"
+            )
         except subprocess.TimeoutExpired:
-            return "EXIT=1\nERROR: compile timed out after 300s"
+            return f"EXIT=1\nERROR: compile timed out after 300s ({compile_cmd!r})"
         combined = (proc.stdout + proc.stderr).decode("utf-8", "replace")
         tail = "\n".join(combined.splitlines()[-40:])
         if proc.returncode == 0:

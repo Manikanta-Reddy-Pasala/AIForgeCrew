@@ -35,6 +35,7 @@ Public surface (KISS, four functions):
 """
 from __future__ import annotations
 
+import glob as _glob
 import os
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Iterable
@@ -79,19 +80,27 @@ _DEFAULTS_BY_LANG: dict[str, dict[str, str]] = {
     },
     "python": {
         "build_cmd":         "uv sync",
-        "compile_cmd":       "python -m py_compile main.py",
+        "compile_cmd":       "python -m compileall -q .",
         "test_cmd":          "python -m pytest -q",
         "lint_cmd":          "ruff check .",
         "format_cmd":        "ruff format .",
         "security_scan_cmd": "bandit -q -r .",
     },
     "node": {
-        "build_cmd":         "npm install && npm run build",
-        "compile_cmd":       "npm run typecheck",
-        "test_cmd":          "npm test --silent",
+        "build_cmd":         "npm run build",
+        "compile_cmd":       "tsc --noEmit",
+        "test_cmd":          "npm test",
         "lint_cmd":          "npm run lint",
         "format_cmd":        "npx prettier --write .",
         "security_scan_cmd": "npm audit --audit-level=high",
+    },
+    "go": {
+        "build_cmd":         "go build ./...",
+        "compile_cmd":       "go build ./...",
+        "test_cmd":          "go test ./...",
+        "lint_cmd":          "go vet ./...",
+        "format_cmd":        "gofmt -w .",
+        "security_scan_cmd": "govulncheck ./...",
     },
     "react": {
         "build_cmd":         "yarn install && yarn build",
@@ -102,6 +111,40 @@ _DEFAULTS_BY_LANG: dict[str, dict[str, str]] = {
         "security_scan_cmd": "yarn audit --level high",
     },
 }
+
+
+def detect_lang(worktree_path: str) -> str:
+    """Best-effort language fingerprint based on marker files in *worktree_path*.
+
+    Detection rules (highest priority first):
+      * ``pom.xml`` or any ``build.gradle*`` → ``"java"``
+      * ``package.json``                     → ``"node"``
+      * ``go.mod``                           → ``"go"``
+      * ``pyproject.toml`` or ``requirements.txt`` → ``"python"``
+
+    Returns ``""`` when no marker is found — callers should NOT then
+    silently fall back to a Java toolchain. The Doer's pre-flight gate
+    is wired to skip-with-warn instead.
+    """
+    if not worktree_path:
+        return ""
+    base = os.path.abspath(worktree_path)
+    if not os.path.isdir(base):
+        return ""
+    if os.path.isfile(os.path.join(base, "pom.xml")):
+        return "java"
+    if _glob.glob(os.path.join(base, "build.gradle*")):
+        return "java"
+    if os.path.isfile(os.path.join(base, "package.json")):
+        return "node"
+    if os.path.isfile(os.path.join(base, "go.mod")):
+        return "go"
+    if (
+        os.path.isfile(os.path.join(base, "pyproject.toml"))
+        or os.path.isfile(os.path.join(base, "requirements.txt"))
+    ):
+        return "python"
+    return ""
 
 
 def get(repo_name: str, *, worktree: str | None = None) -> Standards:
@@ -116,6 +159,15 @@ def get(repo_name: str, *, worktree: str | None = None) -> Standards:
     _apply(std, _from_neo4j(repo_name))
     if worktree:
         _apply(std, _from_worktree(worktree))
+    # Last-resort lang fallback: only fire when neither Neo4j nor the
+    # worktree YAML supplied an explicit ``lang``. Don't override an
+    # operator-set lang — that's the whole point of the override layer.
+    if not (std.lang or "").strip() and worktree:
+        guessed = detect_lang(worktree)
+        if guessed:
+            std.lang = guessed
+            if std.source == "default":
+                std.source = "auto-detect"
     _apply_defaults(std)
     if not std.source:
         std.source = "default"

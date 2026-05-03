@@ -176,10 +176,15 @@ class TestFinalAnswerStopsLoop:
 # ─────────────────────────── 4. compile_fail_propagates ─────────────────
 
 class TestCompileFailPropagates:
-    def test_non_zero_exit_captured(self, tmp_path: Path) -> None:
+    def test_non_zero_exit_captured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """AC: run_compile returns EXIT=1 and error text on compile failure."""
         from aiforge_core.doer.tools import make_run_compile
 
+        # Pin compile_cmd via env so the tool resolves a valid argv list
+        # without hitting Neo4j or worktree YAML resolution.
+        monkeypatch.setenv("AIFORGE_COMPILE_CMD", "mvn -q -DskipTests compile")
         run_compile = make_run_compile(str(tmp_path))
 
         fake_proc = types.SimpleNamespace(
@@ -193,9 +198,12 @@ class TestCompileFailPropagates:
         assert "EXIT=1" in output
         assert "Compilation failure" in output or "BUILD FAILURE" in output
 
-    def test_zero_exit_on_success(self, tmp_path: Path) -> None:
+    def test_zero_exit_on_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from aiforge_core.doer.tools import make_run_compile
 
+        monkeypatch.setenv("AIFORGE_COMPILE_CMD", "mvn -q -DskipTests compile")
         run_compile = make_run_compile(str(tmp_path))
 
         fake_proc = types.SimpleNamespace(
