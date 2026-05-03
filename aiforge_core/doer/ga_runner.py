@@ -1259,9 +1259,17 @@ def _doer_llm_config() -> dict:
     AIFORGE_DOER_* envs — those aren't part of the LiteLLM kwargs surface.
     ``LLMSession(cfg=...)`` accepts an explicit dict and overrides whatever
     GA's mykey defaults said.
+
+    2026-05 — also reads the resolved provider via ``agent_config.get(role)``
+    so we can stamp ``tool_choice`` / ``tools`` / ``response_format`` for
+    backends that honour native ``tool_calls`` (LM Studio v0.3+, Ollama
+    Cloud, vLLM, OpenAI). For Anthropic / unknown providers the keys stay
+    absent so GA's Anthropic path is unaffected.
     """
     from aiforge_core.runtime import agent_config as _acfg
     resolved = _acfg.resolve_litellm("doer")
+    row = _acfg.get("doer")
+    provider = row.get("provider") or "local"
     raw_model = resolved["model_id"] or ""
     # GA's LLMSession wants the raw model name; strip litellm provider
     # prefixes that resolve_litellm prepends.
@@ -1303,6 +1311,22 @@ def _doer_llm_config() -> dict:
         cfg["chat_template_kwargs"] = {"enable_thinking": True}
     elif think_env == "0":
         cfg["chat_template_kwargs"] = {"enable_thinking": False}
+    # Force native tool calls on backends that honour it. ONE-85 root
+    # cause: GA's LLMSession never sent ``tools`` so the chat.completions
+    # payload had no tools array → model emitted text content → 0 tool
+    # calls extracted. With provider-aware tool_choice="required" the
+    # doer can't return content-only turns on local/cloud-native paths.
+    # Anthropic (proper SDK) uses different semantics → leave untouched.
+    if provider in ("local", "ollama_cloud"):
+        cfg["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "required")
+    elif provider == "openai":
+        cfg["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "auto")
+    # response_format: structured output mode. Only enable for known
+    # coder models that handle JSON-mode well; off by default to avoid
+    # breaking Anthropic/etc.
+    if os.environ.get("AIFORGE_DOER_JSON_MODE", "0") == "1":
+        if any(k in raw_model.lower() for k in ("qwen", "gemma-4", "gpt-oss", "mistral")):
+            cfg["response_format"] = {"type": "json_object"}
     return cfg
 
 
@@ -1540,6 +1564,35 @@ def run_doer_via_ga(
             emit(log, "ga_runner.ops_mcp_failed",
                  ticket=identifier, err=str(exc)[:200])
     handler._ops_name_map = ops_name_map  # type: ignore[attr-defined]
+    # 2026-05 — Forward the resolved tools schema + tool_choice into the
+    # already-built LLMSession so GA's chat.completions payload carries
+    # ``tools`` + ``tool_choice``. Without this, LM Studio / Ollama Cloud
+    # / mlx-lm 0.31 emit text-content responses with empty ``tool_calls[]``
+    # and the doer extracts 0 tools per turn (ticket ONE-85). Only stamps
+    # for OpenAI-compat backends; Anthropic NativeClaudeSession owns its
+    # own tools wiring upstream and is left untouched.
+    try:
+        from aiforge_core.runtime import agent_config as _acfg
+        _doer_provider = (_acfg.get("doer") or {}).get("provider") or "local"
+    except Exception:
+        _doer_provider = "local"
+    session.tools = tools_schema  # type: ignore[attr-defined]
+    if _doer_provider in ("local", "ollama_cloud"):
+        session.tool_choice = os.environ.get(  # type: ignore[attr-defined]
+            "AIFORGE_DOER_TOOL_CHOICE", "required",
+        )
+    elif _doer_provider == "openai":
+        session.tool_choice = os.environ.get(  # type: ignore[attr-defined]
+            "AIFORGE_DOER_TOOL_CHOICE", "auto",
+        )
+    if os.environ.get("AIFORGE_DOER_JSON_MODE", "0") == "1":
+        _ml = (cfg.get("model") or "").lower()
+        if any(k in _ml for k in ("qwen", "gemma-4", "gpt-oss", "mistral")):
+            session.response_format = {"type": "json_object"}  # type: ignore[attr-defined]
+    emit(log, "ga_runner.tools_wired",
+         ticket=identifier, provider=_doer_provider,
+         tools_count=len(tools_schema),
+         tool_choice=getattr(session, "tool_choice", None))
     # Per-repo defaults from .aiforge/aiforge.conf.yml (lift to env).
     try:
         from .ga_tools import repo_config as _rc

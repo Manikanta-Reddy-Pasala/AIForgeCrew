@@ -105,6 +105,26 @@ def _planner_llm_config() -> dict:
         cfg["top_p"] = float(os.environ["AIFORGE_PLANNER_TOP_P"])
     if os.environ.get("AIFORGE_PLANNER_THINK", "0") == "1":
         cfg["chat_template_kwargs"] = {"enable_thinking": True}
+    # 2026-05 — stamp tool_choice for backends that honour native
+    # ``tool_calls[]``. tools_schema is added on the session instance
+    # post-construction (see run_planner_via_ga) since this builder
+    # runs before the schema is loaded.
+    try:
+        from aiforge_core.runtime import agent_config as _acfg
+        _row = _acfg.get("planner") or {}
+        _provider = _row.get("provider") or "local"
+    except Exception:
+        _provider = "local"
+    if ep.backend == "gemini":
+        _provider = "gemini"
+    if _provider in ("local", "ollama_cloud"):
+        cfg["tool_choice"] = os.environ.get(
+            "AIFORGE_PLANNER_TOOL_CHOICE", "required",
+        )
+    elif _provider == "openai":
+        cfg["tool_choice"] = os.environ.get(
+            "AIFORGE_PLANNER_TOOL_CHOICE", "auto",
+        )
     return cfg
 
 
@@ -654,6 +674,29 @@ def _legacy_run_planner_via_ga_loop(ticket: object, log: object | None = None) -
     session = LLMSession(cfg=cfg)
     client = ToolClient(session)
     tools_schema = _load_tools_schema(ga_dir)
+    # 2026-05 — stamp tools / tool_choice on the session so GA's
+    # chat.completions payload carries them (instead of relying purely
+    # on text-protocol). Same root cause as the doer ONE-85 fix:
+    # backends that support native tool_calls won't emit them unless
+    # ``tools`` is in the request body.
+    try:
+        from aiforge_core.runtime import agent_config as _acfg
+        _planner_provider = (_acfg.get("planner") or {}).get("provider") or "local"
+    except Exception:
+        _planner_provider = "local"
+    session.tools = tools_schema  # type: ignore[attr-defined]
+    if _planner_provider in ("local", "ollama_cloud"):
+        session.tool_choice = os.environ.get(  # type: ignore[attr-defined]
+            "AIFORGE_PLANNER_TOOL_CHOICE", "required",
+        )
+    elif _planner_provider == "openai":
+        session.tool_choice = os.environ.get(  # type: ignore[attr-defined]
+            "AIFORGE_PLANNER_TOOL_CHOICE", "auto",
+        )
+    emit(log, "ga_planner.tools_wired",
+         ticket=identifier, provider=_planner_provider,
+         tools_count=len(tools_schema),
+         tool_choice=getattr(session, "tool_choice", None))
 
     task_dir = os.path.join(
         ga_dir, "temp",

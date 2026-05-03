@@ -17,20 +17,36 @@ from __future__ import annotations
 import os
 
 
-def primary_cfg() -> dict:
+def primary_cfg(tools: list[dict] | None = None) -> dict:
     """Active doer backend, gated by global AIFORGE_PRIMARY_BACKEND.
 
     Honours the same flag every other agent honours (Planner /
     Feedback / Learner / Chat) so flipping Settings → 'gemini'
     flips them all at once.
+
+    2026-05 — accepts an optional ``tools`` schema. When provided, it is
+    threaded into the cfg so GA's ``LLMSession`` includes a ``tools`` array
+    in the chat.completions payload (and emits native ``message.tool_calls``
+    instead of text content). Provider is read from ``agent_config`` so
+    ``tool_choice="required"`` is forced for local mlx-lm / LM Studio /
+    Ollama Cloud where it's known to work.
     """
     from aiforge_core.runtime.llm_picker import pick as _pick
     ep = _pick("doer")
+    # Resolve provider once — cheap, used to decide tool_choice.
+    try:
+        from aiforge_core.runtime import agent_config as _acfg
+        provider = (_acfg.get("doer") or {}).get("provider") or "local"
+    except Exception:
+        provider = "local"
     if ep.backend == "gemini":
         cloud = fallback_cfg()
         if cloud is not None:
             cloud["max_retries"] = 2
             cloud["name"] = "gemini-primary"
+            if tools:
+                cloud["tools"] = tools
+                cloud["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "auto")
             return cloud
         # Key missing — silent-fall back to local rather than crash.
     base_url = os.environ.get(
@@ -67,6 +83,22 @@ def primary_cfg() -> dict:
         cfg["chat_template_kwargs"] = {"enable_thinking": True}
     elif os.environ.get("AIFORGE_DOER_THINK") == "0":
         cfg["chat_template_kwargs"] = {"enable_thinking": False}
+    # 2026-05 — pass tools straight through to GA's LLMSession so the
+    # OpenAI-compat chat.completions payload carries the tools array.
+    # Without this, LM Studio and Ollama Cloud emit text content with
+    # no ``tool_calls[]`` (ticket ONE-85: 4 LLM calls × 0 tools each).
+    if tools:
+        cfg["tools"] = tools
+        if provider in ("local", "ollama_cloud"):
+            cfg["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "required")
+        elif provider == "openai":
+            cfg["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "auto")
+        # Anthropic / others — leave tool_choice unset, GA's NativeClaude
+        # path still works via its own tools-injection flow.
+        if os.environ.get("AIFORGE_DOER_JSON_MODE", "0") == "1":
+            ml = (model or "").lower()
+            if any(k in ml for k in ("qwen", "gemma-4", "gpt-oss", "mistral")):
+                cfg["response_format"] = {"type": "json_object"}
     return cfg
 
 
