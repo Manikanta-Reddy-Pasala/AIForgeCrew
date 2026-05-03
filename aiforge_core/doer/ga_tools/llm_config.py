@@ -49,16 +49,37 @@ def primary_cfg(tools: list[dict] | None = None) -> dict:
                 cloud["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "auto")
             return cloud
         # Key missing — silent-fall back to local rather than crash.
-    base_url = os.environ.get(
-        "AIFORGE_DOER_BASE_URL", "http://127.0.0.1:1234"
-    )
-    model = os.environ.get(
-        "AIFORGE_DOER_MODEL",
-        "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
-    )
+    # 2026-05 — single source of truth = agent_config.resolve_litellm.
+    # Env overrides win at agent_config.load_all level, so AIFORGE_DOER_*
+    # still escape-hatches without bypassing the Settings UI.
+    try:
+        from aiforge_core.runtime import agent_config as _acfg
+        resolved = _acfg.resolve_litellm("doer")
+        raw_model = resolved.get("model_id") or ""
+        for p in ("openai/", "anthropic/", "ollama/"):
+            if raw_model.startswith(p):
+                raw_model = raw_model[len(p):]
+                break
+        base_url = (resolved.get("api_base") or "http://127.0.0.1:1234/v1")
+        model = raw_model or os.environ.get(
+            "AIFORGE_DOER_MODEL",
+            "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+        )
+        api_key = resolved.get("api_key") or os.environ.get(
+            "AIFORGE_DOER_API_KEY", "sk-local"
+        )
+    except Exception:
+        base_url = os.environ.get(
+            "AIFORGE_DOER_BASE_URL", "http://127.0.0.1:1234"
+        )
+        model = os.environ.get(
+            "AIFORGE_DOER_MODEL",
+            "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
+        )
+        api_key = os.environ.get("AIFORGE_DOER_API_KEY", "sk-local")
     cfg: dict = {
         "name": "mlx-doer",
-        "apikey": os.environ.get("AIFORGE_DOER_API_KEY", "sk-local"),
+        "apikey": api_key,
         "apibase": base_url.rstrip("/").rstrip("/v1"),
         "model": model,
         "api_mode": "chat_completions",
