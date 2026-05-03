@@ -1063,6 +1063,206 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 .text-center { text-align: center; }
 .nowrap { white-space: nowrap; }
 
+/* ========================================================================
+   SETTINGS — agent provider/model table
+   The 9 archetypes get one tight row each. Provider tints come from a
+   thin left rail so the table stays scannable while still telegraphing
+   which agents are local vs cloud at a glance.
+   ======================================================================== */
+.settings-table {
+  background: var(--bg-2);
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.settings-table-head,
+.settings-row {
+  display: grid;
+  /* role | provider | model | meta-chips | base_url toggle | save */
+  grid-template-columns:
+    minmax(150px, 1fr)
+    minmax(160px, 1.1fr)
+    minmax(220px, 2fr)
+    minmax(140px, 1fr)
+    auto
+    auto;
+  gap: var(--s-3);
+  align-items: center;
+  padding: 10px var(--s-4);
+}
+.settings-table-head {
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border-0);
+  color: var(--fg-2);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  font-weight: 600;
+  padding: 8px var(--s-4);
+}
+.settings-row {
+  border-bottom: 1px solid var(--border-0);
+  position: relative;
+  transition: background var(--dur-fast) var(--ease);
+}
+.settings-row:last-child { border-bottom: 0; }
+.settings-row:hover { background: var(--bg-3); }
+.settings-row.dirty { background: var(--warn-soft); }
+.settings-row.just-saved { background: var(--ok-soft); }
+
+/* left provider stripe — color-codes provider per row */
+.settings-row::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--border-1);
+  transition: background var(--dur-fast) var(--ease);
+}
+.settings-row.prov-local::before        { background: #6e7684; } /* neutral */
+.settings-row.prov-ollama_cloud::before { background: #1f6feb; } /* cool */
+.settings-row.prov-anthropic::before    { background: #c7851a; } /* warm */
+
+.settings-row .role-cell {
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0;
+}
+.settings-row .role-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--fg-0);
+  letter-spacing: -0.005em;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.settings-row .role-hint {
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.settings-row select,
+.settings-row input {
+  padding: 6px 10px;
+  font-size: var(--fs-sm);
+}
+.settings-row select { padding-right: 24px; }
+
+.settings-row .meta-chips {
+  display: flex; gap: 4px; flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.tier-fast      { background: var(--info-soft);   color: var(--info);   border-color: transparent; }
+.tier-balanced  { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.tier-premium   { background: var(--warn-soft);   color: var(--warn);   border-color: transparent; }
+
+.advanced-toggle {
+  background: transparent;
+  border: 1px solid var(--border-0);
+  color: var(--fg-2);
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+.advanced-toggle.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
+}
+.advanced-toggle:hover:not(:disabled) { color: var(--fg-0); }
+
+.settings-row .save-cell {
+  display: flex; align-items: center; gap: 6px;
+  justify-content: flex-end;
+}
+.saved-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ok);
+  background: var(--ok-soft);
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  animation: saved-fade 1.8s ease-out forwards;
+}
+@keyframes saved-fade {
+  0%   { opacity: 1; transform: translateY(0); }
+  70%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-4px); }
+}
+
+.row-error {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: var(--fs-xs);
+  color: var(--err);
+  background: var(--err-soft);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+}
+
+.settings-advanced {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: var(--s-2);
+  margin-top: 4px;
+  padding: 8px 10px;
+  background: var(--bg-1);
+  border: 1px dashed var(--border-1);
+  border-radius: var(--r-sm);
+}
+.settings-advanced label {
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.settings-advanced input { flex: 1; font-family: var(--font-mono); }
+
+.settings-banner {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  background: var(--err-soft);
+  color: var(--err);
+  border: 1px solid transparent;
+  font-size: var(--fs-sm);
+  margin-bottom: var(--s-4);
+}
+.settings-banner button { margin-left: auto; }
+
+@media (max-width: 1024px) {
+  .settings-table-head,
+  .settings-row {
+    grid-template-columns:
+      minmax(140px, 1fr)
+      minmax(140px, 1fr)
+      minmax(180px, 1.6fr)
+      auto
+      auto;
+  }
+  .settings-row .meta-chips,
+  .settings-table-head .col-meta { display: none; }
+}
+@media (max-width: 768px) {
+  .settings-table-head { display: none; }
+  .settings-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    padding: var(--s-4);
+  }
+  .settings-row .save-cell { justify-content: flex-start; }
+}
+
 /* sonner toast dark theme support (auto via prefers, but we force) */
 [data-sonner-toaster] {
   --normal-bg: var(--bg-3);

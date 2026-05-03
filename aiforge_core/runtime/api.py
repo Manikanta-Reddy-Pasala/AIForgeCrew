@@ -1157,6 +1157,75 @@ def config_agents_set(role: str, body: _AgentConfigBody) -> dict:
     return {"role": role, **cfg}
 
 
+# ─────────────────────── Agent model config v2 ─────────────────────────
+# v2 surface for the new Settings UI. Adds per-role base_url, returns the
+# full model catalog inline with each provider, and exposes only the 9
+# archetype roles (no legacy aliases). v1 (above) kept untouched so the
+# current UI build keeps working until it migrates.
+
+
+class _AgentConfigV2Body(BaseModel):
+    provider: str = Field(..., description="One of agent_config.PROVIDERS keys")
+    model: str = Field(..., min_length=1,
+                       description="Model identifier for the provider")
+    base_url: str | None = Field(
+        None, description="Optional override; null = provider default")
+
+
+@app.get("/api/agents/v2/config")
+def agents_v2_config() -> dict:
+    """Return ``{role: {provider, model, base_url|null}}`` for the 9
+    archetypes only. Legacy aliases (supervisor/feedback/chat) stay in
+    storage but never leak to the v2 UI."""
+    full = _acfg.load_all()
+    out: dict[str, dict[str, Any]] = {}
+    for role in _acfg.archetypes():
+        row = full.get(role) or {}
+        out[role] = {
+            "provider": row.get("provider"),
+            "model": row.get("model"),
+            "base_url": row.get("base_url"),
+        }
+    return out
+
+
+@app.get("/api/agents/v2/providers")
+def agents_v2_providers() -> list[dict]:
+    """Catalog payload for the Settings UI: each provider with its
+    available models inline. Includes dynamic discovery for local
+    (LM Studio /v1/models) and ollama_cloud (5-min cached)."""
+    out: list[dict[str, Any]] = []
+    for prov in _acfg.list_providers():
+        try:
+            models = _acfg.list_models(prov["id"])
+        except Exception:
+            models = []
+        out.append({**prov, "models": models})
+    return out
+
+
+@app.put("/api/agents/v2/{role}/config")
+def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
+    if role not in _acfg.archetypes():
+        raise HTTPException(404, f"unknown archetype: {role}")
+    if body.provider not in _acfg.PROVIDERS:
+        raise HTTPException(400, f"unknown provider: {body.provider}")
+    if not body.model or not body.model.strip():
+        raise HTTPException(400, "model cannot be empty")
+    base_url = body.base_url.strip() if body.base_url else None
+    try:
+        cfg = _acfg.set_role(role, body.provider, body.model,
+                             base_url=base_url or None)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {
+        "role": role,
+        "provider": cfg.get("provider"),
+        "model": cfg.get("model"),
+        "base_url": cfg.get("base_url"),
+    }
+
+
 # ─────────────────────────── Chat ask (LLM synthesis) ───────────────────
 #
 # /api/chat/ask is the "smart" chat endpoint: gather from all memory

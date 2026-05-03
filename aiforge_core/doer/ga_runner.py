@@ -1170,22 +1170,32 @@ def _make_handler_class():
 
 
 def _doer_llm_config() -> dict:
-    """The text-protocol cfg for GA's LLMSession. Matches ``oai_doer_config``
-    in mykey.py on the NUC. We hard-code here so this module doesn't need
-    GA's mykey at import time — GA reads its own mykey for default config,
-    but ``LLMSession(cfg=...)`` accepts an explicit cfg dict and overrides."""
-    base_url = os.environ.get(
-        "AIFORGE_DOER_BASE_URL", "http://127.0.0.1:1234"
-    )
-    model = os.environ.get(
-        "AIFORGE_DOER_MODEL",
-        "/Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit",
-    )
+    """The text-protocol cfg for GA's LLMSession.
+
+    Provider/model/base_url/api_key come from agent_config.resolve_litellm
+    so the Settings UI (and AIFORGE_DOER_* env overrides) flip the doer
+    without redeploy. ctx/timeout/temperature/top_p/think still come from
+    AIFORGE_DOER_* envs — those aren't part of the LiteLLM kwargs surface.
+    ``LLMSession(cfg=...)`` accepts an explicit dict and overrides whatever
+    GA's mykey defaults said.
+    """
+    from aiforge_core.runtime import agent_config as _acfg
+    resolved = _acfg.resolve_litellm("doer")
+    raw_model = resolved["model_id"] or ""
+    # GA's LLMSession wants the raw model name; strip litellm provider
+    # prefixes that resolve_litellm prepends.
+    for p in ("openai/", "anthropic/", "ollama/"):
+        if raw_model.startswith(p):
+            raw_model = raw_model[len(p):]
+            break
+    base_url = (resolved.get("api_base") or
+                "http://127.0.0.1:1234/v1").rstrip("/").rstrip("/v1")
+    api_key = resolved.get("api_key") or "sk-local"
     cfg: dict = {
         "name": "mlx-doer",
-        "apikey": os.environ.get("AIFORGE_DOER_API_KEY", "sk-local"),
-        "apibase": base_url.rstrip("/").rstrip("/v1"),
-        "model": model,
+        "apikey": api_key,
+        "apibase": base_url,
+        "model": raw_model,
         "api_mode": "chat_completions",
         "max_retries": 2,
         "connect_timeout": 10,

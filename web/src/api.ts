@@ -3,7 +3,19 @@ const BASE = '/api';
 
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${BASE}${path}`, init);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  if (!r.ok) {
+    // Try to surface the JSON `detail` field FastAPI returns on 4xx, so
+    // the UI can show an actionable message instead of "400 Bad Request".
+    let detail = '';
+    try {
+      const body = await r.json();
+      detail = body?.detail || body?.error || '';
+    } catch {
+      try { detail = await r.text(); } catch { /* ignore */ }
+    }
+    const suffix = detail ? ` — ${detail}` : '';
+    throw new Error(`${r.status} ${r.statusText}${suffix}`);
+  }
   return r.json();
 }
 
@@ -61,6 +73,21 @@ export const api = {
       body: JSON.stringify({ provider, model }),
     }),
 
+  // ── v2 archetype config (used by the Settings page) ─────────────
+  // GET  → { [role]: AgentRoleConfig }   (9 archetypes only)
+  // GET  → ProviderCatalog[]             (3 providers + their models)
+  // PUT  → AgentRoleConfig (echo)        (404 unknown role / 400 bad input)
+  agentsV2Config:    () => j<Record<AgentRole, AgentRoleConfig>>(
+    '/agents/v2/config',
+  ),
+  agentsV2Providers: () => j<ProviderCatalog[]>('/agents/v2/providers'),
+  setAgentV2Config:  (role: AgentRole, body: AgentRoleConfigInput) =>
+    j<AgentRoleConfig & { role: AgentRole }>(`/agents/v2/${role}/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
   // Workflow registry + route detection
   workflows: () => j<WorkflowSpec[]>('/workflows'),
   workflowPreview: (body: string, opts: {
@@ -90,6 +117,41 @@ export const api = {
       }),
     }),
 };
+
+// ── agent v2 config types ─────────────────────────────────────────
+
+export type AgentRole =
+  | 'understander' | 'planner' | 'verifier' | 'grounder'
+  | 'doer' | 'validator' | 'tester' | 'architect' | 'learner';
+
+export type ProviderId = 'local' | 'ollama_cloud' | 'anthropic';
+export type ModelTier = 'fast' | 'balanced' | 'premium';
+
+export interface ProviderModel {
+  id: string;
+  label: string;
+  context: number | null;
+  tier: ModelTier | null;
+}
+
+export interface ProviderCatalog {
+  id: ProviderId;
+  label: string;
+  default_model: string;
+  models: ProviderModel[];
+}
+
+export interface AgentRoleConfig {
+  provider: ProviderId;
+  model: string;
+  base_url: string | null;
+}
+
+export interface AgentRoleConfigInput {
+  provider: ProviderId;
+  model: string;
+  base_url?: string | null;
+}
 
 // ── workflow types ────────────────────────────────────────────────
 

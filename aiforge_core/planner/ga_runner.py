@@ -59,28 +59,37 @@ def _ga_dir() -> str:
 def _planner_llm_config() -> dict:
     """Text-protocol cfg for GA's LLMSession on the planner.
 
-    Honours global AIFORGE_PRIMARY_BACKEND so a Settings flip
-    swaps every agent at once. Falls through to per-role
-    AIFORGE_PLANNER_* vars when backend=local.
+    Provider/model/base_url/api_key come from agent_config.resolve_litellm
+    so a Settings UI flip (or env override) swaps the planner without
+    redeploy. The gemini code path is preserved for the legacy
+    AIFORGE_PRIMARY_BACKEND=gemini operator flow. Knobs that aren't part
+    of the LiteLLM kwargs (timeout/ctx/temp/think) keep reading their
+    AIFORGE_PLANNER_* envs as before.
     """
     from aiforge_core.runtime.llm_picker import pick as _pick
+    from aiforge_core.runtime import agent_config as _acfg
     ep = _pick("planner")
     if ep.backend == "gemini":
         base_url = ep.base_url.rstrip("/").rstrip("/v1")
         model = ep.model
         api_key = ep.api_key
+        name = "gemini-planner"
     else:
-        base_url = os.environ.get(
-            "AIFORGE_PLANNER_BASE_URL", "http://127.0.0.1:1235"
-        )
-        model = os.environ.get(
-            "AIFORGE_PLANNER_MODEL",
-            "/Users/manikanta/.lmstudio/models/unsloth/Qwen3.6-27B-UD-MLX-4bit",
-        )
-        api_key = os.environ.get("AIFORGE_PLANNER_API_KEY", "sk-local")
+        resolved = _acfg.resolve_litellm("planner")
+        # GA's LLMSession wants the raw model name (no `openai/` /
+        # `anthropic/` prefix that LiteLLM uses for routing).
+        raw_model = resolved["model_id"] or ""
+        for p in ("openai/", "anthropic/", "ollama/"):
+            if raw_model.startswith(p):
+                raw_model = raw_model[len(p):]
+                break
+        model = raw_model
+        api_key = resolved.get("api_key") or "sk-local"
+        base_url = (resolved.get("api_base") or
+                    "http://127.0.0.1:1235/v1").rstrip("/").rstrip("/v1")
+        name = "mlx-planner"
     cfg: dict = {
-        "name": ("gemini-planner" if ep.backend == "gemini"
-                 else "mlx-planner"),
+        "name": name,
         "apikey": api_key,
         "apibase": base_url.rstrip("/").rstrip("/v1"),
         "model": model,
