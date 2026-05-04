@@ -20,21 +20,35 @@
 --   tickets, or accept that any in-flight run will be re-claimed and
 --   re-run from scratch.
 --
--- Rollback:
---   None. ADK 2.0.0b1 will recreate the session tables with its new
---   schema on the next DatabaseSessionService(db_url=...) instantiation.
---   To roll back to 1.31.1, redeploy the 1.x code; ADK 1.x will likewise
---   recreate its own tables.
+-- Rollback procedure (no SQL script — manual steps):
+--   Redeploy the 1.31.1 code. ADK 1.x will recreate its own v0 tables on
+--   the next DatabaseSessionService(db_url=...) instantiation. Any leftover
+--   `adk_internal_metadata` row is harmless to 1.x — it doesn't read it.
+
+-- Operator-error guard: refuse to run against the wrong database.
+DO $$
+BEGIN
+  IF current_database() NOT IN ('aiforge', 'aiforge_dev') THEN
+    RAISE EXCEPTION
+      'Wrong database: %. This migration must run against the aiforge (or aiforge_dev) database.',
+      current_database();
+  END IF;
+END
+$$;
 
 BEGIN;
 
+-- Tables defined by google.adk.sessions.schemas v0 (1.31.1) and v1 (2.0.0b1).
+-- DROP order: child first, then parent — keeps the script correct even if
+-- a future edit removes the CASCADE clauses. `events` has an FK to
+-- `sessions`; the rest are independent.
 DROP TABLE IF EXISTS events CASCADE;
 DROP TABLE IF EXISTS sessions CASCADE;
 DROP TABLE IF EXISTS app_states CASCADE;
 DROP TABLE IF EXISTS user_states CASCADE;
-DROP TABLE IF EXISTS app_user_states CASCADE;
+DROP TABLE IF EXISTS adk_internal_metadata CASCADE;
 
--- ADK 2.0b1 will auto-create its own tables on the next
+-- ADK 2.0.0b1 will auto-create its own tables on the next
 -- DatabaseSessionService(db_url=...) instantiation. No CREATE TABLE here.
 
 COMMIT;
