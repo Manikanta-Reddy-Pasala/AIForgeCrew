@@ -1,0 +1,22 @@
+--- /tmp/agent_loop.original.py	2026-05-04 09:00:00
++++ /tmp/agent_loop.py	2026-05-04 09:00:00
+@@ -58,9 +58,16 @@
+             cleaned = _clean_content(response.content)
+             if cleaned: yield cleaned + '\n'
+
+-        if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
+-        else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
+-                          for tc in response.tool_calls]
++        # 2026-05 — AIForge Rule X: when the model emits zero tool_calls
++        # in a turn, treat it as the natural end of the run instead of
++        # dispatching a fake "no_tool" that loops via BaseHandler.
++        # Caller (AIForge harness) reads exit_reason.result and runs its
++        # own compile + acceptance gates on the worktree.
++        if not response.tool_calls:
++            exit_reason = {'result': 'NO_TOOL_CALL', 'reason': 'no_tool_call'}
++            handler.turn_end_callback(response, [], [], turn, '', exit_reason)
++            return exit_reason
++        tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
++                      for tc in response.tool_calls]
+
+         tool_results = []; next_prompts = set(); exit_reason = {}

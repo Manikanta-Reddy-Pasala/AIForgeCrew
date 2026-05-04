@@ -166,123 +166,60 @@ _ASK_EXPLORER_SCHEMA = {
 # in the prompt — the resolved string flows verbatim. Java repos get
 # ``mvn -q -DskipTests compile``; Python ``python -m compileall -q .``;
 # Node ``tsc --noEmit``; Go ``go build ./...``.
-_DOER_GA_PREAMBLE_TMPL = """You are the AIForge Doer agent operating through GenericAgent.
+_DOER_GA_PREAMBLE_TMPL = """You are the AIForge Doer agent.
 
-You MUST modify code so the ticket is implemented. You only get credit when:
-  1. At least one file_patch or file_write call against an allowed file.
+Your job: modify the files under `## Allowed files` so the ticket's
+acceptance criteria are satisfied, then verify with `{compile_cmd}`.
+You earn credit only when:
+  1. At least one file_patch or file_write call lands on an allowed file.
   2. `{compile_cmd}` exits 0 inside the worktree.
   3. Every Acceptance bullet's identifier appears in the new file content.
 
-==== CRITICAL — FILE-EDITING IS THE PRIMARY TOOL ====
-The Planner has already identified the files you need. They are listed
-verbatim under `## Allowed files`. Trust the list. Open those files with
-file_read and edit them with file_patch / file_write. That's the job.
+The Planner already identified the files you need — trust the list.
+Open them with file_read and edit them with file_patch / file_write.
 
-If after turn 3 you still have edit_block_ok=0 you are off-track. STOP
-exploring. file_read your allowed files. file_patch the change.
+==== TOOLS (full schemas in the OpenAI tools array) ====
+The runtime exposes these tools via native tool_calls. Call them by name
+with structured arguments — do not narrate a plan, do not invent custom
+formats, just call the tools.
 
-==== TOOL CHEAT SHEET ====
+- file_read         read a file (line-numbered, cached per run)
+- file_patch        apply a narrow diff (preferred)
+- file_write        write a whole file (new files / full rewrites)
+- bulk_edit         apply N file_patch edits atomically in one turn
+- batch             fan out read-side tools (file_read/glob/grep/web_search)
+                    in one turn — use this on the FIRST turn to read every
+                    file under `## Allowed files` in parallel
+- glob              ripgrep file listing by pattern
+- grep              ripgrep content search
+- bash              persistent shell session (build/git/curl); max 600s
+- code_run          run the configured compile command `{compile_cmd}`
+- java_refactor     OpenRewrite recipe (Java only)
+- lint              run the per-repo lint command
+- tests             run the per-repo test command
+- undo              roll back one file or the last commit
+- web_search        Gemini-grounded search (unknown-API recovery)
+- ask_explorer      read-only sub-agent for broad exploration
+- ask_user          escalate to operator via ticket comment (last resort)
 
-** PARALLELISM (mandatory — Claude CLI / Cursor style) **
-When you need to read OR explore N files, do ALL of them in ONE turn:
-  - batch calls=[{{tool: file_read, args: {{...}}}}, {{tool: file_read, ...}},
-                  {{tool: glob, ...}}, {{tool: grep, ...}}]
-                       → fans out read-side tools concurrently. ONE turn
-                         = N parallel reads. NEVER read files one-per-turn
-                         when the ticket already lists them under
-                         '## Edit targets' or '## Reference files'.
-  - bulk_edit edits=[…]  → as below, but for writes.
-  - dispatch_subagent multi=[…] → up to 4 read-only explorers in parallel
-                         when you need narrative answers across the repo.
+==== HARD RULES ====
+- Edit ONLY files in `## Allowed files`. Writes outside are blocked.
+- code_run is for the configured compile command only — no find/grep/ls/cat.
+- Apply ALL patches first, THEN one code_run with `cd <worktree> && {compile_cmd}`.
+  Building between every patch wastes 60-180s per cycle.
+- Hard cap: two code_run compile calls per run.
+- Parallelize reads via `batch` — never one file_read per turn when the
+  Planner already listed the files.
+- Stop calling tools when the build is green and the acceptance criteria
+  are satisfied. The runtime exits the loop the moment you emit zero
+  tool_calls in a turn.
 
-Do NOT serialize: one file_read per turn = wasted context. The first
-LLM turn after task receipt should be a single `batch` covering every
-file under '## Edit targets' AND '## Reference files'.
-
-- file_read PATH       → returns line-numbered content; cached per run.
-                         Don't re-request the same file. Prefer batch
-                         when reading multiple.
-- file_patch / file_write → make ONE edit. file_patch returns a diff
-                         block AFTER the edit so you can verify it
-                         landed correctly.
-- bulk_edit edits=[...]→ apply N file edits atomically in ONE turn.
-                         Use when ticket touches several files
-                         (controller + service + repo + DTO). Any
-                         single failure rolls the whole batch back
-                         to git HEAD. 4-5 turns → 1 turn.
-- java_refactor recipe → invoke an OpenRewrite recipe (Java-only;
-                         ChangePackage, RenameMethod,
-                         RemoveUnusedImports, OrderImports). Cheaper
-                         than hand-patching every import; recipe
-                         engine knows Java syntax. Skip on non-Java repos.
-- glob PATTERN         → fast file listing (ripgrep). e.g.
-                         '**/*Controller.java'.
-- grep REGEX [glob]    → search file contents (ripgrep). Returns
-                         path:line:content rows. Use this BEFORE
-                         ask_explorer — it's instant.
-- bash COMMAND         → persistent shell session. cwd survives
-                         across calls. Use for build / git / curl.
-                         Default 60s, max 600s.
-- lint                 → run configured lint command (resolved per-repo
-                         from Standards), returns errors. Use after compile
-                         is green.
-- tests                → run unit tests (resolved per-repo from Standards),
-                         returns failures. Use when ticket touches behaviour.
-- undo {{mode,path}}     → roll back ONE file (mode=last_edit) or the
-                         last commit (mode=last_commit). Escape hatch.
-- web_search QUERY     → Gemini-grounded search. Use on
-                         'cannot find symbol' errors.
-- ask_explorer Q       → spawn read-only sub-agent for broad
-                         exploration. Slower than grep; use when
-                         you need narrative context.
-- ask_user QUESTION    → escalate to operator (logs question on
-                         the ticket). Last resort.
-
-Hard rules:
-- Edit ONLY files listed in the ## Allowed files section. Writes outside
-  that list are blocked by the harness ScopeGuard.
-- code_run is for the configured compile command ONLY (`{compile_cmd}`)
-  and only AFTER you've patched.
-  No find / grep / ls / cat — read files via file_read instead.
-- web_search (Gemini grounded) IS the preferred lookup tool for
-  unknown-API errors. Pass a precise query like
-  'Spring Data MongoDB Aggregation.group sum count Java example' —
-  Gemini answers with the right API + citation URLs. Use this on
-  every 'cannot find symbol' / 'method not found' / 'incompatible
-  types' compile error you don't immediately recognize.
-- web_scan is the fallback for fetching a specific docs page when
-  web_search citations point you at one. Don't loop on a wrong API.
-- start_long_term_update IS allowed for one-line patterns you hit
-  repeatedly (e.g. 'Spring Mongo grouping uses Aggregation.group not
-  Expressions.wrap'). Future tickets benefit from your memory.
-- ask_user IS allowed when you've truly exhausted options. It logs
-  the question to the ticket — operator answers and resubmits. Use
-  it sparingly; prefer ask_explorer + web_scan first.
-- Use file_patch for narrow diffs (preferred). Use file_write only for
-  brand-new files or full rewrites.
-- Compile ONCE at the very end, AFTER every patch is applied — not
-  after each individual file_patch. Doing the build between edits
-  doubles wall-clock (full builds can run 60-180s). The harness only
-  checks the LAST compile for green/red.
-- If the final compile fails, read the error and fix in ONE more
-  file_patch + ONE more compile. Maximum two compile calls per run.
-- Do NOT emit `<summary>` until the final compile is green AND at
-  least one file_patch has succeeded.
-
-Work in the provided worktree path. Every code_run command must
-`cd <worktree>` first.
-
-Standard fast workflow (do this exactly):
-  1. file_read each entry under `## Allowed files`.
-  2. file_patch ALL the changes required by the acceptance criteria
-     (often across multiple files: controller + service + repo).
-     Apply every patch BEFORE compiling.
-  3. ONE code_run `cd <worktree> && {compile_cmd}` — only
-     after every file_patch is in. The build is the most expensive
-     call; do it as few times as possible.
-  4. On success (EXIT 0): emit `<summary>BUILD SUCCESS — <files patched></summary>` and STOP.
-  5. On failure: read the compile error, ONE more file_patch to fix it,
-     ONE more compile. Hard cap: two compiles per run.
+==== STANDARD WORKFLOW ====
+  1. ONE `batch` reading every entry under `## Allowed files`.
+  2. file_patch / file_write / bulk_edit to land all acceptance changes.
+  3. ONE code_run `cd <worktree> && {compile_cmd}`.
+  4. If green and acceptance is met: stop calling tools — the run ends.
+  5. If red: read the error, ONE more patch, ONE more compile. Then stop.
 """
 
 
@@ -437,24 +374,25 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"{neighbours_section}"
         f"## Planner notes\n{plan_text or '(none)'}\n\n"
         f"## REQUIRED workflow — DO NOT SKIP STEPS\n"
-        f"1. **file_read EACH file under '## Allowed files'** "
-        f"(absolute paths under `{worktree_path}`). Do NOT grep/find — "
-        f"the file list is final.\n"
-        f"2. **file_patch the change required by the acceptance criteria.** "
-        f"You MUST emit at least one successful file_patch (or "
-        f"file_write) call. The harness rejects runs with "
-        f"edit_block_ok=0. Aim to land the first patch by turn 3.\n"
+        f"1. **batch file_read EACH file under '## Allowed files'** "
+        f"(absolute paths under `{worktree_path}`) in ONE turn. Do "
+        f"NOT grep/find — the file list is final.\n"
+        f"2. **file_patch / file_write / bulk_edit the changes required "
+        f"by the acceptance criteria.** You MUST land at least one "
+        f"successful patch — the harness rejects runs with "
+        f"edit_block_ok=0. Aim for the first patch by turn 3.\n"
         f"3. code_run `cd {worktree_path} && {compile_cmd}` "
-        f"AFTER the patch lands. Compile before editing is a NO-OP "
-        f"(original tree already compiles).\n"
-        f"4. End with a single `<summary>` tag naming the modified "
-        f"file(s) and quoting the BUILD SUCCESS line.\n\n"
+        f"AFTER every patch is applied. Compile before editing is a "
+        f"NO-OP (the original tree already compiles).\n"
+        f"4. When the build is green and acceptance is satisfied, stop "
+        f"calling tools — the run ends automatically the moment a turn "
+        f"emits zero tool_calls.\n\n"
         f"## RECOVERY — when you hit a compile error\n"
         f"1. READ the error carefully. 'cannot find symbol' = wrong "
         f"API, NOT a missing import most of the time.\n"
         f"2. ask_explorer 'show me example usage of <ClassName> in "
         f"this repo' — copy the working pattern.\n"
-        f"3. If repo has no example, web_scan the official docs URL "
+        f"3. If repo has no example, web_search the official docs "
         f"(e.g. docs.spring.io / javadoc.io). Find the right method "
         f"signature.\n"
         f"4. Patch with the correct API. ONE more compile.\n"
@@ -469,7 +407,8 @@ def _build_user_input(ticket: object, plan_text: str, worktree_path: str,
         f"- Running compile between every individual file_patch. Apply "
         f"  ALL patches first, then ONE compile. Full builds can run 60-180s.\n"
         f"- More than two compile calls in a single run.\n"
-        f"- Emitting <summary> with edit_block_ok=0."
+        f"- Emitting narrative text instead of calling tools — the "
+        f"runtime only counts tool_calls."
     )
 
 
@@ -601,10 +540,9 @@ def _make_handler_class():
                          "pending_id": pending.id,
                          "msg": "parked via hitl.request_input"},
                         next_prompt=(
-                            "Pending operator answer. Stop here — output "
-                            "a <summary> reflecting the open question, "
-                            "then end. Dispatcher will resume this run "
-                            "when an answer lands."
+                            "Pending operator answer. Stop calling tools "
+                            "now — the run ends. Dispatcher will resume "
+                            "this run when an answer lands."
                         ),
                     )
                 except Exception as exc:
@@ -632,8 +570,7 @@ def _make_handler_class():
                 {"status": "awaiting_user",
                  "msg": "question logged on ticket"},
                 next_prompt=("Operator notified via ticket comment. "
-                             "Stop here — output a <summary> reflecting "
-                             "the open question, then end."),
+                             "Stop calling tools now — the run ends."),
             )
 
         def do_code_run(self, args, response):  # type: ignore[override]
@@ -700,9 +637,9 @@ def _make_handler_class():
                          "msg": "compile cap exceeded (2 per ticket)"},
                         next_prompt=("You've already compiled twice. Either "
                                      "the build is green and you should "
-                                     "<summary>, or your patches are wrong "
-                                     "and need a different approach. Do not "
-                                     "compile again."),
+                                     "stop calling tools, or your patches "
+                                     "are wrong and need a different approach. "
+                                     "Do not compile again."),
                     )
             yield from super().do_code_run(args, response)
 
@@ -1451,12 +1388,12 @@ def run_doer_via_ga(
             emit(log, "ga_runner.plan_mode_skip",
                  ticket=identifier, error=str(exc)[:200])
 
-    # All backends use LLMSession (GA's text-protocol path). ToolClient
-    # is wired for text-protocol — passing tools array via system
-    # prompt and reading `<tool_use>{...}</tool_use>` blocks from the
-    # model's response. Both mlx-lm 0.31 (which drops native tool_calls)
-    # and cloud APIs (Gemini/OpenAI) follow the text format reliably
-    # when their system prompt instructs them to.
+    # All backends use LLMSession. We forward tools + tool_choice into
+    # the OpenAI-compat chat.completions payload (see step below) so the
+    # model emits native ``message.tool_calls`` and the ToolCallAdapter
+    # in llmcore.py parses them. Verified working on LM Studio (local
+    # mlx-lm) and Ollama Cloud. The text-protocol prompt scaffolding is
+    # suppressed in native mode (see ga_llmcore_native_mode.patch).
     from .ga_tools import llm_config as _llm_cfg
     cfg = _llm_cfg.primary_cfg()
     session = LLMSession(cfg=cfg)
@@ -1577,13 +1514,15 @@ def run_doer_via_ga(
     except Exception:
         _doer_provider = "local"
     session.tools = tools_schema  # type: ignore[attr-defined]
-    if _doer_provider in ("local", "ollama_cloud"):
+    # 2026-05 — Force "required" for every OpenAI-compat backend (local
+    # mlx-lm via LM Studio, Ollama Cloud, OpenAI). Native tool_calls is
+    # the only output channel after the text-protocol preamble was
+    # stripped, so the model must not be able to drop into prose.
+    # Anthropic / others: leave tool_choice unset; NativeClaudeSession
+    # owns its own wiring.
+    if _doer_provider in ("local", "ollama_cloud", "openai"):
         session.tool_choice = os.environ.get(  # type: ignore[attr-defined]
             "AIFORGE_DOER_TOOL_CHOICE", "required",
-        )
-    elif _doer_provider == "openai":
-        session.tool_choice = os.environ.get(  # type: ignore[attr-defined]
-            "AIFORGE_DOER_TOOL_CHOICE", "auto",
         )
     if os.environ.get("AIFORGE_DOER_JSON_MODE", "0") == "1":
         _ml = (cfg.get("model") or "").lower()

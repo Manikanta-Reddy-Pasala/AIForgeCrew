@@ -46,7 +46,12 @@ def primary_cfg(tools: list[dict] | None = None) -> dict:
             cloud["name"] = "gemini-primary"
             if tools:
                 cloud["tools"] = tools
-                cloud["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "auto")
+                # 2026-05 — native tool_calls is the only output channel
+                # now. Force "required" so Gemini-OpenAI-compat emits a
+                # tool call instead of free-form prose.
+                cloud["tool_choice"] = os.environ.get(
+                    "AIFORGE_DOER_TOOL_CHOICE", "required",
+                )
             return cloud
         # Key missing — silent-fall back to local rather than crash.
     # 2026-05 — single source of truth = agent_config.resolve_litellm.
@@ -110,12 +115,16 @@ def primary_cfg(tools: list[dict] | None = None) -> dict:
     # no ``tool_calls[]`` (ticket ONE-85: 4 LLM calls × 0 tools each).
     if tools:
         cfg["tools"] = tools
-        if provider in ("local", "ollama_cloud"):
-            cfg["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "required")
-        elif provider == "openai":
-            cfg["tool_choice"] = os.environ.get("AIFORGE_DOER_TOOL_CHOICE", "auto")
-        # Anthropic / others — leave tool_choice unset, GA's NativeClaude
+        # 2026-05 — native tool_calls is the only output channel after
+        # the text-protocol preamble was stripped. Force "required" for
+        # every OpenAI-compat backend (local mlx-lm via LM Studio, Ollama
+        # Cloud, OpenAI) so the model can't drop into narrative text.
+        # Anthropic / others — leave tool_choice unset; GA's NativeClaude
         # path still works via its own tools-injection flow.
+        if provider in ("local", "ollama_cloud", "openai"):
+            cfg["tool_choice"] = os.environ.get(
+                "AIFORGE_DOER_TOOL_CHOICE", "required",
+            )
         if os.environ.get("AIFORGE_DOER_JSON_MODE", "0") == "1":
             ml = (model or "").lower()
             if any(k in ml for k in ("qwen", "gemma-4", "gpt-oss", "mistral")):
