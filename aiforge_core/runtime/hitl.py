@@ -13,10 +13,9 @@ Resume path:
    from the snapshot, injects the answer as the next user prompt,
    resumes ``agent_runner_loop``.
 
-Until ADK 2.0 sidecar lands, the resume path is a STUB — we only
-record + park. The replay/resume becomes a thin port of the helpers
-in ``google.adk.workflow.utils._workflow_hitl_utils`` once we
-integrate ADK 2.0 ``Workflow``.
+The resume path is currently a STUB — we only record + park; full
+replay using ``google.adk.events.RequestInput`` is tracked under a
+separate follow-up ticket.
 
 Public surface:
 - ``request_input(message, *, ticket, snapshot=None) -> Pending``
