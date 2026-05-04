@@ -85,6 +85,94 @@ if os.environ.get("AIFORGE_DOER_KEEP_CHECKPOINT") != "1":
 _EDIT_TOOLS = {"file_patch", "file_write"}
 
 
+# ─── Native-JSON tool schemas for file_write / file_patch ─────────────
+# AIForge owns these two schemas (rather than reusing GA's stock schema)
+# because GA's upstream impl historically required a sibling
+# ``<file_content>...</file_content>`` text block alongside the tool_call
+# args. Native-tool_calls models (qwen3-coder:480b on Ollama Cloud,
+# verified ticket ONE-89) emit ONLY the args — the content is lost,
+# tool errors, model retries by emitting raw text, and the run wedges.
+# These schemas advertise ``content`` / ``old_string`` / ``new_string``
+# as proper string parameters so the model knows everything must be
+# JSON-inline. AIForge's overrides on ``AiForgeDoerHandler`` consume
+# these args directly (no super() call to GA's stock impl).
+_FILE_WRITE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "file_write",
+        "description": (
+            "Write a file. Use for new files OR full rewrites. Pass the "
+            "entire content as a string in the 'content' argument — do "
+            "NOT use a <file_content> text block. Parent directories "
+            "are auto-created. Path must be inside the worktree's "
+            "Allowed files allowlist."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to write under the worktree. "
+                        "Must match an entry in the ## Allowed files "
+                        "block."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Full file content as a JSON string. Required. "
+                        "Use \\n for newlines, \\\" for embedded quotes."
+                    ),
+                },
+            },
+            "required": ["path", "content"],
+        },
+    },
+}
+
+
+_FILE_PATCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "file_patch",
+        "description": (
+            "Replace an exact text region in an existing file. Pass "
+            "'old_string' (the literal current text — must appear "
+            "exactly once in the file) and 'new_string' (the "
+            "replacement). All inputs are JSON args — do NOT use a "
+            "<file_content> text block."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Absolute path to the file under the worktree."
+                    ),
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": (
+                        "Literal current text to replace. Include enough "
+                        "surrounding context that the match is unique."
+                    ),
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": (
+                        "Replacement text. Use \\n for newlines, \\\" "
+                        "for embedded quotes."
+                    ),
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+}
+
+
 # Custom tool schema for web_search — Gemini 2.5-flash grounded search.
 # Calls https://generativelanguage.googleapis.com with `googleSearch` tool
 # enabled; Gemini returns a curated answer + citations the Doer can use
@@ -184,9 +272,12 @@ with structured arguments — do not narrate a plan, do not invent custom
 formats, just call the tools.
 
 - file_read         read a file (line-numbered, cached per run)
-- file_patch        apply a narrow diff (preferred)
-- file_write        write a whole file (new files / full rewrites)
-- bulk_edit         apply N file_patch edits atomically in one turn
+- file_patch        replace text in a file. Pass `path`, `old_string`,
+                    `new_string` as JSON args (all three required).
+- file_write        write a whole file. Pass `path` + `content` as JSON
+                    string args. Parent dirs auto-created.
+- bulk_edit         apply N file_patch edits atomically in one turn.
+                    Each edit is `{{path, old_content, new_content}}`.
 - batch             fan out read-side tools (file_read/glob/grep/web_search)
                     in one turn — use this on the FIRST turn to read every
                     file under `## Allowed files` in parallel
@@ -203,6 +294,11 @@ formats, just call the tools.
 - ask_user          escalate to operator via ticket comment (last resort)
 
 ==== HARD RULES ====
+- ALL tool inputs travel through the JSON `arguments` object. Never
+  emit a sibling `<file_content>...</file_content>` text block — the
+  Doer harness ignores it. file_write needs `content`, file_patch
+  needs `old_string` + `new_string`, bulk_edit needs `old_content` +
+  `new_content` per edit. All as JSON string args.
 - Edit ONLY files in `## Allowed files`. Writes outside are blocked.
 - code_run is for the configured compile command only — no find/grep/ls/cat.
 - Apply ALL patches first, THEN one code_run with `cd <worktree> && {compile_cmd}`.
@@ -433,6 +529,15 @@ def _make_handler_class():
             self._scope_guard = scope_guard
             self._counters = counters
             self._chunks: list[str] = []
+            # Defensive — ensure _done_hooks always exists. agent_loop.py
+            # reads ``handler._done_hooks`` after the no-tool-call exit
+            # path; an unset attr would AttributeError, an unset+pop
+            # combo would IndexError (the "list index out of range"
+            # symptom seen on ONE-89 turn 4 when the model emitted only
+            # narrative text). The base class normally seeds this, but
+            # we guard against any GA refactor that drops the seed.
+            if not hasattr(self, "_done_hooks") or self._done_hooks is None:
+                self._done_hooks = []
 
         def _get_abs_path(self, path: str) -> str:
             abs_path = super()._get_abs_path(path)
@@ -1027,41 +1132,63 @@ def _make_handler_class():
                 next_prompt=None,
             )
 
-        def do_file_patch(self, args, response):  # type: ignore[override]
-            # Plan Mode write-guard short-circuit.
-            if getattr(self, "_plan_mode_reject_next", False):
-                self._plan_mode_reject_next = False
-                from .ga_tools import plan_mode as _pm
-                yield ""
-                return StepOutcome(
-                    {"status": "error", "msg": "blocked by plan_mode"},
-                    next_prompt=_pm.reject_message("file_patch"),
-                )
-            outcome_gen = super().do_file_patch(args, response)
-            outcome = yield from outcome_gen
-            success = (
-                isinstance(outcome.data, dict)
-                and outcome.data.get("status") in ("success", "ok")
+        # ─── JSON-only file_write / file_patch (ticket ONE-89) ──────
+        # Replaces GA's two-channel ``<file_content>``-text-block design.
+        # All inputs travel through the OpenAI ``arguments`` JSON object;
+        # native-tool_calls models on Ollama Cloud / LM Studio / OpenAI
+        # all stay on a single channel. The deprecated text-block path
+        # is kept ONLY as fallback for the legacy mlx-lm 0.31 Java
+        # tickets that still emit the old format — logs a one-time
+        # WARN per ticket so we can see when it fires.
+        @staticmethod
+        def _extract_file_content_block(response):
+            """Pull <file_content>...</file_content> from the response
+            text. Returns the inner string when present, else None.
+            response can be the raw string OR a MockResponse-like
+            object with a ``.content`` attribute (MockResponse wraps
+            the text-protocol parser output)."""
+            text = ""
+            if isinstance(response, str):
+                text = response
+            elif hasattr(response, "content"):
+                c = getattr(response, "content", "")
+                text = c if isinstance(c, str) else ""
+            elif hasattr(response, "raw"):
+                r = getattr(response, "raw", "")
+                text = r if isinstance(r, str) else str(r)
+            if not text:
+                return None
+            m = re.search(
+                r"<file_content>([\s\S]*?)</file_content>",
+                text, flags=re.DOTALL,
             )
-            if success:
-                self._counters["edit_block_ok"] = (
-                    self._counters.get("edit_block_ok", 0) + 1
+            return m.group(1) if m else None
+
+        def _check_scope_violation(self, abs_path: str):
+            """Return an error StepOutcome when the path is outside the
+            allowlist. ScopeGuard already stashes ._violation in
+            _get_abs_path; this just builds the user-facing rejection.
+            Returns None when path is allowed."""
+            if getattr(self, "_violation", None):
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": f"path outside allowlist: {abs_path}"},
+                    next_prompt=(
+                        f"path {abs_path!r} is outside the ## Allowed "
+                        f"files allowlist; pick a path from that list."
+                    ),
                 )
-                # Append edit-verify diff so the model sees the
-                # actual change that landed (Claude Edit-style).
-                from .ga_tools import edit_verify as _ev
-                abs_path = self._get_abs_path(args.get("path", ""))
-                verify = _ev.banner_for(abs_path, self.cwd)
-                if verify:
-                    yield verify[:1500] + (
-                        "\n" if not verify.endswith("\n") else ""
-                    )
-                # Post-edit hooks (.aiforge/hooks.yml). Errors logged
-                # to next_prompt only when block:true + non-zero exit.
-                self._run_event_hooks("post_edit", outcome)
-            return outcome
+            return None
 
         def do_file_write(self, args, response):  # type: ignore[override]
+            """Write a whole file. JSON-only: ``args = {path, content}``.
+
+            Auto-creates parent directories. Falls back to the
+            deprecated ``<file_content>`` text-block in ``response``
+            ONLY when ``content`` is missing AND such a block exists
+            (legacy mlx-lm 0.31 path; logs DEPRECATION WARN).
+            """
+            # Plan Mode write-guard short-circuit.
             if getattr(self, "_plan_mode_reject_next", False):
                 self._plan_mode_reject_next = False
                 from .ga_tools import plan_mode as _pm
@@ -1070,13 +1197,273 @@ def _make_handler_class():
                     {"status": "error", "msg": "blocked by plan_mode"},
                     next_prompt=_pm.reject_message("file_write"),
                 )
-            outcome_gen = super().do_file_write(args, response)
-            outcome = yield from outcome_gen
-            if isinstance(outcome.data, dict) and outcome.data.get("status") == "success":
-                self._counters["edit_block_ok"] = (
-                    self._counters.get("edit_block_ok", 0) + 1
+
+            path = args.get("path")
+            if not isinstance(path, str) or not path.strip():
+                yield "[file_write] error: 'path' arg missing or empty\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": "file_write: 'path' arg missing or empty"},
+                    next_prompt=(
+                        "file_write needs a non-empty 'path' string arg."
+                    ),
                 )
-                self._run_event_hooks("post_edit", outcome)
+
+            content = args.get("content")
+            if not isinstance(content, str):
+                # Backwards-compat: accept legacy <file_content> block
+                # from response text. Logs DEPRECATION WARN.
+                fallback = self._extract_file_content_block(response)
+                if fallback is None:
+                    yield (
+                        "[file_write] error: 'content' arg missing. "
+                        "Pass it as a JSON string in arguments.\n"
+                    )
+                    return StepOutcome(
+                        {"status": "error",
+                         "msg": ("file_write: 'content' arg missing. "
+                                 "Pass it as a string in the JSON "
+                                 "arguments.")},
+                        next_prompt=(
+                            "Re-emit the file_write call with both "
+                            "'path' and 'content' as JSON string args. "
+                            "Do NOT use a <file_content> text block."
+                        ),
+                    )
+                content = fallback
+                ticket_obj = getattr(self.parent, "_aiforge_ticket", None)
+                emit(
+                    None, "tool.file_write.deprecated_text_block",
+                    ticket=getattr(ticket_obj, "identifier", "?"),
+                    path=path,
+                    note=("legacy <file_content> fallback fired — "
+                          "model should switch to JSON content arg"),
+                )
+
+            abs_path = self._get_abs_path(path)
+            scope_err = self._check_scope_violation(abs_path)
+            if scope_err is not None:
+                yield (
+                    f"[file_write] scope violation: {abs_path}\n"
+                )
+                return scope_err
+
+            # Auto-create parent dirs (turn 3 of ONE-89: model wanted
+            # to write src/shapes/__init__.py but src/shapes/ didn't
+            # exist — tool errored. ScopeGuard's allowlist match for
+            # the file path implicitly authorizes the parent dir.)
+            try:
+                parent_dir = os.path.dirname(abs_path)
+                if parent_dir and not os.path.isdir(parent_dir):
+                    os.makedirs(parent_dir, exist_ok=True)
+            except OSError as exc:
+                yield f"[file_write] mkdir failed: {exc}\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": f"file_write: mkdir failed for {abs_path}: {exc}"},
+                    next_prompt=(
+                        f"Could not create parent dir for {abs_path!r}: "
+                        f"{exc}. Pick a path inside the worktree."
+                    ),
+                )
+
+            try:
+                with open(abs_path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+            except OSError as exc:
+                yield f"[file_write] write failed: {exc}\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": f"file_write: open/write failed for {abs_path}: {exc}"},
+                    next_prompt=(
+                        f"Failed to write {abs_path!r}: {exc}."
+                    ),
+                )
+
+            self._counters["edit_block_ok"] = (
+                self._counters.get("edit_block_ok", 0) + 1
+            )
+            self._run_event_hooks("post_edit", None)
+            yield f"[file_write] {abs_path} ({len(content)} bytes)\n"
+            return StepOutcome(
+                {"status": "success",
+                 "path": abs_path,
+                 "bytes_written": len(content)},
+                next_prompt=self._get_anchor_prompt(skip=False),
+            )
+
+        def do_file_patch(self, args, response):  # type: ignore[override]
+            """Replace a literal text region. JSON-only:
+            ``args = {path, old_string, new_string}``.
+
+            Falls back to ``old_content``/``new_content`` arg names
+            (bulk_edit forwards in that shape) AND to the deprecated
+            ``<file_content>`` block when neither is supplied.
+            """
+            if getattr(self, "_plan_mode_reject_next", False):
+                self._plan_mode_reject_next = False
+                from .ga_tools import plan_mode as _pm
+                yield ""
+                return StepOutcome(
+                    {"status": "error", "msg": "blocked by plan_mode"},
+                    next_prompt=_pm.reject_message("file_patch"),
+                )
+
+            path = args.get("path")
+            if not isinstance(path, str) or not path.strip():
+                yield "[file_patch] error: 'path' arg missing or empty\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": "file_patch: 'path' arg missing or empty"},
+                    next_prompt=(
+                        "file_patch needs a non-empty 'path' string arg."
+                    ),
+                )
+
+            # Accept either canonical (old_string/new_string) OR
+            # bulk_edit's (old_content/new_content) arg names. Both are
+            # JSON strings — no text-block channel.
+            old_string = (
+                args.get("old_string")
+                if isinstance(args.get("old_string"), str)
+                else args.get("old_content")
+            )
+            new_string = (
+                args.get("new_string")
+                if isinstance(args.get("new_string"), str)
+                else args.get("new_content")
+            )
+
+            if not isinstance(old_string, str) or not isinstance(new_string, str):
+                # Last-resort legacy <file_content> fallback.
+                fallback = self._extract_file_content_block(response)
+                if fallback is not None and not isinstance(new_string, str):
+                    new_string = fallback
+                    ticket_obj = getattr(self.parent, "_aiforge_ticket", None)
+                    emit(
+                        None, "tool.file_patch.deprecated_text_block",
+                        ticket=getattr(ticket_obj, "identifier", "?"),
+                        path=path,
+                    )
+                if not isinstance(old_string, str) or not isinstance(new_string, str):
+                    yield (
+                        "[file_patch] error: 'old_string' and "
+                        "'new_string' args required (both JSON strings).\n"
+                    )
+                    return StepOutcome(
+                        {"status": "error",
+                         "msg": ("file_patch: 'old_string' and "
+                                 "'new_string' args required.")},
+                        next_prompt=(
+                            "Re-emit file_patch with 'path', "
+                            "'old_string', 'new_string' as JSON string "
+                            "args. All three required."
+                        ),
+                    )
+
+            abs_path = self._get_abs_path(path)
+            scope_err = self._check_scope_violation(abs_path)
+            if scope_err is not None:
+                yield f"[file_patch] scope violation: {abs_path}\n"
+                return scope_err
+
+            if not os.path.isfile(abs_path):
+                yield f"[file_patch] error: file not found: {abs_path}\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": f"file_patch: file not found: {abs_path}"},
+                    next_prompt=(
+                        f"File {abs_path!r} does not exist. Use "
+                        f"file_write to create it, or fix the path."
+                    ),
+                )
+
+            try:
+                with open(abs_path, "r", encoding="utf-8") as fh:
+                    original = fh.read()
+            except OSError as exc:
+                yield f"[file_patch] read failed: {exc}\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": f"file_patch: read failed: {exc}"},
+                    next_prompt=f"Could not read {abs_path!r}: {exc}.",
+                )
+
+            if old_string == new_string:
+                yield "[file_patch] no-op: old_string == new_string\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": "file_patch: old_string equals new_string"},
+                    next_prompt=(
+                        "old_string and new_string are identical — no "
+                        "change. Pick a real diff."
+                    ),
+                )
+
+            count = original.count(old_string)
+            if count == 0:
+                yield f"[file_patch] error: old_string not found in {abs_path}\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": ("file_patch: old_string not found in "
+                             f"{abs_path}")},
+                    next_prompt=(
+                        f"old_string not found in {abs_path!r}. "
+                        f"file_read it first to copy the exact text."
+                    ),
+                )
+            if count > 1:
+                yield (
+                    f"[file_patch] error: old_string matches {count}× "
+                    f"in {abs_path}; ambiguous\n"
+                )
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": (f"file_patch: old_string ambiguous "
+                             f"({count} matches)")},
+                    next_prompt=(
+                        f"old_string appears {count}× in {abs_path!r}. "
+                        f"Add surrounding context until it's unique."
+                    ),
+                )
+
+            new_text = original.replace(old_string, new_string, 1)
+            try:
+                with open(abs_path, "w", encoding="utf-8") as fh:
+                    fh.write(new_text)
+            except OSError as exc:
+                yield f"[file_patch] write failed: {exc}\n"
+                return StepOutcome(
+                    {"status": "error",
+                     "msg": f"file_patch: write failed: {exc}"},
+                    next_prompt=f"Failed to write {abs_path!r}: {exc}.",
+                )
+
+            self._counters["edit_block_ok"] = (
+                self._counters.get("edit_block_ok", 0) + 1
+            )
+            outcome = StepOutcome(
+                {"status": "success",
+                 "path": abs_path,
+                 "bytes_changed": len(new_string) - len(old_string)},
+                next_prompt=self._get_anchor_prompt(skip=False),
+            )
+            # Append edit-verify diff so the model sees the actual
+            # change that landed (Claude Edit-style).
+            try:
+                from .ga_tools import edit_verify as _ev
+                verify = _ev.banner_for(abs_path, self.cwd)
+                if verify:
+                    yield verify[:1500] + (
+                        "\n" if not verify.endswith("\n") else ""
+                    )
+            except Exception:
+                pass
+            self._run_event_hooks("post_edit", outcome)
+            yield (
+                f"[file_patch] {abs_path} "
+                f"({len(old_string)}→{len(new_string)} bytes)\n"
+            )
             return outcome
 
         # ─── Ops-MCP dynamic dispatch ───────────────────────────
@@ -1465,6 +1852,19 @@ def run_doer_via_ga(
     from .ga_tools.subagent import SCHEMA as _SUBAGENT_SCHEMA
     if os.environ.get("AIFORGE_GOOGLE_API_KEY"):
         tools_schema = list(tools_schema) + [_WS_SCHEMA]
+    # ── ONE-89 — replace GA's stock file_write / file_patch schemas
+    # with our JSON-only versions. GA's upstream advertises a
+    # ``<file_content>`` text-block channel; native-tool_calls models
+    # drop the content and the run wedges. Drop GA's variants by name
+    # before appending our schemas, so the OpenAI tools array carries
+    # exactly one entry per tool name (model gets a single source of
+    # truth for the parameter shape).
+    _OVERRIDE_NAMES = {"file_write", "file_patch"}
+    tools_schema = [
+        t for t in tools_schema
+        if (t.get("function") or {}).get("name") not in _OVERRIDE_NAMES
+    ]
+    tools_schema = list(tools_schema) + [_FILE_WRITE_SCHEMA, _FILE_PATCH_SCHEMA]
     # Always add local utilities — no API key needed.
     tools_schema = list(tools_schema) + [
         _GLOB_SCHEMA, _GREP_SCHEMA, _BASH_SCHEMA, _BATCH_SCHEMA,
