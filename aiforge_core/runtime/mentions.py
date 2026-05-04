@@ -9,7 +9,7 @@ Tag grammar (lenient):
 - ``@file/<repo-relative-path>`` — substitutes a (lineno-prefixed)
   excerpt of the file (up to 120 lines).
 - ``@docs/<library>[#anchor]`` — looks up doc chunk via
-  ``aiforge_core.index.docs_index.lookup_doc(library, anchor)``.
+  ``aiforge_core.indexing.docs_index.lookup_doc(library, anchor)``.
 - ``@web/<url>`` — passes URL to web_search tool, inlines first
   3 result snippets.
 - ``@ticket/<id>`` — inlines ticket title + status + last comment.
@@ -123,7 +123,7 @@ def _resolve_docs(library: str, *, top_k: int) -> str:
     """Anchor split: ``library#topic``."""
     library, _, anchor = library.partition("#")
     try:
-        from aiforge_core.index.docs_index import lookup_doc
+        from aiforge_core.indexing.docs_index import lookup_doc
     except Exception:
         return f"[docs index missing for {library}]"
     chunks = lookup_doc(library, anchor or "", top_k=top_k)

@@ -35,8 +35,8 @@ legacy = [
 ]
 
 [project.scripts]
-aiforge-agents-run = "aiforge_core.aiforge_agents.orchestrator.run_ticket:main"
-aiforge-agents-tb  = "aiforge_core.aiforge_agents.processes.trial_balance:main"
+aiforge-agents-run = "aiforge_core.orchestrator.run_ticket:main"
+aiforge-agents-tb  = "aiforge_core.memory.trial_balance:main"
 
 [tool.setuptools.packages.find]
 include = ["aiforge_core*"]

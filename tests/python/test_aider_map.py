@@ -1,4 +1,4 @@
-"""Unit tests for aiforge_core.index.aider_map.
+"""Unit tests for aiforge_core.indexing.aider_map.
 
 Phase 2 of AIForgeCrew v5. Tests are fully offline — they exercise the
 RepoMap wrapper itself, not Aider's tree-sitter walk. When aider is not
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from aiforge_core.index.aider_map import AiderMapConfig, render_repo_map
+from aiforge_core.indexing.aider_map import AiderMapConfig, render_repo_map
 
 
 # ─────────────────────────── Fixtures ──────────────────────────────────

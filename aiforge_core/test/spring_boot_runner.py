@@ -23,7 +23,7 @@ import urllib.request
 import urllib.error
 from dataclasses import dataclass
 
-from aiforge_core.runtime.logging_setup import emit
+from aiforge_core.observability.logging import emit
 
 
 # Cluster-internal hostnames used in application-qa.yaml → local PF port.

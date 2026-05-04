@@ -282,7 +282,7 @@ def _emit_llm_call(role: str, provider: str, model: str, t0: float,
         return
     import time as _t
     try:
-        from aiforge_core.runtime.logging_setup import get_logger
+        from aiforge_core.observability.logging import get_logger
         logger = get_logger(f"llm.{role}")
         # Best-effort ticket id resolution from current task context.
         ticket = os.environ.get("AIFORGE_CURRENT_TICKET") or None

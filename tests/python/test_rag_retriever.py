@@ -1,4 +1,4 @@
-"""Unit tests for aiforge_core.legacy.rag.retriever — Phase 2 RAG path.
+"""Unit tests for aiforge_core.memory.rag.retriever — Phase 2 RAG path.
 
 Fully offline: no Postgres, no embed sidecar, no rerank sidecar.
 Store methods and HTTP rerank are mocked at the boundary.
@@ -8,7 +8,7 @@ from __future__ import annotations
 import contextlib
 from unittest.mock import patch
 
-from aiforge_core.legacy.retrieval import Hit, ROLE_POLICIES
+from aiforge_core.memory.retrieval import Hit, ROLE_POLICIES
 
 
 def _hit(id_: str, score: float = 1.0, tier: str = "t2") -> Hit:
@@ -34,17 +34,17 @@ def _stub_retrievers(vec_map: dict, bm25_map: dict):
         return hits[:keep]
 
     with (
-        patch("aiforge_core.legacy.rag.retriever._vector_retrieve", side_effect=fake_vec),
-        patch("aiforge_core.legacy.rag.retriever._bm25_retrieve", side_effect=fake_bm25),
-        patch("aiforge_core.legacy.rag.retriever._rerank", side_effect=fake_rerank),
-        patch("aiforge_core.legacy.rag.retriever._get_store", return_value=object()),
+        patch("aiforge_core.memory.rag.retriever._vector_retrieve", side_effect=fake_vec),
+        patch("aiforge_core.memory.rag.retriever._bm25_retrieve", side_effect=fake_bm25),
+        patch("aiforge_core.memory.rag.retriever._rerank", side_effect=fake_rerank),
+        patch("aiforge_core.memory.rag.retriever._get_store", return_value=object()),
     ):
         yield
 
 
 class TestRolePolicy:
     def test_role_policy_applies_correct_tiers(self) -> None:
-        from aiforge_core.legacy.rag.retriever import retrieve_for_role_li
+        from aiforge_core.memory.rag.retriever import retrieve_for_role_li
 
         policy = ROLE_POLICIES.get("doer") or ROLE_POLICIES["developer"]
         tiers_visited: list[str] = []
@@ -54,10 +54,10 @@ class TestRolePolicy:
             return [_hit(f"v-{tier}", tier=tier)]
 
         with (
-            patch("aiforge_core.legacy.rag.retriever._vector_retrieve", side_effect=track_vec),
-            patch("aiforge_core.legacy.rag.retriever._bm25_retrieve", return_value=[]),
-            patch("aiforge_core.legacy.rag.retriever._rerank", side_effect=lambda q, h, keep: h[:keep]),
-            patch("aiforge_core.legacy.rag.retriever._get_store", return_value=object()),
+            patch("aiforge_core.memory.rag.retriever._vector_retrieve", side_effect=track_vec),
+            patch("aiforge_core.memory.rag.retriever._bm25_retrieve", return_value=[]),
+            patch("aiforge_core.memory.rag.retriever._rerank", side_effect=lambda q, h, keep: h[:keep]),
+            patch("aiforge_core.memory.rag.retriever._get_store", return_value=object()),
         ):
             retrieve_for_role_li(None, "doer", "test query", None)
 
@@ -67,7 +67,7 @@ class TestRolePolicy:
 
 class TestRrfFuseOrder:
     def test_rrf_fuse_order(self) -> None:
-        from aiforge_core.legacy.rag.retriever import retrieve_for_role_li
+        from aiforge_core.memory.rag.retriever import retrieve_for_role_li
 
         vec_map = {"t2": [_hit("a"), _hit("b"), _hit("c")]}
         bm25_map = {"t2": [_hit("c"), _hit("a"), _hit("d")]}
@@ -83,7 +83,7 @@ class TestRrfFuseOrder:
 
 class TestSidecarDownFallback:
     def test_sidecar_down_fallback(self) -> None:
-        from aiforge_core.legacy.rag.retriever import _rerank
+        from aiforge_core.memory.rag.retriever import _rerank
 
         hits = [_hit("h1"), _hit("h2"), _hit("h3")]
         with patch("urllib.request.urlopen", side_effect=OSError("sidecar down")):
@@ -95,7 +95,7 @@ class TestSidecarDownFallback:
 
 class TestReturnsSameHitType:
     def test_returns_same_hit_type_as_legacy(self) -> None:
-        from aiforge_core.legacy.rag.retriever import retrieve_for_role_li
+        from aiforge_core.memory.rag.retriever import retrieve_for_role_li
 
         vec_map = {"t2": [_hit("v1"), _hit("v2")]}
         bm25_map = {"t2": [_hit("b1")]}

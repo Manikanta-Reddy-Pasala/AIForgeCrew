@@ -4,7 +4,7 @@
 authoritative external accounting system) and OneShell POS for a
 business across an environment (QA or PROD).
 
-**Owner**: agent (`aiforge_core.aiforge_agents.processes.trial_balance`).
+**Owner**: agent (`aiforge_core.memory.trial_balance`).
 This document is also ingested into AiForgeMemory so the local LLM
 sees it as part of every reconciliation ticket's `context_md`.
 

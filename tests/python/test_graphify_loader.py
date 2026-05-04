@@ -1,4 +1,4 @@
-"""Unit tests for ``aiforge_core.index.graphify_loader``.
+"""Unit tests for ``aiforge_core.indexing.graphify_loader``.
 
 These tests use a hand-rolled fake Neo4j driver that records every
 ``session.run(cypher, **params)`` call. We verify:
@@ -20,8 +20,8 @@ from typing import Any
 
 import pytest
 
-from aiforge_core.index import graphify_loader as loader_mod
-from aiforge_core.index.graphify_loader import (
+from aiforge_core.indexing import graphify_loader as loader_mod
+from aiforge_core.indexing.graphify_loader import (
     CYPHER_FILE,
     CYPHER_SYMBOL,
     _classify_node,

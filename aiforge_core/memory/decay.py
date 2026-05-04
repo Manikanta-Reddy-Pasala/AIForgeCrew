@@ -48,7 +48,7 @@ def _decay_postgres(age_days: int, batch: int) -> int:
     - INTERVAL 'N days' AND COALESCE(metadata->>'hit_count','0') = '0'
     AND COALESCE(status,'active') = 'active' LIMIT batch."""
     import psycopg
-    from aiforge_core.runtime.config import AIFORGE_DSN
+    from aiforge_core.config.env import AIFORGE_DSN
     sql = """
         WITH stale AS (
           SELECT id FROM memories
@@ -78,7 +78,7 @@ def _decay_postgres(age_days: int, batch: int) -> int:
 def _decay_neo4j(age_days: int, batch: int) -> int:
     """Neo4j path — :Memory{created_at, hit_count, status}."""
     try:
-        from aiforge_core.legacy.rag.neo4j_memory import driver  # type: ignore
+        from aiforge_core.memory.rag.neo4j_memory import driver  # type: ignore
     except ImportError:
         return 0
     cy = (

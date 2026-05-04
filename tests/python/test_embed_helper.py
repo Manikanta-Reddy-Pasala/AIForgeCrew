@@ -1,5 +1,5 @@
 from unittest.mock import patch, MagicMock
-from aiforge_core.legacy import embed as embed_mod
+from aiforge_core.memory import embed as embed_mod
 
 
 def _fake_urlopen(response_json):

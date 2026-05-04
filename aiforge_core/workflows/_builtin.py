@@ -18,7 +18,7 @@ register(WorkflowSpec(
         "or a live PCB /trialBalance API pull (3-way). Returns a "
         "Markdown audit report; blocks when material gaps are detected."
     ),
-    handler="aiforge_core.aiforge_agents.processes.trial_balance:run_workflow",
+    handler="aiforge_core.memory.trial_balance:run_workflow",
     triggers={
         "keywords_any": [
             "trial balance", "trial-balance", "tally recon",

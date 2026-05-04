@@ -76,7 +76,7 @@ Scope strictly README.md (plus reading the repo's code for reference). Do NOT mo
     continue
   fi
   cd "$REPO"
-  "$PY" -m aiforge_core.runtime.cli create \
+  "$PY" -m aiforge_core.cli.main create \
     --title "$title" --body "$body" --priority low 2>&1 | tail -1
   sleep 0.2
 done

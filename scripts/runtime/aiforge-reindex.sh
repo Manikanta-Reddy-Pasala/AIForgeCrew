@@ -52,7 +52,7 @@ GRAPHIFY="${GRAPHIFY:-/home/mani/.local/bin/graphify}"
   GJ="$GRAPHIFY_OUT/graph.json"
   if [ -f "$GJ" ] && [ -x "$PY" ]; then
     AIFORGE_NEO4J_URI="${AIFORGE_NEO4J_URI:-bolt://127.0.0.1:7687}" \
-      "$PY" -m aiforge_core.index.graphify_loader \
+      "$PY" -m aiforge_core.indexing.graphify_loader \
       --graph "$GJ" --repo "$REPO_NAME" 2>&1 | tail -3
   fi
 

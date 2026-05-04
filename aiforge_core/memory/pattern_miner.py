@@ -61,7 +61,7 @@ def run() -> dict:
 def _recent_doer_facts(days_back: int) -> list[dict]:
     """Read T3 facts under patterns/doer-success or patterns/doer-failure."""
     try:
-        from aiforge_core.legacy.rag.neo4j_memory import driver  # type: ignore
+        from aiforge_core.memory.rag.neo4j_memory import driver  # type: ignore
     except ImportError:
         return []
     cy = (
@@ -159,7 +159,7 @@ def _persist_pattern(fact: dict) -> str | None:
 
 def _mark_promoted(members: list[dict], new_id: str) -> None:
     try:
-        from aiforge_core.legacy.rag.neo4j_memory import driver  # type: ignore
+        from aiforge_core.memory.rag.neo4j_memory import driver  # type: ignore
     except ImportError:
         return
     cy = (

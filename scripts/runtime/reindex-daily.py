@@ -16,8 +16,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from aiforge_core.legacy.store_v2 import Store
-from aiforge_core.legacy.rag import reindex_repo
+from aiforge_core.memory.store import Store
+from aiforge_core.memory.rag import reindex_repo
 
 
 JOBS = [
@@ -36,7 +36,7 @@ def archive_dead_facts(age_days: int = 90) -> int:
     archived/<original-wing>. Keeps them searchable but deprioritized.
     Returns number archived."""
     import psycopg
-    from aiforge_core.runtime.config import AIFORGE_DSN
+    from aiforge_core.config.env import AIFORGE_DSN
     with psycopg.connect(AIFORGE_DSN, connect_timeout=5) as c, c.cursor() as cur:
         cur.execute(
             "UPDATE memories SET wing = 'archived/' || wing "

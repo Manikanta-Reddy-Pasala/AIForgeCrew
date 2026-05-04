@@ -5,7 +5,7 @@
 # `graphify update <repo>` to refresh that repo's graphify-out/graph.json.
 # Then merges all per-repo graphs into one combined graph.json (Python),
 # then loads the merged graph into Neo4j via
-# `python -m aiforge_core.index.graphify_loader`.
+# `python -m aiforge_core.indexing.graphify_loader`.
 #
 # Designed for launchd / cron / systemd. Per-repo failures are logged and
 # do not abort the whole run.
@@ -166,7 +166,7 @@ fi
 
 log "LOAD merged graph -> Neo4j"
 export PYTHONPATH="$AIFORGE_REPO${PYTHONPATH:+:$PYTHONPATH}"
-if "$PY" -m aiforge_core.index.graphify_loader \
+if "$PY" -m aiforge_core.indexing.graphify_loader \
         --graph "$MERGED_JSON" \
         --repo "_merged" \
         >>"$LOG_DIR/graphify-nightly.out" 2>>"$LOG_DIR/graphify-nightly.err"; then

@@ -38,7 +38,7 @@ def aider_digest(worktree: str, chat_files: list[str],
     if os.environ.get("AIFORGE_AIDER_REPOMAP_ENABLED", "1") != "1":
         return ""
     try:
-        from aiforge_core.index.aider_map import (
+        from aiforge_core.indexing.aider_map import (
             AiderMapConfig, render_repo_map_cached as render_repo_map,
         )
     except Exception:
@@ -65,9 +65,9 @@ _REPO_MAP_EXTS = (".java", ".py", ".ts", ".tsx", ".js", ".kt", ".go")
 def _enumerate_repo_files(root: Path, exclude: set[str],
                           cap: int = 4000) -> list[str]:
     """Walk worktree, return code files. Noise dirs/extensions filtered
-    via the shared ``aiforge_core.index.noise`` module — single source
+    via the shared ``aiforge_core.indexing.noise`` module — single source
     of truth across all indexers + retrievers."""
-    from aiforge_core.index.noise import prune_dirnames, is_noise_path
+    from aiforge_core.indexing.noise import prune_dirnames, is_noise_path
     out: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         prune_dirnames(dirnames)   # in-place prune for noise dirs
@@ -169,3 +169,18 @@ def graph_neighbours(file_paths: list[str], limit: int = 30) -> str:
             + (f"  ({sig})" if sig else "")
         )
     return "\n".join(lines) if len(lines) > 1 else ""
+
+
+# ─────────────────── Compat shim (understander / legacy callers) ────────────
+def query(text: str, *, repo: str = "", token_budget: int = 4000) -> str:
+    """Thin compat wrapper for callers that use the old 1-arg API.
+
+    Tries the AiForgeMemory API first (if installed), otherwise falls back
+    to an empty string so the Understander degrades gracefully.
+    """
+    try:
+        from aiforge_memory.api.read import context_bundle_for  # type: ignore
+        return context_bundle_for(text, repo=repo, role="any",
+                                  token_budget=token_budget)
+    except Exception:
+        return ""

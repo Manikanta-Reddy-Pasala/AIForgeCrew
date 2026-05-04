@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from aiforge_core.runtime.logging_setup import emit
+from aiforge_core.observability.logging import emit
 from aiforge_core.test.mcp_client import find_test_business
 
 

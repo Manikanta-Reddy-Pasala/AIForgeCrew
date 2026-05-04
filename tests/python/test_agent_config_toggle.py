@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aiforge_core.runtime import agent_config as ac
+from aiforge_core.config import agent_config as ac
 
 
 @pytest.fixture

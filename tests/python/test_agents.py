@@ -19,7 +19,7 @@ from aiforge_core.agents import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SHIPPED_YAML = REPO_ROOT / "aiforge_core" / "agents.yaml"
+SHIPPED_YAML = REPO_ROOT / "aiforge_core" / "agents" / "agents.yaml"
 
 EXPECTED_ROLES = {"architect", "planner", "doer", "feedback", "learner"}
 

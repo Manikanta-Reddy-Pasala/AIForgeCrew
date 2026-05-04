@@ -274,7 +274,7 @@ def _apply_defaults(std: Standards) -> None:
 
 def _from_neo4j(repo_name: str) -> dict | None:
     try:
-        from aiforge_core.legacy.rag.neo4j_memory import _get_driver
+        from aiforge_core.memory.rag.neo4j_memory import _get_driver
     except ImportError:
         return None
     cy = (
@@ -334,7 +334,7 @@ def _coerce(row: dict) -> dict:
 
 
 def _persist_to_neo4j(repo_name: str, payload: dict) -> None:
-    from aiforge_core.legacy.rag.neo4j_memory import _get_driver
+    from aiforge_core.memory.rag.neo4j_memory import _get_driver
     cy = (
         "MERGE (r:Repo {name: $name}) "
         "SET r += $payload, r.updated_at = datetime() "

@@ -82,7 +82,7 @@ LLM call is local-only (`AIFORGE_INTENT_LM_URL` defaults to planner port). No cl
 | # | Source | What | Module |
 |---|---|---|---|
 | 1 | `unified_query` | T2 facts + T1 episodic + ticket brief + related symbols + doc/markdown + external lib docs (6-source aggregator) | `aiforge_core/memory/unified_query.py` |
-| 2 | Aider RepoMap | tree-sitter PageRank tag digest over T4/T5 — keyed off focal_files extracted from (1) | `aiforge_core/memory/code_context.py` + `aiforge_core/index/aider_map.py` |
+| 2 | Aider RepoMap | tree-sitter PageRank tag digest over T4/T5 — keyed off focal_files extracted from (1) | `aiforge_core/memory/code_context.py` + `aiforge_core/indexing/aider_map.py` |
 | 3 | graph_neighbours | Neo4j `:Symbol` CALLS / IMPORTS / EXTENDS edges (T5) | `aiforge_core/memory/code_context.py` |
 | 4 | repo_standards | per-repo `:Repo` manifest — build/compile/test/lint/format/conventions/forbidden_patterns/acceptance | `aiforge_core/runtime/repo_standards.py` |
 | 5 | similar_tickets | Postgres `tickets` ILIKE on title+body | inline |
@@ -131,18 +131,18 @@ The learner runs after every Doer pass (`aiforge_core/runtime/doer_learner.py`) 
 | Path | Surface | Purpose | Pipeline |
 |---|---|---|---|
 | `aiforge_core/runtime/adk_runner.py` | HTTP API + systemd `aiforge-graph-runner.service` | Production ticket flow | ADK `SequentialAgent[Planner, Loop[Doer,Feedback], Learner]` |
-| `aiforge_core/aiforge_agents/orchestrator/run_ticket.py` | `aiforge-agents-run` CLI | Experimental v0.4 cascade | 9 stages: Understander → Planner ⇄ Grounder (REPLAN ≤3) → Verifier → Doer ⇄ Validator (CRITIC ×2) → Tester → Architect → Learner |
+| `aiforge_core/orchestrator/run_ticket.py` | `aiforge-agents-run` CLI | Experimental v0.4 cascade | 9 stages: Understander → Planner ⇄ Grounder (REPLAN ≤3) → Verifier → Doer ⇄ Validator (CRITIC ×2) → Tester → Architect → Learner |
 
-Both share infrastructure: pluggable LLM router with health probe + cloud auto-escalation (`aiforge_core/llm/`), recovery engine that consumes the F-001..F-012 failure taxonomy (`aiforge_core/aiforge_agents/runtime/recovery_engine.py`), and per-ticket NDJSON traces at `~/.aiforge/runs/<ticket>.ndjson`.
+Both share infrastructure: pluggable LLM router with health probe + cloud auto-escalation (`aiforge_core/llm/`), recovery engine that consumes the F-001..F-012 failure taxonomy (`aiforge_core/orchestrator/recovery_engine.py`), and per-ticket NDJSON traces at `~/.aiforge/runs/<ticket>.ndjson`.
 
 ## Recovery & Resilience
 
 | Layer | Module | Triggers |
 |---|---|---|
-| Circuit breakers | `aiforge_agents/runtime/circuit_breakers.py` | wall-clock per agent (doer 30min · others 10min · ticket 4hr); retries-per-step (5); token budget (2× expected); audit failures |
-| Failure taxonomy | `aiforge_agents/runtime/failure_taxonomy.py` | F-001 hallucinated import · F-002 hallucinated symbol · F-003 diff context mismatch · F-004/007/008/010 loop · F-005 unreachable plan step · F-006 plan depth · F-009 token budget · F-011 skill misapplication · F-012 memory contradiction. User-extensible at `~/.aiforge/failure_taxonomy.yaml` (F-013+) |
-| Detectors | `aiforge_agents/runtime/detectors.py` | Real ground-truth checks via Neo4j Symbol/Import graph + 3x-same-output loop hash + udiff context line hash |
-| Recovery engine | `aiforge_agents/runtime/recovery_engine.py` | Maps detector match → `Action` (BLOCK_AND_RETRY · REPLAN · REPLAN_SMALLER · SPLIT_TICKET · KGR_FALLBACK · DEMOTE_SKILL · QUARANTINE_MEMORY · ESCALATE_HUMAN). Repeat-escalation guard: same F-mode 3× → forced ESCALATE_HUMAN regardless of policy. |
+| Circuit breakers | `aiforge_core/orchestrator/circuit_breakers.py` | wall-clock per agent (doer 30min · others 10min · ticket 4hr); retries-per-step (5); token budget (2× expected); audit failures |
+| Failure taxonomy | `aiforge_core/orchestrator/failure_taxonomy.py` | F-001 hallucinated import · F-002 hallucinated symbol · F-003 diff context mismatch · F-004/007/008/010 loop · F-005 unreachable plan step · F-006 plan depth · F-009 token budget · F-011 skill misapplication · F-012 memory contradiction. User-extensible at `~/.aiforge/failure_taxonomy.yaml` (F-013+) |
+| Detectors | `aiforge_core/orchestrator/detectors.py` | Real ground-truth checks via Neo4j Symbol/Import graph + 3x-same-output loop hash + udiff context line hash |
+| Recovery engine | `aiforge_core/orchestrator/recovery_engine.py` | Maps detector match → `Action` (BLOCK_AND_RETRY · REPLAN · REPLAN_SMALLER · SPLIT_TICKET · KGR_FALLBACK · DEMOTE_SKILL · QUARANTINE_MEMORY · ESCALATE_HUMAN). Repeat-escalation guard: same F-mode 3× → forced ESCALATE_HUMAN regardless of policy. |
 | LLM client | `aiforge_core/llm/client.py` | 3-tier retry chain — pre-flight cloud escalation when `est_tokens > local_ctx × 0.8`; fallback provider on transport error or empty/garbage 200-OK; cloud quality escalation on second failure |
 | Provider health | `aiforge_core/llm/health.py` | Cached `/v1/models` probe (30s TTL); router skips known-down providers automatically; envs: `AIFORGE_HEALTH_DISABLE`, `AIFORGE_HEALTH_TTL_S`, `AIFORGE_HEALTH_TIMEOUT_S` |
 | Cloud auto-escalation | `aiforge_core/llm/router.py:escalate()` | Reasons: `context_overflow` (token estimate vs local ctx), `quality` (forced cloud after empty/garbage), `timeout`, `breaker_close`. Pinnable via `AIFORGE_<ROLE>_CLOUD_PROVIDER` |
@@ -275,30 +275,36 @@ AIFORGE_PERF_NDJSON            1 = ~/.aiforge/perf.ndjson tail (default)
 
 ---
 
-## Source layout
+## Project layout
 
 ```
 aiforge_core/
-├── intent/             ─── IntentLayer: plain text → Intent → EnrichedTicket
-│   └── classifier.py
-├── context/            ─── UnifiedContext: one read API, 8 sources
-│   └── unified.py
-├── runtime/            ─── api · adk_workflow · cost · otel · memory · repo_standards
-├── doer/
-│   ├── ga_runner.py    ─── GA agent loop bridge (prompt assembly)
-│   └── ga_tools/       ─── 24 modules, one per tool concern
-├── planner/            ─── smolagents CodeAgent
-├── memory/
-│   ├── unified_query.py    ─── 6-source aggregator (used by UnifiedContext source #1)
-│   ├── code_context.py     ─── aider_digest + graph_neighbours (sources #2, #3)
-│   ├── pattern_miner.py    ─── 3+ similar → T3 auto-promote
-│   └── decay.py            ─── archive stale facts
-├── index/              ─── aider_map · merkle · symbol_embed · docs_index
-├── llm/                ─── client · router · cache_markers · rate_limiter · providers
-└── agents.yaml         ─── single source of truth for per-agent contracts
+  agents/         10 archetypes (architect, coordinator, doer, grounder,
+                  learner, planner, tester, understander, validator,
+                  verifier) + base + registry + agents.yaml
+  orchestrator/   run_ticket entry + agent_runner + recovery + circuit_breakers
+                  + tool_registry — wraps archetypes as ADK LlmAgents
+  api/            FastAPI app + MCP HTTP shim (port 8799)
+  cli/            python -m aiforge_core.cli.main — ticket / trace commands
+  tickets/        Postgres ticket lifecycle (claim_next_any, status, events)
+  llm/            litellm client + cache + router
+  memory/         decay + pattern_miner + unified_query + Neo4j RAG +
+                  embed + store + retrieval
+  indexing/       code symbol indexing (docs, repo learn, embeddings)
+  config/         env vars + agents.yaml loader + roles
+  observability/  structured NDJSON logging + OpenTelemetry + cost
+  workflows/      workflow definitions
+  parallel.py     thread-pool helpers
 ```
 
-Single doc — this file. `agents.yaml` is the only other prose source (per-agent allowed/forbidden tools, memory scopes, termination contracts).
+Entry points (per `pyproject.toml`):
+- `aiforge-agents-run` — run one ticket through the orchestrator
+- `aiforge-agents-tb` — trial-balance memory process
+
+Services on the NUC (`192.168.70.115`):
+- `aiforge-api.service` — uvicorn FastAPI on port 8799
+
+Single doc — this file. `agents/agents.yaml` is the only other prose source (per-agent allowed/forbidden tools, memory scopes, termination contracts).
 
 ---
 
@@ -589,7 +595,7 @@ key = "/".join(parts[-2:])  # parent_dir/basename
 
 #### [D] Noise filter
 
-`aiforge_core/index/noise.py` — single source of truth used by indexers AND retrievers. Drops:
+`aiforge_core/indexing/noise.py` — single source of truth used by indexers AND retrievers. Drops:
 
 - dirs: `target`, `build`, `out`, `dist`, `node_modules`, `vendor`, `.gradle`, `.mvn`, `.aiforge-worktrees`, `__pycache__`, ...
 - extensions: `.pyc`, `.class`, `.jar`, `.so`, `.lock`, `.min.js`, `.png`, ...

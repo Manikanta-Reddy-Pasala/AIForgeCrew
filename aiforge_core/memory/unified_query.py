@@ -266,7 +266,7 @@ def _ticket_local(identifier: str) -> dict | None:
     Bypasses graph_mcp's external-provider assumption."""
     try:
         import psycopg
-        from aiforge_core.runtime.config import AIFORGE_DSN
+        from aiforge_core.config.env import AIFORGE_DSN
         from psycopg.rows import dict_row
         with psycopg.connect(AIFORGE_DSN, connect_timeout=2,
                              row_factory=dict_row) as c, c.cursor() as cur:
@@ -306,7 +306,7 @@ def _ticket_local(identifier: str) -> dict | None:
 
 def _mcp_call(tool: str, args: dict) -> Any:
     """Inline graph_rag MCP call via the existing sync helper."""
-    from aiforge_core.runtime.api import _call_graph_mcp_sync  # type: ignore
+    from aiforge_core.api.api import _call_graph_mcp_sync  # type: ignore
     raw = _call_graph_mcp_sync(tool, args)
     if isinstance(raw, str) and raw.startswith("error:"):
         return None
@@ -314,7 +314,7 @@ def _mcp_call(tool: str, args: dict) -> Any:
 
 
 def _docs_lookup(library: str, text: str, *, top_k: int) -> list[dict]:
-    from aiforge_core.index.docs_index import lookup_doc
+    from aiforge_core.indexing.docs_index import lookup_doc
     chunks = lookup_doc(library, text, top_k=top_k) or []
     out: list[dict] = []
     for c in chunks:
