@@ -10,7 +10,7 @@ Caller responsibilities:
 - Tasks are ``Callable[[], R]`` — fully bound, no shared state.
 - ``joiner(results: list[R]) -> Any`` produces the merged value.
 
-Future-compat: when we cut over to ADK 2.0 ``Workflow(BaseNode)``,
+Future-compat: when we adopt the ADK 2.x ``Workflow(BaseNode)`` graph DSL,
 each task here becomes a ``Node`` and ``joiner`` becomes a
 ``JoinNode`` — interface stays the same.
 

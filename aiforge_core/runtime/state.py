@@ -1,13 +1,16 @@
-"""Pydantic-typed inter-node state — ADK 2.0 ``Event(state=...)`` shape
-in plain-Pydantic so we don't carry the ADK 2.0 dep yet.
+"""Pydantic-typed inter-node state — internal envelope mirroring the
+``google.adk.Event`` shape.
 
 KISS: one ``WorkflowState`` base, one ``StateDelta`` for partial
 updates, one ``Event`` envelope. Each agent role declares its own
 state schema by subclassing ``WorkflowState``; orchestrator validates
 inputs/outputs at the boundary.
 
-When we cut over to ADK 2.0, swap our ``Event`` for ``google.adk.Event``
-— field names match (``state``, ``message``, ``actions``).
+Kept separate from ``google.adk.Event`` because not every consumer of
+this envelope is an ADK node (some are pre-ADK helpers in
+``aiforge_agents/``). When a caller IS inside an ADK node, the field
+names match (``state``, ``message``, ``actions``) so a 1:1 swap is
+trivial.
 
 Public surface:
 - ``WorkflowState`` (Pydantic BaseModel base)

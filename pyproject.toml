@@ -33,7 +33,7 @@ xlsx = ["openpyxl>=3.1"]
 # UI chat / GA workflow.
 legacy = [
   "smolagents>=1.13",
-  "google-adk==1.31.1",
+  "google-adk==2.0.0b1",
   "langgraph>=0.3.0",
   "langgraph-checkpoint-postgres>=2.0.0",
   "llama-index-core>=0.12.0",
