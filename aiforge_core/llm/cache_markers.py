@@ -214,15 +214,7 @@ def apply_to_session(session: object, *, provider: str,
             messages = stamp(list(messages), model=model, provider=provider)
         except Exception:
             pass
-        # pre_llm event — record_step only (no wall_ms yet).
-        try:
-            from aiforge_core.doer.ga_tools import hooks as _hk
-            _hk.emit_step(event="pre_llm", name=f"{provider}:{model}",
-                          wall_ms=0,
-                          extra={"role": role,
-                                 "msg_count": len(messages or [])})
-        except Exception:
-            pass
+        # pre_llm event — no-op (ga_tools.hooks removed).
         # Snapshot the outgoing messages so the post-call ``llm.call``
         # event can include them (full chat history) for the UI's
         # /api/llm-trace endpoint.
@@ -276,42 +268,8 @@ def _post_llm(role: str, provider: str, model: str, t0: float,
               *, exc: str | None = None,
               session: object | None = None,
               content_blocks=None) -> None:
-    import time as _t
-    try:
-        from aiforge_core.doer.ga_tools import hooks as _hk
-        wall_ms = int((_t.time() - t0) * 1000)
-        extra = {"role": role}
-        if exc:
-            extra["err"] = exc
-        # Diagnostic: capture tool_use count + first text head from
-        # content_blocks returned by raw_ask. Always captured when
-        # AIFORGE_DEBUG_LLM=1; cheap (one list scan).
-        if (content_blocks is not None
-                and os.environ.get("AIFORGE_DEBUG_LLM", "0") == "1"):
-            try:
-                tool_use = 0
-                text_head = ""
-                for blk in content_blocks or []:
-                    if not isinstance(blk, dict):
-                        continue
-                    bt = blk.get("type")
-                    if bt == "tool_use":
-                        tool_use += 1
-                    elif bt == "text" and not text_head:
-                        text_head = (blk.get("text") or "")[:300]
-                extra["tool_use_count"] = tool_use
-                extra["resp_head"] = text_head
-                extra["block_count"] = len(content_blocks or [])
-            except Exception:
-                pass
-        _hk.emit_step(
-            event="post_llm",
-            name=f"{provider}:{model}",
-            wall_ms=wall_ms,
-            extra=extra,
-        )
-    except Exception:
-        pass
+    # post_llm step event — no-op (ga_tools.hooks removed).
+    pass
 
 
 def _emit_llm_call(role: str, provider: str, model: str, t0: float,

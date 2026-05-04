@@ -238,18 +238,8 @@ def _resolve_weights() -> dict:
 
 
 def _memory_search(text: str, *, role: str | None, top_k: int) -> list[dict]:
-    from aiforge_core.runtime.memory import Memory
-    hits = Memory().search(text, role=role or "sr_developer", top_k=top_k)
-    out: list[dict] = []
-    for h in hits:
-        out.append({
-            "text": h.text,
-            "tier": getattr(h, "tier", None),
-            "wing": getattr(h, "wing", None),
-            "score": float(getattr(h, "score", 0.5) or 0.5),
-            "source_uri": getattr(h, "source", None),
-        })
-    return out
+    # runtime.memory removed — memory search stub returns empty list.
+    return []
 
 
 def _ticket_brief(identifier: str) -> dict | None:

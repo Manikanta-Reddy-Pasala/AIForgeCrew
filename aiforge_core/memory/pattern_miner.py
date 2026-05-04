@@ -153,19 +153,8 @@ def _synthesise(key: str, members: list[dict[str, Any]]) -> dict:
 
 
 def _persist_pattern(fact: dict) -> str | None:
-    try:
-        from aiforge_core.runtime.memory import Memory
-        return Memory().retain_fact(
-            text=fact["text"],
-            tier=fact["tier"],
-            wing=fact["wing"],
-            kind=fact["kind"],
-            source="pattern-miner",
-            metadata=fact["metadata"],
-        )
-    except Exception as exc:
-        print(f"[pattern_miner] persist failed: {exc}")
-        return None
+    # runtime.memory removed — persist is a no-op stub returning None.
+    return None
 
 
 def _mark_promoted(members: list[dict], new_id: str) -> None:
