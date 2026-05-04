@@ -295,15 +295,21 @@ def _from_neo4j(repo_name: str) -> dict | None:
 
 
 def _from_worktree(worktree: str) -> dict | None:
-    try:
-        from aiforge_core.doer.ga_tools import repo_config as _rc
-        cfg = _rc.load(worktree) or {}
-    except Exception:
-        cfg = {}
-    if not cfg:
+    """Read per-worktree YAML override from <worktree>/.aiforge/aiforge.conf.yml.
+    Replaces the old ga_tools.repo_config.load() call inline — no new deps."""
+    import yaml as _yaml
+    conf = os.path.join(worktree, ".aiforge", "aiforge.conf.yml")
+    if not os.path.isfile(conf):
         return None
-    cfg["source"] = "worktree"
-    return _coerce(cfg)
+    try:
+        with open(conf, "r", encoding="utf-8") as fh:
+            data = _yaml.safe_load(fh) or {}
+    except Exception:
+        return None
+    if not data:
+        return None
+    data["source"] = "worktree"
+    return _coerce(data)
 
 
 def _coerce(row: dict) -> dict:

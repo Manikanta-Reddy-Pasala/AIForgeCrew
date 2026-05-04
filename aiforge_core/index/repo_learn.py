@@ -212,37 +212,8 @@ def _existing_sha1(file_id: str) -> str | None:
 
 def _persist_fact(*, repo: str, file_path: str, parsed: dict,
                   content_sha1: str) -> str | None:
-    """Write the summary to T2 memory. ID is stable per (repo,file) so
-    re-runs replace prior summary instead of duplicating."""
-    try:
-        from aiforge_core.runtime.memory import Memory
-        rel = file_path
-        for marker in ("/src/main/", "/src/test/"):
-            if marker in file_path:
-                rel = file_path[file_path.index(marker) + 1:]
-                break
-        text = _summary_text(parsed, file_path, repo)
-        wing = f"code/{repo}/{parsed.get('kind') or 'other'}"
-        return Memory().retain_fact(
-            text=text,
-            tier="t2",
-            wing=wing,
-            kind="file_summary",
-            source=f"repo-learn:{repo}:{rel}",
-            metadata={
-                "repo": repo,
-                "file_path": file_path,
-                "rel_path": rel,
-                "kind": parsed.get("kind"),
-                "exposes": (parsed.get("exposes") or [])[:8],
-                "depends_on": (parsed.get("depends_on") or [])[:8],
-                "tags": (parsed.get("tags") or [])[:6],
-                "sha1": content_sha1,
-                "learned_at": int(time.time()),
-            },
-        )
-    except Exception:
-        return None
+    """Write the summary to T2 memory. Stub — runtime.memory removed."""
+    return None
 
 
 def learn_repo(repo: str, *,

@@ -57,43 +57,17 @@ def _cmd_create(args) -> int:
 
 
 def _cmd_retrieval_eval(args) -> int:
-    """A/B compare cursor-style vs aider-style retrieval."""
-    from aiforge_core.intent.compare_retrieval import compare, render_comparison
-    result = compare(args.text, args.repo, top_k=args.top_k)
-    print(render_comparison(result))
-    return 0
+    """A/B compare cursor-style vs aider-style retrieval (removed — intent module deleted)."""
+    print("retrieval-eval subcommand has been removed (legacy intent module deleted).",
+          file=sys.stderr)
+    return 2
 
 
 def _cmd_classify(args) -> int:
-    """Interactive classifier — agent asks clarifying questions until
-    all intent fields are confidently resolved. Operator answers are
-    persisted to <repo>/.aiforge/synonyms.yml so the same phrasing
-    next time hits the cache, no question asked.
-
-    Output: final Intent as JSON (use with `aiforge ticket create
-    --body ... --project <repo>` to actually file)."""
-    from aiforge_core.intent.interactive import classify_with_clarification
-    text = args.text
-    if not text and not sys.stdin.isatty():
-        text = sys.stdin.read().strip()
-    if not text:
-        print("usage: aiforge ticket classify '<natural language text>'",
-              file=sys.stderr)
-        return 2
-    intent = classify_with_clarification(
-        text, repo=args.repo,
-        auto_persist=not args.no_persist,
-        max_rounds=args.max_rounds,
-    )
-    print()
-    print(json.dumps({
-        "action": intent.action,
-        "entity": intent.entity,
-        "reference_pattern": intent.reference_pattern,
-        "repo_hint": intent.repo_hint,
-        "keywords": intent.keywords,
-    }, indent=2))
-    return 0
+    """Interactive classifier (removed — intent module deleted)."""
+    print("classify subcommand has been removed (legacy intent module deleted).",
+          file=sys.stderr)
+    return 2
 
 
 def _cmd_list(args) -> int:

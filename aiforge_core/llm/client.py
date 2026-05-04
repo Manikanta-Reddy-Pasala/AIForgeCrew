@@ -203,20 +203,8 @@ def _extract_text(resp_body: dict) -> str:
 
 
 def _record_usage(role: str, resp_body: dict) -> None:
-    """Push token counts into ga_tools.tokens registry. Best-effort."""
-    try:
-        from aiforge_core.doer.ga_tools import tokens as _tk
-        import os as _os
-        usage = (resp_body or {}).get("usage") or {}
-        ticket = _os.environ.get("AIFORGE_CURRENT_TICKET", "")
-        _tk.note(
-            ticket or None,
-            role,
-            int(usage.get("prompt_tokens", 0) or 0),
-            int(usage.get("completion_tokens", 0) or 0),
-        )
-    except Exception:
-        pass
+    """Push token counts to registry. Best-effort no-op (ga_tools removed)."""
+    pass
 
 
 def _is_garbage(text: str) -> bool:
