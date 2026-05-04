@@ -1,7 +1,7 @@
 -- ADK 2.0.0b1 migration — reset session storage.
 --
 -- Why:
---   google-adk 1.31.1 → 2.0.0b1 changed the SQLAlchemy schema for ADK
+--   google-adk 1.x → 2.0.0b1 changed the SQLAlchemy schema for ADK
 --   sessions (see google.adk.sessions.schemas v0 → v1). The tables
 --   the 1.x DatabaseSessionService created cannot be reused as-is.
 --
@@ -21,7 +21,7 @@
 --   re-run from scratch.
 --
 -- Rollback procedure (no SQL script — manual steps):
---   Redeploy the 1.31.1 code. ADK 1.x will recreate its own v0 tables on
+--   Redeploy the prior ADK 1.x code. ADK 1.x will recreate its own v0 tables on
 --   the next DatabaseSessionService(db_url=...) instantiation. Any leftover
 --   `adk_internal_metadata` row is harmless to 1.x — it doesn't read it.
 
@@ -38,7 +38,7 @@ $$;
 
 BEGIN;
 
--- Tables defined by google.adk.sessions.schemas v0 (1.31.1) and v1 (2.0.0b1).
+-- Tables defined by google.adk.sessions.schemas v0 (ADK 1.x) and v1 (ADK 2.0.0b1).
 -- DROP order: child first, then parent — keeps the script correct even if
 -- a future edit removes the CASCADE clauses. `events` has an FK to
 -- `sessions`; the rest are independent.
