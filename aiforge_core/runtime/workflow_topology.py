@@ -5,8 +5,8 @@ KISS: a static topology spec representing the live AIForge sequence
 Learner``, plus an optional per-ticket overlay decorating each node
 with the most recent status pulled from ``ticket_events``.
 
-The topology IS hardcoded today — when ADK 2.0 ``Workflow(BaseNode)``
-lands we'll derive the graph from ``Workflow._workflow_graph``
+The topology IS hardcoded today — when we adopt the ADK 2.x ``Workflow(BaseNode)`` graph DSL
+we'll derive the graph from ``Workflow._workflow_graph``
 instead. Interface (``snapshot``) stays identical so the UI doesn't
 care.
 

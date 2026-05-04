@@ -25,7 +25,7 @@ laptop ──ssh──► nuc :8799 (api)
                   │
                   ├── postgres 16     ── tickets, ticket_events, costs, hitl_requests
                   ├── neo4j 5.26      ── 5-tier memory · :Repo standards · :Symbol/:Chunk index
-                  ├── graph-runner    ── ADK 1.31.1 SequentialAgent[Planner, Loop[Doer,Feedback], Learner]
+                  ├── graph-runner    ── ADK 2.0.0b1 SequentialAgent[Planner, Loop[Doer,Feedback], Learner]
                   ├── embed-sidecar   :8764 bge-m3 ONNX  (writes T4/T5 vectors)
                   ├── graphify        ── tree-sitter ingest → :Symbol + INFERRED edges (T5)
                   ├── aider-repomap   ── PageRank tag digest over T5 + on-disk source (T4)
@@ -157,7 +157,7 @@ Both share infrastructure: pluggable LLM router with health probe + cloud auto-e
 | **feedback** | deterministic Python | (none) | doer outcome counters | (none — pure code) | R none · W ticket_events |
 | **learner** | deterministic + optional LLM | distill = template; pattern_miner = heuristic | Doer outcome dict | retain_fact | W T3 (patterns/doer-success or patterns/doer-failure) |
 
-ADK 1.31.1 `SequentialAgent[Planner, LoopAgent[Doer, Feedback], Learner]` orchestrates. ADK does scheduling + lifecycle + tool-allowlist enforcement only — no business logic.
+ADK 2.0.0b1 `SequentialAgent[Planner, LoopAgent[Doer, Feedback], Learner]` orchestrates. ADK does scheduling + lifecycle + tool-allowlist enforcement only — no business logic.
 
 ---
 
