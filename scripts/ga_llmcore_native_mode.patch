@@ -1,0 +1,75 @@
+--- /tmp/llmcore_orig.py	2026-05-04 06:30:15
++++ /tmp/llmcore_new.py	2026-05-04 06:29:50
+@@ -864,8 +864,24 @@
+         self.total_cd_tokens = 0
+ 
+     def chat(self, messages, tools=None):
+-        full_prompt = self._build_protocol_prompt(messages, tools)
+-        print("Full prompt length:", len(full_prompt), 'chars')
++        # 2026-05 — When the underlying session has native tool_choice
++        # configured (LM Studio / Ollama Cloud / OpenAI with tools+tool_choice
++        # in the OpenAI-compat payload), suppress the GA text-protocol
++        # tool-use instructions. Mixed signals (native tools + "emit
++        # <tool_use>{...}</tool_use>" prompt) caused qwen3-coder:480b on
++        # Ollama Cloud to emit only <thinking>/<summary> and zero tool calls.
++        # Fall back to text-protocol whenever the session is NOT in native
++        # mode (e.g. mlx-lm 0.31 + LM Studio where native tool_calls are
++        # broken). ToolClient reads from self.backend each call, so a
++        # session.tool_choice toggle after construction is honoured.
++        _tc = getattr(self.backend, 'tool_choice', None)
++        _bt = getattr(self.backend, 'tools', None)
++        native_mode = bool(_bt) and _tc in ('required', 'auto') or (
++            isinstance(_tc, dict) and bool(_bt)
++        )
++        full_prompt = self._build_protocol_prompt(messages, tools, native_mode=native_mode)
++        print("Full prompt length:", len(full_prompt), 'chars',
++              '(native_mode)' if native_mode else '(text-protocol)')
+         prompt_log = full_prompt
+         gen = self.backend.ask(full_prompt, stream=True)
+         _write_llm_log('Prompt', prompt_log)
+@@ -891,11 +907,31 @@
+             return total
+         return len(str(content))
+     
+-    def _prepare_tool_instruction(self, tools):
++    def _prepare_tool_instruction(self, tools, native_mode=False):
+         tool_instruction = ""
+         if not tools: return tool_instruction
+         tools_json = json.dumps(tools, ensure_ascii=False, separators=(',', ':'))
+         _en = os.environ.get('GA_LANG') == 'en'
++        # 2026-05 — Native mode: the backend payload carries `tools` +
++        # `tool_choice`, so DON'T duplicate the schema in the prompt and
++        # DON'T prescribe the <tool_use> text format. Models given both
++        # signals (qwen3-coder:480b on Ollama Cloud, ticket ONE-87)
++        # picked neither. Emit a one-liner nudge instead and bail out
++        # before the text-protocol block. We still update `last_tools`
++        # so the auto_save_tokens short-circuit on the next call works.
++        if native_mode:
++            tool_instruction = (
++                "\nUse the provided tools to complete the task. "
++                "Emit native tool calls.\n"
++                if _en else
++                "\n请使用提供的工具完成任务，直接发起原生工具调用。\n"
++            )
++            if self.auto_save_tokens and self.last_tools == tools_json:
++                pass  # short-circuit — same one-liner is fine.
++            else:
++                self.total_cd_tokens = 0
++            self.last_tools = tools_json
++            return tool_instruction
+         if _en:
+             tool_instruction = f"""
+ ### Interaction Protocol (must follow strictly, always in effect)
+@@ -919,10 +955,10 @@
+         self.last_tools = tools_json
+         return tool_instruction
+ 
+-    def _build_protocol_prompt(self, messages, tools):
++    def _build_protocol_prompt(self, messages, tools, native_mode=False):
+         system_content = next((m['content'] for m in messages if m['role'].lower() == 'system'), "")
+         history_msgs = [m for m in messages if m['role'].lower() != 'system']
+-        tool_instruction = self._prepare_tool_instruction(tools)
++        tool_instruction = self._prepare_tool_instruction(tools, native_mode=native_mode)
+         system = ""; user = ""
+         if system_content: system += f"{system_content}\n"
+         system += f"{tool_instruction}"
