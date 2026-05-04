@@ -27,12 +27,10 @@ dev = [
   "ruff>=0.4",
 ]
 xlsx = ["openpyxl>=3.1"]
-# Legacy stack — used only by deprecated runtime/api.py chat endpoint
-# + aiforge_core/{planner,doer,intent,context,legacy} packages. New
-# code MUST NOT import these. Install only when running the legacy
-# UI chat / GA workflow.
+# Legacy ADK 2.0b1 dependency — required by the runtime/adk_workflow.py
+# orchestrator path. Will be retired once the entire pipeline cuts over
+# to aiforge_core/aiforge_agents/orchestrator/run_ticket.py.
 legacy = [
-  "smolagents>=1.13",
   "google-adk==2.0.0b1",
 ]
 

@@ -1,9 +1,8 @@
 """GenericAgent text-protocol adapter for the Doer role.
 
 Runs the Doer's edit/compile loop through GenericAgent's
-``agent_runner_loop`` instead of smolagents.  Used when
-``AIFORGE_DOER_BACKEND=genericagent`` (or when ``agents.yaml`` declares
-``backend: genericagent_text_protocol``).
+``agent_runner_loop``.  GA is now the only Doer backend; smolagents has
+been removed.
 
 Why this exists
 ---------------

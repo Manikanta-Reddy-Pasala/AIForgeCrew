@@ -1,12 +1,12 @@
-"""Bridge between the orchestrator and the smolagents Doer agent.
+"""Bridge between the orchestrator and the GA Doer agent.
 
-``run_smolagents_doer`` is called from the graph's doer_node. Runs the
-smolagents ToolCallingAgent inside the ticket's isolated git worktree,
-then — if the agent returned final_answer AND the diff is non-empty —
-commits the change on the per-ticket branch, pushes to origin, and
-(where the origin is a GitHub remote) opens a pull request via ``gh``.
-Commit/push/PR are all fail-soft: the function returns the Doer result
-regardless of whether the publishing steps succeed.
+``run_smolagents_doer`` is called from the graph's doer_node. Despite
+the historical name, it dispatches solely to the GenericAgent (GA)
+backend — smolagents has been removed. On compile-green + final_answer,
+commits the diff on the ticket's branch, pushes to origin, and opens a
+GitHub PR (if the origin supports it). All publishing steps are
+fail-soft: the function returns the Doer result regardless of whether
+the publishing steps succeed.
 """
 from __future__ import annotations
 
@@ -14,23 +14,11 @@ import os
 import re
 import shutil
 import subprocess
-import time
 
 from aiforge_core.runtime import tickets
-from aiforge_core.runtime.config import DOER_MODEL, LM_STUDIO_API_KEY, LM_STUDIO_BASE_URL
 from aiforge_core.runtime.logging_setup import emit
 
-from .agent import build_doer_agent
 from .scope_guard import ScopeViolation
-
-
-class _LLMConfig:
-    """Minimal config shim so we don't import the full RoleConfig."""
-
-    def __init__(self, base_url: str, model: str, api_key: str) -> None:
-        self.base_url = base_url
-        self.model = model
-        self.api_key = api_key
 
 
 # Match the first block that looks like an explicit acceptance contract.
@@ -387,28 +375,8 @@ def _git_commit_push_pr(
 
 
 def _doer_backend() -> str:
-    """Resolve which Doer execution backend to use.
-
-    Priority:
-      1. ``AIFORGE_DOER_BACKEND`` env var — explicit override (``smolagents``,
-         ``genericagent``, ``code``, ``toolcalling``).  ``genericagent``
-         routes through ``run_doer_via_ga``.  Anything else is treated as
-         a smolagents agent-class flag (the existing behaviour).
-      2. ``agents.yaml`` ``doer.identity.backend`` — falls through here when
-         the env var is unset.  ``genericagent_text_protocol`` selects GA.
-      3. Default: ``code`` (smolagents CodeAgent).
-    """
-    env = os.environ.get("AIFORGE_DOER_BACKEND", "").strip().lower()
-    if env:
-        return env
-    try:
-        from aiforge_core.agents import load_agents
-        backend = (load_agents()["doer"].identity or {}).get("backend", "")
-        if backend == "genericagent_text_protocol":
-            return "genericagent"
-    except Exception:
-        pass
-    return "code"
+    """Stub kept for compatibility — always returns ``genericagent``."""
+    return "genericagent"
 
 
 def run_smolagents_doer(
@@ -418,227 +386,29 @@ def run_smolagents_doer(
     prior_verdict: str | None = None,
     prior_fixlist: str | None = None,
 ) -> dict:
-    """Run one Doer tick. Despite the name, dispatches to the configured
-    backend (smolagents CodeAgent, smolagents ToolCallingAgent, or
-    GenericAgent text-protocol) based on ``AIFORGE_DOER_BACKEND`` /
-    ``agents.yaml``.
+    """Run one Doer tick — dispatches solely to the GA runner.
 
-    On compile-green + final_answer, commits the diff on the ticket's
-    branch, pushes to origin, and opens a GitHub PR (if the origin
-    supports it). All publishing steps are fail-soft.
+    The historical name is preserved so existing callers (adk_workflow.py
+    et al.) don't need updating. Smolagents has been removed; this
+    function always routes through ``run_doer_via_ga``.
 
     *prior_verdict* / *prior_fixlist* come from the previous feedback tick and
     are forwarded into the agent's task prompt so Doer can continue from
     where the last tick left off.
     """
-    backend = _doer_backend()
-    if backend == "genericagent":
-        from .ga_runner import run_doer_via_ga
-        # Pack the prior fixlist into the plan_text so GA sees it without
-        # forking the prompt builder.
-        plan_bits = []
-        if prior_verdict == "fail" and (prior_fixlist or "").strip():
-            plan_bits.append(
-                "## Previous feedback (fix list)\n" + prior_fixlist.strip()
-            )
-        plan_text = "\n\n".join(plan_bits)
-        max_turns = int(os.environ.get("AIFORGE_DOER_MAX_TURNS", "30"))
-        emit(log, "doer.backend.selected", backend="genericagent",
-             ticket=getattr(ticket, "identifier", "?"))
-        return run_doer_via_ga(
-            ticket, worktree_path, plan_text=plan_text,
-            max_turns=max_turns, log=log,
+    from .ga_runner import run_doer_via_ga
+    # Pack the prior fixlist into the plan_text so GA sees it without
+    # forking the prompt builder.
+    plan_bits = []
+    if prior_verdict == "fail" and (prior_fixlist or "").strip():
+        plan_bits.append(
+            "## Previous feedback (fix list)\n" + prior_fixlist.strip()
         )
-
-    emit(log, "doer.backend.selected", backend="smolagents",
+    plan_text = "\n\n".join(plan_bits)
+    max_turns = int(os.environ.get("AIFORGE_DOER_MAX_TURNS", "30"))
+    emit(log, "doer.backend.selected", backend="genericagent",
          ticket=getattr(ticket, "identifier", "?"))
-    t_start = time.time()
-    ticket_id = ticket.id  # type: ignore[attr-defined]
-    role_name = "doer"
-
-    # Build a minimal context bundle.
-    try:
-        proc = subprocess.run(
-            ["/Users/manikanta/.local/bin/aiforge-deep-context",
-             ticket.title],  # type: ignore[attr-defined]
-            capture_output=True, text=True, timeout=150,
-            env={**os.environ, "ROLE": role_name}, check=False,
-        )
-        context_bundle = proc.stdout or "(deep-context empty)"
-    except Exception:
-        context_bundle = "(deep-context unavailable — use grep/read_file tools)"
-
-    llm_config = _LLMConfig(
-        base_url=LM_STUDIO_BASE_URL,
-        model=DOER_MODEL,
-        api_key=LM_STUDIO_API_KEY,
+    return run_doer_via_ga(
+        ticket, worktree_path, plan_text=plan_text,
+        max_turns=max_turns, log=log,
     )
-
-    emit(log, "smolagents.start", ticket=ticket.identifier)  # type: ignore[attr-defined]
-
-    # Count required acceptance items from the ticket body so we can gate
-    # final_answer on "N edit_blocks green", not just ">=1". A ticket with
-    # "Acceptance criteria: 1. X  2. Y  3. Z" should produce >=3 edit_blocks.
-    required_items = _count_required_items(getattr(ticket, "body", "") or "")
-
-    try:
-        counters: dict = {"edit_block_ok": 0, "compile_green": 0}
-        agent, task_prompt = build_doer_agent(
-            ticket, worktree_path, context_bundle, llm_config, counters=counters,
-            prior_verdict=prior_verdict, prior_fixlist=prior_fixlist,
-        )
-        # Tell the agent upfront how many distinct edits we expect.
-        if required_items > 1:
-            task_prompt += (
-                f"\n\n## Required-items bar\n"
-                f"The ticket lists ~{required_items} acceptance items. "
-                f"Do NOT call final_answer until you have made at least "
-                f"{required_items} successful edit_block calls AND "
-                f"run_compile returns EXIT=0.\n"
-            )
-        result = agent.run(task=task_prompt)
-
-        summary_text = str(result) if result is not None else ""
-
-        # Programmatic checklist enforcement.
-        edits_ok = counters.get("edit_block_ok", 0)
-        compile_ok = counters.get("compile_green", 0)
-        min_edits = max(1, required_items)
-        checklist_failed = (edits_ok < min_edits) or (compile_ok == 0)
-        if checklist_failed:
-            emit(log, "smolagents.checklist_fail", ticket=ticket.identifier,  # type: ignore[attr-defined]
-                 summary_chars=len(summary_text),
-                 counters=counters, required_items=required_items)
-            compile_err = counters.get("last_compile_error", "")
-            err_block = f"\n\nLast compile error:\n{compile_err}" if compile_err else ""
-            tickets.add_event(
-                ticket_id, role_name, "error",
-                body=(f"final_answer called but checklist not met "
-                      f"(edit_block_ok={edits_ok} < required={min_edits}, "
-                      f"compile_green={compile_ok}).\n\n"
-                      f"Agent summary: {summary_text[:1500]}{err_block}"),
-                metadata={"stop_reason": "checklist_fail", "counters": counters,
-                          "required_items": required_items,
-                          "compile_error": compile_err[:1500] if compile_err else ""},
-            )
-            # Preserve the worktree diff — the feedback→doer retry should
-            # continue from this state instead of starting from pristine
-            # (2026-04-23 ONE-16 finding). Only wipe on terminal cleanup.
-            return {
-                "stop_reason": "checklist_fail",
-                "has_commented": False,
-                "turns": getattr(agent, "step_number", 0),
-                "wall_s": round(time.time() - t_start, 2),
-                "summary": summary_text,
-            }
-
-        diff_proc = subprocess.run(
-            ["git", "diff", "--name-only", "HEAD"],
-            cwd=worktree_path, capture_output=True, text=True, check=False,
-        )
-        all_changed = [ln for ln in diff_proc.stdout.splitlines() if ln.strip()]
-
-        # Filter build noise that gets written by mvn compile itself
-        # (flattened-pom, target/, .mvn cache, etc). Require at least one
-        # real source file change to count as "work done".
-        _NOISE_PATTERNS = (
-            ".flattened-pom.xml", "target/", ".mvn/", ".idea/",
-            ".gradle/", "node_modules/", ".aiforge-worktrees/",
-        )
-        real_changes = [
-            p for p in all_changed
-            if not any(p == n or p.startswith(n) for n in _NOISE_PATTERNS)
-        ]
-
-        if not real_changes:
-            emit(log, "smolagents.no_real_changes", ticket=ticket.identifier,  # type: ignore[attr-defined]
-                 summary_chars=len(summary_text),
-                 noise_only=all_changed)
-            tickets.add_event(
-                ticket_id, role_name, "error",
-                body=(f"final_answer called but only build-noise files changed "
-                      f"({all_changed}); no source edit detected.\n\n"
-                      f"Agent summary: {summary_text[:1500]}"),
-                metadata={"stop_reason": "no_changes", "noise_only": all_changed},
-            )
-            # Undo the noise so the worktree is clean for the next attempt.
-            subprocess.run(["git", "checkout", "--", "."],
-                           cwd=worktree_path, check=False,
-                           capture_output=True, timeout=30)
-            return {
-                "stop_reason": "no_changes",
-                "has_commented": False,
-                "turns": getattr(agent, "step_number", 0),
-                "wall_s": round(time.time() - t_start, 2),
-                "summary": summary_text,
-            }
-
-        changed_files = real_changes
-
-        # Commit + push + PR (fail-soft each step).
-        pub = _git_commit_push_pr(ticket, worktree_path, summary_text, changed_files, log)
-
-        event_meta = {
-            "source": "smolagents_final_answer",
-            "files_changed": changed_files,
-            **{k: v for k, v in pub.items() if v is not None},
-        }
-        comment_body = summary_text[:3500]
-        if pub.get("pr_url"):
-            comment_body = f"{comment_body}\n\nPR: {pub['pr_url']}"
-        elif pub.get("commit_sha"):
-            comment_body = f"{comment_body}\n\nCommit: {pub['commit_sha']}"
-        tickets.add_event(
-            ticket_id, role_name, "comment",
-            body=comment_body[:4000],
-            metadata=event_meta,
-        )
-        emit(log, "smolagents.done", ticket=ticket.identifier,  # type: ignore[attr-defined]
-             summary_chars=len(summary_text),
-             files_changed=len(changed_files),
-             commit_sha=pub.get("commit_sha"),
-             pushed=pub.get("pushed"),
-             pr_url=pub.get("pr_url"))
-        return {
-            "stop_reason": "final_answer",
-            "has_commented": bool(summary_text),
-            "turns": getattr(agent, "step_number", 0),
-            "wall_s": round(time.time() - t_start, 2),
-            "summary": summary_text,
-            "commit_sha": pub.get("commit_sha"),
-            "pr_url": pub.get("pr_url"),
-        }
-
-    except ScopeViolation as exc:
-        emit(log, "smolagents.scope_violation",
-             ticket=getattr(ticket, "identifier", "?"),
-             path=exc.path)
-        tickets.add_event(
-            ticket_id, role_name, "error",
-            body=f"scope violation: {exc}",
-            metadata={"stop_reason": "scope_violation"},
-        )
-        return {
-            "stop_reason": "scope_violation",
-            "has_commented": False,
-            "turns": 0,
-            "wall_s": round(time.time() - t_start, 2),
-            "summary": str(exc),
-        }
-
-    except Exception as exc:
-        emit(log, "smolagents.exception",
-             ticket=getattr(ticket, "identifier", "?"),
-             error=str(exc)[:300])
-        tickets.add_event(
-            ticket_id, role_name, "error",
-            body=f"smolagents exception: {exc}",
-            metadata={"stop_reason": "exception"},
-        )
-        return {
-            "stop_reason": "exception",
-            "has_commented": False,
-            "turns": 0,
-            "wall_s": round(time.time() - t_start, 2),
-            "summary": str(exc),
-        }
