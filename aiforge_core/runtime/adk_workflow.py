@@ -8,8 +8,8 @@ delegates to the production implementation that LangGraph used to call:
 
     * planner — ``aiforge_core.planner.runner.run_planner``
     * doer    — ``aiforge_core.doer.orchestrator_bridge.run_smolagents_doer``
-                (which already routes to GenericAgent when
-                ``AIFORGE_DOER_BACKEND=genericagent``)
+                (the historical name; dispatches solely to GenericAgent — GA
+                is the only Doer backend after the smolagents removal)
     * feedback — single-shot LiteLLM call (port of ``feedback_node``)
     * learner — single-shot LiteLLM call + Neo4j ``:Fact`` write
                 (port of ``learner_node``)
@@ -273,11 +273,11 @@ def _ticket_is_doc_creation(ticket: tickets_mod.Ticket) -> bool:
 
 # ─────────────────────────── Planner agent ──────────────────────────────
 class AiForgePlannerAgent(BaseAgent):
-    """ADK wrapper around the existing smolagents Planner.
+    """ADK wrapper around the GA Planner.
 
-    Reads ``ticket_id`` from ``ctx.session.state`` and runs the smolagents
-    CodeAgent inside a worker thread (smolagents.run is sync). Yields one
-    text Event with the planner's summary.
+    Reads ``ticket_id`` from ``ctx.session.state`` and runs the GA planner
+    inside a worker thread (run is sync). Yields one text Event with the
+    planner's summary.
     """
 
     async def _run_async_impl(
@@ -299,19 +299,9 @@ class AiForgePlannerAgent(BaseAgent):
 
         emit(log, "adk.planner.start",
              ticket=ticket.identifier, max_wall_s=max_wall_s,
-             backend=os.environ.get("AIFORGE_PLANNER_BACKEND", "smolagents"))
+             backend="genericagent")
 
-        # Backend dispatch: env > agents.yaml > smolagents default.
-        backend = os.environ.get("AIFORGE_PLANNER_BACKEND")
-        if not backend and contract is not None:
-            decl = (contract.identity.backend or "").lower()
-            if decl in ("genericagent_text_protocol", "genericagent"):
-                backend = "genericagent"
-        if backend == "genericagent":
-            from aiforge_core.planner.ga_runner import run_planner_via_ga
-            run_planner = run_planner_via_ga
-        else:
-            from aiforge_core.planner import run_planner
+        from aiforge_core.planner.ga_runner import run_planner_via_ga as run_planner
 
         loop = asyncio.get_event_loop()
         t_start = time.time()
@@ -370,9 +360,9 @@ class AiForgePlannerAgent(BaseAgent):
 class AiForgeDoerAgent(BaseAgent):
     """ADK wrapper around the doer bridge.
 
-    Routes via ``run_smolagents_doer`` — which dispatches to GenericAgent
-    when ``AIFORGE_DOER_BACKEND=genericagent`` (the production setting on
-    the NUC). Honours ``feedback_fixlist`` from prior loop iterations.
+    Routes via ``run_smolagents_doer`` — historical name; dispatches solely
+    to GenericAgent (GA). Honours ``feedback_fixlist`` from prior loop
+    iterations.
     """
 
     async def _run_async_impl(

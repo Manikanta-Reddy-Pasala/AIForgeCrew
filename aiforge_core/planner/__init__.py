@@ -1,11 +1,10 @@
-"""smolagents-based Planner package.
+"""Planner package — GA-only (custom code, no smolagents).
 
-Exports the two symbols the graph node and tests need.
+`run_planner` re-exports the GA runner so existing call sites
+(``from aiforge_core.planner import run_planner``) keep working.
 """
 from __future__ import annotations
 
-from .agent import build_planner_agent
-from .runner import run_planner
-from .tools import make_extract_signatures
+from .ga_runner import run_planner_via_ga as run_planner
 
-__all__ = ["build_planner_agent", "run_planner", "make_extract_signatures"]
+__all__ = ["run_planner"]
