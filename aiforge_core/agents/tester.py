@@ -56,8 +56,12 @@ class Tester(BaseArchetype):
             return {"artifact_type": "test_plan",
                     "tests": [], "coverage_target": 0.8,
                     "error": "llm_invalid_json"}
+        try:
+            cov = float(out.get("coverage_target", 0.8))
+        except (TypeError, ValueError):
+            cov = 0.8
         return {
             "artifact_type": "test_plan",
             "tests": list(out.get("tests") or []),
-            "coverage_target": float(out.get("coverage_target", 0.8)),
+            "coverage_target": cov,
         }
