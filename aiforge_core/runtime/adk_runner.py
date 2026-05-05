@@ -356,12 +356,15 @@ def _process_one_ticket() -> bool:
             "scope_violation": "cancelled",
         }.get(outcome, "blocked")
 
-        # On verdict=pass, commit + push + open PR so the ticket lands as
-        # a real branch on the upstream repo. Best-effort — push or PR
-        # failure is logged but doesn't change the ticket status (the
-        # diff already exists on disk for human triage).
+        # PR gate: anything that ISN'T an explicit scope_violation is
+        # eligible. Reason — Feedback judge is brittle (often emits
+        # text instead of strict JSON, parser falls back to `fail`),
+        # but if the Doer actually wrote files on disk, that's real
+        # evidence of work that deserves a PR for human review.
+        # `_commit_push_open_pr` itself short-circuits when the working
+        # tree is clean, so verdict=fail with no edits remains a no-op.
         pr_meta: dict[str, Any] = {}
-        if outcome == "pass":
+        if outcome != "scope_violation":
             pr_meta = _commit_push_open_pr(ticket)
         tickets_mod.update_status(
             ticket.id, new_status, role="adk_runner",
