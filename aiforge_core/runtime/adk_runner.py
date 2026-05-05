@@ -77,15 +77,19 @@ def _build_pipeline():
 
     contracts = load_agents()  # parses agents.yaml, validates v6 shape
 
-    def _agent(role: str, instruction: str, output_key: str) -> "LlmAgent":
+    def _agent(role: str, instruction: str, output_key: str,
+               tools: list | None = None) -> "LlmAgent":
         c = contracts[role]
-        return LlmAgent(
-            name=role,
-            model=_build_litellm_model(role),
-            instruction=instruction,
-            output_key=output_key,
-            timeout=c.contract.max_wall_s,
-        )
+        kwargs: dict[str, Any] = {
+            "name": role,
+            "model": _build_litellm_model(role),
+            "instruction": instruction,
+            "output_key": output_key,
+            "timeout": c.contract.max_wall_s,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        return LlmAgent(**kwargs)
 
     planner = _agent(
         "planner",
@@ -107,14 +111,32 @@ def _build_pipeline():
         ),
         output_key="verifier_verdict",
     )
+    from .doer_tools import adk_function_tools as _doer_tools
     doer = _agent(
         "doer",
         instruction=(
-            "You are the Doer. Execute one child_subticket from the plan. "
-            "Stay inside scope_allowlist_globs. Return JSON "
-            "{file_diffs, compile_status, test_status, turn_log}."
+            "You are the Doer. Execute the plan in state['plan_md'] by "
+            "calling tools — DO NOT reply with prose narrating what you "
+            "would do. The available tools are file_read, file_write, "
+            "file_patch (find/replace one occurrence), list_dir, and "
+            "run_shell.\n"
+            "\n"
+            "Workflow per subticket:\n"
+            "  1. list_dir / file_read to inspect the target file.\n"
+            "  2. file_write or file_patch to make the edit.\n"
+            "  3. run_shell to compile / run tests when applicable.\n"
+            "\n"
+            "When the change is in place, return STRICT JSON: "
+            "{file_diffs: [{path, action: write|patch}], "
+            "compile_status: green|red|skipped, "
+            "test_status: green|red|skipped, "
+            "turn_log: <one-line summary>}.\n"
+            "\n"
+            "Stay inside the subticket's scope_allowlist_globs. Refuse to "
+            "call file_write on any path outside that allowlist."
         ),
         output_key="doer_outcome",
+        tools=_doer_tools(),
     )
     feedback = _agent(
         "feedback",
