@@ -129,7 +129,8 @@ agents:
     rule: >
       Planner reads everything, writes a plan and child subtickets, and never
       touches source files. Every test subticket MUST inject a test skeleton
-      template reference (see docs/agent-rules.md §4).
+      template reference (see docs/agent-rules.md §4). The Verifier runs
+      next; if it rejects, this agent is re-invoked with the issue list.
     termination_contract:
       - plan_md persisted under docs/plans/<ticket_id>.md
       - ">=1 child_subticket created per acceptance criterion"
@@ -137,7 +138,53 @@ agents:
       - test subtickets reference a template in docs/test-skeleton-templates/
 
   # ---------------------------------------------------------------------------
-  # 3. DOER
+  # 3. VERIFIER
+  # ---------------------------------------------------------------------------
+  # Pre-execution plan critic. Single completion, no tools. Runs after
+  # Planner, before LoopAgent[Doer, Feedback]. A `reject` verdict halts
+  # the LoopAgent and triggers a re-plan with the issue list folded
+  # into Planner context. Re-plan cap = 3 (orchestrator-level).
+  # ---------------------------------------------------------------------------
+  verifier:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: claude-opus-4-7
+      backend: direct_litellm
+      base_url: https://api.anthropic.com
+      ctx_window: 200000
+    contract:
+      inputs:
+        - parent_ticket
+        - plan_md
+        - child_subtickets
+        - scope_allowlist_globs
+        - repo_index
+        - memory_search_results
+      outputs:
+        - verdict                   # one of: pass | reject
+        - issues
+        - rationale
+      max_turns: 1
+      max_wall_s: 60
+    tools:
+      allowed: []
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      Verifier is a pure plan critic. No tools, single turn, single JSON
+      verdict. Reject if any subticket has empty scope_allowlist_globs,
+      a plan step references a missing file/symbol, or no test subticket
+      exists for an acceptance criterion.
+    termination_contract:
+      - verdict ∈ {pass, reject} emitted as valid JSON
+      - issues is a (possibly empty) list of {kind, message}
+      - rationale is a non-empty string when verdict=reject
+
+  # ---------------------------------------------------------------------------
+  # 4. DOER
   # ---------------------------------------------------------------------------
   # ADK agent with a custom GenericAgent text-protocol handler over
   # qwen-coder-next on the local MLX runtime. Single subticket per Doer turn,
@@ -194,7 +241,7 @@ agents:
       - max_turns or max_wall_s exceeded → halt with verdict=fail
 
   # ---------------------------------------------------------------------------
-  # 4. FEEDBACK
+  # 5. FEEDBACK
   # ---------------------------------------------------------------------------
   # ADK agent with direct LiteLLM provider — no agent loop, single completion.
   # Inspects Doer's turn_log + diff + test output, emits a verdict.
@@ -234,7 +281,7 @@ agents:
       - rationale is a non-empty string citing specific evidence
 
   # ---------------------------------------------------------------------------
-  # 5. LEARNER
+  # 6. LEARNER
   # ---------------------------------------------------------------------------
   # ADK agent with direct LiteLLM, runs ONLY when feedback.verdict=pass.
   # Extracts durable :Fact rows from the successful turn. Tool-less from the

@@ -27,16 +27,9 @@ dev = [
   "ruff>=0.4",
 ]
 xlsx = ["openpyxl>=3.1"]
-# Legacy ADK 2.0b1 dependency — required by the runtime/adk_workflow.py
-# orchestrator path. Will be retired once the entire pipeline cuts over
-# to aiforge_core/aiforge_agents/orchestrator/run_ticket.py.
-legacy = [
-  "google-adk==2.0.0b1",
-]
 
 [project.scripts]
-aiforge-agents-run = "aiforge_core.orchestrator.run_ticket:main"
-aiforge-agents-tb  = "aiforge_core.memory.trial_balance:main"
+aiforge-agents-tb = "aiforge_core.memory.trial_balance:main"
 
 [tool.setuptools.packages.find]
 include = ["aiforge_core*"]

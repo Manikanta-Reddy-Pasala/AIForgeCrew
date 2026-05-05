@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Bulk-switch all 9 archetype agents to one (provider, model) preset.
+
+Usage:
+  aiforge-profile list
+  aiforge-profile show
+  aiforge-profile apply claude_local
+  aiforge-profile apply ollama_cloud
+  aiforge-profile apply local
+
+After apply, individual archetypes can be re-overridden:
+  aiforge-profile set architect claude_local claude-opus-4-7
+  aiforge-profile set doer       ollama_cloud qwen3-coder:480b
+  aiforge-profile set planner    local       Qwen3.6-27B-MLX-4bit
+
+Persists to $AIFORGE_CONFIG_DIR/agent_config.json (default ~/.aiforge).
+Env AIFORGE_<ROLE>_PROVIDER / _MODEL still wins on read.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+from aiforge_core.config import agent_config as ac
+
+
+def _cmd_list(_: argparse.Namespace) -> int:
+    for name, spec in ac.PROFILES.items():
+        print(f"{name:14s}  provider={spec['provider']:14s} model={spec['model']}")
+    return 0
+
+
+def _cmd_show(_: argparse.Namespace) -> int:
+    full = ac.load_all()
+    for role in ac.archetypes():
+        row = full.get(role) or {}
+        print(f"{role:14s}  {row.get('provider'):14s}  {row.get('model')}")
+    return 0
+
+
+def _cmd_apply(args: argparse.Namespace) -> int:
+    try:
+        out = ac.apply_profile(args.name)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({"profile": args.name, "roles": out}, indent=2))
+    return 0
+
+
+def _cmd_set(args: argparse.Namespace) -> int:
+    try:
+        cfg = ac.set_role(args.role, args.provider, args.model)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({"role": args.role, **cfg}, indent=2))
+    return 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="aiforge-profile")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list", help="list bundled profile presets")
+    sub.add_parser("show", help="show current per-role config")
+
+    a = sub.add_parser("apply", help="bulk-apply a profile to all archetypes")
+    a.add_argument("name", choices=sorted(ac.PROFILES.keys()))
+
+    s = sub.add_parser("set", help="override one archetype")
+    s.add_argument("role", choices=ac.archetypes())
+    s.add_argument("provider", choices=sorted(ac.PROVIDERS.keys()))
+    s.add_argument("model")
+
+    args = p.parse_args()
+    return {
+        "list":  _cmd_list,
+        "show":  _cmd_show,
+        "apply": _cmd_apply,
+        "set":   _cmd_set,
+    }[args.cmd](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

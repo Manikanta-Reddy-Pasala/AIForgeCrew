@@ -21,10 +21,12 @@ from aiforge_core.agents import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_YAML = REPO_ROOT / "aiforge_core" / "agents" / "agents.yaml"
 
-EXPECTED_ROLES = {"architect", "planner", "doer", "feedback", "learner"}
+EXPECTED_ROLES = {
+    "architect", "planner", "verifier", "doer", "feedback", "learner",
+}
 
 
-def test_load_all_five_roles_succeeds() -> None:
+def test_load_all_six_roles_succeeds() -> None:
     contracts = load_agents(SHIPPED_YAML)
     assert set(contracts.keys()) == EXPECTED_ROLES
     for role, c in contracts.items():

@@ -1126,10 +1126,9 @@ from aiforge_core.config import agent_config as _acfg
 def config_agents_list() -> dict:
     """Per-archetype provider + model map. UI Settings calls this.
 
-    Surfaces only the 9 archetype roles
-    (understander/planner/verifier/grounder/doer/validator/tester/
-    architect/learner). Legacy 6-role aliases are kept in storage for
-    back-compat but hidden from the UI.
+    Surfaces the 6 v5 archetype roles
+    (architect/planner/verifier/doer/feedback/learner) — the live ADK
+    SequentialAgent + external Architect.
     """
     full = _acfg.load_all()
     visible = {r: full[r] for r in _acfg._ARCHETYPES if r in full}
@@ -1159,9 +1158,9 @@ def config_agents_set(role: str, body: _AgentConfigBody) -> dict:
 
 # ─────────────────────── Agent model config v2 ─────────────────────────
 # v2 surface for the new Settings UI. Adds per-role base_url, returns the
-# full model catalog inline with each provider, and exposes only the 9
-# archetype roles (no legacy aliases). v1 (above) kept untouched so the
-# current UI build keeps working until it migrates.
+# full model catalog inline with each provider, and exposes only the 6
+# v5 archetype roles. v1 (above) kept untouched so the current UI build
+# keeps working until it migrates.
 
 
 class _AgentConfigV2Body(BaseModel):
@@ -1174,9 +1173,8 @@ class _AgentConfigV2Body(BaseModel):
 
 @app.get("/api/agents/v2/config")
 def agents_v2_config() -> dict:
-    """Return ``{role: {provider, model, base_url|null}}`` for the 9
-    archetypes only. Legacy aliases (supervisor/feedback/chat) stay in
-    storage but never leak to the v2 UI."""
+    """Return ``{role: {provider, model, base_url|null}}`` for the 6
+    v5 archetypes (architect/planner/verifier/doer/feedback/learner)."""
     full = _acfg.load_all()
     out: dict[str, dict[str, Any]] = {}
     for role in _acfg.archetypes():
@@ -1224,6 +1222,32 @@ def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
         "model": cfg.get("model"),
         "base_url": cfg.get("base_url"),
     }
+
+
+@app.get("/api/agents/v2/profiles")
+def agents_v2_profiles_list() -> dict:
+    """Bundled profile presets — apply one to assign all 9 archetypes
+    to the same provider/model in one call."""
+    return {
+        "profiles": [
+            {"name": name, **spec}
+            for name, spec in _acfg.PROFILES.items()
+        ]
+    }
+
+
+@app.put("/api/agents/v2/profile/{name}")
+def agents_v2_profile_apply(name: str) -> dict:
+    """Bulk-apply a profile preset to every archetype.
+
+    Returns the resulting per-role map. After applying, individual
+    archetypes can still be flipped via PUT /api/agents/v2/{role}/config.
+    """
+    try:
+        out = _acfg.apply_profile(name)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    return {"profile": name, "roles": out}
 
 
 # ─────────────────────────── Chat ask (LLM synthesis) ───────────────────

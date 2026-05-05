@@ -1,12 +1,24 @@
-"""Verifier — PreFlect critic on plan + similar past failures."""
+"""Verifier — pre-execution plan critic. Single LLM completion, no tools.
+
+Runs after Planner emits the plan + child subtickets, BEFORE the
+LoopAgent[Doer, Feedback]. Catches bad plans early so a slow Doer turn
+isn't wasted on an unreachable spec.
+
+Verdict shape:
+    {"verdict": "pass" | "reject", "issues": [...], "rationale": "..."}
+
+A `reject` verdict means the orchestrator should re-plan with the issue
+list folded into Planner context. Cap re-plans at 3 per ticket
+(orchestrator-level concern, not enforced here).
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
+from dataclasses import dataclass
 from typing import Any
 
 from aiforge_core.agents.base import BaseArchetype
 from aiforge_core.agents.registry import register
+
 
 @register("verifier")
 @dataclass
@@ -14,51 +26,77 @@ class Verifier(BaseArchetype):
     name: str = "verifier"
 
     def run(self, *, ctx: dict[str, Any]) -> dict[str, Any]:
+        """Single-shot critic over the Planner output.
+
+        Inputs (from ctx):
+          plan, child_subtickets, scope_allowlist_globs, parent_ticket,
+          repo_index, memory_search_results
+
+        Output: ``{artifact_type: "verifier_verdict", verdict, issues, rationale}``
+        """
         from aiforge_core.orchestrator import llm_client
 
-        plan = ctx.get("plan", {})
-        understanding = ctx.get("understanding", {})
+        plan = ctx.get("plan") or {}
+        subtickets = ctx.get("child_subtickets") or []
+        scope_globs = ctx.get("scope_allowlist_globs") or []
 
-        # Trim heavy fields — context_md can be 4–8k tokens and is not
-        # needed for the critic call. Without it max_tokens=2048 was
-        # overflowing on big plans, yielding truncated/invalid JSON.
-        u_slim = {k: v for k, v in (understanding or {}).items()
-                  if k != "context_md"}
+        if not plan or not plan.get("steps"):
+            return {
+                "artifact_type": "verifier_verdict",
+                "verdict": "reject",
+                "issues": [{
+                    "kind": "missing_plan",
+                    "message": "planner emitted empty or missing plan",
+                }],
+                "rationale": "no plan to verify",
+            }
 
         system = (
-            "You are a critic. Given an Understanding and a Plan, decide "
-            "if the plan is sound. Output STRICT JSON, no prose: "
-            "{\"verdict\":\"pass|repair|reject\",\"issues\":[...]}. "
-            "issues[] = list of {step_id:int, kind:str, message:str}. "
-            "Reject if plan references files explicitly invented "
-            "(non-existent under repo root) or steps fail to address the "
-            "problem statement. Repair if plan is on track but a step "
-            "needs adjustment. Pass if plan is sound. "
-            "Do NOT include a revised_plan — orchestrator handles repair "
-            "via REPLAN. Keep issues[] short (≤3)."
+            "You are the plan verifier. Critique the plan and return STRICT "
+            "JSON only with shape: "
+            "{\"verdict\": \"pass\"|\"reject\", "
+            "\"issues\": [{\"kind\": \"<kind>\", \"message\": \"<msg>\"}], "
+            "\"rationale\": \"<one-line summary>\"}.\n\n"
+            "Reject when ANY hold:\n"
+            "- A subticket has empty/missing scope_allowlist_globs\n"
+            "- A plan step targets paths outside the parent ticket's scope\n"
+            "- No test subticket for an acceptance criterion\n"
+            "- A plan step references a file/symbol absent from repo_index\n"
+            "- The plan exceeds reasonable depth for the ticket size\n"
         )
         user = (
-            f"# Understanding\n{u_slim}\n\n"
-            f"# Plan\n{plan}\n"
+            f"# Plan\n{plan}\n\n"
+            f"# Child subtickets\n{subtickets}\n\n"
+            f"# Scope allowlist globs\n{scope_globs}\n"
         )
         out = llm_client.call_json(
             role=self.name,
-            model=self.model or "qwen2.5-14b-instruct",
+            model=self.model or "claude-opus-4-7",
             system=system, user=user,
             temperature=self.temperature,
-            max_tokens=self.max_tokens or 4000,
+            max_tokens=self.max_tokens or 1024,
         )
         if out is None:
-            # Safer fail: invalid JSON should NOT auto-pass. Mark as repair.
-            return {"artifact_type": "verifier_verdict",
-                    "verdict": "repair", "issues": [
-                        {"step_id": 0, "kind": "verifier_error",
-                         "message": "verifier returned invalid JSON"},
-                    ], "revised_plan": None,
-                    "error": "llm_invalid_json"}
+            return {
+                "artifact_type": "verifier_verdict",
+                "verdict": "reject",
+                "issues": [{"kind": "verifier_error",
+                            "message": "verifier returned invalid JSON"}],
+                "rationale": "json_decode_failed",
+            }
+
+        verdict = out.get("verdict")
+        if verdict not in ("pass", "reject"):
+            return {
+                "artifact_type": "verifier_verdict",
+                "verdict": "reject",
+                "issues": [{"kind": "verifier_error",
+                            "message": f"unknown verdict: {verdict!r}"}],
+                "rationale": "bad_verdict_value",
+            }
         return {
             "artifact_type": "verifier_verdict",
-            "verdict": str(out.get("verdict", "pass")),
+            "verdict": verdict,
             "issues": list(out.get("issues") or []),
-            "revised_plan": out.get("revised_plan"),
+            "rationale": str(out.get("rationale") or ""),
         }

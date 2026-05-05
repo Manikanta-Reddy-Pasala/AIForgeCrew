@@ -74,7 +74,7 @@ export const api = {
     }),
 
   // ── v2 archetype config (used by the Settings page) ─────────────
-  // GET  → { [role]: AgentRoleConfig }   (9 archetypes only)
+  // GET  → { [role]: AgentRoleConfig }   (5 v5 archetypes)
   // GET  → ProviderCatalog[]             (3 providers + their models)
   // PUT  → AgentRoleConfig (echo)        (404 unknown role / 400 bad input)
   agentsV2Config:    () => j<Record<AgentRole, AgentRoleConfig>>(
@@ -87,6 +87,16 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+
+  // Profile presets — bulk-assign one (provider, model) to all 9 archetypes.
+  agentsV2Profiles: () => j<{
+    profiles: Array<{ name: string; provider: string; model: string }>;
+  }>('/agents/v2/profiles'),
+  applyAgentV2Profile: (name: string) =>
+    j<{ profile: string; roles: Record<AgentRole, AgentRoleConfig> }>(
+      `/agents/v2/profile/${name}`,
+      { method: 'PUT' },
+    ),
 
   // Workflow registry + route detection
   workflows: () => j<WorkflowSpec[]>('/workflows'),
@@ -121,8 +131,7 @@ export const api = {
 // ── agent v2 config types ─────────────────────────────────────────
 
 export type AgentRole =
-  | 'understander' | 'planner' | 'verifier' | 'grounder'
-  | 'doer' | 'validator' | 'tester' | 'architect' | 'learner';
+  | 'architect' | 'planner' | 'verifier' | 'doer' | 'feedback' | 'learner';
 
 export type ProviderId = 'local' | 'ollama_cloud' | 'anthropic';
 export type ModelTier = 'fast' | 'balanced' | 'premium';

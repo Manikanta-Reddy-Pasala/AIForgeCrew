@@ -23,10 +23,8 @@ class Learner(BaseArchetype):
         ticket_id = ctx.get("ticket_id", self.ticket_id)
         repo = ctx.get("repo", self.repo)
         plan = ctx.get("plan") or {}
-        verdict = ctx.get("verifier_verdict") or {}
-        grounding = ctx.get("grounding") or {}
+        verdict = ctx.get("feedback_verdict") or {}
         doer_out = ctx.get("doer_outcome") or {}
-        validation = ctx.get("validation") or {}
         review = ctx.get("review") or {}
 
         # task_class = feature dir name (second-to-last segment), or
@@ -42,34 +40,17 @@ class Learner(BaseArchetype):
         task_class = task_class or "unknown"
 
         tool_sequence = [s.get("action", "") for s in steps if s.get("action")]
-        # Authoritative success signals — Architect approval is final.
-        # Verifier `pass` is rare on local-LLM stack (often falls back to
-        # `repair` on JSON truncation); not a hard requirement for success
-        # so long as validation/review both clear.
-        success = (
-            grounding.get("resolved", False)
-            and validation.get("decision") == "approve"
-            and review.get("decision") == "approve"
-        )
-
-        outcome = "success" if success else (
-            "blocked" if grounding.get("unresolved_refs")
-            else "rejected"
-        )
+        # v5 success signal: feedback verdict == "pass".
+        success = verdict.get("verdict") == "pass"
+        outcome = "success" if success else "rejected"
         summary = (
             f"plan_steps={len(steps)} verdict={verdict.get('verdict','?')} "
-            f"grounded={grounding.get('resolved',False)} "
-            f"validation={validation.get('decision','?')} "
             f"detectors={len(doer_out.get('problems') or [])}"
         )
-
         artifacts = {
-            "plan_steps":     len(steps),
-            "verdict":        verdict.get("verdict"),
-            "grounded":       grounding.get("resolved"),
-            "unresolved":     len(grounding.get("unresolved_refs") or []),
-            "doer_problems":  len(doer_out.get("problems") or []),
-            "validation":     validation.get("decision"),
+            "plan_steps":    len(steps),
+            "verdict":       verdict.get("verdict"),
+            "doer_problems": len(doer_out.get("problems") or []),
         }
 
         online.record_episodic(
@@ -169,7 +150,7 @@ class Learner(BaseArchetype):
                         for p in (doer_out.get("problems") or [])
                     ],
                     "apply_error": doer_out.get("apply_error") or "",
-                    "validation": validation.get("decision"),
+                    "verdict": verdict.get("verdict"),
                     "review": review.get("decision"),
                 }
                 with open(summary_path, "w") as _f:

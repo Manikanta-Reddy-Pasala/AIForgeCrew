@@ -22,21 +22,20 @@ import { Icon } from '../icons';
 // "Reload" button is exposed for ops to pick up freshly-downloaded
 // models without a hard page refresh.
 
+// v5 production pipeline (agents.yaml + runtime.adk_runner):
+//   architect (external, human-driven)
+//   → planner → verifier → LoopAgent[doer, feedback] → learner
 const ROLE_ORDER: AgentRole[] = [
-  'understander', 'planner', 'verifier', 'grounder',
-  'doer', 'validator', 'tester', 'architect', 'learner',
+  'architect', 'planner', 'verifier', 'doer', 'feedback', 'learner',
 ];
 
 const ROLE_HINTS: Record<AgentRole, string> = {
-  understander: 'Reads the ticket and grounds it against repo + memory.',
-  planner:      'Writes the multi-step implementation plan.',
-  verifier:     'Critiques the plan before execution.',
-  grounder:     'Resolves plan refs to actual files/symbols.',
-  doer:         'Edits code, runs tests/compile.',
-  validator:    'Final go/no-go on the diff.',
-  tester:       'Generates and runs tests.',
-  architect:    'Splits/restructures tickets when needed.',
-  learner:      'Writes facts to memory after a run.',
+  architect: 'External Claude Code. Drives ticket creation; never edits code.',
+  planner:   'Reads parent ticket; emits plan + child subtickets.',
+  verifier:  'Plan critic. Single-turn judge BEFORE execution. Reject → re-plan.',
+  doer:      'Edits code inside the subticket allowlist; runs compile + tests.',
+  feedback:  'Post-execution judge. Verdict: pass | fail | scope_violation.',
+  learner:   'Runs only on verdict=pass. Writes :Fact rows to memory.',
 };
 
 interface RowState {
@@ -185,11 +184,38 @@ export default function Settings() {
     else if (ok && fail) toast.warning(`Saved ${ok}, ${fail} failed`);
   }
 
-  // ── doer/runtime backend toggle (separate concern, kept from prior UI)
-  // This isn't part of the v2 archetype config; it flips a runtime
-  // fallback chain that affects every agent. Worth keeping around.
+  // ── profile presets — bulk-apply one (provider, model) to all 9 archetypes
+  const [profiles, setProfiles] = useState<
+    Array<{ name: string; provider: string; model: string }>
+  >([]);
+  const [profileBusy, setProfileBusy] = useState<string | null>(null);
+  useEffect(() => {
+    api.agentsV2Profiles()
+      .then(d => setProfiles(d.profiles || []))
+      .catch(() => { /* surface only on apply failure */ });
+  }, []);
+  async function applyProfile(name: string) {
+    if (profileBusy) return;
+    setProfileBusy(name);
+    try {
+      await api.applyAgentV2Profile(name);
+      toast.success(`Profile "${name}" applied to all archetypes`);
+      await load(true);  // refresh table to reflect new state
+    } catch (e: any) {
+      toast.error(`Profile apply failed: ${e?.message || 'unknown'}`);
+    } finally {
+      setProfileBusy(null);
+    }
+  }
+
+  // ── runtime backend toggle (separate concern, kept from prior UI)
+  // This isn't part of the v2 archetype config; it flips the runtime
+  // fallback chain that affects every agent. Backend options are
+  // sourced from /api/runtime/llm_backend → `options` (filtered by
+  // provider availability — e.g. claude_local only shows up when the
+  // `claude` CLI is installed).
   const [doerBackend, setDoerBackend] = useState<string>('local');
-  const [geminiAvailable, setGeminiAvailable] = useState<boolean>(false);
+  const [backendOptions, setBackendOptions] = useState<string[]>(['local']);
   const [doerBackendBusy, setDoerBackendBusy] = useState(false);
   useEffect(() => {
     fetch('/api/runtime/llm_backend')
@@ -197,10 +223,21 @@ export default function Settings() {
       .then(d => {
         if (!d) return;
         setDoerBackend(d.backend || 'local');
-        setGeminiAvailable(!!d.gemini_available);
+        if (Array.isArray(d.options) && d.options.length > 0) {
+          setBackendOptions(d.options);
+        }
       })
       .catch(() => { /* endpoint might not exist on this build */ });
   }, []);
+
+  const BACKEND_LABEL: Record<string, string> = {
+    local:        'local (mlx-lm)',
+    ollama_cloud: 'ollama cloud',
+    claude_local: 'claude (subscription CLI)',
+    anthropic:    'anthropic (API)',
+    openai:       'openai (API)',
+    gemini:       'gemini (cloud Flash)',
+  };
   async function changeDoerBackend(next: string) {
     setDoerBackendBusy(true);
     try {
@@ -264,14 +301,44 @@ export default function Settings() {
         </div>
       )}
 
+      {/* bulk profile presets — full claude_local / ollama_cloud / local */}
+      {profiles.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 14 }}>Profile preset</h2>
+          <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
+            Bulk-assign one provider + model to all 9 archetypes. After
+            applying, individual rows below can still be overridden for
+            mix-and-match.
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            {profiles.map(p => (
+              <button
+                key={p.name}
+                className="ghost"
+                onClick={() => applyProfile(p.name)}
+                disabled={!!profileBusy}
+                title={`${p.provider} → ${p.model}`}
+              >
+                {profileBusy === p.name
+                  ? `Applying ${p.name}…`
+                  : `Apply ${p.name}`}
+                <span className="small muted" style={{ marginLeft: 6 }}>
+                  ({p.provider})
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* runtime-wide backend (separate from per-archetype config) */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 14 }}>LLM backend (runtime fallback)</h2>
+        <h2 style={{ fontSize: 14 }}>LLM backend (all agents)</h2>
         <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
-          Flips the runtime fallback order between local mlx-lm and
-          cloud Gemini-Flash for every agent at once. Per-archetype
-          provider settings below still take precedence on the primary
-          attempt.
+          Default backend used by every agent when its archetype row
+          below has no explicit override. Options reflect what's
+          actually installed/reachable on this host (claude_local needs
+          the <code>claude</code> CLI; ollama_cloud needs an API key).
         </div>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <label className="small muted">Backend</label>
@@ -279,12 +346,13 @@ export default function Settings() {
             value={doerBackend}
             onChange={e => changeDoerBackend(e.target.value)}
             disabled={doerBackendBusy}
-            style={{ minWidth: 200 }}
+            style={{ minWidth: 240 }}
           >
-            <option value="local">local (mlx-lm)</option>
-            <option value="gemini" disabled={!geminiAvailable}>
-              gemini (cloud Flash){!geminiAvailable && ' — no API key'}
-            </option>
+            {backendOptions.map(opt => (
+              <option key={opt} value={opt}>
+                {BACKEND_LABEL[opt] || opt}
+              </option>
+            ))}
           </select>
           {doerBackendBusy && <span className="small muted">switching…</span>}
         </div>

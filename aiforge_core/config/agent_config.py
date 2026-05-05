@@ -1,16 +1,19 @@
 """Per-archetype model + provider config, persisted to a JSON file.
 
-The 9 archetypes are the units the new pluggable pipeline operates on:
-  understander, planner, verifier, grounder, doer, validator,
-  tester, architect, learner
+The 6 archetypes match the v5 production pipeline (see
+``aiforge_core/agents/agents.yaml`` + ``runtime.adk_runner``):
 
-Each can be flipped between providers (local mlx_lm / Ollama Cloud /
-Anthropic Claude) without a redeploy. Env vars still override at read
-time so ops keeps a final-say escape hatch.
+    architect, planner, verifier, doer, feedback, learner
 
-The legacy 6-role names (supervisor/feedback/chat) are retained as
-aliases that map onto the closest archetype so existing API consumers
-keep working — they're hidden from the Settings UI.
+Architect is external (human-driven Claude Code) but still configurable
+here for trace symmetry — its model pin is read by the operator's
+external client. The other five run inside the ADK SequentialAgent:
+``Planner → Verifier → LoopAgent[Doer, Feedback] → Learner``.
+
+Each archetype can be flipped between providers (local mlx_lm / Ollama
+Cloud / Anthropic Claude / Claude subscription CLI) without a redeploy.
+Env vars still override at read time so ops keeps a final-say escape
+hatch.
 
 Storage: ``$AIFORGE_CONFIG_DIR/agent_config.json`` (default ``~/.aiforge``).
 """
@@ -27,20 +30,13 @@ from typing import Any
 
 _LOCK = threading.Lock()
 
-# Pluggable archetype roles — what `aiforge_core` operates on.
-_ARCHETYPES = (
-    "understander", "planner", "verifier", "grounder",
-    "doer", "validator", "tester", "architect", "learner",
+# v5 production pipeline — what the live ADK SequentialAgent runs.
+# Order matches execution: architect (external) → planner → verifier
+# (plan critic, single completion) → LoopAgent[doer, feedback] → learner.
+_ARCHETYPES: tuple[str, ...] = (
+    "architect", "planner", "verifier", "doer", "feedback", "learner",
 )
-
-# Legacy 6-role keys retained for back-compat with older API consumers.
-# Each maps to the closest archetype on read.
-_LEGACY_ALIAS: dict[str, str] = {
-    "supervisor": "architect",
-    "feedback":   "validator",
-    "chat":       "doer",
-}
-_ROLES = _ARCHETYPES + tuple(_LEGACY_ALIAS.keys())
+_ROLES = _ARCHETYPES
 
 # Local default — single Mac Studio model serves every archetype.
 _LOCAL_DEFAULT_MODEL = (
@@ -72,6 +68,17 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "api_key_default": "",
         "base_url": "https://ollama.com/v1",
     },
+    # Claude subscription via `claude` CLI subprocess — no API billing.
+    # base_url marker `claude:cli` signals the runtime to skip LiteLLM and
+    # shell out via `aiforge_core.llm.client._send_via_claude_cli`.
+    "claude_local": {
+        "label": "Claude Subscription (CLI)",
+        "litellm_prefix": "anthropic",
+        "default_model": "claude-opus-4-7",
+        "api_key_env": "AIFORGE_CLAUDE_API_KEY",   # unused; kept for parity
+        "api_key_default": "",
+        "base_url": "claude:cli",
+    },
 }
 
 _DEFAULT: dict[str, dict[str, Any]] = {
@@ -79,12 +86,6 @@ _DEFAULT: dict[str, dict[str, Any]] = {
            "base_url": None}
     for role in _ROLES
 }
-# Chat ships on Ollama Cloud by default — local mlx-lm is too slow for
-# the live Q+A flow and gemini is parked behind a hidden flag while we
-# standardise on Ollama. Flip via the Settings UI or
-# AIFORGE_CHAT_PROVIDER env.
-_DEFAULT["chat"] = {"provider": "ollama_cloud", "model": "llama3.1:70b",
-                    "base_url": None}
 
 
 # ────────────────────────── Model catalog ──────────────────────────────
@@ -126,6 +127,15 @@ MODEL_CATALOG: dict[str, list[dict[str, Any]]] = {
         {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6",
          "context": 200000, "tier": "balanced"},
         {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5",
+         "context": 200000, "tier": "fast"},
+    ],
+    "claude_local": [
+        {"id": "claude-opus-4-7", "label": "Claude Opus 4.7 (subscription)",
+         "context": 1000000, "tier": "premium"},
+        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (subscription)",
+         "context": 200000, "tier": "balanced"},
+        {"id": "claude-haiku-4-5-20251001",
+         "label": "Claude Haiku 4.5 (subscription)",
          "context": 200000, "tier": "fast"},
     ],
 }
@@ -330,11 +340,24 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     Handles provider-specific prefixing, base_url, and api_key lookup
     from env / default. Callers pass the result straight into
     LiteLLMModel(**this_dict).
+
+    For ``claude_local`` the returned dict carries ``api_base="claude:cli"``
+    and an extra key ``_claude_cli=True``. Runtimes MUST detect this and
+    route the call through ``aiforge_core.llm.client._send_via_claude_cli``
+    instead of constructing a LiteLLMModel.
     """
     row = get(role)
     prov = PROVIDERS.get(row["provider"]) or PROVIDERS["local"]
     prefix = prov["litellm_prefix"]
     model = row["model"]
+    # Claude subscription: no LiteLLM, no API key. Runtime must subprocess.
+    if row["provider"] == "claude_local":
+        return {
+            "model_id": model,
+            "api_base": "claude:cli",
+            "api_key": "",
+            "_claude_cli": True,
+        }
     # Always add LiteLLM provider prefix unless caller already supplied one.
     # mlx-lm expects the full filesystem path as ``model`` — those paths have
     # ``/`` separators, so the old "if '/' not in model" check skipped them
@@ -407,3 +430,56 @@ def list_models(provider: str) -> list[dict[str, Any]]:
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider: {provider}")
     return _enriched_catalog(provider)
+
+
+# ────────────────────────── Profile presets ────────────────────────────
+# A profile assigns one (provider, model) pair to all 9 archetypes at
+# once — the "give me a full claude_local stack" or "everything on
+# Ollama Cloud" knob. After applying, individual archetypes can still
+# be flipped via set_role() or env vars (mix-and-match).
+
+PROFILES: dict[str, dict[str, str]] = {
+    # Full Claude subscription stack — every archetype shells out to
+    # `claude` CLI on the keychain host. NUC -> Mac Studio works via
+    # AIFORGE_CLAUDE_HOST=mac-studio (ssh).
+    "claude_local": {
+        "provider": "claude_local",
+        "model": "claude-opus-4-7",
+    },
+    # Full Ollama Cloud stack — paid hosted, ~128K ctx, Qwen3-Coder 480B.
+    "ollama_cloud": {
+        "provider": "ollama_cloud",
+        "model": "qwen3-coder:480b",
+    },
+    # Full local stack — single LM Studio process serves all archetypes.
+    # Tune AIFORGE_LM_BASE_URL (default 1234) for per-role port routing.
+    "local": {
+        "provider": "local",
+        "model": _LOCAL_DEFAULT_MODEL,
+    },
+}
+
+
+def profiles() -> list[str]:
+    """Names of the bundled profiles."""
+    return list(PROFILES.keys())
+
+
+def apply_profile(name: str) -> dict[str, dict[str, Any]]:
+    """Bulk-assign one (provider, model) pair to every archetype.
+
+    Returns the resulting per-role config map. Existing per-role base_url
+    overrides are cleared — the profile is meant as a clean slate. After
+    applying, callers can still call ``set_role()`` to mix-and-match.
+
+    Raises ``ValueError`` on unknown profile name.
+    """
+    if name not in PROFILES:
+        raise ValueError(
+            f"unknown profile: {name!r}. known: {sorted(PROFILES)}"
+        )
+    spec = PROFILES[name]
+    out: dict[str, dict[str, Any]] = {}
+    for role in _ARCHETYPES:
+        out[role] = set_role(role, spec["provider"], spec["model"])
+    return out

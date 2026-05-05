@@ -5,7 +5,7 @@ Per-mode action:
     F-002 (hallucinated symbol)  → block + retry doer with ground-truth symbol list
     F-003 (diff context hash)    → re-fetch file content + retry doer
     F-004/F-007/F-008/F-010 (loops) → escalate to KGR (knowledge gap resolver)
-    F-005 (unreachable plan step) → re-plan with grounder feedback
+    F-005 (unreachable plan step) → re-plan with feedback verdict
     F-006 (plan depth)            → force task-split: split into 2 sub-tickets
     F-009 (token budget)          → re-plan with smaller scope
     F-011 (skill misapplication)  → demote skill, fall back to plan-from-scratch

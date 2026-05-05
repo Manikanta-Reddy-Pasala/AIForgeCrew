@@ -126,14 +126,13 @@ The learner runs after every Doer pass (`aiforge_core/runtime/doer_learner.py`) 
 
 ---
 
-## Two orchestrators (both supported)
+## Orchestrator
 
-| Path | Surface | Purpose | Pipeline |
-|---|---|---|---|
-| `aiforge_core/runtime/adk_runner.py` | HTTP API + systemd `aiforge-graph-runner.service` | Production ticket flow | ADK `SequentialAgent[Planner, Loop[Doer,Feedback], Learner]` |
-| `aiforge_core/orchestrator/run_ticket.py` | `aiforge-agents-run` CLI | Experimental v0.4 cascade | 9 stages: Understander → Planner ⇄ Grounder (REPLAN ≤3) → Verifier → Doer ⇄ Validator (CRITIC ×2) → Tester → Architect → Learner |
+| Path | Surface | Pipeline |
+|---|---|---|
+| `aiforge_core/runtime/adk_runner.py` | HTTP API + systemd `aiforge-graph-runner.service` | ADK `SequentialAgent[Planner, Verifier, LoopAgent[Doer, Feedback], Learner]` (Architect = external Claude Code) |
 
-Both share infrastructure: pluggable LLM router with health probe + cloud auto-escalation (`aiforge_core/llm/`), recovery engine that consumes the F-001..F-012 failure taxonomy (`aiforge_core/orchestrator/recovery_engine.py`), and per-ticket NDJSON traces at `~/.aiforge/runs/<ticket>.ndjson`.
+Infrastructure: pluggable LLM router with health probe + cloud auto-escalation (`aiforge_core/llm/`), recovery engine over the F-001..F-012 failure taxonomy (`aiforge_core/orchestrator/recovery_engine.py`), and per-ticket NDJSON traces at `~/.aiforge/runs/<ticket>.ndjson`.
 
 ## Recovery & Resilience
 
@@ -279,10 +278,9 @@ AIFORGE_PERF_NDJSON            1 = ~/.aiforge/perf.ndjson tail (default)
 
 ```
 aiforge_core/
-  agents/         10 archetypes (architect, coordinator, doer, grounder,
-                  learner, planner, tester, understander, validator,
-                  verifier) + base + registry + agents.yaml
-  orchestrator/   run_ticket entry + agent_runner + recovery + circuit_breakers
+  agents/         6 v5 archetypes (architect, planner, verifier, doer,
+                  feedback, learner) + base + registry + agents.yaml
+  orchestrator/   agent_runner + recovery + circuit_breakers
                   + tool_registry — wraps archetypes as ADK LlmAgents
   api/            FastAPI app + MCP HTTP shim (port 8799)
   cli/            python -m aiforge_core.cli.main — ticket / trace commands
