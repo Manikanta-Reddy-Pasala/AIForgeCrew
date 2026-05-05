@@ -43,18 +43,24 @@ logging.basicConfig(
 
 
 def _build_litellm_model(role: str):
-    """Return an ADK ``LiteLlm`` for the given role, or None if claude_local
-    (subprocess CLI is not yet wired through ADK)."""
+    """Return an ADK BaseLlm for the given role.
+
+    Routing:
+      * ``claude_local`` → ``ClaudeSubscriptionLlm`` (subprocess CLI,
+        subscription auth via OAuth keychain; no API billing).
+      * everything else → ``LiteLlm`` (LiteLLM-backed standard path).
+    """
     from google.adk.models.lite_llm import LiteLlm
     cfg = _acfg.resolve_litellm(role)
     if cfg.get("_claude_cli"):
-        log.warning(
-            "role=%s on claude_local — ADK subprocess wrapper not implemented; "
-            "falling back to local for this run", role,
-        )
-        # Re-resolve forcing local — temporary until claude CLI is wrapped.
-        os.environ[f"AIFORGE_{role.upper()}_PROVIDER"] = "local"
-        cfg = _acfg.resolve_litellm(role)
+        from .claude_subscription_llm import ClaudeSubscriptionLlm
+        # ClaudeSubscriptionLlm reads AIFORGE_CLAUDE_BIN / _HOST from env.
+        # Strip the litellm `anthropic/` prefix if present — CLI takes a
+        # bare model id.
+        model_id = cfg["model_id"]
+        if model_id.startswith("anthropic/"):
+            model_id = model_id.split("/", 1)[1]
+        return ClaudeSubscriptionLlm(model=model_id)
     kwargs: dict[str, Any] = {"model": cfg["model_id"]}
     if cfg.get("api_base"):
         kwargs["api_base"] = cfg["api_base"]
