@@ -204,7 +204,14 @@ def _process_one_ticket() -> bool:
                 verdict = {}
         outcome = verdict.get("verdict", "fail") if isinstance(verdict, dict) else "fail"
 
-        new_status = "done" if outcome == "pass" else "failed"
+        # Map verdict to a tickets-store-valid status:
+        #   pass             → done
+        #   scope_violation  → cancelled (clear operator signal)
+        #   fail / anything  → blocked (needs human triage)
+        new_status = {
+            "pass": "done",
+            "scope_violation": "cancelled",
+        }.get(outcome, "blocked")
         tickets_mod.update_status(
             ticket.id, new_status, role="adk_runner",
             metadata_patch={
@@ -214,12 +221,13 @@ def _process_one_ticket() -> bool:
                                     else None,
             },
         )
-        log.info("ticket=%s status=%s", ticket.identifier, new_status)
+        log.info("ticket=%s status=%s verdict=%s",
+                 ticket.identifier, new_status, outcome)
     except Exception as exc:
         log.exception("ticket=%s failed during ADK run: %s", ticket.identifier, exc)
         try:
             tickets_mod.update_status(
-                ticket.id, "failed", role="adk_runner",
+                ticket.id, "blocked", role="adk_runner",
                 metadata_patch={"error": str(exc)[:500]},
             )
         except Exception:
