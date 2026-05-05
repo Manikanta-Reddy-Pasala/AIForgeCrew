@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from aiforge_core.runtime import repo_standards as rs
+from aiforge_core.config import repo_standards as rs
 
 
 # ─────────────────────────── detect_lang ────────────────────────────────
