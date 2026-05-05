@@ -1,4 +1,4 @@
-"""Unit tests for ``aiforge_core.runtime.repo_standards``.
+"""Unit tests for ``aiforge_core.config.repo_standards``.
 
 Covers:
   * ``detect_lang`` for java / node / go / python / empty fallback
