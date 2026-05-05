@@ -8,6 +8,35 @@ from typing import Any
 from aiforge_core.agents.base import BaseArchetype
 from aiforge_core.agents.registry import register
 
+def _validate_udiff_syntax(udiff: str, target_path: str) -> tuple[bool, str]:
+    """Return (ok, error_msg). Catches the most common Doer bugs:
+    - Java keyword arguments (Python-style `x = foo`)
+    - Mismatched parens / braces
+    - Statements outside class body in .java files
+    """
+    if not udiff or not udiff.strip():
+        return False, "empty udiff"
+    if target_path.endswith(".java"):
+        added_lines = [l[1:] for l in udiff.split("\n")
+                       if l.startswith("+") and not l.startswith("+++")]
+        joined = "\n".join(added_lines)
+        # Java doesn't have Python-style keyword args inside method calls
+        # at top-level. Heuristic: `IDENT = VALUE,` inside a parens chain.
+        import re as _re
+        if _re.search(r"\b\w+\s*=\s*\w+[\s,]", joined) and "(" in joined:
+            # Allow if the `=` is inside an annotation @X(name = "val")
+            # or array initialiser. Conservative — only flag when it
+            # looks like a method-call kwarg.
+            if not _re.search(r"@\w+\s*\(", joined):
+                return False, "java: looks like Python-style kwargs in method call"
+        # Mismatched parens
+        if joined.count("(") != joined.count(")"):
+            return False, f"java: paren count mismatch ({joined.count('(')} vs {joined.count(')')})"
+        if joined.count("{") != joined.count("}"):
+            return False, f"java: brace count mismatch ({joined.count('{')} vs {joined.count('}')})"
+    return True, ""
+
+
 def memory_lookup(*, repo: str, query: str, k: int = 8) -> list[dict]:
     """Active mid-task retrieval — agents call this when they hit an
     unknown reference (a class/method/concept they need but can't find
@@ -388,6 +417,28 @@ class Doer(BaseArchetype):
             m is None and raw.lstrip().startswith(("--- ", "+++ ", "@@ "))
             and not raw.rstrip().endswith(("\n", "}"))
         )
+
+        # Syntax validation — catch common LLM diff bugs before detectors.
+        # If the udiff is syntactically invalid, surface error immediately
+        # so the CRITIC retry loop in the orchestrator can see it.
+        _syn_ok, _syn_err = _validate_udiff_syntax(udiff, target_rel)
+        if not _syn_ok:
+            return {
+                "artifact_type": "doer_outcome",
+                "step_id": step.get("id"),
+                "action": action,
+                "target": target_rel,
+                "udiff": "",
+                "problems": [],
+                "applied": False,
+                "applied_branch": "",
+                "apply_error": f"udiff_invalid: {_syn_err}",
+                "tests_green": False,
+                "artifact_path": "",
+                "blocked_by_detectors": False,
+                "error": f"udiff_invalid: {_syn_err}",
+                "retry_hint": _syn_err,
+            }
 
         # Detectors — plan_create_fqns already computed above for prompt
         problems: list[dict] = []

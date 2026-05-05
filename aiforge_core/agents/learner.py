@@ -148,6 +148,35 @@ class Learner(BaseArchetype):
                 ),
             )
 
+        # On rejected outcomes, write a failures_summary.json artifact to the
+        # run dir so the Planner can recall it on future tickets.
+        if outcome == "rejected":
+            import glob as _glob
+            import json as _json
+            import os as _os
+            run_dir = _os.path.expanduser(f"~/.aiforge/runs/{ticket_id}")
+            try:
+                _os.makedirs(run_dir, exist_ok=True)
+                summary_path = _os.path.join(run_dir, "failures_summary.json")
+                failure_data = {
+                    "ticket_id": ticket_id,
+                    "repo": repo,
+                    "task_class": task_class,
+                    "outcome": outcome,
+                    "summary": summary,
+                    "doer_problems": [
+                        {"mode": p.get("mode"), "evidence": p.get("evidence", "")[:200]}
+                        for p in (doer_out.get("problems") or [])
+                    ],
+                    "apply_error": doer_out.get("apply_error") or "",
+                    "validation": validation.get("decision"),
+                    "review": review.get("decision"),
+                }
+                with open(summary_path, "w") as _f:
+                    _json.dump(failure_data, _f, indent=2)
+            except Exception:
+                pass  # best-effort; don't break the Learner run
+
         return {
             "artifact_type": "learning",
             "outcome": outcome,
@@ -155,3 +184,26 @@ class Learner(BaseArchetype):
             "tool_sequence": tool_sequence,
             "summary": summary,
         }
+
+
+def recent_failure_hints(repo: str, k: int = 5) -> list[str]:
+    """Read the last k failures_summary.json files for this repo and return
+    their summary strings. Called by the orchestrator to augment Planner prompts
+    with ticket-level failure context that Postgres may not yet have indexed.
+    """
+    import glob
+    import json
+    import os
+    pattern = os.path.expanduser("~/.aiforge/runs/*/failures_summary.json")
+    rows: list[str] = []
+    for p in sorted(glob.glob(pattern), reverse=True):
+        try:
+            with open(p) as f:
+                d = json.load(f)
+            if d.get("repo") == repo:
+                rows.append(d.get("summary", ""))
+                if len(rows) >= k:
+                    break
+        except Exception:
+            pass
+    return rows
