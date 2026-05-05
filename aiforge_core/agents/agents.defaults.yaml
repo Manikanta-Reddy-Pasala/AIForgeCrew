@@ -1,23 +1,35 @@
-# Bundled archetype defaults. Override via ~/.aiforge/agents.yaml
-# (global) or <repo>/.aiforge/agents.yaml (per-repo).
+# Bundled archetype defaults — tuned for Qwen3-Coder-Next (LM Studio).
+#
 # Lookup order: per-repo > global > this file > BaseArchetype field defaults.
-
-# Mac Studio Qwen3-Coder-Next-MLX-4bit runs with a 128–256K context
-# window. We give every stage a generous output budget so JSON envelopes
-# / udiffs / review bodies are never truncated. Inputs always fit.
+#
+# OFFICIAL Qwen3-Coder coding sampler (per Qwen team, HuggingFace card):
+#   temperature: 0.7  top_p: 0.8  top_k: 20
+#   presence_penalty: 1.5  repetition_penalty: 1.05
+# These yield best edit/refactor quality. Lower temp (e.g. 0.2) makes
+# Qwen3-Coder fall into "read everything first" mode and skip Doer edits.
+#
+# Granite-4.1 alternative (IBM recommendation): temp 0.2 top_p 1.0 rep_penalty 1.05.
+# To run Granite, override per-archetype via ~/.aiforge/agents.yaml or
+# AIFORGE_<ROLE>_TEMPERATURE / AIFORGE_<ROLE>_TOP_P env vars.
 archetypes:
   understander:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
-    temperature: 0.3
-    top_p: 0.9
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    presence_penalty: 1.5
+    repetition_penalty: 1.05
     grammar: understanding.json
     max_tokens: 8000
     prompt_version: v1
 
   planner:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit   # reasoning model
-    temperature: 0.3
-    top_p: 0.9
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    presence_penalty: 1.5
+    repetition_penalty: 1.05
     grammar: plan.gbnf
     # 12-step plans easily emit 8–10k JSON; give 24k headroom.
     max_tokens: 24000
@@ -25,7 +37,7 @@ archetypes:
 
   verifier:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
-    temperature: 0.0
+    temperature: 0.7
     grammar: verify.json
     max_tokens: 4000
     prompt_version: v1
@@ -39,8 +51,10 @@ archetypes:
 
   doer:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
-    temperature: 0.2
-    top_p: 0.95
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    presence_penalty: 1.5
     repetition_penalty: 1.05
     grammar: udiff.gbnf
     # 24k fits a 500-line Java class or a long README. Hardly hit even
@@ -50,21 +64,24 @@ archetypes:
 
   validator:
     model: ""           # heuristic-only in P1; LLM optional later
-    temperature: 0.0
+    temperature: 0.7
     max_tokens: 1024
     prompt_version: v1
 
   tester:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
-    temperature: 0.1
-    top_p: 0.9
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    presence_penalty: 1.5
+    repetition_penalty: 1.05
     grammar: tests.json
     max_tokens: 12000
     prompt_version: v1
 
   architect:
     model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
-    temperature: 0.0
+    temperature: 0.7
     grammar: review.json
     max_tokens: 12000
     prompt_version: v1
@@ -77,6 +94,6 @@ archetypes:
 
   learner:
     model: ""                        # heuristic by default; override for distillation
-    temperature: 0.0
+    temperature: 0.7
     max_tokens: 4000
     prompt_version: v1
