@@ -97,6 +97,10 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
         tokens_estimate=_estimate_tokens(payload),
         max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)),
     )
+    # Claude subscription path — bypass HTTP and shell out to `claude` CLI.
+    # Subscription auth lives in the OS keychain, not as an API key.
+    if ep.provider == "claude_local":
+        return _send_via_claude_cli(ep, payload, timeout_s)
     req = urllib.request.Request(
         f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
@@ -108,6 +112,53 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
     )
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         return json.loads(resp.read())
+
+
+def _send_via_claude_cli(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
+    """Run `claude --print` and shape the result into an OpenAI-compat
+    chat-completion response. Honours AIFORGE_CLAUDE_HOST for SSH routing
+    (e.g. NUC → Mac Studio where the subscription keychain lives)."""
+    import subprocess
+
+    body = json.loads(payload)
+    messages = body.get("messages") or []
+    # Flatten messages into a single prompt — claude CLI takes one stdin.
+    parts: list[str] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
+        parts.append(f"<|{role}|>\n{content}")
+    prompt = "\n\n".join(parts)
+
+    bin_name = ep.extras.get("claude_bin", "claude") if ep.extras else "claude"
+    host = ep.extras.get("claude_host", "") if ep.extras else ""
+    cmd = [bin_name, "--print"]
+    if ep.model:
+        cmd += ["--model", ep.model]
+    if host:
+        cmd = ["ssh", host, " ".join(cmd)]
+
+    proc = subprocess.run(
+        cmd, input=prompt.encode(), capture_output=True, timeout=timeout_s,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"claude_local subprocess failed: rc={proc.returncode} "
+            f"stderr={proc.stderr.decode(errors='replace')[:500]}"
+        )
+    text = proc.stdout.decode(errors="replace").strip()
+    return {
+        "id": "claude-local-stub",
+        "model": ep.model,
+        "choices": [{"index": 0,
+                     "message": {"role": "assistant", "content": text},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": _estimate_tokens(payload),
+                  "completion_tokens": max(1, len(text) // 4),
+                  "total_tokens": _estimate_tokens(payload) + max(1, len(text) // 4)},
+    }
 
 
 def _int_env(name: str, default: int) -> int:
