@@ -63,6 +63,18 @@ def _build_body(ep: Endpoint, messages: list[dict],
     body.update(ep.extras)
     if extras:
         body.update(extras)
+    # LM Studio rejects response_format.type=json_object — only json_schema or text.
+    if ep.provider == "local":
+        rf = body.get("response_format")
+        if isinstance(rf, dict) and rf.get("type") == "json_object":
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "out",
+                    "schema": {"type": "object"},
+                    "strict": False,
+                },
+            }
     return json.dumps(body).encode()
 
 
