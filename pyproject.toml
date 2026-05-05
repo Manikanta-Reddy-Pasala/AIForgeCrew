@@ -18,6 +18,9 @@ dependencies = [
   "openai>=1.50",
   "numpy>=1.26",
   "litellm>=1.40",
+  # ADK 2.x — drives the v6 SequentialAgent[Planner, Verifier,
+  # LoopAgent[Doer, Feedback], Learner] in runtime.adk_runner.
+  "google-adk>=2.0.0b1",
   "aiforge-memory @ git+https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git@main",
 ]
 
