@@ -192,6 +192,21 @@ def run(*, repo: str, title: str, body: str,
         repo=repo, query=f"{title}\n{body}", k=80, log=log,
     )
 
+    # Inject explicit file paths mentioned in title/body — they MUST end up
+    # in allowed_files so the post-Planner filter accepts them. Vector/fulltext
+    # search can miss specific paths the operator named directly.
+    import re as _re_path
+    _pattern = r"[\w./-]*src/[\w./-]+\.(?:java|py|ts|tsx|js|kt|go|rs|cpp|h)"
+    _mentioned = set(_re_path.findall(_pattern, f"{title}\n{body}"))
+    for _mp in _mentioned:
+        if _mp not in allowed_files:
+            allowed_files.insert(0, _mp)
+    if _mentioned:
+        try:
+            log.info("allowed_files.injected", extra={"aiforge": {"event": "allowed_files.injected", "paths": list(_mentioned)}})
+        except Exception:
+            pass
+
     # Pull top skills + chronic failure patterns the Learner has
     # accumulated for this repo + task_class. Both are surfaced to
     # the Planner / Doer prompts so the system auto-corrects on
