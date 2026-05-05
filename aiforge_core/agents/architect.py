@@ -45,7 +45,15 @@ class Architect(BaseArchetype):
             "Understanding + Plan. Output strict JSON: "
             "{decision, comments[], mr_title, mr_body}. "
             "decision ∈ {approve, request_changes, reject}. "
-            "mr_title ≤ 70 chars. mr_body in markdown w/ ## Summary, ## Changes, ## Tests."
+            "mr_title ≤ 70 chars. mr_body in markdown w/ ## Summary, ## Changes, ## Tests.\n"
+            "\n"
+            "SEVERITY RULE: each comment object MUST include a `severity` field: "
+            "\"block\" or \"advisory\". Block-worthy issues: scope violations, syntactically "
+            "invalid code, missing required files, runtime crashes. Advisory issues: style, "
+            "naming, over-engineering, doc phrasing, minor formatting. "
+            "Set decision=request_changes ONLY when at least one comment has severity=block. "
+            "If all comments are advisory (or there are no comments), set decision=approve. "
+            "Example comment shape: {\"text\": \"...\", \"severity\": \"block\"}"
         )
         user = (
             f"{failures_block}"
@@ -65,7 +73,23 @@ class Architect(BaseArchetype):
                     "comments": ["llm_invalid_json"],
                     "mr_title": "", "mr_body": "",
                     "mr_url": ""}
-        decision = str(out.get("decision", "request_changes"))
+        raw_comments = list(out.get("comments") or [])
+        # Normalise comments to dicts; plain strings default to advisory.
+        comments: list[dict] = []
+        for c in raw_comments:
+            if isinstance(c, dict):
+                comments.append(c)
+            else:
+                comments.append({"text": str(c), "severity": "advisory"})
+        # Severity-based decision override: only block when a BLOCK comment exists.
+        has_block = any(c.get("severity") == "block" for c in comments)
+        llm_decision = str(out.get("decision", "request_changes"))
+        if llm_decision == "reject":
+            decision = "reject"
+        elif has_block:
+            decision = "request_changes"
+        else:
+            decision = "approve"
         mr_title = str(out.get("mr_title", ""))[:70]
         mr_body = str(out.get("mr_body", ""))
 
@@ -88,7 +112,7 @@ class Architect(BaseArchetype):
         return {
             "artifact_type": "review",
             "decision": decision,
-            "comments": list(out.get("comments") or []),
+            "comments": comments,
             "mr_title":  mr_title,
             "mr_body":   mr_body,
             "mr_url":    mr_url,

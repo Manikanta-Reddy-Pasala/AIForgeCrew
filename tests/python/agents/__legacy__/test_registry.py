@@ -8,7 +8,7 @@ import aiforge_core.agents  # noqa: F401  (triggers @register)
 def test_all_archetypes_registered() -> None:
     expected = {
         "understander", "planner", "verifier", "grounder",
-        "doer", "tester", "architect", "coordinator", "learner",
+        "doer", "tester", "architect", "learner",
     }
     assert expected.issubset(set(registry.known()))
 

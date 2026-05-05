@@ -135,6 +135,22 @@ class Grounder(BaseArchetype):
             except Exception:
                 pass
 
+        # Filesystem fallback — Neo4j may be stale on freshly-added files.
+        # For each still-unresolved step, check the actual filesystem under
+        # ~/codeRepo/<repo>/<target>. If the file exists on disk, accept it.
+        import os as _os
+        repo_root = _os.path.expanduser(f"~/codeRepo/{repo}")
+        for u in list(unresolved):
+            target = u.get("target", "")
+            if not target:
+                continue
+            candidates = [
+                _os.path.join(repo_root, target),
+                target if _os.path.isabs(target) else _os.path.join(repo_root, target.lstrip("/")),
+            ]
+            if any(_os.path.isfile(c) for c in candidates):
+                unresolved.remove(u)  # filesystem says it exists — accept
+
         return {"artifact_type": "grounding",
                 "resolved": len(unresolved) == 0,
                 "unresolved_refs": unresolved}

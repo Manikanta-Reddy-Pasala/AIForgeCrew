@@ -42,6 +42,7 @@ from typing import Any
 # Trigger archetype @register side effects
 import aiforge_core.agents  # noqa: F401
 from aiforge_core.agents import registry
+from aiforge_core.agents.learner import recent_failure_hints
 from aiforge_core.orchestrator import circuit_breakers as cb_mod
 from aiforge_core.memory import online_learner as learner
 from aiforge_core.observability.logging import emit, get_run_logger
@@ -215,9 +216,10 @@ def run(*, repo: str, title: str, body: str,
     skills_hint = learner.top_skills_for(
         repo=repo, task_class=task_class_guess, k=3,
     )
-    failures_hint = learner.top_failures_for(
+    failures_hint = list(learner.top_failures_for(
         repo=repo, task_class=task_class_guess, k=5,
-    )
+    )) + [{"mode": "local", "evidence": h, "lesson": h, "seen_count": 1}
+          for h in recent_failure_hints(repo, k=5) if h]
 
     # Stage P — Planner (with REPLAN loop on grounder failure OR Verifier reject)
     p_t0 = time.time()
