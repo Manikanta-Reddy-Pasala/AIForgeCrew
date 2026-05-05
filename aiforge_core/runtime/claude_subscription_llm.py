@@ -1,22 +1,38 @@
 """ADK ``BaseLlm`` wrapper around the ``claude`` CLI subscription.
 
-Runs Anthropic's ``claude --print`` as a subprocess instead of hitting the
-API. Lets the v6 ADK SequentialAgent participate in the operator's Claude
-Pro/Team subscription quota — no per-token billing, OAuth keychain auth.
+Runs Anthropic's ``claude --print`` as a subprocess instead of hitting
+the API. Lets the v6 ADK SequentialAgent participate in the operator's
+Claude Pro/Team subscription quota — no per-token billing, OAuth
+keychain auth.
+
+Tool model — important
+======================
+
+The claude CLI has its OWN built-in Read/Edit/Write/Bash tools. We do
+NOT try to bridge ADK FunctionTool calls into claude — that's a dead
+end (claude speaks Anthropic's native tool-use schema, ADK speaks
+OpenAI's). Instead we let claude use its native tools directly:
+
+  * cwd is set to ``AIFORGE_REPO_ROOT`` so claude operates in the
+    workspace.
+  * ``--add-dir <root>`` whitelists that path.
+  * ``--permission-mode acceptEdits`` auto-approves Read/Edit/Write so
+    the run is non-interactive.
+
+Result: when the Doer prompt asks claude to edit a file, claude actually
+edits the file using its own tools. The text response is the model's
+summary. Other agents (Planner, Verifier, Feedback, Learner) don't ask
+for edits in their prompt, so they won't use the tools — same exec
+path, no special-casing.
 
 Wired into ``runtime.adk_runner._build_litellm_model`` when
 ``agent_config.resolve_litellm`` returns ``_claude_cli=True``.
 
-Limitations carried over from the underlying CLI:
-- No streaming through ``--print`` (full response, single chunk).
-- No native tool-call schema; system prompt steers tool use.
-- Subprocess startup ~500-1500ms per call.
-- Rate-limited per subscription tier (Pro/Team), not exposed
-  programmatically.
-
-Honours the same env knobs as ``aiforge_core.llm.providers.claude_local``:
-``AIFORGE_CLAUDE_BIN`` (default ``claude``) and ``AIFORGE_CLAUDE_HOST``
-(SSH-route NUC → Mac Studio when keychain is on a different host).
+Honours env knobs:
+``AIFORGE_CLAUDE_BIN`` (default ``claude``)
+``AIFORGE_CLAUDE_HOST`` (SSH-route NUC → Mac Studio for keychain)
+``AIFORGE_REPO_ROOT`` (default ``$HOME/aiforge_workspace``)
+``AIFORGE_CLAUDE_TIMEOUT_S`` (default 180)
 """
 from __future__ import annotations
 
@@ -93,13 +109,26 @@ class ClaudeSubscriptionLlm(BaseLlm):
 
         bin_name = os.environ.get("AIFORGE_CLAUDE_BIN", "claude")
         host = os.environ.get("AIFORGE_CLAUDE_HOST", "")
-        cmd = [bin_name, "--print"]
+        # Repo root the CLI is allowed to read/edit — same path the
+        # Doer's ADK FunctionTools resolve against, so behavior is
+        # consistent across providers.
+        repo_root = os.path.expanduser(os.environ.get(
+            "AIFORGE_REPO_ROOT", "~/aiforge_workspace",
+        ))
+        os.makedirs(repo_root, exist_ok=True)
+
+        cmd = [bin_name, "--print",
+               "--permission-mode", "acceptEdits",
+               "--add-dir", repo_root]
         if self.model:
             cmd += ["--model", self.model]
         if host:
+            # Remote execution: claude runs on the keychain host, so
+            # the cwd flag is meaningless here — caller must mirror
+            # the workspace dir on the remote host.
             cmd = ["ssh", host, " ".join(cmd)]
 
-        log.info("claude_subscription invoking: %s", cmd)
+        log.info("claude_subscription invoking: %s (cwd=%s)", cmd, repo_root)
         timeout_s = float(os.environ.get("AIFORGE_CLAUDE_TIMEOUT_S", "180"))
 
         proc = await asyncio.create_subprocess_exec(
@@ -107,6 +136,7 @@ class ClaudeSubscriptionLlm(BaseLlm):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=repo_root if not host else None,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
