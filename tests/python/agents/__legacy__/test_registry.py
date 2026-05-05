@@ -19,7 +19,7 @@ def test_build_planner_picks_up_defaults() -> None:
     # Bundled default points at the loaded Qwen-Coder-Next on Mac Studio
     assert "Qwen3-Coder-Next" in p.model
     assert p.grammar == "plan.gbnf"
-    assert p.temperature == 0.3
+    assert p.temperature == 0.7
 
 
 def test_build_doer_picks_up_defaults() -> None:
@@ -27,7 +27,7 @@ def test_build_doer_picks_up_defaults() -> None:
     # Bundled default points at Qwen-Coder-Next on Mac Studio LM Studio
     assert "Qwen3-Coder-Next" in d.model
     assert d.grammar == "udiff.gbnf"
-    assert d.temperature == 0.2
+    assert d.temperature == 0.7
     assert d.repetition_penalty == 1.05
 
 
