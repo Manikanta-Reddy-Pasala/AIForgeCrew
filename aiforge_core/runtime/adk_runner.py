@@ -169,6 +169,35 @@ def _build_pipeline():
     )
 
 
+def _fetch_memory_block(ticket) -> str:
+    """Pre-flight AiForgeMemory recall for the claimed ticket.
+
+    Pulls hits from the unified retrieval surface (memory hybrid search +
+    ticket brief + related_memories + sym_lookup + find_doc) and formats
+    them as a markdown block. Empty string when recall returns nothing
+    or the memory backend is unreachable — never raises.
+    """
+    try:
+        from aiforge_core.memory import unified_query as _uq
+        text = f"{ticket.title}\n{ticket.body or ''}"
+        result = _uq.query(text, ticket=ticket.identifier, limit=8)
+    except Exception as exc:
+        log.warning("memory recall failed: %s", exc)
+        return ""
+    hits = result.get("hits") or []
+    if not hits:
+        return ""
+    lines = ["## Memory hits (AiForgeMemory)", ""]
+    for h in hits[:8]:
+        src = h.get("source", "?")
+        score = h.get("score", 0.0)
+        body = (h.get("text") or h.get("body") or h.get("summary") or "")[:300]
+        lines.append(f"- [{src} {score:.2f}] {body}")
+    sources = ",".join(result.get("used_sources") or [])
+    log.info("memory: %d hits sources=%s", len(hits), sources)
+    return "\n".join(lines) + "\n"
+
+
 def _process_one_ticket() -> bool:
     """Claim + run a single ticket. Returns True when one ran, False when
     the queue was empty (caller exits and lets systemd back off)."""
@@ -177,6 +206,7 @@ def _process_one_ticket() -> bool:
         return False
 
     log.info("claimed ticket=%s title=%r", ticket.identifier, ticket.title)
+    memory_block = _fetch_memory_block(ticket)
     pipeline = _build_pipeline()
 
     try:
@@ -195,6 +225,8 @@ def _process_one_ticket() -> bool:
             f"## Title\n{ticket.title}\n\n"
             f"## Body\n{ticket.body or '(no body)'}\n"
         )
+        if memory_block:
+            prompt += "\n" + memory_block
 
         async def _run() -> dict:
             session = await session_svc.create_session(
