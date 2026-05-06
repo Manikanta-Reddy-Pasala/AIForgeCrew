@@ -63,7 +63,12 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "ollama_cloud": {
         "label": "Ollama Cloud",
         "litellm_prefix": "openai",
-        "default_model": "llama3.1:70b",
+        # Colon-delimited model ids (e.g. ``llama3.1:70b``) trigger
+        # LiteLLM's Ollama auto-detector even with the ``openai/`` prefix
+        # and route to ``/api/generate`` instead of the OpenAI-compat
+        # ``/chat/completions`` ollama.com actually exposes. Pin a name
+        # without ``:`` so LiteLLM stays on the openai code path.
+        "default_model": "qwen3-coder-next",
         "api_key_env": "OLLAMA_CLOUD_API_KEY",
         "api_key_default": "",
         "base_url": "https://ollama.com/v1",

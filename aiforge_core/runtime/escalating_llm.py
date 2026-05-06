@@ -120,13 +120,23 @@ class EscalatingLlm(BaseLlm):
             return
 
         # Non-streaming: collect primary's responses, judge, retry on fail.
+        # Order: primary (skipped if sticky-demoted) → cloud chain →
+        # primary as last-resort retry. The trailing primary slot saves
+        # us from total-failure stalls when (a) the primary had a
+        # transient blip earlier in the same pipeline run AND (b) no
+        # cloud provider can rescue (no key, all 5xx, etc). It's also
+        # the only attempt for a primary that was demoted on a *prior*
+        # call — without it, sticky-demotion + cloud-down = deadlock.
         candidates: list[tuple[str, BaseLlm]] = []
-        if not self.primary_demoted and self.primary_model is not None:
+        was_demoted_at_start = self.primary_demoted
+        if not was_demoted_at_start and self.primary_model is not None:
             candidates.append(("primary", self.primary_model))
         for label, m in zip(self.chain_labels, self.chain_models):
             candidates.append((label, m))
+        if self.primary_model is not None:
+            candidates.append(("primary_retry", self.primary_model))
 
-        if self.primary_demoted:
+        if was_demoted_at_start:
             log.info(
                 "llm.primary_skipped role=%s reason=sticky_demotion",
                 self.role,
@@ -162,6 +172,12 @@ class EscalatingLlm(BaseLlm):
                 if label == "primary":
                     self.primary_demoted = True
                 continue
+
+            # primary_retry success — clear the demotion so subsequent
+            # calls go back to the fast path. The cloud excursion was
+            # enough; no need to keep paying its latency.
+            if label == "primary_retry":
+                self.primary_demoted = False
 
             if label != "primary":
                 log.info(

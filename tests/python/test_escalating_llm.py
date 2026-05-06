@@ -194,30 +194,58 @@ def test_all_fail_raises_last_exception() -> None:
         _drive(e)
 
 
-def test_sticky_demotion_skips_primary_on_subsequent_call() -> None:
-    """First call: primary fails → demoted. Second call: primary skipped
-    even if it would succeed now. Stops the loop wasting turns on a
-    proven-flaky local model."""
+def test_sticky_demotion_prefers_cloud_after_primary_fail() -> None:
+    """First call: primary fails → demoted. Second call: cloud is tried
+    BEFORE primary_retry, so a recovered primary doesn't pre-empt the
+    cheaper cloud path that's already proven to work."""
     primary = _StubModel(model="primary", error=RuntimeError("flaky"))
     cloud = _StubModel(model="cloud", script=[_resp("rescued")])
     e = EscalatingLlm(model="primary", role="doer",
                       primary_model=primary, chain_models=[cloud],
                       chain_labels=["cloud"])
 
-    # First call: primary fails, cloud rescues. primary_demoted flips.
     out1 = _drive(e)
     assert out1[0].content.parts[0].text == "rescued"
     assert e.primary_demoted is True
-    assert primary.calls == 1
+    assert primary.calls == 1  # primary tried once, failed
     assert cloud.calls == 1
 
-    # Even if primary would now succeed, it's skipped.
+    # Cloud succeeds → primary_retry never reached.
     primary.error = None
     primary.script = [_resp("primary_back")]
     cloud.script = [_resp("cloud_again")]
     out2 = _drive(e)
     assert out2[0].content.parts[0].text == "cloud_again"
-    assert primary.calls == 1  # not invoked again
+    assert primary.calls == 1  # demoted; cloud went first and worked
+    assert cloud.calls == 2
+
+
+def test_primary_retry_saves_run_when_cloud_unreachable() -> None:
+    """Sticky-demoted primary still gets a last-chance shot after cloud
+    fails — otherwise a single transient primary blip + a flaky cloud
+    chain would deadlock the pipeline."""
+    primary = _StubModel(model="primary", error=RuntimeError("first blip"))
+    cloud = _StubModel(model="cloud", error=RuntimeError("cloud down"))
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[cloud],
+                      chain_labels=["cloud"])
+
+    # Call 1: primary blips, cloud down → primary_retry also fails (still
+    # erroring). Whole stack raises.
+    with pytest.raises(RuntimeError):
+        _drive(e)
+    assert e.primary_demoted is True
+    assert primary.calls == 2  # primary slot + primary_retry slot
+    assert cloud.calls == 1
+
+    # Call 2: primary recovers, cloud still down. primary skipped (demoted)
+    # → cloud fails → primary_retry rescues. Demotion cleared on success.
+    primary.error = None
+    primary.script = [_resp("primary_recovered")]
+    out = _drive(e)
+    assert out[0].content.parts[0].text == "primary_recovered"
+    assert e.primary_demoted is False  # cleared
+    assert primary.calls == 3
     assert cloud.calls == 2
 
 
