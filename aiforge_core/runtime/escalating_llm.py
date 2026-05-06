@@ -54,7 +54,16 @@ def _is_empty(resp: LlmResponse) -> bool:
 
 
 def _build_one(cfg: dict[str, Any]) -> BaseLlm:
-    """Construct a BaseLlm from a resolve_litellm-shaped dict."""
+    """Construct a BaseLlm from a resolve_litellm-shaped dict.
+
+    Recognised cfg keys (besides ``model_id``/``api_base``/``api_key``):
+
+    * ``_claude_cli`` — route through ``ClaudeSubscriptionLlm`` instead
+      of LiteLLM (the subscription CLI doesn't speak the OpenAI proto).
+    * ``custom_llm_provider`` — override LiteLLM's URL/model auto-detect.
+      Required for ollama.com (OpenAI-compat at ``/v1`` but LiteLLM
+      misroutes to ``/api/generate`` without it).
+    """
     if cfg.get("_claude_cli"):
         from .claude_subscription_llm import ClaudeSubscriptionLlm
         model_id = cfg["model_id"]
@@ -67,6 +76,8 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
         kwargs["api_base"] = cfg["api_base"]
     if cfg.get("api_key"):
         kwargs["api_key"] = cfg["api_key"]
+    if cfg.get("custom_llm_provider"):
+        kwargs["custom_llm_provider"] = cfg["custom_llm_provider"]
     return LiteLlm(**kwargs)
 
 

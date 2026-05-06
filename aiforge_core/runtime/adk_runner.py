@@ -384,10 +384,27 @@ def _process_one_ticket() -> bool:
                  ticket.identifier, new_status, outcome)
     except Exception as exc:
         log.exception("ticket=%s failed during ADK run: %s", ticket.identifier, exc)
+        # Even on ADK failure, the Doer (especially claude_local using
+        # native CLI tools) may have written real files to disk before
+        # the orchestrator stalled. Surface that work as a draft PR for
+        # human review instead of silently dropping it. The function
+        # short-circuits with pr_skip_reason=no_changes when the tree
+        # is clean, so this is a no-op when nothing was written.
+        rescue_pr_meta: dict[str, Any] = {}
+        try:
+            rescue_pr_meta = _commit_push_open_pr(ticket)
+            if rescue_pr_meta.get("pr_url"):
+                log.info(
+                    "ticket=%s rescued partial work as PR despite ADK failure: %s",
+                    ticket.identifier, rescue_pr_meta["pr_url"],
+                )
+        except Exception as rescue_exc:
+            log.warning("ticket=%s PR rescue also failed: %s",
+                        ticket.identifier, rescue_exc)
         try:
             tickets_mod.update_status(
                 ticket.id, "blocked", role="adk_runner",
-                metadata_patch={"error": str(exc)[:500]},
+                metadata_patch={"error": str(exc)[:500], **rescue_pr_meta},
             )
         except Exception:
             pass

@@ -483,10 +483,17 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
             os.environ.get(f"AIFORGE_{role.upper()}_{name.upper()}_BASE_URL")
             or prov.get("base_url")
         )
-        out.append({
+        entry: dict[str, Any] = {
             "model_id": model, "api_base": base_url, "api_key": api_key,
             "_provider": name,
-        })
+        }
+        # Ollama Cloud sits at https://ollama.com/v1 (OpenAI-compat) but
+        # LiteLLM detects the ollama.com domain + treats it as an Ollama
+        # endpoint, posting to /api/generate which 404s. Force the
+        # openai code path explicitly.
+        if name == "ollama_cloud":
+            entry["custom_llm_provider"] = "openai"
+        out.append(entry)
     return out
 
 
