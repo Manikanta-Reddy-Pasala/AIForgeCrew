@@ -14,6 +14,12 @@ const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 
 type RouteMode = 'auto' | 'code' | 'workflow';
 
+interface AttachedFile {
+  name: string;
+  size: number;
+  content_b64: string;
+}
+
 interface Draft {
   title: string;
   body: string;
@@ -22,12 +28,38 @@ interface Draft {
   route_mode: RouteMode;          // local UI state — translated on submit
   route_workflow: string;         // selected workflow id (when mode='workflow')
   attachments: string;            // comma-separated attachment role names
+  attached_files: AttachedFile[]; // operator-uploaded files; presence forces claude_local
 }
 
 const FRESH_DRAFT: Draft = {
   title: '', body: '', assignee_role: 'planner', priority: 'medium',
   route_mode: 'auto', route_workflow: '', attachments: '',
+  attached_files: [],
 };
+
+// Reads a File object as base64 (without the data:...;base64, prefix).
+// The backend AttachedFile model expects raw base64 only.
+async function readAsBase64(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  // Chunk to keep String.fromCharCode within safe arg-count limits on
+  // larger files (~16MB+ would otherwise blow the stack).
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(
+      null, Array.from(bytes.subarray(i, i + CHUNK)) as unknown as number[],
+    );
+  }
+  return btoa(binary);
+}
+
+const MAX_FILE_BYTES = 5 * 1024 * 1024;  // 5MB hard cap per file
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / 1024 / 1024).toFixed(1)}MB`;
+}
 
 export default function Tickets() {
   const qc = useQueryClient();
@@ -96,6 +128,12 @@ export default function Tickets() {
       title: draft.title, body: draft.body,
       assignee_role: draft.assignee_role, priority: draft.priority,
       attachments: atts,
+      // attached_files only sent when actually present; the backend
+      // pins the run to claude_local when this list is non-empty
+      // because only the subscription CLI can read uploaded files.
+      attached_files: draft.attached_files.map(f => ({
+        name: f.name, content_b64: f.content_b64,
+      })),
     };
     if (draft.route_mode === 'code') {
       payload.route = 'code';
@@ -181,6 +219,79 @@ export default function Tickets() {
                 onChange={e => setDraft({ ...draft, attachments: e.target.value })}
               />
             </label>
+
+            <div className="field">
+              <div style={{ marginBottom: 6 }}>
+                Attached files{' '}
+                <span style={{ opacity: 0.6, fontSize: 12 }}>
+                  (when present, ticket is pinned to Claude Local — only
+                  Claude's subscription CLI can read uploaded files)
+                </span>
+              </div>
+              <input
+                type="file"
+                multiple
+                onChange={async e => {
+                  const picked = Array.from(e.target.files || []);
+                  if (!picked.length) return;
+                  const accepted: AttachedFile[] = [];
+                  for (const f of picked) {
+                    if (f.size > MAX_FILE_BYTES) {
+                      toast.error(`${f.name} is ${formatBytes(f.size)} — over 5MB cap, skipping`);
+                      continue;
+                    }
+                    try {
+                      const b64 = await readAsBase64(f);
+                      accepted.push({ name: f.name, size: f.size, content_b64: b64 });
+                    } catch (err: any) {
+                      toast.error(`Couldn't read ${f.name}: ${err.message || err}`);
+                    }
+                  }
+                  if (accepted.length) {
+                    setDraft({
+                      ...draft,
+                      attached_files: [...draft.attached_files, ...accepted],
+                    });
+                    toast.success(
+                      `Added ${accepted.length} file${accepted.length > 1 ? 's' : ''} — ` +
+                      `ticket will run on Claude Local`,
+                    );
+                  }
+                  e.target.value = '';  // allow re-picking the same file
+                }}
+              />
+              {draft.attached_files.length > 0 && (
+                <div className="row" style={{
+                  gap: 6, flexWrap: 'wrap', marginTop: 8,
+                  padding: 8,
+                  border: '1px solid var(--border-1)',
+                  borderRadius: 4,
+                  background: 'var(--bg-1)',
+                }}>
+                  <strong style={{ marginRight: 4 }}>
+                    🔒 Claude Local mode:
+                  </strong>
+                  {draft.attached_files.map((f, i) => (
+                    <span key={i} style={{
+                      padding: '2px 6px',
+                      background: 'var(--bg-2)',
+                      borderRadius: 3,
+                      fontSize: 12,
+                    }}>
+                      📎 {f.name} ({formatBytes(f.size)}){' '}
+                      <button
+                        className="ghost"
+                        style={{ padding: 0, marginLeft: 2, fontSize: 12 }}
+                        onClick={() => setDraft({
+                          ...draft,
+                          attached_files: draft.attached_files.filter((_, j) => j !== i),
+                        })}
+                      >×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <div className="field">
               <div style={{ marginBottom: 6 }}>Route</div>

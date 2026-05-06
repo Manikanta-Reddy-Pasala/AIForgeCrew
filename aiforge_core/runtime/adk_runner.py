@@ -32,7 +32,7 @@ from aiforge_core.tickets import store as tickets_mod
 
 from . import memory_block
 from .git_pr import commit_push_open_pr
-from .pipeline import build_pipeline
+from .pipeline import build_pipeline, set_force_provider
 
 
 log = logging.getLogger("adk_runner")
@@ -145,9 +145,45 @@ def _build_prompt(ticket, memory_md: str) -> str:
         f"## Title\n{ticket.title}\n\n"
         f"## Body\n{ticket.body or '(no body)'}\n"
     )
+    # Ticket attachments — list paths so the Doer (always claude_local
+    # when these are present, see _process_one_ticket) can `file_read`
+    # them via its native CLI tools. Each entry is the
+    # workspace-relative path the API persisted.
+    md = ticket.metadata or {}
+    files = md.get("attached_files") or []
+    if isinstance(files, list) and files:
+        out += "\n## Attached files (read these BEFORE you start)\n"
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            path = f.get("path", "")
+            size = f.get("size", "?")
+            name = f.get("name", "")
+            if path:
+                out += f"- `{path}` ({name}, {size} bytes)\n"
+        out += (
+            "\nThese files were uploaded by the operator with the "
+            "ticket. Use `file_read` to load them — their context is "
+            "REQUIRED for the change.\n"
+        )
     if memory_md:
         out += "\n" + memory_md
     return out
+
+
+def _ticket_force_provider(ticket) -> str | None:
+    """Per-ticket pipeline override.
+
+    Today the only path that flips this is "operator uploaded files
+    with the ticket" → force ``claude_local`` because only the
+    subscription CLI can read attached files via its native filesystem
+    tools. Future use: ``provider`` field on the ticket itself.
+    """
+    md = ticket.metadata or {}
+    forced = md.get("force_provider")
+    if isinstance(forced, str) and forced:
+        return forced
+    return None
 
 
 def _process_one_ticket() -> bool:
@@ -160,6 +196,12 @@ def _process_one_ticket() -> bool:
     log.info("claimed ticket=%s title=%r", ticket.identifier, ticket.title)
     memory_md = memory_block.fetch(ticket)
     prompt = _build_prompt(ticket, memory_md)
+
+    forced = _ticket_force_provider(ticket)
+    set_force_provider(forced)
+    if forced:
+        log.info("ticket=%s force_provider=%s (attachments present)",
+                 ticket.identifier, forced)
 
     try:
         state = asyncio.run(_run_pipeline(prompt))
@@ -211,6 +253,11 @@ def _process_one_ticket() -> bool:
             )
         except Exception:
             pass
+    finally:
+        # Always clear the per-ticket override so the next claim builds
+        # against the operator's profile, not the previous ticket's
+        # forced provider.
+        set_force_provider(None)
     return True
 
 

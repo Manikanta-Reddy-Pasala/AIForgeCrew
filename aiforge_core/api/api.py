@@ -176,6 +176,22 @@ def list_agents() -> list[dict]:
 
 
 # ─────────────────────────── Tickets ────────────────────────────────────
+class AttachedFile(BaseModel):
+    """File the operator dragged into the New Ticket form.
+
+    Persisted to disk on ticket-create + recorded in
+    ``ticket.metadata.attached_files`` so the runner can hand the paths
+    to the Doer prompt. Triggers a per-ticket override that pins the
+    pipeline to ``claude_local`` — only Claude's subscription CLI can
+    read attachments via its native filesystem tools, the LiteLLM /
+    Ollama / Anthropic-API providers don't have a way to inline them
+    short of base64-stuffing the prompt.
+    """
+
+    name: str
+    content_b64: str  # raw bytes, base64-encoded
+
+
 class TicketCreate(BaseModel):
     title: str
     body: str = ""
@@ -191,6 +207,7 @@ class TicketCreate(BaseModel):
     route: str | None = None                    # 'code' | 'workflow' | None=auto
     route_workflow: str | None = None           # required when route='workflow'
     attachments: list[str] = Field(default_factory=list)  # attachment role names; feeds detector
+    attached_files: list[AttachedFile] = Field(default_factory=list)
 
 
 class RouteUpdate(BaseModel):
@@ -334,6 +351,43 @@ def _derive_branch(identifier: str, title: str) -> str:
     return f"aiforge/{identifier}{('-' + slug) if slug else ''}"
 
 
+def _persist_ticket_attachments(
+    identifier: str, files: list[AttachedFile],
+) -> list[dict]:
+    """Decode + write each uploaded file under the workspace.
+
+    Files land at ``{AIFORGE_REPO_ROOT}/.aiforge/ticket-files/{id}/<name>``
+    so claude_local's ``--add-dir <root>`` whitelist already covers
+    them. Returns a metadata-friendly list of ``{name, size, path}`` —
+    path is relative to the repo root so the Doer prompt can reference
+    it without leaking absolute filesystem layout.
+    """
+    import base64
+    import os as _os
+    from pathlib import Path as _Path
+
+    root = _Path(_os.path.expanduser(_os.environ.get(
+        "AIFORGE_REPO_ROOT", "~/aiforge_workspace",
+    ))).resolve()
+    target_dir = root / ".aiforge" / "ticket-files" / identifier
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    out: list[dict] = []
+    for f in files:
+        # Defensive: strip directory components so a malicious name
+        # like ``../../etc/passwd`` can't escape the per-ticket dir.
+        safe_name = _Path(f.name).name or "attachment.bin"
+        try:
+            data = base64.b64decode(f.content_b64, validate=False)
+        except Exception:
+            continue
+        dest = target_dir / safe_name
+        dest.write_bytes(data)
+        rel = dest.relative_to(root).as_posix()
+        out.append({"name": safe_name, "size": len(data), "path": rel})
+    return out
+
+
 @app.post("/api/tickets", status_code=201)
 def create_ticket(payload: TicketCreate) -> dict:
     parent_id = None
@@ -407,6 +461,31 @@ def create_ticket(payload: TicketCreate) -> dict:
         route=route, route_workflow=route_workflow,
         route_source=route_source, route_confidence=route_confidence,
     )
+    # Persist any uploaded files into a per-ticket dir under the
+    # workspace and stamp metadata.attached_files. Force claude_local
+    # for the run because attachments are only readable through the
+    # subscription CLI's native filesystem tools (LiteLLM/Ollama
+    # providers can't ingest arbitrary files inline). The metadata
+    # flag is read by the runtime in
+    # ``aiforge_core.runtime.pipeline.build_litellm_model``.
+    if payload.attached_files:
+        attach_meta = _persist_ticket_attachments(t.identifier,
+                                                  payload.attached_files)
+        if attach_meta:
+            patched_md = dict(t.metadata or {})
+            patched_md["attached_files"] = attach_meta
+            patched_md["force_provider"] = "claude_local"
+            try:
+                tickets_mod.update_status(
+                    t.id, t.status, role="api",
+                    metadata_patch={
+                        "attached_files": attach_meta,
+                        "force_provider": "claude_local",
+                    },
+                )
+                t.metadata = patched_md
+            except Exception:
+                pass
     if not t.branch:
         t.branch = _derive_branch(t.identifier, t.title)
         try:

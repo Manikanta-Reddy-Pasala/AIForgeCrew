@@ -32,21 +32,57 @@ from .escalating_llm import EscalatingLlm
 from .local_probe import maybe_substitute_primary
 
 
+# Per-ticket override knob populated by ``adk_runner._process_one_ticket``
+# before each ``build_pipeline`` call. None means "respect agent_config";
+# a string means "force every archetype onto this provider for this run".
+# Module-level because the ADK LlmAgent factory has no clean place to
+# thread an option down through and the runner is single-shot anyway.
+_FORCE_PROVIDER: str | None = None
+
+
+def set_force_provider(name: str | None) -> None:
+    """Pin every archetype to ``name`` (e.g. ``claude_local``) for the
+    next pipeline build. Pass ``None`` to clear."""
+    global _FORCE_PROVIDER
+    _FORCE_PROVIDER = name
+
+
+def _force_claude_local_cfg(role: str) -> dict:
+    """Build a resolve_litellm-shaped dict that pins claude_local with
+    the provider's default model — used when a ticket has attachments
+    that only the subscription CLI can read."""
+    from aiforge_core.config.agent_config import PROVIDERS as _PROV
+    prov = _PROV["claude_local"]
+    return {
+        "model_id": prov["default_model"],
+        "api_base": "claude:cli",
+        "api_key": "",
+        "_claude_cli": True,
+    }
+
+
 def build_litellm_model(role: str):
     """Return an :class:`EscalatingLlm` for the given role.
 
-    Wraps the primary (mlx-lm via LiteLlm or ClaudeSubscriptionLlm)
-    with the cloud fallback chain so transport / empty-response /
-    routing failures get retried transparently. Disable the chain
-    with ``AIFORGE_ESCALATE_DISABLE=1``.
+    Resolution order:
 
-    Pre-flight probe: when the operator's profile points at the local
-    mlx-lm endpoint and that endpoint is dead, the primary cfg is
-    swapped at build time to a cloud default (Ollama Cloud's
-    ``qwen3-coder-next``) — see :mod:`local_probe`. Avoids paying the
-    primary→fail→cloud round-trip cost on every single Doer turn when
-    LM Studio is just off.
+    1. Per-ticket force override (e.g. attachments → claude_local).
+       Disables the cloud chain too — attachments only work through
+       the subscription CLI, so falling back to a different provider
+       would silently drop the file context.
+    2. Operator profile via ``agent_config.resolve_litellm``.
+    3. Pre-flight local-endpoint probe — if local mlx-lm is dead,
+       swap to ``cloud_default_for_local`` (Ollama Cloud
+       ``qwen3-coder-next`` by default) so the agent loop doesn't pay
+       a failed-primary round-trip on every turn.
+
+    EscalatingLlm wrapping always applies (primary → cloud chain →
+    primary_retry); disable the chain with ``AIFORGE_ESCALATE_DISABLE=1``.
     """
+    if _FORCE_PROVIDER == "claude_local":
+        primary = _force_claude_local_cfg(role)
+        return EscalatingLlm.build(role, primary, [])  # no chain — file
+                                                       # context is local
     primary = _acfg.resolve_litellm(role)
     primary = maybe_substitute_primary(role, primary)
     chain = _acfg.cloud_escalation_chain(role)
