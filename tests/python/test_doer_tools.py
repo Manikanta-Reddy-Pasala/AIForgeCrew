@@ -25,36 +25,36 @@ def _isolated_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_validate_python_compile_ok() -> None:
-    ok, err = dt._validate_syntax("a.py", "def f():\n    return 1\n")
+    ok, err = dt.validate_syntax("a.py", "def f():\n    return 1\n")
     assert ok and err == ""
 
 
 def test_validate_python_syntax_error() -> None:
-    ok, err = dt._validate_syntax("a.py", "def f(:\n    pass\n")
+    ok, err = dt.validate_syntax("a.py", "def f(:\n    pass\n")
     assert not ok
     assert "(" in err or "syntax" in err.lower()
 
 
 def test_validate_unbalanced_braces() -> None:
-    ok, err = dt._validate_syntax("x.java", "class X { void f() { }")
+    ok, err = dt.validate_syntax("x.java", "class X { void f() { }")
     assert not ok
     assert "{}" in err
 
 
 def test_validate_unbalanced_parens() -> None:
-    ok, err = dt._validate_syntax("x.go", "func f(int x { }")
+    ok, err = dt.validate_syntax("x.go", "func f(int x { }")
     assert not ok
 
 
 def test_validate_empty_rejected() -> None:
-    ok, err = dt._validate_syntax("a.py", "")
+    ok, err = dt.validate_syntax("a.py", "")
     assert not ok
     assert "empty" in err
 
 
 def test_validate_java_python_kwargs_rejected() -> None:
     src = "class X {\n  void f() {\n    helper(name = bar, value = baz);\n  }\n}\n"
-    ok, err = dt._validate_syntax("X.java", src)
+    ok, err = dt.validate_syntax("X.java", src)
     assert not ok
     assert "kwargs" in err
 
@@ -68,12 +68,12 @@ def test_validate_java_annotation_with_eq_allowed() -> None:
         "  public void f() {}\n"
         "}\n"
     )
-    ok, err = dt._validate_syntax("X.java", src)
+    ok, err = dt.validate_syntax("X.java", src)
     assert ok, err
 
 
 def test_validate_unknown_extension_passes_when_balanced() -> None:
-    ok, err = dt._validate_syntax("notes.txt", "hello world\n")
+    ok, err = dt.validate_syntax("notes.txt", "hello world\n")
     assert ok, err
 
 
