@@ -251,13 +251,14 @@ def memory_lookup(query: str, k: int = 6) -> dict:
         from aiforge_core.memory import unified_query as _uq
     except Exception as exc:
         return {"ok": False, "error": f"memory backend missing: {exc}"}
+    capped_k = max(1, min(12, int(k or 6)))
     try:
-        result = _uq.query(query, limit=max(1, min(12, int(k or 6))))
+        result = _uq.query(query, limit=capped_k)
     except Exception as exc:
         return {"ok": False, "error": f"memory query failed: {exc}"}
     raw_hits = result.get("hits") or []
     hits: list[dict] = []
-    for h in raw_hits[:k]:
+    for h in raw_hits[:capped_k]:
         body = (h.get("text") or h.get("body") or h.get("summary") or "")[:600]
         hits.append({
             "source": h.get("source", "?"),

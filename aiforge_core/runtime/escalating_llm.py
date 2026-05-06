@@ -75,14 +75,23 @@ class EscalatingLlm(BaseLlm):
 
     Pydantic-friendly: stores child models as plain attributes via
     ``model_config(arbitrary_types_allowed=True)`` (inherited).
+
+    Sticky-demotion: once the primary fails for any reason, this wrapper
+    flags itself ``_primary_demoted`` and SKIPS the primary on every
+    subsequent call. This matters for the LoopAgent[Doer, Feedback]
+    cycle — if the local model produced a broken plan on turn 1 (which
+    Feedback rejected), spending another turn on the same flaky model
+    just burns latency. We promote to cloud and stay there for the
+    duration of this pipeline run. A fresh EscalatingLlm is built per
+    ticket inside ``_build_pipeline``, so the demotion auto-resets
+    between tickets.
     """
 
     role: str
-    # The primary + chain are kept under ``_extra`` because BaseLlm is a
-    # pydantic v2 model and we don't want them validated as fields.
     primary_model: BaseLlm | None = None
     chain_models: list[BaseLlm] = []
     chain_labels: list[str] = []
+    primary_demoted: bool = False
 
     @classmethod
     def build(cls, role: str, primary_cfg: dict[str, Any],
@@ -111,11 +120,17 @@ class EscalatingLlm(BaseLlm):
             return
 
         # Non-streaming: collect primary's responses, judge, retry on fail.
-        candidates: list[tuple[str, BaseLlm]] = [
-            ("primary", self.primary_model)  # type: ignore[list-item]
-        ]
+        candidates: list[tuple[str, BaseLlm]] = []
+        if not self.primary_demoted and self.primary_model is not None:
+            candidates.append(("primary", self.primary_model))
         for label, m in zip(self.chain_labels, self.chain_models):
             candidates.append((label, m))
+
+        if self.primary_demoted:
+            log.info(
+                "llm.primary_skipped role=%s reason=sticky_demotion",
+                self.role,
+            )
 
         last_exc: Exception | None = None
         for idx, (label, model) in enumerate(candidates):
@@ -134,21 +149,25 @@ class EscalatingLlm(BaseLlm):
                     self.role, label, getattr(model, "model", "?"),
                     str(exc)[:200],
                 )
+                if label == "primary":
+                    self.primary_demoted = True
                 continue
 
-            # Did the model produce anything useful?
             if not buffered or all(_is_empty(r) for r in buffered):
                 log.warning(
                     "llm.attempt_empty role=%s attempt=%s model=%s "
                     "responses=%d", self.role, label,
                     getattr(model, "model", "?"), len(buffered),
                 )
+                if label == "primary":
+                    self.primary_demoted = True
                 continue
 
-            if idx > 0:
+            if label != "primary":
                 log.info(
-                    "llm.escalated role=%s succeeded_via=%s after_primary_fail",
-                    self.role, label,
+                    "llm.escalated role=%s succeeded_via=%s "
+                    "(primary_demoted=%s)",
+                    self.role, label, self.primary_demoted,
                 )
             for r in buffered:
                 yield r
