@@ -157,10 +157,23 @@ class EscalatingLlm(BaseLlm):
         for idx, (label, model) in enumerate(candidates):
             if model is None:
                 continue
+            # ADK's LlmAgent stamps the request with the agent-bound
+            # model name (the EscalatingLlm wrapper's `model` field).
+            # When we forward to a cloud provider whose model_id is
+            # different, LiteLlm picks llm_request.model FIRST (`or
+            # self.model`) and posts e.g. `claude-opus-4-7` to
+            # ollama.com → 404. Stamp the chain entry's model on each
+            # forward so the right id reaches the right endpoint.
+            req_for_attempt = llm_request
+            target_model = getattr(model, "model", None)
+            if target_model and llm_request.model != target_model:
+                req_for_attempt = llm_request.model_copy(
+                    update={"model": target_model},
+                )
             buffered: list[LlmResponse] = []
             try:
                 async for r in model.generate_content_async(
-                    llm_request, stream=False,
+                    req_for_attempt, stream=False,
                 ):
                     buffered.append(r)
             except Exception as exc:  # noqa: BLE001

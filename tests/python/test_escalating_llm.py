@@ -249,6 +249,32 @@ def test_primary_retry_saves_run_when_cloud_unreachable() -> None:
     assert cloud.calls == 2
 
 
+def test_chain_attempt_uses_target_models_id() -> None:
+    """When forwarding to a chain entry, the LlmRequest.model must be
+    rewritten to the chain entry's id — otherwise LiteLlm posts the
+    primary's model name to the cloud endpoint and 404s."""
+
+    seen_models: list[str] = []
+
+    class _Recorder(BaseLlm):
+        async def generate_content_async(self, llm_request, stream=False):
+            seen_models.append(llm_request.model)
+            yield _resp("ok")
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    primary = _StubModel(model="primary-id", error=RuntimeError("force_chain"))
+    cloud = _Recorder(model="cloud-target-id")
+    e = EscalatingLlm(model="primary-id", role="doer",
+                      primary_model=primary, chain_models=[cloud],
+                      chain_labels=["cloud"])
+    out = _drive(e)
+    assert out[0].content.parts[0].text == "ok"
+    assert seen_models == ["cloud-target-id"], seen_models
+
+
 def test_streaming_bypasses_retry_chain() -> None:
     """Streaming mode honours primary directly — partial chunk re-emission
     across providers would violate the streaming contract, so the chain
