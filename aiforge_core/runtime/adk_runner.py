@@ -50,22 +50,53 @@ _VERDICT_TO_STATUS: dict[str, str] = {
 }
 
 
-def _extract_verdict(state: dict) -> str:
-    """Pull ``feedback_verdict.verdict`` out of pipeline state.
+_VERDICT_TOKENS: tuple[str, ...] = ("scope_violation", "pass", "fail")
 
-    The Feedback agent is asked for STRICT JSON but local models
-    occasionally wrap the value in extra prose; tolerate both ``str``
-    (parse + fallback) and ``dict`` shapes.
+
+def _extract_verdict(state: dict) -> str:
+    """Pull the Feedback verdict out of pipeline state.
+
+    The new Feedback prompt asks for a leading token (``pass`` /
+    ``fail`` / ``scope_violation``) followed by an optional rationale
+    line — much more robust than strict JSON for local Claude /
+    qwen which routinely wrap responses in prose.
+
+    Tolerated shapes (in order):
+      1. raw string starting with one of the tokens
+      2. JSON-with-``verdict``-key (legacy — still emitted by some
+         models)
+      3. anything else → ``fail``
+
+    ``scope_violation`` is checked before ``fail`` because the literal
+    string contains ``fail`` as a substring; without the order rule a
+    model that emits ``scope_violation`` would be parsed as ``fail``.
     """
-    verdict = state.get("feedback_verdict") or {}
-    if isinstance(verdict, str):
-        try:
-            verdict = json.loads(verdict)
-        except json.JSONDecodeError:
-            verdict = {}
-    if not isinstance(verdict, dict):
+    raw = state.get("feedback_verdict")
+    if isinstance(raw, dict):
+        return str(raw.get("verdict", "fail")).lower()
+    if not isinstance(raw, str):
         return "fail"
-    return verdict.get("verdict", "fail")
+
+    text = raw.strip()
+    if not text:
+        return "fail"
+
+    # Legacy JSON path — kept for tickets ran on older prompt revisions.
+    if text.startswith("{"):
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict) and obj.get("verdict"):
+            return str(obj["verdict"]).lower()
+
+    # New prompt path — leading token decides. Strip any markdown-y
+    # wrapping the model might add despite the rules.
+    head = text.lstrip("`*_-> ").lower()
+    for token in _VERDICT_TOKENS:
+        if head.startswith(token):
+            return token
+    return "fail"
 
 
 def _extract_verifier(state: dict) -> str | None:

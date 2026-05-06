@@ -497,6 +497,66 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
     return out
 
 
+def cloud_default_for_local(role: str) -> dict[str, Any] | None:
+    """Return a cloud-shaped cfg to use when the ``local`` primary is
+    unreachable.
+
+    Picked the same way :func:`cloud_escalation_chain` picks chain
+    entries — first cloud provider in
+    ``ollama_cloud → anthropic → claude_local`` order that has a key
+    configured. Honours the per-role / global pin envs so an operator
+    can force ``anthropic`` here instead of the default Ollama Cloud.
+
+    Returns ``None`` when no cloud is configured (caller keeps the
+    dead local cfg + relies on the chain to rescue per-call).
+    """
+    if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
+        return None
+    pinned = (
+        os.environ.get(f"AIFORGE_{role.upper()}_LOCAL_DEAD_FALLBACK")
+        or os.environ.get("AIFORGE_LOCAL_DEAD_FALLBACK")
+    )
+    candidates: list[str] = []
+    if pinned:
+        candidates.append(pinned.lower())
+    for name in _CLOUD_PROVIDERS_ORDERED:
+        if name not in candidates:
+            candidates.append(name)
+    for name in candidates:
+        prov = PROVIDERS.get(name)
+        if prov is None:
+            continue
+        api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
+        if name != "claude_local" and not api_key:
+            continue
+        if name == "claude_local":
+            return {
+                "model_id": prov["default_model"],
+                "api_base": "claude:cli",
+                "api_key": "",
+                "_claude_cli": True,
+                "_provider": name,
+            }
+        prefix = prov["litellm_prefix"]
+        model = prov["default_model"]
+        KNOWN_PREFIXES = (
+            "openai/", "anthropic/", "azure/", "ollama/", "huggingface/",
+            "mistral/", "groq/", "cohere/", "bedrock/",
+        )
+        if not any(model.startswith(p) for p in KNOWN_PREFIXES):
+            model = f"{prefix}/{model}"
+        entry: dict[str, Any] = {
+            "model_id": model,
+            "api_base": prov.get("base_url"),
+            "api_key": api_key,
+            "_provider": name,
+        }
+        if name == "ollama_cloud":
+            entry["custom_llm_provider"] = "openai"
+        return entry
+    return None
+
+
 # ────────────────────────── Settings UI helpers ────────────────────────
 
 

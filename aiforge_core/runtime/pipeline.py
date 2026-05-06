@@ -29,6 +29,7 @@ from aiforge_core.config import agent_config as _acfg
 from . import prompts
 from .doer_tools import adk_function_tools as _doer_tools
 from .escalating_llm import EscalatingLlm
+from .local_probe import maybe_substitute_primary
 
 
 def build_litellm_model(role: str):
@@ -38,8 +39,16 @@ def build_litellm_model(role: str):
     with the cloud fallback chain so transport / empty-response /
     routing failures get retried transparently. Disable the chain
     with ``AIFORGE_ESCALATE_DISABLE=1``.
+
+    Pre-flight probe: when the operator's profile points at the local
+    mlx-lm endpoint and that endpoint is dead, the primary cfg is
+    swapped at build time to a cloud default (Ollama Cloud's
+    ``qwen3-coder-next``) — see :mod:`local_probe`. Avoids paying the
+    primary→fail→cloud round-trip cost on every single Doer turn when
+    LM Studio is just off.
     """
     primary = _acfg.resolve_litellm(role)
+    primary = maybe_substitute_primary(role, primary)
     chain = _acfg.cloud_escalation_chain(role)
     return EscalatingLlm.build(role, primary, chain)
 
