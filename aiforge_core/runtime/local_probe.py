@@ -118,7 +118,22 @@ def maybe_substitute_primary(role: str, primary_cfg: dict) -> dict:
     if is_alive(api_base):
         return primary_cfg
 
-    # Local is dead — try the cloud default.
+    # Local is dead — try to bring it up via SSH before falling back.
+    # Auto-start is opt-in (needs AIFORGE_LMS_HOST configured) and
+    # only runs once per process; if it succeeds we keep the local
+    # primary cfg and the rest of the pipeline runs on fast mlx-lm.
+    try:
+        from .local_starter import try_start as _try_start
+        if _try_start(api_base):
+            log.info(
+                "local_probe: %s back online via lms_autostart, "
+                "keeping local primary for role=%s", api_base, role,
+            )
+            return primary_cfg
+    except Exception as exc:  # noqa: BLE001 — never break ticket flow
+        log.warning("local_probe: auto-start raised: %s", exc)
+
+    # Auto-start declined / failed → fall back to cloud default.
     try:
         from aiforge_core.config.agent_config import cloud_default_for_local
         substitute = cloud_default_for_local(role)
