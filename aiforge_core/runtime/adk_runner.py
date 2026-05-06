@@ -43,30 +43,20 @@ logging.basicConfig(
 
 
 def _build_litellm_model(role: str):
-    """Return an ADK BaseLlm for the given role.
+    """Return an ADK BaseLlm for the given role, with cloud escalation.
 
-    Routing:
-      * ``claude_local`` → ``ClaudeSubscriptionLlm`` (subprocess CLI,
-        subscription auth via OAuth keychain; no API billing).
-      * everything else → ``LiteLlm`` (LiteLLM-backed standard path).
+    Wraps the role's primary model (mlx-lm via LiteLlm or
+    ClaudeSubscriptionLlm via the subscription CLI) inside
+    :class:`EscalatingLlm`, which transparently retries on Ollama Cloud
+    → Anthropic → Claude subscription when the primary errors out or
+    returns garbage. Hard-disable the chain with
+    ``AIFORGE_ESCALATE_DISABLE=1`` (or per-role via the same env on the
+    cloud_escalation_chain helper).
     """
-    from google.adk.models.lite_llm import LiteLlm
-    cfg = _acfg.resolve_litellm(role)
-    if cfg.get("_claude_cli"):
-        from .claude_subscription_llm import ClaudeSubscriptionLlm
-        # ClaudeSubscriptionLlm reads AIFORGE_CLAUDE_BIN / _HOST from env.
-        # Strip the litellm `anthropic/` prefix if present — CLI takes a
-        # bare model id.
-        model_id = cfg["model_id"]
-        if model_id.startswith("anthropic/"):
-            model_id = model_id.split("/", 1)[1]
-        return ClaudeSubscriptionLlm(model=model_id)
-    kwargs: dict[str, Any] = {"model": cfg["model_id"]}
-    if cfg.get("api_base"):
-        kwargs["api_base"] = cfg["api_base"]
-    if cfg.get("api_key"):
-        kwargs["api_key"] = cfg["api_key"]
-    return LiteLlm(**kwargs)
+    from .escalating_llm import EscalatingLlm
+    primary = _acfg.resolve_litellm(role)
+    chain = _acfg.cloud_escalation_chain(role)
+    return EscalatingLlm.build(role, primary, chain)
 
 
 def _build_pipeline():
@@ -117,14 +107,28 @@ def _build_pipeline():
         instruction=(
             "You are the Doer. Execute the plan in state['plan_md'] by "
             "calling tools — DO NOT reply with prose narrating what you "
-            "would do. The available tools are file_read, file_write, "
-            "file_patch (find/replace one occurrence), list_dir, and "
-            "run_shell.\n"
+            "would do. Available tools: file_read, file_write, file_patch "
+            "(find/replace one occurrence), list_dir, run_shell, "
+            "memory_lookup (search AiForgeMemory for symbols/concepts you "
+            "don't recognise).\n"
+            "\n"
+            "Anti-hallucination protocol:\n"
+            "  - Before importing or referencing any class/function not in "
+            "    the file you're editing, call memory_lookup or list_dir + "
+            "    file_read to confirm it exists.\n"
+            "  - file_write rejects content with unbalanced braces / "
+            "    Python-style kwargs in Java / unparseable Python. If you "
+            "    get back {ok: False, error: 'syntax_invalid: ...'}, fix "
+            "    the syntax and try again — never paste the same draft.\n"
+            "  - On any tool error, read the error string and adjust. "
+            "    Do NOT loop the same call. If you've tried twice without "
+            "    progress, return verdict=fail with the blocker.\n"
             "\n"
             "Workflow per subticket:\n"
             "  1. list_dir / file_read to inspect the target file.\n"
-            "  2. file_write or file_patch to make the edit.\n"
-            "  3. run_shell to compile / run tests when applicable.\n"
+            "  2. memory_lookup if you need symbol/import context.\n"
+            "  3. file_write or file_patch to make the edit.\n"
+            "  4. run_shell to compile / run tests when applicable.\n"
             "\n"
             "When the change is in place, return STRICT JSON: "
             "{file_diffs: [{path, action: write|patch}], "

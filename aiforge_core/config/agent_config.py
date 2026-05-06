@@ -405,6 +405,86 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     }
 
 
+# Auto-escalation chain — preferred order when the primary fails.
+# Cloud providers only; runtime falls through to the first one with a
+# usable api_key. claude_local sits last because it's slowest and most
+# expensive in subscription quota.
+_CLOUD_PROVIDERS_ORDERED: tuple[str, ...] = (
+    "ollama_cloud", "anthropic", "claude_local",
+)
+
+
+def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
+    """Return cloud-provider configs to try after the primary fails.
+
+    Skips providers without an api_key (they'd just fail again) and the
+    role's current primary provider (no point retrying the same thing).
+
+    Honoured envs:
+      AIFORGE_<ROLE>_CLOUD_PROVIDER  pin a single cloud target
+      AIFORGE_CLOUD_PROVIDER         global cloud preference
+      AIFORGE_ESCALATE_DISABLE=1     turn the chain off entirely
+
+    The returned list mirrors :func:`resolve_litellm` shape so the runner
+    can build a LiteLlm or ClaudeSubscriptionLlm from each entry without
+    further translation.
+    """
+    if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
+        return []
+    primary_provider = get(role)["provider"]
+    pinned = (
+        os.environ.get(f"AIFORGE_{role.upper()}_CLOUD_PROVIDER")
+        or os.environ.get("AIFORGE_CLOUD_PROVIDER")
+    )
+    candidates: list[str] = []
+    if pinned:
+        candidates.append(pinned.lower())
+    for name in _CLOUD_PROVIDERS_ORDERED:
+        if name not in candidates:
+            candidates.append(name)
+    out: list[dict[str, Any]] = []
+    for name in candidates:
+        if name == primary_provider:
+            continue
+        if name not in PROVIDERS:
+            continue
+        prov = PROVIDERS[name]
+        # Skip providers we have no key for — they'd 401 immediately.
+        # claude_local is the exception: the CLI reads the OS keychain,
+        # not an env var, so we can't pre-flight-validate it here.
+        api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
+        if name != "claude_local" and not api_key:
+            continue
+        # Build an ad-hoc resolve_litellm-shaped dict with the provider's
+        # default model — caller can override via env if needed.
+        if name == "claude_local":
+            out.append({
+                "model_id": prov["default_model"],
+                "api_base": "claude:cli",
+                "api_key": "",
+                "_claude_cli": True,
+                "_provider": name,
+            })
+            continue
+        prefix = prov["litellm_prefix"]
+        model = prov["default_model"]
+        KNOWN_PREFIXES = (
+            "openai/", "anthropic/", "azure/", "ollama/", "huggingface/",
+            "mistral/", "groq/", "cohere/", "bedrock/",
+        )
+        if not any(model.startswith(p) for p in KNOWN_PREFIXES):
+            model = f"{prefix}/{model}"
+        base_url = (
+            os.environ.get(f"AIFORGE_{role.upper()}_{name.upper()}_BASE_URL")
+            or prov.get("base_url")
+        )
+        out.append({
+            "model_id": model, "api_base": base_url, "api_key": api_key,
+            "_provider": name,
+        })
+    return out
+
+
 # ────────────────────────── Settings UI helpers ────────────────────────
 
 

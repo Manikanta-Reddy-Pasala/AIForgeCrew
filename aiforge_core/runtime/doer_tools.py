@@ -65,10 +65,49 @@ def file_read(path: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _validate_syntax(path: str, content: str) -> tuple[bool, str]:
+    """Cheap syntax sniff so the Doer can self-correct before commit.
+
+    Designed to catch the model's most common hallucinations:
+
+    * unbalanced ``{}``/``()``/``[]`` — half-truncated output
+    * Python: tries ``compile()`` with a friendly error
+    * Java/Kotlin: refuses Python-style ``foo = bar`` kwargs in calls
+
+    Returns ``(ok, error_msg)``. Empty string on the happy path.
+    """
+    if not content or not content.strip():
+        return False, "empty file content"
+    pairs = {"{": "}", "(": ")", "[": "]"}
+    for opener, closer in pairs.items():
+        if content.count(opener) != content.count(closer):
+            return False, (
+                f"unbalanced {opener}{closer} "
+                f"({content.count(opener)} vs {content.count(closer)})"
+            )
+    if path.endswith(".py"):
+        try:
+            compile(content, path, "exec")
+        except SyntaxError as exc:
+            return False, f"python syntax: {exc.msg} at line {exc.lineno}"
+    if path.endswith((".java", ".kt")):
+        import re as _re
+        # `foo = bar,` inside a method call — Python kwargs in Java.
+        # Allow it inside annotations like `@Bean(name = "x")`.
+        if _re.search(r"\b\w+\s*=\s*\w+[\s,]", content) and "(" in content:
+            if not _re.search(r"@\w+\s*\(", content):
+                return False, "java/kotlin: looks like Python-style kwargs in call"
+    return True, ""
+
+
 def file_write(path: str, content: str) -> dict:
     """Create or overwrite a UTF-8 text file relative to the repo root.
 
     Parent directories are created as needed. Existing files are replaced.
+    Runs a syntax sanity check first — when the check fails the file is
+    NOT written and the error string is surfaced so the Doer can fix
+    its draft on the next turn instead of leaking corrupt output to
+    disk. Set ``AIFORGE_DOER_SKIP_SYNTAX=1`` to bypass (debug only).
 
     Args:
       path: relative path under the repo root.
@@ -79,6 +118,12 @@ def file_write(path: str, content: str) -> dict:
     """
     try:
         p = _resolve_inside_root(path)
+        if os.environ.get("AIFORGE_DOER_SKIP_SYNTAX", "0") not in ("1", "true"):
+            ok, err = _validate_syntax(path, content)
+            if not ok:
+                return {"ok": False, "error": f"syntax_invalid: {err}",
+                        "hint": "fix the syntax and call file_write again; "
+                                "or call memory_lookup if you need symbol info"}
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return {"ok": True, "path": path,
@@ -186,6 +231,43 @@ def run_shell(cmd: str) -> dict:
     }
 
 
+def memory_lookup(query: str, k: int = 6) -> dict:
+    """Active mid-task retrieval over AiForgeMemory.
+
+    The Doer calls this when it hits an unknown class/method/concept it
+    can't find by reading nearby files. Returns the same hybrid hits the
+    pipeline pre-fetches at ticket-claim time: vector + fulltext +
+    1-hop graph, fused via RRF.
+
+    Args:
+      query: free-form text — symbol, error message, or natural question.
+      k: max hits to return (default 6, capped at 12).
+
+    Returns:
+      ``{ok, hits: [{source, score, body}], used_sources: [...]}`` or
+      ``{ok: False, error}`` when the memory backend is unreachable.
+    """
+    try:
+        from aiforge_core.memory import unified_query as _uq
+    except Exception as exc:
+        return {"ok": False, "error": f"memory backend missing: {exc}"}
+    try:
+        result = _uq.query(query, limit=max(1, min(12, int(k or 6))))
+    except Exception as exc:
+        return {"ok": False, "error": f"memory query failed: {exc}"}
+    raw_hits = result.get("hits") or []
+    hits: list[dict] = []
+    for h in raw_hits[:k]:
+        body = (h.get("text") or h.get("body") or h.get("summary") or "")[:600]
+        hits.append({
+            "source": h.get("source", "?"),
+            "score": float(h.get("score", 0.0) or 0.0),
+            "body": body,
+        })
+    return {"ok": True, "hits": hits,
+            "used_sources": result.get("used_sources") or []}
+
+
 # ─── ADK wiring helper ────────────────────────────────────────────────
 
 
@@ -199,10 +281,11 @@ def adk_function_tools() -> list:
         FunctionTool(func=file_patch),
         FunctionTool(func=list_dir),
         FunctionTool(func=run_shell),
+        FunctionTool(func=memory_lookup),
     ]
 
 
 __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
-    "adk_function_tools",
+    "memory_lookup", "adk_function_tools",
 ]
