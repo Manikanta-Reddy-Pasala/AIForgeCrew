@@ -21,12 +21,16 @@ from aiforge_core.agents import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_YAML = REPO_ROOT / "aiforge_core" / "agents" / "agents.yaml"
 
-EXPECTED_ROLES = {
+CORE_ROLES = {
     "architect", "planner", "verifier", "doer", "feedback", "learner",
 }
+EXTENDED_ROLES = {
+    "triage", "researcher", "refiner",
+}
+EXPECTED_ROLES = CORE_ROLES | EXTENDED_ROLES
 
 
-def test_load_all_six_roles_succeeds() -> None:
+def test_load_all_roles_succeeds() -> None:
     contracts = load_agents(SHIPPED_YAML)
     assert set(contracts.keys()) == EXPECTED_ROLES
     for role, c in contracts.items():
@@ -35,6 +39,12 @@ def test_load_all_six_roles_succeeds() -> None:
         assert c.identity.model
         assert c.contract.max_turns > 0
         assert c.termination_contract
+
+
+def test_core_six_roles_still_present() -> None:
+    """Backwards-compat: the original 6 archetypes must remain wired."""
+    contracts = load_agents(SHIPPED_YAML)
+    assert CORE_ROLES <= set(contracts.keys())
 
 
 def test_default_path_loads_when_no_arg() -> None:

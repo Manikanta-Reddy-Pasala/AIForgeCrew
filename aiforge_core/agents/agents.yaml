@@ -325,6 +325,137 @@ agents:
       - "facts_json validates against schema [{text, about: [path|fqn|ticket], tags}]"
       - server-side write_fact plugin acks each row, or learner re-runs once
 
+  # ---------------------------------------------------------------------------
+  # 7. TRIAGE  (extended pipeline — option G)
+  # ---------------------------------------------------------------------------
+  # Runs FIRST on the parent ticket. Single-turn JSON classifier that tags the
+  # ticket as trivial / moderate / hard. The model_router uses the label to
+  # pick downstream Doer/Researcher tiers; the orchestrator can also short-
+  # circuit trivial tickets straight to Doer (skip Planner+Verifier).
+  # ---------------------------------------------------------------------------
+  triage:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: Qwen3.6-27B-MLX-4bit
+      backend: direct_litellm
+      base_url: http://127.0.0.1:1235/v1
+      ctx_window: 32000
+    contract:
+      inputs:
+        - parent_ticket
+      outputs:
+        - complexity              # one of: trivial | moderate | hard
+        - estimated_files
+        - rationale
+      max_turns: 1
+      max_wall_s: 60
+    tools:
+      allowed: []
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      Triage emits a single JSON verdict on ticket complexity. Uses no tools.
+      Drives downstream model selection via aiforge_core.runtime.model_router.
+    termination_contract:
+      - "complexity ∈ {trivial, moderate, hard} emitted as valid JSON"
+      - estimated_files is a non-negative integer
+      - rationale is a non-empty string
+
+  # ---------------------------------------------------------------------------
+  # 8. RESEARCHER  (extended pipeline — option A)
+  # ---------------------------------------------------------------------------
+  # Sits between Verifier and the Doer loop. Read-only context-gatherer:
+  # for each child subticket, pulls relevant files / symbols / prior facts /
+  # gotchas and emits a research_brief.md the Doer consumes verbatim.
+  # Reduces Doer turns spent on exploration.
+  # ---------------------------------------------------------------------------
+  researcher:
+    identity:
+      runtime: adk_agent_with_ga
+      model: Qwen3.6-27B-MLX-4bit
+      backend: genericagent_text_protocol
+      base_url: http://127.0.0.1:1235/v1
+      ctx_window: 64000
+    contract:
+      inputs:
+        - parent_ticket
+        - plan_md
+        - child_subtickets
+        - scope_allowlist_globs
+      outputs:
+        - research_brief_md
+      max_turns: 10
+      max_wall_s: 600
+    tools:
+      allowed:
+        - graphify_lookup
+        - memory_lookup
+        - file_read
+        - list_dir
+        - grep_repos
+      forbidden:
+        - file_write
+        - file_patch
+        - run_compile
+        - code_run
+        - ask_user
+    memory:
+      read_scope: full
+      write_scope: none
+    rule: >
+      Researcher is a read-only context gatherer. It writes nothing to disk
+      except research_brief_md, which downstream agents persist. Stops as
+      soon as each subticket has at least one relevant_files entry.
+    termination_contract:
+      - research_brief_md persisted under docs/briefs/<ticket_id>.md
+      - every child_subticket has >=1 entry in research_brief_md
+      - no file mutations recorded in the trace
+
+  # ---------------------------------------------------------------------------
+  # 9. REFINER  (extended pipeline — option D)
+  # ---------------------------------------------------------------------------
+  # Runs AFTER Doer, BEFORE Feedback. Polishes Doer's diff without changing
+  # behaviour: rename misleading vars, drop dead code, simplify identical
+  # branches. Reduces Feedback rejections that aren't correctness bugs.
+  # Tool-less from the model's perspective — receives the diff in its prompt
+  # and emits a JSON patch list the orchestrator applies through file_patch.
+  # ---------------------------------------------------------------------------
+  refiner:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: Qwen3.6-27B-MLX-4bit
+      backend: direct_litellm
+      base_url: http://127.0.0.1:1235/v1
+      ctx_window: 32000
+    contract:
+      inputs:
+        - file_diffs
+        - scope_allowlist_globs
+      outputs:
+        - refiner_changes         # JSON: [{path, diff}]
+        - refiner_skipped         # bool — true when diff is already clean
+        - refiner_rationale
+      max_turns: 1
+      max_wall_s: 90
+    tools:
+      allowed: []
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      Refiner polishes without changing behaviour. Forbidden: signature
+      changes, file moves, formatter-only diffs, scope-allowlist violations.
+      Set refiner_skipped=true when the Doer diff is already clean.
+    termination_contract:
+      - "refiner_skipped ∈ {true, false} emitted as valid JSON"
+      - refiner_changes is a (possibly empty) list of {path, diff}
+      - all changes resolve to paths inside scope_allowlist_globs
+
 # =============================================================================
 # Cross-cutting invariants (informational — enforced in code, not parsed here)
 # =============================================================================

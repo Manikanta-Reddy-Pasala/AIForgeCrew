@@ -1,13 +1,19 @@
 """ADK SequentialAgent factory for the v6 pipeline.
 
-Pipeline shape::
+Pipeline shape (extended)::
 
     SequentialAgent[
         planner,
         verifier,
-        LoopAgent[doer, feedback]   # cap = 3 iterations
+        researcher,                                   # option A — context brief
+        LoopAgent[doer, refiner, feedback]            # cap = 3 iterations
         learner,
     ]
+
+Triage (option G) runs in the orchestration layer BEFORE this pipeline so
+its complexity verdict can drive model_router for downstream archetypes.
+The Refiner sits between Doer and Feedback so behaviour-neutral polish
+doesn't get mistaken for a correctness fix on Feedback re-loops.
 
 Each ``LlmAgent`` is wrapped around an :class:`EscalatingLlm` so the
 local mlx-lm primary auto-falls-over to the operator's cloud chain
@@ -26,7 +32,7 @@ from typing import Any
 from aiforge_core.agents.loader import load_agents
 from aiforge_core.config import agent_config as _acfg
 
-from . import prompts
+from . import prompts, prompts_extended
 from .doer_tools import adk_function_tools as _doer_tools
 from .escalating_llm import EscalatingLlm
 from .local_probe import maybe_substitute_primary
@@ -112,19 +118,24 @@ def build_pipeline():
 
     planner = _agent("planner", prompts.PLANNER, output_key="plan_md")
     verifier = _agent("verifier", prompts.VERIFIER, output_key="verifier_verdict")
+    researcher = _agent("researcher", prompts_extended.RESEARCHER,
+                        output_key="research_brief_md",
+                        tools=_doer_tools())
     doer = _agent("doer", prompts.DOER, output_key="doer_outcome",
                   tools=_doer_tools())
+    refiner = _agent("refiner", prompts_extended.REFINER,
+                     output_key="refiner_changes")
     feedback = _agent("feedback", prompts.FEEDBACK, output_key="feedback_verdict")
     learner = _agent("learner", prompts.LEARNER, output_key="facts_json")
 
     doer_loop = LoopAgent(
-        name="doer_feedback_loop",
-        sub_agents=[doer, feedback],
+        name="doer_refiner_feedback_loop",
+        sub_agents=[doer, refiner, feedback],
         max_iterations=3,
     )
     return SequentialAgent(
         name="aiforge_v6_pipeline",
-        sub_agents=[planner, verifier, doer_loop, learner],
+        sub_agents=[planner, verifier, researcher, doer_loop, learner],
     )
 
 
