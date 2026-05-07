@@ -20,9 +20,13 @@ PATH="$HOME/.lmstudio/bin:$PATH"
 # (qwen3.6-27b + qwen3.6-35b-a3b @ 512K each) down to a single
 # gpt-oss-120b @ 128K that handles every role (planner/doer/feedback/
 # learner/chat). OpenAI's gpt-oss supports up to 128K native context.
-TARGET_CTX=65536    # qwen-coder-next (Qwen3-Coder-Next MLX 80B @ 4bit,
-                    # ~45GB weights). 64K ctx safe, fits 96GB headroom.
-TARGET_TTL=43200
+TARGET_CTX=262144   # qwen-coder-next (Qwen3-Coder-Next MLX 80B @ 4bit,
+                    # ~45GB weights + 256K KV ≈ 70GB on 96GB Mac Studio).
+                    # 256K is the contractual default — 64K truncated the
+                    # ONE-116 3kLOC multi-turn Doer mid-run.
+TARGET_TTL=86400    # 24h. Earlier 12h had been observed to drop the model
+                    # mid-run on long tickets when idle gaps between turns
+                    # tripped LM Studio's idle-unload heuristic.
 MODELS=(qwen-coder-next)
 INTERVAL=60
 
