@@ -61,17 +61,24 @@ def test_no_test_subticket_flagged():
     assert any(i["kind"] == "strict_no_test_subticket" for i in out["issues"])
 
 
-def test_rule_error_does_not_crash():
-    """A buggy rule should produce a strict_rule_error issue, not raise."""
+def test_rule_error_does_not_crash(monkeypatch):
+    """A buggy rule should produce a strict_rule_error issue, not raise.
+
+    After the package split, ``apply()`` reads RULES from
+    ``verifier_strict.rules`` (the source module) rather than the
+    package-level alias, so we patch where the constant actually lives.
+    """
     def broken_rule(plan):
         raise RuntimeError("kaboom")
-    rules = vs.RULES
-    try:
-        vs.RULES = (broken_rule,)
-        out = vs.apply({}, base_verdict={"verdict": "pass", "issues": []})
-        assert any(i["kind"] == "strict_rule_error" for i in out["issues"])
-    finally:
-        vs.RULES = rules
+
+    # Package-level ``apply`` is the function (re-exported); we need the
+    # apply MODULE so we can rebind its RULES name. Use importlib so the
+    # ``from ... import apply`` in __init__ doesn't shadow the submodule.
+    import importlib
+    apply_mod = importlib.import_module("aiforge_core.runtime.verifier_strict.apply")
+    monkeypatch.setattr(apply_mod, "RULES", (broken_rule,))
+    out = vs.apply({}, base_verdict={"verdict": "pass", "issues": []})
+    assert any(i["kind"] == "strict_rule_error" for i in out["issues"])
 
 
 def test_existing_issues_preserved():
