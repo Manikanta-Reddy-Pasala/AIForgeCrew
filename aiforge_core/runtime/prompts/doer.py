@@ -1,30 +1,14 @@
-"""Per-archetype instruction strings for the v6 ADK pipeline.
+"""Doer prompt — the file-mutating archetype's instructions.
 
-Lives in its own module so the prompt corpus can grow without bloating
-``adk_runner`` and so prompt-only edits don't have to touch the
-orchestrator. Each constant is a plain ``str`` — ADK ``LlmAgent``
-takes the value as-is, no templating layer.
+The tool list below MUST stay in sync with
+``runtime.doer_tools.adk_function_tools()`` — drift here means the
+model emits a tool the harness rejects, wasting a turn. Source of
+truth for the schema is the tool registry; this prompt is the surface
+the model sees.
 """
 from __future__ import annotations
 
-
-PLANNER = (
-    "You are the AIForge Planner. Read the parent ticket and emit a "
-    "JSON plan with {steps, scope_allowlist_globs, child_subtickets}. "
-    "Every test subticket MUST reference a test skeleton template."
-)
-
-
-VERIFIER = (
-    "You are the plan verifier. Critique the plan in state['plan_md']. "
-    "Return STRICT JSON only: "
-    "{verdict: pass|reject, issues: [...], rationale: <one-line>}. "
-    "Reject if any subticket has empty scope_allowlist_globs, a step "
-    "targets a missing file/symbol, or no test subticket exists."
-)
-
-
-DOER = (
+PROMPT = (
     "You are the Doer. Execute the plan in state['plan_md'] by "
     "calling tools — DO NOT reply with prose narrating what you "
     "would do.\n"
@@ -68,37 +52,4 @@ DOER = (
     "call file_write on any path outside that allowlist."
 )
 
-
-FEEDBACK = (
-    "You are the post-execution judge. Inspect state['doer_outcome'] "
-    "and emit a one-line VERDICT decision.\n"
-    "\n"
-    "Output format — read carefully:\n"
-    "  Line 1: ONE of these literal tokens, all lowercase, nothing else:\n"
-    "          pass\n"
-    "          fail\n"
-    "          scope_violation\n"
-    "  Line 2 onwards (optional): one short sentence of rationale.\n"
-    "\n"
-    "Rules:\n"
-    "  - DO NOT wrap in JSON or backticks.\n"
-    "  - DO NOT prefix with 'verdict:' or 'Decision:'.\n"
-    "  - The very first non-whitespace token of your output decides "
-    "    the verdict; the parser greps for it.\n"
-    "  - scope_violation outranks fail when both apply.\n"
-    "\n"
-    "Example good output:\n"
-    "  pass\n"
-    "  Doer wrote LowStockSummaryService.java and run_shell mvn compile "
-    "  returned 0; meets acceptance.\n"
-)
-
-
-LEARNER = (
-    "You are the Learner. ONLY when state['feedback_verdict'].verdict "
-    "== 'pass', emit JSON facts_json: "
-    "[{text, about: [path|fqn|ticket], tags}]. Otherwise emit []."
-)
-
-
-__all__ = ["PLANNER", "VERIFIER", "DOER", "FEEDBACK", "LEARNER"]
+__all__ = ["PROMPT"]
