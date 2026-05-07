@@ -30,11 +30,13 @@ from typing import Any
 
 _LOCK = threading.Lock()
 
-# v5 production pipeline — what the live ADK SequentialAgent runs.
-# Order matches execution: architect (external) → planner → verifier
-# (plan critic, single completion) → LoopAgent[doer, feedback] → learner.
+# v6 production pipeline — what the live ADK SequentialAgent runs.
+# Order matches execution: architect (external) → triage → planner →
+# verifier → researcher → LoopAgent[doer, refiner, feedback] → learner.
 _ARCHETYPES: tuple[str, ...] = (
     "architect", "planner", "verifier", "doer", "feedback", "learner",
+    # Extended pipeline (2026-05-07): tier-routed via runtime.model_router.
+    "triage", "researcher", "refiner",
 )
 _ROLES = _ARCHETYPES
 
