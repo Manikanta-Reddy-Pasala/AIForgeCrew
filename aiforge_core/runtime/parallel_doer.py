@@ -29,40 +29,92 @@ class Subticket:
     scope_allowlist_globs: tuple[str, ...]
 
 
-def _glob_overlaps(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
-    """Heuristic glob conflict — pairs share a literal prefix.
+def _literal_prefix(glob: str) -> str:
+    """Return the part of ``glob`` before the first wildcard.
 
-    KISS: we don't try to evaluate globs against the filesystem. If
-    two patterns share any non-empty prefix segment they're treated
-    as conflicting. Operators can opt out via empty allowlist (which
-    means "no scope constraint" → always conflicts to be safe).
+    For ``aiforge_core/runtime/**`` returns ``aiforge_core/runtime/``.
+    For ``src/foo.py`` (no wildcards) returns the whole string. The
+    trailing slash is significant — see :func:`_prefix_conflict`.
+    """
+    for i, ch in enumerate(glob):
+        if ch in "*?[":
+            return glob[:i]
+    return glob
+
+
+def _prefix_conflict(x: str, y: str) -> bool:
+    """True when one literal-prefix is a directory-prefix of the other.
+
+    Two scopes conflict when their writable regions overlap. We treat
+    them as overlapping if the path-prefixes are identical OR one is a
+    parent dir of the other (``aiforge_core/`` vs ``aiforge_core/runtime/``).
+    Different files in the same directory are NOT a conflict — the
+    Doers can edit ``foo.py`` and ``bar.py`` in parallel safely.
+    """
+    return (
+        x == y
+        or x.startswith(y + "/")
+        or y.startswith(x + "/")
+    )
+
+
+def _glob_overlaps(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """Heuristic conflict check between two scope_allowlist_globs.
+
+    KISS: we don't evaluate globs against the filesystem. We reduce
+    each glob to its literal prefix, strip trailing slashes for clean
+    comparison, then check whether ANY prefix from set ``a`` shares a
+    directory-prefix relationship with ANY prefix in set ``b``.
+
+    An empty allowlist means "no scope constraint" — that's strictly
+    less safe than any constrained scope, so we always treat it as
+    conflicting to avoid running an unscoped Doer alongside anything.
     """
     if not a or not b:
         return True
-    # Compare each literal prefix up to the first wildcard.
-    def _prefix(p: str) -> str:
-        for i, ch in enumerate(p):
-            if ch in "*?[":
-                return p[:i]
-        return p
-    pas = {_prefix(p).rstrip("/") for p in a if _prefix(p)}
-    pbs = {_prefix(p).rstrip("/") for p in b if _prefix(p)}
+
+    pas = {_literal_prefix(p).rstrip("/") for p in a if _literal_prefix(p)}
+    pbs = {_literal_prefix(p).rstrip("/") for p in b if _literal_prefix(p)}
     if not pas or not pbs:
+        # Every glob in at least one set was a pure wildcard like ``**``.
+        # That's a "match everything" pattern — treat as conflict.
         return True
-    for x in pas:
-        for y in pbs:
-            if x == y or x.startswith(y + "/") or y.startswith(x + "/"):
-                return True
-    return False
+
+    return any(_prefix_conflict(x, y) for x in pas for y in pbs)
+
+
+def _can_join(st: Subticket, batch: list[Subticket],
+              max_parallel: int) -> bool:
+    """True when ``st`` can be added to ``batch`` without scope conflicts.
+
+    A subticket joins a batch only when (a) the batch isn't already at
+    its parallel cap and (b) none of its existing members share a
+    scope-prefix with the candidate. Pulled out as a helper to make the
+    placement logic in :func:`batch` linear and readable.
+    """
+    if len(batch) >= max_parallel:
+        return False
+    return all(
+        not _glob_overlaps(st.scope_allowlist_globs, other.scope_allowlist_globs)
+        for other in batch
+    )
 
 
 def batch(subtickets: list[Subticket],
           max_parallel: int = 3) -> list[list[Subticket]]:
     """Group ``subtickets`` into sequential batches of disjoint scopes.
 
-    Each returned batch is safe to run in parallel; batches must run
-    in order. ``max_parallel`` caps batch size to avoid over-loading
-    the inference server."""
+    Each returned batch is safe to run in parallel; batches MUST run
+    in order. The first batch that can absorb a subticket wins — this
+    is a greedy first-fit, intentional KISS over a perfect bin-pack
+    that nobody asked for.
+
+    Args:
+      subtickets:    Plan-emitted leaves, in their original order.
+      max_parallel:  Per-batch cap. Tighter caps trade throughput for
+        a calmer inference server; default 3 matches the LM Studio
+        ``parallel`` slot count we ship with.
+    """
     if not subtickets:
         return []
     if max_parallel < 1:
@@ -72,11 +124,7 @@ def batch(subtickets: list[Subticket],
     for st in subtickets:
         placed = False
         for b in batches:
-            if len(b) >= max_parallel:
-                continue
-            if all(not _glob_overlaps(st.scope_allowlist_globs,
-                                     other.scope_allowlist_globs)
-                   for other in b):
+            if _can_join(st, b, max_parallel):
                 b.append(st)
                 placed = True
                 break

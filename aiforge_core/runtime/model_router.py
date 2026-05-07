@@ -20,24 +20,39 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-# Tiers ordered cheapest -> strongest. Real model ids must exist in the
-# operator's LM Studio / Ollama / Anthropic catalog. Operators override
-# via env or agent_config; the router never invents a model.
+# Tiers ordered cheapest -> strongest, low index = cheaper / faster /
+# weaker, high index = pricier / slower / stronger. Each tier name MUST
+# resolve in the operator's LM Studio / Ollama / Anthropic catalog;
+# the router never invents a model — it picks from this list and the
+# operator-specific config (env vars, agent_config.json) takes precedence.
+#
+# Why three tiers for the Doer specifically? Empirically:
+#   - trivial tickets (rename, typo, single-line tweak) — Devstral 24B is
+#     plenty and finishes in 1/3 the wall-clock of Qwen-Coder-Next.
+#   - moderate tickets — Qwen-Coder-Next 80B is the workhorse default.
+#   - hard tickets, or any first-attempt compile-fail — escalate to a
+#     cloud reasoner so a stuck local Doer doesn't burn the loop cap.
 DOER_TIERS: tuple[str, ...] = (
     "Devstral-Small-2-24B-Instruct-2512-4bit",   # fastest local coder
     "Qwen3-Coder-Next-MLX-4bit",                  # default
     "claude-opus-4-7",                             # cloud escalation
 )
 
+# Researcher needs broad context recall, not code-gen muscle. Two tiers
+# is enough: dense 27B for normal sweeps, MoE 35B when the parent ticket
+# spans multiple subsystems and we need higher-fidelity retrieval.
 RESEARCHER_TIERS: tuple[str, ...] = (
     "Qwen3.6-27B-MLX-4bit",                       # default
     "Qwen3.6-35B-A3B-MoE",                         # MoE for harder context
 )
 
+# Refiner is a single-turn JSON polisher — one tier is fine; complexity
+# doesn't move the needle on rename/dead-code/identical-branch edits.
 REFINER_TIERS: tuple[str, ...] = (
     "Qwen3.6-27B-MLX-4bit",
 )
 
+# Triage is a one-shot complexity classifier — cheap and fast wins.
 TRIAGE_TIERS: tuple[str, ...] = (
     "Qwen3.6-27B-MLX-4bit",                       # cheap, single-turn JSON
 )
@@ -65,14 +80,19 @@ def _tiers_for(role: str) -> tuple[str, ...]:
 
 
 def _index_for_complexity(complexity: str, max_idx: int) -> int:
-    """trivial -> 0, moderate -> middle, hard -> last."""
+    """Map a complexity label onto a tier index.
+
+    trivial -> 0 (cheapest), hard -> max_idx (strongest).
+    moderate (and any unknown / typo'd value) lands at index 1 when the
+    tier list has at least three entries — that's the canonical
+    "default" slot. For shorter tier lists we clamp to ``max_idx`` so
+    we never overshoot.
+    """
     c = (complexity or "moderate").lower()
     if c == "trivial":
         return 0
     if c == "hard":
         return max_idx
-    # moderate (and any unknown value) lands in the middle, biased to
-    # default tier. With 3 tiers that's index 1 — the "default".
     return min(1, max_idx)
 
 

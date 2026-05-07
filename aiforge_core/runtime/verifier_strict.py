@@ -21,8 +21,16 @@ from typing import Any, Callable
 Rule = Callable[[dict[str, Any]], list[dict[str, str]]]
 
 
-MAX_SUBTICKETS = 8        # plans bigger than this are usually mis-scoped
-MAX_FILES_PER_SUBTICKET = 5  # subtickets touching 5+ files are over-scoped
+# Empirical caps from past failed runs. A plan with 9+ subtickets almost
+# always fragments work that should belong to a single coherent change;
+# splitting it across multiple parent tickets gives Reviewer + Architect
+# a chance to push back BEFORE the Doer loop burns turns.
+MAX_SUBTICKETS = 8
+
+# A subticket touching 5+ files is usually doing two unrelated jobs;
+# pre-empt the Doer "scope_violation" failure mode by rejecting at plan
+# time instead of mid-loop.
+MAX_FILES_PER_SUBTICKET = 5
 
 
 def _subtickets(plan: dict) -> list[dict]:
