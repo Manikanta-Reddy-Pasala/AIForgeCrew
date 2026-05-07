@@ -25,7 +25,8 @@ laptop ──ssh──► nuc :8799 (api)
                   │
                   ├── postgres 16     ── tickets, ticket_events, costs, hitl_requests
                   ├── neo4j 5.26      ── 5-tier memory · :Repo standards · :Symbol/:Chunk index
-                  ├── graph-runner    ── ADK 2.0.0b1 SequentialAgent[Planner, Loop[Doer,Feedback], Learner]
+                  ├── graph-runner    ── ADK 2.0.0b1 SequentialAgent[Planner, Verifier, Researcher, Loop[Doer, Refiner, Feedback], Learner]
+                  │                     (Triage runs upstream in orchestration; Architect is external — 9 archetypes total)
                   ├── embed-sidecar   :8764 bge-m3 ONNX  (writes T4/T5 vectors)
                   ├── graphify        ── tree-sitter ingest → :Symbol + INFERRED edges (T5)
                   ├── aider-repomap   ── PageRank tag digest over T5 + on-disk source (T4)

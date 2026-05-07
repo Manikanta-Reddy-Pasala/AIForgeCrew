@@ -29,11 +29,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from aiforge_core.agents.loader import load_agents
+from aiforge_core.agents import (
+    doer as _doer_mod,
+    feedback as _feedback_mod,
+    learner as _learner_mod,
+    planner as _planner_mod,
+    refiner as _refiner_mod,
+    researcher as _researcher_mod,
+    verifier as _verifier_mod,
+)
 from aiforge_core.config import agent_config as _acfg
 
-from . import prompts, prompts_extended
-from .doer_tools import adk_function_tools as _doer_tools
 from .escalating_llm import EscalatingLlm
 from .local_probe import maybe_substitute_primary
 
@@ -97,37 +103,26 @@ def build_litellm_model(role: str):
 
 def build_pipeline():
     """Construct the SequentialAgent. Returns the root agent ready for
-    ``Runner(agent=..., session_service=...)``."""
-    from google.adk.agents import LlmAgent, LoopAgent, SequentialAgent
+    ``Runner(agent=..., session_service=...)``.
 
-    contracts = load_agents()  # parses agents.yaml, validates v6 shape
+    Each archetype is built by its own module under
+    ``aiforge_core.agents.*`` — the call site below is the ONLY place
+    that knows the order in which they run. Adding a new role = drop a
+    module and slot it into the right list here; the per-archetype
+    files stay declarative.
+    """
+    from google.adk.agents import LoopAgent, SequentialAgent
 
-    def _agent(role: str, instruction: str, output_key: str,
-               tools: list | None = None) -> "LlmAgent":
-        c = contracts[role]
-        kwargs: dict[str, Any] = {
-            "name": role,
-            "model": build_litellm_model(role),
-            "instruction": instruction,
-            "output_key": output_key,
-            "timeout": c.contract.max_wall_s,
-        }
-        if tools:
-            kwargs["tools"] = tools
-        return LlmAgent(**kwargs)
+    planner = _planner_mod.build(build_litellm_model)
+    verifier = _verifier_mod.build(build_litellm_model)
+    researcher = _researcher_mod.build(build_litellm_model)
+    doer = _doer_mod.build(build_litellm_model)
+    refiner = _refiner_mod.build(build_litellm_model)
+    feedback = _feedback_mod.build(build_litellm_model)
+    learner = _learner_mod.build(build_litellm_model)
 
-    planner = _agent("planner", prompts.PLANNER, output_key="plan_md")
-    verifier = _agent("verifier", prompts.VERIFIER, output_key="verifier_verdict")
-    researcher = _agent("researcher", prompts_extended.RESEARCHER,
-                        output_key="research_brief_md",
-                        tools=_doer_tools())
-    doer = _agent("doer", prompts.DOER, output_key="doer_outcome",
-                  tools=_doer_tools())
-    refiner = _agent("refiner", prompts_extended.REFINER,
-                     output_key="refiner_changes")
-    feedback = _agent("feedback", prompts.FEEDBACK, output_key="feedback_verdict")
-    learner = _agent("learner", prompts.LEARNER, output_key="facts_json")
-
+    # Doer / Refiner / Feedback live inside the loop so a Feedback
+    # rejection rewinds the polish-then-judge cycle, not just the Doer.
     doer_loop = LoopAgent(
         name="doer_refiner_feedback_loop",
         sub_agents=[doer, refiner, feedback],
