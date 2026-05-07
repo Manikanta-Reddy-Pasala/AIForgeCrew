@@ -53,6 +53,7 @@ agents:
     tools:
       allowed:
         - graph_lookup
+        - graphify_lookup
         - search_memory
         - read_file
         - list_dir
@@ -108,6 +109,7 @@ agents:
     tools:
       allowed:
         - graph_lookup
+        - graphify_lookup
         - search_memory
         - read_file
         - list_dir
@@ -218,6 +220,8 @@ agents:
         - file_patch
         - code_run                  # shell — ScopeGuard wraps this; covers grep/ls/find
         - update_working_checkpoint # save mid-run state
+        - graphify_lookup           # read-only graph traversal (no fs writes)
+        - memory_lookup             # read-only AiForgeMemory recall
       forbidden:
         - ask_user
         - start_long_term_update

@@ -21,6 +21,7 @@ import subprocess
 from .sandbox import resolve_inside_root, root
 from .syntax_guard import validate_syntax
 from .memory_lookup_tool import memory_lookup
+from .graphify_lookup_tool import graphify_lookup
 
 
 def file_read(path: str) -> dict:
@@ -188,14 +189,14 @@ def adk_function_tools() -> list:
     """
     from google.adk.tools import FunctionTool
     canonical = [file_read, file_write, file_patch, list_dir, run_shell,
-                 memory_lookup]
+                 memory_lookup, graphify_lookup]
     aliases = [read, write, patch, ls, shell, bash]
     return [FunctionTool(func=fn) for fn in canonical + aliases]
 
 
 __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
-    "memory_lookup",
+    "memory_lookup", "graphify_lookup",
     "read", "write", "patch", "ls", "shell", "bash",
     "adk_function_tools",
 ]
