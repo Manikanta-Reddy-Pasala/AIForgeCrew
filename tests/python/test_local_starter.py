@@ -64,9 +64,9 @@ def test_success_path_keeps_local(monkeypatch: pytest.MonkeyPatch) -> None:
     joined = " ".join(args)
     assert "lms server start" in joined
     assert "lms load" in joined
-    # Context-length is the contractual minimum (64K) — anything smaller
-    # truncates Doer prompts on multi-file tickets.
-    assert "--context-length 65536" in joined
+    # Default ctx is 256K (Mac Studio has the headroom and 32K was too
+    # tight for the ONE-116 3kLOC ticket); floor stays at 64K.
+    assert "--context-length 262144" in joined
 
 
 def test_ctx_env_override_takes_effect(monkeypatch: pytest.MonkeyPatch) -> None:

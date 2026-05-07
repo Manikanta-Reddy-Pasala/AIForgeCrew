@@ -19,14 +19,19 @@ Env knobs (all optional):
   AIFORGE_LMS_HOST=user@host          SSH target (default: AIFORGE_CLAUDE_HOST)
   AIFORGE_LMS_BIN=lms                 lms CLI path on the remote host
   AIFORGE_LMS_MODEL=<id>              model id to ``lms load``
-  AIFORGE_LMS_TTL=43200               --ttl seconds for ``lms load``
-                                      (12h default; LM Studio's own default
-                                      is 1h which idle-unloads mid-run)
-  AIFORGE_LMS_CTX=65536               --context-length passed to ``lms load``.
+  AIFORGE_LMS_TTL=86400               --ttl seconds for ``lms load``
+                                      (24h default; LM Studio's own default
+                                      is 1h which idle-unloads mid-run, and
+                                      a 25-minute multi-turn ticket has been
+                                      observed to outlast a 12h TTL on some
+                                      LM Studio configs because the idle
+                                      timer resets on each request)
+  AIFORGE_LMS_CTX=262144              --context-length passed to ``lms load``.
                                       LM Studio JIT-loads at 4K otherwise,
                                       which truncates Doer prompts on any
                                       ticket touching more than ~2 files.
-                                      64K is the contractual minimum here.
+                                      256K is the contractual default; 64K
+                                      is the absolute floor (clamped here).
   AIFORGE_LMS_WARMUP_S=60             post-load sleep before re-probe
   AIFORGE_LMS_SSH_TIMEOUT_S=120       outer SSH timeout
 """
@@ -108,14 +113,15 @@ def try_start(api_base: str) -> bool:
         return cached[0]
 
     bin_name = os.environ.get("AIFORGE_LMS_BIN", "lms")
-    ttl = _int_env("AIFORGE_LMS_TTL", 43200)
+    ttl = _int_env("AIFORGE_LMS_TTL", 86400)
     warmup = _int_env("AIFORGE_LMS_WARMUP_S", 60)
     ssh_timeout = _int_env("AIFORGE_LMS_SSH_TIMEOUT_S", 120)
-    # 64K is the contractual minimum — LM Studio's JIT default of 4K
-    # truncates Doer prompts on any ticket touching >~2 files. Floor
-    # an operator override (env var) at 65536 so a typo can't regress
-    # below the gate.
-    ctx = max(_int_env("AIFORGE_LMS_CTX", 65536), 65536)
+    # Mac Studio (96 GB unified memory) easily holds Qwen-Coder-Next 80B
+    # at 4-bit + a 256K KV cache; 256K became the default after ticket
+    # ONE-116 needed >32K to fit the multi-file ticket body + 10 round
+    # trips. The hard floor stays at 65536 — anything smaller risks the
+    # original 4K-truncation bug, regardless of operator override.
+    ctx = max(_int_env("AIFORGE_LMS_CTX", 262144), 65536)
 
     # `lms server start` is idempotent — exits 0 if already running.
     # `lms load <model> --ttl <s> --context-length <n>` loads into VRAM
