@@ -22,6 +22,11 @@ Env knobs (all optional):
   AIFORGE_LMS_TTL=43200               --ttl seconds for ``lms load``
                                       (12h default; LM Studio's own default
                                       is 1h which idle-unloads mid-run)
+  AIFORGE_LMS_CTX=65536               --context-length passed to ``lms load``.
+                                      LM Studio JIT-loads at 4K otherwise,
+                                      which truncates Doer prompts on any
+                                      ticket touching more than ~2 files.
+                                      64K is the contractual minimum here.
   AIFORGE_LMS_WARMUP_S=60             post-load sleep before re-probe
   AIFORGE_LMS_SSH_TIMEOUT_S=120       outer SSH timeout
 """
@@ -106,18 +111,27 @@ def try_start(api_base: str) -> bool:
     ttl = _int_env("AIFORGE_LMS_TTL", 43200)
     warmup = _int_env("AIFORGE_LMS_WARMUP_S", 60)
     ssh_timeout = _int_env("AIFORGE_LMS_SSH_TIMEOUT_S", 120)
+    # 64K is the contractual minimum — LM Studio's JIT default of 4K
+    # truncates Doer prompts on any ticket touching >~2 files. Floor
+    # an operator override (env var) at 65536 so a typo can't regress
+    # below the gate.
+    ctx = max(_int_env("AIFORGE_LMS_CTX", 65536), 65536)
 
     # `lms server start` is idempotent — exits 0 if already running.
-    # `lms load <model> --ttl <s>` loads into VRAM and sets the idle
-    # timer; LM Studio's default 1h TTL trips mid-run on a long ticket.
+    # `lms load <model> --ttl <s> --context-length <n>` loads into VRAM
+    # at the pinned ctx and sets the idle timer; LM Studio's defaults
+    # (1h TTL, 4K ctx) both trip on long tickets.
     if model:
-        remote = f"{bin_name} server start && {bin_name} load {model} --ttl {ttl}"
+        remote = (
+            f"{bin_name} server start && "
+            f"{bin_name} load {model} --ttl {ttl} --context-length {ctx}"
+        )
     else:
         remote = f"{bin_name} server start"
 
     log.info(
-        "lms_autostart: ssh %s -> %s (warmup=%ds)",
-        host, remote, warmup,
+        "lms_autostart: ssh %s -> %s (warmup=%ds, ctx=%d)",
+        host, remote, warmup, ctx,
     )
     try:
         proc = subprocess.run(

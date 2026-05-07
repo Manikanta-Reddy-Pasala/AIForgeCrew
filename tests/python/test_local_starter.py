@@ -64,6 +64,51 @@ def test_success_path_keeps_local(monkeypatch: pytest.MonkeyPatch) -> None:
     joined = " ".join(args)
     assert "lms server start" in joined
     assert "lms load" in joined
+    # Context-length is the contractual minimum (64K) — anything smaller
+    # truncates Doer prompts on multi-file tickets.
+    assert "--context-length 65536" in joined
+
+
+def test_ctx_env_override_takes_effect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Operator can raise ctx via AIFORGE_LMS_CTX without touching code."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    monkeypatch.setenv("AIFORGE_LMS_CTX", "131072")
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch("urllib.request.urlopen", return_value=_Resp()), \
+         patch("time.sleep"):
+        ls.try_start("http://x:1234/v1")
+    joined = " ".join(run_mock.call_args[0][0])
+    assert "--context-length 131072" in joined
+
+
+def test_ctx_env_below_floor_clamps_to_minimum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setting AIFORGE_LMS_CTX below 64K must clamp up — never accept a
+    value that risks the original 4K-truncation bug."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    monkeypatch.setenv("AIFORGE_LMS_CTX", "8192")  # try to undercut
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch("urllib.request.urlopen", return_value=_Resp()), \
+         patch("time.sleep"):
+        ls.try_start("http://x:1234/v1")
+    joined = " ".join(run_mock.call_args[0][0])
+    assert "--context-length 65536" in joined
+    assert "--context-length 8192" not in joined
 
 
 def test_load_failure_falls_through(monkeypatch: pytest.MonkeyPatch) -> None:
