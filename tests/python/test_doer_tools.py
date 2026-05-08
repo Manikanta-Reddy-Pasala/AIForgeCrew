@@ -155,3 +155,144 @@ def test_memory_lookup_caps_k() -> None:
         assert len(res["hits"]) <= 12
     finally:
         sys.modules.pop("aiforge_core.memory.unified_query", None)
+
+
+# ─── grep_repo ─────────────────────────────────────────────────────────
+
+
+def test_grep_repo_finds_match(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("def alpha():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def beta():\n    return 2\n")
+    res = dt.grep_repo(r"def alpha")
+    assert res["ok"] is True
+    assert len(res["hits"]) == 1
+    assert res["hits"][0]["file"] == "a.py"
+    assert res["hits"][0]["line"] == 1
+    assert "alpha" in res["hits"][0]["text"]
+
+
+def test_grep_repo_path_subdir(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "x.py").write_text("class Widget:\n    pass\n")
+    (tmp_path / "other.py").write_text("class Widget:\n    pass\n")
+    res = dt.grep_repo(r"class Widget", path="src")
+    assert res["ok"] is True
+    files = {h["file"] for h in res["hits"]}
+    assert all(f.startswith("src/") for f in files)
+
+
+def test_grep_repo_no_match(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("x = 1\n")
+    res = dt.grep_repo(r"NEVER_MATCHES_xyz123")
+    assert res["ok"] is True
+    assert res["hits"] == []
+
+
+def test_grep_repo_empty_pattern_rejected() -> None:
+    res = dt.grep_repo("")
+    assert res["ok"] is False
+
+
+def test_grep_repo_nonexistent_path() -> None:
+    res = dt.grep_repo("foo", path="does/not/exist")
+    assert res["ok"] is False
+
+
+def test_grep_repo_skips_excluded_dirs(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("MAGIC_TOKEN\n")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "lib.js").write_text("MAGIC_TOKEN\n")
+    (tmp_path / "src.py").write_text("MAGIC_TOKEN\n")
+    res = dt.grep_repo("MAGIC_TOKEN")
+    files = {h["file"] for h in res["hits"]}
+    assert "src.py" in files
+    assert not any(".git" in f or "node_modules" in f for f in files)
+
+
+# ─── fetch_url ─────────────────────────────────────────────────────────
+
+
+def test_fetch_url_rejects_non_http() -> None:
+    assert dt.fetch_url("file:///etc/passwd")["ok"] is False
+    assert dt.fetch_url("ftp://example.com")["ok"] is False
+    assert dt.fetch_url("")["ok"] is False
+
+
+def test_fetch_url_handles_urlerror(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+
+    def _boom(*a, **kw):
+        raise urllib.error.URLError("dns fail")
+
+    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    res = dt.fetch_url("https://example.invalid")
+    assert res["ok"] is False
+    assert "url error" in res["error"]
+
+
+def test_fetch_url_caps_body_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Body larger than 256 KB → truncated=True, body capped."""
+    big = b"X" * (300 * 1024)
+
+    class _Resp:
+        status = 200
+        headers = {"Content-Type": "text/plain"}
+
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+            self._read = False
+
+        def read(self, n: int = -1) -> bytes:
+            if self._read:
+                return b""
+            self._read = True
+            return self._payload[:n] if n > 0 else self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *a, **kw: _Resp(big),
+    )
+    res = dt.fetch_url("https://example.com/big")
+    assert res["ok"] is True
+    assert res["truncated"] is True
+    assert len(res["body"].encode("utf-8")) <= 256 * 1024
+
+
+def test_fetch_url_handles_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+
+    def _boom(*a, **kw):
+        raise urllib.error.HTTPError(
+            "https://x", 404, "not found", {}, None,
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    res = dt.fetch_url("https://example.com/missing")
+    assert res["ok"] is False
+    assert res["status"] == 404
+
+
+# ─── adk_function_tools registry ───────────────────────────────────────
+
+
+def test_adk_function_tools_includes_new_tools() -> None:
+    """Registry must expose grep_repo + fetch_url + their aliases."""
+    pytest.importorskip("google.adk")
+    tools = dt.adk_function_tools()
+    names = {t.func.__name__ for t in tools}
+    assert "grep_repo" in names
+    assert "fetch_url" in names
+    # Aliases stay reachable for hallucinated names
+    assert "grep" in names and "search" in names
+    assert "http_get" in names and "web_fetch" in names
+
+
+def test_module_all_lists_new_tools() -> None:
+    assert "grep_repo" in dt.__all__
+    assert "fetch_url" in dt.__all__
