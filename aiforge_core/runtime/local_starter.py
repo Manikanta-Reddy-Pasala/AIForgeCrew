@@ -36,6 +36,13 @@ Env knobs (all optional):
                                       is the absolute floor (clamped here).
   AIFORGE_LMS_WARMUP_S=60             post-load sleep before re-probe
   AIFORGE_LMS_SSH_TIMEOUT_S=120       outer SSH timeout
+  AIFORGE_LMS_PARALLEL=1              LM Studio --parallel value. Default
+                                      1 — pipeline only issues one inflight
+                                      request per role, so the LM Studio
+                                      default of 4 just reserves 4× the
+                                      KV cache for nothing and was the root
+                                      cause of MLX Metal-buffer crashes
+                                      on Mac Studio's 96GB unified memory.
 """
 from __future__ import annotations
 
@@ -133,8 +140,19 @@ def try_start(api_base: str) -> bool:
     # flag is appended only when ttl>0 because omitting it tells LM
     # Studio "no idle unload", which is what we want for production
     # tickets that may pause between turns.
+    # PARALLEL=1 by default. The pipeline only ever issues one inflight
+    # request per role, so the LM Studio default PARALLEL=4 just
+    # reserves 4× the KV cache for nothing. ONE-117 surfaced this:
+    # 131K-ctx KV × 4 lanes pushed Mac Studio's 96GB unified memory
+    # past the headroom and triggered MLX Metal command-buffer aborts.
+    # Override via AIFORGE_LMS_PARALLEL — bump for genuine concurrent
+    # serving (UI demos), keep at 1 for ticket runners.
+    parallel = max(_int_env("AIFORGE_LMS_PARALLEL", 1), 1)
     if model:
-        load_cmd = f"{bin_name} load {model} --context-length {ctx}"
+        load_cmd = (
+            f"{bin_name} load {model} "
+            f"--context-length {ctx} --parallel {parallel}"
+        )
         if ttl > 0:
             load_cmd += f" --ttl {ttl}"
         remote = f"{bin_name} server start && {load_cmd}"
@@ -142,8 +160,8 @@ def try_start(api_base: str) -> bool:
         remote = f"{bin_name} server start"
 
     log.info(
-        "lms_autostart: ssh %s -> %s (warmup=%ds, ctx=%d, ttl=%s)",
-        host, remote, warmup, ctx,
+        "lms_autostart: ssh %s -> %s (warmup=%ds, ctx=%d, parallel=%d, ttl=%s)",
+        host, remote, warmup, ctx, parallel,
         f"{ttl}s" if ttl > 0 else "off (manual unload only)",
     )
     try:
