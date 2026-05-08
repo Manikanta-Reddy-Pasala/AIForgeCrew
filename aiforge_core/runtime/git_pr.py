@@ -95,9 +95,70 @@ def _checkout_branch(repo_root: str, branch: str) -> str:
     return ""
 
 
+_DEFAULT_GITIGNORE = """\
+# Auto-added by AIForgeCrew runtime so Doer-emitted artefacts don't
+# pollute commits. Edit freely; runtime only writes this file when it
+# does not already exist.
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Local databases / scratch
+*.db
+*.sqlite
+*.sqlite3
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Node (when Doer scaffolds JS)
+node_modules/
+
+# Java (when Doer scaffolds Maven/Gradle)
+target/
+build/
+"""
+
+
+def _ensure_gitignore(repo_root: str) -> None:
+    """Write a sensible default ``.gitignore`` when the repo doesn't
+    already have one. Stops Doer-emitted ``__pycache__`` and SQLite
+    scratch DBs from landing in commits — the stress test that
+    motivated this file produced 7 ``.pyc`` files + a ``stress5k.db``
+    in the snapshot before this guard existed.
+
+    No-op when ``.gitignore`` already exists — operator's choice wins.
+    """
+    gi = os.path.join(repo_root, ".gitignore")
+    if os.path.exists(gi):
+        return
+    try:
+        with open(gi, "w", encoding="utf-8") as f:
+            f.write(_DEFAULT_GITIGNORE)
+    except OSError as exc:
+        log.warning("git_pr.gitignore_write_failed: %s", exc)
+
+
 def _commit_changes(repo_root: str, identifier: str, title: str) -> str:
     """Stage Doer changes (transient dirs excluded) and commit. Returns
     ``""`` on success or a ``pr_skip_reason`` on failure."""
+    _ensure_gitignore(repo_root)
     run_git(
         ["git", "add", "--", ".", *_EXCLUDE_PATHSPECS],
         repo_root,
@@ -113,8 +174,46 @@ def _commit_changes(repo_root: str, identifier: str, title: str) -> str:
     return ""
 
 
+def _has_reachable_remote(repo_root: str) -> tuple[bool, str]:
+    """Pre-check before push: does ``origin`` exist AND is it reachable?
+
+    Returns ``(True, '')`` when ``git ls-remote origin`` succeeds in
+    ≤10s. Returns ``(False, reason)`` for: no origin configured, repo
+    not on GitHub (e.g. fresh stress sandbox), DNS/auth failure.
+
+    Catching this BEFORE ``git push`` saves the runner ~30s on every
+    isolated/sandbox ticket and gives the operator a clean
+    ``pr_skip_reason='no_remote'`` instead of a noisy push_failed.
+    """
+    rc, out, _ = run_git(["git", "remote"], repo_root)
+    if rc != 0 or "origin" not in (out or "").split():
+        return False, "no_origin_configured"
+    try:
+        proc = subprocess.run(
+            ["git", "ls-remote", "--exit-code", "origin", "HEAD"],
+            cwd=repo_root, capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "remote_unreachable_timeout"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"remote_probe_error: {exc}"
+    if proc.returncode != 0:
+        return False, "remote_unreachable"
+    return True, ""
+
+
 def _push(repo_root: str, branch: str) -> tuple[bool, str]:
-    """``(pushed?, err_or_empty)``."""
+    """``(pushed?, err_or_empty)``.
+
+    Probes the remote first via :func:`_has_reachable_remote` so a
+    sandbox repo without a real origin (stress tests, scratch
+    worktrees) returns a clean ``no_remote`` reason instead of timing
+    out ``git push``.
+    """
+    reachable, reason = _has_reachable_remote(repo_root)
+    if not reachable:
+        log.info("git_pr.push_skipped: %s", reason)
+        return False, reason
     rc, _, err = run_git(
         ["git", "push", "-u", "origin", branch], repo_root,
     )

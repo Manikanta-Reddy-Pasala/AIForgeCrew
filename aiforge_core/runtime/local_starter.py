@@ -185,4 +185,42 @@ def try_start(api_base: str) -> bool:
     return alive
 
 
-__all__ = ["try_start", "reset"]
+# ─── Mid-pipeline crash recovery ───────────────────────────────────────
+
+
+_CRASH_MARKERS: tuple[str, ...] = (
+    "model has crashed",
+    "no models loaded",
+    "exit code: null",
+    "model crashed",
+    "lms load",
+)
+
+
+def looks_like_lm_crash(err: str) -> bool:
+    """Sniff a LiteLLM/OpenAI error string for the LM-Studio MLX
+    crash/unload signatures we want to auto-recover from.
+
+    Conservative — only matches strings LM Studio is known to return
+    when the MLX engine kills the model mid-session. Generic HTTP
+    5xx, rate limits, and connection refused go to the cloud chain
+    via normal escalation, not here.
+    """
+    if not err:
+        return False
+    low = err.lower()
+    return any(m in low for m in _CRASH_MARKERS)
+
+
+def try_recover(api_base: str) -> bool:
+    """Force a re-attempt of :func:`try_start` even if already tried
+    once in this process. Used by EscalatingLlm when LM Studio
+    crashes mid-pipeline — the per-process cache would otherwise lock
+    us out of recovery for the rest of the run.
+    """
+    log.warning("lms_autostart: forced recovery (cache cleared)")
+    reset()
+    return try_start(api_base)
+
+
+__all__ = ["try_start", "try_recover", "looks_like_lm_crash", "reset"]
