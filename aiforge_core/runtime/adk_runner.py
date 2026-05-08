@@ -52,6 +52,99 @@ _VERDICT_TO_STATUS: dict[str, str] = {
 
 _VERDICT_TOKENS: tuple[str, ...] = ("scope_violation", "pass", "fail")
 
+# Cap rationales persisted to ticket_events so a chatty model can't bloat
+# the audit trail with a multi-paragraph rant. 300 chars matches the spec
+# in the operator-observability ticket.
+_REASON_MAX_CHARS = 300
+_REASON_DEFAULT_PASS = "no rationale provided"
+_REASON_DEFAULT_FAIL = "no rationale provided"
+
+
+def _extract_reason(state: dict, verdict: str) -> str:
+    """Pull the post-verdict rationale line out of the Feedback output.
+
+    The Feedback prompt asks the model to put the verdict token on
+    line 1 and a short rationale on line 2+. This function returns
+    that rationale flattened to a single line, trimmed to
+    :data:`_REASON_MAX_CHARS` so the audit trail can't be bloated.
+
+    Tolerated shapes mirror :func:`_extract_verdict`:
+      1. raw string ``"<token>\\n<reason>..."`` → returns reason
+      2. dict ``{"verdict": ..., "rationale": "..."}`` → returns rationale
+      3. anything else / no rationale → role-appropriate default
+
+    The verdict token itself is stripped from the head so we don't
+    double-print it (``"pass: pass — looks good"`` → ``"pass: looks good"``).
+    """
+    raw = state.get("feedback_verdict")
+    text: str | None = None
+    if isinstance(raw, dict):
+        # Legacy JSON dict — both ``rationale`` and ``reason`` seen in
+        # the wild; ``reason`` is the new canonical key (matches the
+        # ticket_events column the operators query).
+        text = raw.get("rationale") or raw.get("reason")
+    elif isinstance(raw, str) and raw.strip():
+        s = raw.strip()
+        # Legacy JSON string — try once, fall through to plain text on
+        # parse fail rather than 500ing.
+        if s.startswith("{"):
+            try:
+                obj = json.loads(s)
+            except json.JSONDecodeError:
+                obj = None
+            if isinstance(obj, dict):
+                text = obj.get("rationale") or obj.get("reason")
+        if text is None:
+            # Plain leading-token format: drop line 1, take the rest.
+            head = s.lstrip("`*_-> ")
+            for token in _VERDICT_TOKENS:
+                if head.lower().startswith(token):
+                    head = head[len(token):]
+                    break
+            # Anything after the verdict token is the rationale; flatten
+            # newlines and tabs so the audit row is single-line.
+            text = head.strip(" :—-\n\t").replace("\n", " ").replace("\t", " ")
+
+    if not text:
+        return _REASON_DEFAULT_PASS if verdict == "pass" else _REASON_DEFAULT_FAIL
+
+    # Collapse runs of whitespace so the audit body is compact.
+    text = " ".join(text.split())
+    if len(text) > _REASON_MAX_CHARS:
+        text = text[: _REASON_MAX_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def _record_verdict_event(ticket_id: int, verdict: str, reason: str) -> None:
+    """Persist a ``verdict_attempt`` row in ``ticket_events``.
+
+    Called once per ticket after the SequentialAgent run resolves its
+    final session state. The row schema is:
+
+      kind        = 'verdict_attempt'
+      agent_role  = 'feedback'
+      body        = '<verdict>: <reason>'
+      metadata    = {'verdict': ..., 'reason': ...}
+
+    Operators query this row to see WHY a Doer-Feedback loop
+    converged (or didn't) — the prior ``status_change`` rows only
+    captured the eventual ticket status, not the reasoning.
+
+    Failures are swallowed: the audit trail is best-effort, we never
+    want a Postgres hiccup to block the runner from finalising the
+    ticket status. The exception is logged so an operator can spot a
+    persistent DB-grant problem.
+    """
+    body = f"{verdict}: {reason}"
+    try:
+        tickets_mod.add_event(
+            ticket_id, "feedback", "verdict_attempt", body,
+            {"verdict": verdict, "reason": reason},
+        )
+    except Exception as exc:  # pragma: no cover — best-effort audit
+        log.warning("ticket_id=%s failed to persist verdict_attempt: %s",
+                    ticket_id, exc)
+
 
 def _extract_verdict(state: dict) -> str:
     """Pull the Feedback verdict out of pipeline state.
@@ -241,6 +334,14 @@ def _process_one_ticket() -> bool:
     try:
         state = asyncio.run(_run_pipeline(prompt))
         outcome = _extract_verdict(state)
+        # Capture the Feedback rationale BEFORE any mutation so an
+        # operator scanning ticket_events sees both the verdict and
+        # the convergence reason. Best-effort: any persistence error
+        # is logged + swallowed inside the helper so the runner still
+        # makes forward progress on the ticket itself.
+        reason = _extract_reason(state, outcome)
+        _record_verdict_event(ticket.id, outcome, reason)
+
         new_status = _VERDICT_TO_STATUS.get(outcome, "blocked")
 
         # PR gate: anything that ISN'T an explicit scope_violation is
