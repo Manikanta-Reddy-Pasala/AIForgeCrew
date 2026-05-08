@@ -101,7 +101,7 @@ def build_litellm_model(role: str):
     return EscalatingLlm.build(role, primary, chain)
 
 
-def build_pipeline():
+def build_pipeline(*, skip_researcher: bool = False):
     """Construct the SequentialAgent. Returns the root agent ready for
     ``Runner(agent=..., session_service=...)``.
 
@@ -110,8 +110,16 @@ def build_pipeline():
     that knows the order in which they run. Adding a new role = drop a
     module and slot it into the right list here; the per-archetype
     files stay declarative.
+
+    Args:
+      skip_researcher: when True, omit Researcher from the pipeline.
+        Caller (typically :mod:`adk_runner`) decides via
+        :func:`researcher_routing.should_skip_researcher`. Saves
+        5+ LM calls on greenfield tickets where the Researcher would
+        find nothing relevant anyway.
     """
     from google.adk.agents import LoopAgent, SequentialAgent
+    from .loop_budget import build_loop_budget_callbacks
 
     planner = _planner_mod.build(build_litellm_model)
     verifier = _verifier_mod.build(build_litellm_model)
@@ -123,14 +131,41 @@ def build_pipeline():
 
     # Doer / Refiner / Feedback live inside the loop so a Feedback
     # rejection rewinds the polish-then-judge cycle, not just the Doer.
+    # ``before_agent_callback`` runs once per LoopAgent invocation, but
+    # we attach the LOC-plateau watcher to the Refiner — it sees every
+    # loop turn AFTER the Doer has emitted its file_diffs payload,
+    # which is the cheapest place to compute the LOC delta.
+    plateau_before, plateau_after = build_loop_budget_callbacks()
+    if plateau_before is not None:
+        # Attach to the Refiner's after-callback so we see the loop
+        # iteration's LOC outcome AFTER the Doer reported file_diffs
+        # but BEFORE Feedback wastes a turn judging a stuck loop.
+        existing_after = refiner.after_agent_callback
+        merged_after: list = []
+        if existing_after is not None:
+            if isinstance(existing_after, list):
+                merged_after.extend(existing_after)
+            else:
+                merged_after.append(existing_after)
+        merged_after.append(plateau_after)
+        refiner.after_agent_callback = merged_after
+
+    sub_agents: list = [planner, verifier]
+    if not skip_researcher:
+        sub_agents.append(researcher)
     doer_loop = LoopAgent(
         name="doer_refiner_feedback_loop",
         sub_agents=[doer, refiner, feedback],
         max_iterations=3,
+        # ``plateau_before`` aborts the LoopAgent at the start of the
+        # next iteration when state['loop_budget_kill'] is set.
+        before_agent_callback=plateau_before,
     )
+    sub_agents.append(doer_loop)
+    sub_agents.append(learner)
     return SequentialAgent(
         name="aiforge_v6_pipeline",
-        sub_agents=[planner, verifier, researcher, doer_loop, learner],
+        sub_agents=sub_agents,
     )
 
 
