@@ -103,6 +103,12 @@ class EscalatingLlm(BaseLlm):
     chain_models: list[BaseLlm] = []
     chain_labels: list[str] = []
     primary_demoted: bool = False
+    # One LM-crash auto-recovery attempt per pipeline run. Resets per
+    # ticket (fresh EscalatingLlm is built per ticket in pipeline.py).
+    # Without the cap a flapping LM Studio could trigger an SSH-load
+    # storm; with the cap, we get one free recovery per ticket and
+    # subsequent crashes fall through to the cloud chain as normal.
+    lm_recovery_tried: bool = False
 
     @classmethod
     def build(cls, role: str, primary_cfg: dict[str, Any],
@@ -178,11 +184,54 @@ class EscalatingLlm(BaseLlm):
                     buffered.append(r)
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
+                err_str = str(exc)
                 log.warning(
                     "llm.attempt_failed role=%s attempt=%s model=%s err=%s",
                     self.role, label, getattr(model, "model", "?"),
-                    str(exc)[:200],
+                    err_str[:200],
                 )
+                # LM Studio MLX crash mid-pipeline ("model has crashed"
+                # / "No models loaded") — force-reload the model and
+                # retry the SAME attempt once before falling through
+                # to the cloud chain. Without this, sticky-demotion
+                # locks us off the local primary for the rest of the
+                # ticket and a stress run starves on cloud rate limits.
+                if (label in ("primary", "primary_retry")
+                        and not self.lm_recovery_tried):
+                    from . import local_starter
+                    if local_starter.looks_like_lm_crash(err_str):
+                        self.lm_recovery_tried = True
+                        api_base = getattr(model, "api_base", "") or ""
+                        recovered = local_starter.try_recover(api_base)
+                        log.warning(
+                            "llm.lm_crash_recovery role=%s recovered=%s",
+                            self.role, recovered,
+                        )
+                        if recovered:
+                            buffered = []
+                            try:
+                                async for r in model.generate_content_async(
+                                    req_for_attempt, stream=False,
+                                ):
+                                    buffered.append(r)
+                            except Exception as retry_exc:  # noqa: BLE001
+                                last_exc = retry_exc
+                                log.warning(
+                                    "llm.recovery_retry_failed role=%s "
+                                    "err=%s", self.role,
+                                    str(retry_exc)[:200],
+                                )
+                                if label == "primary":
+                                    self.primary_demoted = True
+                                continue
+                            if buffered and not all(_is_empty(r) for r in buffered):
+                                log.info(
+                                    "llm.recovered role=%s after_lm_reload",
+                                    self.role,
+                                )
+                                for r in buffered:
+                                    yield r
+                                return
                 if label == "primary":
                     self.primary_demoted = True
                 continue

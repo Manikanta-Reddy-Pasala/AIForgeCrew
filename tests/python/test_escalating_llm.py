@@ -288,3 +288,105 @@ def test_streaming_bypasses_retry_chain() -> None:
     # Got primary's two responses; cloud never invoked.
     assert len(out) == 2
     assert cloud.calls == 0
+
+
+# ─── LM-crash mid-pipeline recovery ────────────────────────────────────
+
+
+def test_looks_like_lm_crash_matches_known_signatures() -> None:
+    from aiforge_core.runtime import local_starter as ls
+    assert ls.looks_like_lm_crash(
+        "OpenAIException - Error code: 400 - {'error': "
+        "'The model has crashed without additional information. "
+        "(Exit code: null)'}"
+    )
+    assert ls.looks_like_lm_crash(
+        "No models loaded. Please load a model in the developer page "
+        "or use the 'lms load' command."
+    )
+
+
+def test_looks_like_lm_crash_skips_unrelated_errors() -> None:
+    from aiforge_core.runtime import local_starter as ls
+    assert not ls.looks_like_lm_crash("rate limit exceeded")
+    assert not ls.looks_like_lm_crash("connection refused")
+    assert not ls.looks_like_lm_crash("")
+
+
+def test_lm_crash_triggers_recovery_then_retry(monkeypatch) -> None:
+    """Primary raises crash signature → local_starter.try_recover is
+    invoked → primary retried inline → success short-circuits chain."""
+    from aiforge_core.runtime import local_starter as ls
+    ls.reset()
+    recover_calls = {"n": 0}
+    monkeypatch.setattr(ls, "try_recover",
+                        lambda api_base: recover_calls.update(n=1) or True)
+
+    class _CrashThenRecover(BaseLlm):
+        api_base: str = "http://127.0.0.1:1234/v1"
+        calls: int = 0
+
+        async def generate_content_async(self, llm_request, stream=False):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError(
+                    "litellm.BadRequestError - The model has crashed "
+                    "without additional information. (Exit code: null)"
+                )
+            yield _resp("recovered output")
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    primary = _CrashThenRecover(model="local-mlx")
+    cloud = _StubModel(model="cloud", script=[_resp("CLOUD")])
+    e = EscalatingLlm(model="local-mlx", role="doer",
+                      primary_model=primary, chain_models=[cloud],
+                      chain_labels=["cloud"])
+    out = _drive(e)
+    assert recover_calls["n"] == 1
+    assert out[0].content.parts[0].text == "recovered output"
+    assert cloud.calls == 0  # cloud bypassed by inline recovery
+    assert e.lm_recovery_tried is True
+
+
+def test_lm_crash_recovery_capped_per_pipeline(monkeypatch) -> None:
+    """Second crash in the same EscalatingLlm does NOT re-fire
+    try_recover; falls through to cloud chain instead."""
+    from aiforge_core.runtime import local_starter as ls
+    ls.reset()
+    recover_calls = {"n": 0}
+    monkeypatch.setattr(ls, "try_recover",
+                        lambda api_base: recover_calls.update(
+                            n=recover_calls["n"] + 1) or True)
+    primary = _StubModel(model="local",
+                         error=RuntimeError("model has crashed"))
+    cloud = _StubModel(model="cloud", script=[_resp("CLOUD")])
+    e = EscalatingLlm(model="local", role="doer",
+                      primary_model=primary, chain_models=[cloud],
+                      chain_labels=["cloud"])
+    e.lm_recovery_tried = True  # simulate prior recovery this pipeline
+    out = _drive(e)
+    assert recover_calls["n"] == 0  # cap respected
+    assert out[0].content.parts[0].text == "CLOUD"
+
+
+def test_non_crash_error_bypasses_recovery(monkeypatch) -> None:
+    """Plain rate-limit / connection error must NOT call try_recover —
+    it should escalate to cloud as before."""
+    from aiforge_core.runtime import local_starter as ls
+    ls.reset()
+    recover_calls = {"n": 0}
+    monkeypatch.setattr(ls, "try_recover",
+                        lambda api_base: recover_calls.update(
+                            n=recover_calls["n"] + 1) or True)
+    primary = _StubModel(model="local",
+                         error=RuntimeError("connection refused"))
+    cloud = _StubModel(model="cloud", script=[_resp("CLOUD")])
+    e = EscalatingLlm(model="local", role="doer",
+                      primary_model=primary, chain_models=[cloud],
+                      chain_labels=["cloud"])
+    out = _drive(e)
+    assert recover_calls["n"] == 0
+    assert out[0].content.parts[0].text == "CLOUD"
