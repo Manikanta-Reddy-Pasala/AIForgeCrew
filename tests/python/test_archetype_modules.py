@@ -47,11 +47,14 @@ def test_role_is_lowercase_and_non_empty(mod):
 
 
 def test_prompts_non_empty_for_real_agents():
-    """The architect is external (no prompt); every other agent owns one."""
+    """Every archetype now owns a non-trivial system prompt.
+
+    The architect was a no-prompt placeholder until ONE-117 surfaced
+    the need for a structural-plan contract; the prompt now documents
+    the JSON shape the EXTERNAL Claude Code session must emit so the
+    Doer can read ``state['structural_plan']`` deterministically.
+    """
     for mod in ALL_MODULES:
-        if mod is architect:
-            assert mod.PROMPT == ""
-            continue
         assert isinstance(mod.PROMPT, str) and len(mod.PROMPT) > 50, (
             f"{mod.ROLE} prompt looks empty/stub")
 

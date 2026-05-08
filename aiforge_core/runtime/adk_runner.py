@@ -33,6 +33,7 @@ from aiforge_core.tickets import store as tickets_mod
 from . import memory_block
 from .git_pr import commit_push_open_pr
 from .pipeline import build_pipeline, set_force_provider
+from .researcher_routing import should_skip_researcher
 
 
 log = logging.getLogger("adk_runner")
@@ -44,13 +45,23 @@ logging.basicConfig(
 
 # Map Feedback verdict → tickets-store status. ``fail`` and any
 # unrecognised value land in ``blocked`` so a human can triage.
+# ``partial`` comes from the loop-budget kill switch (see
+# :mod:`loop_budget`) — partial work still gets PR-shipped for human
+# review, so the status maps to ``blocked`` to flag triage need.
 _VERDICT_TO_STATUS: dict[str, str] = {
     "pass": "done",
     "scope_violation": "cancelled",
+    "partial": "blocked",
 }
 
 
-_VERDICT_TOKENS: tuple[str, ...] = ("scope_violation", "pass", "fail")
+# Order matters: ``scope_violation`` is checked before ``fail`` (string
+# substring overlap) and ``partial`` is checked before ``pass`` for
+# the same reason — neither is a strict substring of the other today
+# but the rule keeps future-proofing cheap.
+_VERDICT_TOKENS: tuple[str, ...] = (
+    "scope_violation", "partial", "pass", "fail",
+)
 
 # Cap rationales persisted to ticket_events so a chatty model can't bloat
 # the audit trail with a multi-paragraph rant. 300 chars matches the spec
@@ -233,13 +244,20 @@ def _build_context_plugins() -> list:
     return [ContextFilterPlugin(num_invocations_to_keep=keep)]
 
 
-async def _run_pipeline(prompt: str) -> dict:
-    """Drive one ADK pipeline run and return the final session state."""
+async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
+    """Drive one ADK pipeline run and return the final session state.
+
+    ``skip_researcher`` lets the caller drop the Researcher step for
+    greenfield tickets (see :mod:`researcher_routing`). Passed through
+    to :func:`build_pipeline` so the SequentialAgent skips assembling
+    that LlmAgent — saves ~5 LM calls and ~4 minutes wall-clock when
+    the Researcher would have found nothing relevant.
+    """
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types as gtypes
 
-    pipeline = build_pipeline()
+    pipeline = build_pipeline(skip_researcher=skip_researcher)
     session_svc = InMemorySessionService()
     plugins = _build_context_plugins()
     runner = Runner(
@@ -331,8 +349,22 @@ def _process_one_ticket() -> bool:
         log.info("ticket=%s force_provider=%s (attachments present)",
                  ticket.identifier, forced)
 
+    # Researcher routing: skip the read-only context gatherer on
+    # greenfield tickets where the body has no reference patterns AND
+    # the repo's git log doesn't mention the project keyword. Saves
+    # ~5 LM calls + ~4min on tickets where Researcher would find
+    # nothing relevant. ``AIFORGE_RESEARCHER_FORCE=1`` overrides.
+    skip_researcher, skip_reason = should_skip_researcher(
+        ticket.title or "", ticket.body or "",
+    )
+    log.info("ticket=%s researcher=%s reason=%s",
+             ticket.identifier,
+             "skip" if skip_researcher else "run", skip_reason)
+
     try:
-        state = asyncio.run(_run_pipeline(prompt))
+        state = asyncio.run(_run_pipeline(
+            prompt, skip_researcher=skip_researcher,
+        ))
         outcome = _extract_verdict(state)
         # Capture the Feedback rationale BEFORE any mutation so an
         # operator scanning ticket_events sees both the verdict and
