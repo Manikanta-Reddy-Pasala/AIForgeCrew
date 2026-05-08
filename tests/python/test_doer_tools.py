@@ -7,6 +7,7 @@ workspace.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -296,3 +297,136 @@ def test_adk_function_tools_includes_new_tools() -> None:
 def test_module_all_lists_new_tools() -> None:
     assert "grep_repo" in dt.__all__
     assert "fetch_url" in dt.__all__
+
+
+# ─── git_commit ────────────────────────────────────────────────────────
+
+
+def _git_init(repo: Path) -> None:
+    """Initialise an isolated git repo without touching the global config."""
+    import subprocess as _sp
+
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    _sp.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, env=env)
+    _sp.run(["git", "config", "user.email", "test@example.com"],
+            cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    _sp.run(["git", "config", "commit.gpgsign", "false"],
+            cwd=repo, check=True)
+
+
+def test_git_commit_success_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A staged change should produce a real commit; tool returns ok=True."""
+    if shutil.which("git") is None:
+        pytest.skip("git binary not on PATH")
+    _git_init(tmp_path)
+    # Need an initial commit so HEAD exists for diff.
+    (tmp_path / "seed.txt").write_text("seed\n")
+    import subprocess as _sp
+    _sp.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+    _sp.run(["git", "commit", "-m", "init", "-q"], cwd=tmp_path, check=True)
+
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+    (tmp_path / "feature.py").write_text("x = 1\n")
+
+    res = dt.git_commit("feat: add feature module")
+    assert res["ok"] is True, res
+    assert res.get("skipped") is None
+    log = _sp.run(
+        ["git", "log", "--oneline"], cwd=tmp_path,
+        capture_output=True, text=True, check=True,
+    )
+    assert "feat: add feature module" in log.stdout
+
+
+def test_git_commit_skips_when_nothing_staged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty working tree → skipped marker, no error, no new commit."""
+    if shutil.which("git") is None:
+        pytest.skip("git binary not on PATH")
+    _git_init(tmp_path)
+    (tmp_path / "seed.txt").write_text("seed\n")
+    import subprocess as _sp
+    _sp.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+    _sp.run(["git", "commit", "-m", "init", "-q"], cwd=tmp_path, check=True)
+
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+
+    before = _sp.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    res = dt.git_commit("nothing changed")
+    assert res["ok"] is True
+    assert res.get("skipped") == "nothing to commit"
+
+    after = _sp.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert before == after, "HEAD must not move when nothing was committed"
+
+
+def test_git_commit_soft_errors_on_add_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Simulated `git add` failure must return ok=False, not raise."""
+    import subprocess as real_sp
+
+    real_run = real_sp.run
+
+    def _fake_run(cmd, *a, **kw):
+        if isinstance(cmd, list) and cmd[:2] == ["git", "add"]:
+            class _Result:
+                returncode = 1
+                stdout = b""
+                stderr = b"fatal: simulated add failure"
+            return _Result()
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr("aiforge_core.runtime.doer_tools.subprocess.run", _fake_run)
+    res = dt.git_commit("anything")
+    assert res["ok"] is False
+    assert res["error"] == "git_add_failed"
+    assert "simulated add failure" in res["stderr"]
+
+
+def test_git_commit_rejects_empty_message() -> None:
+    """Guard rail: empty/whitespace messages produce ok=False without
+    invoking git at all."""
+    res = dt.git_commit("")
+    assert res["ok"] is False
+    res = dt.git_commit("   ")
+    assert res["ok"] is False
+
+
+def test_git_commit_in_function_tools_registry() -> None:
+    """ADK registry must expose git_commit + its aliases."""
+    pytest.importorskip("google.adk")
+    tools = dt.adk_function_tools()
+    names = {t.func.__name__ for t in tools}
+    assert "git_commit" in names
+    assert "commit" in names
+    assert "git_add_commit" in names
+
+
+def test_git_commit_in_module_all() -> None:
+    assert "git_commit" in dt.__all__
+    assert "commit" in dt.__all__
+    assert "git_add_commit" in dt.__all__
