@@ -16,12 +16,15 @@ problem to the model.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import urllib.error
+import urllib.request
 
+from .graphify_lookup_tool import graphify_lookup
+from .memory_lookup_tool import memory_lookup
 from .sandbox import resolve_inside_root, root
 from .syntax_guard import validate_syntax
-from .memory_lookup_tool import memory_lookup
-from .graphify_lookup_tool import graphify_lookup
 
 
 def file_read(path: str) -> dict:
@@ -139,6 +142,126 @@ def run_shell(cmd: str) -> dict:
     }
 
 
+# ─── Repo grep ─────────────────────────────────────────────────────────
+
+
+_GREP_DEFAULT_EXCLUDES = (
+    ".git", "node_modules", "target", "build", "dist", ".venv", "venv",
+    "__pycache__", ".mvn", ".idea", ".gradle",
+)
+
+
+def grep_repo(pattern: str, path: str = ".") -> dict:
+    """Recursive regex search over the repo. Returns matching ``{file,
+    line, text}`` rows.
+
+    Uses ripgrep when available (10-100x faster on large trees), falls
+    back to ``grep -RnE``. Both produce the same shape so the model
+    can't tell the difference. Output capped at 200 hits / 8 KB to
+    keep the agent context small.
+
+    Args:
+      pattern: extended regex (anchors, groups, alternation OK).
+      path: search root, repo-relative; default = whole repo.
+    """
+    if not pattern or not pattern.strip():
+        return {"ok": False, "error": "empty pattern"}
+    try:
+        target = resolve_inside_root(path) if path and path != "." else root()
+    except (PermissionError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}
+    if not target.exists():
+        return {"ok": False, "error": f"not found: {path}"}
+
+    rg = shutil.which("rg")
+    if rg:
+        cmd = [rg, "--no-heading", "--with-filename", "--line-number",
+               "--max-count", "200", "--max-filesize", "1M",
+               "-e", pattern, str(target)]
+        for ex in _GREP_DEFAULT_EXCLUDES:
+            cmd[1:1] = ["--glob", f"!{ex}"]
+    else:
+        excludes = []
+        for ex in _GREP_DEFAULT_EXCLUDES:
+            excludes += [f"--exclude-dir={ex}"]
+        cmd = ["grep", "-RnE", *excludes, "--", pattern, str(target)]
+
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, timeout=30, cwd=root(),
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "timeout"}
+    except FileNotFoundError as exc:
+        return {"ok": False, "error": f"binary missing: {exc}"}
+
+    out = proc.stdout.decode("utf-8", "replace")
+    hits: list[dict] = []
+    repo_root = str(root())
+    for line in out.splitlines()[:200]:
+        # rg/grep both emit `path:lineno:text`. Split only twice so a
+        # colon in code lands in `text`, not the path/lineno fields.
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        file_abs, lineno, text = parts
+        rel = file_abs[len(repo_root):].lstrip("/") if file_abs.startswith(repo_root) else file_abs
+        hits.append({"file": rel, "line": int(lineno) if lineno.isdigit() else 0,
+                     "text": text[:240]})
+    return {
+        "ok": True,
+        "pattern": pattern,
+        "path": path or ".",
+        "engine": "rg" if rg else "grep",
+        "hits": hits,
+        "truncated": len(out.splitlines()) > 200,
+    }
+
+
+# ─── HTTP fetch ────────────────────────────────────────────────────────
+
+
+_FETCH_MAX_BYTES = 256 * 1024
+_FETCH_TIMEOUT_S = 15
+
+
+def fetch_url(url: str) -> dict:
+    """GET an http(s) URL and return the body as text.
+
+    Used for fetching public docs / spec pages mid-task. NOT a browser:
+    no cookies, no JS, no redirects to file://. Body capped at 256 KB,
+    timeout 15s, http(s) only.
+    """
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return {"ok": False, "error": "url must be http(s)"}
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "AIForgeCrew-Doer/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S) as resp:
+            raw = resp.read(_FETCH_MAX_BYTES + 1)
+            status = resp.status
+            ctype = resp.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "error": f"http {exc.code}", "status": exc.code}
+    except urllib.error.URLError as exc:
+        return {"ok": False, "error": f"url error: {exc.reason}"}
+    except (TimeoutError, OSError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+    truncated = len(raw) > _FETCH_MAX_BYTES
+    body = raw[:_FETCH_MAX_BYTES].decode("utf-8", "replace")
+    return {
+        "ok": True,
+        "url": url,
+        "status": status,
+        "content_type": ctype,
+        "body": body,
+        "bytes": len(raw),
+        "truncated": truncated,
+    }
+
+
 # ─── Hallucination-tolerant aliases ────────────────────────────────────
 #
 # Without these the Doer's "Tool 'read' not found" failure (observed in
@@ -176,6 +299,26 @@ def bash(cmd: str) -> dict:
     return run_shell(cmd)
 
 
+def grep(pattern: str, path: str = ".") -> dict:
+    """Alias for :func:`grep_repo`."""
+    return grep_repo(pattern, path)
+
+
+def search(pattern: str, path: str = ".") -> dict:
+    """Alias for :func:`grep_repo`."""
+    return grep_repo(pattern, path)
+
+
+def http_get(url: str) -> dict:
+    """Alias for :func:`fetch_url`."""
+    return fetch_url(url)
+
+
+def web_fetch(url: str) -> dict:
+    """Alias for :func:`fetch_url`."""
+    return fetch_url(url)
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -189,14 +332,18 @@ def adk_function_tools() -> list:
     """
     from google.adk.tools import FunctionTool
     canonical = [file_read, file_write, file_patch, list_dir, run_shell,
+                 grep_repo, fetch_url,
                  memory_lookup, graphify_lookup]
-    aliases = [read, write, patch, ls, shell, bash]
+    aliases = [read, write, patch, ls, shell, bash,
+               grep, search, http_get, web_fetch]
     return [FunctionTool(func=fn) for fn in canonical + aliases]
 
 
 __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
+    "grep_repo", "fetch_url",
     "memory_lookup", "graphify_lookup",
     "read", "write", "patch", "ls", "shell", "bash",
+    "grep", "search", "http_get", "web_fetch",
     "adk_function_tools",
 ]
