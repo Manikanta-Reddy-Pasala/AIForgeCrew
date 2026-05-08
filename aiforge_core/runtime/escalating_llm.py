@@ -252,6 +252,15 @@ class EscalatingLlm(BaseLlm):
             if label == "primary_retry":
                 self.primary_demoted = False
 
+            # Any successful primary call (including primary_retry)
+            # earns a fresh recovery budget for the NEXT crash. Without
+            # this reset, recovery is one-shot per pipeline lifetime —
+            # ONE-117 hit MLX crash 3× across a 67min run; the 3rd
+            # crash exhausted because the flag was already burnt by
+            # the 2nd recovery 5min earlier.
+            if label in ("primary", "primary_retry"):
+                self.lm_recovery_tried = False
+
             if label != "primary":
                 log.info(
                     "llm.escalated role=%s succeeded_via=%s "

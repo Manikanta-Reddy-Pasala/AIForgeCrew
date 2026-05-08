@@ -78,3 +78,71 @@ def test_default_gitignore_template_covers_polyglot_artifacts() -> None:
     assert "target/" in body                # Maven
     assert "*.db" in body                    # SQLite scratch
     assert "build/" in body                  # Gradle/Setuptools
+
+
+# ─── _checkout_branch idempotent re-runs ────────────────────────────────
+
+
+def test_checkout_branch_handles_existing_branch(tmp_path: Path) -> None:
+    """The runner's pipeline can crash mid-run; on retry _checkout_branch
+    must NOT fail when the branch already exists from the prior run.
+    Uses 'checkout -B' which creates-or-resets."""
+    _git_init(tmp_path)
+    # Pre-create the branch (simulate prior run that crashed).
+    subprocess.run(
+        ["git", "branch", "ticket-foo"], cwd=tmp_path, check=True,
+        capture_output=True,
+    )
+    reason = gp._checkout_branch(str(tmp_path), "ticket-foo")
+    assert reason == ""
+    # Confirm we're now on the branch.
+    rc = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert rc.stdout.strip() == "ticket-foo"
+
+
+def test_checkout_branch_creates_when_absent(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    reason = gp._checkout_branch(str(tmp_path), "ticket-bar")
+    assert reason == ""
+    rc = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert rc.stdout.strip() == "ticket-bar"
+
+
+def test_checkout_branch_resets_existing_to_head(tmp_path: Path) -> None:
+    """If branch existed at an older commit, ``checkout -B`` resets it
+    to current HEAD. Important when Doer's mid-pipeline-crash branch
+    is N commits behind main on retry."""
+    _git_init(tmp_path)
+    # Make a second commit on main.
+    (tmp_path / "x.txt").write_text("x")
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "add", "x.txt"], cwd=tmp_path, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-m", "second"], cwd=tmp_path, check=True,
+        capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True,
+        text=True,
+    ).stdout.strip()
+    # Pre-create branch at the FIRST commit (older).
+    subprocess.run(
+        ["git", "branch", "stale", "HEAD~1"], cwd=tmp_path, check=True,
+        capture_output=True,
+    )
+    reason = gp._checkout_branch(str(tmp_path), "stale")
+    assert reason == ""
+    new_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert new_head == head  # branch reset to current HEAD

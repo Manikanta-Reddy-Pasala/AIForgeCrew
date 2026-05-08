@@ -390,3 +390,45 @@ def test_non_crash_error_bypasses_recovery(monkeypatch) -> None:
     out = _drive(e)
     assert recover_calls["n"] == 0
     assert out[0].content.parts[0].text == "CLOUD"
+
+
+def test_lm_recovery_flag_resets_on_primary_success() -> None:
+    """After a successful primary call, lm_recovery_tried resets to
+    False so the NEXT crash gets a fresh recovery attempt. ONE-117
+    needed 3 recoveries across a 67min run; the original 1-shot cap
+    burnt out by crash 2."""
+    primary = _StubModel(model="primary", script=[_resp("ok")])
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[],
+                      chain_labels=[])
+    e.lm_recovery_tried = True   # simulate prior recovery
+    out = _drive(e)
+    assert out[0].content.parts[0].text == "ok"
+    assert e.lm_recovery_tried is False  # reset on primary success
+
+
+def test_lm_recovery_flag_resets_on_primary_retry_success() -> None:
+    """primary_retry success also resets lm_recovery_tried + clears
+    primary_demoted. Both knobs need to flip green together."""
+    class _OnceFail(BaseLlm):
+        calls: int = 0
+
+        async def generate_content_async(self, llm_request, stream=False):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("transient")
+            yield _resp("recovered")
+
+        @classmethod
+        def supported_models(cls):
+            return []
+
+    primary = _OnceFail(model="primary")
+    e = EscalatingLlm(model="primary", role="doer",
+                      primary_model=primary, chain_models=[],
+                      chain_labels=[])
+    e.lm_recovery_tried = True
+    out = _drive(e)
+    assert out[0].content.parts[0].text == "recovered"
+    assert e.lm_recovery_tried is False
+    assert e.primary_demoted is False
