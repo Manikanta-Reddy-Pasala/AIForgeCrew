@@ -107,6 +107,39 @@ def _extract_verifier(state: dict) -> str | None:
     return None
 
 
+def _build_context_plugins() -> list:
+    """Wire ADK's ``ContextFilterPlugin`` so long-running Doer loops
+    don't blow past the LM's context window.
+
+    Without this, ADK accumulates every tool result + LLM response in
+    session.events and replays the lot on every turn. ONE-117 hit
+    MLX GPU OOM (Metal command buffer abort → SIGABRT) after ~140
+    LiteLLM calls because the prompt approached 131K tokens and the
+    KV cache + 4-way parallel batches exceeded 96GB unified memory.
+
+    ``num_invocations_to_keep`` keeps the last N invocations verbatim
+    and drops older ones. An "invocation" = one user turn + the model
+    turns it triggered (tool calls, retries). Default 12 is a balance:
+    the Doer can still see its last 5-10 file_reads + edits while the
+    model summary / oldest tool noise gets evicted.
+
+    Env knobs:
+      AIFORGE_CONTEXT_KEEP_INVOCATIONS=12  → invocations to retain
+      AIFORGE_CONTEXT_FILTER_DISABLE=1     → opt out (debug only)
+    """
+    if os.environ.get("AIFORGE_CONTEXT_FILTER_DISABLE", "0") in ("1", "true"):
+        return []
+    try:
+        from google.adk.plugins.context_filter_plugin import ContextFilterPlugin
+    except ImportError:
+        log.warning("context_filter: ContextFilterPlugin not available — "
+                    "ADK older than 2.0b? skipping")
+        return []
+    keep = int(os.environ.get("AIFORGE_CONTEXT_KEEP_INVOCATIONS", "12"))
+    log.info("context_filter: enabled keep=%d invocations", keep)
+    return [ContextFilterPlugin(num_invocations_to_keep=keep)]
+
+
 async def _run_pipeline(prompt: str) -> dict:
     """Drive one ADK pipeline run and return the final session state."""
     from google.adk.runners import Runner
@@ -115,9 +148,11 @@ async def _run_pipeline(prompt: str) -> dict:
 
     pipeline = build_pipeline()
     session_svc = InMemorySessionService()
+    plugins = _build_context_plugins()
     runner = Runner(
         agent=pipeline, app_name="aiforge",
         session_service=session_svc, auto_create_session=True,
+        plugins=plugins,
     )
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",

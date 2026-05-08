@@ -85,10 +85,17 @@ def _has_doer_changes(repo_root: str) -> tuple[bool, str]:
 
 
 def _checkout_branch(repo_root: str, branch: str) -> str:
-    """Create the ticket branch from current HEAD. Returns ``""`` on
-    success or a ``pr_skip_reason`` string on failure."""
-    run_git(["git", "branch", "-D", branch], repo_root)  # ignore rc
-    rc, _, err = run_git(["git", "checkout", "-b", branch], repo_root)
+    """Create or reset the ticket branch to current HEAD. Returns ``""``
+    on success or a ``pr_skip_reason`` on failure.
+
+    Uses ``checkout -B`` (capital B) which CREATES the branch when
+    absent OR FORCE-RESETS it to current HEAD when it exists. Beats
+    the old ``branch -D && checkout -b`` pair which fails when HEAD
+    is already on the target branch (delete blocked + create errors
+    'already exists') — that's the exact failure that bricked the
+    ONE-117 retry run after MLX crashed mid-pipeline.
+    """
+    rc, _, err = run_git(["git", "checkout", "-B", branch], repo_root)
     if rc != 0:
         log.warning("git_pr.checkout_failed: %s", err)
         return "checkout_failed"
