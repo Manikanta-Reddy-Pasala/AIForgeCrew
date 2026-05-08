@@ -35,6 +35,8 @@ _DEFAULT_WEIGHTS = {
     "symbol":     0.9,
     "doc":        0.6,
     "external":   0.5,
+    "afm_bundle": 1.1,   # AiForgeMemory ContextBundle (chunks + repo_map +
+                         # conventions + notes/docs + vector observations)
 }
 
 
@@ -46,8 +48,16 @@ def query(
     ticket: str | None = None,
     role: str | None = None,
     limit: int = 8,
+    repo: str | None = None,
 ) -> dict:
-    """Unified retrieval. Returns ``{hits, used_sources, errors}``."""
+    """Unified retrieval. Returns ``{hits, used_sources, errors}``.
+
+    ``repo`` (optional) — repository name in the AiForgeMemory graph
+    (Repo.name). When provided, enables source #7 (afm_bundle) which
+    fetches code-graph context: chunks, repo_map, conventions,
+    notes/docs, vector-recalled observations. Falls back to the
+    ``AIFORGE_AFM_REPO`` env var when omitted.
+    """
     if not text.strip():
         return {"hits": [], "used_sources": [], "errors": []}
 
@@ -137,6 +147,22 @@ def query(
                 )
         except Exception as exc:
             errors.append(f"external:{library}: {exc}")
+
+    # 7) AiForgeMemory ContextBundle — code-graph RAG (chunks/repo_map/
+    # conventions/notes/docs/vector observations). Repo identifier from
+    # caller kwarg or AIFORGE_AFM_REPO env fallback.
+    afm_repo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
+    if afm_repo and os.environ.get("AIFORGE_AFM_BUNDLE_ENABLED", "1") == "1":
+        try:
+            rows = _afm_bundle(text, repo=afm_repo, role=role)
+            if rows:
+                used.append("afm_bundle")
+                raw_hits.extend(
+                    _tag(rows, source="afm_bundle",
+                         weight=weights["afm_bundle"]),
+                )
+        except Exception as exc:
+            errors.append(f"afm_bundle: {exc}")
 
     raw_hits.sort(key=lambda h: -float(h.get("score") or 0))
     # Optional cross-encoder rerank pass over the top-30 — biggest
@@ -396,3 +422,99 @@ def _guess_library(text: str) -> str | None:
         if any(h in t for h in hints):
             return lib
     return None
+
+
+def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
+    """Fan-out into AiForgeMemory ContextBundle and flatten its sections
+    into ranked rows. Section weights tuned so the most actionable bits
+    (relevant chunks > repo_map > conventions > notes/docs > observations)
+    surface first. Empty list on any backend failure.
+
+    Sections produced:
+    - repo_map        → 1 row, ranked-tag tree
+    - conventions_md  → 1 row, .cursorrules
+    - chunks          → up to 5 rows, one per anchor-file Chunk_v2
+    - notes           → up to 3 rows, MENTIONS-linked Note_v2
+    - docs            → up to 3 rows, MENTIONS-linked Doc_v2
+    - observations    → up to 3 rows, vector-recalled Observation_v2
+    """
+    # Module renamed api/read.py → api/http.py in AiForgeMemory commit
+    # 32d86ad (feature-vertical refactor). Support both so older installs
+    # don't break the unified_query loop.
+    try:
+        from aiforge_memory.api.http import context_bundle_object
+    except Exception:
+        try:
+            from aiforge_memory.api.read import context_bundle_object
+        except Exception:
+            return []
+    role_arg = role or "doer"
+    try:
+        b = context_bundle_object(text, repo=repo, role=role_arg,
+                                  token_budget=4000)
+    except Exception:
+        return []
+    if b is None:
+        return []
+
+    out: list[dict] = []
+    # Highest-signal first: repo_map (structure summary)
+    if b.repo_map:
+        out.append({
+            "text": f"[afm/repo_map]\n{b.repo_map[:1500]}",
+            "score": 0.95,
+            "source_uri": f"afm://{repo}/repo_map",
+        })
+    # Conventions = project rules; second priority
+    if b.conventions_md:
+        out.append({
+            "text": f"[afm/conventions]\n{b.conventions_md[:1500]}",
+            "score": 0.90,
+            "source_uri": f"afm://{repo}/conventions",
+        })
+    # Code chunks — most concrete actionable evidence
+    for c in (b.chunks or [])[:5]:
+        path = c.get("file_path") or ""
+        body = (c.get("text") or "").strip()
+        if not path or not body:
+            continue
+        out.append({
+            "text": f"[afm/chunk {path}]\n{body[:800]}",
+            "score": 0.85,
+            "source_uri": f"afm://{repo}/{path}",
+        })
+    # Notes (MENTIONS-linked memos)
+    for n in (b.notes or [])[:3]:
+        title = n.get("title") or "Note"
+        body = (n.get("body") or "").strip()
+        if not body:
+            continue
+        out.append({
+            "text": f"[afm/note {title}]\n{body[:600]}",
+            "score": 0.70,
+            "source_uri": f"afm://{repo}/note/{n.get('id', '')}",
+        })
+    # External docs
+    for d in (b.docs or [])[:3]:
+        title = d.get("title") or "Doc"
+        body = (d.get("body") or "").strip()
+        url = d.get("url") or ""
+        if not body:
+            continue
+        out.append({
+            "text": f"[afm/doc {title}]\n{body[:600]}",
+            "score": 0.65,
+            "source_uri": url or f"afm://{repo}/doc/{d.get('id', '')}",
+        })
+    # Vector-recalled observations (typically agent learnings)
+    for o in (b.observations or [])[:3]:
+        body = (o.get("text") or "").strip()
+        if not body:
+            continue
+        kind = o.get("kind") or "observation"
+        out.append({
+            "text": f"[afm/{kind}]\n{body[:500]}",
+            "score": float(o.get("score") or 0.55),
+            "source_uri": f"afm://{repo}/observation/{o.get('id', '')}",
+        })
+    return out

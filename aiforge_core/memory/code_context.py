@@ -178,8 +178,13 @@ def query(text: str, *, repo: str = "", token_budget: int = 4000) -> str:
     Tries the AiForgeMemory API first (if installed), otherwise falls back
     to an empty string so the Understander degrades gracefully.
     """
+    # Module renamed api/read.py → api/http.py in AiForgeMemory commit
+    # 32d86ad. Try the new name first, fall back to the old.
     try:
-        from aiforge_memory.api.read import context_bundle_for  # type: ignore
+        try:
+            from aiforge_memory.api.http import context_bundle_for  # type: ignore
+        except ImportError:
+            from aiforge_memory.api.read import context_bundle_for  # type: ignore
         return context_bundle_for(text, repo=repo, role="any",
                                   token_budget=token_budget)
     except Exception:

@@ -20,7 +20,12 @@ def fetch(ticket) -> str:
     try:
         from aiforge_core.memory import unified_query as _uq
         text = f"{ticket.title}\n{ticket.body or ''}"
-        result = _uq.query(text, ticket=ticket.identifier, limit=8)
+        # ticket.project doubles as the AiForgeMemory Repo.name for
+        # source #7 (afm_bundle). Falls back to env when absent.
+        result = _uq.query(
+            text, ticket=ticket.identifier, limit=8,
+            repo=getattr(ticket, "project", None) or None,
+        )
     except Exception as exc:
         log.warning("memory recall failed: %s", exc)
         return ""
