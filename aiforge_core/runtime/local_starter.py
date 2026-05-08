@@ -19,13 +19,15 @@ Env knobs (all optional):
   AIFORGE_LMS_HOST=user@host          SSH target (default: AIFORGE_CLAUDE_HOST)
   AIFORGE_LMS_BIN=lms                 lms CLI path on the remote host
   AIFORGE_LMS_MODEL=<id>              model id to ``lms load``
-  AIFORGE_LMS_TTL=86400               --ttl seconds for ``lms load``
-                                      (24h default; LM Studio's own default
-                                      is 1h which idle-unloads mid-run, and
-                                      a 25-minute multi-turn ticket has been
-                                      observed to outlast a 12h TTL on some
-                                      LM Studio configs because the idle
-                                      timer resets on each request)
+  AIFORGE_LMS_TTL=0                   --ttl seconds for ``lms load``.
+                                      0 (default) OMITS the flag entirely so
+                                      the model stays loaded until an
+                                      explicit ``lms unload``. Any positive
+                                      value passes through unchanged for
+                                      operators who want a finite TTL.
+                                      LM Studio's own default if no flag is
+                                      passed is "no idle unload" — that's
+                                      what we want for production tickets.
   AIFORGE_LMS_CTX=262144              --context-length passed to ``lms load``.
                                       LM Studio JIT-loads at 4K otherwise,
                                       which truncates Doer prompts on any
@@ -113,7 +115,10 @@ def try_start(api_base: str) -> bool:
         return cached[0]
 
     bin_name = os.environ.get("AIFORGE_LMS_BIN", "lms")
-    ttl = _int_env("AIFORGE_LMS_TTL", 86400)
+    # TTL=0 (default) means "no idle unload" — keep the model loaded
+    # until an explicit ``lms unload``. Any positive value passes
+    # through unchanged for operators who want a finite TTL.
+    ttl = _int_env("AIFORGE_LMS_TTL", 0)
     warmup = _int_env("AIFORGE_LMS_WARMUP_S", 60)
     ssh_timeout = _int_env("AIFORGE_LMS_SSH_TIMEOUT_S", 120)
     # Mac Studio (96 GB unified memory) easily holds Qwen-Coder-Next 80B
@@ -124,20 +129,22 @@ def try_start(api_base: str) -> bool:
     ctx = max(_int_env("AIFORGE_LMS_CTX", 262144), 65536)
 
     # `lms server start` is idempotent — exits 0 if already running.
-    # `lms load <model> --ttl <s> --context-length <n>` loads into VRAM
-    # at the pinned ctx and sets the idle timer; LM Studio's defaults
-    # (1h TTL, 4K ctx) both trip on long tickets.
+    # `lms load <model> --context-length <n>` pins the ctx; the TTL
+    # flag is appended only when ttl>0 because omitting it tells LM
+    # Studio "no idle unload", which is what we want for production
+    # tickets that may pause between turns.
     if model:
-        remote = (
-            f"{bin_name} server start && "
-            f"{bin_name} load {model} --ttl {ttl} --context-length {ctx}"
-        )
+        load_cmd = f"{bin_name} load {model} --context-length {ctx}"
+        if ttl > 0:
+            load_cmd += f" --ttl {ttl}"
+        remote = f"{bin_name} server start && {load_cmd}"
     else:
         remote = f"{bin_name} server start"
 
     log.info(
-        "lms_autostart: ssh %s -> %s (warmup=%ds, ctx=%d)",
+        "lms_autostart: ssh %s -> %s (warmup=%ds, ctx=%d, ttl=%s)",
         host, remote, warmup, ctx,
+        f"{ttl}s" if ttl > 0 else "off (manual unload only)",
     )
     try:
         proc = subprocess.run(

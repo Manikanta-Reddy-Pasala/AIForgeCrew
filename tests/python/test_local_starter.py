@@ -67,6 +67,28 @@ def test_success_path_keeps_local(monkeypatch: pytest.MonkeyPatch) -> None:
     # Default ctx is 256K (Mac Studio has the headroom and 32K was too
     # tight for the ONE-116 3kLOC ticket); floor stays at 64K.
     assert "--context-length 262144" in joined
+    # Default TTL is 0 → omit the flag so the model stays loaded
+    # until an explicit ``lms unload`` (operator-driven lifetime).
+    assert "--ttl" not in joined
+
+
+def test_explicit_ttl_env_appends_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Operator who wants a finite TTL still gets the flag through."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    monkeypatch.setenv("AIFORGE_LMS_TTL", "3600")
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch("urllib.request.urlopen", return_value=_Resp()), \
+         patch("time.sleep"):
+        ls.try_start("http://x:1234/v1")
+    joined = " ".join(run_mock.call_args[0][0])
+    assert "--ttl 3600" in joined
 
 
 def test_ctx_env_override_takes_effect(monkeypatch: pytest.MonkeyPatch) -> None:

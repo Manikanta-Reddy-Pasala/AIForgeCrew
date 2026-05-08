@@ -24,9 +24,11 @@ TARGET_CTX=262144   # qwen-coder-next (Qwen3-Coder-Next MLX 80B @ 4bit,
                     # ~45GB weights + 256K KV ≈ 70GB on 96GB Mac Studio).
                     # 256K is the contractual default — 64K truncated the
                     # ONE-116 3kLOC multi-turn Doer mid-run.
-TARGET_TTL=86400    # 24h. Earlier 12h had been observed to drop the model
-                    # mid-run on long tickets when idle gaps between turns
-                    # tripped LM Studio's idle-unload heuristic.
+TARGET_TTL=0        # 0 = no TTL → keep loaded until explicit ``lms unload``.
+                    # Earlier 12h/24h finite TTLs were observed to drop the
+                    # model mid-run when idle gaps between turns tripped
+                    # LM Studio's idle-unload heuristic. Operator-driven
+                    # lifetime is the safer default for long tickets.
 MODELS=(qwen-coder-next)
 INTERVAL=60
 
@@ -47,9 +49,16 @@ ensure_pinned() {
   local row ctx
   row=$(lms ps 2>/dev/null | awk -v n="$name" '$1 == n { print $0 }')
   if [ -z "$row" ]; then
-    log "$name not loaded — loading at $TARGET_CTX"
-    lms load "$load_spec" --context-length "$TARGET_CTX" --ttl "$TARGET_TTL" \
-      --identifier "$name" >/dev/null 2>&1 &
+    log "$name not loaded — loading at $TARGET_CTX (ttl=$TARGET_TTL)"
+    if [ "$TARGET_TTL" -gt 0 ]; then
+      lms load "$load_spec" --context-length "$TARGET_CTX" --ttl "$TARGET_TTL" \
+        --identifier "$name" >/dev/null 2>&1 &
+    else
+      # No --ttl flag → LM Studio keeps the model loaded until an
+      # explicit ``lms unload``. Matches local_starter's default.
+      lms load "$load_spec" --context-length "$TARGET_CTX" \
+        --identifier "$name" >/dev/null 2>&1 &
+    fi
     return
   fi
   # lms ps columns (whitespace-separated):
