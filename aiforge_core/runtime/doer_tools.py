@@ -27,6 +27,19 @@ from .sandbox import resolve_inside_root, root
 from .syntax_guard import validate_syntax
 
 
+# Pathspecs to keep transient cache dirs out of Doer-created commits.
+# Mirrors ``runtime.git_pr._EXCLUDE_PATHSPECS`` so manual commits
+# behave like the auto-PR step at end-of-ticket.
+_EXCLUDE_PATHSPECS: tuple[str, ...] = (
+    ":(exclude)graphify-out",
+    ":(exclude).aiforge",
+    ":(exclude).aiforge-worktrees",
+    ":(exclude).idea",
+    ":(exclude).vscode",
+    ":(exclude).DS_Store",
+)
+
+
 def file_read(path: str) -> dict:
     """Read a UTF-8 text file relative to the repo root.
 
@@ -262,6 +275,78 @@ def fetch_url(url: str) -> dict:
     }
 
 
+# ─── Git commit ────────────────────────────────────────────────────────
+
+
+def git_commit(message: str) -> dict:
+    """Stage Doer-authored changes and commit with ``message``.
+
+    Runs ``git add -A -- . <_EXCLUDE_PATHSPECS>`` then
+    ``git commit -m <message>`` inside :func:`sandbox.root`. Same
+    soft-error contract as the other Doer tools — failure returns
+    ``{ok: False, error: ...}`` rather than raising so the agent loop
+    survives a flaky workspace.
+
+    Skip-empty: if nothing is staged after ``git add`` (i.e.
+    ``git diff --cached --quiet`` exits 0), returns
+    ``{ok: True, skipped: "nothing to commit"}`` without invoking
+    ``git commit``. Lets the Doer call ``git_commit`` after every
+    milestone without worrying about empty-tree errors.
+
+    Used for in-task milestone snapshots (models written, schemas
+    written, etc.) so progress is captured even if a later step
+    blocks. The end-of-ticket PR step in :mod:`runtime.git_pr` still
+    runs after the Doer finishes — these milestone commits flow into
+    the same branch.
+    """
+    if not message or not str(message).strip():
+        return {"ok": False, "error": "empty commit message"}
+    cwd = str(root())
+
+    add_proc = subprocess.run(
+        ["git", "add", "-A", "--", ".", *_EXCLUDE_PATHSPECS],
+        cwd=cwd, capture_output=True, timeout=60,
+    )
+    if add_proc.returncode != 0:
+        return {
+            "ok": False,
+            "error": "git_add_failed",
+            "stderr": add_proc.stderr.decode("utf-8", "replace")[:2000],
+        }
+
+    diff_proc = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=cwd, capture_output=True, timeout=30,
+    )
+    # `git diff --cached --quiet` exits 0 when nothing is staged, 1
+    # when there ARE staged changes. Anything else = git error.
+    if diff_proc.returncode == 0:
+        return {"ok": True, "skipped": "nothing to commit"}
+    if diff_proc.returncode not in (0, 1):
+        return {
+            "ok": False,
+            "error": "git_diff_failed",
+            "stderr": diff_proc.stderr.decode("utf-8", "replace")[:2000],
+        }
+
+    commit_proc = subprocess.run(
+        ["git", "commit", "-m", str(message)],
+        cwd=cwd, capture_output=True, timeout=60,
+    )
+    if commit_proc.returncode != 0:
+        return {
+            "ok": False,
+            "error": "git_commit_failed",
+            "stderr": commit_proc.stderr.decode("utf-8", "replace")[:2000],
+            "stdout": commit_proc.stdout.decode("utf-8", "replace")[:2000],
+        }
+    return {
+        "ok": True,
+        "message": str(message),
+        "stdout": commit_proc.stdout.decode("utf-8", "replace")[:2000],
+    }
+
+
 # ─── Hallucination-tolerant aliases ────────────────────────────────────
 #
 # Without these the Doer's "Tool 'read' not found" failure (observed in
@@ -319,6 +404,16 @@ def web_fetch(url: str) -> dict:
     return fetch_url(url)
 
 
+def commit(message: str) -> dict:
+    """Alias for :func:`git_commit`."""
+    return git_commit(message)
+
+
+def git_add_commit(message: str) -> dict:
+    """Alias for :func:`git_commit`."""
+    return git_commit(message)
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -332,18 +427,20 @@ def adk_function_tools() -> list:
     """
     from google.adk.tools import FunctionTool
     canonical = [file_read, file_write, file_patch, list_dir, run_shell,
-                 grep_repo, fetch_url,
+                 grep_repo, fetch_url, git_commit,
                  memory_lookup, graphify_lookup]
     aliases = [read, write, patch, ls, shell, bash,
-               grep, search, http_get, web_fetch]
+               grep, search, http_get, web_fetch,
+               commit, git_add_commit]
     return [FunctionTool(func=fn) for fn in canonical + aliases]
 
 
 __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
-    "grep_repo", "fetch_url",
+    "grep_repo", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup",
     "read", "write", "patch", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
+    "commit", "git_add_commit",
     "adk_function_tools",
 ]
