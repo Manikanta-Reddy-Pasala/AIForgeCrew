@@ -131,6 +131,16 @@ def should_skip_researcher(
     ``reason`` is a short tag for trace logging (``forced_on``,
     ``has_reference_word``, ``git_log_match``, ``greenfield``).
     """
+    # Explicit skip overrides everything. Useful when the operator
+    # has hand-curated the ticket body with file paths + line numbers
+    # so the Researcher's web/code lookup adds no value AND its
+    # claude_local subprocess sometimes returns empty (observed on
+    # ticket bodies past ~8KB). Without this knob, pipelines on
+    # hand-curated brownfield tickets would die at the Researcher
+    # stage with EscalatingLlm-exhausted (no chain to fall back on).
+    if os.environ.get("AIFORGE_RESEARCHER_SKIP", "0") in ("1", "true"):
+        return True, "env_skip"
+
     if os.environ.get("AIFORGE_RESEARCHER_FORCE", "0") in ("1", "true"):
         return False, "forced_on"
 
