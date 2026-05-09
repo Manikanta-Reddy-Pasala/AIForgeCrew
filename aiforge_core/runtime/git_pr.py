@@ -67,10 +67,71 @@ def _resolve_repo_root() -> str | None:
     return repo_root
 
 
+def _detect_default_branch(repo_root: str) -> str:
+    """Resolve the remote's default branch name (``main`` / ``master``).
+
+    Strategy:
+      1. ``git symbolic-ref refs/remotes/origin/HEAD`` if it's set
+         (preferred — git-native, no fetch round-trip).
+      2. Walk a small candidate list, first that exists wins.
+
+    Returns ``"master"`` as the fallback because most OneShell repos
+    still default to ``master`` (PosClientBackend is the canary).
+    """
+    rc, out, _ = run_git(
+        ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        repo_root,
+    )
+    if rc == 0:
+        ref = (out or "").strip()
+        if ref.startswith("origin/"):
+            return ref[len("origin/"):]
+    for cand in ("main", "master"):
+        rc, _, _ = run_git(
+            ["git", "rev-parse", "--verify", "--quiet", f"origin/{cand}"],
+            repo_root,
+        )
+        if rc == 0:
+            return cand
+    return "master"
+
+
+def _unpushed_commit_count(repo_root: str, base_branch: str) -> int:
+    """Count commits on HEAD that are NOT yet on ``origin/<base_branch>``.
+
+    Catches the case where the Doer's ``git_commit`` tool (PR #22)
+    already committed mid-run — ``git status`` is clean but there are
+    unpushed commits ahead of origin. Without this check
+    :func:`_has_doer_changes` returns False and we drop the work on
+    the floor, which is exactly what bricked the ONE-1 PR #25 re-test
+    (3 milestone commits sitting on local NUC, never pushed).
+    """
+    rc, out, _ = run_git(
+        ["git", "rev-list", "--count",
+         f"origin/{base_branch}..HEAD"],
+        repo_root,
+    )
+    if rc != 0:
+        return 0
+    try:
+        return int((out or "0").strip())
+    except ValueError:
+        return 0
+
+
 def _has_doer_changes(repo_root: str) -> tuple[bool, str]:
     """``(True, "")`` when there's at least one tracked-or-untracked
-    change OUTSIDE the transient-dir allowlist. ``(False, reason)``
-    otherwise so the caller can return early with ``pr_skip_reason``."""
+    change OUTSIDE the transient-dir allowlist OR there are unpushed
+    commits ahead of ``origin/<default-branch>``. ``(False, reason)``
+    otherwise so the caller can return early with ``pr_skip_reason``.
+
+    The unpushed-commits branch covers the scenario where the Doer
+    self-committed via the ``git_commit`` tool: ``git status`` is
+    clean but real work is sitting on a local branch ahead of origin.
+    Pre-PR #26 the runtime returned ``no_changes`` here and skipped
+    the push, stranding 3 commits / 50 files / 7151 LOC of audit
+    subsystem work on the NUC during ONE-1's PR #25 re-test.
+    """
     rc, out, err = run_git(
         ["git", "status", "--porcelain", "--", ".", *_EXCLUDE_PATHSPECS],
         repo_root,
@@ -78,10 +139,23 @@ def _has_doer_changes(repo_root: str) -> tuple[bool, str]:
     if rc != 0:
         log.warning("git_pr.status_failed: %s", err)
         return False, "git_status_failed"
-    if not out.strip():
-        log.info("git_pr.clean: no Doer changes (transient dirs excluded)")
-        return False, "no_changes"
-    return True, ""
+    if out.strip():
+        return True, ""
+
+    # Working tree clean — check for unpushed commits on the current
+    # branch. Doer's ``git_commit`` tool commits without pushing.
+    base = _detect_default_branch(repo_root)
+    unpushed = _unpushed_commit_count(repo_root, base)
+    if unpushed > 0:
+        log.info(
+            "git_pr.unpushed_commits: %d commit(s) ahead of origin/%s — "
+            "Doer self-committed via git_commit tool", unpushed, base,
+        )
+        return True, ""
+
+    log.info("git_pr.clean: no Doer changes + no unpushed commits "
+             "(transient dirs excluded)")
+    return False, "no_changes"
 
 
 def _checkout_branch(repo_root: str, branch: str) -> str:

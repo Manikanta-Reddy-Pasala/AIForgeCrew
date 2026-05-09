@@ -188,7 +188,20 @@ def test_env_overrides_threshold(monkeypatch):
     assert callable(after)
 
 
-# ─── evaluate_call_budget — per-LM-call watcher (PR #25 patch A) ─────
+# ─── evaluate_call_budget — per-LM-call watcher ───────────────────────
+# PR #25 first cut stored the counter in session state; that broke
+# under live ONE-1 because LoopAgent state plumbing was eating the
+# delta. PR #26 moves the counter to a module-level dict keyed by
+# bucket_key (typically ADK invocation_id) — survives ANY ADK plumbing.
+# Tests reset the module-level dict via the autouse fixture below.
+
+
+@pytest.fixture(autouse=True)
+def _reset_loop_budget_counters():
+    """Each test starts with fresh module-level counters."""
+    loop_budget.reset_call_counters()
+    yield
+    loop_budget.reset_call_counters()
 
 
 def test_evaluate_call_budget_records_count_no_kill():
@@ -196,11 +209,15 @@ def test_evaluate_call_budget_records_count_no_kill():
     by default and we're nowhere near it."""
     state: dict = {}
     fired = loop_budget.evaluate_call_budget(
-        state, llm_call_budget=400, wall_budget_s=5400.0, now=1000.0,
+        state, bucket_key="t1",
+        llm_call_budget=400, wall_budget_s=5400.0, now=1000.0,
     )
     assert fired is False
+    # Mirror in session state for trace visibility
     assert state["llm_call_count"] == 1
-    assert state["llm_first_call_at"] == 1000.0
+    # Source of truth: module-level counter
+    assert loop_budget._CALL_COUNTERS["t1"]["count"] == 1
+    assert loop_budget._CALL_COUNTERS["t1"]["first_at"] == 1000.0
     assert "loop_budget_kill" not in state
 
 
@@ -210,13 +227,15 @@ def test_evaluate_call_budget_fires_at_call_cap():
     state: dict = {}
     for n in range(3):
         loop_budget.evaluate_call_budget(
-            state, llm_call_budget=3, wall_budget_s=999999.0,
+            state, bucket_key="t1",
+            llm_call_budget=3, wall_budget_s=999999.0,
             now=1000.0 + n,
         )
     assert state.get("loop_budget_kill") is True
     assert "llm_call_budget" in state["loop_budget_reason"]
     assert "3/3" in state["loop_budget_reason"]
     assert state["llm_call_count"] == 3
+    assert loop_budget._CALL_COUNTERS["t1"]["count"] == 3
 
 
 def test_evaluate_call_budget_fires_on_wall_clock():
@@ -224,11 +243,13 @@ def test_evaluate_call_budget_fires_on_wall_clock():
     catches the "30 calls in 90 minutes" stuck-on-LM-latency mode."""
     state: dict = {}
     loop_budget.evaluate_call_budget(
-        state, llm_call_budget=999, wall_budget_s=600.0, now=1000.0,
+        state, bucket_key="t1",
+        llm_call_budget=999, wall_budget_s=600.0, now=1000.0,
     )
     # 700s later, second call — wall budget is 600s so should trip.
     fired = loop_budget.evaluate_call_budget(
-        state, llm_call_budget=999, wall_budget_s=600.0, now=1700.0,
+        state, bucket_key="t1",
+        llm_call_budget=999, wall_budget_s=600.0, now=1700.0,
     )
     assert fired is True
     assert state.get("loop_budget_kill") is True
@@ -236,16 +257,20 @@ def test_evaluate_call_budget_fires_on_wall_clock():
 
 
 def test_evaluate_call_budget_idempotent_after_kill():
-    """Once the kill flag is set, further calls bump the counter (so
-    traces show real LM-call count) but don't re-fire."""
-    state: dict = {"loop_budget_kill": True, "llm_call_count": 50,
-                    "llm_first_call_at": 1000.0,
-                    "loop_budget_reason": "llm_call_budget:50/50_after_60s"}
+    """Once the kill flag is set, further calls bump the module-level
+    counter (so traces show real LM-call count) but don't re-fire."""
+    state: dict = {
+        "loop_budget_kill": True,
+        "loop_budget_reason": "llm_call_budget:50/50_after_60s",
+    }
+    # Pre-seed the module counter to simulate "already at 50"
+    loop_budget._CALL_COUNTERS["t1"] = {"count": 50, "first_at": 1000.0}
     out = loop_budget.evaluate_call_budget(
-        state, llm_call_budget=10, wall_budget_s=10.0, now=99999.0,
+        state, bucket_key="t1",
+        llm_call_budget=10, wall_budget_s=10.0, now=99999.0,
     )
     assert out is False  # never re-fires
-    assert state["llm_call_count"] == 51  # count still increments
+    assert loop_budget._CALL_COUNTERS["t1"]["count"] == 51  # bumps regardless
     # Reason string preserved — not overwritten with a new tag.
     assert state["loop_budget_reason"].startswith("llm_call_budget:50/50")
 
@@ -256,29 +281,60 @@ def test_evaluate_call_budget_zero_budget_disables_call_check():
     state: dict = {}
     for n in range(50):
         loop_budget.evaluate_call_budget(
-            state, llm_call_budget=0, wall_budget_s=999999.0,
+            state, bucket_key="t1",
+            llm_call_budget=0, wall_budget_s=999999.0,
             now=1000.0 + n,
         )
     assert state.get("loop_budget_kill") is None or \
         state.get("loop_budget_kill") is False or \
         "loop_budget_kill" not in state
-    assert state["llm_call_count"] == 50
+    assert loop_budget._CALL_COUNTERS["t1"]["count"] == 50
 
 
 def test_evaluate_call_budget_first_call_at_stable():
-    """``llm_first_call_at`` must NOT update on subsequent calls —
-    wall-clock elapsed depends on it."""
+    """``first_at`` must NOT update on subsequent calls — wall-clock
+    elapsed depends on it being stamped exactly once."""
     state: dict = {}
-    loop_budget.evaluate_call_budget(
-        state, llm_call_budget=999, wall_budget_s=999999.0, now=1000.0,
+    for t in (1000.0, 2000.0, 3000.0):
+        loop_budget.evaluate_call_budget(
+            state, bucket_key="t1",
+            llm_call_budget=999, wall_budget_s=999999.0, now=t,
+        )
+    assert loop_budget._CALL_COUNTERS["t1"]["first_at"] == 1000.0
+    assert loop_budget._CALL_COUNTERS["t1"]["count"] == 3
+
+
+def test_evaluate_call_budget_distinct_buckets_isolated():
+    """The whole point of bucket_key — two ADK invocations don't
+    contaminate each other's counts. ``ticket_a`` hitting the budget
+    must NOT fire the kill flag for a separate ``ticket_b``."""
+    state_a: dict = {}
+    for n in range(5):
+        loop_budget.evaluate_call_budget(
+            state_a, bucket_key="ticket_a",
+            llm_call_budget=5, wall_budget_s=999999.0, now=1000.0 + n,
+        )
+    assert state_a.get("loop_budget_kill") is True
+    # ticket_b: its own state, no kill flag
+    state_b: dict = {}
+    fired = loop_budget.evaluate_call_budget(
+        state_b, bucket_key="ticket_b",
+        llm_call_budget=5, wall_budget_s=999999.0, now=2000.0,
     )
+    assert fired is False
+    assert "loop_budget_kill" not in state_b
+    assert loop_budget._CALL_COUNTERS["ticket_b"]["count"] == 1
+
+
+def test_reset_call_counters_clears_buckets():
+    """reset_call_counters() drops all bucket entries."""
     loop_budget.evaluate_call_budget(
-        state, llm_call_budget=999, wall_budget_s=999999.0, now=2000.0,
+        {}, bucket_key="t1",
+        llm_call_budget=10, wall_budget_s=10, now=1.0,
     )
-    loop_budget.evaluate_call_budget(
-        state, llm_call_budget=999, wall_budget_s=999999.0, now=3000.0,
-    )
-    assert state["llm_first_call_at"] == 1000.0
+    assert "t1" in loop_budget._CALL_COUNTERS
+    loop_budget.reset_call_counters()
+    assert loop_budget._CALL_COUNTERS == {}
 
 
 def test_call_budget_env_override(monkeypatch):

@@ -19,10 +19,20 @@ The wrapper is intentionally non-streaming: ADK ``LlmAgent`` /
 If the caller asks for streaming we honour the primary directly without
 the retry chain — partial-chunk re-emission across providers would
 violate the streaming contract.
+
+Loop-budget integration: each inner ``model.generate_content_async``
+call (primary, each chain entry, primary_retry) increments the
+loop-budget LM-call counter via :func:`loop_budget.evaluate_call_budget`.
+ADK's ``before_model_callback`` only fires once per outer ADK
+invocation; without this hook a single ADK call that escalates 3 times
+through the chain would only register as 1 LM call against the budget,
+under-counting actual model load. The hook does NOT short-circuit
+the call — it just feeds the watchdog so the budget reflects reality.
 """
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, AsyncGenerator
 
 from google.adk.models.base_llm import BaseLlm
@@ -176,6 +186,28 @@ class EscalatingLlm(BaseLlm):
                 req_for_attempt = llm_request.model_copy(
                     update={"model": target_model},
                 )
+            # Tick the loop-budget LM-call counter for THIS inner call.
+            # ADK's before_model_callback only fires once per outer
+            # invocation, so without this hook a 3-attempt escalation
+            # registers as 1 call. Pass an empty state dict; the
+            # module-level counter is the source of truth, and the
+            # session-state mirror lives in the Doer's callback.
+            try:
+                from . import loop_budget as _lb
+                _lb.evaluate_call_budget(
+                    {},  # no session-state mirror at this layer
+                    bucket_key=f"escalating:{self.role}",
+                    llm_call_budget=int(os.environ.get(
+                        "AIFORGE_LOOP_LLM_CALL_BUDGET",
+                        str(_lb._DEFAULT_LLM_CALL_BUDGET),
+                    )),
+                    wall_budget_s=float(os.environ.get(
+                        "AIFORGE_LOOP_WALL_BUDGET_S",
+                        str(_lb._DEFAULT_WALL_BUDGET_S),
+                    )),
+                )
+            except Exception as _exc:  # noqa: BLE001 — never block on instrument
+                log.debug("escalating_llm.budget_tick_failed: %s", _exc)
             buffered: list[LlmResponse] = []
             try:
                 async for r in model.generate_content_async(

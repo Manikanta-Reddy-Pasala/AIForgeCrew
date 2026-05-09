@@ -8,6 +8,18 @@ calling tools without ever returning a final response. ONE-1 burned
 done in 1.5h, then ~2h stuck in `mvn compile` / `mvn test` red-loop)
 before ADK's hard ``Runner.max_llm_calls=500`` cap finally killed it.
 
+The first attempt at a per-LM-call budget (PR #25) stored the counter
+in ``callback_context.state['llm_call_count']``. **That broke under
+ONE-1's PR #25 re-test:** despite 440+ ADK invocations the counter
+never accumulated past a few units and the 400 trip never fired.
+Root cause is contested — most likely candidate is that the LoopAgent
+flushes session-state delta on iteration boundaries in a way that
+loses single-turn deltas, but proving it requires an ADK contributor
+spelunk we can't justify. The pragmatic fix is to **NOT rely on ADK
+session state** for the counter at all: a module-level dict keyed by
+``InvocationContext.invocation_id`` survives the entire Runner
+lifetime regardless of LoopAgent / Refiner / Doer state plumbing.
+
 This module supplies THREE complementary watchdogs, each hooked at a
 different ADK checkpoint so a stuck loop trips at least one of them:
 
@@ -16,11 +28,12 @@ different ADK checkpoint so a stuck loop trips at least one of them:
    when 3 consecutive iterations show |delta| < 50 LOC AND elapsed
    > 600s. Targets the "edit-revert-edit" failure mode where each
    iteration genuinely returns but makes no real progress. Catches
-   inter-iteration plateaus.
+   inter-iteration plateaus. (Still uses session state — works at
+   iteration boundary where state.delta does flush.)
 
 2. **LM-call + wall-clock** (``before_model_callback`` on the Doer):
-   increments ``state['llm_call_count']`` on EVERY LLM call. Trips
-   when count >= ``AIFORGE_LOOP_LLM_CALL_BUDGET`` (default 400) OR
+   increments a MODULE-LEVEL counter on EVERY LLM call. Trips when
+   count >= ``AIFORGE_LOOP_LLM_CALL_BUDGET`` (default 400) OR
    elapsed > ``AIFORGE_LOOP_WALL_BUDGET_S`` (default 5400 = 90 min).
    Targets the "single mega-iteration" failure mode where the Doer
    never returns and so the iteration-boundary watcher above never
@@ -40,17 +53,24 @@ Env knobs (all optional):
   - ``AIFORGE_LOOP_WALL_BUDGET_S``       default 5400   (wall-clock 90m)
   - ``AIFORGE_LOOP_BUDGET_DISABLE=1``    disables ALL watchdogs
 
-State shape this module owns (all optional, all created lazily):
+State shape:
 
-    state['loc_history']        -> list[int]    # LOC per iteration
-    state['loc_first_seen']     -> float        # epoch sec of turn 0
-    state['llm_call_count']     -> int          # cumulative LM calls
-    state['llm_first_call_at']  -> float        # epoch sec of 1st call
-    state['loop_budget_kill']   -> bool         # set when ANY watcher fires
-    state['loop_budget_reason'] -> str          # short tag for traces
+    Session state (LoopAgent-aware, used by LOC plateau watcher):
+        state['loc_history']        -> list[int]    # LOC per iteration
+        state['loc_first_seen']     -> float        # epoch sec of turn 0
+        state['loop_budget_kill']   -> bool         # set when ANY watcher fires
+        state['loop_budget_reason'] -> str          # short tag for traces
+
+    Module-level (PROCESS-aware, used by LM-call + wall-clock watcher):
+        _CALL_COUNTERS[bucket_key] -> {'count': int, 'first_at': float}
 
 The kill flag is monotonic — once set, never cleared. Idempotent so a
 stuck callback that fires twice doesn't double-emit the partial verdict.
+
+The module-level counter dict is not auto-reset between tickets — but
+the runner is single-shot per ticket (systemd Restart=always), so each
+new ticket gets a fresh process and a fresh dict. Tests can clear it
+explicitly via :func:`reset_call_counters`.
 """
 from __future__ import annotations
 
@@ -76,6 +96,28 @@ _DEFAULT_MIN_ELAPSED_S = 600.0
 # scaffold (ONE-1 hit ~4h before its mega-turn finally died).
 _DEFAULT_LLM_CALL_BUDGET = 400
 _DEFAULT_WALL_BUDGET_S = 5400.0
+
+
+# Module-level counter dict, keyed by an opaque "bucket key" (typically
+# the ADK ``invocation_id``). One entry per Runner.run_async invocation.
+# We do NOT use ``callback_context.state`` for the counter because the
+# LoopAgent/Refiner/Doer state plumbing was empirically losing the
+# delta on PR #25's ONE-1 re-test (440 LM calls observed, counter never
+# accumulated). Module-level dict survives ALL ADK plumbing.
+#
+# Single-shot runner means each ticket is a fresh process and a fresh
+# dict — no cross-ticket pollution. Tests reset via reset_call_counters().
+_CALL_COUNTERS: dict[str, dict[str, float]] = {}
+
+
+def reset_call_counters() -> None:
+    """Test-only — drop all module-level call counters.
+
+    The runner is single-shot per ticket so production code never needs
+    this; tests do, otherwise a budget-trip in test N is still set when
+    test N+1 runs.
+    """
+    _CALL_COUNTERS.clear()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -235,18 +277,28 @@ def evaluate_plateau(
 def evaluate_call_budget(
     state: dict,
     *,
+    bucket_key: str = "default",
     llm_call_budget: int = _DEFAULT_LLM_CALL_BUDGET,
     wall_budget_s: float = _DEFAULT_WALL_BUDGET_S,
     now: float | None = None,
 ) -> bool:
-    """Pure helper — increment ``state['llm_call_count']`` and return
+    """Pure helper — increment the module-level call counter and return
     whether the LM-call OR wall-clock budget kill switch should fire.
 
-    Mutates ``state`` in place:
-      - increments ``state['llm_call_count']``
-      - stamps ``state['llm_first_call_at']`` on first call
+    Counter lives in :data:`_CALL_COUNTERS` keyed by ``bucket_key`` (the
+    ADK ``invocation_id`` in production). The kill flag is mirrored to
+    ``state['loop_budget_kill']`` / ``state['loop_budget_reason']`` so
+    the LoopAgent's ``before_agent_callback`` can read it and short-
+    circuit at the next iteration boundary.
+
+    Mutations on success:
+      - bumps ``_CALL_COUNTERS[bucket_key]['count']``
+      - stamps ``_CALL_COUNTERS[bucket_key]['first_at']`` on first call
       - sets ``state['loop_budget_kill']`` and
         ``state['loop_budget_reason']`` when either budget trips
+      - mirrors ``state['llm_call_count']`` for trace visibility (best
+        effort — the source of truth is the module-level counter so
+        ADK's state-delta drop won't break the kill check)
 
     Returns ``True`` when this call SET the kill flag (transition);
     ``False`` if the flag was already set or no budget tripped.
@@ -254,19 +306,28 @@ def evaluate_call_budget(
     Idempotent — safe to call after the kill flag is already raised.
     Lives outside the callback so unit tests can drive it without ADK.
     """
-    # Already killed — bump counter for trace completeness but don't
-    # re-evaluate (avoids double-logging the kill warning).
-    count = int(state.get("llm_call_count", 0)) + 1
-    state["llm_call_count"] = count
+    bucket = _CALL_COUNTERS.setdefault(bucket_key, {})
+
+    if "first_at" not in bucket:
+        bucket["first_at"] = float(now if now is not None else time.time())
+
+    bucket["count"] = float(int(bucket.get("count", 0)) + 1)
+    count = int(bucket["count"])
+
+    # Best-effort mirror to session state for trace visibility — even if
+    # the LoopAgent eats the delta, an iteration-boundary trace still
+    # shows a recent count value (the most recent flushed delta).
+    try:
+        state["llm_call_count"] = count
+    except Exception:  # noqa: BLE001 — state can be a wrapper that rejects writes
+        pass
+
     if state.get("loop_budget_kill"):
         return False
 
-    if "llm_first_call_at" not in state:
-        state["llm_first_call_at"] = now if now is not None else time.time()
-
     elapsed = (
         (now if now is not None else time.time())
-        - state["llm_first_call_at"]
+        - bucket["first_at"]
     )
 
     if llm_call_budget > 0 and count >= llm_call_budget:
@@ -275,9 +336,10 @@ def evaluate_call_budget(
             f"llm_call_budget:{count}/{llm_call_budget}_after_{int(elapsed)}s"
         )
         log.warning(
-            "loop_budget: LM-call budget hit count=%d/%d elapsed=%.1fs — "
-            "force commit + verdict=partial (before ADK 500 hard cap)",
-            count, llm_call_budget, elapsed,
+            "loop_budget: LM-call budget hit count=%d/%d elapsed=%.1fs "
+            "bucket=%s — force commit + verdict=partial (before ADK 500 "
+            "hard cap)",
+            count, llm_call_budget, elapsed, bucket_key,
         )
         return True
 
@@ -287,9 +349,9 @@ def evaluate_call_budget(
             f"wall_budget:{int(elapsed)}s>={int(wall_budget_s)}s_count={count}"
         )
         log.warning(
-            "loop_budget: wall-clock budget hit elapsed=%.1fs/%.1fs count=%d — "
-            "force commit + verdict=partial",
-            elapsed, wall_budget_s, count,
+            "loop_budget: wall-clock budget hit elapsed=%.1fs/%.1fs "
+            "count=%d bucket=%s — force commit + verdict=partial",
+            elapsed, wall_budget_s, count, bucket_key,
         )
         return True
 
@@ -363,15 +425,39 @@ def build_loop_budget_callbacks() -> tuple[
         cleanly so the partial work is on disk before the rescue
         path commits.
 
+        Counter is keyed on ``InvocationContext.invocation_id`` so
+        the value persists across LoopAgent iteration boundaries
+        (which the previous session-state implementation didn't —
+        see PR #25 ONE-1 re-test postmortem in module docstring).
+
         ``llm_request`` is the raw model request — we don't mutate
         it. ADK's ``BeforeModelCallback`` signature requires the
         param even when unused.
         """
         del llm_request  # unused — required by callback signature
         state = callback_context.state
+        # Extract invocation_id robustly. ADK 2.0b1 exposes it via
+        # ``invocation_context`` on the CallbackContext; older builds
+        # may not have the same attribute path. Default to the
+        # ticket's ADK app name + a fixed suffix so the bucket is
+        # still ticket-scoped if introspection fails.
+        bucket_key = "default"
+        for attr_chain in (
+            ("invocation_context", "invocation_id"),
+            ("_invocation_context", "invocation_id"),
+        ):
+            obj: Any = callback_context
+            for attr in attr_chain:
+                obj = getattr(obj, attr, None)
+                if obj is None:
+                    break
+            if isinstance(obj, str) and obj:
+                bucket_key = obj
+                break
         try:
             evaluate_call_budget(
                 state,
+                bucket_key=bucket_key,
                 llm_call_budget=llm_call_budget,
                 wall_budget_s=wall_budget_s,
             )
@@ -420,4 +506,5 @@ __all__ = [
     "build_loop_budget_callbacks",
     "evaluate_plateau",
     "evaluate_call_budget",
+    "reset_call_counters",
 ]

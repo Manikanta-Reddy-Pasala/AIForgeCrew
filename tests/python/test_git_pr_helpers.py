@@ -146,3 +146,117 @@ def test_checkout_branch_resets_existing_to_head(tmp_path: Path) -> None:
         text=True,
     ).stdout.strip()
     assert new_head == head  # branch reset to current HEAD
+
+
+# ─── _has_doer_changes — unpushed-commit detection (PR #26) ───────────
+
+
+def _git_with_fake_origin(tmp: Path) -> Path:
+    """Init a repo with a fake ``origin`` (a bare local clone) and make
+    one commit on master so we have a baseline for ``origin/master``.
+
+    Without this scaffolding, ``git rev-list origin/master..HEAD`` has
+    no comparison point and the helper returns 0 unconditionally.
+    """
+    bare = tmp / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(bare)],
+                   check=True, capture_output=True)
+    work = tmp / "work"
+    work.mkdir()
+    subprocess.run(["git", "init", "-b", "master", str(work)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)],
+                   cwd=work, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "--allow-empty", "-m", "init"],
+        cwd=work, check=True, capture_output=True,
+    )
+    subprocess.run(["git", "push", "-u", "origin", "master"],
+                   cwd=work, check=True, capture_output=True)
+    return work
+
+
+def test_unpushed_commit_count_zero_when_in_sync(tmp_path: Path) -> None:
+    work = _git_with_fake_origin(tmp_path)
+    assert gp._unpushed_commit_count(str(work), "master") == 0
+
+
+def test_unpushed_commit_count_counts_local_only_commits(
+    tmp_path: Path,
+) -> None:
+    """Doer scenario: ran ``git_commit`` mid-run, never pushed."""
+    work = _git_with_fake_origin(tmp_path)
+    for n in range(3):
+        (work / f"f{n}.txt").write_text(str(n))
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+             "add", f"f{n}.txt"], cwd=work, check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-m", f"local commit {n}"],
+            cwd=work, check=True, capture_output=True,
+        )
+    assert gp._unpushed_commit_count(str(work), "master") == 3
+
+
+def test_has_doer_changes_unpushed_commits_alone(tmp_path: Path) -> None:
+    """Working tree is CLEAN but 3 Doer-self-committed commits ahead of
+    origin — must NOT skip the push. This is the regression PR #26
+    fixes; pre-PR #26 returned ``no_changes`` and stranded the work."""
+    work = _git_with_fake_origin(tmp_path)
+    (work / "loyalty.java").write_text("class Loyalty {}")
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "add", "loyalty.java"], cwd=work, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-m", "doer milestone commit"],
+        cwd=work, check=True, capture_output=True,
+    )
+    has_changes, reason = gp._has_doer_changes(str(work))
+    assert has_changes is True
+    assert reason == ""
+
+
+def test_has_doer_changes_no_changes_when_truly_clean(
+    tmp_path: Path,
+) -> None:
+    """Workspace clean + everything pushed → no_changes is correct."""
+    work = _git_with_fake_origin(tmp_path)
+    has_changes, reason = gp._has_doer_changes(str(work))
+    assert has_changes is False
+    assert reason == "no_changes"
+
+
+def test_has_doer_changes_dirty_tree_takes_precedence(
+    tmp_path: Path,
+) -> None:
+    """Working tree dirty → True, even if also have unpushed commits.
+    Caller will commit + push as usual."""
+    work = _git_with_fake_origin(tmp_path)
+    (work / "draft.txt").write_text("uncommitted")
+    has_changes, reason = gp._has_doer_changes(str(work))
+    assert has_changes is True
+    assert reason == ""
+
+
+# ─── _detect_default_branch ────────────────────────────────────────────
+
+
+def test_detect_default_branch_falls_back_when_no_remote(
+    tmp_path: Path,
+) -> None:
+    """No origin → fall back to ``master`` (OneShell convention)."""
+    _git_init(tmp_path)
+    branch = gp._detect_default_branch(str(tmp_path))
+    assert branch == "master"
+
+
+def test_detect_default_branch_uses_origin_master(tmp_path: Path) -> None:
+    """When origin/master exists (no main), pick master."""
+    work = _git_with_fake_origin(tmp_path)
+    branch = gp._detect_default_branch(str(work))
+    assert branch == "master"
