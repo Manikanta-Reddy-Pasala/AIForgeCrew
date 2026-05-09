@@ -131,15 +131,18 @@ def build_pipeline(*, skip_researcher: bool = False):
 
     # Doer / Refiner / Feedback live inside the loop so a Feedback
     # rejection rewinds the polish-then-judge cycle, not just the Doer.
-    # ``before_agent_callback`` runs once per LoopAgent invocation, but
-    # we attach the LOC-plateau watcher to the Refiner — it sees every
-    # loop turn AFTER the Doer has emitted its file_diffs payload,
-    # which is the cheapest place to compute the LOC delta.
-    plateau_before, plateau_after = build_loop_budget_callbacks()
+    # Three watchdogs cover three different stuck-loop failure modes
+    # (see :mod:`loop_budget` docstring):
+    #   - LOC plateau   → Refiner.after_agent_callback   (per-iteration)
+    #   - LM-call/wall  → Doer.before_model_callback     (per-LM-call)
+    #   - Kill short    → LoopAgent.before_agent_callback (per-iteration)
+    plateau_before, plateau_after, doer_before_model = (
+        build_loop_budget_callbacks()
+    )
     if plateau_before is not None:
-        # Attach to the Refiner's after-callback so we see the loop
-        # iteration's LOC outcome AFTER the Doer reported file_diffs
-        # but BEFORE Feedback wastes a turn judging a stuck loop.
+        # Refiner sees the loop iteration's LOC outcome AFTER the Doer
+        # reported file_diffs but BEFORE Feedback wastes a turn judging
+        # a stuck loop.
         existing_after = refiner.after_agent_callback
         merged_after: list = []
         if existing_after is not None:
@@ -149,6 +152,20 @@ def build_pipeline(*, skip_researcher: bool = False):
                 merged_after.append(existing_after)
         merged_after.append(plateau_after)
         refiner.after_agent_callback = merged_after
+
+        # Doer's before-model hook fires on every LLM call within a
+        # single iteration — catches the "one mega-iteration runs 500
+        # tool calls" failure mode where the iteration boundary watcher
+        # never gets a chance to evaluate.
+        existing_before_model = doer.before_model_callback
+        merged_before_model: list = []
+        if existing_before_model is not None:
+            if isinstance(existing_before_model, list):
+                merged_before_model.extend(existing_before_model)
+            else:
+                merged_before_model.append(existing_before_model)
+        merged_before_model.append(doer_before_model)
+        doer.before_model_callback = merged_before_model
 
     sub_agents: list = [planner, verifier]
     if not skip_researcher:

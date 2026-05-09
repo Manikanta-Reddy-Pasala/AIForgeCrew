@@ -244,6 +244,43 @@ def _build_context_plugins() -> list:
     return [ContextFilterPlugin(num_invocations_to_keep=keep)]
 
 
+def _build_run_config():
+    """Return an ADK ``RunConfig`` with our LLM-call ceiling.
+
+    ADK's default ``RunConfig.max_llm_calls=500`` is too tight for
+    mega-tickets — ONE-1 (audit subsystem, 5K LOC scaffold) hit it
+    after ~4 hours when the Doer kept calling tools to chase ``mvn
+    test`` failures. We raise to 1500 by default so the soft
+    LM-call budget in :mod:`loop_budget` (default 400) is the actual
+    limiter — that path commits the work as ``verdict=partial``
+    instead of crashing with an unhandled exception.
+
+    Override via ``AIFORGE_ADK_MAX_LLM_CALLS``. Returns ``None`` when
+    the ADK ``RunConfig`` isn't importable (very old ADK) so
+    ``run_async`` falls back to the framework default.
+    """
+    try:
+        from google.adk.agents.run_config import RunConfig
+    except ImportError:
+        log.warning("adk_run_config: RunConfig not importable — "
+                    "leaving max_llm_calls at framework default")
+        return None
+    raw = os.environ.get("AIFORGE_ADK_MAX_LLM_CALLS", "1500")
+    try:
+        cap = int(raw)
+    except ValueError:
+        log.warning("adk_run_config: bad AIFORGE_ADK_MAX_LLM_CALLS=%r — "
+                    "using 1500", raw)
+        cap = 1500
+    if cap <= 0:
+        log.warning("adk_run_config: AIFORGE_ADK_MAX_LLM_CALLS<=0 disables "
+                    "the cap; using 1500 instead")
+        cap = 1500
+    log.info("adk_run_config: max_llm_calls=%d (loop_budget soft cap = %s)",
+             cap, os.environ.get("AIFORGE_LOOP_LLM_CALL_BUDGET", "400"))
+    return RunConfig(max_llm_calls=cap)
+
+
 async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
     """Drive one ADK pipeline run and return the final session state.
 
@@ -271,10 +308,18 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
     )
-    async for event in runner.run_async(
-        user_id="aiforge-runner",
-        session_id=session.id, new_message=content,
-    ):
+    # Raised LM-call ceiling — see :func:`_build_run_config`. Pass
+    # only when non-None so old ADK versions still drive the runner
+    # via the kwarg-default path.
+    run_kwargs: dict = {
+        "user_id": "aiforge-runner",
+        "session_id": session.id,
+        "new_message": content,
+    }
+    rc = _build_run_config()
+    if rc is not None:
+        run_kwargs["run_config"] = rc
+    async for event in runner.run_async(**run_kwargs):
         if event.is_final_response():
             pass  # session.state already mutated; drained for completeness
     session = await session_svc.get_session(

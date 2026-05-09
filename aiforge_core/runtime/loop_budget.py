@@ -1,37 +1,56 @@
-"""LOC-delta kill switch for the Doer/Refiner/Feedback LoopAgent.
+"""Wall-clock + LM-call + LOC kill switches for the Doer LoopAgent.
 
-The LoopAgent caps iterations at 3 by default, but ONE-117 showed
-that even a small cap doesn't bound wall-clock when each iteration
-calls dozens of tools without making real progress. The Doer would
-spend 35+ minutes polishing a near-final scaffold — file_writes that
-edited a single line, then reverted it next turn — without ever
-satisfying Feedback.
+The LoopAgent caps iterations at 3 by default, but ONE-117 and ONE-1
+(audit subsystem) both showed that even a small iteration cap doesn't
+bound wall-clock or LM-call count when a SINGLE Doer turn keeps
+calling tools without ever returning a final response. ONE-1 burned
+500 LM calls in one mega-iteration over ~4 hours (file-write phase
+done in 1.5h, then ~2h stuck in `mvn compile` / `mvn test` red-loop)
+before ADK's hard ``Runner.max_llm_calls=500`` cap finally killed it.
 
-This module supplies two ADK ``LlmAgent`` callbacks that together
-implement a LOC-plateau watchdog:
+This module supplies THREE complementary watchdogs, each hooked at a
+different ADK checkpoint so a stuck loop trips at least one of them:
 
-* ``after_loop_iteration_callback`` — attaches to the Refiner. Reads
-  ``state['doer_outcome']['file_diffs']`` (Doer-emitted), computes
-  the iteration's LOC count, appends to ``state['loc_history']``.
-  When 3 consecutive iterations show |delta| < 50 LOC AND elapsed
-  time > 600s, sets ``state['loop_budget_kill']=True``.
-* ``before_loop_callback`` — attaches to the LoopAgent. Reads the
-  kill flag and, if set, yields a verdict-partial Content that
-  short-circuits the loop. Doer's existing commit path then takes
-  the partial work to a PR for human review.
+1. **LOC-plateau** (``after_iteration_callback`` on the Refiner):
+   reads Doer ``file_diffs``, tracks ``state['loc_history']``. Trips
+   when 3 consecutive iterations show |delta| < 50 LOC AND elapsed
+   > 600s. Targets the "edit-revert-edit" failure mode where each
+   iteration genuinely returns but makes no real progress. Catches
+   inter-iteration plateaus.
+
+2. **LM-call + wall-clock** (``before_model_callback`` on the Doer):
+   increments ``state['llm_call_count']`` on EVERY LLM call. Trips
+   when count >= ``AIFORGE_LOOP_LLM_CALL_BUDGET`` (default 400) OR
+   elapsed > ``AIFORGE_LOOP_WALL_BUDGET_S`` (default 5400 = 90 min).
+   Targets the "single mega-iteration" failure mode where the Doer
+   never returns and so the iteration-boundary watcher above never
+   fires. Catches intra-iteration runaway.
+
+3. **Kill-flag short-circuit** (``before_agent_callback`` on the
+   LoopAgent): reads the kill flag set by either watcher above and
+   short-circuits the next iteration with ``verdict=partial`` so the
+   adk_runner's commit-and-PR path takes whatever's on disk to GitHub
+   for human triage instead of dropping the work on the floor.
 
 Env knobs (all optional):
-  - ``AIFORGE_LOOP_LOC_PLATEAU_TURNS``   default 3
-  - ``AIFORGE_LOOP_LOC_PLATEAU_DELTA``   default 50
-  - ``AIFORGE_LOOP_MIN_ELAPSED_S``       default 600
-  - ``AIFORGE_LOOP_BUDGET_DISABLE=1``    disables the watchdog
+  - ``AIFORGE_LOOP_LOC_PLATEAU_TURNS``   default 3      (LOC plateau)
+  - ``AIFORGE_LOOP_LOC_PLATEAU_DELTA``   default 50     (LOC plateau)
+  - ``AIFORGE_LOOP_MIN_ELAPSED_S``       default 600    (LOC plateau)
+  - ``AIFORGE_LOOP_LLM_CALL_BUDGET``     default 400    (LM-call cap)
+  - ``AIFORGE_LOOP_WALL_BUDGET_S``       default 5400   (wall-clock 90m)
+  - ``AIFORGE_LOOP_BUDGET_DISABLE=1``    disables ALL watchdogs
 
 State shape this module owns (all optional, all created lazily):
 
-    state['loc_history']     -> list[int]    # cumulative LOC per turn
-    state['loc_first_seen']  -> float        # epoch seconds of turn 0
-    state['loop_budget_kill']-> bool         # set when plateau hits
-    state['loop_budget_reason'] -> str       # short tag for traces
+    state['loc_history']        -> list[int]    # LOC per iteration
+    state['loc_first_seen']     -> float        # epoch sec of turn 0
+    state['llm_call_count']     -> int          # cumulative LM calls
+    state['llm_first_call_at']  -> float        # epoch sec of 1st call
+    state['loop_budget_kill']   -> bool         # set when ANY watcher fires
+    state['loop_budget_reason'] -> str          # short tag for traces
+
+The kill flag is monotonic — once set, never cleared. Idempotent so a
+stuck callback that fires twice doesn't double-emit the partial verdict.
 """
 from __future__ import annotations
 
@@ -50,6 +69,13 @@ log = logging.getLogger("aiforge.loop_budget")
 _DEFAULT_PLATEAU_TURNS = 3
 _DEFAULT_PLATEAU_DELTA = 50
 _DEFAULT_MIN_ELAPSED_S = 600.0
+
+# LM-call budget — 400 trips before ADK's own hard 500 cap so we get
+# a clean partial-verdict commit rather than an exception traceback.
+# Wall-clock — 90min default chosen to comfortably bound a 5K-LOC
+# scaffold (ONE-1 hit ~4h before its mega-turn finally died).
+_DEFAULT_LLM_CALL_BUDGET = 400
+_DEFAULT_WALL_BUDGET_S = 5400.0
 
 
 def _env_int(name: str, default: int) -> int:
@@ -206,24 +232,99 @@ def evaluate_plateau(
     return True
 
 
+def evaluate_call_budget(
+    state: dict,
+    *,
+    llm_call_budget: int = _DEFAULT_LLM_CALL_BUDGET,
+    wall_budget_s: float = _DEFAULT_WALL_BUDGET_S,
+    now: float | None = None,
+) -> bool:
+    """Pure helper — increment ``state['llm_call_count']`` and return
+    whether the LM-call OR wall-clock budget kill switch should fire.
+
+    Mutates ``state`` in place:
+      - increments ``state['llm_call_count']``
+      - stamps ``state['llm_first_call_at']`` on first call
+      - sets ``state['loop_budget_kill']`` and
+        ``state['loop_budget_reason']`` when either budget trips
+
+    Returns ``True`` when this call SET the kill flag (transition);
+    ``False`` if the flag was already set or no budget tripped.
+
+    Idempotent — safe to call after the kill flag is already raised.
+    Lives outside the callback so unit tests can drive it without ADK.
+    """
+    # Already killed — bump counter for trace completeness but don't
+    # re-evaluate (avoids double-logging the kill warning).
+    count = int(state.get("llm_call_count", 0)) + 1
+    state["llm_call_count"] = count
+    if state.get("loop_budget_kill"):
+        return False
+
+    if "llm_first_call_at" not in state:
+        state["llm_first_call_at"] = now if now is not None else time.time()
+
+    elapsed = (
+        (now if now is not None else time.time())
+        - state["llm_first_call_at"]
+    )
+
+    if llm_call_budget > 0 and count >= llm_call_budget:
+        state["loop_budget_kill"] = True
+        state["loop_budget_reason"] = (
+            f"llm_call_budget:{count}/{llm_call_budget}_after_{int(elapsed)}s"
+        )
+        log.warning(
+            "loop_budget: LM-call budget hit count=%d/%d elapsed=%.1fs — "
+            "force commit + verdict=partial (before ADK 500 hard cap)",
+            count, llm_call_budget, elapsed,
+        )
+        return True
+
+    if wall_budget_s > 0 and elapsed >= wall_budget_s:
+        state["loop_budget_kill"] = True
+        state["loop_budget_reason"] = (
+            f"wall_budget:{int(elapsed)}s>={int(wall_budget_s)}s_count={count}"
+        )
+        log.warning(
+            "loop_budget: wall-clock budget hit elapsed=%.1fs/%.1fs count=%d — "
+            "force commit + verdict=partial",
+            elapsed, wall_budget_s, count,
+        )
+        return True
+
+    return False
+
+
 def build_loop_budget_callbacks() -> tuple[
     Callable[..., Any] | None,
     Callable[..., Any] | None,
+    Callable[..., Any] | None,
 ]:
-    """Wire the plateau watcher into the LoopAgent.
+    """Wire the three watchdogs into the v6 pipeline.
 
-    Returns ``(before_loop_callback, after_iteration_callback)``.
-    Both are ``None`` when the watchdog is env-disabled — caller
-    can fall back to the unguarded shape with a single ``if``.
+    Returns
+        ``(before_loop_callback, after_iteration_callback,
+        before_doer_model_callback)``.
+
+    All three are ``None`` when the watchdog is env-disabled. Callers
+    branch on the first element only — if it's ``None`` the others
+    are too, matching the original 2-tuple contract callers used
+    before the per-LM-call watcher was added.
+
+    Wiring map (caller's responsibility — see :mod:`pipeline`):
+      - ``before_loop_callback``     → LoopAgent.before_agent_callback
+      - ``after_iteration_callback`` → Refiner.after_agent_callback
+      - ``before_doer_model_callback`` → Doer.before_model_callback
 
     The before-loop callback short-circuits the LoopAgent when the
     kill flag is set (next iteration never starts). The after-
-    iteration callback is the one that observes Doer LOC output and
-    flips the flag — attach it to the Refiner so it runs ONCE per
-    loop iteration, after the Doer has updated state.
+    iteration callback observes inter-iteration LOC plateau. The
+    before-model callback observes per-LM-call wall-clock + count
+    so a single runaway iteration trips even without a Refiner turn.
     """
     if os.environ.get("AIFORGE_LOOP_BUDGET_DISABLE", "0") in ("1", "true"):
-        return None, None
+        return None, None, None
 
     plateau_turns = _env_int("AIFORGE_LOOP_LOC_PLATEAU_TURNS",
                              _DEFAULT_PLATEAU_TURNS)
@@ -231,6 +332,10 @@ def build_loop_budget_callbacks() -> tuple[
                              _DEFAULT_PLATEAU_DELTA)
     min_elapsed_s = _env_float("AIFORGE_LOOP_MIN_ELAPSED_S",
                                _DEFAULT_MIN_ELAPSED_S)
+    llm_call_budget = _env_int("AIFORGE_LOOP_LLM_CALL_BUDGET",
+                               _DEFAULT_LLM_CALL_BUDGET)
+    wall_budget_s = _env_float("AIFORGE_LOOP_WALL_BUDGET_S",
+                               _DEFAULT_WALL_BUDGET_S)
 
     async def after_iteration_callback(*, callback_context):  # type: ignore[no-untyped-def]
         """Refiner's after-agent hook — observe LOC, flip kill flag."""
@@ -245,6 +350,36 @@ def build_loop_budget_callbacks() -> tuple[
         except Exception as exc:  # never let watchdog crash the loop
             log.exception("loop_budget.after_iteration_callback failed: %s", exc)
         return None  # don't override the refiner's content
+
+    async def before_doer_model_callback(*, callback_context, llm_request):  # type: ignore[no-untyped-def]
+        """Doer's before-model hook — count LM calls + check budgets.
+
+        Fires on EVERY LLM call the Doer makes (one call per tool
+        roundtrip + one per reasoning step). When the LM-call budget
+        or wall-clock budget trips, sets the kill flag — the loop's
+        ``before_agent_callback`` will short-circuit the NEXT
+        iteration. We don't short-circuit the current LM call here
+        because we want the Doer to finish its current tool turn
+        cleanly so the partial work is on disk before the rescue
+        path commits.
+
+        ``llm_request`` is the raw model request — we don't mutate
+        it. ADK's ``BeforeModelCallback`` signature requires the
+        param even when unused.
+        """
+        del llm_request  # unused — required by callback signature
+        state = callback_context.state
+        try:
+            evaluate_call_budget(
+                state,
+                llm_call_budget=llm_call_budget,
+                wall_budget_s=wall_budget_s,
+            )
+        except Exception as exc:  # never let watchdog crash the loop
+            log.exception(
+                "loop_budget.before_doer_model_callback failed: %s", exc,
+            )
+        return None  # never short-circuit the call itself
 
     async def before_loop_callback(*, callback_context):  # type: ignore[no-untyped-def]
         """LoopAgent's before-agent hook — short-circuit on kill flag.
@@ -268,6 +403,7 @@ def build_loop_budget_callbacks() -> tuple[
                 "verdict": "partial",
                 "reason": state.get("loop_budget_reason", "loc_plateau"),
                 "loc_history": state.get("loc_history", []),
+                "llm_call_count": state.get("llm_call_count", 0),
             })
             return gtypes.Content(
                 role="model",
@@ -277,10 +413,11 @@ def build_loop_budget_callbacks() -> tuple[
             log.exception("loop_budget.before_loop_callback failed: %s", exc)
             return None
 
-    return before_loop_callback, after_iteration_callback
+    return before_loop_callback, after_iteration_callback, before_doer_model_callback
 
 
 __all__ = [
     "build_loop_budget_callbacks",
     "evaluate_plateau",
+    "evaluate_call_budget",
 ]
