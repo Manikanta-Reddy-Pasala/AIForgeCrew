@@ -414,16 +414,21 @@ def build_loop_budget_callbacks() -> tuple[
         return None  # don't override the refiner's content
 
     async def before_doer_model_callback(*, callback_context, llm_request):  # type: ignore[no-untyped-def]
-        """Doer's before-model hook — count LM calls + check budgets.
+        """Doer's before-model hook — count LM calls + short-circuit on kill.
 
         Fires on EVERY LLM call the Doer makes (one call per tool
         roundtrip + one per reasoning step). When the LM-call budget
-        or wall-clock budget trips, sets the kill flag — the loop's
-        ``before_agent_callback`` will short-circuit the NEXT
-        iteration. We don't short-circuit the current LM call here
-        because we want the Doer to finish its current tool turn
-        cleanly so the partial work is on disk before the rescue
-        path commits.
+        or wall-clock budget trips, sets the kill flag.
+
+        **PR #27 change:** if the kill flag is set when this fires
+        (Doer over budget but still wanting another LM call inside
+        the same iteration), return a verdict=partial ``LlmResponse``
+        so ADK SKIPS the LLM call entirely. This is the only way to
+        terminate a mega-iteration that never returns — the
+        LoopAgent's ``before_agent_callback`` only fires at iteration
+        boundaries, which a runaway Doer never reaches. ONE-1 PR #25
+        re-test ran 3 hours / 440+ LM calls inside ONE iteration
+        precisely because of this gap; PR #27 closes it.
 
         Counter is keyed on ``InvocationContext.invocation_id`` so
         the value persists across LoopAgent iteration boundaries
@@ -465,7 +470,51 @@ def build_loop_budget_callbacks() -> tuple[
             log.exception(
                 "loop_budget.before_doer_model_callback failed: %s", exc,
             )
-        return None  # never short-circuit the call itself
+
+        # PR #27: short-circuit MID-ITERATION when the kill flag is
+        # set. Without this, the Doer keeps issuing tool calls
+        # forever — the iteration boundary is unreachable.
+        if state.get("loop_budget_kill"):
+            try:
+                from google.adk.models.llm_response import LlmResponse
+                from google.genai import types as gtypes
+                payload = json.dumps({
+                    "verdict": "partial",
+                    "reason": state.get("loop_budget_reason", "kill_flag"),
+                    "blocker": (
+                        "loop budget exhausted mid-iteration; partial "
+                        "work committed by milestone path"
+                    ),
+                    "compile_status": "skipped",
+                    "test_status": "skipped",
+                    "file_diffs": [],
+                    "turn_log": (
+                        f"loop_budget_kill:"
+                        f"{state.get('loop_budget_reason', 'budget')}"
+                    ),
+                })
+                state.setdefault(
+                    "feedback_verdict",
+                    f"partial loop_budget_kill: "
+                    f"{state.get('loop_budget_reason', 'budget')}",
+                )
+                log.warning(
+                    "loop_budget: short-circuiting Doer LM call "
+                    "(reason=%s) — returning verdict=partial",
+                    state.get("loop_budget_reason", "kill_flag"),
+                )
+                return LlmResponse(
+                    content=gtypes.Content(
+                        role="model",
+                        parts=[gtypes.Part.from_text(text=payload)],
+                    ),
+                )
+            except Exception as exc:
+                log.exception(
+                    "loop_budget.short_circuit_failed: %s — letting "
+                    "the LM call proceed", exc,
+                )
+        return None  # let the LM call proceed when budget is healthy
 
     async def before_loop_callback(*, callback_context):  # type: ignore[no-untyped-def]
         """LoopAgent's before-agent hook — short-circuit on kill flag.

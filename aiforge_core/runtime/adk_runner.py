@@ -30,7 +30,7 @@ from typing import Any
 
 from aiforge_core.tickets import store as tickets_mod
 
-from . import memory_block
+from . import memory_block, structural_plan
 from .git_pr import commit_push_open_pr
 from .pipeline import build_pipeline, set_force_provider
 from .researcher_routing import should_skip_researcher
@@ -281,7 +281,12 @@ def _build_run_config():
     return RunConfig(max_llm_calls=cap)
 
 
-async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
+async def _run_pipeline(
+    prompt: str,
+    *,
+    skip_researcher: bool = False,
+    seed_state: dict | None = None,
+) -> dict:
     """Drive one ADK pipeline run and return the final session state.
 
     ``skip_researcher`` lets the caller drop the Researcher step for
@@ -289,6 +294,12 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
     to :func:`build_pipeline` so the SequentialAgent skips assembling
     that LlmAgent — saves ~5 LM calls and ~4 minutes wall-clock when
     the Researcher would have found nothing relevant.
+
+    ``seed_state`` (PR #27): pre-populate ADK session state with
+    operator-supplied context. Currently used to inject
+    ``structural_plan`` (heuristic file tree from ticket body, see
+    :mod:`structural_plan`) so the Doer can look up canonical paths
+    via ``state['structural_plan']``.
     """
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
@@ -302,9 +313,12 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
         session_service=session_svc, auto_create_session=True,
         plugins=plugins,
     )
-    session = await session_svc.create_session(
-        app_name="aiforge", user_id="aiforge-runner",
-    )
+    create_kwargs: dict = {
+        "app_name": "aiforge", "user_id": "aiforge-runner",
+    }
+    if seed_state:
+        create_kwargs["state"] = dict(seed_state)
+    session = await session_svc.create_session(**create_kwargs)
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
     )
@@ -357,6 +371,13 @@ def _build_prompt(ticket, memory_md: str) -> str:
             "ticket. Use `file_read` to load them — their context is "
             "REQUIRED for the change.\n"
         )
+    # PR #27 issue #3: when the ticket body lists explicit source paths,
+    # surface them to the Doer as a canonical file tree so it can't
+    # drift into similar-looking but different package paths (the
+    # ONE-1 ``feature/audit/`` vs ``audit/`` regression).
+    plan = structural_plan.build_plan(ticket.body or "")
+    if plan is not None:
+        out += structural_plan.render_for_prompt(plan)
     if memory_md:
         out += "\n" + memory_md
     return out
@@ -406,9 +427,23 @@ def _process_one_ticket() -> bool:
              ticket.identifier,
              "skip" if skip_researcher else "run", skip_reason)
 
+    # PR #27 issue #3: heuristic structural_plan from ticket body.
+    # When the body lists explicit source paths (mega-tickets), seed
+    # ADK session state so downstream agents can read
+    # state['structural_plan'] for canonical-owner lookups instead of
+    # guessing package paths. Returns None for short tickets — that
+    # path skips seeding entirely (the Doer falls back to grep_repo).
+    seed: dict = {}
+    plan_obj = structural_plan.build_plan(ticket.body or "")
+    if plan_obj is not None:
+        seed["structural_plan"] = plan_obj
+        log.info("ticket=%s structural_plan=heuristic paths=%d",
+                 ticket.identifier, len(plan_obj.get("tree", [])))
+
     try:
         state = asyncio.run(_run_pipeline(
             prompt, skip_researcher=skip_researcher,
+            seed_state=seed or None,
         ))
         outcome = _extract_verdict(state)
         # Capture the Feedback rationale BEFORE any mutation so an

@@ -362,6 +362,69 @@ def test_call_budget_env_override(monkeypatch):
     assert "llm_call_budget" in ctx.state["loop_budget_reason"]
 
 
+# ─── PR #27 issue #7: mid-iteration short-circuit ─────────────────────
+
+
+def test_before_doer_model_short_circuits_when_kill_flag_set(monkeypatch):
+    """When the kill flag is already set (Doer in mega-iteration that
+    won't return), the Doer's before_model_callback must return an
+    LlmResponse with verdict=partial so ADK skips the LLM call.
+
+    This is the failure mode that ate ONE-1 PR #25 re-test: Doer kept
+    issuing tool calls inside one LoopAgent iteration, so iteration-
+    boundary hooks never fired. PR #27 (this test) closes the gap by
+    short-circuiting at the per-LM-call boundary."""
+    monkeypatch.setenv("AIFORGE_LOOP_LLM_CALL_BUDGET", "999")
+    monkeypatch.setenv("AIFORGE_LOOP_WALL_BUDGET_S", "999999")
+    monkeypatch.delenv("AIFORGE_LOOP_BUDGET_DISABLE", raising=False)
+    _b, _a, before_model = loop_budget.build_loop_budget_callbacks()
+
+    class _Ctx:
+        def __init__(self):
+            # Pre-set the kill flag — simulates "budget already
+            # tripped on a prior LM call within this same iteration".
+            self.state: dict = {
+                "loop_budget_kill": True,
+                "loop_budget_reason": "llm_call_budget:400/400_after_60s",
+            }
+
+    import asyncio
+    ctx = _Ctx()
+    result = asyncio.run(
+        before_model(callback_context=ctx, llm_request=None),
+    )
+    assert result is not None, (
+        "must short-circuit when kill flag is set"
+    )
+    # Result is an LlmResponse with content carrying the verdict JSON.
+    text_parts = []
+    for part in result.content.parts:
+        if getattr(part, "text", None):
+            text_parts.append(part.text)
+    payload = "".join(text_parts)
+    assert "partial" in payload
+    assert "loop_budget_kill" in ctx.state.get("feedback_verdict", "")
+
+
+def test_before_doer_model_does_not_short_circuit_when_kill_unset(monkeypatch):
+    """Healthy budget → callback returns None and lets the LM call proceed."""
+    monkeypatch.setenv("AIFORGE_LOOP_LLM_CALL_BUDGET", "999")
+    monkeypatch.setenv("AIFORGE_LOOP_WALL_BUDGET_S", "999999")
+    monkeypatch.delenv("AIFORGE_LOOP_BUDGET_DISABLE", raising=False)
+    _b, _a, before_model = loop_budget.build_loop_budget_callbacks()
+
+    class _Ctx:
+        def __init__(self):
+            self.state: dict = {}  # no kill flag
+
+    import asyncio
+    ctx = _Ctx()
+    result = asyncio.run(
+        before_model(callback_context=ctx, llm_request=None),
+    )
+    assert result is None, "must NOT short-circuit when budget is healthy"
+
+
 # ─── adk_runner _build_run_config (PR #25 patch C) ────────────────────
 
 
@@ -448,3 +511,27 @@ def test_doer_prompt_references_one1_postmortem():
     keeps future maintainers honest about why the rules exist."""
     from aiforge_core.runtime.prompts import DOER
     assert "ONE-1" in DOER or "audit subsystem" in DOER.lower()
+
+
+def test_doer_prompt_has_canonical_file_tree_rule():
+    """PR #27 issue #3 — Doer must obey ``## Canonical file tree``
+    section when present in the seed prompt."""
+    from aiforge_core.runtime.prompts import DOER
+    assert "Canonical file tree" in DOER
+    assert "structural_plan" in DOER
+
+
+def test_doer_prompt_has_anti_stub_rule():
+    """PR #27 issue #10 — Doer must audit its own diffs for orphan
+    sub-30-LOC stubs before returning verdict=pass."""
+    from aiforge_core.runtime.prompts import DOER
+    text = DOER.lower()
+    assert "anti-stub" in text or "orphan stub" in text
+    assert "30 loc" in text or "30 lines" in text or "<30 loc" in text
+
+
+def test_doer_prompt_cites_feature_audit_drift_as_canary():
+    """The ONE-1 ``feature/audit/`` regression should be specifically
+    cited so future regressions surface in code review."""
+    from aiforge_core.runtime.prompts import DOER
+    assert "feature.audit" in DOER or "feature/audit" in DOER
