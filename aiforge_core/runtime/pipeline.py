@@ -128,6 +128,22 @@ def build_pipeline(*, skip_researcher: bool = False):
     refiner = _refiner_mod.build(build_litellm_model)
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)
+    # Persist Learner-emitted facts into Neo4j (Observation_v2 +
+    # Decision_v2). Without this, state['facts_json'] dies with the
+    # session — the memory layer stayed near-empty across 8 days of
+    # tickets. The callback reads ticket/repo info already populated
+    # by adk_runner before the pipeline starts.
+    from .learner_persist import make_learner_after_callback
+    _existing_learner_after = learner.after_agent_callback
+    _learner_persist_cb = make_learner_after_callback()
+    _merged_learner_after: list = []
+    if _existing_learner_after is not None:
+        if isinstance(_existing_learner_after, list):
+            _merged_learner_after.extend(_existing_learner_after)
+        else:
+            _merged_learner_after.append(_existing_learner_after)
+    _merged_learner_after.append(_learner_persist_cb)
+    learner.after_agent_callback = _merged_learner_after
 
     # Doer / Refiner / Feedback live inside the loop so a Feedback
     # rejection rewinds the polish-then-judge cycle, not just the Doer.

@@ -244,7 +244,8 @@ def _build_context_plugins() -> list:
     return [ContextFilterPlugin(num_invocations_to_keep=keep)]
 
 
-async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
+async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
+                        ticket=None) -> dict:
     """Drive one ADK pipeline run and return the final session state.
 
     ``skip_researcher`` lets the caller drop the Researcher step for
@@ -252,6 +253,10 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
     to :func:`build_pipeline` so the SequentialAgent skips assembling
     that LlmAgent — saves ~5 LM calls and ~4 minutes wall-clock when
     the Researcher would have found nothing relevant.
+
+    ``ticket`` (optional) seeds session.state with identifier + project
+    so the Learner's after-callback can write Observation_v2 nodes
+    keyed back to the ticket. None = test path.
     """
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
@@ -265,8 +270,13 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False) -> dict:
         session_service=session_svc, auto_create_session=True,
         plugins=plugins,
     )
+    initial_state: dict[str, Any] = {}
+    if ticket is not None:
+        initial_state["ticket_identifier"] = getattr(ticket, "identifier", "") or ""
+        initial_state["ticket_project"] = getattr(ticket, "project", "") or ""
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
+        state=initial_state or None,
     )
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
@@ -363,7 +373,7 @@ def _process_one_ticket() -> bool:
 
     try:
         state = asyncio.run(_run_pipeline(
-            prompt, skip_researcher=skip_researcher,
+            prompt, skip_researcher=skip_researcher, ticket=ticket,
         ))
         outcome = _extract_verdict(state)
         # Capture the Feedback rationale BEFORE any mutation so an
