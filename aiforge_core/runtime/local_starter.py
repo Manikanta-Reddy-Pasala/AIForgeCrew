@@ -43,6 +43,16 @@ Env knobs (all optional):
                                       KV cache for nothing and was the root
                                       cause of MLX Metal-buffer crashes
                                       on Mac Studio's 96GB unified memory.
+  AIFORGE_LMS_GPU=                    --gpu offload ratio (0.0-1.0) passed
+                                      to ``lms load``. Empty/unset OMITS the
+                                      flag so LM Studio uses its own default
+                                      (full GPU offload on Apple Silicon).
+                                      Set to 0.85 on Mac Studio to leave
+                                      15% unified-memory headroom for the
+                                      KV cache + activations — eliminates
+                                      the ONE-1 MLX Metal-OOM crash where
+                                      ``--gpu max`` + 128K ctx + 4-way
+                                      parallel exhausted unified memory.
 """
 from __future__ import annotations
 
@@ -148,10 +158,33 @@ def try_start(api_base: str) -> bool:
     # Override via AIFORGE_LMS_PARALLEL — bump for genuine concurrent
     # serving (UI demos), keep at 1 for ticket runners.
     parallel = max(_int_env("AIFORGE_LMS_PARALLEL", 1), 1)
+    # ``AIFORGE_LMS_GPU`` (0.0-1.0) caps GPU offload. Empty/unset omits
+    # the flag so LM Studio uses its own default. Capping at 0.85 on
+    # Mac Studio leaves 15% of the 96GB unified pool free for KV cache
+    # + activations — without that headroom a long Doer prompt at 128K
+    # ctx blows past the Metal allocator and the model crashes with
+    # ``Exit code: null``.
+    gpu_raw = os.environ.get("AIFORGE_LMS_GPU", "").strip()
+    gpu_flag = ""
+    if gpu_raw:
+        try:
+            gpu_val = float(gpu_raw)
+            if 0.0 < gpu_val <= 1.0:
+                gpu_flag = f" --gpu {gpu_val}"
+            else:
+                log.warning(
+                    "lms_autostart: AIFORGE_LMS_GPU=%r out of range "
+                    "(0.0,1.0] — ignoring", gpu_raw,
+                )
+        except ValueError:
+            log.warning(
+                "lms_autostart: AIFORGE_LMS_GPU=%r not a float — ignoring",
+                gpu_raw,
+            )
     if model:
         load_cmd = (
             f"{bin_name} load {model} "
-            f"--context-length {ctx} --parallel {parallel}"
+            f"--context-length {ctx} --parallel {parallel}{gpu_flag}"
         )
         if ttl > 0:
             load_cmd += f" --ttl {ttl}"
@@ -160,8 +193,10 @@ def try_start(api_base: str) -> bool:
         remote = f"{bin_name} server start"
 
     log.info(
-        "lms_autostart: ssh %s -> %s (warmup=%ds, ctx=%d, parallel=%d, ttl=%s)",
+        "lms_autostart: ssh %s -> %s "
+        "(warmup=%ds, ctx=%d, parallel=%d, gpu=%s, ttl=%s)",
         host, remote, warmup, ctx, parallel,
+        gpu_raw or "default",
         f"{ttl}s" if ttl > 0 else "off (manual unload only)",
     )
     try:

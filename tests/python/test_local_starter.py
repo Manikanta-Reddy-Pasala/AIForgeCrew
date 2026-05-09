@@ -133,6 +133,88 @@ def test_ctx_env_below_floor_clamps_to_minimum(
     assert "--context-length 8192" not in joined
 
 
+def test_gpu_env_appends_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``AIFORGE_LMS_GPU=0.85`` must surface as ``--gpu 0.85`` in the
+    remote ``lms load`` command. This is the Mac Studio memory-headroom
+    knob that prevents the ONE-1 MLX Metal-OOM crash."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    monkeypatch.setenv("AIFORGE_LMS_GPU", "0.85")
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch("urllib.request.urlopen", return_value=_Resp()), \
+         patch("time.sleep"):
+        ls.try_start("http://x:1234/v1")
+    joined = " ".join(run_mock.call_args[0][0])
+    assert "--gpu 0.85" in joined
+
+
+def test_gpu_env_unset_omits_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No ``AIFORGE_LMS_GPU`` => no ``--gpu`` flag (LM Studio default)."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    monkeypatch.delenv("AIFORGE_LMS_GPU", raising=False)
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch("urllib.request.urlopen", return_value=_Resp()), \
+         patch("time.sleep"):
+        ls.try_start("http://x:1234/v1")
+    joined = " ".join(run_mock.call_args[0][0])
+    assert "--gpu" not in joined
+
+
+def test_gpu_env_out_of_range_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Values outside (0.0, 1.0] are dropped with a warning — the flag
+    shouldn't make it into the remote command and the rest of the run
+    must proceed unchanged."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    monkeypatch.setenv("AIFORGE_LMS_GPU", "1.5")
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch("urllib.request.urlopen", return_value=_Resp()), \
+         patch("time.sleep"):
+        ls.try_start("http://x:1234/v1")
+    joined = " ".join(run_mock.call_args[0][0])
+    assert "--gpu" not in joined
+
+
+def test_gpu_env_garbage_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-numeric ``AIFORGE_LMS_GPU`` must NOT propagate ``--gpu`` and
+    must not crash the auto-start path (that would brick local model
+    serving for every ticket)."""
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
+    monkeypatch.setenv("AIFORGE_LMS_GPU", "max")  # legacy invalid value
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock, \
+         patch("urllib.request.urlopen", return_value=_Resp()), \
+         patch("time.sleep"):
+        ls.try_start("http://x:1234/v1")
+    joined = " ".join(run_mock.call_args[0][0])
+    assert "--gpu" not in joined
+
+
 def test_load_failure_falls_through(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
     monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
