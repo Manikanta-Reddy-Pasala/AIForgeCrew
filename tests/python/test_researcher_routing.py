@@ -196,3 +196,40 @@ def test_title_with_only_stopwords_falls_through_to_greenfield(tmp_path):
     # skipped entirely. Result: greenfield.
     assert skip is True
     assert reason == "greenfield"
+
+
+def test_skip_env_short_circuits_brownfield(tmp_path, monkeypatch) -> None:
+    """AIFORGE_RESEARCHER_SKIP=1 wins over reference-word detection.
+    Use case: hand-curated brownfield ticket whose body contains
+    explicit file paths + line numbers — Researcher adds no value AND
+    sometimes returns empty on long bodies, killing the pipeline."""
+    monkeypatch.setenv("AIFORGE_RESEARCHER_SKIP", "1")
+    skip, reason = should_skip_researcher(
+        title="Stock correction bug",
+        body="See ProductStockRepository.java line 553 — existing logic ignores serialNo.",
+        repo_root=str(tmp_path),
+    )
+    assert skip is True
+    assert reason == "env_skip"
+
+
+def test_skip_env_zero_falls_through(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_RESEARCHER_SKIP", "0")
+    skip, reason = should_skip_researcher(
+        title="Stock correction bug",
+        body="The existing logic ignores serialNo.",
+        repo_root=str(tmp_path),
+    )
+    assert skip is False
+    assert reason == "has_reference_word"
+
+
+def test_skip_env_overrides_force_env(tmp_path, monkeypatch) -> None:
+    """SKIP=1 + FORCE=1 → SKIP wins (it appears first in the function)."""
+    monkeypatch.setenv("AIFORGE_RESEARCHER_SKIP", "1")
+    monkeypatch.setenv("AIFORGE_RESEARCHER_FORCE", "1")
+    skip, reason = should_skip_researcher(
+        title="anything", body="anything", repo_root=str(tmp_path),
+    )
+    assert skip is True
+    assert reason == "env_skip"
