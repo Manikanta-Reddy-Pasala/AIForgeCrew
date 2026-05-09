@@ -67,10 +67,57 @@ def _resolve_repo_root() -> str | None:
     return repo_root
 
 
+def _default_base_branch(repo_root: str) -> str:
+    """Resolve the upstream base branch. Tries `origin/HEAD` first
+    (the GitHub default branch the operator set in repo settings),
+    falls back to `origin/master` then `origin/main`. Returns the
+    first ref that exists; returns `origin/master` as a sane default
+    when nothing resolves (push will fail later with a clear error)."""
+    rc, out, _ = run_git(
+        ["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+        repo_root,
+    )
+    if rc == 0 and out.strip():
+        # `refs/remotes/origin/master` -> `origin/master`
+        return out.strip().replace("refs/remotes/", "")
+    for candidate in ("origin/master", "origin/main"):
+        rc, _, _ = run_git(
+            ["git", "rev-parse", "--verify", "--quiet", candidate],
+            repo_root,
+        )
+        if rc == 0:
+            return candidate
+    return "origin/master"
+
+
+def _has_unpushed_commits(repo_root: str) -> tuple[bool, str]:
+    """``(True, base)`` when HEAD is ahead of the upstream base by at
+    least one commit. ``(False, reason)`` otherwise. Used by
+    :func:`_has_doer_changes` to detect the Doer-self-committed path:
+    PR #22's ``git_commit`` tool lets the Doer commit milestones
+    in-loop, leaving the working tree clean by the time
+    ``commit_push_open_pr`` runs — without this check, the runner
+    short-circuits on ``no_changes`` and the work never gets pushed."""
+    base = _default_base_branch(repo_root)
+    rc, out, _ = run_git(
+        ["git", "rev-list", "--count", f"{base}..HEAD"], repo_root,
+    )
+    if rc != 0:
+        return False, "rev_list_failed"
+    try:
+        ahead = int((out or "0").strip())
+    except ValueError:
+        ahead = 0
+    if ahead > 0:
+        return True, base
+    return False, "head_at_base"
+
+
 def _has_doer_changes(repo_root: str) -> tuple[bool, str]:
-    """``(True, "")`` when there's at least one tracked-or-untracked
-    change OUTSIDE the transient-dir allowlist. ``(False, reason)``
-    otherwise so the caller can return early with ``pr_skip_reason``."""
+    """``(True, "")`` when EITHER the working tree has uncommitted
+    Doer-authored changes OUTSIDE the transient-dir allowlist, OR
+    HEAD is ahead of the upstream base (Doer self-committed via
+    PR #22's ``git_commit`` tool). ``(False, reason)`` otherwise."""
     rc, out, err = run_git(
         ["git", "status", "--porcelain", "--", ".", *_EXCLUDE_PATHSPECS],
         repo_root,
@@ -78,10 +125,16 @@ def _has_doer_changes(repo_root: str) -> tuple[bool, str]:
     if rc != 0:
         log.warning("git_pr.status_failed: %s", err)
         return False, "git_status_failed"
-    if not out.strip():
-        log.info("git_pr.clean: no Doer changes (transient dirs excluded)")
-        return False, "no_changes"
-    return True, ""
+    if out.strip():
+        return True, ""
+    # Working tree clean — but the Doer may have committed in-loop.
+    # Detect unpushed commits ahead of upstream base.
+    ahead, info = _has_unpushed_commits(repo_root)
+    if ahead:
+        log.info("git_pr.unpushed: HEAD ahead of %s — will push", info)
+        return True, ""
+    log.info("git_pr.clean: no Doer changes (transient dirs excluded)")
+    return False, "no_changes"
 
 
 def _checkout_branch(repo_root: str, branch: str) -> str:
