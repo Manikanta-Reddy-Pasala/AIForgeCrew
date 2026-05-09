@@ -117,11 +117,31 @@ class ClaudeSubscriptionLlm(BaseLlm):
         ))
         os.makedirs(repo_root, exist_ok=True)
 
+        # Permission mode: `bypassPermissions` skips ALL permission
+        # prompts (write file, run shell, web fetch). The CLI's
+        # `acceptEdits` only auto-accepts edits but still asks on
+        # other tools — caused silent stalls on long Doer turns when
+        # claude wanted to bash out to mvn and the unattended
+        # subprocess had no way to answer "yes". Override knob:
+        # `AIFORGE_CLAUDE_PERMISSION_MODE` (default `bypassPermissions`).
+        permission_mode = os.environ.get(
+            "AIFORGE_CLAUDE_PERMISSION_MODE", "bypassPermissions",
+        )
         cmd = [bin_name, "--print",
-               "--permission-mode", "acceptEdits",
+               "--permission-mode", permission_mode,
                "--add-dir", repo_root]
         if self.model:
             cmd += ["--model", self.model]
+        # Auto-fallback to a smaller/faster model when the primary is
+        # overloaded or rate-limited. Without this, opus 4.7 returns
+        # empty stdout under load and EscalatingLlm exhausts on
+        # claude_local-only profiles. Override via
+        # `AIFORGE_CLAUDE_FALLBACK_MODEL`; set empty string to disable.
+        fallback = os.environ.get(
+            "AIFORGE_CLAUDE_FALLBACK_MODEL", "claude-sonnet-4-6",
+        )
+        if fallback:
+            cmd += ["--fallback-model", fallback]
         if host:
             # Remote execution: claude runs on the keychain host, so
             # the cwd flag is meaningless here — caller must mirror
@@ -129,7 +149,14 @@ class ClaudeSubscriptionLlm(BaseLlm):
             cmd = ["ssh", host, " ".join(cmd)]
 
         log.info("claude_subscription invoking: %s (cwd=%s)", cmd, repo_root)
-        timeout_s = float(os.environ.get("AIFORGE_CLAUDE_TIMEOUT_S", "180"))
+        # Timeout: 0 (default) = NO timeout. Long Doer turns under
+        # claude_local can run 10-30 min when the CLI is doing real
+        # mvn/grep/file_read work. The old 180s default cut them off
+        # mid-turn and the TimeoutError path yielded a non-empty error
+        # response that EscalatingLlm treated as success. Set
+        # `AIFORGE_CLAUDE_TIMEOUT_S` to a positive value to re-enable
+        # a hard cap (debugging only).
+        timeout_s = float(os.environ.get("AIFORGE_CLAUDE_TIMEOUT_S", "0"))
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -139,9 +166,15 @@ class ClaudeSubscriptionLlm(BaseLlm):
             cwd=repo_root if not host else None,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")), timeout=timeout_s,
-            )
+            if timeout_s > 0:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(prompt.encode("utf-8")), timeout=timeout_s,
+                )
+            else:
+                # No-timeout path — let the CLI run as long as it
+                # needs. The runner's outer `max_turns` + ADK's
+                # `max_llm_calls` are the only ceilings.
+                stdout, stderr = await proc.communicate(prompt.encode("utf-8"))
         except asyncio.TimeoutError:
             proc.kill()
             yield LlmResponse(
