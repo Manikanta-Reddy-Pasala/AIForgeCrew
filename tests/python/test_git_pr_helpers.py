@@ -146,3 +146,84 @@ def test_checkout_branch_resets_existing_to_head(tmp_path: Path) -> None:
         text=True,
     ).stdout.strip()
     assert new_head == head  # branch reset to current HEAD
+
+
+# ─── _has_doer_changes detects unpushed commits ────────────────────────
+
+
+def _make_repo_with_commit_ahead(tmp_path: Path) -> None:
+    """Init a repo with an 'origin' simulating an upstream that's
+    behind HEAD by one commit (the Doer-self-committed scenario)."""
+    upstream = tmp_path / "upstream.git"
+    work = tmp_path / "work"
+    subprocess.run(["git", "init", "--bare", str(upstream)], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "init", "-b", "master", str(work)], check=True,
+                   capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "--allow-empty", "-m", "init"],
+        cwd=work, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(upstream)],
+        cwd=work, check=True, capture_output=True,
+    )
+    subprocess.run(["git", "push", "-u", "origin", "master"],
+                   cwd=work, check=True, capture_output=True)
+    # Add an 'ahead' commit (simulates Doer's git_commit firing).
+    (work / "x.txt").write_text("x")
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "add", "x.txt"],
+        cwd=work, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-m", "doer milestone"],
+        cwd=work, check=True, capture_output=True,
+    )
+    return work
+
+
+def test_has_doer_changes_detects_unpushed_commits(tmp_path: Path) -> None:
+    """Working tree clean + HEAD ahead of origin/master = Doer
+    self-committed via the new git_commit tool. _has_doer_changes
+    must return True so commit_push_open_pr proceeds with the push."""
+    work = _make_repo_with_commit_ahead(tmp_path)
+    has, reason = gp._has_doer_changes(str(work))
+    assert has is True
+    assert reason == ""
+
+
+def test_has_doer_changes_clean_at_base_returns_false(tmp_path: Path) -> None:
+    """Working tree clean + HEAD == origin/master = nothing to ship."""
+    work = _make_repo_with_commit_ahead(tmp_path)
+    # Push the milestone, leaving HEAD == origin/master.
+    subprocess.run(["git", "push"], cwd=work, check=True, capture_output=True)
+    has, reason = gp._has_doer_changes(str(work))
+    assert has is False
+    assert reason == "no_changes"
+
+
+def test_has_doer_changes_uncommitted_still_works(tmp_path: Path) -> None:
+    """Pre-existing path: working tree dirty → True. Must still hold."""
+    _git_init(tmp_path)
+    (tmp_path / "y.py").write_text("y = 1")
+    has, reason = gp._has_doer_changes(str(tmp_path))
+    assert has is True
+    assert reason == ""
+
+
+def test_default_base_branch_resolves_master(tmp_path: Path) -> None:
+    """When the repo has only origin/master, that's the base."""
+    work = _make_repo_with_commit_ahead(tmp_path)
+    base = gp._default_base_branch(str(work))
+    assert base == "origin/master"
+
+
+def test_default_base_branch_no_origin_fallback(tmp_path: Path) -> None:
+    """Repo without origin remote returns the safe default."""
+    _git_init(tmp_path)
+    base = gp._default_base_branch(str(tmp_path))
+    assert base == "origin/master"
