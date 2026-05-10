@@ -70,6 +70,16 @@ def build_llm_agent(role: str, instruction: str, output_key: str,
     tools = tools_factory() if tools_factory else None
     if tools:
         kwargs["tools"] = tools
+    # Per-archetype stage_start / stage_done events into ticket_events
+    # so the UI's audit panel can show pipeline progress at the
+    # archetype level (architect → planner → verifier → doer …) instead
+    # of just status_change rows.
+    from aiforge_core.runtime.observability import make_stage_callbacks
+    before_cb, after_cb = make_stage_callbacks(role)
+    if before_cb is not None:
+        kwargs["before_agent_callback"] = before_cb
+    if after_cb is not None:
+        kwargs["after_agent_callback"] = after_cb
     return LlmAgent(**kwargs)
 
 

@@ -345,6 +345,13 @@ def commit_push_open_pr(ticket) -> dict:
         return {"branch_pushed": True,
                 "pr_skip_reason": pr_err or "gh_create_failed",
                 "gh_err": pr_err}
+    # Emit a `pr_opened` event so the UI's audit panel surfaces the
+    # link. Best-effort: a Postgres hiccup logs but never blocks.
+    try:
+        from .observability import emit_pr_opened
+        emit_pr_opened(ticket_id=ticket.id, pr_url=pr_url, branch=branch)
+    except Exception:  # noqa: BLE001
+        pass
     return {"branch_pushed": True, "pr_url": pr_url}
 
 
