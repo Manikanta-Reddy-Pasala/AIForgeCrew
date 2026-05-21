@@ -322,6 +322,30 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
     )
+    # Sub #6 follow-up: inject multimodal image parts when ticket has
+    # image attachments AND the Doer model supports vision.
+    if ticket is not None:
+        try:
+            from aiforge_core.config.agent_config import get_config
+            from aiforge_core.runtime.vision_adk import inject_image_parts
+
+            cfg = get_config()
+            doer_model = (cfg.get("doer", {}) or {}).get("model", "")
+            md = ticket.metadata or {}
+            images = [
+                str(f.get("path", "")) for f in (md.get("attached_files") or [])
+                if isinstance(f, dict)
+                and str(f.get("name", "")).lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".gif", ".webp"),
+                )
+                and f.get("path")
+            ]
+            if images:
+                injected = inject_image_parts([content], doer_model, images)
+                if injected and injected[0] is not content:
+                    content = injected[0]
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            log.debug("vision_adk.inject failed: %s", exc)
     try:
         async for event in runner.run_async(
             user_id="aiforge-runner",

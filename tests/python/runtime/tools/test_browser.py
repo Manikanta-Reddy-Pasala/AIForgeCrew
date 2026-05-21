@@ -123,3 +123,59 @@ def test_browser_op_failure_soft_errors(monkeypatch):
     assert out["ok"] is False
     assert out["error"] == "browser_op_failed"
     assert "element not visible" in out["detail"]
+
+
+def test_mouse_click_with_coords(monkeypatch):
+    monkeypatch.setattr(br, "_playwright_available", lambda: True)
+    page = MagicMock()
+    monkeypatch.setattr(br, "_get_context", lambda rid: (MagicMock(), page))
+    out = br.browse("mouse_click", x=100, y=200, button="right")
+    assert out["ok"]
+    assert out["x"] == 100 and out["y"] == 200
+    page.mouse.click.assert_called_once_with(100, 200, button="right")
+
+
+def test_mouse_click_missing_coords(monkeypatch):
+    monkeypatch.setattr(br, "_playwright_available", lambda: True)
+    monkeypatch.setattr(br, "_get_context",
+                        lambda rid: (MagicMock(), MagicMock()))
+    out = br.browse("mouse_click", x=100)
+    assert out["ok"] is False
+    assert out["error"] == "missing_x_or_y"
+
+
+def test_key_press(monkeypatch):
+    monkeypatch.setattr(br, "_playwright_available", lambda: True)
+    page = MagicMock()
+    monkeypatch.setattr(br, "_get_context", lambda rid: (MagicMock(), page))
+    out = br.browse("key_press", key="Enter")
+    assert out["ok"]
+    page.keyboard.press.assert_called_once_with("Enter")
+
+
+def test_key_press_missing_key(monkeypatch):
+    monkeypatch.setattr(br, "_playwright_available", lambda: True)
+    monkeypatch.setattr(br, "_get_context",
+                        lambda rid: (MagicMock(), MagicMock()))
+    out = br.browse("key_press")
+    assert out["ok"] is False
+    assert out["error"] == "missing_key"
+
+
+def test_type_text(monkeypatch):
+    monkeypatch.setattr(br, "_playwright_available", lambda: True)
+    page = MagicMock()
+    monkeypatch.setattr(br, "_get_context", lambda rid: (MagicMock(), page))
+    out = br.browse("type", text="hello world")
+    assert out["ok"]
+    assert out["typed_bytes"] == 11
+    page.keyboard.type.assert_called_once_with("hello world")
+
+
+def test_scroll(monkeypatch):
+    monkeypatch.setattr(br, "_playwright_available", lambda: True)
+    page = MagicMock()
+    monkeypatch.setattr(br, "_get_context", lambda rid: (MagicMock(), page))
+    out = br.browse("scroll", dy=500)
+    assert out["ok"]
+    page.mouse.wheel.assert_called_once_with(0, 500)

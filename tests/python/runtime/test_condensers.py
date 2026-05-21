@@ -56,11 +56,41 @@ def test_amortized_summary_lists_events():
     assert "event 39" in summary
 
 
-def test_llm_falls_back_to_recent():
+def test_llm_falls_back_to_recent_when_no_summarizer():
     evts = _make_events(50)
     out = condense(evts, "llm", keep=10)
     assert len(out) == 10
     assert out[-1]["text"] == "event 49"
+
+
+def test_llm_uses_summarizer_when_provided():
+    evts = _make_events(50)
+    captured = {}
+    def _summarize(prompt):
+        captured["prompt"] = prompt
+        return "- did things\n- finished thing"
+    out = condense(evts, "llm", keep=10, summarizer=_summarize)
+    assert len(out) == 11  # summary + tail
+    assert out[0]["role"] == "condenser"
+    assert "<llm_summary>" in out[0]["text"]
+    assert "did things" in out[0]["text"]
+    assert out[-1]["text"] == "event 49"
+    assert "event 0" in captured["prompt"]
+
+
+def test_llm_falls_back_when_summarizer_raises():
+    evts = _make_events(50)
+    def _bad(_p):
+        raise RuntimeError("LLM down")
+    out = condense(evts, "llm", keep=10, summarizer=_bad)
+    assert len(out) == 10
+    assert all("condenser" != e.get("role") for e in out)
+
+
+def test_llm_falls_back_when_summarizer_returns_empty():
+    evts = _make_events(50)
+    out = condense(evts, "llm", keep=10, summarizer=lambda _p: "")
+    assert len(out) == 10
 
 
 def test_unknown_strategy_is_noop():

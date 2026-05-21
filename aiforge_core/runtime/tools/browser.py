@@ -145,6 +145,26 @@ def _extract_text(page: Any, selector: str | None) -> dict[str, Any]:
     return {"ok": True, "text": text, "truncated": truncated}
 
 
+def _mouse_click(page: Any, x: int, y: int, button: str) -> dict[str, Any]:
+    page.mouse.click(x, y, button=button or "left")
+    return {"ok": True, "x": x, "y": y, "button": button or "left"}
+
+
+def _key_press(page: Any, key: str) -> dict[str, Any]:
+    page.keyboard.press(key)
+    return {"ok": True, "key": key}
+
+
+def _type_text(page: Any, text: str) -> dict[str, Any]:
+    page.keyboard.type(text)
+    return {"ok": True, "typed_bytes": len(text.encode("utf-8"))}
+
+
+def _scroll(page: Any, dx: int, dy: int) -> dict[str, Any]:
+    page.mouse.wheel(dx, dy)
+    return {"ok": True, "dx": dx, "dy": dy}
+
+
 def browse(
     command: str,
     *,
@@ -152,12 +172,19 @@ def browse(
     path: str | None = None,
     selector: str | None = None,
     text: str | None = None,
+    x: int | None = None,
+    y: int | None = None,
+    button: str | None = None,
+    key: str | None = None,
+    dx: int | None = None,
+    dy: int | None = None,
     _run_id: str | None = None,
 ) -> dict[str, Any]:
     """OpenHands-parity browser dispatcher.
 
     Commands: ``goto``, ``screenshot``, ``click``, ``fill``, ``extract_text``,
-    ``close``. Soft-error contract.
+    ``mouse_click`` (x/y/button), ``key_press`` (key), ``type`` (text),
+    ``scroll`` (dx/dy), ``close``. Soft-error contract.
     """
     if not _playwright_available():
         return {"ok": False, "error": "playwright_missing",
@@ -193,6 +220,20 @@ def browse(
             return _fill(page, selector, text)
         if command == "extract_text":
             return _extract_text(page, selector)
+        if command == "mouse_click":
+            if x is None or y is None:
+                return {"ok": False, "error": "missing_x_or_y"}
+            return _mouse_click(page, x, y, button or "left")
+        if command == "key_press":
+            if not key:
+                return {"ok": False, "error": "missing_key"}
+            return _key_press(page, key)
+        if command == "type":
+            if text is None:
+                return {"ok": False, "error": "missing_text"}
+            return _type_text(page, text)
+        if command == "scroll":
+            return _scroll(page, dx or 0, dy or 0)
         return {"ok": False, "error": "unknown_command", "command": command}
     except Exception as exc:  # noqa: BLE001 — Playwright timeouts, etc.
         emit("Browse", {"action": "error", "command": command,

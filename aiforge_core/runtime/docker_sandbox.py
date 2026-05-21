@@ -51,7 +51,15 @@ def _container_exists(name: str) -> bool:
 
 
 def ensure_container(run_id: str) -> str:
-    """Lazy-create the per-run container and return its name."""
+    """Lazy-create the per-run container and return its name.
+
+    Mount mode:
+      ``AIFORGE_DOCKER_VOLUME_MODE=ro`` (default, safe) — workspace
+      mounted read-only; container writes go to its own filesystem.
+      ``AIFORGE_DOCKER_VOLUME_MODE=rw`` — workspace mounted read-write;
+      container can edit operator files. ONLY use when ScopeGuard +
+      agent allowlist provides sufficient containment.
+    """
     if run_id in _containers:
         return _containers[run_id]
     name = _container_name(run_id)
@@ -60,20 +68,25 @@ def ensure_container(run_id: str) -> str:
         network = os.environ.get("AIFORGE_DOCKER_NETWORK", "bridge")
         memory = os.environ.get("AIFORGE_DOCKER_MEMORY", "1g")
         cpus = os.environ.get("AIFORGE_DOCKER_CPUS", "2")
+        vol_mode = os.environ.get(
+            "AIFORGE_DOCKER_VOLUME_MODE", "ro",
+        ).lower()
+        if vol_mode not in ("ro", "rw"):
+            vol_mode = "ro"
         repo = str(root())
         subprocess.run(
             [
                 "docker", "run", "-d", "--name", name,
                 "--network", network,
                 "--memory", memory, "--cpus", cpus,
-                "-v", f"{repo}:/workspace:ro",
+                "-v", f"{repo}:/workspace:{vol_mode}",
                 "--workdir", "/workspace",
                 image, "tail", "-f", "/dev/null",
             ],
             check=True, capture_output=True,
         )
         emit("DockerSandbox", {"action": "created", "name": name,
-                               "image": image})
+                               "image": image, "vol_mode": vol_mode})
     _containers[run_id] = name
     return name
 
