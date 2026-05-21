@@ -46,8 +46,9 @@ termination_contract; absence triggers Verifier rejection.
 | `editor` | `tools/editor.py` | view/create/str_replace/insert/undo_edit + per-path snapshot ring depth 5 |
 | `bash` | `tools/bash.py` | tmux-backed persistent shell (or Docker via sub #7); cwd/env/jobs persist |
 | `browse` | `tools/browser.py` | Playwright headless: goto/screenshot/click/fill/extract_text/mouse_click/key_press/type/scroll/close |
-| `execute_ipython_cell` | `tools/ipython_kernel.py` | jupyter_client KernelManager; variables/imports persist across calls |
-| `delegate_to_agent` | `tools/delegation.py` | spawn single-agent ADK runner for researcher/planner/refiner/triage/verifier |
+| `execute_ipython_cell` | `tools/ipython_kernel.py` | jupyter_client KernelManager; AgentSkills helpers auto-loaded (sub #12) |
+| `delegate_to_agent` | `tools/delegation.py` | spawn single-agent ADK runner; depth-capped via `AIFORGE_DELEGATION_MAX_DEPTH` (sub #16) |
+| `mcp` | `tools/mcp_client.py` | JSON-RPC client for FastMCP servers; defaults to oneshell-mcp QA tier (sub #11) |
 | `think` | `tools/cognition.py` | no-op + `:Think` trace; 4 KB cap |
 | `finish` | `tools/cognition.py` | Doer-only explicit termination signal |
 | `grep_repo` | `doer_tools.py` (legacy) | rg/grep wrapper |
@@ -114,7 +115,21 @@ plumbing:
 | #6 vision | `_run_pipeline` rewrites first user Content with image parts | ticket has image attachments AND Doer model on vision allowlist |
 | #9 budget | `EscalatingLlm.generate_content_async` records per-call usage | every LLM call writes a `Spend` to the in-process tracker |
 
-## §9 — Resolver (sub #10, autonomous issue-watcher)
+## §9 — Extended subs #11..#17 (2026-05-22)
+
+Additional OH-parity surfaces beyond the original 1-10:
+
+| Sub | Module | Purpose |
+|---|---|---|
+| #11 MCP client | `tools/mcp_client.py` | call oneshell-mcp or arbitrary MCP servers; defaults to NUC QA tier |
+| #12 AgentSkills | `tools/agentskills.py` | OH-style helpers (open_file/goto_line/find_file/search_dir/...) auto-injected into the IPython kernel |
+| #13 Truncation marker | `tools/truncation.py` | `<truncated bytes_dropped=N>` suffix on capped outputs |
+| #14 :Condensation event | `condensers.py` | trace node emitted whenever condense() reduces count |
+| #15 Trajectory JSON | `trajectory.py` | dump session events+state to `~/.aiforge/trajectories/<ticket>/<run>.json` |
+| #16 Delegation depth cap | `tools/delegation.py` | `AIFORGE_DELEGATION_MAX_DEPTH` (default 3) guards runaway recursion |
+| #17 Repo microagents | `microagents.py` | `type: repo` files load with no trigger requirement and always inject |
+
+## §10 — Resolver (sub #10, autonomous issue-watcher)
 
 `runtime/resolver.py` polls a GitHub repo for issues tagged `aiforge-bot`
 and converts each into a ticket on the AIForge Postgres queue. The existing
@@ -136,4 +151,5 @@ Env knobs: `AIFORGE_RESOLVER_GH_REPO=owner/repo`,
 - `docs/superpowers/specs/2026-05-21-sub7-docker-sandbox.md` — sub #7
 - `docs/superpowers/specs/2026-05-21-sub8-delegation.md` — sub #8
 - `docs/superpowers/specs/2026-05-21-sub9-budget-tracker.md` — sub #9
-- `docs/superpowers/specs/2026-05-21-openhands-parity-roadmap.md` — all 9 + status
+- `docs/superpowers/specs/2026-05-21-openhands-parity-roadmap.md` — full roadmap + status
+- `docs/superpowers/specs/2026-05-22-subs11-17-extension.md` — subs #11..#17 batch

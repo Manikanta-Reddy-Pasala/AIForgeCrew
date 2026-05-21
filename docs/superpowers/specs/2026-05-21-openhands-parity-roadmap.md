@@ -180,3 +180,23 @@ Rationale:
 - **2026-05-22:** NUC install **still deferred** — neither 192.168.70.115
   nor 192.168.70.191 reachable from current network. Deploy steps queued
   in README.md "NUC deploy steps" section.
+
+- **2026-05-22 (later):** second-pass gap audit closed 7 more subs in
+  commit 91556b6, all memory-driven. See
+  `2026-05-22-subs11-17-extension.md` for the spec.
+  - sub #11 MCP client (closes EVAL-4 follow-up from 2026-04-23)
+  - sub #12 AgentSkills helpers (open_file/goto_line/find_file/...)
+  - sub #13 truncation marker
+  - sub #14 :Condensation trace event
+  - sub #15 trajectory JSON dump
+  - sub #16 delegation depth cap
+  - sub #17 type:repo microagents (always-on)
+
+  Final suite count: **526 passed**, 14 skipped (unchanged optional
+  infra: tmux/jupyter_client/aiforge DB).
+
+  Genuinely deferred items (no near-term value): E2B/Kubernetes
+  runtimes (Docker covers), VSCode plugin (web/ frontend is the UI
+  surface), parallel multi-tool dispatch (ADK 2.0.0b1 native), full
+  Action/Observation typed schema (dict tool returns + :ToolCall +
+  :ToolResult trace nodes are functionally equivalent).

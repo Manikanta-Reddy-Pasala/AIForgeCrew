@@ -153,7 +153,7 @@ Infrastructure: pluggable LLM router with health probe + cloud auto-escalation (
 |---|---|---|---|---|---|
 | **chat** | GA loop (`_chat_via_ga`) | qwen3-coder-next via Ollama Cloud | UnifiedContext.for_chat(query) injected via `do_unified_memory_query` tool | search_memory, unified_memory_query, related_memories, find_doc, sym_lookup, ticket_brief, ops_* (mongo/k8s/tekton/tally), read_claude_memory | R full · W T3 (chat_qa wing, auto) |
 | **planner** | smolagents CodeAgent | Qwen 3.6 27B (mlx-lm :1235) | UnifiedContext.for_planner(ticket) → `task_prompt` | read_file, list_dir, grep_repos, write_plan, related_tickets, related_memories | R full · W ticket body |
-| **doer** | GA agent_runner_loop | qwen3-coder-next (mlx-lm :1234) | UnifiedContext.for_doer(ticket) prepended to prompt | **editor** · **bash** (tmux/Docker) · **browse** (Playwright) · **execute_ipython_cell** · **delegate_to_agent** · **think** · **finish** · grep_repo · fetch_url · git_commit · memory_lookup · graphify_lookup · update_working_checkpoint | R full · W via learner (T3) |
+| **doer** | GA agent_runner_loop | qwen3-coder-next (mlx-lm :1234) | UnifiedContext.for_doer(ticket) prepended to prompt | **editor** · **bash** (tmux/Docker) · **browse** (Playwright) · **execute_ipython_cell** (+AgentSkills) · **delegate_to_agent** (depth-capped) · **mcp** (oneshell-mcp client) · **think** · **finish** · grep_repo · fetch_url · git_commit · memory_lookup · graphify_lookup · update_working_checkpoint | R full · W via learner (T3) |
 | **feedback** | deterministic Python | (none) | doer outcome counters | (none — pure code) | R none · W ticket_events |
 | **learner** | deterministic + optional LLM | distill = template; pattern_miner = heuristic | Doer outcome dict | retain_fact | W T3 (patterns/doer-success or patterns/doer-failure) |
 
@@ -168,8 +168,9 @@ The Doer calls eight canonical tools, declared in `aiforge_core/agents/agents.ya
 | `editor(command, path, ...)` | `runtime/tools/editor.py` | OH-style multi-command: `view`, `create`, `str_replace`, `insert`, `undo_edit` (per-path snapshot ring depth 5). Sub-command allowlist via `editor_commands` field in agents.yaml. |
 | `bash(command, restart, timeout)` | `runtime/tools/bash.py` | tmux-backed persistent session per ADK run; cwd / env / background jobs persist across calls. Falls back to stateless subprocess if tmux missing; delegates to Docker sandbox when `AIFORGE_DOCKER_SANDBOX=1`. |
 | `browse(command, ...)` | `runtime/tools/browser.py` | Playwright headless: `goto`, `screenshot`, `click`, `fill`, `extract_text`, `mouse_click`, `key_press`, `type`, `scroll`, `close`. URL allowlist via `AIFORGE_BROWSER_ALLOWLIST` regex CSV. |
-| `execute_ipython_cell(code, timeout)` | `runtime/tools/ipython_kernel.py` | Persistent Jupyter kernel; variables / imports / defs persist across calls. |
-| `delegate_to_agent(role, prompt, timeout)` | `runtime/tools/delegation.py` | Spawn single-agent ADK runner for researcher/planner/refiner/triage/verifier. |
+| `execute_ipython_cell(code, timeout)` | `runtime/tools/ipython_kernel.py` | Persistent Jupyter kernel; variables / imports / defs persist across calls. AgentSkills helpers (`open_file`, `goto_line`, `find_file`, `search_dir`, `search_file`, `create_file`, `run_cmd`) auto-loaded into namespace on first call. |
+| `delegate_to_agent(role, prompt, timeout)` | `runtime/tools/delegation.py` | Spawn single-agent ADK runner for researcher/planner/refiner/triage/verifier. Depth-capped via `AIFORGE_DELEGATION_MAX_DEPTH` (default 3). |
+| `mcp(command, endpoint, tool, arguments)` | `runtime/tools/mcp_client.py` | JSON-RPC client for FastMCP servers. Defaults point at oneshell-mcp QA tier on NUC (mongo/k8s/tekton/tally at 192.168.70.115:881x). Override via `AIFORGE_MCP_ENDPOINTS`. |
 | `think(thought)` | `runtime/tools/cognition.py` | No-op + `:Think` trace event. 4 KB cap. |
 | `finish(summary, status)` | `runtime/tools/cognition.py` | Doer-only explicit termination signal; returns `terminate=True`. |
 | Support tools | `runtime/doer_tools.py` | `grep_repo`, `fetch_url`, `git_commit`, `memory_lookup`, `graphify_lookup`, `update_working_checkpoint`. |
@@ -181,11 +182,18 @@ Non-Doer agents (Architect, Planner, Researcher) get **view-only** access via th
 | Sub | Module | Activate via |
 |---|---|---|
 | #4 Memory condenser | `runtime/condensers.py` | `AIFORGE_CONDENSER_STRATEGY=amortized\|recent\|llm` |
-| #5 Microagents | `runtime/microagents.py` | drop `*.md` files in `~/.aiforge/microagents/` with `triggers:` frontmatter |
+| #5 Microagents | `runtime/microagents.py` | drop `*.md` files in `~/.aiforge/microagents/` with `triggers:` frontmatter; or `type: repo` for always-on (sub #17) |
 | #6 Multimodal vision | `runtime/vision.py` + `runtime/vision_adk.py` | auto-attached when Doer model on vision allowlist AND ticket has image attachments |
 | #7 Docker sandbox | `runtime/docker_sandbox.py` | `AIFORGE_DOCKER_SANDBOX=1`; volume mode via `AIFORGE_DOCKER_VOLUME_MODE=ro\|rw` |
 | #9 Budget tracker | `runtime/budget.py` | recorded automatically by `EscalatingLlm`; query via `tracker.total() / by_role() / by_model()` |
 | #10 Resolver | `runtime/resolver.py` | systemd timer running `python -m aiforge_core.runtime.resolver` |
+| #11 MCP client | `runtime/tools/mcp_client.py` | tool registered to Doer; defaults to oneshell-mcp QA; override `AIFORGE_MCP_ENDPOINTS` |
+| #12 AgentSkills helpers | `runtime/tools/agentskills.py` | auto-injected into IPython kernel on first cell run |
+| #13 Truncation marker | `runtime/tools/truncation.py` | shared helper; tools wrap capped output with `<truncated bytes_dropped=N>` |
+| #14 Condensation event | `runtime/condensers.py` | `:Condensation` trace fires whenever condense() reduces event count |
+| #15 Trajectory dump | `runtime/trajectory.py` | runner finally block dumps session JSON to `~/.aiforge/trajectories/`; toggle via `AIFORGE_TRAJECTORY_DUMP=0` |
+| #16 Delegation depth cap | `runtime/tools/delegation.py` | `AIFORGE_DELEGATION_MAX_DEPTH` (default 3) prevents runaway recursive delegation |
+| #17 Repo microagents | `runtime/microagents.py` | `*.md` with `type: repo` always loaded, no triggers needed |
 
 See:
 
@@ -215,6 +223,15 @@ export AIFORGE_BROWSER_ALLOWLIST='^https?://'
 export AIFORGE_RESOLVER_GH_REPO=Manikanta-Reddy-Pasala/AIForgeCrew
 export AIFORGE_RESOLVER_LABEL=aiforge-bot
 export GITHUB_TOKEN=...                  # for the resolver
+
+# Sub #11 MCP defaults already point at NUC; override if needed:
+# export AIFORGE_MCP_ENDPOINTS="oneshell-mongo=http://192.168.70.115:8810,..."
+# Sub #16 delegation depth cap:
+# export AIFORGE_DELEGATION_MAX_DEPTH=3
+# Sub #15 trajectory dump:
+# export AIFORGE_TRAJECTORY_DUMP=1
+# Sub #17 microagents — drop *.md files in:
+mkdir -p ~/.aiforge/microagents
 
 # Restart
 .venv/bin/pytest tests/python/ -q        # confirm tmux + jupyter tests now run
