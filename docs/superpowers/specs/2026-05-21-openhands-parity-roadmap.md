@@ -116,3 +116,36 @@ Rationale:
 - **2026-05-21:** decomposed into 9 subs (this doc).
 - **2026-05-21:** sub #1 specced separately (`2026-05-21-tool-surface-upgrade-design.md`); user approved approach B (layered tools package).
 - **2026-05-21:** ADK migration audit closed — already on `2.0.0b1`.
+- **2026-05-21:** all 9 subs landed in single session. See per-sub specs:
+  - `2026-05-21-tool-surface-upgrade-design.md` (#1) + plan
+  - `2026-05-21-sub2-browser-tool.md` (#2)
+  - `2026-05-21-sub3-ipython-kernel.md` (#3)
+  - `2026-05-21-sub4-memory-condenser.md` (#4)
+  - `2026-05-21-sub5-microagents.md` (#5)
+  - `2026-05-21-sub6-vision.md` (#6)
+  - `2026-05-21-sub7-docker-sandbox.md` (#7)
+  - `2026-05-21-sub8-delegation.md` (#8)
+  - `2026-05-21-sub9-budget-tracker.md` (#9)
+
+## 10. Verification log (all subs)
+
+- **2026-05-21:** `pytest tests/python/ -q` (excluding pre-existing
+  embed_sidecar / graphify_lookup_tool infra failures unrelated to
+  OpenHands parity work): **475 passed, 14 skipped** for missing
+  optional dependencies (tmux x 4, jupyter_client x 3, aiforge DB x 6,
+  integration tmux x 1). All 9 subs covered by unit tests:
+  - sub #1: 45 tests, 84-96% per-module coverage
+  - sub #2: 11 tests via Playwright MagicMock
+  - sub #3: 5 tests (2 always + 3 jupyter-skip)
+  - sub #4: 8 tests (pure functions, full coverage)
+  - sub #5: 10 tests
+  - sub #6: 8 tests
+  - sub #7: 9 tests via Docker CLI mocks
+  - sub #8: 5 tests via asyncio AsyncMock
+  - sub #9: 9 tests (incl. concurrent thread safety)
+
+- **2026-05-21:** Doer's final allowed toolset in `agents.yaml`:
+  `editor`, `bash`, `browse`, `execute_ipython_cell`,
+  `delegate_to_agent`, `think`, `finish`, plus support tools
+  (grep_repo / fetch_url / git_commit / memory_lookup /
+  graphify_lookup / update_working_checkpoint).
