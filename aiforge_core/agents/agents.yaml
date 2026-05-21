@@ -55,8 +55,7 @@ agents:
         - graph_lookup
         - graphify_lookup
         - search_memory
-        - read_file
-        - list_dir
+        - editor                # view-only via editor_commands below
         - grep_repos
         - lookup_repo
         - create_parent_ticket
@@ -68,6 +67,11 @@ agents:
         - run_compile
         - file_write
         - code_run
+        - bash
+        - run_shell
+        - file_read
+    editor_commands:
+      - view
     memory:
       read_scope: full
       write_scope: none
@@ -111,8 +115,7 @@ agents:
         - graph_lookup
         - graphify_lookup
         - search_memory
-        - read_file
-        - list_dir
+        - editor                # view-only via editor_commands below
         - grep_repos
         - lookup_repo
         - write_plan
@@ -125,6 +128,12 @@ agents:
         - run_compile
         - ask_user
         - code_run
+        - bash
+        - run_shell
+        - file_read
+        - file_write
+    editor_commands:
+      - view
     memory:
       read_scope: full
       write_scope: none
@@ -215,13 +224,16 @@ agents:
       max_wall_s: 1500
     tools:
       allowed:
-        - file_read
-        - file_write
-        - file_patch
-        - code_run                  # shell — ScopeGuard wraps this; covers grep/ls/find
+        - editor                    # NEW — OH-parity multi-command editor
+        - bash                      # NEW — tmux persistent session
+        - think                     # NEW — no-op + :Think trace
+        - finish                    # NEW — Doer-only termination signal
         - update_working_checkpoint # save mid-run state
         - graphify_lookup           # read-only graph traversal (no fs writes)
         - memory_lookup             # read-only AiForgeMemory recall
+        - grep_repo                 # kept — useful for fast pattern search
+        - fetch_url                 # kept — public-docs fetch
+        - git_commit                # kept — milestone snapshots
       forbidden:
         - ask_user
         - start_long_term_update
@@ -230,6 +242,12 @@ agents:
         - write_plan
         - web_scan
         - web_execute_js
+        - file_read                 # LEGACY — superseded by editor view
+        - file_write                # LEGACY — superseded by editor create
+        - file_patch                # LEGACY — superseded by editor str_replace
+        - list_dir                  # LEGACY — superseded by editor view (dir)
+        - run_shell                 # LEGACY — superseded by bash
+        - code_run                  # LEGACY — superseded by bash
     memory:
       read_scope: scoped            # only :Fact ABOUT files in allowlist globs
       write_scope: none
@@ -393,8 +411,7 @@ agents:
       allowed:
         - graphify_lookup
         - memory_lookup
-        - file_read
-        - list_dir
+        - editor                # view-only via editor_commands below
         - grep_repos
       forbidden:
         - file_write
@@ -402,6 +419,11 @@ agents:
         - run_compile
         - code_run
         - ask_user
+        - bash
+        - run_shell
+        - file_read
+    editor_commands:
+      - view
     memory:
       read_scope: full
       write_scope: none

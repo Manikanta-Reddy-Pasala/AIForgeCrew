@@ -79,6 +79,7 @@ class AgentContract:
     memory: Memory
     rule: str
     termination_contract: list[str]
+    editor_commands: list[str] | None = None
 
 
 class AgentSpecError(ValueError):
@@ -151,6 +152,14 @@ def _parse_one(role: str, raw: dict) -> AgentContract:
     if not termination:
         raise AgentSpecError(f"{where}.termination_contract must be non-empty")
 
+    editor_commands_raw = raw.get("editor_commands")
+    if editor_commands_raw is not None:
+        editor_commands = _as_list_str(
+            editor_commands_raw, f"{where}.editor_commands",
+        )
+    else:
+        editor_commands = None
+
     return AgentContract(
         role=role,
         identity=identity,
@@ -160,6 +169,7 @@ def _parse_one(role: str, raw: dict) -> AgentContract:
         memory=memory,
         rule=rule.strip(),
         termination_contract=termination,
+        editor_commands=editor_commands,
     )
 
 

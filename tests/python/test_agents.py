@@ -58,10 +58,16 @@ def test_validate_shipped_yaml_has_no_violations() -> None:
     assert violations == [], f"shipped yaml should be clean, got: {violations}"
 
 
-def test_doer_allowed_includes_file_write() -> None:
+def test_doer_allowed_includes_oh_parity_tools() -> None:
+    """After sub-project #1, Doer's allowed set is editor/bash/think/finish
+    plus support tools; legacy file_write/file_patch/code_run are moved to
+    forbidden (see docs/superpowers/specs/2026-05-21-tool-surface-upgrade-design.md)."""
     contracts = load_agents(SHIPPED_YAML)
     full_schema = [
-        {"name": "file_read", "description": "..."},
+        {"name": "editor", "description": "..."},
+        {"name": "bash", "description": "..."},
+        {"name": "think", "description": "..."},
+        {"name": "finish", "description": "..."},
         {"name": "file_write", "description": "..."},
         {"name": "file_patch", "description": "..."},
         {"name": "code_run", "description": "..."},
@@ -70,11 +76,46 @@ def test_doer_allowed_includes_file_write() -> None:
     ]
     filtered = tools_schema_for_role("doer", full_schema, contracts)
     names = {t["name"] for t in filtered}
-    assert "file_write" in names
-    assert "file_patch" in names
-    assert "code_run" in names
+    assert "editor" in names
+    assert "bash" in names
+    assert "think" in names
+    assert "finish" in names
+    assert "file_write" not in names
+    assert "file_patch" not in names
+    assert "code_run" not in names
     assert "ask_user" not in names
     assert "create_child_ticket" not in names
+
+
+def test_doer_has_full_editor_access() -> None:
+    contracts = load_agents()
+    doer = contracts["doer"]
+    assert doer.editor_commands is None  # None = full access
+    assert "editor" in doer.tools.allowed
+    assert "bash" in doer.tools.allowed
+    assert "think" in doer.tools.allowed
+    assert "finish" in doer.tools.allowed
+
+
+def test_legacy_tools_moved_to_forbidden_for_doer() -> None:
+    contracts = load_agents()
+    doer = contracts["doer"]
+    forbidden = set(doer.tools.forbidden)
+    for legacy in ("file_read", "file_write", "file_patch",
+                   "run_shell", "code_run"):
+        assert legacy in forbidden, (
+            f"{legacy} must be forbidden for Doer post sub-project #1"
+        )
+
+
+def test_view_only_roles_have_editor_commands_view() -> None:
+    contracts = load_agents()
+    for role in ("architect", "planner", "researcher"):
+        c = contracts[role]
+        assert c.editor_commands == ["view"], (
+            f"{role} must restrict editor to view-only"
+        )
+        assert "editor" in c.tools.allowed
 
 
 def test_planner_filter_excludes_file_write() -> None:
