@@ -309,3 +309,29 @@ None remaining at brainstorm close. (Editor coexistence = replace + alias; bash 
 ## 12. Successor work
 
 Once this lands and the eval gate passes, drill into sub-project #2 (Browser tool) per the OpenHands parity roadmap. Each subsequent sub-project gets its own spec → plan → implementation cycle.
+
+## 13. Verification log
+
+- **2026-05-21** — full `pytest tests/python/ -q` on dev box (macOS, no tmux, no embed sidecar, no aiforge DB): 413 passed, 11 skipped (3 pre-existing failures in `test_embed_sidecar.py` x2 + `test_graphify_lookup_tool.py` x1 are unrelated infra dependencies; verified pre-existing via stash).
+- **2026-05-21** — `tools/` package coverage:
+
+```
+aiforge_core/runtime/tools/__init__.py        100%
+aiforge_core/runtime/tools/_trace.py           96%
+aiforge_core/runtime/tools/bash.py             39%   ← tmux path skipped (dev box lacks tmux)
+aiforge_core/runtime/tools/cognition.py        96%
+aiforge_core/runtime/tools/editor.py           84%
+TOTAL                                          74%
+```
+
+bash.py coverage is gated by `tmux` availability — the four currently-skipped
+tmux integration tests cover the persistent-session path and will exercise
+the missing lines when this runs on a tmux-equipped host (Mac Studio prod).
+Coverage ≥85% target met for `__init__.py`, `_trace.py`, `cognition.py`,
+`editor.py`; full `bash.py` coverage pending re-run on tmux host.
+
+- **2026-05-21** — `validate_contracts(load_agents())` returns `[]`; agents.yaml
+  parses cleanly; Doer's `editor_commands` is `None` (full access); Architect /
+  Planner / Researcher carry `editor_commands: [view]`.
+- **2026-05-21** — eval re-run on ONE-107 / ONE-108 / ONE-109 fixtures: pending
+  next Mac Studio production cycle (writes here on completion).
