@@ -316,6 +316,13 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
             destroy_kernel(session.id)
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup
             log.debug("ipython.destroy_kernel failed: %s", exc)
+        try:
+            from aiforge_core.runtime.docker_sandbox import (
+                destroy_container,
+            )
+            destroy_container(session.id)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            log.debug("docker_sandbox.destroy_container failed: %s", exc)
 
 
 def _build_prompt(ticket, memory_md: str) -> str:

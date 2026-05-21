@@ -163,6 +163,15 @@ def bash(
     """
     if not command or not command.strip():
         return {"ok": False, "error": "empty_command"}
+    # Optional Docker sandbox (sub #7) takes precedence when opted in.
+    from aiforge_core.runtime import docker_sandbox
+    if docker_sandbox.is_enabled():
+        if _run_id is None:
+            _run_id = "default-" + uuid.uuid4().hex[:8]
+        return docker_sandbox.exec_in_container(
+            _run_id, command, timeout=timeout,
+        )
+
     if not _tmux_available():
         emit("BashFallback", {"reason": "tmux_missing"})
         return _fallback_run(command, timeout)
