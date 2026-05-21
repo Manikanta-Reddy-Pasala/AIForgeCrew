@@ -240,8 +240,49 @@ def _build_context_plugins() -> list:
                     "ADK older than 2.0b? skipping")
         return []
     keep = int(os.environ.get("AIFORGE_CONTEXT_KEEP_INVOCATIONS", "12"))
-    log.info("context_filter: enabled keep=%d invocations", keep)
-    return [ContextFilterPlugin(num_invocations_to_keep=keep)]
+    strategy = os.environ.get("AIFORGE_CONDENSER_STRATEGY", "").strip()
+    custom = None
+    if strategy:
+        # Sub #4: optional aggressive condenser layered over the
+        # invocation-keep trim. ``amortized`` compresses oldest half
+        # into one synthetic block; ``recent`` is keep-tail only.
+        from aiforge_core.runtime.condensers import condense
+
+        def _adk_custom_filter(contents):
+            events = [
+                {"type": "content", "role": getattr(c, "role", ""),
+                 "text": " ".join(
+                     getattr(p, "text", "") for p in getattr(c, "parts", [])
+                     if getattr(p, "text", None)
+                 )}
+                for c in contents
+            ]
+            condensed = condense(events, strategy)
+            # ADK custom_filter must return list[Content]; map back by
+            # keeping the original Content objects when index survives,
+            # otherwise drop (amortized prepends one synthetic block we
+            # let through as-is via a fresh Content).
+            from google.genai import types as gtypes
+            # Heuristic: align tail-N of condensed to tail-N of contents.
+            keep_n = len(condensed) - (1 if condensed and condensed[0].get(
+                "role") == "condenser" else 0)
+            tail = contents[-keep_n:] if keep_n > 0 else []
+            if condensed and condensed[0].get("role") == "condenser":
+                summary_part = gtypes.Part.from_text(
+                    text=condensed[0]["text"],
+                )
+                summary = gtypes.Content(role="user", parts=[summary_part])
+                return [summary] + list(tail)
+            return list(tail)
+
+        custom = _adk_custom_filter
+        log.info("context_filter: enabled keep=%d invocations + "
+                 "condenser=%s", keep, strategy)
+    else:
+        log.info("context_filter: enabled keep=%d invocations", keep)
+    return [ContextFilterPlugin(
+        num_invocations_to_keep=keep, custom_filter=custom,
+    )]
 
 
 async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
@@ -355,6 +396,50 @@ def _build_prompt(ticket, memory_md: str) -> str:
         )
     if memory_md:
         out += "\n" + memory_md
+
+    # Microagent injection (sub #5). Match against ticket title + body and
+    # prepend matched playbooks. Best-effort: parse failures swallowed.
+    try:
+        from aiforge_core.runtime.microagents import (
+            load_microagents, match, render_injection,
+        )
+        agents = load_microagents()
+        hay = f"{ticket.title or ''} {ticket.body or ''}"
+        matched = match(hay, agents)
+        if matched:
+            out = render_injection(matched) + "\n\n" + out
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("microagents.inject failed: %s", exc)
+
+    # Vision attach hint (sub #6). When the ticket has image attachments
+    # AND the active Doer model supports vision, list them with a flag so
+    # the model knows it can request a multimodal turn. Actual content-
+    # block conversion lives in vision.attach_image; wiring it through
+    # ADK's LlmRequest.contents shape is a follow-up.
+    try:
+        from aiforge_core.runtime.vision import supports_vision
+        from aiforge_core.config.agent_config import get_config
+        cfg = get_config()
+        doer_model = (cfg.get("doer", {}) or {}).get("model", "")
+        if supports_vision(doer_model):
+            md = ticket.metadata or {}
+            images = [
+                f for f in (md.get("attached_files") or [])
+                if isinstance(f, dict)
+                and str(f.get("name", "")).lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".gif", ".webp"),
+                )
+            ]
+            if images:
+                out += (
+                    "\n## Multimodal images (vision-enabled model)\n"
+                    "These attachments are images. Call `vision.attach_image`\n"
+                    "to convert each into multimodal content blocks.\n"
+                )
+                for img in images:
+                    out += f"- `{img.get('path','')}`\n"
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("vision.attach_hint failed: %s", exc)
     return out
 
 

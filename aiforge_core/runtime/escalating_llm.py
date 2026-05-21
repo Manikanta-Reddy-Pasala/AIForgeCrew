@@ -267,6 +267,32 @@ class EscalatingLlm(BaseLlm):
                     "(primary_demoted=%s)",
                     self.role, label, self.primary_demoted,
                 )
+            # Sub #9: record per-call spend on the unified budget tracker.
+            # Best-effort: a missing usage_metadata field never blocks the
+            # yield. Cost stays 0 — populated by a downstream price-table
+            # plugin in a follow-up.
+            try:
+                from aiforge_core.runtime.budget import tracker
+                in_t = 0
+                out_t = 0
+                for r in buffered:
+                    usage = getattr(r, "usage_metadata", None)
+                    if usage is None:
+                        continue
+                    in_t += int(
+                        getattr(usage, "prompt_token_count", 0) or 0,
+                    )
+                    out_t += int(
+                        getattr(usage, "candidates_token_count", 0) or 0,
+                    )
+                if in_t or out_t:
+                    tracker.record(
+                        role=self.role,
+                        model=getattr(model, "model", "") or label,
+                        input_tokens=in_t, output_tokens=out_t,
+                    )
+            except Exception as exc:  # noqa: BLE001 — accounting is best-effort
+                log.debug("budget.record failed: %s", exc)
             for r in buffered:
                 yield r
             return
