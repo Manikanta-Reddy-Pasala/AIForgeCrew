@@ -14,8 +14,9 @@ Three independent layers MUST agree:
 3. **Trace assertion** — harness pre-flight inspects recorded `:ToolCall` events
    and fails the run if a forbidden name appears.
 
-This means a model that hallucinates "edit_block" while the Doer's allowed set
-is `{editor, bash, think, finish, ...}` is stopped at every layer.
+A model that hallucinates `edit_block` while the Doer's allowed set is
+`{editor, bash, browse, execute_ipython_cell, delegate_to_agent, think, finish, …}`
+is stopped at every layer.
 
 ## §2 — Memory write isolation
 
@@ -36,28 +37,103 @@ Every test subticket MUST reference a template under
 `docs/test-skeleton-templates/`. Planner enforces this in its
 termination_contract; absence triggers Verifier rejection.
 
-## §X — Tool surface (sub-project #1, 2026-05-21)
+## §5 — Tool surface (OpenHands parity, 2026-05-21)
 
-**Doer:** `editor`, `bash`, `think`, `finish`, `update_working_checkpoint`,
-`graphify_lookup`, `memory_lookup`, `grep_repo`, `fetch_url`, `git_commit`.
-All five legacy file/shell tools (`file_read`, `file_write`, `file_patch`,
-`list_dir`, `run_shell`, `code_run`) moved to `forbidden`.
+**Doer canonical tools** (declared in `agents.yaml.doer.tools.allowed`):
 
-**Architect / Planner / Researcher:** `editor` restricted to `editor_commands:
-[view]` (view-only). All mutating commands return `editor_command_not_allowed`.
+| Tool | Module | Purpose |
+|---|---|---|
+| `editor` | `tools/editor.py` | view/create/str_replace/insert/undo_edit + per-path snapshot ring depth 5 |
+| `bash` | `tools/bash.py` | tmux-backed persistent shell (or Docker via sub #7); cwd/env/jobs persist |
+| `browse` | `tools/browser.py` | Playwright headless: goto/screenshot/click/fill/extract_text/mouse_click/key_press/type/scroll/close |
+| `execute_ipython_cell` | `tools/ipython_kernel.py` | jupyter_client KernelManager; variables/imports persist across calls |
+| `delegate_to_agent` | `tools/delegation.py` | spawn single-agent ADK runner for researcher/planner/refiner/triage/verifier |
+| `think` | `tools/cognition.py` | no-op + `:Think` trace; 4 KB cap |
+| `finish` | `tools/cognition.py` | Doer-only explicit termination signal |
+| `grep_repo` | `doer_tools.py` (legacy) | rg/grep wrapper |
+| `fetch_url` | `doer_tools.py` (legacy) | http(s) GET only |
+| `git_commit` | `doer_tools.py` (legacy) | milestone snapshots inside ticket branch |
+| `memory_lookup` | `runtime/memory_lookup_tool.py` | hybrid AiForgeMemory recall (read-only) |
+| `graphify_lookup` | `runtime/graphify_lookup_tool.py` | graph traversal (read-only) |
+| `update_working_checkpoint` | runtime/learner_persist.py | mid-run state save |
 
-**Verifier / Refiner / Feedback / Learner / Triage:** tool-less
-(`forbidden: ALL`) — unchanged.
+**Architect / Planner / Researcher** carry `editor` with
+`editor_commands: [view]` — view-only enforced inside `editor.py`.
+
+**Verifier / Refiner / Feedback / Learner / Triage** are tool-less
+(`forbidden: ALL`).
 
 `finish` is Doer-only and enforced inside the tool (non-Doer attempts return
-`agent_not_authorized` regardless of allowlist content).
+`agent_not_authorized` regardless of allowlist content). Legacy tools
+`file_read`/`file_write`/`file_patch`/`list_dir`/`run_shell`/`code_run` are
+moved to Doer's `forbidden` list; the underlying functions still ship in
+`doer_tools.py` as escape hatches for hallucinated names for one release.
 
-`bash` sessions are tmux-backed per ADK run; `destroy_session(run_id)` is
-called in `runtime/adk_runner._run_pipeline`'s `finally` block so sessions
-never leak across tickets. Falls back to stateless subprocess on dev boxes
-without tmux.
+## §6 — Session lifecycle
+
+Every per-run runtime resource is created lazily on first call AND destroyed
+in `runtime/adk_runner._run_pipeline`'s `finally` block:
+
+| Resource | Create | Destroy |
+|---|---|---|
+| tmux bash | `bash._create_session(run_id)` | `bash.destroy_session(run_id)` |
+| Playwright browser context | `browser._get_context(run_id)` | `browser.destroy_context(run_id)` |
+| IPython kernel | `ipython_kernel._start_kernel(run_id)` | `ipython_kernel.destroy_kernel(run_id)` |
+| Docker sandbox container | `docker_sandbox.ensure_container(run_id)` | `docker_sandbox.destroy_container(run_id)` |
+| Editor undo ring | per-mutation snapshot | retained 5-deep per path |
+
+`run_id` = ADK `session.id` so the four resources share a single key per
+ticket. All cleanups are best-effort: failures are logged at debug and
+never block the runner from finalising the ticket.
+
+## §7 — Optional deps & graceful degradation
+
+Each new capability ships with an `*_available()` probe:
+
+| Capability | Probe | Behaviour when absent |
+|---|---|---|
+| tmux | `bash._tmux_available()` | falls back to stateless subprocess + warn-once trace |
+| Playwright | `browser._playwright_available()` | `browse` returns `{ok: False, error: "playwright_missing"}` |
+| jupyter_client | `ipython._jupyter_available()` | `execute_ipython_cell` returns `kernel_missing` |
+| Docker daemon | `docker_sandbox.is_enabled()` (env + binary + `docker info`) | `bash` runs on host as before |
+
+This way the same code runs on a contributor box (no extras) and the NUC
+(everything installed) without conditional imports leaking through to the
+agent prompt.
+
+## §8 — Pipeline auto-wires
+
+`_build_prompt` and `_build_context_plugins` integrate the orthogonal
+sub-projects into the ADK pipeline without each tool needing its own
+plumbing:
+
+| Sub | Wire | Trigger |
+|---|---|---|
+| #4 condenser | `ContextFilterPlugin.custom_filter` | `AIFORGE_CONDENSER_STRATEGY=amortized\|recent\|llm` |
+| #5 microagents | `_build_prompt` prepends matched playbooks | match ticket title+body against `~/.aiforge/microagents/*.md` triggers |
+| #6 vision | `_run_pipeline` rewrites first user Content with image parts | ticket has image attachments AND Doer model on vision allowlist |
+| #9 budget | `EscalatingLlm.generate_content_async` records per-call usage | every LLM call writes a `Spend` to the in-process tracker |
+
+## §9 — Resolver (sub #10, autonomous issue-watcher)
+
+`runtime/resolver.py` polls a GitHub repo for issues tagged `aiforge-bot`
+and converts each into a ticket on the AIForge Postgres queue. The existing
+`adk_runner` then processes those tickets normally and produces a PR via
+`runtime/git_pr.py`. Designed for systemd timer execution.
+
+Env knobs: `AIFORGE_RESOLVER_GH_REPO=owner/repo`,
+`AIFORGE_RESOLVER_LABEL=aiforge-bot`, `AIFORGE_RESOLVER_INTERVAL=60`,
+`GITHUB_TOKEN`.
 
 ## Spec history
 
 - `docs/superpowers/specs/2026-05-21-tool-surface-upgrade-design.md` — sub #1
-- `docs/superpowers/specs/2026-05-21-openhands-parity-roadmap.md` — subs #1-#9
+- `docs/superpowers/specs/2026-05-21-sub2-browser-tool.md` — sub #2
+- `docs/superpowers/specs/2026-05-21-sub3-ipython-kernel.md` — sub #3
+- `docs/superpowers/specs/2026-05-21-sub4-memory-condenser.md` — sub #4
+- `docs/superpowers/specs/2026-05-21-sub5-microagents.md` — sub #5
+- `docs/superpowers/specs/2026-05-21-sub6-vision.md` — sub #6
+- `docs/superpowers/specs/2026-05-21-sub7-docker-sandbox.md` — sub #7
+- `docs/superpowers/specs/2026-05-21-sub8-delegation.md` — sub #8
+- `docs/superpowers/specs/2026-05-21-sub9-budget-tracker.md` — sub #9
+- `docs/superpowers/specs/2026-05-21-openhands-parity-roadmap.md` — all 9 + status

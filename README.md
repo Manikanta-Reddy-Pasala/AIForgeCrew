@@ -153,28 +153,74 @@ Infrastructure: pluggable LLM router with health probe + cloud auto-escalation (
 |---|---|---|---|---|---|
 | **chat** | GA loop (`_chat_via_ga`) | qwen3-coder-next via Ollama Cloud | UnifiedContext.for_chat(query) injected via `do_unified_memory_query` tool | search_memory, unified_memory_query, related_memories, find_doc, sym_lookup, ticket_brief, ops_* (mongo/k8s/tekton/tally), read_claude_memory | R full · W T3 (chat_qa wing, auto) |
 | **planner** | smolagents CodeAgent | Qwen 3.6 27B (mlx-lm :1235) | UnifiedContext.for_planner(ticket) → `task_prompt` | read_file, list_dir, grep_repos, write_plan, related_tickets, related_memories | R full · W ticket body |
-| **doer** | GA agent_runner_loop | qwen3-coder-next (mlx-lm :1234) | UnifiedContext.for_doer(ticket) prepended to prompt | **editor** (view/create/str_replace/insert/undo_edit), **bash** (tmux persistent session), **think**, **finish**, grep_repo, fetch_url, git_commit, memory_lookup, graphify_lookup, update_working_checkpoint | R full · W via learner (T3) |
+| **doer** | GA agent_runner_loop | qwen3-coder-next (mlx-lm :1234) | UnifiedContext.for_doer(ticket) prepended to prompt | **editor** · **bash** (tmux/Docker) · **browse** (Playwright) · **execute_ipython_cell** · **delegate_to_agent** · **think** · **finish** · grep_repo · fetch_url · git_commit · memory_lookup · graphify_lookup · update_working_checkpoint | R full · W via learner (T3) |
 | **feedback** | deterministic Python | (none) | doer outcome counters | (none — pure code) | R none · W ticket_events |
 | **learner** | deterministic + optional LLM | distill = template; pattern_miner = heuristic | Doer outcome dict | retain_fact | W T3 (patterns/doer-success or patterns/doer-failure) |
 
 ADK 2.0.0b1 `SequentialAgent[Planner, LoopAgent[Doer, Feedback], Learner]` orchestrates. ADK does scheduling + lifecycle + tool-allowlist enforcement only — no business logic.
 
-### Doer tool surface (OpenHands-parity sub-project #1, 2026-05-21)
+### Doer tool surface (OpenHands parity, 2026-05-21)
 
-The Doer calls four canonical tools, declared in `aiforge_core/agents/agents.yaml`:
+The Doer calls eight canonical tools, declared in `aiforge_core/agents/agents.yaml`:
 
 | Tool | Module | Notes |
 |---|---|---|
 | `editor(command, path, ...)` | `runtime/tools/editor.py` | OH-style multi-command: `view`, `create`, `str_replace`, `insert`, `undo_edit` (per-path snapshot ring depth 5). Sub-command allowlist via `editor_commands` field in agents.yaml. |
-| `bash(command, restart, timeout)` | `runtime/tools/bash.py` | tmux-backed persistent session per ADK run; cwd / env / background jobs persist across calls. Falls back to stateless subprocess if tmux missing. |
+| `bash(command, restart, timeout)` | `runtime/tools/bash.py` | tmux-backed persistent session per ADK run; cwd / env / background jobs persist across calls. Falls back to stateless subprocess if tmux missing; delegates to Docker sandbox when `AIFORGE_DOCKER_SANDBOX=1`. |
+| `browse(command, ...)` | `runtime/tools/browser.py` | Playwright headless: `goto`, `screenshot`, `click`, `fill`, `extract_text`, `mouse_click`, `key_press`, `type`, `scroll`, `close`. URL allowlist via `AIFORGE_BROWSER_ALLOWLIST` regex CSV. |
+| `execute_ipython_cell(code, timeout)` | `runtime/tools/ipython_kernel.py` | Persistent Jupyter kernel; variables / imports / defs persist across calls. |
+| `delegate_to_agent(role, prompt, timeout)` | `runtime/tools/delegation.py` | Spawn single-agent ADK runner for researcher/planner/refiner/triage/verifier. |
 | `think(thought)` | `runtime/tools/cognition.py` | No-op + `:Think` trace event. 4 KB cap. |
 | `finish(summary, status)` | `runtime/tools/cognition.py` | Doer-only explicit termination signal; returns `terminate=True`. |
+| Support tools | `runtime/doer_tools.py` | `grep_repo`, `fetch_url`, `git_commit`, `memory_lookup`, `graphify_lookup`, `update_working_checkpoint`. |
 
-Non-Doer agents (Architect, Planner, Researcher) get **view-only** access via the `editor_commands: [view]` field. The legacy `file_read / file_write / file_patch / list_dir / run_shell / code_run` tools are kept one release as hallucinated-name escape hatches in `runtime/doer_tools.py` and will be removed in the next minor release. See:
+Non-Doer agents (Architect, Planner, Researcher) get **view-only** access via the `editor_commands: [view]` field. The legacy `file_read / file_write / file_patch / list_dir / run_shell / code_run` tools are kept one release as hallucinated-name escape hatches in `runtime/doer_tools.py` and will be removed in the next minor release.
 
-- Spec: `docs/superpowers/specs/2026-05-21-tool-surface-upgrade-design.md`
-- Roadmap: `docs/superpowers/specs/2026-05-21-openhands-parity-roadmap.md` (subs #2-#9)
+### Pipeline-layer features
+
+| Sub | Module | Activate via |
+|---|---|---|
+| #4 Memory condenser | `runtime/condensers.py` | `AIFORGE_CONDENSER_STRATEGY=amortized\|recent\|llm` |
+| #5 Microagents | `runtime/microagents.py` | drop `*.md` files in `~/.aiforge/microagents/` with `triggers:` frontmatter |
+| #6 Multimodal vision | `runtime/vision.py` + `runtime/vision_adk.py` | auto-attached when Doer model on vision allowlist AND ticket has image attachments |
+| #7 Docker sandbox | `runtime/docker_sandbox.py` | `AIFORGE_DOCKER_SANDBOX=1`; volume mode via `AIFORGE_DOCKER_VOLUME_MODE=ro\|rw` |
+| #9 Budget tracker | `runtime/budget.py` | recorded automatically by `EscalatingLlm`; query via `tracker.total() / by_role() / by_model()` |
+| #10 Resolver | `runtime/resolver.py` | systemd timer running `python -m aiforge_core.runtime.resolver` |
+
+See:
+
+- Specs: `docs/superpowers/specs/2026-05-21-sub{1..9}-*.md`
+- Roadmap: `docs/superpowers/specs/2026-05-21-openhands-parity-roadmap.md`
 - Plan:  `docs/superpowers/plans/2026-05-21-tool-surface-upgrade.md`
+- Rules: `docs/agent-rules.md`
+
+### NUC deploy steps (run on the AIForge stack host)
+
+```bash
+# Pull latest
+cd ~/AIForgeCrew && git pull origin main
+
+# Optional deps for full sub coverage
+uv pip install playwright jupyter_client ipykernel
+playwright install chromium
+
+# System deps (Ubuntu)
+sudo apt install -y tmux docker.io
+
+# Env knobs (add to ~/.aiforge/env or systemd unit)
+export AIFORGE_DOCKER_SANDBOX=1          # opt into Docker bash
+export AIFORGE_DOCKER_VOLUME_MODE=ro     # safer; flip to rw when needed
+export AIFORGE_CONDENSER_STRATEGY=amortized
+export AIFORGE_BROWSER_ALLOWLIST='^https?://'
+export AIFORGE_RESOLVER_GH_REPO=Manikanta-Reddy-Pasala/AIForgeCrew
+export AIFORGE_RESOLVER_LABEL=aiforge-bot
+export GITHUB_TOKEN=...                  # for the resolver
+
+# Restart
+.venv/bin/pytest tests/python/ -q        # confirm tmux + jupyter tests now run
+sudo systemctl restart aiforge-runner
+sudo systemctl restart aiforge-resolver  # if you wire the new timer
+```
 
 ---
 

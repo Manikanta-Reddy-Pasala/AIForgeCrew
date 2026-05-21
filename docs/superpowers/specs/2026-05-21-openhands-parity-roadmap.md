@@ -149,3 +149,34 @@ Rationale:
   `delegate_to_agent`, `think`, `finish`, plus support tools
   (grep_repo / fetch_url / git_commit / memory_lookup /
   graphify_lookup / update_working_checkpoint).
+
+- **2026-05-22:** 5 remaining gaps closed (commit 05d1922):
+  - **browse interactive**: `mouse_click`, `key_press`, `type`, `scroll`
+    commands added (OH `browse_interactive` parity).
+  - **LLMCondenser**: real summarizer wiring (`summarizer=` kwarg);
+    falls back to recent on empty/exception.
+  - **Vision content-block ADK shim**: `runtime/vision_adk.py`
+    rewrites `LlmRequest.contents` first user message with image parts
+    for vision-supporting Doer models.
+  - **Docker sandbox RW mount**: `AIFORGE_DOCKER_VOLUME_MODE=rw` knob.
+  - **Resolver (sub #10)**: autonomous GitHub-issue → ticket bridge
+    in `runtime/resolver.py` with `list_open_bot_issues` / `resolve_once` /
+    `loop` entrypoints. Tagged sub #10 because it is orthogonal to the
+    original 9 and adds an end-to-end OH-style autonomous bot.
+
+- **2026-05-22:** test count: **497 passed**, 14 skipped (tmux/jupyter/
+  DB optional infra). All 11 OH-parity sub modules covered by unit tests:
+  - sub #1 editor/bash/think/finish — 45 tests
+  - sub #2 browser — 17 tests (incl. 6 new for interactive commands)
+  - sub #3 ipython — 5 tests
+  - sub #4 condensers — 11 tests (incl. 3 new for LLMCondenser)
+  - sub #5 microagents — 10 tests
+  - sub #6 vision + vision_adk — 14 tests
+  - sub #7 docker_sandbox — 9 tests
+  - sub #8 delegation — 5 tests
+  - sub #9 budget — 9 tests
+  - sub #10 resolver — 7 tests
+
+- **2026-05-22:** NUC install **still deferred** — neither 192.168.70.115
+  nor 192.168.70.191 reachable from current network. Deploy steps queued
+  in README.md "NUC deploy steps" section.
