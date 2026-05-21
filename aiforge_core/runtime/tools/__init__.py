@@ -26,6 +26,7 @@ def adk_function_tools() -> list:
     from .browser import browse
     from .cognition import finish, think
     from .editor import editor
+    from .ipython_kernel import execute_ipython_cell
 
-    canonical = [editor, bash, browse, think, finish]
+    canonical = [editor, bash, browse, execute_ipython_cell, think, finish]
     return [FunctionTool(func=fn) for fn in canonical]
