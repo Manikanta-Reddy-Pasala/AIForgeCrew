@@ -281,17 +281,27 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
     )
-    async for event in runner.run_async(
-        user_id="aiforge-runner",
-        session_id=session.id, new_message=content,
-    ):
-        if event.is_final_response():
-            pass  # session.state already mutated; drained for completeness
-    session = await session_svc.get_session(
-        app_name="aiforge", user_id="aiforge-runner",
-        session_id=session.id,
-    )
-    return dict(session.state or {})
+    try:
+        async for event in runner.run_async(
+            user_id="aiforge-runner",
+            session_id=session.id, new_message=content,
+        ):
+            if event.is_final_response():
+                pass  # session.state mutated; drained for completeness
+        session = await session_svc.get_session(
+            app_name="aiforge", user_id="aiforge-runner",
+            session_id=session.id,
+        )
+        return dict(session.state or {})
+    finally:
+        # Best-effort tmux session cleanup for the Doer's persistent bash
+        # (sub-project #1, see runtime/tools/bash.py). Failure is swallowed
+        # so the runner still returns even when tmux isn't installed.
+        try:
+            from aiforge_core.runtime.tools.bash import destroy_session
+            destroy_session(session.id)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            log.debug("bash.destroy_session failed: %s", exc)
 
 
 def _build_prompt(ticket, memory_md: str) -> str:
