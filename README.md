@@ -153,11 +153,28 @@ Infrastructure: pluggable LLM router with health probe + cloud auto-escalation (
 |---|---|---|---|---|---|
 | **chat** | GA loop (`_chat_via_ga`) | qwen3-coder-next via Ollama Cloud | UnifiedContext.for_chat(query) injected via `do_unified_memory_query` tool | search_memory, unified_memory_query, related_memories, find_doc, sym_lookup, ticket_brief, ops_* (mongo/k8s/tekton/tally), read_claude_memory | R full · W T3 (chat_qa wing, auto) |
 | **planner** | smolagents CodeAgent | Qwen 3.6 27B (mlx-lm :1235) | UnifiedContext.for_planner(ticket) → `task_prompt` | read_file, list_dir, grep_repos, write_plan, related_tickets, related_memories | R full · W ticket body |
-| **doer** | GA agent_runner_loop | qwen3-coder-next (mlx-lm :1234) | UnifiedContext.for_doer(ticket) prepended to prompt | file_read, file_patch, file_write, code_run, glob, grep, edit_block, plan_mode, todos, subagent, hooks, sandbox, secrets, ... (24 ga_tools) | R full · W via learner (T3) |
+| **doer** | GA agent_runner_loop | qwen3-coder-next (mlx-lm :1234) | UnifiedContext.for_doer(ticket) prepended to prompt | **editor** (view/create/str_replace/insert/undo_edit), **bash** (tmux persistent session), **think**, **finish**, grep_repo, fetch_url, git_commit, memory_lookup, graphify_lookup, update_working_checkpoint | R full · W via learner (T3) |
 | **feedback** | deterministic Python | (none) | doer outcome counters | (none — pure code) | R none · W ticket_events |
 | **learner** | deterministic + optional LLM | distill = template; pattern_miner = heuristic | Doer outcome dict | retain_fact | W T3 (patterns/doer-success or patterns/doer-failure) |
 
 ADK 2.0.0b1 `SequentialAgent[Planner, LoopAgent[Doer, Feedback], Learner]` orchestrates. ADK does scheduling + lifecycle + tool-allowlist enforcement only — no business logic.
+
+### Doer tool surface (OpenHands-parity sub-project #1, 2026-05-21)
+
+The Doer calls four canonical tools, declared in `aiforge_core/agents/agents.yaml`:
+
+| Tool | Module | Notes |
+|---|---|---|
+| `editor(command, path, ...)` | `runtime/tools/editor.py` | OH-style multi-command: `view`, `create`, `str_replace`, `insert`, `undo_edit` (per-path snapshot ring depth 5). Sub-command allowlist via `editor_commands` field in agents.yaml. |
+| `bash(command, restart, timeout)` | `runtime/tools/bash.py` | tmux-backed persistent session per ADK run; cwd / env / background jobs persist across calls. Falls back to stateless subprocess if tmux missing. |
+| `think(thought)` | `runtime/tools/cognition.py` | No-op + `:Think` trace event. 4 KB cap. |
+| `finish(summary, status)` | `runtime/tools/cognition.py` | Doer-only explicit termination signal; returns `terminate=True`. |
+
+Non-Doer agents (Architect, Planner, Researcher) get **view-only** access via the `editor_commands: [view]` field. The legacy `file_read / file_write / file_patch / list_dir / run_shell / code_run` tools are kept one release as hallucinated-name escape hatches in `runtime/doer_tools.py` and will be removed in the next minor release. See:
+
+- Spec: `docs/superpowers/specs/2026-05-21-tool-surface-upgrade-design.md`
+- Roadmap: `docs/superpowers/specs/2026-05-21-openhands-parity-roadmap.md` (subs #2-#9)
+- Plan:  `docs/superpowers/plans/2026-05-21-tool-surface-upgrade.md`
 
 ---
 
