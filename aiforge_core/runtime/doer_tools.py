@@ -422,17 +422,30 @@ def adk_function_tools() -> list:
 
     Lazy import keeps unit tests ADK-free.
 
-    Order — canonical names first so they show up at the top of the
-    schema dump the model consumes; aliases follow as escape hatches.
+    Order — OpenHands-parity tools first (editor/bash/think/finish from
+    :mod:`aiforge_core.runtime.tools`), then legacy canonical names, then
+    aliases. Per-agent allowlists in ``agents.yaml`` filter this set at
+    Layer A so each role sees only what its contract permits.
+
+    Legacy tools (file_read/file_write/file_patch/list_dir/run_shell)
+    are DEPRECATED — kept one release as escape hatches for hallucinated
+    names. Doer's ``forbidden`` list in ``agents.yaml`` blocks them.
     """
     from google.adk.tools import FunctionTool
-    canonical = [file_read, file_write, file_patch, list_dir, run_shell,
-                 grep_repo, fetch_url, git_commit,
-                 memory_lookup, graphify_lookup]
-    aliases = [read, write, patch, ls, shell, bash,
+
+    # New OH-parity surface (sub-project #1)
+    from aiforge_core.runtime.tools.bash import bash as new_bash
+    from aiforge_core.runtime.tools.cognition import finish, think
+    from aiforge_core.runtime.tools.editor import editor
+
+    new_canonical = [editor, new_bash, think, finish]
+    legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
+                        grep_repo, fetch_url, git_commit,
+                        memory_lookup, graphify_lookup]
+    aliases = [read, write, patch, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit]
-    return [FunctionTool(func=fn) for fn in canonical + aliases]
+    return [FunctionTool(func=fn) for fn in new_canonical + legacy_canonical + aliases]
 
 
 __all__ = [
