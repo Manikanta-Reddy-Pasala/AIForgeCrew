@@ -65,7 +65,11 @@ def _parse_file(path: Path) -> Microagent | None:
     except (TypeError, ValueError):
         priority = 0
     body = m.group(2).strip()
-    if not name or not triggers or not body:
+    # ``type: repo`` agents are always loaded (no triggers needed); they
+    # describe project-wide conventions and live in repo-level state.
+    if not name or not body:
+        return None
+    if mtype != "repo" and not triggers:
         return None
     return Microagent(
         name=name, type=mtype, triggers=triggers,
@@ -88,13 +92,19 @@ def load_microagents(directory: Path | None = None) -> list[Microagent]:
 
 
 def match(text: str, agents: list[Microagent]) -> list[Microagent]:
-    """Return microagents whose triggers appear (case-insensitive
-    substring) in ``text``, sorted by priority descending."""
-    if not text:
-        return []
-    low = text.lower()
-    hits = [ma for ma in agents
-            if any(t in low for t in ma.triggers)]
+    """Return microagents that apply to ``text``, sorted by priority desc.
+
+    ``type: repo`` agents are ALWAYS included (project-wide context).
+    Other types match by trigger-substring (case-insensitive).
+    """
+    low = (text or "").lower()
+    hits: list[Microagent] = []
+    for ma in agents:
+        if ma.type == "repo":
+            hits.append(ma)
+            continue
+        if low and any(t in low for t in ma.triggers):
+            hits.append(ma)
     return sorted(hits, key=lambda m: -m.priority)
 
 

@@ -28,7 +28,8 @@ def adk_function_tools() -> list:
     from .delegation import delegate_to_agent
     from .editor import editor
     from .ipython_kernel import execute_ipython_cell
+    from .mcp_client import mcp
 
     canonical = [editor, bash, browse, execute_ipython_cell,
-                 delegate_to_agent, think, finish]
+                 delegate_to_agent, mcp, think, finish]
     return [FunctionTool(func=fn) for fn in canonical]

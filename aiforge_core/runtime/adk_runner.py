@@ -388,6 +388,19 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
             destroy_container(session.id)
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup
             log.debug("docker_sandbox.destroy_container failed: %s", exc)
+        # Sub #15: dump session trajectory for replay-style debugging.
+        if os.environ.get("AIFORGE_TRAJECTORY_DUMP", "1") in ("1", "true"):
+            try:
+                from aiforge_core.runtime.trajectory import dump_trajectory
+                ticket_id = (initial_state.get("ticket_identifier")
+                             if initial_state else None) or "unknown"
+                events = list(getattr(session, "events", []) or [])
+                dump_trajectory(
+                    ticket_id, session.id,
+                    events, dict(session.state or {}),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                log.debug("trajectory.dump_failed: %s", exc)
 
 
 def _build_prompt(ticket, memory_md: str) -> str:

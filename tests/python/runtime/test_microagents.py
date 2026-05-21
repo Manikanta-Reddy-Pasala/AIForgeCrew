@@ -109,3 +109,30 @@ def test_match_empty_text_returns_empty(micro_dir):
            "---\nbody\n")
     agents = ma.load_microagents()
     assert ma.match("", agents) == []
+
+
+def test_repo_type_loads_without_triggers(micro_dir):
+    _write(micro_dir, "conv.md",
+           "---\nname: conventions\ntype: repo\npriority: 1\n"
+           "---\nUse pytest. Run `make test`.\n")
+    agents = ma.load_microagents()
+    assert len(agents) == 1
+    assert agents[0].type == "repo"
+    assert agents[0].triggers == ()
+
+
+def test_repo_type_always_matches(micro_dir):
+    _write(micro_dir, "conv.md",
+           "---\nname: conventions\ntype: repo\npriority: 1\n"
+           "---\nrepo body\n")
+    _write(micro_dir, "trig.md",
+           "---\nname: pytips\ntype: knowledge\ntriggers: [pytest]\npriority: 1\n"
+           "---\npytest body\n")
+    agents = ma.load_microagents()
+    # No keyword in text — only repo type should match
+    hits = ma.match("totally unrelated text", agents)
+    assert len(hits) == 1
+    assert hits[0].name == "conventions"
+    # With keyword — both fire, repo first if higher priority (tie → name order)
+    hits = ma.match("pytest discussion", agents)
+    assert {h.name for h in hits} == {"conventions", "pytips"}

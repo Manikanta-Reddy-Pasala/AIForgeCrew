@@ -50,3 +50,29 @@ def test_delegate_timeout(monkeypatch):
     out = dlg.delegate_to_agent("verifier", "verify x", timeout=1)
     assert out["ok"] is False
     assert out["error"] == "timeout"
+
+
+def test_delegation_depth_cap(monkeypatch):
+    async def _ok(role, prompt, timeout):
+        return {"ok": True, "role": role, "output": "x", "state_keys": []}
+    monkeypatch.setattr(dlg, "_run_delegate_async", _ok)
+    monkeypatch.setenv("AIFORGE_DELEGATION_DEPTH", "3")
+    monkeypatch.setenv("AIFORGE_DELEGATION_MAX_DEPTH", "3")
+    out = dlg.delegate_to_agent("researcher", "do stuff")
+    assert out["ok"] is False
+    assert out["error"] == "delegation_depth_exceeded"
+    assert out["max_depth"] == 3
+
+
+def test_delegation_depth_increments(monkeypatch):
+    captured = {}
+    async def _capture(role, prompt, timeout):
+        import os as _os
+        captured["depth_inside"] = _os.environ.get("AIFORGE_DELEGATION_DEPTH")
+        return {"ok": True, "role": role, "output": "", "state_keys": []}
+    monkeypatch.setattr(dlg, "_run_delegate_async", _capture)
+    monkeypatch.setenv("AIFORGE_DELEGATION_DEPTH", "1")
+    out = dlg.delegate_to_agent("planner", "plan")
+    assert out["ok"]
+    assert captured["depth_inside"] == "2"  # incremented before async run
+    assert out["depth"] == 1                # outer call recorded its depth

@@ -12,11 +12,14 @@ Strategies:
 * ``recent``     — keep last N events
 * ``amortized``  — collapse oldest half into one ``<condensed>`` block
                   once event count exceeds a threshold
-* ``llm``        — placeholder; falls back to ``recent`` until wired
+* ``llm``        — uses an operator-supplied summarizer callable;
+                  falls back to ``recent`` on absence / failure
 """
 from __future__ import annotations
 
 from typing import Any
+
+from .tools._trace import emit
 
 
 def _noop(events: list[dict[str, Any]], **_kw) -> list[dict[str, Any]]:
@@ -140,10 +143,21 @@ def condense(
 ) -> list[dict[str, Any]]:
     """Apply ``strategy`` to ``events`` and return the reduced list.
 
-    Unknown strategy → noop with a debug log (no raise).
+    Unknown strategy → noop with a debug log (no raise). Emits a
+    ``:Condensation`` trace event when ``len(out) < len(events)`` so
+    operators can audit how often the compactor fires (sub #14, OH
+    CondensationAction parity).
     """
     fn = _STRATEGIES.get(strategy, _noop)
-    return fn(events, **kwargs)
+    out = fn(events, **kwargs)
+    if len(out) < len(events):
+        emit("Condensation", {
+            "strategy": strategy,
+            "before": len(events),
+            "after": len(out),
+            "dropped": len(events) - len(out),
+        })
+    return out
 
 
 __all__ = ["condense"]

@@ -42,6 +42,18 @@ def _start_kernel(run_id: str) -> tuple[Any, Any]:
     _kernels[run_id] = km
     _clients[run_id] = client
     emit("Cell", {"action": "kernel_started", "run_id": run_id})
+    # Inject AgentSkills helpers (sub #12) so the model can call
+    # open_file / goto_line / find_file / search_dir / search_file /
+    # create_file / run_cmd from any cell.
+    try:
+        from .agentskills import bootstrap_code
+        client.execute(bootstrap_code(), silent=True, store_history=False)
+        # Drain the bootstrap iopub events so they don't pollute the
+        # next real call's output.
+        _drain_iopub(client, "", timeout=5)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        emit("Cell", {"action": "agentskills_inject_failed",
+                      "error": str(exc)[:200]})
     return km, client
 
 
