@@ -228,6 +228,7 @@ agents:
         - bash                      # NEW — tmux persistent session
         - browse                    # NEW — Playwright headless browser (sub #2)
         - execute_ipython_cell      # NEW — persistent Jupyter kernel (sub #3)
+        - delegate_to_agent         # NEW — spawn researcher/planner/etc. (sub #8)
         - think                     # NEW — no-op + :Think trace
         - finish                    # NEW — Doer-only termination signal
         - update_working_checkpoint # save mid-run state
