@@ -226,6 +226,7 @@ agents:
       allowed:
         - editor                    # NEW — OH-parity multi-command editor
         - bash                      # NEW — tmux persistent session
+        - browse                    # NEW — Playwright headless browser (sub #2)
         - think                     # NEW — no-op + :Think trace
         - finish                    # NEW — Doer-only termination signal
         - update_working_checkpoint # save mid-run state

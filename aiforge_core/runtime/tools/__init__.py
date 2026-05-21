@@ -23,8 +23,9 @@ def adk_function_tools() -> list:
     from google.adk.tools import FunctionTool
 
     from .bash import bash
+    from .browser import browse
     from .cognition import finish, think
     from .editor import editor
 
-    canonical = [editor, bash, think, finish]
+    canonical = [editor, bash, browse, think, finish]
     return [FunctionTool(func=fn) for fn in canonical]

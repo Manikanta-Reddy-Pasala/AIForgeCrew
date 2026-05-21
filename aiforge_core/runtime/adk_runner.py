@@ -302,6 +302,13 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
             destroy_session(session.id)
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup
             log.debug("bash.destroy_session failed: %s", exc)
+        try:
+            from aiforge_core.runtime.tools.browser import (
+                destroy_context as destroy_browser,
+            )
+            destroy_browser(session.id)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            log.debug("browser.destroy_context failed: %s", exc)
 
 
 def _build_prompt(ticket, memory_md: str) -> str:
