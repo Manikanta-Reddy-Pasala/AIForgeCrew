@@ -108,6 +108,8 @@ export default function TicketDetail() {
               : <div className="muted small">(empty)</div>}
           </div>
 
+          <AttachmentsBlock identifier={t.identifier} files={t.metadata?.attached_files} />
+
           {t.metadata?.enrichment && (
             <div className="card">
               <div className="card-header">
@@ -537,6 +539,70 @@ function RouteBadge({ t, onChanged }: { t: any; onChanged: () => void }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+type AttachedFile = { name: string; path?: string; size?: number };
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
+
+function AttachmentsBlock({
+  identifier, files,
+}: { identifier: string; files?: AttachedFile[] }) {
+  if (!files || !Array.isArray(files) || files.length === 0) return null;
+  const fmt = (n?: number) => {
+    if (!n && n !== 0) return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  };
+  return (
+    <div className="card">
+      <div className="card-header"><h2>Attachments ({files.length})</h2></div>
+      <div className="stack" style={{ gap: 12 }}>
+        {files.map((f, i) => {
+          const url = `/files/${encodeURIComponent(identifier)}/${encodeURIComponent(f.name)}`;
+          const isImage = IMAGE_EXT.test(f.name);
+          return (
+            <div key={i} className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+              {isImage ? (
+                <a href={url} target="_blank" rel="noopener">
+                  <img
+                    src={url}
+                    alt={f.name}
+                    style={{
+                      maxWidth: 160, maxHeight: 120,
+                      border: '1px solid var(--border-1)', borderRadius: 4,
+                      objectFit: 'cover',
+                    }}
+                  />
+                </a>
+              ) : (
+                <div style={{
+                  width: 64, height: 64, display: 'flex',
+                  alignItems: 'center', justifyContent: 'center',
+                  border: '1px solid var(--border-1)', borderRadius: 4,
+                  fontSize: 12, color: 'var(--muted)',
+                }}>
+                  {(f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase()}
+                </div>
+              )}
+              <div className="stack" style={{ gap: 4, minWidth: 0, flex: 1 }}>
+                <a href={url} target="_blank" rel="noopener" style={{ wordBreak: 'break-all' }}>
+                  {f.name}
+                </a>
+                <div className="muted small">{fmt(f.size)}</div>
+                {f.path && (
+                  <code className="mono small muted" style={{ wordBreak: 'break-all' }}>
+                    {f.path}
+                  </code>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

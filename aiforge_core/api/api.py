@@ -1682,6 +1682,24 @@ def repo_standards_set(name: str, body: _StandardsBody) -> dict:
     return repo_standards_get(name=name)
 
 
+# ─────────────────────── Ticket file attachments ────────────────────────
+# Operator-uploaded files persisted by ``_persist_ticket_attachments``
+# under ``{AIFORGE_REPO_ROOT}/.aiforge/ticket-files/{identifier}/``.
+# Mount as a static route so the UI can render image thumbnails inline
+# and offer download links for non-image files. Names were sanitized at
+# upload (``_Path(f.name).name``) so path-traversal is contained to the
+# per-ticket subdir.
+_TICKET_FILES_ROOT = os.path.join(
+    os.path.expanduser(os.environ.get("AIFORGE_REPO_ROOT", "~/aiforge_workspace")),
+    ".aiforge", "ticket-files",
+)
+os.makedirs(_TICKET_FILES_ROOT, exist_ok=True)
+app.mount(
+    "/files",
+    StaticFiles(directory=_TICKET_FILES_ROOT, check_dir=False),
+    name="ticket-files",
+)
+
 # ─────────────────────────── Static UI ──────────────────────────────────
 # If the Vite production build exists, serve it at /ui/ and redirect "/" to it.
 _DIST = os.path.abspath(os.path.join(

@@ -540,6 +540,32 @@ def _build_prompt(ticket, memory_md: str) -> str:
         f"## Title\n{ticket.title}\n\n"
         f"## Body\n{ticket.body or '(no body)'}\n"
     )
+    # Operator follow-up comments: anything the human added via
+    # POST /api/tickets/{id}/comments after ticket creation. The
+    # Enhancer would otherwise never see this signal — it only
+    # reads ``ticket.body``. Folded in chronological order; bot/agent
+    # comments are excluded so the Doer doesn't loop on its own
+    # past commentary.
+    try:
+        evts = tickets_mod.comments(ticket.id) or []
+        human_comments = [
+            e for e in evts
+            if e.get("kind") == "comment"
+            and (e.get("agent_role") or "").lower() == "human"
+            and (e.get("body") or "").strip()
+        ]
+        if human_comments:
+            out += "\n## Operator follow-up comments\n"
+            out += (
+                "These were posted on the ticket AFTER it was opened. "
+                "Treat them as authoritative extensions of the body.\n\n"
+            )
+            for c in human_comments:
+                ts = str(c.get("created_at") or "")[:19]
+                body = (c.get("body") or "").strip()
+                out += f"- _{ts}_:\n  {body}\n"
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("comment_fold_failed: %s", exc)
     # Ticket attachments — list paths so the Doer (always claude_local
     # when these are present, see _process_one_ticket) can `file_read`
     # them via its native CLI tools. Each entry is the
