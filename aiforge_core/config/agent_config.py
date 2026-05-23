@@ -37,6 +37,9 @@ _ARCHETYPES: tuple[str, ...] = (
     "architect", "planner", "verifier", "doer", "feedback", "learner",
     # Extended pipeline (2026-05-07): tier-routed via runtime.model_router.
     "triage", "researcher", "refiner",
+    # Post-validator live boot (2026-05-23): runs the recipe under
+    # aiforge_core/recipes/live_verify/<project>.md.
+    "live_verifier",
 )
 _ROLES = _ARCHETYPES
 

@@ -565,6 +565,50 @@ agents:
       - state['validator_verdict'] is a valid JSON object with
         verdict ∈ {approve, request_changes, abstain}
 
+  # ──────────────────────────────────────────────────────────────────────
+  # Live verifier — boots the candidate fix after Validator approves so
+  # we confirm the change WORKS end-to-end, not just that the diff
+  # compiles. Reads a per-project recipe from
+  # aiforge_core/recipes/live_verify/<project>.md (fallback _default.md).
+  # TallyConnector tickets pin to claude_local at build time because
+  # Tally requires Windows/COM; other repos use the configured model.
+  live_verifier:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: Qwen3-Coder-Next-MLX-4bit
+      backend: direct_litellm
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
+    contract:
+      inputs:
+        - ticket_body
+        - file_diffs
+        - validator_verdict
+      outputs:
+        - live_verifier_verdict
+      max_turns: 12
+      max_wall_s: 900
+    tools:
+      allowed:
+        - bash
+        - file_read
+        - file_grep
+      forbidden:
+        - file_write
+        - file_patch
+    memory:
+      read_scope: full
+      write_scope: none
+    rule: >
+      Live verifier follows the project recipe to boot the service (or
+      port-forward to a running instance), exercise the touched endpoint
+      with the ticket's repro payload, and emit a fenced JSON verdict.
+      ok=false on any boot timeout, non-2xx, or assertion miss. Never
+      edits code — observation only.
+    termination_contract:
+      - state['live_verifier_verdict'] is a JSON object with
+        ok ∈ {true, false} and a non-empty rationale string
+
 # =============================================================================
 # Cross-cutting invariants (informational — enforced in code, not parsed here)
 # =============================================================================

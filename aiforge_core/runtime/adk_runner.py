@@ -333,6 +333,40 @@ def _record_verdict_event(ticket_id: int, verdict: str, reason: str) -> None:
                     ticket_id, exc)
 
 
+def _extract_live_verifier(state: dict) -> dict | None:
+    """Pull the live_verifier verdict out of pipeline state.
+
+    The agent is told to emit a fenced ```json``` block at the end of
+    its response containing ``{"ok": bool, "rationale": "...", ...}``.
+    Parses the LAST such block in ``state['live_verifier_verdict']``.
+    Returns ``None`` when the stage didn't run or the JSON couldn't be
+    parsed — caller treats that as "no veto" rather than blocking on
+    a parser hiccup.
+    """
+    raw = state.get("live_verifier_verdict")
+    if isinstance(raw, dict):
+        return raw if "ok" in raw else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    # Strip ```json fences then try whole-text + last balanced object.
+    import re as _re
+    fenced = _re.findall(
+        r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=_re.DOTALL,
+    )
+    candidates = fenced[::-1]  # prefer the last (final answer)
+    if text.startswith("{"):
+        candidates.append(text)
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "ok" in obj:
+            return obj
+    return None
+
+
 def _extract_verdict(state: dict) -> str:
     """Pull the Feedback verdict out of pipeline state.
 
@@ -479,7 +513,10 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     from google.adk.sessions import InMemorySessionService
     from google.genai import types as gtypes
 
-    pipeline = build_pipeline(skip_researcher=skip_researcher)
+    pipeline = build_pipeline(
+        skip_researcher=skip_researcher,
+        project=getattr(ticket, "project", None) if ticket else None,
+    )
     session_svc = InMemorySessionService()
     plugins = _build_context_plugins()
     runner = Runner(
@@ -895,6 +932,23 @@ def _process_one_ticket() -> bool:
         reason = _extract_reason(state, outcome)
         _record_verdict_event(ticket.id, outcome, reason)
 
+        # Live-verifier veto: even if Feedback says "pass" and Validator
+        # approved the diff, a failing live verifier (boot didn't come
+        # up, endpoint 4xx/5xx, assertion missed) flips the outcome
+        # to ``fail`` so claude_takeover gets a chance to fix the real
+        # bug. Soft-read the JSON because the live_verifier emits it
+        # via a fenced ``json`` block — see prompts/live_verifier.py.
+        lv = _extract_live_verifier(state)
+        if lv is not None and lv.get("ok") is False and outcome == "pass":
+            log.warning(
+                "ticket=%s live_verifier vetoed pass: %s",
+                ticket.identifier, lv.get("rationale", "")[:200],
+            )
+            outcome = "fail"
+            reason = (
+                f"live_verifier rejected: {lv.get('rationale', '')[:300]}"
+            )
+
         # **Claude takeover on failure** — replay the SequentialAgent
         # once under claude_local. Now an in-framework re-run (the
         # ADK Sequential rebuilds with EscalatingLlm pinned), not a
@@ -1064,6 +1118,12 @@ def _process_one_ticket() -> bool:
                 # Validator reject patched and re-validated.
                 "handled_by": handled_by,
                 **({"claude_fix": fix_meta} if fix_meta else {}),
+                **({
+                    "live_verifier_ok": (lv or {}).get("ok"),
+                    "live_verifier_rationale": (lv or {}).get("rationale"),
+                    "live_handoff": (lv or {}).get("live_handoff", False),
+                    "handoff_brief": (lv or {}).get("handoff_brief"),
+                } if lv else {}),
             },
         )
         log.info("ticket=%s status=%s verdict=%s",

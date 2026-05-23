@@ -27,6 +27,7 @@ straight wiring layer.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from aiforge_core.agents import (
@@ -34,6 +35,7 @@ from aiforge_core.agents import (
     enhancer as _enhancer_mod,
     feedback as _feedback_mod,
     learner as _learner_mod,
+    live_verifier as _live_verifier_mod,
     planner as _planner_mod,
     refiner as _refiner_mod,
     researcher as _researcher_mod,
@@ -122,7 +124,8 @@ def build_litellm_model(role: str):
     return EscalatingLlm.build(role, primary, chain)
 
 
-def build_pipeline(*, skip_researcher: bool = False):
+def build_pipeline(*, skip_researcher: bool = False,
+                    project: str | None = None):
     """Construct the SequentialAgent. Returns the root agent ready for
     ``Runner(agent=..., session_service=...)``.
 
@@ -138,6 +141,12 @@ def build_pipeline(*, skip_researcher: bool = False):
         :func:`researcher_routing.should_skip_researcher`. Saves
         5+ LM calls on greenfield tickets where the Researcher would
         find nothing relevant anyway.
+      project: target repo name (``ticket.project``). Drives two
+        things: which ``live_verifier`` recipe gets baked into the
+        prompt and whether the live_verifier stage is pinned to
+        ``claude_local`` (TallyConnector needs Windows-side Claude
+        for full coverage; other repos default to the operator's
+        configured model).
     """
     from google.adk.agents import LoopAgent, SequentialAgent
     from .loop_budget import build_loop_budget_callbacks
@@ -238,6 +247,23 @@ def build_pipeline(*, skip_researcher: bool = False):
     sub_agents.append(doer_loop)
     sub_agents.append(learner)
     sub_agents.append(validator)
+
+    # Live verifier — runs after Validator approves so we confirm the
+    # fix WORKS, not just that the diff looks plausible. TallyConnector
+    # can only be exercised end-to-end on a Windows machine with COM
+    # bindings, so its recipe always routes through claude_local
+    # (which can hand off to the operator's Windows-side Claude via
+    # the handoff_brief field in the verdict). Other repos use the
+    # operator's configured model.
+    if os.environ.get("AIFORGE_LIVE_VERIFIER", "1") in {"1", "true"}:
+        lv_factory = (
+            _claude_pinned_model
+            if (project or "").lower() == "tallyconnector"
+            else build_litellm_model
+        )
+        live_verifier = _live_verifier_mod.build(lv_factory, project=project)
+        sub_agents.append(live_verifier)
+
     return SequentialAgent(
         name="aiforge_v6_pipeline",
         sub_agents=sub_agents,
