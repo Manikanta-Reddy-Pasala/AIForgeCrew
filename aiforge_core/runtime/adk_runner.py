@@ -36,6 +36,39 @@ from .pipeline import build_pipeline, set_force_provider
 from .researcher_routing import should_skip_researcher
 
 
+def _setup_ticket_workspace(ticket) -> tuple[str | None, str | None]:
+    """Resolve per-ticket worktree and pin ``AIFORGE_REPO_ROOT`` to it.
+
+    The Doer's sandboxed file tools (:mod:`sandbox.root`) and
+    :mod:`git_pr` both read ``AIFORGE_REPO_ROOT`` to choose the working
+    directory. Without this hook every ticket lands on whatever the
+    operator's systemd EnvironmentFile pinned — usually a stale repo.
+
+    Returns ``(worktree_path, prior_env)``. Caller MUST pass
+    ``prior_env`` back to :func:`_restore_env` in a finally block.
+    """
+    from aiforge_core.runtime.workspace import ensure_branch_and_worktree
+
+    prior = os.environ.get("AIFORGE_REPO_ROOT")
+    worktree = ensure_branch_and_worktree(ticket)
+    if worktree:
+        os.environ["AIFORGE_REPO_ROOT"] = worktree
+        log.info("ticket=%s workspace=%s", ticket.identifier, worktree)
+    else:
+        log.warning(
+            "ticket=%s no worktree (project=%r) — falling back to env",
+            ticket.identifier, ticket.project,
+        )
+    return worktree, prior
+
+
+def _restore_env(prior: str | None) -> None:
+    if prior is None:
+        os.environ.pop("AIFORGE_REPO_ROOT", None)
+    else:
+        os.environ["AIFORGE_REPO_ROOT"] = prior
+
+
 log = logging.getLogger("adk_runner")
 logging.basicConfig(
     level=os.environ.get("AIFORGE_LOG_LEVEL", "INFO"),
@@ -389,16 +422,33 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup
             log.debug("docker_sandbox.destroy_container failed: %s", exc)
         # Sub #15: dump session trajectory for replay-style debugging.
+        # Gap-11 (2026-05-23): also index a one-line-per-event summary
+        # into AFM as a queryable ``Note_v2`` so future tickets can
+        # rerank "have we run something like this before?" against past
+        # runs without re-reading raw JSON.
         if os.environ.get("AIFORGE_TRAJECTORY_DUMP", "1") in ("1", "true"):
             try:
-                from aiforge_core.runtime.trajectory import dump_trajectory
+                from aiforge_core.runtime.trajectory import (
+                    dump_trajectory, index_trajectory_to_memory,
+                )
                 ticket_id = (initial_state.get("ticket_identifier")
                              if initial_state else None) or "unknown"
                 events = list(getattr(session, "events", []) or [])
-                dump_trajectory(
+                dump_out = dump_trajectory(
                     ticket_id, session.id,
                     events, dict(session.state or {}),
                 )
+                if dump_out.get("ok") and ticket is not None and ticket.project:
+                    idx = index_trajectory_to_memory(
+                        trajectory_path=dump_out["path"],
+                        repo=ticket.project,
+                        ticket_identifier=ticket_id,
+                    )
+                    if not idx.get("ok"):
+                        log.debug(
+                            "trajectory.index_skipped: %s",
+                            idx.get("error", "unknown"),
+                        )
             except Exception as exc:  # noqa: BLE001 — best-effort
                 log.debug("trajectory.dump_failed: %s", exc)
 
@@ -503,6 +553,22 @@ def _process_one_ticket() -> bool:
         return False
 
     log.info("claimed ticket=%s title=%r", ticket.identifier, ticket.title)
+
+    worktree, prior_env = _setup_ticket_workspace(ticket)
+    if not worktree:
+        tickets_mod.update_status(
+            ticket.id, "blocked", role="adk_runner",
+            metadata_patch={
+                "error": (
+                    f"no target repo for project={ticket.project!r}; "
+                    "set ticket.project to a directory under "
+                    f"AIFORGE_WORKTREE_ROOT ({os.environ.get('AIFORGE_WORKTREE_ROOT', '~/codeRepo')})"
+                )[:500],
+            },
+        )
+        _restore_env(prior_env)
+        return True
+
     memory_md = memory_block.fetch(ticket)
     prompt = _build_prompt(ticket, memory_md)
 
@@ -589,6 +655,7 @@ def _process_one_ticket() -> bool:
         # against the operator's profile, not the previous ticket's
         # forced provider.
         set_force_provider(None)
+        _restore_env(prior_env)
     return True
 
 
