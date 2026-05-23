@@ -32,6 +32,47 @@ agents:
   # External Claude Code instance run by the human operator. Drives ticket
   # creation via the Postgres ticket API. Never edits code itself.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # 0. ENHANCER (Claude — first stage of the SequentialAgent)
+  # ---------------------------------------------------------------------------
+  # Claude rewrites the operator's raw ticket body into a structured
+  # brief (## Goal / ## Context / ## Acceptance / ## Out of scope /
+  # ## Hints). Pinned to claude_local because local models are weak
+  # at re-framing under-specified tickets. Pure judgment — no tools.
+  enhancer:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: claude-opus-4-7
+      backend: direct_litellm
+      base_url: claude:cli
+      ctx_window: 200000
+    contract:
+      inputs:
+        - parent_ticket
+        - memory_search_results
+      outputs:
+        - enhanced_body
+      max_turns: 1
+      max_wall_s: 240
+    tools:
+      allowed: []
+      forbidden:
+        - editor
+        - file_write
+        - file_patch
+        - bash
+        - run_shell
+        - code_run
+    memory:
+      read_scope: full
+      write_scope: none
+    rule: >
+      Enhancer rewrites the ticket body once and never edits code. Honour
+      the operator's stated acceptance criteria verbatim; never invent new
+      requirements; never drop ones they wrote.
+    termination_contract:
+      - state['enhanced_body'] populated with the rewritten brief
+
   architect:
     identity:
       runtime: external_claude_code
@@ -486,6 +527,43 @@ agents:
       - "refiner_skipped ∈ {true, false} emitted as valid JSON"
       - refiner_changes is a (possibly empty) list of {path, diff}
       - all changes resolve to paths inside scope_allowlist_globs
+
+  # ---------------------------------------------------------------------------
+  # 10. VALIDATOR (Claude — final pre-PR sanity gate)
+  # ---------------------------------------------------------------------------
+  # Independent second-opinion after Learner. Pinned to claude_local;
+  # judgment only, no tools.
+  validator:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: claude-opus-4-7
+      backend: direct_litellm
+      base_url: claude:cli
+      ctx_window: 200000
+    contract:
+      inputs:
+        - file_diffs
+        - feedback_verdict
+        - refiner_verdict
+        - scope_allowlist_globs
+      outputs:
+        - validator_verdict
+      max_turns: 1
+      max_wall_s: 240
+    tools:
+      allowed: []
+      forbidden:
+        - ALL
+    memory:
+      read_scope: full
+      write_scope: none
+    rule: >
+      Validator returns a strict JSON verdict only. Approves only when the
+      diff plausibly satisfies the ticket acceptance and stays in scope;
+      otherwise requests changes or abstains.
+    termination_contract:
+      - state['validator_verdict'] is a valid JSON object with
+        verdict ∈ {approve, request_changes, abstain}
 
 # =============================================================================
 # Cross-cutting invariants (informational — enforced in code, not parsed here)

@@ -31,11 +31,13 @@ from typing import Any
 
 from aiforge_core.agents import (
     doer as _doer_mod,
+    enhancer as _enhancer_mod,
     feedback as _feedback_mod,
     learner as _learner_mod,
     planner as _planner_mod,
     refiner as _refiner_mod,
     researcher as _researcher_mod,
+    validator as _validator_mod,
     verifier as _verifier_mod,
 )
 from aiforge_core.config import agent_config as _acfg
@@ -71,6 +73,20 @@ def _force_claude_local_cfg(role: str) -> dict:
         "api_key": "",
         "_claude_cli": True,
     }
+
+
+def _claude_pinned_model(role: str):
+    """Build an :class:`EscalatingLlm` always pinned to ``claude_local``.
+
+    Used for the Enhancer + Validator agents — those stages are
+    *always* Claude regardless of the operator's profile because
+    local models are weak at re-framing tickets / second-opinion
+    judging. We don't pass a cloud chain because Claude IS the
+    fallback layer for everything else; degrading further makes no
+    sense for these two roles.
+    """
+    primary = _force_claude_local_cfg(role)
+    return EscalatingLlm.build(role, primary, [])
 
 
 def build_litellm_model(role: str):
@@ -121,6 +137,7 @@ def build_pipeline(*, skip_researcher: bool = False):
     from google.adk.agents import LoopAgent, SequentialAgent
     from .loop_budget import build_loop_budget_callbacks
 
+    enhancer = _enhancer_mod.build(_claude_pinned_model)
     planner = _planner_mod.build(build_litellm_model)
     verifier = _verifier_mod.build(build_litellm_model)
     researcher = _researcher_mod.build(build_litellm_model)
@@ -182,7 +199,27 @@ def build_pipeline(*, skip_researcher: bool = False):
         merged_after.append(plateau_after)
         refiner.after_agent_callback = merged_after
 
-    sub_agents: list = [planner, verifier]
+    # Build the Validator with claude_local + attach a failure-memory
+    # after-callback. Validator runs last so its callback sees the
+    # final verdicts from Feedback / Refiner and can write a
+    # failure ``Observation_v2`` when the run didn't land cleanly.
+    validator = _validator_mod.build(_claude_pinned_model)
+    try:
+        from .failure_memory import make_failure_memory_after_callback
+        _fm_cb = make_failure_memory_after_callback()
+        existing_v = validator.after_agent_callback
+        merged_v: list = []
+        if existing_v is not None:
+            if isinstance(existing_v, list):
+                merged_v.extend(existing_v)
+            else:
+                merged_v.append(existing_v)
+        merged_v.append(_fm_cb)
+        validator.after_agent_callback = merged_v
+    except Exception:
+        pass  # failure_memory wiring never blocks pipeline boot
+
+    sub_agents: list = [enhancer, planner, verifier]
     if not skip_researcher:
         sub_agents.append(researcher)
     doer_loop = LoopAgent(
@@ -195,6 +232,7 @@ def build_pipeline(*, skip_researcher: bool = False):
     )
     sub_agents.append(doer_loop)
     sub_agents.append(learner)
+    sub_agents.append(validator)
     return SequentialAgent(
         name="aiforge_v6_pipeline",
         sub_agents=sub_agents,

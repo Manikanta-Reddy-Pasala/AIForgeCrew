@@ -15,8 +15,9 @@ from .verifier import PROMPT as VERIFIER
 from .doer import PROMPT as DOER
 from .feedback import PROMPT as FEEDBACK
 from .learner import PROMPT as LEARNER
+from .validator import VALIDATOR
 
 __all__ = [
     "ARCHITECT", "ENHANCER", "PLANNER", "VERIFIER", "DOER",
-    "FEEDBACK", "LEARNER",
+    "FEEDBACK", "LEARNER", "VALIDATOR",
 ]

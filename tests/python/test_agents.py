@@ -26,6 +26,8 @@ CORE_ROLES = {
 }
 EXTENDED_ROLES = {
     "triage", "researcher", "refiner",
+    # 2026-05-23: Claude bookends the local Doer.
+    "enhancer", "validator",
 }
 EXPECTED_ROLES = CORE_ROLES | EXTENDED_ROLES
 

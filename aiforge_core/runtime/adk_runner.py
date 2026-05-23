@@ -762,42 +762,12 @@ def _process_one_ticket() -> bool:
     _ingest_ticket_external_refs(ticket)
 
     memory_md = memory_block.fetch(ticket)
-
-    # **Claude Enhancer pre-flight.** Local models are weak at
-    # re-framing under-specified tickets — let Claude rewrite the
-    # body into a structured brief first. ENHANCE_BLOCKED stops the
-    # pipeline early with a clear message to the operator. Anything
-    # else replaces ``ticket.body`` on the in-memory ticket object
-    # so the Planner / Doer see the enriched version, while the
-    # original on disk stays intact for audit.
-    enhancer_meta: dict[str, Any] = {}
-    try:
-        from aiforge_core.runtime.enhancer import enhance
-        eres = enhance(ticket, memory_md=memory_md)
-        enhancer_meta = {"enhancer_used_claude": eres.get("used_claude", False)}
-        if eres.get("blocked_reason"):
-            tickets_mod.update_status(
-                ticket.id, "blocked", role="enhancer",
-                metadata_patch={
-                    "enhancer_blocked": eres["blocked_reason"],
-                    **enhancer_meta,
-                },
-            )
-            _restore_env(prior_env)
-            return True
-        if eres.get("ok") and eres.get("enhanced_body"):
-            log.info("ticket=%s enhancer=ok len_before=%d len_after=%d",
-                     ticket.identifier,
-                     len(ticket.body or ""),
-                     len(eres["enhanced_body"]))
-            ticket.body = eres["enhanced_body"]
-            enhancer_meta["enhancer_enhanced"] = True
-        else:
-            log.info("ticket=%s enhancer=skipped reason=%s",
-                     ticket.identifier, eres.get("error", "unknown"))
-    except Exception as exc:  # noqa: BLE001
-        log.debug("enhancer skipped: %s", exc)
-
+    # Enhancer + Validator now run as proper ADK LlmAgents inside the
+    # SequentialAgent (see :func:`pipeline.build_pipeline`). The
+    # enhanced body lands in ``state['enhanced_body']`` for the
+    # Planner/Doer; the validator's verdict lands in
+    # ``state['validator_verdict']`` for the runner to fold into
+    # ticket metadata.
     prompt = _build_prompt(ticket, memory_md)
 
     forced = _ticket_force_provider(ticket)
@@ -831,11 +801,10 @@ def _process_one_ticket() -> bool:
         reason = _extract_reason(state, outcome)
         _record_verdict_event(ticket.id, outcome, reason)
 
-        # **Claude takeover** — when the local Doer loop fails AND we
-        # haven't already escalated, replay the pipeline once on the
-        # claude_local profile. Pattern the user asked for:
-        # "local model is main action; Claude takes over on failure".
-        # Toggle via ``AIFORGE_CLAUDE_TAKEOVER=0``.
+        # **Claude takeover on failure** — replay the SequentialAgent
+        # once under claude_local. Now an in-framework re-run (the
+        # ADK Sequential rebuilds with EscalatingLlm pinned), not a
+        # bespoke subprocess loop. Toggle: AIFORGE_CLAUDE_TAKEOVER=0.
         if (
             outcome == "fail"
             and os.environ.get("AIFORGE_CLAUDE_TAKEOVER", "1") in {"1", "true"}
@@ -866,19 +835,16 @@ def _process_one_ticket() -> bool:
 
         new_status = _VERDICT_TO_STATUS.get(outcome, "blocked")
 
-        # Always record a failure-pattern memory when verdict != pass.
-        # Pattern the user asked for: AIForge learns from its own
-        # mistakes. ``AIFORGE_FAILURE_MEMORY=0`` opts out.
-        if outcome != "pass" and os.environ.get(
-            "AIFORGE_FAILURE_MEMORY", "1"
-        ) in {"1", "true"}:
+        # Validator (ADK LlmAgent) wrote validator_verdict into the
+        # session state; surface it on the ticket so operators see
+        # both the in-loop verdict and Claude's independent take.
+        validator_out: Any = state.get("validator_verdict") if state else None
+        if isinstance(validator_out, str):
             try:
-                from aiforge_core.runtime.failure_memory import record_failure
-                record_failure(
-                    ticket, verdict=outcome, reason=reason,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.debug("failure_memory skipped: %s", exc)
+                import json as _json
+                validator_out = _json.loads(validator_out)
+            except Exception:
+                validator_out = {"raw": validator_out[:400]}
 
         # PR gate: anything that ISN'T an explicit scope_violation is
         # eligible. `commit_push_open_pr` itself short-circuits on a
@@ -933,6 +899,12 @@ def _process_one_ticket() -> bool:
                 **({"review_verdict": review_meta.get("verdict"),
                     "review_axes": review_meta.get("axes") or {}}
                    if review_meta and review_meta.get("ok") else {}),
+                **({"validator_verdict": (validator_out or {}).get("verdict"),
+                    "validator_rationale": (validator_out or {}).get("rationale"),
+                    "validator_scope_ok": (validator_out or {}).get("scope_ok"),
+                    "validator_regression_risk":
+                        (validator_out or {}).get("regression_risk")}
+                   if validator_out else {}),
             },
         )
         log.info("ticket=%s status=%s verdict=%s",

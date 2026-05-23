@@ -94,4 +94,64 @@ def record_failure(
             pass
 
 
-__all__ = ["record_failure"]
+def make_failure_memory_after_callback():
+    """Return an ADK ``after_agent_callback`` for the Validator.
+
+    Reads ``state['validator_verdict']`` (parsed as JSON if string),
+    plus ``state['feedback_verdict']`` and the canonical ticket
+    identifier / project that adk_runner seeds into initial_state,
+    and writes a failure ``Observation_v2`` whenever the run didn't
+    land cleanly.
+
+    Soft-fail. Never breaks the pipeline.
+    """
+    async def _callback(*, callback_context, **_kw):
+        if os.environ.get("AIFORGE_FAILURE_MEMORY", "1") in {"0", "false", ""}:
+            return None
+        try:
+            import json
+            state = callback_context.state
+            ticket_identifier = state.get("ticket_identifier", "")
+            repo = (
+                state.get("ticket_project")
+                or os.environ.get("AIFORGE_AFM_REPO", "")
+                or ""
+            )
+            if not (ticket_identifier and repo):
+                return None
+            fb = state.get("feedback_verdict") or ""
+            vv = state.get("validator_verdict") or ""
+            if isinstance(vv, str):
+                try:
+                    vv_parsed = json.loads(vv)
+                except Exception:
+                    vv_parsed = {}
+            else:
+                vv_parsed = vv or {}
+            validator_verdict = (vv_parsed.get("verdict") or "")
+            # Pass only when both in-loop AND validator approve.
+            ok = fb == "pass" and validator_verdict in {"approve", ""}
+            if ok:
+                return None
+
+            # Build a lightweight stub for record_failure.
+            class _T:
+                pass
+            t = _T()
+            t.identifier = ticket_identifier
+            t.title = state.get("ticket_title", "")
+            t.project = repo
+            verdict = fb if fb else "fail"
+            reason = (vv_parsed.get("rationale") or "")[:280]
+            record_failure(
+                t, verdict=verdict, reason=reason,
+                review_verdict=validator_verdict or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("failure_memory callback: %s", exc)
+        return None
+
+    return _callback
+
+
+__all__ = ["record_failure", "make_failure_memory_after_callback"]
