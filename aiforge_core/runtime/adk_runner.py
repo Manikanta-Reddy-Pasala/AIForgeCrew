@@ -1188,6 +1188,25 @@ def _process_one_ticket() -> bool:
                     "ticket=%s live_verifier ok=false: %s",
                     ticket.identifier, (lv.get("rationale") or "")[:200],
                 )
+            elif lv is not None and lv.get("ok") is True and os.environ.get(
+                "AIFORGE_AUTO_MERGE_ON_VALIDATE", "1"
+            ) in {"1", "true"}:
+                # Claude validated the live behaviour → merge the PR.
+                # For deploy_target=qa/prod the deploy recipe already
+                # merged it, so merge_pr reports already_merged — still
+                # surfaced so the operator sees the final state.
+                try:
+                    from .git_pr import merge_pr
+                    merge_meta = merge_pr(pr_meta["pr_url"])
+                    pr_meta["pr_merged"] = merge_meta.get("merged")
+                    pr_meta["pr_merge_reason"] = merge_meta.get("reason")
+                    log.info(
+                        "ticket=%s auto-merge merged=%s reason=%s",
+                        ticket.identifier, merge_meta.get("merged"),
+                        merge_meta.get("reason"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("auto-merge failed: %s", exc)
 
         # C1: grade the PR's CI runs once the push is in. Empty PR
         # metadata (no diff to ship) skips this. Soft-fail: any

@@ -478,4 +478,31 @@ def commit_push_open_pr(ticket) -> dict:
     return {"branch_pushed": True, "pr_url": pr_url}
 
 
-__all__ = ["run_git", "commit_push_open_pr"]
+def merge_pr(pr_url: str, *, squash: bool = True) -> dict:
+    """Merge a PR after the live_verifier validated it.
+
+    Returns ``{"merged": bool, "reason": str}``. Idempotent-ish: when
+    the PR is already merged (e.g. the deploy recipe merged it for a
+    ``deploy_target=qa`` ticket) ``gh`` errors and we report
+    ``already_merged`` rather than treating it as a failure. Never
+    touches anything but the PR's own branch.
+    """
+    if not pr_url:
+        return {"merged": False, "reason": "no_pr_url"}
+    if not shutil.which("gh"):
+        return {"merged": False, "reason": "gh_not_installed"}
+    args = ["gh", "pr", "merge", pr_url, "--delete-branch"]
+    args.append("--squash" if squash else "--merge")
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode == 0:
+        log.info("git_pr.merged %s", pr_url)
+        return {"merged": True, "reason": ""}
+    low = out.lower()
+    if "already merged" in low or "not mergeable" in low and "merged" in low:
+        return {"merged": True, "reason": "already_merged"}
+    log.warning("git_pr.merge_failed %s: %s", pr_url, out[:300])
+    return {"merged": False, "reason": out[:300]}
+
+
+__all__ = ["run_git", "commit_push_open_pr", "merge_pr"]

@@ -302,3 +302,43 @@ def test_classify_head_diff_empty_when_no_commits(tmp_path: Path) -> None:
     _git_init(tmp_path)
     prod, test = gp._classify_head_diff(str(tmp_path))
     assert prod == [] and test == []
+
+
+# ── auto-merge on validate ────────────────────────────────────────────
+
+
+def test_merge_pr_no_url() -> None:
+    assert gp.merge_pr("")["merged"] is False
+    assert gp.merge_pr("")["reason"] == "no_pr_url"
+
+
+def test_merge_pr_no_gh(monkeypatch) -> None:
+    monkeypatch.setattr(gp.shutil, "which", lambda _x: None)
+    out = gp.merge_pr("https://github.com/o/r/pull/1")
+    assert out["merged"] is False
+    assert out["reason"] == "gh_not_installed"
+
+
+def test_merge_pr_success(monkeypatch) -> None:
+    monkeypatch.setattr(gp.shutil, "which", lambda _x: "/usr/bin/gh")
+
+    class _P:
+        returncode = 0
+        stdout = "Merged"
+        stderr = ""
+    monkeypatch.setattr(gp.subprocess, "run", lambda *a, **k: _P())
+    out = gp.merge_pr("https://github.com/o/r/pull/1")
+    assert out["merged"] is True
+
+
+def test_merge_pr_already_merged(monkeypatch) -> None:
+    monkeypatch.setattr(gp.shutil, "which", lambda _x: "/usr/bin/gh")
+
+    class _P:
+        returncode = 1
+        stdout = ""
+        stderr = "Pull request already merged"
+    monkeypatch.setattr(gp.subprocess, "run", lambda *a, **k: _P())
+    out = gp.merge_pr("https://github.com/o/r/pull/1")
+    assert out["merged"] is True
+    assert out["reason"] == "already_merged"
