@@ -24,10 +24,16 @@ import os
 
 
 def run() -> dict:
-    """Archive stale facts. Returns ``{postgres, neo4j}`` counters."""
+    """Archive stale facts. Returns ``{postgres, neo4j, afm}`` counters.
+
+    The ``afm`` counter is the AiForgeMemory-side ``Observation_v2``
+    + ``Decision_v2`` archival (added 2026-05-23 after the
+    `(repo, text)` dedupe in AFM landed). The legacy ``neo4j`` path
+    targets the older ``:Memory`` label and stays for backward compat.
+    """
     age = int(os.environ.get("AIFORGE_DECAY_AGE_DAYS", "90"))
     batch = int(os.environ.get("AIFORGE_DECAY_BATCH", "500"))
-    out = {"postgres": 0, "neo4j": 0, "errors": []}
+    out = {"postgres": 0, "neo4j": 0, "afm": 0, "errors": []}
 
     try:
         out["postgres"] = _decay_postgres(age, batch)
@@ -37,6 +43,10 @@ def run() -> dict:
         out["neo4j"] = _decay_neo4j(age, batch)
     except Exception as exc:
         out["errors"].append(f"neo4j: {exc}")
+    try:
+        out["afm"] = _decay_afm(age, batch)
+    except Exception as exc:
+        out["errors"].append(f"afm: {exc}")
     return out
 
 
@@ -76,7 +86,12 @@ def _decay_postgres(age_days: int, batch: int) -> int:
 
 
 def _decay_neo4j(age_days: int, batch: int) -> int:
-    """Neo4j path — :Memory{created_at, hit_count, status}."""
+    """Legacy Neo4j path — :Memory{created_at, hit_count, status}.
+
+    Kept for backward compat with pre-AFM memory nodes. New writes
+    target ``:Observation_v2`` / ``:Decision_v2`` (handled by
+    :func:`_decay_afm`).
+    """
     try:
         from aiforge_core.memory.rag.neo4j_memory import driver  # type: ignore
     except ImportError:
@@ -94,3 +109,57 @@ def _decay_neo4j(age_days: int, batch: int) -> int:
     with driver().session() as sess:
         rec = sess.run(cy, days=age_days, batch=batch).single()
         return int((rec or {"n": 0}).get("n", 0))
+
+
+def _decay_afm(age_days: int, batch: int) -> int:
+    """AFM-side archival of ``Observation_v2`` + ``Decision_v2``.
+
+    Archives nodes where:
+    - ``status`` is null or ``'active'``
+    - ``seen_count`` ≤ 1 (i.e. emitted once, never re-hit by the
+      ``(repo, text)`` dedupe path — strong signal it wasn't reused)
+    - ``created_at`` older than ``$days``
+    - ``last_seen_at`` is null OR older than ``$days`` too — so a fact
+      that got bumped recently still survives even if its creation
+      timestamp is ancient.
+
+    Hot facts (seen_count > 1) are kept regardless of age. This is
+    intentionally distinct from the legacy ``:Memory`` rule that keyed
+    on ``hit_count``; AFM never wrote ``hit_count`` so we couldn't
+    reuse the same path.
+    """
+    try:
+        from neo4j import GraphDatabase
+    except ImportError:
+        return 0
+
+    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
+    pw = os.environ.get(
+        "AIFORGE_NEO4J_PASSWORD",
+        os.environ.get("NEO4J_PASSWORD", "password"),
+    )
+    drv = GraphDatabase.driver(uri, auth=(user, pw))
+    try:
+        cy = (
+            "MATCH (o) "
+            "WHERE (o:Observation_v2 OR o:Decision_v2) "
+            "  AND (o.status IS NULL OR o.status = 'active') "
+            "  AND coalesce(o.seen_count, 1) <= 1 "
+            "  AND o.created_at IS NOT NULL "
+            "  AND o.created_at < datetime() - duration({days: $days}) "
+            "  AND (o.last_seen_at IS NULL "
+            "       OR o.last_seen_at < datetime() - duration({days: $days})) "
+            "WITH o LIMIT $batch "
+            "SET o.status = 'archived', "
+            "    o.archived_at = datetime() "
+            "RETURN count(o) AS n"
+        )
+        with drv.session() as sess:
+            rec = sess.run(cy, days=age_days, batch=batch).single()
+            return int((rec or {"n": 0}).get("n", 0))
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
