@@ -720,6 +720,21 @@ def _process_one_ticket() -> bool:
     # embedder lands. Soft-fails on any backend error.
     _persist_ticket_media(ticket)
 
+    # C5: spec → failing-test scaffold. Parses ticket body's
+    # "Acceptance" bullets and writes a per-language test file under
+    # ``tests/aiforge_spec/``. Doer's run_tests then has a TDD target.
+    if os.environ.get("AIFORGE_SPEC_TO_TESTS", "1") in {"1", "true"}:
+        try:
+            from aiforge_core.runtime.spec_to_tests import write_scaffold
+            md = ticket.metadata or {}
+            language = md.get("test_language", "python")
+            write_scaffold(
+                ticket.identifier, ticket.body or "",
+                repo_root=worktree, language=language,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("spec_to_tests skipped: %s", exc)
+
     # Gap-9 wire-in: when the ticket metadata lists external references
     # (Confluence / Slack thread / Jira ticket / plain URLs), pull them
     # into AFM via the external_ingest spine so the Doer's memory_block
@@ -771,12 +786,52 @@ def _process_one_ticket() -> bool:
         if outcome != "scope_violation":
             pr_meta = commit_push_open_pr(ticket)
 
+        # C1: grade the PR's CI runs once the push is in. Empty PR
+        # metadata (no diff to ship) skips this. Soft-fail: any
+        # ``gh`` error lands in pr_meta as ``ci_*`` keys for an
+        # operator to inspect, never blocks status update.
+        ci_meta: dict[str, Any] = {}
+        if pr_meta.get("pr_url") and os.environ.get(
+            "AIFORGE_CI_GRADE", "1"
+        ) in {"1", "true"}:
+            try:
+                from aiforge_core.runtime.ci_feedback import grade_and_react
+                ci_meta = grade_and_react(
+                    pr_meta["pr_url"],
+                    poll_seconds=int(
+                        os.environ.get("AIFORGE_CI_POLL_S", "30"),
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                ci_meta = {"ok": False, "error": str(exc)[:200]}
+
+        # C2: second-agent PR review pass. Posts a structured verdict
+        # comment so a human (or follow-up agent) can react. Soft-fail.
+        review_meta: dict[str, Any] = {}
+        if pr_meta.get("pr_url"):
+            try:
+                from aiforge_core.runtime.pr_reviewer import review_pr
+                review_meta = review_pr(
+                    pr_meta["pr_url"],
+                    ticket.title or "",
+                    ticket.body or "",
+                )
+            except Exception as exc:  # noqa: BLE001
+                review_meta = {"ok": False, "error": str(exc)[:200]}
+
         tickets_mod.update_status(
             ticket.id, new_status, role="adk_runner",
             metadata_patch={
                 "feedback_verdict": outcome,
                 "verifier_verdict": _extract_verifier(state),
                 **pr_meta,
+                **({"ci_status": ci_meta.get("status"),
+                    "ci_rolled_back": ci_meta.get("rolled_back", False),
+                    "ci_checks": ci_meta.get("checks") or []}
+                   if ci_meta else {}),
+                **({"review_verdict": review_meta.get("verdict"),
+                    "review_axes": review_meta.get("axes") or {}}
+                   if review_meta and review_meta.get("ok") else {}),
             },
         )
         log.info("ticket=%s status=%s verdict=%s",
