@@ -35,24 +35,42 @@ ssh "$NUC_HOST" bash -s <<'REMOTE'
 set -euo pipefail
 ROOT="$HOME/aiforge-claude-memory-sync"
 [ -d "$ROOT" ] || exit 0
+# Pick the first aiforge-memory venv available — KISS, no install.
+CLI=""
+for cand in \
+  "$HOME/AIForgeCrew/.venv/bin/aiforge-memory" \
+  "$HOME/codeRepo/AiForgeMemory/.venv/bin/aiforge-memory" \
+  "$(command -v aiforge-memory 2>/dev/null || true)"; do
+  if [ -x "$cand" ]; then CLI="$cand"; break; fi
+done
+if [ -z "$CLI" ]; then
+  echo "no aiforge-memory CLI on NUC" >&2
+  exit 2
+fi
+# Source runtime env (Neo4j + LM Studio creds) so the CLI talks to
+# the right backends. Missing file → ingest still works against
+# defaults (bolt://127.0.0.1:7687 / neo4j / password).
+[ -f "$HOME/.aiforge/runtime.env" ] && set -a && \
+  source "$HOME/.aiforge/runtime.env" && set +a || true
+ok=0; fail=0
 for proj_dir in "$ROOT"/*/; do
   [ -d "$proj_dir/memory" ] || continue
   proj_slug="$(basename "$proj_dir")"
-  # Last hyphen-segment as repo name; falls back to slug if no hyphen.
   repo="${proj_slug##*-}"
   if [ -z "$repo" ] || [ "$repo" = "$proj_slug" ]; then
     repo="$proj_slug"
   fi
   for md in "$proj_dir/memory"/*.md; do
     [ -f "$md" ] || continue
-    # KISS: rely on AFM exact-text dedupe + external_ingest URL keying
-    # so re-running the script doesn't bloat the graph.
-    aiforge-memory ingest-external "$md" \
-      --repo "$repo" \
-      --source-type claude_memory \
-      --tags "source:claude_memory" \
-      >/dev/null 2>&1 || true
+    if "$CLI" ingest-external "$md" \
+        --repo "$repo" \
+        --source-type claude_memory \
+        --tags "source:claude_memory" >/dev/null 2>&1; then
+      ok=$((ok+1))
+    else
+      fail=$((fail+1))
+    fi
   done
 done
-echo "sync ok"
+echo "sync ok ingested=$ok failed=$fail"
 REMOTE
