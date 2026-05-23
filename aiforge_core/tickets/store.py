@@ -331,22 +331,44 @@ def _aliases_for(role: str) -> list[str]:
 
 
 
+def _excluded_projects() -> list[str]:
+    """Projects the runner must NOT auto-claim. TallyConnector needs a
+    Windows + COM environment the Linux runner can't provide, so those
+    tickets are handled out-of-band (operator / Windows-side Claude)
+    and left in ``todo`` for visibility. Override / extend via
+    ``AIFORGE_RUNNER_EXCLUDE_PROJECTS`` (comma-separated)."""
+    import os
+    raw = os.environ.get(
+        "AIFORGE_RUNNER_EXCLUDE_PROJECTS",
+        "TallyConnector,Tally Connector",
+    )
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 def claim_next_any() -> Ticket | None:
     """Atomically claim the oldest todo ticket across all roles.
 
     Uses SELECT ... FOR UPDATE SKIP LOCKED so concurrent graph runners
     cannot double-claim. Marks status='in_progress' in the same transaction.
     Returns None when no todo tickets exist for any role.
+
+    Tickets whose ``project`` is in :func:`_excluded_projects`
+    (TallyConnector by default) are NEVER claimed — they stay ``todo``
+    so an operator can spot + handle them on the Windows side. A NULL
+    project is always claimable.
     """
+    excluded = _excluded_projects()
     with _conn() as c, c.cursor(row_factory=dict_row) as cur:
         cur.execute(
             "SELECT * FROM tickets "
             "WHERE status='todo' "
+            "  AND (project IS NULL OR project <> ALL(%s)) "
             "ORDER BY CASE priority "
             "  WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 "
             "  WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
             "created_at ASC LIMIT 1 "
             "FOR UPDATE SKIP LOCKED",
+            (excluded,),
         )
         row = cur.fetchone()
         if row is None:

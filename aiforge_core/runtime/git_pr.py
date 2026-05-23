@@ -359,10 +359,30 @@ def _push(repo_root: str, branch: str) -> tuple[bool, str]:
     rc, _, err = run_git(
         ["git", "push", "-u", "origin", branch], repo_root,
     )
-    if rc != 0:
-        log.warning("git_pr.push_failed: %s", err)
-        return False, err[:300]
-    return True, ""
+    if rc == 0:
+        return True, ""
+    # Re-run of a ticket: the aiforge/<id> branch already exists on
+    # origin from a prior attempt and our local worktree branch has
+    # been re-created from base, so the histories diverged and the
+    # plain push is rejected (non-fast-forward). Since this branch is
+    # exclusively ours (aiforge/* namespace, one ticket = one branch),
+    # a lease-guarded force is safe — it only overwrites if the remote
+    # is still where we last saw it. Never touches master/main.
+    low = (err or "").lower()
+    if (branch.startswith("aiforge/")
+            and ("non-fast-forward" in low or "rejected" in low
+                 or "fetch first" in low or "stale info" in low)):
+        log.info("git_pr.push retry --force-with-lease for %s", branch)
+        rc2, _, err2 = run_git(
+            ["git", "push", "--force-with-lease", "-u", "origin", branch],
+            repo_root,
+        )
+        if rc2 == 0:
+            return True, ""
+        log.warning("git_pr.push_failed (after lease retry): %s", err2)
+        return False, err2[:300]
+    log.warning("git_pr.push_failed: %s", err)
+    return False, err[:300]
 
 
 def _open_pr(repo_root: str, identifier: str, title: str,

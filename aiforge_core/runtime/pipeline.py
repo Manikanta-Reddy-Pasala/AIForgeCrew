@@ -249,19 +249,20 @@ def build_pipeline(*, skip_researcher: bool = False,
     sub_agents.append(validator)
 
     # Live verifier — runs after Validator approves so we confirm the
-    # fix WORKS, not just that the diff looks plausible. TallyConnector
-    # can only be exercised end-to-end on a Windows machine with COM
-    # bindings, so its recipe always routes through claude_local
-    # (which can hand off to the operator's Windows-side Claude via
-    # the handoff_brief field in the verdict). Other repos use the
-    # operator's configured model.
+    # fix WORKS, not just that the diff looks plausible. ALWAYS pinned
+    # to claude_local: (1) the operator's standing rule is "Claude must
+    # validate"; (2) the recipe (~8.6K chars) PLUS the full
+    # SequentialAgent session history (enhancer→…→validator outputs)
+    # overflows a local model's context window — ONE-1 blocked on
+    # exactly this (litellm 400 "tokens to keep > context length") when
+    # the verifier ran on Qwen. Claude's large context absorbs it and
+    # its tool use (bash/curl/mvn) is more reliable for the boot+deploy
+    # recipes. TallyConnector additionally emits a Windows handoff
+    # brief from the same claude_local engine.
     if os.environ.get("AIFORGE_LIVE_VERIFIER", "1") in {"1", "true"}:
-        lv_factory = (
-            _claude_pinned_model
-            if (project or "").lower() == "tallyconnector"
-            else build_litellm_model
+        live_verifier = _live_verifier_mod.build(
+            _claude_pinned_model, project=project,
         )
-        live_verifier = _live_verifier_mod.build(lv_factory, project=project)
         sub_agents.append(live_verifier)
 
     return SequentialAgent(
