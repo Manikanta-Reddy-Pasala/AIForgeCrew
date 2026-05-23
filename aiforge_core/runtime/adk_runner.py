@@ -699,6 +699,24 @@ def _process_one_ticket() -> bool:
 
     log.info("claimed ticket=%s title=%r", ticket.identifier, ticket.title)
 
+    # LM Studio liveness check + opportunistic tunnel restart. When
+    # the local model is unreachable, flip the pipeline to a cloud
+    # profile for this run so we don't burn a slot on retries that
+    # can't ever land. ``AIFORGE_LM_HEALTH=0`` opts out.
+    if os.environ.get("AIFORGE_LM_HEALTH", "1") in {"1", "true"}:
+        try:
+            from aiforge_core.runtime.lm_health import check_lm_health
+            health = check_lm_health(restart_on_fail=True)
+            if not health.get("doer_ok"):
+                log.warning(
+                    "ticket=%s lm_unreachable — forcing claude_local "
+                    "for this run (restarted=%s)",
+                    ticket.identifier, health.get("restarted"),
+                )
+                set_force_provider("claude_local")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("lm_health probe skipped: %s", exc)
+
     worktree, prior_env = _setup_ticket_workspace(ticket)
     if not worktree:
         tickets_mod.update_status(
@@ -744,6 +762,42 @@ def _process_one_ticket() -> bool:
     _ingest_ticket_external_refs(ticket)
 
     memory_md = memory_block.fetch(ticket)
+
+    # **Claude Enhancer pre-flight.** Local models are weak at
+    # re-framing under-specified tickets — let Claude rewrite the
+    # body into a structured brief first. ENHANCE_BLOCKED stops the
+    # pipeline early with a clear message to the operator. Anything
+    # else replaces ``ticket.body`` on the in-memory ticket object
+    # so the Planner / Doer see the enriched version, while the
+    # original on disk stays intact for audit.
+    enhancer_meta: dict[str, Any] = {}
+    try:
+        from aiforge_core.runtime.enhancer import enhance
+        eres = enhance(ticket, memory_md=memory_md)
+        enhancer_meta = {"enhancer_used_claude": eres.get("used_claude", False)}
+        if eres.get("blocked_reason"):
+            tickets_mod.update_status(
+                ticket.id, "blocked", role="enhancer",
+                metadata_patch={
+                    "enhancer_blocked": eres["blocked_reason"],
+                    **enhancer_meta,
+                },
+            )
+            _restore_env(prior_env)
+            return True
+        if eres.get("ok") and eres.get("enhanced_body"):
+            log.info("ticket=%s enhancer=ok len_before=%d len_after=%d",
+                     ticket.identifier,
+                     len(ticket.body or ""),
+                     len(eres["enhanced_body"]))
+            ticket.body = eres["enhanced_body"]
+            enhancer_meta["enhancer_enhanced"] = True
+        else:
+            log.info("ticket=%s enhancer=skipped reason=%s",
+                     ticket.identifier, eres.get("error", "unknown"))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("enhancer skipped: %s", exc)
+
     prompt = _build_prompt(ticket, memory_md)
 
     forced = _ticket_force_provider(ticket)
@@ -777,7 +831,54 @@ def _process_one_ticket() -> bool:
         reason = _extract_reason(state, outcome)
         _record_verdict_event(ticket.id, outcome, reason)
 
+        # **Claude takeover** — when the local Doer loop fails AND we
+        # haven't already escalated, replay the pipeline once on the
+        # claude_local profile. Pattern the user asked for:
+        # "local model is main action; Claude takes over on failure".
+        # Toggle via ``AIFORGE_CLAUDE_TAKEOVER=0``.
+        if (
+            outcome == "fail"
+            and os.environ.get("AIFORGE_CLAUDE_TAKEOVER", "1") in {"1", "true"}
+            and not (ticket.metadata or {}).get("claude_takeover_attempted")
+        ):
+            log.info("ticket=%s claude_takeover starting (verdict=fail)",
+                     ticket.identifier)
+            try:
+                tickets_mod.update_status(
+                    ticket.id, "in_progress", role="claude_takeover",
+                    metadata_patch={"claude_takeover_attempted": True},
+                )
+                set_force_provider("claude_local")
+                state2 = asyncio.run(_run_pipeline(
+                    prompt, skip_researcher=skip_researcher, ticket=ticket,
+                ))
+                outcome2 = _extract_verdict(state2)
+                reason2 = _extract_reason(state2, outcome2)
+                _record_verdict_event(ticket.id, outcome2, reason2)
+                if outcome2 == "pass":
+                    log.info("ticket=%s claude_takeover SUCCESS — flipping verdict",
+                             ticket.identifier)
+                    outcome = outcome2
+                    reason = reason2
+                    state = state2
+            except Exception as exc:  # noqa: BLE001
+                log.warning("claude_takeover failed: %s", exc)
+
         new_status = _VERDICT_TO_STATUS.get(outcome, "blocked")
+
+        # Always record a failure-pattern memory when verdict != pass.
+        # Pattern the user asked for: AIForge learns from its own
+        # mistakes. ``AIFORGE_FAILURE_MEMORY=0`` opts out.
+        if outcome != "pass" and os.environ.get(
+            "AIFORGE_FAILURE_MEMORY", "1"
+        ) in {"1", "true"}:
+            try:
+                from aiforge_core.runtime.failure_memory import record_failure
+                record_failure(
+                    ticket, verdict=outcome, reason=reason,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("failure_memory skipped: %s", exc)
 
         # PR gate: anything that ISN'T an explicit scope_violation is
         # eligible. `commit_push_open_pr` itself short-circuits on a
