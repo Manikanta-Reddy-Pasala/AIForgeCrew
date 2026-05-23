@@ -384,7 +384,13 @@ def _persist_ticket_attachments(
         dest = target_dir / safe_name
         dest.write_bytes(data)
         rel = dest.relative_to(root).as_posix()
-        out.append({"name": safe_name, "size": len(data), "path": rel})
+        # ``abs_path`` stays valid even when downstream code (the
+        # runner) rebinds AIFORGE_REPO_ROOT to a per-ticket worktree,
+        # so the materializer can locate the upload from anywhere.
+        out.append({
+            "name": safe_name, "size": len(data),
+            "path": rel, "abs_path": str(dest),
+        })
     return out
 
 

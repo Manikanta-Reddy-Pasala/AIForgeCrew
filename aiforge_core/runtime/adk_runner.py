@@ -69,6 +69,69 @@ def _restore_env(prior: str | None) -> None:
         os.environ["AIFORGE_REPO_ROOT"] = prior
 
 
+def _materialize_attachments_in_worktree(ticket, worktree: str) -> None:
+    """Copy operator-uploaded files into the per-ticket worktree.
+
+    The API persists attachments under its own
+    ``AIFORGE_REPO_ROOT/.aiforge/ticket-files/{identifier}/`` (typically
+    a shared workspace). The runner then rebinds
+    ``AIFORGE_REPO_ROOT`` to a per-ticket git worktree which is OUT OF
+    SCOPE of Claude CLI's ``--add-dir`` whitelist. Without this copy
+    the Doer prompt's ``.aiforge/ticket-files/{id}/<name>`` relative
+    path resolves to a missing file inside the worktree.
+
+    Strategy: copy each upload by absolute path (stored as ``abs_path``
+    at upload time; falls back to the api's historical default base
+    for tickets created before that field existed). Skips silently
+    when the ticket has no attachments or the worktree is missing.
+    """
+    import shutil
+    if not worktree or not os.path.isdir(worktree):
+        return
+    md = ticket.metadata or {}
+    files = md.get("attached_files") or []
+    if not isinstance(files, list) or not files:
+        return
+    dest_dir = os.path.join(
+        worktree, ".aiforge", "ticket-files", ticket.identifier,
+    )
+    os.makedirs(dest_dir, exist_ok=True)
+    fallback_base = os.path.expanduser(os.environ.get(
+        "AIFORGE_TICKET_FILES_BASE", "~/codeRepo/Scheduler",
+    ))
+    copied = 0
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        name = f.get("name")
+        if not name:
+            continue
+        src = f.get("abs_path")
+        if not src or not os.path.isfile(src):
+            rel = f.get("path") or ""
+            candidate = os.path.join(fallback_base, rel)
+            src = candidate if os.path.isfile(candidate) else None
+        if not src:
+            log.warning(
+                "ticket=%s attachment missing on disk name=%r",
+                ticket.identifier, name,
+            )
+            continue
+        try:
+            shutil.copy2(src, os.path.join(dest_dir, name))
+            copied += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "ticket=%s attachment copy failed name=%r: %s",
+                ticket.identifier, name, exc,
+            )
+    if copied:
+        log.info(
+            "ticket=%s materialized %d attachment(s) into worktree",
+            ticket.identifier, copied,
+        )
+
+
 def _persist_ticket_media(ticket) -> None:
     """Gap-10 wire-in: stash image attachments as an AFM
     ``Observation_v2`` with ``media_refs`` populated.
@@ -757,6 +820,11 @@ def _process_one_ticket() -> bool:
         )
         _restore_env(prior_env)
         return True
+
+    # Pull operator-uploaded files into the per-ticket worktree so
+    # Claude CLI (whose ``--add-dir`` is the worktree) can ``file_read``
+    # them by the same relative path the Doer prompt references.
+    _materialize_attachments_in_worktree(ticket, worktree)
 
     # Gap-10 wire-in: persist any image attachments as an
     # Observation_v2 with ``media_refs`` so future tickets can recall
