@@ -1701,7 +1701,12 @@ if os.path.isdir(_DIST):
 
     @app.get("/")
     def _root_redirect():
-        return FileResponse(os.path.join(_DIST, "index.html"))
+        # Real 307 redirect to /ui/. Returning index.html directly
+        # makes the browser load the bundle at path "/" but the SPA
+        # router is mounted at basename="/ui" — first render shows
+        # only the static <title> with an empty <div id="root">.
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/ui/", status_code=307)
 else:
     @app.get("/")
     def _root_info() -> dict:
