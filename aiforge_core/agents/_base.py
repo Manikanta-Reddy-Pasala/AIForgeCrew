@@ -41,7 +41,7 @@ def contract_for(role: str) -> AgentContract:
     return contracts[role]
 
 
-def build_llm_agent(role: str, instruction: str, output_key: str,
+def build_llm_agent(role: str, instruction: "str | Callable", output_key: str,
                     tools_factory: Callable[[], list] | None,
                     model_factory: ModelFactory):
     """Construct the ADK ``LlmAgent`` for one archetype.
@@ -50,7 +50,12 @@ def build_llm_agent(role: str, instruction: str, output_key: str,
       role: must match an entry in ``agents.yaml``; used to pull
         ``timeout`` from the contract so per-role wall-clock caps stay
         co-located with the rest of the contract.
-      instruction: the system prompt string consumed verbatim.
+      instruction: the system prompt. A ``str`` is subject to ADK's
+        ``{var}`` state-templating; pass a ``Callable[[ctx], str]``
+        (InstructionProvider) when the prompt contains literal braces
+        — e.g. the live_verifier recipe is full of bash ``${...}``,
+        curl ``%{http_code}`` and JSON ``{...}`` that must NOT be
+        treated as session variables.
       output_key: ADK session-state key the agent writes its result to.
       tools_factory: zero-arg callable returning the FunctionTool list
         for this role. ``None`` means tool-less (judges, classifiers).

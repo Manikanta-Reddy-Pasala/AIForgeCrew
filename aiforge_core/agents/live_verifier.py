@@ -99,12 +99,22 @@ def _prompt_for_project(project: str | None) -> str:
 
 def build(model_factory: _base.ModelFactory, project: str | None = None):
     """Build the live_verifier agent with the project-specific recipe
-    baked into the prompt."""
+    baked into the prompt.
+
+    The recipe markdown is full of literal braces — bash ``${PR_URL}``,
+    curl ``%{http_code}``, ``$(seq 1 30)``, and JSON verdict examples
+    like ``{"ok": true}``. ADK treats ``{var}`` in a *string*
+    instruction as session-state placeholders and raises
+    ``Context variable not found`` (this is exactly what blocked ONE-7
+    on ``%{http_code}``). Passing the prompt as an InstructionProvider
+    callable makes ADK use it verbatim — no templating — so every
+    brace survives.
+    """
     prompt = _prompt_for_project(project or os.environ.get(
         "AIFORGE_TICKET_PROJECT", "",
     ))
     return _base.build_llm_agent(
-        ROLE, prompt, OUTPUT_KEY, TOOLS_FACTORY, model_factory,
+        ROLE, lambda _ctx: prompt, OUTPUT_KEY, TOOLS_FACTORY, model_factory,
     )
 
 

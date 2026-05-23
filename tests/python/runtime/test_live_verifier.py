@@ -173,3 +173,23 @@ def test_live_verifier_prompt_contains_both_sections() -> None:
     # Both project recipes actually inlined.
     assert "tekton" in prompt.lower()
     assert "port-forward" in prompt.lower() or "pos-api.oneshell.in" in prompt
+
+
+# ── ADK templating bypass (ONE-7 regression) ──────────────────────────
+
+
+def test_live_verifier_instruction_is_callable_not_templated() -> None:
+    """ONE-7 blocked with 'Context variable not found: http_code' because
+    the recipe's ``%{http_code}`` was treated as an ADK state var. The
+    live_verifier must pass its prompt as an InstructionProvider
+    callable so braces survive verbatim."""
+    from aiforge_core.runtime import pipeline
+
+    p = pipeline.build_pipeline(skip_researcher=True, project="PosClientBackend")
+    lv = [s for s in p.sub_agents if s.name == "live_verifier"][0]
+    inst = lv.instruction
+    assert callable(inst), "instruction must be a provider callable"
+    rendered = inst(None)
+    # The exact tokens that broke ONE-7 must be present untouched.
+    assert "%{http_code}" in rendered
+    assert "${AIFORGE_AUTO_MERGE:-0}" in rendered or "AIFORGE_AUTO_MERGE" in rendered
