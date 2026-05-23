@@ -57,14 +57,28 @@ def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
 
 
 def _resolve_repo_root() -> str | None:
-    """Honour ``AIFORGE_REPO_ROOT`` and confirm it's a git repo."""
+    """Honour ``AIFORGE_REPO_ROOT`` and confirm it's a git repo.
+
+    Accepts both regular repos (``.git`` is a directory) and worktrees
+    (``.git`` is a file containing ``gitdir: ...``). Falls back to
+    ``git rev-parse --git-dir`` so any layout git itself accepts also
+    works here.
+    """
     repo_root = os.path.expanduser(os.environ.get(
         "AIFORGE_REPO_ROOT", "~/aiforge_workspace",
     ))
-    if not os.path.isdir(os.path.join(repo_root, ".git")):
-        log.warning("git_pr.skip: %s is not a git repo", repo_root)
-        return None
-    return repo_root
+    dot_git = os.path.join(repo_root, ".git")
+    if os.path.isdir(dot_git) or os.path.isfile(dot_git):
+        return repo_root
+    probe = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=repo_root if os.path.isdir(repo_root) else None,
+        check=False, capture_output=True,
+    )
+    if probe.returncode == 0:
+        return repo_root
+    log.warning("git_pr.skip: %s is not a git repo", repo_root)
+    return None
 
 
 def _default_base_branch(repo_root: str) -> str:

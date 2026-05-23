@@ -1,8 +1,9 @@
 #!/bin/bash
 # Janitor: remove .aiforge-worktrees/ONE-* whose ticket is in a terminal status.
-PGPASS=aiforgepass
+PGPASS="${AIFORGE_PG_PASSWORD:-aiforgepass}"
+ROOT="${AIFORGE_WORKTREE_ROOT:-$HOME/codeRepo}"
 removed=0
-for wt in /home/mani/codeRepo/*/.aiforge-worktrees/*; do
+for wt in "$ROOT"/*/.aiforge-worktrees/*; do
   [ -d "$wt" ] || continue
   ticket=$(basename "$wt")
   case "$ticket" in
@@ -14,7 +15,7 @@ for wt in /home/mani/codeRepo/*/.aiforge-worktrees/*; do
   case "$status" in
     done|blocked|failed|cancelled)
       echo "[$repo/$ticket] status=$status -> remove"
-      cd "/home/mani/codeRepo/$repo" 2>/dev/null
+      cd "$ROOT/$repo" 2>/dev/null || continue
       git worktree remove --force "$wt" 2>&1 | tail -1
       removed=$((removed+1))
       ;;
@@ -27,8 +28,8 @@ for wt in /home/mani/codeRepo/*/.aiforge-worktrees/*; do
   esac
 done
 # Prune any tracked-but-missing worktree refs
-for repo in /home/mani/codeRepo/*/.git; do
-  cd "$(dirname "$repo")"
+for repo in "$ROOT"/*/.git; do
+  cd "$(dirname "$repo")" || continue
   git worktree prune 2>&1 | tail -1
 done
 echo "removed=$removed"
