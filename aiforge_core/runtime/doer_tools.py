@@ -431,6 +431,38 @@ def git_add_commit(message: str) -> dict:
     return git_commit(message)
 
 
+# Claude-Code / OpenHands meta-tools local models (Qwen3-Coder) emit
+# from training but which have no side effect in our pipeline. ADK
+# hard-errors on an unregistered function name and that BLOCKS the whole
+# ticket (ONE-7: 'Tool todo_write not found' → no_changes → blocked),
+# so we register them as no-ops that return success and nudge the model
+# back toward the real tools. Cheaper than letting one stray call kill a
+# 30-minute run.
+
+def todo_write(todos: str = "", **_kw) -> dict:
+    """No-op planning scratchpad (Claude-Code TodoWrite). Accepted so a
+    stray call doesn't abort the run; the plan already lives in state."""
+    return {"ok": True, "note": "todo noted (no-op); use editor/bash to act"}
+
+
+def todowrite(todos: str = "", **_kw) -> dict:
+    """Alias spelling for :func:`todo_write`."""
+    return todo_write(todos)
+
+
+def glob(pattern: str = "*", path: str = ".") -> dict:
+    """Claude-Code Glob → delegate to grep_repo's file search. Falls
+    back to list_dir when no pattern."""
+    return grep_repo(pattern, path)
+
+
+def task(description: str = "", **_kw) -> dict:
+    """No-op for Claude-Code Task/Agent spawns — the Doer already runs
+    inside the pipeline; sub-agent spawning goes through delegate_to_agent,
+    not this name. Accepted so a stray call doesn't abort the run."""
+    return {"ok": True, "note": "task no-op; use editor/bash directly"}
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -461,7 +493,8 @@ def adk_function_tools() -> list:
                         memory_lookup, graphify_lookup]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
-               commit, git_add_commit]
+               commit, git_add_commit,
+               todo_write, todowrite, glob, task]
     return [FunctionTool(func=fn) for fn in new_canonical + legacy_canonical + aliases]
 
 
@@ -472,5 +505,6 @@ __all__ = [
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
     "commit", "git_add_commit",
+    "todo_write", "todowrite", "glob", "task",
     "adk_function_tools",
 ]

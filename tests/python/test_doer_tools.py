@@ -466,3 +466,21 @@ def test_edit_registered_in_adk_tools() -> None:
     }
     assert "edit" in names
     assert "str_replace" in names
+
+
+def test_meta_tool_noops_registered_and_safe() -> None:
+    """Local models emit todo_write/glob/task from training; they must
+    be registered no-ops (not pipeline-killers) — ONE-7 regression."""
+    from aiforge_core.runtime.doer_tools import adk_function_tools
+    names = {
+        getattr(t, "name", getattr(getattr(t, "func", None), "__name__", ""))
+        for t in adk_function_tools()
+    }
+    for n in ("todo_write", "todowrite", "glob", "task"):
+        assert n in names, n
+
+
+def test_todo_write_is_noop_ok() -> None:
+    from aiforge_core.runtime import doer_tools as dt
+    assert dt.todo_write("[x] do thing")["ok"] is True
+    assert dt.task("spawn researcher")["ok"] is True
