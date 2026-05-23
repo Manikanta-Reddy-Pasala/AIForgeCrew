@@ -1,81 +1,42 @@
-"""Unit tests for the Claude-Enhance → local-Doer → Claude-Review
-pattern shipped 2026-05-23.
+"""Unit tests for the Claude-Enhance → local-Doer → Claude-Validate
+pattern, now wired through proper ADK LlmAgents (2026-05-23 refactor).
 
 Covers:
-* enhancer.enhance — prompt build, blocked-reason path, success path
+* pipeline.build_pipeline — Enhancer at index 0, Validator at end
 * lm_health.check_lm_health — both endpoints OK / fail / restart
-* failure_memory.record_failure — soft-fail on missing project
+* failure_memory.record_failure + after-callback shape
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aiforge_core.runtime import enhancer, failure_memory, lm_health
+from aiforge_core.runtime import failure_memory, lm_health, pipeline
 
 
-# ── Enhancer ────────────────────────────────────────────────────────────
+# ── Pipeline shape ─────────────────────────────────────────────────────
 
-class _StubTicket:
-    def __init__(self, body="goal: do X", title="T", project="repo"):
-        self.title = title
-        self.body = body
-        self.project = project
-        self.metadata = None
-
-
-def test_enhancer_disabled_via_env(monkeypatch) -> None:
-    monkeypatch.setenv("AIFORGE_ENHANCER", "0")
-    out = enhancer.enhance(_StubTicket())
-    assert out["ok"] is False
-    assert out["error"] == "disabled"
+def test_pipeline_starts_with_enhancer_and_ends_with_validator() -> None:
+    p = pipeline.build_pipeline(skip_researcher=True)
+    names = [s.name for s in (getattr(p, "sub_agents", []) or [])]
+    # enhancer must be the FIRST stage so the rewritten body reaches
+    # the Planner / Doer.
+    assert names[0] == "enhancer", names
+    # validator must be the LAST stage so its judgment sees the full
+    # session state (incl. Learner's writeback).
+    assert names[-1] == "validator", names
+    # Loop wrapper still lives between the planner stages and learner.
+    assert "doer_refiner_feedback_loop" in names
 
 
-def test_enhancer_returns_ok_when_cli_succeeds(monkeypatch) -> None:
-    monkeypatch.setenv("AIFORGE_ENHANCER", "1")
-    monkeypatch.setattr(
-        enhancer, "_claude_cli_invoke",
-        lambda prompt, **kw: "# Enhanced\n## Goal\ndo X\n",
-    )
-    out = enhancer.enhance(_StubTicket())
-    assert out["ok"] is True
-    assert out["used_claude"] is True
-    assert "Goal" in out["enhanced_body"]
-
-
-def test_enhancer_blocked(monkeypatch) -> None:
-    monkeypatch.setenv("AIFORGE_ENHANCER", "1")
-    monkeypatch.setattr(
-        enhancer, "_claude_cli_invoke",
-        lambda prompt, **kw: "ENHANCE_BLOCKED: body is empty",
-    )
-    out = enhancer.enhance(_StubTicket(body=""))
-    assert out["ok"] is False
-    assert out["blocked_reason"] == "body is empty"
-    assert out["used_claude"] is True
-
-
-def test_enhancer_cli_failure_is_soft(monkeypatch) -> None:
-    monkeypatch.setenv("AIFORGE_ENHANCER", "1")
-    monkeypatch.setattr(enhancer, "_claude_cli_invoke",
-                        lambda prompt, **kw: None)
-    out = enhancer.enhance(_StubTicket())
-    assert out["ok"] is False
-    assert out["error"] == "claude_unreachable_or_failed"
-    assert out["used_claude"] is False
-
-
-def test_enhancer_strips_code_fences(monkeypatch) -> None:
-    monkeypatch.setenv("AIFORGE_ENHANCER", "1")
-    monkeypatch.setattr(
-        enhancer, "_claude_cli_invoke",
-        lambda prompt, **kw: "```markdown\n# Hi\n## Goal\ngo\n```",
-    )
-    out = enhancer.enhance(_StubTicket())
-    assert out["ok"] is True
-    assert not out["enhanced_body"].startswith("```")
-    assert not out["enhanced_body"].endswith("```")
+def test_pipeline_with_researcher_keeps_order() -> None:
+    p = pipeline.build_pipeline(skip_researcher=False)
+    names = [s.name for s in (getattr(p, "sub_agents", []) or [])]
+    assert names[0] == "enhancer", names
+    assert "researcher" in names
+    assert names[-1] == "validator", names
 
 
 # ── LM health ────────────────────────────────────────────────────────────
@@ -122,30 +83,37 @@ def test_lm_health_no_restart_when_flag_off(monkeypatch) -> None:
 
 # ── Failure memory ───────────────────────────────────────────────────────
 
+class _StubTicket:
+    def __init__(self, body="goal: do X", title="T", project="repo"):
+        self.title = title
+        self.body = body
+        self.project = project
+        self.metadata = None
+        self.identifier = "ONE-99"
+
+
 def test_failure_memory_skips_on_pass() -> None:
-    t = _StubTicket()
-    out = failure_memory.record_failure(t, verdict="pass")
+    out = failure_memory.record_failure(_StubTicket(), verdict="pass")
     assert out["ok"] is False
     assert out["error"] == "not_a_failure"
 
 
 def test_failure_memory_skips_without_project() -> None:
-    t = _StubTicket(project="")
-    out = failure_memory.record_failure(t, verdict="fail")
+    out = failure_memory.record_failure(
+        _StubTicket(project=""), verdict="fail",
+    )
     assert out["ok"] is False
     assert out["error"] == "no_project"
 
 
 def test_failure_memory_calls_upsert(monkeypatch) -> None:
     t = _StubTicket()
-    t.identifier = "ONE-99"
     fake_upsert = MagicMock(
         return_value={"id": "obs_xyz", "deduped": False},
     )
     fake_store = MagicMock(upsert_observation=fake_upsert)
-    fake_driver = MagicMock()
     fake_gdb = MagicMock()
-    fake_gdb.driver.return_value = fake_driver
+    fake_gdb.driver.return_value = MagicMock()
     with patch.dict("sys.modules", {
         "aiforge_memory.features.memory.store": fake_store,
         "neo4j": MagicMock(GraphDatabase=fake_gdb),
@@ -160,3 +128,61 @@ def test_failure_memory_calls_upsert(monkeypatch) -> None:
     assert kwargs["kind"] == "failure"
     assert "kind:failure" in kwargs["tags"]
     assert "ci:red" in kwargs["tags"]
+
+
+def test_failure_memory_callback_skips_on_clean_pass(monkeypatch) -> None:
+    """Both feedback=pass AND validator approve → no write."""
+    cb = failure_memory.make_failure_memory_after_callback()
+    state = {
+        "ticket_identifier": "ONE-1",
+        "ticket_project": "TestRepo",
+        "feedback_verdict": "pass",
+        "validator_verdict": json.dumps({
+            "verdict": "approve", "rationale": "looks good",
+        }),
+    }
+    called = {"n": 0}
+    monkeypatch.setattr(
+        failure_memory, "record_failure",
+        lambda *a, **kw: called.__setitem__("n", called["n"] + 1),
+    )
+
+    class _Ctx:
+        pass
+    ctx = _Ctx()
+    ctx.state = state
+    import asyncio
+    asyncio.run(cb(callback_context=ctx))
+    assert called["n"] == 0
+
+
+def test_failure_memory_callback_writes_on_validator_reject(monkeypatch) -> None:
+    """feedback=pass but validator request_changes → write."""
+    cb = failure_memory.make_failure_memory_after_callback()
+    state = {
+        "ticket_identifier": "ONE-2",
+        "ticket_project": "TestRepo",
+        "feedback_verdict": "pass",
+        "validator_verdict": json.dumps({
+            "verdict": "request_changes",
+            "rationale": "scope drift",
+        }),
+    }
+    captured = {}
+
+    def _rec(t, *, verdict, reason, review_verdict=None, **_kw):
+        captured["verdict"] = verdict
+        captured["reason"] = reason
+        captured["review_verdict"] = review_verdict
+        return {"ok": True}
+
+    monkeypatch.setattr(failure_memory, "record_failure", _rec)
+
+    class _Ctx:
+        pass
+    ctx = _Ctx()
+    ctx.state = state
+    import asyncio
+    asyncio.run(cb(callback_context=ctx))
+    assert captured.get("review_verdict") == "request_changes"
+    assert "scope drift" in (captured.get("reason") or "")
