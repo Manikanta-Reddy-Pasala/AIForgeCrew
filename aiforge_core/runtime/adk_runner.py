@@ -656,11 +656,30 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
                     content = injected[0]
         except Exception as exc:  # noqa: BLE001 — best-effort
             log.debug("vision_adk.inject failed: %s", exc)
+    # Hard ceiling on total LLM calls for the whole pipeline run. A
+    # local model (Qwen) can thrash — ONE-7 made 383 calls across 52
+    # minutes and wrote ZERO files, spinning on read/think without ever
+    # committing an edit. ADK's default cap is high enough that this
+    # never tripped. Bounding it means a stuck local Doer aborts and
+    # the runner's claude_takeover path rescues the ticket instead of
+    # burning an hour. A healthy multi-stage run uses ~70-90 calls, so
+    # 120 leaves headroom. Tune via AIFORGE_MAX_LLM_CALLS.
+    run_config = None
     try:
-        async for event in runner.run_async(
+        from google.adk.agents.run_config import RunConfig
+        run_config = RunConfig(
+            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "120")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("RunConfig unavailable: %s", exc)
+    try:
+        _run_kwargs: dict[str, Any] = dict(
             user_id="aiforge-runner",
             session_id=session.id, new_message=content,
-        ):
+        )
+        if run_config is not None:
+            _run_kwargs["run_config"] = run_config
+        async for event in runner.run_async(**_run_kwargs):
             if event.is_final_response():
                 pass  # session.state mutated; drained for completeness
         session = await session_svc.get_session(
@@ -668,6 +687,29 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
             session_id=session.id,
         )
         return dict(session.state or {})
+    except Exception as exc:  # noqa: BLE001
+        # max_llm_calls trip (or any mid-run ADK error) — recover the
+        # partial session state and tag it so the caller treats this as
+        # a soft FAIL (→ claude_takeover) rather than a hard crash that
+        # only marks the ticket blocked. The local Doer thrash that
+        # motivated the cap should hand off to Claude, not dead-end.
+        name = type(exc).__name__
+        is_limit = "LlmCallsLimit" in name or "max_llm_calls" in str(exc)
+        log.warning(
+            "pipeline run aborted (%s)%s — returning partial state",
+            name, " [llm-cap]" if is_limit else "",
+        )
+        try:
+            session = await session_svc.get_session(
+                app_name="aiforge", user_id="aiforge-runner",
+                session_id=session.id,
+            )
+            state = dict(session.state or {})
+        except Exception:  # noqa: BLE001
+            state = {}
+        state["feedback_verdict"] = "fail"
+        state["_pipeline_abort"] = name
+        return state
     finally:
         # Best-effort tmux session cleanup for the Doer's persistent bash
         # (sub-project #1, see runtime/tools/bash.py). Failure is swallowed
