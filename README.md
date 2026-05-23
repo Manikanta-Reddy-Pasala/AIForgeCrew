@@ -119,11 +119,29 @@ Lifecycle (deterministic templates, no LLM):
 ```
 write ─► retain_fact ─► neo4j ─► search hits++
                               │
-                              ├── decay         (>90d, hit_count=0 → archived)
+                              ├── decay         (>90d, hit_count=0 → archived; AFM Observation_v2 + Decision_v2 also archived per seen_count ≤ 1)
                               └── pattern_miner (3+ similar outcomes → T3 auto-promoted)
 ```
 
 The learner runs after every Doer pass (`aiforge_core/runtime/doer_learner.py`) — distills outcome to one T3 fact. The pattern miner (`aiforge_core/memory/pattern_miner.py`) promotes 3+ similar outcomes to a single T3 recipe. Both **read paths** for those facts are now closed via UnifiedContext source #6.
+
+### Frontier upgrades (2026-05-23)
+
+The memory layer landed six audit-driven upgrades in one pass — runtime side wires AFM's new write/read paths automatically.
+
+| Upgrade | Surface | Activate / observe |
+|---|---|---|
+| **Trajectory serializer fix** | `runtime/trajectory.py:_event_to_dict` reads the real `google.adk.events.Event` shape (`content.parts[]`, `author`, `actions`) | `~/.aiforge/trajectories/<TICKET>/<RUN>.json` now contains 14+ real events with text / function_call / function_response content (pre-fix every event was `{}`) |
+| **Parallel multi-tool dispatch** | ADK 2.0.0b1 → **2.1.0** (`pyproject.toml`). `flows/llm_flows/functions.py` already `asyncio.gather`s `function_call` arrays | no flag — happens automatically when the Doer model returns multiple `function_call`s in one turn |
+| **Observation_v2 exact dedupe (v1)** | AFM `upsert_observation` collapses on `(repo, text)`; bumps `seen_count` + `last_seen_at`, unions tags | every Learner / `memory_write` write returns `{deduped: bool, seen_count: int}` |
+| **Semantic dedupe (v2)** | `runtime/learner_persist.py` embeds each fact via bge-m3 → `recall_observations_ppr` → `HARD` skip / `SOFT` supersede tag | `AIFORGE_SEMANTIC_DEDUPE=0` to disable; thresholds `AIFORGE_SEMANTIC_DEDUPE_HARD=0.95` / `_SOFT=0.85`; log `learner_persist.skip_semantic_dupe` on hits |
+| **Memory decay extension** | `aiforge_core/memory/decay.py:_decay_afm` archives stale `Observation_v2` + `Decision_v2` (`seen_count ≤ 1`, no recent `last_seen_at`); legacy `:Memory` path retained | nightly `aiforge-memory-decay.service` (now corrected to `aiforge_core.cli.maintenance` + `%h`-based paths); manual: `python -m aiforge_core.cli.maintenance memory decay` |
+| **PPR-lite reranker** | AFM `recall_observations_ppr` (1-iter personalized PageRank over `:MENTIONS` neighbourhood, no GDS required); `bundle._vector_observations` calls it first, falls back to vanilla | every ticket's `memory_block` now PPR-ranked; `alpha=0.7` defaults to vector-leaning blend |
+| **Bi-temporal `event_time`** | AFM `upsert_observation(event_time=epoch_seconds)`; defaults to ingest moment | Cypher: `WHERE o.event_time < datetime('2025-01-01')` etc. |
+| **Multi-modal `media_refs`** | AFM `upsert_observation(media_refs=[...])` and `memory_write(media_refs=...)` round-trip image / video / file refs as string array | future vision-embed pipeline picks them up; today they round-trip + show in search results |
+| **Doer self-edit memory tool** | `runtime/tools/memory_write.py` registered in `adk_function_tools()` alongside `editor`/`bash`/`mcp` | Doer call: `memory_write(text="…", kind="gotcha", tags=[…], media_refs=[…], decision=False)`; repo inferred from `AIFORGE_REPO_ROOT` |
+| **Trajectory-as-memory replay** | `runtime/trajectory.py:index_trajectory_to_memory` → one Note_v2 per session, tagged `kind:trajectory` + `trajectory_path:<json>`; called from `adk_runner` after every dump | toggle off via `AIFORGE_TRAJECTORY_INDEX=0`; query: `MATCH (n:Note_v2) WHERE "kind:trajectory" IN n.tags` |
+| **External-source ingest spine** | AFM `features/external_ingest/ingest_external_source(driver, source, repo, source_type, …)` — file / `http(s)://` / raw text → 1 Doc_v2 + chunked Note_v2 with consistent tags | concrete connectors (Confluence / Slack / Jira / Notion) ship as per-API PRs that fetch raw text via MCP / native API and hand off to this spine |
 
 ---
 
@@ -171,6 +189,7 @@ The Doer calls eight canonical tools, declared in `aiforge_core/agents/agents.ya
 | `execute_ipython_cell(code, timeout)` | `runtime/tools/ipython_kernel.py` | Persistent Jupyter kernel; variables / imports / defs persist across calls. AgentSkills helpers (`open_file`, `goto_line`, `find_file`, `search_dir`, `search_file`, `create_file`, `run_cmd`) auto-loaded into namespace on first call. |
 | `delegate_to_agent(role, prompt, timeout)` | `runtime/tools/delegation.py` | Spawn single-agent ADK runner for researcher/planner/refiner/triage/verifier. Depth-capped via `AIFORGE_DELEGATION_MAX_DEPTH` (default 3). |
 | `mcp(command, endpoint, tool, arguments)` | `runtime/tools/mcp_client.py` | JSON-RPC client for FastMCP servers. Defaults point at oneshell-mcp QA tier on NUC (mongo/k8s/tekton/tally at 192.168.70.115:881x). Override via `AIFORGE_MCP_ENDPOINTS`. |
+| `memory_write(text, kind, tags, media_refs, decision)` | `runtime/tools/memory_write.py` | Doer self-edit (Letta-class). Persists an AFM `Observation_v2` (or `Decision_v2` when `decision=True`) mid-run. Repo inferred from `AIFORGE_REPO_ROOT`. AFM dedupe + semantic dedupe + media_refs all flow through. |
 | `think(thought)` | `runtime/tools/cognition.py` | No-op + `:Think` trace event. 4 KB cap. |
 | `finish(summary, status)` | `runtime/tools/cognition.py` | Doer-only explicit termination signal; returns `terminate=True`. |
 | Support tools | `runtime/doer_tools.py` | `grep_repo`, `fetch_url`, `git_commit`, `memory_lookup`, `graphify_lookup`, `update_working_checkpoint`. |
