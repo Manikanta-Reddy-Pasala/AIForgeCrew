@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -25,16 +25,22 @@ interface Draft {
   body: string;
   assignee_role: string;
   priority: string;
+  project: string;                // AFM repo name / target codeRepo dir
   route_mode: RouteMode;          // local UI state — translated on submit
   route_workflow: string;         // selected workflow id (when mode='workflow')
   attachments: string;            // comma-separated attachment role names
   attached_files: AttachedFile[]; // operator-uploaded files; presence forces claude_local
+  external_refs: string;          // newline-separated URLs / file paths (gap-9)
+  scope_allowlist_globs: string;  // newline-separated globs (gap-C6)
 }
 
 const FRESH_DRAFT: Draft = {
   title: '', body: '', assignee_role: 'planner', priority: 'medium',
+  project: '',
   route_mode: 'auto', route_workflow: '', attachments: '',
   attached_files: [],
+  external_refs: '',
+  scope_allowlist_globs: '',
 };
 
 // Reads a File object as base64 (without the data:...;base64, prefix).
@@ -59,6 +65,57 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
   return `${(n / 1024 / 1024).toFixed(1)}MB`;
+}
+
+// KISS drag-and-drop dropzone — wraps a native ``<input type="file">``
+// so click-to-pick still works alongside drag. The browser sets
+// ``dataTransfer.files`` on drop; we forward both surfaces to the
+// same onFiles handler.
+function DropZone({ onFiles }: { onFiles: (files: File[]) => void }) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onDragOver={e => { e.preventDefault(); setHover(true); }}
+      onDragLeave={() => setHover(false)}
+      onDrop={e => {
+        e.preventDefault();
+        setHover(false);
+        const dropped = Array.from(e.dataTransfer?.files || []);
+        if (dropped.length) onFiles(dropped);
+      }}
+      onClick={() => inputRef.current?.click()}
+      style={{
+        border: hover
+          ? '2px dashed var(--accent, #4a90e2)'
+          : '2px dashed var(--border-1, #ccc)',
+        background: hover ? 'var(--bg-2)' : 'var(--bg-1)',
+        padding: 16,
+        borderRadius: 6,
+        textAlign: 'center',
+        cursor: 'pointer',
+        transition: 'background 120ms, border-color 120ms',
+        userSelect: 'none',
+      }}
+    >
+      <div style={{ fontSize: 14, opacity: 0.8 }}>
+        {hover
+          ? 'Release to attach'
+          : 'Drag files here, or click to browse'}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        onChange={e => {
+          const picked = Array.from(e.target.files || []);
+          if (picked.length) onFiles(picked);
+          e.target.value = '';
+        }}
+      />
+    </div>
+  );
 }
 
 export default function Tickets() {
@@ -135,6 +192,22 @@ export default function Tickets() {
         name: f.name, content_b64: f.content_b64,
       })),
     };
+    // Optional target repo (AFM Repo.name / WORKTREE_ROOT directory).
+    const project = draft.project.trim();
+    if (project) payload.project = project;
+    // Optional URL / path list parsed from textarea (one per line).
+    // Wires to adk_runner._ingest_ticket_external_refs (gap-9).
+    const extRefs = draft.external_refs
+      .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    // Optional glob allowlist for the diff-scope guard (gap-C6).
+    const scopeGlobs = draft.scope_allowlist_globs
+      .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (extRefs.length || scopeGlobs.length) {
+      payload.metadata = {
+        ...(extRefs.length ? { external_refs: extRefs } : {}),
+        ...(scopeGlobs.length ? { scope_allowlist_globs: scopeGlobs } : {}),
+      };
+    }
     if (draft.route_mode === 'code') {
       payload.route = 'code';
     } else if (draft.route_mode === 'workflow') {
@@ -199,7 +272,14 @@ export default function Tickets() {
                   {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
               </label>
-              <div />
+              <label className="field">
+                Project
+                <input
+                  placeholder="e.g. TallyConnector"
+                  value={draft.project}
+                  onChange={e => setDraft({ ...draft, project: e.target.value })}
+                />
+              </label>
             </div>
             <label className="field">
               Body
@@ -208,6 +288,32 @@ export default function Tickets() {
                 placeholder="Context, acceptance, hints…"
                 value={draft.body}
                 onChange={e => setDraft({ ...draft, body: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              External references{' '}
+              <span style={{ opacity: 0.6, fontSize: 12 }}>
+                (one URL or file path per line — auto-ingested into AFM
+                so the Doer's memory hits include their content)
+              </span>
+              <textarea
+                rows={3}
+                placeholder={'https://example.com/spec.md\nhttps://api.linear.app/...\n/srv/docs/runbook.md'}
+                value={draft.external_refs}
+                onChange={e => setDraft({ ...draft, external_refs: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              Scope allowlist{' '}
+              <span style={{ opacity: 0.6, fontSize: 12 }}>
+                (one glob per line — Doer edits outside these globs
+                are refused at the tool boundary)
+              </span>
+              <textarea
+                rows={2}
+                placeholder={'src/**\ntests/**\n!**/*.lock'}
+                value={draft.scope_allowlist_globs}
+                onChange={e => setDraft({ ...draft, scope_allowlist_globs: e.target.value })}
               />
             </label>
 
@@ -224,16 +330,12 @@ export default function Tickets() {
               <div style={{ marginBottom: 6 }}>
                 Attached files{' '}
                 <span style={{ opacity: 0.6, fontSize: 12 }}>
-                  (when present, ticket is pinned to Claude Local — only
-                  Claude's subscription CLI can read uploaded files)
+                  (drag &amp; drop or click — 5 MB cap per file; when
+                  present, ticket is pinned to Claude Local)
                 </span>
               </div>
-              <input
-                type="file"
-                multiple
-                onChange={async e => {
-                  const picked = Array.from(e.target.files || []);
-                  if (!picked.length) return;
+              <DropZone
+                onFiles={async (picked) => {
                   const accepted: AttachedFile[] = [];
                   for (const f of picked) {
                     if (f.size > MAX_FILE_BYTES) {
@@ -248,16 +350,15 @@ export default function Tickets() {
                     }
                   }
                   if (accepted.length) {
-                    setDraft({
-                      ...draft,
-                      attached_files: [...draft.attached_files, ...accepted],
-                    });
+                    setDraft(d => ({
+                      ...d,
+                      attached_files: [...d.attached_files, ...accepted],
+                    }));
                     toast.success(
                       `Added ${accepted.length} file${accepted.length > 1 ? 's' : ''} — ` +
                       `ticket will run on Claude Local`,
                     );
                   }
-                  e.target.value = '';  // allow re-picking the same file
                 }}
               />
               {draft.attached_files.length > 0 && (
