@@ -22,7 +22,8 @@ from . import _base
 ROLE = "live_verifier"
 OUTPUT_KEY = "live_verifier_verdict"
 
-_RECIPES_DIR = Path(__file__).resolve().parent.parent / "recipes" / "live_verify"
+_VERIFY_DIR = Path(__file__).resolve().parent.parent / "recipes" / "live_verify"
+_DEPLOY_DIR = Path(__file__).resolve().parent.parent / "recipes" / "deploy"
 
 
 def _tools_factory() -> list:
@@ -42,30 +43,58 @@ def _tools_factory() -> list:
 TOOLS_FACTORY = _tools_factory
 
 
-def load_recipe(project: str | None) -> str:
-    """Return the recipe markdown for ``project``. Falls back to
-    ``_default.md`` for unknown projects; returns a short stub when
-    even the default is missing (test environments)."""
-    candidates: list[Path] = []
-    if project:
-        candidates.append(_RECIPES_DIR / f"{project}.md")
-    candidates.append(_RECIPES_DIR / "_default.md")
-    for p in candidates:
+def _read_first(paths: list[Path], fallback: str) -> str:
+    for p in paths:
         if p.is_file():
             try:
                 return p.read_text(encoding="utf-8")
             except OSError:
                 continue
-    return (
-        "# Live verify — fallback\n\n"
-        "No recipe found. Run the project's standard test command "
-        "(`./mvnw test`, `npm test`, `pytest`) and emit "
-        "`{\"ok\": exit==0, \"rationale\": \"...\"}`.\n"
+    return fallback
+
+
+def load_recipe(project: str | None) -> str:
+    """Return the VERIFY recipe markdown for ``project``."""
+    candidates: list[Path] = []
+    if project:
+        candidates.append(_VERIFY_DIR / f"{project}.md")
+    candidates.append(_VERIFY_DIR / "_default.md")
+    return _read_first(
+        candidates,
+        (
+            "# Live verify — fallback\n\n"
+            "No recipe found. Run the project's standard test command "
+            "(`./mvnw test`, `npm test`, `pytest`) and emit "
+            "`{\"ok\": exit==0, \"rationale\": \"...\"}`.\n"
+        ),
+    )
+
+
+def load_deploy_recipe(project: str | None) -> str:
+    """Return the DEPLOY recipe markdown for ``project``. Falls back
+    to the generic default. Returned text is injected into the
+    live_verifier prompt as a ``Deploy`` section the agent runs BEFORE
+    its verify section."""
+    candidates: list[Path] = []
+    if project:
+        candidates.append(_DEPLOY_DIR / f"{project}.md")
+    candidates.append(_DEPLOY_DIR / "_default.md")
+    return _read_first(
+        candidates,
+        (
+            "# Deploy — fallback\n\n"
+            "No deploy recipe. Skip; treat the verify step as testing "
+            "against the existing deployed instance.\n"
+        ),
     )
 
 
 def _prompt_for_project(project: str | None) -> str:
-    return prompts.LIVE_VERIFIER.replace("{recipe_md}", load_recipe(project))
+    return (
+        prompts.LIVE_VERIFIER
+        .replace("{deploy_md}", load_deploy_recipe(project))
+        .replace("{recipe_md}", load_recipe(project))
+    )
 
 
 def build(model_factory: _base.ModelFactory, project: str | None = None):
@@ -81,5 +110,5 @@ def build(model_factory: _base.ModelFactory, project: str | None = None):
 
 __all__ = [
     "ROLE", "OUTPUT_KEY", "TOOLS_FACTORY",
-    "load_recipe", "build",
+    "load_recipe", "load_deploy_recipe", "build",
 ]

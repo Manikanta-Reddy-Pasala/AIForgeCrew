@@ -132,3 +132,44 @@ def test_resolve_stage_attribution_unknown_role_returns_safe_default() -> None:
 
     attr = o._resolve_stage_attribution("__not_a_role__")
     assert attr["effective_provider"] == "unknown"
+
+
+# ── deploy recipe loader ──────────────────────────────────────────────
+
+
+def test_load_deploy_recipe_posclient_has_tekton_steps() -> None:
+    from aiforge_core.agents import live_verifier as lv
+
+    md = lv.load_deploy_recipe("PosClientBackend")
+    assert "tekton" in md.lower()
+    assert "argocd" in md.lower()
+    assert "AIFORGE_AUTO_MERGE" in md
+
+
+def test_load_deploy_recipe_tally_emits_windows_handoff() -> None:
+    from aiforge_core.agents import live_verifier as lv
+
+    md = lv.load_deploy_recipe("TallyConnector")
+    assert "windows" in md.lower()
+    assert "AIFORGE_AUTO_MERGE" in md
+
+
+def test_load_deploy_recipe_falls_back_to_default() -> None:
+    from aiforge_core.agents import live_verifier as lv
+
+    md = lv.load_deploy_recipe("NoSuchRepo")
+    assert "AIFORGE_AUTO_MERGE" in md
+
+
+def test_live_verifier_prompt_contains_both_sections() -> None:
+    from aiforge_core.agents import live_verifier as lv
+
+    prompt = lv._prompt_for_project("PosClientBackend")
+    # Both placeholders resolved (no unfilled braces left).
+    assert "{deploy_md}" not in prompt
+    assert "{recipe_md}" not in prompt
+    # Deploy section appears BEFORE Verify section in prompt order.
+    assert prompt.index("### Deploy") < prompt.index("### Verify")
+    # Both project recipes actually inlined.
+    assert "tekton" in prompt.lower()
+    assert "port-forward" in prompt.lower() or "pos-api.oneshell.in" in prompt

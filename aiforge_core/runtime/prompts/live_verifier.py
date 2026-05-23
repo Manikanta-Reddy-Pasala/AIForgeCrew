@@ -54,7 +54,19 @@ Minimum schema (every recipe extends this):
    and let the next loop iteration fix it.
 5. **No mock data.** Use the exact payloads the ticket repro uses.
 
-## Recipe
+## Recipes
+
+Two sections follow. **Run the Deploy section FIRST**, then the
+Verify section. The Deploy section honours an autonomy gate
+(``AIFORGE_AUTO_MERGE``) — when off it's a no-op note in your
+evidence; when on it merges the PR + waits for the deploy to land.
+Verify always runs.
+
+### Deploy
+
+{deploy_md}
+
+### Verify
 
 {recipe_md}
 """
