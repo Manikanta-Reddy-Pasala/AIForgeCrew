@@ -495,6 +495,103 @@ def _build_context_plugins() -> list:
     )]
 
 
+def _run_live_verifier(ticket, pr_url: str) -> dict | None:
+    """Run the live_verifier as a standalone single-agent pipeline AFTER
+    the PR is open.
+
+    Why standalone instead of a pipeline tail: the deploy recipe needs
+    a real ``PR_URL`` to merge + roll out before testing. The seed
+    prompt carries the ticket body, the PR URL, and a ``git diff`` stat
+    so the verifier knows what changed without inheriting the whole
+    SequentialAgent history (which overflowed the model). ``PR_URL`` is
+    exported to the process env so the recipe's bash ``$PR_URL`` and the
+    ``AIFORGE_AUTO_MERGE`` gate (set by deploy_target) resolve.
+    """
+    import asyncio as _asyncio
+
+    from .pipeline import build_live_verifier_agent
+
+    repo_root = os.path.expanduser(os.environ.get(
+        "AIFORGE_REPO_ROOT", "~/aiforge_workspace",
+    ))
+    # Compact diff stat so the verifier knows what to exercise without
+    # us replaying the full Doer history.
+    diff_stat = ""
+    try:
+        import subprocess as _sp
+        diff_stat = _sp.run(
+            ["git", "diff", "--stat", "origin/HEAD...HEAD"],
+            cwd=repo_root, capture_output=True, text=True, timeout=30,
+        ).stdout[:1500]
+    except Exception:  # noqa: BLE001
+        pass
+
+    prev_pr = os.environ.get("PR_URL")
+    os.environ["PR_URL"] = pr_url
+    try:
+        prompt = (
+            f"# Ticket {ticket.identifier}\n"
+            f"## Title\n{ticket.title}\n\n"
+            f"## Body\n{ticket.body or '(no body)'}\n\n"
+            f"## PR opened\n{pr_url}\n\n"
+            f"## Diff stat (origin/HEAD...HEAD)\n```\n{diff_stat}\n```\n"
+        )
+        verdict_state = _asyncio.run(_run_single_agent(
+            build_live_verifier_agent(getattr(ticket, "project", None)),
+            prompt, ticket=ticket,
+        ))
+        return _extract_live_verifier(verdict_state)
+    finally:
+        if prev_pr is None:
+            os.environ.pop("PR_URL", None)
+        else:
+            os.environ["PR_URL"] = prev_pr
+
+
+async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
+    """Drive a one-agent pipeline and return final session state. Used
+    for the post-PR live_verifier — no condenser plugins (single turn,
+    claude_local handles the full recipe context)."""
+    from google.adk.runners import Runner
+    from google.adk.sessions import InMemorySessionService
+    from google.genai import types as gtypes
+
+    session_svc = InMemorySessionService()
+    runner = Runner(
+        agent=agent, app_name="aiforge",
+        session_service=session_svc, auto_create_session=True,
+    )
+    initial_state: dict[str, Any] = {}
+    if ticket is not None:
+        initial_state["ticket_identifier"] = getattr(ticket, "identifier", "") or ""
+        initial_state["ticket_project"] = getattr(ticket, "project", "") or ""
+    session = await session_svc.create_session(
+        app_name="aiforge", user_id="aiforge-runner",
+        state=initial_state or None,
+    )
+    content = gtypes.Content(
+        role="user", parts=[gtypes.Part.from_text(text=prompt)],
+    )
+    try:
+        async for event in runner.run_async(
+            user_id="aiforge-runner",
+            session_id=session.id, new_message=content,
+        ):
+            if event.is_final_response():
+                pass
+        session = await session_svc.get_session(
+            app_name="aiforge", user_id="aiforge-runner",
+            session_id=session.id,
+        )
+        return dict(session.state or {})
+    finally:
+        try:
+            from aiforge_core.runtime.tools.bash import destroy_session
+            destroy_session(session.id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
                         ticket=None) -> dict:
     """Drive one ADK pipeline run and return the final session state.
@@ -952,22 +1049,10 @@ def _process_one_ticket() -> bool:
         reason = _extract_reason(state, outcome)
         _record_verdict_event(ticket.id, outcome, reason)
 
-        # Live-verifier veto: even if Feedback says "pass" and Validator
-        # approved the diff, a failing live verifier (boot didn't come
-        # up, endpoint 4xx/5xx, assertion missed) flips the outcome
-        # to ``fail`` so claude_takeover gets a chance to fix the real
-        # bug. Soft-read the JSON because the live_verifier emits it
-        # via a fenced ``json`` block — see prompts/live_verifier.py.
-        lv = _extract_live_verifier(state)
-        if lv is not None and lv.get("ok") is False and outcome == "pass":
-            log.warning(
-                "ticket=%s live_verifier vetoed pass: %s",
-                ticket.identifier, lv.get("rationale", "")[:200],
-            )
-            outcome = "fail"
-            reason = (
-                f"live_verifier rejected: {lv.get('rationale', '')[:300]}"
-            )
+        # live_verifier no longer runs inside the pipeline — it runs
+        # standalone AFTER the PR opens (see below) so its deploy recipe
+        # has a real PR_URL to merge. ``lv`` is populated there.
+        lv: dict | None = None
 
         # **Claude takeover on failure** — replay the SequentialAgent
         # once under claude_local. Now an in-framework re-run (the
@@ -1078,6 +1163,31 @@ def _process_one_ticket() -> bool:
                 ticket.identifier,
                 ", ".join(pr_meta.get("test_only_files", [])[:5]),
             )
+
+        # Live verifier — runs HERE (post-PR) so its deploy recipe has a
+        # real PR_URL to merge + roll out before testing. Only when the
+        # PR actually opened and the verdict is otherwise a pass; a fail
+        # already routes to claude_fix/takeover above. A failing live
+        # verify flips the ticket to blocked so the operator knows the
+        # merged/worktree fix didn't actually hold.
+        if (
+            pr_meta.get("pr_url")
+            and outcome == "pass"
+            and os.environ.get("AIFORGE_LIVE_VERIFIER", "1") in {"1", "true"}
+        ):
+            try:
+                lv = _run_live_verifier(ticket, pr_meta["pr_url"])
+            except Exception as exc:  # noqa: BLE001
+                log.warning("live_verifier standalone failed: %s", exc)
+                lv = None
+            if lv is not None and lv.get("ok") is False:
+                outcome = "fail"
+                new_status = "blocked"
+                reason = f"live_verifier rejected: {(lv.get('rationale') or '')[:300]}"
+                log.warning(
+                    "ticket=%s live_verifier ok=false: %s",
+                    ticket.identifier, (lv.get("rationale") or "")[:200],
+                )
 
         # C1: grade the PR's CI runs once the push is in. Empty PR
         # metadata (no diff to ship) skips this. Soft-fail: any

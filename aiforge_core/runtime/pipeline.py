@@ -248,22 +248,14 @@ def build_pipeline(*, skip_researcher: bool = False,
     sub_agents.append(learner)
     sub_agents.append(validator)
 
-    # Live verifier — runs after Validator approves so we confirm the
-    # fix WORKS, not just that the diff looks plausible. ALWAYS pinned
-    # to claude_local: (1) the operator's standing rule is "Claude must
-    # validate"; (2) the recipe (~8.6K chars) PLUS the full
-    # SequentialAgent session history (enhancer→…→validator outputs)
-    # overflows a local model's context window — ONE-1 blocked on
-    # exactly this (litellm 400 "tokens to keep > context length") when
-    # the verifier ran on Qwen. Claude's large context absorbs it and
-    # its tool use (bash/curl/mvn) is more reliable for the boot+deploy
-    # recipes. TallyConnector additionally emits a Windows handoff
-    # brief from the same claude_local engine.
-    if os.environ.get("AIFORGE_LIVE_VERIFIER", "1") in {"1", "true"}:
-        live_verifier = _live_verifier_mod.build(
-            _claude_pinned_model, project=project,
-        )
-        sub_agents.append(live_verifier)
+    # NOTE: live_verifier is intentionally NOT in this SequentialAgent.
+    # It must run AFTER the runner opens the PR (commit_push_open_pr),
+    # because its deploy recipe merges that PR + waits for the rollout
+    # before testing. Wiring it as the pipeline tail meant the PR
+    # didn't exist yet (PR_URL unset) so the deploy step no-op'd and
+    # the verifier honestly reported "fix not on QA" (ONE-7). The
+    # runner now invokes it standalone via :func:`build_live_verifier`
+    # once the PR is live. See adk_runner._run_live_verifier.
 
     return SequentialAgent(
         name="aiforge_v6_pipeline",
@@ -271,4 +263,15 @@ def build_pipeline(*, skip_researcher: bool = False,
     )
 
 
-__all__ = ["build_pipeline", "build_litellm_model"]
+def build_live_verifier_agent(project: str | None = None):
+    """Build the standalone live_verifier agent the runner invokes
+    AFTER opening the PR. Always pinned to claude_local — see the note
+    in :func:`build_pipeline` for why (context size + tool reliability
+    + the operator's "Claude must validate" rule)."""
+    return _live_verifier_mod.build(_claude_pinned_model, project=project)
+
+
+__all__ = [
+    "build_pipeline", "build_litellm_model", "build_live_verifier_agent",
+    "set_force_provider", "get_force_provider",
+]

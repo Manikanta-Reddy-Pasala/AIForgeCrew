@@ -185,8 +185,7 @@ def test_live_verifier_instruction_is_callable_not_templated() -> None:
     callable so braces survive verbatim."""
     from aiforge_core.runtime import pipeline
 
-    p = pipeline.build_pipeline(skip_researcher=True, project="PosClientBackend")
-    lv = [s for s in p.sub_agents if s.name == "live_verifier"][0]
+    lv = pipeline.build_live_verifier_agent(project="PosClientBackend")
     inst = lv.instruction
     assert callable(inst), "instruction must be a provider callable"
     rendered = inst(None)

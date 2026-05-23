@@ -18,18 +18,17 @@ from aiforge_core.runtime import failure_memory, lm_health, pipeline
 
 # ── Pipeline shape ─────────────────────────────────────────────────────
 
-def test_pipeline_starts_with_enhancer_and_ends_with_live_verifier() -> None:
+def test_pipeline_starts_with_enhancer_and_ends_with_validator() -> None:
     p = pipeline.build_pipeline(skip_researcher=True)
     names = [s.name for s in (getattr(p, "sub_agents", []) or [])]
     # enhancer must be the FIRST stage so the rewritten body reaches
     # the Planner / Doer.
     assert names[0] == "enhancer", names
-    # live_verifier is now the tail so its veto sees Validator's
-    # approval AND the final worktree state before git_pr commits.
-    assert names[-1] == "live_verifier", names
-    # Validator still runs immediately before live_verifier.
-    assert names[-2] == "validator", names
-    # Loop wrapper still lives between the planner stages and learner.
+    # Validator is the tail again — live_verifier was pulled OUT of the
+    # pipeline so it can run AFTER the PR opens (it merges + deploys the
+    # PR before testing; the PR doesn't exist mid-pipeline).
+    assert names[-1] == "validator", names
+    assert "live_verifier" not in names, names
     assert "doer_refiner_feedback_loop" in names
 
 
@@ -38,18 +37,17 @@ def test_pipeline_with_researcher_keeps_order() -> None:
     names = [s.name for s in (getattr(p, "sub_agents", []) or [])]
     assert names[0] == "enhancer", names
     assert "researcher" in names
-    assert names[-1] == "live_verifier", names
-    assert names[-2] == "validator", names
-
-
-def test_pipeline_can_disable_live_verifier(monkeypatch) -> None:
-    """AIFORGE_LIVE_VERIFIER=0 falls back to Validator-as-tail for
-    operators who don't want the live boot stage."""
-    monkeypatch.setenv("AIFORGE_LIVE_VERIFIER", "0")
-    p = pipeline.build_pipeline(skip_researcher=True)
-    names = [s.name for s in (getattr(p, "sub_agents", []) or [])]
     assert names[-1] == "validator", names
     assert "live_verifier" not in names
+
+
+def test_build_live_verifier_agent_standalone() -> None:
+    """The runner builds the live_verifier on its own, post-PR."""
+    lv = pipeline.build_live_verifier_agent(project="PosClientBackend")
+    assert lv.name == "live_verifier"
+    inst = lv.instruction
+    assert callable(inst)  # InstructionProvider — recipe braces survive
+    assert "%{http_code}" in inst(None)
 
 
 # ── LM health ────────────────────────────────────────────────────────────
