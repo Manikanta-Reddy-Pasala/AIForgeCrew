@@ -9,6 +9,7 @@ keep working unchanged.
 from __future__ import annotations
 
 from .architect import PROMPT as ARCHITECT
+from .enhancer import ENHANCER
 from .planner import PROMPT as PLANNER
 from .verifier import PROMPT as VERIFIER
 from .doer import PROMPT as DOER
@@ -16,5 +17,6 @@ from .feedback import PROMPT as FEEDBACK
 from .learner import PROMPT as LEARNER
 
 __all__ = [
-    "ARCHITECT", "PLANNER", "VERIFIER", "DOER", "FEEDBACK", "LEARNER",
+    "ARCHITECT", "ENHANCER", "PLANNER", "VERIFIER", "DOER",
+    "FEEDBACK", "LEARNER",
 ]
