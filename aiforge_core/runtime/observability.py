@@ -86,6 +86,38 @@ def _emit(
         )
 
 
+def _resolve_stage_attribution(role: str) -> dict[str, Any]:
+    """Compute which model + provider the named role actually ran under.
+
+    Reads ``agents.yaml`` for the configured pair and folds in any
+    pipeline-wide ``force_provider`` override. Returns a dict with
+    ``model_configured``, ``provider_configured``, ``force_provider``,
+    and ``effective_provider`` so the UI can render a per-stage badge
+    without re-deriving the override logic.
+    """
+    out: dict[str, Any] = {}
+    try:
+        from aiforge_core.config.agent_config import get_config
+        cfg = (get_config() or {}).get(role, {}) or {}
+        out["model_configured"] = cfg.get("model")
+        out["provider_configured"] = cfg.get("provider")
+    except Exception:
+        pass
+    try:
+        from aiforge_core.runtime.pipeline import get_force_provider
+        forced = get_force_provider()
+        if forced:
+            out["force_provider"] = forced
+    except Exception:
+        pass
+    out["effective_provider"] = (
+        out.get("force_provider")
+        or out.get("provider_configured")
+        or "unknown"
+    )
+    return out
+
+
 def make_stage_callbacks(role: str) -> tuple:
     """Return ``(before, after)`` ADK callbacks that emit ``stage_start``
     / ``stage_done`` events for ``role``. Wire onto every LlmAgent.
@@ -93,6 +125,10 @@ def make_stage_callbacks(role: str) -> tuple:
     Body excerpts:
       - stage_start: short description of what the agent is about to do
       - stage_done: short excerpt of what it produced (output_key value)
+
+    Both events carry per-stage model attribution in ``metadata`` so the
+    UI can show "Enhancer → claude-opus-4-7 (claude_local)" instead of
+    leaving the operator to guess.
     """
     if _is_disabled():
         return (None, None)
@@ -103,10 +139,11 @@ def make_stage_callbacks(role: str) -> tuple:
             tid = _ticket_id_from_state(state)
             if tid is None:
                 return None
+            attr = _resolve_stage_attribution(role)
             _emit(
                 ticket_id=tid, agent_role=role, kind="stage_start",
                 body=f"{role} entered",
-                metadata={"role": role, "phase": "start"},
+                metadata={"role": role, "phase": "start", **attr},
             )
         except Exception as exc:  # noqa: BLE001
             log.debug("stage_start.failed role=%s: %s", role, exc)
@@ -130,10 +167,11 @@ def make_stage_callbacks(role: str) -> tuple:
                 if v:
                     output = str(v)
                     break
+            attr = _resolve_stage_attribution(role)
             _emit(
                 ticket_id=tid, agent_role=role, kind="stage_done",
                 body=f"{role} produced: {output}" if output else f"{role} done",
-                metadata={"role": role, "phase": "done"},
+                metadata={"role": role, "phase": "done", **attr},
             )
         except Exception as exc:  # noqa: BLE001
             log.debug("stage_done.failed role=%s: %s", role, exc)

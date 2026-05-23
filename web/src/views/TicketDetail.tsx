@@ -154,6 +154,24 @@ export default function TicketDetail() {
                   <span className="ts">{(e.created_at || '').slice(11, 19)}</span>
                   <span className="role">{e.agent_role || 'system'}</span>
                   <span className="kind">{e.kind}</span>
+                  {e.metadata?.effective_provider && (
+                    <span
+                      className="chip sm"
+                      title={
+                        `configured: ${e.metadata.model_configured || '?'} / ${e.metadata.provider_configured || '?'}` +
+                        (e.metadata.force_provider ? ` · forced: ${e.metadata.force_provider}` : '')
+                      }
+                      style={{
+                        background: e.metadata.force_provider
+                          ? 'rgba(180,120,40,0.18)' : 'rgba(80,140,200,0.18)',
+                        marginLeft: 6,
+                      }}
+                    >
+                      {e.metadata.model_configured
+                        ? `${e.metadata.model_configured} · ${e.metadata.effective_provider}`
+                        : e.metadata.effective_provider}
+                    </span>
+                  )}
                   {e.body && <div className="event-body">{String(e.body).slice(0, 800)}</div>}
                 </div>
               ))}

@@ -61,6 +61,11 @@ def set_force_provider(name: str | None) -> None:
     _FORCE_PROVIDER = name
 
 
+def get_force_provider() -> str | None:
+    """Read the current pipeline-wide provider override (or ``None``)."""
+    return _FORCE_PROVIDER
+
+
 def _force_claude_local_cfg(role: str) -> dict:
     """Build a resolve_litellm-shaped dict that pins claude_local with
     the provider's default model — used when a ticket has attachments
