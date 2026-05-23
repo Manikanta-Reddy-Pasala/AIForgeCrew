@@ -27,10 +27,16 @@ def adk_function_tools() -> list:
     from .cognition import finish, think
     from .delegation import delegate_to_agent
     from .editor import editor
+    from .format import format
     from .ipython_kernel import execute_ipython_cell
+    from .lsp import lsp
     from .mcp_client import mcp
     from .memory_write import memory_write
+    from .test_runner import run_tests
+    from .typecheck import typecheck
 
     canonical = [editor, bash, browse, execute_ipython_cell,
-                 delegate_to_agent, mcp, memory_write, think, finish]
+                 delegate_to_agent, mcp, memory_write,
+                 format, typecheck, run_tests, lsp,
+                 think, finish]
     return [FunctionTool(func=fn) for fn in canonical]

@@ -125,6 +125,22 @@ def build_pipeline(*, skip_researcher: bool = False):
     verifier = _verifier_mod.build(build_litellm_model)
     researcher = _researcher_mod.build(build_litellm_model)
     doer = _doer_mod.build(build_litellm_model)
+    # C6 scope guard — block edits outside ``scope_allowlist_globs``
+    # at the tool-call boundary. KISS: one before_tool_callback,
+    # rejects with a soft error when the Doer drifts outside scope.
+    try:
+        from .scope_guard import make_scope_guard_callback
+        _scope_cb = make_scope_guard_callback()
+        if _scope_cb is not None:
+            existing = getattr(doer, "before_tool_callback", None)
+            if existing is None:
+                doer.before_tool_callback = _scope_cb
+            elif isinstance(existing, list):
+                doer.before_tool_callback = list(existing) + [_scope_cb]
+            else:
+                doer.before_tool_callback = [existing, _scope_cb]
+    except Exception:
+        pass  # scope guard never blocks pipeline boot
     refiner = _refiner_mod.build(build_litellm_model)
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)

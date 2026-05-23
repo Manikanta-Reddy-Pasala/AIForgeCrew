@@ -231,6 +231,10 @@ agents:
         - delegate_to_agent         # NEW — spawn researcher/planner/etc. (sub #8)
         - mcp                       # NEW — MCP client for oneshell-mcp + ext (sub #11)
         - memory_write              # NEW (gap-8) — Doer self-edit Observation_v2/Decision_v2 mid-run
+        - format                    # NEW (C3) — first-class formatter (ruff/black/prettier/gofmt/rustfmt)
+        - typecheck                 # NEW (C4) — language-aware type-checker (mypy/tsc/mvn compile/...)
+        - run_tests                 # NEW (C9) — pytest/mvn/npm/cargo/go test with fast/all/discover modes
+        - lsp                       # NEW (C8) — multilspy goto_definition / find_references / hover
         - think                     # NEW — no-op + :Think trace
         - finish                    # NEW — Doer-only termination signal
         - update_working_checkpoint # save mid-run state
