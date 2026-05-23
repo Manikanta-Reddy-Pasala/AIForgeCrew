@@ -227,3 +227,78 @@ def test_default_base_branch_no_origin_fallback(tmp_path: Path) -> None:
     _git_init(tmp_path)
     base = gp._default_base_branch(str(tmp_path))
     assert base == "origin/master"
+
+
+# ─────────────────── empty-production-diff guard ──────────────────────
+
+
+def test_is_test_path_java_maven() -> None:
+    assert gp._is_test_path("src/test/java/com/x/FooTest.java") is True
+    assert gp._is_test_path("src/main/java/com/x/Foo.java") is False
+
+
+def test_is_test_path_python_pytest() -> None:
+    assert gp._is_test_path("tests/test_thing.py") is True
+    assert gp._is_test_path("pkg/foo_test.py") is True
+    assert gp._is_test_path("pkg/foo.py") is False
+
+
+def test_is_test_path_js_jest() -> None:
+    assert gp._is_test_path("src/__tests__/foo.test.tsx") is True
+    assert gp._is_test_path("src/foo.test.ts") is True
+    assert gp._is_test_path("src/foo.ts") is False
+
+
+def test_is_test_path_pycache_always() -> None:
+    assert gp._is_test_path("__pycache__/x.cpython-312.pyc") is True
+    assert gp._is_test_path("foo/__pycache__/x.pyc") is True
+
+
+def test_is_test_path_fixtures() -> None:
+    assert gp._is_test_path("src/test/resources/fixtures/credit-note.xml") is True
+    assert gp._is_test_path("src/main/resources/config.xml") is False
+
+
+def _commit_files(repo: Path, files: dict[str, str]) -> None:
+    for rel, body in files.items():
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
+        subprocess.run(["git", "add", rel], cwd=repo, check=True,
+                       capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-m", "diff"],
+        cwd=repo, check=True, capture_output=True,
+    )
+
+
+def test_classify_head_diff_test_only(tmp_path: Path) -> None:
+    """Java PR that adds ONLY a JUnit test + XML fixture — exactly the
+    ONE-3 false-positive shape — comes back as test-only."""
+    _git_init(tmp_path)
+    _commit_files(tmp_path, {
+        "src/test/java/com/x/FooTest.java": "class FooTest{}",
+        "src/test/resources/fixtures/sample.xml": "<root/>",
+    })
+    prod, test = gp._classify_head_diff(str(tmp_path))
+    assert prod == []
+    assert len(test) == 2
+
+
+def test_classify_head_diff_mixed(tmp_path: Path) -> None:
+    """A real fix touches src/main AND src/test — counts as prod."""
+    _git_init(tmp_path)
+    _commit_files(tmp_path, {
+        "src/main/java/com/x/Foo.java": "class Foo{}",
+        "src/test/java/com/x/FooTest.java": "class FooTest{}",
+    })
+    prod, test = gp._classify_head_diff(str(tmp_path))
+    assert prod == ["src/main/java/com/x/Foo.java"]
+    assert test == ["src/test/java/com/x/FooTest.java"]
+
+
+def test_classify_head_diff_empty_when_no_commits(tmp_path: Path) -> None:
+    _git_init(tmp_path)
+    prod, test = gp._classify_head_diff(str(tmp_path))
+    assert prod == [] and test == []

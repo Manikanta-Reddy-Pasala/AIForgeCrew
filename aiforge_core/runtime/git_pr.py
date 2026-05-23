@@ -41,7 +41,75 @@ _EXCLUDE_PATHSPECS: tuple[str, ...] = (
     ":(exclude).idea",
     ":(exclude).vscode",
     ":(exclude).DS_Store",
+    # Python bytecode + caches — slipped into TallyConnector#10/#11
+    # because those repos lacked a Python .gitignore. Belt-and-braces
+    # at git add time so the target repo's own ignores are irrelevant.
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.py[cod]",
+    ":(exclude,glob)**/*.class",
+    ":(exclude,glob)**/.pytest_cache/**",
+    ":(exclude,glob)**/.ruff_cache/**",
+    ":(exclude,glob)**/.mypy_cache/**",
 )
+
+
+# File-path heuristics for classifying a diff as test-only. Conservative:
+# anything that is clearly NOT a test counts as a production change and
+# unblocks the PR. False negatives (calling real prod code a "test") are
+# worse than false positives — they let a fix-less PR ship.
+_TEST_PATH_FRAGMENTS = (
+    "/src/test/", "src/test/",          # Java/Maven layout
+    "/test/", "/tests/",                # Python / Go / generic
+    "/__tests__/",                      # JS/TS Jest
+    "/fixtures/", "/testdata/",
+    "/spec/",                           # Ruby / some JS
+)
+_TEST_SUFFIXES = (
+    "_test.py", "_test.go", "_test.ts", "_test.tsx",
+    ".test.ts", ".test.tsx", ".test.js", ".test.jsx",
+    "test.java",                         # *Test.java / FooTest.java
+    "_spec.rb",
+)
+_TEST_ALWAYS_PATHS = (
+    "__pycache__/", ".pytest_cache/", ".ruff_cache/", ".mypy_cache/",
+)
+
+
+def _is_test_path(path: str) -> bool:
+    p = path.lower()
+    # Normalise so leading-segment matches work for both ``tests/foo``
+    # and ``./tests/foo``-style git outputs.
+    norm = "/" + p.lstrip("./")
+    if any(p.startswith(t) or t in p for t in _TEST_ALWAYS_PATHS):
+        return True
+    if any(frag in norm for frag in _TEST_PATH_FRAGMENTS):
+        return True
+    if any(p.endswith(suf) for suf in _TEST_SUFFIXES):
+        return True
+    return False
+
+
+def _classify_head_diff(repo_root: str) -> tuple[list[str], list[str]]:
+    """Return ``(prod_files, test_files)`` changed in HEAD's commit.
+
+    Uses ``git diff-tree`` so it works on the just-created Doer commit
+    even before push. Returns two empty lists when nothing changed or
+    the command fails — the caller treats that as "skip the guard"
+    rather than blocking on a tooling hiccup.
+    """
+    rc, out, _ = run_git(
+        ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+        repo_root,
+    )
+    if rc != 0 or not out.strip():
+        return [], []
+    prod, test = [], []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        (test if _is_test_path(line) else prod).append(line)
+    return prod, test
 
 
 def run_git(args: list[str], cwd: str) -> tuple[int, str, str]:
@@ -343,6 +411,27 @@ def commit_push_open_pr(ticket) -> dict:
     err = _commit_changes(repo_root, ticket.identifier, title)
     if err:
         return {"pr_skip_reason": err}
+
+    # Empty-production-diff guard. ONE-3 false-positive: validator
+    # approved a PR whose only changes were a JUnit test class + an XML
+    # fixture, with zero edits to ``src/main``. Tests prove a fix; they
+    # are not the fix. Reject so the runner can re-loop the Doer (or
+    # escalate to claude_takeover) instead of publishing a no-op PR.
+    # Toggle: ``AIFORGE_ALLOW_TEST_ONLY_PR=1`` reinstates the old
+    # behaviour for the rare valid case (e.g. backfilling regression
+    # coverage with no production change).
+    if os.environ.get("AIFORGE_ALLOW_TEST_ONLY_PR", "0") not in ("1", "true"):
+        prod, test = _classify_head_diff(repo_root)
+        if test and not prod:
+            log.warning(
+                "git_pr.test_only_diff: %d test file(s), no production change "
+                "— rejecting PR. Tests: %s",
+                len(test), ", ".join(test[:5]),
+            )
+            return {
+                "pr_skip_reason": "test_only_diff",
+                "test_only_files": test[:10],
+            }
 
     pushed, push_err = _push(repo_root, branch)
     if not pushed:

@@ -991,6 +991,20 @@ def _process_one_ticket() -> bool:
         if outcome != "scope_violation":
             pr_meta = commit_push_open_pr(ticket)
 
+        # Empty-production-diff: git_pr rejected because the Doer only
+        # wrote tests / fixtures with no edit to ``src/main``. Demote
+        # the verdict so the ticket lands as ``blocked`` (not ``done``)
+        # and the operator sees a clear reason instead of an empty PR.
+        if pr_meta.get("pr_skip_reason") == "test_only_diff":
+            outcome = "fail"
+            new_status = "blocked"
+            log.warning(
+                "ticket=%s test_only_diff — demoting verdict to fail. "
+                "Doer wrote: %s",
+                ticket.identifier,
+                ", ".join(pr_meta.get("test_only_files", [])[:5]),
+            )
+
         # C1: grade the PR's CI runs once the push is in. Empty PR
         # metadata (no diff to ship) skips this. Soft-fail: any
         # ``gh`` error lands in pr_meta as ``ci_*`` keys for an
