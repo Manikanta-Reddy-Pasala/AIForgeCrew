@@ -430,3 +430,39 @@ def test_git_commit_in_module_all() -> None:
     assert "git_commit" in dt.__all__
     assert "commit" in dt.__all__
     assert "git_add_commit" in dt.__all__
+
+
+# ── hallucinated tool-name aliases (local-model support) ──────────────
+
+
+def test_edit_alias_delegates_to_file_patch(tmp_path, monkeypatch) -> None:
+    """ONE-7 regression: local Qwen calls `edit`; it must mutate the file
+    via file_patch instead of failing 'Tool edit not found'."""
+    import os
+    from aiforge_core.runtime import doer_tools as dt
+
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
+    f = tmp_path / "Foo.java"
+    f.write_text("class Foo { int x = 1; }\n")
+    out = dt.edit("Foo.java", "int x = 1;", "int x = 2;")
+    assert isinstance(out, dict)
+    assert "int x = 2;" in f.read_text()
+
+
+def test_str_replace_alias_delegates(tmp_path, monkeypatch) -> None:
+    from aiforge_core.runtime import doer_tools as dt
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
+    f = tmp_path / "a.txt"
+    f.write_text("hello world")
+    dt.str_replace("a.txt", "world", "there")
+    assert f.read_text() == "hello there"
+
+
+def test_edit_registered_in_adk_tools() -> None:
+    from aiforge_core.runtime.doer_tools import adk_function_tools
+    names = {
+        getattr(t, "name", getattr(getattr(t, "func", None), "__name__", ""))
+        for t in adk_function_tools()
+    }
+    assert "edit" in names
+    assert "str_replace" in names

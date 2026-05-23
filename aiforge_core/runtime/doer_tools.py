@@ -369,6 +369,23 @@ def patch(path: str, old_text: str, new_text: str) -> dict:
     return file_patch(path, old_text, new_text)
 
 
+def edit(path: str, old_text: str, new_text: str) -> dict:
+    """Alias for :func:`file_patch`.
+
+    Local models (Qwen3-Coder) consistently emit a tool call named
+    ``edit`` — the Claude/aider str-replace convention — which wasn't
+    registered. ONE-7 spent 37 minutes looping "Tool 'edit' not found",
+    never wrote a file, and blocked with ``no_changes``. Registering
+    the alias closes that gap so the local-model Doer can actually
+    mutate files."""
+    return file_patch(path, old_text, new_text)
+
+
+def str_replace(path: str, old_text: str, new_text: str) -> dict:
+    """Alias for :func:`file_patch` (OpenHands str_replace_editor name)."""
+    return file_patch(path, old_text, new_text)
+
+
 def ls(path: str = "") -> dict:
     """Alias for :func:`list_dir`."""
     return list_dir(path)
@@ -442,7 +459,7 @@ def adk_function_tools() -> list:
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
                         grep_repo, fetch_url, git_commit,
                         memory_lookup, graphify_lookup]
-    aliases = [read, write, patch, ls, shell,
+    aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit]
     return [FunctionTool(func=fn) for fn in new_canonical + legacy_canonical + aliases]
@@ -452,7 +469,7 @@ __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup",
-    "read", "write", "patch", "ls", "shell", "bash",
+    "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
     "commit", "git_add_commit",
     "adk_function_tools",
