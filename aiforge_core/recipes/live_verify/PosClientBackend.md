@@ -4,38 +4,52 @@ You are the **live_verifier** for PosClientBackend. The Doer wrote a
 candidate fix; you must confirm it works against a running instance
 of the service.
 
-## Boot the service
+## Pick a target instance (three modes, in order)
 
-Prefer the QA k8s deployment when reachable:
-
-```bash
-kubectl --insecure-skip-tls-verify get pods -n pos \
-  -l app=posclientbackend 2>/dev/null | grep -c Running
-```
-
-If that returns `≥ 1`, port-forward:
+### Mode A — public QA URL (preferred, always reachable from NUC)
 
 ```bash
-kubectl --insecure-skip-tls-verify port-forward svc/posclientbackend \
-  8090:8080 -n pos >/tmp/pcb-pf.log 2>&1 &
-echo $! > /tmp/pcb-pf.pid
-sleep 4
-curl -sf http://127.0.0.1:8090/actuator/health || \
-  { kill $(cat /tmp/pcb-pf.pid); exit 1; }
+BASE="https://pos-api.oneshell.in"
+curl -sf -o /dev/null -w "%{http_code}\n" "$BASE/actuator/health" | grep -q "^200$" \
+  && echo "MODE=A" || true
 ```
 
-Otherwise boot locally in the worktree:
+If health responds 200, set ``BASE=https://pos-api.oneshell.in`` and
+skip to **Exercise the change**. No port-forward, no local boot.
+
+### Mode B — kubectl port-forward (only when kubectl is installed)
+
+```bash
+command -v kubectl >/dev/null && \
+  kubectl --insecure-skip-tls-verify get pods -n pos \
+    -l app=posclientbackend 2>/dev/null | grep -qc Running \
+  && {
+    kubectl --insecure-skip-tls-verify port-forward svc/posclientbackend \
+      8090:8080 -n pos >/tmp/pcb-pf.log 2>&1 &
+    echo $! > /tmp/pcb-pf.pid
+    sleep 4
+    BASE="http://127.0.0.1:8090"
+    curl -sf "$BASE/actuator/health" >/dev/null || \
+      { kill $(cat /tmp/pcb-pf.pid); BASE=""; }
+  }
+```
+
+### Mode C — local mvnw boot (LAST RESORT, often fails on missing infra)
 
 ```bash
 ./mvnw -q -DskipTests spring-boot:run >/tmp/pcb-boot.log 2>&1 &
 echo $! > /tmp/pcb-boot.pid
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
   sleep 2
-  curl -sf http://127.0.0.1:8090/actuator/health && break
+  curl -sf "http://127.0.0.1:8090/actuator/health" >/dev/null && \
+    { BASE="http://127.0.0.1:8090"; break; }
 done
 ```
 
-Local boot is slow (~30-90s). Always set a 120s ceiling.
+Local boot needs Mongo / Redis / NATS reachable from this host —
+if the env vars don't point at a working stack it will fail. When
+all three modes fail, emit ``ok=false`` with rationale
+``"no reachable PosClientBackend instance"`` and stop.
 
 ## Identify the endpoint touched by the diff
 
@@ -49,15 +63,16 @@ operator's repro almost always names the exact endpoint.
 
 ## Exercise the change
 
-For a read-after-write bug (ONE-1 chartOfAccounts shape):
+For a read-after-write bug (ONE-1 chartOfAccounts shape), using
+``$BASE`` from the boot step:
 
 ```bash
 # POST then immediately GET; assert the new entity shows up.
-RESP=$(curl -sf -X POST http://127.0.0.1:8090/v1/api/<resource> \
+RESP=$(curl -sf -X POST "$BASE/v1/api/<resource>" \
   -H 'content-type: application/json' -d '<payload-from-ticket>')
 ID=$(echo "$RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
-GET=$(curl -sf "http://127.0.0.1:8090/v1/api/<resource>/<read-back-endpoint>?<query>")
+GET=$(curl -sf "$BASE/v1/api/<resource>/<read-back-endpoint>?<query>")
 echo "$GET" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
