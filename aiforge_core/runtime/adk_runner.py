@@ -69,6 +69,86 @@ def _restore_env(prior: str | None) -> None:
         os.environ["AIFORGE_REPO_ROOT"] = prior
 
 
+def _persist_ticket_media(ticket) -> None:
+    """Gap-10 wire-in: stash image attachments as an AFM
+    ``Observation_v2`` with ``media_refs`` populated.
+
+    Vision sub #6 attaches images for the run, but the bytes vanished
+    once the ADK session torn down. Capturing the paths here gives a
+    durable record so future tickets can recall "we saw screenshot X
+    last time" via the same memory_block path the Doer already reads.
+
+    Soft-fail — never raises into the ticket loop. ``AIFORGE_VISION_PERSIST=0``
+    opts out.
+    """
+    if os.environ.get("AIFORGE_VISION_PERSIST", "1") in ("0", "false", ""):
+        return
+    md = ticket.metadata or {}
+    files = md.get("attached_files") or []
+    media_paths = [
+        str(f.get("path", "")) for f in files
+        if isinstance(f, dict)
+        and str(f.get("name", "")).lower().endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".webp"),
+        )
+    ]
+    media_paths = [p for p in media_paths if p]
+    if not media_paths:
+        return
+    if not ticket.project:
+        return
+    try:
+        from neo4j import GraphDatabase
+
+        from aiforge_memory.features.memory.store import upsert_observation
+    except ImportError:
+        return
+    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
+    pw = os.environ.get(
+        "AIFORGE_NEO4J_PASSWORD",
+        os.environ.get("NEO4J_PASSWORD", "password"),
+    )
+    try:
+        drv = GraphDatabase.driver(uri, auth=(user, pw))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("vision persist driver fail: %s", exc)
+        return
+    try:
+        try:
+            from aiforge_core.tickets.store import get as ticket_get
+            t = ticket_get(ticket.identifier)
+            created_at = getattr(t, "created_at", None)
+        except Exception:
+            created_at = None
+        event_time = None
+        if created_at is not None:
+            try:
+                event_time = created_at.timestamp()
+            except Exception:
+                event_time = None
+        upsert_observation(
+            drv, repo=ticket.project,
+            text=(
+                f"Ticket {ticket.identifier} included "
+                f"{len(media_paths)} image attachment(s): "
+                + ", ".join(p.rsplit("/", 1)[-1] for p in media_paths)
+            ),
+            kind="attachment",
+            author="adk_runner",
+            tags=[f"ticket:{ticket.identifier}", "kind:vision"],
+            media_refs=media_paths,
+            event_time=event_time,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("vision persist failed: %s", exc)
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
+
+
 log = logging.getLogger("adk_runner")
 logging.basicConfig(
     level=os.environ.get("AIFORGE_LOG_LEVEL", "INFO"),
@@ -545,6 +625,71 @@ def _ticket_force_provider(ticket) -> str | None:
     return None
 
 
+def _ingest_ticket_external_refs(ticket) -> None:
+    """Gap-9 wire-in: feed ``ticket.metadata.external_refs`` (a list
+    of URLs / paths) through :func:`ingest_external_source` so the
+    Doer's memory_block sees their content.
+
+    Each ref ingests as one ``Doc_v2`` + chunked ``Note_v2`` keyed on
+    the ref URI. AFM dedupes by URI at the Doc level (second ingest of
+    the same URL re-uses the node), so the cost of re-ingesting is
+    bounded.
+
+    Disable with ``AIFORGE_EXTERNAL_INGEST=0``. Soft-fail on any
+    backend error.
+    """
+    if os.environ.get("AIFORGE_EXTERNAL_INGEST", "1") in ("0", "false", ""):
+        return
+    md = ticket.metadata or {}
+    refs = md.get("external_refs") or []
+    refs = [r for r in refs if isinstance(r, str) and r.strip()]
+    if not refs:
+        return
+    if not ticket.project:
+        return
+    try:
+        from neo4j import GraphDatabase
+
+        from aiforge_memory.features.external_ingest import (
+            ingest_external_source,
+        )
+    except ImportError:
+        return
+    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
+    pw = os.environ.get(
+        "AIFORGE_NEO4J_PASSWORD",
+        os.environ.get("NEO4J_PASSWORD", "password"),
+    )
+    try:
+        drv = GraphDatabase.driver(uri, auth=(user, pw))
+    except Exception as exc:  # noqa: BLE001
+        log.debug("external_ingest driver fail: %s", exc)
+        return
+    try:
+        for src in refs[:5]:  # cap fan-out per ticket
+            try:
+                out = ingest_external_source(
+                    drv,
+                    source=src,
+                    repo=ticket.project,
+                    source_type=md.get("external_refs_type", "external"),
+                    tags=[f"ticket:{ticket.identifier}"],
+                )
+                log.info(
+                    "external_ingest ticket=%s src=%s ok=%s notes=%d",
+                    ticket.identifier, src, out.get("ok"),
+                    len(out.get("note_ids") or []),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("external_ingest failed for %s: %s", src, exc)
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
+
+
 def _process_one_ticket() -> bool:
     """Claim + run one ticket. Returns True when one ran, False on
     empty queue (caller exits + lets systemd back off)."""
@@ -568,6 +713,20 @@ def _process_one_ticket() -> bool:
         )
         _restore_env(prior_env)
         return True
+
+    # Gap-10 wire-in: persist any image attachments as an
+    # Observation_v2 with ``media_refs`` so future tickets can recall
+    # "this ticket had screenshots X / Y" — even before the vision
+    # embedder lands. Soft-fails on any backend error.
+    _persist_ticket_media(ticket)
+
+    # Gap-9 wire-in: when the ticket metadata lists external references
+    # (Confluence / Slack thread / Jira ticket / plain URLs), pull them
+    # into AFM via the external_ingest spine so the Doer's memory_block
+    # hit list can include their content. ``external_refs`` is a list
+    # of strings (URLs / paths) on ticket.metadata. Skipped silently
+    # when absent. Soft-fail on any backend error.
+    _ingest_ticket_external_refs(ticket)
 
     memory_md = memory_block.fetch(ticket)
     prompt = _build_prompt(ticket, memory_md)
