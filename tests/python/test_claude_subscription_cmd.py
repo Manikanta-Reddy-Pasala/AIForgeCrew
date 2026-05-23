@@ -104,3 +104,63 @@ def test_module_default_does_not_set_180s() -> None:
     # fallback-model must be wired with a non-empty default.
     assert "--fallback-model" in text, "must pass --fallback-model"
     assert "AIFORGE_CLAUDE_FALLBACK_MODEL" in text, "fallback must be env-overrideable"
+
+
+# ── role-scoped session reuse (delta send) ────────────────────────────
+
+
+def test_flatten_to_prompt_start_slices_delta() -> None:
+    from aiforge_core.runtime import claude_subscription_llm as csl
+    from google.genai import types as gtypes
+
+    def _c(role: str, text: str):
+        return gtypes.Content(role=role,
+                              parts=[gtypes.Part.from_text(text=text)])
+
+    contents = [_c("user", "seed"), _c("model", "a1"), _c("user", "b2")]
+    full = csl._flatten_to_prompt(contents)
+    assert "seed" in full and "a1" in full and "b2" in full
+
+    delta = csl._flatten_to_prompt(contents, start=2)
+    assert "b2" in delta
+    assert "seed" not in delta and "a1" not in delta
+
+
+def test_flatten_to_prompt_start_past_end_is_empty() -> None:
+    from aiforge_core.runtime import claude_subscription_llm as csl
+    from google.genai import types as gtypes
+
+    contents = [gtypes.Content(role="user",
+                               parts=[gtypes.Part.from_text(text="x")])]
+    assert csl._flatten_to_prompt(contents, start=5) == ""
+
+
+def test_reuse_disabled_by_default(monkeypatch) -> None:
+    """Default OFF until verified against the live CLI."""
+    from aiforge_core.runtime import claude_subscription_llm as csl
+    monkeypatch.delenv("AIFORGE_CLAUDE_SESSION_REUSE", raising=False)
+    assert csl._reuse_enabled() is False
+
+
+def test_reuse_enabled_via_env(monkeypatch) -> None:
+    from aiforge_core.runtime import claude_subscription_llm as csl
+    monkeypatch.setenv("AIFORGE_CLAUDE_SESSION_REUSE", "1")
+    assert csl._reuse_enabled() is True
+
+
+def test_reuse_disabled_via_env(monkeypatch) -> None:
+    from aiforge_core.runtime import claude_subscription_llm as csl
+    monkeypatch.setenv("AIFORGE_CLAUDE_SESSION_REUSE", "0")
+    assert csl._reuse_enabled() is False
+
+
+def test_session_state_dict_is_per_instance_keyed() -> None:
+    """Two different instances must not share session state — keyed by
+    id(self)."""
+    from aiforge_core.runtime import claude_subscription_llm as csl
+    csl._SESSION_STATE.clear()
+    csl._SESSION_STATE[1] = {"session_id": "a", "sent_count": 3}
+    csl._SESSION_STATE[2] = {"session_id": "b", "sent_count": 5}
+    assert csl._SESSION_STATE[1]["session_id"] == "a"
+    assert csl._SESSION_STATE[2]["session_id"] == "b"
+    csl._SESSION_STATE.clear()

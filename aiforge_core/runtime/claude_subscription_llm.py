@@ -37,6 +37,7 @@ Honours env knobs:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from typing import AsyncGenerator
@@ -49,15 +50,46 @@ from google.genai import types as gtypes
 log = logging.getLogger("claude_subscription_llm")
 
 
-def _flatten_to_prompt(contents: list[gtypes.Content] | None) -> str:
+# ── Role-scoped session reuse ─────────────────────────────────────────
+# Each archetype builds its OWN ClaudeSubscriptionLlm instance (see
+# agents/_base.build_llm_agent), and the ADK LoopAgent reuses the same
+# Doer/Refiner/Feedback instances across its 3 iterations. So keying
+# session state by ``id(self)`` gives us per-role continuity for free:
+# the Doer's iteration 2 + 3 ``--resume`` the session opened in
+# iteration 1, letting claude reuse its server-side context cache
+# instead of us re-sending the full ticket + memory + plan each turn.
+#
+# We store (session_id, sent_content_count) per instance. On resume we
+# send ONLY the contents the session hasn't seen yet (delta) — that's
+# where the token saving comes from. BaseLlm is a pydantic model so we
+# can't stash mutable attrs on it directly; a module dict keyed by
+# id(self) sidesteps that. The runner is single-shot (one ticket per
+# process) so the dict never grows unbounded.
+_SESSION_STATE: dict[int, dict] = {}
+
+
+def _reuse_enabled() -> bool:
+    # Default OFF until verified against the live CLI on a throwaway
+    # ticket — delta-send + --resume is unproven against real claude
+    # session persistence, and a misalignment would silently strip
+    # context from a production Doer turn. Flip to "1" to enable.
+    return os.environ.get("AIFORGE_CLAUDE_SESSION_REUSE", "0") in ("1", "true")
+
+
+def _flatten_to_prompt(
+    contents: list[gtypes.Content] | None, *, start: int = 0,
+) -> str:
     """Concatenate ADK Content parts into a single prompt the CLI takes
     on stdin. Loses fine-grained role tagging (CLI is single-turn) but
     preserves order. Each turn is prefixed with a role marker so the
-    model can still distinguish system vs user vs assistant context."""
+    model can still distinguish system vs user vs assistant context.
+
+    ``start`` lets a resumed session send ONLY the contents the CLI
+    hasn't seen yet (delta) instead of replaying the whole history."""
     if not contents:
         return ""
     parts: list[str] = []
-    for c in contents:
+    for c in contents[start:]:
         role = (getattr(c, "role", None) or "user").strip() or "user"
         text_chunks: list[str] = []
         for p in (c.parts or []):
@@ -89,8 +121,31 @@ class ClaudeSubscriptionLlm(BaseLlm):
         stream: bool = False,
     ) -> AsyncGenerator[LlmResponse, None]:
         """One-shot subprocess call. Streaming flag is ignored (CLI
-        ``--print`` returns the full response only)."""
-        prompt = _flatten_to_prompt(llm_request.contents)
+        ``--print`` returns the full response only).
+
+        When ``AIFORGE_CLAUDE_SESSION_REUSE`` is on (default) and this
+        instance already opened a claude session, we ``--resume`` it and
+        send only the NEW contents — claude reuses its server-side
+        context cache for everything sent earlier."""
+        contents = llm_request.contents or []
+        state = _SESSION_STATE.get(id(self)) if _reuse_enabled() else None
+        resume_id = (state or {}).get("session_id")
+        sent_count = (state or {}).get("sent_count", 0)
+
+        # Delta-send only makes sense when the history grew monotonically.
+        # If a condenser shrank ``contents`` below what we already sent,
+        # the index no longer maps cleanly — drop the session and replay
+        # in full so we never send a misaligned delta.
+        if resume_id and 0 < sent_count <= len(contents):
+            prompt = _flatten_to_prompt(contents, start=sent_count)
+            if not prompt.strip():
+                # Nothing new to say — still must send something; replay
+                # just the final turn so the CLI has a user message.
+                prompt = _flatten_to_prompt(contents[-1:]) if contents else ""
+        else:
+            resume_id = None  # full replay
+            prompt = _flatten_to_prompt(contents)
+
         # Pull system instruction out of config when the agent supplied one.
         sys_text = ""
         cfg = getattr(llm_request, "config", None)
@@ -104,7 +159,9 @@ class ClaudeSubscriptionLlm(BaseLlm):
                 sys_text = "\n".join(
                     p.text for p in sys_parts if getattr(p, "text", None)
                 )
-        if sys_text:
+        # System instruction only needs sending on the FIRST turn — a
+        # resumed session already carries it.
+        if sys_text and not resume_id:
             prompt = f"<|system|>\n{sys_text}\n\n{prompt}"
 
         bin_name = os.environ.get("AIFORGE_CLAUDE_BIN", "claude")
@@ -130,6 +187,13 @@ class ClaudeSubscriptionLlm(BaseLlm):
         cmd = [bin_name, "--print",
                "--permission-mode", permission_mode,
                "--add-dir", repo_root]
+        # JSON output carries the session_id we need to resume later.
+        # Only worth the parse overhead when reuse is on.
+        want_json = _reuse_enabled()
+        if want_json:
+            cmd += ["--output-format", "json"]
+        if resume_id:
+            cmd += ["--resume", resume_id]
         if self.model:
             cmd += ["--model", self.model]
         # Auto-fallback to a smaller/faster model when the primary is
@@ -207,7 +271,39 @@ class ClaudeSubscriptionLlm(BaseLlm):
             )
             return
 
-        text = (stdout or b"").decode("utf-8", "replace").strip()
+        raw = (stdout or b"").decode("utf-8", "replace").strip()
+        text = raw
+        new_session_id: str | None = None
+        if want_json:
+            # ``--output-format json`` wraps the result:
+            # {"type":"result","result":"<text>","session_id":"...", ...}
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    text = (obj.get("result") or obj.get("text") or "").strip() or raw
+                    new_session_id = obj.get("session_id")
+            except json.JSONDecodeError:
+                # CLI fell back to plain text (older build / error) —
+                # keep raw as the response and skip session capture.
+                text = raw
+
+        # Persist session state for this instance so the next turn from
+        # the SAME agent (e.g. Doer loop iteration 2) resumes instead of
+        # replaying. ``--resume`` keeps the original id, so we keep the
+        # one we already had when the CLI didn't echo a new one.
+        if _reuse_enabled():
+            sid = new_session_id or resume_id
+            if sid:
+                _SESSION_STATE[id(self)] = {
+                    "session_id": sid,
+                    "sent_count": len(contents),
+                }
+                if not resume_id:
+                    log.info(
+                        "claude_subscription session opened id=%s (model=%s)",
+                        sid, self.model,
+                    )
+
         yield LlmResponse(
             content=gtypes.Content(
                 role="model",
