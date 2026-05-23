@@ -1,0 +1,11 @@
+[Unit]
+Description=AIForge PR-comment response loop (C7 — ticket every new PR comment)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/AIForgeCrew
+EnvironmentFile=%h/.aiforge/runtime.env
+ExecStart=%h/AIForgeCrew/.venv/bin/python -m aiforge_core.runtime.pr_comments_loop
+StandardOutput=journal
+StandardError=journal

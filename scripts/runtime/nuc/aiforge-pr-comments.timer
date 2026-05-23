@@ -1,0 +1,10 @@
+[Unit]
+Description=Run aiforge-pr-comments every 10 min (C7)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=aiforge-pr-comments.service
+
+[Install]
+WantedBy=timers.target
