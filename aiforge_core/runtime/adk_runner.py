@@ -422,16 +422,33 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup
             log.debug("docker_sandbox.destroy_container failed: %s", exc)
         # Sub #15: dump session trajectory for replay-style debugging.
+        # Gap-11 (2026-05-23): also index a one-line-per-event summary
+        # into AFM as a queryable ``Note_v2`` so future tickets can
+        # rerank "have we run something like this before?" against past
+        # runs without re-reading raw JSON.
         if os.environ.get("AIFORGE_TRAJECTORY_DUMP", "1") in ("1", "true"):
             try:
-                from aiforge_core.runtime.trajectory import dump_trajectory
+                from aiforge_core.runtime.trajectory import (
+                    dump_trajectory, index_trajectory_to_memory,
+                )
                 ticket_id = (initial_state.get("ticket_identifier")
                              if initial_state else None) or "unknown"
                 events = list(getattr(session, "events", []) or [])
-                dump_trajectory(
+                dump_out = dump_trajectory(
                     ticket_id, session.id,
                     events, dict(session.state or {}),
                 )
+                if dump_out.get("ok") and ticket is not None and ticket.project:
+                    idx = index_trajectory_to_memory(
+                        trajectory_path=dump_out["path"],
+                        repo=ticket.project,
+                        ticket_identifier=ticket_id,
+                    )
+                    if not idx.get("ok"):
+                        log.debug(
+                            "trajectory.index_skipped: %s",
+                            idx.get("error", "unknown"),
+                        )
             except Exception as exc:  # noqa: BLE001 — best-effort
                 log.debug("trajectory.dump_failed: %s", exc)
 

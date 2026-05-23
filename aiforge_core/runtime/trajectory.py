@@ -193,4 +193,141 @@ def list_trajectories(ticket_id: str | int | None = None) -> list[str]:
     return [str(p) for p in sorted(root.rglob("*.json"))]
 
 
-__all__ = ["dump_trajectory", "load_trajectory", "list_trajectories"]
+def _summarize_trajectory(events: list[dict]) -> str:
+    """Render a short trajectory summary suitable for AFM Note_v2 body.
+
+    Picks the most signal-dense slots per event (author, tool calls,
+    final text snippet) so a future ticket asking "have we seen this
+    before?" can rerank trajectories by content instead of just by
+    ticket id."""
+    lines: list[str] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        author = ev.get("author") or ev.get("agent_name") or ev.get("role")
+        snippet_parts: list[str] = []
+        for part in ev.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("function_call"):
+                fc = part["function_call"]
+                snippet_parts.append(
+                    f"call {fc.get('name')}({_short(fc.get('args'))})"
+                )
+            elif part.get("function_response"):
+                fr = part["function_response"]
+                snippet_parts.append(
+                    f"resp {fr.get('name')} → {_short(fr.get('response'))}"
+                )
+            elif part.get("text"):
+                snippet_parts.append(_short(part["text"]))
+        if not snippet_parts:
+            text = ev.get("text") or ev.get("tool_name") or ""
+            if text:
+                snippet_parts.append(_short(text))
+        if not snippet_parts:
+            continue
+        joined = " | ".join(snippet_parts)[:240]
+        lines.append(f"{author or '?'}: {joined}")
+    return "\n".join(lines[:80])
+
+
+def _short(val: Any, limit: int = 120) -> str:
+    s = str(val) if val is not None else ""
+    s = s.replace("\n", " ").strip()
+    if len(s) > limit:
+        s = s[: limit - 1] + "…"
+    return s
+
+
+def index_trajectory_to_memory(
+    *,
+    trajectory_path: str | Path,
+    repo: str,
+    ticket_identifier: str,
+    title_prefix: str = "trajectory",
+) -> dict:
+    """Persist a one-line-per-event trajectory summary into AFM as a
+    queryable ``Note_v2`` so future tickets can rerank "have we run
+    something like this before?" against past runs.
+
+    The note body holds the rendered summary (capped to ~80 lines); a
+    tag points back at the JSON file on disk for full replay.
+
+    Soft-fails on any error — never raises. Returns
+    ``{ok, note_id?, error?}``.
+    """
+    out: dict[str, Any] = {"ok": False}
+    if os.environ.get("AIFORGE_TRAJECTORY_INDEX", "1") in ("0", "false", ""):
+        out["error"] = "disabled"
+        return out
+    try:
+        loaded = load_trajectory(trajectory_path)
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = f"load_failed: {exc}"
+        return out
+    if not loaded.get("ok"):
+        out["error"] = loaded.get("error", "load_failed")
+        return out
+
+    traj = loaded["trajectory"]
+    body = _summarize_trajectory(traj.get("events") or [])
+    if not body.strip():
+        out["error"] = "empty_summary"
+        return out
+
+    try:
+        from aiforge_memory.features.memory.store import upsert_note
+    except ImportError:
+        try:
+            from aiforge_memory.memory.store import upsert_note  # type: ignore
+        except ImportError:
+            out["error"] = "aiforge_memory_not_installed"
+            return out
+
+    try:
+        from neo4j import GraphDatabase
+    except ImportError:
+        out["error"] = "neo4j_driver_missing"
+        return out
+
+    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
+    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
+    pw = os.environ.get(
+        "AIFORGE_NEO4J_PASSWORD",
+        os.environ.get("NEO4J_PASSWORD", "password"),
+    )
+    try:
+        drv = GraphDatabase.driver(uri, auth=(user, pw))
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = f"neo4j_connect_failed: {exc}"
+        return out
+
+    try:
+        result = upsert_note(
+            drv, repo=repo,
+            title=f"{title_prefix}:{ticket_identifier}:{traj.get('run_id', '')}",
+            body=body,
+            author="trajectory_indexer",
+            tags=[
+                f"ticket:{ticket_identifier}",
+                f"trajectory_path:{str(trajectory_path)}",
+                "kind:trajectory",
+            ],
+        )
+        out["ok"] = True
+        out["note_id"] = result.get("id")
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = f"upsert_failed: {exc}"
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
+    return out
+
+
+__all__ = [
+    "dump_trajectory", "load_trajectory", "list_trajectories",
+    "index_trajectory_to_memory",
+]

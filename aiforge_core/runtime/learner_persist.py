@@ -102,12 +102,12 @@ def persist_facts(
     # Module renamed in AiForgeMemory commit 32d86ad — try both.
     try:
         from aiforge_memory.features.memory.store import (
-            upsert_decision, upsert_observation,
+            recall_observations, upsert_decision, upsert_observation,
         )
     except ImportError:
         try:
             from aiforge_memory.memory.store import (  # type: ignore
-                upsert_decision, upsert_observation,
+                recall_observations, upsert_decision, upsert_observation,
             )
         except ImportError:
             out["errors"].append("aiforge_memory_not_installed")
@@ -116,6 +116,38 @@ def persist_facts(
             except Exception:
                 pass
             return out
+
+    # Semantic dedupe (v2): when bge-m3 sidecar is reachable, compute
+    # each fact's embedding once and check the existing Observation_v2
+    # vector index for a near-duplicate in the same repo before write.
+    # ``AFM PR #4`` already deduplicates on exact ``(repo, text)``
+    # match; this adds the cosine-similarity layer on top so paraphrased
+    # restatements ("README had 3 occurrences of X" vs "README contained
+    # 3 X references") also collapse instead of bloating the graph.
+    #
+    # Thresholds:
+    #   sim ≥ ``AIFORGE_SEMANTIC_DEDUPE_HARD`` (default 0.95) → skip
+    #     entirely; treat as duplicate of the existing fact.
+    #   ``HARD`` > sim ≥ ``AIFORGE_SEMANTIC_DEDUPE_SOFT`` (default 0.85)
+    #     → still write, but tag the new fact with
+    #     ``superseded-check:<existing_id>`` so a human / future
+    #     compactor can reconcile or merge.
+    #
+    # Disable wholesale with ``AIFORGE_SEMANTIC_DEDUPE=0`` — pure-text
+    # dedupe at AFM remains active either way.
+    semantic_dedupe = (
+        os.environ.get("AIFORGE_SEMANTIC_DEDUPE", "1") not in {"0", "false", ""}
+    )
+    hard = float(os.environ.get("AIFORGE_SEMANTIC_DEDUPE_HARD", "0.95"))
+    soft = float(os.environ.get("AIFORGE_SEMANTIC_DEDUPE_SOFT", "0.85"))
+
+    embed_fn = None
+    if semantic_dedupe:
+        try:
+            from aiforge_core.memory.embed import embed as embed_fn  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            log.debug("semantic dedupe disabled — embed import failed: %s", exc)
+            embed_fn = None
 
     try:
         for fact in facts:
@@ -129,6 +161,44 @@ def persist_facts(
                 refs = list(about) + [f"ticket:{ticket_identifier}"]
             else:
                 refs = list(about)
+
+            embed_vec: list[float] | None = None
+            similar_id: str | None = None
+            similar_score: float = 0.0
+            if embed_fn is not None and not text.startswith(_DECISION_PREFIX):
+                try:
+                    embed_vec = embed_fn(text)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("embed failed for fact: %s", exc)
+                    embed_vec = None
+                if embed_vec:
+                    try:
+                        hits = recall_observations(
+                            driver, repo=repo, query_vec=embed_vec, k=1,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug("recall_observations failed: %s", exc)
+                        hits = []
+                    if hits:
+                        top = hits[0]
+                        similar_score = float(top.get("score") or 0.0)
+                        similar_id = top.get("id")
+
+            if similar_id and similar_score >= hard:
+                # Hard-duplicate — skip the upsert entirely. AFM
+                # ``upsert_observation`` would have bumped seen_count
+                # if texts matched exactly; for paraphrases we don't
+                # touch the existing node and simply count it.
+                out.setdefault("skipped_semantic_dupes", 0)
+                out["skipped_semantic_dupes"] += 1
+                log.info(
+                    "learner_persist.skip_semantic_dupe repo=%s score=%.3f existing=%s",
+                    repo, similar_score, similar_id,
+                )
+                continue
+            if similar_id and similar_score >= soft:
+                tags.append(f"superseded-check:{similar_id}")
+
             try:
                 if text.startswith(_DECISION_PREFIX):
                     title = text[len(_DECISION_PREFIX):].strip()[:120] or "decision"
@@ -147,6 +217,7 @@ def persist_facts(
                         author="learner",
                         session_id=session_id,
                         tags=tags, refs=refs,
+                        embed_vec=embed_vec,
                     )
                     out["written_observations"] += 1
             except Exception as exc:  # noqa: BLE001
