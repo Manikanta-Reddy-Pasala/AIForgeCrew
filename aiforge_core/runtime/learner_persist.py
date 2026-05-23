@@ -80,9 +80,17 @@ def persist_facts(
     repo: str,
     ticket_identifier: str | None = None,
     session_id: str = "",
+    event_time: float | None = None,
 ) -> dict:
     """Persist a list of Learner-emitted facts into Neo4j as
     Observation_v2 (default) or Decision_v2 (DECISION: prefix).
+
+    ``event_time`` (gap-7) is the epoch-seconds timestamp of when the
+    underlying ticket / run actually happened. When supplied it lands
+    on every Observation_v2 we write, separate from the ingest
+    ``created_at``, so bi-temporal Cypher hops (``WHERE
+    o.event_time > datetime('2025-...')``) work. Decisions don't carry
+    event_time yet; they're typically "decided now".
 
     Returns ``{written_observations, written_decisions, errors}``.
     Soft-fails on any backend error — never raises into the agent loop.
@@ -218,6 +226,7 @@ def persist_facts(
                         session_id=session_id,
                         tags=tags, refs=refs,
                         embed_vec=embed_vec,
+                        event_time=event_time,
                     )
                     out["written_observations"] += 1
             except Exception as exc:  # noqa: BLE001
@@ -257,10 +266,24 @@ def make_learner_after_callback():
                 or ""
             )
             session_id = state.get("session_id", "")
+            # Gap-7 wire: lift the ticket's created_at into Observation_v2.event_time
+            # so bi-temporal queries can hop by "when did this happen?"
+            # separate from the ingest moment.
+            event_time = None
+            if ticket_identifier:
+                try:
+                    from aiforge_core.tickets.store import get as ticket_get
+                    t = ticket_get(ticket_identifier)
+                    ca = getattr(t, "created_at", None) if t else None
+                    if ca is not None:
+                        event_time = ca.timestamp()
+                except Exception:
+                    event_time = None
             persist_facts(
                 facts=facts, repo=repo,
                 ticket_identifier=ticket_identifier,
                 session_id=session_id,
+                event_time=event_time,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("learner_persist.callback_failed: %s", exc)

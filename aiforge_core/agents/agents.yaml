@@ -230,6 +230,7 @@ agents:
         - execute_ipython_cell      # NEW — persistent Jupyter kernel (sub #3)
         - delegate_to_agent         # NEW — spawn researcher/planner/etc. (sub #8)
         - mcp                       # NEW — MCP client for oneshell-mcp + ext (sub #11)
+        - memory_write              # NEW (gap-8) — Doer self-edit Observation_v2/Decision_v2 mid-run
         - think                     # NEW — no-op + :Think trace
         - finish                    # NEW — Doer-only termination signal
         - update_working_checkpoint # save mid-run state
