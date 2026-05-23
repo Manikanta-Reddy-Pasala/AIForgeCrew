@@ -208,6 +208,10 @@ class TicketCreate(BaseModel):
     route_workflow: str | None = None           # required when route='workflow'
     attachments: list[str] = Field(default_factory=list)  # attachment role names; feeds detector
     attached_files: list[AttachedFile] = Field(default_factory=list)
+    # Deploy autonomy — operator opts the pipeline into auto-merge +
+    # wait-for-deploy + live test on a real environment. 'none' (the
+    # default) keeps the old PR-only flow.
+    deploy_target: str | None = None            # 'none' | 'qa' | 'prod' | None
 
 
 class RouteUpdate(BaseModel):
@@ -405,6 +409,13 @@ def create_ticket(payload: TicketCreate) -> dict:
     md = dict(payload.metadata or {})
     if payload.max_turns is not None:
         md["max_turns"] = int(payload.max_turns)
+    # Deploy target — normalize to one of {none, qa, prod}; anything
+    # else is treated as 'none' so a typo can't accidentally arm an
+    # autonomous merge.
+    dt = (payload.deploy_target or "none").lower().strip()
+    if dt not in {"none", "qa", "prod"}:
+        dt = "none"
+    md["deploy_target"] = dt
     assignee = _cfg.canonical_role(payload.assignee_role) if payload.assignee_role else None
     # IntentLayer — translate plain language at INGRESS so every
     # downstream agent (planner, doer) sees enriched body + metadata.

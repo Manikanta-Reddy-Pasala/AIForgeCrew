@@ -32,6 +32,7 @@ interface Draft {
   attached_files: AttachedFile[]; // operator-uploaded files; presence forces claude_local
   external_refs: string;          // newline-separated URLs / file paths (gap-9)
   scope_allowlist_globs: string;  // newline-separated globs (gap-C6)
+  deploy_target: string;          // 'none' | 'qa' | 'prod' — arms auto-merge + wait
 }
 
 const FRESH_DRAFT: Draft = {
@@ -41,6 +42,7 @@ const FRESH_DRAFT: Draft = {
   attached_files: [],
   external_refs: '',
   scope_allowlist_globs: '',
+  deploy_target: 'none',
 };
 
 // Reads a File object as base64 (without the data:...;base64, prefix).
@@ -195,6 +197,11 @@ export default function Tickets() {
     // Optional target repo (AFM Repo.name / WORKTREE_ROOT directory).
     const project = draft.project.trim();
     if (project) payload.project = project;
+    // Deploy target — only send when non-default. Server normalizes
+    // to {none, qa, prod}; anything else falls back to 'none'.
+    if (draft.deploy_target && draft.deploy_target !== 'none') {
+      payload.deploy_target = draft.deploy_target;
+    }
     // Optional URL / path list parsed from textarea (one per line).
     // Wires to adk_runner._ingest_ticket_external_refs (gap-9).
     const extRefs = draft.external_refs
@@ -279,6 +286,18 @@ export default function Tickets() {
                   value={draft.project}
                   onChange={e => setDraft({ ...draft, project: e.target.value })}
                 />
+              </label>
+              <label className="field">
+                Deploy + test
+                <select
+                  value={draft.deploy_target}
+                  onChange={e => setDraft({ ...draft, deploy_target: e.target.value })}
+                  title="When 'qa' or 'prod', the live_verifier will auto-merge the PR, wait for the deploy to land, then verify on that environment."
+                >
+                  <option value="none">none — open PR only</option>
+                  <option value="qa">qa — auto-merge + deploy + verify</option>
+                  <option value="prod">prod — auto-merge + tag + deploy + verify</option>
+                </select>
               </label>
             </div>
             <label className="field">

@@ -907,6 +907,26 @@ def _process_one_ticket() -> bool:
         log.info("ticket=%s force_provider=%s (attachments present)",
                  ticket.identifier, forced)
 
+    # Deploy autonomy — when the operator chose 'qa' or 'prod' at
+    # ticket-creation time, the deploy recipe will merge the PR + wait
+    # for the new SHA. We arm both env knobs in the runner's process
+    # so the live_verifier's bash commands see them. Reset to the
+    # prior values in the ``finally`` cleanup below (``_restore_env``).
+    deploy_target = ((ticket.metadata or {}).get("deploy_target")
+                     or "none").lower()
+    if deploy_target in {"qa", "prod"}:
+        os.environ["AIFORGE_AUTO_MERGE"] = "1"
+        os.environ["AIFORGE_DEPLOY_TARGET"] = deploy_target
+        log.info(
+            "ticket=%s deploy_target=%s (auto-merge armed)",
+            ticket.identifier, deploy_target,
+        )
+    else:
+        # Belt-and-braces: a previous run with deploy_target=qa MUST
+        # NOT leak its auto-merge env into the next claim.
+        os.environ.pop("AIFORGE_AUTO_MERGE", None)
+        os.environ.pop("AIFORGE_DEPLOY_TARGET", None)
+
     # Researcher routing: skip the read-only context gatherer on
     # greenfield tickets where the body has no reference patterns AND
     # the repo's git log doesn't mention the project keyword. Saves
