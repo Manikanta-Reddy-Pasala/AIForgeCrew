@@ -97,9 +97,14 @@ def _resolve_stage_attribution(role: str) -> dict[str, Any]:
     """
     out: dict[str, Any] = {}
     try:
-        from aiforge_core.config.agent_config import get_config
-        cfg = (get_config() or {}).get(role, {}) or {}
-        out["model_configured"] = cfg.get("model")
+        from aiforge_core.config.agent_config import get as get_role_cfg
+        cfg = get_role_cfg(role) or {}
+        model = cfg.get("model")
+        # LM Studio paths are absolute filesystem locations — show the
+        # leaf (model directory name) so the UI chip stays readable.
+        if isinstance(model, str) and "/" in model:
+            model = model.rsplit("/", 1)[-1] or model
+        out["model_configured"] = model
         out["provider_configured"] = cfg.get("provider")
     except Exception:
         pass

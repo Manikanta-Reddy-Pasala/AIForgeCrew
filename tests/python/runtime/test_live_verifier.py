@@ -102,3 +102,33 @@ def test_extract_live_verifier_returns_none_when_missing() -> None:
     from aiforge_core.runtime import adk_runner
 
     assert adk_runner._extract_live_verifier({}) is None
+
+
+# ── stage attribution ─────────────────────────────────────────────────
+
+
+def test_resolve_stage_attribution_returns_model_provider() -> None:
+    from aiforge_core.runtime import observability as o
+
+    attr = o._resolve_stage_attribution("doer")
+    assert attr["effective_provider"] in {"local", "claude_local",
+                                          "ollama_cloud", "openrouter"}
+    assert attr["model_configured"] is not None
+    # No leading slash — long LM Studio paths are stripped to the leaf.
+    assert not (attr["model_configured"] or "").startswith("/")
+
+
+def test_resolve_stage_attribution_force_provider_wins(monkeypatch) -> None:
+    from aiforge_core.runtime import observability as o, pipeline as p
+
+    monkeypatch.setattr(p, "_FORCE_PROVIDER", "claude_local")
+    attr = o._resolve_stage_attribution("doer")
+    assert attr["effective_provider"] == "claude_local"
+    assert attr["force_provider"] == "claude_local"
+
+
+def test_resolve_stage_attribution_unknown_role_returns_safe_default() -> None:
+    from aiforge_core.runtime import observability as o
+
+    attr = o._resolve_stage_attribution("__not_a_role__")
+    assert attr["effective_provider"] == "unknown"
