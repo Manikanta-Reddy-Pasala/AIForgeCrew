@@ -20,7 +20,7 @@ dependencies = [
   "litellm>=1.40",
   # ADK 2.x — drives the v6 SequentialAgent[Planner, Verifier,
   # LoopAgent[Doer, Feedback], Learner] in runtime.adk_runner.
-  "google-adk>=2.0.0b1",
+  "google-adk>=2.1.0",
   "aiforge-memory @ git+https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git@main",
 ]
 

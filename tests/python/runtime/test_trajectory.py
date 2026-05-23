@@ -68,3 +68,54 @@ def test_event_to_dict_coerces_object():
     assert d["type"] == "tool_call"
     assert d["tool_name"] == "bash"
     assert d["tool_args"] == {"command": "ls"}
+
+
+def test_event_to_dict_reads_real_adk_event_shape():
+    """ADK ``Event`` exposes content/parts/author, not type/text/kind.
+
+    Pre-fix the dumper returned ``{}`` for every real event because it
+    only looked at the legacy attribute names.
+    """
+    class _Part:
+        text = "hello world"
+        function_call = None
+        function_response = None
+
+    class _ToolCallPart:
+        text = None
+        class function_call:
+            name = "bash"
+            args = {"command": "ls"}
+        function_response = None
+
+    class _Content:
+        role = "model"
+        parts = [_Part(), _ToolCallPart()]
+
+    class _Actions:
+        state_delta = {"k": "v"}
+        artifact_delta = None
+        transfer_to_agent = None
+        escalate = False
+
+    class _AdkEvent:
+        id = "evt-1"
+        invocation_id = "inv-1"
+        author = "doer"
+        timestamp = 123.45
+        partial = False
+        branch = None
+        long_running_tool_ids = None
+        content = _Content()
+        actions = _Actions()
+        error_code = None
+        error_message = None
+
+    d = trajectory._event_to_dict(_AdkEvent())
+    assert d["id"] == "evt-1"
+    assert d["author"] == "doer"
+    assert d["role"] == "model"
+    assert d["parts"][0]["text"] == "hello world"
+    assert d["parts"][1]["function_call"]["name"] == "bash"
+    assert d["parts"][1]["function_call"]["args"] == {"command": "ls"}
+    assert d["state_delta"] == {"k": "v"}
