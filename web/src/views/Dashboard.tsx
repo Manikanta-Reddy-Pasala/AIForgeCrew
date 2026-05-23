@@ -150,8 +150,6 @@ export default function Dashboard() {
               {(agents.data || []).map((a: any) => (
                 <div key={a.role} className="agent-row">
                   <div className="agent-name">{a.role}</div>
-                  <span className="chip mono">{a.model}</span>
-                  <span className="chip">{a.transport}</span>
                   <span className="spacer" />
                   <span className="muted xs">
                     {a.active_tickets?.length || 0} active · {relTime(a.last_activity)}
