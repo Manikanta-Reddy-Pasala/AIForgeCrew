@@ -846,6 +846,50 @@ def _process_one_ticket() -> bool:
             except Exception:
                 validator_out = {"raw": validator_out[:400]}
 
+        # **Claude targeted fix on Validator reject.** Pattern (2026-
+        # 05-23): when Validator says request_changes / abstain, run
+        # ONE Claude turn with full failure context to patch only what
+        # was called out — re-uses same worktree so commit_push_open_pr
+        # below folds the fix into the SAME PR. On success, also
+        # persists a Decision_v2 recipe so the local Doer's next
+        # similar ticket recalls the fix pattern.
+        handled_by = "local"
+        fix_meta: dict[str, Any] = {}
+        if validator_out and (validator_out.get("verdict") or "").lower() in {
+            "request_changes", "abstain"
+        }:
+            try:
+                from aiforge_core.runtime import claude_fix
+                import aiforge_core.runtime.adk_runner as _runner_mod
+                fix_meta = claude_fix.attempt_fix(
+                    ticket=ticket,
+                    pipeline_state=state or {},
+                    memory_md=memory_md,
+                    runner_module=_runner_mod,
+                    skip_researcher=skip_researcher,
+                )
+                if fix_meta.get("attempted"):
+                    handled_by = "claude_fix"
+                if fix_meta.get("ok"):
+                    outcome = "pass"
+                    new_status = "done"
+                    log.info(
+                        "ticket=%s claude_fix SUCCESS verdict→pass",
+                        ticket.identifier,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("claude_fix wrap failed: %s", exc)
+        # Mark whether the local Doer or Claude actually finished the
+        # ticket — useful for both ops dashboards AND future training
+        # (Doer self-evals: "how often does local model finish without
+        # Claude rescue?").
+        if outcome == "pass" and handled_by == "local":
+            handled_by = "local"  # explicit
+        elif outcome == "pass" and (ticket.metadata or {}).get(
+            "claude_takeover_attempted"
+        ):
+            handled_by = "claude_takeover"
+
         # PR gate: anything that ISN'T an explicit scope_violation is
         # eligible. `commit_push_open_pr` itself short-circuits on a
         # clean tree, so verdict=fail with no edits stays a no-op.
@@ -905,6 +949,13 @@ def _process_one_ticket() -> bool:
                     "validator_regression_risk":
                         (validator_out or {}).get("regression_risk")}
                    if validator_out else {}),
+                # Provenance: which agent actually finished the
+                # ticket. "local" = local pipeline cleared on its own;
+                # "claude_takeover" = full-pipeline replay on Claude
+                # fixed it; "claude_fix" = targeted Claude turn after
+                # Validator reject patched and re-validated.
+                "handled_by": handled_by,
+                **({"claude_fix": fix_meta} if fix_meta else {}),
             },
         )
         log.info("ticket=%s status=%s verdict=%s",
