@@ -139,6 +139,8 @@ _STRATEGIES = {
 def condense(
     events: list[dict[str, Any]],
     strategy: str = "noop",
+    *,
+    memory_injector: Any = None,
     **kwargs: Any,
 ) -> list[dict[str, Any]]:
     """Apply ``strategy`` to ``events`` and return the reduced list.
@@ -147,6 +149,15 @@ def condense(
     ``:Condensation`` trace event when ``len(out) < len(events)`` so
     operators can audit how often the compactor fires (sub #14, OH
     CondensationAction parity).
+
+    ``memory_injector`` (gap #4, PreCompact parity): an optional
+    callable ``(dropped_events: list[dict]) -> str``. When condensation
+    actually fires (``len(out) < len(events)``) it is handed the events
+    that were dropped and may return a recovered-memory string; a
+    non-empty result is prepended as a single ``role="memory"`` event so
+    durable facts survive compaction instead of vanishing with the
+    truncated history. Any exception is swallowed — memory recovery must
+    never break the turn.
     """
     fn = _STRATEGIES.get(strategy, _noop)
     out = fn(events, **kwargs)
@@ -157,6 +168,19 @@ def condense(
             "after": len(out),
             "dropped": len(events) - len(out),
         })
+        if memory_injector is not None:
+            try:
+                kept_ids = {id(e) for e in out}
+                dropped = [e for e in events if id(e) not in kept_ids]
+                block = memory_injector(dropped)
+                if isinstance(block, str) and block.strip():
+                    out = [{
+                        "type": "system", "role": "memory",
+                        "text": f"<memory>\n{block.strip()}\n</memory>",
+                        "n_recovered": len(dropped),
+                    }] + out
+            except Exception:  # noqa: BLE001 — recovery is best-effort
+                pass
     return out
 
 

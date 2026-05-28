@@ -190,6 +190,9 @@ def test_persist_facts_semantic_soft_dupe_tags_supersede(monkeypatch) -> None:
     fake_obs.assert_called_once()
     tags = fake_obs.call_args.kwargs["tags"]
     assert any(t.startswith("superseded-check:") for t in tags)
+    # Gap #2: the new fact actively supersedes the stale near-dup so the
+    # old one drops out of recall (not just an audit tag).
+    assert fake_obs.call_args.kwargs.get("supersedes") == ["existing-obs-1"]
 
 
 def test_persist_facts_semantic_below_soft_writes_clean(monkeypatch) -> None:
@@ -209,6 +212,8 @@ def test_persist_facts_semantic_below_soft_writes_clean(monkeypatch) -> None:
     assert out["written_observations"] == 1
     tags = fake_obs.call_args.kwargs["tags"]
     assert not any(t.startswith("superseded-check:") for t in tags)
+    # Gap #2: nothing to supersede below the soft threshold.
+    assert not fake_obs.call_args.kwargs.get("supersedes")
 
 
 def test_persist_facts_semantic_disabled_via_env(monkeypatch) -> None:

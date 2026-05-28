@@ -97,3 +97,53 @@ def test_unknown_strategy_is_noop():
     evts = _make_events(20)
     out = condense(evts, "weird-thing")
     assert out == evts
+
+
+# ── Gap #4: PreCompact memory re-injection ──────────────────────────
+
+
+def test_memory_injector_prepends_block_when_condensation_fires():
+    evts = _make_events(100)
+    dropped_seen = {}
+
+    def _inject(dropped):
+        dropped_seen["n"] = len(dropped)
+        return "fact A survived\nfact B survived"
+
+    out = condense(evts, "recent", keep=20, memory_injector=_inject)
+    # 20 tail + 1 recovered memory event at the head.
+    assert len(out) == 21
+    head = out[0]
+    assert head.get("role") == "memory"
+    assert "fact A survived" in head["text"]
+    # injector saw the 80 dropped events.
+    assert dropped_seen["n"] == 80
+    # original tail preserved at the end.
+    assert out[-1]["text"] == "event 99"
+
+
+def test_memory_injector_not_called_when_no_condensation():
+    evts = _make_events(10)
+    calls = []
+    condense(evts, "recent", keep=50,
+             memory_injector=lambda d: calls.append(d) or "x")
+    assert calls == []
+
+
+def test_memory_injector_failure_is_swallowed():
+    evts = _make_events(100)
+
+    def _bad(_dropped):
+        raise RuntimeError("memory backend down")
+
+    out = condense(evts, "recent", keep=20, memory_injector=_bad)
+    # Condensation still happened; no memory event prepended.
+    assert len(out) == 20
+    assert all(e.get("role") != "memory" for e in out)
+
+
+def test_memory_injector_empty_result_prepends_nothing():
+    evts = _make_events(100)
+    out = condense(evts, "recent", keep=20, memory_injector=lambda d: "  ")
+    assert len(out) == 20
+    assert all(e.get("role") != "memory" for e in out)

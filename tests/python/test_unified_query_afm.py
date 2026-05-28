@@ -214,3 +214,41 @@ def test_query_afm_failure_isolated(
 def test_default_weight_includes_afm_bundle(uq) -> None:
     assert "afm_bundle" in uq._DEFAULT_WEIGHTS
     assert uq._DEFAULT_WEIGHTS["afm_bundle"] > 0
+
+
+# ── Gap #3: session/source diversification ──────────────────────────
+
+
+def test_diversify_caps_per_group(uq) -> None:
+    hits = [{"source": "memory", "ticket": "ONE-1", "text": str(i)}
+            for i in range(5)]
+    hits += [{"source": "doc", "text": "d1"},
+             {"source": "doc", "text": "d2"}]
+    out = uq._diversify(hits, per_group=3)
+    # 3 kept from the ONE-1 flood + both doc rows = 5.
+    assert len(out) == 5
+    one1 = [h for h in out if h.get("ticket") == "ONE-1"]
+    assert len(one1) == 3
+    # highest-ranked survivors kept, order preserved.
+    assert [h["text"] for h in one1] == ["0", "1", "2"]
+
+
+def test_diversify_keys_by_source_without_ticket(uq) -> None:
+    hits = [{"source": "doc", "text": str(i)} for i in range(4)]
+    out = uq._diversify(hits, per_group=2)
+    assert len(out) == 2
+    assert [h["text"] for h in out] == ["0", "1"]
+
+
+def test_diversify_passthrough_under_cap(uq) -> None:
+    hits = [{"source": "memory", "text": "a"},
+            {"source": "doc", "text": "b"}]
+    out = uq._diversify(hits, per_group=3)
+    assert out == hits
+
+
+def test_diversify_disabled_when_per_group_zero(uq) -> None:
+    hits = [{"source": "memory", "ticket": "ONE-1", "text": str(i)}
+            for i in range(5)]
+    out = uq._diversify(hits, per_group=0)
+    assert out == hits

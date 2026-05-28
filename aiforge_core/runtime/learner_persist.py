@@ -204,8 +204,12 @@ def persist_facts(
                     repo, similar_score, similar_id,
                 )
                 continue
+            supersedes_ids: list[str] = []
             if similar_id and similar_score >= soft:
                 tags.append(f"superseded-check:{similar_id}")
+                # Gap #2: last-write-wins — the fresh fact supersedes the
+                # stale near-dup so it stops co-surfacing in recall.
+                supersedes_ids = [similar_id]
 
             try:
                 if text.startswith(_DECISION_PREFIX):
@@ -227,6 +231,7 @@ def persist_facts(
                         tags=tags, refs=refs,
                         embed_vec=embed_vec,
                         event_time=event_time,
+                        supersedes=supersedes_ids,
                     )
                     out["written_observations"] += 1
             except Exception as exc:  # noqa: BLE001
