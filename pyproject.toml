@@ -22,6 +22,12 @@ dependencies = [
   # LoopAgent[Doer, Feedback], Learner] in runtime.adk_runner.
   "google-adk>=2.1.0",
   "aiforge-memory @ git+https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git@main",
+  # Doer runtime tools: execute_ipython_cell (jupyter kernel) + browse
+  # (playwright). Declared here so `uv sync` stops pruning them — they
+  # were previously hand-installed on the host and vanished on every sync.
+  "jupyter-client>=8.6",
+  "ipykernel>=6.29",
+  "playwright>=1.44",
 ]
 
 [project.optional-dependencies]
