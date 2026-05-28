@@ -233,6 +233,66 @@ def build_pipeline(*, skip_researcher: bool = False,
     except Exception:
         pass  # failure_memory wiring never blocks pipeline boot
 
+    # A2 REPLAN signal — additive, env-flagged. When the Doer loop
+    # exhausts its iterations still failing, blindly retrying the same
+    # Doer rarely helps; the plan is usually too broad. We accumulate
+    # each iteration's Feedback verdict (feedback agent's after-callback)
+    # and, when the loop terminates, evaluate should_replan(); if true we
+    # stash a ``replan_note`` into session state + emit a ``:Replan``
+    # trace so a subsequent Planner / next ticket attempt can re-plan
+    # smaller. Disable with AIFORGE_REPLAN_ENABLED=0. Backward-compatible:
+    # nothing else reads ``replan_note`` yet — this only emits the signal.
+    if os.environ.get("AIFORGE_REPLAN_ENABLED", "1") != "0":
+        from .replan import build_replan_note, should_replan
+
+        async def _replan_accumulate(*, callback_context):  # type: ignore[no-untyped-def]
+            try:
+                state = callback_context.state
+                v = state.get("feedback_verdict")
+                if isinstance(v, str) and v:
+                    # normalise "partial loop_budget_kill: ..." → leading word
+                    verdict = v.split()[0] if v.split() else v
+                    hist = list(state.get("verdict_history") or [])
+                    hist.append(verdict)
+                    state["verdict_history"] = hist
+                    state["last_rationale"] = state.get(
+                        "feedback_rationale", verdict)
+            except Exception:  # never break the loop
+                pass
+            return None
+
+        async def _replan_evaluate(*, callback_context):  # type: ignore[no-untyped-def]
+            try:
+                state = callback_context.state
+                hist = list(state.get("verdict_history") or [])
+                if should_replan(hist):
+                    note = build_replan_note(
+                        hist, str(state.get("last_rationale", "")))
+                    state["replan_note"] = note
+                    try:
+                        from .tools._trace import emit
+                        emit(":Replan", {
+                            "verdicts": hist,
+                            "note": note,
+                        })
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return None
+
+        _fb_after = feedback.after_agent_callback
+        _merged_fb: list = []
+        if _fb_after is not None:
+            if isinstance(_fb_after, list):
+                _merged_fb.extend(_fb_after)
+            else:
+                _merged_fb.append(_fb_after)
+        _merged_fb.append(_replan_accumulate)
+        feedback.after_agent_callback = _merged_fb
+    else:
+        _replan_evaluate = None  # type: ignore[assignment]
+
     sub_agents: list = [enhancer, planner, verifier]
     if not skip_researcher:
         sub_agents.append(researcher)
@@ -243,6 +303,8 @@ def build_pipeline(*, skip_researcher: bool = False,
         # ``plateau_before`` aborts the LoopAgent at the start of the
         # next iteration when state['loop_budget_kill'] is set.
         before_agent_callback=plateau_before,
+        # A2: evaluate the replan signal once the loop terminates.
+        after_agent_callback=_replan_evaluate,
     )
     sub_agents.append(doer_loop)
     sub_agents.append(learner)

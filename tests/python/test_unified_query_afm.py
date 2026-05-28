@@ -252,3 +252,80 @@ def test_diversify_disabled_when_per_group_zero(uq) -> None:
             for i in range(5)]
     out = uq._diversify(hits, per_group=0)
     assert out == hits
+
+
+# ── Gap A7: cross-repo CALLS_REPO neighbour source ──────────────────
+
+
+def test_default_weight_includes_xrepo(uq) -> None:
+    assert "xrepo" in uq._DEFAULT_WEIGHTS
+    assert uq._DEFAULT_WEIGHTS["xrepo"] > 0
+
+
+def test_cross_repo_links_empty_on_import_failure(
+    uq, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If aiforge_memory link store missing, helper soft-fails to []."""
+    real_import = __import__
+
+    def _bad_import(name, *args, **kwargs):
+        if name.startswith("aiforge_memory.features.link") or \
+                name.startswith("aiforge_memory.api.commands._driver"):
+            raise ImportError("not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _bad_import)
+    rows = uq._cross_repo_links("anything", repo="X")
+    assert rows == []
+
+
+def test_query_includes_xrepo_when_helper_returns_rows(
+    uq, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Monkeypatched _cross_repo_links returns rows + repo set →
+    'xrepo' appears in used_sources."""
+    captured = {}
+
+    def _spy(text, *, repo):
+        captured["repo"] = repo
+        return [{"text": "[xrepo] Y --rest--> X (conf 0.8)",
+                 "score": 0.8, "source": "xrepo"}]
+
+    monkeypatch.setattr(uq, "_cross_repo_links", _spy)
+    out = uq.query("hello", repo="X", limit=4)
+    assert captured["repo"] == "X"
+    assert "xrepo" in out["used_sources"]
+
+
+def test_query_skips_xrepo_when_disabled(
+    uq, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AIFORGE_XREPO_ENABLED=0 turns off the source even with repo."""
+    monkeypatch.setenv("AIFORGE_XREPO_ENABLED", "0")
+    called = {"n": 0}
+
+    def _spy(*a, **kw):
+        called["n"] += 1
+        return []
+
+    monkeypatch.setattr(uq, "_cross_repo_links", _spy)
+    out = uq.query("hello", repo="X", limit=2)
+    assert called["n"] == 0
+    assert "xrepo" not in out["used_sources"]
+
+
+def test_query_skips_xrepo_when_no_repo(
+    uq, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No repo known → cross-repo source never invoked."""
+    monkeypatch.delenv("AIFORGE_AFM_REPO", raising=False)
+    called = {"n": 0}
+
+    def _spy(*a, **kw):
+        called["n"] += 1
+        return []
+
+    monkeypatch.setattr(uq, "_cross_repo_links", _spy)
+    out = uq.query("hello world", limit=2)
+    assert called["n"] == 0
+    assert "xrepo" not in out["used_sources"]

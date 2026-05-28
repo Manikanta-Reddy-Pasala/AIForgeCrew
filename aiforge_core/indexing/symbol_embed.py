@@ -16,7 +16,58 @@ Toggle: ``AIFORGE_SYMBOL_EMBED=0`` to short-circuit (default on).
 from __future__ import annotations
 
 import os
+import time
+from pathlib import Path
 from typing import Iterable
+
+
+def should_refresh(
+    changed_paths: list[str],
+    *,
+    exts: tuple[str, ...] = (".py", ".java", ".ts", ".go", ".rs"),
+) -> bool:
+    """Return True when any changed path is a code file worth re-embedding
+    (gap A8b). Pure predicate — no I/O."""
+    return any(
+        str(p).lower().endswith(exts) for p in (changed_paths or [])
+    )
+
+
+def request_refresh(changed_paths: list[str]) -> dict:
+    """Push-on-change trigger for symbol embedding (gap A8b).
+
+    When ``AIFORGE_SYMBOL_PUSH_REFRESH=1`` and ``changed_paths`` contains
+    code files, touch a sentinel under ``~/.aiforge`` so the existing
+    embed cron can pick the change up early instead of waiting for its
+    15-min tick. Additive + no-op-safe: returns
+    ``{requested: bool, marker: str|None}`` and never raises on the
+    happy path.
+    """
+    if os.environ.get("AIFORGE_SYMBOL_PUSH_REFRESH") != "1":
+        return {"requested": False, "marker": None}
+    if not should_refresh(changed_paths):
+        return {"requested": False, "marker": None}
+    marker = Path.home() / ".aiforge" / "symbol_refresh.request"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(time.time()), encoding="utf-8")
+    except OSError as exc:
+        return {"requested": False, "marker": None, "error": str(exc)[:80]}
+    return {"requested": True, "marker": str(marker)}
+
+
+def consume_refresh_marker() -> bool:
+    """True (and clears the sentinel) if a push-refresh was requested
+    since the last cron tick. Lets the existing embed cron run early
+    on change. No-op-safe."""
+    marker = Path.home() / ".aiforge" / "symbol_refresh.request"
+    try:
+        if marker.is_file():
+            marker.unlink()
+            return True
+    except OSError:
+        return False
+    return False
 
 
 def backfill(repo: str | None = None, *, batch: int = 200) -> dict:

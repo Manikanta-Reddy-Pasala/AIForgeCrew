@@ -65,6 +65,86 @@ def _api_url(owner: str, repo: str, pr: int, *, latest_id: int | None) -> str:
     return base if latest_id is None else f"{base}?since=2000-01-01"
 
 
+_QUESTION_STARTERS = (
+    "who", "what", "why", "how", "where",
+    "can", "could", "should", "is", "are", "does",
+)
+_NIT_KEYWORDS = ("nit", "typo", "style", "lint", "rename", "format")
+
+
+def classify_comment(body: str) -> str:
+    """Pure heuristic classifier.
+
+    Returns one of ``"question"`` | ``"nit"`` | ``"change_request"``.
+
+    - ends with ``?`` or starts with a question word -> ``"question"``
+    - contains a nit keyword (nit/typo/style/lint/rename/format) -> ``"nit"``
+    - otherwise -> ``"change_request"``
+    """
+    text = (body or "").strip()
+    if not text:
+        return "change_request"
+    lowered = text.lower()
+    first_word = lowered.split(None, 1)[0].strip(".,:;!?") if lowered else ""
+    if text.endswith("?") or first_word in _QUESTION_STARTERS:
+        return "question"
+    if any(kw in lowered for kw in _NIT_KEYWORDS):
+        return "nit"
+    return "change_request"
+
+
+def _lightweight_enabled() -> bool:
+    return os.environ.get("AIFORGE_PR_COMMENT_LIGHTWEIGHT", "1") != "0"
+
+
+def route_comment(comment: dict) -> dict:
+    """Route a comment to a ``lightweight`` or ``full`` handling path.
+
+    Questions + nits go lightweight; change-requests go full. When the
+    ``AIFORGE_PR_COMMENT_LIGHTWEIGHT`` env flag is ``"0"`` everything is
+    forced to ``full`` (preserves the original always-ticket behavior).
+    """
+    cid = comment.get("id")
+    kind = classify_comment(comment.get("body", ""))
+    if not _lightweight_enabled():
+        return {
+            "mode": "full",
+            "reason": f"lightweight_disabled:{kind}",
+            "comment_id": cid,
+        }
+    if kind in ("question", "nit"):
+        return {"mode": "lightweight", "reason": kind, "comment_id": cid}
+    return {"mode": "full", "reason": kind, "comment_id": cid}
+
+
+def lightweight_reply(comment: dict) -> dict:
+    """Record the *intent* of a lightweight reply (stub).
+
+    Does NOT post anything to GitHub yet; it just composes the planned
+    reply text and returns it for logging/emission.
+    """
+    cid = comment.get("id")
+    kind = classify_comment(comment.get("body", ""))
+    snippet = (comment.get("body", "") or "").strip().splitlines()
+    snippet = snippet[0][:200] if snippet else ""
+    if kind == "question":
+        reply_text = (
+            "Thanks for the question; this looks like a clarification "
+            f"rather than a code change. Re: \"{snippet}\""
+        )
+    else:  # nit
+        reply_text = (
+            "Acknowledged as a nit/style note; noting for a minor "
+            f"follow-up. Re: \"{snippet}\""
+        )
+    return {
+        "comment_id": cid,
+        "kind": kind,
+        "reply_text": reply_text,
+        "posted": False,
+    }
+
+
 def _post_followup_ticket(
     *, project: str, pr_num: int, comment: dict,
 ) -> bool:
@@ -113,6 +193,7 @@ def run() -> dict:
         "--limit", "30",
     ]) or []
     new_tickets = 0
+    lightweight_replies = 0
     seen = state
     for pr in prs:
         repo = pr.get("headRepository", {}).get("name") or ""
@@ -132,12 +213,28 @@ def run() -> dict:
             cid = c.get("id", 0)
             if cid <= last_id:
                 continue
+            route = route_comment(c)
+            log.info(
+                "PR %s comment %s -> %s (%s)",
+                key, cid, route["mode"], route["reason"],
+            )
+            if route["mode"] == "lightweight":
+                reply = lightweight_reply(c)
+                log.info(
+                    "lightweight reply (not posted) for comment %s: %s",
+                    cid, reply["reply_text"],
+                )
+                lightweight_replies += 1
+                seen[key] = max(last_id, cid)
+                last_id = seen[key]
+                continue
             if _post_followup_ticket(project=repo, pr_num=pr_num, comment=c):
                 new_tickets += 1
                 seen[key] = max(last_id, cid)
                 last_id = seen[key]
     _save_state(seen)
     return {"ok": True, "tickets_created": new_tickets,
+            "lightweight_replies": lightweight_replies,
             "prs_scanned": len(prs)}
 
 
@@ -151,4 +248,7 @@ if __name__ == "__main__":
     sys.exit(main())
 
 
-__all__ = ["run", "main"]
+__all__ = [
+    "run", "main",
+    "classify_comment", "route_comment", "lightweight_reply",
+]
