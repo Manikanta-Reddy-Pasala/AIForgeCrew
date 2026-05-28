@@ -71,19 +71,29 @@ fi
 
 mkdir -p "$OUT_BASE" "$AIFORGE_HOME/logs"
 
-rc=0
+ok=0
+fail=0
 while IFS= read -r repo; do
   [ -n "$repo" ] || continue
   name="$(basename "$repo")"
   out="$OUT_BASE/$name"
-  {
+  if {
     echo "=== $(date -Iseconds) graphify update $name ==="
     echo "    out=$out"
     cd "$repo" && timeout "$PER_REPO_TIMEOUT" "$GRAPHIFY" update . --out "$out" 2>&1 | tail -3
-  } >>"$LOG" 2>&1 || {
-    echo "aiforge-graphify-all: graphify failed for $name" >&2
-    rc=1
-  }
+  } >>"$LOG" 2>&1; then
+    ok=$((ok + 1))
+  else
+    echo "aiforge-graphify-all: graphify failed for $name (continuing)" >&2
+    fail=$((fail + 1))
+  fi
 done < <(discover)
 
-exit "$rc"
+echo "aiforge-graphify-all: $ok ok, $fail failed" >&2
+# Per-repo failures (non-code repos, parse errors) are expected and logged
+# — they must NOT mark the timer unit red. Only a total wipeout (nothing
+# indexed at all) is a real failure worth surfacing.
+if [ "$ok" -eq 0 ] && [ "$fail" -gt 0 ]; then
+  exit 1
+fi
+exit 0

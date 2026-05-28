@@ -91,3 +91,31 @@ EOF
   run env AIFORGE_CODE_ROOT="/no/such/path/xyz" scripts/runtime/aiforge-graphify-all.sh --dry-run
   [ "$status" -eq 0 ]
 }
+
+@test "aiforge-graphify-all.sh exits 0 when some repos fail but others succeed" {
+  tmp="$(mktemp -d)"; mkdir -p "$tmp/repoA/.git" "$tmp/repoB/.git" "$tmp/bin"
+  # fake graphify: succeed everywhere except when run inside repoB
+  cat > "$tmp/bin/graphify" <<'FAKE'
+#!/usr/bin/env bash
+case "$PWD" in *repoB) exit 2 ;; esac
+exit 0
+FAKE
+  chmod +x "$tmp/bin/graphify"
+  run env AIFORGE_CODE_ROOT="$tmp" AIFORGE_HOME="$tmp/.aiforge" GRAPHIFY="$tmp/bin/graphify" \
+      scripts/runtime/aiforge-graphify-all.sh
+  [ "$status" -eq 0 ]
+  rm -rf "$tmp"
+}
+
+@test "aiforge-graphify-all.sh exits 1 when every repo fails" {
+  tmp="$(mktemp -d)"; mkdir -p "$tmp/repoA/.git" "$tmp/repoB/.git" "$tmp/bin"
+  cat > "$tmp/bin/graphify" <<'FAKE'
+#!/usr/bin/env bash
+exit 2
+FAKE
+  chmod +x "$tmp/bin/graphify"
+  run env AIFORGE_CODE_ROOT="$tmp" AIFORGE_HOME="$tmp/.aiforge" GRAPHIFY="$tmp/bin/graphify" \
+      scripts/runtime/aiforge-graphify-all.sh
+  [ "$status" -eq 1 ]
+  rm -rf "$tmp"
+}
