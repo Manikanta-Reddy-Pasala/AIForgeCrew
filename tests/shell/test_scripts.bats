@@ -71,3 +71,23 @@ EOF
   [[ "$output" =~ "CREATE TABLE memories" ]]
   [[ "$output" =~ "CREATE TABLE memory_proposals" ]]
 }
+
+@test "aiforge-graphify-all.sh exists and is executable" {
+  [ -x scripts/runtime/aiforge-graphify-all.sh ]
+}
+
+@test "aiforge-graphify-all.sh --dry-run lists git repos under code root, skips non-git" {
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/repoA/.git" "$tmp/repoB/.git" "$tmp/plaindir"
+  run env AIFORGE_CODE_ROOT="$tmp" scripts/runtime/aiforge-graphify-all.sh --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"repoA"* ]]
+  [[ "$output" == *"repoB"* ]]
+  [[ "$output" != *"plaindir"* ]]
+  rm -rf "$tmp"
+}
+
+@test "aiforge-graphify-all.sh --dry-run exits 0 when code root missing" {
+  run env AIFORGE_CODE_ROOT="/no/such/path/xyz" scripts/runtime/aiforge-graphify-all.sh --dry-run
+  [ "$status" -eq 0 ]
+}
