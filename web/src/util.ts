@@ -2,8 +2,8 @@
 
 export function statusClass(s: string): string {
   if (s === 'done') return 'ok';
-  if (s === 'blocked' || s === 'cancelled') return 'err';
-  if (s === 'in_progress' || s === 'in_review') return 'active';
+  if (s === 'blocked' || s === 'cancelled' || s === 'qa_failed') return 'err';
+  if (s === 'in_progress' || s === 'in_review' || s === 'qa') return 'active';
   if (s === 'todo') return '';
   return '';
 }
@@ -18,7 +18,7 @@ export function priorityClass(p: string): string {
   }
 }
 
-const TERMINAL = new Set(['done', 'cancelled']);
+const TERMINAL = new Set(['done', 'cancelled', 'qa_failed']);
 
 export function formatDuration(sec: number | null | undefined): string {
   if (sec == null || !isFinite(sec) || sec < 0) return '—';

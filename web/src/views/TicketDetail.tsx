@@ -8,7 +8,7 @@ import {
   statusClass, priorityClass, durationCell, durationTitle, relTime,
 } from '../util';
 
-const TRANSITIONS = ['todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'];
+const TRANSITIONS = ['todo', 'in_progress', 'in_review', 'qa', 'qa_failed', 'done', 'blocked', 'cancelled'];
 
 export default function TicketDetail() {
   const { id = '' } = useParams();
