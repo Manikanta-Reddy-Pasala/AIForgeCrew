@@ -5,7 +5,7 @@ requires-python = ">=3.11"
 [[package]]
 name = "aiforge-memory"
 version = "0.1.2"
-source = { git = "https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git?rev=main#19eb7ce6610200d564f5653330356a5fe5d91b13" }
+source = { git = "https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git?rev=main#f41af96c5b7f2e746d1f86561366da0397c23200" }
 dependencies = [
     { name = "httpx" },
     { name = "neo4j" },
