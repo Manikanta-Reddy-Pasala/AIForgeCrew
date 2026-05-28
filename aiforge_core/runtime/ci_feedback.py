@@ -18,9 +18,12 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
 
 log = logging.getLogger("aiforge.ci_feedback")
+
+_RED_CONCLUSIONS = {"failure", "timed_out", "cancelled"}
+_LOG_EXCERPT_CAP = 2048  # ~2KB
 
 _PR_URL_RE = re.compile(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)")
 
@@ -180,4 +183,91 @@ def grade_and_react(
     return out
 
 
-__all__ = ["read_pr_checks", "open_revert_pr", "grade_and_react"]
+def build_fix_request(
+    pr: str, repo: str, failed_checks: list[dict]
+) -> dict[str, Any]:
+    """A3: build a closed-loop follow-up fix request from red checks.
+
+    Pure function — no side effects. ``failed_checks`` is the subset of
+    check-run dicts (``{name, conclusion, summary}``) that went red.
+    Returns ``{kind, pr, repo, title, body, checks}`` where ``checks``
+    is the list of failing check names and ``body`` summarises them
+    with any captured log excerpt (truncated to ~2KB total).
+    """
+    names = [c.get("name") or "(unnamed)" for c in failed_checks]
+    title = "CI red — auto-fix: " + ", ".join(names[:5])
+    if len(names) > 5:
+        title += f" (+{len(names) - 5} more)"
+
+    lines = [
+        f"Automated follow-up: CI failed on PR {pr} ({repo}).",
+        "Fix the failing checks below.",
+        "",
+        "Failing checks:",
+    ]
+    budget = _LOG_EXCERPT_CAP
+    for c in failed_checks:
+        name = c.get("name") or "(unnamed)"
+        excerpt = (c.get("summary") or "").strip()
+        if budget <= 0:
+            excerpt = ""
+        elif len(excerpt) > budget:
+            excerpt = excerpt[:budget] + "…(truncated)"
+        budget -= len(excerpt)
+        if excerpt:
+            lines.append(f"- {name}: {excerpt}")
+        else:
+            lines.append(f"- {name}")
+    body = "\n".join(lines)
+    return {
+        "kind": "ci_fix",
+        "pr": pr,
+        "repo": repo,
+        "title": title,
+        "body": body,
+        "checks": names,
+    }
+
+
+def on_ci_red(
+    graded: dict[str, Any],
+    *,
+    dispatch: Callable[[dict[str, Any]], Any] | None = None,
+) -> dict[str, Any] | None:
+    """A3: close the CI loop by dispatching a fix request on red.
+
+    Builds a :func:`build_fix_request` from the failing checks in a
+    ``grade_and_react`` result. When ``AIFORGE_CI_AUTOFIX_ENABLED`` ==
+    ``"1"`` and there is at least one failing check, the fix request is
+    handed to the injected ``dispatch`` callable (a new ticket / re-
+    dispatch signal). Dependency injection keeps this testable without
+    GitHub.
+
+    Returns the fix request dict (regardless of whether it was
+    dispatched) so callers can inspect it; returns ``None`` when there
+    are no failing checks. Does not replace the existing revert/escalate
+    path — it complements it.
+    """
+    checks = graded.get("checks") or []
+    failed = [c for c in checks if c.get("conclusion") in _RED_CONCLUSIONS]
+    if not failed:
+        return None
+    pr = graded.get("pr_url") or graded.get("pr") or ""
+    repo = graded.get("repo") or ""
+    req = build_fix_request(pr, repo, failed)
+    enabled = os.environ.get("AIFORGE_CI_AUTOFIX_ENABLED", "0") == "1"
+    if enabled and dispatch is not None:
+        try:
+            dispatch(req)
+        except Exception:  # noqa: BLE001 - dispatch failures must not break CI grading
+            log.exception("ci autofix dispatch failed for %s", pr)
+    return req
+
+
+__all__ = [
+    "read_pr_checks",
+    "open_revert_pr",
+    "grade_and_react",
+    "build_fix_request",
+    "on_ci_red",
+]

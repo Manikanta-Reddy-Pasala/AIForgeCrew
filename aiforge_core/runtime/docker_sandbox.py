@@ -25,10 +25,61 @@ def _docker_available() -> bool:
     return shutil.which("docker") is not None
 
 
+def sandbox_policy() -> str:
+    """Resolve the sandbox policy from the environment.
+
+    * ``AIFORGE_SANDBOX_REQUIRED=1`` -> ``"required"`` (host fallback
+      forbidden; refuse if docker is unavailable).
+    * else ``AIFORGE_DOCKER_SANDBOX=1`` -> ``"preferred"`` (use docker
+      when reachable, else fall back to host silently).
+    * otherwise -> ``"off"``.
+    """
+    if os.environ.get("AIFORGE_SANDBOX_REQUIRED", "0") in ("1", "true"):
+        return "required"
+    if os.environ.get("AIFORGE_DOCKER_SANDBOX", "0") in ("1", "true"):
+        return "preferred"
+    return "off"
+
+
+def resolve_exec(docker_available: bool) -> dict[str, str]:
+    """Decide where a command should run given policy + docker state.
+
+    Returns ``{"mode": "docker"|"host"|"refuse", "reason": ...}``.
+    Callers consult this to route execution; a ``"refuse"`` decision
+    means the exec must NOT silently run on host.
+    """
+    policy = sandbox_policy()
+    if policy == "required":
+        if docker_available:
+            return {"mode": "docker", "reason": "policy_required_docker_ok"}
+        return {
+            "mode": "refuse",
+            "reason": (
+                "AIFORGE_SANDBOX_REQUIRED=1 but docker is unavailable; "
+                "host fallback is forbidden"
+            ),
+        }
+    if policy == "preferred":
+        if docker_available:
+            return {"mode": "docker", "reason": "policy_preferred_docker_ok"}
+        return {"mode": "host", "reason": "policy_preferred_docker_down"}
+    return {"mode": "host", "reason": "policy_off"}
+
+
 def is_enabled() -> bool:
-    """``True`` when the operator opted in AND docker is reachable."""
-    if os.environ.get("AIFORGE_DOCKER_SANDBOX", "0") not in ("1", "true"):
+    """``True`` when execution should route through this module.
+
+    Returns ``True`` when docker is opted-in AND reachable, OR when the
+    policy is ``required`` (regardless of docker reachability) so that a
+    missing/broken docker is forced through :func:`exec_in_container`,
+    which refuses rather than silently falling back to host exec.
+    """
+    policy = sandbox_policy()
+    if policy == "off":
         return False
+    if policy == "required":
+        return True
+    # preferred: only route through docker when actually reachable
     if not _docker_available():
         return False
     probe = subprocess.run(
@@ -94,9 +145,24 @@ def ensure_container(run_id: str) -> str:
 def exec_in_container(
     run_id: str, command: str, *, timeout: int = 90,
 ) -> dict[str, Any]:
-    """Run ``command`` inside the per-run container (``bash -lc``)."""
+    """Run ``command`` inside the per-run container (``bash -lc``).
+
+    Consults :func:`resolve_exec`. A ``"refuse"`` decision (mandatory
+    sandbox + docker unavailable) returns a refusal result instead of
+    running on host.
+    """
     if not command or not command.strip():
         return {"ok": False, "error": "empty_command"}
+    decision = resolve_exec(_docker_available())
+    if decision["mode"] == "refuse":
+        emit("DockerSandbox", {"action": "refused",
+                               "reason": decision["reason"]})
+        return {
+            "ok": False,
+            "error": "sandbox_required",
+            "reason": decision["reason"],
+            "command": command,
+        }
     name = ensure_container(run_id)
     try:
         proc = subprocess.run(
@@ -142,6 +208,8 @@ def destroy_container(run_id: str) -> None:
 
 
 __all__ = [
+    "sandbox_policy",
+    "resolve_exec",
     "is_enabled",
     "ensure_container",
     "exec_in_container",

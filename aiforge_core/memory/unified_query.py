@@ -37,6 +37,7 @@ _DEFAULT_WEIGHTS = {
     "external":   0.5,
     "afm_bundle": 1.1,   # AiForgeMemory ContextBundle (chunks + repo_map +
                          # conventions + notes/docs + vector observations)
+    "xrepo":      0.7,   # AiForgeMemory CALLS_REPO cross-repo edges
 }
 
 
@@ -163,6 +164,22 @@ def query(
                 )
         except Exception as exc:
             errors.append(f"afm_bundle: {exc}")
+
+    # 8) Cross-repo CALLS_REPO neighbours (gap A7). Retrieval normally
+    # stops at the worktree boundary; surface "repo Y calls repo X" edges
+    # AiForgeMemory already computes so a ticket touching X sees its
+    # cross-repo callers/callees. Needs a known repo; flag-guarded.
+    xrepo_repo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
+    if xrepo_repo and os.environ.get("AIFORGE_XREPO_ENABLED", "1") == "1":
+        try:
+            rows = _cross_repo_links(text, repo=xrepo_repo)
+            if rows:
+                used.append("xrepo")
+                raw_hits.extend(
+                    _tag(rows, source="xrepo", weight=weights["xrepo"]),
+                )
+        except Exception as exc:
+            errors.append(f"xrepo: {exc}")
 
     raw_hits.sort(key=lambda h: -float(h.get("score") or 0))
     # Gap #3: diversify so one ticket / source can't flood the block.
@@ -548,5 +565,52 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
             "text": f"[afm/{kind}]\n{body[:500]}",
             "score": float(o.get("score") or 0.55),
             "source_uri": f"afm://{repo}/observation/{o.get('id', '')}",
+        })
+    return out
+
+
+def _cross_repo_links(text: str, *, repo: str) -> list[dict]:
+    """Surface AiForgeMemory CALLS_REPO edges touching ``repo`` (gap A7).
+
+    Cross-repo retrieval: a ticket scoped to repo X normally can't see
+    that repo Y calls into it. AiForgeMemory already computes these
+    ``(Repo)-[:CALLS_REPO {via, confidence}]->(Repo)`` edges; we read
+    them back via the link store and flatten to ranked rows so they
+    participate in unified ranking.
+
+    Reuses the same soft-fail import shim style as ``_afm_bundle`` —
+    returns ``[]`` on any backend/import failure (never raises). The
+    ``text`` arg is accepted for signature parity / future filtering but
+    edges are repo-scoped, not text-scoped.
+
+    Each row: ``{"text": "[xrepo] <from> --<via>--> <to> (conf <c>)",
+    "score": <c>, "source": "xrepo"}``.
+    """
+    try:
+        from aiforge_memory.api.commands._driver import driver
+        from aiforge_memory.features.link.store import list_edges
+    except Exception:
+        return []
+    try:
+        drv = driver()
+        edges = list_edges(drv, repo=repo) or []
+    except Exception:
+        return []
+
+    out: list[dict] = []
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src = e.get("src") or "?"
+        dst = e.get("dst") or "?"
+        via = e.get("via") or "?"
+        try:
+            conf = float(e.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        out.append({
+            "text": f"[xrepo] {src} --{via}--> {dst} (conf {conf:.2f})",
+            "score": conf,
+            "source": "xrepo",
         })
     return out

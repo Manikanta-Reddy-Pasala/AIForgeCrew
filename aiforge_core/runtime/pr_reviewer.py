@@ -124,6 +124,110 @@ def _llm_review(prompt: str) -> dict[str, Any]:
         return {}
 
 
+# --------------------------------------------------------------------------
+# Iterative reviewer<->doer handshake (gap A5).
+#
+# Axes are scored 0-2 (0=fail, 1=concern, 2=clean); we normalize to 0-1 by
+# dividing by ``_AXIS_MAX`` so the float ``min_score`` thresholds are
+# meaningful. ``correctness``/``security``/``regression`` are *critical*:
+# a single low critical axis forces a revision even if the average is fine.
+# All three functions below are pure (no I/O) so they are trivially testable
+# with fake callables; real wiring is gated behind AIFORGE_REVIEWER_ITERATE.
+# --------------------------------------------------------------------------
+
+_AXIS_MAX = 2.0
+_CRITICAL_AXES = ("correctness", "security", "regression")
+_ALL_AXES = ("scope", "correctness", "security", "regression", "style")
+
+
+def iterate_enabled() -> bool:
+    """Whether the iterative reviewer<->doer handshake is active.
+
+    Default off (``AIFORGE_REVIEWER_ITERATE=0``) preserves the current
+    single-shot ``review_pr`` behavior. Set to ``1``/``true`` to let a
+    caller drive ``review_rounds`` for real.
+    """
+    return os.environ.get("AIFORGE_REVIEWER_ITERATE", "0") in {"1", "true", "True"}
+
+
+def needs_revision(review: dict[str, Any], *, min_score: float = 0.7) -> bool:
+    """True when the review warrants another doer pass.
+
+    Returns True if the review is empty, the verdict is
+    ``request_changes``, any *critical* axis (correctness/security/
+    regression) falls below ``min_score`` (normalized 0-1), or the overall
+    axis average falls below ``min_score``.
+    """
+    if not review:
+        return True
+    if review.get("verdict") == "request_changes":
+        return True
+    axes = review.get("axes") or {}
+    scores = [
+        axes[ax] / _AXIS_MAX
+        for ax in _ALL_AXES
+        if isinstance(axes.get(ax), (int, float))
+    ]
+    if not scores:
+        return True
+    # any critical axis below threshold
+    for ax in _CRITICAL_AXES:
+        val = axes.get(ax)
+        if isinstance(val, (int, float)) and val / _AXIS_MAX < min_score:
+            return True
+    # overall average below threshold
+    return (sum(scores) / len(scores)) < min_score
+
+
+def extract_fix_list(review: dict[str, Any]) -> list[str]:
+    """Turn low-scoring axes + their rationales into actionable bullets.
+
+    Each bullet names the failing axis and, when present, its per-axis
+    rationale (``{axis}_rationale``) or the overall ``rationale``. Clean
+    axes (score == max) are omitted. Returns ``[]`` when nothing is wrong.
+    """
+    axes = (review or {}).get("axes") or {}
+    overall = (review or {}).get("rationale", "")
+    fixes: list[str] = []
+    for ax in _ALL_AXES:
+        val = axes.get(ax)
+        if not isinstance(val, (int, float)):
+            continue
+        if val >= _AXIS_MAX:
+            continue
+        detail = review.get(f"{ax}_rationale") or overall or ""
+        bullet = f"[{ax}] score {val}/{int(_AXIS_MAX)}"
+        if detail:
+            bullet += f": {detail}"
+        fixes.append(bullet)
+    return fixes
+
+
+def review_rounds(
+    run_review,
+    apply_fixes,
+    *,
+    max_rounds: int = 2,
+    min_score: float = 0.7,
+) -> dict[str, Any]:
+    """Loop orchestrator for the reviewer<->doer handshake (pure).
+
+    ``run_review() -> dict`` produces a review result; ``apply_fixes(
+    fix_list: list[str]) -> None`` hands the doer the actionable bullets.
+    Each round: run a review; if it does not need revision, return
+    ``{"rounds": n, "status": "approved", "review": <review>}``; otherwise
+    apply the extracted fix list and loop. After ``max_rounds`` failing
+    reviews, return ``{"rounds": n, "status": "max_rounds", ...}``.
+    """
+    last_review: dict[str, Any] = {}
+    for n in range(1, max_rounds + 1):
+        last_review = run_review() or {}
+        if not needs_revision(last_review, min_score=min_score):
+            return {"rounds": n, "status": "approved", "review": last_review}
+        apply_fixes(extract_fix_list(last_review))
+    return {"rounds": max_rounds, "status": "max_rounds", "review": last_review}
+
+
 def review_pr(
     pr_url: str,
     ticket_title: str,
@@ -172,4 +276,10 @@ def review_pr(
             "posted": posted}
 
 
-__all__ = ["review_pr"]
+__all__ = [
+    "review_pr",
+    "needs_revision",
+    "extract_fix_list",
+    "review_rounds",
+    "iterate_enabled",
+]
