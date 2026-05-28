@@ -15,6 +15,8 @@ const COLUMNS: { key: string; title: string; color: string }[] = [
   { key: 'todo',        title: 'To do',        color: '#8892a0' },
   { key: 'in_progress', title: 'In progress',  color: '#6aa6ff' },
   { key: 'in_review',   title: 'In review',    color: '#a48bff' },
+  { key: 'qa',          title: 'QA',           color: '#36c5d0' },
+  { key: 'qa_failed',   title: 'QA failed',    color: '#e5534b' },
   { key: 'blocked',     title: 'Blocked',      color: '#f0883e' },
   { key: 'done',        title: 'Done',         color: '#3fb950' },
   { key: 'cancelled',   title: 'Cancelled',    color: '#5a6472' },

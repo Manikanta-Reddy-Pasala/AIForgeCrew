@@ -9,7 +9,7 @@ import {
 } from '../util';
 
 const ROLES = ['', 'supervisor', 'planner', 'doer', 'feedback', 'learner'];
-const STATUSES = ['', 'todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'];
+const STATUSES = ['', 'todo', 'in_progress', 'in_review', 'qa', 'qa_failed', 'done', 'blocked', 'cancelled'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 
 type RouteMode = 'auto' | 'code' | 'workflow';

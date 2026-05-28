@@ -26,7 +26,12 @@ from psycopg.rows import dict_row
 from aiforge_core.config.env import AIFORGE_DSN
 
 
-VALID_STATUS = {"todo", "in_progress", "in_review", "done", "blocked", "cancelled"}
+# "qa" = merged/awaiting QA verification (in-flight). "qa_failed" = QA
+# rejected; terminal end-state, reopened manually by an operator.
+VALID_STATUS = {
+    "todo", "in_progress", "in_review", "qa", "qa_failed",
+    "done", "blocked", "cancelled",
+}
 VALID_PRIORITY = {"low", "medium", "high", "urgent"}
 
 
@@ -392,7 +397,10 @@ def update_status(ticket_id: int, status: str, *, role: str | None = None,
                   metadata_patch: dict | None = None) -> Ticket:
     if status not in VALID_STATUS:
         raise ValueError(f"bad status {status!r}")
-    completed_at = "now()" if status in ("done", "cancelled") else "completed_at"
+    completed_at = (
+        "now()" if status in ("done", "cancelled", "qa_failed")
+        else "completed_at"
+    )
     with _conn() as c, c.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"UPDATE tickets SET status=%s, completed_at={completed_at}, "
@@ -447,14 +455,14 @@ def by_title_project(title: str, project: str | None) -> list[Ticket]:
             cur.execute(
                 "SELECT * FROM tickets "
                 "WHERE lower(title)=%s AND project=%s "
-                "AND status IN ('todo','in_progress','in_review','blocked','done') "
+                "AND status IN ('todo','in_progress','in_review','qa','qa_failed','blocked','done') "
                 "ORDER BY created_at ASC LIMIT 20",
                 (needle, project),
             )
         else:
             cur.execute(
                 "SELECT * FROM tickets WHERE lower(title)=%s "
-                "AND status IN ('todo','in_progress','in_review','blocked','done') "
+                "AND status IN ('todo','in_progress','in_review','qa','qa_failed','blocked','done') "
                 "ORDER BY created_at ASC LIMIT 20",
                 (needle,),
             )
