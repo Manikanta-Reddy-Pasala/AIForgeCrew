@@ -165,6 +165,11 @@ def query(
             errors.append(f"afm_bundle: {exc}")
 
     raw_hits.sort(key=lambda h: -float(h.get("score") or 0))
+    # Gap #3: diversify so one ticket / source can't flood the block.
+    # Cap per group (ticket id if present, else source) — agentmemory's
+    # session-diversification analog. Knob: AIFORGE_DIVERSIFY_PER_GROUP
+    # (default 3, 0 disables).
+    raw_hits = _diversify(raw_hits)
     # Optional cross-encoder rerank pass over the top-30 — biggest
     # quality jump per hour for natural-language → exact-symbol
     # retrieval. No-op when the reranker sidecar is not running.
@@ -183,6 +188,33 @@ def query(
         "used_sources": used,
         "errors": errors,
     }
+
+
+def _diversify(hits: list[dict], *, per_group: int | None = None) -> list[dict]:
+    """Cap how many hits any single origin contributes (gap #3).
+
+    Group key = ``ticket`` when set, else ``source``. Walks ``hits`` in
+    rank order keeping at most ``per_group`` per key; relative order is
+    preserved. ``per_group <= 0`` disables (returns the input list).
+    Default comes from ``AIFORGE_DIVERSIFY_PER_GROUP`` (3).
+    """
+    if per_group is None:
+        try:
+            per_group = int(os.environ.get("AIFORGE_DIVERSIFY_PER_GROUP", "3"))
+        except ValueError:
+            per_group = 3
+    if per_group <= 0:
+        return hits
+    seen: dict[str, int] = {}
+    out: list[dict] = []
+    for h in hits:
+        key = str(h.get("ticket") or h.get("source") or "")
+        n = seen.get(key, 0)
+        if n >= per_group:
+            continue
+        seen[key] = n + 1
+        out.append(h)
+    return out
 
 
 def _rerank_top(hits: list[dict], *, query: str) -> list[dict] | None:
