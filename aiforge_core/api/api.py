@@ -235,6 +235,12 @@ class TicketPatch(BaseModel):
     body: str | None = None
     max_turns: int | None = None
     metadata: dict | None = None
+    # Post-create attachment editing. New uploads (base64) are persisted
+    # to the per-ticket dir; remove_files names are unlinked. Presence of
+    # any surviving attachment forces claude_local (only the CLI can read
+    # arbitrary files inline), matching create-time behavior.
+    attached_files: list[AttachedFile] = Field(default_factory=list)
+    remove_files: list[str] = Field(default_factory=list)
 
 
 class CommentCreate(BaseModel):
@@ -398,6 +404,39 @@ def _persist_ticket_attachments(
     return out
 
 
+def _remove_ticket_attachments(
+    identifier: str, names: list[str],
+) -> list[str]:
+    """Delete named files from a ticket's attachment dir.
+
+    Mirrors ``_persist_ticket_attachments`` path resolution. Each name
+    is reduced to its basename (``../`` traversal stripped) before
+    unlinking ``{root}/.aiforge/ticket-files/{id}/<name>``. A missing
+    file is a no-op. Returns the basenames actually removed.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    root = _Path(_os.path.expanduser(_os.environ.get(
+        "AIFORGE_REPO_ROOT", "~/aiforge_workspace",
+    ))).resolve()
+    target_dir = root / ".aiforge" / "ticket-files" / identifier
+
+    removed: list[str] = []
+    for n in names:
+        safe_name = _Path(n).name
+        if not safe_name:
+            continue
+        dest = target_dir / safe_name
+        try:
+            if dest.exists():
+                dest.unlink()
+                removed.append(safe_name)
+        except OSError:
+            continue
+    return removed
+
+
 @app.post("/api/tickets", status_code=201)
 def create_ticket(payload: TicketCreate) -> dict:
     parent_id = None
@@ -541,6 +580,26 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
         merge_md.update(payload.metadata)
     if payload.max_turns is not None:
         merge_md["max_turns"] = int(payload.max_turns)
+    # Attachment editing: remove first, then add, then stamp the
+    # recomputed list. jsonb '||' shallow-merge replaces the whole
+    # attached_files key — so passing the full list covers add + remove.
+    if payload.remove_files or payload.attached_files:
+        current = list((t.metadata or {}).get("attached_files") or [])
+        if payload.remove_files:
+            removed = set(_remove_ticket_attachments(
+                t.identifier, payload.remove_files))
+            current = [
+                f for f in current
+                if (f.get("name") if isinstance(f, dict) else None)
+                not in removed
+            ]
+        if payload.attached_files:
+            current.extend(_persist_ticket_attachments(
+                t.identifier, payload.attached_files))
+        merge_md["attached_files"] = current
+        # Force claude_local while files remain; clear the flag when the
+        # last attachment is removed so the run can use any provider.
+        merge_md["force_provider"] = "claude_local" if current else None
     if (payload.assignee_role or payload.labels is not None
             or payload.body is not None or merge_md):
         sets: list[str] = []

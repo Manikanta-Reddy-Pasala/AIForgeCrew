@@ -7,6 +7,7 @@ import { Icon } from '../icons';
 import {
   statusClass, priorityClass, durationCell, durationTitle, relTime,
 } from '../util';
+import { DropZone, readAsBase64, MAX_FILE_BYTES, formatBytes } from '../components/FileUpload';
 
 const TRANSITIONS = ['todo', 'in_progress', 'in_review', 'qa', 'qa_failed', 'done', 'blocked', 'cancelled'];
 
@@ -101,14 +102,17 @@ export default function TicketDetail() {
 
       <div className="grid grid-2" style={{ alignItems: 'start' }}>
         <div className="stack">
-          <div className="card">
-            <div className="card-header"><h2>Body</h2></div>
-            {t.body
-              ? <pre style={{ whiteSpace: 'pre-wrap' }}>{t.body}</pre>
-              : <div className="muted small">(empty)</div>}
-          </div>
+          <BodyBlock
+            identifier={t.identifier}
+            body={t.body}
+            onSaved={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
+          />
 
-          <AttachmentsBlock identifier={t.identifier} files={t.metadata?.attached_files} />
+          <AttachmentsBlock
+            identifier={t.identifier}
+            files={t.metadata?.attached_files}
+            onSaved={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
+          />
 
           {t.metadata?.enrichment && (
             <div className="card">
@@ -562,39 +566,163 @@ function RouteBadge({ t, onChanged }: { t: any; onChanged: () => void }) {
 }
 
 type AttachedFile = { name: string; path?: string; size?: number };
+type NewFile = { name: string; size: number; content_b64: string };
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp)$/i;
 
-function AttachmentsBlock({
-  identifier, files,
-}: { identifier: string; files?: AttachedFile[] }) {
-  if (!files || !Array.isArray(files) || files.length === 0) return null;
-  const fmt = (n?: number) => {
-    if (!n && n !== 0) return '';
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    return `${(n / 1024 / 1024).toFixed(2)} MB`;
-  };
+function fmtSize(n?: number) {
+  if (!n && n !== 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+}
+
+// Editable ticket body (description). Read-only <pre> until Edit; then a
+// textarea + Save/Cancel that PATCHes the body.
+function BodyBlock({
+  identifier, body, onSaved,
+}: { identifier: string; body?: string; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(body || '');
+  const [saving, setSaving] = useState(false);
+
+  function startEdit() { setDraft(body || ''); setEditing(true); }
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.patch(identifier, { body: draft });
+      toast.success('Description updated');
+      setEditing(false);
+      onSaved();
+    } catch (e: any) { toast.error(e.message); }
+    finally { setSaving(false); }
+  }
+
   return (
     <div className="card">
-      <div className="card-header"><h2>Attachments ({files.length})</h2></div>
+      <div className="card-header" style={{ display: 'flex', alignItems: 'center' }}>
+        <h2 style={{ flex: 1 }}>Body</h2>
+        {!editing && (
+          <button className="ghost sm" onClick={startEdit}>
+            <Icon.Edit size={14} /> Edit
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <div className="stack" style={{ gap: 8 }}>
+          <textarea
+            rows={10}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            style={{ width: '100%', fontFamily: 'inherit' }}
+          />
+          <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
+            <button className="ghost sm" onClick={() => setEditing(false)} disabled={saving}>
+              Cancel
+            </button>
+            <button onClick={save} disabled={saving}>
+              <Icon.Send size={14} /> {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        body
+          ? <pre style={{ whiteSpace: 'pre-wrap' }}>{body}</pre>
+          : <div className="muted small">(empty)</div>
+      )}
+    </div>
+  );
+}
+
+// Attachments grid with inline add/remove. Removals + new uploads are
+// staged locally and applied in one PATCH on Save.
+function AttachmentsBlock({
+  identifier, files, onSaved,
+}: { identifier: string; files?: AttachedFile[]; onSaved: () => void }) {
+  const existing = Array.isArray(files) ? files : [];
+  const [editing, setEditing] = useState(false);
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
+  const [added, setAdded] = useState<NewFile[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  function reset() { setRemoved(new Set()); setAdded([]); setEditing(false); }
+
+  function toggleRemove(name: string) {
+    setRemoved(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
+
+  async function onFiles(picked: File[]) {
+    for (const f of picked) {
+      if (f.size > MAX_FILE_BYTES) {
+        toast.error(`${f.name} is ${formatBytes(f.size)} — over 5MB cap, skipping`);
+        continue;
+      }
+      const content_b64 = await readAsBase64(f);
+      setAdded(prev => [...prev.filter(x => x.name !== f.name),
+        { name: f.name, size: f.size, content_b64 }]);
+    }
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.patch(identifier, {
+        attached_files: added,
+        remove_files: Array.from(removed),
+      });
+      toast.success('Attachments updated');
+      reset();
+      onSaved();
+    } catch (e: any) { toast.error(e.message); }
+    finally { setSaving(false); }
+  }
+
+  const dirty = removed.size > 0 || added.length > 0;
+  if (existing.length === 0 && !editing) {
+    return (
+      <div className="card">
+        <div className="card-header" style={{ display: 'flex', alignItems: 'center' }}>
+          <h2 style={{ flex: 1 }}>Attachments</h2>
+          <button className="ghost sm" onClick={() => setEditing(true)}>
+            <Icon.Edit size={14} /> Add
+          </button>
+        </div>
+        <div className="muted small">No attachments.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header" style={{ display: 'flex', alignItems: 'center' }}>
+        <h2 style={{ flex: 1 }}>Attachments ({existing.length})</h2>
+        {!editing && (
+          <button className="ghost sm" onClick={() => setEditing(true)}>
+            <Icon.Edit size={14} /> Edit
+          </button>
+        )}
+      </div>
       <div className="stack" style={{ gap: 12 }}>
-        {files.map((f, i) => {
+        {existing.map((f, i) => {
           const url = `/files/${encodeURIComponent(identifier)}/${encodeURIComponent(f.name)}`;
           const isImage = IMAGE_EXT.test(f.name);
+          const isRemoved = removed.has(f.name);
           return (
-            <div key={i} className="row" style={{ gap: 12, alignItems: 'flex-start' }}>
+            <div key={i} className="row"
+              style={{ gap: 12, alignItems: 'flex-start', opacity: isRemoved ? 0.4 : 1 }}>
               {isImage ? (
                 <a href={url} target="_blank" rel="noopener">
-                  <img
-                    src={url}
-                    alt={f.name}
+                  <img src={url} alt={f.name}
                     style={{
                       maxWidth: 160, maxHeight: 120,
                       border: '1px solid var(--border-1)', borderRadius: 4,
                       objectFit: 'cover',
-                    }}
-                  />
+                    }} />
                 </a>
               ) : (
                 <div style={{
@@ -607,20 +735,51 @@ function AttachmentsBlock({
                 </div>
               )}
               <div className="stack" style={{ gap: 4, minWidth: 0, flex: 1 }}>
-                <a href={url} target="_blank" rel="noopener" style={{ wordBreak: 'break-all' }}>
+                <a href={url} target="_blank" rel="noopener"
+                  style={{ wordBreak: 'break-all', textDecoration: isRemoved ? 'line-through' : undefined }}>
                   {f.name}
                 </a>
-                <div className="muted small">{fmt(f.size)}</div>
+                <div className="muted small">{fmtSize(f.size)}</div>
                 {f.path && (
                   <code className="mono small muted" style={{ wordBreak: 'break-all' }}>
                     {f.path}
                   </code>
                 )}
               </div>
+              {editing && (
+                <button className="ghost sm danger" onClick={() => toggleRemove(f.name)}
+                  title={isRemoved ? 'Keep' : 'Remove'}>
+                  {isRemoved ? 'Undo' : <Icon.Trash size={14} />}
+                </button>
+              )}
             </div>
           );
         })}
       </div>
+      {editing && (
+        <div className="stack" style={{ gap: 8, marginTop: 12 }}>
+          <DropZone onFiles={onFiles} />
+          {added.length > 0 && (
+            <div className="stack" style={{ gap: 2 }}>
+              {added.map((f, i) => (
+                <div key={i} className="small muted">
+                  📎 {f.name} ({formatBytes(f.size)}){' '}
+                  <button className="ghost sm danger"
+                    onClick={() => setAdded(prev => prev.filter(x => x.name !== f.name))}>
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
+            <button className="ghost sm" onClick={reset} disabled={saving}>Cancel</button>
+            <button onClick={save} disabled={saving || !dirty}>
+              <Icon.Send size={14} /> {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
