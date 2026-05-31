@@ -46,4 +46,5 @@ export const Icon = {
   Filter: (p: P) => <Svg {...p}><path d="M22 3H2l8 10v7l4 2v-9l8-10Z" /></Svg>,
   PanelLeft: (p: P) => <Svg {...p}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /></Svg>,
   Trash: (p: P) => <Svg {...p}><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></Svg>,
+  Edit: (p: P) => <Svg {...p}><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" /></Svg>,
 };
