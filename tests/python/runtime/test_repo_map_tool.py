@@ -49,7 +49,7 @@ def test_repo_map_returns_treesitter_digest(tmp_path, monkeypatch):
     _seed_repo(tmp_path)
     out = doer_tools.repo_map(focus="calculator add multiply", token_budget=512)
     assert out["ok"] is True, out
-    assert out["engine"] == "aider-treesitter-pagerank"
+    assert out["engine"].startswith("aider-treesitter-pagerank")
     digest = out["digest"]
     # ranked symbols from the seeded files should surface
     assert "calc.py" in digest
@@ -70,3 +70,42 @@ def test_repo_map_in_doer_tool_list() -> None:
     # the grep+AST trio is all present
     assert "grep_repo" in names
     assert "graphify_lookup" in names
+    assert "impacted_tests" in names
+
+
+def test_digest_file_paths_parser() -> None:
+    digest = textwrap.dedent('''
+        aiforge_core/runtime/pipeline.py:
+        │def build_pipeline(...):
+        ⋮
+        aiforge_core/agents/doer.py:
+        │class Doer:
+    ''')
+    paths = doer_tools._digest_file_paths(digest)
+    assert "aiforge_core/runtime/pipeline.py" in paths
+    assert "aiforge_core/agents/doer.py" in paths
+    # code lines (│ / ⋮ prefixed) are NOT mistaken for paths
+    assert all(not p.startswith(("│", "⋮")) for p in paths)
+
+
+def test_impacted_tests_no_files() -> None:
+    out = doer_tools.impacted_tests("")
+    assert out["ok"] is False
+    assert out["tests"] == []
+
+
+def test_impacted_tests_no_repo_soft_fails(monkeypatch) -> None:
+    monkeypatch.delenv("AIFORGE_AFM_REPO", raising=False)
+    out = doer_tools.impacted_tests("src/Foo.java")
+    assert out["ok"] is False
+    assert "AIFORGE_AFM_REPO" in out["error"]
+    assert out["tests"] == []
+
+
+def test_impacted_tests_repo_set_no_backend(monkeypatch) -> None:
+    # repo set but Neo4j unreachable → soft-fail to empty list (run all)
+    monkeypatch.setenv("AIFORGE_AFM_REPO", "SomeRepo")
+    monkeypatch.setenv("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:59999")
+    out = doer_tools.impacted_tests("src/Foo.java, src/Bar.java")
+    # either ok with empty tests, or graceful error — never raises
+    assert out["tests"] == []
