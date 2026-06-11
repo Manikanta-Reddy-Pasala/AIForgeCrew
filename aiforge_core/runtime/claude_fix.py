@@ -174,6 +174,7 @@ def attempt_fix(
     try:
         new_state = asyncio.run(runner_module._run_pipeline(
             prompt, skip_researcher=skip_researcher, ticket=ticket,
+            memory_md=memory_md,
         ))
     except Exception as exc:  # noqa: BLE001
         log.warning("claude_fix pipeline failed: %s", exc)

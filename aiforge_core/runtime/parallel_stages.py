@@ -5,7 +5,7 @@ Two fan-outs replace what were single sequential agents. In the
 nodes; the branches converge at a ``JoinNode`` (waits for all), then a
 ``FunctionNode`` merges their per-branch state into one key:
 
-* **context** — researcher + ctx_memory + ctx_repomap + ctx_conventions
+* **context** — researcher + ctx_repomap + ctx_conventions
   run in parallel; :func:`merge_context` concatenates their ``*_brief_md``
   keys into ``context_brief_md`` for the Doer.
 * **verifier** — verify_correctness + verify_scope + verify_risk run in
@@ -147,10 +147,10 @@ def build_context_branches(model_factory, *, skip_researcher: bool = False,
         branches.append(_researcher_mod.build(model_factory))
     # ctx_memory was REMOVED from the fan-out (2026-06-11 efficiency
     # audit): it was an LLM agent re-querying the exact backends the
-    # runner's pre-flight memory_block already queried — 3-6 local calls
-    # each dragging ~3K tokens of tool schemas. The pre-flight result now
-    # seeds state['memory_brief_md'] directly; merge_context folds it
-    # into context_brief_md the same as before.
+    # runner's pre-flight memory_block already queried. The pre-flight
+    # result seeds state['memory_brief_md'], injected DIRECTLY into the
+    # doer/planner/enhancer/verify_risk prompts (not merged here — the
+    # trivial path skips this merge node).
     branches.append(_ctx_repomap_mod.build(model_factory))
     if not skip_conventions:
         branches.append(_ctx_conventions_mod.build(model_factory))
