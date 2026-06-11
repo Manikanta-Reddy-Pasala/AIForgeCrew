@@ -143,7 +143,13 @@ def _record_history(state: dict, loc: int, *, now: float | None = None) -> None:
     # Cap at 32 entries — way more than the plateau window needs.
     if len(history) > 32:
         del history[: len(history) - 32]
-    state.setdefault("loc_first_seen", now if now is not None else time.time())
+    # NOT setdefault: a replan clears this key by setting it to None
+    # (ADK State has no pop) and setdefault no-ops on an existing-but-
+    # None key — the later ``now - None`` then TypeErrors every Refiner
+    # turn and the plateau watchdog dies silently for the whole pass.
+    first = state.get("loc_first_seen")
+    if not isinstance(first, (int, float)):
+        state["loc_first_seen"] = now if now is not None else time.time()
 
 
 def _plateau_hit(history: list[int], turns: int, delta: int) -> bool:

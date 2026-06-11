@@ -184,7 +184,13 @@ def test_pipeline_modes_and_retry(monkeypatch) -> None:
 def test_workflow_concurrency_cap(monkeypatch) -> None:
     monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "1")
     from aiforge_core.runtime.pipeline import build_pipeline
+    # default = 3 (floor: the 3 verify branches must schedule in one
+    # wave or ADK's JoinNode can fire early off a stale pass-1 status
+    # on replan passes)
+    monkeypatch.delenv("AIFORGE_WORKFLOW_MAX_CONCURRENCY", raising=False)
+    assert build_pipeline(skip_researcher=True).max_concurrency == 3
+    # values below the floor are clamped up
     monkeypatch.setenv("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "2")
-    assert build_pipeline(skip_researcher=True).max_concurrency == 2
+    assert build_pipeline(skip_researcher=True).max_concurrency == 3
     monkeypatch.setenv("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "0")
     assert build_pipeline(skip_researcher=True).max_concurrency is None

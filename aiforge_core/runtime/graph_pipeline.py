@@ -149,7 +149,15 @@ async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
             "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
             "loc_history", "loc_first_seen", "doer_outcome",
             "verifier_verdict", "verify_correctness", "verify_scope",
-            "verify_risk", "verify_replan_count"))
+            "verify_risk", "verify_replan_count",
+            # quality-gate signals: a stale tests_ok=False from the failed
+            # pass would force Feedback's gate to fail the replanned pass
+            # unless the new Doer happens to re-run run_tests.
+            "tests_ok", "typecheck_ok", "lint_ok",
+            # plan-derived scope: cleared so plan_promote re-derives from
+            # the NEW plan (+ operator seeds) instead of monotonically
+            # widening with the rejected plan's globs.
+            "scope_allowlist_globs"))
         state["replan_note"] = (
             f"Validator requested changes (replan {replans + 1}). The prior "
             "plan did not land cleanly — re-plan SMALLER: split the failing "
@@ -177,9 +185,11 @@ async def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
             f"Verifier rejected the plan ({why}). Re-plan addressing the "
             "rejection before any code is written."
         )
-        # clear stale per-axis verdicts so the re-plan's verifier pass is fresh
+        # clear stale per-axis verdicts + plan-derived scope so the
+        # re-plan's verifier pass and plan_promote run fresh
         _clear_state(state, ("verifier_verdict", "verify_correctness",
-                             "verify_scope", "verify_risk"))
+                             "verify_scope", "verify_risk",
+                             "scope_allowlist_globs"))
         ctx.route = ROUTE_VERIFY_REPLAN
         _trace(":VerifyReplan", {"replan": vreplans + 1, "why": why})
     else:
@@ -226,7 +236,13 @@ async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
             sg = st.get("scope_allowlist_globs")
             if isinstance(sg, list):
                 globs += [str(g) for g in sg if g]
-    seeded = state.get("scope_allowlist_globs")
+    # Operator-seeded globs live in a SEPARATE durable key — the runner
+    # writes both keys at init. Replans clear scope_allowlist_globs (so
+    # the rejected plan's globs don't widen scope forever) but never the
+    # seeded key. Fall back to the live key for back-compat.
+    seeded = state.get("scope_allowlist_globs_seeded")
+    if not isinstance(seeded, list):
+        seeded = state.get("scope_allowlist_globs")
     if isinstance(seeded, list):
         globs = list(seeded) + [g for g in globs if g not in seeded]
     # dedupe, keep order
