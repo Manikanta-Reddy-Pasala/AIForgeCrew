@@ -4,8 +4,8 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/mani/AIForgeCrew
-EnvironmentFile=/home/mani/.aiforge/runtime.env
-ExecStart=/home/mani/AIForgeCrew/.venv/bin/python -m aiforge_core.runtime.maintenance_cli memory mine
+WorkingDirectory=%h/AIForgeCrew
+EnvironmentFile=%h/.aiforge/runtime.env
+ExecStart=%h/AIForgeCrew/.venv/bin/python -m aiforge_core.runtime.maintenance_cli memory mine
 StandardOutput=journal
 StandardError=journal

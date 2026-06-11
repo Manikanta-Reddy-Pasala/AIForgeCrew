@@ -29,7 +29,10 @@ PROMPT = (
     "  ## Patterns to match\n"
     "  - <naming / layout / import rule with a one-line example>\n"
     "\n"
-    "Only report what you actually found in the repo. One screen max."
+    "Only report what you actually found in the repo. One screen max.\n"
+    "\n"
+    "--- Enhanced ticket (the area being touched; from pipeline state) ---\n"
+    "{enhanced_body?}"
 )
 
 __all__ = ["PROMPT"]

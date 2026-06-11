@@ -15,9 +15,9 @@ PROMPT = (
     "  - memory_lookup(query, k=6)  — hybrid recall over prior "
     "Observation_v2 / Decision_v2 facts and the AFM bundle\n"
     "\n"
-    "Run 2-4 focused lookups derived from the plan and subtickets "
-    "(feature name, touched modules, error symptoms). Then emit a "
-    "compact markdown brief:\n"
+    "You run BEFORE the Planner — no plan exists yet. Run 2-4 focused "
+    "lookups derived from the ticket below (feature name, modules it "
+    "mentions, error symptoms). Then emit a compact markdown brief:\n"
     "  ## Prior facts\n"
     "  - <fact> (source)\n"
     "  ## Past failures to avoid\n"
@@ -25,9 +25,12 @@ PROMPT = (
     "  ## Accepted decisions\n"
     "  - <decision the Doer must respect>\n"
     "\n"
-    "Keep it short — only what changes how the Doer should code. If "
-    "memory has nothing relevant, say so in one line. Do not invent "
-    "facts; only report what the lookups returned."
+    "Keep it short — only what changes how the team should plan or "
+    "code this. If memory has nothing relevant, say so in one line. Do "
+    "not invent facts; only report what the lookups returned.\n"
+    "\n"
+    "--- Enhanced ticket (from pipeline state) ---\n"
+    "{enhanced_body?}"
 )
 
 __all__ = ["PROMPT"]

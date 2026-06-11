@@ -3,4 +3,4 @@ Description=AIForge git pull of every repo under ~/codeRepo
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash /home/mani/AIForgeCrew/scripts/runtime/nuc/git-pull-repos.sh
+ExecStart=/bin/bash %h/AIForgeCrew/scripts/runtime/nuc/git-pull-repos.sh

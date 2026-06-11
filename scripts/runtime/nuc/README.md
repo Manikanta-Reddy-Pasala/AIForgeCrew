@@ -18,7 +18,17 @@ The pg-tunnel (MS→NUC postgres loopback) and reverse NUC→MS ssh tunnel
 (`lm-tunnel.service` on NUC, exposes MS LM Studio as NUC:1235) are the
 only cross-host glue. No rsync anywhere; code comes from GitHub.
 
-## Install
+## Deploy (preferred — scripted, idempotent)
+
+```bash
+cd ~/AIForgeCrew && git pull --ff-only && bash scripts/runtime/nuc/deploy.sh
+```
+
+Pulls both repos, reinstalls packages, syncs the (%h-relative) systemd
+user units, restarts services, enables every timer, and runs health
+checks. Exits non-zero on a failed health check.
+
+## Install (manual, one-time reference)
 
 ```bash
 # One-time on NUC

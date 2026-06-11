@@ -4,16 +4,16 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/mani/AIForgeCrew/services/rerank_sidecar
-EnvironmentFile=/home/mani/.aiforge/runtime.env
-Environment=BGE_RERANKER_MODEL=/home/mani/.aiforge/models/bge-reranker-v2-m3
+WorkingDirectory=%h/AIForgeCrew/services/rerank_sidecar
+EnvironmentFile=%h/.aiforge/runtime.env
+Environment=BGE_RERANKER_MODEL=%h/.aiforge/models/bge-reranker-v2-m3
 Environment=BGE_RERANKER_FP16=1
 Environment=BGE_RERANKER_DEVICE=cpu
 Environment=HF_HUB_OFFLINE=1
 # Install script downloads ~568MB PyTorch model on first boot only.
 TimeoutStartSec=900
-ExecStartPre=/bin/bash -lc '/home/mani/AIForgeCrew/scripts/install-rerank-sidecar.sh --no-run ; true'
-ExecStart=/home/mani/.aiforge/venv-rerank/bin/uvicorn app:app --host 127.0.0.1 --port 8765
+ExecStartPre=/bin/bash -lc '%h/AIForgeCrew/scripts/install-rerank-sidecar.sh --no-run ; true'
+ExecStart=%h/.aiforge/venv-rerank/bin/uvicorn app:app --host 127.0.0.1 --port 8765
 Restart=always
 RestartSec=10
 StandardOutput=journal

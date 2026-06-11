@@ -4,16 +4,16 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/mani/AIForgeCrew/services/embed_sidecar
-EnvironmentFile=/home/mani/.aiforge/runtime.env
-Environment=BGE_M3_DIR=/home/mani/.aiforge/models/bge-m3
-Environment=EMBED_VENV=/home/mani/.aiforge/venv-embed
+WorkingDirectory=%h/AIForgeCrew/services/embed_sidecar
+EnvironmentFile=%h/.aiforge/runtime.env
+Environment=BGE_M3_DIR=%h/.aiforge/models/bge-m3
+Environment=EMBED_VENV=%h/.aiforge/venv-embed
 # Install script is idempotent; re-runs each boot but skips work
 # when venv + model are already present. First run downloads ~2GB
 # of bge-m3 ONNX so allow generous startup window.
 TimeoutStartSec=900
-ExecStartPre=/bin/bash -lc '/home/mani/AIForgeCrew/scripts/install-embed-sidecar.sh --no-run ; true'
-ExecStart=/home/mani/.aiforge/venv-embed/bin/uvicorn app:app --host 127.0.0.1 --port 8764
+ExecStartPre=/bin/bash -lc '%h/AIForgeCrew/scripts/install-embed-sidecar.sh --no-run ; true'
+ExecStart=%h/.aiforge/venv-embed/bin/uvicorn app:app --host 127.0.0.1 --port 8764
 Restart=always
 RestartSec=10
 StandardOutput=journal
