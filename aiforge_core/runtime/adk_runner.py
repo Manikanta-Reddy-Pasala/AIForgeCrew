@@ -679,8 +679,12 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         if isinstance(_globs, str):
             _globs = [g.strip() for g in _globs.splitlines() if g.strip()]
         if isinstance(_globs, list) and _globs:
-            initial_state["scope_allowlist_globs"] = [
-                str(g) for g in _globs if g]
+            _clean = [str(g) for g in _globs if g]
+            initial_state["scope_allowlist_globs"] = _clean
+            # Durable copy for plan_promote: replans clear the live key
+            # (plan-derived globs are per-plan) but the operator's seed
+            # must survive every epoch.
+            initial_state["scope_allowlist_globs_seeded"] = list(_clean)
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
         state=initial_state or None,

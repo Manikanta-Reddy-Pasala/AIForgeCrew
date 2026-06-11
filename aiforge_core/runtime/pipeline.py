@@ -375,15 +375,35 @@ def build_pipeline(*, skip_researcher: bool = False,
     # Cap concurrent graph-scheduled nodes. The 4-way context fan-out
     # against a single local mlx-lm endpoint is queueing, not parallelism
     # — the server processes serially while 4 in-flight chat-mode prompts
-    # multiply KV-cache pressure (the ONE-117 OOM recipe). 2 keeps a
-    # little pipelining without the pile-up; raise for cloud providers
-    # via AIFORGE_WORKFLOW_MAX_CONCURRENCY (0 = unlimited).
-    _cap = int(os.environ.get("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "2"))
-    return Workflow(
+    # multiply KV-cache pressure (the ONE-117 OOM recipe). Floor is 3:
+    # with a smaller cap a replan pass can re-fire the 3 verify branches
+    # across two scheduler waves, and ADK's JoinNode then sees the
+    # not-yet-rescheduled third branch's stale pass-1 COMPLETED status
+    # and fires early with the old axis verdict (double-running
+    # merge_verdicts + verifier_gate). Raise for cloud providers via
+    # AIFORGE_WORKFLOW_MAX_CONCURRENCY (0 = unlimited).
+    _cap = int(os.environ.get("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "3"))
+    if 0 < _cap < 3:
+        _cap = 3
+    wf = Workflow(
         name="aiforge_v6_pipeline",
         edges=edges,
         max_concurrency=_cap if _cap > 0 else None,
     )
+    # CRITICAL un-stall: ADK's graph builder CLONES every LlmAgent into
+    # the graph and forces wait_for_output=True for mode="chat"
+    # (conversational re-trigger semantics, _workflow_graph_utils.py).
+    # A chat node here never yields an engine "output" — its reply is
+    # message_as_output content — so the node parks in WAITING and
+    # downstream never triggers: the run stalled right after the
+    # enhancer. Our chat agents are one-shot graph stages; flip the
+    # flag on the CLONES (mutating the pre-construction originals is
+    # useless — the clone step overwrites it).
+    from google.adk.agents import LlmAgent as _LlmAgent
+    for _n in wf.graph.nodes:
+        if isinstance(_n, _LlmAgent) and getattr(_n, "mode", None) == "chat":
+            _n.wait_for_output = False
+    return wf
 
 
 def _append_after(agent, cb) -> None:
