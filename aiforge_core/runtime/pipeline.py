@@ -38,9 +38,7 @@ from aiforge_core.agents import (
     live_verifier as _live_verifier_mod,
     planner as _planner_mod,
     refiner as _refiner_mod,
-    researcher as _researcher_mod,
     validator as _validator_mod,
-    verifier as _verifier_mod,
 )
 from aiforge_core.config import agent_config as _acfg
 
@@ -150,11 +148,22 @@ def build_pipeline(*, skip_researcher: bool = False,
     """
     from google.adk.agents import LoopAgent, SequentialAgent
     from .loop_budget import build_loop_budget_callbacks
+    from .parallel_stages import (
+        build_context_parallel,
+        build_verifier_parallel,
+    )
 
     enhancer = _enhancer_mod.build(_claude_pinned_model)
     planner = _planner_mod.build(build_litellm_model)
-    verifier = _verifier_mod.build(build_litellm_model)
-    researcher = _researcher_mod.build(build_litellm_model)
+    # Verifier is now a ParallelAgent fan-out of three axis critics
+    # (correctness / scope / risk) merged into ``verifier_verdict``.
+    verifier = build_verifier_parallel(build_litellm_model)
+    # Context gathering is now a ParallelAgent fan-out (researcher +
+    # ctx_memory + ctx_repomap + ctx_conventions) merged into
+    # ``context_brief_md``. ``skip_researcher`` drops only the narrative
+    # researcher branch; the other three still run.
+    context_gather = build_context_parallel(
+        build_litellm_model, skip_researcher=skip_researcher)
     doer = _doer_mod.build(build_litellm_model)
     # C6 scope guard — block edits outside ``scope_allowlist_globs``
     # at the tool-call boundary. KISS: one before_tool_callback,
@@ -293,9 +302,6 @@ def build_pipeline(*, skip_researcher: bool = False,
     else:
         _replan_evaluate = None  # type: ignore[assignment]
 
-    sub_agents: list = [enhancer, planner, verifier]
-    if not skip_researcher:
-        sub_agents.append(researcher)
     doer_loop = LoopAgent(
         name="doer_refiner_feedback_loop",
         sub_agents=[doer, refiner, feedback],
@@ -306,19 +312,38 @@ def build_pipeline(*, skip_researcher: bool = False,
         # A2: evaluate the replan signal once the loop terminates.
         after_agent_callback=_replan_evaluate,
     )
-    sub_agents.append(doer_loop)
-    sub_agents.append(learner)
-    sub_agents.append(validator)
 
-    # NOTE: live_verifier is intentionally NOT in this SequentialAgent.
-    # It must run AFTER the runner opens the PR (commit_push_open_pr),
-    # because its deploy recipe merges that PR + waits for the rollout
-    # before testing. Wiring it as the pipeline tail meant the PR
-    # didn't exist yet (PR_URL unset) so the deploy step no-op'd and
-    # the verifier honestly reported "fix not on QA" (ONE-7). The
-    # runner now invokes it standalone via :func:`build_live_verifier`
+    # NOTE: live_verifier is intentionally NOT in this pipeline. It must
+    # run AFTER the runner opens the PR (commit_push_open_pr), because its
+    # deploy recipe merges that PR + waits for the rollout before testing.
+    # The runner invokes it standalone via :func:`build_live_verifier`
     # once the PR is live. See adk_runner._run_live_verifier.
 
+    # Default: deterministic GraphPipeline (custom BaseAgent) that routes
+    # trivial tickets straight to the Doer and replans once on a Validator
+    # rejection. Set AIFORGE_GRAPH_PIPELINE=0 to fall back to the flat
+    # SequentialAgent (same stages, no fast-path / replan edge).
+    if os.environ.get("AIFORGE_GRAPH_PIPELINE", "1") != "0":
+        from .graph_pipeline import GraphPipeline
+        return GraphPipeline(
+            name="aiforge_v6_pipeline",
+            sub_agents=[
+                enhancer, context_gather, planner, verifier,
+                doer_loop, learner, validator,
+            ],
+            enhancer=enhancer,
+            context_gather=context_gather,
+            planner=planner,
+            verifier=verifier,
+            doer_loop=doer_loop,
+            learner=learner,
+            validator=validator,
+        )
+
+    sub_agents: list = [
+        enhancer, context_gather, planner, verifier,
+        doer_loop, learner, validator,
+    ]
     return SequentialAgent(
         name="aiforge_v6_pipeline",
         sub_agents=sub_agents,

@@ -36,7 +36,12 @@ def test_pipeline_with_researcher_keeps_order() -> None:
     p = pipeline.build_pipeline(skip_researcher=False)
     names = [s.name for s in (getattr(p, "sub_agents", []) or [])]
     assert names[0] == "enhancer", names
-    assert "researcher" in names
+    # Researcher is now a branch inside the context_gather ParallelAgent,
+    # not a direct pipeline child.
+    assert "researcher" not in names, names
+    ctx = next(s for s in p.sub_agents if s.name == "context_gather")
+    ctx_branches = [s.name for s in ctx.sub_agents]
+    assert "researcher" in ctx_branches, ctx_branches
     assert names[-1] == "validator", names
     assert "live_verifier" not in names
 

@@ -81,6 +81,9 @@ def test_archetype_registry_resolves_every_module():
     expected_roles = {
         "architect", "triage", "planner", "verifier", "researcher",
         "doer", "refiner", "feedback", "learner",
+        # ParallelAgent fan-out branches (2026-06-11).
+        "ctx_memory", "ctx_repomap", "ctx_conventions",
+        "verify_correctness", "verify_scope", "verify_risk",
     }
     assert set(ARCHETYPES.keys()) == expected_roles
     for role in expected_roles:

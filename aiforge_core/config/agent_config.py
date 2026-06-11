@@ -40,6 +40,12 @@ _ARCHETYPES: tuple[str, ...] = (
     # Post-validator live boot (2026-05-23): runs the recipe under
     # aiforge_core/recipes/live_verify/<project>.md.
     "live_verifier",
+    # Parallel context-gathering fan-out (ParallelAgent) — see
+    # runtime.parallel_stages. Read-only gatherers, local-tier by default.
+    "ctx_memory", "ctx_repomap", "ctx_conventions",
+    # Parallel verifier fan-out (ParallelAgent) — three axis critics
+    # merged into verifier_verdict.
+    "verify_correctness", "verify_scope", "verify_risk",
 )
 _ROLES = _ARCHETYPES
 

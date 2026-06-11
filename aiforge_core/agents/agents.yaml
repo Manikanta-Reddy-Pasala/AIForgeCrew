@@ -609,6 +609,233 @@ agents:
       - state['live_verifier_verdict'] is a JSON object with
         ok ∈ {true, false} and a non-empty rationale string
 
+  # ---------------------------------------------------------------------------
+  # 12-14. CONTEXT GATHERERS (ParallelAgent fan-out — run concurrently)
+  # ---------------------------------------------------------------------------
+  # Three read-only gatherers run inside an ADK ParallelAgent between the
+  # Planner and the Doer loop. Each writes its own brief key; a merge
+  # callback concatenates them into context_brief_md for the Doer. They
+  # replace the single sequential Researcher's narrow file-read pass with
+  # three independent context angles fetched at once.
+  # ---------------------------------------------------------------------------
+  ctx_memory:
+    identity:
+      runtime: adk_agent_with_ga
+      model: Qwen3.6-27B-MLX-4bit
+      backend: genericagent_text_protocol
+      base_url: http://127.0.0.1:1235/v1
+      ctx_window: 64000
+    contract:
+      inputs:
+        - parent_ticket
+        - plan_md
+        - child_subtickets
+      outputs:
+        - memory_brief_md
+      max_turns: 6
+      max_wall_s: 300
+    tools:
+      allowed:
+        - memory_lookup
+      forbidden:
+        - file_write
+        - file_patch
+        - bash
+        - run_shell
+        - ask_user
+    memory:
+      read_scope: full
+      write_scope: none
+    rule: >
+      ctx_memory recalls prior Observation_v2 / Decision_v2 facts and the
+      AFM bundle for tickets similar to this one. Read-only. Writes only
+      memory_brief_md. Surfaces past failures and accepted decisions so the
+      Doer does not repeat them.
+    termination_contract:
+      - state['memory_brief_md'] is a non-empty markdown string
+      - no file mutations recorded in the trace
+
+  ctx_repomap:
+    identity:
+      runtime: adk_agent_with_ga
+      model: Qwen3.6-27B-MLX-4bit
+      backend: genericagent_text_protocol
+      base_url: http://127.0.0.1:1235/v1
+      ctx_window: 64000
+    contract:
+      inputs:
+        - parent_ticket
+        - plan_md
+        - child_subtickets
+        - scope_allowlist_globs
+      outputs:
+        - repo_brief_md
+      max_turns: 8
+      max_wall_s: 300
+    tools:
+      allowed:
+        - graphify_lookup
+        - grep_repos
+        - editor
+      forbidden:
+        - file_write
+        - file_patch
+        - bash
+        - run_shell
+        - ask_user
+    editor_commands:
+      - view
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      ctx_repomap locates the files and symbols the plan touches via
+      graphify_lookup + grep_repos, then views the key ones. Read-only.
+      Writes only repo_brief_md — a compact list of {path, symbols, why}.
+    termination_contract:
+      - state['repo_brief_md'] is a non-empty markdown string
+      - every child_subticket has >=1 relevant_files entry
+      - no file mutations recorded in the trace
+
+  ctx_conventions:
+    identity:
+      runtime: adk_agent_with_ga
+      model: Qwen3.6-27B-MLX-4bit
+      backend: genericagent_text_protocol
+      base_url: http://127.0.0.1:1235/v1
+      ctx_window: 64000
+    contract:
+      inputs:
+        - parent_ticket
+        - scope_allowlist_globs
+      outputs:
+        - conventions_brief_md
+      max_turns: 6
+      max_wall_s: 300
+    tools:
+      allowed:
+        - grep_repos
+        - editor
+      forbidden:
+        - file_write
+        - file_patch
+        - bash
+        - run_shell
+        - ask_user
+    editor_commands:
+      - view
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      ctx_conventions gathers the target repo's conventions — lint/format
+      config, test layout + naming, import style, build tool. Read-only.
+      Writes only conventions_brief_md so the Doer matches house style.
+    termination_contract:
+      - state['conventions_brief_md'] is a non-empty markdown string
+      - no file mutations recorded in the trace
+
+  # ---------------------------------------------------------------------------
+  # 15-17. SUB-VERIFIERS (ParallelAgent fan-out — merged into verifier_verdict)
+  # ---------------------------------------------------------------------------
+  # The single Verifier is split into three concurrent plan critics, each
+  # judging one axis. A merge callback ANDs their verdicts into the legacy
+  # verifier_verdict (reject if ANY axis rejects) so downstream code is
+  # unchanged. Pure judgment — no tools, single turn each.
+  # ---------------------------------------------------------------------------
+  verify_correctness:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: claude-opus-4-7
+      backend: direct_litellm
+      base_url: https://api.anthropic.com
+      ctx_window: 200000
+    contract:
+      inputs:
+        - parent_ticket
+        - plan_md
+        - child_subtickets
+      outputs:
+        - verify_correctness
+      max_turns: 1
+      max_wall_s: 60
+    tools:
+      allowed: []
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      verify_correctness judges ONLY whether the plan actually solves the
+      ticket: every acceptance criterion has a covering step and a test
+      subticket, and no plan step references a missing file/symbol.
+    termination_contract:
+      - "verdict ∈ {pass, reject} emitted as valid JSON"
+      - rationale is a non-empty string when verdict=reject
+
+  verify_scope:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: claude-opus-4-7
+      backend: direct_litellm
+      base_url: https://api.anthropic.com
+      ctx_window: 200000
+    contract:
+      inputs:
+        - plan_md
+        - child_subtickets
+        - scope_allowlist_globs
+      outputs:
+        - verify_scope
+      max_turns: 1
+      max_wall_s: 60
+    tools:
+      allowed: []
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      verify_scope judges ONLY scope hygiene: every subticket has a
+      non-empty scope_allowlist_globs, no step edits outside it, and the
+      blast radius matches the ticket size.
+    termination_contract:
+      - "verdict ∈ {pass, reject} emitted as valid JSON"
+      - rationale is a non-empty string when verdict=reject
+
+  verify_risk:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: claude-opus-4-7
+      backend: direct_litellm
+      base_url: https://api.anthropic.com
+      ctx_window: 200000
+    contract:
+      inputs:
+        - parent_ticket
+        - plan_md
+        - memory_search_results
+      outputs:
+        - verify_risk
+      max_turns: 1
+      max_wall_s: 60
+    tools:
+      allowed: []
+      forbidden:
+        - ALL
+    memory:
+      read_scope: scoped
+      write_scope: none
+    rule: >
+      verify_risk judges ONLY risk: migrations without rollback, secret or
+      auth changes, and steps that repeat a past failure surfaced in
+      memory. Reject high-risk plans lacking a mitigation step.
+    termination_contract:
+      - "verdict ∈ {pass, reject} emitted as valid JSON"
+      - rationale is a non-empty string when verdict=reject
+
 # =============================================================================
 # Cross-cutting invariants (informational — enforced in code, not parsed here)
 # =============================================================================
