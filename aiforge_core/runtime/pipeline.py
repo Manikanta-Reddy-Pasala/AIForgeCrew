@@ -1,19 +1,34 @@
-"""ADK SequentialAgent factory for the v6 pipeline.
+"""Native ADK ``Workflow`` graph factory for the v6 pipeline.
 
-Pipeline shape (extended)::
+ADK 2.x deprecated ``SequentialAgent`` / ``ParallelAgent`` / ``LoopAgent``
+in favour of the graph-based :class:`google.adk.workflow.Workflow`:
+explicit nodes wired by ``Edge``s, parallel fan-out + ``JoinNode``, and
+conditional routing where a node emits ``ctx.route`` and the matching edge
+fires. This module wires that graph.
 
-    SequentialAgent[
-        planner,
-        verifier,
-        researcher,                                   # option A — context brief
-        LoopAgent[doer, refiner, feedback]            # cap = 3 iterations
-        learner,
-    ]
+Graph shape::
 
-Triage (option G) runs in the orchestration layer BEFORE this pipeline so
-its complexity verdict can drive model_router for downstream archetypes.
-The Refiner sits between Doer and Feedback so behaviour-neutral polish
-doesn't get mistaken for a correctness fix on Feedback re-loops.
+    START → triage_gate ──trivial──────────────────────────────► doer
+                       └──full──► enhancer
+        enhancer ─┬► researcher ─┐
+                  ├► ctx_memory ─┤
+                  ├► ctx_repomap ┤ (parallel)  → context_join → merge_context
+                  └► ctx_conv ───┘                                   │
+                                                                     ▼
+        planner ─┬► verify_correctness ─┐                        planner
+                 ├► verify_scope ───────┤ (parallel) → verifier_join
+                 └► verify_risk ────────┘        → merge_verdicts → doer
+        doer → refiner → feedback → loop_gate ──loop──► doer
+                                             └──exit──► validator
+        validator → validator_gate ──replan──► planner   (once)
+                                   └──done────► learner
+
+Parallel fan-outs replace ``ParallelAgent``; the Doer loop's ``loop_gate``
+(iteration counter + LOC-plateau + Feedback verdict) replaces
+``LoopAgent``; ``triage_gate`` / ``validator_gate`` express the fast-path
+and replan edges. Triage complexity may be pre-seeded in state; absent, the
+graph takes the full path. Agents run as ``chat``-mode graph nodes so each
+stage still sees prior stages' output.
 
 Each ``LlmAgent`` is wrapped around an :class:`EscalatingLlm` so the
 local mlx-lm primary auto-falls-over to the operator's cloud chain
@@ -27,24 +42,34 @@ straight wiring layer.
 """
 from __future__ import annotations
 
-import os
-from typing import Any
-
 from aiforge_core.agents import (
     doer as _doer_mod,
+)
+from aiforge_core.agents import (
     enhancer as _enhancer_mod,
+)
+from aiforge_core.agents import (
     feedback as _feedback_mod,
+)
+from aiforge_core.agents import (
     learner as _learner_mod,
+)
+from aiforge_core.agents import (
     live_verifier as _live_verifier_mod,
+)
+from aiforge_core.agents import (
     planner as _planner_mod,
+)
+from aiforge_core.agents import (
     refiner as _refiner_mod,
+)
+from aiforge_core.agents import (
     validator as _validator_mod,
 )
 from aiforge_core.config import agent_config as _acfg
 
 from .escalating_llm import EscalatingLlm
 from .local_probe import maybe_substitute_primary
-
 
 # Per-ticket override knob populated by ``adk_runner._process_one_ticket``
 # before each ``build_pipeline`` call. None means "respect agent_config";
@@ -146,28 +171,36 @@ def build_pipeline(*, skip_researcher: bool = False,
         for full coverage; other repos default to the operator's
         configured model).
     """
-    from google.adk.agents import LoopAgent, SequentialAgent
+    from google.adk.workflow import START, Edge, Workflow
+
+    from .graph_pipeline import (
+        ROUTE_DONE,
+        ROUTE_EXIT,
+        ROUTE_FULL,
+        ROUTE_LOOP,
+        ROUTE_REPLAN,
+        ROUTE_TRIVIAL,
+        make_loop_gate,
+        make_triage_gate,
+        make_validator_gate,
+    )
     from .loop_budget import build_loop_budget_callbacks
     from .parallel_stages import (
-        build_context_parallel,
-        build_verifier_parallel,
+        build_context_branches,
+        build_verifier_branches,
+        make_context_join,
+        make_merge_context_node,
+        make_merge_verdicts_node,
+        make_verifier_join,
     )
 
+    # ── leaf agents ─────────────────────────────────────────────────────
     enhancer = _enhancer_mod.build(_claude_pinned_model)
     planner = _planner_mod.build(build_litellm_model)
-    # Verifier is now a ParallelAgent fan-out of three axis critics
-    # (correctness / scope / risk) merged into ``verifier_verdict``.
-    verifier = build_verifier_parallel(build_litellm_model)
-    # Context gathering is now a ParallelAgent fan-out (researcher +
-    # ctx_memory + ctx_repomap + ctx_conventions) merged into
-    # ``context_brief_md``. ``skip_researcher`` drops only the narrative
-    # researcher branch; the other three still run.
-    context_gather = build_context_parallel(
-        build_litellm_model, skip_researcher=skip_researcher)
     doer = _doer_mod.build(build_litellm_model)
-    # C6 scope guard — block edits outside ``scope_allowlist_globs``
-    # at the tool-call boundary. KISS: one before_tool_callback,
-    # rejects with a soft error when the Doer drifts outside scope.
+    # C6 scope guard — block edits outside ``scope_allowlist_globs`` at the
+    # tool-call boundary. KISS: one before_tool_callback that rejects with a
+    # soft error when the Doer drifts outside scope.
     try:
         from .scope_guard import make_scope_guard_callback
         _scope_cb = make_scope_guard_callback()
@@ -184,170 +217,108 @@ def build_pipeline(*, skip_researcher: bool = False,
     refiner = _refiner_mod.build(build_litellm_model)
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)
-    # Persist Learner-emitted facts into Neo4j (Observation_v2 +
-    # Decision_v2). Without this, state['facts_json'] dies with the
-    # session — the memory layer stayed near-empty across 8 days of
-    # tickets. The callback reads ticket/repo info already populated
-    # by adk_runner before the pipeline starts.
-    from .learner_persist import make_learner_after_callback
-    _existing_learner_after = learner.after_agent_callback
-    _learner_persist_cb = make_learner_after_callback()
-    _merged_learner_after: list = []
-    if _existing_learner_after is not None:
-        if isinstance(_existing_learner_after, list):
-            _merged_learner_after.extend(_existing_learner_after)
-        else:
-            _merged_learner_after.append(_existing_learner_after)
-    _merged_learner_after.append(_learner_persist_cb)
-    learner.after_agent_callback = _merged_learner_after
-
-    # Doer / Refiner / Feedback live inside the loop so a Feedback
-    # rejection rewinds the polish-then-judge cycle, not just the Doer.
-    # ``before_agent_callback`` runs once per LoopAgent invocation, but
-    # we attach the LOC-plateau watcher to the Refiner — it sees every
-    # loop turn AFTER the Doer has emitted its file_diffs payload,
-    # which is the cheapest place to compute the LOC delta.
-    plateau_before, plateau_after = build_loop_budget_callbacks()
-    if plateau_before is not None:
-        # Attach to the Refiner's after-callback so we see the loop
-        # iteration's LOC outcome AFTER the Doer reported file_diffs
-        # but BEFORE Feedback wastes a turn judging a stuck loop.
-        existing_after = refiner.after_agent_callback
-        merged_after: list = []
-        if existing_after is not None:
-            if isinstance(existing_after, list):
-                merged_after.extend(existing_after)
-            else:
-                merged_after.append(existing_after)
-        merged_after.append(plateau_after)
-        refiner.after_agent_callback = merged_after
-
-    # Build the Validator with claude_local + attach a failure-memory
-    # after-callback. Validator runs last so its callback sees the
-    # final verdicts from Feedback / Refiner and can write a
-    # failure ``Observation_v2`` when the run didn't land cleanly.
     validator = _validator_mod.build(_claude_pinned_model)
+
+    # Parallel branch agents (researcher + 3 context gatherers; 3 verifiers).
+    context_branches = build_context_branches(
+        build_litellm_model, skip_researcher=skip_researcher)
+    verifier_branches = build_verifier_branches(build_litellm_model)
+
+    # As ``Workflow`` graph nodes, LlmAgents default to single_turn
+    # (include_contents='none'), which would blind each stage to the prior
+    # stages' outputs. ``chat`` mode preserves the conversation history —
+    # matching the old SequentialAgent behaviour where every agent sees
+    # what came before. (``task`` mode is rejected for static graph nodes.)
+    _agent_nodes = [
+        enhancer, planner, doer, refiner, feedback, learner, validator,
+        *context_branches, *verifier_branches,
+    ]
+    for _a in _agent_nodes:
+        _a.mode = "chat"
+
+    # ── per-agent callbacks (fire via agent.run_async inside the node) ──
+    # Persist Learner-emitted facts into Neo4j (Observation_v2 +
+    # Decision_v2). Without this, state['facts_json'] dies with the session.
+    from .learner_persist import make_learner_after_callback
+    _append_after(learner, make_learner_after_callback())
+
+    # LOC-plateau watcher on the Refiner — sees each loop turn AFTER the Doer
+    # reported file_diffs. Sets state['loop_budget_kill'] which loop_gate
+    # reads to exit the Doer loop early. (The old LoopAgent before-callback
+    # abort is now the loop_gate's ``exit`` route.)
+    _plateau_before, plateau_after = build_loop_budget_callbacks()
+    if plateau_after is not None:
+        _append_after(refiner, plateau_after)
+
+    # Failure-memory after-callback on the Validator — writes a failure
+    # Observation_v2 when the run didn't land cleanly.
     try:
         from .failure_memory import make_failure_memory_after_callback
-        _fm_cb = make_failure_memory_after_callback()
-        existing_v = validator.after_agent_callback
-        merged_v: list = []
-        if existing_v is not None:
-            if isinstance(existing_v, list):
-                merged_v.extend(existing_v)
-            else:
-                merged_v.append(existing_v)
-        merged_v.append(_fm_cb)
-        validator.after_agent_callback = merged_v
+        _append_after(validator, make_failure_memory_after_callback())
     except Exception:
         pass  # failure_memory wiring never blocks pipeline boot
 
-    # A2 REPLAN signal — additive, env-flagged. When the Doer loop
-    # exhausts its iterations still failing, blindly retrying the same
-    # Doer rarely helps; the plan is usually too broad. We accumulate
-    # each iteration's Feedback verdict (feedback agent's after-callback)
-    # and, when the loop terminates, evaluate should_replan(); if true we
-    # stash a ``replan_note`` into session state + emit a ``:Replan``
-    # trace so a subsequent Planner / next ticket attempt can re-plan
-    # smaller. Disable with AIFORGE_REPLAN_ENABLED=0. Backward-compatible:
-    # nothing else reads ``replan_note`` yet — this only emits the signal.
-    if os.environ.get("AIFORGE_REPLAN_ENABLED", "1") != "0":
-        from .replan import build_replan_note, should_replan
+    # ── routing + merge nodes ───────────────────────────────────────────
+    triage_gate = make_triage_gate()
+    context_join = make_context_join()
+    merge_context = make_merge_context_node()
+    verifier_join = make_verifier_join()
+    merge_verdicts = make_merge_verdicts_node()
+    loop_gate = make_loop_gate()
+    validator_gate = make_validator_gate()
 
-        async def _replan_accumulate(*, callback_context):  # type: ignore[no-untyped-def]
-            try:
-                state = callback_context.state
-                v = state.get("feedback_verdict")
-                if isinstance(v, str) and v:
-                    # normalise "partial loop_budget_kill: ..." → leading word
-                    verdict = v.split()[0] if v.split() else v
-                    hist = list(state.get("verdict_history") or [])
-                    hist.append(verdict)
-                    state["verdict_history"] = hist
-                    state["last_rationale"] = state.get(
-                        "feedback_rationale", verdict)
-            except Exception:  # never break the loop
-                pass
-            return None
-
-        async def _replan_evaluate(*, callback_context):  # type: ignore[no-untyped-def]
-            try:
-                state = callback_context.state
-                hist = list(state.get("verdict_history") or [])
-                if should_replan(hist):
-                    note = build_replan_note(
-                        hist, str(state.get("last_rationale", "")))
-                    state["replan_note"] = note
-                    try:
-                        from .tools._trace import emit
-                        emit(":Replan", {
-                            "verdicts": hist,
-                            "note": note,
-                        })
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            return None
-
-        _fb_after = feedback.after_agent_callback
-        _merged_fb: list = []
-        if _fb_after is not None:
-            if isinstance(_fb_after, list):
-                _merged_fb.extend(_fb_after)
-            else:
-                _merged_fb.append(_fb_after)
-        _merged_fb.append(_replan_accumulate)
-        feedback.after_agent_callback = _merged_fb
-    else:
-        _replan_evaluate = None  # type: ignore[assignment]
-
-    doer_loop = LoopAgent(
-        name="doer_refiner_feedback_loop",
-        sub_agents=[doer, refiner, feedback],
-        max_iterations=3,
-        # ``plateau_before`` aborts the LoopAgent at the start of the
-        # next iteration when state['loop_budget_kill'] is set.
-        before_agent_callback=plateau_before,
-        # A2: evaluate the replan signal once the loop terminates.
-        after_agent_callback=_replan_evaluate,
-    )
-
-    # NOTE: live_verifier is intentionally NOT in this pipeline. It must
-    # run AFTER the runner opens the PR (commit_push_open_pr), because its
-    # deploy recipe merges that PR + waits for the rollout before testing.
-    # The runner invokes it standalone via :func:`build_live_verifier`
-    # once the PR is live. See adk_runner._run_live_verifier.
-
-    # Default: deterministic GraphPipeline (custom BaseAgent) that routes
-    # trivial tickets straight to the Doer and replans once on a Validator
-    # rejection. Set AIFORGE_GRAPH_PIPELINE=0 to fall back to the flat
-    # SequentialAgent (same stages, no fast-path / replan edge).
-    if os.environ.get("AIFORGE_GRAPH_PIPELINE", "1") != "0":
-        from .graph_pipeline import GraphPipeline
-        return GraphPipeline(
-            name="aiforge_v6_pipeline",
-            sub_agents=[
-                enhancer, context_gather, planner, verifier,
-                doer_loop, learner, validator,
-            ],
-            enhancer=enhancer,
-            context_gather=context_gather,
-            planner=planner,
-            verifier=verifier,
-            doer_loop=doer_loop,
-            learner=learner,
-            validator=validator,
-        )
-
-    sub_agents: list = [
-        enhancer, context_gather, planner, verifier,
-        doer_loop, learner, validator,
+    # ── graph edges ─────────────────────────────────────────────────────
+    # NOTE: live_verifier is intentionally NOT in this graph — it runs
+    # standalone AFTER the runner opens the PR (its deploy recipe merges +
+    # rolls out the PR before testing). See adk_runner._run_live_verifier.
+    edges: list = [
+        # entry + fast-path switch
+        Edge(from_node=START, to_node=triage_gate),
+        Edge(from_node=triage_gate, to_node=doer, route=ROUTE_TRIVIAL),
+        Edge(from_node=triage_gate, to_node=enhancer, route=ROUTE_FULL),
     ]
-    return SequentialAgent(
-        name="aiforge_v6_pipeline",
-        sub_agents=sub_agents,
-    )
+    # context fan-out → join → merge → planner
+    for br in context_branches:
+        edges.append(Edge(from_node=enhancer, to_node=br))
+        edges.append(Edge(from_node=br, to_node=context_join))
+    edges.append(Edge(from_node=context_join, to_node=merge_context))
+    edges.append(Edge(from_node=merge_context, to_node=planner))
+    # verifier fan-out → join → merge → doer
+    for br in verifier_branches:
+        edges.append(Edge(from_node=planner, to_node=br))
+        edges.append(Edge(from_node=br, to_node=verifier_join))
+    edges.append(Edge(from_node=verifier_join, to_node=merge_verdicts))
+    edges.append(Edge(from_node=merge_verdicts, to_node=doer))
+    # doer loop: doer → refiner → feedback → loop_gate ⟲
+    edges += [
+        Edge(from_node=doer, to_node=refiner),
+        Edge(from_node=refiner, to_node=feedback),
+        Edge(from_node=feedback, to_node=loop_gate),
+        Edge(from_node=loop_gate, to_node=doer, route=ROUTE_LOOP),
+        Edge(from_node=loop_gate, to_node=validator, route=ROUTE_EXIT),
+        # validator → replan back to planner, or done → learner
+        Edge(from_node=validator, to_node=validator_gate),
+        Edge(from_node=validator_gate, to_node=planner, route=ROUTE_REPLAN),
+        Edge(from_node=validator_gate, to_node=learner, route=ROUTE_DONE),
+    ]
+
+    return Workflow(name="aiforge_v6_pipeline", edges=edges)
+
+
+def _append_after(agent, cb) -> None:
+    """Append ``cb`` to ``agent.after_agent_callback`` preserving existing
+    callback(s)."""
+    if cb is None:
+        return
+    existing = getattr(agent, "after_agent_callback", None)
+    merged: list = []
+    if existing is not None:
+        if isinstance(existing, list):
+            merged.extend(existing)
+        else:
+            merged.append(existing)
+    merged.append(cb)
+    agent.after_agent_callback = merged
 
 
 def build_live_verifier_agent(project: str | None = None):

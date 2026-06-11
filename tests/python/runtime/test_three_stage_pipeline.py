@@ -15,35 +15,58 @@ import pytest
 
 from aiforge_core.runtime import failure_memory, lm_health, pipeline
 
-
 # ── Pipeline shape ─────────────────────────────────────────────────────
 
-def test_pipeline_starts_with_enhancer_and_ends_with_validator() -> None:
+def _edge_set(p):
+    """Return {(from, to, route)} for the Workflow graph."""
+    return {(e.from_node.name, e.to_node.name, e.route) for e in p.graph.edges}
+
+
+def test_pipeline_is_workflow_graph_with_core_nodes() -> None:
     p = pipeline.build_pipeline(skip_researcher=True)
-    names = [s.name for s in (getattr(p, "sub_agents", []) or [])]
-    # enhancer must be the FIRST stage so the rewritten body reaches
-    # the Planner / Doer.
-    assert names[0] == "enhancer", names
-    # Validator is the tail again — live_verifier was pulled OUT of the
-    # pipeline so it can run AFTER the PR opens (it merges + deploys the
-    # PR before testing; the PR doesn't exist mid-pipeline).
-    assert names[-1] == "validator", names
-    assert "live_verifier" not in names, names
-    assert "doer_refiner_feedback_loop" in names
-
-
-def test_pipeline_with_researcher_keeps_order() -> None:
-    p = pipeline.build_pipeline(skip_researcher=False)
-    names = [s.name for s in (getattr(p, "sub_agents", []) or [])]
-    assert names[0] == "enhancer", names
-    # Researcher is now a branch inside the context_gather ParallelAgent,
-    # not a direct pipeline child.
-    assert "researcher" not in names, names
-    ctx = next(s for s in p.sub_agents if s.name == "context_gather")
-    ctx_branches = [s.name for s in ctx.sub_agents]
-    assert "researcher" in ctx_branches, ctx_branches
-    assert names[-1] == "validator", names
+    from google.adk.workflow import Workflow
+    assert isinstance(p, Workflow)
+    names = {n.name for n in p.graph.nodes}
+    # core agents + routers + joins present
+    for n in ("enhancer", "planner", "doer", "validator", "learner",
+              "triage_gate", "loop_gate", "validator_gate",
+              "context_join", "verifier_join", "merge_context",
+              "merge_verdicts"):
+        assert n in names, (n, names)
+    # live_verifier runs standalone post-PR, not in the graph
     assert "live_verifier" not in names
+
+
+def test_pipeline_routing_edges() -> None:
+    p = pipeline.build_pipeline(skip_researcher=True)
+    edges = _edge_set(p)
+    # fast-path + full-path switch off triage
+    assert ("triage_gate", "doer", "trivial") in edges
+    assert ("triage_gate", "enhancer", "full") in edges
+    # doer loop: feedback → loop_gate ⟲ doer, exit → validator
+    assert ("loop_gate", "doer", "loop") in edges
+    assert ("loop_gate", "validator", "exit") in edges
+    # replan edge back to planner; done → learner
+    assert ("validator_gate", "planner", "replan") in edges
+    assert ("validator_gate", "learner", "done") in edges
+
+
+def test_pipeline_researcher_is_parallel_branch() -> None:
+    p = pipeline.build_pipeline(skip_researcher=False)
+    edges = _edge_set(p)
+    names = {n.name for n in p.graph.nodes}
+    assert "researcher" in names
+    # researcher fans out from enhancer and converges at context_join
+    assert ("enhancer", "researcher", None) in edges
+    assert ("researcher", "context_join", None) in edges
+
+
+def test_pipeline_skip_researcher_drops_branch() -> None:
+    p = pipeline.build_pipeline(skip_researcher=True)
+    names = {n.name for n in p.graph.nodes}
+    assert "researcher" not in names
+    # the other three gatherers remain
+    assert {"ctx_memory", "ctx_repomap", "ctx_conventions"} <= names
 
 
 def test_build_live_verifier_agent_standalone() -> None:

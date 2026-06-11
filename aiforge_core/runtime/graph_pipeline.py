@@ -1,40 +1,42 @@
-"""GraphPipeline — a custom ADK ``BaseAgent`` that routes the v6 pipeline
-as a deterministic graph instead of a flat ``SequentialAgent``.
+"""Routing FunctionNodes for the native ADK ``Workflow`` graph.
 
-ADK ships three workflow agents (Sequential / Parallel / Loop) but no
-graph type — conditional, data-driven routing is expressed by
-subclassing ``BaseAgent`` and driving the children from
-``_run_async_impl``. This class is that graph:
+ADK 2.x deprecated ``ParallelAgent`` / ``LoopAgent`` in favour of the
+graph-based :class:`google.adk.workflow.Workflow`: explicit nodes wired
+by ``Edge``s, with conditional routing expressed by an edge ``route``
+value a node emits (``ctx.route = "..."``). This module holds the three
+deterministic routers that drive the v6 graph; the agents themselves are
+plain ``LlmAgent`` graph nodes (see :mod:`pipeline`).
 
-    triage_verdict.complexity == "trivial"
-        └─► doer_loop ─► validator                      (fast path)
+* **triage_gate** — fast-path switch. ``trivial`` ticket routes straight
+  to the Doer; everything else takes the full enhance→context→plan path.
+* **loop_gate** — replaces ``LoopAgent``'s internal counter. Reads the
+  Feedback verdict + an iteration counter (+ the LOC-plateau kill flag)
+  and routes ``loop`` back to the Doer or ``exit`` to the Validator.
+* **validator_gate** — replan edge. A failed Validator routes ``replan``
+  back to the Planner once (resetting the loop counter); otherwise
+  ``done`` to the Learner.
 
-    otherwise
-        enhancer ─► context_gather(∥) ─┐
-                                       ▼
-            ┌──────────────────────────────────────────┐
-            │ planner ─► verifier(∥) ─► doer_loop ─► validator │  ◄─┐
-            └──────────────────────────────────────────┘     │
-                                       │                       │
-              validator == request_changes AND replans<max ───┘
-                                       │ (else)
-                                       ▼
-                                    learner
-
-The replan edge sends a failed run back to the Planner ONCE (default),
-stashing a ``replan_note`` so the next plan goes smaller — blindly
-re-running the same Doer rarely helps (A2 finding). ``context_gather``
-and ``verifier`` are ``ParallelAgent`` fan-outs built in
-:mod:`parallel_stages`; everything else is an ``LlmAgent`` /
-``LoopAgent``. Children are also registered in ``sub_agents`` so ADK
-tracks the parent/branch tree correctly.
+Each gate is wrapped as a ``FunctionNode`` via :func:`make_*` so the
+pipeline can name them and wire edges. Routes are plain strings matched
+against ``Edge.route``.
 """
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from google.adk.agents import BaseAgent
+# Route label constants — keep in sync with the edge wiring in pipeline.py.
+ROUTE_TRIVIAL = "trivial"
+ROUTE_FULL = "full"
+ROUTE_LOOP = "loop"
+ROUTE_EXIT = "exit"
+ROUTE_REPLAN = "replan"
+ROUTE_DONE = "done"
+
+# Doer loop iteration cap (was LoopAgent.max_iterations=3).
+MAX_DOER_ITERS = 3
+# Replan cap (was GraphPipeline.max_replans=1).
+MAX_REPLANS = 1
 
 
 def _read_complexity(state: Any) -> str:
@@ -63,121 +65,111 @@ def _read_complexity(state: Any) -> str:
     return "moderate"
 
 
-def _validator_failed(state: Any) -> bool:
-    """True when the Validator asked for changes (the replan trigger)."""
+def _parse_verdict(raw: Any) -> str | None:
+    """Best-effort extract a verdict token from a dict / JSON / bare str."""
     try:
-        raw = state.get("validator_verdict")
-        verdict = None
         if isinstance(raw, dict):
-            verdict = raw.get("verdict")
-        elif isinstance(raw, str) and raw.strip():
+            v = raw.get("verdict")
+            return str(v).lower() if v is not None else None
+        if isinstance(raw, str) and raw.strip():
             text = raw.strip().strip("`")
             if text[:4].lower() == "json":
                 text = text[4:]
             try:
                 obj = json.loads(text)
-                verdict = obj.get("verdict") if isinstance(obj, dict) else None
+                if isinstance(obj, dict) and obj.get("verdict") is not None:
+                    return str(obj["verdict"]).lower()
             except Exception:
-                verdict = text.lower()
-        if verdict is None:
-            return False
-        return str(verdict).lower() in ("request_changes", "reject", "fail")
+                pass
+            return text.split()[0].lower() if text.split() else None
     except Exception:
-        return False
+        pass
+    return None
 
 
-class GraphPipeline(BaseAgent):
-    """Deterministic graph router over the v6 archetypes."""
+def _validator_failed(state: Any) -> bool:
+    """True when the Validator asked for changes (the replan trigger)."""
+    v = _parse_verdict(state.get("validator_verdict"))
+    return v in ("request_changes", "reject", "fail") if v else False
 
-    enhancer: BaseAgent
-    context_gather: BaseAgent
-    planner: BaseAgent
-    verifier: BaseAgent
-    doer_loop: BaseAgent
-    learner: BaseAgent
-    validator: BaseAgent
-    max_replans: int = 1
 
-    async def _run_async_impl(self, ctx):  # type: ignore[no-untyped-def]
-        state = ctx.session.state
-        complexity = _read_complexity(state)
+def _feedback_passed(state: Any) -> bool:
+    v = _parse_verdict(state.get("feedback_verdict"))
+    return v in ("pass", "approve", "pass_with_warnings") if v else False
 
-        # ---- fast path: trivial ticket skips planning/context/verify ----
-        if complexity == "trivial":
-            yield self._route_event(complexity, ["doer_loop", "validator"])
-            async for ev in self.doer_loop.run_async(ctx):
-                yield ev
-            async for ev in self.validator.run_async(ctx):
-                yield ev
-            return
 
-        # ---- full path -------------------------------------------------
-        yield self._route_event(
-            complexity,
-            ["enhancer", "context_gather", "planner", "verifier",
-             "doer_loop", "validator", "learner"],
+# ── router node bodies ──────────────────────────────────────────────────
+# Each takes the workflow Context (param named ``ctx`` is bound to the
+# Context, not to state) and sets ``ctx.route``.
+
+async def _triage_gate(ctx):  # type: ignore[no-untyped-def]
+    complexity = _read_complexity(ctx.state)
+    route = ROUTE_TRIVIAL if complexity == "trivial" else ROUTE_FULL
+    ctx.state["graph_route"] = {"complexity": complexity, "route": route}
+    ctx.route = route
+    _trace(":GraphRoute", {"complexity": complexity, "route": route})
+
+
+async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
+    state = ctx.state
+    iters = int(state.get("doer_iters", 0)) + 1
+    state["doer_iters"] = iters
+    kill = bool(state.get("loop_budget_kill"))
+    if _feedback_passed(state) or kill or iters >= MAX_DOER_ITERS:
+        ctx.route = ROUTE_EXIT
+        _trace(":LoopExit", {"iters": iters, "kill": kill})
+    else:
+        ctx.route = ROUTE_LOOP
+
+
+async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
+    state = ctx.state
+    replans = int(state.get("replan_count", 0))
+    if _validator_failed(state) and replans < MAX_REPLANS:
+        state["replan_count"] = replans + 1
+        # Reset the Doer loop counter so the re-planned attempt gets a
+        # fresh budget.
+        state["doer_iters"] = 0
+        state["replan_note"] = (
+            f"Validator requested changes (replan {replans + 1}). The prior "
+            "plan did not land cleanly — re-plan SMALLER: split the failing "
+            "subticket, tighten scope, add the missing test."
         )
-        async for ev in self.enhancer.run_async(ctx):
-            yield ev
-        async for ev in self.context_gather.run_async(ctx):
-            yield ev
-
-        replans = 0
-        while True:
-            async for ev in self.planner.run_async(ctx):
-                yield ev
-            async for ev in self.verifier.run_async(ctx):
-                yield ev
-            async for ev in self.doer_loop.run_async(ctx):
-                yield ev
-            async for ev in self.validator.run_async(ctx):
-                yield ev
-
-            if replans >= self.max_replans or not _validator_failed(state):
-                break
-            replans += 1
-            # Persist + signal the replan. The state_delta reaches the next
-            # Planner pass (same run) AND survives to the final session
-            # state the runner inspects.
-            yield self._replan_event(replans)
-
-        # Learner runs once, after the run settles — persists facts on the
-        # final state via its after_agent_callback.
-        async for ev in self.learner.run_async(ctx):
-            yield ev
-
-    # -- helpers ---------------------------------------------------------
-    def _route_event(self, complexity: str, path: list[str]):
-        """Build a state-delta event recording the chosen route. Yielding
-        it (vs raw state mutation) is what persists it past the run."""
-        route = {"complexity": complexity, "path": path}
-        try:
-            from .tools._trace import emit
-            emit(":GraphRoute", route)
-        except Exception:
-            pass
-        return self._state_event({"graph_route": route})
-
-    def _replan_event(self, replans: int):
-        note = (
-            f"Validator requested changes (replan {replans}). The prior "
-            "plan did not land cleanly — re-plan SMALLER: split the "
-            "failing subticket, tighten scope, add the missing test."
-        )
-        try:
-            from .tools._trace import emit
-            emit(":Replan", {"replan": replans, "note": note})
-        except Exception:
-            pass
-        return self._state_event(
-            {"replan_note": note, "replan_count": replans})
-
-    def _state_event(self, delta: dict):
-        from google.adk.events import Event, EventActions
-        return Event(
-            author=self.name,
-            actions=EventActions(state_delta=delta),
-        )
+        ctx.route = ROUTE_REPLAN
+        _trace(":Replan", {"replan": replans + 1})
+    else:
+        ctx.route = ROUTE_DONE
 
 
-__all__ = ["GraphPipeline", "_read_complexity", "_validator_failed"]
+def _trace(label: str, payload: dict) -> None:
+    try:
+        from .tools._trace import emit
+        emit(label, payload)
+    except Exception:
+        pass
+
+
+# ── FunctionNode factories ──────────────────────────────────────────────
+
+def make_triage_gate():
+    from google.adk.workflow import node
+    return node(_triage_gate, name="triage_gate")
+
+
+def make_loop_gate():
+    from google.adk.workflow import node
+    return node(_loop_gate, name="loop_gate")
+
+
+def make_validator_gate():
+    from google.adk.workflow import node
+    return node(_validator_gate, name="validator_gate")
+
+
+__all__ = [
+    "ROUTE_TRIVIAL", "ROUTE_FULL", "ROUTE_LOOP", "ROUTE_EXIT",
+    "ROUTE_REPLAN", "ROUTE_DONE", "MAX_DOER_ITERS", "MAX_REPLANS",
+    "make_triage_gate", "make_loop_gate", "make_validator_gate",
+    "_read_complexity", "_validator_failed", "_feedback_passed",
+    "_parse_verdict",
+]

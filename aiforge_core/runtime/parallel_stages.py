@@ -1,20 +1,21 @@
-"""ParallelAgent stages for the v6 pipeline + their merge callbacks.
+"""Parallel graph stages for the native ADK ``Workflow``.
 
-Two fan-outs replace what used to be single sequential agents:
+Two fan-outs replace what were single sequential agents. In the
+``Workflow`` model a fan-out is N edges from one source to N branch
+nodes; the branches converge at a ``JoinNode`` (waits for all), then a
+``FunctionNode`` merges their per-branch state into one key:
 
-* **context_gather** — ``ParallelAgent`` running the Researcher plus the
-  three concurrent gatherers (ctx_memory / ctx_repomap / ctx_conventions).
-  Each writes its own ``*_brief_md`` key; :func:`merge_context_briefs`
-  concatenates them into ``context_brief_md`` for the Doer.
+* **context** — researcher + ctx_memory + ctx_repomap + ctx_conventions
+  run in parallel; :func:`merge_context` concatenates their ``*_brief_md``
+  keys into ``context_brief_md`` for the Doer.
+* **verifier** — verify_correctness + verify_scope + verify_risk run in
+  parallel; :func:`merge_verdicts` ANDs their JSON verdicts into the
+  legacy ``verifier_verdict`` dict (reject if ANY axis rejects) so the
+  runner's ``_extract_verifier`` keeps working unchanged.
 
-* **verifier** — ``ParallelAgent`` running the three sub-verifiers
-  (verify_correctness / verify_scope / verify_risk). Each emits a JSON
-  verdict; :func:`merge_verifier_verdicts` ANDs them into the legacy
-  ``verifier_verdict`` dict (reject if ANY axis rejects) so the runner's
-  ``_extract_verifier`` keeps working unchanged.
-
-The merge callbacks are plain ``after_agent_callback`` hooks — pure,
-state-only, and exception-safe so a flaky branch never breaks the run.
+The merge bodies are wrapped as ``FunctionNode`` via the ``make_*``
+factories. They read/write ``ctx.state`` directly — the workflow engine
+flushes those mutations as state deltas.
 """
 from __future__ import annotations
 
@@ -70,7 +71,6 @@ def _coerce_verdict(raw: Any) -> dict:
         return raw
     if isinstance(raw, str):
         text = raw.strip()
-        # strip a ```json fence if present
         if text.startswith("```"):
             text = text.strip("`")
             if text[:4].lower() == "json":
@@ -86,11 +86,12 @@ def _coerce_verdict(raw: Any) -> dict:
     return {"verdict": "pass"}
 
 
-async def merge_context_briefs(*, callback_context, **_kw):  # type: ignore[no-untyped-def]
-    """ParallelAgent after-callback — concat the per-gatherer briefs into
-    ``context_brief_md`` so the Doer reads one consolidated block."""
+# ── merge node bodies (FunctionNode) ────────────────────────────────────
+
+async def merge_context(ctx):  # type: ignore[no-untyped-def]
+    """Concat the per-gatherer briefs into ``context_brief_md``."""
     try:
-        state = callback_context.state
+        state = ctx.state
         sections: list[str] = []
         for key, heading in _CONTEXT_BRIEFS:
             val = state.get(key)
@@ -99,15 +100,13 @@ async def merge_context_briefs(*, callback_context, **_kw):  # type: ignore[no-u
         if sections:
             state["context_brief_md"] = "\n\n".join(sections)
     except Exception:
-        pass  # never break the pipeline on a merge slip
-    return None
+        pass  # never break the graph on a merge slip
 
 
-async def merge_verifier_verdicts(*, callback_context, **_kw):  # type: ignore[no-untyped-def]
-    """ParallelAgent after-callback — AND the three axis verdicts into the
-    legacy ``verifier_verdict`` dict. Reject if ANY axis rejects."""
+async def merge_verdicts(ctx):  # type: ignore[no-untyped-def]
+    """AND the three axis verdicts into the legacy ``verifier_verdict``."""
     try:
-        state = callback_context.state
+        state = ctx.state
         issues: list = []
         rejected = False
         reject_axes: list[str] = []
@@ -121,7 +120,7 @@ async def merge_verifier_verdicts(*, callback_context, **_kw):  # type: ignore[n
                     issues.append({"kind": axis, "message": str(rat)})
             for it in verdict.get("issues") or []:
                 issues.append(it)
-        merged = {
+        state["verifier_verdict"] = {
             "verdict": "reject" if rejected else "pass",
             "issues": issues,
             "rationale": (
@@ -129,56 +128,59 @@ async def merge_verifier_verdicts(*, callback_context, **_kw):  # type: ignore[n
                 else "all axes passed"
             ),
         }
-        state["verifier_verdict"] = merged
     except Exception:
-        pass  # leave verifier_verdict unset; runner treats None as non-blocking
-    return None
+        pass
 
 
-def build_context_parallel(model_factory, *, skip_researcher: bool = False):
-    """Build the ``ParallelAgent`` context-gathering stage.
+# ── builders ────────────────────────────────────────────────────────────
 
-    Runs the three concurrent gatherers (plus the Researcher unless
-    ``skip_researcher``) and merges their briefs into ``context_brief_md``.
-    """
-    from google.adk.agents import ParallelAgent
-
+def build_context_branches(model_factory, *, skip_researcher: bool = False):
+    """Return the parallel context-gatherer agent nodes (chat-mode)."""
     branches: list = []
     if not skip_researcher:
         branches.append(_researcher_mod.build(model_factory))
     branches.append(_ctx_memory_mod.build(model_factory))
     branches.append(_ctx_repomap_mod.build(model_factory))
     branches.append(_ctx_conventions_mod.build(model_factory))
-
-    stage = ParallelAgent(
-        name="context_gather",
-        sub_agents=branches,
-        after_agent_callback=merge_context_briefs,
-    )
-    return stage
+    return branches
 
 
-def build_verifier_parallel(model_factory):
-    """Build the ``ParallelAgent`` verifier stage — three axis critics
-    merged into ``verifier_verdict``."""
-    from google.adk.agents import ParallelAgent
-
-    branches = [
+def build_verifier_branches(model_factory):
+    """Return the three parallel sub-verifier agent nodes (chat-mode)."""
+    return [
         _verify_correctness_mod.build(model_factory),
         _verify_scope_mod.build(model_factory),
         _verify_risk_mod.build(model_factory),
     ]
-    stage = ParallelAgent(
-        name="verifier",
-        sub_agents=branches,
-        after_agent_callback=merge_verifier_verdicts,
-    )
-    return stage
+
+
+def make_context_join():
+    from google.adk.workflow import JoinNode
+    return JoinNode(name="context_join")
+
+
+def make_verifier_join():
+    from google.adk.workflow import JoinNode
+    return JoinNode(name="verifier_join")
+
+
+def make_merge_context_node():
+    from google.adk.workflow import node
+    return node(merge_context, name="merge_context")
+
+
+def make_merge_verdicts_node():
+    from google.adk.workflow import node
+    return node(merge_verdicts, name="merge_verdicts")
 
 
 __all__ = [
-    "merge_context_briefs",
-    "merge_verifier_verdicts",
-    "build_context_parallel",
-    "build_verifier_parallel",
+    "merge_context",
+    "merge_verdicts",
+    "build_context_branches",
+    "build_verifier_branches",
+    "make_context_join",
+    "make_verifier_join",
+    "make_merge_context_node",
+    "make_merge_verdicts_node",
 ]
