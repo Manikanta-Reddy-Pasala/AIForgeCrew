@@ -27,7 +27,6 @@ import os
 import re
 from typing import Any
 
-
 _DEFAULT_WEIGHTS = {
     "memory":     1.0,
     "ticket":     1.2,
@@ -291,7 +290,11 @@ def render(result: dict) -> str:
     for i, h in enumerate(result["hits"], 1):
         src = h.get("source") or "?"
         text = (h.get("text") or "")[:300].replace("\n", " ")
-        lines.append(f"  {i}. [{src}|{h.get('score',0):.2f}] {text}")
+        try:
+            sc = float(h.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            sc = 0.0
+        lines.append(f"  {i}. [{src}|{sc:.2f}] {text}")
     if result.get("errors"):
         lines.append("[errors] " + "; ".join(result["errors"]))
     return "\n".join(lines)
@@ -341,8 +344,9 @@ def _ticket_local(identifier: str) -> dict | None:
     Bypasses graph_mcp's external-provider assumption."""
     try:
         import psycopg
-        from aiforge_core.config.env import AIFORGE_DSN
         from psycopg.rows import dict_row
+
+        from aiforge_core.config.env import AIFORGE_DSN
         with psycopg.connect(AIFORGE_DSN, connect_timeout=2,
                              row_factory=dict_row) as c, c.cursor() as cur:
             cur.execute(

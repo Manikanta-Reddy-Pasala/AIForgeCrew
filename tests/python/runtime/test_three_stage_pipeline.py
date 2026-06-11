@@ -201,10 +201,13 @@ def test_failure_memory_callback_skips_on_clean_pass(monkeypatch) -> None:
 def test_failure_memory_callback_writes_on_validator_reject(monkeypatch) -> None:
     """feedback=pass but validator request_changes → write."""
     cb = failure_memory.make_failure_memory_after_callback()
+    # TERMINAL reject: replan budget already spent (replan_count==MAX_REPLANS)
+    # so this Validator pass is the last one → record the failure.
     state = {
         "ticket_identifier": "ONE-2",
         "ticket_project": "TestRepo",
         "feedback_verdict": "pass",
+        "replan_count": 1,
         "validator_verdict": json.dumps({
             "verdict": "request_changes",
             "rationale": "scope drift",
@@ -228,3 +231,29 @@ def test_failure_memory_callback_writes_on_validator_reject(monkeypatch) -> None
     asyncio.run(cb(callback_context=ctx))
     assert captured.get("review_verdict") == "request_changes"
     assert "scope drift" in (captured.get("reason") or "")
+
+
+def test_failure_memory_callback_skips_non_terminal_reject(monkeypatch) -> None:
+    """A reject with replan budget remaining is NOT terminal — skip the
+    write so the replanned attempt isn't pre-recorded as a failure."""
+    cb = failure_memory.make_failure_memory_after_callback()
+    state = {
+        "ticket_identifier": "ONE-3",
+        "ticket_project": "TestRepo",
+        "feedback_verdict": "pass",
+        "replan_count": 0,  # budget remains → validator_gate will replan
+        "validator_verdict": json.dumps({"verdict": "request_changes"}),
+    }
+    called = {"n": 0}
+    monkeypatch.setattr(
+        failure_memory, "record_failure",
+        lambda *a, **kw: called.__setitem__("n", called["n"] + 1),
+    )
+
+    class _Ctx:
+        pass
+    ctx = _Ctx()
+    ctx.state = state
+    import asyncio
+    asyncio.run(cb(callback_context=ctx))
+    assert called["n"] == 0

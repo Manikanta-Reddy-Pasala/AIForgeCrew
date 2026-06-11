@@ -33,8 +33,8 @@ def record_failure(
         return {"ok": False, "error": "no_project"}
 
     try:
-        from neo4j import GraphDatabase
         from aiforge_memory.features.memory.store import upsert_observation
+        from neo4j import GraphDatabase
     except ImportError:
         return {"ok": False, "error": "deps_missing"}
 
@@ -133,6 +133,19 @@ def make_failure_memory_after_callback():
             ok = fb == "pass" and validator_verdict in {"approve", ""}
             if ok:
                 return None
+
+            # Don't record a failure that's about to be re-planned — the
+            # Validator runs once PER attempt, so a mid-replan write would
+            # pile up near-duplicate failure observations. Only the
+            # TERMINAL validator pass (replan budget spent) records.
+            try:
+                from .graph_pipeline import MAX_REPLANS
+            except Exception:
+                MAX_REPLANS = 1
+            failing = validator_verdict in {"request_changes", "reject", "fail"}
+            replan_count = int(state.get("replan_count", 0) or 0)
+            if failing and replan_count < MAX_REPLANS:
+                return None  # not terminal — a re-planned attempt may pass
 
             # Build a lightweight stub for record_failure.
             class _T:

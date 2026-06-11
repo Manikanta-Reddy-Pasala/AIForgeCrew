@@ -123,6 +123,46 @@ def test_validator_gate_pass_routes_done() -> None:
     assert ctx.route == gp.ROUTE_DONE
 
 
+def test_validator_gate_replan_clears_stale_loop_state() -> None:
+    # prior pass left a 'pass' feedback verdict + kill flag; replan must
+    # wipe them so the next Doer loop doesn't exit at zero iterations.
+    state = {
+        "validator_verdict": {"verdict": "request_changes"},
+        "feedback_verdict": '{"verdict": "pass"}',
+        "loop_budget_kill": True,
+        "doer_outcome": "old",
+        "verifier_verdict": {"verdict": "pass"},
+        "verify_correctness": '{"verdict": "pass"}',
+    }
+    _run(gp._validator_gate(_FakeCtx(state)))
+    for k in ("feedback_verdict", "loop_budget_kill", "doer_outcome",
+              "verifier_verdict", "verify_correctness"):
+        assert k not in state, k
+    assert state["doer_iters"] == 0
+
+
+def test_verifier_gate_reject_routes_replan_then_pass() -> None:
+    state = {"verifier_verdict": {"verdict": "reject", "rationale": "no test"}}
+    ctx = _FakeCtx(state)
+    _run(gp._verifier_gate(ctx))
+    assert ctx.route == gp.ROUTE_VERIFY_REPLAN
+    assert state["verify_replan_count"] == 1
+    assert "replan_note" in state
+    # per-axis verdicts cleared for a fresh re-verify
+    assert "verifier_verdict" not in state
+    # budget spent → next reject proceeds to the Doer anyway
+    state["verifier_verdict"] = {"verdict": "reject"}
+    ctx2 = _FakeCtx(state)
+    _run(gp._verifier_gate(ctx2))
+    assert ctx2.route == gp.ROUTE_VERIFY_PASS
+
+
+def test_verifier_gate_pass_routes_to_doer() -> None:
+    ctx = _FakeCtx({"verifier_verdict": {"verdict": "pass"}})
+    _run(gp._verifier_gate(ctx))
+    assert ctx.route == gp.ROUTE_VERIFY_PASS
+
+
 # ── full graph execution with stub agent nodes ─────────────────────────
 
 def _build_stub_graph(order, *, validator_sets):
@@ -153,6 +193,7 @@ def _build_stub_graph(order, *, validator_sets):
     vjoin, mver = ps.make_verifier_join(), ps.make_merge_verdicts_node()
     triage, loopg, valg = (
         gp.make_triage_gate(), gp.make_loop_gate(), gp.make_validator_gate())
+    verg = gp.make_verifier_gate()
 
     ctx_branches = [researcher, ctx_mem]
     ver_branches = [vcorr, vscope]
@@ -171,7 +212,9 @@ def _build_stub_graph(order, *, validator_sets):
                   Edge(from_node=br, to_node=vjoin)]
     edges += [
         Edge(from_node=vjoin, to_node=mver),
-        Edge(from_node=mver, to_node=doer),
+        Edge(from_node=mver, to_node=verg),
+        Edge(from_node=verg, to_node=doer, route=gp.ROUTE_VERIFY_PASS),
+        Edge(from_node=verg, to_node=planner, route=gp.ROUTE_VERIFY_REPLAN),
         Edge(from_node=doer, to_node=refiner),
         Edge(from_node=refiner, to_node=feedback),
         Edge(from_node=feedback, to_node=loopg),

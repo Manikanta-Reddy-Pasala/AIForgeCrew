@@ -183,9 +183,12 @@ def build_pipeline(*, skip_researcher: bool = False,
         ROUTE_LOOP,
         ROUTE_REPLAN,
         ROUTE_TRIVIAL,
+        ROUTE_VERIFY_PASS,
+        ROUTE_VERIFY_REPLAN,
         make_loop_gate,
         make_triage_gate,
         make_validator_gate,
+        make_verifier_gate,
     )
     from .loop_budget import build_loop_budget_callbacks
     from .parallel_stages import (
@@ -244,6 +247,21 @@ def build_pipeline(*, skip_researcher: bool = False,
     for _a in _agent_nodes:
         _a.mode = "chat"
 
+    # Parallel branches share a JoinNode: if ONE branch raises (flaky local
+    # mlx-lm), the ADK workflow engine sets error_shut_down and the whole
+    # graph aborts — the join never fires, planning/doing never runs. Give
+    # the fan-out branches a light node-level retry so a transient blip
+    # retries instead of nuking the run. (EscalatingLlm already handles
+    # model-layer fallover; this guards the exhausted-chain re-raise.)
+    try:
+        from google.adk.workflow import RetryConfig
+        _branch_retry = RetryConfig(max_attempts=2, initial_delay=1.0,
+                                    backoff_factor=2.0)
+        for _b in (*context_branches, *verifier_branches):
+            _b.retry_config = _branch_retry
+    except Exception:
+        pass  # retry is best-effort; never block pipeline boot
+
     # ── per-agent callbacks (fire via agent.run_async inside the node) ──
     # Persist Learner-emitted facts into Neo4j (Observation_v2 +
     # Decision_v2). Without this, state['facts_json'] dies with the session.
@@ -274,6 +292,7 @@ def build_pipeline(*, skip_researcher: bool = False,
     merge_verdicts = make_merge_verdicts_node()
     loop_gate = make_loop_gate()
     validator_gate = make_validator_gate()
+    verifier_gate = make_verifier_gate()
 
     # ── graph edges ─────────────────────────────────────────────────────
     # NOTE: live_verifier is intentionally NOT in this graph — it runs
@@ -297,7 +316,13 @@ def build_pipeline(*, skip_researcher: bool = False,
         edges.append(Edge(from_node=planner, to_node=br))
         edges.append(Edge(from_node=br, to_node=verifier_join))
     edges.append(Edge(from_node=verifier_join, to_node=merge_verdicts))
-    edges.append(Edge(from_node=merge_verdicts, to_node=doer))
+    # verifier_gate ACTS on the merged verdict: a rejected plan loops back
+    # to the planner once (bounded); a passing plan proceeds to the Doer.
+    edges.append(Edge(from_node=merge_verdicts, to_node=verifier_gate))
+    edges.append(Edge(from_node=verifier_gate, to_node=doer,
+                      route=ROUTE_VERIFY_PASS))
+    edges.append(Edge(from_node=verifier_gate, to_node=planner,
+                      route=ROUTE_VERIFY_REPLAN))
     # doer loop: doer → refiner → feedback → loop_gate ⟲
     edges += [
         Edge(from_node=doer, to_node=refiner),
