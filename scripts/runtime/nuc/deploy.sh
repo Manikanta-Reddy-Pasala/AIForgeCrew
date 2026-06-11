@@ -24,11 +24,23 @@ else
 fi
 
 step "install packages"
-"$CREW/.venv/bin/pip" install -q -e "$CREW"
-if [ -d "$AFM" ]; then
-    # AFM installs into the same venv the runner/api import from.
-    "$CREW/.venv/bin/pip" install -q -e "$AFM"
+# The NUC venv is uv-built (no pip binary). Editable installs mean a
+# plain git pull already updates the live code; a reinstall is only
+# needed when dependencies change. Use pip if present, else uv, else
+# skip with a note.
+PY="$CREW/.venv/bin/python"
+if [ -x "$CREW/.venv/bin/pip" ]; then
+    "$CREW/.venv/bin/pip" install -q -e "$CREW"
+    [ -d "$AFM" ] && "$CREW/.venv/bin/pip" install -q -e "$AFM"
+elif command -v uv >/dev/null 2>&1 || [ -x "$HOME/.local/bin/uv" ]; then
+    UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+    "$UV" pip install -q --python "$PY" -e "$CREW"
+    [ -d "$AFM" ] && "$UV" pip install -q --python "$PY" -e "$AFM"
+else
+    echo "note: no pip/uv — skipping reinstall (editable installs track"
+    echo "      the pulled code; rerun with uv on PATH if deps changed)"
 fi
+"$PY" -c "import aiforge_core, aiforge_memory"     || { echo "FATAL: package import broken" >&2; exit 1; }
 
 step "sync systemd user units"
 mkdir -p "$UNIT_DST"
