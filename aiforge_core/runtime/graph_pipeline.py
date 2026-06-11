@@ -250,6 +250,19 @@ async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
     merged = [g for g in globs if not (g in seen or seen.add(g))]
     if merged:
         state["scope_allowlist_globs"] = merged
+        # Re-match glob-scoped repo rules against the plan-widened scope
+        # so file-scoped rules the operator seed didn't reach now load
+        # (Cursor semantics: rules follow the files being touched).
+        try:
+            import os as _os
+
+            from . import repo_rules
+            refreshed = repo_rules.collect(
+                _os.environ.get("AIFORGE_REPO_ROOT", ""), merged)
+            if refreshed:
+                state["rules_md"] = refreshed
+        except Exception:
+            pass  # rules are additive context — never block the plan
 
 
 def _clear_state(state, keys) -> None:

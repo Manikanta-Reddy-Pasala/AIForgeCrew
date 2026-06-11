@@ -153,6 +153,7 @@ def build_litellm_model(role: str):
 
 
 def build_pipeline(*, skip_researcher: bool = False,
+                    skip_conventions: bool = False,
                     project: str | None = None):
     """Construct the v6 ``Workflow`` graph. Returns the root node ready
     for ``Runner(agent=..., session_service=...)``.
@@ -248,9 +249,13 @@ def build_pipeline(*, skip_researcher: bool = False,
     learner = _learner_mod.build(build_litellm_model)
     validator = _validator_mod.build(_claude_pinned_model)
 
-    # Parallel branch agents (researcher + 3 context gatherers; 3 verifiers).
+    # Parallel branch agents (researcher + context gatherers; 3 verifiers).
+    # skip_conventions: the runner found glob-scoped repo rules files —
+    # those ARE the conventions, injected free via {rules_md?}, so the
+    # paid ctx_conventions LLM branch is dropped.
     context_branches = build_context_branches(
-        build_litellm_model, skip_researcher=skip_researcher)
+        build_litellm_model, skip_researcher=skip_researcher,
+        skip_conventions=skip_conventions)
     verifier_branches = build_verifier_branches(build_litellm_model)
 
     # As ``Workflow`` graph nodes, LlmAgents default to single_turn

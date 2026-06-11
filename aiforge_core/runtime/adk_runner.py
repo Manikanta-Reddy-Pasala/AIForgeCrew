@@ -208,18 +208,28 @@ def _persist_ticket_media(ticket) -> None:
                 event_time = created_at.timestamp()
             except Exception:
                 event_time = None
+        _media_text = (
+            f"Ticket {ticket.identifier} included "
+            f"{len(media_paths)} image attachment(s): "
+            + ", ".join(p.rsplit("/", 1)[-1] for p in media_paths)
+        )
+        # embed so the observation is reachable via vector recall / PPR
+        # (was write-only without embed_vec). Soft on sidecar absence.
+        _media_vec = None
+        try:
+            from aiforge_core.memory.embed import embed as _embed
+            _media_vec = _embed(_media_text)
+        except Exception:  # noqa: BLE001
+            _media_vec = None
         upsert_observation(
             drv, repo=ticket.project,
-            text=(
-                f"Ticket {ticket.identifier} included "
-                f"{len(media_paths)} image attachment(s): "
-                + ", ".join(p.rsplit("/", 1)[-1] for p in media_paths)
-            ),
+            text=_media_text,
             kind="attachment",
             author="adk_runner",
             tags=[f"ticket:{ticket.identifier}", "kind:vision"],
             media_refs=media_paths,
             event_time=event_time,
+            embed_vec=_media_vec,
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("vision persist failed: %s", exc)
@@ -663,7 +673,7 @@ async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
 
 
 async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
-                        ticket=None) -> dict:
+                        ticket=None, memory_md: str = "") -> dict:
     """Drive one ADK pipeline run and return the final session state.
 
     ``skip_researcher`` lets the caller drop the Researcher step for
@@ -680,8 +690,29 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     from google.adk.sessions import InMemorySessionService
     from google.genai import types as gtypes
 
+    # Glob-scoped repo rules (Cursor-style): collected BEFORE the build so
+    # a repo that carries rules files skips the paid ctx_conventions LLM
+    # branch entirely — the rules ARE the conventions, for free.
+    _scope_seed: list = []
+    if ticket is not None:
+        _raw_globs = (getattr(ticket, "metadata", None) or {}).get(
+            "scope_allowlist_globs")
+        if isinstance(_raw_globs, str):
+            _raw_globs = [g.strip() for g in _raw_globs.splitlines()
+                          if g.strip()]
+        if isinstance(_raw_globs, list):
+            _scope_seed = [str(g) for g in _raw_globs if g]
+    rules_md = ""
+    try:
+        from aiforge_core.runtime import repo_rules
+        rules_md = repo_rules.collect(
+            os.environ.get("AIFORGE_REPO_ROOT", ""), _scope_seed)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("repo_rules collect failed: %s", exc)
+
     pipeline = build_pipeline(
         skip_researcher=skip_researcher,
+        skip_conventions=bool(rules_md),
         project=getattr(ticket, "project", None) if ticket else None,
     )
     session_svc = InMemorySessionService()
@@ -703,6 +734,7 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         _globs = _md.get("scope_allowlist_globs")
         if isinstance(_globs, str):
             _globs = [g.strip() for g in _globs.splitlines() if g.strip()]
+        _clean: list = []
         if isinstance(_globs, list) and _globs:
             _clean = [str(g) for g in _globs if g]
             initial_state["scope_allowlist_globs"] = _clean
@@ -710,6 +742,18 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
             # (plan-derived globs are per-plan) but the operator's seed
             # must survive every epoch.
             initial_state["scope_allowlist_globs_seeded"] = list(_clean)
+        # Glob-scoped repo rules collected above (pre-build, drives
+        # skip_conventions). plan_promote re-matches once the plan
+        # widens the globs. Injected via {rules_md?} in prompts.
+        if rules_md:
+            initial_state["rules_md"] = rules_md
+        # Pre-flight memory recall — seeded as STATE, not stitched into
+        # the seed prompt: one instruction-injected copy ({memory_brief_md?}
+        # / merged into {context_brief_md?}) instead of 60-120 history
+        # replays. This also replaces the ctx_memory LLM agent, which
+        # re-queried the identical backends with 3-6 local calls.
+        if memory_md:
+            initial_state["memory_brief_md"] = memory_md
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
         state=initial_state or None,
@@ -917,8 +961,15 @@ def _build_prompt(ticket, memory_md: str) -> str:
             "ticket. Use `file_read` to load them — their context is "
             "REQUIRED for the change.\n"
         )
-    if memory_md:
-        out += "\n" + memory_md
+    # NOTE: memory_md is NO LONGER appended to the seed. The seed is
+    # replayed in contents on every chat-mode LLM call (60-120×/ticket ≈
+    # 40-80K tokens of pure memory-block repetition, Claude-priced on
+    # enhancer/validator/takeover). The block now seeds
+    # state['memory_brief_md'] instead → merged once into
+    # {context_brief_md?} / {memory_brief_md?} instruction injections,
+    # which also survive compaction. (Param retained for call-site
+    # compatibility; the runner routes it into initial_state instead.)
+    _ = memory_md
 
     # Microagent injection (sub #5). Match against ticket title + body and
     # prepend matched playbooks. Best-effort: parse failures swallowed.
@@ -1173,6 +1224,7 @@ def _process_one_ticket() -> bool:
     try:
         state = asyncio.run(_run_pipeline(
             prompt, skip_researcher=skip_researcher, ticket=ticket,
+            memory_md=memory_md,
         ))
         outcome = _extract_verdict(state)
         # Capture the Feedback rationale BEFORE any mutation so an
@@ -1214,6 +1266,7 @@ def _process_one_ticket() -> bool:
                 set_force_provider("claude_local")
                 state2 = asyncio.run(_run_pipeline(
                     prompt, skip_researcher=skip_researcher, ticket=ticket,
+                    memory_md=memory_md,
                 ))
                 outcome2 = _extract_verdict(state2)
                 reason2 = _extract_reason(state2, outcome2)

@@ -26,9 +26,6 @@ from aiforge_core.agents import (
     ctx_conventions as _ctx_conventions_mod,
 )
 from aiforge_core.agents import (
-    ctx_memory as _ctx_memory_mod,
-)
-from aiforge_core.agents import (
     ctx_repomap as _ctx_repomap_mod,
 )
 from aiforge_core.agents import (
@@ -134,14 +131,26 @@ async def merge_verdicts(ctx):  # type: ignore[no-untyped-def]
 
 # ── builders ────────────────────────────────────────────────────────────
 
-def build_context_branches(model_factory, *, skip_researcher: bool = False):
-    """Return the parallel context-gatherer agent nodes (chat-mode)."""
+def build_context_branches(model_factory, *, skip_researcher: bool = False,
+                           skip_conventions: bool = False):
+    """Return the parallel context-gatherer agent nodes (chat-mode).
+
+    ``skip_conventions`` drops the ctx_conventions LLM branch — used when
+    the target repo carries glob-scoped rules files (.aiforge/rules /
+    .cursor/rules / AGENTS.md), which provide the conventions for free.
+    """
     branches: list = []
     if not skip_researcher:
         branches.append(_researcher_mod.build(model_factory))
-    branches.append(_ctx_memory_mod.build(model_factory))
+    # ctx_memory was REMOVED from the fan-out (2026-06-11 efficiency
+    # audit): it was an LLM agent re-querying the exact backends the
+    # runner's pre-flight memory_block already queried — 3-6 local calls
+    # each dragging ~3K tokens of tool schemas. The pre-flight result now
+    # seeds state['memory_brief_md'] directly; merge_context folds it
+    # into context_brief_md the same as before.
     branches.append(_ctx_repomap_mod.build(model_factory))
-    branches.append(_ctx_conventions_mod.build(model_factory))
+    if not skip_conventions:
+        branches.append(_ctx_conventions_mod.build(model_factory))
     return branches
 
 

@@ -72,12 +72,24 @@ def record_failure(
     if review_verdict:
         tags.append(f"review:{review_verdict}")
 
+    # Embed the failure text — without embed_vec the observation is
+    # invisible to vector recall AND the PPR seed stage, so the whole
+    # "prior failures surface on the next similar ticket" loop was
+    # broken at the write site. Soft: no sidecar → write without vector.
+    embed_vec = None
+    try:
+        from aiforge_core.memory.embed import embed as _embed
+        embed_vec = _embed(text)
+    except Exception:  # noqa: BLE001
+        embed_vec = None
+
     try:
         out = upsert_observation(
             drv, repo=ticket.project, text=text,
             kind="failure",
             author="failure_memory",
             tags=tags,
+            embed_vec=embed_vec,
         )
         log.info(
             "failure_memory: ticket=%s id=%s deduped=%s",

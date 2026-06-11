@@ -111,7 +111,7 @@ def test_build_context_branches(_no_escalate) -> None:
     from aiforge_core.runtime.pipeline import build_litellm_model
     branches = ps.build_context_branches(build_litellm_model)
     assert [b.name for b in branches] == [
-        "researcher", "ctx_memory", "ctx_repomap", "ctx_conventions"]
+        "researcher", "ctx_repomap", "ctx_conventions"]
 
 
 def test_build_context_branches_skip_researcher(_no_escalate) -> None:
@@ -119,7 +119,7 @@ def test_build_context_branches_skip_researcher(_no_escalate) -> None:
     branches = ps.build_context_branches(build_litellm_model, skip_researcher=True)
     names = [b.name for b in branches]
     assert "researcher" not in names
-    assert names == ["ctx_memory", "ctx_repomap", "ctx_conventions"]
+    assert names == ["ctx_repomap", "ctx_conventions"]
 
 
 def test_build_verifier_branches(_no_escalate) -> None:

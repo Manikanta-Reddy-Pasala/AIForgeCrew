@@ -69,7 +69,9 @@ def test_pipeline_skip_researcher_drops_branch() -> None:
     names = {n.name for n in p.graph.nodes}
     assert "researcher" not in names
     # the other three gatherers remain
-    assert {"ctx_memory", "ctx_repomap", "ctx_conventions"} <= names
+    assert {"ctx_repomap", "ctx_conventions"} <= names
+    # ctx_memory removed: pre-flight recall seeds memory_brief_md
+    assert "ctx_memory" not in names
 
 
 def test_build_live_verifier_agent_standalone() -> None:

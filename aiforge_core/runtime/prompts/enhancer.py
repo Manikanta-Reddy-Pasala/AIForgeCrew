@@ -71,6 +71,10 @@ Use AFM citations.
 4. Keep total length under 1200 words. Local model context is finite.
 5. Never include code blocks larger than 20 lines. Pointers,
    not transplants — let the Doer read the file itself.
+
+--- Memory recall (prior facts/decisions/failures for tickets like this
+— fold anything relevant into ## Context / ## Hints) ---
+{memory_brief_md?}
 """
 
 
