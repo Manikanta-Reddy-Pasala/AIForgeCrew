@@ -55,11 +55,15 @@ def _list_of_str(v: Any) -> list[str]:
 def _coerce_brief(entry: dict) -> dict:
     """Project a raw brief dict onto the canonical 5-field shape.
 
+    Accepts both the legacy per-subticket shape (``subticket_id``) and
+    the pre-planner shape (``topic`` — the researcher now runs BEFORE
+    the planner, so briefs are keyed by goal/acceptance topic).
     Missing / wrong-typed fields default to empty rather than raising —
     a single broken entry shouldn't sink the whole brief list.
     """
     return {
-        "subticket_id": str(entry.get("subticket_id") or "").strip(),
+        "subticket_id": str(entry.get("subticket_id")
+                            or entry.get("topic") or "").strip(),
         "relevant_files": _list_of_dicts(entry.get("relevant_files")),
         "related_symbols": _list_of_dicts(entry.get("related_symbols")),
         "prior_facts": _list_of_str(entry.get("prior_facts")),
@@ -94,6 +98,9 @@ def parse(raw: str) -> list[dict]:
         except json.JSONDecodeError:
             return []
 
+    # Pre-planner researcher wraps the array: {"areas": [...]}.
+    if isinstance(data, dict) and isinstance(data.get("areas"), list):
+        data = data["areas"]
     if not isinstance(data, list):
         return []
     return [_coerce_brief(e) for e in data if isinstance(e, dict)]

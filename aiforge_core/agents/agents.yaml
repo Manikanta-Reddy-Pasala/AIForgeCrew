@@ -452,8 +452,7 @@ agents:
     contract:
       inputs:
         - parent_ticket
-        - plan_md
-        - child_subtickets
+        - enhanced_body            # runs PRE-planner: no plan exists yet
         - scope_allowlist_globs
       outputs:
         - research_brief_md
@@ -480,12 +479,13 @@ agents:
       read_scope: full
       write_scope: none
     rule: >
-      Researcher is a read-only context gatherer. It writes nothing to disk
-      except research_brief_md, which downstream agents persist. Stops as
-      soon as each subticket has at least one relevant_files entry.
+      Researcher is a read-only context gatherer that runs PRE-planner
+      (parallel context fan-out). It writes nothing to disk except
+      research_brief_md, which the Planner consumes. Stops as soon as
+      each goal/acceptance item has at least one relevant_files entry.
     termination_contract:
       - research_brief_md persisted under docs/briefs/<ticket_id>.md
-      - every child_subticket has >=1 entry in research_brief_md
+      - every distinct goal/acceptance item has >=1 relevant_files entry
       - no file mutations recorded in the trace
 
   # ---------------------------------------------------------------------------
@@ -630,8 +630,7 @@ agents:
     contract:
       inputs:
         - parent_ticket
-        - plan_md
-        - child_subtickets
+        - enhanced_body            # runs PRE-planner: no plan exists yet
       outputs:
         - memory_brief_md
       max_turns: 6
@@ -667,8 +666,7 @@ agents:
     contract:
       inputs:
         - parent_ticket
-        - plan_md
-        - child_subtickets
+        - enhanced_body            # runs PRE-planner: no plan exists yet
         - scope_allowlist_globs
       outputs:
         - repo_brief_md

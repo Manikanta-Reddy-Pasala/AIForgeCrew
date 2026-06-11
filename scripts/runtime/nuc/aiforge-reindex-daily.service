@@ -3,7 +3,7 @@ Description=AIForge daily reindex
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/mani/AIForgeCrew
+WorkingDirectory=%h/AIForgeCrew
 Environment=AIFORGE_DSN=postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge
-Environment=HOME=/home/mani
+Environment=HOME=%h
 ExecStart=/bin/bash -lc "cd ~/AIForgeCrew && git pull && .venv/bin/python scripts/runtime/reindex-daily.py"
