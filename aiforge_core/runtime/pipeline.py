@@ -8,8 +8,8 @@ fires. This module wires that graph.
 
 Graph shape::
 
-    START → triage_gate ──trivial──────────────────────────────► doer
-                       └──full──► enhancer
+    START → triage → triage_gate ──trivial─────────────────────► doer
+                                └──full──► enhancer
         enhancer ─┬► researcher ─┐
                   ├► ctx_memory ─┤
                   ├► ctx_repomap ┤ (parallel)  → context_join → merge_context
@@ -62,6 +62,9 @@ from aiforge_core.agents import (
 )
 from aiforge_core.agents import (
     refiner as _refiner_mod,
+)
+from aiforge_core.agents import (
+    triage as _triage_mod,
 )
 from aiforge_core.agents import (
     validator as _validator_mod,
@@ -149,8 +152,8 @@ def build_litellm_model(role: str):
 
 def build_pipeline(*, skip_researcher: bool = False,
                     project: str | None = None):
-    """Construct the SequentialAgent. Returns the root agent ready for
-    ``Runner(agent=..., session_service=...)``.
+    """Construct the v6 ``Workflow`` graph. Returns the root node ready
+    for ``Runner(agent=..., session_service=...)``.
 
     Each archetype is built by its own module under
     ``aiforge_core.agents.*`` — the call site below is the ONLY place
@@ -195,6 +198,11 @@ def build_pipeline(*, skip_researcher: bool = False,
     )
 
     # ── leaf agents ─────────────────────────────────────────────────────
+    # Triage runs FIRST as a cheap single-turn classifier; its
+    # ``triage_verdict`` (complexity) feeds triage_gate's fast-path
+    # decision. Without this node nothing populates the verdict and the
+    # graph always takes the full path.
+    triage = _triage_mod.build(build_litellm_model)
     enhancer = _enhancer_mod.build(_claude_pinned_model)
     planner = _planner_mod.build(build_litellm_model)
     doer = _doer_mod.build(build_litellm_model)
@@ -230,8 +238,8 @@ def build_pipeline(*, skip_researcher: bool = False,
     # matching the old SequentialAgent behaviour where every agent sees
     # what came before. (``task`` mode is rejected for static graph nodes.)
     _agent_nodes = [
-        enhancer, planner, doer, refiner, feedback, learner, validator,
-        *context_branches, *verifier_branches,
+        triage, enhancer, planner, doer, refiner, feedback, learner,
+        validator, *context_branches, *verifier_branches,
     ]
     for _a in _agent_nodes:
         _a.mode = "chat"
@@ -273,7 +281,8 @@ def build_pipeline(*, skip_researcher: bool = False,
     # rolls out the PR before testing). See adk_runner._run_live_verifier.
     edges: list = [
         # entry + fast-path switch
-        Edge(from_node=START, to_node=triage_gate),
+        Edge(from_node=START, to_node=triage),
+        Edge(from_node=triage, to_node=triage_gate),
         Edge(from_node=triage_gate, to_node=doer, route=ROUTE_TRIVIAL),
         Edge(from_node=triage_gate, to_node=enhancer, route=ROUTE_FULL),
     ]

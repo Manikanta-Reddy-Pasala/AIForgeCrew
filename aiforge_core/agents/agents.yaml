@@ -282,6 +282,7 @@ agents:
         - graphify_lookup           # read-only graph traversal (no fs writes)
         - memory_lookup             # read-only AiForgeMemory recall
         - repo_map                  # tree-sitter PageRank repo map (AST, no vectors)
+        - impacted_tests            # diff→covering-tests map (run targeted slice)
         - grep_repo                 # kept — useful for fast pattern search
         - fetch_url                 # kept — public-docs fetch
         - git_commit                # kept — milestone snapshots

@@ -28,7 +28,7 @@ def test_pipeline_is_workflow_graph_with_core_nodes() -> None:
     assert isinstance(p, Workflow)
     names = {n.name for n in p.graph.nodes}
     # core agents + routers + joins present
-    for n in ("enhancer", "planner", "doer", "validator", "learner",
+    for n in ("triage", "enhancer", "planner", "doer", "validator", "learner",
               "triage_gate", "loop_gate", "validator_gate",
               "context_join", "verifier_join", "merge_context",
               "merge_verdicts"):
@@ -40,6 +40,9 @@ def test_pipeline_is_workflow_graph_with_core_nodes() -> None:
 def test_pipeline_routing_edges() -> None:
     p = pipeline.build_pipeline(skip_researcher=True)
     edges = _edge_set(p)
+    # triage runs first and feeds the gate (populates triage_verdict)
+    assert ("__START__", "triage", None) in edges
+    assert ("triage", "triage_gate", None) in edges
     # fast-path + full-path switch off triage
     assert ("triage_gate", "doer", "trivial") in edges
     assert ("triage_gate", "enhancer", "full") in edges

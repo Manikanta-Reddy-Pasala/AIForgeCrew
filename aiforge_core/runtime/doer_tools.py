@@ -261,8 +261,60 @@ def repo_map(focus: str = "", token_budget: int = 1024) -> dict:
     if not digest:
         return {"ok": False, "error": "empty map (repo too small or "
                 "aider/tree-sitter unavailable)", "digest": ""}
+    # Enrich with Graphify INFERRED call/use edges that tree-sitter alone
+    # misses — the file paths the aider digest surfaced are the seed.
+    # Soft: empty string when Neo4j/Graphify is unavailable.
+    try:
+        from aiforge_core.memory.code_context import graph_neighbours
+        files = _digest_file_paths(digest)
+        neighbours = graph_neighbours(files) if files else ""
+    except Exception:  # noqa: BLE001
+        neighbours = ""
+    if neighbours:
+        digest = f"{digest}\n\n{neighbours}"
     return {"ok": True, "focus": focus, "digest": digest,
-            "engine": "aider-treesitter-pagerank"}
+            "engine": "aider-treesitter-pagerank+graphify"}
+
+
+def _digest_file_paths(digest: str) -> list[str]:
+    """Extract the file paths an Aider repo-map digest lists. Each file
+    section starts with a ``path/to/file.ext:`` header line."""
+    import re
+    paths: list[str] = []
+    for line in digest.splitlines():
+        m = re.match(r"^([^\s│⋮].*\.[A-Za-z0-9_]+):\s*$", line)
+        if m:
+            paths.append(m.group(1))
+    return paths[:20]
+
+
+def impacted_tests(changed_files: str) -> dict:
+    """Map changed files → the test files that likely cover them.
+
+    Walks the Neo4j File_v2/Symbol_v2 graph (MENTIONS/CALLS/IMPORTS) back
+    up to test files. Pass the result's ``pattern`` to ``run_tests`` /
+    ``pytest -k`` / ``mvn -Dtest=`` to run only the relevant slice
+    instead of the full suite. Soft-fails to an empty list (→ run all)
+    when the graph is unavailable.
+
+    Args:
+      changed_files: comma- or space-separated repo-relative paths you
+        edited (e.g. ``"src/main/java/Foo.java, src/main/java/Bar.java"``).
+    """
+    import os as _os
+    raw = (changed_files or "").replace(",", " ").split()
+    if not raw:
+        return {"ok": False, "error": "no changed files given", "tests": []}
+    repo = _os.environ.get("AIFORGE_AFM_REPO", "").strip()
+    if not repo:
+        return {"ok": False, "error": "AIFORGE_AFM_REPO unset", "tests": []}
+    try:
+        from aiforge_core.runtime.diff_impact import impacted_tests as _impacted
+        tests = _impacted(repo, raw)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc), "tests": []}
+    return {"ok": True, "tests": tests, "pattern": ",".join(tests),
+            "count": len(tests)}
 
 
 # ─── HTTP fetch ────────────────────────────────────────────────────────
@@ -523,8 +575,8 @@ def adk_function_tools() -> list:
 
     new_canonical = [editor, new_bash, think, finish]
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
-                        grep_repo, repo_map, fetch_url, git_commit,
-                        memory_lookup, graphify_lookup]
+                        grep_repo, repo_map, impacted_tests, fetch_url,
+                        git_commit, memory_lookup, graphify_lookup]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -534,7 +586,7 @@ def adk_function_tools() -> list:
 
 __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
-    "grep_repo", "repo_map", "fetch_url", "git_commit",
+    "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
