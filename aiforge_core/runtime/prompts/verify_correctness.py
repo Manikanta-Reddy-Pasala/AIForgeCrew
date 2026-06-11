@@ -21,7 +21,13 @@ PROMPT = (
     "Return STRICT JSON only:\n"
     '  {"verdict": "pass"|"reject", '
     '"issues": [{"kind": str, "message": str}], '
-    '"rationale": <one-line, required when reject>}'
+    '"rationale": <one-line, required when reject>}\n'
+    "\n"
+    "--- Ticket (from pipeline state) ---\n"
+    "{enhanced_body?}\n"
+    "\n"
+    "--- The plan to judge (state['plan_md']) ---\n"
+    "{plan_md?}"
 )
 
 __all__ = ["PROMPT"]

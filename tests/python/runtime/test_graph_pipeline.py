@@ -165,7 +165,7 @@ def test_verifier_gate_pass_routes_to_doer() -> None:
 
 # ── full graph execution with stub agent nodes ─────────────────────────
 
-def _build_stub_graph(order, *, validator_sets):
+def _build_stub_graph(order, *, validator_sets, verifier_rejects=False):
     """Mirror the real pipeline topology but stub the agents as recording
     FunctionNodes, wired through the REAL gate + merge nodes."""
 
@@ -176,11 +176,13 @@ def _build_stub_graph(order, *, validator_sets):
                 ctx.state[k] = v
         return node(_fn, name=name)
 
+    _v = ('{"verdict":"reject", "rationale": "bad plan"}'
+          if verifier_rejects else '{"verdict":"pass"}')
     enhancer = agent_stub("enhancer")
     researcher = agent_stub("researcher", {"research_brief_md": "r"})
     ctx_mem = agent_stub("ctx_memory", {"memory_brief_md": "m"})
     planner = agent_stub("planner")
-    vcorr = agent_stub("verify_correctness", {"verify_correctness": '{"verdict":"pass"}'})
+    vcorr = agent_stub("verify_correctness", {"verify_correctness": _v})
     vscope = agent_stub("verify_scope", {"verify_scope": '{"verdict":"pass"}'})
     doer = agent_stub("doer")
     refiner = agent_stub("refiner")
@@ -280,3 +282,21 @@ def test_graph_replan_loops_back_to_planner_once() -> None:
     assert order.count("validator") == 2
     assert order[-1] == "learner"
     assert state.get("replan_count") == 1
+
+
+def test_graph_verifier_validator_pingpong_is_bounded() -> None:
+    """Worst case: verifier ALWAYS rejects + validator ALWAYS rejects.
+    validator-replan clears verify_replan_count, so the budgets compose:
+    (MAX_REPLANS+1) × (MAX_VERIFY_REPLANS+1) = 4 planner runs max — the
+    graph must still terminate at learner, never spin."""
+    order: list = []
+    wf = _build_stub_graph(
+        order,
+        validator_sets={"validator_verdict": '{"verdict":"request_changes"}'},
+        verifier_rejects=True,
+    )
+    state = _drive(wf, {"complexity": "moderate"})
+    expected = (gp.MAX_REPLANS + 1) * (gp.MAX_VERIFY_REPLANS + 1)
+    assert order.count("planner") == expected, order
+    assert order[-1] == "learner"
+    assert state.get("replan_count") == gp.MAX_REPLANS

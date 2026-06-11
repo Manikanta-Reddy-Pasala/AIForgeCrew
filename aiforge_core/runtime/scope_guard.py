@@ -6,10 +6,15 @@ Reject Doer edits that fall outside the ticket's
 this module is the enforcement.
 
 KISS: one function builds an ADK ``before_tool_callback`` for the
-Doer LlmAgent. The callback inspects ``editor`` / ``bash`` /
-``execute_ipython_cell`` calls, extracts the target path(s), checks
-each against the glob allowlist, and rejects with a tool-error when
-any path falls outside.
+Doer LlmAgent. The callback inspects ``editor`` / ``file_write`` /
+``file_patch`` calls, extracts the target path(s), checks each
+against the glob allowlist, and rejects with a tool-error when any
+path falls outside.
+
+KNOWN LIMIT: ``bash`` / ``run_shell`` / ``execute_ipython_cell`` are
+NOT inspected — a shell ``sed -i`` can write outside scope. Catching
+that requires command parsing; the Validator's scope_ok check is the
+backstop for shell-side drift.
 
 Empty allowlist → allow everything (back-compat for tickets that
 don't carry the field yet).
@@ -88,9 +93,10 @@ def make_scope_guard_callback():
                     "scope_allowlist_globs": globs,
                     "hint": (
                         "Edit refused: path is outside the ticket's "
-                        "scope_allowlist_globs. Either edit a file "
-                        "inside an allowed glob, or request a scope "
-                        "expansion via create_child_ticket."
+                        "scope_allowlist_globs. Edit only files inside "
+                        "an allowed glob; if the fix genuinely needs a "
+                        "wider scope, say so in your verdict rationale "
+                        "so the operator can widen the allowlist."
                     ),
                 }
         except Exception as exc:  # noqa: BLE001

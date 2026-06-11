@@ -120,6 +120,14 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     state["doer_iters"] = iters
     kill = bool(state.get("loop_budget_kill"))
     if _feedback_passed(state) or kill or iters >= MAX_DOER_ITERS:
+        if kill and not _feedback_passed(state):
+            # LOC-plateau kill: progress stalled but work exists. Mark the
+            # verdict ``partial`` so the runner ships the partial diff as a
+            # PR (status review) instead of claude_takeover replaying the
+            # whole pipeline. (Was the LoopAgent before-callback's job;
+            # the migration moved the exit here but dropped the verdict.)
+            reason = str(state.get("loop_budget_reason", "loc plateau"))
+            state["feedback_verdict"] = f"partial loop_budget_kill: {reason}"
         ctx.route = ROUTE_EXIT
         _trace(":LoopExit", {"iters": iters, "kill": kill})
     else:
@@ -178,6 +186,56 @@ async def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
         ctx.route = ROUTE_VERIFY_PASS
 
 
+async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
+    """Promote structured fields out of the Planner's raw ``plan_md``.
+
+    The Planner emits one JSON blob under ``plan_md``; nothing else
+    parsed it, so ``scope_allowlist_globs`` from the plan's subtickets
+    never reached the state key scope_guard / verify_scope judge.
+    Union the plan's globs with any operator-seeded ones. Soft-fail —
+    an unparseable plan leaves state untouched.
+    """
+    state = ctx.state
+    raw = state.get("plan_md")
+    if not isinstance(raw, str) or not raw.strip():
+        return
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+    try:
+        obj = json.loads(text)
+    except Exception:
+        # plan may be markdown with an embedded JSON object — best-effort
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return
+        try:
+            obj = json.loads(text[start:end + 1])
+        except Exception:
+            return
+    if not isinstance(obj, dict):
+        return
+    globs: list[str] = []
+    top = obj.get("scope_allowlist_globs")
+    if isinstance(top, list):
+        globs += [str(g) for g in top if g]
+    for st in obj.get("subtickets") or []:
+        if isinstance(st, dict):
+            sg = st.get("scope_allowlist_globs")
+            if isinstance(sg, list):
+                globs += [str(g) for g in sg if g]
+    seeded = state.get("scope_allowlist_globs")
+    if isinstance(seeded, list):
+        globs = list(seeded) + [g for g in globs if g not in seeded]
+    # dedupe, keep order
+    seen: set = set()
+    merged = [g for g in globs if not (g in seen or seen.add(g))]
+    if merged:
+        state["scope_allowlist_globs"] = merged
+
+
 def _clear_state(state, keys) -> None:
     """Drop keys from session state. ADK's ``State`` has no ``pop`` (only
     item set/get), so fall back to setting ``None`` — the parse helpers
@@ -222,12 +280,17 @@ def make_verifier_gate():
     return node(_verifier_gate, name="verifier_gate")
 
 
+def make_plan_promote():
+    from google.adk.workflow import node
+    return node(_plan_promote, name="plan_promote")
+
+
 __all__ = [
     "ROUTE_TRIVIAL", "ROUTE_FULL", "ROUTE_LOOP", "ROUTE_EXIT",
     "ROUTE_REPLAN", "ROUTE_DONE", "ROUTE_VERIFY_PASS", "ROUTE_VERIFY_REPLAN",
     "MAX_DOER_ITERS", "MAX_REPLANS", "MAX_VERIFY_REPLANS",
     "make_triage_gate", "make_loop_gate", "make_validator_gate",
-    "make_verifier_gate",
+    "make_verifier_gate", "make_plan_promote",
     "_read_complexity", "_validator_failed", "_feedback_passed",
     "_parse_verdict",
 ]

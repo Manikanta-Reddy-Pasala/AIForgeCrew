@@ -129,8 +129,15 @@ def make_failure_memory_after_callback():
             else:
                 vv_parsed = vv or {}
             validator_verdict = (vv_parsed.get("verdict") or "")
+            # Feedback's contract is "verdict token on the FIRST LINE,
+            # rationale below" — the raw value is e.g. "pass\nlooks good",
+            # never exactly "pass". Compare the leading token, not the
+            # whole string, or every clean pass writes a fake failure.
+            fb_token = (fb.split()[0].lower() if isinstance(fb, str)
+                        and fb.split() else "")
             # Pass only when both in-loop AND validator approve.
-            ok = fb == "pass" and validator_verdict in {"approve", ""}
+            ok = fb_token in {"pass", "pass_with_warnings"} \
+                and validator_verdict in {"approve", ""}
             if ok:
                 return None
 
@@ -154,7 +161,7 @@ def make_failure_memory_after_callback():
             t.identifier = ticket_identifier
             t.title = state.get("ticket_title", "")
             t.project = repo
-            verdict = fb if fb else "fail"
+            verdict = fb_token or "fail"
             reason = (vv_parsed.get("rationale") or "")[:280]
             record_failure(
                 t, verdict=verdict, reason=reason,

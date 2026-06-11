@@ -559,8 +559,9 @@ def adk_function_tools() -> list:
 
     Order — OpenHands-parity tools first (editor/bash/think/finish from
     :mod:`aiforge_core.runtime.tools`), then legacy canonical names, then
-    aliases. Per-agent allowlists in ``agents.yaml`` filter this set at
-    Layer A so each role sees only what its contract permits.
+    aliases. NOTE: every agent built with this factory currently sees the
+    FULL set — the ``agents.yaml`` allowed/forbidden lists are enforced
+    by prompt contract + the GA/harness layers, not filtered here.
 
     Legacy tools (file_read/file_write/file_patch/list_dir/run_shell)
     are DEPRECATED — kept one release as escape hatches for hallucinated

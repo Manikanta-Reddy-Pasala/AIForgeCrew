@@ -50,6 +50,9 @@ Return ONLY a single JSON object, no prose around it, matching:
    pipeline failed before producing diffs. Don't pretend to
    approve nothing.
 5. Cap rationale at 280 chars. No code blocks; pointers + reasoning.
+6. An ABSENT plan is EXPECTED on the trivial fast-path (triage routed
+   straight to the Doer) — do NOT abstain just because plan_md is
+   empty; judge doer_outcome directly against the ticket body.
 
 --- Pipeline context (verbatim from state; authoritative even if the
 chat above was trimmed by context compaction) ---

@@ -186,6 +186,7 @@ def build_pipeline(*, skip_researcher: bool = False,
         ROUTE_VERIFY_PASS,
         ROUTE_VERIFY_REPLAN,
         make_loop_gate,
+        make_plan_promote,
         make_triage_gate,
         make_validator_gate,
         make_verifier_gate,
@@ -225,6 +226,21 @@ def build_pipeline(*, skip_researcher: bool = False,
                 doer.before_tool_callback = [existing, _scope_cb]
     except Exception:
         pass  # scope guard never blocks pipeline boot
+    # A1 quality gate signals — record run_tests/typecheck/format results
+    # into tests_ok/typecheck_ok/lint_ok so the Feedback agent's
+    # deterministic gate (quality_gate.evaluate) actually has inputs.
+    try:
+        from .quality_gate import make_quality_signal_callback
+        _qs_cb = make_quality_signal_callback()
+        existing_after_tool = getattr(doer, "after_tool_callback", None)
+        if existing_after_tool is None:
+            doer.after_tool_callback = _qs_cb
+        elif isinstance(existing_after_tool, list):
+            doer.after_tool_callback = list(existing_after_tool) + [_qs_cb]
+        else:
+            doer.after_tool_callback = [existing_after_tool, _qs_cb]
+    except Exception:
+        pass  # signal wiring never blocks pipeline boot
     refiner = _refiner_mod.build(build_litellm_model)
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)
@@ -238,14 +254,23 @@ def build_pipeline(*, skip_researcher: bool = False,
     # As ``Workflow`` graph nodes, LlmAgents default to single_turn
     # (include_contents='none'), which would blind each stage to the prior
     # stages' outputs. ``chat`` mode preserves the conversation history —
-    # matching the old SequentialAgent behaviour where every agent sees
-    # what came before. (``task`` mode is rejected for static graph nodes.)
+    # matching the old SequentialAgent behaviour — for the agents that
+    # genuinely need it (multi-turn tool users + judges of the run's
+    # history). (``task`` mode is rejected for static graph nodes.)
     _agent_nodes = [
-        triage, enhancer, planner, doer, refiner, feedback, learner,
-        validator, *context_branches, *verifier_branches,
+        enhancer, planner, doer, refiner, feedback, learner,
+        *context_branches,
     ]
     for _a in _agent_nodes:
         _a.mode = "chat"
+    # Tool-less single-shot judges run single_turn: they read everything
+    # they need from state-templated prompt blocks ({plan_md?} etc.), so
+    # replaying the full 22-node history into each of them wastes tokens
+    # massively (3 verifiers × full history × up to 4 planner epochs,
+    # plus the Claude-priced validator) and re-creates the ONE-117 KV
+    # pressure. single_turn → include_contents='none'.
+    for _a in (triage, validator, *verifier_branches):
+        _a.mode = "single_turn"
 
     # Parallel branches share a JoinNode: if ONE branch raises (flaky local
     # mlx-lm), the ADK workflow engine sets error_shut_down and the whole
@@ -258,6 +283,12 @@ def build_pipeline(*, skip_researcher: bool = False,
         _branch_retry = RetryConfig(max_attempts=2, initial_delay=1.0,
                                     backoff_factor=2.0)
         for _b in (*context_branches, *verifier_branches):
+            _b.retry_config = _branch_retry
+        # The serial chokepoints too: enhancer/validator are pinned to
+        # claude_local with NO escalation chain, and planner/doer/triage
+        # sit on the critical path — a single transient exception in any
+        # of them is error_shut_down for the whole graph.
+        for _b in (triage, enhancer, planner, doer, validator):
             _b.retry_config = _branch_retry
     except Exception:
         pass  # retry is best-effort; never block pipeline boot
@@ -293,6 +324,7 @@ def build_pipeline(*, skip_researcher: bool = False,
     loop_gate = make_loop_gate()
     validator_gate = make_validator_gate()
     verifier_gate = make_verifier_gate()
+    plan_promote = make_plan_promote()
 
     # ── graph edges ─────────────────────────────────────────────────────
     # NOTE: live_verifier is intentionally NOT in this graph — it runs
@@ -311,9 +343,11 @@ def build_pipeline(*, skip_researcher: bool = False,
         edges.append(Edge(from_node=br, to_node=context_join))
     edges.append(Edge(from_node=context_join, to_node=merge_context))
     edges.append(Edge(from_node=merge_context, to_node=planner))
-    # verifier fan-out → join → merge → doer
+    # planner → plan_promote (parse plan JSON → scope_allowlist_globs in
+    # state) → verifier fan-out → join → merge → verifier_gate
+    edges.append(Edge(from_node=planner, to_node=plan_promote))
     for br in verifier_branches:
-        edges.append(Edge(from_node=planner, to_node=br))
+        edges.append(Edge(from_node=plan_promote, to_node=br))
         edges.append(Edge(from_node=br, to_node=verifier_join))
     edges.append(Edge(from_node=verifier_join, to_node=merge_verdicts))
     # verifier_gate ACTS on the merged verdict: a rejected plan loops back
