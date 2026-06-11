@@ -19,6 +19,7 @@ PROMPT = (
     "  - file_patch(path, old_text, new_text) — find/replace ONE occurrence\n"
     "  - list_dir(path='')                — list directory entries\n"
     "  - grep_repo(pattern, path='.')     — recursive regex search\n"
+    "  - repo_map(focus)                  — tree-sitter repo map (AST, find files/symbols)\n"
     "  - fetch_url(url)                   — GET http(s), 256 KB cap, 15s\n"
     "  - run_shell(cmd)                   — runs in repo root, 90s cap\n"
     "  - git_commit(message)              — `git add -A` + `git commit -m`\n"
