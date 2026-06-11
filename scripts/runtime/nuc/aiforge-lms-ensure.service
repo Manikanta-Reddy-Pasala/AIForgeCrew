@@ -1,0 +1,7 @@
+[Unit]
+Description=Ensure LM Studio doer model loaded with required ctx/TTL
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.aiforge/runtime.env
+ExecStart=/bin/bash %h/AIForgeCrew/scripts/runtime/nuc/lms-ensure.sh
