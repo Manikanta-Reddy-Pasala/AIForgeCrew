@@ -712,7 +712,10 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
 
     pipeline = build_pipeline(
         skip_researcher=skip_researcher,
-        skip_conventions=bool(rules_md),
+        # only skip when the rules will actually be SEEDED (ticket path);
+        # a ticket-less run must keep the ctx_conventions branch or it
+        # gets neither rules nor conventions.
+        skip_conventions=bool(rules_md and ticket is not None),
         project=getattr(ticket, "project", None) if ticket else None,
     )
     session_svc = InMemorySessionService()
@@ -748,10 +751,10 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         if rules_md:
             initial_state["rules_md"] = rules_md
         # Pre-flight memory recall — seeded as STATE, not stitched into
-        # the seed prompt: one instruction-injected copy ({memory_brief_md?}
-        # / merged into {context_brief_md?}) instead of 60-120 history
-        # replays. This also replaces the ctx_memory LLM agent, which
-        # re-queried the identical backends with 3-6 local calls.
+        # the seed prompt: ONE {memory_brief_md?} instruction copy per
+        # consuming agent (enhancer/planner/doer/verify_risk) instead
+        # of 60-120 history replays. Also replaces the ctx_memory LLM
+        # agent, which re-queried the identical backends.
         if memory_md:
             initial_state["memory_brief_md"] = memory_md
     session = await session_svc.create_session(

@@ -10,10 +10,10 @@ Graph shape::
 
     START → triage → triage_gate ──trivial─────────────────────► doer
                                 └──full──► enhancer
-        enhancer ─┬► researcher ─┐
-                  ├► ctx_memory ─┤
-                  ├► ctx_repomap ┤ (parallel)  → context_join → merge_context
-                  └► ctx_conv ───┘                                   │
+        enhancer ─┬► researcher ──┐
+                  ├► ctx_repomap ─┤ (parallel) → context_join → merge_context
+                  └► ctx_conv? ───┘  (conv skipped when repo rules exist)
+                                                                     │
                                                                      ▼
         planner ─┬► verify_correctness ─┐                        planner
                  ├► verify_scope ───────┤ (parallel) → verifier_join

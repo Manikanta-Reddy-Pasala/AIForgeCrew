@@ -154,3 +154,15 @@ def test_trajectory_touched_paths():
     assert "src/app/main.py" in paths
     assert "aiforge_core/runtime/pipeline.py" in paths
     assert len([p for p in paths if p == "src/app/main.py"]) == 1
+
+
+def test_globs_intersect_extension_vs_dir():
+    """v1 matcher failed the dominant real combo — Cursor extension
+    globs vs ticket directory scopes."""
+    from aiforge_core.runtime.repo_rules import _globs_intersect as gi
+    assert gi("**/*.py", "src/a/**")
+    assert gi("*.py", "aiforge_core/runtime/**")
+    assert gi("aiforge_core/**/*.py", "aiforge_core/runtime/**")
+    assert gi("app/**/*.ts", "app/routes/**")
+    assert not gi("docs/**", "src/**")
+    assert not gi("backend/**/*.go", "frontend/**")

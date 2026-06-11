@@ -11,10 +11,9 @@ can step through what the agent did.
 """
 from __future__ import annotations
 
-import re
-
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -255,8 +254,10 @@ def _touched_paths(events: list[dict], cap: int = 10) -> list[str]:
     for evt in events:
         blob = str(evt.get("args") or "") + " " + str(evt.get("text") or "")
         for m in _PATH_RE.findall(blob):
-            path = m.lstrip("./")
-            if "/" in path and path not in seen and not path.startswith("/"):
+            if m.startswith(("/", "..")):
+                continue  # absolute / parent-relative — not a repo path
+            path = m[2:] if m.startswith("./") else m
+            if "/" in path and path not in seen:
                 seen.append(path)
                 if len(seen) >= cap:
                     return seen

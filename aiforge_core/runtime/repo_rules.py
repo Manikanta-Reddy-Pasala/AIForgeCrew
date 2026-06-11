@@ -105,16 +105,50 @@ def load_rules(repo_root: str | Path) -> list[Rule]:
     return rules
 
 
+def _split_glob(g: str) -> tuple[str, str]:
+    """Split a glob into (dir-prefix, basename-pattern).
+
+    ``aiforge_core/**/*.py`` → ("aiforge_core", "*.py");
+    ``src/a/**`` → ("src/a", "**"); ``*.py`` → ("", "*.py").
+    The dir-prefix is the longest leading run of literal path segments.
+    """
+    parts = g.split("/")
+    prefix: list[str] = []
+    for seg in parts[:-1]:
+        if any(ch in seg for ch in "*?["):
+            break
+        prefix.append(seg)
+    base = parts[-1] if parts else g
+    return "/".join(prefix), base or "**"
+
+
 def _globs_intersect(rule_glob: str, scope_glob: str) -> bool:
-    """Pattern-vs-pattern intersection, best-effort: fnmatch each
-    against the other so the broader pattern absorbs the narrower."""
-    return (fnmatch.fnmatch(scope_glob, rule_glob)
-            or fnmatch.fnmatch(rule_glob, scope_glob)
-            # `src/**` vs `src/a/file.py`-style literal prefixes
-            or fnmatch.fnmatch(scope_glob.rstrip("*").rstrip("/") or "/",
-                               rule_glob)
-            or fnmatch.fnmatch(rule_glob.rstrip("*").rstrip("/") or "/",
-                               scope_glob))
+    """Pattern-vs-pattern intersection.
+
+    v1 fnmatch-both-ways failed the DOMINANT real combination —
+    extension rule globs (Cursor ``.mdc`` canon: ``**/*.py``) vs
+    directory scope globs (ticket canon: ``src/a/**``) — silently
+    making most glob-scoped rules inert. v2 splits each glob into
+    (dir-prefix, basename-pattern): they intersect when one prefix is a
+    path-prefix of the other (or fnmatch-compatible) AND either
+    basename is a wildcard or the basenames fnmatch each other.
+    """
+    rp, rb = _split_glob(rule_glob)
+    sp, sb = _split_glob(scope_glob)
+    # dir-prefix compatibility: one literal prefix extends the other,
+    # or the shorter pattern's prefix fnmatches into the longer's.
+    prefix_ok = (
+        rp == sp
+        or rp.startswith(sp + "/") or sp.startswith(rp + "/")
+        or rp == "" or sp == ""
+        or fnmatch.fnmatch(sp, rp) or fnmatch.fnmatch(rp, sp)
+    )
+    if not prefix_ok:
+        return False
+    wild = ("*", "**")
+    if rb in wild or sb in wild:
+        return True
+    return fnmatch.fnmatch(sb, rb) or fnmatch.fnmatch(rb, sb)
 
 
 def match_rules(rules: list[Rule], scope_globs: list[str] | None) -> list[Rule]:
