@@ -179,3 +179,12 @@ def test_pipeline_modes_and_retry(monkeypatch) -> None:
     for guarded in ("triage", "enhancer", "planner", "doer", "validator",
                     "verify_scope"):
         assert nodes[guarded].retry_config is not None, guarded
+
+
+def test_workflow_concurrency_cap(monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "1")
+    from aiforge_core.runtime.pipeline import build_pipeline
+    monkeypatch.setenv("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "2")
+    assert build_pipeline(skip_researcher=True).max_concurrency == 2
+    monkeypatch.setenv("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "0")
+    assert build_pipeline(skip_researcher=True).max_concurrency is None

@@ -42,6 +42,8 @@ straight wiring layer.
 """
 from __future__ import annotations
 
+import os
+
 from aiforge_core.agents import (
     doer as _doer_mod,
 )
@@ -370,7 +372,18 @@ def build_pipeline(*, skip_researcher: bool = False,
         Edge(from_node=validator_gate, to_node=learner, route=ROUTE_DONE),
     ]
 
-    return Workflow(name="aiforge_v6_pipeline", edges=edges)
+    # Cap concurrent graph-scheduled nodes. The 4-way context fan-out
+    # against a single local mlx-lm endpoint is queueing, not parallelism
+    # — the server processes serially while 4 in-flight chat-mode prompts
+    # multiply KV-cache pressure (the ONE-117 OOM recipe). 2 keeps a
+    # little pipelining without the pile-up; raise for cloud providers
+    # via AIFORGE_WORKFLOW_MAX_CONCURRENCY (0 = unlimited).
+    _cap = int(os.environ.get("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "2"))
+    return Workflow(
+        name="aiforge_v6_pipeline",
+        edges=edges,
+        max_concurrency=_cap if _cap > 0 else None,
+    )
 
 
 def _append_after(agent, cb) -> None:
