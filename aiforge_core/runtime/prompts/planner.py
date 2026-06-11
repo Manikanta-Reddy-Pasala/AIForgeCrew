@@ -43,10 +43,11 @@ PROMPT = (
     '    "scope_allowlist_globs": ["<glob>", ...],\n'
     '    "acceptance": ["<bullet>", "<bullet>", ...]\n'
     "  }\n"
-    "The orchestrator will run the Doer ONCE per subticket — each "
-    "subticket becomes its own commit + milestone checkpoint. Order "
-    "the array so dependencies come first (db schema before routers, "
-    "models before serializers, etc.).\n"
+    "The Doer executes the WHOLE plan in one session, working through "
+    "the subtickets in array order — so order them dependencies-first "
+    "(db schema before routers, models before serializers, etc.). Each "
+    "subticket's scope_allowlist_globs are unioned into the run's "
+    "edit-scope enforcement.\n"
     "\n"
     "If the ticket is small (single file, mechanical edit, <2000 "
     "chars body) OMIT the ``subtickets`` field entirely — do NOT "
@@ -59,7 +60,14 @@ PROMPT = (
     "\n"
     "--- Enhanced ticket (verbatim from pipeline state; authoritative "
     "even if trimmed from the chat above by context compaction) ---\n"
-    "{enhanced_body?}"
+    "{enhanced_body?}\n"
+    "\n"
+    "REPLAN NOTE (set only when a prior attempt failed — if present, "
+    "you are RE-planning: go smaller, fix exactly what it names):\n"
+    "{replan_note?}\n"
+    "\n"
+    "PRIOR VERIFIER VERDICT (address every rejection reason):\n"
+    "{verifier_verdict?}"
 )
 
 __all__ = ["PROMPT"]

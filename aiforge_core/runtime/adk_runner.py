@@ -449,34 +449,60 @@ def _build_context_plugins() -> list:
     LiteLLM calls because the prompt approached 131K tokens and the
     KV cache + 4-way parallel batches exceeded 96GB unified memory.
 
-    ``num_invocations_to_keep`` keeps the last N invocations verbatim
-    and drops older ones. An "invocation" = one user turn + the model
-    turns it triggered (tool calls, retries). Default 12 is a balance:
-    the Doer can still see its last 5-10 file_reads + edits while the
-    model summary / oldest tool noise gets evicted.
+    ``num_invocations_to_keep`` keeps the last N invocations verbatim —
+    BUT an "invocation" starts at a *human-user* message, and a Workflow
+    graph run has exactly ONE (the seed prompt): the invocation trim
+    never fires. The real work is done by the content-tail custom
+    filter below: keep the seed user message + the most recent
+    ``AIFORGE_CONTEXT_MAX_CONTENTS`` contents (split adjusted so a
+    function response is never orphaned from its call). Critical
+    hand-offs (plan/context/verdicts) are injected from session state
+    via ``{key?}`` templating, so trimming old history is safe.
 
     Env knobs:
-      AIFORGE_CONTEXT_KEEP_INVOCATIONS=12  → invocations to retain
+      AIFORGE_CONTEXT_MAX_CONTENTS=60      → contents to retain (tail)
+      AIFORGE_CONTEXT_KEEP_INVOCATIONS=12  → legacy invocation trim
+      AIFORGE_CONDENSER_STRATEGY=          → optional condenser on top
       AIFORGE_CONTEXT_FILTER_DISABLE=1     → opt out (debug only)
     """
     if os.environ.get("AIFORGE_CONTEXT_FILTER_DISABLE", "0") in ("1", "true"):
         return []
     try:
-        from google.adk.plugins.context_filter_plugin import ContextFilterPlugin
+        from google.adk.plugins.context_filter_plugin import (
+            ContextFilterPlugin,
+            _adjust_split_index_to_avoid_orphaned_function_responses,
+            _is_human_user_content,
+        )
     except ImportError:
         log.warning("context_filter: ContextFilterPlugin not available — "
                     "ADK older than 2.0b? skipping")
         return []
     keep = int(os.environ.get("AIFORGE_CONTEXT_KEEP_INVOCATIONS", "12"))
+    max_contents = int(os.environ.get("AIFORGE_CONTEXT_MAX_CONTENTS", "60"))
     strategy = os.environ.get("AIFORGE_CONDENSER_STRATEGY", "").strip()
-    custom = None
+
+    def _tail_trim(contents):
+        """Keep seed user message + last ``max_contents`` contents."""
+        if max_contents <= 0 or len(contents) <= max_contents:
+            return contents
+        split = len(contents) - max_contents
+        try:
+            split = _adjust_split_index_to_avoid_orphaned_function_responses(
+                contents, split)
+        except Exception:
+            pass
+        head_seed = [c for c in contents[:split]
+                     if _is_human_user_content(c)][:1]
+        return head_seed + list(contents[split:])
+
     if strategy:
         # Sub #4: optional aggressive condenser layered over the
-        # invocation-keep trim. ``amortized`` compresses oldest half
+        # content-tail trim. ``amortized`` compresses oldest half
         # into one synthetic block; ``recent`` is keep-tail only.
         from aiforge_core.runtime.condensers import condense
 
         def _adk_custom_filter(contents):
+            contents = _tail_trim(contents)
             events = [
                 {"type": "content", "role": getattr(c, "role", ""),
                  "text": " ".join(
@@ -504,10 +530,11 @@ def _build_context_plugins() -> list:
             return list(tail)
 
         custom = _adk_custom_filter
-        log.info("context_filter: enabled keep=%d invocations + "
-                 "condenser=%s", keep, strategy)
+        log.info("context_filter: enabled max_contents=%d + condenser=%s",
+                 max_contents, strategy)
     else:
-        log.info("context_filter: enabled keep=%d invocations", keep)
+        custom = _tail_trim
+        log.info("context_filter: enabled max_contents=%d", max_contents)
     return [ContextFilterPlugin(
         num_invocations_to_keep=keep, custom_filter=custom,
     )]
@@ -643,6 +670,17 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     if ticket is not None:
         initial_state["ticket_identifier"] = getattr(ticket, "identifier", "") or ""
         initial_state["ticket_project"] = getattr(ticket, "project", "") or ""
+        initial_state["ticket_title"] = getattr(ticket, "title", "") or ""
+        # C6 scope enforcement: the UI stores the operator's allowlist in
+        # ticket.metadata. Without this seed, scope_guard / verify_scope /
+        # the Validator's rule 2 all judged a permanently-empty field.
+        _md = getattr(ticket, "metadata", None) or {}
+        _globs = _md.get("scope_allowlist_globs")
+        if isinstance(_globs, str):
+            _globs = [g.strip() for g in _globs.splitlines() if g.strip()]
+        if isinstance(_globs, list) and _globs:
+            initial_state["scope_allowlist_globs"] = [
+                str(g) for g in _globs if g]
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
         state=initial_state or None,
@@ -1125,11 +1163,18 @@ def _process_one_ticket() -> bool:
         # once under claude_local. Now an in-framework re-run (the
         # ADK Sequential rebuilds with EscalatingLlm pinned), not a
         # bespoke subprocess loop. Toggle: AIFORGE_CLAUDE_TAKEOVER=0.
+        # ``takeover_ran`` tracks THIS run's takeover for handled_by
+        # provenance — the in-memory ticket.metadata is stale (the
+        # metadata_patch below lands in Postgres, not on this object),
+        # and a re-queued ticket carrying the old flag would otherwise
+        # misattribute a clean local pass as "claude_takeover".
+        takeover_ran = False
         if (
             outcome == "fail"
             and os.environ.get("AIFORGE_CLAUDE_TAKEOVER", "1") in {"1", "true"}
             and not (ticket.metadata or {}).get("claude_takeover_attempted")
         ):
+            takeover_ran = True
             log.info("ticket=%s claude_takeover starting (verdict=fail)",
                      ticket.identifier)
             try:
@@ -1203,11 +1248,7 @@ def _process_one_ticket() -> bool:
         # ticket — useful for both ops dashboards AND future training
         # (Doer self-evals: "how often does local model finish without
         # Claude rescue?").
-        if outcome == "pass" and handled_by == "local":
-            handled_by = "local"  # explicit
-        elif outcome == "pass" and (ticket.metadata or {}).get(
-            "claude_takeover_attempted"
-        ):
+        if outcome == "pass" and takeover_ran and handled_by == "local":
             handled_by = "claude_takeover"
 
         # PR gate: anything that ISN'T an explicit scope_violation is

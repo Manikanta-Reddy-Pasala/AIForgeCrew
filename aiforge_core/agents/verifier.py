@@ -1,11 +1,11 @@
 """Verifier archetype — single-turn plan critic.
 
-The model returns ``{verdict: pass|reject, issues, rationale}``. The
-orchestrator layers ``runtime.verifier_strict.apply`` on top to add
-deterministic structural rules (cap on subticket count etc.). Any
-strict-mode rejection flips the verdict regardless of what the model
-said — this is intentional: an LLM that rubber-stamps every plan is
-worse than no verifier at all.
+LEGACY: superseded in the Workflow graph by the parallel
+verify_correctness / verify_scope / verify_risk trio (see
+``runtime.parallel_stages``); kept registered for back-compat with
+callers that build a one-shot verifier directly.
+
+The model returns ``{verdict: pass|reject, issues, rationale}``.
 """
 from __future__ import annotations
 

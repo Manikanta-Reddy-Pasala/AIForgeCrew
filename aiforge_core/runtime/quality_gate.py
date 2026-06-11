@@ -27,7 +27,42 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["evaluate", "gate_verdict"]
+__all__ = ["evaluate", "gate_verdict", "make_quality_signal_callback"]
+
+# Doer tool name → session-state signal key the gate reads.
+_TOOL_SIGNAL_KEYS = {
+    "run_tests": "tests_ok",
+    "typecheck": "typecheck_ok",
+    "format": "lint_ok",
+}
+
+
+def make_quality_signal_callback():
+    """Return an ADK ``after_tool_callback`` that records quality signals.
+
+    The gate (``evaluate``/``gate_verdict`` below) reads ``tests_ok`` /
+    ``typecheck_ok`` / ``lint_ok`` from session state — but nothing
+    wrote them, so the gate was permanently pass. This callback watches
+    the Doer's run_tests / typecheck / format tool results and writes
+    ``result["ok"]`` into the matching key. Always returns ``None`` so
+    the tool response itself is never altered.
+    """
+    async def _cb(*, tool, args, tool_context, tool_response, **_kw):
+        try:
+            name = getattr(tool, "name", "") or ""
+            key = _TOOL_SIGNAL_KEYS.get(name)
+            if not key or not isinstance(tool_response, dict):
+                return None
+            ok = tool_response.get("ok")
+            if isinstance(ok, bool):
+                state = getattr(tool_context, "state", None)
+                if state is not None:
+                    state[key] = ok
+        except Exception:  # noqa: BLE001 — signals are best-effort
+            pass
+        return None
+
+    return _cb
 
 
 def evaluate(

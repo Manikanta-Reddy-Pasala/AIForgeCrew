@@ -19,7 +19,13 @@ PROMPT = (
     "Return STRICT JSON only:\n"
     '  {"verdict": "pass"|"reject", '
     '"issues": [{"kind": str, "message": str}], '
-    '"rationale": <one-line, required when reject>}'
+    '"rationale": <one-line, required when reject>}\n'
+    "\n"
+    "--- The plan to judge (state['plan_md']) ---\n"
+    "{plan_md?}\n"
+    "\n"
+    "--- Operator/plan scope allowlist (state) ---\n"
+    "{scope_allowlist_globs?}"
 )
 
 __all__ = ["PROMPT"]

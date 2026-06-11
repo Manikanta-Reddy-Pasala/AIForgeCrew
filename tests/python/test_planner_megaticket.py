@@ -56,12 +56,16 @@ def test_planner_prompt_describes_phase_decomposition():
         "planner prompt should give a phase-decomposition example")
 
 
-def test_planner_prompt_demands_one_doer_run_per_subticket():
-    """The orchestrator-iteration contract MUST be in the prompt so
-    the model understands subtickets are dispatched serially."""
+def test_planner_prompt_states_doer_execution_contract():
+    """The execution contract MUST be truthful: the Doer works through
+    the whole plan in one session, subtickets in array order. (The old
+    'orchestrator runs the Doer once per subticket' promise was false —
+    nothing dispatched per-subticket.)"""
     text = prompts.PLANNER.lower()
-    assert "once per subticket" in text or "per subticket" in text, (
-        "planner prompt must explain the one-Doer-run-per-subticket contract")
+    assert "whole plan in one session" in text, (
+        "planner prompt must state the single-session execution contract")
+    assert "array order" in text, (
+        "planner prompt must tell the model subtickets execute in order")
 
 
 def test_planner_prompt_mentions_optional_top_level_field():

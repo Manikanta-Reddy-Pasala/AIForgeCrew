@@ -1,8 +1,8 @@
 """Verifier prompt — single-turn JSON plan critic.
 
-Pairs with ``runtime.verifier_strict`` which post-processes the LLM
-verdict with deterministic structural rules; the prompt's reject
-criteria below are the floor, the strict-mode rules add a ceiling.
+LEGACY: superseded in the Workflow graph by the verify_correctness /
+verify_scope / verify_risk prompts; kept for the back-compat verifier
+archetype.
 
 The Verifier RUNS the test + lint commands itself instead of trusting
 the Doer's self-reported turn_log fields — the Doer has been observed
