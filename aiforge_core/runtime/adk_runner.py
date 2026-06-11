@@ -36,7 +36,7 @@ from .pipeline import build_pipeline, set_force_provider
 from .researcher_routing import should_skip_researcher
 
 
-def _setup_ticket_workspace(ticket) -> tuple[str | None, str | None]:
+def _setup_ticket_workspace(ticket) -> tuple[str | None, dict]:
     """Resolve per-ticket worktree and pin ``AIFORGE_REPO_ROOT`` to it.
 
     The Doer's sandboxed file tools (:mod:`sandbox.root`) and
@@ -49,11 +49,24 @@ def _setup_ticket_workspace(ticket) -> tuple[str | None, str | None]:
     """
     from aiforge_core.runtime.workspace import ensure_branch_and_worktree
 
-    prior = os.environ.get("AIFORGE_REPO_ROOT")
+    # Capture BOTH env vars we override per-ticket so the finally can
+    # restore them. AIFORGE_AFM_REPO scopes memory recall (unified_query
+    # afm_bundle/xrepo, memory_lookup, impacted_tests) to THIS ticket's
+    # repo — without it those sources fall back to a process-global that
+    # is never set (→ dead) or, if exported once, leaks another repo's
+    # context into every ticket (the ONE-2 class bug).
+    prior = {
+        "AIFORGE_REPO_ROOT": os.environ.get("AIFORGE_REPO_ROOT"),
+        "AIFORGE_AFM_REPO": os.environ.get("AIFORGE_AFM_REPO"),
+    }
+    project = (getattr(ticket, "project", "") or "").strip()
+    if project:
+        os.environ["AIFORGE_AFM_REPO"] = project
     worktree = ensure_branch_and_worktree(ticket)
     if worktree:
         os.environ["AIFORGE_REPO_ROOT"] = worktree
-        log.info("ticket=%s workspace=%s", ticket.identifier, worktree)
+        log.info("ticket=%s workspace=%s afm_repo=%s",
+                 ticket.identifier, worktree, project or "-")
     else:
         log.warning(
             "ticket=%s no worktree (project=%r) — falling back to env",
@@ -62,11 +75,17 @@ def _setup_ticket_workspace(ticket) -> tuple[str | None, str | None]:
     return worktree, prior
 
 
-def _restore_env(prior: str | None) -> None:
-    if prior is None:
-        os.environ.pop("AIFORGE_REPO_ROOT", None)
-    else:
-        os.environ["AIFORGE_REPO_ROOT"] = prior
+def _restore_env(prior) -> None:
+    # ``prior`` is the dict captured by _setup_ticket_workspace. Tolerate a
+    # bare string for back-compat (older call shape = REPO_ROOT only).
+    if isinstance(prior, str) or prior is None:
+        prior = {"AIFORGE_REPO_ROOT": prior, "AIFORGE_AFM_REPO":
+                 os.environ.get("AIFORGE_AFM_REPO")}
+    for key, val in prior.items():
+        if val is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = val
 
 
 def _materialize_attachments_in_worktree(ticket, worktree: str) -> None:
@@ -161,9 +180,8 @@ def _persist_ticket_media(ticket) -> None:
     if not ticket.project:
         return
     try:
-        from neo4j import GraphDatabase
-
         from aiforge_memory.features.memory.store import upsert_observation
+        from neo4j import GraphDatabase
     except ImportError:
         return
     uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
@@ -662,13 +680,18 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     # committing an edit. ADK's default cap is high enough that this
     # never tripped. Bounding it means a stuck local Doer aborts and
     # the runner's claude_takeover path rescues the ticket instead of
-    # burning an hour. A healthy multi-stage run uses ~70-90 calls, so
-    # 120 leaves headroom. Tune via AIFORGE_MAX_LLM_CALLS.
+    # burning an hour. The v6 Workflow graph is wider than the old
+    # Sequential pipeline — triage + 4 context branches + 3 verifiers +
+    # the Doer loop (≤3×) + a possible verifier-replan AND validator-replan
+    # each re-running planner/verify/doer. A healthy full+replan run can
+    # use ~120-160 calls, so the old 120 ceiling tripped mid-Doer exactly
+    # on the harder tickets. 220 leaves headroom. Tune via
+    # AIFORGE_MAX_LLM_CALLS.
     run_config = None
     try:
         from google.adk.agents.run_config import RunConfig
         run_config = RunConfig(
-            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "120")),
+            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "220")),
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("RunConfig unavailable: %s", exc)
@@ -748,7 +771,8 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         if os.environ.get("AIFORGE_TRAJECTORY_DUMP", "1") in ("1", "true"):
             try:
                 from aiforge_core.runtime.trajectory import (
-                    dump_trajectory, index_trajectory_to_memory,
+                    dump_trajectory,
+                    index_trajectory_to_memory,
                 )
                 ticket_id = (initial_state.get("ticket_identifier")
                              if initial_state else None) or "unknown"
@@ -833,7 +857,9 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # prepend matched playbooks. Best-effort: parse failures swallowed.
     try:
         from aiforge_core.runtime.microagents import (
-            load_microagents, match, render_injection,
+            load_microagents,
+            match,
+            render_injection,
         )
         agents = load_microagents()
         hay = f"{ticket.title or ''} {ticket.body or ''}"
@@ -849,8 +875,8 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # block conversion lives in vision.attach_image; wiring it through
     # ADK's LlmRequest.contents shape is a follow-up.
     try:
-        from aiforge_core.runtime.vision import supports_vision
         from aiforge_core.config.agent_config import get_config
+        from aiforge_core.runtime.vision import supports_vision
         cfg = get_config()
         doer_model = (cfg.get("doer", {}) or {}).get("model", "")
         if supports_vision(doer_model):
@@ -913,11 +939,10 @@ def _ingest_ticket_external_refs(ticket) -> None:
     if not ticket.project:
         return
     try:
-        from neo4j import GraphDatabase
-
         from aiforge_memory.features.external_ingest import (
             ingest_external_source,
         )
+        from neo4j import GraphDatabase
     except ImportError:
         return
     uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
@@ -1154,8 +1179,8 @@ def _process_one_ticket() -> bool:
             "request_changes", "abstain"
         }:
             try:
-                from aiforge_core.runtime import claude_fix
                 import aiforge_core.runtime.adk_runner as _runner_mod
+                from aiforge_core.runtime import claude_fix
                 fix_meta = claude_fix.attempt_fix(
                     ticket=ticket,
                     pipeline_state=state or {},

@@ -32,11 +32,15 @@ ROUTE_LOOP = "loop"
 ROUTE_EXIT = "exit"
 ROUTE_REPLAN = "replan"
 ROUTE_DONE = "done"
+ROUTE_VERIFY_PASS = "verify_pass"
+ROUTE_VERIFY_REPLAN = "verify_replan"
 
 # Doer loop iteration cap (was LoopAgent.max_iterations=3).
 MAX_DOER_ITERS = 3
 # Replan cap (was GraphPipeline.max_replans=1).
 MAX_REPLANS = 1
+# Verifier-reject → re-plan cap (bounded inner loop).
+MAX_VERIFY_REPLANS = 1
 
 
 def _read_complexity(state: Any) -> str:
@@ -112,7 +116,7 @@ async def _triage_gate(ctx):  # type: ignore[no-untyped-def]
 
 async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
-    iters = int(state.get("doer_iters", 0)) + 1
+    iters = int(state.get("doer_iters", 0) or 0) + 1
     state["doer_iters"] = iters
     kill = bool(state.get("loop_budget_kill"))
     if _feedback_passed(state) or kill or iters >= MAX_DOER_ITERS:
@@ -124,12 +128,20 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
 
 async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
-    replans = int(state.get("replan_count", 0))
+    replans = int(state.get("replan_count", 0) or 0)
     if _validator_failed(state) and replans < MAX_REPLANS:
         state["replan_count"] = replans + 1
-        # Reset the Doer loop counter so the re-planned attempt gets a
-        # fresh budget.
+        # Reset ALL loop-scoped state so the re-planned attempt starts
+        # clean. Resetting only doer_iters left a stale feedback_verdict
+        # / loop_budget_kill from the prior pass — loop_gate would read
+        # the old "pass" (or kill flag) and EXIT the Doer loop at zero
+        # real iterations, silently wasting the replan.
         state["doer_iters"] = 0
+        _clear_state(state, (
+            "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
+            "loc_history", "loc_first_seen", "doer_outcome",
+            "verifier_verdict", "verify_correctness", "verify_scope",
+            "verify_risk", "verify_replan_count"))
         state["replan_note"] = (
             f"Validator requested changes (replan {replans + 1}). The prior "
             "plan did not land cleanly — re-plan SMALLER: split the failing "
@@ -139,6 +151,45 @@ async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
         _trace(":Replan", {"replan": replans + 1})
     else:
         ctx.route = ROUTE_DONE
+
+
+async def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
+    """Act on the merged verifier verdict. A rejected plan loops back to
+    the Planner ONCE (bounded) instead of handing a known-bad plan to the
+    Doer; otherwise proceed to the Doer."""
+    state = ctx.state
+    verdict = _parse_verdict(state.get("verifier_verdict"))
+    vreplans = int(state.get("verify_replan_count", 0) or 0)
+    if verdict == "reject" and vreplans < MAX_VERIFY_REPLANS:
+        state["verify_replan_count"] = vreplans + 1
+        vv = state.get("verifier_verdict") or {}
+        why = vv.get("rationale", "verifier rejected the plan") \
+            if isinstance(vv, dict) else "verifier rejected the plan"
+        state["replan_note"] = (
+            f"Verifier rejected the plan ({why}). Re-plan addressing the "
+            "rejection before any code is written."
+        )
+        # clear stale per-axis verdicts so the re-plan's verifier pass is fresh
+        _clear_state(state, ("verifier_verdict", "verify_correctness",
+                             "verify_scope", "verify_risk"))
+        ctx.route = ROUTE_VERIFY_REPLAN
+        _trace(":VerifyReplan", {"replan": vreplans + 1, "why": why})
+    else:
+        ctx.route = ROUTE_VERIFY_PASS
+
+
+def _clear_state(state, keys) -> None:
+    """Drop keys from session state. ADK's ``State`` has no ``pop`` (only
+    item set/get), so fall back to setting ``None`` — the parse helpers
+    and ``{key?}`` templating both treat None as absent."""
+    for k in keys:
+        try:
+            state.pop(k, None)  # plain dict (tests)
+        except AttributeError:
+            try:
+                state[k] = None  # ADK State delta
+            except Exception:
+                pass
 
 
 def _trace(label: str, payload: dict) -> None:
@@ -166,10 +217,17 @@ def make_validator_gate():
     return node(_validator_gate, name="validator_gate")
 
 
+def make_verifier_gate():
+    from google.adk.workflow import node
+    return node(_verifier_gate, name="verifier_gate")
+
+
 __all__ = [
     "ROUTE_TRIVIAL", "ROUTE_FULL", "ROUTE_LOOP", "ROUTE_EXIT",
-    "ROUTE_REPLAN", "ROUTE_DONE", "MAX_DOER_ITERS", "MAX_REPLANS",
+    "ROUTE_REPLAN", "ROUTE_DONE", "ROUTE_VERIFY_PASS", "ROUTE_VERIFY_REPLAN",
+    "MAX_DOER_ITERS", "MAX_REPLANS", "MAX_VERIFY_REPLANS",
     "make_triage_gate", "make_loop_gate", "make_validator_gate",
+    "make_verifier_gate",
     "_read_complexity", "_validator_failed", "_feedback_passed",
     "_parse_verdict",
 ]

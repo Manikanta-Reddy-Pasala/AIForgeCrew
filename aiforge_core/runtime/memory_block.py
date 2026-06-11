@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 
-
 log = logging.getLogger("aiforge.memory_block")
 
 
@@ -37,7 +36,10 @@ def fetch(ticket) -> str:
     lines = ["## Memory hits (AiForgeMemory)", ""]
     for h in hits[:8]:
         src = h.get("source", "?")
-        score = h.get("score", 0.0)
+        try:
+            score = float(h.get("score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
         body = (h.get("text") or h.get("body") or h.get("summary") or "")[:300]
         lines.append(f"- [{src} {score:.2f}] {body}")
 
