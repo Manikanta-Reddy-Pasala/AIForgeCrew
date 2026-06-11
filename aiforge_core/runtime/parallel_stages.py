@@ -42,9 +42,12 @@ from aiforge_core.agents import (
 )
 
 # (state_key, human heading) for each context brief, in display order.
+# NOTE: memory_brief_md is NOT merged here — it is injected directly via
+# {memory_brief_md?} in the doer/planner/enhancer/verify_risk prompts so
+# the TRIVIAL fast-path (which skips this merge node entirely) still
+# carries memory, and the full path doesn't get a second folded copy.
 _CONTEXT_BRIEFS: list[tuple[str, str]] = [
     ("research_brief_md", "Researcher"),
-    ("memory_brief_md", "Memory"),
     ("repo_brief_md", "Repo map"),
     ("conventions_brief_md", "Conventions"),
 ]
