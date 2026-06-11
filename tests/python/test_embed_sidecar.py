@@ -10,7 +10,7 @@ SIDECAR = os.environ.get("EMBED_SIDECAR_URL", "http://127.0.0.1:8764")
 
 def _sidecar_up() -> bool:
     try:
-        urllib.request.urlopen(f"{SIDECAR}/health", timeout=2)
+        urllib.request.urlopen(f"{SIDECAR}/healthz", timeout=2)
         return True
     except Exception:
         return False

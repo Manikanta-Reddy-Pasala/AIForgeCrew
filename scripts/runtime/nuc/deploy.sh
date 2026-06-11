@@ -80,9 +80,9 @@ check() {  # check <name> <cmd...>
     if "$@" >/dev/null 2>&1; then echo "OK   $name"
     else echo "FAIL $name"; fail=1; fi
 }
-check "api :8799/health"       curl -fsS -m 5 http://127.0.0.1:8799/health
-check "embed sidecar :8764"    curl -fsS -m 5 http://127.0.0.1:8764/health
-check "rerank sidecar :8765"   curl -fsS -m 5 http://127.0.0.1:8765/health
+check "api :8799/api/health"   curl -fsS -m 5 http://127.0.0.1:8799/api/health
+check "embed sidecar :8764"    curl -fsS -m 5 http://127.0.0.1:8764/healthz
+check "rerank sidecar :8765"   curl -fsS -m 5 http://127.0.0.1:8765/healthz
 check "neo4j bolt :7687"       bash -c 'exec 3<>/dev/tcp/127.0.0.1/7687'
 check "postgres :5432"         bash -c 'exec 3<>/dev/tcp/127.0.0.1/5432'
 check "decay timer enabled"    systemctl --user is-enabled aiforge-memory-decay.timer
