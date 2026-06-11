@@ -13,8 +13,8 @@ PROMPT = (
     "  - a schema or data migration with no rollback / down step\n"
     "  - a change to auth, secrets, or permissions with no safeguard\n"
     "  - a destructive or irreversible operation without a guard\n"
-    "  - a step that repeats a past failure surfaced in "
-    "    state['memory_search_results'] with no mitigation\n"
+    "  - a step that repeats a past failure surfaced in the memory "
+    "    context below with no mitigation\n"
     "\n"
     "Return STRICT JSON only:\n"
     '  {"verdict": "pass"|"reject", '

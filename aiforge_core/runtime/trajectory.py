@@ -11,6 +11,8 @@ can step through what the agent did.
 """
 from __future__ import annotations
 
+import re
+
 import json
 import os
 import time
@@ -240,6 +242,27 @@ def _short(val: Any, limit: int = 120) -> str:
     return s
 
 
+
+_PATH_RE = re.compile(r"[\w./-]+\.(?:py|java|ts|tsx|js|go|rs|md|yaml|yml|json|xml)\b")
+
+
+def _touched_paths(events: list[dict], cap: int = 10) -> list[str]:
+    """Pull repo-relative file paths out of the event stream so the
+    trajectory note gets MENTIONS edges (refs match File_v2.path).
+    Without refs the note was write-only: bundle._notes_for can only
+    reach Note_v2 via MENTIONS, and no index covers it."""
+    seen: list[str] = []
+    for evt in events:
+        blob = str(evt.get("args") or "") + " " + str(evt.get("text") or "")
+        for m in _PATH_RE.findall(blob):
+            path = m.lstrip("./")
+            if "/" in path and path not in seen and not path.startswith("/"):
+                seen.append(path)
+                if len(seen) >= cap:
+                    return seen
+    return seen
+
+
 def index_trajectory_to_memory(
     *,
     trajectory_path: str | Path,
@@ -314,6 +337,10 @@ def index_trajectory_to_memory(
                 f"trajectory_path:{str(trajectory_path)}",
                 "kind:trajectory",
             ],
+            # MENTIONS edges to the files this run touched — the only
+            # recall path for Note_v2; without refs the note was
+            # write-only (~5K tokens/ticket never read).
+            refs=_touched_paths(traj.get("events") or []),
         )
         out["ok"] = True
         out["note_id"] = result.get("id")

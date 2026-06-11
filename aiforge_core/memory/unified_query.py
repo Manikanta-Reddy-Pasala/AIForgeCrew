@@ -66,13 +66,8 @@ def query(
     errors: list[str] = []
     raw_hits: list[dict] = []
 
-    # 1) Memory hybrid search
-    try:
-        rows = _memory_search(text, role=role, top_k=limit)
-        used.append("memory")
-        raw_hits.extend(_tag(rows, source="memory", weight=weights["memory"]))
-    except Exception as exc:
-        errors.append(f"memory: {exc}")
+    # (the old "memory hybrid search" Postgres source was a dead stub —
+    # it returned [] unconditionally; Observation recall rides afm_bundle)
 
     # 2) Ticket brief — explicit ticket OR auto-detected token
     auto_ticket = ticket or (_TICKET_RE.search(text) or [None])[0]
@@ -224,7 +219,7 @@ def _diversify(hits: list[dict], *, per_group: int | None = None) -> list[dict]:
     seen: dict[str, int] = {}
     out: list[dict] = []
     for h in hits:
-        key = str(h.get("ticket") or h.get("source") or "")
+        key = str(h.get("ticket") or h.get("group") or h.get("source") or "")
         n = seen.get(key, 0)
         if n >= per_group:
             continue
@@ -313,12 +308,6 @@ def _resolve_weights() -> dict:
             except ValueError:
                 pass
     return out
-
-
-def _memory_search(text: str, *, role: str | None, top_k: int) -> list[dict]:
-    # runtime.memory removed — memory search stub returns empty list.
-    return []
-
 
 def _ticket_brief(identifier: str) -> dict | None:
     """Fetch ticket brief. Tries local Postgres first (canonical),
@@ -504,7 +493,7 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
     role_arg = role or "doer"
     try:
         b = context_bundle_object(text, repo=repo, role=role_arg,
-                                  token_budget=4000)
+                                  token_budget=1000)
     except Exception:
         return []
     if b is None:
@@ -515,6 +504,7 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
     if b.repo_map:
         out.append({
             "text": f"[afm/repo_map]\n{b.repo_map[:1500]}",
+            "group": "afm:repo_map",
             "score": 0.95,
             "source_uri": f"afm://{repo}/repo_map",
         })
@@ -522,6 +512,7 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
     if b.conventions_md:
         out.append({
             "text": f"[afm/conventions]\n{b.conventions_md[:1500]}",
+            "group": "afm:conventions",
             "score": 0.90,
             "source_uri": f"afm://{repo}/conventions",
         })
@@ -533,6 +524,7 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
             continue
         out.append({
             "text": f"[afm/chunk {path}]\n{body[:800]}",
+            "group": "afm:chunk",
             "score": 0.85,
             "source_uri": f"afm://{repo}/{path}",
         })
@@ -544,6 +536,7 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
             continue
         out.append({
             "text": f"[afm/note {title}]\n{body[:600]}",
+            "group": "afm:note",
             "score": 0.70,
             "source_uri": f"afm://{repo}/note/{n.get('id', '')}",
         })
@@ -556,6 +549,7 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
             continue
         out.append({
             "text": f"[afm/doc {title}]\n{body[:600]}",
+            "group": "afm:doc",
             "score": 0.65,
             "source_uri": url or f"afm://{repo}/doc/{d.get('id', '')}",
         })
@@ -567,6 +561,7 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
         kind = o.get("kind") or "observation"
         out.append({
             "text": f"[afm/{kind}]\n{body[:500]}",
+            "group": "afm:observation",
             "score": float(o.get("score") or 0.55),
             "source_uri": f"afm://{repo}/observation/{o.get('id', '')}",
         })

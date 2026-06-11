@@ -80,7 +80,7 @@ def test_full_graph_executes_every_stage(_stub_pipeline) -> None:
     state = _drive(wf, "# Ticket T-1\nfix the thing")
     # every stage fired, in causal order
     assert calls[0] == "triage"
-    for stage in ("enhancer", "ctx_memory", "ctx_repomap",
+    for stage in ("enhancer", "ctx_repomap",
                   "ctx_conventions", "planner", "verify_correctness",
                   "verify_scope", "verify_risk", "doer", "refiner",
                   "feedback", "validator", "learner"):
