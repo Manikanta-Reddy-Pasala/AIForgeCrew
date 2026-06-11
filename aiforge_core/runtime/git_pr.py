@@ -499,7 +499,35 @@ def commit_push_open_pr(ticket) -> dict:
         emit_pr_opened(ticket_id=ticket.id, pr_url=pr_url, branch=branch)
     except Exception:  # noqa: BLE001
         pass
+    _fire_delta_ingest(ticket, repo_root)
     return {"branch_pushed": True, "pr_url": pr_url}
+
+
+def _fire_delta_ingest(ticket, repo_root: str) -> None:
+    """Fire-and-forget AiForgeMemory delta ingest of the just-pushed code.
+
+    Without this, the code-chunk vector index only refreshes on the
+    aiforge-memory scheduler daemon's interval — recall on the next
+    ticket (or a re-read on THIS ticket) returns the pre-change code.
+    Soft: missing CLI / missing project / disabled env all no-op.
+    Toggle: AIFORGE_POST_PR_INGEST=0.
+    """
+    if os.environ.get("AIFORGE_POST_PR_INGEST", "1") in {"0", "false", ""}:
+        return
+    project = (getattr(ticket, "project", "") or "").strip()
+    cli = shutil.which("aiforge-memory")
+    if not project or not cli or not repo_root:
+        return
+    try:
+        subprocess.Popen(
+            [cli, "ingest", project, "--path", str(repo_root), "--delta"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        log.info("post-PR delta ingest fired repo=%s path=%s",
+                 project, repo_root)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("post-PR delta ingest failed to spawn: %s", exc)
 
 
 def merge_pr(pr_url: str, *, squash: bool = True) -> dict:

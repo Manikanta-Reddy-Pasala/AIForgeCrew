@@ -27,7 +27,8 @@ cp /path/to/AIForgeCrew/scripts/runtime/nuc/*.service ~/.config/systemd/user/
 cp /path/to/AIForgeCrew/scripts/runtime/nuc/*.timer   ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now aiforge-api
-for t in aiforge-file-indexer.timer aiforge-reindex-daily.timer aiforge-git-pull.timer; do
+for t in aiforge-file-indexer.timer aiforge-reindex-daily.timer aiforge-git-pull.timer \
+         aiforge-memory-decay.timer; do
     systemctl --user enable --now "$t"
 done
 # Allow systemd user services to run without a logged-in session:
