@@ -8,6 +8,23 @@ import pytest
 SIDECAR = os.environ.get("EMBED_SIDECAR_URL", "http://127.0.0.1:8764")
 
 
+def _sidecar_up() -> bool:
+    try:
+        urllib.request.urlopen(f"{SIDECAR}/health", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+# Live contract test — hermetic skip when the sidecar isn't running so
+# the suite is green on dev boxes without the service stack.
+pytestmark = pytest.mark.skipif(
+    not _sidecar_up(),
+    reason=f"embed sidecar not reachable at {SIDECAR}; "
+           "start services/embed_sidecar to run this contract test",
+)
+
+
 def _post(path, body):
     req = urllib.request.Request(
         f"{SIDECAR}{path}",

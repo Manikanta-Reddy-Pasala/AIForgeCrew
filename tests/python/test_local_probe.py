@@ -125,6 +125,9 @@ def test_substitute_swaps_dead_local_for_cloud_default(
     """LM Studio is off → probe says dead → maybe_substitute returns
     the cloud default cfg from agent_config."""
     monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
+    # hermetic: the suite often runs with AIFORGE_ESCALATE_DISABLE=1,
+    # which makes cloud_default_for_local return None and no swap happen
+    monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "0")
     cfg = _make_cfg("http://127.0.0.1:1234/v1")
     import urllib.error
     with patch("urllib.request.urlopen",

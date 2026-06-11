@@ -481,8 +481,33 @@ def _build_context_plugins() -> list:
     max_contents = int(os.environ.get("AIFORGE_CONTEXT_MAX_CONTENTS", "60"))
     strategy = os.environ.get("AIFORGE_CONDENSER_STRATEGY", "").strip()
 
+    def _text_of(c) -> str:
+        try:
+            return " ".join(p.text for p in (c.parts or [])
+                            if getattr(p, "text", None))
+        except Exception:
+            return ""
+
+    def _dedupe_adjacent_user(contents):
+        """Drop adjacent duplicate user-text contents. single_turn nodes
+        append their seed input to the SHARED session events (shallow
+        session copy in ADK's wrapper), so every chat agent replays the
+        ticket+memory seed twice back-to-back — pure token waste."""
+        out: list = []
+        for c in contents:
+            if (out
+                    and getattr(c, "role", "") == "user"
+                    and getattr(out[-1], "role", "") == "user"):
+                t = _text_of(c)
+                if t and t == _text_of(out[-1]):
+                    continue
+            out.append(c)
+        return out
+
     def _tail_trim(contents):
-        """Keep seed user message + last ``max_contents`` contents."""
+        """Dedupe seed echoes, then keep seed user message + last
+        ``max_contents`` contents."""
+        contents = _dedupe_adjacent_user(contents)
         if max_contents <= 0 or len(contents) <= max_contents:
             return contents
         split = len(contents) - max_contents
