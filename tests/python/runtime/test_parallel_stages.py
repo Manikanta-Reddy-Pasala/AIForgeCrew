@@ -31,7 +31,10 @@ def test_merge_context_concats_present_briefs() -> None:
     _run(ps.merge_context(_FakeCtx(state)))
     merged = state["context_brief_md"]
     assert "## Researcher" in merged and "found foo.py" in merged
-    assert "## Memory" in merged and "## Repo map" in merged
+    assert "## Repo map" in merged
+    # memory is injected directly via {memory_brief_md?} (trivial path
+    # skips this merge node) — never folded here, or it would double.
+    assert "## Memory" not in merged
     assert "## Conventions" not in merged
 
 
@@ -42,10 +45,10 @@ def test_merge_context_no_briefs_is_noop() -> None:
 
 
 def test_merge_context_skips_blank() -> None:
-    state = {"research_brief_md": "   ", "memory_brief_md": "real"}
+    state = {"research_brief_md": "   ", "repo_brief_md": "real"}
     _run(ps.merge_context(_FakeCtx(state)))
     assert "## Researcher" not in state["context_brief_md"]
-    assert "## Memory" in state["context_brief_md"]
+    assert "## Repo map" in state["context_brief_md"]
 
 
 # ── merge_verdicts ───────────────────────────────────────────────────────
