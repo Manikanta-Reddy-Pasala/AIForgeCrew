@@ -231,6 +231,40 @@ def grep_repo(pattern: str, path: str = ".") -> dict:
     }
 
 
+def repo_map(focus: str = "", token_budget: int = 1024) -> dict:
+    """Ranked structural map of the repo — pure tree-sitter AST, no vectors.
+
+    Runs Aider's RepoMap (tree-sitter tags + PageRank) over the worktree
+    and returns a token-budgeted digest of the most relevant files +
+    their key symbols/signatures. This is the grep+AST navigation path:
+    exact, zero-staleness (reads HEAD), no embedding / re-index cost.
+
+    Prefer this for "what's in this repo / where do the important
+    symbols live" over fuzzy vector recall. Combine with ``grep_repo``
+    (exact pattern) and ``graphify_lookup`` (typed call/use edges) to
+    pin down specifics.
+
+    Args:
+      focus: natural-language hint (the ticket goal / a symbol name).
+        Used as PageRank personalisation so the map centres on what you
+        asked about. Empty = generic top-K digest.
+      token_budget: rough token cap on the digest (default 1024).
+    """
+    try:
+        from aiforge_core.memory.code_context import aider_digest
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"repo_map unavailable: {exc}"}
+    digest = aider_digest(
+        str(root()), chat_files=[], token_budget=token_budget,
+        user_text=focus or "",
+    )
+    if not digest:
+        return {"ok": False, "error": "empty map (repo too small or "
+                "aider/tree-sitter unavailable)", "digest": ""}
+    return {"ok": True, "focus": focus, "digest": digest,
+            "engine": "aider-treesitter-pagerank"}
+
+
 # ─── HTTP fetch ────────────────────────────────────────────────────────
 
 
@@ -489,7 +523,7 @@ def adk_function_tools() -> list:
 
     new_canonical = [editor, new_bash, think, finish]
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
-                        grep_repo, fetch_url, git_commit,
+                        grep_repo, repo_map, fetch_url, git_commit,
                         memory_lookup, graphify_lookup]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
@@ -500,7 +534,7 @@ def adk_function_tools() -> list:
 
 __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
-    "grep_repo", "fetch_url", "git_commit",
+    "grep_repo", "repo_map", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
