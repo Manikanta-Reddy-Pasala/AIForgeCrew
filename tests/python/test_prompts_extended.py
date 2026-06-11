@@ -37,4 +37,8 @@ def test_refiner_forbids_signature_changes():
 
 
 def test_module_exports_are_stable():
-    assert set(pe.__all__) == {"TRIAGE", "RESEARCHER", "REFINER"}
+    assert set(pe.__all__) == {
+        "TRIAGE", "RESEARCHER", "REFINER",
+        # 2026-06-11: context-gatherer prompts for the ParallelAgent stage.
+        "CTX_MEMORY", "CTX_REPOMAP", "CTX_CONVENTIONS",
+    }

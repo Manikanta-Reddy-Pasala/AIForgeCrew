@@ -28,6 +28,10 @@ EXTENDED_ROLES = {
     "triage", "researcher", "refiner",
     # 2026-05-23: Claude bookends the local Doer.
     "enhancer", "validator",
+    # 2026-06-11: live-boot verifier + ParallelAgent fan-outs.
+    "live_verifier",
+    "ctx_memory", "ctx_repomap", "ctx_conventions",
+    "verify_correctness", "verify_scope", "verify_risk",
 }
 EXPECTED_ROLES = CORE_ROLES | EXTENDED_ROLES
 

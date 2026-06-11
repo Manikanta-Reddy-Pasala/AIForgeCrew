@@ -33,8 +33,21 @@ def _archetypes() -> dict:
     paying that cost.
     """
     from . import (
-        architect, doer, feedback, learner, planner,
-        refiner, researcher, triage, verifier,
+        architect,
+        ctx_conventions,
+        ctx_memory,
+        ctx_repomap,
+        doer,
+        feedback,
+        learner,
+        planner,
+        refiner,
+        researcher,
+        triage,
+        verifier,
+        verify_correctness,
+        verify_risk,
+        verify_scope,
     )
     return {
         "architect":  architect,
@@ -42,6 +55,12 @@ def _archetypes() -> dict:
         "planner":    planner,
         "verifier":   verifier,
         "researcher": researcher,
+        "ctx_memory":      ctx_memory,
+        "ctx_repomap":     ctx_repomap,
+        "ctx_conventions": ctx_conventions,
+        "verify_correctness": verify_correctness,
+        "verify_scope":       verify_scope,
+        "verify_risk":        verify_risk,
         "doer":       doer,
         "refiner":    refiner,
         "feedback":   feedback,

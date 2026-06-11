@@ -17,8 +17,12 @@ from .feedback import PROMPT as FEEDBACK
 from .learner import PROMPT as LEARNER
 from .validator import VALIDATOR
 from .live_verifier import LIVE_VERIFIER
+from .verify_correctness import PROMPT as VERIFY_CORRECTNESS
+from .verify_scope import PROMPT as VERIFY_SCOPE
+from .verify_risk import PROMPT as VERIFY_RISK
 
 __all__ = [
     "ARCHITECT", "ENHANCER", "PLANNER", "VERIFIER", "DOER",
     "FEEDBACK", "LEARNER", "VALIDATOR", "LIVE_VERIFIER",
+    "VERIFY_CORRECTNESS", "VERIFY_SCOPE", "VERIFY_RISK",
 ]
