@@ -50,6 +50,17 @@ Return ONLY a single JSON object, no prose around it, matching:
    pipeline failed before producing diffs. Don't pretend to
    approve nothing.
 5. Cap rationale at 280 chars. No code blocks; pointers + reasoning.
+
+--- Pipeline context (verbatim from state; authoritative even if the
+chat above was trimmed by context compaction) ---
+PLAN:
+{plan_md?}
+
+DOER OUTCOME (file_diffs + compile/test status):
+{doer_outcome?}
+
+IN-LOOP FEEDBACK VERDICT:
+{feedback_verdict?}
 """
 
 

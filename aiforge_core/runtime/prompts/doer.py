@@ -105,7 +105,20 @@ PROMPT = (
     "turn_log: <one-line summary>}.\n"
     "\n"
     "Stay inside the subticket's scope_allowlist_globs. Refuse to "
-    "call file_write on any path outside that allowlist."
+    "call file_write on any path outside that allowlist.\n"
+    "\n"
+    "--- Pipeline context (verbatim from state; authoritative even if "
+    "the chat above was trimmed by context compaction) ---\n"
+    "PLAN:\n{plan_md?}\n"
+    "\n"
+    "GATHERED CONTEXT (memory / repo map / conventions / research):\n"
+    "{context_brief_md?}\n"
+    "\n"
+    "VERIFIER VERDICT (heed any rejection reasons):\n"
+    "{verifier_verdict?}\n"
+    "\n"
+    "REPLAN NOTE (set only on a re-planned attempt — go smaller):\n"
+    "{replan_note?}"
 )
 
 __all__ = ["PROMPT"]

@@ -55,7 +55,11 @@ PROMPT = (
     "\n"
     "Every test subticket MUST reference a test skeleton template "
     "from ``docs/test-skeleton-templates/``. Scope allowlists keep "
-    "the Doer from drifting into adjacent files."
+    "the Doer from drifting into adjacent files.\n"
+    "\n"
+    "--- Enhanced ticket (verbatim from pipeline state; authoritative "
+    "even if trimmed from the chat above by context compaction) ---\n"
+    "{enhanced_body?}"
 )
 
 __all__ = ["PROMPT"]
