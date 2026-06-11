@@ -53,7 +53,7 @@ agents:
       outputs:
         - enhanced_body
       max_turns: 1
-      max_wall_s: 240
+      max_wall_s: 600
     tools:
       allowed: []
       forbidden:
@@ -338,7 +338,7 @@ agents:
         - verdict                   # one of: pass | fail | scope_violation
         - rationale
       max_turns: 1
-      max_wall_s: 60
+      max_wall_s: 300
     tools:
       allowed: []
       forbidden:
@@ -378,7 +378,7 @@ agents:
       outputs:
         - facts_json                # [{text, about: [...], tags: [...]}]
       max_turns: 1
-      max_wall_s: 60
+      max_wall_s: 300
     tools:
       allowed: []                   # write_fact is server-side, not a model tool
       forbidden:
@@ -418,7 +418,7 @@ agents:
         - estimated_files
         - rationale
       max_turns: 1
-      max_wall_s: 60
+      max_wall_s: 300
     tools:
       allowed: []
       forbidden:
@@ -513,7 +513,7 @@ agents:
         - refiner_skipped         # bool — true when diff is already clean
         - refiner_rationale
       max_turns: 1
-      max_wall_s: 90
+      max_wall_s: 300
     tools:
       allowed: []
       forbidden:
@@ -551,7 +551,7 @@ agents:
       outputs:
         - validator_verdict
       max_turns: 1
-      max_wall_s: 240
+      max_wall_s: 600
     tools:
       allowed: []
       forbidden:
@@ -761,7 +761,7 @@ agents:
       outputs:
         - verify_correctness
       max_turns: 1
-      max_wall_s: 60
+      max_wall_s: 300
     tools:
       allowed: []
       forbidden:
@@ -792,7 +792,7 @@ agents:
       outputs:
         - verify_scope
       max_turns: 1
-      max_wall_s: 60
+      max_wall_s: 300
     tools:
       allowed: []
       forbidden:
@@ -823,7 +823,7 @@ agents:
       outputs:
         - verify_risk
       max_turns: 1
-      max_wall_s: 60
+      max_wall_s: 300
     tools:
       allowed: []
       forbidden:
