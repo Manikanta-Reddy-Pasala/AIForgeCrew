@@ -40,8 +40,12 @@ def test_label_query_returns_typed_neighbors():
 
 
 def test_file_path_query_returns_contained_symbols():
-    """Querying by source path lists the file's symbols (contains edges out)."""
-    res = graphify_lookup("aiforge_core/runtime/memory.py", hops=1,
+    """Querying by source path lists the file's symbols (contains edges out).
+
+    Uses pipeline.py — a stable, heavily-symbolled file. (The old
+    fixture path runtime/memory.py was deleted from the repo; the test
+    then failed on graph content, not tool behaviour.)"""
+    res = graphify_lookup("aiforge_core/runtime/pipeline.py", hops=1,
                           max_neighbors=8, repo_root=str(REPO_ROOT))
     assert res["ok"] is True
     assert res["matches"], "no matches for known repo file"

@@ -194,3 +194,19 @@ def test_workflow_concurrency_cap(monkeypatch) -> None:
     assert build_pipeline(skip_researcher=True).max_concurrency == 3
     monkeypatch.setenv("AIFORGE_WORKFLOW_MAX_CONCURRENCY", "0")
     assert build_pipeline(skip_researcher=True).max_concurrency is None
+
+
+def test_context_filter_dedupes_adjacent_seed_echo(monkeypatch) -> None:
+    """single_turn nodes append the seed to shared events → chat agents
+    saw the ticket twice back-to-back. The filter drops the echo."""
+    monkeypatch.setenv("AIFORGE_CONTEXT_MAX_CONTENTS", "60")
+    monkeypatch.delenv("AIFORGE_CONDENSER_STRATEGY", raising=False)
+    from aiforge_core.runtime.adk_runner import _build_context_plugins
+    custom = _build_context_plugins()[0]._custom_filter
+    seed = _content("user", "TICKET body")
+    echo = _content("user", "TICKET body")
+    other = _content("user", "different user text")
+    model = _content("model", "reply")
+    out = custom([seed, echo, model, other])
+    assert len(out) == 3
+    assert out[0] is seed and out[1] is model and out[2] is other

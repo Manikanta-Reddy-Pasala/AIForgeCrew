@@ -41,7 +41,7 @@ def _make_bundle(**kwargs) -> SimpleNamespace:
 
 def test_afm_bundle_emits_repo_map_row(uq) -> None:
     bundle = _make_bundle(repo_map="api/main.py:\n  - process\n")
-    with patch("aiforge_memory.api.read.context_bundle_object",
+    with patch("aiforge_memory.api.http.context_bundle_object",
                return_value=bundle, create=True):
         rows = uq._afm_bundle("fix payment", repo="X", role="doer")
     assert any("[afm/repo_map]" in r["text"] for r in rows)
@@ -51,7 +51,7 @@ def test_afm_bundle_emits_repo_map_row(uq) -> None:
 
 def test_afm_bundle_emits_conventions_row(uq) -> None:
     bundle = _make_bundle(conventions_md="- use ruff\n- pin deps\n")
-    with patch("aiforge_memory.api.read.context_bundle_object",
+    with patch("aiforge_memory.api.http.context_bundle_object",
                return_value=bundle, create=True):
         rows = uq._afm_bundle("any", repo="X", role="doer")
     assert any("[afm/conventions]" in r["text"] for r in rows)
@@ -63,7 +63,7 @@ def test_afm_bundle_caps_chunks_at_5(uq) -> None:
         {"file_path": f"f{i}.py", "text": f"chunk{i}"} for i in range(10)
     ]
     bundle = _make_bundle(chunks=chunks)
-    with patch("aiforge_memory.api.read.context_bundle_object",
+    with patch("aiforge_memory.api.http.context_bundle_object",
                return_value=bundle, create=True):
         rows = uq._afm_bundle("any", repo="X", role="doer")
     chunk_rows = [r for r in rows if "[afm/chunk" in r["text"]]
@@ -76,7 +76,7 @@ def test_afm_bundle_skips_chunks_missing_path_or_body(uq) -> None:
         {"file_path": "ok.py", "text": ""},
         {"file_path": "good.py", "text": "real"},
     ])
-    with patch("aiforge_memory.api.read.context_bundle_object",
+    with patch("aiforge_memory.api.http.context_bundle_object",
                return_value=bundle, create=True):
         rows = uq._afm_bundle("any", repo="X", role="doer")
     assert any("good.py" in r["text"] for r in rows)
@@ -89,7 +89,7 @@ def test_afm_bundle_emits_notes_and_docs(uq) -> None:
         docs=[{"id": "d1", "title": "Vector",
                "url": "https://x/y", "body": "cosine"}],
     )
-    with patch("aiforge_memory.api.read.context_bundle_object",
+    with patch("aiforge_memory.api.http.context_bundle_object",
                return_value=bundle, create=True):
         rows = uq._afm_bundle("any", repo="X", role="doer")
     assert any("[afm/note Migration]" in r["text"] for r in rows)
@@ -102,7 +102,7 @@ def test_afm_bundle_emits_observations_with_kind(uq) -> None:
     bundle = _make_bundle(observations=[
         {"id": "o1", "kind": "lesson", "text": "use cl100k_base", "score": 0.8},
     ])
-    with patch("aiforge_memory.api.read.context_bundle_object",
+    with patch("aiforge_memory.api.http.context_bundle_object",
                return_value=bundle, create=True):
         rows = uq._afm_bundle("any", repo="X", role="doer")
     obs_row = next(r for r in rows if "[afm/lesson]" in r["text"])
@@ -110,7 +110,7 @@ def test_afm_bundle_emits_observations_with_kind(uq) -> None:
 
 
 def test_afm_bundle_returns_empty_on_none_bundle(uq) -> None:
-    with patch("aiforge_memory.api.read.context_bundle_object",
+    with patch("aiforge_memory.api.http.context_bundle_object",
                return_value=None):
         rows = uq._afm_bundle("any", repo="X", role="doer")
     assert rows == []

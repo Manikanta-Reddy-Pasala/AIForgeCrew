@@ -222,6 +222,9 @@ def test_dead_local_autostart_fails_falls_back_to_cloud(
     monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
     monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
     monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
+    # hermetic: AIFORGE_ESCALATE_DISABLE=1 (common suite env) disables
+    # cloud_default_for_local → no swap → spurious failure
+    monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "0")
     import urllib.error
 
     cfg = {"model_id": "openai//Users/foo", "api_base": "http://127.0.0.1:1234/v1",
