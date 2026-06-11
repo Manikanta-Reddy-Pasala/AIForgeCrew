@@ -130,9 +130,8 @@ def graph_neighbours(file_paths: list[str], limit: int = 30) -> str:
         from neo4j import GraphDatabase  # type: ignore
     except Exception:
         return ""
-    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
-    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    pw = os.environ.get("AIFORGE_NEO4J_PASSWORD", "password")
+    from aiforge_core.memory.neo4j_conn import neo4j_params
+    uri, user, pw = neo4j_params()
     # Reduce to the repo-relative tail. The indexer keeps the host-side
     # absolute path; matching by ENDS WITH on the relative suffix is
     # both fast (suffix index for Symbol.file_path is implicit on small

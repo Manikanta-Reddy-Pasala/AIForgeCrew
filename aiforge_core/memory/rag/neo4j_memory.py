@@ -40,9 +40,9 @@ from aiforge_core.memory.retrieval import Hit, ROLE_POLICIES, rrf_fuse
 
 log = logging.getLogger("aiforge.rag.neo4j_memory")
 
-NEO4J_URI = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
-NEO4J_USER = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-NEO4J_PASS = os.environ.get("AIFORGE_NEO4J_PASSWORD", "password")
+from aiforge_core.memory.neo4j_conn import neo4j_params
+
+NEO4J_URI, NEO4J_USER, NEO4J_PASS = neo4j_params()
 EMBED_URL = os.environ.get("AIFORGE_EMBED_URL", "http://127.0.0.1:8764")
 EMBED_DIM = int(os.environ.get("AIFORGE_EMBED_DIM", "1024"))
 

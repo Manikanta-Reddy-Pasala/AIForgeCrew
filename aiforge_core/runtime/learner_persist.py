@@ -64,9 +64,8 @@ def _open_driver():
         from neo4j import GraphDatabase
     except ImportError:
         return None
-    uri = os.environ.get("AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687")
-    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    pw = os.environ.get("AIFORGE_NEO4J_PASSWORD", "password")
+    from aiforge_core.memory.neo4j_conn import neo4j_params
+    uri, user, pw = neo4j_params()
     try:
         return GraphDatabase.driver(uri, auth=(user, pw))
     except Exception as exc:  # noqa: BLE001
