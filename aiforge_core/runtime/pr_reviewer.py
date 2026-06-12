@@ -28,6 +28,13 @@ rationale per axis. Axes:
 - regression  — likely test failures or behaviour shifts?
 - style    — naming + comments + adherence to repo conventions?
 
+For the correctness and regression axes, re-check each hunk
+specifically for: (1) comparison/boundary operator changes,
+(2) removed or weakened locking vs documented thread-safety,
+(3) changed return values vs the docstring contract,
+(4) swallowed exceptions. Missing a real regression is far worse
+than a long review.
+
 Return STRICT JSON: {"verdict": "approve"|"comment"|"request_changes",
 "rationale": "...", "scope": int, "correctness": int, "security": int,
 "regression": int, "style": int}.
