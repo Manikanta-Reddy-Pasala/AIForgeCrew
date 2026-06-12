@@ -100,23 +100,23 @@ _LEARNER_TOOLS = (
 )
 
 
-# ─────────────────────────── Models ─────────────────────────────────────
-# Cross-family diversity: Google MoE (Supervisor), Qwen MoE (Planner),
-# Qwen dense (Doer), Mistral dense (Feedback), Qwen small (Learner).
-# All models already on disk; change here + git push to swap.
-# Doer's model is the ONLY one protected (always hot). Other roles'
-# models are free to differ — memguard evicts non-protected to fit when
-# a role's tick needs a different LLM. Currently only Planner + Doer
-# ticks run; Supervisor / Feedback / Learner kept in config for re-enable
-# but their plists aren't installed.
-SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", "qwen3.6-27b")
-PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    "qwen3.6-27b")
-DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       "qwen3.6-35b-a3b@8bit")
-FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",   "qwen3.6-27b")
-LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",    "qwen3.6-27b")
+# ─────────────────────────── Models (LEGACY) ────────────────────────────
+# These feed the legacy `cli.orchestrator` tick loop and the manual
+# `aiforge-memory repo learn` CLI ONLY — the live v6 ADK pipeline reads
+# per-role models from `config.agent_config` (dynamic, see
+# `_local_default_model()`), NOT from here. Defaults point at the
+# currently-served local model so a manual `repo learn` run without env
+# overrides still hits a real endpoint instead of a deleted model.
+# Override via AIFORGE_<ROLE>_MODEL when re-enabling the legacy path.
+_LEGACY_DEFAULT_MODEL = "qwen/qwen3-coder-next"
+SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", _LEGACY_DEFAULT_MODEL)
+PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    _LEGACY_DEFAULT_MODEL)
+DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       _LEGACY_DEFAULT_MODEL)
+FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",   _LEGACY_DEFAULT_MODEL)
+LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",    _LEGACY_DEFAULT_MODEL)
 
 # Supervisor transport — flip to claude_cli for cloud oversight on tough
-# routing calls. Default = local gemma-4-26b (fast + fits memory budget).
+# routing calls. Default = local served model (fast + fits memory budget).
 SUPERVISOR_TRANSPORT = os.environ.get("AIFORGE_SUPERVISOR_TRANSPORT", "openai")
 
 
