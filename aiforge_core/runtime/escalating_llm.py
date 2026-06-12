@@ -176,6 +176,12 @@ class EscalatingLlm(BaseLlm):
                 req_for_attempt = llm_request.model_copy(
                     update={"model": target_model},
                 )
+            # Per-model quirk sheet (system suffix / token cap / temp)
+            # — applied per attempt so it tracks whichever model is
+            # actually serving this call.
+            from aiforge_core.config import model_overrides
+            req_for_attempt = model_overrides.apply(
+                target_model, req_for_attempt)
             buffered: list[LlmResponse] = []
             try:
                 async for r in model.generate_content_async(
