@@ -1291,8 +1291,9 @@ def config_agents_list() -> dict:
         "roles": visible,
         "archetype_order": list(_acfg._ARCHETYPES),
         "providers": {
-            k: {"label": v["label"], "default_model": v["default_model"]}
-            for k, v in _acfg.PROVIDERS.items()
+            p["id"]: {"label": p["label"],
+                      "default_model": p["default_model"]}
+            for p in _acfg.list_providers()
         },
     }
 

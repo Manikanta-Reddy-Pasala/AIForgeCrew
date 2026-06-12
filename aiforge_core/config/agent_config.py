@@ -35,7 +35,7 @@ _LOCK = threading.Lock()
 # verifier → researcher → LoopAgent[doer, refiner, feedback] → learner.
 _ARCHETYPES: tuple[str, ...] = (
     "architect", "planner", "verifier", "doer", "feedback", "learner",
-    # Extended pipeline (2026-05-07): tier-routed via runtime.model_router.
+    # Extended pipeline (2026-05-07).
     "triage", "researcher", "refiner",
     # Post-validator live boot (2026-05-23): runs the recipe under
     # aiforge_core/recipes/live_verify/<project>.md.
@@ -49,17 +49,45 @@ _ARCHETYPES: tuple[str, ...] = (
 )
 _ROLES = _ARCHETYPES
 
-# Local default — single Mac Studio model serves every archetype.
-_LOCAL_DEFAULT_MODEL = (
+# Local default — resolved dynamically, in order:
+#   1. AIFORGE_LOCAL_DEFAULT_MODEL env (operator pin)
+#   2. first model id served by the local /v1/models endpoint (5-min cache)
+#   3. legacy hardcoded path (only when the server is unreachable AND no
+#      env pin exists — keeps cold-start behavior identical to before)
+_LOCAL_FALLBACK_MODEL = (
     "/Users/manikanta/.lmstudio/models/lmstudio-community/"
     "Qwen3-Coder-Next-MLX-4bit"
 )
+_LOCAL_DEFAULT_CACHE: list[Any] = [0.0, None]  # [ts, model_id]
+_LOCAL_DEFAULT_TTL_S = 300.0
+
+
+def _local_default_model() -> str:
+    """Resolve the local provider's default model id at call time."""
+    env = os.environ.get("AIFORGE_LOCAL_DEFAULT_MODEL")
+    if env and env.strip():
+        return env.strip()
+    now = time.time()
+    if _LOCAL_DEFAULT_CACHE[1] and (now - _LOCAL_DEFAULT_CACHE[0]) < \
+            _LOCAL_DEFAULT_TTL_S:
+        return _LOCAL_DEFAULT_CACHE[1]
+    try:
+        discovered = _discover_local_models()
+    except Exception:
+        discovered = []
+    if discovered:
+        _LOCAL_DEFAULT_CACHE[0] = now
+        _LOCAL_DEFAULT_CACHE[1] = discovered[0]["id"]
+        return _LOCAL_DEFAULT_CACHE[1]
+    return _LOCAL_FALLBACK_MODEL
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "local": {
-        "label": "Local (mlx-lm on Mac Studio)",
+        "label": "Local (LM Studio / mlx-lm on Mac Studio)",
         "litellm_prefix": "openai",
-        "default_model": _LOCAL_DEFAULT_MODEL,
+        # Resolved at call time by _local_default_model() — see
+        # list_providers() / _defaults(). None here means "dynamic".
+        "default_model": None,
         "api_key_env": "LM_STUDIO_API_KEY",
         "api_key_default": "lm-studio",
     },
@@ -97,11 +125,14 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
-_DEFAULT: dict[str, dict[str, Any]] = {
-    role: {"provider": "local", "model": _LOCAL_DEFAULT_MODEL,
-           "base_url": None}
-    for role in _ROLES
-}
+def _defaults() -> dict[str, dict[str, Any]]:
+    """Per-role defaults, resolved lazily so the local model id tracks
+    whatever the local server actually serves (no hardcoded pin)."""
+    model = _local_default_model()
+    return {
+        role: {"provider": "local", "model": model, "base_url": None}
+        for role in _ROLES
+    }
 
 
 # ────────────────────────── Model catalog ──────────────────────────────
@@ -110,19 +141,11 @@ _DEFAULT: dict[str, dict[str, Any]] = {
 # a short cache to avoid hammering the upstream on every UI refresh).
 
 MODEL_CATALOG: dict[str, list[dict[str, Any]]] = {
-    "local": [
-        {"id": _LOCAL_DEFAULT_MODEL,
-         "label": "Qwen3-Coder-Next (MLX 4bit)",
-         "context": 128000, "tier": "balanced"},
-        {"id": ("/Users/manikanta/.lmstudio/models/unsloth/"
-                "Qwen3.6-27B-UD-MLX-4bit"),
-         "label": "Qwen3.6-27B (MLX 4bit)",
-         "context": 64000, "tier": "balanced"},
-        {"id": ("/Users/manikanta/.lmstudio/models/lmstudio-community/"
-                "gemma-4-31b-MLX-4bit"),
-         "label": "Gemma 4 31B (MLX 4bit)",
-         "context": 64000, "tier": "balanced"},
-    ],
+    # local is fully dynamic — populated by _discover_local_models()
+    # hitting /v1/models on the configured endpoints. No hardcoded
+    # paths: stale entries for deleted models caused phantom catalog
+    # rows (Qwen3.6-27B / gemma-4-31b were removed from disk long ago).
+    "local": [],
     "ollama_cloud": [
         {"id": "qwen3-coder:480b", "label": "Qwen3 Coder 480B",
          "context": 128000, "tier": "premium"},
@@ -276,7 +299,8 @@ def _path() -> Path:
 def load_all() -> dict[str, dict[str, Any]]:
     """Read the full per-role map, merging defaults for missing keys."""
     p = _path()
-    cfg: dict[str, dict[str, Any]] = {k: dict(v) for k, v in _DEFAULT.items()}
+    cfg: dict[str, dict[str, Any]] = {k: dict(v)
+                                      for k, v in _defaults().items()}
     if p.exists():
         try:
             disk = json.loads(p.read_text())
@@ -582,7 +606,9 @@ def list_providers() -> list[dict[str, Any]]:
         {
             "id": pid,
             "label": prov["label"],
-            "default_model": prov["default_model"],
+            "default_model": (prov["default_model"]
+                              or (_local_default_model()
+                                  if pid == "local" else None)),
         }
         for pid, prov in PROVIDERS.items()
     ]
@@ -616,9 +642,11 @@ PROFILES: dict[str, dict[str, str]] = {
     },
     # Full local stack — single LM Studio process serves all archetypes.
     # Tune AIFORGE_LM_BASE_URL (default 1234) for per-role port routing.
+    # model="" means "resolve dynamically at apply time" — see
+    # apply_profile().
     "local": {
         "provider": "local",
-        "model": _LOCAL_DEFAULT_MODEL,
+        "model": "",
     },
 }
 
@@ -642,7 +670,8 @@ def apply_profile(name: str) -> dict[str, dict[str, Any]]:
             f"unknown profile: {name!r}. known: {sorted(PROFILES)}"
         )
     spec = PROFILES[name]
+    model = spec["model"] or _local_default_model()
     out: dict[str, dict[str, Any]] = {}
     for role in _ARCHETYPES:
-        out[role] = set_role(role, spec["provider"], spec["model"])
+        out[role] = set_role(role, spec["provider"], model)
     return out

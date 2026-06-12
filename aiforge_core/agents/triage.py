@@ -1,8 +1,8 @@
 """Triage archetype — single-turn complexity classifier.
 
 Runs FIRST (in the orchestration layer, upstream of the ADK
-SequentialAgent) so its ``complexity`` verdict can seed
-``runtime.model_router.pick`` for downstream archetypes. Tool-less by
+SequentialAgent) so its ``complexity`` verdict can steer the
+trivial-fast-path routing in ``runtime.graph_pipeline``. Tool-less by
 contract — see ``agents.yaml`` ``triage.tools.allowed: []``.
 """
 from __future__ import annotations
