@@ -200,11 +200,15 @@ def try_start(api_base: str) -> bool:
     # Override via AIFORGE_LMS_PARALLEL — bump for genuine concurrent
     # serving (UI demos), keep at 1 for ticket runners.
     parallel = max(_int_env("AIFORGE_LMS_PARALLEL", 1), 1)
-    # 4-bit KV-cache quantization cuts KV memory ~4× (relieves the
-    # ONE-117 OOM). Applied to TEXT models only — vision/embedding MLX
-    # models break under KV-quant (obs-28582). Set AIFORGE_LMS_KV_BITS=0
-    # to disable globally.
-    kv_bits = _int_env("AIFORGE_LMS_KV_BITS", 4)
+    # KV-cache quantization. DEFAULT 0 (OFF): the installed LM Studio
+    # `lms load` CLI has NO KV-quant flag — it errors with "unknown
+    # option '--kv-cache-quantization'" (verified live 2026-06-19), so
+    # enabling this would break every model load. The plumbing stays as
+    # a forward-compat hook: set AIFORGE_LMS_KV_BITS>0 ONLY against an
+    # lms build that accepts _KV_FLAG, or a mlx_lm.server runtime. When
+    # >0 it applies to TEXT models only — vision/embedding MLX models
+    # break under KV-quant (obs-28582).
+    kv_bits = _int_env("AIFORGE_LMS_KV_BITS", 0)
     kind = _model_kind(model)
     if model:
         load_cmd = _load_cmd(bin_name, model, ctx=ctx, parallel=parallel,

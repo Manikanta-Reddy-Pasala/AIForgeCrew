@@ -22,11 +22,13 @@ GPU="${GPU:-max}"
 # kills mid-run multi-query agents. Pin for 12h by default; override w/ TTL=... .
 TTL="${TTL:-43200}"
 MANIFEST="${MANIFEST:-security/model-checksums.yml}"
-# 4-bit KV-cache quant (~4× KV memory cut; relieves the ONE-117 OOM).
-# Applied to TEXT models only — vision/embedding MLX models break under
-# KV-quant (obs-28582). Set KV_BITS=0 to disable. Confirm the exact lms
-# flag with `lms load --help` on the host; centralised in KV_FLAG below.
-KV_BITS="${KV_BITS:-4}"
+# KV-cache quant. DEFAULT 0 (OFF): the installed LM Studio `lms load`
+# CLI has NO KV-quant flag — it errors "unknown option
+# '--kv-cache-quantization'" (verified live 2026-06-19), so enabling
+# would break the load. Forward-compat hook only: set KV_BITS>0 ONLY
+# against an lms build that accepts KV_FLAG. When >0, applied to TEXT
+# models only (vision/embedding break under KV-quant, obs-28582).
+KV_BITS="${KV_BITS:-0}"
 KV_FLAG="--kv-cache-quantization"
 
 [[ -x "$LMS" ]] || { echo "LM Studio CLI missing: $LMS" >&2; exit 1; }
