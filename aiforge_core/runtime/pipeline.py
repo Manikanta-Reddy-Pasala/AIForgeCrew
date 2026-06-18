@@ -54,6 +54,9 @@ from aiforge_core.agents import (
     feedback as _feedback_mod,
 )
 from aiforge_core.agents import (
+    gap_eval as _gap_eval_mod,
+)
+from aiforge_core.agents import (
     learner as _learner_mod,
 )
 from aiforge_core.agents import (
@@ -185,9 +188,12 @@ def build_pipeline(*, skip_researcher: bool = False,
         ROUTE_FULL,
         ROUTE_LOOP,
         ROUTE_REPLAN,
+        ROUTE_RESEARCH_GAP,
+        ROUTE_RESEARCH_OK,
         ROUTE_TRIVIAL,
         ROUTE_VERIFY_PASS,
         ROUTE_VERIFY_REPLAN,
+        make_gap_gate,
         make_loop_gate,
         make_plan_promote,
         make_triage_gate,
@@ -201,6 +207,7 @@ def build_pipeline(*, skip_researcher: bool = False,
         make_context_join,
         make_merge_context_node,
         make_merge_verdicts_node,
+        make_research_entry_node,
         make_verifier_join,
     )
 
@@ -248,6 +255,9 @@ def build_pipeline(*, skip_researcher: bool = False,
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)
     validator = _validator_mod.build(_claude_pinned_model)
+    # Research-gap critic — only meaningful when the Researcher ran.
+    gap_eval = _gap_eval_mod.build(build_litellm_model) \
+        if not skip_researcher else None
 
     # Parallel branch agents (researcher + context gatherers; 3 verifiers).
     # skip_conventions: the runner found glob-scoped repo rules files —
@@ -276,7 +286,10 @@ def build_pipeline(*, skip_researcher: bool = False,
     # massively (3 verifiers × full history × up to 4 planner epochs,
     # plus the Claude-priced validator) and re-creates the ONE-117 KV
     # pressure. single_turn → include_contents='none'.
-    for _a in (triage, validator, *verifier_branches):
+    _single_turn = [triage, validator, *verifier_branches]
+    if gap_eval is not None:
+        _single_turn.append(gap_eval)
+    for _a in _single_turn:
         _a.mode = "single_turn"
 
     # Parallel branches share a JoinNode: if ONE branch raises (flaky local
@@ -295,7 +308,10 @@ def build_pipeline(*, skip_researcher: bool = False,
         # claude_local with NO escalation chain, and planner/doer/triage
         # sit on the critical path — a single transient exception in any
         # of them is error_shut_down for the whole graph.
-        for _b in (triage, enhancer, planner, doer, validator):
+        _crit = [triage, enhancer, planner, doer, validator]
+        if gap_eval is not None:
+            _crit.append(gap_eval)
+        for _b in _crit:
             _b.retry_config = _branch_retry
     except Exception:
         pass  # retry is best-effort; never block pipeline boot
@@ -332,6 +348,8 @@ def build_pipeline(*, skip_researcher: bool = False,
     validator_gate = make_validator_gate()
     verifier_gate = make_verifier_gate()
     plan_promote = make_plan_promote()
+    research_entry = make_research_entry_node()
+    gap_gate = make_gap_gate() if not skip_researcher else None
 
     # ── graph edges ─────────────────────────────────────────────────────
     # NOTE: live_verifier is intentionally NOT in this graph — it runs
@@ -344,12 +362,26 @@ def build_pipeline(*, skip_researcher: bool = False,
         Edge(from_node=triage_gate, to_node=doer, route=ROUTE_TRIVIAL),
         Edge(from_node=triage_gate, to_node=enhancer, route=ROUTE_FULL),
     ]
-    # context fan-out → join → merge → planner
+    # context fan-out: enhancer → research_entry → branches → join → merge.
+    # research_entry is the stable fan-out source so the research-gap loop
+    # can re-enter it and re-fire ALL branches in one scheduler wave
+    # (JoinNode re-arm requirement).
+    edges.append(Edge(from_node=enhancer, to_node=research_entry))
     for br in context_branches:
-        edges.append(Edge(from_node=enhancer, to_node=br))
+        edges.append(Edge(from_node=research_entry, to_node=br))
         edges.append(Edge(from_node=br, to_node=context_join))
     edges.append(Edge(from_node=context_join, to_node=merge_context))
-    edges.append(Edge(from_node=merge_context, to_node=planner))
+    if gap_gate is not None:
+        # merge_context → gap_eval → gap_gate ─┬ research_ok  → planner
+        #                                       └ research_gap → research_entry
+        edges.append(Edge(from_node=merge_context, to_node=gap_eval))
+        edges.append(Edge(from_node=gap_eval, to_node=gap_gate))
+        edges.append(Edge(from_node=gap_gate, to_node=planner,
+                          route=ROUTE_RESEARCH_OK))
+        edges.append(Edge(from_node=gap_gate, to_node=research_entry,
+                          route=ROUTE_RESEARCH_GAP))
+    else:
+        edges.append(Edge(from_node=merge_context, to_node=planner))
     # planner → plan_promote (parse plan JSON → scope_allowlist_globs in
     # state) → verifier fan-out → join → merge → verifier_gate
     edges.append(Edge(from_node=planner, to_node=plan_promote))

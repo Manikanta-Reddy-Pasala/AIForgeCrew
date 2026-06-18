@@ -20,9 +20,10 @@ from .live_verifier import LIVE_VERIFIER
 from .verify_correctness import PROMPT as VERIFY_CORRECTNESS
 from .verify_scope import PROMPT as VERIFY_SCOPE
 from .verify_risk import PROMPT as VERIFY_RISK
+from .gap_eval import PROMPT as GAP_EVAL
 
 __all__ = [
     "ARCHITECT", "ENHANCER", "PLANNER", "VERIFIER", "DOER",
     "FEEDBACK", "LEARNER", "VALIDATOR", "LIVE_VERIFIER",
-    "VERIFY_CORRECTNESS", "VERIFY_SCOPE", "VERIFY_RISK",
+    "VERIFY_CORRECTNESS", "VERIFY_SCOPE", "VERIFY_RISK", "GAP_EVAL",
 ]

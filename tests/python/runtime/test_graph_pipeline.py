@@ -300,3 +300,55 @@ def test_graph_verifier_validator_pingpong_is_bounded() -> None:
     assert order.count("planner") == expected, order
     assert order[-1] == "learner"
     assert state.get("replan_count") == gp.MAX_REPLANS
+
+
+# ── research-gap loop ──────────────────────────────────────────────────
+
+def test_research_gap_loop_redispatches_once_then_proceeds() -> None:
+    """gap_eval judges insufficient on pass 1 → gap_gate routes back to
+    research_entry (researcher re-runs) → pass 2 judged sufficient →
+    proceeds to planner. Researcher runs exactly twice; bounded."""
+    order: list = []
+
+    def agent_stub(name, fn=None):
+        async def _fn(ctx):
+            order.append(name)
+            if fn:
+                fn(ctx.state)
+        return node(_fn, name=name)
+
+    def _gap_eval_body(state):
+        # insufficient until one gap pass has been spent
+        if int(state.get("gap_pass_count", 0) or 0) == 0:
+            state["gap_verdict"] = '{"sufficient": false, "missing": ["x"]}'
+        else:
+            state["gap_verdict"] = '{"sufficient": true}'
+
+    enhancer = agent_stub("enhancer")
+    researcher = agent_stub("researcher",
+                            lambda s: s.__setitem__("research_brief_md", "r"))
+    gap_eval = agent_stub("gap_eval", _gap_eval_body)
+    planner = agent_stub("planner")
+
+    from aiforge_core.runtime import parallel_stages as ps
+    rentry = ps.make_research_entry_node()
+    cjoin, mctx = ps.make_context_join(), ps.make_merge_context_node()
+    gapg = gp.make_gap_gate()
+
+    edges = [
+        Edge(from_node=START, to_node=enhancer),
+        Edge(from_node=enhancer, to_node=rentry),
+        Edge(from_node=rentry, to_node=researcher),
+        Edge(from_node=researcher, to_node=cjoin),
+        Edge(from_node=cjoin, to_node=mctx),
+        Edge(from_node=mctx, to_node=gap_eval),
+        Edge(from_node=gap_eval, to_node=gapg),
+        Edge(from_node=gapg, to_node=planner, route=gp.ROUTE_RESEARCH_OK),
+        Edge(from_node=gapg, to_node=rentry, route=gp.ROUTE_RESEARCH_GAP),
+    ]
+    wf = Workflow(name="gap_stub", edges=edges)
+    state = _drive(wf, {})
+    assert order.count("researcher") == 2, order
+    assert order.count("planner") == 1, order
+    assert order[-1] == "planner"
+    assert state.get("gap_pass_count") == 1

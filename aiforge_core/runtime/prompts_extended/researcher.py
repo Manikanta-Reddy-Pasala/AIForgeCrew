@@ -34,7 +34,9 @@ PROMPT = (
     "relevant_files entry — don't over-research.\n"
     "\n"
     "--- Enhanced ticket (from pipeline state) ---\n"
-    "{enhanced_body?}"
+    "{enhanced_body?}\n"
+    "\n"
+    "{research_gap_brief_md?}"
 )
 
 __all__ = ["PROMPT"]

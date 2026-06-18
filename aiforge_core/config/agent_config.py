@@ -46,6 +46,9 @@ _ARCHETYPES: tuple[str, ...] = (
     # Parallel verifier fan-out (ParallelAgent) — three axis critics
     # merged into verifier_verdict.
     "verify_correctness", "verify_scope", "verify_risk",
+    # Research-completeness critic (2026-06-18) — drives the bounded
+    # research-gap re-search loop. Local-tier, tool-less.
+    "gap_eval",
 )
 _ROLES = _ARCHETYPES
 

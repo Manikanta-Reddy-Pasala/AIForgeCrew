@@ -32,6 +32,8 @@ EXTENDED_ROLES = {
     "live_verifier",
     "ctx_memory", "ctx_repomap", "ctx_conventions",
     "verify_correctness", "verify_scope", "verify_risk",
+    # 2026-06-18: research-completeness critic (research-gap loop).
+    "gap_eval",
 }
 EXPECTED_ROLES = CORE_ROLES | EXTENDED_ROLES
 
