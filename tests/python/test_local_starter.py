@@ -236,3 +236,43 @@ def test_dead_local_autostart_fails_falls_back_to_cloud(
         out = lp.maybe_substitute_primary("doer", cfg)
     assert out is not cfg
     assert out.get("_provider") == "ollama_cloud"
+
+
+# ── KV-cache quantization (_load_cmd / _model_kind) ─────────────────────
+
+def test_kv_quant_added_for_text_model() -> None:
+    cmd = ls._load_cmd("lms", "qwen", ctx=65536, parallel=1, ttl=0,
+                       kv_bits=4, kind="text")
+    assert "--context-length 65536" in cmd
+    assert f"{ls._KV_FLAG} 4" in cmd
+
+
+def test_kv_quant_skipped_for_vision_model() -> None:
+    cmd = ls._load_cmd("lms", "nex-vision", ctx=65536, parallel=1, ttl=0,
+                       kv_bits=4, kind="vision")
+    assert "kv-cache-quantization" not in cmd   # obs-28582: breaks vision
+
+
+def test_kv_quant_disabled_when_bits_zero() -> None:
+    cmd = ls._load_cmd("lms", "qwen", ctx=65536, parallel=1, ttl=0,
+                       kv_bits=0, kind="text")
+    assert "kv-cache-quantization" not in cmd
+
+
+def test_ttl_appended_when_positive() -> None:
+    cmd = ls._load_cmd("lms", "qwen", ctx=65536, parallel=1, ttl=900,
+                       kv_bits=0, kind="text")
+    assert "--ttl 900" in cmd
+
+
+def test_model_kind_classification() -> None:
+    assert ls._model_kind("qwen3-coder-next") == "text"
+    assert ls._model_kind("nex-n2-mini") == "vision"
+    assert ls._model_kind("some-vl-7b") == "vision"
+    assert ls._model_kind("bge-embed-large") == "embedding"
+    assert ls._model_kind(None) == "text"
+
+
+def test_model_kind_honours_vision_override_env(monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_VISION_MODELS", "weirdname,foo")
+    assert ls._model_kind("weirdname-13b") == "vision"

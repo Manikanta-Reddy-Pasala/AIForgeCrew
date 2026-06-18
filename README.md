@@ -320,7 +320,10 @@ systemctl --user start aiforge-api               # :8799
 systemctl --user start aiforge-graph-runner
 systemctl --user start aiforge-embed-sidecar     # :8764
 
-# Mac Studio (LLMs)
+# Mac Studio (LLMs) — local serving is LM Studio (`lms`), not raw
+# mlx_lm.server. Models load via scripts/load-models.sh (manifest:
+# security/model-checksums.yml); the runner also auto-starts via
+# aiforge_core/runtime/local_starter.py. Equivalent direct invocations:
 mlx_lm.server --model qwen3-coder-next --port 1234
 mlx_lm.server --model qwen3.6-27b --port 1235
 
@@ -340,6 +343,14 @@ AIFORGE_<ROLE>_MODEL           per-role model id
 AIFORGE_PLANNER_MODEL          default qwen3.6-27b
 AIFORGE_INTENT_LM_URL          default = planner LM URL (port 1235)
 AIFORGE_INTENT_MODEL           default = AIFORGE_PLANNER_MODEL
+
+# LM Studio serving / KV-cache quant
+AIFORGE_LMS_KV_BITS            KV-cache quant bits for TEXT models (default 4;
+                               4× KV memory cut, relieves ONE-117 OOM). 0=off.
+AIFORGE_LMS_VISION_MODELS      comma-sep id substrings forced to full-precision
+                               KV (MLX vision breaks under KV-quant, obs-28582)
+AIFORGE_LMS_CTX                lms --context-length (default 262144, floor 65536)
+AIFORGE_LMS_PARALLEL           lms --parallel (default 1)
 
 # IntentLayer / UnifiedContext
 AIFORGE_INTENT_ENRICH          1 = enrich on ticket POST (default 1)

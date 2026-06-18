@@ -489,6 +489,50 @@ agents:
       - no file mutations recorded in the trace
 
   # ---------------------------------------------------------------------------
+  # 8b. GAP_EVAL  (research-completeness critic — 2026-06-18)
+  # ---------------------------------------------------------------------------
+  # Runs AFTER merge_context, BEFORE the Planner. Tool-less JSON critic;
+  # gap_gate re-dispatches the context fan-out at most once when research
+  # is judged insufficient.
+  gap_eval:
+    identity:
+      runtime: adk_agent_direct_litellm
+      model: Qwen3.6-27B-MLX-4bit
+      backend: direct_litellm
+      base_url: http://127.0.0.1:1235/v1
+      ctx_window: 64000
+    contract:
+      inputs:
+        - enhanced_body
+        - context_brief_md
+      outputs:
+        - gap_verdict
+      max_turns: 1
+      max_wall_s: 180
+    tools:
+      allowed: []
+      forbidden:
+        - file_write
+        - file_patch
+        - file_read
+        - bash
+        - run_shell
+        - run_compile
+        - code_run
+        - ask_user
+    memory:
+      read_scope: full
+      write_scope: none
+    rule: >
+      gap_eval is a tool-less research-completeness critic running
+      PRE-planner (after merge_context). It writes only gap_verdict
+      JSON ({sufficient, missing, queries}); the graph's gap_gate
+      re-dispatches the context fan-out at most once when insufficient.
+    termination_contract:
+      - gap_verdict written as JSON ({sufficient, missing, queries})
+      - no file mutations recorded in the trace
+
+  # ---------------------------------------------------------------------------
   # 9. REFINER  (extended pipeline — option D)
   # ---------------------------------------------------------------------------
   # Runs AFTER Doer, BEFORE Feedback. Polishes Doer's diff without changing

@@ -41,6 +41,10 @@ MAX_DOER_ITERS = 3
 MAX_REPLANS = 1
 # Verifier-reject → re-plan cap (bounded inner loop).
 MAX_VERIFY_REPLANS = 1
+# Research-gap → re-search cap (bounded research-completeness loop).
+MAX_GAP_PASSES = 1
+ROUTE_RESEARCH_GAP = "research_gap"
+ROUTE_RESEARCH_OK = "research_ok"
 
 
 def _read_complexity(state: Any) -> str:
@@ -89,6 +93,52 @@ def _parse_verdict(raw: Any) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _gap_sufficient(raw: Any) -> bool:
+    """True when the gap-evaluator judged research sufficient.
+
+    Tolerant: a dict with ``sufficient`` wins; a JSON string is parsed;
+    anything unparseable defaults to True so a critic formatting slip
+    never traps the pipeline in a re-search loop (mirrors
+    parallel_stages._coerce_verdict's fail-open stance)."""
+    try:
+        obj: Any = raw
+        if isinstance(raw, str) and raw.strip():
+            text = raw.strip().strip("`")
+            if text[:4].lower() == "json":
+                text = text[4:]
+            obj = json.loads(text)
+        if isinstance(obj, dict) and "sufficient" in obj:
+            return bool(obj["sufficient"])
+    except Exception:
+        pass
+    return True
+
+
+def _render_gap_brief(raw: Any) -> str:
+    """Render the gap-evaluator's missing/queries into a researcher hint."""
+    missing: list = []
+    queries: list = []
+    try:
+        obj: Any = raw
+        if isinstance(raw, str):
+            text = raw.strip().strip("`")
+            if text[:4].lower() == "json":
+                text = text[4:]
+            obj = json.loads(text)
+        if isinstance(obj, dict):
+            missing = [str(m) for m in (obj.get("missing") or []) if m]
+            queries = [str(q) for q in (obj.get("queries") or []) if q]
+    except Exception:
+        pass
+    lines = ["A prior research pass was judged INCOMPLETE. Specifically "
+             "locate the following before the Planner runs:"]
+    for m in missing:
+        lines.append(f"  - MISSING: {m}")
+    for q in queries:
+        lines.append(f"  - SEARCH: {q}")
+    return "\n".join(lines)
 
 
 def _validator_failed(state: Any) -> bool:
@@ -194,6 +244,23 @@ async def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
         _trace(":VerifyReplan", {"replan": vreplans + 1, "why": why})
     else:
         ctx.route = ROUTE_VERIFY_PASS
+
+
+async def _gap_gate(ctx):  # type: ignore[no-untyped-def]
+    """Bounded research-completeness loop. If the gap-evaluator judged
+    research insufficient and we have budget, re-dispatch the context
+    fan-out (route research_gap → research_entry) with a targeted hint;
+    otherwise proceed to the Planner."""
+    state = ctx.state
+    passes = int(state.get("gap_pass_count", 0) or 0)
+    if not _gap_sufficient(state.get("gap_verdict")) and passes < MAX_GAP_PASSES:
+        state["gap_pass_count"] = passes + 1
+        state["research_gap_brief_md"] = _render_gap_brief(
+            state.get("gap_verdict"))
+        ctx.route = ROUTE_RESEARCH_GAP
+        _trace(":ResearchGap", {"pass": passes + 1})
+    else:
+        ctx.route = ROUTE_RESEARCH_OK
 
 
 async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
@@ -309,6 +376,11 @@ def make_verifier_gate():
     return node(_verifier_gate, name="verifier_gate")
 
 
+def make_gap_gate():
+    from google.adk.workflow import node
+    return node(_gap_gate, name="gap_gate")
+
+
 def make_plan_promote():
     from google.adk.workflow import node
     return node(_plan_promote, name="plan_promote")
@@ -317,9 +389,10 @@ def make_plan_promote():
 __all__ = [
     "ROUTE_TRIVIAL", "ROUTE_FULL", "ROUTE_LOOP", "ROUTE_EXIT",
     "ROUTE_REPLAN", "ROUTE_DONE", "ROUTE_VERIFY_PASS", "ROUTE_VERIFY_REPLAN",
-    "MAX_DOER_ITERS", "MAX_REPLANS", "MAX_VERIFY_REPLANS",
+    "ROUTE_RESEARCH_GAP", "ROUTE_RESEARCH_OK",
+    "MAX_DOER_ITERS", "MAX_REPLANS", "MAX_VERIFY_REPLANS", "MAX_GAP_PASSES",
     "make_triage_gate", "make_loop_gate", "make_validator_gate",
-    "make_verifier_gate", "make_plan_promote",
+    "make_verifier_gate", "make_plan_promote", "make_gap_gate",
     "_read_complexity", "_validator_failed", "_feedback_passed",
-    "_parse_verdict",
+    "_parse_verdict", "_gap_sufficient", "_render_gap_brief", "_gap_gate",
 ]

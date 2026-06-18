@@ -132,6 +132,20 @@ async def merge_verdicts(ctx):  # type: ignore[no-untyped-def]
         pass
 
 
+async def research_entry(ctx):  # type: ignore[no-untyped-def]
+    """No-op fan-out source for the context branches.
+
+    Exists so the context fan-out has a single stable re-entry point:
+    the first pass enters from the Enhancer, the research-gap loop
+    re-enters here. Re-entering one node re-fires ALL outgoing branch
+    edges in one scheduler wave, which is what context_join needs to
+    re-arm (a JoinNode fired with only a subset of its in-branches
+    rescheduled reads stale COMPLETED status — the ONE-117
+    max_concurrency note in pipeline.py). Body intentionally does
+    nothing."""
+    return None
+
+
 # ── builders ────────────────────────────────────────────────────────────
 
 def build_context_branches(model_factory, *, skip_researcher: bool = False,
@@ -186,13 +200,20 @@ def make_merge_verdicts_node():
     return node(merge_verdicts, name="merge_verdicts")
 
 
+def make_research_entry_node():
+    from google.adk.workflow import node
+    return node(research_entry, name="research_entry")
+
+
 __all__ = [
     "merge_context",
     "merge_verdicts",
+    "research_entry",
     "build_context_branches",
     "build_verifier_branches",
     "make_context_join",
     "make_verifier_join",
     "make_merge_context_node",
     "make_merge_verdicts_node",
+    "make_research_entry_node",
 ]
