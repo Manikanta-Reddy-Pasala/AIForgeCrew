@@ -2,7 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** (A) Add a bounded research-completeness loop to the v6 ADK `Workflow` pipeline — an LLM gap-evaluator re-dispatches the context fan-out once when research is judged insufficient. (B) Wire LM Studio KV-cache quantization (4-bit, text-models only) into the model-load path.
+> **UPDATE 2026-06-19 — Part B (KV-quant) DISCARDED.** Live check on Mac
+> Studio: `lms load` has no KV-quant flag (`error: unknown option`), no
+> persisted KV-quant config, no standalone `mlx_lm`. KV-quant is not
+> achievable on the LM Studio runtime without migrating serving to
+> `mlx_lm.server`, which was deferred. All Part-B code/docs were reverted;
+> only **Part A (research-gap loop)** shipped and is live-validated.
+
+**Goal:** (A) Add a bounded research-completeness loop to the v6 ADK `Workflow` pipeline — an LLM gap-evaluator re-dispatches the context fan-out once when research is judged insufficient. ~~(B) Wire LM Studio KV-cache quantization.~~ *(B discarded — see note above.)*
 
 **Architecture:** Part A inserts `research_entry` (passthrough fan-out source) + `gap_eval` (tool-less JSON critic) + `gap_gate` (bounded router) between `merge_context` and `planner`; the gap edge re-enters `research_entry` so the whole context fan-out re-fires in one scheduler wave (required for `JoinNode` re-arm). Part B extends `local_starter._load_cmd` + a per-model manifest, gated by `AIFORGE_LMS_KV_BITS`, excluding vision/embedding models (KV-quant breaks MLX vision — obs-28582).
 

@@ -36,13 +36,6 @@ Env knobs (all optional):
                                       is the absolute floor (clamped here).
   AIFORGE_LMS_WARMUP_S=60             post-load sleep before re-probe
   AIFORGE_LMS_SSH_TIMEOUT_S=120       outer SSH timeout
-  AIFORGE_LMS_KV_BITS=4               KV-cache quant bits for TEXT models
-                                      (4× KV memory cut). 0 disables.
-                                      Vision/embedding models always load
-                                      full-precision KV (MLX vision breaks
-                                      under KV-quant — obs-28582); classify
-                                      extra vision ids via
-                                      AIFORGE_LMS_VISION_MODELS (comma-sep).
   AIFORGE_LMS_PARALLEL=1              LM Studio --parallel value. Default
                                       1 — pipeline only issues one inflight
                                       request per role, so the LM Studio
@@ -60,12 +53,6 @@ import time
 
 
 log = logging.getLogger("aiforge.local_starter")
-
-
-# Exact lms KV-quant flag — confirm against `lms load --help` on the
-# target host (see the KV-quant validation doc). Centralised so a
-# version drift is a one-line change.
-_KV_FLAG = "--kv-cache-quantization"
 
 
 # ``{(host, model): (success?, when_attempted)}`` — only one attempt
@@ -101,45 +88,6 @@ def _int_env(name: str, default: int) -> int:
         return int(os.environ.get(name, default))
     except ValueError:
         return default
-
-
-def _model_kind(model: str | None) -> str:
-    """Classify a model id for KV-quant eligibility.
-
-    Vision/embedding MLX models break under KV-cache quantization
-    (obs-28582: KV-quant config killed the nex-n2-mini vision load), so
-    they must load full-precision KV. Heuristic on the model id plus an
-    explicit override list via ``AIFORGE_LMS_VISION_MODELS`` (comma-sep
-    substrings). Default ``text``."""
-    if not model:
-        return "text"
-    name = model.lower()
-    extra = [s.strip().lower() for s
-             in os.environ.get("AIFORGE_LMS_VISION_MODELS", "").split(",")
-             if s.strip()]
-    vision_markers = ["vision", "-vl", "vl-", "llava", "nex-n2-mini"] + extra
-    if any(m in name for m in vision_markers):
-        return "vision"
-    if "embed" in name:
-        return "embedding"
-    return "text"
-
-
-def _load_cmd(bin_name: str, model: str, *, ctx: int, parallel: int,
-              ttl: int, kv_bits: int, kind: str) -> str:
-    """Assemble the ``lms load`` command string.
-
-    KV-quant is applied ONLY for text models (``kind == 'text'``) and
-    only when ``kv_bits > 0``. MLX vision/embedding models break under
-    KV-cache quantization (obs-28582), so they always load
-    full-precision KV."""
-    cmd = (f"{bin_name} load {model} "
-           f"--context-length {ctx} --parallel {parallel}")
-    if kv_bits > 0 and kind == "text":
-        cmd += f" {_KV_FLAG} {kv_bits}"
-    if ttl > 0:
-        cmd += f" --ttl {ttl}"
-    return cmd
 
 
 def _disabled() -> bool:
@@ -200,29 +148,21 @@ def try_start(api_base: str) -> bool:
     # Override via AIFORGE_LMS_PARALLEL — bump for genuine concurrent
     # serving (UI demos), keep at 1 for ticket runners.
     parallel = max(_int_env("AIFORGE_LMS_PARALLEL", 1), 1)
-    # KV-cache quantization. DEFAULT 0 (OFF): the installed LM Studio
-    # `lms load` CLI has NO KV-quant flag — it errors with "unknown
-    # option '--kv-cache-quantization'" (verified live 2026-06-19), so
-    # enabling this would break every model load. The plumbing stays as
-    # a forward-compat hook: set AIFORGE_LMS_KV_BITS>0 ONLY against an
-    # lms build that accepts _KV_FLAG, or a mlx_lm.server runtime. When
-    # >0 it applies to TEXT models only — vision/embedding MLX models
-    # break under KV-quant (obs-28582).
-    kv_bits = _int_env("AIFORGE_LMS_KV_BITS", 0)
-    kind = _model_kind(model)
     if model:
-        load_cmd = _load_cmd(bin_name, model, ctx=ctx, parallel=parallel,
-                             ttl=ttl, kv_bits=kv_bits, kind=kind)
+        load_cmd = (
+            f"{bin_name} load {model} "
+            f"--context-length {ctx} --parallel {parallel}"
+        )
+        if ttl > 0:
+            load_cmd += f" --ttl {ttl}"
         remote = f"{bin_name} server start && {load_cmd}"
     else:
         remote = f"{bin_name} server start"
 
     log.info(
-        "lms_autostart: ssh %s -> %s (warmup=%ds, ctx=%d, parallel=%d, "
-        "ttl=%s, kv_bits=%d, kind=%s)",
+        "lms_autostart: ssh %s -> %s (warmup=%ds, ctx=%d, parallel=%d, ttl=%s)",
         host, remote, warmup, ctx, parallel,
         f"{ttl}s" if ttl > 0 else "off (manual unload only)",
-        kv_bits, kind,
     )
     try:
         proc = subprocess.run(

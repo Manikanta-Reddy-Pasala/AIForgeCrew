@@ -8,9 +8,7 @@
 #   Gemma-4-31B    dense 4bit weights 18 GB + 128K KV q8 ~12 GB = ~30 GB
 #   Total resident: ~84 GB of 96 GB (~12 GB buffer)
 # Without KV quantization, Gemma KV alone at 128K ≈ 24 GB → overshoots.
-# KV-quant is now passed on the load line for text models (KV_BITS, default 4).
-# If the installed lms rejects KV_FLAG, the load WARNs and continues; set in
-# GUI as a fallback or update KV_FLAG to the version's actual token.
+# Note: LM Studio may not accept --kv-cache-quantization via CLI yet; set in GUI if needed.
 set -euo pipefail
 
 LMS="${LMS:-$HOME/.lmstudio/bin/lms}"
@@ -22,14 +20,6 @@ GPU="${GPU:-max}"
 # kills mid-run multi-query agents. Pin for 12h by default; override w/ TTL=... .
 TTL="${TTL:-43200}"
 MANIFEST="${MANIFEST:-security/model-checksums.yml}"
-# KV-cache quant. DEFAULT 0 (OFF): the installed LM Studio `lms load`
-# CLI has NO KV-quant flag — it errors "unknown option
-# '--kv-cache-quantization'" (verified live 2026-06-19), so enabling
-# would break the load. Forward-compat hook only: set KV_BITS>0 ONLY
-# against an lms build that accepts KV_FLAG. When >0, applied to TEXT
-# models only (vision/embedding break under KV-quant, obs-28582).
-KV_BITS="${KV_BITS:-0}"
-KV_FLAG="--kv-cache-quantization"
 
 [[ -x "$LMS" ]] || { echo "LM Studio CLI missing: $LMS" >&2; exit 1; }
 [[ -f "$MANIFEST" ]] || { echo "Manifest missing: $MANIFEST" >&2; exit 1; }
@@ -50,30 +40,16 @@ for m in doc.get("models") or []:
     role = next(iter(assigned))
     path = m["path"].rstrip("/")
     path = re.sub(r".*/\.lmstudio/models/", "", path)
-    # Classify for KV-quant eligibility. Vision/embedding MLX models
-    # break under KV-cache quantization (obs-28582) → kind!=text skips it.
-    low = (m["name"] + " " + path).lower()
-    if any(k in low for k in ("vision", "-vl", "vl-", "llava", "nex-n2-mini")):
-        kind = "vision"
-    elif "embed" in low:
-        kind = "embedding"
-    else:
-        kind = "text"
-    print(f"{m['name']}|{path}|{role}|{kind}")
+    print(f"{m['name']}|{path}|{role}")
 PY
 
-while IFS='|' read -r name path role kind; do
-  kv=""
-  if [[ "$KV_BITS" -gt 0 && "$kind" == "text" ]]; then
-    kv="$KV_FLAG $KV_BITS"
-  fi
-  echo ">>> load $name (role=$role kind=$kind) ctx=$CTX gpu=$GPU ttl=${TTL}s kv=${kv:-none}"
+while IFS='|' read -r name path role; do
+  echo ">>> load $name (role=$role) ctx=$CTX gpu=$GPU ttl=${TTL}s"
   "$LMS" load "$path" \
     --gpu "$GPU" \
     --context-length "$CTX" \
     --ttl "$TTL" \
     --identifier "$role" \
-    $kv \
     || echo "WARN: load failed for $name; continuing" >&2
 done < /tmp/aiforge-roles.tsv
 
