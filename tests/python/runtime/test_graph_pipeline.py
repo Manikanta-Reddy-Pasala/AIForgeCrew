@@ -346,7 +346,7 @@ def test_research_gap_loop_redispatches_once_then_proceeds() -> None:
         Edge(from_node=gapg, to_node=planner, route=gp.ROUTE_RESEARCH_OK),
         Edge(from_node=gapg, to_node=rentry, route=gp.ROUTE_RESEARCH_GAP),
     ]
-    wf = Workflow(name="gap-stub", edges=edges)
+    wf = Workflow(name="gap_stub", edges=edges)
     state = _drive(wf, {})
     assert order.count("researcher") == 2, order
     assert order.count("planner") == 1, order
