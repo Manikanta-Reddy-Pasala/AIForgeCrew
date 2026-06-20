@@ -1875,12 +1875,31 @@ def runtime_perf(reset: bool = False) -> dict:
     return {"rows": [], "reset": bool(reset)}
 
 
+def _static_topology() -> dict:
+    """Static v6 pipeline DAG — fallback when no live topology module is
+    present, so the Workflow view renders instead of erroring."""
+    stages = ["triage", "planner", "verifier", "researcher",
+              "doer", "refiner", "feedback", "learner"]
+    nodes = [{"id": s, "label": s, "status": "idle"} for s in stages]
+    edges = [{"from": stages[i], "to": stages[i + 1]}
+             for i in range(len(stages) - 1)]
+    return {"nodes": nodes, "edges": edges, "static": True}
+
+
+def _topology_snapshot(ticket: str | None) -> dict:
+    try:
+        from aiforge_core.runtime import workflow_topology as _wt
+        return _wt.snapshot(ticket)
+    except Exception:
+        return _static_topology()
+
+
 @app.get("/api/workflow/topology")
 def workflow_topology(ticket: str | None = None) -> dict:
     """DAG snapshot for the UI graph view. Optional ?ticket=X overlays
-    per-node status + last_event_at."""
-    from aiforge_core.runtime import workflow_topology as _wt
-    return _wt.snapshot(ticket)
+    per-node status + last_event_at. Falls back to a static pipeline DAG
+    when no live topology module is available."""
+    return _topology_snapshot(ticket)
 
 
 @app.get("/api/workflow/stream")
@@ -1890,13 +1909,12 @@ def workflow_stream(ticket: str | None = None,
     seconds (clamped 1..30). UI ``EventSource`` consumes for live
     DAG status. Disconnect-safe — generator exits when client closes.
     """
-    from aiforge_core.runtime import workflow_topology as _wt
     interval = max(1, min(int(interval or 3), 30))
 
     def _gen():
         import time as _t
         while True:
-            snap = _wt.snapshot(ticket)
+            snap = _topology_snapshot(ticket)
             yield f"data: {json.dumps(snap)}\n\n"
             _t.sleep(interval)
 
@@ -2003,9 +2021,17 @@ if os.path.isdir(_DIST):
     class _SpaStatic(StaticFiles):
         async def get_response(self, path: str, scope):
             try:
-                return await super().get_response(path, scope)
+                resp = await super().get_response(path, scope)
             except Exception:
-                return FileResponse(os.path.join(_DIST, "index.html"))
+                resp = FileResponse(os.path.join(_DIST, "index.html"))
+            # index.html / the SPA shell must never be cached, or a deploy
+            # leaves users on a stale bundle that references deleted asset
+            # hashes ("everything broken" after an update). The hashed
+            # assets under /ui/assets/ stay cacheable.
+            if path in ("", "/", "index.html") or not path.startswith("assets/"):
+                if getattr(resp, "media_type", "") == "text/html" or path in ("", "/", "index.html"):
+                    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return resp
 
     app.mount("/ui", _SpaStatic(directory=_DIST, html=True), name="ui")
 
