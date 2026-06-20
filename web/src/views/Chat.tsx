@@ -21,6 +21,9 @@ type LiveTurn = {
 
 const LS_SESSION_KEY = 'aiforge.chat.activeSessionId';
 const LS_MODEL_KEY = 'aiforge.chat.model';
+const LS_MODE_KEY = 'aiforge.chat.flowmode';
+
+type ChatMode = 'simple' | 'team';
 
 // ── relative time helper ──────────────────────────────────────────────────────
 
@@ -77,6 +80,14 @@ export default function Chat() {
 
   // Rename state: { id, value }
   const [renaming, setRenaming] = useState<{ id: number; value: string } | null>(null);
+
+  // Chat mode: 'simple' (single agent) | 'team' (full ADK pipeline)
+  const [chatMode, setChatMode] = useState<ChatMode>(() => {
+    try {
+      const v = localStorage.getItem(LS_MODE_KEY);
+      return (v === 'team' ? 'team' : 'simple') as ChatMode;
+    } catch { return 'simple'; }
+  });
 
   // Model selector
   const [modelOptions, setModelOptions] = useState<ChatModelEntry[]>([]);
@@ -164,6 +175,11 @@ export default function Chat() {
   useEffect(() => {
     try { if (selectedModel) localStorage.setItem(LS_MODEL_KEY, selectedModel); } catch { /* ignore */ }
   }, [selectedModel]);
+
+  // Persist chat mode
+  useEffect(() => {
+    try { localStorage.setItem(LS_MODE_KEY, chatMode); } catch { /* ignore */ }
+  }, [chatMode]);
 
   // Auto-scroll on new messages / live turn updates
   useEffect(() => {
@@ -289,7 +305,7 @@ export default function Chat() {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: q }),
+        body: JSON.stringify({ content: q, mode: chatMode }),
       });
 
       if (!res.ok) {
@@ -473,38 +489,58 @@ export default function Chat() {
             )}
           </div>
           <div className="row" style={{ gap: 'var(--s-2)' }}>
-            {/* Model selector */}
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
-              Model
-              <select
-                className="chat-model-select"
-                value={selectedModel}
-                onChange={async e => {
-                  const newModel = e.target.value;
-                  setSelectedModel(newModel);
-                  try {
-                    await chatApi.setChatModel(newModel, chatProvider || undefined);
-                    toast.success('Model updated');
-                  } catch (err: any) {
-                    toast.error(`Failed to set model: ${err.message}`);
-                  }
-                }}
-                disabled={busy || modelOptions.length === 0}
-                title="Chat model"
+            {/* Simple | Team mode toggle */}
+            <div className="chat-mode-toggle" title="Simple: single conversational agent · Team: full ADK planner→doer→learner pipeline">
+              <button
+                className={chatMode === 'simple' ? 'active' : ''}
+                onClick={() => setChatMode('simple')}
+                disabled={busy}
               >
-                {modelOptions.length === 0 ? (
-                  <option value={selectedModel || ''}>
-                    {selectedModel || 'No models — configure on Home page'}
-                  </option>
-                ) : (
-                  modelOptions.map(opt => (
-                    <option key={opt.id} value={opt.id}>
-                      {opt.label}
+                Simple
+              </button>
+              <button
+                className={chatMode === 'team' ? 'active' : ''}
+                onClick={() => setChatMode('team')}
+                disabled={busy}
+              >
+                Team (full flow)
+              </button>
+            </div>
+
+            {/* Model selector — less relevant in team mode, so hide it */}
+            {chatMode === 'simple' && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
+                Model
+                <select
+                  className="chat-model-select"
+                  value={selectedModel}
+                  onChange={async e => {
+                    const newModel = e.target.value;
+                    setSelectedModel(newModel);
+                    try {
+                      await chatApi.setChatModel(newModel, chatProvider || undefined);
+                      toast.success('Model updated');
+                    } catch (err: any) {
+                      toast.error(`Failed to set model: ${err.message}`);
+                    }
+                  }}
+                  disabled={busy || modelOptions.length === 0}
+                  title="Chat model"
+                >
+                  {modelOptions.length === 0 ? (
+                    <option value={selectedModel || ''}>
+                      {selectedModel || 'No models — configure on Home page'}
                     </option>
-                  ))
-                )}
-              </select>
-            </label>
+                  ) : (
+                    modelOptions.map(opt => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+            )}
 
             {activeSession && (
               <>
