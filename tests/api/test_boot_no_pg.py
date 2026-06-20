@@ -274,3 +274,18 @@ def test_ticket_answer_requeues(client):
     got = c.get(f"/api/tickets/{t.identifier}").json()["ticket"]
     assert got["status"] == "todo"
     assert "React file" in got["body"]
+
+
+def test_ticket_events_stream_surfaces_awaiting(client):
+    c, store = client
+    t = store.create(title="q", body="vague", assignee_role="doer", project="demo",
+                     metadata={"interactive": True})
+    store.add_event(t.id, "clarify", "clarification", "What do you mean?",
+                    {"questions": ["What do you mean?"]})
+    store.update_status(t.id, "blocked",
+                        metadata_patch={"awaiting_input": True,
+                                        "clarify_questions": ["What do you mean?"]})
+    body = c.get(f"/api/tickets/{t.identifier}/events/stream").text
+    assert '"kind": "clarification"' in body
+    assert '"awaiting_input": true' in body
+    assert "What do you mean?" in body

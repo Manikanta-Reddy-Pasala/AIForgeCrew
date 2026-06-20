@@ -1283,6 +1283,61 @@ def stream_ticket_trace(identifier: str):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+_TERMINAL_TICKET = {"done", "qa", "qa_failed", "cancelled"}
+
+
+@app.get("/api/tickets/{identifier}/events/stream")
+def stream_ticket_events(identifier: str) -> StreamingResponse:
+    """Live stage updates for a ticket, sourced from ``ticket_events`` in
+    the DB (shared across the api + runner containers — unlike the
+    log-tail trace). Emits every event for the ticket, then polls for new
+    ones; emits the clarification + status when the run pauses awaiting
+    the user; closes on a terminal status. Chat Pipeline mode streams
+    this."""
+    import time as _t
+
+    def _gen():
+        t0 = tickets_mod.get(identifier)
+        if t0 is None:
+            yield f"data: {json.dumps({'kind': 'error', 'body': 'ticket not found'})}\n\n"
+            return
+        tid = t0.id
+        seen: set = set()
+        for _ in range(1200):   # ~40 min at 2s
+            t = tickets_mod.get(identifier)
+            if t is None:
+                break
+            for e in tickets_mod.comments(tid, 1000):
+                eid = e.get("id")
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                created = e.get("created_at")
+                yield "data: " + json.dumps({
+                    "kind": e.get("kind"), "agent_role": e.get("agent_role"),
+                    "body": e.get("body") or "",
+                    "metadata": e.get("metadata") or {},
+                    "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
+                }) + "\n\n"
+            meta = t.metadata or {}
+            awaiting = bool(meta.get("awaiting_input"))
+            yield "data: " + json.dumps({
+                "kind": "status", "status": t.status, "awaiting_input": awaiting,
+                "clarify_questions": meta.get("clarify_questions") or [],
+            }) + "\n\n"
+            if awaiting:
+                break
+            if t.status in _TERMINAL_TICKET:
+                yield f"data: {json.dumps({'kind': 'done', 'status': t.status})}\n\n"
+                break
+            if t.status == "blocked":
+                yield f"data: {json.dumps({'kind': 'done', 'status': 'blocked'})}\n\n"
+                break
+            _t.sleep(2)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
 # ─────────────────────────── LLM call trace ─────────────────────────────
 #
 # Per-ticket stream of just the ``llm.call`` NDJSON events — full chat
@@ -1874,7 +1929,7 @@ def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
         [{"type": "ticket", "identifier": t.identifier, "project": project}],
     )
     return {"ticket": t.identifier, "ticket_id": t.id, "project": project,
-            "trace_url": f"/api/trace/{t.identifier}/stream"}
+            "trace_url": f"/api/tickets/{t.identifier}/events/stream"}
 
 
 class _TicketAnswerBody(BaseModel):
@@ -1898,7 +1953,7 @@ def ticket_answer(identifier: str, body: _TicketAnswerBody) -> dict:
         metadata_patch={"clarified": True, "awaiting_input": False},
     )
     return {"ticket": t.identifier, "status": "todo",
-            "trace_url": f"/api/trace/{t.identifier}/stream"}
+            "trace_url": f"/api/tickets/{t.identifier}/events/stream"}
 
 
 _MCP_ALLOWED_TOOLS = {

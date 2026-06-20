@@ -326,7 +326,9 @@ export function chatSessionTicket(
 }
 
 export function traceStreamURL(identifier: string): string {
-  return `${BASE}/trace/${identifier}/stream`;
+  // DB-sourced ticket-event stream (works across api/runner containers,
+  // surfaces clarification + status); not the log-tail trace.
+  return `${BASE}/tickets/${identifier}/events/stream`;
 }
 
 /** Poll ticket status — returns the raw ticket object including metadata. */
