@@ -108,6 +108,26 @@ def test_set_openai_compatible_role_with_key(client):
     assert "sk-secret" not in str(cfg)
 
 
+def test_chat_agent_sse_streams_events(client, monkeypatch):
+    c, _ = client
+
+    def _fake_agent(messages, *, cwd, role="doer", **kw):
+        yield {"type": "thought", "text": "thinking"}
+        yield {"type": "tool", "name": "list_dir", "args": {}, "result": {"ok": True}}
+        yield {"type": "message", "text": "all done"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent.run_chat_agent",
+                        _fake_agent)
+    r = c.post("/api/chat/agent",
+               json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    body = r.text
+    assert '"type": "tool"' in body
+    assert '"text": "all done"' in body
+    assert '"type": "done"' in body
+
+
 def test_providers_test_endpoint(client, monkeypatch):
     import aiforge_core.llm.providers.openai_compatible as oc
     monkeypatch.setattr(oc, "probe",

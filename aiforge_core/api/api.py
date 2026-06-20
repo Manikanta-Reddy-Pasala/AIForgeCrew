@@ -1554,6 +1554,48 @@ def chat_retain(body: _ChatRetainBody) -> dict:
     no-op stub — explicit memory writes go through the new agent
     pipeline's Learner stage."""
     return {"id": None, "retained": False, "reason": "deprecated"}
+
+
+class _ChatMessage(BaseModel):
+    role: str = Field("user", description="'user' or 'assistant'")
+    content: str = Field("", description="message text")
+
+
+class _ChatAgentBody(BaseModel):
+    messages: list[_ChatMessage] = Field(..., description="conversation so far")
+    cwd: str | None = Field(None, description="working directory; default workspace")
+    role: str = Field("doer", description="archetype whose provider config drives the LLM")
+
+
+def _default_cwd() -> str:
+    return (
+        os.environ.get("AIFORGE_WORKSPACE_DIR")
+        or os.environ.get("AIFORGE_REPO_ROOT")
+        or os.getcwd()
+    )
+
+
+@app.post("/api/chat/agent")
+def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
+    """Conversational full-filesystem coding agent (SSE).
+
+    Streams ReAct steps — thoughts, tool calls + results, and the final
+    message — as ``data: {json}\\n\\n`` events. Drives the provider
+    configured for ``role`` on the home page. NOT the ticket pipeline.
+    """
+    from aiforge_core.runtime.chat_agent import run_chat_agent
+    cwd = body.cwd or _default_cwd()
+    msgs = [{"role": m.role, "content": m.content} for m in body.messages]
+
+    def _gen():
+        try:
+            for ev in run_chat_agent(msgs, cwd=cwd, role=body.role):
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
 _MCP_ALLOWED_TOOLS = {
     "sym_lookup", "list_repos", "list_services", "list_endpoints",
     "list_integrations", "graph_neighborhood", "caller_chain",
