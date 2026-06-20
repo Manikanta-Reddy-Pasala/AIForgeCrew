@@ -139,3 +139,55 @@ class SqliteBackend:
                 r = c.execute("SELECT * FROM tickets WHERE identifier = ?",
                               (str(ident_or_id),)).fetchone()
         return _row_to_dict(r) if r else None
+
+    def claim_next_any(self, aliases, excluded_projects) -> "dict | None":
+        if not aliases:
+            return None
+        ph_roles = ",".join("?" for _ in aliases)
+        sql = (
+            f"SELECT * FROM tickets "
+            f"WHERE status = 'todo' AND assignee_role IN ({ph_roles}) "
+        )
+        params = list(aliases)
+        if excluded_projects:
+            ph_proj = ",".join("?" for _ in excluded_projects)
+            sql += f"AND (project IS NULL OR project NOT IN ({ph_proj})) "
+            params += list(excluded_projects)
+        sql += "ORDER BY created_at ASC, id ASC LIMIT 1"
+        with self._conn() as c:
+            r = c.execute(sql, params).fetchone()
+            if not r:
+                return None
+            c.execute(
+                "UPDATE tickets SET status='in_progress', "
+                "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+                (r["id"],),
+            )
+            r2 = c.execute("SELECT * FROM tickets WHERE id=?", (r["id"],)).fetchone()
+        return _row_to_dict(r2)
+
+    def update_status(self, ticket_id, status, role, extra) -> "dict | None":
+        sets = ["status = ?", "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')"]
+        params = [status]
+        if status == "done":
+            sets.append("completed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        for k in ("branch", "assignee_role", "parent_id"):
+            if k in extra:
+                sets.append(f"{k} = ?")
+                params.append(extra[k])
+        params.append(ticket_id)
+        with self._conn() as c:
+            c.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id = ?", params)
+            r = c.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        return _row_to_dict(r) if r else None
+
+    def update_route(self, ticket_id, route, workflow, source, confidence) -> "dict | None":
+        with self._conn() as c:
+            c.execute(
+                "UPDATE tickets SET route=?, route_workflow=?, route_source=?, "
+                "route_confidence=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                "WHERE id=?",
+                (route, workflow, source, confidence, ticket_id),
+            )
+            r = c.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        return _row_to_dict(r) if r else None

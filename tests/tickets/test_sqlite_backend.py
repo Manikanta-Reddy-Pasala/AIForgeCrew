@@ -34,3 +34,43 @@ def test_create_and_get(be):
     assert got["title"] == "hello"
     got_by_id = be.get(row["id"])
     assert got_by_id["id"] == row["id"]
+
+
+def _mk(be, role, status="todo", project="demo"):
+    ident = be.new_identifier()
+    return be.create({
+        "identifier": ident, "title": "t", "body": "", "status": status,
+        "priority": "medium", "assignee_role": role, "parent_id": None,
+        "branch": None, "project": project, "labels": [], "metadata": {},
+        "route": "code", "route_workflow": None, "route_source": "auto",
+        "route_confidence": None,
+    })
+
+
+def test_claim_next_any_oldest_first(be):
+    first = _mk(be, "doer")
+    _mk(be, "doer")
+    claimed = be.claim_next_any(aliases=["doer"], excluded_projects=[])
+    assert claimed["id"] == first["id"]
+
+
+def test_claim_excludes_projects(be):
+    _mk(be, "doer", project="skipme")
+    keep = _mk(be, "doer", project="demo")
+    claimed = be.claim_next_any(aliases=["doer"], excluded_projects=["skipme"])
+    assert claimed["id"] == keep["id"]
+
+
+def test_update_status_sets_completed(be):
+    t = _mk(be, "doer")
+    out = be.update_status(t["id"], "done", role="doer", extra={})
+    assert out["status"] == "done"
+    assert out["completed_at"] is not None
+
+
+def test_update_route(be):
+    t = _mk(be, "doer")
+    out = be.update_route(t["id"], "workflow", "wf-1", "manual", 0.9)
+    assert out["route"] == "workflow"
+    assert out["route_workflow"] == "wf-1"
+    assert out["route_confidence"] == 0.9
