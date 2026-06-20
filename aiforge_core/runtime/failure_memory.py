@@ -18,6 +18,30 @@ import os
 log = logging.getLogger("aiforge.failure_memory")
 
 
+def _failure_text(ticket, verdict, reason, ci_status, review_verdict) -> str:
+    parts = [
+        f"FAILURE ticket={ticket.identifier} project={ticket.project} "
+        f"title={(ticket.title or '')[:120]!r}",
+        f"verdict={verdict}",
+    ]
+    if reason:
+        parts.append(f"reason={reason[:300]}")
+    if ci_status:
+        parts.append(f"ci={ci_status}")
+    if review_verdict:
+        parts.append(f"review={review_verdict}")
+    return " | ".join(parts)
+
+
+def _failure_tags(ticket, verdict, ci_status, review_verdict) -> list[str]:
+    tags = [f"ticket:{ticket.identifier}", "kind:failure", f"verdict:{verdict}"]
+    if ci_status:
+        tags.append(f"ci:{ci_status}")
+    if review_verdict:
+        tags.append(f"review:{review_verdict}")
+    return tags
+
+
 def record_failure(
     ticket,
     *,
@@ -31,6 +55,25 @@ def record_failure(
         return {"ok": False, "error": "not_a_failure"}
     if not ticket.project:
         return {"ok": False, "error": "no_project"}
+
+    text = _failure_text(ticket, verdict, reason, ci_status, review_verdict)
+    tags = _failure_tags(ticket, verdict, ci_status, review_verdict)
+
+    # Embedded (zero-infra) path — write the failure to the SQLite memory
+    # store so prior failures still surface on the next similar ticket.
+    from aiforge_core.memory import backend_select as _bsel
+    if _bsel.embedded():
+        try:
+            from aiforge_core.memory import sqlite_memory as _sqlmem
+            rid = _sqlmem.write_unit(
+                text=text, kind="failure", source="failure_memory",
+                tags=tags, repo=ticket.project, ticket=ticket.identifier,
+            )
+            log.info("failure_memory[sqlite]: ticket=%s id=%s",
+                     ticket.identifier, rid)
+            return {"ok": True, "id": rid, "deduped": rid == 0}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"sqlite: {exc}"}
 
     try:
         from aiforge_memory.features.memory.store import upsert_observation
@@ -48,29 +91,6 @@ def record_failure(
         drv = GraphDatabase.driver(uri, auth=(user, pw))
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"driver: {exc}"}
-
-    text_parts = [
-        f"FAILURE ticket={ticket.identifier} project={ticket.project} "
-        f"title={(ticket.title or '')[:120]!r}",
-        f"verdict={verdict}",
-    ]
-    if reason:
-        text_parts.append(f"reason={reason[:300]}")
-    if ci_status:
-        text_parts.append(f"ci={ci_status}")
-    if review_verdict:
-        text_parts.append(f"review={review_verdict}")
-    text = " | ".join(text_parts)
-
-    tags = [
-        f"ticket:{ticket.identifier}",
-        "kind:failure",
-        f"verdict:{verdict}",
-    ]
-    if ci_status:
-        tags.append(f"ci:{ci_status}")
-    if review_verdict:
-        tags.append(f"review:{review_verdict}")
 
     # Embed the failure text — without embed_vec the observation is
     # invisible to vector recall AND the PPR seed stage, so the whole

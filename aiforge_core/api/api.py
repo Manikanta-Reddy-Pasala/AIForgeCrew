@@ -122,12 +122,14 @@ def _event_row_out(r: dict) -> dict:
 # ─────────────────────────── Health / Agents ────────────────────────────
 @app.get("/api/health")
 def health() -> dict:
-    status = {"ok": True, "postgres": False, "lm_studio": False}
+    from aiforge_core.tickets.backend_factory import get_backend
+    status = {"ok": True, "postgres": False, "storage": None, "lm_studio": False}
     try:
-        with _db() as c, c.cursor() as cur:
-            cur.execute("SELECT 1")
-            cur.fetchone()
-        status["postgres"] = True
+        be = get_backend()
+        status["storage"] = be.name
+        # Cheap reachability probe — an identifier that never exists.
+        tickets_mod.get("__healthcheck__")
+        status["postgres"] = be.name == "postgres"
     except Exception:
         status["ok"] = False
     try:
@@ -144,34 +146,44 @@ def health() -> dict:
 def list_agents() -> list[dict]:
     """Static role catalogue + dynamic last-activity from ticket_events."""
     out = []
-    with _db() as c, c.cursor() as cur:
-        for name, rc in ROLES.items():
-            cur.execute(
-                "SELECT MAX(created_at) AS last_activity, "
-                "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
-                "FROM ticket_events WHERE agent_role = %s",
-                (name,),
-            )
-            row = cur.fetchone() or {}
+    # Activity stats use Postgres-specific SQL (FILTER). On the embedded
+    # SQLite backend they degrade to nulls — the static role catalogue
+    # still renders so the Agents / Home views work everywhere.
+    def _activity(name: str) -> tuple:
+        try:
+            with _db() as c, c.cursor() as cur:
+                cur.execute(
+                    "SELECT MAX(created_at) AS last_activity, "
+                    "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
+                    "FROM ticket_events WHERE agent_role = %s",
+                    (name,),
+                )
+                row = cur.fetchone() or {}
+                cur.execute(
+                    "SELECT identifier, status FROM tickets "
+                    "WHERE assignee_role = %s AND status IN "
+                    "('todo','in_progress','in_review') ORDER BY created_at DESC",
+                    (name,),
+                )
+                active = [{"identifier": r["identifier"], "status": r["status"]}
+                          for r in cur.fetchall()]
             last = row.get("last_activity")
-            cur.execute(
-                "SELECT identifier, status FROM tickets "
-                "WHERE assignee_role = %s AND status IN "
-                "('todo','in_progress','in_review') ORDER BY created_at DESC",
-                (name,),
-            )
-            active = [{"identifier": r["identifier"], "status": r["status"]}
-                      for r in cur.fetchall()]
-            out.append({
-                "role": name,
-                "model": rc.model,
-                "transport": rc.transport,
-                "max_turns": rc.max_turns,
-                "tool_allowlist": list(rc.tool_allowlist),
-                "last_activity": last.isoformat() if last else None,
-                "lifetime_turns": row.get("turns", 0),
-                "active_tickets": active,
-            })
+            return (last.isoformat() if last else None, row.get("turns", 0), active)
+        except Exception:
+            return (None, 0, [])
+
+    for name, rc in ROLES.items():
+        last_iso, turns, active = _activity(name)
+        out.append({
+            "role": name,
+            "model": rc.model,
+            "transport": rc.transport,
+            "max_turns": rc.max_turns,
+            "tool_allowlist": list(rc.tool_allowlist),
+            "last_activity": last_iso,
+            "lifetime_turns": turns,
+            "active_tickets": active,
+        })
     return out
 
 
@@ -253,76 +265,29 @@ def list_tickets(role: str | None = Query(None),
                  status: str | None = Query(None),
                  parent: str | None = Query(None),
                  limit: int = Query(100, le=500)) -> list[dict]:
-    clauses: list[str] = []
-    params: list[Any] = []
-    if role:
-        clauses.append("assignee_role = %s"); params.append(role)
-    if status:
-        statuses = [s.strip() for s in status.split(",")]
-        clauses.append("status = ANY(%s)"); params.append(statuses)
-    if parent:
-        clauses.append("parent_id = (SELECT id FROM tickets WHERE identifier=%s)")
-        params.append(parent)
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    # Subquery: derive `active_role` = the role of the most-recent agent
-    # event on this ticket. Falls back to NULL when no agent has fired
-    # yet (so the UI still has assignee_role to show). Distinct from the
-    # static `assignee_role` (which is auto-set to "supervisor" by the
-    # routing default and never gets overwritten).
-    active_role_expr = (
-        "(SELECT agent_role FROM ticket_events "
-        " WHERE ticket_id=tickets.id AND agent_role IS NOT NULL "
-        " ORDER BY created_at DESC LIMIT 1) AS active_role"
+    # Backend-agnostic (SQLite default / Postgres opt-in). `active_role`
+    # = role of the most-recent agent event; `started_at` = first
+    # in_progress event time — both enriched by the store layer.
+    statuses = [s.strip() for s in status.split(",")] if status else None
+    rows = tickets_mod.list_tickets(
+        role=role, statuses=statuses, parent_identifier=parent, limit=limit,
     )
-    q = (
-        "SELECT tickets.*, "
-        "(SELECT MIN(created_at) FROM ticket_events "
-        " WHERE ticket_id=tickets.id AND kind='status_change' AND body='in_progress'"
-        ") AS started_at, "
-        f"{active_role_expr} "
-        f"FROM tickets{where} ORDER BY id DESC LIMIT %s"
-    )
-    params.append(limit)
-    with _db() as c, c.cursor() as cur:
-        cur.execute(q, params)
-        rows = cur.fetchall()
     return [_ticket_row_out(r) for r in rows]
 
 
 @app.get("/api/tickets/{identifier}")
 def get_ticket(identifier: str) -> dict:
-    _started_expr = (
-        "(SELECT MIN(created_at) FROM ticket_events "
-        " WHERE ticket_id=tickets.id AND kind='status_change' AND body='in_progress'"
-        ") AS started_at"
-    )
-    _active_role_expr = (
-        "(SELECT agent_role FROM ticket_events "
-        " WHERE ticket_id=tickets.id AND agent_role IS NOT NULL "
-        " ORDER BY created_at DESC LIMIT 1) AS active_role"
-    )
-    with _db() as c, c.cursor() as cur:
-        cur.execute(
-            f"SELECT tickets.*, {_started_expr}, {_active_role_expr} "
-            f"FROM tickets WHERE identifier=%s",
-            (identifier,),
-        )
-        t = cur.fetchone()
-        if not t:
-            raise HTTPException(404, f"ticket {identifier} not found")
-        ticket_id = t["id"]
-        cur.execute(
-            "SELECT * FROM ticket_events WHERE ticket_id=%s "
-            "ORDER BY created_at ASC LIMIT 500",
-            (ticket_id,),
-        )
-        events = [_event_row_out(r) for r in cur.fetchall()]
-        cur.execute(
-            f"SELECT tickets.*, {_started_expr}, {_active_role_expr} "
-            "FROM tickets WHERE parent_id=%s ORDER BY created_at ASC",
-            (ticket_id,),
-        )
-        children = [_ticket_row_out(r) for r in cur.fetchall()]
+    # Backend-agnostic ticket detail. Children are fetched via the
+    # enriched list filtered by this ticket as parent.
+    t = tickets_mod.get_enriched(identifier)
+    if not t:
+        raise HTTPException(404, f"ticket {identifier} not found")
+    ticket_id = t["id"]
+    events = [_event_row_out(r) for r in tickets_mod.comments(ticket_id, 500)]
+    children = [
+        _ticket_row_out(r)
+        for r in tickets_mod.list_tickets(parent_identifier=identifier, limit=500)
+    ]
     # Per-stage timeline — one row per agent that emitted a stage_done
     # event. Lets the UI render an inline timing breakdown without
     # parsing every event payload. Order = chronological.
@@ -545,13 +510,7 @@ def create_ticket(payload: TicketCreate) -> dict:
     if not t.branch:
         t.branch = _derive_branch(t.identifier, t.title)
         try:
-            with tickets_mod._conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE tickets SET branch=%s WHERE id=%s",
-                        (t.branch, t.id),
-                    )
-                conn.commit()
+            tickets_mod.set_branch(t.id, t.branch)
         except Exception:
             pass
     return _ticket_row_out({
@@ -1005,6 +964,13 @@ def metrics() -> dict:
 # ─────────────────────────── Memory ─────────────────────────────────────
 @app.get("/api/memory/stats")
 def memory_stats() -> dict:
+    from aiforge_core.memory import backend_select as _bsel
+    if _bsel.embedded():
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        s = _sqlmem.stats()
+        wings = [{"tier": "embedded", "wing": k, "n": v, "embedded": v}
+                 for k, v in s.get("by_kind", {}).items()]
+        return {"backend": "sqlite", "total": s.get("total", 0), "wings": wings}
     with _db() as c, c.cursor() as cur:
         cur.execute(
             "SELECT tier, wing, COUNT(*) AS n, "
@@ -1013,13 +979,25 @@ def memory_stats() -> dict:
             "ORDER BY tier, wing"
         )
         rows = cur.fetchall()
-    return {"wings": rows}
+    return {"backend": "postgres", "wings": rows}
 
 
 @app.get("/api/memory/search")
 def memory_search(q: str = Query(..., min_length=2),
                   role: str = Query("sr_developer"),
                   top_k: int = Query(12, le=50)) -> list[dict]:
+    from aiforge_core.memory import backend_select as _bsel
+    if _bsel.embedded():
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        return [
+            {
+                "tier": "embedded", "wing": h.get("kind"),
+                "source": h.get("source"),
+                "text": (h.get("text") or "")[:800], "score": h.get("score"),
+                "metadata": {"ticket": h.get("ticket"), "repo": h.get("repo")},
+            }
+            for h in _sqlmem.recall(q, limit=top_k)
+        ]
     from aiforge_core.memory.store import Memory
     m = Memory()
     hits = m.search(q, role=role, top_k=top_k)
@@ -1325,6 +1303,14 @@ class _AgentConfigV2Body(BaseModel):
                        description="Model identifier for the provider")
     base_url: str | None = Field(
         None, description="Optional override; null = provider default")
+    api_key: str | None = Field(
+        None, description="Optional API key (openai_compatible cloud-with-key); "
+                          "blank = no token")
+
+
+class _ProviderTestBody(BaseModel):
+    base_url: str = Field(..., description="OpenAI-compatible base URL to probe")
+    api_key: str | None = Field(None, description="Optional bearer key")
 
 
 @app.get("/api/agents/v2/config")
@@ -1339,8 +1325,18 @@ def agents_v2_config() -> dict:
             "provider": row.get("provider"),
             "model": row.get("model"),
             "base_url": row.get("base_url"),
+            # Never echo the secret — just whether one is stored.
+            "api_key_set": bool(row.get("api_key")),
         }
     return out
+
+
+@app.post("/api/providers/test")
+def providers_test(body: _ProviderTestBody) -> dict:
+    """Test-connection for the home page. Probes ``{base_url}/v1/models``
+    and returns ``{ok, models[]}`` (or ``{ok:false, error}``)."""
+    from aiforge_core.llm.providers.openai_compatible import probe
+    return probe(body.base_url, body.api_key)
 
 
 @app.get("/api/agents/v2/providers")
@@ -1367,9 +1363,11 @@ def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
     if not body.model or not body.model.strip():
         raise HTTPException(400, "model cannot be empty")
     base_url = body.base_url.strip() if body.base_url else None
+    api_key = body.api_key.strip() if body.api_key else None
     try:
         cfg = _acfg.set_role(role, body.provider, body.model,
-                             base_url=base_url or None)
+                             base_url=base_url or None,
+                             api_key=api_key or None)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {
@@ -1377,6 +1375,7 @@ def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
         "provider": cfg.get("provider"),
         "model": cfg.get("model"),
         "base_url": cfg.get("base_url"),
+        "api_key_set": bool(cfg.get("api_key")),
     }
 
 
@@ -1555,6 +1554,48 @@ def chat_retain(body: _ChatRetainBody) -> dict:
     no-op stub — explicit memory writes go through the new agent
     pipeline's Learner stage."""
     return {"id": None, "retained": False, "reason": "deprecated"}
+
+
+class _ChatMessage(BaseModel):
+    role: str = Field("user", description="'user' or 'assistant'")
+    content: str = Field("", description="message text")
+
+
+class _ChatAgentBody(BaseModel):
+    messages: list[_ChatMessage] = Field(..., description="conversation so far")
+    cwd: str | None = Field(None, description="working directory; default workspace")
+    role: str = Field("doer", description="archetype whose provider config drives the LLM")
+
+
+def _default_cwd() -> str:
+    return (
+        os.environ.get("AIFORGE_WORKSPACE_DIR")
+        or os.environ.get("AIFORGE_REPO_ROOT")
+        or os.getcwd()
+    )
+
+
+@app.post("/api/chat/agent")
+def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
+    """Conversational full-filesystem coding agent (SSE).
+
+    Streams ReAct steps — thoughts, tool calls + results, and the final
+    message — as ``data: {json}\\n\\n`` events. Drives the provider
+    configured for ``role`` on the home page. NOT the ticket pipeline.
+    """
+    from aiforge_core.runtime.chat_agent import run_chat_agent
+    cwd = body.cwd or _default_cwd()
+    msgs = [{"role": m.role, "content": m.content} for m in body.messages]
+
+    def _gen():
+        try:
+            for ev in run_chat_agent(msgs, cwd=cwd, role=body.role):
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
 _MCP_ALLOWED_TOOLS = {
     "sym_lookup", "list_repos", "list_services", "list_endpoints",
     "list_integrations", "graph_neighborhood", "caller_chain",

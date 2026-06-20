@@ -94,6 +94,18 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "api_key_env": "LM_STUDIO_API_KEY",
         "api_key_default": "lm-studio",
     },
+    # Generic OpenAI-compatible endpoint — the deploy-anywhere provider.
+    # User supplies base_url (+ optional api_key) per role via the home
+    # page. Covers OSS-no-token, LM Studio, OpenRouter, Groq, Together,
+    # vLLM, and cloud-with-key. Blank key = no token.
+    "openai_compatible": {
+        "label": "OpenAI-compatible (any base URL — OSS / LM Studio / OpenRouter / cloud)",
+        "litellm_prefix": "openai",
+        "default_model": None,          # free-text / discovered via /v1/models
+        "api_key_env": "AIFORGE_OPENAI_COMPAT_API_KEY",
+        "api_key_default": "not-needed",  # OSS endpoints ignore the key
+        "base_url": None,               # required per-role (UI-set)
+    },
     "anthropic": {
         "label": "Anthropic Claude",
         "litellm_prefix": "anthropic",
@@ -149,6 +161,10 @@ MODEL_CATALOG: dict[str, list[dict[str, Any]]] = {
     # paths: stale entries for deleted models caused phantom catalog
     # rows (Qwen3.6-27B / gemma-4-31b were removed from disk long ago).
     "local": [],
+    # openai_compatible is fully dynamic too — the model list depends on
+    # the per-role base_url, so the UI fetches it on demand via the
+    # provider-probe endpoint rather than from this static catalog.
+    "openai_compatible": [],
     "ollama_cloud": [
         {"id": "qwen3-coder:480b", "label": "Qwen3 Coder 480B",
          "context": 128000, "tier": "premium"},
@@ -315,22 +331,27 @@ def load_all() -> dict[str, dict[str, Any]]:
                                         cfg[role]["provider"],
                             "model": row.get("model") or cfg[role]["model"],
                             "base_url": row.get("base_url"),
+                            "api_key": row.get("api_key"),
                         }
         except Exception:
             pass
     # Env override: AIFORGE_<ROLE>_MODEL / AIFORGE_<ROLE>_PROVIDER /
-    # AIFORGE_<ROLE>_BASE_URL. Always wins over persisted JSON — ops
-    # escape hatch.
+    # AIFORGE_<ROLE>_BASE_URL / AIFORGE_<ROLE>_API_KEY. Always wins over
+    # persisted JSON — ops escape hatch.
     for role in _ROLES:
+        cfg[role].setdefault("api_key", None)
         env_model = os.environ.get(f"AIFORGE_{role.upper()}_MODEL")
         env_prov = os.environ.get(f"AIFORGE_{role.upper()}_PROVIDER")
         env_base = os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
+        env_key = os.environ.get(f"AIFORGE_{role.upper()}_API_KEY")
         if env_model:
             cfg[role]["model"] = env_model
         if env_prov:
             cfg[role]["provider"] = env_prov
         if env_base:
             cfg[role]["base_url"] = env_base
+        if env_key:
+            cfg[role]["api_key"] = env_key
     return cfg
 
 
@@ -342,12 +363,15 @@ def get(role: str) -> dict[str, Any]:
 
 
 def set_role(role: str, provider: str, model: str,
-             base_url: str | None = None) -> dict[str, Any]:
-    """Persist {provider, model, base_url?} for a single role.
+             base_url: str | None = None,
+             api_key: str | None = None) -> dict[str, Any]:
+    """Persist {provider, model, base_url?, api_key?} for a single role.
 
     ``base_url`` is optional; when None, the provider's default is used at
-    resolve time. Env vars still win on next read, which is desired for a
-    one-off override without losing the saved default.
+    resolve time. ``api_key`` is optional too — used mainly by the
+    ``openai_compatible`` provider for cloud-with-key endpoints; leave it
+    blank for OSS-no-token. Env vars still win on next read, which is
+    desired for a one-off override without losing the saved default.
     """
     if role not in _ROLES:
         raise ValueError(f"unknown role: {role}")
@@ -357,6 +381,8 @@ def set_role(role: str, provider: str, model: str,
         raise ValueError("model cannot be empty")
     if base_url is not None and not isinstance(base_url, str):
         raise ValueError("base_url must be string or None")
+    if api_key is not None and not isinstance(api_key, str):
+        raise ValueError("api_key must be string or None")
     with _LOCK:
         p = _path()
         disk: dict[str, dict[str, Any]] = {}
@@ -372,6 +398,10 @@ def set_role(role: str, provider: str, model: str,
             row["base_url"] = base_url.strip()
         else:
             row["base_url"] = None
+        if api_key and api_key.strip():
+            row["api_key"] = api_key.strip()
+        else:
+            row["api_key"] = None
         disk[role] = row
         p.write_text(json.dumps(disk, indent=2))
     return get(role)
@@ -442,7 +472,18 @@ def resolve_litellm(role: str) -> dict[str, Any]:
             or stored
             or prov.get("base_url")
         )
-    api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
+    if row["provider"] == "openai_compatible":
+        # env > per-role env > stored config key > provider default
+        # ("not-needed" sentinel so OSS-no-token endpoints still get a
+        # non-empty key, which the OpenAI client requires).
+        api_key = (
+            os.environ.get(prov["api_key_env"])
+            or os.environ.get(f"AIFORGE_{role.upper()}_API_KEY")
+            or row.get("api_key")
+            or prov["api_key_default"]
+        )
+    else:
+        api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
     return {
         "model_id": model, "api_base": base_url, "api_key": api_key,
     }

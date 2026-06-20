@@ -66,8 +66,24 @@ def query(
     errors: list[str] = []
     raw_hits: list[dict] = []
 
-    # (the old "memory hybrid search" Postgres source was a dead stub —
-    # it returned [] unconditionally; Observation recall rides afm_bundle)
+    # 1) Embedded SQLite recall — active only when no Neo4j/Postgres is
+    # configured (backend_select.embedded()). Surfaces the agent's own
+    # observations/failures/learnings written to ~/.aiforge/memory.db.
+    # Soft-fail like every other source; the pro backends recall via
+    # afm_bundle instead, so this stays dark when they're present.
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if _bsel.embedded():
+            from aiforge_core.memory import sqlite_memory as _sqlmem
+            sqlite_repo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
+            rows = _sqlmem.recall(text, limit=limit, repo=sqlite_repo)
+            if rows:
+                used.append("memory")
+                raw_hits.extend(
+                    _tag(rows, source="memory", weight=weights["memory"]),
+                )
+    except Exception as exc:
+        errors.append(f"memory: {exc}")
 
     # 2) Ticket brief — explicit ticket OR auto-detected token
     auto_ticket = ticket or (_TICKET_RE.search(text) or [None])[0]

@@ -151,6 +151,9 @@ def test_failure_memory_skips_without_project() -> None:
 
 
 def test_failure_memory_calls_upsert(monkeypatch) -> None:
+    # Exercise the Neo4j/AFM write path — pin a Neo4j URI so
+    # backend_select doesn't route to the default embedded SQLite store.
+    monkeypatch.setenv("NEO4J_URI", "bolt://test:7687")
     t = _StubTicket()
     fake_upsert = MagicMock(
         return_value={"id": "obs_xyz", "deduped": False},
