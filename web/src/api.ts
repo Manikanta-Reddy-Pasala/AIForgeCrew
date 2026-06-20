@@ -46,6 +46,31 @@ export const api = {
   memoryStats:  () => j<any>('/memory/stats'),
   memorySearch: (q: string, role = 'planner', topK = 12) =>
     j<any[]>(`/memory/search?q=${encodeURIComponent(q)}&role=${role}&top_k=${topK}`),
+  memorySources: () => j<MemorySource[]>('/memory/sources'),
+  memorySourceCreate: (body: { kind: string; location: string; name?: string }) =>
+    j<MemorySource>('/memory/sources', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  memorySourceDelete: (id: number) =>
+    fetch(`${BASE}/memory/sources/${id}`, { method: 'DELETE' }).then(r => {
+      if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
+    }),
+  memorySourceIndex: (id: number) =>
+    j<MemorySource>(`/memory/sources/${id}/index`, { method: 'POST' }),
+  memorySourceUpload: async (file: File, name?: string): Promise<MemorySource> => {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (name) fd.append('name', name);
+    const r = await fetch(`${BASE}/memory/sources/upload`, { method: 'POST', body: fd });
+    if (!r.ok) {
+      let detail = '';
+      try { const b = await r.json(); detail = b?.detail || b?.error || ''; } catch { /* ignore */ }
+      throw new Error(`${r.status} ${r.statusText}${detail ? ` — ${detail}` : ''}`);
+    }
+    return r.json();
+  },
   mcpTool:  (tool: string, args: Record<string, any> = {}) =>
     j<any>('/mcp/tool', {
       method: 'POST',
@@ -135,6 +160,20 @@ export const api = {
       }),
     }),
 };
+
+// ── memory source types ───────────────────────────────────────────
+
+export interface MemorySource {
+  id: number;
+  kind: string;
+  name: string;
+  location: string;
+  status: string;
+  units: number;
+  error: string | null;
+  last_indexed: string | null;
+  created_at: string;
+}
 
 // ── agent v2 config types ─────────────────────────────────────────
 
