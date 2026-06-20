@@ -17,7 +17,17 @@ type LiveTurn = {
   text: string;
   steps: AgentStep[];
   streaming: boolean;
+  elapsedSec?: number;
 };
+
+// ── Elapsed time formatter ────────────────────────────────────────────────────
+
+function fmtElapsed(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${String(s).padStart(2, '0')}s`;
+}
 
 const LS_SESSION_KEY = 'aiforge.chat.activeSessionId';
 const LS_MODEL_KEY = 'aiforge.chat.model';
@@ -95,6 +105,11 @@ export default function Chat() {
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     try { return localStorage.getItem(LS_MODEL_KEY) || ''; } catch { return ''; }
   });
+
+  // Elapsed timer for the live streaming turn
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sendStartRef = useRef<number>(0);
 
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -192,6 +207,16 @@ export default function Chat() {
       setTimeout(() => renameInputRef.current?.focus(), 30);
     }
   }, [renaming]);
+
+  // Cleanup timer interval on unmount to prevent leaks
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
 
   // ── Select a session ──────────────────────────────────────────────────────
 
@@ -299,6 +324,14 @@ export default function Chat() {
     setLiveTurn(initialLive);
     setBusy(true);
 
+    // Start elapsed timer
+    sendStartRef.current = Date.now();
+    setElapsedSec(0);
+    if (timerRef.current !== null) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - sendStartRef.current) / 1000));
+    }, 1000);
+
     const isFirstMessage = messages.length === 0;
 
     try {
@@ -368,8 +401,14 @@ export default function Chat() {
         }
       }
 
-      // Ensure streaming is cleared
-      setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
+      // Ensure streaming is cleared; freeze the elapsed timer
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
+      setElapsedSec(finalElapsed);
+      setLiveTurn(prev => prev ? { ...prev, streaming: false, elapsedSec: finalElapsed } : null);
 
       // Re-fetch session messages to get persisted IDs and auto-title
       await loadSession(sessionId);
@@ -384,7 +423,13 @@ export default function Chat() {
       }
 
     } catch (e: any) {
-      setLiveTurn(prev => prev ? { ...prev, text: `Agent error: ${e.message}`, streaming: false } : null);
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
+      setElapsedSec(finalElapsed);
+      setLiveTurn(prev => prev ? { ...prev, text: `Agent error: ${e.message}`, streaming: false, elapsedSec: finalElapsed } : null);
       toast.error(`Agent failed: ${e.message}`);
     } finally {
       setBusy(false);
@@ -619,6 +664,7 @@ export default function Chat() {
                       text={liveTurn.text}
                       steps={liveTurn.steps}
                       streaming={liveTurn.streaming}
+                      elapsedSec={liveTurn.streaming ? elapsedSec : liveTurn.elapsedSec}
                     />
                   </div>
                 </div>
@@ -676,10 +722,12 @@ function AssistantBubble({
   text,
   steps,
   streaming,
+  elapsedSec,
 }: {
   text: string;
   steps: AgentStep[];
   streaming: boolean;
+  elapsedSec?: number;
 }) {
   return (
     <div>
@@ -703,6 +751,23 @@ function AssistantBubble({
       {streaming && (steps.length > 0 || text) && (
         <div style={{ marginTop: 4, padding: '0 2px' }}>
           <div className="typing" style={{ padding: '4px 0' }}><span /><span /><span /></div>
+        </div>
+      )}
+      {elapsedSec !== undefined && (
+        <div style={{
+          marginTop: 6,
+          fontSize: 'var(--fs-xs)',
+          color: 'var(--fg-3)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          fontVariantNumeric: 'tabular-nums',
+        }}>
+          {streaming ? (
+            <span>⏱ {fmtElapsed(elapsedSec)}</span>
+          ) : (
+            <span className="muted xs">· {fmtElapsed(elapsedSec)}</span>
+          )}
         </div>
       )}
     </div>
