@@ -213,3 +213,54 @@ export function logStreamURL(role: string): string {
 export function chatAgentURL(): string {
   return `${BASE}/chat/agent`;
 }
+
+// ── Chat session types ────────────────────────────────────────────
+
+export interface ChatSession {
+  id: number;
+  title: string;
+  cwd: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+}
+
+export interface ChatMsg {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  steps: any[];
+  created_at: string;
+}
+
+// ── Chat session API methods ──────────────────────────────────────
+
+export const chatApi = {
+  sessions: () => j<ChatSession[]>('/chat/sessions'),
+
+  sessionCreate: (body?: { title?: string; cwd?: string }) =>
+    j<ChatSession>('/chat/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    }),
+
+  sessionGet: (id: number) =>
+    j<{ session: ChatSession; messages: ChatMsg[] }>(`/chat/sessions/${id}`),
+
+  sessionRename: (id: number, title: string) =>
+    j<ChatSession>(`/chat/sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    }),
+
+  sessionDelete: (id: number) =>
+    fetch(`${BASE}/chat/sessions/${id}`, { method: 'DELETE' }).then(r => {
+      if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
+    }),
+};
+
+export function chatSessionMessageURL(id: number): string {
+  return `${BASE}/chat/sessions/${id}/message`;
+}

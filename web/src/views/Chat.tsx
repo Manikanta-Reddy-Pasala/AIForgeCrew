@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api, chatAgentURL } from '../api';
+import { chatApi, chatSessionMessageURL, ChatSession, ChatMsg } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -11,156 +11,257 @@ type AgentStep =
   | { kind: 'tool'; name: string; args: object; result: object }
   | { kind: 'error'; text: string };
 
-type Turn = {
-  id: string;
-  role: 'user' | 'system';
+// A "live" turn: the in-progress assistant turn while streaming.
+type LiveTurn = {
+  role: 'assistant';
   text: string;
-  // Memory Q&A fields
-  queryRef?: string;
-  hits?: any[];
-  tools?: any[];
-  tiers?: string[];
-  normalized?: string;
-  summary?: string;
-  saved?: { worked: boolean; id?: number | string } | null;
-  // Agent mode fields
-  agentMode?: boolean;
-  steps?: AgentStep[];
-  streaming?: boolean;
-  createdAt: number;
+  steps: AgentStep[];
+  streaming: boolean;
 };
 
-type ChatMode = 'memory' | 'agent';
+const LS_SESSION_KEY = 'aiforge.chat.activeSessionId';
 
-function uid() { return Math.random().toString(36).slice(2, 10); }
+// ── relative time helper ──────────────────────────────────────────────────────
 
-// Chat = memory-grounded Q&A against AIForge Neo4j + graph_rag MCP.
-// Agent mode adds a full-filesystem coding agent via POST /api/chat/agent (SSE).
+function relTime(isoStr: string): string {
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+// ── Convert a persisted ChatMsg step (from server) to AgentStep ───────────────
+
+function toAgentStep(raw: any): AgentStep | null {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.type === 'thought' || raw.kind === 'thought') {
+    return { kind: 'thought', text: raw.text || '' };
+  }
+  if (raw.type === 'tool' || raw.kind === 'tool') {
+    return { kind: 'tool', name: raw.name || '', args: raw.args || {}, result: raw.result || {} };
+  }
+  if (raw.type === 'error' || raw.kind === 'error') {
+    return { kind: 'error', text: raw.text || '' };
+  }
+  return null;
+}
+
+// ── Chat component ─────────────────────────────────────────────────────────────
+
 export default function Chat() {
-  const [turns, setTurns] = useState<Turn[]>([]);
+  // Sessions list
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+
+  // Active session
+  const [activeId, setActiveId] = useState<number | null>(() => {
+    try {
+      const v = localStorage.getItem(LS_SESSION_KEY);
+      return v ? Number(v) : null;
+    } catch { return null; }
+  });
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [msgsLoading, setMsgsLoading] = useState(false);
+
+  // Live turn (the assistant response being streamed right now)
+  const [liveTurn, setLiveTurn] = useState<LiveTurn | null>(null);
+
+  // Composer
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
-  const [drawerTurn, setDrawerTurn] = useState<Turn | null>(null);
-  const [mode, setMode] = useState<ChatMode>(() => {
-    try {
-      const saved = localStorage.getItem('aiforge.chat.mode');
-      return (saved === 'agent' || saved === 'memory') ? saved : 'memory';
-    } catch { return 'memory'; }
-  });
+
+  // Rename state: { id, value }
+  const [renaming, setRenaming] = useState<{ id: number; value: string } | null>(null);
+
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
 
-  // History rehydration from localStorage. Chat UI state is ephemeral
-  // by policy — drop turns older than 7 days on load. Actual memory +
-  // confirmed flows live in Neo4j (T1-T3) and are unaffected.
-  useEffect(() => {
-    const CHAT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  // ── Load sessions list ─────────────────────────────────────────────────────
+
+  async function loadSessions(silent = false) {
+    if (!silent) setSessionsLoading(true);
     try {
-      const raw = localStorage.getItem('aiforge.chat.history');
-      if (!raw) return;
-      const saved = JSON.parse(raw) as Turn[];
-      if (!Array.isArray(saved)) return;
-      const cutoff = Date.now() - CHAT_TTL_MS;
-      const fresh = saved.filter(t => (t.createdAt || 0) >= cutoff);
-      if (fresh.length > 0) setTurns(fresh);
-      if (fresh.length !== saved.length) {
-        localStorage.setItem('aiforge.chat.history', JSON.stringify(fresh));
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => {
-    try {
-      const toSave = turns.slice(-60).map(t => ({ ...t, streaming: false }));
-      localStorage.setItem('aiforge.chat.history', JSON.stringify(toSave));
-      localStorage.setItem('aiforge.chat.saved_at', String(Date.now()));
-    } catch { /* ignore */ }
-  }, [turns]);
-
-  useEffect(() => {
-    try { localStorage.setItem('aiforge.chat.mode', mode); } catch { /* ignore */ }
-  }, [mode]);
-
-  // auto-scroll on new turns
-  useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
-  }, [turns, busy]);
-
-  function resetChat() {
-    setTurns([]);
-    setDrawerTurn(null);
-    try { localStorage.removeItem('aiforge.chat.history'); } catch { /* ignore */ }
-  }
-
-  // ── Memory Q&A mode ────────────────────────────────────────────────────────
-
-  async function sendMemory(q: string) {
-    const userTurn: Turn = { id: uid(), role: 'user', text: q, createdAt: Date.now() };
-    setTurns(t => [...t, userTurn]);
-    setBusy(true);
-    try {
-      const res = await api.chatAsk(q, 16);
-      const sysTurn: Turn = {
-        id: uid(),
-        role: 'system',
-        text: res.answer || '(no answer)',
-        queryRef: res.normalized || q,
-        normalized: res.normalized,
-        hits: res.hits || [],
-        tools: res.tools_called || [],
-        tiers: res.tiers_used || [],
-        summary: (res.answer || '').split('\n').slice(0, 2).join(' ').slice(0, 300),
-        saved: null,
-        createdAt: Date.now(),
-      };
-      setTurns(t => [...t, sysTurn]);
-      setDrawerTurn(sysTurn);
+      const list = await chatApi.sessions();
+      setSessions(list);
     } catch (e: any) {
-      setTurns(t => [...t, {
-        id: uid(),
-        role: 'system',
-        text: `error: ${e.message}`,
-        createdAt: Date.now(),
-      }]);
-      toast.error(`Chat failed: ${e.message}`);
+      if (!silent) toast.error(`Failed to load sessions: ${e.message}`);
     } finally {
-      setBusy(false);
-      textareaRef.current?.focus();
+      if (!silent) setSessionsLoading(false);
     }
   }
 
-  // ── Agent mode (SSE over POST) ─────────────────────────────────────────────
+  // ── Load a specific session's messages ────────────────────────────────────
 
-  async function sendAgent(q: string, allTurns: Turn[]) {
-    // Build message history: include all prior turns except in-progress ones
-    const messages = allTurns
-      .filter(t => !t.streaming)
-      .map(t => ({
-        role: (t.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
-        content: t.text,
-      }));
-    // Append the new user message
-    messages.push({ role: 'user', content: q });
+  async function loadSession(id: number) {
+    setMsgsLoading(true);
+    setMessages([]);
+    setLiveTurn(null);
+    try {
+      const res = await chatApi.sessionGet(id);
+      setMessages(res.messages);
+    } catch (e: any) {
+      toast.error(`Failed to load session: ${e.message}`);
+      // Session may have been deleted; clear active
+      setActiveId(null);
+      try { localStorage.removeItem(LS_SESSION_KEY); } catch { /* ignore */ }
+    } finally {
+      setMsgsLoading(false);
+    }
+  }
 
-    const agentTurnId = uid();
-    const agentTurn: Turn = {
-      id: agentTurnId,
-      role: 'system',
-      text: '',
-      agentMode: true,
+  // ── On mount: load sessions; if active ID persisted, load it too ──────────
+
+  useEffect(() => {
+    loadSessions().then(() => {
+      // sessions loaded; if there's an activeId, load it
+      if (activeId !== null) {
+        loadSession(activeId);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist active session id
+  useEffect(() => {
+    try {
+      if (activeId !== null) {
+        localStorage.setItem(LS_SESSION_KEY, String(activeId));
+      } else {
+        localStorage.removeItem(LS_SESSION_KEY);
+      }
+    } catch { /* ignore */ }
+  }, [activeId]);
+
+  // Auto-scroll on new messages / live turn updates
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages, liveTurn]);
+
+  // Focus rename input when rename starts
+  useEffect(() => {
+    if (renaming) {
+      setTimeout(() => renameInputRef.current?.focus(), 30);
+    }
+  }, [renaming]);
+
+  // ── Select a session ──────────────────────────────────────────────────────
+
+  function selectSession(id: number) {
+    if (id === activeId) return;
+    setActiveId(id);
+    setLiveTurn(null);
+    setBusy(false);
+    loadSession(id);
+  }
+
+  // ── Create a new session ──────────────────────────────────────────────────
+
+  async function createSession(): Promise<number | null> {
+    try {
+      const session = await chatApi.sessionCreate();
+      setSessions(prev => [session, ...prev]);
+      setActiveId(session.id);
+      setMessages([]);
+      setLiveTurn(null);
+      return session.id;
+    } catch (e: any) {
+      toast.error(`Failed to create session: ${e.message}`);
+      return null;
+    }
+  }
+
+  async function handleNewChat() {
+    await createSession();
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  }
+
+  // ── Delete a session ──────────────────────────────────────────────────────
+
+  async function deleteSession(id: number) {
+    if (!window.confirm('Delete this conversation?')) return;
+    try {
+      await chatApi.sessionDelete(id);
+      setSessions(prev => prev.filter(s => s.id !== id));
+      if (activeId === id) {
+        setActiveId(null);
+        setMessages([]);
+        setLiveTurn(null);
+      }
+    } catch (e: any) {
+      toast.error(`Delete failed: ${e.message}`);
+    }
+  }
+
+  // ── Rename a session ──────────────────────────────────────────────────────
+
+  function startRename(session: ChatSession, e: React.MouseEvent) {
+    e.stopPropagation();
+    setRenaming({ id: session.id, value: session.title });
+  }
+
+  async function commitRename() {
+    if (!renaming) return;
+    const trimmed = renaming.value.trim();
+    setRenaming(null);
+    if (!trimmed) return;
+    // Find current title to check if changed
+    const current = sessions.find(s => s.id === renaming.id);
+    if (current && current.title === trimmed) return;
+    try {
+      const updated = await chatApi.sessionRename(renaming.id, trimmed);
+      setSessions(prev => prev.map(s => s.id === renaming.id ? { ...s, title: updated.title } : s));
+    } catch (e: any) {
+      toast.error(`Rename failed: ${e.message}`);
+    }
+  }
+
+  function onRenameKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+    if (e.key === 'Escape') { setRenaming(null); }
+  }
+
+  // ── SSE streaming send ────────────────────────────────────────────────────
+
+  async function send() {
+    const q = input.trim();
+    if (!q || busy) return;
+    setInput('');
+
+    // Ensure we have a session
+    let sessionId = activeId;
+    if (sessionId === null) {
+      const newId = await createSession();
+      if (newId === null) return;
+      sessionId = newId;
+    }
+
+    // Optimistically append user message
+    const optimisticUser: ChatMsg = {
+      id: -(Date.now()), // placeholder, negative to distinguish
+      role: 'user',
+      content: q,
       steps: [],
-      streaming: true,
-      createdAt: Date.now(),
+      created_at: new Date().toISOString(),
     };
+    setMessages(prev => [...prev, optimisticUser]);
+
+    // Start live assistant turn
+    const initialLive: LiveTurn = { role: 'assistant', text: '', steps: [], streaming: true };
+    setLiveTurn(initialLive);
     setBusy(true);
 
-    setTurns(t => [...t, agentTurn]);
+    const isFirstMessage = messages.length === 0;
 
     try {
-      const res = await fetch(chatAgentURL(), {
+      const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages }),
+        body: JSON.stringify({ content: q }),
       });
 
       if (!res.ok) {
@@ -171,121 +272,81 @@ export default function Chat() {
       }
 
       const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
+      const decoder = new TextDecoder({ ignoreBOM: true });
       let buffer = '';
 
       function applyEvent(raw: string) {
-        // Strip leading "data: " prefix
         const line = raw.startsWith('data: ') ? raw.slice(6) : raw;
         if (!line.trim()) return;
         let evt: any;
         try { evt = JSON.parse(line); } catch { return; }
 
-        setTurns(ts => ts.map(t => {
-          if (t.id !== agentTurnId) return t;
+        setLiveTurn(prev => {
+          if (!prev) return prev;
           if (evt.type === 'thought') {
-            return { ...t, steps: [...(t.steps || []), { kind: 'thought', text: evt.text }] };
+            return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text }] };
           }
           if (evt.type === 'tool') {
-            return { ...t, steps: [...(t.steps || []), { kind: 'tool', name: evt.name, args: evt.args || {}, result: evt.result || {} }] };
+            return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {} }] };
           }
           if (evt.type === 'message') {
-            return { ...t, text: evt.text, streaming: false };
+            return { ...prev, text: evt.text, streaming: false };
           }
           if (evt.type === 'error') {
-            return { ...t, text: evt.text, steps: [...(t.steps || []), { kind: 'error', text: evt.text }], streaming: false };
+            return { ...prev, text: evt.text, steps: [...prev.steps, { kind: 'error' as const, text: evt.text }], streaming: false };
           }
           if (evt.type === 'done') {
-            return { ...t, streaming: false };
+            return { ...prev, streaming: false };
           }
-          return t;
-        }));
+          return prev;
+        });
       }
 
-      outer: while (true) {
+      while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        // Split on double newline (SSE event boundary)
         const parts = buffer.split('\n\n');
-        // Last part may be incomplete — keep it in the buffer
         buffer = parts.pop() ?? '';
         for (const part of parts) {
           if (part.trim()) {
-            // Each part may contain multiple "data: ..." lines — handle the
-            // common single-line case and the rare multi-line case.
             for (const line of part.split('\n')) {
-              if (line.startsWith('data: ')) {
-                applyEvent(line);
-              }
+              if (line.startsWith('data: ')) applyEvent(line);
             }
           }
-          // Check if we already got done/message from this batch
         }
       }
 
-      // Flush any remaining buffer content
+      // Flush remaining buffer
       if (buffer.trim()) {
         for (const line of buffer.split('\n')) {
           if (line.startsWith('data: ')) applyEvent(line);
         }
       }
 
-      // Ensure streaming flag is cleared regardless of whether 'done' arrived
-      setTurns(ts => ts.map(t => t.id === agentTurnId ? { ...t, streaming: false } : t));
+      // Ensure streaming is cleared
+      setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
+
+      // Re-fetch session messages to get persisted IDs and auto-title
+      await loadSession(sessionId);
+      setLiveTurn(null);
+
+      // Refresh sidebar (for auto-title on first message, and updated_at)
+      if (isFirstMessage) {
+        await loadSessions(true);
+      } else {
+        // Silently update the session's updated_at in the list
+        loadSessions(true);
+      }
+
     } catch (e: any) {
-      setTurns(ts => ts.map(t =>
-        t.id === agentTurnId
-          ? { ...t, text: `Agent error: ${e.message}`, streaming: false }
-          : t
-      ));
+      setLiveTurn(prev => prev ? { ...prev, text: `Agent error: ${e.message}`, streaming: false } : null);
       toast.error(`Agent failed: ${e.message}`);
     } finally {
       setBusy(false);
       textareaRef.current?.focus();
     }
-  }
 
-  // ── Shared send handler ────────────────────────────────────────────────────
-
-  async function send() {
-    const q = input.trim();
-    if (!q || busy) return;
-    setInput('');
-    if (mode === 'agent') {
-      // Snapshot turns before appending the new user message so we can build history
-      const snapshot = turns;
-      const userTurn: Turn = { id: uid(), role: 'user', text: q, createdAt: Date.now() };
-      setTurns(t => [...t, userTurn]);
-      await sendAgent(q, snapshot);
-    } else {
-      await sendMemory(q);
-    }
-  }
-
-  async function retain(turn: Turn, worked: boolean) {
-    if (!turn.queryRef || !turn.summary) return;
-    const topic = inferTopic(turn.queryRef);
-    const hitRefs = (turn.hits || [])
-      .slice(0, 5)
-      .map(h => h.wing || h.source || String(h.id || ''))
-      .filter(Boolean);
-    try {
-      const r = await api.chatRetain({
-        query: turn.queryRef,
-        answer: turn.summary,
-        worked,
-        topic,
-        hit_refs: hitRefs,
-      });
-      setTurns(ts => ts.map(x =>
-        x.id === turn.id ? { ...x, saved: { worked, id: r.id } } : x));
-      toast.success(worked
-        ? `Saved as pattern (${topic})`
-        : `Marked as anti-pattern (${topic})`);
-    } catch (e: any) {
-      toast.error(`Retain failed: ${e.message}`);
-    }
   }
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -295,204 +356,249 @@ export default function Chat() {
     }
   }
 
-  const drawerOpen = !!drawerTurn && mode === 'memory';
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  const activeSession = sessions.find(s => s.id === activeId) || null;
 
   return (
-    <div className={`chat-shell ${drawerOpen ? '' : 'drawer-closed'}`}>
-      <section className="chat-main">
+    <div className="chat-shell-v2">
+      {/* ── Left sidebar: sessions list ─────────────────────────────────────── */}
+      <div className="chat-sessions-sidebar">
+        <div className="chat-sessions-header">
+          <button onClick={handleNewChat} disabled={busy}>
+            <Icon.Plus size={13} /> New chat
+          </button>
+        </div>
+        <div className="chat-sessions-list">
+          {sessionsLoading ? (
+            <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {[1,2,3].map(i => (
+                <div key={i} className="skeleton" style={{ height: 44, borderRadius: 8 }} />
+              ))}
+            </div>
+          ) : sessions.length === 0 ? (
+            <div style={{ padding: '16px 10px', textAlign: 'center', color: 'var(--fg-3)', fontSize: 'var(--fs-xs)' }}>
+              No conversations yet
+            </div>
+          ) : sessions.map(s => (
+            <div
+              key={s.id}
+              className={`chat-session-item ${s.id === activeId ? 'active' : ''}`}
+              onClick={() => { if (!renaming || renaming.id !== s.id) selectSession(s.id); }}
+            >
+              <div className="chat-session-item-body">
+                {renaming && renaming.id === s.id ? (
+                  <input
+                    ref={renameInputRef}
+                    className="chat-session-rename-input"
+                    value={renaming.value}
+                    onChange={e => setRenaming(r => r ? { ...r, value: e.target.value } : r)}
+                    onKeyDown={onRenameKey}
+                    onBlur={commitRename}
+                    onClick={e => e.stopPropagation()}
+                  />
+                ) : (
+                  <>
+                    <div className="chat-session-title" title={s.title}>{s.title || 'Untitled'}</div>
+                    <div className="chat-session-meta">
+                      {relTime(s.updated_at)}
+                      {s.message_count != null && s.message_count > 0
+                        ? ` · ${s.message_count} msg${s.message_count === 1 ? '' : 's'}`
+                        : ''}
+                    </div>
+                  </>
+                )}
+              </div>
+              {(!renaming || renaming.id !== s.id) && (
+                <div className="chat-session-actions">
+                  <button
+                    title="Rename"
+                    onClick={e => startRename(s, e)}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    title="Delete"
+                    onClick={e => { e.stopPropagation(); deleteSession(s.id); }}
+                  >
+                    <Icon.X size={11} />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Main pane ──────────────────────────────────────────────────────────── */}
+      <div className="chat-v2-main">
+        {/* Topbar */}
         <div className="chat-topbar">
           <div className="row">
-            {/* Mode toggle */}
-            <div className="segmented">
-              <button
-                className={mode === 'memory' ? 'on' : ''}
-                onClick={() => setMode('memory')}
-                title="Memory-grounded Q&A"
-              >
-                <Icon.Sparkles size={11} /> Ask memory
-              </button>
-              <button
-                className={mode === 'agent' ? 'on' : ''}
-                onClick={() => setMode('agent')}
-                title="Full-filesystem coding agent"
-              >
-                <Icon.Agents size={11} /> Agent (full FS)
-              </button>
-            </div>
-            {mode === 'agent' && (
+            <span className="topbar-title" style={{ fontSize: 'var(--fs-md)' }}>
+              {activeSession ? activeSession.title || 'Untitled' : 'Agent Chat'}
+            </span>
+            {activeSession && (
               <span className="xs muted" style={{ fontFamily: 'var(--font-mono)' }}>
                 reads &amp; writes files · runs commands
               </span>
             )}
           </div>
-          <div className="row">
-            <button className="ghost sm" onClick={resetChat}>Clear</button>
-            {mode === 'memory' && (
+          {activeSession && (
+            <div className="row">
               <button
                 className="ghost sm"
-                onClick={() => setDrawerTurn(drawerOpen ? null : (turns.slice().reverse().find(t => t.role === 'system' && t.hits) || null))}
+                onClick={() => setRenaming({ id: activeSession.id, value: activeSession.title })}
+                title="Rename this conversation"
               >
-                {drawerOpen ? 'Hide context' : 'Show context'}
+                Rename
               </button>
-            )}
-          </div>
-        </div>
-
-        <div className="chat-log" ref={logRef}>
-          {turns.map(t => (
-            <div key={t.id} className={`bubble ${t.role === 'user' ? 'user' : 'sys'}`}>
-              <div className="bubble-avatar">{t.role === 'user' ? 'You' : 'AI'}</div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {/* Agent turn: show steps then final answer */}
-                {t.agentMode ? (
-                  <div>
-                    {/* Streamed steps */}
-                    {(t.steps || []).length > 0 && (
-                      <div style={{ marginBottom: t.text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        {(t.steps || []).map((s, i) => (
-                          <AgentStepRow key={i} step={s} />
-                        ))}
-                      </div>
-                    )}
-                    {/* Final message */}
-                    {t.text && (
-                      <div className="bubble-body">
-                        <MdLite text={t.text} />
-                      </div>
-                    )}
-                    {/* Still streaming with no answer yet */}
-                    {t.streaming && !t.text && (t.steps || []).length === 0 && (
-                      <div className="bubble-body" style={{ padding: 0, background: 'transparent', border: 0 }}>
-                        <div className="typing"><span /><span /><span /></div>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div>
-                    <div className="bubble-body">
-                      {t.role === 'system'
-                        ? <MdLite text={t.text} />
-                        : <span style={{ whiteSpace: 'pre-wrap' }}>{t.text}</span>}
-                    </div>
-                    {t.role === 'system' && t.queryRef && (
-                      <div className="bubble-footer">
-                        {t.normalized && t.normalized !== t.text && (
-                          <span className="xs muted">understood as "{t.normalized}"</span>
-                        )}
-                        {t.tiers && t.tiers.length > 0 && (
-                          <span className="chip sm">tiers: {t.tiers.join(',')}</span>
-                        )}
-                        {t.tools && t.tools.length > 0 && (
-                          <span className="chip sm">{t.tools.length} tool call{t.tools.length === 1 ? '' : 's'}</span>
-                        )}
-                        {t.hits && t.hits.length > 0 && (
-                          <button className="ghost sm" onClick={() => setDrawerTurn(t)}>
-                            {t.hits.length} hits
-                          </button>
-                        )}
-                        <span className="spacer" />
-                        {t.saved == null && (
-                          <span className="retain-row">
-                            <button className="ghost sm" onClick={() => retain(t, true)}>
-                              <Icon.Check size={12} /> Worked
-                            </button>
-                            <button className="ghost sm" onClick={() => retain(t, false)}>
-                              <Icon.X size={12} /> Didn't help
-                            </button>
-                          </span>
-                        )}
-                        {t.saved && (
-                          <span className={`chip sm ${t.saved.worked ? 'ok' : 'warn'}`}>
-                            saved as T3 {t.saved.worked ? 'pattern' : 'anti-pattern'}
-                            {t.saved.id != null ? ` #${t.saved.id}` : ''}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-          {busy && mode === 'memory' && (
-            <div className="bubble sys">
-              <div className="bubble-avatar">AI</div>
-              <div className="bubble-body" style={{ padding: 0, background: 'transparent', border: 0 }}>
-                <div className="typing"><span /><span /><span /></div>
-              </div>
+              <button
+                className="ghost sm"
+                style={{ color: 'var(--err)' }}
+                onClick={() => deleteSession(activeSession.id)}
+              >
+                Delete
+              </button>
             </div>
           )}
         </div>
 
-        <div className="chat-composer">
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            placeholder={
-              mode === 'agent'
-                ? 'Ask the agent to read/write files, run commands, implement a feature…  (Enter to send)'
-                : 'Ask about tickets, repos, code, past decisions…  (Enter to send, Shift+Enter for newline)'
-            }
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={onKey}
-            disabled={busy}
-          />
-          <button onClick={send} disabled={busy || !input.trim()}>
-            {mode === 'agent'
-              ? <><Icon.Agents size={14} /> {busy ? 'Running…' : 'Run'}</>
-              : <><Icon.Send size={14} /> {busy ? 'Thinking' : 'Send'}</>
-            }
-          </button>
-        </div>
-      </section>
+        {/* Message log or empty state */}
+        {activeId === null ? (
+          <div className="chat-empty-state">
+            <div className="empty-icon">💬</div>
+            <h3>Start a conversation</h3>
+            <p>Click <strong>New chat</strong> to begin, or select a past conversation from the sidebar.</p>
+            <button onClick={handleNewChat}>
+              <Icon.Plus size={14} /> New chat
+            </button>
+          </div>
+        ) : msgsLoading ? (
+          <div className="chat-log" style={{ justifyContent: 'center', alignItems: 'center' }}>
+            <div className="typing"><span /><span /><span /></div>
+          </div>
+        ) : (
+          <>
+            <div className="chat-log" ref={logRef}>
+              {messages.length === 0 && !liveTurn && !busy && (
+                <div className="chat-empty-state" style={{ flex: 'none' }}>
+                  <div className="empty-icon">✨</div>
+                  <p style={{ maxWidth: 320 }}>Send a message to get started. The agent can read and write files, run commands, and implement features.</p>
+                </div>
+              )}
 
-      {drawerOpen && drawerTurn && (
-        <aside className="chat-drawer">
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <h3>Context</h3>
-            <button className="icon" onClick={() => setDrawerTurn(null)} title="Close"><Icon.X size={14} /></button>
-          </div>
-          <div className="drawer-section">
-            <h4>Query</h4>
-            <div className="small">{drawerTurn.queryRef || '—'}</div>
-            {drawerTurn.tiers && drawerTurn.tiers.length > 0 && (
-              <div style={{ marginTop: 6 }} className="row tight">
-                {drawerTurn.tiers.map(tr => <span key={tr} className="chip sm">{tr}</span>)}
-              </div>
-            )}
-          </div>
-          {drawerTurn.tools && drawerTurn.tools.length > 0 && (
-            <div className="drawer-section">
-              <h4>Tool calls ({drawerTurn.tools.length})</h4>
-              {drawerTurn.tools.map((c: any, i: number) => (
-                <div key={i} className="hit">
-                  <div className="hit-head">
-                    <span className="chip sm mono">{c.tool}</span>
-                    {typeof c.dur_ms === 'number' && <span>· {c.dur_ms}ms</span>}
+              {/* Persisted messages */}
+              {messages.map(msg => (
+                <div
+                  key={msg.id}
+                  className={`bubble ${msg.role === 'user' ? 'user' : 'sys'}`}
+                >
+                  <div className="bubble-avatar">{msg.role === 'user' ? 'You' : 'AI'}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {msg.role === 'assistant' ? (
+                      <AssistantBubble
+                        text={msg.content}
+                        steps={(msg.steps || []).map(toAgentStep).filter((s): s is AgentStep => s !== null)}
+                        streaming={false}
+                      />
+                    ) : (
+                      <div className="bubble-body">
+                        <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
+                      </div>
+                    )}
                   </div>
-                  {c.args && <pre className="xs" style={{ padding: 6, margin: 0 }}>{JSON.stringify(c.args, null, 2)}</pre>}
                 </div>
               ))}
-            </div>
-          )}
-          <div className="drawer-section">
-            <h4>Memory hits ({drawerTurn.hits?.length || 0})</h4>
-            {(drawerTurn.hits || []).slice(0, 20).map((h: any, i: number) => (
-              <div key={i} className="hit">
-                <div className="hit-head">
-                  <span className="chip sm">{h.tier}</span>
-                  <span className="chip sm mono">{h.wing}</span>
-                  {typeof h.score === 'number' && <span>score {h.score.toFixed(3)}</span>}
+
+              {/* Live streaming assistant turn */}
+              {liveTurn && (
+                <div className="bubble sys">
+                  <div className="bubble-avatar">AI</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <AssistantBubble
+                      text={liveTurn.text}
+                      steps={liveTurn.steps}
+                      streaming={liveTurn.streaming}
+                    />
+                  </div>
                 </div>
-                <div>{(h.text || '').slice(0, 280)}</div>
-              </div>
-            ))}
-            {(!drawerTurn.hits || drawerTurn.hits.length === 0) && (
-              <div className="muted small">No hits returned.</div>
-            )}
+              )}
+            </div>
+
+            <div className="chat-composer">
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                placeholder="Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={onKey}
+                disabled={busy}
+              />
+              <button onClick={send} disabled={busy || !input.trim()}>
+                <Icon.Agents size={14} /> {busy ? 'Running…' : 'Run'}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Composer shown even when no session: send will create one */}
+        {activeId === null && (
+          <div className="chat-composer">
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              placeholder="Type a message to start a new conversation…  (Enter to send)"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={onKey}
+              disabled={busy}
+            />
+            <button onClick={send} disabled={busy || !input.trim()}>
+              <Icon.Agents size={14} /> Run
+            </button>
           </div>
-        </aside>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── AssistantBubble — renders steps + final text ──────────────────────────────
+
+function AssistantBubble({
+  text,
+  steps,
+  streaming,
+}: {
+  text: string;
+  steps: AgentStep[];
+  streaming: boolean;
+}) {
+  return (
+    <div>
+      {steps.length > 0 && (
+        <div style={{ marginBottom: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {steps.map((s, i) => (
+            <AgentStepRow key={i} step={s} />
+          ))}
+        </div>
+      )}
+      {text && (
+        <div className="bubble-body">
+          <MdLite text={text} />
+        </div>
+      )}
+      {streaming && !text && steps.length === 0 && (
+        <div className="bubble-body" style={{ padding: 0, background: 'transparent', border: 0 }}>
+          <div className="typing"><span /><span /><span /></div>
+        </div>
+      )}
+      {streaming && (steps.length > 0 || text) && (
+        <div style={{ marginTop: 4, padding: '0 2px' }}>
+          <div className="typing" style={{ padding: '4px 0' }}><span /><span /><span /></div>
+        </div>
       )}
     </div>
   );
@@ -571,21 +677,4 @@ function AgentStepRow({ step }: { step: AgentStep }) {
     );
   }
   return null;
-}
-
-function inferTopic(q: string): string {
-  const keywords: Record<string, string> = {
-    'pagination|batchSize|limit': 'pagination',
-    'memory|neo4j|mcp':           'memory',
-    'sync|nats|pushToRemote':     'sync',
-    'readme|doc(s|ument)':        'docs',
-    'compile|mvn|build':          'build',
-    'deploy|k8s|kubernetes':      'deploy',
-    'sales|invoice|balance':      'finance-flow',
-  };
-  const ql = q.toLowerCase();
-  for (const pat of Object.keys(keywords)) {
-    if (new RegExp(pat).test(ql)) return keywords[pat];
-  }
-  return 'general';
 }
