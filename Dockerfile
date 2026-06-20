@@ -29,6 +29,9 @@ ENV UV_SYSTEM_PYTHON=1 \
 COPY . .
 COPY --from=web /web/dist ./web/dist
 RUN uv pip install --system -e .
+# Common dev tools so chat sessions can run/test the code they build
+# (the agent can pip-install anything else on demand).
+RUN uv pip install --system pytest ruff
 
 RUN mkdir -p /data/aiforge
 EXPOSE 8799
