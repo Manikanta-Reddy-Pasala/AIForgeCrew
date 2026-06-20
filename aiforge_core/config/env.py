@@ -15,6 +15,21 @@ AIFORGE_DSN = os.environ.get(
     "postgresql://manikanta@127.0.0.1:5432/aiforge",
 )
 
+# ─────────────────────────── storage backend ───────────────────────────
+# Default to embedded SQLite. Postgres only when AIFORGE_PG_URL is set
+# (or the legacy AIFORGE_DSN explicitly points at a postgres:// URL).
+AIFORGE_PG_URL = os.environ.get("AIFORGE_PG_URL") or (
+    AIFORGE_DSN if str(AIFORGE_DSN).startswith(("postgres://", "postgresql://"))
+    and os.environ.get("AIFORGE_FORCE_PG") == "1"
+    else None
+)
+AIFORGE_DB_PATH = os.environ.get(
+    "AIFORGE_DB_PATH",
+    os.path.join(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+                 "aiforge.db"),
+)
+AIFORGE_USE_SQLITE = AIFORGE_PG_URL is None
+
 # ─────────────────────────── Inference endpoints ────────────────────────
 LM_STUDIO_BASE_URL = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
 LM_STUDIO_API_KEY  = os.environ.get("AIFORGE_LM_API_KEY", "lm-studio")
