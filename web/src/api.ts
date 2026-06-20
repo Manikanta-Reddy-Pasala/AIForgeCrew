@@ -268,11 +268,13 @@ export interface ChatSession {
 export interface ChatModelEntry {
   id: string;
   label: string;
+  active: boolean;
 }
 
 export interface ChatModelsResponse {
   provider: string;
   current: string | null;
+  current_active: boolean;
   models: ChatModelEntry[];
 }
 
@@ -292,7 +294,7 @@ export const chatApi = {
   chatModels: () => j<ChatModelsResponse>('/chat/models'),
 
   setChatModel: (model: string, provider?: string) =>
-    j<{ provider: string; model: string }>('/chat/model', {
+    j<{ provider: string; model: string; active: boolean }>('/chat/model', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, ...(provider ? { provider } : {}) }),

@@ -105,6 +105,7 @@ export default function Chat() {
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     try { return localStorage.getItem(LS_MODEL_KEY) || ''; } catch { return ''; }
   });
+  const [modelActive, setModelActive] = useState<boolean>(true);
 
   // Elapsed timer for the live streaming turn
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -152,18 +153,32 @@ export default function Chat() {
 
   useEffect(() => {
     // Fetch available chat model options (non-blocking; failures are silent)
-    chatApi.chatModels().then(resp => {
+    chatApi.chatModels().then(async resp => {
       setChatProvider(resp.provider || '');
-      setModelOptions(resp.models || []);
-      // Use backend's current as ground truth; fall back to localStorage, then first option
-      setSelectedModel(prev => {
-        const backendCurrent = resp.current || '';
-        const localPersisted = prev;
-        const allIds = (resp.models || []).map((m: ChatModelEntry) => m.id);
-        if (backendCurrent && allIds.includes(backendCurrent)) return backendCurrent;
-        if (localPersisted && allIds.includes(localPersisted)) return localPersisted;
-        return backendCurrent || (resp.models?.[0]?.id ?? '');
-      });
+      const models = resp.models || [];
+      setModelOptions(models);
+
+      // If saved selection is not active AND there is at least one active model, auto-switch
+      if (resp.current_active === false && models.length > 0) {
+        const firstActive = models[0];
+        setSelectedModel(firstActive.id);
+        setModelActive(firstActive.active);
+        try {
+          await chatApi.setChatModel(firstActive.id, resp.provider || undefined);
+        } catch { /* ignore — best-effort */ }
+        toast.warning(`Previous chat model not loaded — switched to ${firstActive.label || firstActive.id}`);
+      } else {
+        // Use backend's current as ground truth; fall back to localStorage, then first option
+        setSelectedModel(prev => {
+          const backendCurrent = resp.current || '';
+          const localPersisted = prev;
+          const allIds = models.map((m: ChatModelEntry) => m.id);
+          if (backendCurrent && allIds.includes(backendCurrent)) return backendCurrent;
+          if (localPersisted && allIds.includes(localPersisted)) return localPersisted;
+          return backendCurrent || (models[0]?.id ?? '');
+        });
+        setModelActive(resp.current_active ?? true);
+      }
     }).catch(() => { /* backend may not have the endpoint yet — ignore */ });
 
     loadSessions().then(() => {
@@ -555,6 +570,17 @@ export default function Chat() {
             {/* Model selector — less relevant in team mode, so hide it */}
             {chatMode === 'simple' && (
               <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
+                <span
+                  title={modelActive ? 'Model is loaded and active' : 'Model is not currently loaded'}
+                  style={{
+                    display: 'inline-block',
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: modelActive ? 'var(--ok, #22c55e)' : 'var(--warn, #f59e0b)',
+                    flexShrink: 0,
+                  }}
+                />
                 Model
                 <select
                   className="chat-model-select"
@@ -563,8 +589,14 @@ export default function Chat() {
                     const newModel = e.target.value;
                     setSelectedModel(newModel);
                     try {
-                      await chatApi.setChatModel(newModel, chatProvider || undefined);
-                      toast.success('Model updated');
+                      const res = await chatApi.setChatModel(newModel, chatProvider || undefined);
+                      setModelActive(res.active);
+                      if (res.active) {
+                        toast.success('Model updated');
+                      } else {
+                        const label = modelOptions.find(o => o.id === newModel)?.label || newModel;
+                        toast.warning(`${label} is not loaded — it may fail or take time to load`);
+                      }
                     } catch (err: any) {
                       toast.error(`Failed to set model: ${err.message}`);
                     }
@@ -573,8 +605,8 @@ export default function Chat() {
                   title="Chat model"
                 >
                   {modelOptions.length === 0 ? (
-                    <option value={selectedModel || ''}>
-                      {selectedModel || 'No models — configure on Home page'}
+                    <option value="" disabled>
+                      no active models — load one in LM Studio / configure on Home
                     </option>
                   ) : (
                     modelOptions.map(opt => (
