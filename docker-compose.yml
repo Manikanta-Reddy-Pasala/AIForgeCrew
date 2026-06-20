@@ -44,8 +44,11 @@ services:
       NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-4G}
       NEO4J_server_default__listen__address: 0.0.0.0
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
+      # Bind-mount the host data dir so an existing Neo4j store is reused
+      # in place (zero copy). Point these at your current dirs to migrate
+      # without data loss; defaults are fresh local dirs for new installs.
+      - ${NEO4J_DATA_DIR:-./neo4j-data}:/data
+      - ${NEO4J_LOGS_DIR:-./neo4j-logs}:/logs
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -131,14 +134,6 @@ services:
 
 volumes:
   aiforge_pgdata:
-  # Reuse the existing Neo4j data volume so the graph is preserved.
-  # Override NEO4J_VOLUME to the real name (find it with:
-  #   docker volume ls | grep neo4j). Set NEO4J_VOLUME_EXTERNAL=false to
-  # start a fresh graph instead.
-  neo4j_data:
-    name: ${NEO4J_VOLUME:-graph_rag_neo4j_data}
-    external: ${NEO4J_VOLUME_EXTERNAL:-true}
-  neo4j_logs:
   models_cache:
   hf_cache:
   app_state:
