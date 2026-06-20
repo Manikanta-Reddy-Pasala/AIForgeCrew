@@ -48,7 +48,9 @@ if [[ ! -d .venv ]]; then
   uv venv .venv
 fi
 echo "==> installing python deps (editable)"
-.venv/bin/uv pip install -e . >/dev/null
+# Global uv targeting the venv's python — `uv venv` does not install uv
+# *into* the venv, so `.venv/bin/uv` would not exist on a fresh machine.
+uv pip install --python .venv/bin/python -e . >/dev/null
 
 # ── Web UI build (optional) ───────────────────────────────────────────
 if [[ $SKIP_WEB -eq 0 ]]; then
