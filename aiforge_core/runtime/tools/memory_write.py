@@ -46,6 +46,7 @@ def memory_write(
     tags: list[str] | None = None,
     media_refs: list[str] | None = None,
     decision: bool = False,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     """Persist a fact the Doer noticed during this run.
 
@@ -70,7 +71,7 @@ def memory_write(
     if not text:
         return {"ok": False, "error": "empty_text"}
 
-    repo = _infer_repo()
+    repo = repo or _infer_repo()
     if not repo:
         return {"ok": False, "error": "no_repo_in_env"}
 

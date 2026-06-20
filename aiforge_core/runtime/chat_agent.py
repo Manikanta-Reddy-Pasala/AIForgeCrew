@@ -128,6 +128,25 @@ def _t_memory_lookup(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_memory_write(args: dict, cwd: str) -> dict:
+    """Persist a durable fact/decision into the knowledge memory so future
+    chats + tickets recall it. repo defaults to the working dir's name."""
+    try:
+        from aiforge_core.runtime.tools.memory_write import memory_write as _mw
+        repo = args.get("repo") or os.path.basename(os.path.normpath(cwd)) or "chat"
+        return _mw(
+            text=args["text"],
+            kind=args.get("kind", "note"),
+            tags=list(args.get("tags") or []) + ["chat"],
+            decision=bool(args.get("decision")),
+            repo=repo,
+        )
+    except KeyError:
+        return {"ok": False, "error": "missing arg: text"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_read": _t_file_read,
     "file_write": _t_file_write,
@@ -136,6 +155,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "list_dir": _t_list_dir,
     "run_command": _t_run_command,
     "memory_lookup": _t_memory_lookup,
+    "memory_write": _t_memory_write,
 }
 
 _SYSTEM = """You are AIForge, an autonomous coding assistant with FULL access to \
@@ -145,7 +165,7 @@ You work by emitting ONE step at a time in this exact text format.
 
 To use a tool:
 THOUGHT: <your reasoning>
-ACTION: <one of: file_read, file_write, file_create, file_patch, list_dir, run_command, memory_lookup>
+ACTION: <one of: file_read, file_write, file_create, file_patch, list_dir, run_command, memory_lookup, memory_write>
 ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
@@ -154,7 +174,9 @@ Tool arguments:
 - file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}
 - list_dir     {{"path": "."}}
 - run_command  {{"cmd": "ls -la", "timeout": 120}}
-- memory_lookup{{"query": "..."}}
+- memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
+- memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false}}
+                (save a learning/decision to the knowledge graph for future recall)
 
 When you are done and ready to reply to the user:
 THOUGHT: <reasoning>

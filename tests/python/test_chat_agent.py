@@ -117,3 +117,25 @@ def test_workspace_clamp(tmp_path, monkeypatch):
     tool = [e for e in evs if e["type"] == "tool"][0]
     assert tool["result"]["ok"] is False
     assert "escapes" in tool["result"]["error"]
+
+
+def test_memory_write_tool(tmp_path, monkeypatch):
+    # embedded memory → writes land in sqlite_memory
+    import importlib
+    for k in ("AIFORGE_MEMORY_BACKEND", "NEO4J_URI", "AIFORGE_NEO4J_URI",
+              "AIFORGE_PG_URL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "mem.db"))
+    import aiforge_core.memory.backend_select as bs; importlib.reload(bs)
+    import aiforge_core.memory.sqlite_memory as sm; importlib.reload(sm)
+    fn = _scripted([
+        'ACTION: memory_write\nARGS_JSON: {"text": "staging needs the VPN on first", "kind": "gotcha"}',
+        "FINAL: saved",
+    ])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "remember this"}], cwd=str(tmp_path / "myrepo"),
+        complete_fn=fn))
+    tool = [e for e in evs if e["type"] == "tool"][0]
+    assert tool["name"] == "memory_write"
+    assert tool["result"]["ok"] is True
+    assert sm.stats()["total"] == 1
