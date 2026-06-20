@@ -191,3 +191,52 @@ class SqliteBackend:
             )
             r = c.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
         return _row_to_dict(r) if r else None
+
+    def add_event(self, ticket_id, role, kind, body, metadata) -> int:
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO ticket_events(ticket_id, role, kind, body, metadata) "
+                "VALUES (?,?,?,?,?)",
+                (ticket_id, role, kind, body, json.dumps(metadata or {})),
+            )
+            return int(cur.lastrowid)
+
+    def add_comment(self, ticket_id, role, body) -> int:
+        return self.add_event(ticket_id, role, "comment", body, {})
+
+    def comments(self, ticket_id, limit) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, role, kind, body, metadata, created_at FROM ticket_events "
+                "WHERE ticket_id = ? AND kind = 'comment' "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (ticket_id, limit),
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["metadata"] = json.loads(d.get("metadata") or "{}")
+            out.append(d)
+        return out
+
+    def children(self, parent_id) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM tickets WHERE parent_id = ? ORDER BY created_at ASC, id ASC",
+                (parent_id,),
+            ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    def by_title_project(self, title, project) -> list[dict]:
+        with self._conn() as c:
+            if project is None:
+                rows = c.execute(
+                    "SELECT * FROM tickets WHERE title = ? AND project IS NULL",
+                    (title,),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM tickets WHERE title = ? AND project = ?",
+                    (title, project),
+                ).fetchall()
+        return [_row_to_dict(r) for r in rows]
