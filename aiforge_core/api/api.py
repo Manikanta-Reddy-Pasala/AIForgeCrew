@@ -1828,12 +1828,30 @@ class _SessionMsgBody(BaseModel):
     mode: str = Field("simple", description="'simple' (single agent) | 'team' (full ADK flow)")
 
 
+def _chat_workspace_root() -> str:
+    return os.environ.get(
+        "AIFORGE_CHAT_WORKSPACE_ROOT",
+        os.path.join(os.path.expanduser(
+            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "chat-workspaces"))
+
+
 @app.post("/api/chat/sessions", status_code=201)
 def chat_session_create(body: _NewSessionBody) -> dict:
     from aiforge_core.runtime import chat_store
-    return chat_store.create_session(body.title or "New chat",
-                                     body.cwd or _default_cwd(),
-                                     role=body.role or "chat")
+    s = chat_store.create_session(body.title or "New chat",
+                                  body.cwd or _default_cwd(),
+                                  role=body.role or "chat")
+    # Isolation: when the caller didn't pin a cwd, give the session its
+    # own workspace dir so it can build/clean/run without touching other
+    # sessions or the host. Persisted under app_state on the compose deploy.
+    if not body.cwd:
+        ws = os.path.join(_chat_workspace_root(), f"session-{s['id']}")
+        try:
+            os.makedirs(ws, exist_ok=True)
+            s = chat_store.set_session_cwd(s["id"], ws) or s
+        except OSError:
+            pass
+    return s
 
 
 @app.get("/api/chat/sessions")

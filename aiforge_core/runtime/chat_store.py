@@ -103,6 +103,15 @@ def create_session(title: str = "New chat", cwd: str | None = None,
     return _session_row(r)
 
 
+def set_session_cwd(session_id: int, cwd: str) -> "dict | None":
+    with _conn() as c:
+        c.execute(f"UPDATE chat_sessions SET cwd=?, updated_at={_NOW} WHERE id=?",
+                  (cwd, session_id))
+        r = c.execute("SELECT * FROM chat_sessions WHERE id=?",
+                      (session_id,)).fetchone()
+    return _session_row(r) if r else None
+
+
 def set_session_role(session_id: int, role: str) -> "dict | None":
     with _conn() as c:
         c.execute(f"UPDATE chat_sessions SET role=?, updated_at={_NOW} WHERE id=?",

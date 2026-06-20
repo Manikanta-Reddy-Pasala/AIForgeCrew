@@ -293,3 +293,15 @@ def test_chat_team_vs_simple_mode(client, monkeypatch):
     r2 = c.post(f"/api/chat/sessions/{sid}/message",
                 json={"content": "build an app", "mode": "team"})
     assert "TEAM" in r2.text and "planner" in r2.text  # team = ADK flow
+
+
+def test_chat_session_isolated_workspace(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_ROOT", str(tmp_path / "ws"))
+    c, _ = client
+    s = c.post("/api/chat/sessions", json={}).json()
+    assert f"session-{s['id']}" in s["cwd"]
+    import os as _os
+    assert _os.path.isdir(s["cwd"])           # workspace created
+    # explicit cwd is respected (not overridden)
+    s2 = c.post("/api/chat/sessions", json={"cwd": "/pinned/dir"}).json()
+    assert s2["cwd"] == "/pinned/dir"
