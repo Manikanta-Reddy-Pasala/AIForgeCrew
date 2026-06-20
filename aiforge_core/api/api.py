@@ -1825,6 +1825,7 @@ class _RenameBody(BaseModel):
 class _SessionMsgBody(BaseModel):
     content: str = Field(..., min_length=1)
     role: str | None = Field(None, description="override the session's model (archetype)")
+    mode: str = Field("simple", description="'simple' (single agent) | 'team' (full ADK flow)")
 
 
 @app.post("/api/chat/sessions", status_code=201)
@@ -1875,6 +1876,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     (model picker)."""
     from aiforge_core.runtime import chat_store
     from aiforge_core.runtime.chat_agent import run_chat_agent
+    from aiforge_core.runtime.chat_pipeline import stream_chat_pipeline
 
     session = chat_store.get_session(session_id)
     if not session:
@@ -1894,14 +1896,21 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         if m["role"] in ("user", "assistant") and m["content"]
     ]
     cwd = session.get("cwd") or _default_cwd()
+    team = body.mode == "team"
+    prompt = body.content.strip()
+
+    def _events():
+        # Team mode → full ADK agent flow (planner→…→learner) for complex
+        # builds. Simple mode → single conversational agent for quick work.
+        if team:
+            return stream_chat_pipeline(prompt, cwd=cwd)
+        return run_chat_agent(history, cwd=cwd, role=role)
 
     def _gen():
         steps: list[dict] = []
         final_text = ""
         try:
-            # No step cap — runs until done or a stuck loop is detected
-            # (chat_agent's loop detection). Builds whole repos.
-            for ev in run_chat_agent(history, cwd=cwd, role=role):
+            for ev in _events():
                 if ev.get("type") == "message":
                     final_text = ev.get("text", "")
                 elif ev.get("type") in ("thought", "tool", "error"):

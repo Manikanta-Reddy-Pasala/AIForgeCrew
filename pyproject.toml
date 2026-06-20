@@ -21,7 +21,11 @@ dependencies = [
   "litellm>=1.40",
   # ADK 2.x — drives the v6 SequentialAgent[Planner, Verifier,
   # LoopAgent[Doer, Feedback], Learner] in runtime.adk_runner.
-  "google-adk>=2.1.0",
+  # Pinned: 2.3.x added a Workflow validation that rejects the v6 graph
+  # (chat-mode agents following a gate, e.g. doer after triage_gate),
+  # breaking build_pipeline. 2.1.x builds the graph correctly. Revisit
+  # when the graph is reworked for the newer constraint.
+  "google-adk>=2.1.0,<2.2",
   "aiforge-memory @ git+https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git@main",
   # Doer runtime tools: execute_ipython_cell (jupyter kernel) + browse
   # (playwright). Declared here so `uv sync` stops pruning them — they

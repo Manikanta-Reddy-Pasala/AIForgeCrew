@@ -270,3 +270,26 @@ def test_ticket_events_stream_surfaces_awaiting(client):
     assert '"kind": "clarification"' in body
     assert '"awaiting_input": true' in body
     assert "What do you mean?" in body
+
+
+def test_chat_team_vs_simple_mode(client, monkeypatch):
+    c, _ = client
+
+    def _fake_simple(messages, *, cwd, role="chat", **kw):
+        yield {"type": "message", "text": "SIMPLE"}
+        yield {"type": "done"}
+
+    def _fake_team(prompt, *, cwd, **kw):
+        yield {"type": "thought", "text": "**planner** · plan"}
+        yield {"type": "message", "text": "TEAM"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent.run_chat_agent", _fake_simple)
+    monkeypatch.setattr("aiforge_core.runtime.chat_pipeline.stream_chat_pipeline", _fake_team)
+
+    sid = c.post("/api/chat/sessions", json={}).json()["id"]
+    r1 = c.post(f"/api/chat/sessions/{sid}/message", json={"content": "hi"})
+    assert "SIMPLE" in r1.text                       # default = simple
+    r2 = c.post(f"/api/chat/sessions/{sid}/message",
+                json={"content": "build an app", "mode": "team"})
+    assert "TEAM" in r2.text and "planner" in r2.text  # team = ADK flow

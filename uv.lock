@@ -50,7 +50,7 @@ xlsx = [
 requires-dist = [
     { name = "aiforge-memory", git = "https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git?rev=main" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "google-adk", specifier = ">=2.1.0" },
+    { name = "google-adk", specifier = ">=2.1.0,<2.2" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "ipykernel", specifier = ">=6.29" },
     { name = "jupyter-client", specifier = ">=8.6" },
