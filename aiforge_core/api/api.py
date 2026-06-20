@@ -1880,10 +1880,11 @@ def _static_topology() -> dict:
     present, so the Workflow view renders instead of erroring."""
     stages = ["triage", "planner", "verifier", "researcher",
               "doer", "refiner", "feedback", "learner"]
-    nodes = [{"id": s, "label": s, "status": "idle"} for s in stages]
-    edges = [{"from": stages[i], "to": stages[i + 1]}
+    nodes = [{"id": s, "label": s, "type": "agent", "tools": [],
+              "status": "idle", "last_event_at": None} for s in stages]
+    edges = [{"from": stages[i], "to": stages[i + 1], "label": ""}
              for i in range(len(stages) - 1)]
-    return {"nodes": nodes, "edges": edges, "static": True}
+    return {"nodes": nodes, "edges": edges, "ticket": None, "static": True}
 
 
 def _topology_snapshot(ticket: str | None) -> dict:
