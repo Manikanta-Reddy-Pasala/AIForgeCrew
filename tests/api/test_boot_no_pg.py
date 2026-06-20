@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 def client(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_PG_URL", raising=False)
     monkeypatch.delenv("AIFORGE_FORCE_PG", raising=False)
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_DB_PATH", str(tmp_path / "api.db"))
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "memory.db"))
     for k in ("AIFORGE_MEMORY_BACKEND", "AIFORGE_NEO4J_URI", "NEO4J_URI"):
@@ -88,3 +89,32 @@ def test_memory_search_embedded(client):
     assert r.status_code == 200
     rows = r.json()
     assert any("widget" in (row.get("text") or "") for row in rows)
+
+
+def test_set_openai_compatible_role_with_key(client):
+    c, _ = client
+    r = c.put("/api/agents/v2/doer/config", json={
+        "provider": "openai_compatible", "model": "qwen-coder",
+        "base_url": "http://box:1234", "api_key": "sk-secret",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["provider"] == "openai_compatible"
+    assert body["base_url"] == "http://box:1234"
+    assert body["api_key_set"] is True
+    # config GET reports key presence without echoing the secret
+    cfg = c.get("/api/agents/v2/config").json()
+    assert cfg["doer"]["api_key_set"] is True
+    assert "sk-secret" not in str(cfg)
+
+
+def test_providers_test_endpoint(client, monkeypatch):
+    import aiforge_core.llm.providers.openai_compatible as oc
+    monkeypatch.setattr(oc, "probe",
+                        lambda base_url, api_key=None: {"ok": True,
+                                                        "models": ["m1"]})
+    c, _ = client
+    r = c.post("/api/providers/test",
+               json={"base_url": "http://box:1234", "api_key": ""})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "models": ["m1"]}

@@ -1303,6 +1303,14 @@ class _AgentConfigV2Body(BaseModel):
                        description="Model identifier for the provider")
     base_url: str | None = Field(
         None, description="Optional override; null = provider default")
+    api_key: str | None = Field(
+        None, description="Optional API key (openai_compatible cloud-with-key); "
+                          "blank = no token")
+
+
+class _ProviderTestBody(BaseModel):
+    base_url: str = Field(..., description="OpenAI-compatible base URL to probe")
+    api_key: str | None = Field(None, description="Optional bearer key")
 
 
 @app.get("/api/agents/v2/config")
@@ -1317,8 +1325,18 @@ def agents_v2_config() -> dict:
             "provider": row.get("provider"),
             "model": row.get("model"),
             "base_url": row.get("base_url"),
+            # Never echo the secret — just whether one is stored.
+            "api_key_set": bool(row.get("api_key")),
         }
     return out
+
+
+@app.post("/api/providers/test")
+def providers_test(body: _ProviderTestBody) -> dict:
+    """Test-connection for the home page. Probes ``{base_url}/v1/models``
+    and returns ``{ok, models[]}`` (or ``{ok:false, error}``)."""
+    from aiforge_core.llm.providers.openai_compatible import probe
+    return probe(body.base_url, body.api_key)
 
 
 @app.get("/api/agents/v2/providers")
@@ -1345,9 +1363,11 @@ def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
     if not body.model or not body.model.strip():
         raise HTTPException(400, "model cannot be empty")
     base_url = body.base_url.strip() if body.base_url else None
+    api_key = body.api_key.strip() if body.api_key else None
     try:
         cfg = _acfg.set_role(role, body.provider, body.model,
-                             base_url=base_url or None)
+                             base_url=base_url or None,
+                             api_key=api_key or None)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {
@@ -1355,6 +1375,7 @@ def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
         "provider": cfg.get("provider"),
         "model": cfg.get("model"),
         "base_url": cfg.get("base_url"),
+        "api_key_set": bool(cfg.get("api_key")),
     }
 
 
