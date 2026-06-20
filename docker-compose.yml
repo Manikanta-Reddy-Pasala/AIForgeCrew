@@ -67,7 +67,9 @@ services:
     environment:
       BGE_M3_DIR: /models/bge-m3
     volumes:
-      - models_cache:/models
+      # Bind-mount an existing bge-m3 model dir (offline, no HF download).
+      # Defaults to a local dir for fresh installs.
+      - ${BGE_M3_HOST_DIR:-./models/bge-m3}:/models/bge-m3:ro
     ports:
       - "8764:8764"
 
@@ -90,23 +92,27 @@ services:
     image: aiforge-app:latest
     container_name: aiforge-api
     restart: unless-stopped
+    # Host networking: lets the app reach a host-loopback LM endpoint
+    # (e.g. an SSH tunnel on 127.0.0.1:1234) AND the published
+    # postgres/neo4j/embed/rerank ports via localhost. For a fully
+    # container-internal setup instead, drop network_mode and switch the
+    # env hostnames below back to service names (postgres/neo4j/embed).
+    network_mode: host
     command: >
       uvicorn aiforge_core.api.api:app --host 0.0.0.0 --port 8799
     environment: &app_env
-      AIFORGE_DSN: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@postgres:5432/${PG_DB:-aiforge}
-      AIFORGE_PG_URL: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@postgres:5432/${PG_DB:-aiforge}
+      AIFORGE_DSN: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:5432/${PG_DB:-aiforge}
+      AIFORGE_PG_URL: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:5432/${PG_DB:-aiforge}
       AIFORGE_FORCE_PG: "1"
-      AIFORGE_NEO4J_URI: bolt://neo4j:7687
-      NEO4J_URI: bolt://neo4j:7687
+      AIFORGE_NEO4J_URI: bolt://127.0.0.1:7687
+      NEO4J_URI: bolt://127.0.0.1:7687
       AIFORGE_NEO4J_USER: neo4j
       AIFORGE_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-password}
       AIFORGE_MEMORY_BACKEND: neo4j
-      AIFORGE_EMBED_URL: http://embed:8764
-      AIFORGE_RERANK_URL: http://rerank:8765
-      AIFORGE_LM_BASE_URL: ${AIFORGE_LM_BASE_URL:-http://host.docker.internal:1234/v1}
+      AIFORGE_EMBED_URL: http://127.0.0.1:8764
+      AIFORGE_RERANK_URL: http://127.0.0.1:8765
+      AIFORGE_LM_BASE_URL: ${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}
       AIFORGE_CONFIG_DIR: /data/aiforge
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - app_state:/data/aiforge
     depends_on:
@@ -114,17 +120,14 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_started
-    ports:
-      - "8799:8799"
 
   runner:
     image: aiforge-app:latest
     container_name: aiforge-runner
     restart: unless-stopped
+    network_mode: host
     command: python -m aiforge_core.runtime.adk_runner
     environment: *app_env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - app_state:/data/aiforge
     depends_on:
