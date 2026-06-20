@@ -23,6 +23,11 @@ def _reset_semantic_env(monkeypatch):
     # Force semantic dedupe OFF so the legacy routing/empty-text/error
     # paths never reach the embed-sidecar path under test.
     monkeypatch.setenv("AIFORGE_SEMANTIC_DEDUPE", "0")
+    # These tests exercise the Neo4j/AFM write path; pin a Neo4j URI so
+    # backend_select doesn't route to the (now-default) embedded SQLite
+    # backend. The embedded path has its own tests in
+    # test_memory_write_routing.py.
+    monkeypatch.setenv("NEO4J_URI", "bolt://test:7687")
 
 
 def test_coerce_facts_handles_python_list() -> None:

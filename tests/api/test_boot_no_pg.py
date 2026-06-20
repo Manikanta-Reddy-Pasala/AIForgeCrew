@@ -11,6 +11,9 @@ def client(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_PG_URL", raising=False)
     monkeypatch.delenv("AIFORGE_FORCE_PG", raising=False)
     monkeypatch.setenv("AIFORGE_DB_PATH", str(tmp_path / "api.db"))
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "memory.db"))
+    for k in ("AIFORGE_MEMORY_BACKEND", "AIFORGE_NEO4J_URI", "NEO4J_URI"):
+        monkeypatch.delenv(k, raising=False)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)
     import aiforge_core.tickets.backend_factory as bf
@@ -19,6 +22,12 @@ def client(monkeypatch, tmp_path):
     import aiforge_core.tickets.store as store
     importlib.reload(store)
     store.create(title="seed ticket", assignee_role="doer", project="demo")
+    import aiforge_core.memory.backend_select as bsel
+    importlib.reload(bsel)
+    import aiforge_core.memory.sqlite_memory as sqlmem
+    importlib.reload(sqlmem)
+    sqlmem.write_unit(text="embedded memory seed about widgets", kind="learning",
+                      source="learner", repo="demo")
 
     import aiforge_core.api.api as api
     importlib.reload(api)
@@ -62,3 +71,20 @@ def test_agents_endpoint_does_not_500_on_sqlite(client):
     r = c.get("/api/agents")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+def test_memory_stats_embedded(client):
+    c, _ = client
+    r = c.get("/api/memory/stats")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["backend"] == "sqlite"
+    assert body["total"] >= 1
+
+
+def test_memory_search_embedded(client):
+    c, _ = client
+    r = c.get("/api/memory/search", params={"q": "widgets"})
+    assert r.status_code == 200
+    rows = r.json()
+    assert any("widget" in (row.get("text") or "") for row in rows)

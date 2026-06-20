@@ -77,6 +77,24 @@ def memory_write(
     tags = list(tags or [])
     tags.append("doer-self-write")
 
+    # Embedded (zero-infra) path — persist the Doer's self-write to the
+    # SQLite memory store instead of Neo4j/AFM.
+    from aiforge_core.memory import backend_select as _bsel
+    if _bsel.embedded():
+        try:
+            from aiforge_core.memory import sqlite_memory as _sqlmem
+            rid = _sqlmem.write_unit(
+                text=text, kind=("decision" if decision else kind),
+                source="doer", tags=tags,
+                metadata={"media_refs": media_refs or []}, repo=repo,
+            )
+            return {"ok": True, "id": rid,
+                    "label": "Decision_v2" if decision else "Observation_v2",
+                    "deduped": rid == 0}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("memory_write[sqlite] failed: %s", exc)
+            return {"ok": False, "error": f"sqlite: {exc}"}
+
     try:
         from aiforge_memory.features.memory.store import (
             upsert_decision, upsert_observation,

@@ -964,6 +964,13 @@ def metrics() -> dict:
 # ─────────────────────────── Memory ─────────────────────────────────────
 @app.get("/api/memory/stats")
 def memory_stats() -> dict:
+    from aiforge_core.memory import backend_select as _bsel
+    if _bsel.embedded():
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        s = _sqlmem.stats()
+        wings = [{"tier": "embedded", "wing": k, "n": v, "embedded": v}
+                 for k, v in s.get("by_kind", {}).items()]
+        return {"backend": "sqlite", "total": s.get("total", 0), "wings": wings}
     with _db() as c, c.cursor() as cur:
         cur.execute(
             "SELECT tier, wing, COUNT(*) AS n, "
@@ -972,13 +979,25 @@ def memory_stats() -> dict:
             "ORDER BY tier, wing"
         )
         rows = cur.fetchall()
-    return {"wings": rows}
+    return {"backend": "postgres", "wings": rows}
 
 
 @app.get("/api/memory/search")
 def memory_search(q: str = Query(..., min_length=2),
                   role: str = Query("sr_developer"),
                   top_k: int = Query(12, le=50)) -> list[dict]:
+    from aiforge_core.memory import backend_select as _bsel
+    if _bsel.embedded():
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        return [
+            {
+                "tier": "embedded", "wing": h.get("kind"),
+                "source": h.get("source"),
+                "text": (h.get("text") or "")[:800], "score": h.get("score"),
+                "metadata": {"ticket": h.get("ticket"), "repo": h.get("repo")},
+            }
+            for h in _sqlmem.recall(q, limit=top_k)
+        ]
     from aiforge_core.memory.store import Memory
     m = Memory()
     hits = m.search(q, role=role, top_k=top_k)

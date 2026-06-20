@@ -73,6 +73,49 @@ def _open_driver():
         return None
 
 
+def _persist_facts_embedded(
+    *, facts: list[dict], repo: str, ticket_identifier: str | None,
+    session_id: str, event_time: float | None,
+) -> dict:
+    """SQLite-backed Learner persistence (zero-infra). DECISION: facts
+    become ``decision`` units, the rest ``learning`` units. Mirrors the
+    Neo4j path's result-dict shape; soft-fails per fact."""
+    from aiforge_core.memory import sqlite_memory as _sqlmem
+    out = {"written_observations": 0, "written_decisions": 0, "errors": []}
+    for fact in facts:
+        text = (fact.get("text") or "").strip()
+        if not text:
+            continue
+        tags = list(fact.get("tags") or [])
+        if ticket_identifier:
+            tags.append(f"ticket:{ticket_identifier}")
+        refs = list(fact.get("about") or [])
+        try:
+            if text.startswith(_DECISION_PREFIX):
+                title = text[len(_DECISION_PREFIX):].strip()[:120] or "decision"
+                _sqlmem.write_unit(
+                    text=text, kind="decision", source="learner", title=title,
+                    tags=tags, metadata={"refs": refs, "session_id": session_id},
+                    repo=repo, ticket=ticket_identifier, event_time=event_time,
+                )
+                out["written_decisions"] += 1
+            else:
+                _sqlmem.write_unit(
+                    text=text, kind="learning", source="learner",
+                    tags=tags, metadata={"refs": refs, "session_id": session_id},
+                    repo=repo, ticket=ticket_identifier, event_time=event_time,
+                )
+                out["written_observations"] += 1
+        except Exception as exc:  # noqa: BLE001
+            out["errors"].append(f"sqlite_write_failed: {exc}")
+    log.info(
+        "learner_persist[sqlite]: repo=%s ticket=%s observations=%d decisions=%d",
+        repo, ticket_identifier or "-",
+        out["written_observations"], out["written_decisions"],
+    )
+    return out
+
+
 def persist_facts(
     *,
     facts: list[dict],
@@ -100,6 +143,15 @@ def persist_facts(
         return out
     if not facts or not repo:
         return out
+
+    # Embedded (zero-infra) path — write learnings to the SQLite memory
+    # store instead of Neo4j/AFM. Same result-dict shape, never raises.
+    from aiforge_core.memory import backend_select as _bsel
+    if _bsel.embedded():
+        return _persist_facts_embedded(
+            facts=facts, repo=repo, ticket_identifier=ticket_identifier,
+            session_id=session_id, event_time=event_time,
+        )
 
     driver = _open_driver()
     if driver is None:
