@@ -29,7 +29,7 @@ from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -1059,6 +1059,71 @@ def memory_search(q: str = Query(..., min_length=2),
         }
         for h in hits
     ]
+
+
+# ───────────────────── Memory sources (ingestion) ──────────────────────
+# Register code repos / docs folders / URLs / files and index them into
+# the active memory backend. See aiforge_core.runtime.memory_sources +
+# memory_ingest.
+
+
+class _MemSourceBody(BaseModel):
+    kind: str = Field(..., description="repo | docs | url | file")
+    location: str = Field(..., min_length=1, description="path or URL")
+    name: str | None = Field(None)
+
+
+@app.get("/api/memory/sources")
+def memory_sources_list() -> list[dict]:
+    from aiforge_core.runtime import memory_sources as _ms
+    return _ms.list_sources()
+
+
+@app.post("/api/memory/sources", status_code=201)
+def memory_sources_create(body: _MemSourceBody) -> dict:
+    from aiforge_core.runtime import memory_sources as _ms
+    try:
+        return _ms.create(body.kind, body.location, body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/memory/sources/upload", status_code=201)
+async def memory_sources_upload(file: UploadFile = File(...),
+                                name: str | None = Form(None)) -> dict:
+    """Upload a single file to ingest. Saved under the config dir, then
+    registered as a ``file`` source (index it with the /index endpoint)."""
+    from aiforge_core.runtime import memory_sources as _ms
+    dest_dir = os.path.join(
+        os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+        "memory-files")
+    os.makedirs(dest_dir, exist_ok=True)
+    safe = os.path.basename(file.filename or "upload.txt")
+    dest = os.path.join(dest_dir, safe)
+    with open(dest, "wb") as fh:
+        fh.write(await file.read())
+    return _ms.create("file", dest, name or safe)
+
+
+@app.delete("/api/memory/sources/{source_id}", status_code=204)
+def memory_sources_delete(source_id: int) -> None:
+    from aiforge_core.runtime import memory_sources as _ms
+    if not _ms.delete(source_id):
+        raise HTTPException(404, f"source {source_id} not found")
+
+
+@app.post("/api/memory/sources/{source_id}/index")
+def memory_sources_index(source_id: int) -> dict:
+    """Kick off background indexing of a source into memory."""
+    import threading
+    from aiforge_core.runtime import memory_sources as _ms
+    from aiforge_core.runtime.memory_ingest import run_index
+    src = _ms.get(source_id)
+    if not src:
+        raise HTTPException(404, f"source {source_id} not found")
+    _ms.set_status(source_id, "indexing", error=None)
+    threading.Thread(target=run_index, args=(source_id,), daemon=True).start()
+    return {**src, "status": "indexing"}
 
 
 # ─────────────────────────── Logs SSE ───────────────────────────────────

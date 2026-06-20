@@ -206,6 +206,34 @@ def test_chat_models_and_session_role(client, monkeypatch):
     assert c.get(f"/api/chat/sessions/{sid}").json()["session"]["role"] == "doer"
 
 
+def test_memory_sources_crud_and_index(client, monkeypatch, tmp_path):
+    c, _ = client
+    # fake docs dir
+    docs = tmp_path / "d"; docs.mkdir()
+    (docs / "n.md").write_text("# n\nhello world\n")
+    import aiforge_core.runtime.tools.memory_write as mw
+    monkeypatch.setattr(mw, "memory_write", lambda **kw: {"ok": True, "id": 1})
+
+    s = c.post("/api/memory/sources",
+               json={"kind": "docs", "location": str(docs), "name": "d"}).json()
+    assert s["kind"] == "docs" and s["status"] == "idle"
+    sid = s["id"]
+    assert any(x["id"] == sid for x in c.get("/api/memory/sources").json())
+
+    r = c.post(f"/api/memory/sources/{sid}/index")
+    assert r.status_code == 200 and r.json()["status"] == "indexing"
+    # background thread finishes quickly with the stub writer
+    import time
+    for _ in range(20):
+        cur = next(x for x in c.get("/api/memory/sources").json() if x["id"] == sid)
+        if cur["status"] in ("done", "error"):
+            break
+        time.sleep(0.1)
+    assert cur["status"] == "done"
+
+    assert c.delete(f"/api/memory/sources/{sid}").status_code == 204
+
+
 def test_memory_stats_neo4j_routing(client, monkeypatch):
     c, _ = client
     import aiforge_core.api.api as api
