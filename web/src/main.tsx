@@ -11,6 +11,7 @@ import { api } from './api';
 
 // Dashboard is the biggest view (pulls recharts). Lazy-load so the
 // main bundle stays small and other pages load instantly.
+const Home         = lazy(() => import('./views/Home'));
 const Dashboard    = lazy(() => import('./views/Dashboard'));
 const Tickets      = lazy(() => import('./views/Tickets'));
 const TicketDetail = lazy(() => import('./views/TicketDetail'));
@@ -56,9 +57,10 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Operate',
     items: [
-      { to: '/',        label: 'Dashboard',  icon: 'Dashboard', end: true },
-      { to: '/board',   label: 'Board',      icon: 'Board' },
-      { to: '/tickets', label: 'Tickets',    icon: 'Tickets' },
+      { to: '/',          label: 'Home',       icon: 'Tool',      end: true },
+      { to: '/dashboard', label: 'Dashboard',  icon: 'Dashboard' },
+      { to: '/board',     label: 'Board',      icon: 'Board' },
+      { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },
     ],
   },
   {
@@ -87,16 +89,17 @@ const NAV: { group: string; items: NavItem[] }[] = [
 ];
 
 const TITLE_MAP: Record<string, string> = {
-  '/':         'Dashboard',
-  '/board':    'Board',
-  '/tickets':  'Tickets',
-  '/chat':     'Chat',
-  '/tools':    'MCP Tools',
-  '/memory':   'Memory',
-  '/agents':   'Agents',
-  '/workflow': 'Workflow',
-  '/perf':     'Perf',
-  '/logs':     'Live logs',
+  '/':           'Home',
+  '/dashboard':  'Dashboard',
+  '/board':      'Board',
+  '/tickets':    'Tickets',
+  '/chat':       'Chat',
+  '/tools':      'MCP Tools',
+  '/memory':     'Memory',
+  '/agents':     'Agents',
+  '/workflow':   'Workflow',
+  '/perf':       'Perf',
+  '/logs':       'Live logs',
 };
 
 function useTitle(pathname: string): string {
@@ -186,7 +189,8 @@ function Shell() {
       <main className="page">
         <Suspense fallback={<RouteFallback />}>
           <Routes>
-            <Route path="/" element={<Dashboard />} />
+            <Route path="/" element={<Home />} />
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/board" element={<Kanban />} />
             <Route path="/tickets" element={<Tickets />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />

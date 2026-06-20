@@ -98,6 +98,14 @@ export const api = {
       { method: 'PUT' },
     ),
 
+  // Test an OpenAI-compatible endpoint reachability.
+  providersTest: (base_url: string, api_key?: string) =>
+    j<{ ok: boolean; models?: string[]; error?: string }>('/providers/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url, api_key }),
+    }),
+
   // Workflow registry + route detection
   workflows: () => j<WorkflowSpec[]>('/workflows'),
   workflowPreview: (body: string, opts: {
@@ -133,7 +141,7 @@ export const api = {
 export type AgentRole =
   | 'architect' | 'planner' | 'verifier' | 'doer' | 'feedback' | 'learner';
 
-export type ProviderId = 'local' | 'ollama_cloud' | 'anthropic';
+export type ProviderId = 'local' | 'ollama_cloud' | 'anthropic' | 'openai_compatible' | 'claude_local';
 export type ModelTier = 'fast' | 'balanced' | 'premium';
 
 export interface ProviderModel {
@@ -154,12 +162,14 @@ export interface AgentRoleConfig {
   provider: ProviderId;
   model: string;
   base_url: string | null;
+  api_key_set?: boolean;
 }
 
 export interface AgentRoleConfigInput {
   provider: ProviderId;
   model: string;
   base_url?: string | null;
+  api_key?: string | null;
 }
 
 // ── workflow types ────────────────────────────────────────────────
