@@ -22,9 +22,16 @@ NEO4J_CONTAINER="${NEO4J_CONTAINER:-aiforge-neo4j}"
 DOCKER="${DOCKER:-sudo docker}"
 
 echo "==> postgres dump → $OUT/pg-${PG_DB}-${TS}.sql.gz"
-PGPASSWORD="$PG_PASSWORD" pg_dump \
-  -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" \
-  | gzip > "$OUT/pg-${PG_DB}-${TS}.sql.gz"
+# Dump as the postgres superuser: the app role often doesn't own every
+# table (e.g. adk_internal_metadata) so its pg_dump fails on LOCK TABLE.
+# Falls back to the app role over TCP if passwordless sudo isn't available.
+if sudo -n -u postgres true 2>/dev/null; then
+  sudo -n -u postgres pg_dump -d "$PG_DB" | gzip > "$OUT/pg-${PG_DB}-${TS}.sql.gz"
+else
+  PGPASSWORD="$PG_PASSWORD" pg_dump \
+    -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" \
+    | gzip > "$OUT/pg-${PG_DB}-${TS}.sql.gz"
+fi
 echo "    $(du -h "$OUT/pg-${PG_DB}-${TS}.sql.gz" | cut -f1)"
 
 if $DOCKER ps --format '{{.Names}}' | grep -qx "$NEO4J_CONTAINER"; then
