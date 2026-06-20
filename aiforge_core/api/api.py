@@ -1861,7 +1861,10 @@ def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
     t = tickets_mod.create(
         title=title, body=body.content.strip(), project=project,
         priority="urgent", route="code",
-        metadata={"source": "chat", "chat_session_id": session_id},
+        # interactive=chat → the runner's clarify step may ask questions
+        # before running. Normal tickets omit this → static, no ask.
+        metadata={"source": "chat", "chat_session_id": session_id,
+                  "interactive": True},
     )
     chat_store.add_message(session_id, "user", body.content)
     chat_store.add_message(
@@ -1871,6 +1874,30 @@ def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
         [{"type": "ticket", "identifier": t.identifier, "project": project}],
     )
     return {"ticket": t.identifier, "ticket_id": t.id, "project": project,
+            "trace_url": f"/api/trace/{t.identifier}/stream"}
+
+
+class _TicketAnswerBody(BaseModel):
+    content: str = Field(..., min_length=1)
+
+
+@app.post("/api/tickets/{identifier}/answer")
+def ticket_answer(identifier: str, body: _TicketAnswerBody) -> dict:
+    """Answer a clarification a chat/interactive ticket asked. Folds the
+    answer into the ticket body, marks it clarified, and re-queues it so
+    the pipeline resumes with the new context."""
+    t = tickets_mod.get(identifier)
+    if t is None:
+        raise HTTPException(404, f"ticket {identifier} not found")
+    ans = body.content.strip()
+    tickets_mod.append_body(t.id, f"\n\n## Clarification\n{ans}\n")
+    tickets_mod.add_comment(t.id, "user", ans)
+    tickets_mod.add_event(t.id, "clarify", "clarification_answer", ans, {})
+    tickets_mod.update_status(
+        t.id, "todo", role="chat",
+        metadata_patch={"clarified": True, "awaiting_input": False},
+    )
+    return {"ticket": t.identifier, "status": "todo",
             "trace_url": f"/api/trace/{t.identifier}/stream"}
 
 

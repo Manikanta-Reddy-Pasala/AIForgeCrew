@@ -217,6 +217,15 @@ class PgBackend:
                         (branch, ticket_id))
             c.commit()
 
+    def append_body(self, ticket_id, extra) -> "dict | None":
+        with self._conn() as c, c.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "UPDATE tickets SET body = body || %s WHERE id=%s RETURNING *",
+                (extra, ticket_id))
+            row = cur.fetchone()
+            c.commit()
+        return row
+
     def insert_event(self, ticket_id, agent_role, kind, body, metadata) -> int:
         with self._conn() as c, c.cursor() as cur:
             cur.execute(

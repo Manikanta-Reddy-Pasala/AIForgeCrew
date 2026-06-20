@@ -1110,6 +1110,16 @@ def _process_one_ticket() -> bool:
 
     log.info("claimed ticket=%s title=%r", ticket.identifier, ticket.title)
 
+    # Interactive (chat) runs may pause to ask clarifying questions before
+    # any pipeline work. Static tickets skip this entirely. Returns True
+    # when it parked the ticket awaiting the user's answer.
+    try:
+        from .clarify import maybe_clarify
+        if maybe_clarify(ticket):
+            return True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("clarify gate skipped: %s", exc)
+
     # LM Studio liveness check + opportunistic tunnel restart. When
     # the local model is unreachable, flip the pipeline to a cloud
     # profile for this run so we don't burn a slot on retries that

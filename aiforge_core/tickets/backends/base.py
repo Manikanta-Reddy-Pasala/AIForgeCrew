@@ -69,6 +69,10 @@ class StoreBackend(Protocol):
         """Set a ticket's git branch."""
         ...
 
+    def append_body(self, ticket_id: int, extra: str) -> "dict | None":
+        """Append text to a ticket's body (used for clarifications)."""
+        ...
+
     def insert_event(self, ticket_id: int, agent_role: "str | None", kind: str,
                      body: "str | None", metadata: dict) -> int:
         """Insert a ticket_event, return its id."""

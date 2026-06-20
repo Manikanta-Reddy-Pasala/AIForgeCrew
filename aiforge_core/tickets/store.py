@@ -302,3 +302,9 @@ def get_enriched(identifier: str) -> dict | None:
 
 def set_branch(ticket_id: int, branch: str) -> None:
     get_backend().set_branch(ticket_id, branch)
+
+
+def append_body(ticket_id: int, extra: str) -> Ticket | None:
+    """Append text to a ticket body (used to fold in chat clarifications)."""
+    row = get_backend().append_body(ticket_id, extra)
+    return Ticket.from_row(row) if row else None

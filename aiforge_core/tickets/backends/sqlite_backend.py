@@ -226,6 +226,17 @@ class SqliteBackend:
                 (branch, ticket_id),
             )
 
+    def append_body(self, ticket_id, extra) -> "dict | None":
+        with self._conn() as c:
+            c.execute(
+                f"UPDATE tickets SET body = body || ?, updated_at = {_NOW} "
+                "WHERE id = ?",
+                (extra, ticket_id),
+            )
+            r = c.execute("SELECT * FROM tickets WHERE id = ?",
+                          (ticket_id,)).fetchone()
+        return _row_to_dict(r) if r else None
+
     def insert_event(self, ticket_id, agent_role, kind, body, metadata) -> int:
         with self._conn() as c:
             cur = c.execute(

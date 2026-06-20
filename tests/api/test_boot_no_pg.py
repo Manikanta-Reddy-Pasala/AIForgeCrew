@@ -261,3 +261,16 @@ def test_chat_pipeline_ticket(client):
     assert c.get(f"/api/tickets/{body['ticket']}").status_code == 200
     msgs = c.get(f"/api/chat/sessions/{sid}").json()["messages"]
     assert any("pipeline run" in (m["content"] or "").lower() for m in msgs)
+
+
+def test_ticket_answer_requeues(client):
+    c, store = client
+    t = store.create(title="q", body="vague", assignee_role="doer", project="demo",
+                     metadata={"interactive": True, "awaiting_input": True})
+    store.update_status(t.id, "blocked")
+    r = c.post(f"/api/tickets/{t.identifier}/answer",
+               json={"content": "use the React file"})
+    assert r.status_code == 200 and r.json()["status"] == "todo"
+    got = c.get(f"/api/tickets/{t.identifier}").json()["ticket"]
+    assert got["status"] == "todo"
+    assert "React file" in got["body"]
