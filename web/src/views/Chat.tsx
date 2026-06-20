@@ -272,7 +272,7 @@ export default function Chat() {
       }
 
       const reader = res.body!.getReader();
-      const decoder = new TextDecoder({ ignoreBOM: true });
+      const decoder = new TextDecoder('utf-8');
       let buffer = '';
 
       function applyEvent(raw: string) {
