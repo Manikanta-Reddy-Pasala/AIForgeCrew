@@ -244,3 +244,20 @@ def test_memory_stats_neo4j_routing(client, monkeypatch):
     r = c.get("/api/memory/stats")
     assert r.status_code == 200
     assert r.json() == {"backend": "neo4j", "total": 7, "wings": []}
+
+
+def test_chat_pipeline_ticket(client):
+    c, _ = client
+    s = c.post("/api/chat/sessions", json={"cwd": "/x/demo"}).json()
+    sid = s["id"]
+    r = c.post(f"/api/chat/sessions/{sid}/ticket",
+               json={"content": "fix the parser bug", "project": "demo"})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["ticket"].startswith("ONE-")
+    assert body["project"] == "demo"
+    assert body["trace_url"].endswith("/stream")
+    # ticket exists + chat got the linking messages
+    assert c.get(f"/api/tickets/{body['ticket']}").status_code == 200
+    msgs = c.get(f"/api/chat/sessions/{sid}").json()["messages"]
+    assert any("pipeline run" in (m["content"] or "").lower() for m in msgs)

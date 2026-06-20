@@ -131,7 +131,7 @@ services:
     # doesn't hot-loop on an empty queue.
     command: >
       sh -c "while true; do python -m aiforge_core.runtime.adk_runner || true;
-      sleep ${AIFORGE_RUNNER_POLL_SEC:-30}; done"
+      sleep ${AIFORGE_RUNNER_POLL_SEC:-10}; done"
     environment: *app_env
     volumes:
       - app_state:/data/aiforge

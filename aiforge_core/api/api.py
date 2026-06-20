@@ -1835,6 +1835,45 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             chat_store.add_message(session_id, "assistant", final_text, steps)
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+class _SessionTicketBody(BaseModel):
+    content: str = Field(..., min_length=1)
+    project: str | None = Field(None, description="target repo; defaults to session cwd name")
+
+
+@app.post("/api/chat/sessions/{session_id}/ticket", status_code=201)
+def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
+    """Pipeline mode: turn a chat message into a real ticket that runs the
+    full architect→planner→verifier→doer→feedback→learner pipeline. The
+    runner picks it up (urgent priority → next); the chat UI streams live
+    stage updates from ``/api/trace/{identifier}/stream``. Returns the
+    created ticket identifier + trace stream path."""
+    from aiforge_core.runtime import chat_store
+    session = chat_store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, f"session {session_id} not found")
+    project = (body.project or "").strip() or os.path.basename(
+        os.path.normpath(session.get("cwd") or _default_cwd())) or None
+    title = body.content.strip().splitlines()[0][:120] or "chat request"
+    if (session.get("title") or "New chat") == "New chat":
+        chat_store.rename_session(session_id, title)
+    t = tickets_mod.create(
+        title=title, body=body.content.strip(), project=project,
+        priority="urgent", route="code",
+        metadata={"source": "chat", "chat_session_id": session_id},
+    )
+    chat_store.add_message(session_id, "user", body.content)
+    chat_store.add_message(
+        session_id, "assistant",
+        f"Started pipeline run as **{t.identifier}** (project `{project or '—'}`). "
+        f"Streaming stage updates…",
+        [{"type": "ticket", "identifier": t.identifier, "project": project}],
+    )
+    return {"ticket": t.identifier, "ticket_id": t.id, "project": project,
+            "trace_url": f"/api/trace/{t.identifier}/stream"}
+
+
 _MCP_ALLOWED_TOOLS = {
     "sym_lookup", "list_repos", "list_services", "list_endpoints",
     "list_integrations", "graph_neighborhood", "caller_chain",
