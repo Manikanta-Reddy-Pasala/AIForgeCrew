@@ -962,10 +962,44 @@ def metrics() -> dict:
 
 
 # ─────────────────────────── Memory ─────────────────────────────────────
+def _neo4j_stats() -> dict:
+    """Node counts per label from the graph (one row per label, plus a
+    grand total). Soft — returns zeros on any driver error."""
+    try:
+        from neo4j import GraphDatabase
+        from aiforge_core.memory.neo4j_conn import neo4j_params
+        uri, user, pw = neo4j_params()
+        drv = GraphDatabase.driver(uri, auth=(user, pw))
+    except Exception as exc:  # noqa: BLE001
+        return {"backend": "neo4j", "total": 0, "wings": [], "error": str(exc)}
+    try:
+        with drv.session() as s:
+            total = s.run("MATCH (n) RETURN count(n) AS n").single()["n"]
+            rows = s.run(
+                "MATCH (n) UNWIND labels(n) AS label "
+                "RETURN label, count(*) AS n ORDER BY n DESC LIMIT 30"
+            )
+            wings = [
+                {"tier": "graph", "wing": r["label"], "n": r["n"], "embedded": r["n"]}
+                for r in rows
+            ]
+        return {"backend": "neo4j", "total": int(total), "wings": wings}
+    except Exception as exc:  # noqa: BLE001
+        return {"backend": "neo4j", "total": 0, "wings": [], "error": str(exc)}
+    finally:
+        try:
+            drv.close()
+        except Exception:
+            pass
+
+
 @app.get("/api/memory/stats")
 def memory_stats() -> dict:
     from aiforge_core.memory import backend_select as _bsel
-    if _bsel.embedded():
+    backend = _bsel.memory_backend()
+    if backend == "neo4j":
+        return _neo4j_stats()
+    if backend == "sqlite":
         from aiforge_core.memory import sqlite_memory as _sqlmem
         s = _sqlmem.stats()
         wings = [{"tier": "embedded", "wing": k, "n": v, "embedded": v}
@@ -987,7 +1021,8 @@ def memory_search(q: str = Query(..., min_length=2),
                   role: str = Query("sr_developer"),
                   top_k: int = Query(12, le=50)) -> list[dict]:
     from aiforge_core.memory import backend_select as _bsel
-    if _bsel.embedded():
+    backend = _bsel.memory_backend()
+    if backend == "sqlite":
         from aiforge_core.memory import sqlite_memory as _sqlmem
         return [
             {
@@ -997,6 +1032,21 @@ def memory_search(q: str = Query(..., min_length=2),
                 "metadata": {"ticket": h.get("ticket"), "repo": h.get("repo")},
             }
             for h in _sqlmem.recall(q, limit=top_k)
+        ]
+    if backend == "neo4j":
+        # Use the unified recall (afm_bundle + graph hops); map to UI rows.
+        from aiforge_core.memory import unified_query as _uq
+        res = _uq.query(q, role=role, limit=top_k)
+        return [
+            {
+                "tier": "graph", "wing": h.get("kind") or h.get("source"),
+                "source": h.get("source"),
+                "text": (h.get("text") or "")[:800],
+                "score": h.get("score"),
+                "metadata": {k: v for k, v in h.items()
+                             if k not in ("text", "score", "source")},
+            }
+            for h in res.get("hits", [])
         ]
     from aiforge_core.memory.store import Memory
     m = Memory()

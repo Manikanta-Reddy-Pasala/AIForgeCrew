@@ -138,3 +138,15 @@ def test_providers_test_endpoint(client, monkeypatch):
                json={"base_url": "http://box:1234", "api_key": ""})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "models": ["m1"]}
+
+
+def test_memory_stats_neo4j_routing(client, monkeypatch):
+    c, _ = client
+    import aiforge_core.api.api as api
+    monkeypatch.setattr("aiforge_core.memory.backend_select.memory_backend",
+                        lambda: "neo4j")
+    monkeypatch.setattr(api, "_neo4j_stats",
+                        lambda: {"backend": "neo4j", "total": 7, "wings": []})
+    r = c.get("/api/memory/stats")
+    assert r.status_code == 200
+    assert r.json() == {"backend": "neo4j", "total": 7, "wings": []}
