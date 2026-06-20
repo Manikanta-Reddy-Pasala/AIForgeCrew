@@ -188,21 +188,52 @@ the task is complete, then give FINAL. Do real work — read and edit files, run
 commands — rather than guessing."""
 
 
+def _balanced_json(text: str, start_at: int = 0) -> dict:
+    """Extract + parse the first balanced {...} object at/after start_at.
+    Brace-counting (string-aware) so it survives code fences, trailing
+    junk, pretty-printed/multiline JSON, and braces inside strings.
+    Returns {} when none parses."""
+    start = text.find("{", start_at)
+    if start < 0:
+        return {}
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except (ValueError, TypeError):
+                    return {}
+    return {}
+
+
 def _parse(out: str) -> dict:
-    """Parse a model turn into {kind, ...}."""
+    """Parse a model turn into {kind, ...}. Tolerant of code fences,
+    pretty-printed JSON, and stray markdown around the protocol."""
     fin = _FINAL_RE.search(out)
     act = _ACTION_RE.search(out)
-    # FINAL wins only if there's no action before it (action-first agents
-    # sometimes mention "final" in prose). Prefer ACTION when present.
+    # Prefer ACTION when present (models sometimes mention "final" in prose).
     if act:
         name = act.group(1).strip()
-        args_m = _ARGS_RE.search(out)
-        args = {}
-        if args_m:
-            try:
-                args = json.loads(args_m.group(1))
-            except (ValueError, TypeError):
-                args = {}
+        # Args = first balanced {...} after the ARGS_JSON marker if present,
+        # else after the ACTION line. Handles ```json fenced args.
+        m = re.search(r"ARGS_JSON\s*:?", out, re.IGNORECASE)
+        args = _balanced_json(out, m.end() if m else act.end())
         thought = _THOUGHT_RE.search(out)
         return {"kind": "action", "tool": name, "args": args,
                 "thought": thought.group(1).strip() if thought else ""}

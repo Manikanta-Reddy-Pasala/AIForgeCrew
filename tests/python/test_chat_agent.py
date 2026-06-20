@@ -152,3 +152,16 @@ def test_memory_write_tool(tmp_path, monkeypatch):
     assert tool["name"] == "memory_write"
     assert tool["result"]["ok"] is True
     assert sm.stats()["total"] == 1
+
+
+def test_fenced_args_write_persists(tmp_path):
+    # model wraps args in a ```json fence — must still extract + write
+    fn = _scripted([
+        'ACTION: file_write\nARGS_JSON:\n```json\n{"path": "out.txt", "content": "BANANA"}\n```',
+        "FINAL: wrote it",
+    ])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "write it"}], cwd=str(tmp_path), complete_fn=fn))
+    tool = [e for e in evs if e["type"] == "tool"][0]
+    assert tool["result"]["ok"] is True
+    assert (tmp_path / "out.txt").read_text() == "BANANA"
