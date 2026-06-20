@@ -92,7 +92,7 @@ def _session_row(r: sqlite3.Row) -> dict:
 
 
 def create_session(title: str = "New chat", cwd: str | None = None,
-                   role: str = "doer") -> dict:
+                   role: str = "chat") -> dict:
     with _LOCK, _conn() as c:
         cur = c.execute(
             "INSERT INTO chat_sessions(title, cwd, role) VALUES (?,?,?)",

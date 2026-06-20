@@ -175,12 +175,16 @@ def test_chat_sessions_crud_and_message(client, monkeypatch):
 
 def test_chat_models_endpoint(client):
     c, _ = client
-    models = c.get("/api/chat/models").json()
-    assert isinstance(models, list) and models
-    assert all("role" in m and "model" in m for m in models)
-    # session create still records a chosen role (model dropdown)
-    s = c.post("/api/chat/sessions", json={"role": "planner"}).json()
-    assert s["role"] == "planner"
+    body = c.get("/api/chat/models").json()
+    assert "provider" in body and "models" in body and isinstance(body["models"], list)
+    # new sessions default to the dedicated 'chat' slot, not 'doer'
+    s = c.post("/api/chat/sessions", json={}).json()
+    assert s["role"] == "chat"
+    # picker can set the chat model
+    r = c.put("/api/chat/model", json={"provider": "openai_compatible",
+                                       "model": "qwen-coder-x"})
+    assert r.status_code == 200 and r.json()["model"] == "qwen-coder-x"
+    assert c.get("/api/chat/models").json()["current"] == "qwen-coder-x"
 
 
 def test_memory_sources_crud_and_index(client, monkeypatch, tmp_path):

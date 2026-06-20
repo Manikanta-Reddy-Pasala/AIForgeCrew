@@ -1778,21 +1778,44 @@ def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
 class _NewSessionBody(BaseModel):
     title: str | None = Field(None)
     cwd: str | None = Field(None)
-    role: str = Field("doer", description="archetype whose provider/model drives chat")
+    role: str = Field("chat", description="model slot driving chat (default: chat)")
 
 
 @app.get("/api/chat/models")
-def chat_models() -> list[dict]:
-    """Selectable chat models — one per archetype, with its currently
-    configured provider + model (set on the home page). The chat picker
-    sends the chosen ``role``."""
-    full = _acfg.load_all()
-    out = []
-    for role in _acfg.archetypes():
-        row = full.get(role) or {}
-        out.append({"role": role, "provider": row.get("provider"),
-                    "model": row.get("model")})
-    return out
+def chat_models() -> dict:
+    """Models available for the dedicated 'chat' slot. Returns the
+    current provider/model + the provider's model catalog so the picker
+    shows real model names (no pipeline roles)."""
+    row = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
+    provider = row.get("provider") or "local"
+    try:
+        models = _acfg.list_models(provider) or []
+    except Exception:
+        models = []
+    return {
+        "provider": provider,
+        "current": row.get("model"),
+        "models": [{"id": m.get("id"), "label": m.get("label") or m.get("id")}
+                   for m in models if m.get("id")],
+    }
+
+
+class _ChatModelBody(BaseModel):
+    model: str = Field(..., min_length=1)
+    provider: str | None = Field(None)
+
+
+@app.put("/api/chat/model")
+def chat_model_set(body: _ChatModelBody) -> dict:
+    """Persist the chat slot's model (the picker calls this)."""
+    cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
+    provider = body.provider or cur.get("provider") or "local"
+    try:
+        cfg = _acfg.set_role("chat", provider, body.model,
+                             base_url=cur.get("base_url"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"provider": cfg.get("provider"), "model": cfg.get("model")}
 
 
 class _RenameBody(BaseModel):
@@ -1809,7 +1832,7 @@ def chat_session_create(body: _NewSessionBody) -> dict:
     from aiforge_core.runtime import chat_store
     return chat_store.create_session(body.title or "New chat",
                                      body.cwd or _default_cwd(),
-                                     role=body.role or "doer")
+                                     role=body.role or "chat")
 
 
 @app.get("/api/chat/sessions")
@@ -1857,7 +1880,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
 
-    role = body.role or session.get("role") or "doer"
+    role = body.role or session.get("role") or "chat"
     if body.role and body.role != session.get("role"):
         chat_store.set_session_role(session_id, body.role)
 

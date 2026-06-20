@@ -49,6 +49,9 @@ _ARCHETYPES: tuple[str, ...] = (
     # Research-completeness critic (2026-06-18) — drives the bounded
     # research-gap re-search loop. Local-tier, tool-less.
     "gap_eval",
+    # Conversational chat agent (2026-06-21) — the UI chat's own model
+    # slot, configured on the home page; independent of the pipeline.
+    "chat",
 )
 _ROLES = _ARCHETYPES
 
