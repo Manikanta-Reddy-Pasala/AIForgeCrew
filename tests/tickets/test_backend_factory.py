@@ -23,3 +23,9 @@ def test_pg_url_selects_postgres(monkeypatch):
     envmod = _reload_env(monkeypatch, AIFORGE_PG_URL="postgresql://x/y")
     assert envmod.AIFORGE_USE_SQLITE is False
     assert envmod.AIFORGE_PG_URL == "postgresql://x/y"
+
+
+def test_pg_backend_importable():
+    from aiforge_core.tickets.backends.pg_backend import PgBackend
+    assert hasattr(PgBackend, "claim_next_any")
+    assert hasattr(PgBackend, "create")
