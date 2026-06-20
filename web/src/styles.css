@@ -799,6 +799,16 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   line-height: 1.5;
 }
 
+/* Compact model/role selector in the chat topbar */
+.chat-model-select {
+  width: auto;
+  min-width: 140px;
+  max-width: 240px;
+  padding: 4px 28px 4px 10px;
+  font-size: var(--fs-xs);
+  border-radius: var(--r-sm);
+}
+
 .bubble {
   display: flex;
   gap: var(--s-3);

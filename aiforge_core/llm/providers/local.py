@@ -41,10 +41,19 @@ class LocalMlxProvider:
             or os.environ.get("LM_STUDIO_API_KEY")
             or "sk-local"
         )
-        model = (
-            os.environ.get(f"AIFORGE_{role_up}_MODEL")
-            or "mlx-local"
-        )
+        # Model resolution: per-role env → the role's configured model
+        # from agent_config (which dynamically discovers the served local
+        # model id from /v1/models) → global LM model env → the legacy
+        # "mlx-local" placeholder. Without the agent_config step the chat
+        # path sent "mlx-local", which LM Studio rejected (empty response).
+        model = os.environ.get(f"AIFORGE_{role_up}_MODEL")
+        if not model:
+            try:
+                from aiforge_core.config import agent_config as _acfg
+                model = (_acfg.get(role) or {}).get("model")
+            except Exception:
+                model = None
+        model = model or os.environ.get("AIFORGE_LM_MODEL") or "mlx-local"
         # mlx-lm honours chat_template_kwargs for thinking-mode flips.
         extras: dict = {}
         think_env = os.environ.get(f"AIFORGE_{role_up}_THINK")

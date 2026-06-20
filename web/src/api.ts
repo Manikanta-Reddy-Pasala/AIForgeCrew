@@ -220,9 +220,16 @@ export interface ChatSession {
   id: number;
   title: string;
   cwd: string | null;
+  role?: string | null;
   created_at: string;
   updated_at: string;
   message_count?: number;
+}
+
+export interface ChatModelOption {
+  role: string;
+  provider: string | null;
+  model: string | null;
 }
 
 export interface ChatMsg {
@@ -238,7 +245,9 @@ export interface ChatMsg {
 export const chatApi = {
   sessions: () => j<ChatSession[]>('/chat/sessions'),
 
-  sessionCreate: (body?: { title?: string; cwd?: string }) =>
+  chatModels: () => j<ChatModelOption[]>('/chat/models'),
+
+  sessionCreate: (body?: { title?: string; cwd?: string; role?: string }) =>
     j<ChatSession>('/chat/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
