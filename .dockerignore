@@ -1,0 +1,12 @@
+.venv
+**/__pycache__
+**/*.pyc
+web/node_modules
+web/dist
+.git
+.pytest_cache
+graphify-out
+*.db
+.aiforge
+docs
+evals

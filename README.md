@@ -32,6 +32,20 @@ over automatically.
 `./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
 `--skip-web` skips the UI rebuild.
 
+### Full "pro" stack with Docker Compose
+
+For the heavier setup (Postgres + Neo4j graph memory + embedding sidecars),
+`docker-compose.yml` runs everything as one stack:
+
+```bash
+docker compose up -d --build      # api+ui on :8799, postgres, neo4j, embed, rerank
+```
+
+Migrating an existing bare-metal install **without losing data** (dump+restore
+Postgres, reuse the existing Neo4j volume) is documented step-by-step in
+[`scripts/compose/CUTOVER.md`](scripts/compose/CUTOVER.md); back up first with
+`scripts/compose/backup-prod.sh`.
+
 ---
 
 ```
