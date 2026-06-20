@@ -1073,6 +1073,64 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   .chat-sessions-sidebar { display: none; }
 }
 
+/* ── Chat mode toggle ───────────────────────────────────────────── */
+.chat-mode-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.chat-mode-toggle button {
+  all: unset;
+  padding: 4px 12px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--fg-2);
+  background: var(--bg-1);
+  transition: background var(--dur-fast), color var(--dur-fast);
+}
+.chat-mode-toggle button + button {
+  border-left: 1px solid var(--border-1);
+}
+.chat-mode-toggle button:hover:not(:disabled) {
+  background: var(--bg-3);
+  color: var(--fg-0);
+}
+.chat-mode-toggle button.active {
+  background: var(--accent);
+  color: #fff;
+}
+.chat-mode-toggle button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Pipeline stage log ─────────────────────────────────────────── */
+.pipeline-stage-log {
+  background: var(--bg-code);
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pipeline-stage-line {
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pipeline-stage-line:first-child {
+  color: var(--fg-2);
+}
+
 /* ========================================================================
    MCP TOOLS
    ======================================================================== */

@@ -312,3 +312,36 @@ export const chatApi = {
 export function chatSessionMessageURL(id: number): string {
   return `${BASE}/chat/sessions/${id}/message`;
 }
+
+export function chatSessionTicket(
+  id: number,
+  content: string,
+  project?: string,
+): Promise<{ ticket: string; ticket_id: number; project: string | null; trace_url: string }> {
+  return j(`/chat/sessions/${id}/ticket`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, ...(project ? { project } : {}) }),
+  });
+}
+
+export function traceStreamURL(identifier: string): string {
+  return `${BASE}/trace/${identifier}/stream`;
+}
+
+/** Poll ticket status — returns the raw ticket object including metadata. */
+export function ticketStatus(identifier: string): Promise<{ ticket: { status: string; metadata?: Record<string, any> } }> {
+  return j(`/tickets/${identifier}`);
+}
+
+/** Submit a clarification answer. Returns the re-queued ticket plus a trace_url for resuming. */
+export function ticketAnswer(
+  identifier: string,
+  content: string,
+): Promise<{ ticket: string; status: string; trace_url: string }> {
+  return j(`/tickets/${identifier}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+}

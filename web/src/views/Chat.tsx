@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { chatApi, chatSessionMessageURL, ChatSession, ChatMsg, ChatModelOption } from '../api';
+import { chatApi, chatSessionMessageURL, chatSessionTicket, traceStreamURL, ticketStatus, ticketAnswer, ChatSession, ChatMsg, ChatModelOption } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -19,8 +19,50 @@ type LiveTurn = {
   streaming: boolean;
 };
 
+type ChatMode = 'agent' | 'pipeline';
+
+// A pipeline run turn rendered in the chat log
+type PipelineTurn = {
+  ticketId: string;          // e.g. ONE-123
+  project: string | null;
+  stageLines: string[];      // formatted stage-update lines
+  running: boolean;
+  finalStatus: string | null;
+  // Clarification / awaiting-input state
+  awaitingInput: boolean;
+  clarifyQuestion: string;   // question text shown to user
+  answerDraft: string;       // current value of the answer <input>
+  answerBusy: boolean;       // true while POST /answer is in-flight
+  answersGiven: string[];    // history of answers appended to the bubble
+};
+
 const LS_SESSION_KEY = 'aiforge.chat.activeSessionId';
 const LS_ROLE_KEY = 'aiforge.chat.role';
+const LS_MODE_KEY = 'aiforge.chat.mode';
+
+// Statuses that definitively end the run (blocked is handled separately — it
+// may mean "awaiting input" rather than a permanent failure).
+const TERMINAL_STATUSES = new Set(['done', 'qa', 'qa_failed', 'cancelled']);
+
+// Format a generic trace event object as a human-readable stage line
+function formatTraceEvent(evt: Record<string, unknown>): string {
+  const role = (evt.role ?? evt.agent_role ?? '') as string;
+  const kind = (evt.kind ?? '') as string;
+  const stage = (evt.stage ?? '') as string;
+  const status = (evt.status ?? '') as string;
+  const body = (evt.body ?? evt.text ?? '') as string;
+
+  const prefix = role ? `[${role}]` : kind ? `[${kind}]` : '';
+
+  let detail = '';
+  if (stage && status) detail = `${stage} → ${status}`;
+  else if (stage) detail = stage;
+  else if (status) detail = `status → ${status}`;
+  else if (kind) detail = kind;
+
+  const snippet = body ? ` · ${String(body).slice(0, 120)}` : '';
+  return [prefix, detail, snippet].filter(Boolean).join(' ') || JSON.stringify(evt).slice(0, 160);
+}
 
 // ── relative time helper ──────────────────────────────────────────────────────
 
@@ -75,6 +117,14 @@ export default function Chat() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // Pipeline mode
+  const [mode, setMode] = useState<ChatMode>(() => {
+    try { return (localStorage.getItem(LS_MODE_KEY) as ChatMode) || 'agent'; } catch { return 'agent'; }
+  });
+  const [pipelineProject, setPipelineProject] = useState('');
+  const [pipelineTurn, setPipelineTurn] = useState<PipelineTurn | null>(null);
+  const pipelineEsRef = useRef<EventSource | null>(null);
+
   // Rename state: { id, value }
   const [renaming, setRenaming] = useState<{ id: number; value: string } | null>(null);
 
@@ -87,6 +137,7 @@ export default function Chat() {
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const answerInputRef = useRef<HTMLInputElement | null>(null);
 
   // ── Load sessions list ─────────────────────────────────────────────────────
 
@@ -165,10 +216,20 @@ export default function Chat() {
     try { localStorage.setItem(LS_ROLE_KEY, selectedRole); } catch { /* ignore */ }
   }, [selectedRole]);
 
+  // Persist chat mode
+  useEffect(() => {
+    try { localStorage.setItem(LS_MODE_KEY, mode); } catch { /* ignore */ }
+  }, [mode]);
+
+  // Close pipeline EventSource on unmount
+  useEffect(() => {
+    return () => { pipelineEsRef.current?.close(); };
+  }, []);
+
   // Auto-scroll on new messages / live turn updates
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, liveTurn]);
+  }, [messages, liveTurn, pipelineTurn]);
 
   // Focus rename input when rename starts
   useEffect(() => {
@@ -181,6 +242,10 @@ export default function Chat() {
 
   function selectSession(id: number) {
     if (id === activeId) return;
+    // Close any active pipeline stream
+    pipelineEsRef.current?.close();
+    pipelineEsRef.current = null;
+    setPipelineTurn(null);
     setActiveId(id);
     setLiveTurn(null);
     setBusy(false);
@@ -377,11 +442,232 @@ export default function Chat() {
 
   }
 
+  // ── Pipeline send ─────────────────────────────────────────────────────────
+
+  /**
+   * Helper: open (or re-open) an EventSource for `identifier` and stream
+   * stage updates into the existing pipelineTurn. Handles:
+   *  - clarification events (kind === "clarification")
+   *  - blocked status — polls ticket to check awaiting_input
+   *  - terminal statuses (done / qa / qa_failed / cancelled)
+   */
+  function openTraceStream(identifier: string) {
+    // Close any previously open stream
+    pipelineEsRef.current?.close();
+    pipelineEsRef.current = null;
+
+    const es = new EventSource(traceStreamURL(identifier));
+    pipelineEsRef.current = es;
+
+    es.onmessage = ev => {
+      try {
+        const d = JSON.parse(ev.data);
+
+        // ── Detect clarification event ────────────────────────────────────
+        const isClarifyEvent = d.kind === 'clarification';
+        const isClarifyBlocked =
+          (d.status === 'blocked' || d.kind === 'blocked') &&
+          (d.awaiting_input === true || d.metadata?.awaiting_input === true);
+
+        if (isClarifyEvent || isClarifyBlocked) {
+          const question: string =
+            d.body ?? d.text ??
+            (Array.isArray(d.metadata?.questions) ? d.metadata.questions.join('\n') : '') ??
+            'The pipeline needs more information to proceed.';
+
+          es.close();
+          pipelineEsRef.current = null;
+
+          setPipelineTurn(prev => prev ? {
+            ...prev,
+            running: false,
+            awaitingInput: true,
+            clarifyQuestion: question,
+            stageLines: [...prev.stageLines, `[clarification] ${question}`],
+          } : null);
+
+          // busy stays true — the user must answer before continuing
+          // Focus the answer input after state settles
+          setTimeout(() => answerInputRef.current?.focus(), 80);
+          return;
+        }
+
+        // ── Normal event: append stage line ──────────────────────────────
+        const line = formatTraceEvent(d);
+        const status = (d.status ?? d.kind ?? '') as string;
+        const isTerminal = TERMINAL_STATUSES.has(status);
+
+        setPipelineTurn(prev => {
+          if (!prev) return prev;
+          const updated = { ...prev, stageLines: [...prev.stageLines, line] };
+          if (isTerminal) {
+            updated.running = false;
+            updated.finalStatus = status;
+          }
+          return updated;
+        });
+
+        if (isTerminal) {
+          es.close();
+          pipelineEsRef.current = null;
+          setBusy(false);
+        }
+      } catch { /* ignore malformed SSE frames */ }
+    };
+
+    es.onerror = () => {
+      es.close();
+      pipelineEsRef.current = null;
+
+      // EventSource closes when backend closes the connection — this happens
+      // on `blocked` status (backend ends the SSE stream). Poll the ticket
+      // to find out if we're actually awaiting_input or truly done.
+      ticketStatus(identifier).then(res => {
+        const meta = res?.ticket?.metadata ?? {};
+        const awaitingInput: boolean =
+          meta.awaiting_input === true ||
+          (Array.isArray(meta.clarify_questions) && meta.clarify_questions.length > 0);
+
+        if (awaitingInput) {
+          const q: string =
+            (Array.isArray(meta.clarify_questions) ? meta.clarify_questions.join('\n') : '') ||
+            meta.clarify_reason ||
+            'The pipeline needs more information to continue.';
+
+          setPipelineTurn(prev => prev ? {
+            ...prev,
+            running: false,
+            awaitingInput: true,
+            clarifyQuestion: q,
+            stageLines: [...prev.stageLines, `[awaiting input] ${q}`],
+          } : null);
+
+          // busy stays true; user must answer
+          setTimeout(() => answerInputRef.current?.focus(), 80);
+        } else {
+          // Truly closed / finished — treat stream-close as done
+          const finalSt = res?.ticket?.status ?? 'blocked';
+          setPipelineTurn(prev => prev ? {
+            ...prev,
+            running: false,
+            finalStatus: finalSt,
+            stageLines: [...prev.stageLines, 'Stream closed.'],
+          } : null);
+          setBusy(false);
+        }
+      }).catch(() => {
+        // Poll failed — just close gracefully
+        setPipelineTurn(prev => prev ? {
+          ...prev,
+          running: false,
+          stageLines: [...prev.stageLines, 'Stream closed.'],
+        } : null);
+        setBusy(false);
+      });
+    };
+  }
+
+  /** Submit the user's answer to a clarification prompt and resume streaming. */
+  async function submitAnswer(identifier: string, answer: string) {
+    if (!answer.trim()) return;
+
+    setPipelineTurn(prev => prev ? {
+      ...prev,
+      answerBusy: true,
+      answersGiven: [...prev.answersGiven, answer],
+      answerDraft: '',
+    } : null);
+
+    try {
+      await ticketAnswer(identifier, answer);
+      // Resume streaming — backend re-queued the ticket
+      setPipelineTurn(prev => prev ? {
+        ...prev,
+        awaitingInput: false,
+        clarifyQuestion: '',
+        answerBusy: false,
+        running: true,
+        stageLines: [...prev.stageLines, `[you] ${answer}`, 'Resuming pipeline…'],
+      } : null);
+      openTraceStream(identifier);
+    } catch (e: any) {
+      toast.error(`Answer failed: ${e.message}`);
+      setPipelineTurn(prev => prev ? { ...prev, answerBusy: false } : null);
+    }
+  }
+
+  async function sendPipeline() {
+    const q = input.trim();
+    if (!q || busy) return;
+    setInput('');
+
+    // Close any prior stream
+    pipelineEsRef.current?.close();
+    pipelineEsRef.current = null;
+    setPipelineTurn(null);
+
+    // Ensure session
+    let sessionId = activeId;
+    if (sessionId === null) {
+      const newId = await createSession();
+      if (newId === null) return;
+      sessionId = newId;
+    }
+
+    // Optimistic user message
+    const optimisticUser: ChatMsg = {
+      id: -(Date.now()),
+      role: 'user',
+      content: q,
+      steps: [],
+      created_at: new Date().toISOString(),
+    };
+    setMessages(prev => [...prev, optimisticUser]);
+    setBusy(true);
+
+    const isFirstMessage = messages.length === 0;
+
+    try {
+      const proj = pipelineProject.trim() || undefined;
+      const result = await chatSessionTicket(sessionId, q, proj);
+
+      const turn: PipelineTurn = {
+        ticketId: result.ticket,
+        project: result.project,
+        stageLines: [`Ticket ${result.ticket} created — connecting to trace…`],
+        running: true,
+        finalStatus: null,
+        awaitingInput: false,
+        clarifyQuestion: '',
+        answerDraft: '',
+        answerBusy: false,
+        answersGiven: [],
+      };
+      setPipelineTurn(turn);
+
+      openTraceStream(result.ticket);
+
+      if (isFirstMessage) await loadSessions(true);
+      else loadSessions(true);
+
+    } catch (e: any) {
+      toast.error(`Pipeline failed: ${e.message}`);
+      setPipelineTurn(prev => prev ? { ...prev, running: false, stageLines: [...(prev?.stageLines ?? []), `Error: ${e.message}`] } : null);
+      setBusy(false);
+    }
+  }
+
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      send();
+      if (mode === 'pipeline') sendPipeline();
+      else send();
     }
+  }
+
+  function handleSend() {
+    if (mode === 'pipeline') sendPipeline();
+    else send();
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -468,29 +754,52 @@ export default function Chat() {
             </span>
             {activeSession && (
               <span className="xs muted" style={{ fontFamily: 'var(--font-mono)' }}>
-                reads &amp; writes files · runs commands
+                {mode === 'pipeline' ? 'full pipeline · architect→planner→doer→learner' : 'reads & writes files · runs commands'}
               </span>
             )}
           </div>
           <div className="row" style={{ gap: 'var(--s-2)' }}>
-            {/* Model selector */}
-            <select
-              className="chat-model-select"
-              value={selectedRole}
-              onChange={e => setSelectedRole(e.target.value)}
-              disabled={busy}
-              title="Agent role / model for this conversation"
-            >
-              {modelOptions.length === 0 ? (
-                <option value={selectedRole}>{selectedRole}</option>
-              ) : (
-                modelOptions.map(opt => (
-                  <option key={opt.role} value={opt.role}>
-                    {opt.role}{opt.model ? ` — ${opt.model}` : ''}
-                  </option>
-                ))
-              )}
-            </select>
+            {/* Mode toggle */}
+            <div className="chat-mode-toggle">
+              <button
+                className={mode === 'agent' ? 'active' : ''}
+                onClick={() => setMode('agent')}
+                disabled={busy}
+                title="Single Doer agent — direct file/command access"
+              >
+                Agent
+              </button>
+              <button
+                className={mode === 'pipeline' ? 'active' : ''}
+                onClick={() => setMode('pipeline')}
+                disabled={busy}
+                title="Full pipeline — architect → planner → doer → learner"
+              >
+                Pipeline
+              </button>
+            </div>
+
+            {/* Model selector (Agent mode only) */}
+            {mode === 'agent' && (
+              <select
+                className="chat-model-select"
+                value={selectedRole}
+                onChange={e => setSelectedRole(e.target.value)}
+                disabled={busy}
+                title="Agent role / model for this conversation"
+              >
+                {modelOptions.length === 0 ? (
+                  <option value={selectedRole}>{selectedRole}</option>
+                ) : (
+                  modelOptions.map(opt => (
+                    <option key={opt.role} value={opt.role}>
+                      {opt.role}{opt.model ? ` — ${opt.model}` : ''}
+                    </option>
+                  ))
+                )}
+              </select>
+            )}
+
             {activeSession && (
               <>
                 <button
@@ -559,7 +868,7 @@ export default function Chat() {
                 </div>
               ))}
 
-              {/* Live streaming assistant turn */}
+              {/* Live streaming assistant turn (Agent mode) */}
               {liveTurn && (
                 <div className="bubble sys">
                   <div className="bubble-avatar">AI</div>
@@ -572,43 +881,227 @@ export default function Chat() {
                   </div>
                 </div>
               )}
+
+              {/* Pipeline run turn */}
+              {pipelineTurn && (
+                <div className="bubble sys">
+                  <div className="bubble-avatar">⚡</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <PipelineBubble
+                      turn={pipelineTurn}
+                      answerInputRef={answerInputRef}
+                      onAnswerChange={v =>
+                        setPipelineTurn(prev => prev ? { ...prev, answerDraft: v } : null)
+                      }
+                      onAnswerSubmit={() =>
+                        pipelineTurn && submitAnswer(pipelineTurn.ticketId, pipelineTurn.answerDraft)
+                      }
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="chat-composer">
-              <textarea
-                ref={textareaRef}
-                rows={1}
-                placeholder="Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={onKey}
-                disabled={busy}
-              />
-              <button onClick={send} disabled={busy || !input.trim()}>
-                <Icon.Agents size={14} /> {busy ? 'Running…' : 'Run'}
-              </button>
+            <div className="chat-composer" style={{ flexDirection: 'column', gap: 6 }}>
+              {mode === 'pipeline' && (
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--fg-2)', flexShrink: 0 }}>Project:</span>
+                  <input
+                    type="text"
+                    placeholder="optional — backend will auto-detect"
+                    value={pipelineProject}
+                    onChange={e => setPipelineProject(e.target.value)}
+                    disabled={busy}
+                    style={{
+                      flex: 1,
+                      fontSize: 'var(--fs-xs)',
+                      padding: '3px 8px',
+                      borderRadius: 'var(--r-sm)',
+                      border: '1px solid var(--border-1)',
+                      background: 'var(--bg-1)',
+                      color: 'var(--fg-1)',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                  />
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <textarea
+                  ref={textareaRef}
+                  rows={1}
+                  placeholder={mode === 'pipeline'
+                    ? 'Describe the task to run through the full pipeline… (Enter to send)'
+                    : 'Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)'}
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={onKey}
+                  disabled={busy}
+                  style={{ flex: 1 }}
+                />
+                <button onClick={handleSend} disabled={busy || !input.trim()}>
+                  <Icon.Agents size={14} /> {busy ? 'Running…' : mode === 'pipeline' ? 'Run Pipeline' : 'Run'}
+                </button>
+              </div>
             </div>
           </>
         )}
 
         {/* Composer shown even when no session: send will create one */}
         {activeId === null && (
-          <div className="chat-composer">
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              placeholder="Type a message to start a new conversation…  (Enter to send)"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={onKey}
-              disabled={busy}
-            />
-            <button onClick={send} disabled={busy || !input.trim()}>
-              <Icon.Agents size={14} /> Run
-            </button>
+          <div className="chat-composer" style={{ flexDirection: 'column', gap: 6 }}>
+            {mode === 'pipeline' && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--fg-2)', flexShrink: 0 }}>Project:</span>
+                <input
+                  type="text"
+                  placeholder="optional"
+                  value={pipelineProject}
+                  onChange={e => setPipelineProject(e.target.value)}
+                  disabled={busy}
+                  style={{
+                    flex: 1,
+                    fontSize: 'var(--fs-xs)',
+                    padding: '3px 8px',
+                    borderRadius: 'var(--r-sm)',
+                    border: '1px solid var(--border-1)',
+                    background: 'var(--bg-1)',
+                    color: 'var(--fg-1)',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                />
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 6 }}>
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                placeholder="Type a message to start a new conversation…  (Enter to send)"
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={onKey}
+                disabled={busy}
+                style={{ flex: 1 }}
+              />
+              <button onClick={handleSend} disabled={busy || !input.trim()}>
+                <Icon.Agents size={14} /> {mode === 'pipeline' ? 'Run Pipeline' : 'Run'}
+              </button>
+            </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── PipelineBubble — renders a pipeline run turn with live stage log ──────────
+
+function PipelineBubble({
+  turn,
+  answerInputRef,
+  onAnswerChange,
+  onAnswerSubmit,
+}: {
+  turn: PipelineTurn;
+  answerInputRef: React.RefObject<HTMLInputElement | null>;
+  onAnswerChange: (v: string) => void;
+  onAnswerSubmit: () => void;
+}) {
+  function onAnswerKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onAnswerSubmit(); }
+  }
+
+  // Determine header label
+  let statusLabel: React.ReactNode = null;
+  if (turn.awaitingInput) {
+    statusLabel = <span style={{ color: 'var(--warn)' }}>waiting for your answer…</span>;
+  } else if (turn.running) {
+    statusLabel = <span style={{ color: 'var(--warn)' }}>running…</span>;
+  } else if (turn.finalStatus) {
+    statusLabel = <span style={{ color: 'var(--ok)' }}>✓ done ({turn.finalStatus})</span>;
+  }
+
+  return (
+    <div>
+      <div className="bubble-body" style={{ marginBottom: 6 }}>
+        <span>
+          Ticket{' '}
+          <a
+            href={`/ui/tickets/${turn.ticketId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: 'var(--accent)', fontWeight: 600 }}
+          >
+            {turn.ticketId}
+          </a>
+          {turn.project ? ` · ${turn.project}` : ''}
+          {' '}
+          {statusLabel}
+        </span>
+      </div>
+
+      {/* Stage log */}
+      {turn.stageLines.length > 0 && (
+        <div className="pipeline-stage-log">
+          {turn.stageLines.map((line, i) => (
+            <div key={i} className="pipeline-stage-line">{line}</div>
+          ))}
+          {turn.running && !turn.awaitingInput && (
+            <div style={{ padding: '4px 0' }}>
+              <div className="typing"><span /><span /><span /></div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Clarification answer input — shown when pipeline is awaiting input */}
+      {turn.awaitingInput && (
+        <div className="pipeline-clarify-box" style={{
+          marginTop: 8,
+          padding: '10px 12px',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--warn)',
+          borderRadius: 'var(--r-sm)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}>
+          <div style={{
+            fontSize: 'var(--fs-sm)',
+            color: 'var(--fg-1)',
+            lineHeight: 1.5,
+            whiteSpace: 'pre-wrap',
+          }}>
+            {turn.clarifyQuestion}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              ref={answerInputRef}
+              type="text"
+              placeholder="Type your answer…"
+              value={turn.answerDraft}
+              onChange={e => onAnswerChange(e.target.value)}
+              onKeyDown={onAnswerKey}
+              disabled={turn.answerBusy}
+              style={{
+                flex: 1,
+                fontSize: 'var(--fs-sm)',
+                padding: '5px 10px',
+                borderRadius: 'var(--r-sm)',
+                border: '1px solid var(--border-1)',
+                background: 'var(--bg-0)',
+                color: 'var(--fg-1)',
+              }}
+            />
+            <button
+              onClick={onAnswerSubmit}
+              disabled={turn.answerBusy || !turn.answerDraft.trim()}
+              style={{ flexShrink: 0 }}
+            >
+              {turn.answerBusy ? 'Sending…' : 'Send'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
