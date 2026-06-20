@@ -58,6 +58,7 @@ services:
   embed:
     build:
       context: ./services/embed_sidecar
+      network: host
     container_name: aiforge-embed
     restart: unless-stopped
     environment:
@@ -70,6 +71,7 @@ services:
   rerank:
     build:
       context: ./services/rerank_sidecar
+      network: host
     container_name: aiforge-rerank
     restart: unless-stopped
     volumes:
@@ -81,6 +83,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     image: aiforge-app:latest
     container_name: aiforge-api
     restart: unless-stopped
