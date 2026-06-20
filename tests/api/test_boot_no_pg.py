@@ -173,18 +173,23 @@ def test_chat_sessions_crud_and_message(client, monkeypatch):
     assert c.get(f"/api/chat/sessions/{sid}").status_code == 404
 
 
-def test_chat_models_endpoint(client):
+def test_chat_models_endpoint(client, monkeypatch):
     c, _ = client
+    import aiforge_core.api.api as api
+    monkeypatch.setattr(api, "_served_model_ids",
+                        lambda provider: {"qwen-coder-x", "m2"})
     body = c.get("/api/chat/models").json()
-    assert "provider" in body and "models" in body and isinstance(body["models"], list)
-    # new sessions default to the dedicated 'chat' slot, not 'doer'
+    assert body["provider"] and isinstance(body["models"], list)
+    assert all(m["active"] for m in body["models"])     # only active listed
     s = c.post("/api/chat/sessions", json={}).json()
     assert s["role"] == "chat"
-    # picker can set the chat model
-    r = c.put("/api/chat/model", json={"provider": "openai_compatible",
-                                       "model": "qwen-coder-x"})
-    assert r.status_code == 200 and r.json()["model"] == "qwen-coder-x"
-    assert c.get("/api/chat/models").json()["current"] == "qwen-coder-x"
+    # served model → active
+    r = c.put("/api/chat/model", json={"provider": "local", "model": "qwen-coder-x"})
+    assert r.status_code == 200 and r.json()["active"] is True
+    assert c.get("/api/chat/models").json()["current_active"] is True
+    # not served → saved but flagged inactive
+    assert c.put("/api/chat/model",
+                 json={"provider": "local", "model": "ghost"}).json()["active"] is False
 
 
 def test_memory_sources_crud_and_index(client, monkeypatch, tmp_path):

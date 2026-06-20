@@ -1781,22 +1781,31 @@ class _NewSessionBody(BaseModel):
     role: str = Field("chat", description="model slot driving chat (default: chat)")
 
 
+def _served_model_ids(provider: str) -> set:
+    """IDs the provider is currently serving (active/loaded). For local /
+    ollama_cloud this hits /v1/models; empty set when undiscoverable."""
+    try:
+        return {m.get("id") for m in (_acfg.list_models(provider) or [])
+                if m.get("id")}
+    except Exception:
+        return set()
+
+
 @app.get("/api/chat/models")
 def chat_models() -> dict:
-    """Models available for the dedicated 'chat' slot. Returns the
-    current provider/model + the provider's model catalog so the picker
-    shows real model names (no pipeline roles)."""
+    """Models for the dedicated 'chat' slot. Lists only the provider's
+    currently-served (active) models, flags whether the saved selection
+    is still active so the UI can warn / re-pick."""
     row = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     provider = row.get("provider") or "local"
-    try:
-        models = _acfg.list_models(provider) or []
-    except Exception:
-        models = []
+    served = _served_model_ids(provider)
+    current = row.get("model")
     return {
         "provider": provider,
-        "current": row.get("model"),
-        "models": [{"id": m.get("id"), "label": m.get("label") or m.get("id")}
-                   for m in models if m.get("id")],
+        "current": current,
+        "current_active": (current in served) if served else True,
+        "models": [{"id": mid, "label": mid.split("/")[-1], "active": True}
+                   for mid in sorted(served)],
     }
 
 
@@ -1807,7 +1816,9 @@ class _ChatModelBody(BaseModel):
 
 @app.put("/api/chat/model")
 def chat_model_set(body: _ChatModelBody) -> dict:
-    """Persist the chat slot's model (the picker calls this)."""
+    """Persist the chat slot's model + report whether it's active (served
+    right now). Rejected only on bad input — an inactive model is saved
+    but flagged so the UI can warn."""
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     provider = body.provider or cur.get("provider") or "local"
     try:
@@ -1815,7 +1826,9 @@ def chat_model_set(body: _ChatModelBody) -> dict:
                              base_url=cur.get("base_url"))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    return {"provider": cfg.get("provider"), "model": cfg.get("model")}
+    served = _served_model_ids(provider)
+    return {"provider": cfg.get("provider"), "model": cfg.get("model"),
+            "active": (cfg.get("model") in served) if served else True}
 
 
 class _RenameBody(BaseModel):
