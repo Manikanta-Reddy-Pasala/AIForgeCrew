@@ -2,6 +2,38 @@
 
 Autonomous code-fix pipeline. Plain-language ticket → enriched intent → PR.
 
+## Quickstart (deploy anywhere)
+
+No Postgres, no Neo4j, no GPU — clone and run:
+
+```bash
+git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
+cd AIForgeCrew
+./run.sh
+```
+
+Open **http://127.0.0.1:8799/ui/**. The landing page is config-first: pick a
+provider + model for each pipeline step. Choose **OpenAI-compatible** and paste any
+base URL — LM Studio (`http://localhost:1234/v1`), OpenRouter, Groq, Together, vLLM,
+or a cloud endpoint with a key. Leave the key blank for no-token OSS endpoints. Hit
+**Test connection** to verify. Then use **Chat** (a full-filesystem coding agent) or
+file a **Ticket** (the full pipeline).
+
+Storage defaults to embedded **SQLite** (tickets) + a local **SQLite vector store**
+(memory) under `~/.aiforge/`. To use the heavier "pro" backends, set
+`AIFORGE_PG_URL` (Postgres tickets) and/or `NEO4J_URI` (graph memory) and they take
+over automatically.
+
+> ⚠️ **Security.** By default the Chat agent has **full, unsandboxed filesystem and
+> shell access** on the host. Set `AIFORGE_WORKSPACE_DIR=/path/to/workspace` to clamp
+> file/exec operations to one directory, and run shared/untrusted deployments inside a
+> container. Treat the chat box like a terminal.
+
+`./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
+`--skip-web` skips the UI rebuild.
+
+---
+
 ```
 human text ─► IntentLayer ─► EnrichedTicket ─► Planner ──► Doer ⇄ Feedback ─► Publish ─► Learner
                   │                                ▲                            │           │
