@@ -77,16 +77,29 @@ def test_unknown_tool_reports_error(tmp_path):
     assert "unknown tool" in tool["result"]["error"]
 
 
-def test_step_limit(tmp_path):
-    # Always returns an action — never finishes; loop must cap.
+def test_loop_detection_same_action(tmp_path):
+    # Always the SAME action — loop detection kills it (not a step cap).
     def _fn(role, messages, **kw):
         return 'ACTION: list_dir\nARGS_JSON: {"path": "."}'
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content": "loop"}], cwd=str(tmp_path),
-        complete_fn=_fn, max_steps=3))
-    tools = [e for e in evs if e["type"] == "tool"]
-    assert len(tools) == 3
-    assert "step limit" in [e for e in evs if e["type"] == "message"][0]["text"]
+        complete_fn=_fn))
+    err = [e for e in evs if e["type"] == "error"]
+    assert err and "breaking the loop" in err[0]["text"]
+    assert len([e for e in evs if e["type"] == "tool"]) < ca._LOOP_REPEAT
+    assert evs[-1] == {"type": "done"}
+
+
+def test_progressing_actions_not_killed(tmp_path):
+    # Different actions each step → NOT a loop; runs until FINAL.
+    seq = [f'ACTION: list_dir\nARGS_JSON: {{"path": "{i}"}}' for i in range(6)]
+    seq.append("FINAL: done")
+    fn = _scripted(seq)
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "work"}], cwd=str(tmp_path), complete_fn=fn))
+    # no loop error; finished normally
+    assert not [e for e in evs if e["type"] == "error"]
+    assert [e for e in evs if e["type"] == "message"][0]["text"] == "done"
 
 
 def test_llm_error_is_soft(tmp_path):

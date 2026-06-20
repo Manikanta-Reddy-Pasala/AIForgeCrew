@@ -1845,28 +1845,40 @@ def chat_session_delete(session_id: int) -> None:
 
 @app.post("/api/chat/sessions/{session_id}/message")
 def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
-    """Append a user message, run the full ADK agent team (ticketless,
-    in the session's working dir), stream each stage's output as SSE, and
-    persist the assistant reply + steps. Auto-titles a fresh session."""
+    """Append a user message, run the full-FS coding agent over the whole
+    session history (Claude-CLI-style: many tool steps, builds repos),
+    stream every step as SSE, and persist the assistant reply + steps.
+    Auto-titles a fresh session. The model is the session's role
+    (model picker)."""
     from aiforge_core.runtime import chat_store
-    from aiforge_core.runtime.chat_pipeline import stream_chat_pipeline
+    from aiforge_core.runtime.chat_agent import run_chat_agent
 
     session = chat_store.get_session(session_id)
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
 
+    role = body.role or session.get("role") or "doer"
+    if body.role and body.role != session.get("role"):
+        chat_store.set_session_role(session_id, body.role)
+
     chat_store.add_message(session_id, "user", body.content)
     if (session.get("title") or "New chat") == "New chat":
         chat_store.rename_session(session_id, body.content.strip()[:60])
 
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in chat_store.get_messages(session_id)
+        if m["role"] in ("user", "assistant") and m["content"]
+    ]
     cwd = session.get("cwd") or _default_cwd()
-    prompt = body.content.strip()
 
     def _gen():
         steps: list[dict] = []
         final_text = ""
         try:
-            for ev in stream_chat_pipeline(prompt, cwd=cwd):
+            # No step cap — runs until done or a stuck loop is detected
+            # (chat_agent's loop detection). Builds whole repos.
+            for ev in run_chat_agent(history, cwd=cwd, role=role):
                 if ev.get("type") == "message":
                     final_text = ev.get("text", "")
                 elif ev.get("type") in ("thought", "tool", "error"):

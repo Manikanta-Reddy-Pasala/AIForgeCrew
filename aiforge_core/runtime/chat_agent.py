@@ -212,14 +212,24 @@ def _parse(out: str) -> dict:
     return {"kind": "final", "text": out.strip()}
 
 
+# Loop detection: no fixed step budget — long coding sessions run until
+# the agent finishes. We stop only when it's clearly STUCK: the same
+# tool+args repeated this many times, or identical model output N times
+# in a row. ``_SAFETY_CAP`` is a last-resort runaway guard (very high;
+# tune with AIFORGE_CHAT_SAFETY_CAP), not a normal stopping point.
+_LOOP_REPEAT = 4
+_OUTPUT_REPEAT = 3
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
     role: str = "doer",
-    max_steps: int = 12,
+    max_steps: int | None = None,   # kept for callers/tests; None = no cap
     complete_fn: Callable[..., str] | None = None,
 ) -> Iterator[dict]:
-    """Drive the ReAct loop, yielding SSE-ready event dicts:
+    """Drive the ReAct loop until the agent finishes or a stuck loop is
+    detected (NOT a step count). Yields SSE-ready event dicts:
 
     ``{"type": "thought", "text"}`` · ``{"type": "tool", "name", "args",
     "result"}`` · ``{"type": "message", "text"}`` (final) ·
@@ -228,28 +238,59 @@ def run_chat_agent(
     if complete_fn is None:
         from aiforge_core.llm.client import complete as complete_fn  # type: ignore
 
+    import collections
+    safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
+
     convo: list[dict] = [{"role": "system", "content": _SYSTEM.format(cwd=cwd)}]
     for m in messages:
         r = m.get("role") or "user"
         convo.append({"role": "assistant" if r == "assistant" else "user",
                       "content": m.get("content") or ""})
 
-    for _ in range(max_steps):
+    action_counts: dict[str, int] = {}
+    recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)
+
+    n = 0
+    while n < safety:
+        n += 1
         try:
             out = complete_fn(role, convo)
         except Exception as exc:  # noqa: BLE001
             yield {"type": "error", "text": f"llm error: {exc}"}
             yield {"type": "done"}
             return
+
+        # Stuck-output loop: identical model reply N times running.
+        recent_outputs.append(out.strip())
+        if (len(recent_outputs) == _OUTPUT_REPEAT
+                and len(set(recent_outputs)) == 1):
+            yield {"type": "error",
+                   "text": f"stopped: the model repeated the same response "
+                           f"{_OUTPUT_REPEAT}× — breaking the loop"}
+            yield {"type": "done"}
+            return
+
         convo.append({"role": "assistant", "content": out})
         step = _parse(out)
         if step["kind"] == "final":
             yield {"type": "message", "text": step["text"]}
             yield {"type": "done"}
             return
+
         # action
         name = step["tool"]
         args = step["args"]
+        # Stuck-action loop: same tool+args repeated too many times.
+        sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
+        action_counts[sig] = action_counts.get(sig, 0) + 1
+        if action_counts[sig] >= _LOOP_REPEAT:
+            yield {"type": "error",
+                   "text": f"stopped: repeated the same action '{name}' "
+                           f"{action_counts[sig]}× with the same args — "
+                           f"breaking the loop"}
+            yield {"type": "done"}
+            return
+
         if step.get("thought"):
             yield {"type": "thought", "text": step["thought"]}
         fn = TOOLS.get(name)
@@ -267,5 +308,6 @@ def run_chat_agent(
         convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
 
     yield {"type": "message",
-           "text": "(stopped: reached the step limit without finishing)"}
+           "text": "(stopped: hit the runaway safety cap — "
+                   "raise AIFORGE_CHAT_SAFETY_CAP if this was real work)"}
     yield {"type": "done"}
