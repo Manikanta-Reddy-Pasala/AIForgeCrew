@@ -1658,6 +1658,21 @@ def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
 class _NewSessionBody(BaseModel):
     title: str | None = Field(None)
     cwd: str | None = Field(None)
+    role: str = Field("doer", description="archetype whose provider/model drives chat")
+
+
+@app.get("/api/chat/models")
+def chat_models() -> list[dict]:
+    """Selectable chat models — one per archetype, with its currently
+    configured provider + model (set on the home page). The chat picker
+    sends the chosen ``role``."""
+    full = _acfg.load_all()
+    out = []
+    for role in _acfg.archetypes():
+        row = full.get(role) or {}
+        out.append({"role": role, "provider": row.get("provider"),
+                    "model": row.get("model")})
+    return out
 
 
 class _RenameBody(BaseModel):
@@ -1666,14 +1681,15 @@ class _RenameBody(BaseModel):
 
 class _SessionMsgBody(BaseModel):
     content: str = Field(..., min_length=1)
-    role: str = Field("doer", description="archetype whose provider drives the LLM")
+    role: str | None = Field(None, description="override the session's model (archetype)")
 
 
 @app.post("/api/chat/sessions", status_code=201)
 def chat_session_create(body: _NewSessionBody) -> dict:
     from aiforge_core.runtime import chat_store
     return chat_store.create_session(body.title or "New chat",
-                                     body.cwd or _default_cwd())
+                                     body.cwd or _default_cwd(),
+                                     role=body.role or "doer")
 
 
 @app.get("/api/chat/sessions")
@@ -1719,6 +1735,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
 
+    # Model selection: a per-message role overrides + persists on the
+    # session (so the picker choice sticks); else use the session's role.
+    role = body.role or session.get("role") or "doer"
+    if body.role and body.role != session.get("role"):
+        chat_store.set_session_role(session_id, body.role)
+
     chat_store.add_message(session_id, "user", body.content)
     # Auto-title from the first user message.
     if (session.get("title") or "New chat") == "New chat":
@@ -1735,7 +1757,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         steps: list[dict] = []
         final_text = ""
         try:
-            for ev in run_chat_agent(history, cwd=cwd, role=body.role):
+            for ev in run_chat_agent(history, cwd=cwd, role=role):
                 if ev.get("type") == "message":
                     final_text = ev.get("text", "")
                 elif ev.get("type") in ("thought", "tool", "error"):

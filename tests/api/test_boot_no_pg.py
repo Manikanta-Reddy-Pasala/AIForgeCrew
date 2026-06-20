@@ -178,6 +178,34 @@ def test_chat_sessions_crud_and_message(client, monkeypatch):
     assert c.get(f"/api/chat/sessions/{sid}").status_code == 404
 
 
+def test_chat_models_and_session_role(client, monkeypatch):
+    c, _ = client
+
+    def _fake_agent(messages, *, cwd, role="doer", **kw):
+        yield {"type": "message", "text": f"role={role}"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent.run_chat_agent",
+                        _fake_agent)
+
+    models = c.get("/api/chat/models").json()
+    assert isinstance(models, list) and models
+    assert all("role" in m and "model" in m for m in models)
+
+    # create with a chosen role
+    s = c.post("/api/chat/sessions", json={"role": "planner"}).json()
+    assert s["role"] == "planner"
+    sid = s["id"]
+    r = c.post(f"/api/chat/sessions/{sid}/message", json={"content": "hi"})
+    assert "role=planner" in r.text
+
+    # per-message override sticks on the session
+    r2 = c.post(f"/api/chat/sessions/{sid}/message",
+                json={"content": "switch", "role": "doer"})
+    assert "role=doer" in r2.text
+    assert c.get(f"/api/chat/sessions/{sid}").json()["session"]["role"] == "doer"
+
+
 def test_memory_stats_neo4j_routing(client, monkeypatch):
     c, _ = client
     import aiforge_core.api.api as api

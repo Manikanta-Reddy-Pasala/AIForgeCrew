@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     title       TEXT NOT NULL DEFAULT 'New chat',
     cwd         TEXT,
+    role        TEXT NOT NULL DEFAULT 'doer',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -63,6 +64,11 @@ def _conn() -> Iterator[sqlite3.Connection]:
     c.execute("PRAGMA foreign_keys=ON")
     try:
         c.executescript(_DDL)
+        # Migrate pre-role databases (SQLite has no ADD COLUMN IF NOT EXISTS).
+        cols = {r[1] for r in c.execute("PRAGMA table_info(chat_sessions)")}
+        if "role" not in cols:
+            c.execute("ALTER TABLE chat_sessions ADD COLUMN role TEXT "
+                      "NOT NULL DEFAULT 'doer'")
         yield c
         c.commit()
     finally:
@@ -79,19 +85,31 @@ def _iso(v):
 
 
 def _session_row(r: sqlite3.Row) -> dict:
+    keys = r.keys()
     return {"id": r["id"], "title": r["title"], "cwd": r["cwd"],
+            "role": (r["role"] if "role" in keys else "doer") or "doer",
             "created_at": _iso(r["created_at"]), "updated_at": _iso(r["updated_at"])}
 
 
-def create_session(title: str = "New chat", cwd: str | None = None) -> dict:
+def create_session(title: str = "New chat", cwd: str | None = None,
+                   role: str = "doer") -> dict:
     with _LOCK, _conn() as c:
         cur = c.execute(
-            "INSERT INTO chat_sessions(title, cwd) VALUES (?,?)",
-            (title or "New chat", cwd),
+            "INSERT INTO chat_sessions(title, cwd, role) VALUES (?,?,?)",
+            (title or "New chat", cwd, role or "doer"),
         )
         r = c.execute("SELECT * FROM chat_sessions WHERE id=?",
                       (cur.lastrowid,)).fetchone()
     return _session_row(r)
+
+
+def set_session_role(session_id: int, role: str) -> "dict | None":
+    with _conn() as c:
+        c.execute(f"UPDATE chat_sessions SET role=?, updated_at={_NOW} WHERE id=?",
+                  (role or "doer", session_id))
+        r = c.execute("SELECT * FROM chat_sessions WHERE id=?",
+                      (session_id,)).fetchone()
+    return _session_row(r) if r else None
 
 
 def list_sessions() -> list[dict]:
