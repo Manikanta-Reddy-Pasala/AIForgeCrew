@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { chatApi, chatSessionMessageURL, ChatSession, ChatMsg, ChatModelOption } from '../api';
+import { chatApi, chatSessionMessageURL, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -20,7 +20,7 @@ type LiveTurn = {
 };
 
 const LS_SESSION_KEY = 'aiforge.chat.activeSessionId';
-const LS_ROLE_KEY = 'aiforge.chat.role';
+const LS_MODEL_KEY = 'aiforge.chat.model';
 
 // ── relative time helper ──────────────────────────────────────────────────────
 
@@ -79,9 +79,10 @@ export default function Chat() {
   const [renaming, setRenaming] = useState<{ id: number; value: string } | null>(null);
 
   // Model selector
-  const [modelOptions, setModelOptions] = useState<ChatModelOption[]>([]);
-  const [selectedRole, setSelectedRole] = useState<string>(() => {
-    try { return localStorage.getItem(LS_ROLE_KEY) || 'doer'; } catch { return 'doer'; }
+  const [modelOptions, setModelOptions] = useState<ChatModelEntry[]>([]);
+  const [chatProvider, setChatProvider] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try { return localStorage.getItem(LS_MODEL_KEY) || ''; } catch { return ''; }
   });
 
   const logRef = useRef<HTMLDivElement | null>(null);
@@ -111,10 +112,6 @@ export default function Chat() {
     try {
       const res = await chatApi.sessionGet(id);
       setMessages(res.messages);
-      // Sync the role selector to whatever this session was using
-      if (res.session.role) {
-        setSelectedRole(res.session.role);
-      }
     } catch (e: any) {
       toast.error(`Failed to load session: ${e.message}`);
       // Session may have been deleted; clear active
@@ -128,16 +125,19 @@ export default function Chat() {
   // ── On mount: load sessions + models; if active ID persisted, load it too ──
 
   useEffect(() => {
-    // Fetch available model options (non-blocking; failures are silent)
-    chatApi.chatModels().then(opts => {
-      setModelOptions(opts);
-      // If no persisted role or it's not in the list, default to first entry
-      if (opts.length > 0) {
-        setSelectedRole(prev => {
-          const valid = opts.some(o => o.role === prev);
-          return valid ? prev : opts[0].role;
-        });
-      }
+    // Fetch available chat model options (non-blocking; failures are silent)
+    chatApi.chatModels().then(resp => {
+      setChatProvider(resp.provider || '');
+      setModelOptions(resp.models || []);
+      // Use backend's current as ground truth; fall back to localStorage, then first option
+      setSelectedModel(prev => {
+        const backendCurrent = resp.current || '';
+        const localPersisted = prev;
+        const allIds = (resp.models || []).map((m: ChatModelEntry) => m.id);
+        if (backendCurrent && allIds.includes(backendCurrent)) return backendCurrent;
+        if (localPersisted && allIds.includes(localPersisted)) return localPersisted;
+        return backendCurrent || (resp.models?.[0]?.id ?? '');
+      });
     }).catch(() => { /* backend may not have the endpoint yet — ignore */ });
 
     loadSessions().then(() => {
@@ -160,10 +160,10 @@ export default function Chat() {
     } catch { /* ignore */ }
   }, [activeId]);
 
-  // Persist selected role
+  // Persist selected model
   useEffect(() => {
-    try { localStorage.setItem(LS_ROLE_KEY, selectedRole); } catch { /* ignore */ }
-  }, [selectedRole]);
+    try { if (selectedModel) localStorage.setItem(LS_MODEL_KEY, selectedModel); } catch { /* ignore */ }
+  }, [selectedModel]);
 
   // Auto-scroll on new messages / live turn updates
   useEffect(() => {
@@ -191,7 +191,7 @@ export default function Chat() {
 
   async function createSession(): Promise<number | null> {
     try {
-      const session = await chatApi.sessionCreate({ role: selectedRole });
+      const session = await chatApi.sessionCreate();
       setSessions(prev => [session, ...prev]);
       setActiveId(session.id);
       setMessages([]);
@@ -289,7 +289,7 @@ export default function Chat() {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: q, role: selectedRole }),
+        body: JSON.stringify({ content: q }),
       });
 
       if (!res.ok) {
@@ -474,23 +474,37 @@ export default function Chat() {
           </div>
           <div className="row" style={{ gap: 'var(--s-2)' }}>
             {/* Model selector */}
-            <select
-              className="chat-model-select"
-              value={selectedRole}
-              onChange={e => setSelectedRole(e.target.value)}
-              disabled={busy}
-              title="Agent role / model for this conversation"
-            >
-              {modelOptions.length === 0 ? (
-                <option value={selectedRole}>{selectedRole}</option>
-              ) : (
-                modelOptions.map(opt => (
-                  <option key={opt.role} value={opt.role}>
-                    {opt.role}{opt.model ? ` — ${opt.model}` : ''}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
+              Model
+              <select
+                className="chat-model-select"
+                value={selectedModel}
+                onChange={async e => {
+                  const newModel = e.target.value;
+                  setSelectedModel(newModel);
+                  try {
+                    await chatApi.setChatModel(newModel, chatProvider || undefined);
+                    toast.success('Model updated');
+                  } catch (err: any) {
+                    toast.error(`Failed to set model: ${err.message}`);
+                  }
+                }}
+                disabled={busy || modelOptions.length === 0}
+                title="Chat model"
+              >
+                {modelOptions.length === 0 ? (
+                  <option value={selectedModel || ''}>
+                    {selectedModel || 'No models — configure on Home page'}
                   </option>
-                ))
-              )}
-            </select>
+                ) : (
+                  modelOptions.map(opt => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
 
             {activeSession && (
               <>
