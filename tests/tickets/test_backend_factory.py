@@ -25,7 +25,11 @@ def test_pg_url_selects_postgres(monkeypatch):
     assert envmod.AIFORGE_PG_URL == "postgresql://x/y"
 
 
-def test_pg_backend_importable():
+def test_both_backends_satisfy_protocol():
+    from aiforge_core.tickets.backends.base import StoreBackend
     from aiforge_core.tickets.backends.pg_backend import PgBackend
-    assert hasattr(PgBackend, "claim_next_any")
-    assert hasattr(PgBackend, "create")
+    from aiforge_core.tickets.backends.sqlite_backend import SqliteBackend
+    proto = [m for m in dir(StoreBackend) if not m.startswith("_")]
+    for be in (PgBackend, SqliteBackend):
+        missing = [m for m in proto if not hasattr(be, m)]
+        assert missing == [], f"{be.__name__} missing {missing}"

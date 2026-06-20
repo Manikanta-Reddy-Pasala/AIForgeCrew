@@ -122,12 +122,14 @@ def _event_row_out(r: dict) -> dict:
 # ─────────────────────────── Health / Agents ────────────────────────────
 @app.get("/api/health")
 def health() -> dict:
-    status = {"ok": True, "postgres": False, "lm_studio": False}
+    from aiforge_core.tickets.backend_factory import get_backend
+    status = {"ok": True, "postgres": False, "storage": None, "lm_studio": False}
     try:
-        with _db() as c, c.cursor() as cur:
-            cur.execute("SELECT 1")
-            cur.fetchone()
-        status["postgres"] = True
+        be = get_backend()
+        status["storage"] = be.name
+        # Cheap reachability probe — an identifier that never exists.
+        tickets_mod.get("__healthcheck__")
+        status["postgres"] = be.name == "postgres"
     except Exception:
         status["ok"] = False
     try:
@@ -144,34 +146,44 @@ def health() -> dict:
 def list_agents() -> list[dict]:
     """Static role catalogue + dynamic last-activity from ticket_events."""
     out = []
-    with _db() as c, c.cursor() as cur:
-        for name, rc in ROLES.items():
-            cur.execute(
-                "SELECT MAX(created_at) AS last_activity, "
-                "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
-                "FROM ticket_events WHERE agent_role = %s",
-                (name,),
-            )
-            row = cur.fetchone() or {}
+    # Activity stats use Postgres-specific SQL (FILTER). On the embedded
+    # SQLite backend they degrade to nulls — the static role catalogue
+    # still renders so the Agents / Home views work everywhere.
+    def _activity(name: str) -> tuple:
+        try:
+            with _db() as c, c.cursor() as cur:
+                cur.execute(
+                    "SELECT MAX(created_at) AS last_activity, "
+                    "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
+                    "FROM ticket_events WHERE agent_role = %s",
+                    (name,),
+                )
+                row = cur.fetchone() or {}
+                cur.execute(
+                    "SELECT identifier, status FROM tickets "
+                    "WHERE assignee_role = %s AND status IN "
+                    "('todo','in_progress','in_review') ORDER BY created_at DESC",
+                    (name,),
+                )
+                active = [{"identifier": r["identifier"], "status": r["status"]}
+                          for r in cur.fetchall()]
             last = row.get("last_activity")
-            cur.execute(
-                "SELECT identifier, status FROM tickets "
-                "WHERE assignee_role = %s AND status IN "
-                "('todo','in_progress','in_review') ORDER BY created_at DESC",
-                (name,),
-            )
-            active = [{"identifier": r["identifier"], "status": r["status"]}
-                      for r in cur.fetchall()]
-            out.append({
-                "role": name,
-                "model": rc.model,
-                "transport": rc.transport,
-                "max_turns": rc.max_turns,
-                "tool_allowlist": list(rc.tool_allowlist),
-                "last_activity": last.isoformat() if last else None,
-                "lifetime_turns": row.get("turns", 0),
-                "active_tickets": active,
-            })
+            return (last.isoformat() if last else None, row.get("turns", 0), active)
+        except Exception:
+            return (None, 0, [])
+
+    for name, rc in ROLES.items():
+        last_iso, turns, active = _activity(name)
+        out.append({
+            "role": name,
+            "model": rc.model,
+            "transport": rc.transport,
+            "max_turns": rc.max_turns,
+            "tool_allowlist": list(rc.tool_allowlist),
+            "last_activity": last_iso,
+            "lifetime_turns": turns,
+            "active_tickets": active,
+        })
     return out
 
 
@@ -253,76 +265,29 @@ def list_tickets(role: str | None = Query(None),
                  status: str | None = Query(None),
                  parent: str | None = Query(None),
                  limit: int = Query(100, le=500)) -> list[dict]:
-    clauses: list[str] = []
-    params: list[Any] = []
-    if role:
-        clauses.append("assignee_role = %s"); params.append(role)
-    if status:
-        statuses = [s.strip() for s in status.split(",")]
-        clauses.append("status = ANY(%s)"); params.append(statuses)
-    if parent:
-        clauses.append("parent_id = (SELECT id FROM tickets WHERE identifier=%s)")
-        params.append(parent)
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    # Subquery: derive `active_role` = the role of the most-recent agent
-    # event on this ticket. Falls back to NULL when no agent has fired
-    # yet (so the UI still has assignee_role to show). Distinct from the
-    # static `assignee_role` (which is auto-set to "supervisor" by the
-    # routing default and never gets overwritten).
-    active_role_expr = (
-        "(SELECT agent_role FROM ticket_events "
-        " WHERE ticket_id=tickets.id AND agent_role IS NOT NULL "
-        " ORDER BY created_at DESC LIMIT 1) AS active_role"
+    # Backend-agnostic (SQLite default / Postgres opt-in). `active_role`
+    # = role of the most-recent agent event; `started_at` = first
+    # in_progress event time — both enriched by the store layer.
+    statuses = [s.strip() for s in status.split(",")] if status else None
+    rows = tickets_mod.list_tickets(
+        role=role, statuses=statuses, parent_identifier=parent, limit=limit,
     )
-    q = (
-        "SELECT tickets.*, "
-        "(SELECT MIN(created_at) FROM ticket_events "
-        " WHERE ticket_id=tickets.id AND kind='status_change' AND body='in_progress'"
-        ") AS started_at, "
-        f"{active_role_expr} "
-        f"FROM tickets{where} ORDER BY id DESC LIMIT %s"
-    )
-    params.append(limit)
-    with _db() as c, c.cursor() as cur:
-        cur.execute(q, params)
-        rows = cur.fetchall()
     return [_ticket_row_out(r) for r in rows]
 
 
 @app.get("/api/tickets/{identifier}")
 def get_ticket(identifier: str) -> dict:
-    _started_expr = (
-        "(SELECT MIN(created_at) FROM ticket_events "
-        " WHERE ticket_id=tickets.id AND kind='status_change' AND body='in_progress'"
-        ") AS started_at"
-    )
-    _active_role_expr = (
-        "(SELECT agent_role FROM ticket_events "
-        " WHERE ticket_id=tickets.id AND agent_role IS NOT NULL "
-        " ORDER BY created_at DESC LIMIT 1) AS active_role"
-    )
-    with _db() as c, c.cursor() as cur:
-        cur.execute(
-            f"SELECT tickets.*, {_started_expr}, {_active_role_expr} "
-            f"FROM tickets WHERE identifier=%s",
-            (identifier,),
-        )
-        t = cur.fetchone()
-        if not t:
-            raise HTTPException(404, f"ticket {identifier} not found")
-        ticket_id = t["id"]
-        cur.execute(
-            "SELECT * FROM ticket_events WHERE ticket_id=%s "
-            "ORDER BY created_at ASC LIMIT 500",
-            (ticket_id,),
-        )
-        events = [_event_row_out(r) for r in cur.fetchall()]
-        cur.execute(
-            f"SELECT tickets.*, {_started_expr}, {_active_role_expr} "
-            "FROM tickets WHERE parent_id=%s ORDER BY created_at ASC",
-            (ticket_id,),
-        )
-        children = [_ticket_row_out(r) for r in cur.fetchall()]
+    # Backend-agnostic ticket detail. Children are fetched via the
+    # enriched list filtered by this ticket as parent.
+    t = tickets_mod.get_enriched(identifier)
+    if not t:
+        raise HTTPException(404, f"ticket {identifier} not found")
+    ticket_id = t["id"]
+    events = [_event_row_out(r) for r in tickets_mod.comments(ticket_id, 500)]
+    children = [
+        _ticket_row_out(r)
+        for r in tickets_mod.list_tickets(parent_identifier=identifier, limit=500)
+    ]
     # Per-stage timeline — one row per agent that emitted a stage_done
     # event. Lets the UI render an inline timing breakdown without
     # parsing every event payload. Order = chronological.
@@ -545,13 +510,7 @@ def create_ticket(payload: TicketCreate) -> dict:
     if not t.branch:
         t.branch = _derive_branch(t.identifier, t.title)
         try:
-            with tickets_mod._conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE tickets SET branch=%s WHERE id=%s",
-                        (t.branch, t.id),
-                    )
-                conn.commit()
+            tickets_mod.set_branch(t.id, t.branch)
         except Exception:
             pass
     return _ticket_row_out({
