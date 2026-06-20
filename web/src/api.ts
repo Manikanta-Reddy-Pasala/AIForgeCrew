@@ -209,3 +209,7 @@ export interface RoutePreview {
 export function logStreamURL(role: string): string {
   return `${BASE}/logs/${role}/stream`;
 }
+
+export function chatAgentURL(): string {
+  return `${BASE}/chat/agent`;
+}

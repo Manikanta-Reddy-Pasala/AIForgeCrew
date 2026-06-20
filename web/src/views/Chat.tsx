@@ -1,13 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api } from '../api';
+import { api, chatAgentURL } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
+
+// ── types ──────────────────────────────────────────────────────────────────────
+
+type AgentStep =
+  | { kind: 'thought'; text: string }
+  | { kind: 'tool'; name: string; args: object; result: object }
+  | { kind: 'error'; text: string };
 
 type Turn = {
   id: string;
   role: 'user' | 'system';
   text: string;
+  // Memory Q&A fields
   queryRef?: string;
   hits?: any[];
   tools?: any[];
@@ -15,19 +23,30 @@ type Turn = {
   normalized?: string;
   summary?: string;
   saved?: { worked: boolean; id?: number | string } | null;
+  // Agent mode fields
+  agentMode?: boolean;
+  steps?: AgentStep[];
+  streaming?: boolean;
   createdAt: number;
 };
+
+type ChatMode = 'memory' | 'agent';
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
 
 // Chat = memory-grounded Q&A against AIForge Neo4j + graph_rag MCP.
-// Each system reply has a "did this help?" footer that persists the Q+A
-// as a T3 `patterns/<topic>` memory via /chat/retain.
+// Agent mode adds a full-filesystem coding agent via POST /api/chat/agent (SSE).
 export default function Chat() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [drawerTurn, setDrawerTurn] = useState<Turn | null>(null);
+  const [mode, setMode] = useState<ChatMode>(() => {
+    try {
+      const saved = localStorage.getItem('aiforge.chat.mode');
+      return (saved === 'agent' || saved === 'memory') ? saved : 'memory';
+    } catch { return 'memory'; }
+  });
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -49,15 +68,18 @@ export default function Chat() {
       }
     } catch { /* ignore */ }
   }, []);
+
   useEffect(() => {
     try {
-      // Keep last 60 turns and stamp the save so the TTL trim on
-      // reload has a stable clock to reason about.
-      const toSave = turns.slice(-60);
+      const toSave = turns.slice(-60).map(t => ({ ...t, streaming: false }));
       localStorage.setItem('aiforge.chat.history', JSON.stringify(toSave));
       localStorage.setItem('aiforge.chat.saved_at', String(Date.now()));
     } catch { /* ignore */ }
   }, [turns]);
+
+  useEffect(() => {
+    try { localStorage.setItem('aiforge.chat.mode', mode); } catch { /* ignore */ }
+  }, [mode]);
 
   // auto-scroll on new turns
   useEffect(() => {
@@ -70,10 +92,9 @@ export default function Chat() {
     try { localStorage.removeItem('aiforge.chat.history'); } catch { /* ignore */ }
   }
 
-  async function send() {
-    const q = input.trim();
-    if (!q || busy) return;
-    setInput('');
+  // ── Memory Q&A mode ────────────────────────────────────────────────────────
+
+  async function sendMemory(q: string) {
     const userTurn: Turn = { id: uid(), role: 'user', text: q, createdAt: Date.now() };
     setTurns(t => [...t, userTurn]);
     setBusy(true);
@@ -105,6 +126,140 @@ export default function Chat() {
     } finally {
       setBusy(false);
       textareaRef.current?.focus();
+    }
+  }
+
+  // ── Agent mode (SSE over POST) ─────────────────────────────────────────────
+
+  async function sendAgent(q: string, allTurns: Turn[]) {
+    // Build message history: include all prior turns except in-progress ones
+    const messages = allTurns
+      .filter(t => !t.streaming)
+      .map(t => ({
+        role: (t.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
+        content: t.text,
+      }));
+    // Append the new user message
+    messages.push({ role: 'user', content: q });
+
+    const agentTurnId = uid();
+    const agentTurn: Turn = {
+      id: agentTurnId,
+      role: 'system',
+      text: '',
+      agentMode: true,
+      steps: [],
+      streaming: true,
+      createdAt: Date.now(),
+    };
+    setBusy(true);
+
+    setTurns(t => [...t, agentTurn]);
+
+    try {
+      const res = await fetch(chatAgentURL(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages }),
+      });
+
+      if (!res.ok) {
+        let detail = '';
+        try { const b = await res.json(); detail = b?.detail || b?.error || ''; } catch { /* ignore */ }
+        try { if (!detail) detail = await res.text(); } catch { /* ignore */ }
+        throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`);
+      }
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      function applyEvent(raw: string) {
+        // Strip leading "data: " prefix
+        const line = raw.startsWith('data: ') ? raw.slice(6) : raw;
+        if (!line.trim()) return;
+        let evt: any;
+        try { evt = JSON.parse(line); } catch { return; }
+
+        setTurns(ts => ts.map(t => {
+          if (t.id !== agentTurnId) return t;
+          if (evt.type === 'thought') {
+            return { ...t, steps: [...(t.steps || []), { kind: 'thought', text: evt.text }] };
+          }
+          if (evt.type === 'tool') {
+            return { ...t, steps: [...(t.steps || []), { kind: 'tool', name: evt.name, args: evt.args || {}, result: evt.result || {} }] };
+          }
+          if (evt.type === 'message') {
+            return { ...t, text: evt.text, streaming: false };
+          }
+          if (evt.type === 'error') {
+            return { ...t, text: evt.text, steps: [...(t.steps || []), { kind: 'error', text: evt.text }], streaming: false };
+          }
+          if (evt.type === 'done') {
+            return { ...t, streaming: false };
+          }
+          return t;
+        }));
+      }
+
+      outer: while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // Split on double newline (SSE event boundary)
+        const parts = buffer.split('\n\n');
+        // Last part may be incomplete — keep it in the buffer
+        buffer = parts.pop() ?? '';
+        for (const part of parts) {
+          if (part.trim()) {
+            // Each part may contain multiple "data: ..." lines — handle the
+            // common single-line case and the rare multi-line case.
+            for (const line of part.split('\n')) {
+              if (line.startsWith('data: ')) {
+                applyEvent(line);
+              }
+            }
+          }
+          // Check if we already got done/message from this batch
+        }
+      }
+
+      // Flush any remaining buffer content
+      if (buffer.trim()) {
+        for (const line of buffer.split('\n')) {
+          if (line.startsWith('data: ')) applyEvent(line);
+        }
+      }
+
+      // Ensure streaming flag is cleared regardless of whether 'done' arrived
+      setTurns(ts => ts.map(t => t.id === agentTurnId ? { ...t, streaming: false } : t));
+    } catch (e: any) {
+      setTurns(ts => ts.map(t =>
+        t.id === agentTurnId
+          ? { ...t, text: `Agent error: ${e.message}`, streaming: false }
+          : t
+      ));
+      toast.error(`Agent failed: ${e.message}`);
+    } finally {
+      setBusy(false);
+      textareaRef.current?.focus();
+    }
+  }
+
+  // ── Shared send handler ────────────────────────────────────────────────────
+
+  async function send() {
+    const q = input.trim();
+    if (!q || busy) return;
+    setInput('');
+    if (mode === 'agent') {
+      // Snapshot turns before appending the new user message so we can build history
+      const snapshot = turns;
+      const userTurn: Turn = { id: uid(), role: 'user', text: q, createdAt: Date.now() };
+      setTurns(t => [...t, userTurn]);
+      await sendAgent(q, snapshot);
+    } else {
+      await sendMemory(q);
     }
   }
 
@@ -140,75 +295,126 @@ export default function Chat() {
     }
   }
 
-  const drawerOpen = !!drawerTurn;
+  const drawerOpen = !!drawerTurn && mode === 'memory';
 
   return (
     <div className={`chat-shell ${drawerOpen ? '' : 'drawer-closed'}`}>
       <section className="chat-main">
         <div className="chat-topbar">
           <div className="row">
-            <h2><Icon.Sparkles size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 6 }} /> Memory-grounded chat</h2>
+            {/* Mode toggle */}
+            <div className="segmented">
+              <button
+                className={mode === 'memory' ? 'on' : ''}
+                onClick={() => setMode('memory')}
+                title="Memory-grounded Q&A"
+              >
+                <Icon.Sparkles size={11} /> Ask memory
+              </button>
+              <button
+                className={mode === 'agent' ? 'on' : ''}
+                onClick={() => setMode('agent')}
+                title="Full-filesystem coding agent"
+              >
+                <Icon.Agents size={11} /> Agent (full FS)
+              </button>
+            </div>
+            {mode === 'agent' && (
+              <span className="xs muted" style={{ fontFamily: 'var(--font-mono)' }}>
+                reads &amp; writes files · runs commands
+              </span>
+            )}
           </div>
           <div className="row">
             <button className="ghost sm" onClick={resetChat}>Clear</button>
-            <button
-              className="ghost sm"
-              onClick={() => setDrawerTurn(drawerOpen ? null : (turns.slice().reverse().find(t => t.role === 'system' && t.hits) || null))}
-            >
-              {drawerOpen ? 'Hide context' : 'Show context'}
-            </button>
+            {mode === 'memory' && (
+              <button
+                className="ghost sm"
+                onClick={() => setDrawerTurn(drawerOpen ? null : (turns.slice().reverse().find(t => t.role === 'system' && t.hits) || null))}
+              >
+                {drawerOpen ? 'Hide context' : 'Show context'}
+              </button>
+            )}
           </div>
         </div>
 
         <div className="chat-log" ref={logRef}>
           {turns.map(t => (
-            <div key={t.id} className={`bubble ${t.role}`}>
+            <div key={t.id} className={`bubble ${t.role === 'user' ? 'user' : 'sys'}`}>
               <div className="bubble-avatar">{t.role === 'user' ? 'You' : 'AI'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="bubble-body">
-                  {t.role === 'system'
-                    ? <MdLite text={t.text} />
-                    : <span style={{ whiteSpace: 'pre-wrap' }}>{t.text}</span>}
-                </div>
-                {t.role === 'system' && t.queryRef && (
-                  <div className="bubble-footer">
-                    {t.normalized && t.normalized !== t.text && (
-                      <span className="xs muted">understood as "{t.normalized}"</span>
+                {/* Agent turn: show steps then final answer */}
+                {t.agentMode ? (
+                  <div>
+                    {/* Streamed steps */}
+                    {(t.steps || []).length > 0 && (
+                      <div style={{ marginBottom: t.text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {(t.steps || []).map((s, i) => (
+                          <AgentStepRow key={i} step={s} />
+                        ))}
+                      </div>
                     )}
-                    {t.tiers && t.tiers.length > 0 && (
-                      <span className="chip sm">tiers: {t.tiers.join(',')}</span>
+                    {/* Final message */}
+                    {t.text && (
+                      <div className="bubble-body">
+                        <MdLite text={t.text} />
+                      </div>
                     )}
-                    {t.tools && t.tools.length > 0 && (
-                      <span className="chip sm">{t.tools.length} tool call{t.tools.length === 1 ? '' : 's'}</span>
+                    {/* Still streaming with no answer yet */}
+                    {t.streaming && !t.text && (t.steps || []).length === 0 && (
+                      <div className="bubble-body" style={{ padding: 0, background: 'transparent', border: 0 }}>
+                        <div className="typing"><span /><span /><span /></div>
+                      </div>
                     )}
-                    {t.hits && t.hits.length > 0 && (
-                      <button className="ghost sm" onClick={() => setDrawerTurn(t)}>
-                        {t.hits.length} hits
-                      </button>
-                    )}
-                    <span className="spacer" />
-                    {t.saved == null && (
-                      <span className="retain-row">
-                        <button className="ghost sm" onClick={() => retain(t, true)}>
-                          <Icon.Check size={12} /> Worked
-                        </button>
-                        <button className="ghost sm" onClick={() => retain(t, false)}>
-                          <Icon.X size={12} /> Didn't help
-                        </button>
-                      </span>
-                    )}
-                    {t.saved && (
-                      <span className={`chip sm ${t.saved.worked ? 'ok' : 'warn'}`}>
-                        saved as T3 {t.saved.worked ? 'pattern' : 'anti-pattern'}
-                        {t.saved.id != null ? ` #${t.saved.id}` : ''}
-                      </span>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="bubble-body">
+                      {t.role === 'system'
+                        ? <MdLite text={t.text} />
+                        : <span style={{ whiteSpace: 'pre-wrap' }}>{t.text}</span>}
+                    </div>
+                    {t.role === 'system' && t.queryRef && (
+                      <div className="bubble-footer">
+                        {t.normalized && t.normalized !== t.text && (
+                          <span className="xs muted">understood as "{t.normalized}"</span>
+                        )}
+                        {t.tiers && t.tiers.length > 0 && (
+                          <span className="chip sm">tiers: {t.tiers.join(',')}</span>
+                        )}
+                        {t.tools && t.tools.length > 0 && (
+                          <span className="chip sm">{t.tools.length} tool call{t.tools.length === 1 ? '' : 's'}</span>
+                        )}
+                        {t.hits && t.hits.length > 0 && (
+                          <button className="ghost sm" onClick={() => setDrawerTurn(t)}>
+                            {t.hits.length} hits
+                          </button>
+                        )}
+                        <span className="spacer" />
+                        {t.saved == null && (
+                          <span className="retain-row">
+                            <button className="ghost sm" onClick={() => retain(t, true)}>
+                              <Icon.Check size={12} /> Worked
+                            </button>
+                            <button className="ghost sm" onClick={() => retain(t, false)}>
+                              <Icon.X size={12} /> Didn't help
+                            </button>
+                          </span>
+                        )}
+                        {t.saved && (
+                          <span className={`chip sm ${t.saved.worked ? 'ok' : 'warn'}`}>
+                            saved as T3 {t.saved.worked ? 'pattern' : 'anti-pattern'}
+                            {t.saved.id != null ? ` #${t.saved.id}` : ''}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
               </div>
             </div>
           ))}
-          {busy && (
+          {busy && mode === 'memory' && (
             <div className="bubble sys">
               <div className="bubble-avatar">AI</div>
               <div className="bubble-body" style={{ padding: 0, background: 'transparent', border: 0 }}>
@@ -222,14 +428,21 @@ export default function Chat() {
           <textarea
             ref={textareaRef}
             rows={1}
-            placeholder="Ask about tickets, repos, code, past decisions…  (Enter to send, Shift+Enter for newline)"
+            placeholder={
+              mode === 'agent'
+                ? 'Ask the agent to read/write files, run commands, implement a feature…  (Enter to send)'
+                : 'Ask about tickets, repos, code, past decisions…  (Enter to send, Shift+Enter for newline)'
+            }
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={onKey}
             disabled={busy}
           />
           <button onClick={send} disabled={busy || !input.trim()}>
-            <Icon.Send size={14} /> {busy ? 'Thinking' : 'Send'}
+            {mode === 'agent'
+              ? <><Icon.Agents size={14} /> {busy ? 'Running…' : 'Run'}</>
+              : <><Icon.Send size={14} /> {busy ? 'Thinking' : 'Send'}</>
+            }
           </button>
         </div>
       </section>
@@ -283,6 +496,81 @@ export default function Chat() {
       )}
     </div>
   );
+}
+
+// ── Agent step row ─────────────────────────────────────────────────────────────
+
+function AgentStepRow({ step }: { step: AgentStep }) {
+  if (step.kind === 'thought') {
+    return (
+      <div style={{
+        display: 'flex', gap: 6, alignItems: 'flex-start',
+        padding: '5px 10px',
+        background: 'var(--bg-1)',
+        border: '1px solid var(--border-0)',
+        borderRadius: 'var(--r-sm)',
+        fontStyle: 'italic',
+        color: 'var(--fg-2)',
+        fontSize: 'var(--fs-xs)',
+        lineHeight: 1.5,
+      }}>
+        <span style={{ flexShrink: 0, marginTop: 1 }}>💭</span>
+        <span>{step.text}</span>
+      </div>
+    );
+  }
+  if (step.kind === 'tool') {
+    const res = step.result as any;
+    const ok = res?.ok !== false && !res?.error;
+    const snippet = ok
+      ? (res?.output ? String(res.output).slice(0, 120) : 'ok')
+      : (res?.error ? String(res.error).slice(0, 120) : 'error');
+    return (
+      <div style={{
+        display: 'flex', gap: 6, alignItems: 'flex-start',
+        padding: '5px 10px',
+        background: 'var(--bg-1)',
+        border: '1px solid var(--border-0)',
+        borderRadius: 'var(--r-sm)',
+        fontSize: 'var(--fs-xs)',
+        lineHeight: 1.5,
+        fontFamily: 'var(--font-mono)',
+        color: ok ? 'var(--fg-1)' : 'var(--err)',
+      }}>
+        <span style={{ flexShrink: 0, marginTop: 1 }}>🔧</span>
+        <span>
+          <strong>{step.name}</strong>
+          {'('}
+          {Object.entries(step.args as Record<string, unknown>).slice(0, 3).map(([k, v], i) =>
+            `${i > 0 ? ', ' : ''}${k}=${JSON.stringify(v).slice(0, 40)}`
+          ).join('')}
+          {')'}
+          {' → '}
+          <span style={{ color: ok ? 'var(--ok)' : 'var(--err)' }}>
+            {snippet}
+          </span>
+        </span>
+      </div>
+    );
+  }
+  if (step.kind === 'error') {
+    return (
+      <div style={{
+        display: 'flex', gap: 6, alignItems: 'flex-start',
+        padding: '5px 10px',
+        background: 'var(--err-soft)',
+        border: '1px solid transparent',
+        borderRadius: 'var(--r-sm)',
+        fontSize: 'var(--fs-xs)',
+        lineHeight: 1.5,
+        color: 'var(--err)',
+      }}>
+        <span style={{ flexShrink: 0, marginTop: 1 }}>✗</span>
+        <span>{step.text}</span>
+      </div>
+    );
+  }
+  return null;
 }
 
 function inferTopic(q: string): string {
