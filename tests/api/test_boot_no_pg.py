@@ -140,6 +140,44 @@ def test_providers_test_endpoint(client, monkeypatch):
     assert r.json() == {"ok": True, "models": ["m1"]}
 
 
+def test_chat_sessions_crud_and_message(client, monkeypatch):
+    c, _ = client
+
+    def _fake_agent(messages, *, cwd, role="doer", **kw):
+        yield {"type": "tool", "name": "noop", "args": {}, "result": {"ok": True}}
+        yield {"type": "message", "text": f"turns={len(messages)}"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent.run_chat_agent",
+                        _fake_agent)
+
+    s = c.post("/api/chat/sessions", json={}).json()
+    sid = s["id"]
+    assert s["title"] == "New chat"
+
+    r = c.post(f"/api/chat/sessions/{sid}/message",
+               json={"content": "fix the parser bug"})
+    assert r.status_code == 200
+    assert "turns=1" in r.text
+    assert '"type": "tool"' in r.text
+
+    got = c.get(f"/api/chat/sessions/{sid}").json()
+    assert got["session"]["title"] == "fix the parser bug"
+    assert [m["role"] for m in got["messages"]] == ["user", "assistant"]
+    assert got["messages"][1]["content"] == "turns=1"
+    assert got["messages"][1]["steps"]
+
+    r2 = c.post(f"/api/chat/sessions/{sid}/message",
+                json={"content": "now add a test"})
+    assert "turns=3" in r2.text
+
+    assert any(x["id"] == sid for x in c.get("/api/chat/sessions").json())
+    assert c.patch(f"/api/chat/sessions/{sid}",
+                   json={"title": "Parser work"}).json()["title"] == "Parser work"
+    assert c.delete(f"/api/chat/sessions/{sid}").status_code == 204
+    assert c.get(f"/api/chat/sessions/{sid}").status_code == 404
+
+
 def test_memory_stats_neo4j_routing(client, monkeypatch):
     c, _ = client
     import aiforge_core.api.api as api

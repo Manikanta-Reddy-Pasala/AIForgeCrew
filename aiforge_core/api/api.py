@@ -1646,6 +1646,108 @@ def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+# ───────────────────── Persistent chat sessions ────────────────────────
+# Claude-style multi-conversation chat: server-stored sessions the user
+# can resume/rename/delete. Each session threads full history into the
+# agent so a topic continues across turns. Storage: aiforge_core.runtime.
+# chat_store (SQLite, survives reloads/redeploys).
+
+
+class _NewSessionBody(BaseModel):
+    title: str | None = Field(None)
+    cwd: str | None = Field(None)
+
+
+class _RenameBody(BaseModel):
+    title: str = Field(..., min_length=1)
+
+
+class _SessionMsgBody(BaseModel):
+    content: str = Field(..., min_length=1)
+    role: str = Field("doer", description="archetype whose provider drives the LLM")
+
+
+@app.post("/api/chat/sessions", status_code=201)
+def chat_session_create(body: _NewSessionBody) -> dict:
+    from aiforge_core.runtime import chat_store
+    return chat_store.create_session(body.title or "New chat",
+                                     body.cwd or _default_cwd())
+
+
+@app.get("/api/chat/sessions")
+def chat_session_list() -> list[dict]:
+    from aiforge_core.runtime import chat_store
+    return chat_store.list_sessions()
+
+
+@app.get("/api/chat/sessions/{session_id}")
+def chat_session_get(session_id: int) -> dict:
+    from aiforge_core.runtime import chat_store
+    s = chat_store.get_session(session_id)
+    if not s:
+        raise HTTPException(404, f"session {session_id} not found")
+    return {"session": s, "messages": chat_store.get_messages(session_id)}
+
+
+@app.patch("/api/chat/sessions/{session_id}")
+def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
+    from aiforge_core.runtime import chat_store
+    s = chat_store.rename_session(session_id, body.title)
+    if not s:
+        raise HTTPException(404, f"session {session_id} not found")
+    return s
+
+
+@app.delete("/api/chat/sessions/{session_id}", status_code=204)
+def chat_session_delete(session_id: int) -> None:
+    from aiforge_core.runtime import chat_store
+    if not chat_store.delete_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+
+
+@app.post("/api/chat/sessions/{session_id}/message")
+def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
+    """Append a user message, run the full-FS agent over the whole session
+    history, stream the steps (SSE), and persist the assistant reply +
+    steps. Auto-titles a fresh session from the first user message."""
+    from aiforge_core.runtime import chat_store
+    from aiforge_core.runtime.chat_agent import run_chat_agent
+
+    session = chat_store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, f"session {session_id} not found")
+
+    chat_store.add_message(session_id, "user", body.content)
+    # Auto-title from the first user message.
+    if (session.get("title") or "New chat") == "New chat":
+        chat_store.rename_session(session_id, body.content.strip()[:60])
+
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in chat_store.get_messages(session_id)
+        if m["role"] in ("user", "assistant")
+    ]
+    cwd = session.get("cwd") or _default_cwd()
+
+    def _gen():
+        steps: list[dict] = []
+        final_text = ""
+        try:
+            for ev in run_chat_agent(history, cwd=cwd, role=body.role):
+                if ev.get("type") == "message":
+                    final_text = ev.get("text", "")
+                elif ev.get("type") in ("thought", "tool", "error"):
+                    steps.append(ev)
+                yield f"data: {json.dumps(ev)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        finally:
+            chat_store.add_message(session_id, "assistant", final_text, steps)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
 _MCP_ALLOWED_TOOLS = {
     "sym_lookup", "list_repos", "list_services", "list_endpoints",
     "list_integrations", "graph_neighborhood", "caller_chain",
