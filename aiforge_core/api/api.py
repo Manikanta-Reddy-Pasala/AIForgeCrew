@@ -1845,39 +1845,28 @@ def chat_session_delete(session_id: int) -> None:
 
 @app.post("/api/chat/sessions/{session_id}/message")
 def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
-    """Append a user message, run the full-FS agent over the whole session
-    history, stream the steps (SSE), and persist the assistant reply +
-    steps. Auto-titles a fresh session from the first user message."""
+    """Append a user message, run the full ADK agent team (ticketless,
+    in the session's working dir), stream each stage's output as SSE, and
+    persist the assistant reply + steps. Auto-titles a fresh session."""
     from aiforge_core.runtime import chat_store
-    from aiforge_core.runtime.chat_agent import run_chat_agent
+    from aiforge_core.runtime.chat_pipeline import stream_chat_pipeline
 
     session = chat_store.get_session(session_id)
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
 
-    # Model selection: a per-message role overrides + persists on the
-    # session (so the picker choice sticks); else use the session's role.
-    role = body.role or session.get("role") or "doer"
-    if body.role and body.role != session.get("role"):
-        chat_store.set_session_role(session_id, body.role)
-
     chat_store.add_message(session_id, "user", body.content)
-    # Auto-title from the first user message.
     if (session.get("title") or "New chat") == "New chat":
         chat_store.rename_session(session_id, body.content.strip()[:60])
 
-    history = [
-        {"role": m["role"], "content": m["content"]}
-        for m in chat_store.get_messages(session_id)
-        if m["role"] in ("user", "assistant")
-    ]
     cwd = session.get("cwd") or _default_cwd()
+    prompt = body.content.strip()
 
     def _gen():
         steps: list[dict] = []
         final_text = ""
         try:
-            for ev in run_chat_agent(history, cwd=cwd, role=role):
+            for ev in stream_chat_pipeline(prompt, cwd=cwd):
                 if ev.get("type") == "message":
                     final_text = ev.get("text", "")
                 elif ev.get("type") in ("thought", "tool", "error"):

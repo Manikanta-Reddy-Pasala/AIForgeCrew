@@ -143,13 +143,14 @@ def test_providers_test_endpoint(client, monkeypatch):
 def test_chat_sessions_crud_and_message(client, monkeypatch):
     c, _ = client
 
-    def _fake_agent(messages, *, cwd, role="doer", **kw):
-        yield {"type": "tool", "name": "noop", "args": {}, "result": {"ok": True}}
-        yield {"type": "message", "text": f"turns={len(messages)}"}
+    def _fake_pipeline(prompt, *, cwd, **kw):
+        yield {"type": "thought", "text": "**planner** · plan it"}
+        yield {"type": "tool", "name": "file_write", "args": {}, "result": {"ok": True}}
+        yield {"type": "message", "text": f"done: {prompt}"}
         yield {"type": "done"}
 
-    monkeypatch.setattr("aiforge_core.runtime.chat_agent.run_chat_agent",
-                        _fake_agent)
+    monkeypatch.setattr("aiforge_core.runtime.chat_pipeline.stream_chat_pipeline",
+                        _fake_pipeline)
 
     s = c.post("/api/chat/sessions", json={}).json()
     sid = s["id"]
@@ -158,18 +159,14 @@ def test_chat_sessions_crud_and_message(client, monkeypatch):
     r = c.post(f"/api/chat/sessions/{sid}/message",
                json={"content": "fix the parser bug"})
     assert r.status_code == 200
-    assert "turns=1" in r.text
-    assert '"type": "tool"' in r.text
+    assert "done: fix the parser bug" in r.text
+    assert '"type": "tool"' in r.text and "planner" in r.text
 
     got = c.get(f"/api/chat/sessions/{sid}").json()
     assert got["session"]["title"] == "fix the parser bug"
     assert [m["role"] for m in got["messages"]] == ["user", "assistant"]
-    assert got["messages"][1]["content"] == "turns=1"
-    assert got["messages"][1]["steps"]
-
-    r2 = c.post(f"/api/chat/sessions/{sid}/message",
-                json={"content": "now add a test"})
-    assert "turns=3" in r2.text
+    assert got["messages"][1]["content"] == "done: fix the parser bug"
+    assert got["messages"][1]["steps"]   # thought + tool persisted
 
     assert any(x["id"] == sid for x in c.get("/api/chat/sessions").json())
     assert c.patch(f"/api/chat/sessions/{sid}",
@@ -178,32 +175,14 @@ def test_chat_sessions_crud_and_message(client, monkeypatch):
     assert c.get(f"/api/chat/sessions/{sid}").status_code == 404
 
 
-def test_chat_models_and_session_role(client, monkeypatch):
+def test_chat_models_endpoint(client):
     c, _ = client
-
-    def _fake_agent(messages, *, cwd, role="doer", **kw):
-        yield {"type": "message", "text": f"role={role}"}
-        yield {"type": "done"}
-
-    monkeypatch.setattr("aiforge_core.runtime.chat_agent.run_chat_agent",
-                        _fake_agent)
-
     models = c.get("/api/chat/models").json()
     assert isinstance(models, list) and models
     assert all("role" in m and "model" in m for m in models)
-
-    # create with a chosen role
+    # session create still records a chosen role (model dropdown)
     s = c.post("/api/chat/sessions", json={"role": "planner"}).json()
     assert s["role"] == "planner"
-    sid = s["id"]
-    r = c.post(f"/api/chat/sessions/{sid}/message", json={"content": "hi"})
-    assert "role=planner" in r.text
-
-    # per-message override sticks on the session
-    r2 = c.post(f"/api/chat/sessions/{sid}/message",
-                json={"content": "switch", "role": "doer"})
-    assert "role=doer" in r2.text
-    assert c.get(f"/api/chat/sessions/{sid}").json()["session"]["role"] == "doer"
 
 
 def test_memory_sources_crud_and_index(client, monkeypatch, tmp_path):
