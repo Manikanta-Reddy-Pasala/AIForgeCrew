@@ -25,14 +25,10 @@ ENV UV_SYSTEM_PYTHON=1 \
     PYTHONUNBUFFERED=1 \
     AIFORGE_CONFIG_DIR=/data/aiforge
 
-# Install deps first (cache layer) — copy only what pip needs to resolve.
-COPY pyproject.toml README.md ./
-COPY aiforge_core/__init__.py aiforge_core/__init__.py
-RUN uv pip install --system -e . || uv pip install --system -e .
-
-# Full source + the pre-built UI.
+# Full source + the pre-built UI, then install the package (editable).
 COPY . .
 COPY --from=web /web/dist ./web/dist
+RUN uv pip install --system -e .
 
 RUN mkdir -p /data/aiforge
 EXPOSE 8799

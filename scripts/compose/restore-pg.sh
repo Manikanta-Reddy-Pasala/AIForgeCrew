@@ -20,10 +20,14 @@ for _ in $(seq 1 30); do
 done
 
 echo "==> restoring $DUMP into $CONTAINER:$PG_DB"
+# Strip ownership/ACL lines: the source dump may reference roles that
+# don't exist in the fresh compose cluster (only PG_USER is created).
+# Everything ends up owned by PG_USER, which is what the app connects as.
+_strip() { grep -vE '^(ALTER .* OWNER TO|GRANT |REVOKE |.*OWNER TO )' ; }
 if [[ "$DUMP" == *.gz ]]; then
-  gunzip -c "$DUMP" | $DOCKER exec -i "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB"
+  gunzip -c "$DUMP" | _strip | $DOCKER exec -i "$CONTAINER" psql -v ON_ERROR_STOP=0 -U "$PG_USER" -d "$PG_DB" >/dev/null
 else
-  $DOCKER exec -i "$CONTAINER" psql -U "$PG_USER" -d "$PG_DB" < "$DUMP"
+  _strip < "$DUMP" | $DOCKER exec -i "$CONTAINER" psql -v ON_ERROR_STOP=0 -U "$PG_USER" -d "$PG_DB" >/dev/null
 fi
 
 echo "==> ticket count after restore:"
