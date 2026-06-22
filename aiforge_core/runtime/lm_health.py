@@ -21,13 +21,18 @@ import subprocess
 import urllib.error
 import urllib.request
 
+from aiforge_core.net.ssl import context_for as _ssl_context_for
+
 log = logging.getLogger("aiforge.lm_health")
 
 
 def _probe(url: str, timeout: float = 3.0) -> bool:
     try:
-        req = urllib.request.Request(url + "/v1/models")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        models_url = url + "/v1/models"
+        req = urllib.request.Request(models_url)
+        with urllib.request.urlopen(
+            req, timeout=timeout, context=_ssl_context_for(models_url)
+        ) as resp:
             return resp.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False

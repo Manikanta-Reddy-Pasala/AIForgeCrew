@@ -26,7 +26,6 @@ from .memory_lookup_tool import memory_lookup
 from .sandbox import resolve_inside_root, root
 from .syntax_guard import validate_syntax
 
-
 # Pathspecs to keep transient cache dirs out of Doer-created commits.
 # Mirrors ``runtime.git_pr._EXCLUDE_PATHSPECS`` so manual commits
 # behave like the auto-PR step at end-of-ticket.
@@ -337,6 +336,9 @@ def fetch_url(url: str) -> dict:
         req = urllib.request.Request(
             url, headers={"User-Agent": "AIForgeCrew-Doer/1.0"},
         )
+        # Public/arbitrary web fetch — keep stdlib default TLS verification
+        # regardless of AIFORGE_LLM_SSL_VERIFY (that toggle is scoped to
+        # AIForge's own self-hosted endpoints, see aiforge_core.net.ssl).
         with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S) as resp:
             raw = resp.read(_FETCH_MAX_BYTES + 1)
             status = resp.status

@@ -258,14 +258,17 @@ def _rerank_top(hits: list[dict], *, query: str) -> list[dict] | None:
     try:
         import json as _json
         import urllib.request as _ur
+
+        from aiforge_core.net.ssl import context_for as _ssl_context_for
         texts = [(h.get("text") or "")[:1500] for h in hits]
         body = _json.dumps({"query": query[:512], "texts": texts}).encode()
+        rerank_url = url.rstrip("/") + "/rerank"
         req = _ur.Request(
-            url.rstrip("/") + "/rerank",
+            rerank_url,
             data=body,
             headers={"Content-Type": "application/json"},
         )
-        with _ur.urlopen(req, timeout=8) as r:
+        with _ur.urlopen(req, timeout=8, context=_ssl_context_for(rerank_url)) as r:
             resp = _json.loads(r.read())
         # Accept both shapes: list-of-{score} or {scores:[...]}
         if isinstance(resp, dict) and "scores" in resp:

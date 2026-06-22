@@ -11,6 +11,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Iterable
 
+from aiforge_core.net.ssl import context_for as _ssl_context_for
 
 RERANK_URL = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:8765")
 
@@ -59,7 +60,8 @@ def rerank_http(query: str, hits: list[Hit], keep: int) -> list[Hit]:
             data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=20) as r:
+        ctx = _ssl_context_for(f"{RERANK_URL}/rerank")
+        with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
             resp = json.loads(r.read().decode())
         order = resp["order"]
         scores = resp["scores"]

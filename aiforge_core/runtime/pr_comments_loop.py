@@ -169,13 +169,18 @@ def _post_followup_ticket(
     }
     try:
         import urllib.request
+
+        from aiforge_core.net.ssl import context_for as _ssl_context_for
+        url = f"{api}/api/tickets"
         req = urllib.request.Request(
-            f"{api}/api/tickets",
+            url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(
+            req, timeout=10, context=_ssl_context_for(url)
+        ) as resp:
             return resp.status == 201
     except Exception as exc:  # noqa: BLE001
         log.warning("ticket POST failed: %s", exc)

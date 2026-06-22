@@ -20,6 +20,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from aiforge_core.net.ssl import context_for as _ssl_context_for
+
 from ._trace import emit
 
 # Default endpoints — matches oneshell-mcp QA tier on NUC (memory:
@@ -62,7 +64,9 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+    with urllib.request.urlopen(
+        req, timeout=_HTTP_TIMEOUT_S, context=_ssl_context_for(url)
+    ) as resp:
         raw = resp.read(_RESPONSE_CAP_BYTES + 1)
     truncated = len(raw) > _RESPONSE_CAP_BYTES
     text = raw[:_RESPONSE_CAP_BYTES].decode("utf-8", "replace")

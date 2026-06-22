@@ -31,6 +31,7 @@ import time
 import urllib.error
 import urllib.request
 
+from aiforge_core.net.ssl import context_for as _ssl_context_for
 
 log = logging.getLogger("aiforge.local_probe")
 
@@ -76,7 +77,9 @@ def is_alive(api_base: str) -> bool:
     alive = False
     try:
         req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=_timeout()) as resp:
+        with urllib.request.urlopen(
+            req, timeout=_timeout(), context=_ssl_context_for(url)
+        ) as resp:
             alive = 200 <= resp.status < 500
     except (urllib.error.URLError, urllib.error.HTTPError,
             TimeoutError, OSError) as exc:

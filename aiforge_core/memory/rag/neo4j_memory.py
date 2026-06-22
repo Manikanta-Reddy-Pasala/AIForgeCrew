@@ -36,7 +36,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from aiforge_core.memory.retrieval import Hit, ROLE_POLICIES, rrf_fuse
+from aiforge_core.memory.retrieval import ROLE_POLICIES, Hit, rrf_fuse
+from aiforge_core.net.ssl import context_for as _ssl_context_for
 
 log = logging.getLogger("aiforge.rag.neo4j_memory")
 
@@ -95,7 +96,8 @@ def _embed(text: str) -> list[float] | None:
             data=json.dumps({"text": text[:8000]}).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=15) as r:
+        ctx = _ssl_context_for(f"{EMBED_URL}/embed")
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as r:
             resp = json.loads(r.read())
         emb = resp.get("embedding") or resp.get("vector")
         return list(emb) if emb else None

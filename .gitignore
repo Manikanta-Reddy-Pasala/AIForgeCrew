@@ -30,6 +30,8 @@ node_modules/
 .env.*
 !.env.example
 !.env.test.example
+aiforge.env
+!aiforge.env.example
 secrets/
 config/prod/
 

@@ -141,6 +141,8 @@ def _fetch(url: str) -> str:
     req = urllib.request.Request(url, headers={
         "User-Agent": "aiforge-docs-index/0.1",
     })
+    # Public/arbitrary doc URL — keep stdlib default TLS verification
+    # (the AIFORGE_LLM_SSL_VERIFY opt-out is scoped to internal hosts).
     with urllib.request.urlopen(req, timeout=15) as resp:
         return resp.read(2_000_000).decode("utf-8", "replace")
 

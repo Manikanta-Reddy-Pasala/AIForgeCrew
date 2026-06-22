@@ -41,6 +41,8 @@ def _gh_get(path: str) -> Any:
             **({"Authorization": f"Bearer {token}"} if token else {}),
         },
     )
+    # Public GitHub API — always full TLS verification (the
+    # AIFORGE_LLM_SSL_VERIFY opt-out is scoped to internal hosts only).
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode("utf-8"))
 

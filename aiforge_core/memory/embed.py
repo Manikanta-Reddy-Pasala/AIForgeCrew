@@ -9,6 +9,8 @@ import json
 import os
 import urllib.request
 
+from aiforge_core.net.ssl import context_for as _ssl_context_for
+
 SIDECAR_URL = os.environ.get("AIFORGE_EMBED_URL", "http://127.0.0.1:8764")
 DIM = 1024
 
@@ -28,7 +30,8 @@ def _post(path: str, body: dict, timeout: float | None = None) -> dict:
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    ctx = _ssl_context_for(f"{SIDECAR_URL}{path}")
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
         return json.loads(r.read().decode())
 
 

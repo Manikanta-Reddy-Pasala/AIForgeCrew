@@ -28,19 +28,21 @@ import time
 from typing import Any
 
 import psycopg
-from psycopg.rows import dict_row
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
-from aiforge_core.tickets import store as tickets_mod
 from aiforge_core.config import env as _cfg
 from aiforge_core.config.env import (
-    AIFORGE_DSN, LM_STUDIO_BASE_URL, LOG_DIR, ROLES,
+    AIFORGE_DSN,
+    LM_STUDIO_BASE_URL,
+    LOG_DIR,
+    ROLES,
 )
-
+from aiforge_core.tickets import store as tickets_mod
 
 app = FastAPI(title="AIForge API")
 
@@ -134,8 +136,11 @@ def health() -> dict:
         status["ok"] = False
     try:
         import urllib.request
+
+        from aiforge_core.net.ssl import context_for as _ssl_context_for
+        _lm_url = f"{LM_STUDIO_BASE_URL}/models"
         with urllib.request.urlopen(
-            f"{LM_STUDIO_BASE_URL}/models", timeout=3) as r:
+            _lm_url, timeout=3, context=_ssl_context_for(_lm_url)) as r:
             status["lm_studio"] = r.getcode() == 200
     except Exception:
         pass
@@ -757,8 +762,9 @@ def get_rate_limits() -> dict:
 
     UI uses this to render bucket gauges and the limit-edit form.
     """
-    from aiforge_core.llm import list_providers as _list, rl_state as _state
+    from aiforge_core.llm import list_providers as _list
     from aiforge_core.llm import providers as _providers
+    from aiforge_core.llm import rl_state as _state
     out: list[dict] = []
     for entry in _list():
         name = entry["name"]
@@ -967,6 +973,7 @@ def _neo4j_stats() -> dict:
     grand total). Soft — returns zeros on any driver error."""
     try:
         from neo4j import GraphDatabase
+
         from aiforge_core.memory.neo4j_conn import neo4j_params
         uri, user, pw = neo4j_params()
         drv = GraphDatabase.driver(uri, auth=(user, pw))
@@ -1116,6 +1123,7 @@ def memory_sources_delete(source_id: int) -> None:
 def memory_sources_index(source_id: int) -> dict:
     """Kick off background indexing of a source into memory."""
     import threading
+
     from aiforge_core.runtime import memory_sources as _ms
     from aiforge_core.runtime.memory_ingest import run_index
     src = _ms.get(source_id)

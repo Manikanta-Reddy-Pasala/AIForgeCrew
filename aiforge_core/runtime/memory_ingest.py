@@ -90,6 +90,8 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 def _fetch_url(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "aiforge-ingest"})
+    # Arbitrary user-supplied ingest source — keep stdlib default TLS
+    # verification (the AIFORGE_LLM_SSL_VERIFY opt-out is internal-only).
     with urllib.request.urlopen(req, timeout=20) as r:
         raw = r.read().decode("utf-8", errors="replace")
     # crude HTML strip

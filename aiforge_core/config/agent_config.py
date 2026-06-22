@@ -212,9 +212,12 @@ def _http_get_json(url: str, *, headers: dict[str, str] | None = None,
                    timeout: float = 3.0) -> dict | None:
     """Tiny helper. Returns parsed JSON dict on 200, None on any failure.
     Uses urllib so we add no new deps."""
+    from aiforge_core.net.ssl import context_for as _ssl_context_for
     req = urllib.request.Request(url, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(
+            req, timeout=timeout, context=_ssl_context_for(url)
+        ) as r:
             if r.getcode() != 200:
                 return None
             return json.loads(r.read().decode("utf-8", "replace"))

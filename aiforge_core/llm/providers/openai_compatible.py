@@ -86,8 +86,10 @@ def probe(base_url: str, api_key: str | None = None,
     if api_key and api_key.strip() and api_key.strip() != _NO_TOKEN:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
     from .._ssl import context_for as _ssl_context_for
-    ctx = _ssl_context_for(url)
     try:
+        # Inside the try so a bad CA bundle path (FileNotFoundError) is
+        # reported as a clean {ok: False, error} instead of raising.
+        ctx = _ssl_context_for(url)
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             payload = json.loads(r.read())

@@ -12,9 +12,9 @@ import os
 import urllib.request
 from typing import Any
 
-from aiforge_core.memory.retrieval import Hit, ROLE_POLICIES, rrf_fuse
+from aiforge_core.memory.retrieval import ROLE_POLICIES, Hit, rrf_fuse
 from aiforge_core.memory.store import Store
-
+from aiforge_core.net.ssl import context_for as _ssl_context_for
 
 log = logging.getLogger("aiforge.rag.retriever")
 
@@ -61,7 +61,8 @@ def _rerank(query: str, hits: list[Hit], keep: int) -> list[Hit]:
             data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=20) as r:
+        ctx = _ssl_context_for(f"{RERANK_URL}/rerank")
+        with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
             resp = json.loads(r.read().decode())
         order: list[int] = resp["order"]
         scores: list[float] = resp["scores"]

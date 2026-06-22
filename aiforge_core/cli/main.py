@@ -29,13 +29,14 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from aiforge_core import tickets as tickets
+from aiforge_core.net.ssl import context_for as _ssl_context_for
 
 
 def _orchestrator_tick(*a, **kw):
     """Lazy import — only `aiforge ticket tick` needs it, and the
     orchestrator module pulls in heavy ADK + LiteLLM deps that we don't
     want to require for trace/logs/show subcommands."""
-    from aiforge_core.runtime.orchestrator import tick as _tick   # type: ignore
+    from aiforge_core.runtime.orchestrator import tick as _tick  # type: ignore
     return _tick(*a, **kw)
 
 
@@ -73,6 +74,7 @@ def _cmd_classify(args) -> int:
 def _cmd_list(args) -> int:
     import psycopg
     from psycopg.rows import dict_row
+
     from aiforge_core.config.env import AIFORGE_DSN
     q = "SELECT identifier, status, priority, assignee_role, title FROM tickets"
     clauses, params = [], []
@@ -249,7 +251,7 @@ def _cmd_llm_trace(args) -> int:
     qs = urlencode({"limit": args.limit})
     url = f"{_api_base()}/api/llm-trace/{args.identifier}?{qs}"
     try:
-        with urlopen(url, timeout=10) as r:
+        with urlopen(url, timeout=10, context=_ssl_context_for(url)) as r:
             data = json.loads(r.read())
     except Exception as exc:
         print(f"error fetching {url}: {exc}", file=sys.stderr); return 2
@@ -275,7 +277,7 @@ def _stream_sse(url: str, follow: bool, lines_cap: int,
     """Tail an SSE endpoint. When follow=False, print the first lines_cap
     events then exit; when follow=True, stream until ctrl-c."""
     try:
-        r = urlopen(url, timeout=300)
+        r = urlopen(url, timeout=300, context=_ssl_context_for(url))
     except Exception as exc:
         print(f"error connecting {url}: {exc}", file=sys.stderr); return 2
     n = 0
