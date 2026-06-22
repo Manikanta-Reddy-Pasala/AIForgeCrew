@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -43,6 +44,19 @@ from aiforge_core.config.env import (
     ROLES,
 )
 from aiforge_core.tickets import store as tickets_mod
+
+# Make the aiforge.* logger family visible regardless of uvicorn's default
+# config so diagnostics (e.g. the provider-test probe) actually print.
+# Level via AIFORGE_LOG_LEVEL (default INFO). Guarded against double-add on
+# test reloads.
+_af_log = logging.getLogger("aiforge")
+_af_log.setLevel(getattr(logging, os.environ.get("AIFORGE_LOG_LEVEL", "INFO").upper(), logging.INFO))
+if not any(getattr(h, "_aiforge_diag", False) for h in _af_log.handlers):
+    _h = logging.StreamHandler()
+    _h._aiforge_diag = True  # type: ignore[attr-defined]
+    _h.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    _af_log.addHandler(_h)
+    _af_log.propagate = False
 
 app = FastAPI(title="AIForge API")
 
@@ -1520,6 +1534,11 @@ def providers_test(body: _ProviderTestBody) -> dict:
     """Test-connection for the home page. Probes ``{base_url}/v1/models``
     and returns ``{ok, models[]}`` (or ``{ok:false, error}``)."""
     from aiforge_core.llm.providers.openai_compatible import probe
+    # Diagnostic: confirms the request reached THIS build and what the UI
+    # checkbox sent. insecure_tls=False here ⇒ the box wasn't ticked.
+    logging.getLogger("aiforge.api").info(
+        "POST /api/providers/test base_url=%s insecure_tls=%s",
+        body.base_url, body.insecure_tls)
     return probe(body.base_url, body.api_key, insecure=body.insecure_tls)
 
 

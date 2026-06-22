@@ -15,11 +15,14 @@ Resolution (highest first):
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.request
 
 from ..types import Endpoint
 from . import register_provider
+
+log = logging.getLogger("aiforge.provider.openai_compatible")
 
 _DEFAULT_BASE = "http://127.0.0.1:1234/v1"
 _NO_TOKEN = "not-needed"
@@ -100,15 +103,24 @@ def probe(base_url: str, api_key: str | None = None,
     if not base_url or not base_url.strip():
         return {"ok": False, "error": "base_url required", "models": []}
     url = _ensure_v1(base_url.strip()) + "/models"
+    is_https = url.lower().startswith("https://")
     headers = {"Accept": "application/json"}
-    if api_key and api_key.strip() and api_key.strip() != _NO_TOKEN:
+    has_token = bool(api_key and api_key.strip() and api_key.strip() != _NO_TOKEN)
+    if has_token:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
     from .._ssl import context_for as _ssl_context_for
     from .._ssl import insecure_context as _ssl_insecure
+    # Diagnostic: shows the EXACT url hit, whether TLS verification was
+    # skipped, and token presence (never the token itself). Grep the API
+    # logs for "probe ->" to confirm the running build honours insecure.
+    tls_mode = ("skip-verify(CERT_NONE)" if (insecure and is_https)
+                else "verify" if is_https else "plain-http")
+    log.info("probe -> url=%s insecure_flag=%s tls=%s token=%s",
+             url, insecure, tls_mode, "yes" if has_token else "no")
     try:
         # Inside the try so a bad CA bundle path (FileNotFoundError) is
         # reported as a clean {ok: False, error} instead of raising.
-        if insecure and url.lower().startswith("https://"):
+        if insecure and is_https:
             ctx = _ssl_insecure()
         else:
             ctx = _ssl_context_for(url)
@@ -116,7 +128,9 @@ def probe(base_url: str, api_key: str | None = None,
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             payload = json.loads(r.read())
     except Exception as exc:  # noqa: BLE001
+        log.warning("probe FAILED url=%s tls=%s: %s", url, tls_mode, exc)
         return {"ok": False, "error": str(exc), "models": []}
+    log.info("probe OK url=%s tls=%s", url, tls_mode)
     data = payload.get("data") if isinstance(payload, dict) else None
     models = []
     if isinstance(data, list):
