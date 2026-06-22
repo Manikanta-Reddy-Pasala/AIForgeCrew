@@ -67,6 +67,33 @@ def test_providers_test_forwards_insecure(client, monkeypatch):
     assert captured["insecure"] is True
 
 
+def test_providers_test_falls_back_to_saved_token(client, monkeypatch):
+    # Save a role with a token, then Test with a BLANK body + role — the
+    # server must reuse the saved token (UI never re-types the secret).
+    captured = {}
+
+    def _fake_probe(base_url, api_key=None, insecure=False):
+        captured["base_url"] = base_url
+        captured["has_token"] = bool(api_key)
+        captured["insecure"] = insecure
+        return {"ok": True, "models": ["m"]}
+
+    import aiforge_core.llm.providers.openai_compatible as oc
+    monkeypatch.setattr(oc, "probe", _fake_probe)
+
+    client.put("/api/agents/v2/doer/config", json={
+        "provider": "openai_compatible", "model": "m",
+        "base_url": "https://chatai.internal/api",
+        "api_key": "sk-saved", "insecure_tls": True,
+    })
+    r = client.post("/api/providers/test", json={"role": "doer"})  # blank fields
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+    assert captured["base_url"] == "https://chatai.internal/api"
+    assert captured["has_token"] is True
+    assert captured["insecure"] is True
+
+
 def test_chat_models_discovers_openai_compatible(client, monkeypatch):
     # Point the chat slot at an openai_compatible endpoint and confirm
     # /api/chat/models discovers models by probing it (not the empty

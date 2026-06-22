@@ -125,11 +125,14 @@ export const api = {
 
   // Test an OpenAI-compatible endpoint reachability. `insecure_tls` skips
   // TLS verification for this probe (self-signed / internal HTTPS box).
-  providersTest: (base_url: string, api_key?: string, insecure_tls?: boolean) =>
+  // `role` lets the server fill a blank base_url/api_key from that role's
+  // saved config — so Test works after Save without re-typing the token.
+  providersTest: (base_url: string, api_key?: string, insecure_tls?: boolean,
+                  role?: string) =>
     j<{ ok: boolean; models?: string[]; error?: string }>('/providers/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url, api_key, insecure_tls: !!insecure_tls }),
+      body: JSON.stringify({ base_url, api_key, insecure_tls: !!insecure_tls, role }),
     }),
 
   // Workflow registry + route detection

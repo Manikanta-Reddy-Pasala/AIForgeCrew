@@ -1504,10 +1504,17 @@ class _AgentConfigV2Body(BaseModel):
 
 
 class _ProviderTestBody(BaseModel):
-    base_url: str = Field(..., description="OpenAI-compatible base URL to probe")
-    api_key: str | None = Field(None, description="Optional bearer key")
+    base_url: str | None = Field(
+        None, description="OpenAI-compatible base URL to probe; falls back "
+                          "to the saved base_url for `role` when omitted")
+    api_key: str | None = Field(
+        None, description="Bearer key; falls back to the saved token for "
+                          "`role` when omitted (UI never echoes the secret)")
     insecure_tls: bool = Field(
         False, description="Skip TLS verification for this probe only")
+    role: str | None = Field(
+        None, description="Archetype whose saved creds fill blank fields, "
+                          "so Test works after Save without re-typing the token")
 
 
 @app.get("/api/agents/v2/config")
@@ -1531,15 +1538,33 @@ def agents_v2_config() -> dict:
 
 @app.post("/api/providers/test")
 def providers_test(body: _ProviderTestBody) -> dict:
-    """Test-connection for the home page. Probes ``{base_url}/v1/models``
-    and returns ``{ok, models[]}`` (or ``{ok:false, error}``)."""
+    """Test-connection for the home page. Probes ``{base_url}/models`` and
+    returns ``{ok, models[]}`` (or ``{ok:false, error}``).
+
+    Blank ``base_url`` / ``api_key`` fall back to the saved config for
+    ``role`` (resolved via env + stored row), so Test works right after
+    Save — the UI never echoes the stored token back into the field, so
+    without this fallback a post-Save Test would send no token and 401.
+    """
     from aiforge_core.llm.providers.openai_compatible import probe
-    # Diagnostic: confirms the request reached THIS build and what the UI
-    # checkbox sent. insecure_tls=False here ⇒ the box wasn't ticked.
+    base_url = (body.base_url or "").strip()
+    api_key = (body.api_key or "").strip() or None
+    insecure = bool(body.insecure_tls)
+    if body.role and body.role in _acfg.archetypes():
+        try:
+            rl = _acfg.resolve_litellm(body.role)
+        except Exception:
+            rl = {}
+        if not base_url:
+            base_url = rl.get("api_base") or ""
+        if not api_key:
+            k = rl.get("api_key")
+            api_key = None if (not k or k == "not-needed") else k
+        insecure = insecure or bool(rl.get("insecure_tls"))
     logging.getLogger("aiforge.api").info(
-        "POST /api/providers/test base_url=%s insecure_tls=%s",
-        body.base_url, body.insecure_tls)
-    return probe(body.base_url, body.api_key, insecure=body.insecure_tls)
+        "POST /api/providers/test role=%s base_url=%s insecure_tls=%s token=%s",
+        body.role, base_url, insecure, "yes" if api_key else "no")
+    return probe(base_url, api_key, insecure=insecure)
 
 
 @app.get("/api/agents/v2/providers")

@@ -230,6 +230,7 @@ export default function Home() {
         row.base_url.trim(),
         row.api_key.trim() || undefined,
         row.insecure_tls,
+        role,  // server fills the blank token from this role's saved config
       );
       patch(role, { testBusy: false, testResult: res });
       if (res.ok) {
