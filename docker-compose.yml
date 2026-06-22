@@ -112,6 +112,11 @@ services:
       AIFORGE_EMBED_URL: http://127.0.0.1:8764
       AIFORGE_RERANK_URL: http://127.0.0.1:8765
       AIFORGE_LM_BASE_URL: ${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}
+      # TLS for self-hosted https model endpoints. Set AIFORGE_LLM_SSL_VERIFY=false on
+      # the host for a self-signed/internal cert you trust, or point AIFORGE_LLM_CA_BUNDLE
+      # at a PEM to keep verification ON. Default secure (verify).
+      AIFORGE_LLM_SSL_VERIFY: ${AIFORGE_LLM_SSL_VERIFY:-true}
+      AIFORGE_LLM_CA_BUNDLE: ${AIFORGE_LLM_CA_BUNDLE:-}
       AIFORGE_CONFIG_DIR: /data/aiforge
     volumes:
       - app_state:/data/aiforge
