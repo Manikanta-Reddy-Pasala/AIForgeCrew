@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from .types import Endpoint
 from . import providers as _providers
+from ._ssl import context_for as _ssl_context_for
 
 
 _DEFAULT_TTL_S = 30.0
@@ -72,8 +73,9 @@ def _probe(ep: Endpoint) -> HealthState:
         url, method="GET",
         headers={"Authorization": f"Bearer {ep.api_key or 'na'}"},
     )
+    ctx = _ssl_context_for(ep.base_url)
     try:
-        with urllib.request.urlopen(req, timeout=_timeout()) as resp:
+        with urllib.request.urlopen(req, timeout=_timeout(), context=ctx) as resp:
             # Any HTTP status reaching us means the server is alive.
             return HealthState(up=True, checked_at=time.time(),
                                reason=f"http_{resp.status}")

@@ -85,9 +85,11 @@ def probe(base_url: str, api_key: str | None = None,
     headers = {"Accept": "application/json"}
     if api_key and api_key.strip() and api_key.strip() != _NO_TOKEN:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
+    from .._ssl import context_for as _ssl_context_for
+    ctx = _ssl_context_for(url)
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             payload = json.loads(r.read())
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc), "models": []}

@@ -72,12 +72,23 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
         return ClaudeSubscriptionLlm(model=model_id)
     from google.adk.models.lite_llm import LiteLlm
     kwargs: dict[str, Any] = {"model": cfg["model_id"]}
-    if cfg.get("api_base"):
-        kwargs["api_base"] = cfg["api_base"]
+    api_base = cfg.get("api_base") or ""
+    if api_base:
+        kwargs["api_base"] = api_base
     if cfg.get("api_key"):
         kwargs["api_key"] = cfg["api_key"]
     if cfg.get("custom_llm_provider"):
         kwargs["custom_llm_provider"] = cfg["custom_llm_provider"]
+    # Self-hosted HTTPS endpoint with a self-signed / internal cert: mirror
+    # the urllib client's AIFORGE_LLM_SSL_VERIFY toggle for the LiteLLM
+    # (ADK / Team-flow) path. LiteLLM passes ssl_verify through to its
+    # httpx client; only relevant for https, only when explicitly disabled.
+    # A custom CA bundle (AIFORGE_LLM_CA_BUNDLE / SSL_CERT_FILE /
+    # REQUESTS_CA_BUNDLE) is honoured by httpx natively and keeps verify ON.
+    if str(api_base).lower().startswith("https://"):
+        from aiforge_core.llm import _ssl as _llm_ssl
+        if not _llm_ssl._ca_bundle() and not _llm_ssl._verify_enabled():
+            kwargs["ssl_verify"] = False
     return LiteLlm(**kwargs)
 
 

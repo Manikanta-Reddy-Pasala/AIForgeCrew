@@ -33,6 +33,7 @@ from .router import resolve, fallback, escalate
 from .types import Endpoint
 from . import providers as _providers
 from . import rate_limiter as _rl
+from ._ssl import context_for as _ssl_context_for
 
 
 _log = logging.getLogger("aiforge.llm.client")
@@ -110,7 +111,10 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+    # Per-endpoint TLS context — honours AIFORGE_LLM_SSL_VERIFY / CA bundle
+    # for self-hosted HTTPS endpoints; None (default verification) for http.
+    ctx = _ssl_context_for(ep.base_url)
+    with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as resp:
         return json.loads(resp.read())
 
 
