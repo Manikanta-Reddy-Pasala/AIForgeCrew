@@ -1826,6 +1826,30 @@ def _served_model_ids(provider: str) -> set:
         return set()
 
 
+def _served_model_ids_for_role(role: str) -> set:
+    """Served model IDs for a specific role's endpoint.
+
+    openai_compatible has no static catalog — discover by probing the
+    role's configured base_url (with its api_key + TLS settings) /models,
+    exactly like the home-page Test. Falls back to provider-level
+    discovery for local / ollama_cloud.
+    """
+    try:
+        rl = _acfg.resolve_litellm(role)
+    except Exception:
+        rl = {}
+    provider = (_acfg.get(role) or {}).get("provider") or "local"
+    if provider == "openai_compatible":
+        try:
+            from aiforge_core.llm.providers.openai_compatible import probe
+            res = probe(rl.get("api_base") or "", rl.get("api_key"),
+                        insecure=bool(rl.get("insecure_tls")))
+            return set(res.get("models") or [])
+        except Exception:
+            return set()
+    return _served_model_ids(provider)
+
+
 @app.get("/api/chat/models")
 def chat_models() -> dict:
     """Models for the dedicated 'chat' slot. Lists only the provider's
@@ -1833,7 +1857,7 @@ def chat_models() -> dict:
     is still active so the UI can warn / re-pick."""
     row = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     provider = row.get("provider") or "local"
-    served = _served_model_ids(provider)
+    served = _served_model_ids_for_role("chat")
     current = row.get("model")
     return {
         "provider": provider,
@@ -1857,11 +1881,15 @@ def chat_model_set(body: _ChatModelBody) -> dict:
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     provider = body.provider or cur.get("provider") or "local"
     try:
+        # Preserve the chat endpoint's base_url / token / TLS opt-out — only
+        # the model id is changing here. api_key=None is preserved by
+        # set_role; insecure_tls must be passed through explicitly.
         cfg = _acfg.set_role("chat", provider, body.model,
-                             base_url=cur.get("base_url"))
+                             base_url=cur.get("base_url"),
+                             insecure_tls=bool(cur.get("insecure_tls")))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    served = _served_model_ids(provider)
+    served = _served_model_ids_for_role("chat")
     return {"provider": cfg.get("provider"), "model": cfg.get("model"),
             "active": (cfg.get("model") in served) if served else True}
 

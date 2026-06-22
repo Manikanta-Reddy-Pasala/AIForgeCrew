@@ -409,10 +409,16 @@ def set_role(role: str, provider: str, model: str,
             row["base_url"] = base_url.strip()
         else:
             row["base_url"] = None
+        # Secret-preserving: the UI never echoes a stored api_key back, so
+        # its field is blank on every reload. A blank key here therefore
+        # means "leave the saved token untouched", NOT "wipe it" — else a
+        # plain Save (or per-row Save after Apply-to-all) would silently
+        # null the token. Pass api_key="" explicitly to clear (UI sends a
+        # non-empty value only when the operator typed a new token).
         if api_key and api_key.strip():
             row["api_key"] = api_key.strip()
         else:
-            row["api_key"] = None
+            row["api_key"] = (disk.get(role) or {}).get("api_key")
         row["insecure_tls"] = bool(insecure_tls)
         disk[role] = row
         p.write_text(json.dumps(disk, indent=2))

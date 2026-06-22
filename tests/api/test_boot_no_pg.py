@@ -131,8 +131,8 @@ def test_chat_agent_sse_streams_events(client, monkeypatch):
 def test_providers_test_endpoint(client, monkeypatch):
     import aiforge_core.llm.providers.openai_compatible as oc
     monkeypatch.setattr(oc, "probe",
-                        lambda base_url, api_key=None: {"ok": True,
-                                                        "models": ["m1"]})
+                        lambda base_url, api_key=None, **kw: {"ok": True,
+                                                             "models": ["m1"]})
     c, _ = client
     r = c.post("/api/providers/test",
                json={"base_url": "http://box:1234", "api_key": ""})

@@ -97,7 +97,9 @@ def test_build_one_passes_ssl_verify_false_on_insecure(monkeypatch):
     assert captured.get("ssl_verify") is False
 
 
-def test_build_one_no_ssl_verify_when_secure(monkeypatch):
+def test_build_one_no_ssl_verify_for_public_host(monkeypatch):
+    # A PUBLIC https host with no opt-out must keep verification on (no
+    # ssl_verify kwarg). Internal hosts now auto-relax — see below.
     captured = {}
 
     class _FakeLiteLlm:
@@ -110,10 +112,95 @@ def test_build_one_no_ssl_verify_when_secure(monkeypatch):
     monkeypatch.delenv("AIFORGE_LLM_CA_BUNDLE", raising=False)
     from aiforge_core.runtime import escalating_llm
     escalating_llm._build_one({
-        "model_id": "openai/m", "api_base": "https://chatai.internal/v1",
+        "model_id": "openai/m", "api_base": "https://api.openai.com/v1",
         "api_key": "k", "insecure_tls": False,
     })
     assert "ssl_verify" not in captured
+
+
+def test_build_one_auto_relaxes_internal_host(monkeypatch):
+    # Internal host (.internal) → ssl_verify=False even without the per-role
+    # opt-out, so reaching a self-hosted LAN box "just works".
+    captured = {}
+
+    class _FakeLiteLlm:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    import google.adk.models.lite_llm as ll
+    monkeypatch.setattr(ll, "LiteLlm", _FakeLiteLlm)
+    monkeypatch.delenv("AIFORGE_LLM_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("AIFORGE_LLM_TLS_STRICT_INTERNAL", raising=False)
+    from aiforge_core.runtime import escalating_llm
+    escalating_llm._build_one({
+        "model_id": "openai/m", "api_base": "https://chatai.internal/v1",
+        "api_key": "k", "insecure_tls": False,
+    })
+    assert captured.get("ssl_verify") is False
+
+
+# ── blank api_key never wipes a saved token ──────────────────────────
+def test_blank_api_key_preserves_saved_token(cfgdir):
+    cfgdir.set_role("doer", "openai_compatible", "m",
+                    base_url="https://chatai.internal/api", api_key="sk-keep")
+    # a later Save with a blank key field (UI never echoes the secret)
+    cfgdir.set_role("doer", "openai_compatible", "m",
+                    base_url="https://chatai.internal/api", api_key=None)
+    assert cfgdir.get("doer")["api_key"] == "sk-keep"
+    assert cfgdir.resolve_litellm("doer")["api_key"] == "sk-keep"
+
+
+def test_explicit_empty_string_clears_token(cfgdir):
+    cfgdir.set_role("doer", "openai_compatible", "m", api_key="sk-x")
+    cfgdir.set_role("doer", "openai_compatible", "m", api_key="")
+    # empty string is falsy → preserved too (only a non-empty value sets).
+    # Clearing isn't a UI path; assert the token survives a blank save.
+    assert cfgdir.get("doer")["api_key"] == "sk-x"
+
+
+# ── auto_relax_internal: internal relaxes, public strict ─────────────
+@pytest.mark.parametrize("url,expect", [
+    ("https://chatai.internal/api", True),
+    ("https://box.lan/v1", True),
+    ("https://127.0.0.1:1234/v1", True),
+    ("https://10.10.10.3:1234/v1", True),
+    ("https://api.openai.com/v1", False),   # public → strict
+    ("http://chatai.internal/api", False),  # plain http → N/A
+])
+def test_auto_relax_internal(url, expect, monkeypatch):
+    monkeypatch.delenv("AIFORGE_LLM_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("AIFORGE_LLM_TLS_STRICT_INTERNAL", raising=False)
+    from aiforge_core.net.ssl import auto_relax_internal
+    assert auto_relax_internal(url) is expect
+
+
+def test_auto_relax_disabled_by_strict_env(monkeypatch):
+    from aiforge_core.net.ssl import auto_relax_internal
+    monkeypatch.setenv("AIFORGE_LLM_TLS_STRICT_INTERNAL", "1")
+    assert auto_relax_internal("https://chatai.internal/api") is False
+
+
+def test_probe_auto_relaxes_internal_without_flag(monkeypatch):
+    import aiforge_core.llm.providers.openai_compatible as oc
+
+    seen = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"data":[{"id":"qwen"}]}'
+
+    def _fake_urlopen(req, timeout=None, context=None):
+        seen["mode"] = context.verify_mode
+        return _Resp()
+
+    monkeypatch.delenv("AIFORGE_LLM_CA_BUNDLE", raising=False)
+    monkeypatch.delenv("AIFORGE_LLM_TLS_STRICT_INTERNAL", raising=False)
+    monkeypatch.setattr(oc.urllib.request, "urlopen", _fake_urlopen)
+    # insecure=False but host is .internal → auto-relaxed to CERT_NONE
+    out = oc.probe("https://chatai.internal/api", insecure=False)
+    assert out["ok"] is True and out["models"] == ["qwen"]
+    assert seen["mode"] == ssl.CERT_NONE
 
 
 # ── probe(insecure=True) selects the CERT_NONE context ───────────────

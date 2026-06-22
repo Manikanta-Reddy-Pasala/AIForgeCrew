@@ -140,6 +140,33 @@ def _is_trusted_internal_host(host: str | None) -> bool:
     return host in _configured_service_hosts()
 
 
+def auto_relax_internal(url: str | None) -> bool:
+    """Should an HTTPS *model endpoint* skip TLS verification by default?
+
+    True only for a trusted-internal host (loopback / private-IP /
+    ``.local``/``.lan``/``.internal`` style / bare-label / a configured
+    service host) talking HTTPS, when no CA bundle is set and the
+    operator hasn't forced strict mode. Rationale: these are
+    operator-controlled LAN boxes (e.g. ``https://chatai.internal``)
+    where a self-signed cert is the norm, so requiring a per-endpoint
+    opt-out just to reach your own model server is a footgun. PUBLIC
+    hosts are never auto-relaxed — they always verify.
+
+    Bounded to the model-endpoint call sites (probe + the LiteLLM model
+    build); the shared ``context_for`` used by embed/rerank/mcp/etc. is
+    unchanged. Opt out with ``AIFORGE_LLM_TLS_STRICT_INTERNAL=1`` (or set
+    a CA bundle, which keeps verification on for every host).
+    """
+    if not url or not str(url).lower().startswith("https://"):
+        return False
+    if _ca_bundle():
+        return False
+    raw = os.environ.get("AIFORGE_LLM_TLS_STRICT_INTERNAL", "")
+    if raw.strip().lower() not in _FALSEY:
+        return False  # operator forced strict for internal hosts
+    return _is_trusted_internal_host(_host_of(url))
+
+
 def insecure_context() -> ssl.SSLContext:
     """An explicitly non-verifying TLS context (CERT_NONE).
 

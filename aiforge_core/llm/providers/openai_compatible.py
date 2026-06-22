@@ -108,19 +108,25 @@ def probe(base_url: str, api_key: str | None = None,
     has_token = bool(api_key and api_key.strip() and api_key.strip() != _NO_TOKEN)
     if has_token:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
+    from .._ssl import auto_relax_internal as _ssl_auto_relax
     from .._ssl import context_for as _ssl_context_for
     from .._ssl import insecure_context as _ssl_insecure
+    # Skip TLS verify when explicitly asked OR for a trusted-internal host
+    # (self-hosted LAN box, self-signed cert is normal there). Public hosts
+    # always verify. See net.ssl.auto_relax_internal.
+    auto = (not insecure) and _ssl_auto_relax(url)
+    skip_tls = is_https and (insecure or auto)
     # Diagnostic: shows the EXACT url hit, whether TLS verification was
-    # skipped, and token presence (never the token itself). Grep the API
-    # logs for "probe ->" to confirm the running build honours insecure.
-    tls_mode = ("skip-verify(CERT_NONE)" if (insecure and is_https)
-                else "verify" if is_https else "plain-http")
+    # skipped (and why), and token presence (never the token itself). Grep
+    # the API logs for "probe ->" to confirm the running build's behaviour.
+    tls_mode = (("skip-verify(auto-internal)" if auto else "skip-verify(CERT_NONE)")
+                if skip_tls else "verify" if is_https else "plain-http")
     log.info("probe -> url=%s insecure_flag=%s tls=%s token=%s",
              url, insecure, tls_mode, "yes" if has_token else "no")
     try:
         # Inside the try so a bad CA bundle path (FileNotFoundError) is
         # reported as a clean {ok: False, error} instead of raising.
-        if insecure and is_https:
+        if skip_tls:
             ctx = _ssl_insecure()
         else:
             ctx = _ssl_context_for(url)

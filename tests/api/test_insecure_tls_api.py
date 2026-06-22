@@ -65,3 +65,30 @@ def test_providers_test_forwards_insecure(client, monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json()["ok"] is True
     assert captured["insecure"] is True
+
+
+def test_chat_models_discovers_openai_compatible(client, monkeypatch):
+    # Point the chat slot at an openai_compatible endpoint and confirm
+    # /api/chat/models discovers models by probing it (not the empty
+    # static catalog), forwarding the TLS opt-out.
+    import aiforge_core.api.api as api
+    seen = {}
+
+    def _fake_probe(base_url, api_key=None, insecure=False):
+        seen["base_url"] = base_url
+        seen["insecure"] = insecure
+        return {"ok": True, "models": ["qwen3.6-35b-A3b", "chat-llm"]}
+
+    import aiforge_core.llm.providers.openai_compatible as oc
+    monkeypatch.setattr(oc, "probe", _fake_probe)
+
+    api._acfg.set_role("chat", "openai_compatible", "qwen3.6-35b-A3b",
+                       base_url="https://chatai.internal/api",
+                       api_key="sk-tok", insecure_tls=True)
+
+    r = client.get("/api/chat/models")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    ids = {m["id"] for m in body["models"]}
+    assert ids == {"qwen3.6-35b-A3b", "chat-llm"}
+    assert seen["insecure"] is True

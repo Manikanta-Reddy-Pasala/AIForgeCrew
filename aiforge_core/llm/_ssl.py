@@ -12,8 +12,12 @@ from __future__ import annotations
 from aiforge_core.net.ssl import (
     _ca_bundle,
     _verify_enabled,
+    auto_relax_internal,
     context_for,
     insecure_context,
 )
 
-__all__ = ["context_for", "insecure_context", "_ca_bundle", "_verify_enabled"]
+__all__ = [
+    "context_for", "insecure_context", "auto_relax_internal",
+    "_ca_bundle", "_verify_enabled",
+]

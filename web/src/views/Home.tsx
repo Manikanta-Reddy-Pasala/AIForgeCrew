@@ -331,8 +331,19 @@ export default function Home() {
         fail++;
       }
     }
+    // Also point the dedicated Chat slot at the same endpoint, so the chat
+    // model picker discovers models from it (chat isn't in the table).
+    try {
+      await api.setAgentV2Config('chat' as AgentRole, {
+        provider: bulk.provider,
+        model: bulk.model,
+        base_url: bulk.base_url.trim() || null,
+        api_key: bulk.api_key.trim() || null,
+        insecure_tls: bulk.insecure_tls,
+      });
+    } catch { /* chat slot optional — don't fail the whole apply */ }
     setBulk(b => ({ ...b, busy: false, api_key: '' }));
-    if (ok && !fail) toast.success(`Applied to all ${ok} steps`);
+    if (ok && !fail) toast.success(`Applied to all ${ok} steps + chat`);
     else if (ok && fail) toast.warning(`Applied to ${ok}, ${fail} failed`);
     else toast.error('Apply failed for all steps');
   }

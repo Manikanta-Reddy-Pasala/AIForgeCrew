@@ -87,10 +87,16 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     # REQUESTS_CA_BUNDLE) is honoured by httpx natively and keeps verify ON.
     if str(api_base).lower().startswith("https://"):
         from aiforge_core.llm import _ssl as _llm_ssl
-        # Per-role opt-out (UI checkbox / stored insecure_tls) OR the global
-        # AIFORGE_LLM_SSL_VERIFY toggle. A CA bundle keeps verify ON.
+        # Skip TLS verify for the model endpoint when: the per-role opt-out
+        # is set (UI checkbox / stored insecure_tls), the global
+        # AIFORGE_LLM_SSL_VERIFY toggle is off, OR the host is trusted-
+        # internal (self-hosted LAN box). A CA bundle keeps verify ON, and
+        # public hosts always verify. Mirrors openai_compatible.probe so
+        # Test and real calls agree.
         if not _llm_ssl._ca_bundle() and (
-            cfg.get("insecure_tls") or not _llm_ssl._verify_enabled()
+            cfg.get("insecure_tls")
+            or not _llm_ssl._verify_enabled()
+            or _llm_ssl.auto_relax_internal(api_base)
         ):
             kwargs["ssl_verify"] = False
     return LiteLlm(**kwargs)
