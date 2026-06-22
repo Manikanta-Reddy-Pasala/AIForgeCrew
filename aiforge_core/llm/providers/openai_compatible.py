@@ -26,8 +26,20 @@ _NO_TOKEN = "not-needed"
 
 
 def _ensure_v1(url: str) -> str:
+    """Normalise an OpenAI-compatible base URL.
+
+    Append ``/v1`` only when the URL carries no real path — a bare host
+    like ``http://box:1234`` becomes ``…/1234/v1``. When the operator
+    already supplied a path (``…/v1`` for vLLM/LM Studio, or ``…/api``
+    for Open WebUI whose OpenAI surface lives under ``/api``), respect it
+    verbatim instead of force-appending ``/v1`` and 404-ing.
+    """
+    from urllib.parse import urlsplit
     url = url.rstrip("/")
-    return url if url.endswith("/v1") else url + "/v1"
+    path = urlsplit(url if "://" in url else "//" + url, scheme="http").path
+    if path and path not in ("", "/"):
+        return url  # operator-supplied path (/v1, /api, …) wins
+    return url + "/v1"
 
 
 def _config_row(role: str) -> dict:
@@ -76,9 +88,15 @@ class OpenAICompatibleProvider:
 
 
 def probe(base_url: str, api_key: str | None = None,
-          timeout: float = 6.0) -> dict:
+          timeout: float = 6.0, insecure: bool = False) -> dict:
     """Test-connection helper for the home page. GETs ``{base}/models``
-    and returns ``{ok, models: [ids], error?}``. Never raises."""
+    and returns ``{ok, models: [ids], error?}``. Never raises.
+
+    ``insecure=True`` skips TLS verification for THIS probe only — the
+    operator explicitly ticked "skip TLS verify" for a self-signed /
+    internal HTTPS endpoint they're deliberately testing. It never
+    relaxes any other host.
+    """
     if not base_url or not base_url.strip():
         return {"ok": False, "error": "base_url required", "models": []}
     url = _ensure_v1(base_url.strip()) + "/models"
@@ -86,10 +104,14 @@ def probe(base_url: str, api_key: str | None = None,
     if api_key and api_key.strip() and api_key.strip() != _NO_TOKEN:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
     from .._ssl import context_for as _ssl_context_for
+    from .._ssl import insecure_context as _ssl_insecure
     try:
         # Inside the try so a bad CA bundle path (FileNotFoundError) is
         # reported as a clean {ok: False, error} instead of raising.
-        ctx = _ssl_context_for(url)
+        if insecure and url.lower().startswith("https://"):
+            ctx = _ssl_insecure()
+        else:
+            ctx = _ssl_context_for(url)
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
             payload = json.loads(r.read())

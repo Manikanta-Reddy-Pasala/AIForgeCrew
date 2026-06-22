@@ -1,7 +1,7 @@
 import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  BrowserRouter, Routes, Route, NavLink, useLocation, matchPath,
+  BrowserRouter, Routes, Route, NavLink, Navigate, useLocation, matchPath,
 } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
@@ -21,7 +21,6 @@ const Memory       = lazy(() => import('./views/Memory'));
 const Chat         = lazy(() => import('./views/Chat'));
 const Tools        = lazy(() => import('./views/Tools'));
 const Kanban       = lazy(() => import('./views/Kanban'));
-const Settings     = lazy(() => import('./views/Settings'));
 const Trace        = lazy(() => import('./views/Trace'));
 const LlmTrace     = lazy(() => import('./views/LlmTrace'));
 const WorkflowGraph = lazy(() => import('./views/WorkflowGraph'));
@@ -57,7 +56,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Operate',
     items: [
-      { to: '/',          label: 'Home',       icon: 'Tool',      end: true },
+      { to: '/',          label: 'Home / Setup', icon: 'Tool',    end: true },
       { to: '/dashboard', label: 'Dashboard',  icon: 'Dashboard' },
       { to: '/board',     label: 'Board',      icon: 'Board' },
       { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },
@@ -78,12 +77,6 @@ const NAV: { group: string; items: NavItem[] }[] = [
       { to: '/workflow', label: 'Workflow',   icon: 'Tool' },
       { to: '/perf',     label: 'Perf',       icon: 'Tool' },
       { to: '/logs',     label: 'Live logs',  icon: 'Logs' },
-    ],
-  },
-  {
-    group: 'Configure',
-    items: [
-      { to: '/settings', label: 'Settings', icon: 'Tool' },
     ],
   },
 ];
@@ -200,7 +193,8 @@ function Shell() {
             <Route path="/logs" element={<Logs />} />
             <Route path="/logs/:role" element={<Logs />} />
             <Route path="/memory" element={<Memory />} />
-            <Route path="/settings" element={<Settings />} />
+            {/* Legacy Settings merged into Home/Setup; redirect old links. */}
+            <Route path="/settings" element={<Navigate to="/" replace />} />
             <Route path="/trace/:id" element={<Trace />} />
             <Route path="/llm-trace/:id" element={<LlmTrace />} />
             <Route path="/workflow" element={<WorkflowGraph />} />

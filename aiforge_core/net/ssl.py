@@ -140,6 +140,22 @@ def _is_trusted_internal_host(host: str | None) -> bool:
     return host in _configured_service_hosts()
 
 
+def insecure_context() -> ssl.SSLContext:
+    """An explicitly non-verifying TLS context (CERT_NONE).
+
+    For a *deliberate, per-endpoint* opt-out: the operator pasted a
+    self-hosted HTTPS base-URL and ticked "skip TLS verify" in the UI
+    (or stored ``insecure_tls`` on that role). Unlike the global
+    ``AIFORGE_LLM_SSL_VERIFY`` toggle this is scoped to the single
+    endpoint the caller is talking to, so it never strips verification
+    from any other host. Callers gate it on https + the explicit flag.
+    """
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def context_for(url: str | None) -> ssl.SSLContext | None:
     """Return the SSL context to pass to ``urlopen`` for ``url``.
 

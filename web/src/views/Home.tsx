@@ -44,6 +44,7 @@ interface RowState {
   base_url: string;
   api_key: string;
   api_key_set: boolean;
+  insecure_tls: boolean;
   busy: boolean;
   justSavedAt: number | null;
   error: string | null;
@@ -56,6 +57,7 @@ function emptyRow(
   m: string,
   b: string | null,
   api_key_set = false,
+  insecure_tls = false,
 ): RowState {
   return {
     provider: p,
@@ -63,6 +65,7 @@ function emptyRow(
     base_url: b ?? '',
     api_key: '',
     api_key_set,
+    insecure_tls,
     busy: false,
     justSavedAt: null,
     error: null,
@@ -75,7 +78,8 @@ function isDirty(row: RowState, snap: AgentRoleConfig): boolean {
   return (
     row.provider !== snap.provider ||
     row.model !== snap.model ||
-    (row.base_url || null) !== (snap.base_url || null)
+    (row.base_url || null) !== (snap.base_url || null) ||
+    !!row.insecure_tls !== !!snap.insecure_tls
   );
 }
 
@@ -91,6 +95,7 @@ interface BulkState {
   model: string;
   base_url: string;
   api_key: string;
+  insecure_tls: boolean;
   busy: boolean;
 }
 
@@ -113,6 +118,7 @@ export default function Home() {
     model: '',
     base_url: '',
     api_key: '',
+    insecure_tls: false,
     busy: false,
   });
 
@@ -131,7 +137,9 @@ export default function Home() {
         for (const role of ROLE_ORDER) {
           const c = cfg[role];
           if (!c) continue;
-          next[role] = emptyRow(c.provider, c.model, c.base_url, !!c.api_key_set);
+          next[role] = emptyRow(
+            c.provider, c.model, c.base_url, !!c.api_key_set, !!c.insecure_tls,
+          );
         }
         return next;
       });
@@ -181,6 +189,7 @@ export default function Home() {
         model: row.model,
         base_url: row.base_url.trim() || null,
         api_key: row.api_key.trim() || null,
+        insecure_tls: row.insecure_tls,
       });
       setSnapshot(s => s ? ({
         ...s,
@@ -189,9 +198,10 @@ export default function Home() {
           model: updated.model,
           base_url: updated.base_url ?? null,
           api_key_set: updated.api_key_set,
+          insecure_tls: updated.insecure_tls,
         },
       }) : s);
-      patch(role, { busy: false, justSavedAt: Date.now(), api_key: '', api_key_set: !!updated.api_key_set });
+      patch(role, { busy: false, justSavedAt: Date.now(), api_key: '', api_key_set: !!updated.api_key_set, insecure_tls: !!updated.insecure_tls });
       const tid = window.setTimeout(() => {
         setRows(r => ({ ...r, [role]: { ...r[role], justSavedAt: null } }));
       }, 2000);
@@ -219,6 +229,7 @@ export default function Home() {
       const res = await api.providersTest(
         row.base_url.trim(),
         row.api_key.trim() || undefined,
+        row.insecure_tls,
       );
       patch(role, { testBusy: false, testResult: res });
       if (res.ok) {
@@ -251,6 +262,34 @@ export default function Home() {
     patchBulk({ provider: providerId, model: cat?.default_model || '' });
   }
 
+  async function testBulk() {
+    if (!bulk.base_url.trim()) {
+      toast.warning('Enter a base URL before testing');
+      return;
+    }
+    setBulk(b => ({ ...b, busy: true }));
+    try {
+      const res = await api.providersTest(
+        bulk.base_url.trim(),
+        bulk.api_key.trim() || undefined,
+        bulk.insecure_tls,
+      );
+      if (res.ok) {
+        const n = res.models?.length ?? 0;
+        toast.success(n > 0 ? `Reachable — ${n} model${n === 1 ? '' : 's'}` : 'Reachable');
+        if (res.models && res.models.length > 0 && !bulk.model) {
+          patchBulk({ model: res.models[0] });
+        }
+      } else {
+        toast.error(`Connection failed: ${res.error || 'unknown error'}`);
+      }
+    } catch (e: any) {
+      toast.error(`Test failed: ${e?.message || 'unknown'}`);
+    } finally {
+      setBulk(b => ({ ...b, busy: false }));
+    }
+  }
+
   async function applyToAll() {
     setBulk(b => ({ ...b, busy: true }));
     let ok = 0, fail = 0;
@@ -261,6 +300,7 @@ export default function Home() {
           model: bulk.model,
           base_url: bulk.base_url.trim() || null,
           api_key: bulk.api_key.trim() || null,
+          insecure_tls: bulk.insecure_tls,
         });
         setSnapshot(s => s ? ({
           ...s,
@@ -269,6 +309,7 @@ export default function Home() {
             model: updated.model,
             base_url: updated.base_url ?? null,
             api_key_set: updated.api_key_set,
+            insecure_tls: updated.insecure_tls,
           },
         }) : s);
         setRows(r => ({
@@ -280,6 +321,7 @@ export default function Home() {
             base_url: updated.base_url ?? '',
             api_key: '',
             api_key_set: !!updated.api_key_set,
+            insecure_tls: !!updated.insecure_tls,
             justSavedAt: Date.now(),
             error: null,
           },
@@ -293,6 +335,73 @@ export default function Home() {
     if (ok && !fail) toast.success(`Applied to all ${ok} steps`);
     else if (ok && fail) toast.warning(`Applied to ${ok}, ${fail} failed`);
     else toast.error('Apply failed for all steps');
+  }
+
+  // ── profile presets — bulk-assign one (provider, model) to all roles ─
+  const [profiles, setProfiles] = useState<
+    Array<{ name: string; provider: string; model: string }>
+  >([]);
+  const [profileBusy, setProfileBusy] = useState<string | null>(null);
+  useEffect(() => {
+    api.agentsV2Profiles()
+      .then(d => setProfiles(d.profiles || []))
+      .catch(() => { /* surface only on apply failure */ });
+  }, []);
+  async function applyProfile(name: string) {
+    if (profileBusy) return;
+    setProfileBusy(name);
+    try {
+      await api.applyAgentV2Profile(name);
+      toast.success(`Profile "${name}" applied to all archetypes`);
+      await load(true);
+    } catch (e: any) {
+      toast.error(`Profile apply failed: ${e?.message || 'unknown'}`);
+    } finally {
+      setProfileBusy(null);
+    }
+  }
+
+  // ── runtime-wide backend toggle (fallback chain for every agent) ─────
+  const [doerBackend, setDoerBackend] = useState<string>('local');
+  const [backendOptions, setBackendOptions] = useState<string[]>(['local']);
+  const [doerBackendBusy, setDoerBackendBusy] = useState(false);
+  useEffect(() => {
+    fetch('/api/runtime/llm_backend')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        setDoerBackend(d.backend || 'local');
+        if (Array.isArray(d.options) && d.options.length > 0) {
+          setBackendOptions(d.options);
+        }
+      })
+      .catch(() => { /* endpoint might not exist on this build */ });
+  }, []);
+  const BACKEND_LABEL: Record<string, string> = {
+    local:        'local (mlx-lm)',
+    ollama_cloud: 'ollama cloud',
+    claude_local: 'claude (subscription CLI)',
+    anthropic:    'anthropic (API)',
+    openai:       'openai (API)',
+    gemini:       'gemini (cloud Flash)',
+  };
+  async function changeDoerBackend(next: string) {
+    setDoerBackendBusy(true);
+    try {
+      const r = await fetch('/api/runtime/llm_backend', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend: next }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      setDoerBackend(d.backend);
+      toast.success(`Runtime backend → ${d.backend}`);
+    } catch (e: any) {
+      toast.error(`Switch failed: ${e.message}`);
+    } finally {
+      setDoerBackendBusy(false);
+    }
   }
 
   const allProviders: ProviderCatalog[] = providers || [];
@@ -389,7 +498,7 @@ export default function Home() {
 
           {PROVIDERS_WITH_API_KEY.has(bulk.provider) && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label className="small muted">API key</label>
+              <label className="small muted">API key / token</label>
               <input
                 type="password"
                 value={bulk.api_key}
@@ -401,6 +510,18 @@ export default function Home() {
             </div>
           )}
 
+          {PROVIDERS_WITH_BASE_URL.has(bulk.provider) && (
+            <button
+              className="ghost"
+              onClick={testBulk}
+              disabled={bulk.busy || !bulk.base_url.trim()}
+              title="Test connection to this endpoint"
+              style={{ alignSelf: 'flex-end', whiteSpace: 'nowrap' }}
+            >
+              {bulk.busy ? 'Testing…' : 'Test'}
+            </button>
+          )}
+
           <button
             onClick={applyToAll}
             disabled={bulk.busy || !bulk.model || loading}
@@ -408,6 +529,73 @@ export default function Home() {
           >
             {bulk.busy ? 'Applying…' : 'Apply to all steps'}
           </button>
+        </div>
+
+        {PROVIDERS_WITH_BASE_URL.has(bulk.provider) && (
+          <label
+            className="small muted"
+            style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 }}
+            title="For a self-signed / internal HTTPS box (e.g. https://chatai.internal). Scoped to this endpoint only."
+          >
+            <input
+              type="checkbox"
+              checked={bulk.insecure_tls}
+              onChange={e => patchBulk({ insecure_tls: e.target.checked })}
+              disabled={bulk.busy}
+            />
+            Skip TLS verification (self-signed / internal HTTPS cert)
+          </label>
+        )}
+      </div>
+
+      {/* ── Profile presets (bundled provider+model combos) ────── */}
+      {profiles.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 14 }}>Profile preset</h2>
+          <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
+            One-click assign a bundled provider + model to every archetype.
+            Individual rows below can still be overridden afterwards.
+          </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            {profiles.map(p => (
+              <button
+                key={p.name}
+                className="ghost"
+                onClick={() => applyProfile(p.name)}
+                disabled={!!profileBusy}
+                title={`${p.provider} → ${p.model}`}
+              >
+                {profileBusy === p.name ? `Applying ${p.name}…` : `Apply ${p.name}`}
+                <span className="small muted" style={{ marginLeft: 6 }}>
+                  ({p.provider})
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Runtime-wide backend (fallback chain for every agent) ── */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 14 }}>LLM backend (all agents)</h2>
+        <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
+          Default backend used by every agent when its archetype row below
+          has no explicit override. Options reflect what's actually
+          installed/reachable on this host.
+        </div>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <label className="small muted">Backend</label>
+          <select
+            value={doerBackend}
+            onChange={e => changeDoerBackend(e.target.value)}
+            disabled={doerBackendBusy}
+            style={{ minWidth: 240 }}
+          >
+            {backendOptions.map(opt => (
+              <option key={opt} value={opt}>{BACKEND_LABEL[opt] || opt}</option>
+            ))}
+          </select>
+          {doerBackendBusy && <span className="small muted">switching…</span>}
         </div>
       </div>
 
@@ -556,6 +744,22 @@ export default function Home() {
                         }
                         aria-label={`${role} api key`}
                       />
+                    )}
+                    {showBaseUrl && (
+                      <label
+                        className="small muted"
+                        style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                        title="Skip TLS verification for this endpoint (self-signed / internal HTTPS box). Scoped to this host only."
+                      >
+                        <input
+                          type="checkbox"
+                          checked={row.insecure_tls}
+                          onChange={e => patch(role, { insecure_tls: e.target.checked, testResult: null })}
+                          disabled={row.busy}
+                          aria-label={`${role} skip TLS verify`}
+                        />
+                        Skip TLS verify (self-signed)
+                      </label>
                     )}
                     {/* show test result inline */}
                     {row.testResult && (

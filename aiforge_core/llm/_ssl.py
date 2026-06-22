@@ -9,6 +9,11 @@ context_for``) keep working.
 """
 from __future__ import annotations
 
-from aiforge_core.net.ssl import context_for
+from aiforge_core.net.ssl import (
+    _ca_bundle,
+    _verify_enabled,
+    context_for,
+    insecure_context,
+)
 
-__all__ = ["context_for"]
+__all__ = ["context_for", "insecure_context", "_ca_bundle", "_verify_enabled"]

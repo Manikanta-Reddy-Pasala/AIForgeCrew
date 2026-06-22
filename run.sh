@@ -13,6 +13,11 @@
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
 #   --skip-web   don't (re)build the web UI
+#   --docker     run the full Postgres+Neo4j stack via docker compose
+#                instead of the local uvicorn. Stops any already-running
+#                AIForge containers first, then `up -d --build` so a code
+#                change rebuilds the image before (re)starting. Exits after.
+#   --no-build   with --docker: skip the image rebuild (just (re)start)
 #   --test       probe the configured model endpoint with the current SSL
 #                settings (OK/FAIL + error), then exit. Use to verify a
 #                self-hosted HTTPS endpoint reaches AND its TLS is accepted.
@@ -53,18 +58,57 @@ HOST=127.0.0.1
 DEV=0
 SKIP_WEB=0
 TEST=0
+DOCKER=0
+NO_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dev) DEV=1 ;;
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;
+    --docker) DOCKER=1 ;;
+    --no-build) NO_BUILD=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# ── Docker stack (--docker) ───────────────────────────────────────────
+# Full Postgres + Neo4j + sidecars + api + runner via docker compose.
+# Stop anything already running so a stale container can't shadow the new
+# build, then `up -d --build`: Docker's layer cache means the image is
+# rebuilt only when a source layer actually changed (the `COPY . .` layer
+# invalidates on any code change). The SSL/model env vars sourced above
+# flow into compose via its ${AIFORGE_LLM_SSL_VERIFY:-true} interpolation.
+if [[ $DOCKER -eq 1 ]]; then
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "==> 'docker' not found. Install Docker to use --docker." >&2; exit 1
+  fi
+  if docker compose version >/dev/null 2>&1; then
+    DC=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then
+    DC=(docker-compose)
+  else
+    echo "==> docker compose plugin not found." >&2; exit 1
+  fi
+  echo "==> stopping any running AIForge containers"
+  "${DC[@]}" down --remove-orphans || true
+  if [[ $NO_BUILD -eq 1 ]]; then
+    echo "==> starting (no rebuild)"
+    "${DC[@]}" up -d
+  else
+    echo "==> building image (changed layers only) + starting"
+    "${DC[@]}" up -d --build
+  fi
+  echo ""
+  echo "  AIForge (docker) → http://localhost:8799/ui/"
+  echo "  TLS verify: ${AIFORGE_LLM_SSL_VERIFY}   model: ${AIFORGE_LM_BASE_URL:-<unset>}"
+  echo ""
+  "${DC[@]}" ps
+  exit 0
+fi
 
 # ── Python env ────────────────────────────────────────────────────────
 if ! command -v uv >/dev/null 2>&1; then

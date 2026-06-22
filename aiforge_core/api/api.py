@@ -1484,11 +1484,16 @@ class _AgentConfigV2Body(BaseModel):
     api_key: str | None = Field(
         None, description="Optional API key (openai_compatible cloud-with-key); "
                           "blank = no token")
+    insecure_tls: bool = Field(
+        False, description="Skip TLS verification for this endpoint only "
+                           "(self-signed / internal HTTPS box)")
 
 
 class _ProviderTestBody(BaseModel):
     base_url: str = Field(..., description="OpenAI-compatible base URL to probe")
     api_key: str | None = Field(None, description="Optional bearer key")
+    insecure_tls: bool = Field(
+        False, description="Skip TLS verification for this probe only")
 
 
 @app.get("/api/agents/v2/config")
@@ -1505,6 +1510,7 @@ def agents_v2_config() -> dict:
             "base_url": row.get("base_url"),
             # Never echo the secret — just whether one is stored.
             "api_key_set": bool(row.get("api_key")),
+            "insecure_tls": bool(row.get("insecure_tls")),
         }
     return out
 
@@ -1514,7 +1520,7 @@ def providers_test(body: _ProviderTestBody) -> dict:
     """Test-connection for the home page. Probes ``{base_url}/v1/models``
     and returns ``{ok, models[]}`` (or ``{ok:false, error}``)."""
     from aiforge_core.llm.providers.openai_compatible import probe
-    return probe(body.base_url, body.api_key)
+    return probe(body.base_url, body.api_key, insecure=body.insecure_tls)
 
 
 @app.get("/api/agents/v2/providers")
@@ -1545,7 +1551,8 @@ def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
     try:
         cfg = _acfg.set_role(role, body.provider, body.model,
                              base_url=base_url or None,
-                             api_key=api_key or None)
+                             api_key=api_key or None,
+                             insecure_tls=body.insecure_tls)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {
@@ -1554,6 +1561,7 @@ def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
         "model": cfg.get("model"),
         "base_url": cfg.get("base_url"),
         "api_key_set": bool(cfg.get("api_key")),
+        "insecure_tls": bool(cfg.get("insecure_tls")),
     }
 
 

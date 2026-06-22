@@ -87,7 +87,11 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     # REQUESTS_CA_BUNDLE) is honoured by httpx natively and keeps verify ON.
     if str(api_base).lower().startswith("https://"):
         from aiforge_core.llm import _ssl as _llm_ssl
-        if not _llm_ssl._ca_bundle() and not _llm_ssl._verify_enabled():
+        # Per-role opt-out (UI checkbox / stored insecure_tls) OR the global
+        # AIFORGE_LLM_SSL_VERIFY toggle. A CA bundle keeps verify ON.
+        if not _llm_ssl._ca_bundle() and (
+            cfg.get("insecure_tls") or not _llm_ssl._verify_enabled()
+        ):
             kwargs["ssl_verify"] = False
     return LiteLlm(**kwargs)
 

@@ -338,6 +338,7 @@ def load_all() -> dict[str, dict[str, Any]]:
                             "model": row.get("model") or cfg[role]["model"],
                             "base_url": row.get("base_url"),
                             "api_key": row.get("api_key"),
+                            "insecure_tls": bool(row.get("insecure_tls")),
                         }
         except Exception:
             pass
@@ -370,14 +371,18 @@ def get(role: str) -> dict[str, Any]:
 
 def set_role(role: str, provider: str, model: str,
              base_url: str | None = None,
-             api_key: str | None = None) -> dict[str, Any]:
-    """Persist {provider, model, base_url?, api_key?} for a single role.
+             api_key: str | None = None,
+             insecure_tls: bool = False) -> dict[str, Any]:
+    """Persist {provider, model, base_url?, api_key?, insecure_tls?}.
 
     ``base_url`` is optional; when None, the provider's default is used at
     resolve time. ``api_key`` is optional too — used mainly by the
     ``openai_compatible`` provider for cloud-with-key endpoints; leave it
-    blank for OSS-no-token. Env vars still win on next read, which is
-    desired for a one-off override without losing the saved default.
+    blank for OSS-no-token. ``insecure_tls`` skips TLS verification for
+    this endpoint only (self-signed / internal HTTPS box) — a per-role
+    opt-out that avoids editing env files + restarting. Env vars still win
+    on next read, which is desired for a one-off override without losing
+    the saved default.
     """
     if role not in _ROLES:
         raise ValueError(f"unknown role: {role}")
@@ -408,6 +413,7 @@ def set_role(role: str, provider: str, model: str,
             row["api_key"] = api_key.strip()
         else:
             row["api_key"] = None
+        row["insecure_tls"] = bool(insecure_tls)
         disk[role] = row
         p.write_text(json.dumps(disk, indent=2))
     return get(role)
@@ -492,6 +498,10 @@ def resolve_litellm(role: str) -> dict[str, Any]:
         api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
     return {
         "model_id": model, "api_base": base_url, "api_key": api_key,
+        # Per-role TLS opt-out for a self-signed / internal HTTPS endpoint.
+        # Honoured by escalating_llm._build_one (passes ssl_verify=False to
+        # LiteLLM) alongside the global AIFORGE_LLM_SSL_VERIFY toggle.
+        "insecure_tls": bool(row.get("insecure_tls")),
     }
 
 

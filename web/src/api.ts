@@ -123,12 +123,13 @@ export const api = {
       { method: 'PUT' },
     ),
 
-  // Test an OpenAI-compatible endpoint reachability.
-  providersTest: (base_url: string, api_key?: string) =>
+  // Test an OpenAI-compatible endpoint reachability. `insecure_tls` skips
+  // TLS verification for this probe (self-signed / internal HTTPS box).
+  providersTest: (base_url: string, api_key?: string, insecure_tls?: boolean) =>
     j<{ ok: boolean; models?: string[]; error?: string }>('/providers/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url, api_key }),
+      body: JSON.stringify({ base_url, api_key, insecure_tls: !!insecure_tls }),
     }),
 
   // Workflow registry + route detection
@@ -202,6 +203,7 @@ export interface AgentRoleConfig {
   model: string;
   base_url: string | null;
   api_key_set?: boolean;
+  insecure_tls?: boolean;
 }
 
 export interface AgentRoleConfigInput {
@@ -209,6 +211,7 @@ export interface AgentRoleConfigInput {
   model: string;
   base_url?: string | null;
   api_key?: string | null;
+  insecure_tls?: boolean;
 }
 
 // ── workflow types ────────────────────────────────────────────────
