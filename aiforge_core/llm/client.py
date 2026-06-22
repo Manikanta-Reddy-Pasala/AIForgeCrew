@@ -29,12 +29,14 @@ import time
 import urllib.error
 import urllib.request
 
-from .router import resolve, fallback, escalate
-from .types import Endpoint
 from . import providers as _providers
 from . import rate_limiter as _rl
+from ._ssl import _ca_bundle as _ssl_ca_bundle
+from ._ssl import auto_relax_internal as _ssl_auto_relax
 from ._ssl import context_for as _ssl_context_for
-
+from ._ssl import insecure_context as _ssl_insecure
+from .router import escalate, fallback, resolve
+from .types import Endpoint
 
 _log = logging.getLogger("aiforge.llm.client")
 
@@ -111,9 +113,18 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
         },
         method="POST",
     )
-    # Per-endpoint TLS context — honours AIFORGE_LLM_SSL_VERIFY / CA bundle
-    # for self-hosted HTTPS endpoints; None (default verification) for http.
-    ctx = _ssl_context_for(ep.base_url)
+    # Per-endpoint TLS context. Skip verification when the role carries the
+    # explicit insecure_tls opt-out OR the host is trusted-internal (self-
+    # hosted LAN box, self-signed is normal). Public hosts verify; a CA
+    # bundle keeps verify ON. Otherwise honour AIFORGE_LLM_SSL_VERIFY / CA.
+    base = ep.base_url
+    insecure = bool((ep.extras or {}).get("insecure_tls"))
+    if str(base).lower().startswith("https://") and (
+        insecure or _ssl_auto_relax(base)
+    ) and not _ssl_ca_bundle():
+        ctx = _ssl_insecure()
+    else:
+        ctx = _ssl_context_for(base)
     with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as resp:
         return json.loads(resp.read())
 

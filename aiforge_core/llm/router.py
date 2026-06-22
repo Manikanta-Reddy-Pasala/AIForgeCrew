@@ -40,7 +40,11 @@ def _agent_config_for(role: str) -> dict | None:
     so the env var + global default still apply.
     """
     try:
-        from aiforge_core.runtime import agent_config as _acfg
+        # NB: module lives at aiforge_core.config.agent_config — the old
+        # aiforge_core.runtime.agent_config path never existed, so this
+        # silently ImportError'd and the chat/client path fell back to
+        # `local` for every role regardless of the UI's selection.
+        from aiforge_core.config import agent_config as _acfg
         full = _acfg.load_all()
     except Exception:
         return None

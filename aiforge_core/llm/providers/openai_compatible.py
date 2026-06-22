@@ -86,7 +86,10 @@ class OpenAICompatibleProvider:
         )
         return Endpoint(
             base_url=base_url, api_key=api_key, model=model,
-            provider=self.name, role=role, extras={},
+            provider=self.name, role=role,
+            # Carry the per-role TLS opt-out so the client._post path can
+            # skip verification for this endpoint (mirrors the LiteLLM path).
+            extras={"insecure_tls": bool(row.get("insecure_tls"))},
         )
 
 
