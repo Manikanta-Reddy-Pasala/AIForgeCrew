@@ -136,12 +136,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     # Build a context-rich prompt: project summary + prior conversation +
     # the current request, so the team pipeline isn't clueless on follow-ups.
     try:
-        from aiforge_core.runtime.chat_agent import _repo_context
+        from aiforge_core.runtime.chat_agent import _repo_context, _rules_context
+        rules_ctx = _rules_context(cwd)
         repo_ctx = _repo_context(cwd)
     except Exception:  # noqa: BLE001
-        repo_ctx = ""
+        rules_ctx = repo_ctx = ""
     convo = _history_preamble(history)
-    parts = [p for p in (repo_ctx, convo) if p]
+    parts = [p for p in (rules_ctx, repo_ctx, convo) if p]
     prompt = ("\n\n".join(parts) + f"\n\nCURRENT REQUEST:\n{prompt}"
               if parts else prompt)
 

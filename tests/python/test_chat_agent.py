@@ -209,3 +209,44 @@ def test_repo_context_starter_then_persisted(tmp_path, monkeypatch):
                             section_title="t", section_body="Added OrderController.")
     ctx = chat_agent._repo_context(str(tmp_path))
     assert "Added OrderController" in ctx
+
+
+def test_rule_book_persists_and_injects(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
+    monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
+    import importlib
+
+    from aiforge_core.memory import md_store
+    importlib.reload(md_store)
+    from aiforge_core.runtime import chat_agent
+    d = str(tmp_path)
+    assert chat_agent._t_remember_rule({"text": "always use yarn", "scope": "global"}, d)["ok"]
+    assert chat_agent._t_remember_rule({"text": "controllers in src/api", "scope": "repo"}, d)["ok"]
+    chat_agent._t_remember_rule({"text": "always use yarn", "scope": "global"}, d)  # dedup
+    ctx = chat_agent._rules_context(d)
+    assert "RULES" in ctx
+    assert ctx.count("always use yarn") == 1          # deduped
+    assert "controllers in src/api" in ctx            # repo rule present
+
+
+def test_rule_book_injected_into_system_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
+    monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
+    import importlib
+
+    from aiforge_core.memory import md_store
+    importlib.reload(md_store)
+    from aiforge_core.runtime import chat_agent
+    chat_agent._t_remember_rule({"text": "NEVER delete prod data", "scope": "global"}, str(tmp_path))
+    seen = {}
+
+    def fake(role, convo):
+        seen["sys"] = convo[0]["content"]
+        return "FINAL: ok"
+
+    list(chat_agent.run_chat_agent([{"role": "user", "content": "hi"}],
+                                   cwd=str(tmp_path), complete_fn=fake))
+    assert "NEVER delete prod data" in seen["sys"]
+    assert seen["sys"].index("RULES") < seen["sys"].index("You are AIForge")  # rules first

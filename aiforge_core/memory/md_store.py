@@ -182,6 +182,45 @@ def upsert_section(*, source: str, title: str, section_title: str,
     return d
 
 
+def append_bullet(*, source: str, title: str, bullet: str,
+                  kind: str = "rule", tags: list[str] | None = None,
+                  repo: str = "rules") -> dict:
+    """Append a deduped ``- bullet`` to the file keyed by ``source`` (one
+    clean list, e.g. a rule book). Used for user rules that must persist
+    and apply every session."""
+    tags = list(tags or [])
+    line = "- " + bullet.strip()
+    existing = _find_by_source(source)
+    if existing is not None:
+        raw = existing.read_text(encoding="utf-8", errors="replace").rstrip()
+        if line in raw:                      # already there — dedup
+            d = _parse(existing); d.pop("body", None); return d
+        existing.write_text(raw + "\n" + line + "\n", encoding="utf-8")
+        path = existing
+    else:
+        stem = _slug(title)
+        path = memory_dir() / f"{stem}.md"
+        i = 1
+        while path.exists():
+            path = memory_dir() / f"{stem}-{i}.md"
+            i += 1
+        fm = (
+            "---\n"
+            f"title: {title}\n"
+            f"kind: {kind}\n"
+            f"tags: {', '.join(tags)}\n"
+            f"source: {source}\n"
+            f"created: {_now_iso()}\n"
+            "---\n\n"
+        )
+        path.write_text(fm + line + "\n", encoding="utf-8")
+    d = _parse(path)
+    _ingest_unit(title=d["title"], body=d["body"], kind=kind,
+                 tags=d["tags"] or tags, source=source, repo=repo)
+    d.pop("body", None)
+    return d
+
+
 def ingest_dir() -> dict:
     """(Re)ingest every md file in the memory dir into the backend.
 

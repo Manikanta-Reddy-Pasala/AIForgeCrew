@@ -283,6 +283,48 @@ def _t_grep(args: dict, cwd: str) -> dict:
     return {"ok": True, "matches": out, "note": note, "truncated": False}
 
 
+def _t_remember_rule(args: dict, cwd: str) -> dict:
+    """Persist a user rule that must apply to EVERY future session.
+    scope: 'global' (all repos) or 'repo' (this repo only)."""
+    try:
+        from aiforge_core.memory import md_store
+        text = (args.get("text") or args.get("rule") or "").strip()
+        if not text:
+            return {"ok": False, "error": "missing 'text'"}
+        scope = (args.get("scope") or "global").lower()
+        repo = _repo_name(cwd)
+        if scope == "repo":
+            source, title = f"rules:{repo}", f"{repo} — rules"
+        else:
+            source, title = "rules:global", "AIForge rules (all sessions)"
+        md_store.append_bullet(source=source, title=title, bullet=text,
+                               kind="rule", tags=["rule", scope])
+        return {"ok": True, "scope": scope, "remembered": text}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def _rules_context(cwd: str) -> str:
+    """The user's persistent rule book (global + this-repo), injected into
+    EVERY session so the rules are always honoured."""
+    try:
+        from aiforge_core.memory import md_store
+        blocks = []
+        for src in ("rules:global", f"rules:{_repo_name(cwd)}"):
+            p = md_store._find_by_source(src)
+            if p is not None:
+                body = md_store._parse(p).get("body", "")
+                if body.strip():
+                    blocks.append(body.strip())
+        if not blocks:
+            return ""
+        return ("RULES — the user told you to ALWAYS follow these, every "
+                "session (HIGHEST priority, override defaults):\n"
+                + "\n".join(blocks)[:1800])
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _t_ensure_runtime(args: dict, cwd: str) -> dict:
     """Install + verify missing language runtimes / build tools so the
     agent can actually build & run the project."""
@@ -317,6 +359,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "run_command": _t_run_command,
     "ensure_runtime": _t_ensure_runtime,
     "project": _t_project,
+    "remember_rule": _t_remember_rule,
     "memory_lookup": _t_memory_lookup,
     "memory_write": _t_memory_write,
 }
@@ -329,8 +372,8 @@ You work by emitting ONE step at a time in this exact text format.
 To use a tool:
 THOUGHT: <your reasoning>
 ACTION: <one of: file_read, file_write, file_create, file_patch, list_dir,
-         find, grep, run_command, ensure_runtime, project, memory_lookup,
-         memory_write>
+         find, grep, run_command, ensure_runtime, project, remember_rule,
+         memory_lookup, memory_write>
 ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
@@ -344,6 +387,8 @@ Tool arguments:
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - project        {{"action": "build"}}    (detect+install+build/test/run:
                   maven, gradle, node/react/next/vite, python, go, rust)
+- remember_rule {{"text": "always use yarn", "scope": "repo"}}
+                 (persist a user rule for every session; scope global|repo)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false}}
                 (save a learning/decision to the knowledge graph for future recall)
@@ -358,6 +403,10 @@ the task is complete, then give FINAL. Do real work — read and edit files, run
 commands — rather than guessing.
 
 Operating principles — be fully autonomous, don't stop half-way:
+- RULE BOOK: when the user says "remember…", "always…", "never…", "for \
+all sessions", or states a standing rule about the folder/repo/workflow, \
+immediately call remember_rule (scope=repo for this repo, scope=global for \
+everywhere). Any RULES shown above are user rules — always obey them.
 - SCOPE before reading: when asked to check/review/understand code, first \
 narrow to the FEW files that actually matter — use `grep`/`find` (and \
 list_dir) to locate the relevant symbols/files, then read only those. Do \
@@ -565,8 +614,11 @@ def run_chat_agent(
     # directory structure of the working dir without re-searching it on
     # each follow-up question (the conversation history only carries prior
     # answers, not the structure it discovered last turn).
-    sys_msg = (_SYSTEM.format(cwd=cwd) + "\n\n" + _repo_context(cwd)
-               + "\n\n" + _build_repo_map(cwd))
+    rules = _rules_context(cwd)
+    sys_msg = _SYSTEM.format(cwd=cwd)
+    if rules:                       # user rule book first — highest priority
+        sys_msg = rules + "\n\n" + sys_msg
+    sys_msg += "\n\n" + _repo_context(cwd) + "\n\n" + _build_repo_map(cwd)
     convo: list[dict] = [{"role": "system", "content": sys_msg}]
     for m in messages:
         r = m.get("role") or "user"
