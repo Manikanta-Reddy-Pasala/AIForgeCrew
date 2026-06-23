@@ -40,6 +40,10 @@ from .types import Endpoint
 
 _log = logging.getLogger("aiforge.llm.client")
 
+# Endpoint.extras keys that are transport/routing control — never sent as
+# OpenAI chat-completion body params (strict servers 400 on unknown keys).
+_NON_BODY_EXTRA_KEYS = frozenset({"insecure_tls", "claude_bin", "claude_host"})
+
 
 # HTTP status codes that warrant in-place retry (transient): 408 timeout,
 # 429 rate-limit, 500/502/503/504 server-side. 4xx other than 408/429 are
@@ -62,8 +66,13 @@ def _build_body(ep: Endpoint, messages: list[dict],
         body["max_tokens"] = max_tokens
     if top_p is not None:
         body["top_p"] = top_p
-    # Provider-bundled extras first, then per-call extras override.
-    body.update(ep.extras)
+    # Provider-bundled extras first, then per-call extras override. Strip
+    # transport-control keys (TLS opt-out, claude CLI routing) — they live
+    # on the Endpoint for _post / the CLI path, NOT as chat-completion body
+    # params. Leaking insecure_tls into the body makes strict servers (e.g.
+    # Open WebUI) reject the request with HTTP 400.
+    body.update({k: v for k, v in ep.extras.items()
+                 if k not in _NON_BODY_EXTRA_KEYS})
     if extras:
         body.update(extras)
     # LM Studio rejects response_format.type=json_object — only json_schema or text.
