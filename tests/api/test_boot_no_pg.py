@@ -310,3 +310,13 @@ def test_chat_session_isolated_workspace(client, monkeypatch, tmp_path):
     # explicit cwd is respected (not overridden)
     s2 = c.post("/api/chat/sessions", json={"cwd": "/pinned/dir"}).json()
     assert s2["cwd"] == "/pinned/dir"
+
+
+def test_delete_ticket_sqlite(client):
+    c, store = client
+    t = store.create(title="delete via api", assignee_role="doer", project="demo")
+    r = c.delete(f"/api/tickets/{t.identifier}")
+    assert r.status_code == 204
+    assert store.get(t.identifier) is None
+    # deleting again → 404
+    assert c.delete(f"/api/tickets/{t.identifier}").status_code == 404

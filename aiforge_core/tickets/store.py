@@ -258,6 +258,16 @@ def update_status(ticket_id: int, status: str, *, role: str | None = None,
     return Ticket.from_row(row) if row else None
 
 
+def delete(ident_or_id: "str | int") -> bool:
+    """Delete a ticket (and its events). Resolves an identifier (ONE-100)
+    or numeric id. Returns True when a row was removed. Worktree / branch /
+    PR are intentionally left untouched."""
+    t = get(ident_or_id)
+    if t is None:
+        return False
+    return get_backend().delete_ticket(t.id)
+
+
 def add_comment(ticket_id: int, role: str | None, body: str,
                 metadata: dict | None = None) -> int:
     return add_event(ticket_id, role, "comment", body, metadata)

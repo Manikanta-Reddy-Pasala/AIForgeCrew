@@ -207,6 +207,12 @@ class SqliteBackend:
                           (ticket_id,)).fetchone()
         return _row_to_dict(r) if r else None
 
+    def delete_ticket(self, ticket_id) -> bool:
+        with self._conn() as c:
+            c.execute("DELETE FROM ticket_events WHERE ticket_id = ?", (ticket_id,))
+            cur = c.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+            return (cur.rowcount or 0) > 0
+
     def set_route(self, ident_or_id, route, workflow, source, confidence) -> "dict | None":
         where = "id = ?" if isinstance(ident_or_id, int) else "identifier = ?"
         with self._conn() as c:

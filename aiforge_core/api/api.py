@@ -669,13 +669,11 @@ def delete_ticket(identifier: str) -> None:
     """Delete a ticket and its events. Worktree, branch, and any open PR
     are deliberately NOT touched — operator handles those out-of-band
     so a typo doesn't nuke pushed code. Returns 404 if no such ticket."""
-    t = tickets_mod.get(identifier)
-    if t is None:
+    # Routed through the store/backend so it works on BOTH the embedded
+    # SQLite and the Postgres backend (the old raw _db() path 500'd on
+    # SQLite). 404 if no such ticket.
+    if not tickets_mod.delete(identifier):
         raise HTTPException(404, f"ticket {identifier} not found")
-    with _db() as c, c.cursor() as cur:
-        cur.execute("DELETE FROM ticket_events WHERE ticket_id=%s", (t.id,))
-        cur.execute("DELETE FROM tickets WHERE id=%s", (t.id,))
-        c.commit()
     return None
 
 

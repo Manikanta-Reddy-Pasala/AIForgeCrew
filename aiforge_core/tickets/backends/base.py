@@ -60,6 +60,11 @@ class StoreBackend(Protocol):
         shallow-merge metadata_patch into metadata. Return the row."""
         ...
 
+    def delete_ticket(self, ticket_id: int) -> bool:
+        """Delete a ticket and its events. Return True if a row was
+        removed. Does NOT touch worktrees / branches / PRs."""
+        ...
+
     def set_route(self, ident_or_id: "str | int", route: str,
                   workflow: "str | None", source: str,
                   confidence: "float | None") -> "dict | None":

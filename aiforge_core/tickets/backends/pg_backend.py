@@ -199,6 +199,14 @@ class PgBackend:
             c.commit()
         return row
 
+    def delete_ticket(self, ticket_id) -> bool:
+        with self._conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM ticket_events WHERE ticket_id=%s", (ticket_id,))
+            cur.execute("DELETE FROM tickets WHERE id=%s", (ticket_id,))
+            deleted = (cur.rowcount or 0) > 0
+            c.commit()
+        return deleted
+
     def set_route(self, ident_or_id, route, workflow, source, confidence) -> "dict | None":
         where = "id=%s" if isinstance(ident_or_id, int) else "identifier=%s"
         with self._conn() as c, c.cursor(row_factory=dict_row) as cur:
