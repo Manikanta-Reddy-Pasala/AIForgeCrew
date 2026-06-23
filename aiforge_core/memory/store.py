@@ -12,9 +12,12 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
+
+if TYPE_CHECKING:        # forward-ref for the `list["Hit"]` annotations
+    from .retrieval import Hit
 
 from . import embed as embed_mod
 

@@ -155,7 +155,7 @@ def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
                 _t.sleep(0.2)
             out_b, err_b = proc_p.communicate()
             return {"ok": proc_p.returncode == 0, "command": command,
-                    "exit_code": proc_p.returncode,
+                    "returncode": proc_p.returncode,
                     "stdout": (out_b or b"").decode("utf-8", "replace")[:_STDOUT_CAP_BYTES],
                     "stderr": (err_b or b"").decode("utf-8", "replace")[:_STDOUT_CAP_BYTES]}
         except Exception as exc:  # noqa: BLE001

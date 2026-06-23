@@ -272,12 +272,13 @@ def _t_grep(args: dict, cwd: str) -> dict:
                 continue
             fp = os.path.join(root, f)
             try:
-                for i, ln in enumerate(open(fp, encoding="utf-8", errors="ignore"), 1):
-                    if rx.search(ln):
-                        out.append(f"{os.path.relpath(fp, base)}:{i}:{ln.rstrip()[:200]}")
-                        if len(out) >= limit:
-                            return {"ok": True, "matches": out, "note": note,
-                                    "truncated": True}
+                with open(fp, encoding="utf-8", errors="ignore") as fh:
+                    for i, ln in enumerate(fh, 1):
+                        if rx.search(ln):
+                            out.append(f"{os.path.relpath(fp, base)}:{i}:{ln.rstrip()[:200]}")
+                            if len(out) >= limit:
+                                return {"ok": True, "matches": out, "note": note,
+                                        "truncated": True}
             except Exception:  # noqa: BLE001
                 continue
     return {"ok": True, "matches": out, "note": note, "truncated": False}

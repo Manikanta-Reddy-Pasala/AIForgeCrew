@@ -1824,10 +1824,12 @@ def chat_ask(body: _ChatAskBody) -> dict:
 
 
 @app.post("/api/chat/retain", status_code=201)
-def chat_retain(body: _ChatRetainBody) -> dict:
+def chat_retain(body: dict | None = None) -> dict:
     """Retention path was tied to the GA agent's auto-suggest. Now a
     no-op stub — explicit memory writes go through the new agent
-    pipeline's Learner stage."""
+    pipeline's Learner stage. (``_ChatRetainBody`` was deleted; the typed
+    annotation became an undefined forward-ref that made FastAPI 422 the
+    endpoint instead of returning the no-op — accept a plain body now.)"""
     return {"id": None, "retained": False, "reason": "deprecated"}
 
 

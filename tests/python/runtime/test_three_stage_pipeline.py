@@ -59,8 +59,9 @@ def test_pipeline_researcher_is_parallel_branch() -> None:
     edges = _edge_set(p)
     names = {n.name for n in p.graph.nodes}
     assert "researcher" in names
-    # researcher fans out from enhancer and converges at context_join
-    assert ("enhancer", "researcher", None) in edges
+    # enhancer → research_entry (fan-out node) → researcher → context_join
+    assert ("enhancer", "research_entry", None) in edges
+    assert ("research_entry", "researcher", None) in edges
     assert ("researcher", "context_join", None) in edges
 
 
