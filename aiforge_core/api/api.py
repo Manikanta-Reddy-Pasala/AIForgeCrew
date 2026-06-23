@@ -2329,8 +2329,8 @@ class _StandardsBody(BaseModel):
 def repo_standards_set(name: str, body: _StandardsBody) -> dict:
     """Persist standards onto the Neo4j ``:Repo`` node."""
     from aiforge_core.runtime import repo_standards as _rs
-    std = _rs.upsert(name, **{k: v for k, v in body.model_dump().items()
-                              if v is not None})
+    _rs.upsert(name, **{k: v for k, v in body.model_dump().items()
+                        if v is not None})
     return repo_standards_get(name=name)
 
 

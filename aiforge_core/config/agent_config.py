@@ -618,6 +618,14 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
         # Build an ad-hoc resolve_litellm-shaped dict with the provider's
         # default model — caller can override via env if needed.
         if name == "claude_local":
+            # The CLI reads the OS keychain (no env key to validate), but
+            # it's useless without the binary on PATH — including it then
+            # crashes the whole pipeline with FileNotFoundError: 'claude'
+            # and MASKS the primary's real error. Skip when absent.
+            import shutil
+            claude_bin = os.environ.get("AIFORGE_CLAUDE_BIN", "claude")
+            if not shutil.which(claude_bin):
+                continue
             out.append({
                 "model_id": prov["default_model"],
                 "api_base": "claude:cli",
@@ -685,6 +693,12 @@ def cloud_default_for_local(role: str) -> dict[str, Any] | None:
         if name != "claude_local" and not api_key:
             continue
         if name == "claude_local":
+            # Useless without the binary — skip so we don't crash with
+            # FileNotFoundError: 'claude' (masking the real reason local
+            # was dead). Caller keeps the dead-local cfg / next candidate.
+            import shutil
+            if not shutil.which(os.environ.get("AIFORGE_CLAUDE_BIN", "claude")):
+                continue
             return {
                 "model_id": prov["default_model"],
                 "api_base": "claude:cli",
