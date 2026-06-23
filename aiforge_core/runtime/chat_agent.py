@@ -456,6 +456,41 @@ _LOOP_REPEAT = 4
 _OUTPUT_REPEAT = 3
 
 
+def _build_repo_map(cwd: str, max_entries: int = 240, max_depth: int = 3) -> str:
+    """A compact directory tree of ``cwd`` for the system prompt, so the
+    agent has the repo structure in context every turn (no re-searching).
+    Skips junk dirs, caps entries + depth. Best-effort."""
+    base = str(_workspace_root() or cwd)
+    if not os.path.isdir(base):
+        return f"WORKING DIRECTORY: {base} (not a directory)"
+    lines: list[str] = []
+    base_depth = base.rstrip(os.sep).count(os.sep)
+    try:
+        for root, dirs, files in os.walk(base):
+            depth = root.rstrip(os.sep).count(os.sep) - base_depth
+            if depth >= max_depth:
+                dirs[:] = []
+                continue
+            dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS
+                             and not d.startswith("."))
+            rel = os.path.relpath(root, base)
+            indent = "" if rel == "." else "  " * depth
+            if rel != ".":
+                lines.append(f"{indent}{os.path.basename(root)}/")
+            for f in sorted(files)[:40]:
+                if not f.startswith("."):
+                    lines.append(f"{indent}  {f}")
+            if len(lines) >= max_entries:
+                lines.append("  … (truncated — use find/grep/list_dir for more)")
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    tree = "\n".join(lines) or "(empty)"
+    return ("REPO MAP of the working directory (already known — do NOT "
+            f"re-list directories you can see here):\nWORKING DIRECTORY: {base}\n"
+            f"{tree}")
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -480,7 +515,12 @@ def run_chat_agent(
     import collections
     safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
 
-    convo: list[dict] = [{"role": "system", "content": _SYSTEM.format(cwd=cwd)}]
+    # Inject a fresh repo map every turn so the agent ALWAYS knows the
+    # directory structure of the working dir without re-searching it on
+    # each follow-up question (the conversation history only carries prior
+    # answers, not the structure it discovered last turn).
+    sys_msg = _SYSTEM.format(cwd=cwd) + "\n\n" + _build_repo_map(cwd)
+    convo: list[dict] = [{"role": "system", "content": sys_msg}]
     for m in messages:
         r = m.get("role") or "user"
         convo.append({"role": "assistant" if r == "assistant" else "user",

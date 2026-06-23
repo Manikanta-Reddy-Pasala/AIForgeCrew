@@ -165,3 +165,25 @@ def test_fenced_args_write_persists(tmp_path):
     tool = [e for e in evs if e["type"] == "tool"][0]
     assert tool["result"]["ok"] is True
     assert (tmp_path / "out.txt").read_text() == "BANANA"
+
+
+def test_repo_map_in_system_prompt_each_turn(tmp_path):
+    """The agent must see the dir structure every turn (no re-searching)."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.java").write_text("class App {}")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "junk.js").write_text("x")
+    from aiforge_core.runtime import chat_agent
+
+    seen = {}
+
+    def fake_complete(role, convo):
+        seen["system"] = convo[0]["content"]
+        return "FINAL: done"
+
+    list(chat_agent.run_chat_agent([{"role": "user", "content": "hi"}],
+                                   cwd=str(tmp_path), complete_fn=fake_complete))
+    sysmsg = seen["system"]
+    assert "REPO MAP" in sysmsg
+    assert "App.java" in sysmsg          # structure present
+    assert "node_modules" not in sysmsg  # junk skipped
