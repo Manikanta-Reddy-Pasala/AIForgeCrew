@@ -102,8 +102,11 @@ def fallback(role: str) -> Endpoint | None:
 # Providers considered "cloud" for auto-escalation. Order = preference.
 # A role currently on a non-cloud provider can be promoted to one of
 # these when the request looks too big for local capacity.
+# Keep in sync with agent_config._CLOUD_PROVIDERS_ORDERED — only providers
+# the agent stack is actually wired + keyed for. ``ollama_cloud`` is the
+# supported cloud target post provider-purge.
 _CLOUD_PROVIDERS: tuple[str, ...] = (
-    "ollama_cloud", "openai", "gemini",
+    "ollama_cloud",
 )
 
 # Local context windows assumed when no role-specific cap configured.

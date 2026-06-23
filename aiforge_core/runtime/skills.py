@@ -203,7 +203,12 @@ def auto_context(query: str, cwd: str | None = None, k: int = 4) -> str:
     """Injection block: all always-on skills + the top-``k`` relevant ones
     for ``query`` (by :func:`search`). Empty when none apply."""
     pool = load(cwd)
-    chosen: dict[str, Skill] = {s.name: s for s in pool if s.always}
+    # Cap always-on skills so a large registry can't blow the context budget
+    # every turn (highest-priority always-on win).
+    always_cap = int(os.environ.get("AIFORGE_SKILLS_ALWAYS_CAP", "8"))
+    always_on = sorted((s for s in pool if s.always),
+                       key=lambda s: -s.priority)[:always_cap]
+    chosen: dict[str, Skill] = {s.name: s for s in always_on}
     for hit in search(query, cwd, k=k, skills=pool):
         sk = next((s for s in pool if s.name == hit["name"]), None)
         if sk is not None:

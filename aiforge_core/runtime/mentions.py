@@ -28,10 +28,11 @@ def _root(cwd: str) -> str:
 
 
 def _resolve_path(cwd: str, rel: str) -> str | None:
-    base = os.path.abspath(_root(cwd))
+    # realpath (not abspath) so a symlink inside the workspace that points
+    # OUT of it can't escape the AIFORGE_WORKSPACE_DIR clamp.
+    base = os.path.realpath(os.path.expanduser(_root(cwd)))
     p = rel if os.path.isabs(rel) else os.path.join(base, rel)
-    p = os.path.abspath(os.path.expanduser(p))
-    # keep inside the workspace root (defensive — no escaping via @../../)
+    p = os.path.realpath(os.path.expanduser(p))
     if not (p == base or p.startswith(base + os.sep)):
         return None
     return p

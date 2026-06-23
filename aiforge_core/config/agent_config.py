@@ -125,6 +125,14 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 
 _DEFAULT_KEY = "_default"
 
+# LiteLLM provider prefixes we leave untouched on a model id (already
+# namespaced). One shared copy — resolve_litellm + the two cloud helpers
+# all use it. ``anthropic/`` dropped with the provider purge.
+KNOWN_PREFIXES = (
+    "openai/", "azure/", "ollama/", "huggingface/",
+    "mistral/", "groq/", "cohere/", "bedrock/",
+)
+
 
 def _global_default_row() -> dict[str, Any] | None:
     """The operator's one-endpoint default for EVERY role.
@@ -479,11 +487,7 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     # mlx-lm expects the full filesystem path as ``model`` — those paths have
     # ``/`` separators, so the old "if '/' not in model" check skipped them
     # and LiteLLM raised "LLM Provider NOT provided". Detect known prefixes
-    # (openai, anthropic, ...) instead.
-    KNOWN_PREFIXES = (
-        "openai/", "anthropic/", "azure/", "ollama/", "huggingface/",
-        "mistral/", "groq/", "cohere/", "bedrock/",
-    )
+    # (openai, azure, ...) instead.
     if not any(model.startswith(p) for p in KNOWN_PREFIXES):
         model = f"{prefix}/{model}"
     # Resolution order: env override > stored per-role base_url > provider
@@ -586,11 +590,11 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
         # Build an ad-hoc resolve_litellm-shaped dict with the provider's
         # default model — caller can override via env if needed.
         prefix = prov["litellm_prefix"]
-        model = prov["default_model"]
-        KNOWN_PREFIXES = (
-            "openai/", "anthropic/", "azure/", "ollama/", "huggingface/",
-            "mistral/", "groq/", "cohere/", "bedrock/",
-        )
+        model = prov.get("default_model")
+        if not model:
+            # No usable default model (e.g. openai_compatible needs a per-role
+            # base_url + model). Can't blind-escalate to it — skip.
+            continue
         if not any(model.startswith(p) for p in KNOWN_PREFIXES):
             model = f"{prefix}/{model}"
         base_url = (
@@ -643,11 +647,9 @@ def cloud_default_for_local(role: str) -> dict[str, Any] | None:
         if not api_key:
             continue
         prefix = prov["litellm_prefix"]
-        model = prov["default_model"]
-        KNOWN_PREFIXES = (
-            "openai/", "anthropic/", "azure/", "ollama/", "huggingface/",
-            "mistral/", "groq/", "cohere/", "bedrock/",
-        )
+        model = prov.get("default_model")
+        if not model:
+            continue   # no usable default model → can't use as dead-local fallback
         if not any(model.startswith(p) for p in KNOWN_PREFIXES):
             model = f"{prefix}/{model}"
         entry: dict[str, Any] = {
@@ -666,7 +668,7 @@ def cloud_default_for_local(role: str) -> dict[str, Any] | None:
 
 
 def archetypes() -> list[str]:
-    """The 9 public archetype roles. Legacy aliases stay invisible."""
+    """The public archetype roles. Legacy aliases stay invisible."""
     return list(_ARCHETYPES)
 
 

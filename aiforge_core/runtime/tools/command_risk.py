@@ -28,10 +28,14 @@ from . import delete_guard
 
 # ── dangerous: destructive or exfiltrating — refuse unless confirmed ──────
 _DANGEROUS = [
-    # network piped straight into an interpreter (classic curl|bash installer
-    # / remote-code-exec). Matches curl/wget/fetch … | sh|bash|zsh|python|…
-    (r"\b(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|ksh|python[0-9.]*|perl|ruby|node)\b",
-     "pipes a network download straight into a shell/interpreter (remote code execution)"),
+    # network download piped into an interpreter — classic curl|bash RCE.
+    # Match an interpreter ANYWHERE downstream of a pipe (so an intermediate
+    # stage like ``curl x | tee a | sh`` is still caught, not just the first
+    # pipe). Also catches process substitution ``bash <(curl ...)``.
+    (r"\b(curl|wget|fetch)\b.*\|.*\b(sh|bash|zsh|ksh|python[0-9.]*|perl|ruby|node)\b",
+     "pipes a network download into a shell/interpreter (remote code execution)"),
+    (r"\b(sh|bash|zsh|ksh)\b\s+<\(\s*(curl|wget|fetch)\b",
+     "executes a network download via process substitution (remote code execution)"),
     # secret EXFILTRATION: pushing creds/keys off the box (network/copy verbs)
     (r"(scp|curl|wget|rsync|nc|netcat|tar)\b[^\n]*(\.ssh/|\.aws/|\.env\b|id_rsa|id_ed25519|credentials|secrets?\b|\.pem\b|\.kube/|private[_-]?key)",
      "exfiltrates credentials / private keys / secrets off the machine"),

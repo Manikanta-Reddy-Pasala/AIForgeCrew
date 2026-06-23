@@ -456,3 +456,28 @@ def test_transient_error_classification():
     assert _is_transient_llm_error(Exception("503 Service Unavailable"))
     assert not _is_transient_llm_error(ValueError("bad model id"))
     assert not _is_transient_llm_error(Exception("invalid request body"))
+
+
+def test_cloud_chain_skips_none_default_provider(monkeypatch):
+    """Audit fix: a cloud provider with no default model (openai_compatible)
+    pinned as the target must NOT crash (None.startswith) — it's skipped."""
+    monkeypatch.setattr(
+        ac, "get",
+        lambda role: {"provider": "local", "model": "x", "base_url": None},
+    )
+    monkeypatch.setenv("AIFORGE_DOER_CLOUD_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("AIFORGE_OPENAI_COMPAT_API_KEY", "k")
+    chain = ac.cloud_escalation_chain("doer")          # must not raise
+    assert all(c["_provider"] != "openai_compatible" for c in chain)
+
+
+def test_cloud_default_for_local_skips_none_default(monkeypatch):
+    monkeypatch.setattr(
+        ac, "get",
+        lambda role: {"provider": "local", "model": "x", "base_url": None},
+    )
+    monkeypatch.setenv("AIFORGE_LOCAL_DEAD_FALLBACK", "openai_compatible")
+    monkeypatch.setenv("AIFORGE_OPENAI_COMPAT_API_KEY", "k")
+    monkeypatch.delenv("OLLAMA_CLOUD_API_KEY", raising=False)
+    # openai_compatible skipped (no default model), no ollama key → None, no crash
+    assert ac.cloud_default_for_local("doer") is None

@@ -82,10 +82,17 @@ def _timeout_s() -> float:
 
 def request(session_id: int) -> int:
     """Open a fresh approval request for ``session_id``. Returns a sequence
-    id the UI echoes back so a stale Approve can't resolve a newer request."""
+    id the UI echoes back so a stale Approve can't resolve a newer request.
+
+    If a prior request is still pending (a waiter blocked on it), force-reject
+    it first so that waiter unblocks instead of hanging to its timeout."""
     with _LOCK:
         prev = _PENDING.get(session_id)
         seq = (prev.seq + 1) if prev else 1
+        if prev is not None and not prev.event.is_set():
+            prev.decision = "reject"
+            prev.note = "superseded"
+            prev.event.set()
         _PENDING[session_id] = _Pending(seq=seq)
         return seq
 
@@ -132,8 +139,15 @@ def cancel(session_id: int) -> None:
 
 
 def finish(session_id: int) -> None:
+    # Defensively unblock any in-flight waiter (decision stays default-reject)
+    # so a run that ends/aborts while a tool is awaiting approval doesn't
+    # leave an executor thread blocked until the 900s timeout.
     with _LOCK:
-        _PENDING.pop(session_id, None)
+        p = _PENDING.pop(session_id, None)
+    if p is not None and not p.event.is_set():
+        p.decision = "reject"
+        p.note = "run finished"
+        p.event.set()
 
 
 __all__ = ["request", "wait", "resolve", "cancel", "finish",

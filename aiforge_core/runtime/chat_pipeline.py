@@ -212,7 +212,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                         await runner.close()
                     except Exception:  # noqa: BLE001
                         pass
-                    q.put({"type": "error", "text": "stopped by user"})
+                    q.put({"type": "error", "text": "stopped by user",
+                           "stopped": True})
                     break
                 for ev in map_event(event):
                     q.put(ev)
@@ -252,20 +253,33 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     t = threading.Thread(target=lambda: _run_async_in_thread(_drive), daemon=True)
     t.start()
     errored = False
+    stopped = False
+    saw_real = False     # any substantive (non-error) event from the pipeline
     while True:
         item = q.get()
         if item is _SENTINEL:
             break
         if item.get("type") == "error":
             errored = True
+            if item.get("stopped"):
+                stopped = True
+        else:
+            saw_real = True
         yield item
-    # Fallback to the lightweight agent if the pipeline couldn't run at all.
-    if errored:
+    # Fall back to the lightweight agent ONLY when the pipeline couldn't run
+    # at all — it errored, produced NO substantive events, and the user
+    # didn't Stop it. (A user Stop, or an error mid-run after real output,
+    # must NOT silently launch a second agent.)
+    if errored and not saw_real and not stopped:
         try:
+            from aiforge_core.runtime import chat_cancel as _cc
             from .chat_agent import run_chat_agent
+            if session_id is not None:
+                _cc.start(session_id)   # re-arm so Stop can halt the fallback
             yield {"type": "agent", "role": "fallback",
                    "text": "(pipeline unavailable — using the lightweight agent)"}
-            for ev in run_chat_agent([{"role": "user", "content": prompt}], cwd=cwd):
+            for ev in run_chat_agent([{"role": "user", "content": prompt}],
+                                     cwd=cwd, session_id=session_id):
                 if ev.get("type") != "done":
                     yield ev
         except Exception:

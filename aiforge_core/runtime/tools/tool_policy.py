@@ -75,8 +75,6 @@ def decide(tool: str, args: dict | None = None) -> dict:
     """
     configured = _configured().get(tool, ALLOW)
     policy, reason = configured, ""
-    if configured == ALLOW and reason == "":
-        reason = ""
 
     # Risk escalation for command-running tools.
     if tool in _CMD_TOOLS:

@@ -110,11 +110,7 @@ def _forced_primary_cfg(role: str, provider: str) -> dict | None:
         return None
     model = prov.get("default_model") or _acfg._local_default_model()
     prefix = prov["litellm_prefix"]
-    KNOWN_PREFIXES = (
-        "openai/", "anthropic/", "azure/", "ollama/", "huggingface/",
-        "mistral/", "groq/", "cohere/", "bedrock/",
-    )
-    if not any(model.startswith(p) for p in KNOWN_PREFIXES):
+    if not any(model.startswith(p) for p in _acfg.KNOWN_PREFIXES):
         model = f"{prefix}/{model}"
     api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
     cfg: dict = {

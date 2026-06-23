@@ -104,7 +104,18 @@ def snapshot(cwd: str, label: str = "", when: str = "") -> dict:
             return {"ok": False, "error": f"commit-tree failed: {ct.stderr[:200]}"}
         sha = ct.stdout.strip()
         rows = _load(cwd)
-        ref = f"refs/aiforge-ckpt/{len(rows) + 1}"
+        # Derive the next ref index from EXISTING refs, not the sidecar length
+        # — if the sidecar was lost/corrupt, length-based numbering would
+        # reuse an index and update-ref would clobber a live checkpoint.
+        existing = _git(cwd, "for-each-ref", "--format=%(refname)",
+                        "refs/aiforge-ckpt/").stdout.split()
+        max_n = 0
+        for r in existing:
+            try:
+                max_n = max(max_n, int(r.rsplit("/", 1)[-1]))
+            except (ValueError, IndexError):
+                continue
+        ref = f"refs/aiforge-ckpt/{max_n + 1}"
         _git(cwd, "update-ref", ref, sha)
         row = {"sha": sha, "ref": ref, "label": label or "snapshot", "when": when}
         rows.append(row)
