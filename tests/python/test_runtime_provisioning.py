@@ -220,3 +220,12 @@ def test_project_detect_reports_has_tests(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_x.py").write_text("def test_a(): pass")
     assert pr.detect(str(tmp_path))["has_tests"] is True
+
+
+def test_grep_glob_prefix_pattern(tmp_path):
+    from aiforge_core.runtime import chat_agent
+    (tmp_path / "test_foo.py").write_text("TODO\n")
+    (tmp_path / "main.py").write_text("TODO\n")
+    g = chat_agent._t_grep({"pattern": "TODO", "glob": "test_*"}, str(tmp_path))
+    files = {m.split(":")[0].split("/")[-1] for m in g["matches"]}
+    assert files == {"test_foo.py"}      # prefix glob now matches (fnmatch)

@@ -746,7 +746,8 @@ def _persist_env(key: str, value: str) -> None:
     on next poll-cycle restart. KISS: line-replace; preserves order."""
     if not os.path.isfile(_RUNTIME_ENV_PATH):
         return
-    lines = open(_RUNTIME_ENV_PATH).read().splitlines()
+    with open(_RUNTIME_ENV_PATH) as _f:
+        lines = _f.read().splitlines()
     found = False
     for i, line in enumerate(lines):
         if line.startswith(f"{key}="):
@@ -1298,7 +1299,9 @@ def stream_ticket_trace(identifier: str):
                         continue
                     await queue.put(line.decode("utf-8", "replace").rstrip("\n"))
             finally:
-                try: proc.kill()
+                try:
+                    proc.kill()
+                    await proc.wait()   # reap — don't leak a zombie
                 except Exception: pass
                 await queue.put(None)
 
@@ -1450,7 +1453,9 @@ def stream_llm_trace(identifier: str):
         except asyncio.CancelledError:
             pass
         finally:
-            try: proc.kill()
+            try:
+                proc.kill()
+                await proc.wait()   # reap — don't leak a zombie
             except Exception: pass
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -2283,7 +2288,9 @@ async def mcp_tool_call(body: _McpCallBody) -> dict:
             proc.communicate(payload.encode()), timeout=30,
         )
     except TimeoutError:
-        try: proc.kill()
+        try:
+            proc.kill()
+            await proc.wait()   # reap — don't leak a zombie
         except Exception: pass
         raise HTTPException(504, "MCP server timed out")
     except FileNotFoundError:

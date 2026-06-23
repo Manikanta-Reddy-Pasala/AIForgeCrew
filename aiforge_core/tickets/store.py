@@ -254,8 +254,13 @@ def update_status(ticket_id: int, status: str, *, role: str | None = None,
     row = get_backend().set_status(
         ticket_id, status, status in _COMPLETED_STATUSES, metadata_patch or {},
     )
+    if row is None:
+        # Unknown ticket — set_status found nothing. Writing the event
+        # anyway hits the ticket_events→tickets FK and raises IntegrityError,
+        # crashing the caller. Return None cleanly instead.
+        return None
     get_backend().insert_event(ticket_id, role, "status_change", status, {})
-    return Ticket.from_row(row) if row else None
+    return Ticket.from_row(row)
 
 
 def delete(ident_or_id: "str | int") -> bool:

@@ -136,20 +136,26 @@ def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
                 chat_cancel.track_pgid(sid, os.getpgid(proc_p.pid))
             except Exception:  # noqa: BLE001
                 pass
+            def _kill_and_reap():
+                # Reap the SIGKILLed group so we don't leak pipe FDs / leave
+                # a zombie accumulating across a long Doer run.
+                try:
+                    os.killpg(os.getpgid(proc_p.pid), 9)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    proc_p.communicate(timeout=5)
+                except Exception:  # noqa: BLE001
+                    pass
+
             deadline = _t.monotonic() + timeout
             while proc_p.poll() is None:
                 if chat_cancel.is_cancelled(sid):
-                    try:
-                        os.killpg(os.getpgid(proc_p.pid), 9)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    _kill_and_reap()
                     return {"ok": False, "error": "stopped by user",
                             "command": command}
                 if _t.monotonic() > deadline:
-                    try:
-                        os.killpg(os.getpgid(proc_p.pid), 9)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    _kill_and_reap()
                     return {"ok": False, "error": "timeout", "command": command,
                             "truncated": True}
                 _t.sleep(0.2)

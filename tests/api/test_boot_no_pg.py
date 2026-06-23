@@ -2,7 +2,6 @@
 import importlib
 
 import pytest
-
 from fastapi.testclient import TestClient
 
 
@@ -320,3 +319,9 @@ def test_delete_ticket_sqlite(client):
     assert store.get(t.identifier) is None
     # deleting again → 404
     assert c.delete(f"/api/tickets/{t.identifier}").status_code == 404
+
+
+def test_update_status_missing_ticket_returns_none(client):
+    _, store = client
+    # was crashing with an FK IntegrityError (insert_event on a missing id)
+    assert store.update_status(987654, "in_progress") is None

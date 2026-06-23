@@ -162,6 +162,11 @@ def _kill_proc(proc) -> None:
                 proc.kill()
             except Exception:  # noqa: BLE001
                 pass
+    # Reap so the killed child's pipe FDs are freed (no zombie leak).
+    try:
+        proc.communicate(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _t_memory_lookup(args: dict, cwd: str) -> dict:
@@ -266,10 +271,13 @@ def _t_grep(args: dict, cwd: str) -> dict:
     except _re2.error as e:
         return {"ok": False, "error": f"bad regex: {e}"}
     out: list[str] = []
+    import fnmatch as _fn
     for root, dirs, files in os.walk(target):
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
         for f in files:
-            if glob and not f.endswith(glob.lstrip("*")):
+            # fnmatch handles *.py, test_*, *_spec.ts etc. (the old
+            # endswith(glob.lstrip("*")) only matched suffix globs).
+            if glob and not _fn.fnmatch(f, glob):
                 continue
             fp = os.path.join(root, f)
             try:
