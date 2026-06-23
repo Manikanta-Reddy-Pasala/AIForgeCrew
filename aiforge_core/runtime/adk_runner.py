@@ -970,22 +970,18 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # compatibility; the runner routes it into initial_state instead.)
     _ = memory_md
 
-    # Microagent injection (sub #5). Match against ticket title + body and
-    # prepend matched playbooks. Best-effort: parse failures swallowed.
+    # Skills + microagent injection. Relevance-search the skill registry
+    # (SKILL.md playbooks, incl. ones the Doer authored via learn_skill) +
+    # always-on repo skills, keyed on ticket title + body. Folds in legacy
+    # microagents. Best-effort: parse failures swallowed.
     try:
-        from aiforge_core.runtime.microagents import (
-            load_all,
-            match,
-            render_injection,
-        )
-        # Global ~/.aiforge/microagents + repo-local .aiforge|.openhands ones.
-        agents = load_all()
+        from aiforge_core.runtime import skills as _skills
         hay = f"{ticket.title or ''} {ticket.body or ''}"
-        matched = match(hay, agents)
-        if matched:
-            out = render_injection(matched) + "\n\n" + out
+        sk_block = _skills.auto_context(hay, None)
+        if sk_block:
+            out = sk_block + "\n\n" + out
     except Exception as exc:  # noqa: BLE001 — best-effort
-        log.debug("microagents.inject failed: %s", exc)
+        log.debug("skills.inject failed: %s", exc)
 
     # Vision attach hint (sub #6). When the ticket has image attachments
     # AND the active Doer model supports vision, list them with a flag so

@@ -551,6 +551,31 @@ def task(description: str = "", **_kw) -> dict:
     return {"ok": True, "note": "task no-op; use editor/bash directly"}
 
 
+def skill_search(query: str, k: int = 5) -> dict:
+    """Search the skill registry (SKILL.md playbooks) by relevance — find a
+    reusable recipe before solving an unfamiliar problem from scratch."""
+    try:
+        from aiforge_core.runtime import skills as _skills
+        return {"ok": True, "skills": _skills.search(query, None, k=int(k or 5))}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def learn_skill(name: str, body: str, description: str = "",
+                triggers: str = "", scope: str = "global") -> dict:
+    """Author a reusable SKILL.md after solving a non-trivial, repeatable
+    problem (the self-improving loop). Also recorded in knowledge memory.
+    ``triggers`` is a comma-separated list of words that should surface it."""
+    try:
+        from aiforge_core.runtime import skills as _skills
+        trig = [t.strip() for t in (triggers or "").split(",") if t.strip()]
+        return _skills.write_skill(name=name, description=description, body=body,
+                                   triggers=trig, cwd=None,
+                                   scope=(scope or "global").lower())
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -581,7 +606,8 @@ def adk_function_tools() -> list:
     new_canonical = [editor, new_bash, think, finish, ensure_runtime, project]
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
                         grep_repo, repo_map, impacted_tests, fetch_url,
-                        git_commit, memory_lookup, graphify_lookup]
+                        git_commit, memory_lookup, graphify_lookup,
+                        skill_search, learn_skill]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -592,7 +618,7 @@ def adk_function_tools() -> list:
 __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
-    "memory_lookup", "graphify_lookup",
+    "memory_lookup", "graphify_lookup", "skill_search", "learn_skill",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
     "commit", "git_add_commit",

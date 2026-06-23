@@ -281,6 +281,8 @@ agents:
         - update_working_checkpoint # save mid-run state
         - graphify_lookup           # read-only graph traversal (no fs writes)
         - memory_lookup             # read-only AiForgeMemory recall
+        - skill_search              # find reusable SKILL.md playbooks before solving
+        - learn_skill               # author a reusable skill after solving (self-improve)
         - repo_map                  # tree-sitter PageRank repo map (AST, no vectors)
         - impacted_tests            # diff→covering-tests map (run targeted slice)
         - grep_repo                 # kept — useful for fast pattern search

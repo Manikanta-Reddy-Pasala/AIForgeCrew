@@ -358,6 +358,37 @@ def _t_project(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_skill_search(args: dict, cwd: str) -> dict:
+    """Search the skill registry (SKILL.md playbooks) by relevance."""
+    try:
+        from aiforge_core.runtime import skills as _skills
+        q = args.get("query") or args.get("q") or ""
+        hits = _skills.search(q, cwd, k=int(args.get("k", 5)))
+        return {"ok": True, "skills": hits}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def _t_learn_skill(args: dict, cwd: str) -> dict:
+    """Author a reusable skill (SKILL.md) so future sessions reuse the
+    solution. scope: 'global' (all repos) or 'repo' (this repo)."""
+    try:
+        from aiforge_core.runtime import skills as _skills
+        triggers = args.get("triggers") or []
+        if isinstance(triggers, str):
+            triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+        return _skills.write_skill(
+            name=args.get("name", ""),
+            description=args.get("description", ""),
+            body=args.get("body") or args.get("content") or "",
+            triggers=list(triggers),
+            cwd=cwd,
+            scope=(args.get("scope") or "global").lower(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_read": _t_file_read,
     "file_write": _t_file_write,
@@ -372,10 +403,13 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "remember_rule": _t_remember_rule,
     "memory_lookup": _t_memory_lookup,
     "memory_write": _t_memory_write,
+    "skill_search": _t_skill_search,
+    "learn_skill": _t_learn_skill,
 }
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
-_READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup")
+_READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
+                   "skill_search")
 
 _PLAN_BANNER = (
     "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
@@ -440,6 +474,9 @@ Tool arguments:
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false}}
                 (save a learning/decision to the knowledge graph for future recall)
+- skill_search {{"query": "..."}}                        (find reusable SKILL.md playbooks)
+- learn_skill  {{"name": "...", "description": "when to use it", "body": "the step-by-step playbook", "triggers": ["word1","word2"], "scope": "global|repo"}}
+                (author a reusable skill after solving something non-trivial — also recorded in memory)
 
 When you are done and ready to reply to the user:
 THOUGHT: <reasoning>
@@ -472,6 +509,12 @@ ambiguous request.
 all sessions", or states a standing rule about the folder/repo/workflow, \
 immediately call remember_rule (scope=repo for this repo, scope=global for \
 everywhere). Any RULES shown above are user rules — always obey them.
+- LEARN skills: when you solve a non-trivial, repeatable problem (a fix \
+recipe, a setup sequence, a gotcha + workaround), call learn_skill to save \
+a reusable SKILL.md playbook — name it, give a one-line description of WHEN \
+to use it, the step-by-step body, and trigger words. Before tackling \
+unfamiliar work, skill_search first — a past skill may already solve it. \
+RELEVANT SKILLS shown above are auto-loaded; apply them when they fit.
 - SCOPE before reading: when asked to check/review/understand code, first \
 narrow to the FEW files that actually matter — use `grep`/`find` (and \
 list_dir) to locate the relevant symbols/files, then read only those. Do \
@@ -736,13 +779,14 @@ def run_chat_agent(
     if plan_mode:                   # plan banner second — constrains this turn
         sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
     sys_msg += "\n\n" + _repo_context(cwd) + "\n\n" + _build_repo_map(cwd)
-    # Repo knowledge microagents (#6): repo-shipped conventions + any whose
-    # trigger word hits this request.
+    # Skills registry: always-on skills + the ones most relevant to this
+    # request (SKILL.md standard, relevance-searched; folds in legacy
+    # microagents). The agent can also skill_search / learn_skill at runtime.
     try:
-        from aiforge_core.runtime import microagents as _ma
-        ma_block = _ma.inject_for(last_user, cwd)
-        if ma_block:
-            sys_msg += "\n\n" + ma_block
+        from aiforge_core.runtime import skills as _skills
+        sk_block = _skills.auto_context(last_user, cwd)
+        if sk_block:
+            sys_msg += "\n\n" + sk_block
     except Exception:  # noqa: BLE001
         pass
     # @-mentions (#4): user-referenced files/folders/urls/problems.
