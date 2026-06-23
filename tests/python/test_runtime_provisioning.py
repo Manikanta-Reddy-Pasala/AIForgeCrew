@@ -173,3 +173,41 @@ def test_grep_tolerates_wrong_path(tmp_path):
                            str(tmp_path))
     assert g["ok"] and g["matches"]          # found despite wrong path
     assert "not found" in g["note"]
+
+
+# ── stuck-loop repeat guard ──────────────────────────────────────────
+def test_repeat_guard_blocks_repeated_identical_call(monkeypatch):
+    import asyncio
+    monkeypatch.setenv("AIFORGE_TOOL_REPEAT_LIMIT", "3")
+    from aiforge_core.runtime.repeat_guard import make_repeat_guard_callback
+    cb = make_repeat_guard_callback()
+
+    class _Tool:
+        name = "run_command"
+
+    class _Ctx:
+        def __init__(self):
+            self.state = {}
+
+    ctx = _Ctx()
+
+    async def run():
+        results = []
+        for _ in range(4):
+            results.append(await cb(tool=_Tool(), args={"command": "python3 <"},
+                                    tool_context=ctx))
+        return results
+
+    res = asyncio.run(run())
+    assert res[0] is None and res[1] is None         # first 2 allowed
+    assert res[2] and res[2]["error"] == "repeated_call"  # 3rd blocked
+    # a DIFFERENT call is not blocked
+    async def other():
+        return await cb(tool=_Tool(), args={"command": "ls"}, tool_context=ctx)
+    assert asyncio.run(other()) is None
+
+
+def test_repeat_guard_disabled_by_zero(monkeypatch):
+    monkeypatch.setenv("AIFORGE_TOOL_REPEAT_LIMIT", "0")
+    from aiforge_core.runtime.repeat_guard import make_repeat_guard_callback
+    assert make_repeat_guard_callback() is None

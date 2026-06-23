@@ -172,8 +172,11 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             kw = dict(user_id="chat", session_id=session.id, new_message=content)
             try:
                 from google.adk.agents.run_config import RunConfig
+                # High cap — a real multi-agent build legitimately needs
+                # many calls; the repeat_guard stops genuine stuck loops, so
+                # we don't rely on a low ceiling. Tune AIFORGE_CHAT_MAX_LLM_CALLS.
                 kw["run_config"] = RunConfig(max_llm_calls=int(
-                    os.environ.get("AIFORGE_CHAT_MAX_LLM_CALLS", "120")))
+                    os.environ.get("AIFORGE_CHAT_MAX_LLM_CALLS", "600")))
             except Exception:
                 pass
             final = ""

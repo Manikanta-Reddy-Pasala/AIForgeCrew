@@ -251,6 +251,21 @@ def build_pipeline(*, skip_researcher: bool = False,
                 doer.before_tool_callback = [existing, _scope_cb]
     except Exception:
         pass  # scope guard never blocks pipeline boot
+    # Stuck-loop guard — stop the Doer re-emitting the same (often
+    # malformed) tool call until it burns the whole LLM-call budget.
+    try:
+        from .repeat_guard import make_repeat_guard_callback
+        _rep_cb = make_repeat_guard_callback()
+        if _rep_cb is not None:
+            existing = getattr(doer, "before_tool_callback", None)
+            if existing is None:
+                doer.before_tool_callback = _rep_cb
+            elif isinstance(existing, list):
+                doer.before_tool_callback = list(existing) + [_rep_cb]
+            else:
+                doer.before_tool_callback = [existing, _rep_cb]
+    except Exception:
+        pass
     # A1 quality gate signals — record run_tests/typecheck/format results
     # into tests_ok/typecheck_ok/lint_ok so the Feedback agent's
     # deterministic gate (quality_gate.evaluate) actually has inputs.

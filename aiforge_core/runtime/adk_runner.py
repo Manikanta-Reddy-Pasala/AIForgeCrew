@@ -805,7 +805,7 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     try:
         from google.adk.agents.run_config import RunConfig
         run_config = RunConfig(
-            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "220")),
+            max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "600")),
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("RunConfig unavailable: %s", exc)
