@@ -187,3 +187,25 @@ def test_repo_map_in_system_prompt_each_turn(tmp_path):
     assert "REPO MAP" in sysmsg
     assert "App.java" in sysmsg          # structure present
     assert "node_modules" not in sysmsg  # junk skipped
+
+
+def test_repo_context_starter_then_persisted(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
+    monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
+    import importlib
+
+    from aiforge_core.memory import md_store
+    importlib.reload(md_store)
+    from aiforge_core.runtime import chat_agent
+    (tmp_path / "pom.xml").write_text("x")
+    (tmp_path / "README.md").write_text("# App\nOrders service.")
+    # first time → auto starter from stack + README
+    starter = chat_agent._repo_context(str(tmp_path))
+    assert "PROJECT SUMMARY" in starter and "maven" in starter and "Orders service" in starter
+    # after a session writes the per-repo summary → it's injected next time
+    repo = chat_agent._repo_name(str(tmp_path))
+    md_store.upsert_section(source=f"repo:{repo}", title=f"{repo} memory",
+                            section_title="t", section_body="Added OrderController.")
+    ctx = chat_agent._repo_context(str(tmp_path))
+    assert "Added OrderController" in ctx

@@ -2114,11 +2114,21 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     sess_title = (session.get("title") or "").strip()
                     note_title = (sess_title if sess_title and sess_title != "New chat"
                                   else (prompt.strip()[:80] or "chat session"))
+                    when = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
                     md_store.upsert_section(
                         source=f"chat-session:{session_id}", title=note_title,
-                        section_title=_dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        section_body=section, kind="session",
+                        section_title=when, section_body=section, kind="session",
                         tags=["chat", "team" if team else "simple"])
+                    # Also grow the PER-REPO project summary so the NEXT
+                    # message (even in a new session) gets continuity on what
+                    # this repo is + what's been done.
+                    import os as _os2
+                    repo = _os2.path.basename(_os2.path.normpath(cwd)) or "repo"
+                    md_store.upsert_section(
+                        source=f"repo:{repo}", title=f"{repo} — project memory",
+                        section_title=f"{when} · {prompt.strip()[:50]}",
+                        section_body=f"{final_text[:600]}", kind="project",
+                        tags=["repo", repo])
                 except Exception:  # noqa: BLE001
                     pass
 

@@ -491,6 +491,52 @@ def _build_repo_map(cwd: str, max_entries: int = 240, max_depth: int = 3) -> str
             f"{tree}")
 
 
+def _repo_name(cwd: str) -> str:
+    base = str(_workspace_root() or cwd).rstrip(os.sep)
+    return os.path.basename(base) or "repo"
+
+
+def _repo_context(cwd: str) -> str:
+    """The persistent PROJECT SUMMARY for this repo — what it is + what's
+    been done — injected every turn so follow-ups have continuity. Read
+    from the per-repo memory file (source=repo:<name>); if none exists yet,
+    auto-build a starter from the detected stack + README so there's always
+    something. The summary is updated at the end of each session run."""
+    base = str(_workspace_root() or cwd)
+    repo = _repo_name(cwd)
+    try:
+        from aiforge_core.memory import md_store
+        p = md_store._find_by_source(f"repo:{repo}")
+        if p is not None:
+            body = md_store._parse(p).get("body", "")
+            if body.strip():
+                return (f"PROJECT SUMMARY — {repo} (what this repo is + what "
+                        f"prior sessions did):\n{body[:2500]}")
+    except Exception:  # noqa: BLE001
+        pass
+    # Starter (first time): stack + README excerpt.
+    stacks: list[str] = []
+    try:
+        from aiforge_core.runtime.tools.project_runner import detect
+        stacks = detect(base).get("stacks", [])
+    except Exception:  # noqa: BLE001
+        pass
+    readme = ""
+    for rn in ("README.md", "Readme.md", "readme.md", "README.rst", "README.txt"):
+        rp = os.path.join(base, rn)
+        if os.path.isfile(rp):
+            try:
+                readme = open(rp, encoding="utf-8", errors="ignore").read()[:700]
+            except Exception:  # noqa: BLE001
+                pass
+            break
+    out = f"PROJECT SUMMARY — {repo} (auto-detected; refine as you learn):\n"
+    out += f"- Stack(s): {', '.join(stacks) or 'unknown'}\n"
+    if readme:
+        out += f"- README excerpt:\n{readme}\n"
+    return out
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -519,7 +565,8 @@ def run_chat_agent(
     # directory structure of the working dir without re-searching it on
     # each follow-up question (the conversation history only carries prior
     # answers, not the structure it discovered last turn).
-    sys_msg = _SYSTEM.format(cwd=cwd) + "\n\n" + _build_repo_map(cwd)
+    sys_msg = (_SYSTEM.format(cwd=cwd) + "\n\n" + _repo_context(cwd)
+               + "\n\n" + _build_repo_map(cwd))
     convo: list[dict] = [{"role": "system", "content": sys_msg}]
     for m in messages:
         r = m.get("role") or "user"
