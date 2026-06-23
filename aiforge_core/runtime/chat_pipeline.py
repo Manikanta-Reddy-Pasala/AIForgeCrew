@@ -72,8 +72,22 @@ def _event_text(event) -> str:
 def _run_async_in_thread(coro_factory: Callable) -> None:
     import asyncio
     loop = asyncio.new_event_loop()
+
+    def _quiet_handler(loop, context):  # noqa: ANN001
+        # Swallow litellm LoggingWorker noise (CancelledError / TimeoutError
+        # / "task was destroyed") that asyncio would otherwise print to
+        # stderr when we tear the loop down. Surface anything else.
+        msg = str(context.get("message", "")) + str(context.get("exception", ""))
+        if "LoggingWorker" in msg or "logging_worker" in repr(context.get("future", "")):
+            return
+        exc = context.get("exception")
+        if isinstance(exc, (asyncio.CancelledError, TimeoutError)):
+            return
+        loop.default_exception_handler(context)
+
     try:
         asyncio.set_event_loop(loop)
+        loop.set_exception_handler(_quiet_handler)
         loop.run_until_complete(coro_factory())
     finally:
         # Drain leftover background tasks (litellm's LoggingWorker etc.)

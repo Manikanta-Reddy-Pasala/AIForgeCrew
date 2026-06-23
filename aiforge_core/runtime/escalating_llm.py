@@ -123,28 +123,44 @@ def _quiet_litellm() -> None:
         _l._async_success_callback = []
         _l._async_failure_callback = []
         for name in ("LiteLLM", "litellm", "LiteLLM Router", "LiteLLM Proxy"):
-            logging.getLogger(name).setLevel(logging.CRITICAL)
-        # KILL the async LoggingWorker. It spawns a persistent background
-        # task bound to whatever event loop is running; the team pipeline
-        # creates a NEW loop per run and closes it, orphaning the worker →
-        # "Task was destroyed but it is pending" / "Event loop is closed"
-        # spam. No-op its enqueue (closing the coroutine so there's no
-        # "never awaited" warning) so the worker never starts. We don't use
-        # litellm's async callbacks anyway.
+            lg = logging.getLogger(name)
+            lg.setLevel(logging.CRITICAL)
+            lg.propagate = False
+        try:
+            from litellm._logging import verbose_logger as _vl
+            _vl.setLevel(logging.CRITICAL)
+            _vl.propagate = False
+        except Exception:  # noqa: BLE001
+            pass
+        # FULLY neutralise the async LoggingWorker. It spawns a persistent
+        # background task bound to whatever event loop is running; the team
+        # pipeline creates a NEW loop per run and closes it, orphaning the
+        # worker → "Task was destroyed but it is pending" / "Event loop is
+        # closed" / "task_done() too many times" spam. No-op every entry
+        # point so it never starts a task or processes one (we don't use
+        # litellm's async callbacks anyway).
         try:
             from litellm.litellm_core_utils import logging_worker as _lw
 
-            def _drop(self, async_coroutine, *a, **k):  # noqa: ANN001
+            def _drop(self, async_coroutine=None, *a, **k):  # noqa: ANN001
                 try:
-                    async_coroutine.close()
+                    if async_coroutine is not None:
+                        async_coroutine.close()
                 except Exception:  # noqa: BLE001
                     pass
 
+            async def _anoop(self, *a, **k):  # noqa: ANN001
+                return None
+
             _lw.LoggingWorker.ensure_initialized_and_enqueue = _drop
+            _lw.LoggingWorker.enqueue = _drop
+            _lw.LoggingWorker.start = lambda self, *a, **k: None
+            _lw.LoggingWorker.flush = _anoop
+            _lw.LoggingWorker._flush_on_exit = lambda self, *a, **k: None
             gw = getattr(_lw, "GLOBAL_LOGGING_WORKER", None)
-            if gw is not None and hasattr(gw, "_worker_task"):
+            if gw is not None:
                 try:
-                    if gw._worker_task is not None:
+                    if getattr(gw, "_worker_task", None) is not None:
                         gw._worker_task.cancel()
                     gw._worker_task = None
                 except Exception:  # noqa: BLE001
@@ -153,6 +169,11 @@ def _quiet_litellm() -> None:
             pass
     except Exception:  # noqa: BLE001
         pass
+
+
+# Apply at import — before ANY litellm call / team run — so the worker is
+# never even created (not just lazily when the first LiteLlm is built).
+_quiet_litellm()
 
 
 def _is_empty(resp: LlmResponse) -> bool:
