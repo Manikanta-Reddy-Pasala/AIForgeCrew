@@ -338,6 +338,27 @@ export const chatApi = {
     fetch(`${BASE}/chat/sessions/${id}`, { method: 'DELETE' }).then(r => {
       if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
     }),
+
+  // Resolve a pending approval gate (#1) — Approve/Reject a risky action.
+  approve: (id: number, decision: 'approve' | 'reject', seq?: number) =>
+    j<{ resolved: boolean; decision: string }>(`/chat/sessions/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision, ...(seq != null ? { id: seq } : {}) }),
+    }),
+
+  // Workspace checkpoints (#3).
+  checkpoints: (id: number) =>
+    j<{ checkpoints: Array<{ sha: string; label: string; when: string }> }>(
+      `/chat/sessions/${id}/checkpoints`),
+
+  checkpointRestore: (id: number, sha: string) =>
+    j<{ ok: boolean; restored?: string; left_in_place?: string[]; error?: string }>(
+      `/chat/sessions/${id}/checkpoints/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sha }),
+      }),
 };
 
 export function chatSessionMessageURL(id: number): string {

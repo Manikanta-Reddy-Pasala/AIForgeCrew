@@ -974,11 +974,12 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # prepend matched playbooks. Best-effort: parse failures swallowed.
     try:
         from aiforge_core.runtime.microagents import (
-            load_microagents,
+            load_all,
             match,
             render_injection,
         )
-        agents = load_microagents()
+        # Global ~/.aiforge/microagents + repo-local .aiforge|.openhands ones.
+        agents = load_all()
         hay = f"{ticket.title or ''} {ticket.body or ''}"
         matched = match(hay, agents)
         if matched:

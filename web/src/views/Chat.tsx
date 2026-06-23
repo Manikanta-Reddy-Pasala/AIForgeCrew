@@ -34,7 +34,17 @@ const LS_SESSION_KEY = 'aiforge.chat.activeSessionId';
 const LS_MODEL_KEY = 'aiforge.chat.model';
 const LS_MODE_KEY = 'aiforge.chat.flowmode';
 
-type ChatMode = 'simple' | 'team';
+type ChatMode = 'simple' | 'plan' | 'team';
+
+// A pending human-approval gate (#1): the run is blocked until the user
+// Approves/Rejects this action.
+type PendingApproval = {
+  id: number;          // seq echoed back to the server
+  name: string;
+  args: object;
+  reason?: string;
+  preview?: string;
+};
 
 // ── relative time helper ──────────────────────────────────────────────────────
 
@@ -96,9 +106,13 @@ export default function Chat() {
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     try {
       const v = localStorage.getItem(LS_MODE_KEY);
-      return (v === 'team' ? 'team' : 'simple') as ChatMode;
+      return (v === 'team' || v === 'plan' ? v : 'simple') as ChatMode;
     } catch { return 'simple'; }
   });
+
+  // Pending approval gate (#1) + checkpoints panel (#3).
+  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  const [checkpoints, setCheckpoints] = useState<Array<{ sha: string; label: string; when: string }> | null>(null);
 
   // Model selector
   const [modelOptions, setModelOptions] = useState<ChatModelEntry[]>([]);
@@ -132,6 +146,45 @@ export default function Chat() {
     toast('Stopping run…');
     // Pull whatever the server persisted once it unwinds.
     if (activeId !== null) setTimeout(() => loadSession(activeId), 800);
+  }
+
+  // ── Approval gate (#1) ──────────────────────────────────────────────────────
+  async function resolveApproval(decision: 'approve' | 'reject') {
+    const p = pendingApproval;
+    if (!p || activeId === null) return;
+    setPendingApproval(null);   // optimistic — run resumes server-side
+    try {
+      await chatApi.approve(activeId, decision, p.id);
+    } catch (e: any) {
+      toast.error(`Approval failed: ${e.message}`);
+    }
+  }
+
+  // ── Checkpoints (#3) ────────────────────────────────────────────────────────
+  async function openCheckpoints() {
+    if (activeId === null) return;
+    try {
+      const res = await chatApi.checkpoints(activeId);
+      setCheckpoints(res.checkpoints || []);
+    } catch (e: any) {
+      toast.error(`Couldn't load checkpoints: ${e.message}`);
+    }
+  }
+
+  async function restoreCheckpoint(sha: string) {
+    if (activeId === null) return;
+    if (!window.confirm('Restore the workspace to this checkpoint? Tracked files revert to the snapshot; files created after it are left in place.')) return;
+    try {
+      const res = await chatApi.checkpointRestore(activeId, sha);
+      if (res.ok) {
+        toast.success(`Restored${res.left_in_place && res.left_in_place.length ? ` (${res.left_in_place.length} newer file(s) left in place)` : ''}`);
+        setCheckpoints(null);
+      } else {
+        toast.error(`Restore failed: ${res.error || 'unknown'}`);
+      }
+    } catch (e: any) {
+      toast.error(`Restore failed: ${e.message}`);
+    }
   }
 
   // ── Load sessions list ─────────────────────────────────────────────────────
@@ -399,6 +452,15 @@ export default function Chat() {
         let evt: any;
         try { evt = JSON.parse(line); } catch { return; }
 
+        // Approval gate (#1): the run is blocked server-side; surface the
+        // action + diff so the user can Approve/Reject. Cleared when the
+        // next tool/message event arrives (the run resumed).
+        if (evt.type === 'approval') {
+          setPendingApproval({ id: evt.id, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview });
+          return;
+        }
+        if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);
+
         setLiveTurn(prev => {
           if (!prev) return prev;
           if (evt.type === 'thought') {
@@ -582,14 +644,22 @@ export default function Chat() {
             )}
           </div>
           <div className="row" style={{ gap: 'var(--s-2)' }}>
-            {/* Simple | Team mode toggle */}
-            <div className="chat-mode-toggle" title="Simple: single conversational agent · Team: full ADK planner→doer→learner pipeline">
+            {/* Simple | Plan | Team mode toggle */}
+            <div className="chat-mode-toggle" title="Simple: single agent · Plan: read-only, proposes a plan first · Team: full ADK planner→doer→learner pipeline">
               <button
                 className={chatMode === 'simple' ? 'active' : ''}
                 onClick={() => setChatMode('simple')}
                 disabled={busy}
               >
                 Simple
+              </button>
+              <button
+                className={chatMode === 'plan' ? 'active' : ''}
+                onClick={() => setChatMode('plan')}
+                disabled={busy}
+                title="Read-only: the agent inspects the repo and proposes a plan; switch to Simple/Team to execute"
+              >
+                Plan
               </button>
               <button
                 className={chatMode === 'team' ? 'active' : ''}
@@ -601,7 +671,7 @@ export default function Chat() {
             </div>
 
             {/* Model selector — less relevant in team mode, so hide it */}
-            {chatMode === 'simple' && (
+            {chatMode !== 'team' && (
               <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
                 <span
                   title={modelActive ? 'Model is loaded and active' : 'Model is not currently loaded'}
@@ -654,6 +724,13 @@ export default function Chat() {
 
             {activeSession && (
               <>
+                <button
+                  className="ghost sm"
+                  onClick={openCheckpoints}
+                  title="Workspace checkpoints — roll back this session's edits"
+                >
+                  ↶ Checkpoints
+                </button>
                 <button
                   className="ghost sm"
                   onClick={() => setRenaming({ id: activeSession.id, value: activeSession.title })}
@@ -742,6 +819,33 @@ export default function Chat() {
                   </div>
                 </div>
               )}
+
+              {/* Approval gate (#1): run is paused, awaiting Approve/Reject */}
+              {pendingApproval && (
+                <div style={{
+                  margin: '8px 0', padding: 12,
+                  border: '1px solid var(--warn, #f59e0b)',
+                  borderRadius: 8, background: 'var(--bg-1)',
+                }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+                    ⚠ Approval needed — <code>{pendingApproval.name}</code>
+                  </div>
+                  {pendingApproval.reason && (
+                    <div className="muted xs" style={{ marginBottom: 6 }}>{pendingApproval.reason}</div>
+                  )}
+                  {pendingApproval.preview && (
+                    <pre style={{
+                      maxHeight: 220, overflow: 'auto', fontSize: 11,
+                      background: 'var(--bg-2)', padding: 8, borderRadius: 6,
+                      whiteSpace: 'pre-wrap', margin: '0 0 8px',
+                    }}>{pendingApproval.preview}</pre>
+                  )}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => resolveApproval('approve')}>✓ Approve</button>
+                    <button className="danger" onClick={() => resolveApproval('reject')}>✗ Reject</button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="chat-composer">
@@ -796,6 +900,46 @@ export default function Chat() {
               <button onClick={send} disabled={busy || !input.trim()}>
                 <Icon.Agents size={14} /> Run
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Checkpoints panel (#3) */}
+        {checkpoints !== null && (
+          <div
+            onClick={() => setCheckpoints(null)}
+            style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
+            }}
+          >
+            <div onClick={e => e.stopPropagation()} style={{
+              width: 'min(560px, 92vw)', maxHeight: '70vh', overflow: 'auto',
+              background: 'var(--bg-0)', border: '1px solid var(--border-1)',
+              borderRadius: 10, padding: 16,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <strong>Workspace checkpoints</strong>
+                <button className="ghost sm" onClick={() => setCheckpoints(null)}><Icon.X size={12} /></button>
+              </div>
+              {checkpoints.length === 0 ? (
+                <div className="muted xs">No checkpoints yet. A snapshot is taken automatically before each turn (in a git repo).</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {checkpoints.map(c => (
+                    <div key={c.sha} style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      gap: 8, padding: 8, border: '1px solid var(--border-0)', borderRadius: 6,
+                    }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</div>
+                        <div className="muted xs" style={{ fontFamily: 'var(--font-mono)' }}>{c.when} · {c.sha.slice(0, 8)}</div>
+                      </div>
+                      <button className="ghost sm" onClick={() => restoreCheckpoint(c.sha)} title="Restore the workspace to this snapshot">↶ Restore</button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

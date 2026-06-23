@@ -91,6 +91,46 @@ def load_microagents(directory: Path | None = None) -> list[Microagent]:
     return out
 
 
+# Repo-local microagent dirs — OpenHands ships these in-repo so a project
+# can carry its own conventions/playbooks (``.openhands/microagents``); we
+# also honour ``.aiforge/microagents``.
+_REPO_SUBDIRS = (".aiforge/microagents", ".openhands/microagents")
+
+
+def _repo_root(cwd: str | None) -> str | None:
+    root = os.environ.get("AIFORGE_WORKSPACE_DIR") or cwd \
+        or os.environ.get("AIFORGE_REPO_ROOT")
+    return root or None
+
+
+def load_all(cwd: str | None = None) -> list[Microagent]:
+    """Global (``~/.aiforge/microagents``) + repo-local microagents.
+
+    De-duplicates by ``name`` (repo-local wins — a project can override a
+    global playbook). Best-effort; never raises."""
+    by_name: dict[str, Microagent] = {}
+    for ma in load_microagents():
+        by_name[ma.name] = ma
+    root = _repo_root(cwd)
+    if root:
+        for sub in _REPO_SUBDIRS:
+            try:
+                for ma in load_microagents(Path(root) / sub):
+                    by_name[ma.name] = ma   # repo-local overrides global
+            except Exception:  # noqa: BLE001
+                continue
+    return list(by_name.values())
+
+
+def inject_for(text: str, cwd: str | None = None) -> str:
+    """One-shot: load global + repo microagents, match against ``text``,
+    return the rendered injection block (empty when none fire)."""
+    try:
+        return render_injection(match(text or "", load_all(cwd)))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def match(text: str, agents: list[Microagent]) -> list[Microagent]:
     """Return microagents that apply to ``text``, sorted by priority desc.
 
@@ -124,6 +164,8 @@ def render_injection(matches: list[Microagent]) -> str:
 __all__ = [
     "Microagent",
     "load_microagents",
+    "load_all",
+    "inject_for",
     "match",
     "render_injection",
 ]

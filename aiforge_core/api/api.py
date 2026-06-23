@@ -1964,7 +1964,7 @@ class _RenameBody(BaseModel):
 class _SessionMsgBody(BaseModel):
     content: str = Field(..., min_length=1)
     role: str | None = Field(None, description="override the session's model (archetype)")
-    mode: str = Field("simple", description="'simple' (single agent) | 'team' (full ADK flow)")
+    mode: str = Field("simple", description="'simple' (single agent) | 'plan' (read-only single agent) | 'team' (full ADK flow)")
 
 
 def _chat_workspace_root() -> str:
@@ -2054,10 +2054,25 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     ]
     cwd = session.get("cwd") or _default_cwd()
     team = body.mode == "team"
+    agent_mode = "plan" if body.mode == "plan" else "act"
     prompt = body.content.strip()
 
     from aiforge_core.runtime import chat_cancel
     chat_cancel.start(session_id)
+
+    # Auto-checkpoint (#3): snapshot the working dir at turn start so the
+    # user can roll back this turn's edits. Best-effort; gated by env.
+    if os.environ.get("AIFORGE_CHAT_AUTO_CHECKPOINT", "1") not in ("0", "false") \
+            and not team:
+        try:
+            import datetime as _dt
+
+            from aiforge_core.runtime import checkpoints
+            checkpoints.snapshot(
+                cwd, label=f"before: {prompt[:50]}",
+                when=_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception:  # noqa: BLE001
+            pass
 
     def _events():
         # Team mode → full ADK agent flow (planner→…→learner) for complex
@@ -2065,7 +2080,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         if team:
             return stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
                                         history=history)
-        return run_chat_agent(history, cwd=cwd, role=role, session_id=session_id)
+        return run_chat_agent(history, cwd=cwd, role=role, session_id=session_id,
+                              mode=agent_mode)
 
     def _gen():
         steps: list[dict] = []
@@ -2094,6 +2110,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # runs inline in this generator, so finish it here.
             if not team:
                 chat_cancel.finish(session_id)
+                from aiforge_core.runtime import chat_approve
+                chat_approve.finish(session_id)
             chat_store.add_message(session_id, "assistant", final_text, steps)
             # Auto-memory: persist a markdown note of what this turn did so
             # the Memory tab + ~/.aiforge/memory stay current without manual
@@ -2153,9 +2171,69 @@ def chat_session_stop(session_id: int) -> dict:
     """Stop the in-flight chat run for this session — signals the agent
     loop / ADK pipeline to halt and kills any subprocess groups it
     spawned (builds, test runs). Idempotent."""
-    from aiforge_core.runtime import chat_cancel
+    from aiforge_core.runtime import chat_approve, chat_cancel
     active = chat_cancel.cancel(session_id)
+    chat_approve.cancel(session_id)   # unblock any pending approval gate
     return {"stopped": active, "session_id": session_id}
+
+
+class _ApproveBody(BaseModel):
+    decision: str = Field(..., description="'approve' | 'reject'")
+    id: int | None = Field(None, description="approval seq id echoed from the event")
+    note: str | None = None
+
+
+@app.post("/api/chat/sessions/{session_id}/approve")
+def chat_session_approve(session_id: int, body: _ApproveBody) -> dict:
+    """Resolve a pending approval gate (#1) — the chat run is blocked
+    waiting for the user's Approve/Reject on a risky/ask-policy action."""
+    from aiforge_core.runtime import chat_approve
+    ok = chat_approve.resolve(session_id, body.decision, body.note or "", body.id)
+    return {"resolved": ok, "decision": body.decision, "session_id": session_id}
+
+
+class _CheckpointBody(BaseModel):
+    label: str | None = Field(None, description="human label for the snapshot")
+
+
+@app.get("/api/chat/sessions/{session_id}/checkpoints")
+def chat_session_checkpoints(session_id: int) -> dict:
+    """List workspace checkpoints (#3) for this session's working dir."""
+    from aiforge_core.runtime import checkpoints, chat_store
+    session = chat_store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, f"session {session_id} not found")
+    cwd = session.get("cwd") or _default_cwd()
+    return {"checkpoints": checkpoints.list_checkpoints(cwd)}
+
+
+@app.post("/api/chat/sessions/{session_id}/checkpoints", status_code=201)
+def chat_session_checkpoint_create(session_id: int, body: _CheckpointBody) -> dict:
+    """Snapshot the session's working dir (#3) to a hidden git ref."""
+    import datetime as _dt
+
+    from aiforge_core.runtime import checkpoints, chat_store
+    session = chat_store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, f"session {session_id} not found")
+    cwd = session.get("cwd") or _default_cwd()
+    when = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return checkpoints.snapshot(cwd, label=body.label or "manual", when=when)
+
+
+class _RestoreBody(BaseModel):
+    sha: str = Field(..., min_length=4)
+
+
+@app.post("/api/chat/sessions/{session_id}/checkpoints/restore")
+def chat_session_checkpoint_restore(session_id: int, body: _RestoreBody) -> dict:
+    """Restore the session's working dir to a checkpoint (#3)."""
+    from aiforge_core.runtime import checkpoints, chat_store
+    session = chat_store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, f"session {session_id} not found")
+    cwd = session.get("cwd") or _default_cwd()
+    return checkpoints.restore(cwd, body.sha)
 
 
 class _SessionTicketBody(BaseModel):

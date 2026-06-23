@@ -160,10 +160,16 @@ def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
                             "truncated": True}
                 _t.sleep(0.2)
             out_b, err_b = proc_p.communicate()
+            out_s = (out_b or b"").decode("utf-8", "replace")
+            err_s = (err_b or b"").decode("utf-8", "replace")
             return {"ok": proc_p.returncode == 0, "command": command,
                     "returncode": proc_p.returncode,
-                    "stdout": (out_b or b"").decode("utf-8", "replace")[:_STDOUT_CAP_BYTES],
-                    "stderr": (err_b or b"").decode("utf-8", "replace")[:_STDOUT_CAP_BYTES]}
+                    "stdout": out_s[:_STDOUT_CAP_BYTES],
+                    "stderr": err_s[:_STDOUT_CAP_BYTES],
+                    # Keep the return shape consistent with the non-cancellable
+                    # path below — callers/tests rely on ``truncated``.
+                    "truncated": (len(out_s) > _STDOUT_CAP_BYTES
+                                  or len(err_s) > _STDOUT_CAP_BYTES)}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc), "command": command}
     try:

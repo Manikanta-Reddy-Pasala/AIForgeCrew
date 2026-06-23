@@ -374,6 +374,44 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "memory_write": _t_memory_write,
 }
 
+# PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
+_READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup")
+
+_PLAN_BANNER = (
+    "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
+    "(file_read, list_dir, find, grep) and recall memory (memory_lookup), but "
+    "you CANNOT write files, run commands, install, or change anything. "
+    "Investigate, then produce a concrete step-by-step PLAN in FINAL: (files "
+    "to touch, commands to run, tests, risks). The user switches to Act mode "
+    "to execute it. ASK if you need input to plan well."
+)
+
+
+def _diff_preview(tool: str, args: dict, cwd: str) -> str:
+    """Human-readable preview of a mutating action for the approval gate."""
+    import difflib
+    try:
+        if tool in ("file_write", "file_create"):
+            path = args.get("path", "?")
+            new = args.get("content", "")
+            try:
+                old = _resolve(cwd, path).read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                old = ""
+            diff = "".join(difflib.unified_diff(
+                old.splitlines(keepends=True), new.splitlines(keepends=True),
+                fromfile=f"a/{path}", tofile=f"b/{path}"))
+            return diff[:4000] or f"(new file {path}, {len(new)} bytes)"
+        if tool == "file_patch":
+            return (f"--- {args.get('path', '?')}\n"
+                    f"- {str(args.get('old_text', ''))[:500]}\n"
+                    f"+ {str(args.get('new_text', ''))[:500]}")
+        if tool in ("run_command", "bash", "shell"):
+            return "$ " + str(args.get("cmd", ""))
+    except Exception:  # noqa: BLE001
+        pass
+    return json.dumps(args, default=str)[:1000]
+
 _SYSTEM = """You are AIForge, an autonomous coding assistant with FULL access to \
 the user's filesystem and shell in the working directory {cwd}.
 
@@ -661,22 +699,31 @@ def run_chat_agent(
     max_steps: int | None = None,   # kept for callers/tests; None = no cap
     complete_fn: Callable[..., str] | None = None,
     session_id: int | None = None,
+    mode: str = "act",              # "act" = full tools; "plan" = read-only
 ) -> Iterator[dict]:
     """Drive the ReAct loop until the agent finishes or a stuck loop is
     detected (NOT a step count). Yields SSE-ready event dicts:
 
     ``{"type": "thought", "text"}`` · ``{"type": "tool", "name", "args",
     "result"}`` · ``{"type": "message", "text"}`` (final) ·
+    ``{"type": "approval", ...}`` (ask-policy gate) ·
     ``{"type": "error", "text"}`` · ``{"type": "done"}``.
     """
     if complete_fn is None:
         from aiforge_core.llm.client import complete as complete_fn  # type: ignore
 
-    from aiforge_core.runtime import chat_cancel
+    from aiforge_core.runtime import chat_approve, chat_cancel
+    from aiforge_core.runtime.tools import tool_policy
     chat_cancel.set_active(session_id)
+    plan_mode = (mode or "act").lower() == "plan"
 
     import collections
     safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
+
+    # Latest user message drives mentions (#4) + microagent triggers (#6).
+    last_user = next(
+        (m.get("content") for m in reversed(messages)
+         if (m.get("role") or "user") == "user" and m.get("content")), "")
 
     # Inject a fresh repo map every turn so the agent ALWAYS knows the
     # directory structure of the working dir without re-searching it on
@@ -686,7 +733,26 @@ def run_chat_agent(
     sys_msg = _SYSTEM.format(cwd=cwd)
     if rules:                       # user rule book first — highest priority
         sys_msg = rules + "\n\n" + sys_msg
+    if plan_mode:                   # plan banner second — constrains this turn
+        sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
     sys_msg += "\n\n" + _repo_context(cwd) + "\n\n" + _build_repo_map(cwd)
+    # Repo knowledge microagents (#6): repo-shipped conventions + any whose
+    # trigger word hits this request.
+    try:
+        from aiforge_core.runtime import microagents as _ma
+        ma_block = _ma.inject_for(last_user, cwd)
+        if ma_block:
+            sys_msg += "\n\n" + ma_block
+    except Exception:  # noqa: BLE001
+        pass
+    # @-mentions (#4): user-referenced files/folders/urls/problems.
+    try:
+        from aiforge_core.runtime import mentions as _mentions
+        ment_block, _toks = _mentions.expand(last_user, cwd)
+        if ment_block:
+            sys_msg += "\n\n" + ment_block
+    except Exception:  # noqa: BLE001
+        pass
     # SESSION START (self-learning): on a fresh session — before any
     # assistant turn — proactively recall memory keyed to the opening
     # request, so the agent starts informed by prior sessions (it already
@@ -768,6 +834,49 @@ def run_chat_agent(
 
         if step.get("thought"):
             yield {"type": "thought", "text": step["thought"]}
+
+        # PLAN mode (#2): block mutating tools — read-only only.
+        if plan_mode and name not in _READONLY_TOOLS:
+            result = {"ok": False, "blocked": "plan_mode",
+                      "error": f"'{name}' is blocked in Plan mode (read-only). "
+                               "Finish with a PLAN; the user will switch to Act "
+                               "mode to execute it."}
+            yield {"type": "tool", "name": name, "args": args, "result": result}
+            convo.append({"role": "user",
+                          "content": f"OBSERVATION: {json.dumps(result)}"})
+            continue
+
+        # Permission policy (#5) + risk (#7): allow / ask / deny.
+        verdict = tool_policy.decide(name, args)
+        if verdict["policy"] == tool_policy.DENY:
+            result = {"ok": False, "blocked": "policy",
+                      "error": f"'{name}' is denied by policy: {verdict['reason']}"}
+            yield {"type": "tool", "name": name, "args": args, "result": result}
+            convo.append({"role": "user",
+                          "content": f"OBSERVATION: {json.dumps(result)}"})
+            continue
+        if verdict["policy"] == tool_policy.ASK:
+            # Approval gate (#1): surface the action + diff preview, block on
+            # the user's Approve/Reject (POST /api/chat/sessions/{id}/approve).
+            preview = _diff_preview(name, args, cwd)
+            seq = chat_approve.request(session_id) if session_id is not None else 0
+            yield {"type": "approval", "id": seq, "name": name, "args": args,
+                   "reason": verdict["reason"], "preview": preview}
+            if session_id is None:
+                decision = {"decision": "reject", "note": "no session"}
+            else:
+                decision = chat_approve.wait(session_id)
+            if decision.get("decision") != "approve":
+                result = {"ok": False, "rejected": True,
+                          "error": "user rejected this action"
+                                   + (f": {decision['note']}" if decision.get("note") else "")}
+                yield {"type": "tool", "name": name, "args": args, "result": result}
+                convo.append({"role": "user",
+                              "content": f"OBSERVATION: {json.dumps(result)} "
+                                         "(the user rejected it — do NOT retry; "
+                                         "adjust or ASK what they want instead.)"})
+                continue
+
         fn = TOOLS.get(name)
         if fn is None:
             result = {"ok": False, "error": f"unknown tool: {name}"}
