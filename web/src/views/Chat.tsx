@@ -833,25 +833,46 @@ function AgentBadge({ role }: { role?: string }) {
   );
 }
 
+// A thought/reasoning step. Long chain-of-thought (reasoning models dump
+// their whole "Thinking Process…") is collapsed to one line so each
+// agent reads as a clean structured step; click to expand the full text.
+function ThoughtRow({ step }: { step: Extract<AgentStep, { kind: 'thought' }> }) {
+  const long = step.text.length > 180;
+  const [open, setOpen] = useState(!long);
+  const preview = long && !open
+    ? step.text.replace(/\s+/g, ' ').slice(0, 140) + '…'
+    : step.text;
+  return (
+    <div style={{
+      display: 'flex', gap: 6, alignItems: 'flex-start',
+      padding: '5px 10px',
+      background: 'var(--bg-1)',
+      border: '1px solid var(--border-0)',
+      borderRadius: 'var(--r-sm)',
+      fontStyle: 'italic',
+      color: 'var(--fg-2)',
+      fontSize: 'var(--fs-xs)',
+      lineHeight: 1.5,
+    }}>
+      <span style={{ flexShrink: 0, marginTop: 1 }}>💭</span>
+      <AgentBadge role={step.role} />
+      <span style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{preview}</span>
+      {long && (
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="ghost sm"
+          style={{ flexShrink: 0, fontSize: 10, fontStyle: 'normal', padding: '0 6px' }}
+        >
+          {open ? 'collapse' : 'expand'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AgentStepRow({ step }: { step: AgentStep }) {
   if (step.kind === 'thought') {
-    return (
-      <div style={{
-        display: 'flex', gap: 6, alignItems: 'flex-start',
-        padding: '5px 10px',
-        background: 'var(--bg-1)',
-        border: '1px solid var(--border-0)',
-        borderRadius: 'var(--r-sm)',
-        fontStyle: 'italic',
-        color: 'var(--fg-2)',
-        fontSize: 'var(--fs-xs)',
-        lineHeight: 1.5,
-      }}>
-        <span style={{ flexShrink: 0, marginTop: 1 }}>💭</span>
-        <AgentBadge role={step.role} />
-        <span>{step.text}</span>
-      </div>
-    );
+    return <ThoughtRow step={step} />;
   }
   if (step.kind === 'tool') {
     const res = step.result as any;
