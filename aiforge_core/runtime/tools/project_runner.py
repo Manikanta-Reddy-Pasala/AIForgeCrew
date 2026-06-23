@@ -52,8 +52,39 @@ def _node_framework(cwd: str) -> str:
     return "node"
 
 
+def _has_tests(cwd: str, stacks: list[str]) -> bool:
+    """Best-effort: does the project have a runnable test setup?"""
+    if os.path.isdir(os.path.join(cwd, "src", "test")):   # maven/gradle
+        return True
+    if os.path.isdir(os.path.join(cwd, "tests")) or os.path.isdir(
+            os.path.join(cwd, "test")):
+        return True
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in {
+            ".git", "node_modules", ".venv", "venv", "target", "build", "dist"}]
+        for f in files:
+            if (f.startswith("test_") and f.endswith(".py")) \
+                    or f.endswith("_test.go") or f.endswith(".test.js") \
+                    or f.endswith(".test.ts") or f.endswith(".spec.ts") \
+                    or f.endswith("Test.java") or f.endswith("Tests.java"):
+                return True
+        if root.count(os.sep) - cwd.count(os.sep) >= 4:   # bound the walk
+            dirs[:] = []
+    # Node with a real "test" script (not the npm-init placeholder)?
+    if any(s.startswith("node") for s in stacks):
+        try:
+            import json as _j
+            pkg = _j.loads(open(os.path.join(cwd, "package.json")).read())
+            t = ((pkg.get("scripts") or {}).get("test") or "")
+            if t and "no test specified" not in t:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    return False
+
+
 def detect(cwd: str) -> dict:
-    """Detect the stack(s) present in ``cwd``."""
+    """Detect the stack(s) present in ``cwd`` + whether tests exist."""
     stacks: list[str] = []
     if _has(cwd, "pom.xml"):
         stacks.append("maven")
@@ -68,6 +99,7 @@ def detect(cwd: str) -> dict:
     if _has(cwd, "Cargo.toml"):
         stacks.append("rust")
     return {"ok": True, "stacks": stacks, "cwd": cwd,
+            "has_tests": _has_tests(cwd, stacks),
             "note": "no recognised project markers" if not stacks else ""}
 
 

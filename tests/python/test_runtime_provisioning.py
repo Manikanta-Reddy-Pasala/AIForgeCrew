@@ -211,3 +211,12 @@ def test_repeat_guard_disabled_by_zero(monkeypatch):
     monkeypatch.setenv("AIFORGE_TOOL_REPEAT_LIMIT", "0")
     from aiforge_core.runtime.repeat_guard import make_repeat_guard_callback
     assert make_repeat_guard_callback() is None
+
+
+def test_project_detect_reports_has_tests(tmp_path):
+    from aiforge_core.runtime.tools import project_runner as pr
+    (tmp_path / "requirements.txt").write_text("flask")
+    assert pr.detect(str(tmp_path))["has_tests"] is False   # no tests yet
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("def test_a(): pass")
+    assert pr.detect(str(tmp_path))["has_tests"] is True

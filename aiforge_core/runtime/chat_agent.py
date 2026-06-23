@@ -446,6 +446,12 @@ proceed after they confirm.
 edit the offending file(s), and re-run. Loop until it actually works \
 (exit 0 / server up / tests green). Install any missing tool or package on \
 demand. Never hand a broken state back to the user.
+- TEST what you build: after writing or changing code, verify it — call \
+`project` with action "test" (or run the repo's test command). If you \
+wrote new logic and there's no test for it, add a quick test and run it. \
+If you CANNOT determine how to test (no test framework/files — check \
+`project` detect's has_tests), ASK the user: where and how should I test \
+this, or should I skip tests? Do not silently skip verification.
 - When asked to PUSH (or "commit and push"): use run_command with git — \
 `git add -A`, `git commit -m "<concise message>"`, then `git push`. If not on \
 a branch or push is rejected, create/switch a branch and push that. Report \
