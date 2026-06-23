@@ -58,18 +58,16 @@ def _dir_block(path: str, token: str) -> str:
 
 
 def _url_block(url: str) -> str:
+    # Canonical fetcher (str arg → {ok, body}); falls back to urllib.
     try:
-        from aiforge_core.runtime.tools import fetch_url as _fu
-        # fetch_url exposes a tool fn; call defensively across signatures.
-        res = _fu.fetch_url({"url": url}) if hasattr(_fu, "fetch_url") else None
-        if isinstance(res, dict):
-            txt = res.get("text") or res.get("content") or res.get("body") or ""
-            if txt:
-                return f"@{url} (url):\n{str(txt)[:_MAX_URL]}"
-            return f"@{url} → (fetch returned no text: {res.get('error', 'empty')})"
+        from aiforge_core.runtime.doer_tools import fetch_url
+        res = fetch_url(url)
+        if isinstance(res, dict) and res.get("ok") and res.get("body"):
+            return f"@{url} (url):\n{str(res['body'])[:_MAX_URL]}"
+        if isinstance(res, dict) and not res.get("ok"):
+            return f"@{url} → (could not fetch: {res.get('error', 'error')})"
     except Exception:  # noqa: BLE001
         pass
-    # Fallback: plain urllib GET.
     try:
         import urllib.request
         with urllib.request.urlopen(url, timeout=15) as r:  # noqa: S310
@@ -81,13 +79,17 @@ def _url_block(url: str) -> str:
 
 def _problems_block(cwd: str) -> str:
     """Best-effort workspace diagnostics — run the repo's typecheck and
-    surface failures. Falls back to a TODO/FIXME scan."""
+    surface failures. ``typecheck()`` resolves its own root."""
     try:
         from aiforge_core.runtime.tools.typecheck import typecheck
-        res = typecheck({"path": "."}, _root(cwd)) if callable(typecheck) else None
-        if isinstance(res, dict) and (res.get("output") or res.get("errors")):
-            out = res.get("output") or res.get("errors")
-            return f"@problems (typecheck):\n{str(out)[:_MAX_FILE]}"
+        res = typecheck()
+        if isinstance(res, dict):
+            out = (res.get("output") or res.get("errors")
+                   or res.get("stdout") or res.get("stderr"))
+            if out:
+                return f"@problems (typecheck):\n{str(out)[:_MAX_FILE]}"
+            if res.get("ok"):
+                return "@problems → (typecheck clean — no diagnostics)"
     except Exception:  # noqa: BLE001
         pass
     return ("@problems → (no type-checker output available; run the project's "
@@ -109,7 +111,7 @@ def expand(text: str, cwd: str) -> tuple[str, list[str]]:
         low = tok.lower()
         if low == "problems":
             blocks.append(_problems_block(cwd))
-        elif tok.startswith(("http://", "https://")) or tok.startswith("http"):
+        elif tok.startswith(("http://", "https://")):
             blocks.append(_url_block(tok))
         else:
             p = _resolve_path(cwd, tok.rstrip("/"))

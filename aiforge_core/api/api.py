@@ -2060,10 +2060,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     from aiforge_core.runtime import chat_cancel
     chat_cancel.start(session_id)
 
-    # Auto-checkpoint (#3): snapshot the working dir at turn start so the
-    # user can roll back this turn's edits. Best-effort; gated by env.
-    if os.environ.get("AIFORGE_CHAT_AUTO_CHECKPOINT", "1") not in ("0", "false") \
-            and not team:
+    def _auto_checkpoint():
+        # Snapshot the working dir at turn start so the user can roll back
+        # this turn's edits. Best-effort; gated by env. Runs INSIDE _gen
+        # (first, before streaming) so its git subprocesses don't delay the
+        # StreamingResponse from opening.
+        if os.environ.get("AIFORGE_CHAT_AUTO_CHECKPOINT", "1") in ("0", "false") \
+                or team:
+            return
         try:
             import datetime as _dt
 
@@ -2087,6 +2091,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         steps: list[dict] = []
         final_text = ""
         awaiting = False   # turn ended with a question / pause, not an outcome
+        _auto_checkpoint()   # snapshot first (off the response-open path)
         try:
             for ev in _events():
                 if ev.get("type") == "message":

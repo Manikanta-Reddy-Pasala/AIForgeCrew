@@ -78,8 +78,14 @@ def snapshot(cwd: str, label: str = "", when: str = "") -> dict:
     tmp.close()
     try:
         env = {"GIT_INDEX_FILE": tmp.name}
+        # Initialize the temp index: from HEAD if it exists, else an EMPTY
+        # index (a brand-new workspace has no commit yet — without this the
+        # zero-byte temp file isn't a valid index and ``git add -A`` fails
+        # with "index file smaller than expected").
         if _has_head(cwd):
             _git(cwd, "read-tree", "HEAD", env=env)
+        else:
+            _git(cwd, "read-tree", "--empty", env=env)
         # Stage everything currently in the worktree (tracked + untracked).
         add = _git(cwd, "add", "-A", env=env)
         if add.returncode != 0:
@@ -126,12 +132,20 @@ def restore(cwd: str, sha: str) -> dict:
     if not sha or _git(cwd, "cat-file", "-e", sha).returncode != 0:
         return {"ok": False, "error": "unknown_checkpoint"}
     # Files in the worktree now but NOT in the snapshot tree → would-orphan.
-    now = set(_git(cwd, "ls-files").stdout.split())
-    snap = set(_git(cwd, "ls-tree", "-r", "--name-only", sha).stdout.split())
+    # NUL-delimited so paths with spaces/newlines don't split wrong.
+    now = {p for p in _git(cwd, "ls-files", "-z").stdout.split("\0") if p}
+    snap = {p for p in _git(cwd, "ls-tree", "-r", "--name-only", "-z", sha)
+            .stdout.split("\0") if p}
     left = sorted(now - snap)
-    co = _git(cwd, "checkout", sha, "--", ".")
+    # Worktree-only restore — leave the real index untouched (``git checkout
+    # <sha> -- .`` would also rewrite the staging area). ``git restore
+    # --worktree`` is the non-intrusive form.
+    co = _git(cwd, "restore", "--source", sha, "--worktree", "--", ".")
     if co.returncode != 0:
-        return {"ok": False, "error": f"checkout failed: {co.stderr[:200]}"}
+        # Fallback for older git without ``restore``.
+        co = _git(cwd, "checkout", sha, "--", ".")
+        if co.returncode != 0:
+            return {"ok": False, "error": f"restore failed: {co.stderr[:200]}"}
     return {"ok": True, "restored": sha, "left_in_place": left}
 
 

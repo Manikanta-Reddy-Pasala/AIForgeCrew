@@ -83,7 +83,7 @@ def make_approval_gate_callback():
                 "preview": _preview(name, args or {}),
             })
             # Block off the event loop so /approve (another thread) can resolve.
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             decision = await loop.run_in_executor(None, chat_approve.wait, sid)
             if decision.get("decision") != "approve":
                 return {"ok": False, "rejected": True,

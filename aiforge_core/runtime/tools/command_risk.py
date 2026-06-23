@@ -32,9 +32,9 @@ _DANGEROUS = [
     # / remote-code-exec). Matches curl/wget/fetch … | sh|bash|zsh|python|…
     (r"\b(curl|wget|fetch)\b[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|ksh|python[0-9.]*|perl|ruby|node)\b",
      "pipes a network download straight into a shell/interpreter (remote code execution)"),
-    # secret exfiltration: reading creds/keys and sending them out
-    (r"(cat|grep|tail|head|cp|scp|curl|tar)\b[^\n]*(\.ssh/|\.aws/|\.env\b|id_rsa|id_ed25519|credentials|secrets?\b|\.pem\b|\.kube/|private[_-]?key)",
-     "touches credentials / private keys / secrets"),
+    # secret EXFILTRATION: pushing creds/keys off the box (network/copy verbs)
+    (r"(scp|curl|wget|rsync|nc|netcat|tar)\b[^\n]*(\.ssh/|\.aws/|\.env\b|id_rsa|id_ed25519|credentials|secrets?\b|\.pem\b|\.kube/|private[_-]?key)",
+     "exfiltrates credentials / private keys / secrets off the machine"),
     (r"\benv\b[^\n]*\|\s*(curl|wget|nc|netcat)\b",
      "pipes the environment (likely secrets) to the network"),
     # raw disk / filesystem destruction
@@ -48,6 +48,10 @@ _DANGEROUS = [
 
 # ── caution: reversible-ish but worth a confirmation under ask policy ─────
 _CAUTION = [
+    # local READ of creds/keys (no network) — surfaces secrets into the
+    # agent's context; a heads-up, not an exfil.
+    (r"\b(cat|less|more|grep|tail|head|cp)\b[^\n]*(\.ssh/|\.aws/|\.env\b|id_rsa|id_ed25519|credentials|secrets?\b|\.pem\b|\.kube/|private[_-]?key)",
+     "reads credentials / private keys / secrets"),
     (r"\bsudo\b", "runs with elevated privileges (sudo)"),
     (r"\bchmod\s+(-[a-zA-Z]+\s+)*777\b", "makes a path world-writable (chmod 777)"),
     (r"\bchown\b", "changes file ownership"),
