@@ -30,8 +30,8 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, Iterator
 
 _ACTION_RE = re.compile(r"ACTION:\s*([A-Za-z_]+)", re.IGNORECASE)
 _ARGS_RE = re.compile(r"ARGS_JSON:\s*(\{.*\})", re.IGNORECASE | re.DOTALL)
@@ -101,6 +101,14 @@ def _t_list_dir(args: dict, cwd: str) -> dict:
 
 def _t_run_command(args: dict, cwd: str) -> dict:
     cmd = args["cmd"]
+    from aiforge_core.runtime.tools import delete_guard
+    allow_delete = delete_guard.allow_delete(
+        ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
+    if not allow_delete and not args.get("confirm_delete") \
+            and delete_guard.is_destructive_delete(cmd):
+        return {"ok": False, "blocked": "delete",
+                "error": delete_guard.REFUSAL + " (re-issue with "
+                         "confirm_delete=true after the user agrees.)"}
     base = cwd
     root = _workspace_root()
     if root is not None:
@@ -151,6 +159,17 @@ def _t_memory_write(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_ensure_runtime(args: dict, cwd: str) -> dict:
+    """Install + verify missing language runtimes / build tools so the
+    agent can actually build & run the project."""
+    try:
+        from aiforge_core.runtime.tools.ensure_runtime import ensure_runtime
+        tools = args.get("tools") or args.get("tool") or []
+        return ensure_runtime(tools)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_read": _t_file_read,
     "file_write": _t_file_write,
@@ -158,6 +177,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_patch": _t_file_patch,
     "list_dir": _t_list_dir,
     "run_command": _t_run_command,
+    "ensure_runtime": _t_ensure_runtime,
     "memory_lookup": _t_memory_lookup,
     "memory_write": _t_memory_write,
 }
@@ -177,7 +197,8 @@ Tool arguments:
 - file_write   {{"path": "...", "content": "..."}}      (creates/overwrites)
 - file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}
 - list_dir     {{"path": "."}}
-- run_command  {{"cmd": "ls -la", "timeout": 120}}
+- run_command  {{"cmd": "ls -la", "timeout": 600}}
+- ensure_runtime {{"tools": ["java", "mvn"]}}            (install + verify missing runtimes/build tools)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false}}
                 (save a learning/decision to the knowledge graph for future recall)
@@ -196,6 +217,14 @@ Operating principles — be fully autonomous, don't stop half-way:
 run_command — detect the stack (package.json / requirements.txt / pom.xml / \
 Cargo.toml / Makefile / go.mod), install dependencies, build, then start/run \
 it. Don't just describe the steps — execute them.
+- MISSING RUNTIME/TOOL: if a command fails with "command not found" (java, \
+mvn, python, node, go…) or you know the stack up front, call ensure_runtime \
+with the executables you need (e.g. ["java","mvn"]); it installs + verifies \
+them. Then re-run the build and CONTINUE the loop — finish the job.
+- DELETE policy: you may do every operation autonomously EXCEPT deleting \
+files or data. Never run rm / rmdir / git clean / drop table / etc. without \
+the user's OK — stop and ASK in FINAL, describing the exact command; only \
+proceed after they confirm.
 - FIX errors yourself: if a command fails, read the error in the OBSERVATION, \
 edit the offending file(s), and re-run. Loop until it actually works \
 (exit 0 / server up / tests green). Install any missing tool or package on \

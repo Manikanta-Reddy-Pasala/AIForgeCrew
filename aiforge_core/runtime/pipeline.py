@@ -42,6 +42,7 @@ straight wiring layer.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from aiforge_core.agents import (
@@ -79,6 +80,8 @@ from aiforge_core.config import agent_config as _acfg
 from .escalating_llm import EscalatingLlm
 from .local_probe import maybe_substitute_primary
 
+log = logging.getLogger("aiforge.pipeline")
+
 # Per-ticket override knob populated by ``adk_runner._process_one_ticket``
 # before each ``build_pipeline`` call. None means "respect agent_config";
 # a string means "force every archetype onto this provider for this run".
@@ -113,16 +116,28 @@ def _force_claude_local_cfg(role: str) -> dict:
     }
 
 
-def _claude_pinned_model(role: str):
-    """Build an :class:`EscalatingLlm` always pinned to ``claude_local``.
+def _claude_available() -> bool:
+    """Is the Claude subscription CLI usable on this host?"""
+    import shutil
+    return shutil.which(os.environ.get("AIFORGE_CLAUDE_BIN", "claude")) is not None
 
-    Used for the Enhancer + Validator agents — those stages are
-    *always* Claude regardless of the operator's profile because
-    local models are weak at re-framing tickets / second-opinion
-    judging. We don't pass a cloud chain because Claude IS the
-    fallback layer for everything else; degrading further makes no
-    sense for these two roles.
+
+def _claude_pinned_model(role: str):
+    """Build an :class:`EscalatingLlm` pinned to ``claude_local`` for the
+    Enhancer + Validator stages (local models are weak at re-framing /
+    second-opinion judging).
+
+    BUT fall back to the operator's normally-configured model when the
+    ``claude`` CLI isn't installed — otherwise these stages crash the
+    whole pipeline with ``FileNotFoundError: 'claude'``. A deploy with no
+    Claude CLI (e.g. pointing everything at a self-hosted OpenAI-compatible
+    endpoint) then still runs end-to-end.
     """
+    if not _claude_available():
+        log.warning(
+            "claude CLI not found — %s falls back to the configured model "
+            "instead of claude_local", role)
+        return build_litellm_model(role)
     primary = _force_claude_local_cfg(role)
     return EscalatingLlm.build(role, primary, [])
 
@@ -145,7 +160,7 @@ def build_litellm_model(role: str):
     EscalatingLlm wrapping always applies (primary → cloud chain →
     primary_retry); disable the chain with ``AIFORGE_ESCALATE_DISABLE=1``.
     """
-    if _FORCE_PROVIDER == "claude_local":
+    if _FORCE_PROVIDER == "claude_local" and _claude_available():
         primary = _force_claude_local_cfg(role)
         return EscalatingLlm.build(role, primary, [])  # no chain — file
                                                        # context is local

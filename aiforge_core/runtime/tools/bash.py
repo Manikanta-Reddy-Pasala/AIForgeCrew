@@ -163,6 +163,11 @@ def bash(
     """
     if not command or not command.strip():
         return {"ok": False, "error": "empty_command"}
+    # Delete policy: autonomous for everything else, ask before deleting.
+    from aiforge_core.runtime.tools import delete_guard
+    if not delete_guard.allow_delete() \
+            and delete_guard.is_destructive_delete(command):
+        return {"ok": False, "blocked": "delete", "error": delete_guard.REFUSAL}
     # Optional Docker sandbox (sub #7) takes precedence when opted in.
     from aiforge_core.runtime import docker_sandbox
     if docker_sandbox.is_enabled():

@@ -423,6 +423,26 @@ def get(role: str) -> dict[str, Any]:
     return load_all()[role]
 
 
+def _row_for(role: str) -> dict[str, Any]:
+    """Like :func:`get`, but unknown roles (the always-Claude
+    ``enhancer`` / ``validator`` stages, not in the configurable archetype
+    list) resolve to the global ``_default`` instead of raising — so when
+    the Claude CLI is absent and they fall back, they still get the
+    operator's configured model. ``get`` stays strict for callers (e.g.
+    observability) that depend on the raise.
+    """
+    if role in _ROLES:
+        return get(role)
+    gd = _global_default_row()
+    if gd and gd.get("provider"):
+        model = (gd.get("model") or "").strip() or _local_default_model()
+        return {"provider": gd["provider"], "model": model,
+                "base_url": gd.get("base_url"), "api_key": gd.get("api_key"),
+                "insecure_tls": bool(gd.get("insecure_tls"))}
+    return {"provider": "local", "model": _local_default_model(),
+            "base_url": None, "api_key": None, "insecure_tls": False}
+
+
 def set_role(role: str, provider: str, model: str,
              base_url: str | None = None,
              api_key: str | None = None,
@@ -490,8 +510,11 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     and an extra key ``_claude_cli=True``. Runtimes MUST detect this and
     route the call through ``aiforge_core.llm.client._send_via_claude_cli``
     instead of constructing a LiteLLMModel.
+
+    Unknown roles (enhancer / validator fallback) resolve to the global
+    ``_default`` via :func:`_row_for` rather than raising.
     """
-    row = get(role)
+    row = _row_for(role)
     prov = PROVIDERS.get(row["provider"]) or PROVIDERS["local"]
     prefix = prov["litellm_prefix"]
     model = row["model"]
@@ -591,7 +614,7 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
     """
     if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
         return []
-    primary_provider = get(role)["provider"]
+    primary_provider = _row_for(role)["provider"]
     pinned = (
         os.environ.get(f"AIFORGE_{role.upper()}_CLOUD_PROVIDER")
         or os.environ.get("AIFORGE_CLOUD_PROVIDER")
