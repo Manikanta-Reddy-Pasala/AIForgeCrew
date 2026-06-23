@@ -36,6 +36,7 @@ from pathlib import Path
 _ACTION_RE = re.compile(r"ACTION:\s*([A-Za-z_]+)", re.IGNORECASE)
 _ARGS_RE = re.compile(r"ARGS_JSON:\s*(\{.*\})", re.IGNORECASE | re.DOTALL)
 _FINAL_RE = re.compile(r"FINAL:\s*(.*)", re.IGNORECASE | re.DOTALL)
+_ASK_RE = re.compile(r"ASK:\s*(.*)", re.IGNORECASE | re.DOTALL)
 _THOUGHT_RE = re.compile(r"THOUGHT:\s*(.*?)(?:\n[A-Z_]+:|$)", re.IGNORECASE | re.DOTALL)
 
 _MAX_OBS = 6000  # truncate tool output fed back to the model
@@ -398,12 +399,23 @@ When you are done and ready to reply to the user:
 THOUGHT: <reasoning>
 FINAL: <your full natural-language answer>
 
+When the request is ambiguous, you're missing information, or you'd \
+otherwise have to guess or keep retrying the same thing, ASK the user \
+instead of circling:
+THOUGHT: <why you need input>
+ASK: <one concise, specific question>
+The turn ends and the user's next message answers you.
+
 Rules: emit exactly one ACTION or one FINAL per turn. After each ACTION you \
 receive an OBSERVATION with the tool result, then continue. Keep going until \
 the task is complete, then give FINAL. Do real work — read and edit files, run \
 commands — rather than guessing.
 
 Operating principles — be fully autonomous, don't stop half-way:
+- ASK, don't circle: if you're unsure what the user wants, lack a needed \
+detail, or catch yourself repeating a step that isn't working, emit ASK: \
+<question> and wait — never loop on the same failing action or guess at an \
+ambiguous request.
 - RULE BOOK: when the user says "remember…", "always…", "never…", "for \
 all sessions", or states a standing rule about the folder/repo/workflow, \
 immediately call remember_rule (scope=repo for this repo, scope=global for \
@@ -480,6 +492,7 @@ def _parse(out: str) -> dict:
     """Parse a model turn into {kind, ...}. Tolerant of code fences,
     pretty-printed JSON, and stray markdown around the protocol."""
     fin = _FINAL_RE.search(out)
+    ask = _ASK_RE.search(out)
     act = _ACTION_RE.search(out)
     # Prefer ACTION when present (models sometimes mention "final" in prose).
     if act:
@@ -491,6 +504,8 @@ def _parse(out: str) -> dict:
         thought = _THOUGHT_RE.search(out)
         return {"kind": "action", "tool": name, "args": args,
                 "thought": thought.group(1).strip() if thought else ""}
+    if ask:
+        return {"kind": "ask", "text": ask.group(1).strip()}
     if fin:
         return {"kind": "final", "text": fin.group(1).strip()}
     # No protocol markers — treat the whole output as the final answer.
@@ -643,13 +658,16 @@ def run_chat_agent(
             yield {"type": "done"}
             return
 
-        # Stuck-output loop: identical model reply N times running.
+        # Stuck-output loop: identical model reply N times running. Rather
+        # than just bailing, ASK the user for guidance (don't circle).
         recent_outputs.append(out.strip())
         if (len(recent_outputs) == _OUTPUT_REPEAT
                 and len(set(recent_outputs)) == 1):
-            yield {"type": "error",
-                   "text": f"stopped: the model repeated the same response "
-                           f"{_OUTPUT_REPEAT}× — breaking the loop"}
+            yield {"type": "message", "awaiting_input": True,
+                   "text": "I seem to be going in circles on this. Could you "
+                           "clarify what you'd like me to do, or give a bit "
+                           "more detail? (I stopped rather than keep retrying "
+                           "the same thing.)"}
             yield {"type": "done"}
             return
 
@@ -659,18 +677,26 @@ def run_chat_agent(
             yield {"type": "message", "text": step["text"]}
             yield {"type": "done"}
             return
+        if step["kind"] == "ask":
+            # Agent is asking the user a question — show it + wait for the
+            # next message (which answers it). awaiting_input flags the UI.
+            yield {"type": "message", "awaiting_input": True,
+                   "text": step["text"]}
+            yield {"type": "done"}
+            return
 
         # action
         name = step["tool"]
         args = step["args"]
-        # Stuck-action loop: same tool+args repeated too many times.
+        # Stuck-action loop: same tool+args repeated too many times → ask
+        # the user instead of looping to the safety cap.
         sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
         action_counts[sig] = action_counts.get(sig, 0) + 1
         if action_counts[sig] >= _LOOP_REPEAT:
-            yield {"type": "error",
-                   "text": f"stopped: repeated the same action '{name}' "
-                           f"{action_counts[sig]}× with the same args — "
-                           f"breaking the loop"}
+            yield {"type": "message", "awaiting_input": True,
+                   "text": f"I keep trying the same step (`{name}`) without "
+                           "progress. I've paused — could you clarify or tell "
+                           "me how you'd like me to proceed?"}
             yield {"type": "done"}
             return
 

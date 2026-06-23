@@ -78,16 +78,28 @@ def test_unknown_tool_reports_error(tmp_path):
 
 
 def test_loop_detection_same_action(tmp_path):
-    # Always the SAME action — loop detection kills it (not a step cap).
+    # Always the SAME action — instead of circling, the agent ASKS the user
+    # (message with awaiting_input) and stops.
     def _fn(role, messages, **kw):
         return 'ACTION: list_dir\nARGS_JSON: {"path": "."}'
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content": "loop"}], cwd=str(tmp_path),
         complete_fn=_fn))
-    err = [e for e in evs if e["type"] == "error"]
-    assert err and "breaking the loop" in err[0]["text"]
+    asks = [e for e in evs if e["type"] == "message" and e.get("awaiting_input")]
+    assert asks and ("clarify" in asks[0]["text"] or "proceed" in asks[0]["text"])
     assert len([e for e in evs if e["type"] == "tool"]) < ca._LOOP_REPEAT
     assert evs[-1] == {"type": "done"}
+
+
+def test_agent_can_ask_a_question(tmp_path):
+    def _fn(role, messages, **kw):
+        return "THOUGHT: need detail\nASK: Which port should I use?"
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "run it"}], cwd=str(tmp_path),
+        complete_fn=_fn))
+    msg = [e for e in evs if e["type"] == "message"]
+    assert msg and msg[0].get("awaiting_input") is True
+    assert "Which port" in msg[0]["text"]
 
 
 def test_progressing_actions_not_killed(tmp_path):
