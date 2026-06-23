@@ -7,9 +7,9 @@ import { MdLite } from '../mdlite';
 // ── types ──────────────────────────────────────────────────────────────────────
 
 type AgentStep =
-  | { kind: 'thought'; text: string }
-  | { kind: 'tool'; name: string; args: object; result: object }
-  | { kind: 'error'; text: string };
+  | { kind: 'thought'; text: string; role?: string }
+  | { kind: 'tool'; name: string; args: object; result: object; role?: string }
+  | { kind: 'error'; text: string; role?: string };
 
 // A "live" turn: the in-progress assistant turn while streaming.
 type LiveTurn = {
@@ -53,10 +53,10 @@ function relTime(isoStr: string): string {
 function toAgentStep(raw: any): AgentStep | null {
   if (!raw || typeof raw !== 'object') return null;
   if (raw.type === 'thought' || raw.kind === 'thought') {
-    return { kind: 'thought', text: raw.text || '' };
+    return { kind: 'thought', text: raw.text || '', role: raw.role };
   }
   if (raw.type === 'tool' || raw.kind === 'tool') {
-    return { kind: 'tool', name: raw.name || '', args: raw.args || {}, result: raw.result || {} };
+    return { kind: 'tool', name: raw.name || '', args: raw.args || {}, result: raw.result || {}, role: raw.role };
   }
   if (raw.type === 'error' || raw.kind === 'error') {
     return { kind: 'error', text: raw.text || '' };
@@ -376,10 +376,10 @@ export default function Chat() {
         setLiveTurn(prev => {
           if (!prev) return prev;
           if (evt.type === 'thought') {
-            return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text }] };
+            return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
           }
           if (evt.type === 'tool') {
-            return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {} }] };
+            return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
           }
           if (evt.type === 'message') {
             return { ...prev, text: evt.text, streaming: false };
@@ -810,6 +810,30 @@ function AssistantBubble({
 
 // ── Agent step row ─────────────────────────────────────────────────────────────
 
+// Small pill showing WHICH agent produced a step (team mode). Stable
+// color per role name so the eye can track each agent across steps.
+function AgentBadge({ role }: { role?: string }) {
+  if (!role) return null;
+  let h = 0;
+  for (let i = 0; i < role.length; i++) h = (h * 31 + role.charCodeAt(i)) % 360;
+  return (
+    <span style={{
+      flexShrink: 0,
+      fontFamily: 'var(--font-mono)',
+      fontStyle: 'normal',
+      fontSize: '10px',
+      fontWeight: 600,
+      padding: '1px 6px',
+      borderRadius: 999,
+      color: `hsl(${h} 70% 30%)`,
+      background: `hsl(${h} 70% 92%)`,
+      border: `1px solid hsl(${h} 60% 80%)`,
+      marginTop: 1,
+      whiteSpace: 'nowrap',
+    }} title={`agent: ${role}`}>{role}</span>
+  );
+}
+
 function AgentStepRow({ step }: { step: AgentStep }) {
   if (step.kind === 'thought') {
     return (
@@ -825,6 +849,7 @@ function AgentStepRow({ step }: { step: AgentStep }) {
         lineHeight: 1.5,
       }}>
         <span style={{ flexShrink: 0, marginTop: 1 }}>💭</span>
+        <AgentBadge role={step.role} />
         <span>{step.text}</span>
       </div>
     );
@@ -848,6 +873,7 @@ function AgentStepRow({ step }: { step: AgentStep }) {
         color: ok ? 'var(--fg-1)' : 'var(--err)',
       }}>
         <span style={{ flexShrink: 0, marginTop: 1 }}>🔧</span>
+        <AgentBadge role={step.role} />
         <span>
           <strong>{step.name}</strong>
           {'('}

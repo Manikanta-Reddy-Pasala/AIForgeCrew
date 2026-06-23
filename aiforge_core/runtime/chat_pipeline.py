@@ -33,10 +33,13 @@ def _part_events(author: str, part) -> list[dict]:
     out: list[dict] = []
     text = getattr(part, "text", None)
     if text and text.strip():
-        out.append({"type": "thought", "text": f"**{author}** · {text.strip()}"})
+        # `role` = the agent (author) so the UI can badge each step with
+        # WHICH agent produced it. Text kept clean (no inline **author**).
+        out.append({"type": "thought", "role": author, "text": text.strip()})
     fc = getattr(part, "function_call", None)
     if fc is not None:
-        out.append({"type": "tool", "name": getattr(fc, "name", "?"),
+        out.append({"type": "tool", "role": author,
+                    "name": getattr(fc, "name", "?"),
                     "args": dict(getattr(fc, "args", None) or {}),
                     "result": {"by": author}})
     fr = getattr(part, "function_response", None)
@@ -44,8 +47,8 @@ def _part_events(author: str, part) -> list[dict]:
         resp = getattr(fr, "response", None)
         summary = resp if isinstance(resp, str) else (
             str(resp)[:200] if resp is not None else "")
-        out.append({"type": "thought",
-                    "text": f"{author} · {getattr(fr, 'name', '?')} → {summary}"})
+        out.append({"type": "thought", "role": author,
+                    "text": f"{getattr(fr, 'name', '?')} → {summary}"})
     return out
 
 

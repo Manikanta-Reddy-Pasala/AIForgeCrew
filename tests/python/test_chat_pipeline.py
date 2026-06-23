@@ -34,13 +34,16 @@ class _Event:
 def test_map_text_to_thought():
     ev = _Event("planner", [_FakePart(text="here is the plan")])
     out = cp.map_event(ev)
-    assert out == [{"type": "thought", "text": "**planner** · here is the plan"}]
+    # `role` carries the agent name (UI badges it); text stays clean.
+    assert out == [{"type": "thought", "role": "planner",
+                    "text": "here is the plan"}]
 
 
 def test_map_function_call_to_tool():
     ev = _Event("doer", [_FakePart(fc=_FC("file_write", {"path": "a.py"}))])
     out = cp.map_event(ev)
     assert out[0]["type"] == "tool"
+    assert out[0]["role"] == "doer"
     assert out[0]["name"] == "file_write"
     assert out[0]["args"] == {"path": "a.py"}
 
