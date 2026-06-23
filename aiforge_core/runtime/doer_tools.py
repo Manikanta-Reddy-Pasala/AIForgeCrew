@@ -576,8 +576,9 @@ def adk_function_tools() -> list:
     from aiforge_core.runtime.tools.cognition import finish, think
     from aiforge_core.runtime.tools.editor import editor
     from aiforge_core.runtime.tools.ensure_runtime import ensure_runtime
+    from aiforge_core.runtime.tools.project_runner import project
 
-    new_canonical = [editor, new_bash, think, finish, ensure_runtime]
+    new_canonical = [editor, new_bash, think, finish, ensure_runtime, project]
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
                         grep_repo, repo_map, impacted_tests, fetch_url,
                         git_commit, memory_lookup, graphify_lookup]

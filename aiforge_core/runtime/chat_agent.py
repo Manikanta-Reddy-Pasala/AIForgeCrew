@@ -205,6 +205,18 @@ def _t_ensure_runtime(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_project(args: dict, cwd: str) -> dict:
+    """Detect/install/build/test/run any common stack (maven, gradle,
+    node/react/next/vite, python, go, rust) with the canonical command."""
+    try:
+        from aiforge_core.runtime.tools.project_runner import project
+        return project(action=args.get("action", "detect"),
+                       cwd=args.get("cwd") or cwd,
+                       timeout=int(args.get("timeout", 1800)))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_read": _t_file_read,
     "file_write": _t_file_write,
@@ -213,6 +225,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "list_dir": _t_list_dir,
     "run_command": _t_run_command,
     "ensure_runtime": _t_ensure_runtime,
+    "project": _t_project,
     "memory_lookup": _t_memory_lookup,
     "memory_write": _t_memory_write,
 }
@@ -225,7 +238,7 @@ You work by emitting ONE step at a time in this exact text format.
 To use a tool:
 THOUGHT: <your reasoning>
 ACTION: <one of: file_read, file_write, file_create, file_patch, list_dir,
-         run_command, ensure_runtime, memory_lookup, memory_write>
+         run_command, ensure_runtime, project, memory_lookup, memory_write>
 ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
@@ -235,6 +248,8 @@ Tool arguments:
 - list_dir     {{"path": "."}}
 - run_command  {{"cmd": "ls -la", "timeout": 600}}
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
+- project        {{"action": "build"}}    (detect+install+build/test/run:
+                  maven, gradle, node/react/next/vite, python, go, rust)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false}}
                 (save a learning/decision to the knowledge graph for future recall)
@@ -249,10 +264,11 @@ the task is complete, then give FINAL. Do real work — read and edit files, run
 commands — rather than guessing.
 
 Operating principles — be fully autonomous, don't stop half-way:
-- When asked to RUN something: do EVERY step needed end-to-end via \
-run_command — detect the stack (package.json / requirements.txt / pom.xml / \
-Cargo.toml / Makefile / go.mod), install dependencies, build, then start/run \
-it. Don't just describe the steps — execute them.
+- When asked to RUN/BUILD/TEST a project: prefer the `project` tool — it \
+auto-detects the stack (maven/gradle/node/react/next/vite/python/go/rust), \
+installs the toolchain, and runs the right command. For anything it \
+doesn't cover, fall back to run_command and do every step yourself \
+(install deps → build → run). Execute, don't just describe.
 - MISSING RUNTIME/TOOL: if a command fails with "command not found" (java, \
 mvn, python, node, go…) or you know the stack up front, call ensure_runtime \
 with the executables you need (e.g. ["java","mvn"]); it installs + verifies \

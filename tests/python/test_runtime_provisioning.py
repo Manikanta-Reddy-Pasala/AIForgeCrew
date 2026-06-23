@@ -119,3 +119,36 @@ def test_chat_run_command_stops_when_cancelled(tmp_path):
     out = chat_agent._t_run_command({"cmd": "sleep 30"}, str(tmp_path))
     assert out["ok"] is False and out.get("stopped") is True
     chat_cancel.finish(101)
+
+
+# ── project runner stack detection + command plan ────────────────────
+def test_project_detect_and_plan(tmp_path):
+    from aiforge_core.runtime.tools import project_runner as pr
+    (tmp_path / "pom.xml").write_text("<project/>")
+    assert pr.detect(str(tmp_path))["stacks"] == ["maven"]
+    tools, cmds = pr._plan("maven", "build", str(tmp_path))
+    assert "mvn" in tools and any("package" in c for c in cmds)
+
+
+def test_project_detect_node_react(tmp_path):
+    from aiforge_core.runtime.tools import project_runner as pr
+    (tmp_path / "package.json").write_text('{"dependencies": {"react": "18"}}')
+    stacks = pr.detect(str(tmp_path))["stacks"]
+    assert stacks == ["node:react"]
+    _, cmds = pr._plan("node:react", "run", str(tmp_path))
+    assert cmds == ["npm run dev"]
+
+
+def test_project_detect_python_and_go(tmp_path):
+    from aiforge_core.runtime.tools import project_runner as pr
+    (tmp_path / "requirements.txt").write_text("flask\n")
+    (tmp_path / "go.mod").write_text("module x\n")
+    stacks = set(pr.detect(str(tmp_path))["stacks"])
+    assert {"python", "go"} <= stacks
+
+
+def test_project_tool_registered_on_doer():
+    from aiforge_core.runtime.doer_tools import adk_function_tools
+    names = {getattr(getattr(t, "func", None), "__name__", "")
+             for t in adk_function_tools()}
+    assert "project" in names
