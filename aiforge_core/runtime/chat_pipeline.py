@@ -24,6 +24,13 @@ from collections.abc import Callable, Iterator
 
 _SENTINEL = object()
 
+# Team runs mutate the process-global ``AIFORGE_REPO_ROOT`` (read by the
+# sandbox + git tools). Two concurrent team chats would interleave that env
+# and cross-contaminate cwd. Serialize team runs in-process so only one owns
+# the env at a time. (Ticket runs execute in a separate runner process, so
+# they don't share this lock.)
+_RUN_LOCK = threading.Lock()
+
 
 def _part_events(author: str, part) -> list[dict]:
     """Map a content part to the chat's existing event vocabulary
@@ -133,6 +140,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                          history: list[dict] | None = None) -> Iterator[dict]:
     q: queue.Queue = queue.Queue()
     from aiforge_core.runtime import chat_cancel
+    raw_prompt = prompt   # the user's actual request (before context augmentation)
     # Build a context-rich prompt: project summary + prior conversation +
     # the current request, so the team pipeline isn't clueless on follow-ups.
     try:
@@ -168,8 +176,12 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         if session_id is not None:
             from aiforge_core.runtime import chat_approve
             chat_approve.set_emitter(session_id, q.put)
+        # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs.
+        _RUN_LOCK.acquire()
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
         os.environ["AIFORGE_REPO_ROOT"] = cwd
+        steps: list[dict] = []
+        final_text = ""
         try:
             from google.adk.runners import Runner
             from google.adk.sessions import InMemorySessionService
@@ -217,6 +229,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                     break
                 for ev in map_event(event):
                     q.put(ev)
+                    if ev.get("type") in ("thought", "tool", "error"):
+                        steps.append(ev)
                 # Track the latest substantive text — the last agent's
                 # output is the conversational answer.
                 t = _event_text(event)
@@ -230,6 +244,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 st = {}
             msg = (final or st.get("doer_summary") or st.get("validator_summary")
                    or "Done.")
+            final_text = msg
             q.put({"type": "message", "text": msg})
         except Exception as exc:  # noqa: BLE001
             q.put({"type": "error", "text": f"pipeline: {exc}"})
@@ -238,11 +253,25 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 os.environ.pop("AIFORGE_REPO_ROOT", None)
             else:
                 os.environ["AIFORGE_REPO_ROOT"] = prev_root
-            # The team run owns the cancel token's lifetime — clear it HERE,
-            # when the background thread actually finishes, NOT in the SSE
-            # generator's finally (which runs the instant the client aborts,
-            # popping the token before this thread observes is_cancelled and
-            # leaving the ADK pipeline running in the background).
+            try:
+                _RUN_LOCK.release()
+            except RuntimeError:
+                pass
+            # The team run owns BOTH the cancel-token lifetime AND persistence
+            # — done HERE (background thread), not in the SSE generator, so a
+            # client disconnect can't drop the real answer or persist a
+            # partial one.
+            cancelled = bool(session_id is not None
+                             and chat_cancel.is_cancelled(session_id))
+            if session_id is not None:
+                try:
+                    from aiforge_core.runtime import chat_persist
+                    chat_persist.persist_turn(
+                        session_id=session_id, cwd=cwd, prompt=raw_prompt,
+                        final_text=final_text, steps=steps, team=True,
+                        cancelled=cancelled, awaiting=False)
+                except Exception:  # noqa: BLE001
+                    pass
             if session_id is not None:
                 from aiforge_core.runtime import chat_approve
                 chat_approve.clear_emitter(session_id)

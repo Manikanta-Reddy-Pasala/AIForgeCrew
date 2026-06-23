@@ -32,6 +32,36 @@ over automatically.
 `./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
 `--skip-web` skips the UI rebuild.
 
+## Features
+
+- **Ticket → PR pipeline** — plain-language ticket runs a multi-agent flow
+  (triage → enhance → plan → verify → doer-loop → learn → validate) and opens a PR.
+- **Chat** — a full-filesystem coding agent. Three modes: **Simple** (one agent),
+  **Plan** (read-only — proposes a plan before touching anything), **Team** (the full
+  pipeline, ticketless).
+- **Human-in-the-loop controls** — per-tool **allow/ask/deny** policy + a command
+  **risk** classifier; risky/ask actions **pause for Approve/Reject** with a diff
+  preview (in chat *and* the team pipeline). Autonomous ticket runs never block.
+- **Workspace checkpoints** — auto-snapshot before each turn; one-click **restore**.
+- **Skills** — reusable `SKILL.md` playbooks (agentskills.io standard), relevance-
+  searched and auto-injected; the agent **authors new skills** when it solves
+  something (`learn_skill`), which also land in memory.
+- **Memory** — hybrid recall (vector + full-text + graph) across 7 sources; learns
+  facts, decisions, and per-repo project summaries across sessions.
+- **Context @-mentions** — `@file`, `@folder`, `@url`, `@problems`.
+- **Repo microagents** — repo-shipped conventions auto-injected by trigger word.
+- **Providers** — local (LM Studio / mlx-lm) or any OpenAI-compatible endpoint, with
+  automatic cloud escalation; per-role model assignment + bulk profiles.
+
+## How it works & improves
+
+A ticket (or chat) flows through specialized agents, each on the model you pick; a
+local primary auto-falls-over to a cloud endpoint if it stalls. The Doer edits in an
+isolated git worktree, runs build/tests, and a second-agent review + verifiers gate
+the PR. **It gets better over time:** every solved task writes facts, decisions, and
+reusable skills into memory, and the next relevant ticket/turn recalls and re-injects
+them — so the system stops re-deriving what it already learned.
+
 ### Full "pro" stack with Docker Compose
 
 For the heavier setup (Postgres + Neo4j graph memory + embedding sidecars),

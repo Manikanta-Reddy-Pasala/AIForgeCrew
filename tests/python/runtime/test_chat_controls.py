@@ -323,6 +323,26 @@ def test_checkpoint_outside_git(tmp_path):
     assert checkpoints.snapshot(str(tmp_path))["ok"] is False
 
 
+# ─── chat_persist (team persistence survives disconnect) ──────────────
+
+def test_persist_skips_empty_turn(monkeypatch):
+    from aiforge_core.runtime import chat_persist
+    added = []
+    import aiforge_core.runtime.chat_store as cs
+    monkeypatch.setattr(cs, "add_message",
+                        lambda sid, role, text, steps=None: added.append((text, steps)))
+    monkeypatch.setenv("AIFORGE_CHAT_AUTO_MEMORY", "0")
+    # empty final + no steps → nothing persisted
+    chat_persist.persist_turn(session_id=1, cwd="/tmp", prompt="x", final_text="",
+                              steps=[], team=True, cancelled=True, awaiting=False)
+    assert added == []
+    # has content → persisted
+    chat_persist.persist_turn(session_id=1, cwd="/tmp", prompt="x",
+                              final_text="done the thing", steps=[], team=True,
+                              cancelled=False, awaiting=False)
+    assert added and added[0][0] == "done the thing"
+
+
 def test_checkpoint_unborn_head(tmp_path):
     # fresh `git init`, no commit yet (the new-workspace case) — snapshot
     # must still succeed (empty-index init), not fail on "index smaller".
