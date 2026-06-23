@@ -60,7 +60,7 @@ const TOOLS: Tool[] = [
   { name: 'kube_status', category: 'Kubernetes', desc: 'Summary of deployed pods.', args: [] },
 
   // Docs
-  { name: 'find_doc', category: 'Docs', desc: 'Full-text search across docs + CLAUDE.md.',
+  { name: 'find_doc', category: 'Docs', desc: 'Full-text search across docs (any *.md).',
     args: [{ name: 'query', placeholder: 'search text', required: true }] },
 ];
 
