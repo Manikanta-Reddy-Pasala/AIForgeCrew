@@ -47,9 +47,14 @@ _NON_BODY_EXTRA_KEYS = frozenset({"insecure_tls", "claude_bin", "claude_host"})
 
 
 # HTTP status codes that warrant in-place retry (transient): 408 timeout,
-# 429 rate-limit, 500/502/503/504 server-side. 4xx other than 408/429 are
-# permanent — fall over to next provider immediately.
+# 429 rate-limit, 500/502/503/504 server-side. 401/403 included because the
+# self-hosted proxy (nginx) returns intermittent "401 Authorization
+# Required" even with a valid token — bounded retries (AIFORGE_LLM_RETRY_MAX)
+# ride over the blip instead of failing the chat. Disable the auth retries
+# with AIFORGE_LLM_RETRY_AUTH=0 if your endpoint's 401 is always real.
 _TRANSIENT_HTTP = frozenset({408, 425, 429, 500, 502, 503, 504})
+if os.environ.get("AIFORGE_LLM_RETRY_AUTH", "1") not in ("0", "false", "no"):
+    _TRANSIENT_HTTP = _TRANSIENT_HTTP | {401, 403}
 
 
 def _build_body(ep: Endpoint, messages: list[dict],

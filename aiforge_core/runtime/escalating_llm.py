@@ -22,8 +22,10 @@ violate the streaming contract.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from typing import Any, AsyncGenerator
 
 from google.adk.models.base_llm import BaseLlm
@@ -174,6 +176,33 @@ def _quiet_litellm() -> None:
 # Apply at import — before ANY litellm call / team run — so the worker is
 # never even created (not just lazily when the first LiteLlm is built).
 _quiet_litellm()
+
+
+# Substrings that mark a TRANSIENT failure worth retrying the SAME endpoint
+# with backoff. Includes 401/403 on purpose — the self-hosted proxy
+# (nginx) returns intermittent "401 Authorization Required" even with a
+# valid token; bounded retries ride over the blip instead of surfacing an
+# "agent error" in the UI. Truly-bad creds still stop after the cap.
+_TRANSIENT_MARKERS = (
+    "authenticationerror", "401", "403", "authorization required",
+    "timeout", "timedout", "timed out", "connection", "econnreset", "reset",
+    "temporarily", "unavailable", "rate limit", "ratelimit", "429",
+    "500", "502", "503", "504", "bad gateway", "gateway", "overloaded",
+    "internalservererror", "apiconnectionerror", "serviceunavailable",
+    "jsondecodeerror", "unterminated", "remotedisconnected", "broken pipe",
+)
+
+
+def _attempt_retries() -> int:
+    try:
+        return max(1, int(os.environ.get("AIFORGE_LLM_ATTEMPT_RETRIES", "3")))
+    except ValueError:
+        return 3
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    s = (type(exc).__name__ + " " + str(exc)).lower()
+    return any(m in s for m in _TRANSIENT_MARKERS)
 
 
 def _is_empty(resp: LlmResponse) -> bool:
@@ -394,10 +423,28 @@ class EscalatingLlm(BaseLlm):
                 target_model, req_for_attempt)
             buffered: list[LlmResponse] = []
             try:
-                async for r in model.generate_content_async(
-                    req_for_attempt, stream=False,
-                ):
-                    buffered.append(r)
+                # Bounded retry-with-backoff on the SAME endpoint for
+                # transient errors (flaky 401, 5xx, connection, timeout)
+                # BEFORE falling through to the next candidate — so a proxy
+                # blip doesn't surface as an "agent error" in the UI.
+                _tries = _attempt_retries()
+                for _t in range(_tries):
+                    try:
+                        buffered = []
+                        async for r in model.generate_content_async(
+                            req_for_attempt, stream=False,
+                        ):
+                            buffered.append(r)
+                        break
+                    except Exception as _ie:  # noqa: BLE001
+                        if _t + 1 < _tries and _is_transient_llm_error(_ie):
+                            log.warning(
+                                "llm.attempt_retry role=%s attempt=%s "
+                                "try=%d/%d err=%.140s", self.role, label,
+                                _t + 1, _tries, str(_ie))
+                            await asyncio.sleep(min(8.0, 0.5 * (2 ** _t)) + 0.1)
+                            continue
+                        raise
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 err_str = str(exc)

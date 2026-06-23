@@ -445,3 +445,16 @@ def test_repair_json_truncated_tool_args():
     assert _repair_json("") == "{}"
     assert _repair_json("not json at all") == "{}"
     assert _json.loads(_repair_json('{"a": "b"}')) == {"a": "b"}
+
+
+def test_transient_error_classification():
+    from aiforge_core.runtime.escalating_llm import _is_transient_llm_error
+
+    class AuthenticationError(Exception):
+        pass
+    assert _is_transient_llm_error(AuthenticationError("401 Authorization Required"))
+    assert _is_transient_llm_error(TimeoutError("timed out"))
+    assert _is_transient_llm_error(ConnectionError("connection reset"))
+    assert _is_transient_llm_error(Exception("503 Service Unavailable"))
+    assert not _is_transient_llm_error(ValueError("bad model id"))
+    assert not _is_transient_llm_error(Exception("invalid request body"))
