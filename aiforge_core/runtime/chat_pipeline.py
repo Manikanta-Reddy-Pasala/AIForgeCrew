@@ -110,10 +110,40 @@ def _run_async_in_thread(coro_factory: Callable) -> None:
             pass
 
 
+def _history_preamble(history: list[dict] | None) -> str:
+    """Render prior turns so the team pipeline has conversation continuity
+    (it starts a fresh ADK session per message and would otherwise be
+    clueless on follow-ups). Drops the trailing current user message."""
+    if not history:
+        return ""
+    prior = list(history)
+    if prior and prior[-1].get("role") == "user":
+        prior = prior[:-1]
+    if not prior:
+        return ""
+    lines = []
+    for m in prior[-12:]:
+        who = "User" if m.get("role") == "user" else "Assistant"
+        lines.append(f"{who}: {(m.get('content') or '')[:800]}")
+    return "CONVERSATION SO FAR (continue with this context):\n" + "\n".join(lines)
+
+
 def stream_chat_pipeline(prompt: str, *, cwd: str,
-                         session_id: int | None = None) -> Iterator[dict]:
+                         session_id: int | None = None,
+                         history: list[dict] | None = None) -> Iterator[dict]:
     q: queue.Queue = queue.Queue()
     from aiforge_core.runtime import chat_cancel
+    # Build a context-rich prompt: project summary + prior conversation +
+    # the current request, so the team pipeline isn't clueless on follow-ups.
+    try:
+        from aiforge_core.runtime.chat_agent import _repo_context
+        repo_ctx = _repo_context(cwd)
+    except Exception:  # noqa: BLE001
+        repo_ctx = ""
+    convo = _history_preamble(history)
+    parts = [p for p in (repo_ctx, convo) if p]
+    prompt = ("\n\n".join(parts) + f"\n\nCURRENT REQUEST:\n{prompt}"
+              if parts else prompt)
 
     async def _drive() -> None:
         # Bind this driver thread (+ the bash tool the Doer runs) to the

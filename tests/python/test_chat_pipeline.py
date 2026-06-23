@@ -62,3 +62,15 @@ def test_empty_parts():
 def test_event_text_joins():
     ev = _Event("a", [_FakePart(text="foo "), _FakePart(text="bar")])
     assert cp._event_text(ev) == "foo bar"
+
+
+def test_history_preamble_threads_prior_turns():
+    from aiforge_core.runtime.chat_pipeline import _history_preamble
+    h = [{"role": "user", "content": "build X"},
+         {"role": "assistant", "content": "did X"},
+         {"role": "user", "content": "now Y"}]   # last = current request
+    pre = _history_preamble(h)
+    assert "build X" in pre and "did X" in pre
+    assert "now Y" not in pre                      # current msg excluded
+    assert _history_preamble([]) == ""
+    assert _history_preamble(None) == ""

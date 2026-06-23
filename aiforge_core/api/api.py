@@ -2070,7 +2070,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # Team mode → full ADK agent flow (planner→…→learner) for complex
         # builds. Simple mode → single conversational agent for quick work.
         if team:
-            return stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id)
+            return stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
+                                        history=history)
         return run_chat_agent(history, cwd=cwd, role=role, session_id=session_id)
 
     def _gen():
