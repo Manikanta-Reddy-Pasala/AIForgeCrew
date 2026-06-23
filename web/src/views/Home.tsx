@@ -112,6 +112,12 @@ export default function Home() {
   const [pageError, setPageError] = useState<string | null>(null);
   const savedTimers = useRef<Partial<Record<AgentRole, number>>>({});
 
+  // Models discovered from the configured endpoint by the last successful
+  // Test (bulk or per-row). One generic source: enter base_url + token,
+  // Test, and every openai_compatible model dropdown fills from /v1/models —
+  // no per-model hardcoding.
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+
   // bulk "apply to all" widget
   const [bulk, setBulk] = useState<BulkState>({
     provider: 'local',
@@ -235,6 +241,7 @@ export default function Home() {
       patch(role, { testBusy: false, testResult: res });
       if (res.ok) {
         const modelCount = res.models?.length ?? 0;
+        if (res.models && res.models.length > 0) setDiscoveredModels(res.models);
         const msg = modelCount > 0
           ? `Reachable — ${modelCount} model${modelCount === 1 ? '' : 's'}`
           : 'Reachable';
@@ -277,6 +284,7 @@ export default function Home() {
       );
       if (res.ok) {
         const n = res.models?.length ?? 0;
+        if (res.models && res.models.length > 0) setDiscoveredModels(res.models);
         toast.success(n > 0 ? `Reachable — ${n} model${n === 1 ? '' : 's'}` : 'Reachable');
         if (res.models && res.models.length > 0 && !bulk.model) {
           patchBulk({ model: res.models[0] });
@@ -473,26 +481,34 @@ export default function Home() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <label className="small muted">Model</label>
-            {bulkModels.length > 0 ? (
-              <select
-                value={bulk.model}
-                onChange={e => patchBulk({ model: e.target.value })}
-                disabled={bulk.busy}
-                style={{ minWidth: 220 }}
-              >
-                {bulkModels.map(m => (
-                  <option key={m.id} value={m.id}>{m.label}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                value={bulk.model}
-                onChange={e => patchBulk({ model: e.target.value })}
-                disabled={bulk.busy}
-                placeholder={bulkCat?.default_model || 'model id'}
-                style={{ minWidth: 220 }}
-              />
-            )}
+            {(() => {
+              // openai_compatible: prefer models discovered from the
+              // configured endpoint (Test). Else the provider's catalog.
+              const dyn = bulk.provider === 'openai_compatible'
+                ? discoveredModels : [];
+              const opts = dyn.length ? dyn : bulkModels.map(m => m.id);
+              return opts.length > 0 ? (
+                <select
+                  value={bulk.model}
+                  onChange={e => patchBulk({ model: e.target.value })}
+                  disabled={bulk.busy}
+                  style={{ minWidth: 220 }}
+                >
+                  {bulk.model && !opts.includes(bulk.model) && (
+                    <option value={bulk.model}>{bulk.model} (custom)</option>
+                  )}
+                  {opts.map(id => (<option key={id} value={id}>{id}</option>))}
+                </select>
+              ) : (
+                <input
+                  value={bulk.model}
+                  onChange={e => patchBulk({ model: e.target.value })}
+                  disabled={bulk.busy}
+                  placeholder={bulkCat?.default_model || 'Test to list models, or type id'}
+                  style={{ minWidth: 220 }}
+                />
+              );
+            })()}
           </div>
 
           {PROVIDERS_WITH_BASE_URL.has(bulk.provider) && (
@@ -677,30 +693,34 @@ export default function Home() {
                     ))}
                   </select>
 
-                  {/* model — dropdown or free-text */}
-                  {models.length > 0 ? (
-                    <select
-                      value={row.model}
-                      onChange={e => patch(role, { model: e.target.value })}
-                      disabled={row.busy}
-                      aria-label={`${role} model`}
-                    >
-                      {!current && row.model && (
-                        <option value={row.model}>{row.model} (custom)</option>
-                      )}
-                      {models.map(m => (
-                        <option key={m.id} value={m.id}>{m.label}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      value={row.model}
-                      onChange={e => patch(role, { model: e.target.value })}
-                      disabled={row.busy}
-                      placeholder={cat?.default_model || 'model id'}
-                      aria-label={`${role} model`}
-                    />
-                  )}
+                  {/* model — dropdown from discovered (openai_compatible)
+                      or provider catalog; free-text until discovered */}
+                  {(() => {
+                    const dyn = row.provider === 'openai_compatible'
+                      ? discoveredModels : [];
+                    const opts = dyn.length ? dyn : models.map(m => m.id);
+                    return opts.length > 0 ? (
+                      <select
+                        value={row.model}
+                        onChange={e => patch(role, { model: e.target.value })}
+                        disabled={row.busy}
+                        aria-label={`${role} model`}
+                      >
+                        {row.model && !opts.includes(row.model) && (
+                          <option value={row.model}>{row.model} (custom)</option>
+                        )}
+                        {opts.map(id => (<option key={id} value={id}>{id}</option>))}
+                      </select>
+                    ) : (
+                      <input
+                        value={row.model}
+                        onChange={e => patch(role, { model: e.target.value })}
+                        disabled={row.busy}
+                        placeholder={cat?.default_model || 'Test to list models'}
+                        aria-label={`${role} model`}
+                      />
+                    );
+                  })()}
 
                   {/* tier + context chips */}
                   <div className="meta-chips">
