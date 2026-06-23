@@ -420,6 +420,12 @@ the task is complete, then give FINAL. Do real work — read and edit files, run
 commands — rather than guessing.
 
 Operating principles — be fully autonomous, don't stop half-way:
+- SESSION START: on your FIRST turn you already have, above, the repo map \
+(files/folders), the project summary, and any memory recalled for this \
+request — read them first so you start informed by prior sessions. If the \
+request is clear, proceed. If it's ambiguous or you'd have to assume key \
+details (which files/module, framework, desired behaviour, scope), ASK \
+your clarifying questions UP-FRONT (ASK:) before doing work — don't guess.
 - ASK, don't circle: if you're unsure what the user wants, lack a needed \
 detail, or catch yourself repeating a step that isn't working, emit ASK: \
 <question> and wait — never loop on the same failing action or guess at an \
@@ -575,6 +581,38 @@ def _repo_name(cwd: str) -> str:
     return os.path.basename(base) or "repo"
 
 
+def _memory_recall(cwd: str, query: str, limit: int = 6) -> str:
+    """Proactive memory recall at SESSION START — pull prior decisions /
+    gotchas / learnings relevant to the user's opening request so the agent
+    arrives informed (self-learning) instead of re-deriving what past
+    sessions already worked out. Best-effort: never breaks the turn."""
+    q = (query or "").strip()
+    if not q:
+        return ""
+    hits: list[dict] = []
+    try:
+        from aiforge_core.memory import unified_query as _uq
+        res = _uq.query(q, limit=limit)
+        if isinstance(res, dict):
+            hits = res.get("hits", []) or []
+    except Exception:  # noqa: BLE001
+        hits = []
+    lines: list[str] = []
+    for h in hits:
+        txt = (h.get("text") or "").strip().replace("\n", " ")
+        if not txt:
+            continue
+        src = h.get("source") or ""
+        lines.append(f"- {txt[:240]}" + (f"  ({src})" if src else ""))
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return ""
+    return ("RELEVANT MEMORY recalled for this request (prior decisions / "
+            "gotchas / learnings from earlier sessions — consult before "
+            "re-deriving):\n" + "\n".join(lines))
+
+
 def _repo_context(cwd: str) -> str:
     """The persistent PROJECT SUMMARY for this repo — what it is + what's
     been done — injected every turn so follow-ups have continuity. Read
@@ -649,6 +687,20 @@ def run_chat_agent(
     if rules:                       # user rule book first — highest priority
         sys_msg = rules + "\n\n" + sys_msg
     sys_msg += "\n\n" + _repo_context(cwd) + "\n\n" + _build_repo_map(cwd)
+    # SESSION START (self-learning): on a fresh session — before any
+    # assistant turn — proactively recall memory keyed to the opening
+    # request, so the agent starts informed by prior sessions (it already
+    # has the repo map + project summary above for files/folders). Once the
+    # conversation has assistant turns the recall has already happened.
+    is_init = not any((m.get("role") == "assistant") for m in messages)
+    if is_init:
+        first_user = next(
+            (m.get("content") for m in messages
+             if (m.get("role") or "user") == "user" and m.get("content")),
+            "")
+        recall = _memory_recall(cwd, first_user)
+        if recall:
+            sys_msg += "\n\n" + recall
     convo: list[dict] = [{"role": "system", "content": sys_msg}]
     for m in messages:
         r = m.get("role") or "user"

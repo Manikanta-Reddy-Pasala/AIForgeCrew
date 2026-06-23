@@ -120,42 +120,38 @@ def test_memory_lookup_handles_missing_backend(
     """When unified_query raises, the tool returns ok=False with a clean
     error string instead of bubbling — the agent loop must not crash on
     a flaky memory backend."""
-    import sys
+    # Patch the real module's ``query`` attribute (order-independent):
+    # swapping sys.modules is ignored once the submodule is bound as a
+    # package attribute by any prior import.
+    from aiforge_core.memory import unified_query as uq
 
-    class _Boom:
-        @staticmethod
-        def query(*a, **kw):  # noqa: D401
-            raise RuntimeError("backend down")
+    def _boom(*a, **kw):
+        raise RuntimeError("backend down")
 
-    monkeypatch.setitem(sys.modules, "aiforge_core.memory.unified_query", _Boom)
+    monkeypatch.setattr(uq, "query", _boom)
     res = dt.memory_lookup("anything")
     assert res["ok"] is False
     assert "backend down" in res["error"]
 
 
-def test_memory_lookup_caps_k() -> None:
+def test_memory_lookup_caps_k(monkeypatch: pytest.MonkeyPatch) -> None:
     """k > 12 should be clamped — guards against the model passing huge
     values that would dump the entire memory bank into the context."""
-    import sys
+    from aiforge_core.memory import unified_query as uq
 
-    class _Stub:
-        @staticmethod
-        def query(text, **kw):
-            return {
-                "hits": [
-                    {"source": "m", "score": 0.5, "text": f"row{i}"}
-                    for i in range(20)
-                ],
-                "used_sources": ["memory"],
-            }
+    def _stub_query(text, **kw):
+        return {
+            "hits": [
+                {"source": "m", "score": 0.5, "text": f"row{i}"}
+                for i in range(20)
+            ],
+            "used_sources": ["memory"],
+        }
 
-    sys.modules["aiforge_core.memory.unified_query"] = _Stub  # type: ignore[assignment]
-    try:
-        res = dt.memory_lookup("query", k=999)
-        assert res["ok"] is True
-        assert len(res["hits"]) <= 12
-    finally:
-        sys.modules.pop("aiforge_core.memory.unified_query", None)
+    monkeypatch.setattr(uq, "query", _stub_query)
+    res = dt.memory_lookup("query", k=999)
+    assert res["ok"] is True
+    assert len(res["hits"]) <= 12
 
 
 # ─── grep_repo ─────────────────────────────────────────────────────────

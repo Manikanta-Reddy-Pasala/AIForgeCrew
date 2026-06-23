@@ -136,13 +136,26 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     # Build a context-rich prompt: project summary + prior conversation +
     # the current request, so the team pipeline isn't clueless on follow-ups.
     try:
-        from aiforge_core.runtime.chat_agent import _repo_context, _rules_context
+        from aiforge_core.runtime.chat_agent import (
+            _memory_recall, _repo_context, _rules_context,
+        )
         rules_ctx = _rules_context(cwd)
         repo_ctx = _repo_context(cwd)
     except Exception:  # noqa: BLE001
         rules_ctx = repo_ctx = ""
+        _memory_recall = None  # type: ignore
     convo = _history_preamble(history)
-    parts = [p for p in (rules_ctx, repo_ctx, convo) if p]
+    # SESSION START (self-learning): on a fresh session (no prior turns)
+    # recall memory keyed to the opening request so the team arrives
+    # informed by earlier sessions, same as the lightweight agent.
+    recall_ctx = ""
+    is_init = not convo
+    if is_init and _memory_recall is not None:
+        try:
+            recall_ctx = _memory_recall(cwd, prompt)
+        except Exception:  # noqa: BLE001
+            recall_ctx = ""
+    parts = [p for p in (rules_ctx, repo_ctx, recall_ctx, convo) if p]
     prompt = ("\n\n".join(parts) + f"\n\nCURRENT REQUEST:\n{prompt}"
               if parts else prompt)
 
