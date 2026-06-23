@@ -1,11 +1,11 @@
-"""Enhancer prompt — Claude pre-flight that rewrites the operator's
-raw ticket body into a richer brief the local Doer can act on.
+"""Enhancer prompt — pre-flight stage that rewrites the operator's
+raw ticket body into a richer brief the Doer can act on.
 
-Why a dedicated stage instead of just leaning on the Planner: local
-models (qwen-coder-next at 32K ctx, etc.) are reliable at *executing*
-crisp tasks but weak at *re-framing* under-specified ones. Claude is
-the opposite. Splitting the job keeps the local model on its
-strengths and uses Claude's tokens only where they pay off.
+Why a dedicated stage instead of just leaning on the Planner:
+execution-tuned models (qwen-coder-next, etc.) are reliable at
+*executing* crisp tasks but weaker at *re-framing* under-specified
+ones. Splitting the job keeps the downstream Doer on its strengths
+and spends a focused pass on turning intent into a precise brief.
 """
 from __future__ import annotations
 

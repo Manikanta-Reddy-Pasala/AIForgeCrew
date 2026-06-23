@@ -1,6 +1,6 @@
 """Tests for the new Architect structural-plan prompt + module wiring.
 
-The Architect is an EXTERNAL Claude Code session — there's no live
+The Architect is an EXTERNAL operator session — there's no live
 ``LlmAgent`` to drive in CI. We assert the prompt's machine-readable
 contract instead: tree / symbols / imports keys, JSON shape, and the
 fact that the per-archetype module re-exports it correctly so the

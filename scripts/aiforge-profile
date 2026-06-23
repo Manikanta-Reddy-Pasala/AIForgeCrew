@@ -4,12 +4,10 @@
 Usage:
   aiforge-profile list
   aiforge-profile show
-  aiforge-profile apply claude_local
   aiforge-profile apply ollama_cloud
   aiforge-profile apply local
 
 After apply, individual archetypes can be re-overridden:
-  aiforge-profile set architect claude_local claude-opus-4-7
   aiforge-profile set doer       ollama_cloud qwen3-coder:480b
   aiforge-profile set planner    local       Qwen3.6-27B-MLX-4bit
 

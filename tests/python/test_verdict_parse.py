@@ -7,7 +7,7 @@ shapes the model emits:
 * leading-token plain text (the new prompt asks for this)
 * legacy strict JSON ``{"verdict": "pass", ...}`` (some models still
   output this even with the new prompt)
-* prose-wrapped garbage from claude_local subscription that used to
+* prose-wrapped garbage from chatty models that used to
   parse-fail and silently drop into ``fail`` (ONE-107 root cause)
 """
 from __future__ import annotations

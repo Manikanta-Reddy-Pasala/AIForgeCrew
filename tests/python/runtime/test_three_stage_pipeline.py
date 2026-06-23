@@ -1,5 +1,5 @@
-"""Unit tests for the Claude-Enhance → local-Doer → Claude-Validate
-pattern, now wired through proper ADK LlmAgents (2026-05-23 refactor).
+"""Unit tests for the Enhance → Doer → Validate
+pattern, wired through proper ADK LlmAgents (2026-05-23 refactor).
 
 Covers:
 * pipeline.build_pipeline — Enhancer at index 0, Validator at end

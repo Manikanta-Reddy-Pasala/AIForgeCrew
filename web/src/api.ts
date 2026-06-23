@@ -195,7 +195,7 @@ export interface MemorySource {
 export type AgentRole =
   | 'architect' | 'planner' | 'verifier' | 'doer' | 'feedback' | 'learner';
 
-export type ProviderId = 'local' | 'ollama_cloud' | 'anthropic' | 'openai_compatible' | 'claude_local';
+export type ProviderId = 'local' | 'ollama_cloud' | 'openai_compatible';
 export type ModelTier = 'fast' | 'balanced' | 'premium';
 
 export interface ProviderModel {

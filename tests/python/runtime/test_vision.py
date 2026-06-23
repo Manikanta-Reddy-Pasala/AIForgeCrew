@@ -7,9 +7,8 @@ _PNG_HEADER = b"\x89PNG\r\n\x1a\n"
 
 
 def test_supports_vision_known_models():
-    assert supports_vision("claude-opus-4-7")
-    assert supports_vision("claude-sonnet-4-6")
     assert supports_vision("gpt-4o-2024-08-06")
+    assert supports_vision("gpt-4.1-mini")
     assert supports_vision("gemini-1.5-pro")
     assert supports_vision("qwen2-vl-7b")
 

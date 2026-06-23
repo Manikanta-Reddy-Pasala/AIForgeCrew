@@ -28,7 +28,7 @@ _KNOWN_BACKENDS = {
 }
 
 _KNOWN_RUNTIMES = {
-    "external_claude_code",
+    "external_operator",
     "adk_agent_with_ga",
     "adk_agent_direct_litellm",
 }

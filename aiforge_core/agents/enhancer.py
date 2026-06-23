@@ -1,15 +1,14 @@
-"""Enhancer archetype — Claude rewrites the operator's raw ticket
-body into a structured brief the downstream local Doer can act on.
+"""Enhancer archetype — rewrites the operator's raw ticket body into a
+structured brief the downstream Doer can act on.
 
 First stage of the SequentialAgent pipeline. Reads ``ticket.body``
 through the shared prompt frame and writes the enriched version to
 ``state['enhanced_body']``. The Planner pulls from that key when
 present (falls back to the raw body otherwise).
 
-KISS in-framework: this is a regular ADK LlmAgent. The model
-factory passed in already knows how to force claude_local when the
-caller wants Claude pinned for this role (see
-``pipeline._claude_pinned_model_factory``).
+KISS in-framework: this is a regular ADK LlmAgent built with the shared
+``pipeline.build_litellm_model`` factory — the operator's configured
+model for this role plus the cloud escalation chain.
 """
 from __future__ import annotations
 

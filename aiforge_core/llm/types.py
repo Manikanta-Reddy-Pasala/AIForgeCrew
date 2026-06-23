@@ -15,14 +15,13 @@ class Endpoint:
 
     `extras` carries provider-specific knobs (e.g.
     ``{"chat_template_kwargs": {"enable_thinking": False}}`` for
-    mlx-lm, or system-prompt mutators for Anthropic). Caller picks
-    what it cares about.
+    mlx-lm). Caller picks what it cares about.
     """
 
     base_url: str       # full /v1 base, ready for /chat/completions
     api_key: str
     model: str
-    provider: str       # registry name, e.g. 'local' / 'gemini' / 'anthropic'
+    provider: str       # registry name, e.g. 'local' / 'gemini' / 'ollama_cloud'
     role: str           # which agent role this was resolved for
     extras: dict        # provider-specific extra body fields
 

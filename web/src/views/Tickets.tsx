@@ -30,7 +30,7 @@ interface Draft {
   route_mode: RouteMode;          // local UI state — translated on submit
   route_workflow: string;         // selected workflow id (when mode='workflow')
   attachments: string;            // comma-separated attachment role names
-  attached_files: AttachedFile[]; // operator-uploaded files; presence forces claude_local
+  attached_files: AttachedFile[]; // operator-uploaded files; materialized into the worktree for the Doer
   external_refs: string;          // newline-separated URLs / file paths (gap-9)
   scope_allowlist_globs: string;  // newline-separated globs (gap-C6)
   deploy_target: string;          // 'none' | 'qa' | 'prod' — arms auto-merge + wait
@@ -113,9 +113,8 @@ export default function Tickets() {
       title: draft.title, body: draft.body,
       assignee_role: draft.assignee_role, priority: draft.priority,
       attachments: atts,
-      // attached_files only sent when actually present; the backend
-      // pins the run to claude_local when this list is non-empty
-      // because only the subscription CLI can read uploaded files.
+      // attached_files only sent when actually present; the runner
+      // materializes them into the worktree so the Doer can file_read them.
       attached_files: draft.attached_files.map(f => ({
         name: f.name, content_b64: f.content_b64,
       })),
@@ -275,8 +274,8 @@ export default function Tickets() {
               <div style={{ marginBottom: 6 }}>
                 Attached files{' '}
                 <span style={{ opacity: 0.6, fontSize: 12 }}>
-                  (drag &amp; drop or click — 5 MB cap per file; when
-                  present, ticket is pinned to Claude Local)
+                  (drag &amp; drop or click — 5 MB cap per file; files are
+                  materialized into the worktree for the Doer to read)
                 </span>
               </div>
               <DropZone
@@ -301,7 +300,7 @@ export default function Tickets() {
                     }));
                     toast.success(
                       `Added ${accepted.length} file${accepted.length > 1 ? 's' : ''} — ` +
-                      `ticket will run on Claude Local`,
+                      `materialized into the worktree for the Doer`,
                     );
                   }
                 }}
@@ -315,7 +314,7 @@ export default function Tickets() {
                   background: 'var(--bg-1)',
                 }}>
                   <strong style={{ marginRight: 4 }}>
-                    🔒 Claude Local mode:
+                    📎 Attachments:
                   </strong>
                   {draft.attached_files.map((f, i) => (
                     <span key={i} style={{

@@ -32,8 +32,7 @@ stage still sees prior stages' output.
 
 Each ``LlmAgent`` is wrapped around an :class:`EscalatingLlm` so the
 local mlx-lm primary auto-falls-over to the operator's cloud chain
-(Ollama Cloud → Anthropic → claude_local) without the orchestrator
-having to know about it.
+(Ollama Cloud) without the orchestrator having to know about it.
 
 Per-role provider routing comes from
 :func:`aiforge_core.config.agent_config.resolve_litellm` + the cloud
@@ -91,7 +90,7 @@ _FORCE_PROVIDER: str | None = None
 
 
 def set_force_provider(name: str | None) -> None:
-    """Pin every archetype to ``name`` (e.g. ``claude_local``) for the
+    """Pin every archetype to ``name`` (e.g. ``ollama_cloud``) for the
     next pipeline build. Pass ``None`` to clear."""
     global _FORCE_PROVIDER
     _FORCE_PROVIDER = name
@@ -102,44 +101,28 @@ def get_force_provider() -> str | None:
     return _FORCE_PROVIDER
 
 
-def _force_claude_local_cfg(role: str) -> dict:
-    """Build a resolve_litellm-shaped dict that pins claude_local with
-    the provider's default model — used when a ticket has attachments
-    that only the subscription CLI can read."""
-    from aiforge_core.config.agent_config import PROVIDERS as _PROV
-    prov = _PROV["claude_local"]
-    return {
-        "model_id": prov["default_model"],
-        "api_base": "claude:cli",
-        "api_key": "",
-        "_claude_cli": True,
+def _forced_primary_cfg(role: str, provider: str) -> dict | None:
+    """resolve_litellm-shaped cfg pinning ``role`` onto ``provider``'s
+    default model. Returns ``None`` for an unknown provider so the caller
+    falls back to the role's configured model."""
+    prov = _acfg.PROVIDERS.get(provider)
+    if prov is None:
+        return None
+    model = prov.get("default_model") or _acfg._local_default_model()
+    prefix = prov["litellm_prefix"]
+    KNOWN_PREFIXES = (
+        "openai/", "anthropic/", "azure/", "ollama/", "huggingface/",
+        "mistral/", "groq/", "cohere/", "bedrock/",
+    )
+    if not any(model.startswith(p) for p in KNOWN_PREFIXES):
+        model = f"{prefix}/{model}"
+    api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
+    cfg: dict = {
+        "model_id": model, "api_base": prov.get("base_url"), "api_key": api_key,
     }
-
-
-def _claude_available() -> bool:
-    """Is the Claude subscription CLI usable on this host?"""
-    import shutil
-    return shutil.which(os.environ.get("AIFORGE_CLAUDE_BIN", "claude")) is not None
-
-
-def _claude_pinned_model(role: str):
-    """Build an :class:`EscalatingLlm` pinned to ``claude_local`` for the
-    Enhancer + Validator stages (local models are weak at re-framing /
-    second-opinion judging).
-
-    BUT fall back to the operator's normally-configured model when the
-    ``claude`` CLI isn't installed — otherwise these stages crash the
-    whole pipeline with ``FileNotFoundError: 'claude'``. A deploy with no
-    Claude CLI (e.g. pointing everything at a self-hosted OpenAI-compatible
-    endpoint) then still runs end-to-end.
-    """
-    if not _claude_available():
-        log.warning(
-            "claude CLI not found — %s falls back to the configured model "
-            "instead of claude_local", role)
-        return build_litellm_model(role)
-    primary = _force_claude_local_cfg(role)
-    return EscalatingLlm.build(role, primary, [])
+    if provider == "ollama_cloud":
+        cfg["custom_llm_provider"] = "openai"
+    return cfg
 
 
 def build_litellm_model(role: str):
@@ -147,23 +130,24 @@ def build_litellm_model(role: str):
 
     Resolution order:
 
-    1. Per-ticket force override (e.g. attachments → claude_local).
-       Disables the cloud chain too — attachments only work through
-       the subscription CLI, so falling back to a different provider
-       would silently drop the file context.
-    2. Operator profile via ``agent_config.resolve_litellm``.
-    3. Pre-flight local-endpoint probe — if local mlx-lm is dead,
+    1. Operator profile via ``agent_config.resolve_litellm``.
+    2. Pre-flight local-endpoint probe — if local mlx-lm is dead,
        swap to ``cloud_default_for_local`` (Ollama Cloud
        ``qwen3-coder-next`` by default) so the agent loop doesn't pay
        a failed-primary round-trip on every turn.
 
     EscalatingLlm wrapping always applies (primary → cloud chain →
     primary_retry); disable the chain with ``AIFORGE_ESCALATE_DISABLE=1``.
+
+    A per-run :func:`set_force_provider` pin (e.g. a ticket forced onto
+    ``ollama_cloud``) overrides the role's configured provider for this
+    build.
     """
-    if _FORCE_PROVIDER == "claude_local" and _claude_available():
-        primary = _force_claude_local_cfg(role)
-        return EscalatingLlm.build(role, primary, [])  # no chain — file
-                                                       # context is local
+    if _FORCE_PROVIDER:
+        forced = _forced_primary_cfg(role, _FORCE_PROVIDER)
+        if forced is not None:
+            chain = _acfg.cloud_escalation_chain(role)
+            return EscalatingLlm.build(role, forced, chain)
     primary = _acfg.resolve_litellm(role)
     primary = maybe_substitute_primary(role, primary)
     chain = _acfg.cloud_escalation_chain(role)
@@ -190,10 +174,7 @@ def build_pipeline(*, skip_researcher: bool = False,
         find nothing relevant anyway.
       project: target repo name (``ticket.project``). Drives two
         things: which ``live_verifier`` recipe gets baked into the
-        prompt and whether the live_verifier stage is pinned to
-        ``claude_local`` (TallyConnector needs Windows-side Claude
-        for full coverage; other repos default to the operator's
-        configured model).
+        prompt baked into the live_verifier stage.
     """
     from google.adk.workflow import START, Edge, Workflow
 
@@ -232,7 +213,7 @@ def build_pipeline(*, skip_researcher: bool = False,
     # decision. Without this node nothing populates the verdict and the
     # graph always takes the full path.
     triage = _triage_mod.build(build_litellm_model)
-    enhancer = _enhancer_mod.build(_claude_pinned_model)
+    enhancer = _enhancer_mod.build(build_litellm_model)
     planner = _planner_mod.build(build_litellm_model)
     doer = _doer_mod.build(build_litellm_model)
     # C6 scope guard — block edits outside ``scope_allowlist_globs`` at the
@@ -284,7 +265,7 @@ def build_pipeline(*, skip_researcher: bool = False,
     refiner = _refiner_mod.build(build_litellm_model)
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)
-    validator = _validator_mod.build(_claude_pinned_model)
+    validator = _validator_mod.build(build_litellm_model)
     # Research-gap critic — only meaningful when the Researcher ran.
     gap_eval = _gap_eval_mod.build(build_litellm_model) \
         if not skip_researcher else None
@@ -314,8 +295,8 @@ def build_pipeline(*, skip_researcher: bool = False,
     # they need from state-templated prompt blocks ({plan_md?} etc.), so
     # replaying the full 22-node history into each of them wastes tokens
     # massively (3 verifiers × full history × up to 4 planner epochs,
-    # plus the Claude-priced validator) and re-creates the ONE-117 KV
-    # pressure. single_turn → include_contents='none'.
+    # plus the validator) and re-creates the ONE-117 KV pressure.
+    # single_turn → include_contents='none'.
     _single_turn = [triage, validator, *verifier_branches]
     if gap_eval is not None:
         _single_turn.append(gap_eval)
@@ -334,8 +315,7 @@ def build_pipeline(*, skip_researcher: bool = False,
                                     backoff_factor=2.0)
         for _b in (*context_branches, *verifier_branches):
             _b.retry_config = _branch_retry
-        # The serial chokepoints too: enhancer/validator are pinned to
-        # claude_local with NO escalation chain, and planner/doer/triage
+        # The serial chokepoints too: enhancer/validator/planner/doer/triage
         # sit on the critical path — a single transient exception in any
         # of them is error_shut_down for the whole graph.
         _crit = [triage, enhancer, planner, doer, validator]
@@ -491,10 +471,9 @@ def _append_after(agent, cb) -> None:
 
 def build_live_verifier_agent(project: str | None = None):
     """Build the standalone live_verifier agent the runner invokes
-    AFTER opening the PR. Always pinned to claude_local — see the note
-    in :func:`build_pipeline` for why (context size + tool reliability
-    + the operator's "Claude must validate" rule)."""
-    return _live_verifier_mod.build(_claude_pinned_model, project=project)
+    AFTER opening the PR. Runs on the operator's configured model (with
+    the cloud escalation chain) like every other archetype."""
+    return _live_verifier_mod.build(build_litellm_model, project=project)
 
 
 __all__ = [

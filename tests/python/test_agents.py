@@ -26,7 +26,7 @@ CORE_ROLES = {
 }
 EXTENDED_ROLES = {
     "triage", "researcher", "refiner",
-    # 2026-05-23: Claude bookends the local Doer.
+    # 2026-05-23: Enhancer/Validator bookend the Doer.
     "enhancer", "validator",
     # 2026-06-11: live-boot verifier + ParallelAgent fan-outs.
     "live_verifier",

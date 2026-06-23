@@ -1,8 +1,8 @@
 """Self-healing ADK ``BaseLlm`` wrapper with cloud escalation.
 
-Wraps a primary ADK model (LiteLlm against the operator's local mlx-lm,
-or ClaudeSubscriptionLlm) and an ordered list of cloud fallbacks
-(Ollama Cloud → Anthropic → Claude subscription). On failure of the
+Wraps a primary ADK model (LiteLlm against the operator's local mlx-lm)
+and an ordered list of cloud fallbacks
+(Ollama Cloud). On failure of the
 primary the wrapper transparently retries the same request against
 each cloud entry in turn, so the agent loop never stalls on a flaky
 local model.
@@ -230,18 +230,10 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
 
     Recognised cfg keys (besides ``model_id``/``api_base``/``api_key``):
 
-    * ``_claude_cli`` — route through ``ClaudeSubscriptionLlm`` instead
-      of LiteLLM (the subscription CLI doesn't speak the OpenAI proto).
     * ``custom_llm_provider`` — override LiteLLM's URL/model auto-detect.
       Required for ollama.com (OpenAI-compat at ``/v1`` but LiteLLM
       misroutes to ``/api/generate`` without it).
     """
-    if cfg.get("_claude_cli"):
-        from .claude_subscription_llm import ClaudeSubscriptionLlm
-        model_id = cfg["model_id"]
-        if model_id.startswith("anthropic/"):
-            model_id = model_id.split("/", 1)[1]
-        return ClaudeSubscriptionLlm(model=model_id)
     from google.adk.models.lite_llm import LiteLlm
     _install_adk_toolarg_repair()
     kwargs: dict[str, Any] = {"model": cfg["model_id"]}
@@ -406,7 +398,7 @@ class EscalatingLlm(BaseLlm):
             # model name (the EscalatingLlm wrapper's `model` field).
             # When we forward to a cloud provider whose model_id is
             # different, LiteLlm picks llm_request.model FIRST (`or
-            # self.model`) and posts e.g. `claude-opus-4-7` to
+            # self.model`) and posts e.g. the local mlx-lm path to
             # ollama.com → 404. Stamp the chain entry's model on each
             # forward so the right id reaches the right endpoint.
             req_for_attempt = llm_request

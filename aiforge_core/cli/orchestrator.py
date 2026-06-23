@@ -9,7 +9,7 @@ Behaviour:
   3. Build the CONTEXT bundle (aiforge-deep-context CLI output) +
      events tail + role system prompt.
   4. Run the tool-loop against the role's LLM transport (LM Studio or
-     claude CLI), capped by role.max_turns and TICK_MAX_WALL_SECS.
+     cloud API), capped by role.max_turns and TICK_MAX_WALL_SECS.
   5. Every tool call and LLM turn writes a ticket_event and a
      structured log line.
   6. Release lock, exit.
@@ -446,7 +446,7 @@ def _run_tool_loop(role_cfg: RoleConfig, ticket: tickets.Ticket,
                     "verdict_fail", "create_child_ticket", "update_assignee"}
     _READ_TOOLS = {"read_file", "search", "related_tickets",
                    "graph_neighbors", "run_shell", "fetch_url",
-                   "kubectl_read", "mongo_query", "read_claude_memory"}
+                   "kubectl_read", "mongo_query", "read_operator_memory"}
     while turn < max_turns:
         if time.time() - t_start > TICK_MAX_WALL_SECS:
             stop_reason = "wall_timeout"

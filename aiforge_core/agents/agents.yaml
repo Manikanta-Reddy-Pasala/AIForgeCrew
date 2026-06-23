@@ -29,23 +29,23 @@ agents:
   # ---------------------------------------------------------------------------
   # 1. ARCHITECT
   # ---------------------------------------------------------------------------
-  # External Claude Code instance run by the human operator. Drives ticket
+  # External design session run by the human operator. Drives ticket
   # creation via the Postgres ticket API. Never edits code itself.
   # ---------------------------------------------------------------------------
   # ---------------------------------------------------------------------------
-  # 0. ENHANCER (Claude — first stage of the SequentialAgent)
+  # 0. ENHANCER (first stage of the SequentialAgent)
   # ---------------------------------------------------------------------------
-  # Claude rewrites the operator's raw ticket body into a structured
-  # brief (## Goal / ## Context / ## Acceptance / ## Out of scope /
-  # ## Hints). Pinned to claude_local because local models are weak
-  # at re-framing under-specified tickets. Pure judgment — no tools.
+  # Rewrites the operator's raw ticket body into a structured brief
+  # (## Goal / ## Context / ## Acceptance / ## Out of scope / ## Hints).
+  # Runs on the operator's configured model (+ cloud escalation chain),
+  # same as every other archetype. Pure judgment — no tools.
   enhancer:
     identity:
       runtime: adk_agent_direct_litellm
-      model: claude-opus-4-7
+      model: Qwen3-Coder-Next-MLX-4bit
       backend: direct_litellm
-      base_url: claude:cli
-      ctx_window: 200000
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
     contract:
       inputs:
         - parent_ticket
@@ -75,10 +75,10 @@ agents:
 
   architect:
     identity:
-      runtime: external_claude_code
-      model: claude-opus-4-7
+      runtime: external_operator
+      model: external
       backend: direct_litellm        # n/a — external; recorded for trace symmetry
-      base_url: https://api.anthropic.com
+      base_url: ""
       ctx_window: 1000000
     contract:
       inputs:
@@ -200,10 +200,10 @@ agents:
   verifier:
     identity:
       runtime: adk_agent_direct_litellm
-      model: claude-opus-4-7
+      model: Qwen3-Coder-Next-MLX-4bit
       backend: direct_litellm
-      base_url: https://api.anthropic.com
-      ctx_window: 200000
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
     contract:
       inputs:
         - parent_ticket
@@ -575,17 +575,17 @@ agents:
       - all changes resolve to paths inside scope_allowlist_globs
 
   # ---------------------------------------------------------------------------
-  # 10. VALIDATOR (Claude — final pre-PR sanity gate)
+  # 10. VALIDATOR (final pre-PR sanity gate)
   # ---------------------------------------------------------------------------
-  # Independent second-opinion after Learner. Pinned to claude_local;
-  # judgment only, no tools.
+  # Independent second-opinion after Learner. Runs on the operator's
+  # configured model (+ cloud escalation chain); judgment only, no tools.
   validator:
     identity:
       runtime: adk_agent_direct_litellm
-      model: claude-opus-4-7
+      model: Qwen3-Coder-Next-MLX-4bit
       backend: direct_litellm
-      base_url: claude:cli
-      ctx_window: 200000
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
     contract:
       inputs:
         - file_diffs
@@ -616,8 +616,7 @@ agents:
   # we confirm the change WORKS end-to-end, not just that the diff
   # compiles. Reads a per-project recipe from
   # aiforge_core/recipes/live_verify/<project>.md (fallback _default.md).
-  # TallyConnector tickets pin to claude_local at build time because
-  # Tally requires Windows/COM; other repos use the configured model.
+  # Runs on the operator's configured model (+ cloud escalation chain).
   live_verifier:
     identity:
       runtime: adk_agent_direct_litellm
@@ -793,10 +792,10 @@ agents:
   verify_correctness:
     identity:
       runtime: adk_agent_direct_litellm
-      model: claude-opus-4-7
+      model: Qwen3-Coder-Next-MLX-4bit
       backend: direct_litellm
-      base_url: https://api.anthropic.com
-      ctx_window: 200000
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
     contract:
       inputs:
         - parent_ticket
@@ -824,10 +823,10 @@ agents:
   verify_scope:
     identity:
       runtime: adk_agent_direct_litellm
-      model: claude-opus-4-7
+      model: Qwen3-Coder-Next-MLX-4bit
       backend: direct_litellm
-      base_url: https://api.anthropic.com
-      ctx_window: 200000
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
     contract:
       inputs:
         - plan_md
@@ -855,10 +854,10 @@ agents:
   verify_risk:
     identity:
       runtime: adk_agent_direct_litellm
-      model: claude-opus-4-7
+      model: Qwen3-Coder-Next-MLX-4bit
       backend: direct_litellm
-      base_url: https://api.anthropic.com
-      ctx_window: 200000
+      base_url: http://127.0.0.1:1234/v1
+      ctx_window: 128000
     contract:
       inputs:
         - parent_ticket

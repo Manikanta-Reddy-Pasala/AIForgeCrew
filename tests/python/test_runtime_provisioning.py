@@ -1,4 +1,4 @@
-"""Team-mode self-provisioning + claude-absent fallback + delete guard."""
+"""Team-mode self-provisioning + provider-absent fallback + delete guard."""
 import importlib
 
 import pytest

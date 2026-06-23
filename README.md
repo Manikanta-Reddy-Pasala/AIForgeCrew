@@ -215,7 +215,7 @@ Infrastructure: pluggable LLM router with health probe + cloud auto-escalation (
 
 | Agent | Runtime | Model | Inputs (now) | Tools (allowlist) | Memory R/W |
 |---|---|---|---|---|---|
-| **chat** | GA loop (`_chat_via_ga`) | qwen3-coder-next via Ollama Cloud | UnifiedContext.for_chat(query) injected via `do_unified_memory_query` tool | search_memory, unified_memory_query, related_memories, find_doc, sym_lookup, ticket_brief, ops_* (mongo/k8s/tekton/tally), read_claude_memory | R full · W T3 (chat_qa wing, auto) |
+| **chat** | GA loop (`_chat_via_ga`) | qwen3-coder-next via Ollama Cloud | UnifiedContext.for_chat(query) injected via `do_unified_memory_query` tool | search_memory, unified_memory_query, related_memories, find_doc, sym_lookup, ticket_brief, ops_* (mongo/k8s/tekton/tally), read_operator_memory | R full · W T3 (chat_qa wing, auto) |
 | **planner** | smolagents CodeAgent | Qwen 3.6 27B (mlx-lm :1235) | UnifiedContext.for_planner(ticket) → `task_prompt` | read_file, list_dir, grep_repos, write_plan, related_tickets, related_memories | R full · W ticket body |
 | **doer** | GA agent_runner_loop | qwen3-coder-next (mlx-lm :1234) | UnifiedContext.for_doer(ticket) prepended to prompt | **editor** · **bash** (tmux/Docker) · **browse** (Playwright) · **execute_ipython_cell** (+AgentSkills) · **delegate_to_agent** (depth-capped) · **mcp** (oneshell-mcp client) · **think** · **finish** · grep_repo · fetch_url · git_commit · memory_lookup · graphify_lookup · update_working_checkpoint | R full · W via learner (T3) |
 | **feedback** | deterministic Python | (none) | doer outcome counters | (none — pure code) | R none · W ticket_events |

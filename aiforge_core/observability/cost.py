@@ -36,9 +36,6 @@ RATES: dict[str, tuple[float, float]] = {
     "glm-5":                   (0.50, 1.50),
     "kimi-k2.6":               (0.40, 1.20),
     "kimi-k2:1t":              (1.50, 4.50),
-    # Anthropic
-    "claude-sonnet-4-5":       (3.00, 15.00),
-    "claude-opus-4-7":         (15.00, 75.00),
     # Gemini
     "gemini-2.5-flash":        (0.075, 0.30),
     "gemini-2.5-pro":          (1.25, 5.00),

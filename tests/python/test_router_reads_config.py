@@ -79,7 +79,7 @@ def test_explicit_role_overrides_global_default(cfg):
 
 
 def test_build_body_excludes_transport_control_extras():
-    # insecure_tls / claude routing keys must NOT leak into the chat body —
+    # transport-control keys (insecure_tls) must NOT leak into the chat body —
     # strict servers (Open WebUI) 400 on unknown completion params.
     import json
 
@@ -88,11 +88,10 @@ def test_build_body_excludes_transport_control_extras():
     ep = Endpoint(base_url="https://chatai.internal/api", api_key="k",
                   model="qwen35-122b-reasoning", provider="openai_compatible",
                   role="chat",
-                  extras={"insecure_tls": True, "claude_host": "x",
+                  extras={"insecure_tls": True,
                           "chat_template_kwargs": {"enable_thinking": False}})
     body = json.loads(_build_body(ep, [{"role": "user", "content": "hi"}],
                                   None, None, None, None))
     assert "insecure_tls" not in body
-    assert "claude_host" not in body
     # legitimate body extras still pass through
     assert body.get("chat_template_kwargs") == {"enable_thinking": False}

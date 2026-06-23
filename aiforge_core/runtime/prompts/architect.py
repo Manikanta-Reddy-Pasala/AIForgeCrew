@@ -1,6 +1,6 @@
 """Architect prompt — emit a structural plan the Doer can trust.
 
-The Architect is an EXTERNAL Claude Code session driven by the human
+The Architect is an EXTERNAL design session driven by the human
 operator (see ``aiforge_core/agents/architect.py`` for the contract).
 Its output lands in ticket metadata as ``structural_plan`` and the
 runtime surfaces it into ADK session state under the same key so the
@@ -13,16 +13,16 @@ is the SINGLE SOURCE OF TRUTH for "where does symbol X live"; the
 Doer is instructed to read it before every file_write that imports a
 non-stdlib symbol.
 
-The contract below is the prompt the EXTERNAL Architect (Claude Code
-running in the operator's terminal) is held to. We keep the string
-here so the contract review surface lives next to every other
+The contract below is the prompt the EXTERNAL Architect (the design
+tool running in the operator's terminal) is held to. We keep the
+string here so the contract review surface lives next to every other
 archetype prompt.
 """
 from __future__ import annotations
 
 
 PROMPT = (
-    "You are the AIForge Architect (external Claude Code instance). "
+    "You are the AIForge Architect (external operator session). "
     "Before tickets are dispatched to the Planner+Doer pipeline, "
     "emit a STRUCTURAL PLAN the downstream agents will read out of "
     "session state.\n"

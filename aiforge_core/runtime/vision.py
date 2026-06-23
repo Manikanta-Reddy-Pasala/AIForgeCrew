@@ -15,8 +15,6 @@ from typing import Any
 _MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
 _VISION_MODELS = (
-    # Anthropic
-    "claude-opus", "claude-sonnet", "claude-haiku",
     # OpenAI
     "gpt-4-vision", "gpt-4o", "gpt-4.1", "gpt-4-turbo",
     # Google

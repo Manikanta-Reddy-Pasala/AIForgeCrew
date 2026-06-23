@@ -5,15 +5,14 @@ The 6 archetypes match the v5 production pipeline (see
 
     architect, planner, verifier, doer, feedback, learner
 
-Architect is external (human-driven Claude Code) but still configurable
-here for trace symmetry — its model pin is read by the operator's
-external client. The other five run inside the ADK SequentialAgent:
+Architect is external (human-driven operator session) but still
+configurable here for trace symmetry — its model pin is read by the
+operator's external client. The other five run inside the ADK SequentialAgent:
 ``Planner → Verifier → LoopAgent[Doer, Feedback] → Learner``.
 
 Each archetype can be flipped between providers (local mlx_lm / Ollama
-Cloud / Anthropic Claude / Claude subscription CLI) without a redeploy.
-Env vars still override at read time so ops keeps a final-say escape
-hatch.
+Cloud / any OpenAI-compatible endpoint) without a redeploy. Env vars still
+override at read time so ops keeps a final-say escape hatch.
 
 Storage: ``$AIFORGE_CONFIG_DIR/agent_config.json`` (default ``~/.aiforge``).
 """
@@ -109,14 +108,6 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "api_key_default": "not-needed",  # OSS endpoints ignore the key
         "base_url": None,               # required per-role (UI-set)
     },
-    "anthropic": {
-        "label": "Anthropic Claude",
-        "litellm_prefix": "anthropic",
-        "default_model": "claude-sonnet-4-5",
-        "api_key_env": "ANTHROPIC_API_KEY",
-        "api_key_default": "",
-        "base_url": None,
-    },
     "ollama_cloud": {
         "label": "Ollama Cloud",
         "litellm_prefix": "openai",
@@ -129,17 +120,6 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "api_key_env": "OLLAMA_CLOUD_API_KEY",
         "api_key_default": "",
         "base_url": "https://ollama.com/v1",
-    },
-    # Claude subscription via `claude` CLI subprocess — no API billing.
-    # base_url marker `claude:cli` signals the runtime to skip LiteLLM and
-    # shell out via `aiforge_core.llm.client._send_via_claude_cli`.
-    "claude_local": {
-        "label": "Claude Subscription (CLI)",
-        "litellm_prefix": "anthropic",
-        "default_model": "claude-opus-4-7",
-        "api_key_env": "AIFORGE_CLAUDE_API_KEY",   # unused; kept for parity
-        "api_key_default": "",
-        "base_url": "claude:cli",
     },
 }
 
@@ -233,23 +213,6 @@ MODEL_CATALOG: dict[str, list[dict[str, Any]]] = {
          "context": 128000, "tier": "premium"},
         {"id": "gemma4:31b", "label": "Gemma 4 31B",
          "context": 64000, "tier": "balanced"},
-    ],
-    "anthropic": [
-        {"id": "claude-opus-4-7", "label": "Claude Opus 4.7",
-         "context": 200000, "tier": "premium"},
-        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6",
-         "context": 200000, "tier": "balanced"},
-        {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5",
-         "context": 200000, "tier": "fast"},
-    ],
-    "claude_local": [
-        {"id": "claude-opus-4-7", "label": "Claude Opus 4.7 (subscription)",
-         "context": 1000000, "tier": "premium"},
-        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (subscription)",
-         "context": 200000, "tier": "balanced"},
-        {"id": "claude-haiku-4-5-20251001",
-         "label": "Claude Haiku 4.5 (subscription)",
-         "context": 200000, "tier": "fast"},
     ],
 }
 
@@ -424,10 +387,9 @@ def get(role: str) -> dict[str, Any]:
 
 
 def _row_for(role: str) -> dict[str, Any]:
-    """Like :func:`get`, but unknown roles (the always-Claude
-    ``enhancer`` / ``validator`` stages, not in the configurable archetype
-    list) resolve to the global ``_default`` instead of raising — so when
-    the Claude CLI is absent and they fall back, they still get the
+    """Like :func:`get`, but unknown roles (the ``enhancer`` /
+    ``validator`` stages, not in the configurable archetype list) resolve
+    to the global ``_default`` instead of raising — so they run on the
     operator's configured model. ``get`` stays strict for callers (e.g.
     observability) that depend on the raise.
     """
@@ -506,11 +468,6 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     from env / default. Callers pass the result straight into
     LiteLLMModel(**this_dict).
 
-    For ``claude_local`` the returned dict carries ``api_base="claude:cli"``
-    and an extra key ``_claude_cli=True``. Runtimes MUST detect this and
-    route the call through ``aiforge_core.llm.client._send_via_claude_cli``
-    instead of constructing a LiteLLMModel.
-
     Unknown roles (enhancer / validator fallback) resolve to the global
     ``_default`` via :func:`_row_for` rather than raising.
     """
@@ -518,14 +475,6 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     prov = PROVIDERS.get(row["provider"]) or PROVIDERS["local"]
     prefix = prov["litellm_prefix"]
     model = row["model"]
-    # Claude subscription: no LiteLLM, no API key. Runtime must subprocess.
-    if row["provider"] == "claude_local":
-        return {
-            "model_id": model,
-            "api_base": "claude:cli",
-            "api_key": "",
-            "_claude_cli": True,
-        }
     # Always add LiteLLM provider prefix unless caller already supplied one.
     # mlx-lm expects the full filesystem path as ``model`` — those paths have
     # ``/`` separators, so the old "if '/' not in model" check skipped them
@@ -590,10 +539,9 @@ def resolve_litellm(role: str) -> dict[str, Any]:
 
 # Auto-escalation chain — preferred order when the primary fails.
 # Cloud providers only; runtime falls through to the first one with a
-# usable api_key. claude_local sits last because it's slowest and most
-# expensive in subscription quota.
+# usable api_key.
 _CLOUD_PROVIDERS_ORDERED: tuple[str, ...] = (
-    "ollama_cloud", "anthropic", "claude_local",
+    "ollama_cloud",
 )
 
 
@@ -609,8 +557,7 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
       AIFORGE_ESCALATE_DISABLE=1     turn the chain off entirely
 
     The returned list mirrors :func:`resolve_litellm` shape so the runner
-    can build a LiteLlm or ClaudeSubscriptionLlm from each entry without
-    further translation.
+    can build a LiteLlm from each entry without further translation.
     """
     if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
         return []
@@ -633,30 +580,11 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
             continue
         prov = PROVIDERS[name]
         # Skip providers we have no key for — they'd 401 immediately.
-        # claude_local is the exception: the CLI reads the OS keychain,
-        # not an env var, so we can't pre-flight-validate it here.
         api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
-        if name != "claude_local" and not api_key:
+        if not api_key:
             continue
         # Build an ad-hoc resolve_litellm-shaped dict with the provider's
         # default model — caller can override via env if needed.
-        if name == "claude_local":
-            # The CLI reads the OS keychain (no env key to validate), but
-            # it's useless without the binary on PATH — including it then
-            # crashes the whole pipeline with FileNotFoundError: 'claude'
-            # and MASKS the primary's real error. Skip when absent.
-            import shutil
-            claude_bin = os.environ.get("AIFORGE_CLAUDE_BIN", "claude")
-            if not shutil.which(claude_bin):
-                continue
-            out.append({
-                "model_id": prov["default_model"],
-                "api_base": "claude:cli",
-                "api_key": "",
-                "_claude_cli": True,
-                "_provider": name,
-            })
-            continue
         prefix = prov["litellm_prefix"]
         model = prov["default_model"]
         KNOWN_PREFIXES = (
@@ -688,10 +616,9 @@ def cloud_default_for_local(role: str) -> dict[str, Any] | None:
     unreachable.
 
     Picked the same way :func:`cloud_escalation_chain` picks chain
-    entries — first cloud provider in
-    ``ollama_cloud → anthropic → claude_local`` order that has a key
-    configured. Honours the per-role / global pin envs so an operator
-    can force ``anthropic`` here instead of the default Ollama Cloud.
+    entries — first cloud provider (currently ``ollama_cloud``) that has
+    a key configured. Honours the per-role / global pin envs so an
+    operator can force a specific OpenAI-compatible cloud here.
 
     Returns ``None`` when no cloud is configured (caller keeps the
     dead local cfg + relies on the chain to rescue per-call).
@@ -713,22 +640,8 @@ def cloud_default_for_local(role: str) -> dict[str, Any] | None:
         if prov is None:
             continue
         api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
-        if name != "claude_local" and not api_key:
+        if not api_key:
             continue
-        if name == "claude_local":
-            # Useless without the binary — skip so we don't crash with
-            # FileNotFoundError: 'claude' (masking the real reason local
-            # was dead). Caller keeps the dead-local cfg / next candidate.
-            import shutil
-            if not shutil.which(os.environ.get("AIFORGE_CLAUDE_BIN", "claude")):
-                continue
-            return {
-                "model_id": prov["default_model"],
-                "api_base": "claude:cli",
-                "api_key": "",
-                "_claude_cli": True,
-                "_provider": name,
-            }
         prefix = prov["litellm_prefix"]
         model = prov["default_model"]
         KNOWN_PREFIXES = (
@@ -780,18 +693,11 @@ def list_models(provider: str) -> list[dict[str, Any]]:
 
 # ────────────────────────── Profile presets ────────────────────────────
 # A profile assigns one (provider, model) pair to all 9 archetypes at
-# once — the "give me a full claude_local stack" or "everything on
-# Ollama Cloud" knob. After applying, individual archetypes can still
-# be flipped via set_role() or env vars (mix-and-match).
+# once — the "everything on Ollama Cloud" or "all local" knob. After
+# applying, individual archetypes can still be flipped via set_role() or
+# env vars (mix-and-match).
 
 PROFILES: dict[str, dict[str, str]] = {
-    # Full Claude subscription stack — every archetype shells out to
-    # `claude` CLI on the keychain host. NUC -> Mac Studio works via
-    # AIFORGE_CLAUDE_HOST=mac-studio (ssh).
-    "claude_local": {
-        "provider": "claude_local",
-        "model": "claude-opus-4-7",
-    },
     # Full Ollama Cloud stack — paid hosted, ~128K ctx, Qwen3-Coder 480B.
     "ollama_cloud": {
         "provider": "ollama_cloud",

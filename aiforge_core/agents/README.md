@@ -28,7 +28,7 @@ architect (external)
 
 | # | Archetype | Runtime | Role |
 |---|-----------|---------|------|
-| 1 | **architect**  | external Claude Code (human-driven)    | Writes parent ticket; never edits code |
+| 1 | **architect**  | external operator session (human-driven) | Writes parent ticket; never edits code |
 | 2 | **triage** *(new)* | ADK direct LiteLLM (single completion) | Classifies ticket complexity (`trivial`/`moderate`/`hard`); drives `model_router` tier selection |
 | 3 | **planner**    | ADK + GenericAgent text-protocol       | Reads parent ticket → emits plan + child subtickets + scope allowlist |
 | 4 | **verifier**   | ADK direct LiteLLM (single completion) | Pre-execution plan critic. Reject → re-plan with issues folded in. Layered with `verifier_strict` for deterministic structural checks |
@@ -94,11 +94,10 @@ Per-archetype provider + model is configurable at runtime via
 Bulk presets:
 
 ```bash
-aiforge-profile apply claude_local   # all archetypes → claude-opus-4-7 (subscription CLI)
 aiforge-profile apply ollama_cloud   # all archetypes → qwen3-coder:480b
 aiforge-profile apply local          # all archetypes → LM Studio MLX
 
-aiforge-profile set architect claude_local claude-opus-4-7
+aiforge-profile set planner    ollama_cloud qwen3-coder:480b
 aiforge-profile set doer       ollama_cloud qwen3-coder:480b
 ```
 
@@ -111,7 +110,7 @@ picks a per-role tier list:
 
 | Role       | Tier 0 (cheapest) | Tier 1 (default) | Tier 2 (escalate) |
 |------------|-------------------|------------------|-------------------|
-| doer       | `Devstral-Small-2-24B-Instruct-2512-4bit` | `Qwen3-Coder-Next-MLX-4bit` | `claude-opus-4-7` |
+| doer       | `Devstral-Small-2-24B-Instruct-2512-4bit` | `Qwen3-Coder-Next-MLX-4bit` | `qwen3-coder:480b` (ollama_cloud) |
 | researcher | `Qwen3.6-27B-MLX-4bit` | `Qwen3.6-35B-A3B-MoE` | — |
 | refiner    | `Qwen3.6-27B-MLX-4bit` | — | — |
 | triage     | `Qwen3.6-27B-MLX-4bit` | — | — |

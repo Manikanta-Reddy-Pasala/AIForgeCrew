@@ -34,9 +34,6 @@ AIFORGE_USE_SQLITE = AIFORGE_PG_URL is None
 LM_STUDIO_BASE_URL = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
 LM_STUDIO_API_KEY  = os.environ.get("AIFORGE_LM_API_KEY", "lm-studio")
 
-CLAUDE_BIN = os.environ.get("AIFORGE_CLAUDE_BIN", "claude")
-CLAUDE_MODEL = os.environ.get("AIFORGE_CLAUDE_MODEL", "claude-opus-4-7")
-
 EMBED_SIDECAR_URL   = os.environ.get("AIFORGE_EMBED_URL", "http://127.0.0.1:8764")
 RERANK_SIDECAR_URL  = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:8765")
 
@@ -60,8 +57,8 @@ TICK_MAX_TURNS     = int(os.environ.get("AIFORGE_TICK_MAX_TURNS", "500"))
 @dataclass(frozen=True)
 class RoleConfig:
     name: str                # supervisor | planner | doer | feedback | learner
-    model: str               # LM Studio model id OR "claude-cli"
-    transport: str           # "openai" | "claude_cli"
+    model: str               # LM Studio model id
+    transport: str           # "openai"
     max_turns: int
     tool_allowlist: tuple[str, ...]
     identity_prefix: str = "" # appended to system prompt
@@ -87,31 +84,31 @@ _DOER_TOOLS = (
     # Planner via update_assignee (label=doer-blocked), never recurses.
     "post_comment", "set_status", "retain_fact",
     "update_assignee",   # escalate back to planner on compile-red / spec gap
-    "related_tickets", "graph_neighbors", "kubectl_read", "read_claude_memory",
+    "related_tickets", "graph_neighbors", "kubectl_read", "read_operator_memory",
 )
 _PLANNER_TOOLS = (
     "search", "read_file", "grep_repo", "run_shell", "fetch_url",
     "create_child_ticket", "post_comment", "set_status", "retain_fact",
     "update_assignee",   # escalation to supervisor when stuck
     "related_tickets", "graph_neighbors", "kubectl_read", "mongo_query",
-    "read_claude_memory",
+    "read_operator_memory",
 )
 _SUPERVISOR_TOOLS = (
     # Supervisor now has triage + rescue + audit duty. Needs read + grep +
     # child creation + routing. No write/edit/commit — always delegates.
     "search", "read_file", "grep_repo", "post_comment",
     "create_child_ticket", "update_assignee",
-    "related_tickets", "graph_neighbors", "read_claude_memory",
+    "related_tickets", "graph_neighbors", "read_operator_memory",
 )
 _FEEDBACK_TOOLS = (
     # No set_status — verdict_pass / verdict_fail handle status transitions.
     "search", "read_file", "run_shell",
     "post_comment", "verdict_pass", "verdict_fail",
-    "related_tickets", "read_claude_memory",
+    "related_tickets", "read_operator_memory",
 )
 _LEARNER_TOOLS = (
     "search", "retain_fact", "post_comment", "set_status",
-    "related_tickets", "read_claude_memory",
+    "related_tickets", "read_operator_memory",
 )
 
 
@@ -130,16 +127,15 @@ DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       _LEGACY_DEFAULT_MO
 FEEDBACK_MODEL   = os.environ.get("AIFORGE_FEEDBACK_MODEL",   _LEGACY_DEFAULT_MODEL)
 LEARNER_MODEL    = os.environ.get("AIFORGE_LEARNER_MODEL",    _LEGACY_DEFAULT_MODEL)
 
-# Supervisor transport — flip to claude_cli for cloud oversight on tough
-# routing calls. Default = local served model (fast + fits memory budget).
+# Supervisor transport. Only "openai" (LiteLLM/OpenAI-compatible) is
+# supported now that the Claude CLI path is gone.
 SUPERVISOR_TRANSPORT = os.environ.get("AIFORGE_SUPERVISOR_TRANSPORT", "openai")
 
 
 ROLES: dict[str, RoleConfig] = {
     "supervisor": RoleConfig(
         name="supervisor",
-        model=(CLAUDE_MODEL if SUPERVISOR_TRANSPORT == "claude_cli"
-               else SUPERVISOR_MODEL),
+        model=SUPERVISOR_MODEL,
         transport=SUPERVISOR_TRANSPORT,
         max_turns=15,   # was 4 — triage+rescue+audit needs headroom
         tool_allowlist=_SUPERVISOR_TOOLS,

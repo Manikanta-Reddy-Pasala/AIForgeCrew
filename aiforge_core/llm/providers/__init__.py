@@ -23,10 +23,8 @@ def get(name: str) -> Provider | None:
 # added here are picked up by the router with no router edit.
 from . import local as _local      # noqa: F401, E402
 from . import gemini as _gemini    # noqa: F401, E402
-from . import anthropic as _anthropic  # noqa: F401, E402
 from . import openai as _openai    # noqa: F401, E402
 from . import ollama_cloud as _ollama_cloud  # noqa: F401, E402
-from . import claude_local as _claude_local  # noqa: F401, E402
 from . import openai_compatible as _openai_compatible  # noqa: F401, E402
 
 __all__ = ["PROVIDERS", "register_provider", "get"]

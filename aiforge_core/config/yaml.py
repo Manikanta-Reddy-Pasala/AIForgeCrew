@@ -12,8 +12,6 @@ Schema (all fields optional):
     inference:
       lm_url:    http://127.0.0.1:1234/v1
       lm_key:    lm-studio
-      claude_bin: claude
-      claude_model: claude-opus-4-7
       embed_url:  http://127.0.0.1:8764
       rerank_url: http://127.0.0.1:8765
 
@@ -64,8 +62,6 @@ _FIELD_MAP: dict[tuple[str, ...], str] = {
     ("dsn",): "AIFORGE_DSN",
     ("inference", "lm_url"):       "AIFORGE_LM_BASE_URL",
     ("inference", "lm_key"):       "AIFORGE_LM_API_KEY",
-    ("inference", "claude_bin"):   "AIFORGE_CLAUDE_BIN",
-    ("inference", "claude_model"): "AIFORGE_CLAUDE_MODEL",
     ("inference", "embed_url"):    "AIFORGE_EMBED_URL",
     ("inference", "rerank_url"):   "AIFORGE_RERANK_URL",
     ("paths", "log_dir"):          "AIFORGE_LOG_DIR",

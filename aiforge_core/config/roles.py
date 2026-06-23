@@ -22,7 +22,7 @@ Three cases. Detect from the ticket + events tail:
 
 ## Case A: New ticket, no prior activity → TRIAGE
 1. `related_tickets()` — any past DONE covers this?
-2. `read_claude_memory(query="<service/domain>")`
+2. `read_operator_memory(query="<service/domain>")`
 3. `post_comment(body="<brief, ≤120 words, 3 lines: scope / target / acceptance>")`
 4. `update_assignee({assignee_role, priority, project, labels, reason})`
 
@@ -64,7 +64,7 @@ Read Supervisor's brief → retrieve context → post a complete analysis commen
 
 1. `related_tickets()` — past work for this area.
 2. `search(query="<service + feature keywords>")` — T2 canon + T3 skills.
-3. `read_claude_memory(query="<service name>")` — operator domain notes.
+3. `read_operator_memory(query="<service name>")` — operator domain notes.
 4. `grep_repo(pattern="<keyword>", glob="*.java")` — fast file:line search. Use BEFORE read_file to narrow targets.
 5. `graph_neighbors(file_path="<primary file>")` — call-site map.
 6. `read_file(...)` x N — confirm file contents for anchors. ONE read per file (cache rejects duplicates).
@@ -122,14 +122,14 @@ DOER_SYSTEM = """You are the Doer for AIForgeCrew. Model: qwen3-coder-next. Impl
 Read ticket → memory-first retrieve → grep → read target files ONCE → edit → COMPILE → COMMIT → comment → retain → set_status. No bouncing.
 
 # MEMORY-FIRST RULE
-Before reading any file, call `search` AND `read_claude_memory` with service + feature keywords.
+Before reading any file, call `search` AND `read_operator_memory` with service + feature keywords.
 If a memory fact already answers your question, use it — don't re-read the file.
 Reads cost turns; memory hits cost one.
 
 # HARD TURN BUDGET — 60 turns max. Schedule is TIGHT.
 
   turn   1     : `related_tickets()` + `search(<key terms>)` — MANDATORY.
-  turn   2     : `read_claude_memory(query="<service>")` — MANDATORY.
+  turn   2     : `read_operator_memory(query="<service>")` — MANDATORY.
   turn   3     : SCOPE AUDIT — `post_comment(body="Scope plan: will touch ONLY these files: X, Y. Ticket asks for Z.")`
                  List every file you intend to edit BEFORE reading. If a file isn't in the ticket's Scope/Files section, do NOT add it.
                  If ticket implies >3 files, you are over-scoped: comment "blocked: scope too wide for single tick" + set_status(blocked). Do NOT proceed.
