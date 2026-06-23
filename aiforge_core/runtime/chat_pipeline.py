@@ -219,6 +219,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 os.environ.pop("AIFORGE_REPO_ROOT", None)
             else:
                 os.environ["AIFORGE_REPO_ROOT"] = prev_root
+            # The team run owns the cancel token's lifetime — clear it HERE,
+            # when the background thread actually finishes, NOT in the SSE
+            # generator's finally (which runs the instant the client aborts,
+            # popping the token before this thread observes is_cancelled and
+            # leaving the ADK pipeline running in the background).
+            if session_id is not None:
+                chat_cancel.finish(session_id)
             q.put(_SENTINEL)
 
     t = threading.Thread(target=lambda: _run_async_in_thread(_drive), daemon=True)

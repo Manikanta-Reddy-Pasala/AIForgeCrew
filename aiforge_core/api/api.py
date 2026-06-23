@@ -2084,10 +2084,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     def _gen():
         steps: list[dict] = []
         final_text = ""
+        awaiting = False   # turn ended with a question / pause, not an outcome
         try:
             for ev in _events():
                 if ev.get("type") == "message":
                     final_text = ev.get("text", "")
+                    awaiting = bool(ev.get("awaiting_input"))
                 elif ev.get("type") in ("thought", "tool", "error"):
                     steps.append(ev)
                 yield f"data: {json.dumps(ev)}\n\n"
@@ -2097,15 +2099,27 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         finally:
-            chat_cancel.finish(session_id)
+            # Capture cancellation BEFORE finishing the token (finish pops
+            # it, after which is_cancelled always reads False).
+            cancelled = chat_cancel.is_cancelled(session_id)
+            # Team mode's background thread clears its own token when it
+            # actually stops (chat_pipeline._drive finally) — clearing it
+            # here would orphan a still-running ADK run on Stop. Simple mode
+            # runs inline in this generator, so finish it here.
+            if not team:
+                chat_cancel.finish(session_id)
             chat_store.add_message(session_id, "assistant", final_text, steps)
             # Auto-memory: persist a markdown note of what this turn did so
             # the Memory tab + ~/.aiforge/memory stay current without manual
             # effort. Best-effort; never breaks the response. Skip trivial /
             # cancelled turns. Toggle with AIFORGE_CHAT_AUTO_MEMORY=0.
+            # Skip when the turn ended by ASKING the user (awaiting_input) —
+            # a question / "I'm stuck" pause is not an outcome and would
+            # pollute the per-repo project summary.
             if (os.environ.get("AIFORGE_CHAT_AUTO_MEMORY", "1") not in ("0", "false")
                     and final_text and len(final_text.strip()) > 40
-                    and not chat_cancel.is_cancelled(session_id)):
+                    and not awaiting
+                    and not cancelled):
                 try:
                     import datetime as _dt
 
@@ -2119,7 +2133,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     # ONE file per session, named after the session (full
                     # readable title), UPDATED each turn — not a new file per
                     # run. source=chat-session:<id> is the stable upsert key.
-                    sess_title = (session.get("title") or "").strip()
+                    # Re-read the title — on the first message it was renamed
+                    # AFTER `session` was fetched, so the cached value is stale.
+                    fresh = chat_store.get_session(session_id) or session
+                    sess_title = (fresh.get("title") or "").strip()
                     note_title = (sess_title if sess_title and sess_title != "New chat"
                                   else (prompt.strip()[:80] or "chat session"))
                     when = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -2129,9 +2146,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                         tags=["chat", "team" if team else "simple"])
                     # Also grow the PER-REPO project summary so the NEXT
                     # message (even in a new session) gets continuity on what
-                    # this repo is + what's been done.
-                    import os as _os2
-                    repo = _os2.path.basename(_os2.path.normpath(cwd)) or "repo"
+                    # this repo is + what's been done. Use the SAME repo-name
+                    # function the reader (_repo_context) uses, so the write
+                    # key matches the read key even under AIFORGE_WORKSPACE_DIR.
+                    from aiforge_core.runtime.chat_agent import _repo_name
+                    repo = _repo_name(cwd)
                     md_store.upsert_section(
                         source=f"repo:{repo}", title=f"{repo} — project memory",
                         section_title=f"{when} · {prompt.strip()[:50]}",

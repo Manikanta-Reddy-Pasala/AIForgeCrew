@@ -18,6 +18,7 @@ type LiveTurn = {
   steps: AgentStep[];
   streaming: boolean;
   elapsedSec?: number;
+  awaiting?: boolean;   // agent asked a question — waiting for your reply
 };
 
 // ── Elapsed time formatter ────────────────────────────────────────────────────
@@ -407,7 +408,8 @@ export default function Chat() {
             return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
           }
           if (evt.type === 'message') {
-            return { ...prev, text: evt.text, streaming: false };
+            if (evt.awaiting_input) setTimeout(() => textareaRef.current?.focus(), 30);
+            return { ...prev, text: evt.text, streaming: false, awaiting: !!evt.awaiting_input };
           }
           if (evt.type === 'error') {
             return { ...prev, text: evt.text, steps: [...prev.steps, { kind: 'error' as const, text: evt.text }], streaming: false };
@@ -729,6 +731,14 @@ export default function Chat() {
                       streaming={liveTurn.streaming}
                       elapsedSec={liveTurn.streaming ? elapsedSec : liveTurn.elapsedSec}
                     />
+                    {liveTurn.awaiting && (
+                      <div style={{
+                        marginTop: 6, fontSize: 12, fontWeight: 600,
+                        color: 'var(--accent, #2563eb)',
+                      }}>
+                        ❓ Waiting for your reply — answer below to continue.
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
