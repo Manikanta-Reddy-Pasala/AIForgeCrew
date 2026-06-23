@@ -2101,21 +2101,26 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     and final_text and len(final_text.strip()) > 40
                     and not chat_cancel.is_cancelled(session_id)):
                 try:
+                    import datetime as _dt
+
                     from aiforge_core.memory import md_store
                     tool_names = [s.get("name") for s in steps
                                   if s.get("type") == "tool" and s.get("name")]
-                    body = (f"**Request:** {prompt[:300]}\n\n"
-                            f"**Outcome:** {final_text[:1500]}\n\n"
-                            + (f"**Tools used:** {', '.join(dict.fromkeys(tool_names))}\n"
-                               if tool_names else ""))
-                    # Name the note after the session (chat sidebar title) so
-                    # the .md filename reflects the session, not just the turn.
+                    section = (f"**Request:** {prompt[:300]}\n\n"
+                               f"**Outcome:** {final_text[:1500]}\n\n"
+                               + (f"**Tools used:** {', '.join(dict.fromkeys(tool_names))}\n"
+                                  if tool_names else ""))
+                    # ONE file per session, named after the session (full
+                    # readable title), UPDATED each turn — not a new file per
+                    # run. source=chat-session:<id> is the stable upsert key.
                     sess_title = (session.get("title") or "").strip()
                     note_title = (sess_title if sess_title and sess_title != "New chat"
-                                  else (prompt.strip()[:60] or "chat note"))
-                    md_store.write(note_title, body,
-                                   kind="session", source=f"chat-session:{session_id}",
-                                   tags=["chat", "team" if team else "simple"])
+                                  else (prompt.strip()[:80] or "chat session"))
+                    md_store.upsert_section(
+                        source=f"chat-session:{session_id}", title=note_title,
+                        section_title=_dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        section_body=section, kind="session",
+                        tags=["chat", "team" if team else "simple"])
                 except Exception:  # noqa: BLE001
                     pass
 

@@ -30,9 +30,9 @@ def memory_dir() -> Path:
     return p
 
 
-def _slug(title: str) -> str:
+def _slug(title: str, maxlen: int = 80) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", (title or "note").lower()).strip("-")
-    return (s or "note")[:48]
+    return (s or "note")[:maxlen]
 
 
 def _now_iso() -> str:
@@ -125,6 +125,59 @@ def write(title: str, text: str, *, kind: str = "note",
     _ingest_unit(title=title, body=text, kind=kind, tags=tags,
                  source=f"md:{stem}", repo=repo)
     d = _parse(path)
+    d.pop("body", None)
+    return d
+
+
+def _find_by_source(source: str) -> Path | None:
+    """Locate the md file whose frontmatter ``source`` matches (the stable
+    key for a session), so repeated runs UPDATE one file instead of
+    spawning a new hashed file every time."""
+    for p in memory_dir().glob("*.md"):
+        try:
+            if _parse(p).get("source") == source:
+                return p
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def upsert_section(*, source: str, title: str, section_title: str,
+                   section_body: str, kind: str = "session",
+                   tags: list[str] | None = None, repo: str = "notes") -> dict:
+    """Append a section to the file keyed by ``source`` (create on first
+    use). The filename is the FULL readable ``title`` slug — one stable
+    file per session that grows with each run, then re-ingested whole.
+    """
+    tags = list(tags or [])
+    existing = _find_by_source(source)
+    if existing is not None:
+        raw = existing.read_text(encoding="utf-8", errors="replace").rstrip()
+        existing.write_text(
+            raw + f"\n\n## {section_title}\n\n{section_body.strip()}\n",
+            encoding="utf-8")
+        path = existing
+    else:
+        stem = _slug(title)
+        path = memory_dir() / f"{stem}.md"
+        i = 1
+        while path.exists():       # different session, same title → suffix
+            path = memory_dir() / f"{stem}-{i}.md"
+            i += 1
+        fm = (
+            "---\n"
+            f"title: {title}\n"
+            f"kind: {kind}\n"
+            f"tags: {', '.join(tags)}\n"
+            f"source: {source}\n"
+            f"created: {_now_iso()}\n"
+            "---\n\n"
+        )
+        path.write_text(fm + f"## {section_title}\n\n{section_body.strip()}\n",
+                        encoding="utf-8")
+    d = _parse(path)
+    _ingest_unit(title=d["title"], body=d["body"], kind=kind,
+                 tags=d["tags"] or tags, source=source, repo=repo)
     d.pop("body", None)
     return d
 

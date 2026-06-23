@@ -52,3 +52,25 @@ def test_delete(md):
     d = md.write("ToDelete", "x")
     assert md.delete_file(d["name"]) is True
     assert md.read_file(d["name"]) is None
+
+
+def test_upsert_section_one_file_per_source(md):
+    a = md.upsert_section(source="chat-session:7", title="My Session",
+                          section_title="t1", section_body="first")
+    b = md.upsert_section(source="chat-session:7", title="My Session",
+                          section_title="t2", section_body="second")
+    assert a["file"] == b["file"]            # same file, updated
+    assert a["file"] == "my-session.md"      # full readable name, no hash
+    files = list(md.memory_dir().glob("*.md"))
+    assert len(files) == 1
+    raw = files[0].read_text()
+    assert "## t1" in raw and "## t2" in raw  # both turns appended
+    assert "first" in raw and "second" in raw
+
+
+def test_upsert_distinct_sources_distinct_files(md):
+    md.upsert_section(source="chat-session:1", title="Same Name",
+                      section_title="x", section_body="a")
+    md.upsert_section(source="chat-session:2", title="Same Name",
+                      section_title="y", section_body="b")
+    assert len(list(md.memory_dir().glob("*.md"))) == 2
