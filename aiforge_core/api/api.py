@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import re
-import time
+from datetime import UTC
 from typing import Any
 
 import psycopg
@@ -96,12 +96,12 @@ def _ticket_row_out(r: dict) -> dict:
     if started is None:
         duration_s: float | None = None
     else:
-        from datetime import datetime, timezone
-        end_ts = end or datetime.now(timezone.utc)
+        from datetime import datetime
+        end_ts = end or datetime.now(UTC)
         if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
+            started = started.replace(tzinfo=UTC)
         if end_ts.tzinfo is None:
-            end_ts = end_ts.replace(tzinfo=timezone.utc)
+            end_ts = end_ts.replace(tzinfo=UTC)
         duration_s = max(0.0, (end_ts - started).total_seconds())
     active_role = r.get("active_role")
     return {
@@ -1186,7 +1186,7 @@ def stream_role_log(role: str):
                 sz = os.path.getsize(path)
                 if sz <= last_size:
                     continue
-                with open(path, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     f.seek(last_size)
                     chunk = f.read()
                 last_size = sz
@@ -1428,7 +1428,7 @@ def list_llm_trace(identifier: str, limit: int = 50):
     needle_ticket_compact = f'"ticket":"{identifier}"'
     events: list[dict] = []
     try:
-        with open(err, "r", encoding="utf-8", errors="replace") as f:
+        with open(err, encoding="utf-8", errors="replace") as f:
             for line in f:
                 if (needle_event in line or needle_event_compact in line) and \
                    (needle_ticket in line or needle_ticket_compact in line):
@@ -1584,7 +1584,10 @@ def agents_v2_providers() -> list[dict]:
 
 @app.put("/api/agents/v2/{role}/config")
 def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
-    if role not in _acfg.archetypes():
+    # "_default" is the global fallback every pipeline role inherits (the
+    # home page's "Apply to all" writes it). Allowed alongside the named
+    # archetypes so a single setting covers the ~16 internal roles.
+    if role != _acfg._DEFAULT_KEY and role not in _acfg.archetypes():
         raise HTTPException(404, f"unknown archetype: {role}")
     if body.provider not in _acfg.PROVIDERS:
         raise HTTPException(400, f"unknown provider: {body.provider}")
@@ -2178,7 +2181,7 @@ async def mcp_tool_call(body: _McpCallBody) -> dict:
         out, err = await asyncio.wait_for(
             proc.communicate(payload.encode()), timeout=30,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try: proc.kill()
         except Exception: pass
         raise HTTPException(504, "MCP server timed out")

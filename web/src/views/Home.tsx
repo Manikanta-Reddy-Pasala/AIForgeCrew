@@ -340,17 +340,22 @@ export default function Home() {
         fail++;
       }
     }
-    // Also point the dedicated Chat slot at the same endpoint, so the chat
-    // model picker discovers models from it (chat isn't in the table).
-    try {
-      await api.setAgentV2Config('chat' as AgentRole, {
-        provider: bulk.provider,
-        model: bulk.model,
-        base_url: bulk.base_url.trim() || null,
-        api_key: bulk.api_key.trim() || null,
-        insecure_tls: bulk.insecure_tls,
-      });
-    } catch { /* chat slot optional — don't fail the whole apply */ }
+    // Write the GLOBAL default (_default) + the chat slot to the same
+    // endpoint. _default is inherited by every internal pipeline role
+    // (triage / researcher / ctx_* / verify_* / gap_eval …) that isn't in
+    // the visible table — so team-mode chat + tickets all use this one
+    // endpoint instead of silently falling back to a dead `local`.
+    for (const slot of ['_default', 'chat']) {
+      try {
+        await api.setAgentV2Config(slot as AgentRole, {
+          provider: bulk.provider,
+          model: bulk.model,
+          base_url: bulk.base_url.trim() || null,
+          api_key: bulk.api_key.trim() || null,
+          insecure_tls: bulk.insecure_tls,
+        });
+      } catch { /* optional slots — don't fail the whole apply */ }
+    }
     setBulk(b => ({ ...b, busy: false, api_key: '' }));
     if (ok && !fail) toast.success(`Applied to all ${ok} steps + chat`);
     else if (ok && fail) toast.warning(`Applied to ${ok}, ${fail} failed`);

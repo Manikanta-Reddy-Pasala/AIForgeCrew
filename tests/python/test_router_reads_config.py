@@ -49,6 +49,35 @@ def test_router_still_defaults_local_when_unset(cfg):
     assert ep.provider == "local"
 
 
+def test_global_default_applies_to_all_pipeline_roles(cfg):
+    # One _default config must be inherited by every internal pipeline role
+    # (triage / researcher / ctx_* / verify_* / gap_eval), not just the 6
+    # visible archetypes — else team-mode chat falls back to dead `local`.
+    acfg, router = cfg
+    acfg.set_role("_default", "openai_compatible", "qwen3.6-35b",
+                  base_url="https://chat.ai.internal/proxy/qwen36-35b/v1",
+                  api_key="sk-tok", insecure_tls=True)
+    for role in ("triage", "researcher", "ctx_repomap", "verify_risk",
+                 "gap_eval", "planner", "chat"):
+        rl = acfg.resolve_litellm(role)
+        assert acfg.get(role)["provider"] == "openai_compatible", role
+        assert rl["api_base"] == "https://chat.ai.internal/proxy/qwen36-35b/v1"
+        assert rl["insecure_tls"] is True
+        assert rl["api_key"] == "sk-tok"
+    # router (simple-chat path) honours it too
+    assert router.resolve("triage").provider == "openai_compatible"
+
+
+def test_explicit_role_overrides_global_default(cfg):
+    acfg, _ = cfg
+    acfg.set_role("_default", "openai_compatible", "qwen3.6-35b",
+                  base_url="https://a.internal/v1", api_key="k1")
+    acfg.set_role("doer", "openai_compatible", "qwen35-122b-reasoning",
+                  base_url="https://b.internal/v1", api_key="k2")
+    assert acfg.resolve_litellm("doer")["api_base"] == "https://b.internal/v1"
+    assert acfg.resolve_litellm("triage")["api_base"] == "https://a.internal/v1"
+
+
 def test_build_body_excludes_transport_control_extras():
     # insecure_tls / claude routing keys must NOT leak into the chat body —
     # strict servers (Open WebUI) 400 on unknown completion params.

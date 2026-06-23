@@ -143,9 +143,61 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
+_DEFAULT_KEY = "_default"
+
+
+def _global_default_row() -> dict[str, Any] | None:
+    """The operator's one-endpoint default for EVERY role.
+
+    The pipeline has ~16 roles (the 6 archetypes plus triage / researcher /
+    refiner / ctx_* / verify_* / gap_eval / chat). Configuring each by hand
+    is a footgun — an unconfigured role silently falls back to ``local`` and
+    breaks the whole team flow. A single ``_default`` entry (written by the
+    home page's "Apply to all", or via ``AIFORGE_DEFAULT_*`` env) is
+    inherited by any role without an explicit per-role override.
+
+    Priority: persisted ``_default`` row > ``AIFORGE_DEFAULT_*`` env > none.
+    """
+    p = _path()
+    if p.exists():
+        try:
+            disk = json.loads(p.read_text()) or {}
+            d = disk.get(_DEFAULT_KEY)
+            if isinstance(d, dict) and d.get("provider"):
+                return d
+        except Exception:  # noqa: BLE001
+            pass
+    prov = os.environ.get("AIFORGE_DEFAULT_PROVIDER")
+    if prov:
+        return {
+            "provider": prov,
+            "model": os.environ.get("AIFORGE_DEFAULT_MODEL", ""),
+            "base_url": os.environ.get("AIFORGE_DEFAULT_BASE_URL"),
+            "api_key": os.environ.get("AIFORGE_DEFAULT_API_KEY"),
+            "insecure_tls": os.environ.get(
+                "AIFORGE_DEFAULT_INSECURE_TLS", "").strip().lower()
+                in ("1", "true", "yes", "on"),
+        }
+    return None
+
+
 def _defaults() -> dict[str, dict[str, Any]]:
-    """Per-role defaults, resolved lazily so the local model id tracks
-    whatever the local server actually serves (no hardcoded pin)."""
+    """Per-role defaults. When a global ``_default`` is set, EVERY role
+    inherits it (provider/model/base_url/api_key/insecure_tls); otherwise
+    fall back to ``local`` with the dynamically-resolved local model id."""
+    gd = _global_default_row()
+    if gd and gd.get("provider"):
+        model = (gd.get("model") or "").strip() or _local_default_model()
+        return {
+            role: {
+                "provider": gd["provider"],
+                "model": model,
+                "base_url": gd.get("base_url"),
+                "api_key": gd.get("api_key"),
+                "insecure_tls": bool(gd.get("insecure_tls")),
+            }
+            for role in _ROLES
+        }
     model = _local_default_model()
     return {
         role: {"provider": "local", "model": model, "base_url": None}
@@ -364,6 +416,8 @@ def load_all() -> dict[str, dict[str, Any]]:
 
 def get(role: str) -> dict[str, Any]:
     """Return resolved config for one role: ``{provider, model, base_url}``."""
+    if role == _DEFAULT_KEY:
+        return _global_default_row() or {}
     if role not in _ROLES:
         raise ValueError(f"unknown role: {role}")
     return load_all()[role]
@@ -384,7 +438,7 @@ def set_role(role: str, provider: str, model: str,
     on next read, which is desired for a one-off override without losing
     the saved default.
     """
-    if role not in _ROLES:
+    if role != _DEFAULT_KEY and role not in _ROLES:
         raise ValueError(f"unknown role: {role}")
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider: {provider}")
