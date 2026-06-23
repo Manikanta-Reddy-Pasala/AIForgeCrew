@@ -1094,6 +1094,50 @@ class _MemSourceBody(BaseModel):
     name: str | None = Field(None)
 
 
+# ── Markdown-file memory (human-readable notes on disk + searchable) ──
+
+@app.get("/api/memory/files")
+def memory_files_list() -> list[dict]:
+    from aiforge_core.memory import md_store
+    return md_store.list_files()
+
+
+@app.get("/api/memory/files/{name}")
+def memory_files_get(name: str) -> dict:
+    from aiforge_core.memory import md_store
+    d = md_store.read_file(name)
+    if d is None:
+        raise HTTPException(404, f"no memory file: {name}")
+    return d
+
+
+class _MemFileBody(BaseModel):
+    title: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1)
+    kind: str = Field("note")
+    tags: list[str] | None = Field(None)
+
+
+@app.post("/api/memory/files", status_code=201)
+def memory_files_create(body: _MemFileBody) -> dict:
+    from aiforge_core.memory import md_store
+    return md_store.write(body.title, body.text, kind=body.kind,
+                          tags=body.tags or [], source="manual")
+
+
+@app.post("/api/memory/files/ingest")
+def memory_files_ingest() -> dict:
+    """(Re)ingest every md file in the memory dir into the search backend."""
+    from aiforge_core.memory import md_store
+    return md_store.ingest_dir()
+
+
+@app.delete("/api/memory/files/{name}")
+def memory_files_delete(name: str) -> dict:
+    from aiforge_core.memory import md_store
+    return {"deleted": md_store.delete_file(name), "name": name}
+
+
 @app.get("/api/memory/sources")
 def memory_sources_list() -> list[dict]:
     from aiforge_core.runtime import memory_sources as _ms
@@ -2049,6 +2093,31 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         finally:
             chat_cancel.finish(session_id)
             chat_store.add_message(session_id, "assistant", final_text, steps)
+            # Auto-memory: persist a markdown note of what this turn did so
+            # the Memory tab + ~/.aiforge/memory stay current without manual
+            # effort. Best-effort; never breaks the response. Skip trivial /
+            # cancelled turns. Toggle with AIFORGE_CHAT_AUTO_MEMORY=0.
+            if (os.environ.get("AIFORGE_CHAT_AUTO_MEMORY", "1") not in ("0", "false")
+                    and final_text and len(final_text.strip()) > 40
+                    and not chat_cancel.is_cancelled(session_id)):
+                try:
+                    from aiforge_core.memory import md_store
+                    tool_names = [s.get("name") for s in steps
+                                  if s.get("type") == "tool" and s.get("name")]
+                    body = (f"**Request:** {prompt[:300]}\n\n"
+                            f"**Outcome:** {final_text[:1500]}\n\n"
+                            + (f"**Tools used:** {', '.join(dict.fromkeys(tool_names))}\n"
+                               if tool_names else ""))
+                    # Name the note after the session (chat sidebar title) so
+                    # the .md filename reflects the session, not just the turn.
+                    sess_title = (session.get("title") or "").strip()
+                    note_title = (sess_title if sess_title and sess_title != "New chat"
+                                  else (prompt.strip()[:60] or "chat note"))
+                    md_store.write(note_title, body,
+                                   kind="session", source=f"chat-session:{session_id}",
+                                   tags=["chat", "team" if team else "simple"])
+                except Exception:  # noqa: BLE001
+                    pass
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
 

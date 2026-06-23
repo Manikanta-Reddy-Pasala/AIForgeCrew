@@ -345,6 +345,93 @@ function SourcesPanel() {
 
 // ─── Main Memory page ─────────────────────────────────────────────────────────
 
+function NotesPanel() {
+  const [files, setFiles] = useState<any[] | null>(null);
+  const [open, setOpen] = useState<any | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [title, setTitle] = useState('');
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api.memoryFiles().then(setFiles).catch(() => setFiles([]));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function view(name: string) {
+    try { setOpen(await api.memoryFileGet(name)); } catch { /* ignore */ }
+  }
+  async function create() {
+    if (!title.trim() || !text.trim()) return;
+    setBusy(true);
+    try {
+      await api.memoryFileCreate({ title: title.trim(), text: text.trim(), kind: 'note' });
+      setTitle(''); setText(''); setAdding(false); load();
+    } finally { setBusy(false); }
+  }
+  async function del(name: string) {
+    await api.memoryFileDelete(name); setOpen(null); load();
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2>Notes (markdown memory)</h2>
+        <span className="muted small">
+          Plain <code>.md</code> files in <code>~/.aiforge/memory</code> — written
+          automatically after each chat run, also searchable above.
+        </span>
+      </div>
+      <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+        <button onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Note'}</button>
+        <button className="ghost" onClick={() => api.memoryFilesIngest().then(load)}>
+          Re-ingest folder
+        </button>
+        <button className="ghost" onClick={load}>Refresh</button>
+      </div>
+      {adding && (
+        <div className="row" style={{ flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+          <input placeholder="title" value={title} onChange={e => setTitle(e.target.value)} />
+          <textarea placeholder="markdown body…" value={text}
+                    onChange={e => setText(e.target.value)} rows={5} />
+          <button onClick={create} disabled={busy || !title.trim() || !text.trim()}>
+            {busy ? 'Saving…' : 'Save note'}
+          </button>
+        </div>
+      )}
+      {files === null ? <div className="muted small">Loading…</div>
+        : files.length === 0 ? <div className="muted small">No notes yet — they appear after chat runs, or add one.</div>
+        : (
+          <table className="table">
+            <thead><tr><th>Title</th><th>Kind</th><th>Source</th><th>Created</th><th /></tr></thead>
+            <tbody>
+              {files.map(f => (
+                <tr key={f.name}>
+                  <td><a style={{ cursor: 'pointer' }} onClick={() => view(f.name)}>{f.title}</a></td>
+                  <td><span className="chip sm">{f.kind}</span></td>
+                  <td className="small muted">{f.source}</td>
+                  <td className="small muted">{(f.created || '').slice(0, 16).replace('T', ' ')}</td>
+                  <td><button className="ghost sm" onClick={() => del(f.name)}>✕</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      {open && (
+        <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)',
+                      border: '1px solid var(--border-0)', borderRadius: 8 }}>
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <strong>{open.title}</strong>
+            <button className="ghost sm" onClick={() => setOpen(null)}>close</button>
+          </div>
+          <div className="small muted" style={{ margin: '4px 0' }}>{open.file}</div>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{open.body}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Memory() {
   const [q, setQ]         = useState('');
   const [role, setRole]   = useState('planner');
@@ -373,6 +460,9 @@ export default function Memory() {
 
       {/* Indexed memory stats */}
       <IndexedMemoryPanel />
+
+      {/* Markdown notes (auto-written after chat runs) */}
+      <NotesPanel />
 
       {/* Sources management */}
       <SourcesPanel />

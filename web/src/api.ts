@@ -46,6 +46,17 @@ export const api = {
   memoryStats:  () => j<any>('/memory/stats'),
   memorySearch: (q: string, role = 'planner', topK = 12) =>
     j<any[]>(`/memory/search?q=${encodeURIComponent(q)}&role=${role}&top_k=${topK}`),
+  // Markdown-file memory (human-readable notes on disk + searchable)
+  memoryFiles: () => j<any[]>('/memory/files'),
+  memoryFileGet: (name: string) => j<any>(`/memory/files/${encodeURIComponent(name)}`),
+  memoryFileCreate: (body: { title: string; text: string; kind?: string; tags?: string[] }) =>
+    j<any>('/memory/files', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  memoryFilesIngest: () => j<any>('/memory/files/ingest', { method: 'POST' }),
+  memoryFileDelete: (name: string) =>
+    j<any>(`/memory/files/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   memorySources: () => j<MemorySource[]>('/memory/sources'),
   memorySourceCreate: (body: { kind: string; location: string; name?: string }) =>
     j<MemorySource>('/memory/sources', {
