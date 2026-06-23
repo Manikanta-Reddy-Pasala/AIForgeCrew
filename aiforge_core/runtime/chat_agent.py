@@ -358,6 +358,11 @@ the task is complete, then give FINAL. Do real work — read and edit files, run
 commands — rather than guessing.
 
 Operating principles — be fully autonomous, don't stop half-way:
+- SCOPE before reading: when asked to check/review/understand code, first \
+narrow to the FEW files that actually matter — use `grep`/`find` (and \
+list_dir) to locate the relevant symbols/files, then read only those. Do \
+NOT read every file in the repo; analysing irrelevant files wastes effort \
+and context. Read broadly only when the task genuinely spans the codebase.
 - When asked to RUN/BUILD/TEST a project: prefer the `project` tool — it \
 auto-detects the stack (maven/gradle/node/react/next/vite/python/go/rust), \
 installs the toolchain, and runs the right command. For anything it \
