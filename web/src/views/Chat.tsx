@@ -40,6 +40,7 @@ type ChatMode = 'simple' | 'plan' | 'team';
 // Approves/Rejects this action.
 type PendingApproval = {
   id: number;          // seq echoed back to the server
+  sessionId: number;   // the session that produced it — guards wrong-session resolve
   name: string;
   args: object;
   reason?: string;
@@ -142,6 +143,7 @@ export default function Chat() {
     abortRef.current = null;
     if (timerRef.current !== null) { clearInterval(timerRef.current); timerRef.current = null; }
     setBusy(false);
+    setPendingApproval(null);   // don't leave a resolvable card on a killed run
     setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
     toast('Stopping run…');
     // Pull whatever the server persisted once it unwinds.
@@ -151,10 +153,11 @@ export default function Chat() {
   // ── Approval gate (#1) ──────────────────────────────────────────────────────
   async function resolveApproval(decision: 'approve' | 'reject') {
     const p = pendingApproval;
-    if (!p || activeId === null) return;
     setPendingApproval(null);   // optimistic — run resumes server-side
+    if (!p || activeId === null) return;
+    if (p.sessionId !== activeId) return;   // stale card from another session
     try {
-      await chatApi.approve(activeId, decision, p.id);
+      await chatApi.approve(p.sessionId, decision, p.id);
     } catch (e: any) {
       toast.error(`Approval failed: ${e.message}`);
     }
@@ -207,6 +210,8 @@ export default function Chat() {
     setMsgsLoading(true);
     setMessages([]);
     setLiveTurn(null);
+    setPendingApproval(null);   // don't carry a card across sessions/loads
+    setCheckpoints(null);
     try {
       const res = await chatApi.sessionGet(id);
       setMessages(res.messages);
@@ -456,7 +461,7 @@ export default function Chat() {
         // action + diff so the user can Approve/Reject. Cleared when the
         // next tool/message event arrives (the run resumed).
         if (evt.type === 'approval') {
-          setPendingApproval({ id: evt.id, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview });
+          setPendingApproval({ id: evt.id, sessionId, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview });
           return;
         }
         if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);

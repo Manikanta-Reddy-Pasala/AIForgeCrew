@@ -176,18 +176,36 @@ class SqliteBackend:
             sql += f"AND (project IS NULL OR project NOT IN ({ph})) "
             params += list(excluded_projects)
         sql += f"ORDER BY {_PRIORITY_ORDER}, created_at ASC, id ASC LIMIT 1"
+        # Atomic claim ACROSS PROCESSES: the module _LOCK only serializes
+        # threads in THIS process — a second runner process polling the same
+        # SQLite file would otherwise read the same 'todo' row and double-run
+        # it. The conditional ``UPDATE ... WHERE status='todo'`` re-checks the
+        # status under SQLite's single-writer lock, so only the first claimer
+        # flips the row; a loser sees rowcount 0 and retries the next candidate.
         with _LOCK, self._conn() as c:
-            r = c.execute(sql, params).fetchone()
-            if r is None:
-                return None
-            c.execute(
-                f"UPDATE tickets SET status='in_progress', updated_at={_NOW} "
-                "WHERE id = ?",
-                (r["id"],),
-            )
-            r2 = c.execute("SELECT * FROM tickets WHERE id = ?",
-                           (r["id"],)).fetchone()
-        return _row_to_dict(r2)
+            # Take the write lock up front so a concurrent runner process
+            # can't interleave its read+claim with ours (WAL readers are
+            # snapshot-isolated; BEGIN IMMEDIATE serializes the claimers).
+            try:
+                c.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                pass   # a txn is already open / busy — conditional UPDATE still guards
+            for _ in range(50):                  # bounded: skip rows lost to races
+                r = c.execute(sql, params).fetchone()
+                if r is None:
+                    return None
+                upd = c.execute(
+                    f"UPDATE tickets SET status='in_progress', updated_at={_NOW} "
+                    "WHERE id = ? AND status = 'todo'",
+                    (r["id"],),
+                )
+                if upd.rowcount and upd.rowcount > 0:
+                    r2 = c.execute("SELECT * FROM tickets WHERE id = ?",
+                                   (r["id"],)).fetchone()
+                    return _row_to_dict(r2)
+                # lost the race for this row — another claimer took it; the
+                # next SELECT skips it (no longer 'todo'). Try again.
+            return None
 
     def set_status(self, ticket_id, status, completed, metadata_patch) -> "dict | None":
         with self._conn() as c:

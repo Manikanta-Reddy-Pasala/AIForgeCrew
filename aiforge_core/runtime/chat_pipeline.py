@@ -196,11 +196,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 waited = True
                 q.put({"type": "thought", "role": "system",
                        "text": "waiting for another team run to finish…"})
+        # Lock is held — everything from here is inside try/finally so the
+        # env mutation can't leak the lock if it raises.
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
-        os.environ["AIFORGE_REPO_ROOT"] = cwd
         steps: list[dict] = []
         final_text = ""
         try:
+            os.environ["AIFORGE_REPO_ROOT"] = cwd
             from google.adk.runners import Runner
             from google.adk.sessions import InMemorySessionService
             from google.genai import types as gtypes

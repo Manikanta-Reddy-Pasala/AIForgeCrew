@@ -77,6 +77,15 @@ def test_claim_returns_none_when_empty(be):
     assert be.claim_oldest(excluded_projects=[]) is None
 
 
+def test_claim_is_atomic_no_double_claim(be):
+    # one todo ticket → first claim takes it (flips to in_progress), a second
+    # claim must NOT re-hand the same ticket (audit fix: atomic claim).
+    t = _mk(be)
+    first = be.claim_oldest(excluded_projects=[])
+    assert first["id"] == t["id"] and first["status"] == "in_progress"
+    assert be.claim_oldest(excluded_projects=[]) is None
+
+
 def test_set_status_completed_and_metadata_merge(be):
     t = _mk(be)
     be.set_status(t["id"], "in_progress", completed=False, metadata_patch={"a": 1})
