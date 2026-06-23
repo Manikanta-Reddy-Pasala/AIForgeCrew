@@ -226,9 +226,11 @@ class EscalatingLlm(BaseLlm):
                 last_exc = exc
                 err_str = str(exc)
                 log.warning(
-                    "llm.attempt_failed role=%s attempt=%s model=%s err=%s",
+                    "llm.attempt_failed role=%s attempt=%s model=%s "
+                    "api_base=%s errtype=%s err=%s",
                     self.role, label, getattr(model, "model", "?"),
-                    err_str[:200],
+                    getattr(model, "api_base", "?"),
+                    type(exc).__name__, err_str[:800],
                 )
                 # LM Studio MLX crash mid-pipeline ("model has crashed"
                 # / "No models loaded") — force-reload the model and
@@ -341,8 +343,10 @@ class EscalatingLlm(BaseLlm):
         # was one, else surface a synthetic exhausted-chain error so the
         # ADK runner's outer except can mark the ticket blocked.
         log.error(
-            "llm.exhausted role=%s primary+%d cloud all failed",
+            "llm.exhausted role=%s primary+%d cloud all failed — last err: %s: %s",
             self.role, len(self.chain_models),
+            type(last_exc).__name__ if last_exc else "none",
+            str(last_exc)[:800] if last_exc else "(empty responses)",
         )
         if last_exc is not None:
             raise last_exc

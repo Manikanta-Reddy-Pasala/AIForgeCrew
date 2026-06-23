@@ -105,15 +105,19 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     root = _workspace_root()
     if root is not None:
         base = str(root)
+    # Default generous so dependency installs / builds (npm ci, mvn package,
+    # pip install) aren't killed mid-run; agent may override per call.
+    default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
     try:
         proc = subprocess.run(
             cmd, shell=True, cwd=base, capture_output=True, text=True,
-            timeout=int(args.get("timeout", 120)),
+            timeout=int(args.get("timeout", default_to)),
         )
         return {"ok": proc.returncode == 0, "code": proc.returncode,
                 "stdout": proc.stdout[-_MAX_OBS:], "stderr": proc.stderr[-_MAX_OBS:]}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "timeout"}
+        return {"ok": False, "error": f"timeout after {default_to}s "
+                "(pass a larger \"timeout\" arg for long builds)"}
 
 
 def _t_memory_lookup(args: dict, cwd: str) -> dict:
@@ -185,7 +189,23 @@ FINAL: <your full natural-language answer>
 Rules: emit exactly one ACTION or one FINAL per turn. After each ACTION you \
 receive an OBSERVATION with the tool result, then continue. Keep going until \
 the task is complete, then give FINAL. Do real work — read and edit files, run \
-commands — rather than guessing."""
+commands — rather than guessing.
+
+Operating principles — be fully autonomous, don't stop half-way:
+- When asked to RUN something: do EVERY step needed end-to-end via \
+run_command — detect the stack (package.json / requirements.txt / pom.xml / \
+Cargo.toml / Makefile / go.mod), install dependencies, build, then start/run \
+it. Don't just describe the steps — execute them.
+- FIX errors yourself: if a command fails, read the error in the OBSERVATION, \
+edit the offending file(s), and re-run. Loop until it actually works \
+(exit 0 / server up / tests green). Install any missing tool or package on \
+demand. Never hand a broken state back to the user.
+- When asked to PUSH (or "commit and push"): use run_command with git — \
+`git add -A`, `git commit -m "<concise message>"`, then `git push`. If not on \
+a branch or push is rejected, create/switch a branch and push that. Report \
+the branch + result in FINAL.
+- Verify before claiming done: re-run the build/test/run command and confirm \
+it succeeded from the OBSERVATION, then summarize what you did in FINAL."""
 
 
 def _balanced_json(text: str, start_at: int = 0) -> dict:

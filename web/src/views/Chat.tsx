@@ -707,13 +707,14 @@ export default function Chat() {
               <div style={{ display: 'flex', gap: 6 }}>
                 <textarea
                   ref={textareaRef}
-                  rows={1}
+                  rows={4}
                   placeholder="Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={onKey}
                   disabled={busy}
-                  style={{ flex: 1 }}
+                  style={{ flex: 1, minHeight: 96, resize: 'vertical',
+                           fontSize: 14, lineHeight: 1.5, padding: 10 }}
                 />
                 <button onClick={send} disabled={busy || !input.trim()}>
                   <Icon.Agents size={14} /> {busy ? 'Running…' : 'Run'}
@@ -729,13 +730,14 @@ export default function Chat() {
             <div style={{ display: 'flex', gap: 6 }}>
               <textarea
                 ref={textareaRef}
-                rows={1}
-                placeholder="Type a message to start a new conversation…  (Enter to send)"
+                rows={4}
+                placeholder="Type a message to start a new conversation…  (Enter to send, Shift+Enter for newline)"
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={onKey}
                 disabled={busy}
-                style={{ flex: 1 }}
+                style={{ flex: 1, minHeight: 96, resize: 'vertical',
+                         fontSize: 14, lineHeight: 1.5, padding: 10 }}
               />
               <button onClick={send} disabled={busy || !input.trim()}>
                 <Icon.Agents size={14} /> Run
