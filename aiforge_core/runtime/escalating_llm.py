@@ -22,6 +22,7 @@ violate the streaming contract.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, AsyncGenerator
 
@@ -31,6 +32,81 @@ from google.adk.models.llm_response import LlmResponse
 
 
 log = logging.getLogger("aiforge.escalating_llm")
+
+
+def _repair_json(s: str) -> str:
+    """Best-effort repair of truncated / malformed tool-call argument JSON.
+
+    Weaker local models (and output-token truncation) emit tool calls whose
+    ``arguments`` JSON is cut mid-string — ``json.loads`` then raises
+    ``Unterminated string`` and ADK aborts the whole run. Close the open
+    string + balance brackets so the call at least parses; fall back to
+    ``{}`` if still unparseable (the tool then reports a clear error and the
+    agent retries) rather than killing the pipeline.
+    """
+    if not s or not s.strip():
+        return "{}"
+    try:
+        json.loads(s)
+        return s
+    except Exception:  # noqa: BLE001
+        pass
+    t = s.strip()
+    # Walk the string tracking string-state + bracket stack.
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    closing = {"{": "}", "[": "]"}
+    for ch in t:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch in "{[":
+                stack.append(closing[ch])
+            elif ch in "}]" and stack and stack[-1] == ch:
+                stack.pop()
+    if in_str:
+        t += '"'        # close the unterminated string
+    while stack:
+        t += stack.pop()  # close open objects/arrays
+    try:
+        json.loads(t)
+        return t
+    except Exception:  # noqa: BLE001
+        return "{}"
+
+
+def _install_adk_toolarg_repair() -> None:
+    """Patch ADK's lite_llm so a malformed tool-call ``arguments`` JSON is
+    repaired instead of crashing the run (idempotent)."""
+    try:
+        import google.adk.models.lite_llm as _ll
+    except Exception:  # noqa: BLE001
+        return
+    if getattr(_ll, "_aiforge_toolarg_patched", False):
+        return
+    _orig = _ll._message_to_generate_content_response
+    def _patched(message, *a, **k):  # noqa: ANN001
+        try:
+            return _orig(message, *a, **k)
+        except json.JSONDecodeError:
+            for tc in (getattr(message, "tool_calls", None) or []):
+                fn = getattr(tc, "function", None)
+                if fn is not None and getattr(fn, "arguments", None):
+                    fixed = _repair_json(fn.arguments)
+                    log.warning("repaired malformed tool-call args: %.60s… → %s",
+                                fn.arguments, fixed[:80])
+                    fn.arguments = fixed
+            return _orig(message, *a, **k)
+    _ll._message_to_generate_content_response = _patched
+    _ll._aiforge_toolarg_patched = True
 
 
 def _is_empty(resp: LlmResponse) -> bool:
@@ -71,7 +147,16 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
             model_id = model_id.split("/", 1)[1]
         return ClaudeSubscriptionLlm(model=model_id)
     from google.adk.models.lite_llm import LiteLlm
+    _install_adk_toolarg_repair()
     kwargs: dict[str, Any] = {"model": cfg["model_id"]}
+    # Generous output budget so a tool call carrying file content isn't
+    # truncated mid-string (→ malformed JSON args). Tunable; some endpoints
+    # cap it, so keep it overridable.
+    import os as _os_mt
+    try:
+        kwargs["max_tokens"] = int(_os_mt.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192"))
+    except ValueError:
+        kwargs["max_tokens"] = 8192
     api_base = cfg.get("api_base") or ""
     if api_base:
         kwargs["api_base"] = api_base

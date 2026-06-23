@@ -432,3 +432,16 @@ def test_lm_recovery_flag_resets_on_primary_retry_success() -> None:
     assert out[0].content.parts[0].text == "recovered"
     assert e.lm_recovery_tried is False
     assert e.primary_demoted is False
+
+
+def test_repair_json_truncated_tool_args():
+    import json as _json
+
+    from aiforge_core.runtime.escalating_llm import _repair_json
+    # the real failure: unterminated string in tool-call arguments
+    for bad in ('{"path": "Main.java", "content": "public class Main {',
+                '{"cmd": "mvn package', '{"tools": ["java", "mvn"]'):
+        _json.loads(_repair_json(bad))   # must not raise
+    assert _repair_json("") == "{}"
+    assert _repair_json("not json at all") == "{}"
+    assert _json.loads(_repair_json('{"a": "b"}')) == {"a": "b"}
