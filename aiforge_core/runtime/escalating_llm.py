@@ -99,6 +99,30 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
             or _llm_ssl.auto_relax_internal(api_base)
         ):
             kwargs["ssl_verify"] = False
+            # litellm's HTTP client reads the GLOBAL `litellm.ssl_verify`
+            # when it builds (and caches) its aiohttp/httpx connector — the
+            # per-call ssl_verify kwarg above does NOT reconfigure an
+            # already-built connector, so a self-signed internal endpoint
+            # still raised CERTIFICATE_VERIFY_FAILED. Set the global here
+            # (pipeline-build time, before the first completion) so the
+            # connector is built with verification off. Also force httpx
+            # (disable the aiohttp transport) where ssl_verify is honoured
+            # most predictably. NOTE: this relaxes verification for litellm
+            # globally in this process — acceptable for a self-hosted deploy
+            # whose model endpoint uses an internal/self-signed cert.
+            try:
+                import litellm as _ll
+                if _ll.ssl_verify is not False:
+                    _ll.ssl_verify = False
+                    _ll.disable_aiohttp_transport = True
+                    import os as _o
+                    _o.environ.setdefault("SSL_VERIFY", "False")
+                    log.warning(
+                        "litellm TLS verification disabled (insecure/internal "
+                        "model endpoint %s) — set AIFORGE_LLM_CA_BUNDLE to a "
+                        "PEM to keep verification on.", api_base)
+            except Exception:  # noqa: BLE001
+                pass
     # Match the urllib client path: a generous request timeout (self-hosted
     # reasoning models need minutes) and a non-default User-Agent (some
     # proxies/WAFs reject httpx/litellm's default). Both env-tunable. Applied
