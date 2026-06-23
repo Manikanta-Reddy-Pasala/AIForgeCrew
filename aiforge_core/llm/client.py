@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import time
 import urllib.error
@@ -119,6 +120,9 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {ep.api_key}",
+            # Some proxies/WAFs reject the stdlib Python-urllib UA.
+            "User-Agent": os.environ.get(
+                "AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)"),
         },
         method="POST",
     )

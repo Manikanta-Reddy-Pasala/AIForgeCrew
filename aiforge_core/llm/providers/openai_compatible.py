@@ -28,6 +28,17 @@ _DEFAULT_BASE = "http://127.0.0.1:1234/v1"
 _NO_TOKEN = "not-needed"
 
 
+def _user_agent() -> str:
+    """User-Agent for outbound LLM HTTP.
+
+    Some self-hosted reverse proxies / WAFs in front of the model endpoint
+    reject the stdlib default ``Python-urllib/x.y``. Default to a curl-like
+    UA; override with ``AIFORGE_LLM_USER_AGENT`` (e.g. a proxy may require a
+    specific ``curl/8.5.0 (user)`` audit string).
+    """
+    return os.environ.get("AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)")
+
+
 def _ensure_v1(url: str) -> str:
     """Normalise an OpenAI-compatible base URL.
 
@@ -107,7 +118,7 @@ def probe(base_url: str, api_key: str | None = None,
         return {"ok": False, "error": "base_url required", "models": []}
     url = _ensure_v1(base_url.strip()) + "/models"
     is_https = url.lower().startswith("https://")
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "User-Agent": _user_agent()}
     has_token = bool(api_key and api_key.strip() and api_key.strip() != _NO_TOKEN)
     if has_token:
         headers["Authorization"] = f"Bearer {api_key.strip()}"
