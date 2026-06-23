@@ -76,9 +76,23 @@ def _run_async_in_thread(coro_factory: Callable) -> None:
         asyncio.set_event_loop(loop)
         loop.run_until_complete(coro_factory())
     finally:
+        # Drain leftover background tasks (litellm's LoggingWorker etc.)
+        # BEFORE closing — otherwise abruptly closing the loop cancels them
+        # mid-flight and spams "Task exception was never retrieved" /
+        # "task_done() called too many times".
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for t in pending:
+                t.cancel()
+            if pending:
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:  # noqa: BLE001
+            pass
         try:
             loop.close()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
 

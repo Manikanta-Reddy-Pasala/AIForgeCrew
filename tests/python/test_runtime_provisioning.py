@@ -152,3 +152,24 @@ def test_project_tool_registered_on_doer():
     names = {getattr(getattr(t, "func", None), "__name__", "")
              for t in adk_function_tools()}
     assert "project" in names
+
+
+# ── chat find/grep tools (resolve vague paths) ───────────────────────
+def test_find_locates_by_partial_name(tmp_path):
+    from aiforge_core.runtime import chat_agent
+    (tmp_path / "src" / "controllers").mkdir(parents=True)
+    (tmp_path / "src" / "controllers" / "UserController.java").write_text("class X {}")
+    dirs = chat_agent._t_find({"name": "controller", "kind": "dir"}, str(tmp_path))
+    assert any("controllers" in m for m in dirs["matches"])
+    files = chat_agent._t_find({"name": "user", "kind": "file"}, str(tmp_path))
+    assert any("UserController" in m for m in files["matches"])
+
+
+def test_grep_tolerates_wrong_path(tmp_path):
+    from aiforge_core.runtime import chat_agent
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("# TODO fix this\n")
+    g = chat_agent._t_grep({"pattern": "TODO", "path": "does-not-exist"},
+                           str(tmp_path))
+    assert g["ok"] and g["matches"]          # found despite wrong path
+    assert "not found" in g["note"]

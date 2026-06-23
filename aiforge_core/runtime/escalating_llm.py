@@ -107,6 +107,52 @@ def _install_adk_toolarg_repair() -> None:
             return _orig(message, *a, **k)
     _ll._message_to_generate_content_response = _patched
     _ll._aiforge_toolarg_patched = True
+    _quiet_litellm()
+
+
+def _quiet_litellm() -> None:
+    """Silence litellm's noisy internal logging worker (the async callback
+    queue spams ERROR/Task-never-retrieved tracebacks when the run loop is
+    cancelled — e.g. on Stop). Idempotent, best-effort."""
+    try:
+        import litellm as _l
+        _l.suppress_debug_info = True
+        _l.set_verbose = False
+        _l.success_callback = []
+        _l.failure_callback = []
+        _l._async_success_callback = []
+        _l._async_failure_callback = []
+        for name in ("LiteLLM", "litellm", "LiteLLM Router", "LiteLLM Proxy"):
+            logging.getLogger(name).setLevel(logging.CRITICAL)
+        # KILL the async LoggingWorker. It spawns a persistent background
+        # task bound to whatever event loop is running; the team pipeline
+        # creates a NEW loop per run and closes it, orphaning the worker →
+        # "Task was destroyed but it is pending" / "Event loop is closed"
+        # spam. No-op its enqueue (closing the coroutine so there's no
+        # "never awaited" warning) so the worker never starts. We don't use
+        # litellm's async callbacks anyway.
+        try:
+            from litellm.litellm_core_utils import logging_worker as _lw
+
+            def _drop(self, async_coroutine, *a, **k):  # noqa: ANN001
+                try:
+                    async_coroutine.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            _lw.LoggingWorker.ensure_initialized_and_enqueue = _drop
+            gw = getattr(_lw, "GLOBAL_LOGGING_WORKER", None)
+            if gw is not None and hasattr(gw, "_worker_task"):
+                try:
+                    if gw._worker_task is not None:
+                        gw._worker_task.cancel()
+                    gw._worker_task = None
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _is_empty(resp: LlmResponse) -> bool:

@@ -194,6 +194,95 @@ def _t_memory_write(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build",
+              "__pycache__", ".next", "target", ".gradle", ".idea"}
+
+
+def _t_find(args: dict, cwd: str) -> dict:
+    """Fuzzy-locate files/dirs by partial name — so a vague/wrong folder
+    name still resolves. args: name (substring, case-insensitive),
+    kind ('dir'|'file'|'any'), limit."""
+    base = str(_workspace_root() or cwd)
+    needle = (args.get("name") or args.get("query") or "").lower()
+    kind = (args.get("kind") or "any").lower()
+    limit = int(args.get("limit", 60))
+    hits: list[str] = []
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        if kind in ("dir", "any"):
+            for d in dirs:
+                if not needle or needle in d.lower():
+                    hits.append(os.path.relpath(os.path.join(root, d), base) + "/")
+        if kind in ("file", "any"):
+            for f in files:
+                if not needle or needle in f.lower():
+                    hits.append(os.path.relpath(os.path.join(root, f), base))
+        if len(hits) >= limit:
+            break
+    return {"ok": True, "base": base, "matches": hits[:limit],
+            "truncated": len(hits) > limit}
+
+
+def _t_grep(args: dict, cwd: str) -> dict:
+    """Recursive content search (ripgrep if present, else Python). Tolerant
+    of a wrong ``path``: falls back to the working dir + says so. args:
+    pattern (required), path (optional), glob (optional file filter)."""
+    import re as _re2
+    import shutil as _sh
+    pattern = args.get("pattern") or args.get("query") or ""
+    if not pattern:
+        return {"ok": False, "error": "missing 'pattern'"}
+    base = str(_workspace_root() or cwd)
+    want = args.get("path")
+    note = ""
+    target = base
+    if want:
+        cand = want if os.path.isabs(want) else os.path.join(base, want)
+        if os.path.exists(cand):
+            target = cand
+        else:
+            note = f"path {want!r} not found — searched the whole project instead"
+    limit = int(args.get("limit", 80))
+    glob = args.get("glob")
+    rg = _sh.which("rg")
+    if rg:
+        cmd = [rg, "-n", "-i", "--no-heading", "-m", str(limit)]
+        for d in _SKIP_DIRS:
+            cmd += ["-g", f"!{d}"]
+        if glob:
+            cmd += ["-g", glob]
+        cmd += [pattern, target]
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            lines = (p.stdout or "").splitlines()[:limit]
+            return {"ok": True, "matches": lines, "note": note,
+                    "truncated": len(lines) >= limit}
+        except Exception:  # noqa: BLE001
+            pass  # fall through to python
+    # Python fallback
+    try:
+        rx = _re2.compile(pattern, _re2.IGNORECASE)
+    except _re2.error as e:
+        return {"ok": False, "error": f"bad regex: {e}"}
+    out: list[str] = []
+    for root, dirs, files in os.walk(target):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        for f in files:
+            if glob and not f.endswith(glob.lstrip("*")):
+                continue
+            fp = os.path.join(root, f)
+            try:
+                for i, ln in enumerate(open(fp, encoding="utf-8", errors="ignore"), 1):
+                    if rx.search(ln):
+                        out.append(f"{os.path.relpath(fp, base)}:{i}:{ln.rstrip()[:200]}")
+                        if len(out) >= limit:
+                            return {"ok": True, "matches": out, "note": note,
+                                    "truncated": True}
+            except Exception:  # noqa: BLE001
+                continue
+    return {"ok": True, "matches": out, "note": note, "truncated": False}
+
+
 def _t_ensure_runtime(args: dict, cwd: str) -> dict:
     """Install + verify missing language runtimes / build tools so the
     agent can actually build & run the project."""
@@ -223,6 +312,8 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_create": _t_file_write,   # alias
     "file_patch": _t_file_patch,
     "list_dir": _t_list_dir,
+    "find": _t_find,
+    "grep": _t_grep,
     "run_command": _t_run_command,
     "ensure_runtime": _t_ensure_runtime,
     "project": _t_project,
@@ -238,7 +329,8 @@ You work by emitting ONE step at a time in this exact text format.
 To use a tool:
 THOUGHT: <your reasoning>
 ACTION: <one of: file_read, file_write, file_create, file_patch, list_dir,
-         run_command, ensure_runtime, project, memory_lookup, memory_write>
+         find, grep, run_command, ensure_runtime, project, memory_lookup,
+         memory_write>
 ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
@@ -246,6 +338,8 @@ Tool arguments:
 - file_write   {{"path": "...", "content": "..."}}      (creates/overwrites)
 - file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}
 - list_dir     {{"path": "."}}
+- find         {{"name": "controller", "kind": "dir"}}  (fuzzy-locate files/dirs by partial name)
+- grep         {{"pattern": "TODO", "path": "src"}}      (recursive; tolerates a wrong path)
 - run_command  {{"cmd": "ls -la", "timeout": 600}}
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - project        {{"action": "build"}}    (detect+install+build/test/run:
@@ -269,6 +363,10 @@ auto-detects the stack (maven/gradle/node/react/next/vite/python/go/rust), \
 installs the toolchain, and runs the right command. For anything it \
 doesn't cover, fall back to run_command and do every step yourself \
 (install deps → build → run). Execute, don't just describe.
+- WRONG/VAGUE path: if you're unsure of a folder/file name or a path \
+errors, use `find` to locate it first (partial name is fine), then read or \
+`grep`. `grep` already searches the whole project if the given path is \
+wrong — never give up because a path was slightly off.
 - MISSING RUNTIME/TOOL: if a command fails with "command not found" (java, \
 mvn, python, node, go…) or you know the stack up front, call ensure_runtime \
 with the executables you need (e.g. ["java","mvn"]); it installs + verifies \
