@@ -18,6 +18,7 @@ backgrounds the job and returns immediately.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -117,6 +118,48 @@ def _drain_until_prompt(
 
 
 def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
+    # New process group so the chat Stop button can kill the whole tree
+    # mid-build (team-mode Doer runs here on tmux-less hosts). Register the
+    # pgid from the PARENT right after spawn via Popen.
+    from aiforge_core.runtime import chat_cancel
+    sid = chat_cancel.active()
+    if sid is not None and chat_cancel.is_cancelled(sid):
+        return {"ok": False, "error": "stopped by user", "command": command}
+    if sid is not None:
+        try:
+            import time as _t
+            proc_p = subprocess.Popen(
+                command, shell=True, cwd=root(),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True)
+            try:
+                chat_cancel.track_pgid(sid, os.getpgid(proc_p.pid))
+            except Exception:  # noqa: BLE001
+                pass
+            deadline = _t.monotonic() + timeout
+            while proc_p.poll() is None:
+                if chat_cancel.is_cancelled(sid):
+                    try:
+                        os.killpg(os.getpgid(proc_p.pid), 9)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return {"ok": False, "error": "stopped by user",
+                            "command": command}
+                if _t.monotonic() > deadline:
+                    try:
+                        os.killpg(os.getpgid(proc_p.pid), 9)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return {"ok": False, "error": "timeout", "command": command,
+                            "truncated": True}
+                _t.sleep(0.2)
+            out_b, err_b = proc_p.communicate()
+            return {"ok": proc_p.returncode == 0, "command": command,
+                    "exit_code": proc_p.returncode,
+                    "stdout": (out_b or b"").decode("utf-8", "replace")[:_STDOUT_CAP_BYTES],
+                    "stderr": (err_b or b"").decode("utf-8", "replace")[:_STDOUT_CAP_BYTES]}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "command": command}
     try:
         proc = subprocess.run(
             command, shell=True, cwd=root(),

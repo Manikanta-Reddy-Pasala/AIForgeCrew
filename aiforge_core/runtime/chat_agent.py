@@ -116,16 +116,51 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     # Default generous so dependency installs / builds (npm ci, mvn package,
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
+    timeout = int(args.get("timeout", default_to))
+    # Run in its own process group so the Stop button can kill the whole
+    # tree (the shell + its children), and poll for cancellation.
+    import time as _time
+
+    from aiforge_core.runtime import chat_cancel
+    sid = chat_cancel.active()
     try:
-        proc = subprocess.run(
-            cmd, shell=True, cwd=base, capture_output=True, text=True,
-            timeout=int(args.get("timeout", default_to)),
+        proc = subprocess.Popen(
+            cmd, shell=True, cwd=base, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
         )
-        return {"ok": proc.returncode == 0, "code": proc.returncode,
-                "stdout": proc.stdout[-_MAX_OBS:], "stderr": proc.stderr[-_MAX_OBS:]}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"timeout after {default_to}s "
-                "(pass a larger \"timeout\" arg for long builds)"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    if sid is not None:
+        try:
+            chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
+        except Exception:  # noqa: BLE001
+            pass
+    deadline = _time.monotonic() + timeout
+    while proc.poll() is None:
+        if sid is not None and chat_cancel.is_cancelled(sid):
+            _kill_proc(proc)
+            return {"ok": False, "stopped": True, "error": "stopped by user"}
+        if _time.monotonic() > deadline:
+            _kill_proc(proc)
+            return {"ok": False, "error": f"timeout after {timeout}s "
+                    "(pass a larger \"timeout\" arg for long builds)"}
+        _time.sleep(0.2)
+    out, err = proc.communicate()
+    return {"ok": proc.returncode == 0, "code": proc.returncode,
+            "stdout": (out or "")[-_MAX_OBS:], "stderr": (err or "")[-_MAX_OBS:]}
+
+
+def _kill_proc(proc) -> None:
+    import signal as _sig
+    for s in (_sig.SIGTERM, _sig.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), s)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _t_memory_lookup(args: dict, cwd: str) -> dict:
@@ -189,7 +224,8 @@ You work by emitting ONE step at a time in this exact text format.
 
 To use a tool:
 THOUGHT: <your reasoning>
-ACTION: <one of: file_read, file_write, file_create, file_patch, list_dir, run_command, memory_lookup, memory_write>
+ACTION: <one of: file_read, file_write, file_create, file_patch, list_dir,
+         run_command, ensure_runtime, memory_lookup, memory_write>
 ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
@@ -198,7 +234,7 @@ Tool arguments:
 - file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}
 - list_dir     {{"path": "."}}
 - run_command  {{"cmd": "ls -la", "timeout": 600}}
-- ensure_runtime {{"tools": ["java", "mvn"]}}            (install + verify missing runtimes/build tools)
+- ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false}}
                 (save a learning/decision to the knowledge graph for future recall)
@@ -307,6 +343,7 @@ def run_chat_agent(
     role: str = "doer",
     max_steps: int | None = None,   # kept for callers/tests; None = no cap
     complete_fn: Callable[..., str] | None = None,
+    session_id: int | None = None,
 ) -> Iterator[dict]:
     """Drive the ReAct loop until the agent finishes or a stuck loop is
     detected (NOT a step count). Yields SSE-ready event dicts:
@@ -317,6 +354,9 @@ def run_chat_agent(
     """
     if complete_fn is None:
         from aiforge_core.llm.client import complete as complete_fn  # type: ignore
+
+    from aiforge_core.runtime import chat_cancel
+    chat_cancel.set_active(session_id)
 
     import collections
     safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
@@ -333,6 +373,10 @@ def run_chat_agent(
     n = 0
     while n < safety:
         n += 1
+        if session_id is not None and chat_cancel.is_cancelled(session_id):
+            yield {"type": "error", "text": "stopped by user"}
+            yield {"type": "done"}
+            return
         try:
             out = complete_fn(role, convo)
         except Exception as exc:  # noqa: BLE001

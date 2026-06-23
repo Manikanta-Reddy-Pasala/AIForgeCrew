@@ -2021,12 +2021,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     team = body.mode == "team"
     prompt = body.content.strip()
 
+    from aiforge_core.runtime import chat_cancel
+    chat_cancel.start(session_id)
+
     def _events():
         # Team mode → full ADK agent flow (planner→…→learner) for complex
         # builds. Simple mode → single conversational agent for quick work.
         if team:
-            return stream_chat_pipeline(prompt, cwd=cwd)
-        return run_chat_agent(history, cwd=cwd, role=role)
+            return stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id)
+        return run_chat_agent(history, cwd=cwd, role=role, session_id=session_id)
 
     def _gen():
         steps: list[dict] = []
@@ -2038,13 +2041,26 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 elif ev.get("type") in ("thought", "tool", "error"):
                     steps.append(ev)
                 yield f"data: {json.dumps(ev)}\n\n"
+                if chat_cancel.is_cancelled(session_id):
+                    break
         except Exception as exc:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         finally:
+            chat_cancel.finish(session_id)
             chat_store.add_message(session_id, "assistant", final_text, steps)
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+@app.post("/api/chat/sessions/{session_id}/stop")
+def chat_session_stop(session_id: int) -> dict:
+    """Stop the in-flight chat run for this session — signals the agent
+    loop / ADK pipeline to halt and kills any subprocess groups it
+    spawned (builds, test runs). Idempotent."""
+    from aiforge_core.runtime import chat_cancel
+    active = chat_cancel.cancel(session_id)
+    return {"stopped": active, "session_id": session_id}
 
 
 class _SessionTicketBody(BaseModel):

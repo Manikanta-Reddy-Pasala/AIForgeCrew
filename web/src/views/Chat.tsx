@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { chatApi, chatSessionMessageURL, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { chatApi, chatSessionMessageURL, chatSessionStop, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -115,6 +115,23 @@ export default function Chat() {
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  // Aborts the in-flight chat stream (Stop button + cleanup on
+  // unmount / session switch so a half-streamed turn doesn't leak).
+  const abortRef = useRef<AbortController | null>(null);
+
+  function stopRun() {
+    // Tell the server to halt the run (agents + sub-agents + subprocesses)
+    // FIRST, then drop the client stream.
+    if (activeId !== null) chatSessionStop(activeId);
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (timerRef.current !== null) { clearInterval(timerRef.current); timerRef.current = null; }
+    setBusy(false);
+    setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
+    toast('Stopping run…');
+    // Pull whatever the server persisted once it unwinds.
+    if (activeId !== null) setTimeout(() => loadSession(activeId), 800);
+  }
 
   // ── Load sessions list ─────────────────────────────────────────────────────
 
@@ -233,10 +250,15 @@ export default function Chat() {
     };
   }, []);
 
+  // Abort the in-flight stream when leaving the Chat view (navigate away).
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
+
   // ── Select a session ──────────────────────────────────────────────────────
 
   function selectSession(id: number) {
     if (id === activeId) return;
+    abortRef.current?.abort();   // drop any in-flight stream on the old session
+    abortRef.current = null;
     setActiveId(id);
     setLiveTurn(null);
     setBusy(false);
@@ -349,11 +371,14 @@ export default function Chat() {
 
     const isFirstMessage = messages.length === 0;
 
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: q, mode: chatMode }),
+        signal: ctrl.signal,
       });
 
       if (!res.ok) {
@@ -442,11 +467,17 @@ export default function Chat() {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
-      setElapsedSec(finalElapsed);
-      setLiveTurn(prev => prev ? { ...prev, text: `Agent error: ${e.message}`, streaming: false, elapsedSec: finalElapsed } : null);
-      toast.error(`Agent failed: ${e.message}`);
+      // User pressed Stop (or navigated away) — not an error.
+      if (e?.name === 'AbortError') {
+        setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
+      } else {
+        const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
+        setElapsedSec(finalElapsed);
+        setLiveTurn(prev => prev ? { ...prev, text: `Agent error: ${e.message}`, streaming: false, elapsedSec: finalElapsed } : null);
+        toast.error(`Agent failed: ${e.message}`);
+      }
     } finally {
+      abortRef.current = null;
       setBusy(false);
       textareaRef.current?.focus();
     }
@@ -715,6 +746,13 @@ export default function Chat() {
                   disabled={busy}
                   style={{ flex: 1 }}
                 />
+                {busy && (
+                  <button onClick={stopRun} className="danger"
+                          title="Stop all agents + processes for this run"
+                          style={{ whiteSpace: 'nowrap' }}>
+                    ■ Stop
+                  </button>
+                )}
                 <button onClick={send} disabled={busy || !input.trim()}>
                   <Icon.Agents size={14} /> {busy ? 'Running…' : 'Run'}
                 </button>
@@ -738,6 +776,13 @@ export default function Chat() {
                 style={{ flex: 1, minHeight: 96, resize: 'vertical',
                          fontSize: 14, lineHeight: 1.5, padding: 10 }}
               />
+              {busy && (
+                <button onClick={stopRun} className="danger"
+                        title="Stop all agents + processes for this run"
+                        style={{ whiteSpace: 'nowrap' }}>
+                  ■ Stop
+                </button>
+              )}
               <button onClick={send} disabled={busy || !input.trim()}>
                 <Icon.Agents size={14} /> Run
               </button>

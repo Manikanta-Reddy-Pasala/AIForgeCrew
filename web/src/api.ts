@@ -333,6 +333,13 @@ export function chatSessionMessageURL(id: number): string {
   return `${BASE}/chat/sessions/${id}/message`;
 }
 
+// Stop the in-flight run for a session (halts agents + kills subprocesses).
+export function chatSessionStop(id: number): Promise<{ stopped: boolean }> {
+  return fetch(`${BASE}/chat/sessions/${id}/stop`, { method: 'POST' })
+    .then(r => r.ok ? r.json() : { stopped: false })
+    .catch(() => ({ stopped: false }));
+}
+
 export function chatSessionTicket(
   id: number,
   content: string,

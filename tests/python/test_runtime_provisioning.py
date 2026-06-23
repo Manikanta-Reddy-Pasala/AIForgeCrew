@@ -93,3 +93,29 @@ def test_chat_run_command_blocks_delete(monkeypatch, tmp_path):
     # everything else runs
     ok = chat_agent._t_run_command({"cmd": "echo hi"}, str(tmp_path))
     assert ok["ok"] is True and "hi" in ok["stdout"]
+
+
+# ── chat cancellation registry ───────────────────────────────────────
+def test_chat_cancel_registry_and_active():
+    from aiforge_core.runtime import chat_cancel
+    tok = chat_cancel.start(99)
+    chat_cancel.set_active(99)
+    assert chat_cancel.active() == 99
+    assert chat_cancel.is_cancelled(99) is False
+    assert tok.cancelled is False
+    assert chat_cancel.cancel(99) is True
+    assert chat_cancel.is_cancelled(99) is True
+    chat_cancel.finish(99)
+    assert chat_cancel.get(99) is None
+    # cancelling an unknown session is a no-op
+    assert chat_cancel.cancel(12345) is False
+
+
+def test_chat_run_command_stops_when_cancelled(tmp_path):
+    from aiforge_core.runtime import chat_agent, chat_cancel
+    chat_cancel.start(101)
+    chat_cancel.set_active(101)
+    chat_cancel.cancel(101)  # pre-cancelled
+    out = chat_agent._t_run_command({"cmd": "sleep 30"}, str(tmp_path))
+    assert out["ok"] is False and out.get("stopped") is True
+    chat_cancel.finish(101)

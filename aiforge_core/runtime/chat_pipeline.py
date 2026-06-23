@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
-from typing import Callable, Iterator
+from collections.abc import Callable, Iterator
 
 _SENTINEL = object()
 
@@ -82,10 +82,15 @@ def _run_async_in_thread(coro_factory: Callable) -> None:
             pass
 
 
-def stream_chat_pipeline(prompt: str, *, cwd: str) -> Iterator[dict]:
+def stream_chat_pipeline(prompt: str, *, cwd: str,
+                         session_id: int | None = None) -> Iterator[dict]:
     q: queue.Queue = queue.Queue()
+    from aiforge_core.runtime import chat_cancel
 
     async def _drive() -> None:
+        # Bind this driver thread (+ the bash tool the Doer runs) to the
+        # session so the Stop button can cancel + kill its subprocesses.
+        chat_cancel.set_active(session_id)
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
         os.environ["AIFORGE_REPO_ROOT"] = cwd
         try:
@@ -113,7 +118,22 @@ def stream_chat_pipeline(prompt: str, *, cwd: str) -> Iterator[dict]:
             except Exception:
                 pass
             final = ""
-            async for event in runner.run_async(**kw):
+            agen = runner.run_async(**kw)
+            async for event in agen:
+                if session_id is not None and chat_cancel.is_cancelled(session_id):
+                    # ADK-native stop: aclose() the run generator (cancels
+                    # the in-flight agent + all its sub-agents) and close the
+                    # runner, then kill any subprocess groups the Doer spawned.
+                    try:
+                        await agen.aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        await runner.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    q.put({"type": "error", "text": "stopped by user"})
+                    break
                 for ev in map_event(event):
                     q.put(ev)
                 # Track the latest substantive text — the last agent's
