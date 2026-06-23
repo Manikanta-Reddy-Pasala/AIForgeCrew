@@ -713,8 +713,7 @@ export default function Chat() {
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={onKey}
                   disabled={busy}
-                  style={{ flex: 1, minHeight: 96, resize: 'vertical',
-                           fontSize: 14, lineHeight: 1.5, padding: 10 }}
+                  style={{ flex: 1 }}
                 />
                 <button onClick={send} disabled={busy || !input.trim()}>
                   <Icon.Agents size={14} /> {busy ? 'Running…' : 'Run'}

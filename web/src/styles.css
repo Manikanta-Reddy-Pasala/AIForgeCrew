@@ -792,12 +792,18 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 }
 .chat-composer textarea {
   flex: 1;
+  width: 100%;
   font-family: var(--font-sans);
   font-size: var(--fs-md);
-  min-height: 40px;
-  max-height: 200px;
-  line-height: 1.5;
+  min-height: 140px;
+  max-height: 50vh;
+  line-height: 1.6;
+  padding: 12px 14px;
+  resize: vertical;
 }
+/* Let the composer span the full chat column width */
+.chat-composer { align-items: stretch; }
+.chat-composer > div { width: 100%; }
 
 /* Compact model/role selector in the chat topbar */
 .chat-model-select {
