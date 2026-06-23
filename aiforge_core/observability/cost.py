@@ -161,9 +161,9 @@ def rollup(group_by: str = "day", *, days_back: int = 30) -> list[dict]:
 
 def _short_model_name(model: str) -> str:
     """Strip LiteLLM prefixes + leading filesystem path."""
-    if "/" in model and not model.startswith(("openai/", "anthropic/")):
+    if "/" in model and not model.startswith("openai/"):
         return model.rsplit("/", 1)[-1]
-    for p in ("openai/", "anthropic/", "ollama/", "ollama_cloud/"):
+    for p in ("openai/", "ollama/", "ollama_cloud/"):
         if model.startswith(p):
             return model[len(p):]
     return model

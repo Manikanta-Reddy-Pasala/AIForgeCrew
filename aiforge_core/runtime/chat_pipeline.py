@@ -177,7 +177,25 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             from aiforge_core.runtime import chat_approve
             chat_approve.set_emitter(session_id, q.put)
         # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs.
-        _RUN_LOCK.acquire()
+        # Acquire CANCELLABLY + with feedback so a 2nd concurrent team run
+        # doesn't stall its client silently behind a long-running first run.
+        acquired = False
+        waited = False
+        while not acquired:
+            if session_id is not None and chat_cancel.is_cancelled(session_id):
+                if session_id is not None:
+                    from aiforge_core.runtime import chat_approve
+                    chat_approve.clear_emitter(session_id)
+                    chat_approve.finish(session_id)
+                    chat_cancel.finish(session_id)
+                q.put({"type": "error", "text": "stopped by user", "stopped": True})
+                q.put(_SENTINEL)
+                return
+            acquired = _RUN_LOCK.acquire(timeout=0.5)
+            if not acquired and not waited:
+                waited = True
+                q.put({"type": "thought", "role": "system",
+                       "text": "waiting for another team run to finish…"})
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
         os.environ["AIFORGE_REPO_ROOT"] = cwd
         steps: list[dict] = []
@@ -307,10 +325,26 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 _cc.start(session_id)   # re-arm so Stop can halt the fallback
             yield {"type": "agent", "role": "fallback",
                    "text": "(pipeline unavailable — using the lightweight agent)"}
-            for ev in run_chat_agent([{"role": "user", "content": prompt}],
+            fb_final = ""
+            fb_steps: list[dict] = []
+            for ev in run_chat_agent([{"role": "user", "content": raw_prompt}],
                                      cwd=cwd, session_id=session_id):
+                if ev.get("type") == "message":
+                    fb_final = ev.get("text", "")
+                elif ev.get("type") in ("thought", "tool", "error"):
+                    fb_steps.append(ev)
                 if ev.get("type") != "done":
                     yield ev
+            # The fallback agent doesn't persist itself — do it here so its
+            # answer survives reload (team _gen skips persistence for team).
+            if session_id is not None:
+                from aiforge_core.runtime import chat_persist
+                cancelled_fb = _cc.is_cancelled(session_id)
+                chat_persist.persist_turn(
+                    session_id=session_id, cwd=cwd, prompt=raw_prompt,
+                    final_text=fb_final, steps=fb_steps, team=False,
+                    cancelled=cancelled_fb, awaiting=False)
+                _cc.finish(session_id)
         except Exception:
             pass
     yield {"type": "done"}
