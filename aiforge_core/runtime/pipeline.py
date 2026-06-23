@@ -247,6 +247,23 @@ def build_pipeline(*, skip_researcher: bool = False,
                 doer.before_tool_callback = [existing, _rep_cb]
     except Exception:
         pass
+    # Human-approval gate — honor allow/ask/deny + risk in the pipeline too.
+    # Blocks for Approve/Reject ONLY when an interactive chat approver is
+    # attached; autonomous ticket runs fall straight through (no hang).
+    # Last in the chain so scope/repeat guards short-circuit before we ask.
+    try:
+        from .tool_gate import make_approval_gate_callback
+        _gate_cb = make_approval_gate_callback()
+        if _gate_cb is not None:
+            existing = getattr(doer, "before_tool_callback", None)
+            if existing is None:
+                doer.before_tool_callback = _gate_cb
+            elif isinstance(existing, list):
+                doer.before_tool_callback = list(existing) + [_gate_cb]
+            else:
+                doer.before_tool_callback = [existing, _gate_cb]
+    except Exception:
+        pass
     # A1 quality gate signals — record run_tests/typecheck/format results
     # into tests_ok/typecheck_ok/lint_ok so the Feedback agent's
     # deterministic gate (quality_gate.evaluate) actually has inputs.

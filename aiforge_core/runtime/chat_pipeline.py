@@ -163,6 +163,11 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         # Bind this driver thread (+ the bash tool the Doer runs) to the
         # session so the Stop button can cancel + kill its subprocesses.
         chat_cancel.set_active(session_id)
+        # Attach an interactive approver so the Doer's tool gate can pause
+        # this team run for human Approve/Reject (the gate no-ops without it).
+        if session_id is not None:
+            from aiforge_core.runtime import chat_approve
+            chat_approve.set_emitter(session_id, q.put)
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
         os.environ["AIFORGE_REPO_ROOT"] = cwd
         try:
@@ -238,6 +243,9 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             # popping the token before this thread observes is_cancelled and
             # leaving the ADK pipeline running in the background).
             if session_id is not None:
+                from aiforge_core.runtime import chat_approve
+                chat_approve.clear_emitter(session_id)
+                chat_approve.finish(session_id)
                 chat_cancel.finish(session_id)
             q.put(_SENTINEL)
 

@@ -35,6 +35,43 @@ class _Pending:
 _LOCK = threading.Lock()
 _PENDING: dict[int, _Pending] = {}
 
+# Per-session event emitter. The simple chat loop yields approval events
+# itself; the TEAM pipeline runs in a background thread whose tool-gate
+# callback can't yield — it pushes the approval event through this emitter
+# (registered by the pipeline driver to enqueue onto its SSE queue).
+_EMITTERS: dict[int, object] = {}
+
+
+def set_emitter(session_id: int, fn) -> None:
+    with _LOCK:
+        _EMITTERS[session_id] = fn
+
+
+def clear_emitter(session_id: int) -> None:
+    with _LOCK:
+        _EMITTERS.pop(session_id, None)
+
+
+def has_emitter(session_id: int | None) -> bool:
+    if session_id is None:
+        return False
+    with _LOCK:
+        return session_id in _EMITTERS
+
+
+def emit(session_id: int, event: dict) -> bool:
+    """Push an event to the session's registered emitter (the chat stream).
+    Returns True if delivered. No-op when none registered."""
+    with _LOCK:
+        fn = _EMITTERS.get(session_id)
+    if fn is None:
+        return False
+    try:
+        fn(event)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
 
 def _timeout_s() -> float:
     try:
@@ -99,4 +136,5 @@ def finish(session_id: int) -> None:
         _PENDING.pop(session_id, None)
 
 
-__all__ = ["request", "wait", "resolve", "cancel", "finish"]
+__all__ = ["request", "wait", "resolve", "cancel", "finish",
+           "set_emitter", "clear_emitter", "has_emitter", "emit"]

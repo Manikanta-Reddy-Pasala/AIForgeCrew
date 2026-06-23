@@ -260,3 +260,93 @@ def test_checkpoint_snapshot_and_restore(tmp_path):
 
 def test_checkpoint_outside_git(tmp_path):
     assert checkpoints.snapshot(str(tmp_path))["ok"] is False
+
+
+# ─── pipeline tool gate (#1 honored in team/Doer) ─────────────────────
+
+class _FakeTool:
+    def __init__(self, name):
+        self.name = name
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+def test_gate_allows_normal_tool(monkeypatch):
+    from aiforge_core.runtime import tool_gate
+    monkeypatch.delenv("AIFORGE_TOOL_POLICY", raising=False)
+    cb = tool_gate.make_approval_gate_callback()
+    out = _run(cb(tool=_FakeTool("file_read"), args={"path": "a"}, tool_context=None))
+    assert out is None
+
+
+def test_gate_denies_by_policy(monkeypatch):
+    from aiforge_core.runtime import tool_gate
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "file_write=deny")
+    cb = tool_gate.make_approval_gate_callback()
+    out = _run(cb(tool=_FakeTool("file_write"), args={"path": "a"}, tool_context=None))
+    assert out and out.get("blocked") == "policy"
+
+
+def test_gate_ask_without_approver_allows_autonomous(monkeypatch):
+    # ASK but no interactive approver attached → autonomy preserved (allow).
+    from aiforge_core.runtime import chat_cancel, tool_gate
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "editor=ask")
+    chat_cancel.set_active(None)
+    cb = tool_gate.make_approval_gate_callback()
+    out = _run(cb(tool=_FakeTool("editor"),
+                  args={"command": "str_replace", "path": "a"}, tool_context=None))
+    assert out is None
+
+
+def test_gate_ask_with_approver_blocks_then_rejects(monkeypatch):
+    from aiforge_core.runtime import chat_approve, chat_cancel, tool_gate
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "editor=ask")
+    sid = 9931
+    events: list = []
+    chat_approve.set_emitter(sid, events.append)
+    chat_cancel.set_active(sid)
+
+    # reject as soon as the approval is requested
+    def _auto():
+        for _ in range(60):
+            if chat_approve.resolve(sid, "reject"):
+                return
+            time.sleep(0.02)
+
+    t = threading.Thread(target=_auto)
+    t.start()
+    cb = tool_gate.make_approval_gate_callback()
+    out = _run(cb(tool=_FakeTool("editor"),
+                  args={"command": "str_replace", "path": "a"}, tool_context=None))
+    t.join(timeout=3)
+    assert any(e.get("type") == "approval" for e in events)
+    assert out and out.get("rejected") is True
+    chat_approve.clear_emitter(sid)
+    chat_approve.finish(sid)
+    chat_cancel.set_active(None)
+
+
+def test_gate_ask_with_approver_approves(monkeypatch):
+    from aiforge_core.runtime import chat_approve, chat_cancel, tool_gate
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "editor=ask")
+    sid = 9932
+    chat_approve.set_emitter(sid, lambda e: None)
+    chat_cancel.set_active(sid)
+
+    def _auto():
+        for _ in range(60):
+            if chat_approve.resolve(sid, "approve"):
+                return
+            time.sleep(0.02)
+
+    threading.Thread(target=_auto).start()
+    cb = tool_gate.make_approval_gate_callback()
+    out = _run(cb(tool=_FakeTool("editor"),
+                  args={"command": "str_replace", "path": "a"}, tool_context=None))
+    assert out is None    # approved → tool proceeds
+    chat_approve.clear_emitter(sid)
+    chat_approve.finish(sid)
+    chat_cancel.set_active(None)
