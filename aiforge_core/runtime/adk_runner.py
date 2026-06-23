@@ -1120,21 +1120,39 @@ def _process_one_ticket() -> bool:
     except Exception as exc:  # noqa: BLE001
         log.debug("clarify gate skipped: %s", exc)
 
-    # LM Studio liveness check + opportunistic tunnel restart. When
-    # the local model is unreachable, flip the pipeline to a cloud
-    # profile for this run so we don't burn a slot on retries that
-    # can't ever land. ``AIFORGE_LM_HEALTH=0`` opts out.
-    if os.environ.get("AIFORGE_LM_HEALTH", "1") in {"1", "true"}:
+    # LM Studio liveness check + opportunistic tunnel restart. ONLY
+    # relevant when the Doer is actually pinned to the ``local`` provider —
+    # if the operator configured a remote OpenAI-compatible / cloud
+    # endpoint, the local 127.0.0.1:1234 box is irrelevant and we must NOT
+    # probe it (and certainly not force claude_local off a dead local box,
+    # which then needs a `claude` CLI that may not exist). ``AIFORGE_LM_HEALTH=0``
+    # opts out entirely.
+    try:
+        from aiforge_core.config import agent_config as _acfg
+        _doer_provider = _acfg.get("doer").get("provider")
+    except Exception:  # noqa: BLE001
+        _doer_provider = "local"
+    if (_doer_provider == "local"
+            and os.environ.get("AIFORGE_LM_HEALTH", "1") in {"1", "true"}):
         try:
             from aiforge_core.runtime.lm_health import check_lm_health
             health = check_lm_health(restart_on_fail=True)
             if not health.get("doer_ok"):
-                log.warning(
-                    "ticket=%s lm_unreachable — forcing claude_local "
-                    "for this run (restarted=%s)",
-                    ticket.identifier, health.get("restarted"),
-                )
-                set_force_provider("claude_local")
+                # Only force claude_local if its CLI is actually installed;
+                # otherwise leave the pipeline on its configured fallback.
+                import shutil
+                if shutil.which(os.environ.get("AIFORGE_CLAUDE_BIN", "claude")):
+                    log.warning(
+                        "ticket=%s lm_unreachable — forcing claude_local "
+                        "for this run (restarted=%s)",
+                        ticket.identifier, health.get("restarted"),
+                    )
+                    set_force_provider("claude_local")
+                else:
+                    log.warning(
+                        "ticket=%s local LM unreachable and no claude CLI — "
+                        "leaving pipeline on its configured/escalation model",
+                        ticket.identifier)
         except Exception as exc:  # noqa: BLE001
             log.debug("lm_health probe skipped: %s", exc)
 
