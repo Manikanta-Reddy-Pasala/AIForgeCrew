@@ -212,11 +212,8 @@ class AttachedFile(BaseModel):
 
     Persisted to disk on ticket-create + recorded in
     ``ticket.metadata.attached_files`` so the runner can hand the paths
-    to the Doer prompt. Triggers a per-ticket override that pins the
-    pipeline to ``claude_local`` — only Claude's subscription CLI can
-    read attachments via its native filesystem tools, the LiteLLM /
-    Ollama / Anthropic-API providers don't have a way to inline them
-    short of base64-stuffing the prompt.
+    to the Doer prompt. The runner materializes the files into the
+    per-ticket worktree; the Doer reads them with its ``file_read`` tool.
     """
 
     name: str
@@ -267,9 +264,8 @@ class TicketPatch(BaseModel):
     max_turns: int | None = None
     metadata: dict | None = None
     # Post-create attachment editing. New uploads (base64) are persisted
-    # to the per-ticket dir; remove_files names are unlinked. Presence of
-    # any surviving attachment forces claude_local (only the CLI can read
-    # arbitrary files inline), matching create-time behavior.
+    # to the per-ticket dir; remove_files names are unlinked. The runner
+    # materializes surviving attachments into the worktree for the Doer.
     attached_files: list[AttachedFile] = Field(default_factory=list)
     remove_files: list[str] = Field(default_factory=list)
 
@@ -350,11 +346,11 @@ def _persist_ticket_attachments(
 ) -> list[dict]:
     """Decode + write each uploaded file under the workspace.
 
-    Files land at ``{AIFORGE_REPO_ROOT}/.aiforge/ticket-files/{id}/<name>``
-    so claude_local's ``--add-dir <root>`` whitelist already covers
-    them. Returns a metadata-friendly list of ``{name, size, path}`` —
-    path is relative to the repo root so the Doer prompt can reference
-    it without leaking absolute filesystem layout.
+    Files land at ``{AIFORGE_REPO_ROOT}/.aiforge/ticket-files/{id}/<name>``;
+    the runner later materializes them into the per-ticket worktree.
+    Returns a metadata-friendly list of ``{name, size, path}`` — path is
+    relative to the repo root so the Doer prompt can reference it without
+    leaking absolute filesystem layout.
     """
     import base64
     import os as _os
@@ -502,26 +498,19 @@ def create_ticket(payload: TicketCreate) -> dict:
         route_source=route_source, route_confidence=route_confidence,
     )
     # Persist any uploaded files into a per-ticket dir under the
-    # workspace and stamp metadata.attached_files. Force claude_local
-    # for the run because attachments are only readable through the
-    # subscription CLI's native filesystem tools (LiteLLM/Ollama
-    # providers can't ingest arbitrary files inline). The metadata
-    # flag is read by the runtime in
-    # ``aiforge_core.runtime.pipeline.build_litellm_model``.
+    # workspace and stamp metadata.attached_files. The runner materializes
+    # them into the per-ticket worktree so the Doer can ``file_read`` them
+    # on whatever provider the role is configured for.
     if payload.attached_files:
         attach_meta = _persist_ticket_attachments(t.identifier,
                                                   payload.attached_files)
         if attach_meta:
             patched_md = dict(t.metadata or {})
             patched_md["attached_files"] = attach_meta
-            patched_md["force_provider"] = "claude_local"
             try:
                 tickets_mod.update_status(
                     t.id, t.status, role="api",
-                    metadata_patch={
-                        "attached_files": attach_meta,
-                        "force_provider": "claude_local",
-                    },
+                    metadata_patch={"attached_files": attach_meta},
                 )
                 t.metadata = patched_md
             except Exception:
@@ -575,9 +564,6 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
             current.extend(_persist_ticket_attachments(
                 t.identifier, payload.attached_files))
         merge_md["attached_files"] = current
-        # Force claude_local while files remain; clear the flag when the
-        # last attachment is removed so the run can use any provider.
-        merge_md["force_provider"] = "claude_local" if current else None
     if (payload.assignee_role or payload.labels is not None
             or payload.body is not None or merge_md):
         sets: list[str] = []

@@ -23,7 +23,7 @@ const ROLE_ORDER: AgentRole[] = [
 ];
 
 const ROLE_HINTS: Record<AgentRole, string> = {
-  architect: 'External Claude Code. Drives ticket creation; never edits code.',
+  architect: 'External operator session. Drives ticket creation; never edits code.',
   planner:   'Reads parent ticket; emits plan + child subtickets.',
   verifier:  'Plan critic. Single-turn judge BEFORE execution. Reject → re-plan.',
   doer:      'Edits code inside the subticket allowlist; runs compile + tests.',
@@ -405,8 +405,6 @@ export default function Home() {
   const BACKEND_LABEL: Record<string, string> = {
     local:        'local (mlx-lm)',
     ollama_cloud: 'ollama cloud',
-    claude_local: 'claude (subscription CLI)',
-    anthropic:    'anthropic (API)',
     openai:       'openai (API)',
     gemini:       'gemini (cloud Flash)',
   };
@@ -865,9 +863,7 @@ export default function Home() {
         <ul className="small muted" style={{ marginTop: 6, paddingLeft: 18 }}>
           <li><code>local</code> — mlx-lm on Mac Studio. Catalog auto-discovered from <code>http://127.0.0.1:1234/v1/models</code>.</li>
           <li><code>ollama_cloud</code> — Ollama Cloud. Requires <code>OLLAMA_CLOUD_API_KEY</code>; catalog cached for 5 min.</li>
-          <li><code>anthropic</code> — Claude via LiteLLM. Requires <code>ANTHROPIC_API_KEY</code>.</li>
-          <li><code>claude_local</code> — Claude subscription CLI. Requires the <code>claude</code> binary installed.</li>
-          <li><code>openai_compatible</code> — Any OpenAI-compatible endpoint. Enter a base URL and optional API key; use <em>Test</em> to verify.</li>
+          <li><code>openai_compatible</code> — Any OpenAI-compatible endpoint (OpenRouter, Groq, Together, vLLM, cloud-with-key). Enter a base URL and optional API key; use <em>Test</em> to verify.</li>
         </ul>
       </div>
     </>

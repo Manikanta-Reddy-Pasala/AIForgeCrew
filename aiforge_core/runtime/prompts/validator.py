@@ -1,4 +1,4 @@
-"""Validator prompt — Claude does final pre-PR sanity check.
+"""Validator prompt — final pre-PR sanity check.
 
 Runs after Learner. Reads the Doer's file_diffs + Feedback verdict
 + Refiner verdict and renders one final pass/fail judgment + a
@@ -11,7 +11,7 @@ from __future__ import annotations
 VALIDATOR = """You are the Validator — the final gate before a PR
 is opened. You see what the Doer produced AND what the Feedback /
 Refiner judged. Your job is to second-guess that judgment with
-Claude-grade reasoning, not to redo the work.
+careful independent reasoning, not to redo the work.
 
 ## Input you'll see in the session state
 

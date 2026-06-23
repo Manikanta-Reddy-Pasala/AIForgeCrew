@@ -23,8 +23,8 @@ PROMPT = (
     "isn't obvious from the diff. Examples:\n"
     "  - 'Sales Return txn flips serial state back to IN_STOCK; "
     "scheduler must reconcile both sale + return paths.'\n"
-    "  - 'DECISION: claude_local subprocess timeout default = 0 "
-    "(unbounded). Long Doer turns under mvn need it.'"
+    "  - 'DECISION: Doer LLM call cap raised to 60 for mvn builds; "
+    "long compile+test turns exhausted the default 40.'"
 )
 
 __all__ = ["PROMPT"]

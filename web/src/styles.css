@@ -1365,7 +1365,7 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 }
 .settings-row.prov-local::before        { background: #6e7684; } /* neutral */
 .settings-row.prov-ollama_cloud::before { background: #1f6feb; } /* cool */
-.settings-row.prov-anthropic::before    { background: #c7851a; } /* warm */
+.settings-row.prov-openai_compatible::before { background: #c7851a; } /* warm */
 
 .settings-row .role-cell {
   display: flex; flex-direction: column; gap: 2px;

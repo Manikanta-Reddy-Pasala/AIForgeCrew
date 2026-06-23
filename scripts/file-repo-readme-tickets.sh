@@ -58,7 +58,7 @@ Required sections in README.md (write as much as needed per section — not a ch
 
 6. **Improvements / known issues** — things that would benefit from refactoring. Duplicated code, missing tests, stale annotations, performance hotspots visible from code. Don't invent — only what's observable in the source. Tag \`(speculative)\` if uncertain.
 
-7. **Memory references** — call \`search\` first for prior canon about this repo; cite any hits. Call \`read_claude_memory(query=\"$repo\")\` for operator notes.
+7. **Memory references** — call \`search\` first for prior canon about this repo; cite any hits. Call \`read_operator_memory(query=\"$repo\")\` for operator notes.
 
 Acceptance:
 - README.md written/updated in the repo root.

@@ -1,14 +1,15 @@
-"""Validator archetype — Claude's final pre-PR sanity gate.
+"""Validator archetype — final pre-PR sanity gate.
 
 Last stage of the SequentialAgent pipeline (after Learner). Reads
 the session state populated by Doer / Feedback / Refiner and emits
 a structured JSON verdict at ``state['validator_verdict']``. The
 runner reads that field after the pipeline exits and folds it into
 ``ticket.metadata.validator_*`` so operators see both the in-loop
-verdict and Claude's independent take.
+verdict and the validator's independent take.
 
-KISS in-framework: regular LlmAgent, claude_local pinned via the
-pipeline's per-role model factory wrapper.
+KISS in-framework: regular ADK LlmAgent built with the shared
+``pipeline.build_litellm_model`` factory — the operator's configured
+model for this role plus the cloud escalation chain.
 """
 from __future__ import annotations
 

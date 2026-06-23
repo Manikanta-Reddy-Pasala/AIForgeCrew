@@ -77,50 +77,30 @@ def _gh_pr_comment(owner: str, repo: str, num: str, body: str) -> bool:
 
 
 def _llm_review(prompt: str) -> dict[str, Any]:
-    """Single review call. Defaults to the Claude subscription CLI
-    (per the 2026-05-23 "Claude does final validation" pattern); set
-    ``AIFORGE_REVIEWER_MODEL=openai/qwen3-coder-next`` to fall back
-    to a LiteLLM-against-LM-Studio path. Returns parsed JSON or
-    ``{}`` on failure."""
-    model = os.environ.get("AIFORGE_REVIEWER_MODEL", "claude-opus-4-7")
+    """Single review call via LiteLLM against the configured endpoint.
 
-    # Claude-CLI path (default). Honours the subscription flow used by
-    # claude_subscription_llm — same binary, no API keys.
-    if model.startswith("claude-"):
-        cli = shutil.which("claude") or os.environ.get("AIFORGE_CLAUDE_BIN")
-        if not cli or not shutil.which(cli):
-            log.warning("pr_reviewer: claude CLI missing — skipping")
-            return {}
-        try:
-            p = subprocess.run(
-                [cli, "--print", "--permission-mode", "bypassPermissions",
-                 "--model", model,
-                 "--fallback-model", os.environ.get(
-                     "AIFORGE_REVIEWER_FALLBACK", "claude-sonnet-4-6")],
-                input=prompt, capture_output=True, text=True, timeout=180,
-            )
-            text = (p.stdout or "").strip()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("pr_reviewer claude failed: %s", exc)
-            return {}
-    else:
-        try:
-            import litellm
-        except ImportError:
-            return {}
-        base = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
-        api_key = os.environ.get("AIFORGE_LM_API_KEY", "lm-studio")
-        try:
-            resp = litellm.completion(
-                model=model,
-                api_base=base, api_key=api_key,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1, timeout=120,
-            )
-            text = resp["choices"][0]["message"]["content"]
-        except Exception as exc:  # noqa: BLE001
-            log.warning("pr_reviewer LLM failed: %s", exc)
-            return {}
+    Defaults to the local LM Studio served model; override with
+    ``AIFORGE_REVIEWER_MODEL`` (e.g. ``openai/<id>`` for any
+    OpenAI-compatible endpoint). Returns parsed JSON or ``{}`` on failure.
+    """
+    model = os.environ.get("AIFORGE_REVIEWER_MODEL", "openai/qwen3-coder-next")
+    try:
+        import litellm
+    except ImportError:
+        return {}
+    base = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234/v1")
+    api_key = os.environ.get("AIFORGE_LM_API_KEY", "lm-studio")
+    try:
+        resp = litellm.completion(
+            model=model,
+            api_base=base, api_key=api_key,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1, timeout=120,
+        )
+        text = resp["choices"][0]["message"]["content"]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pr_reviewer LLM failed: %s", exc)
+        return {}
     # Extract first JSON object from possibly-markdown response.
     m = re.search(r"\{.*\}", text, re.S)
     if not m:

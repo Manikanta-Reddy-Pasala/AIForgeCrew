@@ -98,15 +98,11 @@ def maybe_substitute_primary(role: str, primary_cfg: dict) -> dict:
     a cloud default. Returns the original dict unchanged otherwise.
 
     Substitution rule: only acts on the ``local`` provider. Cloud
-    providers always go through; ``claude_local`` is a subscription
-    CLI not an HTTP endpoint and isn't probeable from here. The
-    cloud default is read from
+    providers always go through. The cloud default is read from
     :func:`aiforge_core.config.agent_config.cloud_default_for_local`
-    so the operator can pin a different fallback (e.g. anthropic) via
+    so the operator can pin a different OpenAI-compatible fallback via
     env without code changes.
     """
-    if primary_cfg.get("_claude_cli"):
-        return primary_cfg
     api_base = primary_cfg.get("api_base", "")
     # mlx-lm / LM Studio defaults to localhost:1234. The local provider
     # is the only one that can plausibly be off; everything else has

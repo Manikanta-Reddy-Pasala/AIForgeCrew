@@ -26,19 +26,19 @@ def test_no_op_when_model_not_vision(repo, monkeypatch):
 
 def test_no_op_when_no_images():
     contents = [MagicMock(role="user", parts=[MagicMock()])]
-    out = vision_adk.inject_image_parts(contents, "claude-opus", [])
+    out = vision_adk.inject_image_parts(contents, "gpt-4o", [])
     assert out == contents
 
 
 def test_no_op_when_empty_contents():
-    out = vision_adk.inject_image_parts([], "claude-opus", ["x.png"])
+    out = vision_adk.inject_image_parts([], "gpt-4o", ["x.png"])
     assert out == []
 
 
 def test_no_op_when_first_message_not_user():
     contents = [MagicMock(role="system", parts=[MagicMock()])]
     out = vision_adk.inject_image_parts(
-        contents, "claude-opus", ["x.png"],
+        contents, "gpt-4o", ["x.png"],
     )
     assert out == contents
 
@@ -78,7 +78,7 @@ def test_inject_appends_image_part(repo, monkeypatch):
     initial_part = _Part(text="please look")
     contents = [_Content(role="user", parts=[initial_part])]
     out = vision_adk.inject_image_parts(
-        contents, "claude-opus-4-7", ["x.png"],
+        contents, "gpt-4o", ["x.png"],
     )
     assert len(out[0].parts) == 2
     appended = out[0].parts[-1]
@@ -89,7 +89,7 @@ def test_inject_skips_missing_file(repo):
     contents_msg = MagicMock(role="user", parts=[MagicMock()])
     contents = [contents_msg]
     out = vision_adk.inject_image_parts(
-        contents, "claude-opus-4-7", ["nope.png"],
+        contents, "gpt-4o", ["nope.png"],
     )
     # Original list returned untouched because nothing appended
     assert out is not contents or len(out[0].parts) == 1

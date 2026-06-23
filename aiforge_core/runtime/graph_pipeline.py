@@ -173,7 +173,7 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
         if kill and not _feedback_passed(state):
             # LOC-plateau kill: progress stalled but work exists. Mark the
             # verdict ``partial`` so the runner ships the partial diff as a
-            # PR (status review) instead of claude_takeover replaying the
+            # PR (status review) instead of replaying the
             # whole pipeline. (Was the LoopAgent before-callback's job;
             # the migration moved the exit here but dropped the verdict.)
             reason = str(state.get("loop_budget_reason", "loc plateau"))

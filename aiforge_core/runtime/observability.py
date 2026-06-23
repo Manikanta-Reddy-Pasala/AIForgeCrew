@@ -6,7 +6,7 @@ useful audit timeline is the in-between: which archetype is running,
 when it starts, when it ends, when a Doer commit lands, when a PR is
 opened. Without these, the UI just shows ``in_progress`` for an hour
 and the operator can't tell if the Doer is editing files, if the
-Verifier rejected, or if claude_local stalled mid-turn.
+Verifier rejected, or if the model stalled mid-turn.
 
 This module exposes helpers that emit:
 
@@ -132,7 +132,7 @@ def make_stage_callbacks(role: str) -> tuple:
       - stage_done: short excerpt of what it produced (output_key value)
 
     Both events carry per-stage model attribution in ``metadata`` so the
-    UI can show "Enhancer → claude-opus-4-7 (claude_local)" instead of
+    UI can show "Enhancer → qwen3-coder-next (local)" instead of
     leaving the operator to guess.
     """
     if _is_disabled():

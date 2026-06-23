@@ -459,8 +459,8 @@ def commit_push_open_pr(ticket) -> dict:
     # Empty-production-diff guard. ONE-3 false-positive: validator
     # approved a PR whose only changes were a JUnit test class + an XML
     # fixture, with zero edits to ``src/main``. Tests prove a fix; they
-    # are not the fix. Reject so the runner can re-loop the Doer (or
-    # escalate to claude_takeover) instead of publishing a no-op PR.
+    # are not the fix. Reject so the runner can re-loop the Doer
+    # instead of publishing a no-op PR.
     # Toggle: ``AIFORGE_ALLOW_TEST_ONLY_PR=1`` reinstates the old
     # behaviour for the rare valid case (e.g. backfilling regression
     # coverage with no production change).

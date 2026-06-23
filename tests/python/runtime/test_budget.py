@@ -44,10 +44,10 @@ def test_by_model_aggregation():
     t = BudgetTracker()
     t.record("doer", "qwen", input_tokens=10, output_tokens=5)
     t.record("planner", "qwen", input_tokens=20, output_tokens=10)
-    t.record("doer", "claude", input_tokens=5, output_tokens=2)
+    t.record("doer", "glm", input_tokens=5, output_tokens=2)
     by_model = t.by_model()
     assert by_model["qwen"]["calls"] == 2
-    assert by_model["claude"]["calls"] == 1
+    assert by_model["glm"]["calls"] == 1
 
 
 def test_ring_evicts_at_cap():

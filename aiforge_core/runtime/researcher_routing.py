@@ -133,8 +133,8 @@ def should_skip_researcher(
     """
     # Explicit skip overrides everything. Useful when the operator
     # has hand-curated the ticket body with file paths + line numbers
-    # so the Researcher's web/code lookup adds no value AND its
-    # claude_local subprocess sometimes returns empty (observed on
+    # so the Researcher's web/code lookup adds no value AND the
+    # model sometimes returns empty (observed on
     # ticket bodies past ~8KB). Without this knob, pipelines on
     # hand-curated brownfield tickets would die at the Researcher
     # stage with EscalatingLlm-exhausted (no chain to fall back on).

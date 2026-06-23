@@ -1,9 +1,10 @@
-"""Architect archetype — external Claude Code, structural-plan emitter.
+"""Architect archetype — external operator session, structural-plan emitter.
 
-The Architect is an EXTERNAL Claude Code session driven by the human
-operator. There's no ADK ``LlmAgent`` to construct — this module
-exists so the per-archetype module set is complete and tooling that
-imports ``from aiforge_core.agents import architect`` succeeds.
+The Architect is an EXTERNAL design session driven by the human
+operator (whatever tool they prefer). There's no ADK ``LlmAgent`` to
+construct — this module exists so the per-archetype module set is
+complete and tooling that imports
+``from aiforge_core.agents import architect`` succeeds.
 
 The ``PROMPT`` constant exposes the structural-plan contract the
 external Architect must follow (file tree + symbol owners + per-file
@@ -32,7 +33,7 @@ def build(model_factory):  # noqa: ARG001
 
     Returning ``None`` lets pipeline-builder code branch on presence
     rather than special-casing the role name. The PROMPT constant is
-    consumed by the EXTERNAL Claude Code session that drives ticket
+    consumed by the EXTERNAL operator session that drives ticket
     creation — it's documented here so the contract review surface
     lives next to every other archetype.
     """

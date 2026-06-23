@@ -39,13 +39,15 @@ def _force_primary_local(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_chain_skips_providers_without_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No keys configured → chain holds only claude_local (no key needed)."""
+    """No keys configured → chain is empty (every cloud provider needs a key)."""
     _force_primary_local(monkeypatch)
+    monkeypatch.delenv("OLLAMA_CLOUD_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     chain = ac.cloud_escalation_chain("doer")
     providers = [c["_provider"] for c in chain]
     assert "ollama_cloud" not in providers
     assert "anthropic" not in providers
-    assert "claude_local" in providers
+    assert providers == []
 
 
 def test_chain_includes_ollama_when_key_set(
@@ -53,27 +55,24 @@ def test_chain_includes_ollama_when_key_set(
 ) -> None:
     _force_primary_local(monkeypatch)
     monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     chain = ac.cloud_escalation_chain("doer")
     providers = [c["_provider"] for c in chain]
     assert "ollama_cloud" in providers
-    # claude_local always present (CLI keychain auth).
-    assert "claude_local" in providers
 
 
 def test_chain_skips_primary_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When primary is anthropic, anthropic shouldn't appear in the chain."""
+    """When primary is ollama_cloud, it shouldn't appear in its own chain."""
     monkeypatch.setattr(
         ac, "get",
-        lambda role: {"provider": "anthropic", "model": "x", "base_url": None},
+        lambda role: {"provider": "ollama_cloud", "model": "x", "base_url": None},
     )
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
     chain = ac.cloud_escalation_chain("doer")
     providers = [c["_provider"] for c in chain]
-    assert "anthropic" not in providers
-    assert "ollama_cloud" in providers
+    assert "ollama_cloud" not in providers
 
 
 def test_chain_disabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -86,11 +85,10 @@ def test_chain_disabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_chain_pinned_provider_first(monkeypatch: pytest.MonkeyPatch) -> None:
     _force_primary_local(monkeypatch)
     monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    monkeypatch.setenv("AIFORGE_DOER_CLOUD_PROVIDER", "anthropic")
+    monkeypatch.setenv("AIFORGE_DOER_CLOUD_PROVIDER", "ollama_cloud")
     chain = ac.cloud_escalation_chain("doer")
     providers = [c["_provider"] for c in chain]
-    assert providers[0] == "anthropic"
+    assert providers[0] == "ollama_cloud"
 
 
 # ─── EscalatingLlm — retry decision logic ─────────────────────────────

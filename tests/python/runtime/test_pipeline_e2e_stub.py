@@ -48,8 +48,6 @@ def _stub_pipeline(monkeypatch):
     calls: list = []
     monkeypatch.setattr(pl, "build_litellm_model",
                         lambda role: _make_stub(role, calls))
-    monkeypatch.setattr(pl, "_claude_pinned_model",
-                        lambda role: _make_stub(role, calls))
     return pl, calls
 
 

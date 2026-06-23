@@ -51,7 +51,7 @@ def test_prompts_non_empty_for_real_agents():
 
     The architect was a no-prompt placeholder until ONE-117 surfaced
     the need for a structural-plan contract; the prompt now documents
-    the JSON shape the EXTERNAL Claude Code session must emit so the
+    the JSON shape the EXTERNAL operator session must emit so the
     Doer can read ``state['structural_plan']`` deterministically.
     """
     for mod in ALL_MODULES:

@@ -94,8 +94,7 @@ def _materialize_attachments_in_worktree(ticket, worktree: str) -> None:
     The API persists attachments under its own
     ``AIFORGE_REPO_ROOT/.aiforge/ticket-files/{identifier}/`` (typically
     a shared workspace). The runner then rebinds
-    ``AIFORGE_REPO_ROOT`` to a per-ticket git worktree which is OUT OF
-    SCOPE of Claude CLI's ``--add-dir`` whitelist. Without this copy
+    ``AIFORGE_REPO_ROOT`` to a per-ticket git worktree. Without this copy
     the Doer prompt's ``.aiforge/ticket-files/{id}/<name>`` relative
     path resolves to a missing file inside the worktree.
 
@@ -400,8 +399,8 @@ def _extract_verdict(state: dict) -> str:
 
     The new Feedback prompt asks for a leading token (``pass`` /
     ``fail`` / ``scope_violation``) followed by an optional rationale
-    line — much more robust than strict JSON for local Claude /
-    qwen which routinely wrap responses in prose.
+    line — much more robust than strict JSON for local models (qwen
+    etc.) which routinely wrap responses in prose.
 
     Tolerated shapes (in order):
       1. raw string starting with one of the tokens
@@ -630,8 +629,7 @@ def _run_live_verifier(ticket, pr_url: str) -> dict | None:
 
 async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
     """Drive a one-agent pipeline and return final session state. Used
-    for the post-PR live_verifier — no condenser plugins (single turn,
-    claude_local handles the full recipe context)."""
+    for the post-PR live_verifier — no condenser plugins (single turn)."""
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types as gtypes
@@ -792,9 +790,9 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     # local model (Qwen) can thrash — ONE-7 made 383 calls across 52
     # minutes and wrote ZERO files, spinning on read/think without ever
     # committing an edit. ADK's default cap is high enough that this
-    # never tripped. Bounding it means a stuck local Doer aborts and
-    # the runner's claude_takeover path rescues the ticket instead of
-    # burning an hour. The v6 Workflow graph is wider than the old
+    # never tripped. Bounding it means a stuck local Doer aborts (and
+    # lands the ticket as blocked) instead of burning an hour. The v6
+    # Workflow graph is wider than the old
     # Sequential pipeline — triage + 4 context branches + 3 verifiers +
     # the Doer loop (≤3×) + a possible verifier-replan AND validator-replan
     # each re-running planner/verify/doer. A healthy full+replan run can
@@ -827,9 +825,8 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     except Exception as exc:  # noqa: BLE001
         # max_llm_calls trip (or any mid-run ADK error) — recover the
         # partial session state and tag it so the caller treats this as
-        # a soft FAIL (→ claude_takeover) rather than a hard crash that
-        # only marks the ticket blocked. The local Doer thrash that
-        # motivated the cap should hand off to Claude, not dead-end.
+        # a soft FAIL rather than a hard crash. A stuck local Doer that
+        # hit the cap lands the ticket as blocked with its partial state.
         name = type(exc).__name__
         is_limit = "LlmCallsLimit" in name or "max_llm_calls" in str(exc)
         log.warning(
@@ -943,9 +940,9 @@ def _build_prompt(ticket, memory_md: str) -> str:
                 out += f"- _{ts}_:\n  {body}\n"
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.debug("comment_fold_failed: %s", exc)
-    # Ticket attachments — list paths so the Doer (always claude_local
-    # when these are present, see _process_one_ticket) can `file_read`
-    # them via its native CLI tools. Each entry is the
+    # Ticket attachments — list paths so the Doer can `file_read` them
+    # via its file tools. The files are materialized into the worktree
+    # (see _materialize_attachments_in_worktree). Each entry is the
     # workspace-relative path the API persisted.
     md = ticket.metadata or {}
     files = md.get("attached_files") or []
@@ -966,8 +963,7 @@ def _build_prompt(ticket, memory_md: str) -> str:
         )
     # NOTE: memory_md is NO LONGER appended to the seed. The seed is
     # replayed in contents on every chat-mode LLM call (60-120×/ticket ≈
-    # 40-80K tokens of pure memory-block repetition, Claude-priced on
-    # enhancer/validator/takeover). The block now seeds
+    # 40-80K tokens of pure memory-block repetition). The block now seeds
     # state['memory_brief_md'] instead → merged once into
     # {context_brief_md?} / {memory_brief_md?} instruction injections,
     # which also survive compaction. (Param retained for call-site
@@ -1023,17 +1019,23 @@ def _build_prompt(ticket, memory_md: str) -> str:
 
 
 def _ticket_force_provider(ticket) -> str | None:
-    """Per-ticket pipeline override.
+    """Per-ticket pipeline override — pin the whole run onto one provider
+    via ``ticket.metadata['force_provider']``.
 
-    Today the only path that flips this is "operator uploaded files
-    with the ticket" → force ``claude_local`` because only the
-    subscription CLI can read attached files via its native filesystem
-    tools. Future use: ``provider`` field on the ticket itself.
+    Only honours providers that still exist in the registry, so a stale
+    ticket carrying a retired provider marker is silently
+    ignored (the run falls back to the role's configured model) instead
+    of crashing the pipeline.
     """
     md = ticket.metadata or {}
     forced = md.get("force_provider")
     if isinstance(forced, str) and forced:
-        return forced
+        try:
+            from aiforge_core.config.agent_config import PROVIDERS
+            if forced in PROVIDERS:
+                return forced
+        except Exception:  # noqa: BLE001
+            pass
     return None
 
 
@@ -1124,9 +1126,10 @@ def _process_one_ticket() -> bool:
     # relevant when the Doer is actually pinned to the ``local`` provider —
     # if the operator configured a remote OpenAI-compatible / cloud
     # endpoint, the local 127.0.0.1:1234 box is irrelevant and we must NOT
-    # probe it (and certainly not force claude_local off a dead local box,
-    # which then needs a `claude` CLI that may not exist). ``AIFORGE_LM_HEALTH=0``
-    # opts out entirely.
+    # probe it. ``AIFORGE_LM_HEALTH=0`` opts out entirely. When local is
+    # unreachable the per-call EscalatingLlm chain
+    # (``cloud_default_for_local`` → Ollama Cloud) rescues
+    # the run automatically — no whole-pipeline force needed here.
     try:
         from aiforge_core.config import agent_config as _acfg
         _doer_provider = _acfg.get("doer").get("provider")
@@ -1138,21 +1141,10 @@ def _process_one_ticket() -> bool:
             from aiforge_core.runtime.lm_health import check_lm_health
             health = check_lm_health(restart_on_fail=True)
             if not health.get("doer_ok"):
-                # Only force claude_local if its CLI is actually installed;
-                # otherwise leave the pipeline on its configured fallback.
-                import shutil
-                if shutil.which(os.environ.get("AIFORGE_CLAUDE_BIN", "claude")):
-                    log.warning(
-                        "ticket=%s lm_unreachable — forcing claude_local "
-                        "for this run (restarted=%s)",
-                        ticket.identifier, health.get("restarted"),
-                    )
-                    set_force_provider("claude_local")
-                else:
-                    log.warning(
-                        "ticket=%s local LM unreachable and no claude CLI — "
-                        "leaving pipeline on its configured/escalation model",
-                        ticket.identifier)
+                log.warning(
+                    "ticket=%s local LM unreachable — pipeline relies on the "
+                    "configured cloud escalation chain (restarted=%s)",
+                    ticket.identifier, health.get("restarted"))
         except Exception as exc:  # noqa: BLE001
             log.debug("lm_health probe skipped: %s", exc)
 
@@ -1171,9 +1163,9 @@ def _process_one_ticket() -> bool:
         _restore_env(prior_env)
         return True
 
-    # Pull operator-uploaded files into the per-ticket worktree so
-    # Claude CLI (whose ``--add-dir`` is the worktree) can ``file_read``
-    # them by the same relative path the Doer prompt references.
+    # Pull operator-uploaded files into the per-ticket worktree so the
+    # Doer can ``file_read`` them by the same relative path the Doer
+    # prompt references.
     _materialize_attachments_in_worktree(ticket, worktree)
 
     # Gap-10 wire-in: persist any image attachments as an
@@ -1217,8 +1209,7 @@ def _process_one_ticket() -> bool:
     forced = _ticket_force_provider(ticket)
     set_force_provider(forced)
     if forced:
-        log.info("ticket=%s force_provider=%s (attachments present)",
-                 ticket.identifier, forced)
+        log.info("ticket=%s force_provider=%s", ticket.identifier, forced)
 
     # Deploy autonomy — when the operator chose 'qa' or 'prod' at
     # ticket-creation time, the deploy recipe will merge the PR + wait
@@ -1271,51 +1262,11 @@ def _process_one_ticket() -> bool:
         # has a real PR_URL to merge. ``lv`` is populated there.
         lv: dict | None = None
 
-        # **Claude takeover on failure** — replay the SequentialAgent
-        # once under claude_local. Now an in-framework re-run (the
-        # ADK Sequential rebuilds with EscalatingLlm pinned), not a
-        # bespoke subprocess loop. Toggle: AIFORGE_CLAUDE_TAKEOVER=0.
-        # ``takeover_ran`` tracks THIS run's takeover for handled_by
-        # provenance — the in-memory ticket.metadata is stale (the
-        # metadata_patch below lands in Postgres, not on this object),
-        # and a re-queued ticket carrying the old flag would otherwise
-        # misattribute a clean local pass as "claude_takeover".
-        takeover_ran = False
-        if (
-            outcome == "fail"
-            and os.environ.get("AIFORGE_CLAUDE_TAKEOVER", "1") in {"1", "true"}
-            and not (ticket.metadata or {}).get("claude_takeover_attempted")
-        ):
-            takeover_ran = True
-            log.info("ticket=%s claude_takeover starting (verdict=fail)",
-                     ticket.identifier)
-            try:
-                tickets_mod.update_status(
-                    ticket.id, "in_progress", role="claude_takeover",
-                    metadata_patch={"claude_takeover_attempted": True},
-                )
-                set_force_provider("claude_local")
-                state2 = asyncio.run(_run_pipeline(
-                    prompt, skip_researcher=skip_researcher, ticket=ticket,
-                    memory_md=memory_md,
-                ))
-                outcome2 = _extract_verdict(state2)
-                reason2 = _extract_reason(state2, outcome2)
-                _record_verdict_event(ticket.id, outcome2, reason2)
-                if outcome2 == "pass":
-                    log.info("ticket=%s claude_takeover SUCCESS — flipping verdict",
-                             ticket.identifier)
-                    outcome = outcome2
-                    reason = reason2
-                    state = state2
-            except Exception as exc:  # noqa: BLE001
-                log.warning("claude_takeover failed: %s", exc)
-
         new_status = _VERDICT_TO_STATUS.get(outcome, "blocked")
 
         # Validator (ADK LlmAgent) wrote validator_verdict into the
-        # session state; surface it on the ticket so operators see
-        # both the in-loop verdict and Claude's independent take.
+        # session state; surface it on the ticket so operators see the
+        # final pre-PR verdict.
         validator_out: Any = state.get("validator_verdict") if state else None
         if isinstance(validator_out, str):
             try:
@@ -1324,45 +1275,10 @@ def _process_one_ticket() -> bool:
             except Exception:
                 validator_out = {"raw": validator_out[:400]}
 
-        # **Claude targeted fix on Validator reject.** Pattern (2026-
-        # 05-23): when Validator says request_changes / abstain, run
-        # ONE Claude turn with full failure context to patch only what
-        # was called out — re-uses same worktree so commit_push_open_pr
-        # below folds the fix into the SAME PR. On success, also
-        # persists a Decision_v2 recipe so the local Doer's next
-        # similar ticket recalls the fix pattern.
+        # The local Doer (running on the operator's configured model +
+        # the cloud escalation chain) is the only path that finishes a
+        # ticket now — kept for ops-dashboard / training provenance.
         handled_by = "local"
-        fix_meta: dict[str, Any] = {}
-        if validator_out and (validator_out.get("verdict") or "").lower() in {
-            "request_changes", "abstain"
-        }:
-            try:
-                import aiforge_core.runtime.adk_runner as _runner_mod
-                from aiforge_core.runtime import claude_fix
-                fix_meta = claude_fix.attempt_fix(
-                    ticket=ticket,
-                    pipeline_state=state or {},
-                    memory_md=memory_md,
-                    runner_module=_runner_mod,
-                    skip_researcher=skip_researcher,
-                )
-                if fix_meta.get("attempted"):
-                    handled_by = "claude_fix"
-                if fix_meta.get("ok"):
-                    outcome = "pass"
-                    new_status = "done"
-                    log.info(
-                        "ticket=%s claude_fix SUCCESS verdict→pass",
-                        ticket.identifier,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("claude_fix wrap failed: %s", exc)
-        # Mark whether the local Doer or Claude actually finished the
-        # ticket — useful for both ops dashboards AND future training
-        # (Doer self-evals: "how often does local model finish without
-        # Claude rescue?").
-        if outcome == "pass" and takeover_ran and handled_by == "local":
-            handled_by = "claude_takeover"
 
         # PR gate: anything that ISN'T an explicit scope_violation is
         # eligible. `commit_push_open_pr` itself short-circuits on a
@@ -1387,10 +1303,9 @@ def _process_one_ticket() -> bool:
 
         # Live verifier — runs HERE (post-PR) so its deploy recipe has a
         # real PR_URL to merge + roll out before testing. Only when the
-        # PR actually opened and the verdict is otherwise a pass; a fail
-        # already routes to claude_fix/takeover above. A failing live
-        # verify flips the ticket to blocked so the operator knows the
-        # merged/worktree fix didn't actually hold.
+        # PR actually opened and the verdict is otherwise a pass. A
+        # failing live verify flips the ticket to blocked so the operator
+        # knows the merged/worktree fix didn't actually hold.
         if (
             pr_meta.get("pr_url")
             and outcome == "pass"
@@ -1412,7 +1327,7 @@ def _process_one_ticket() -> bool:
             elif lv is not None and lv.get("ok") is True and os.environ.get(
                 "AIFORGE_AUTO_MERGE_ON_VALIDATE", "1"
             ) in {"1", "true"}:
-                # Claude validated the live behaviour → merge the PR.
+                # live_verifier validated the behaviour → merge the PR.
                 # For deploy_target=qa/prod the deploy recipe already
                 # merged it, so merge_pr reports already_merged — still
                 # surfaced so the operator sees the final state.
@@ -1481,13 +1396,10 @@ def _process_one_ticket() -> bool:
                     "validator_regression_risk":
                         (validator_out or {}).get("regression_risk")}
                    if validator_out else {}),
-                # Provenance: which agent actually finished the
-                # ticket. "local" = local pipeline cleared on its own;
-                # "claude_takeover" = full-pipeline replay on Claude
-                # fixed it; "claude_fix" = targeted Claude turn after
-                # Validator reject patched and re-validated.
+                # Provenance: which agent finished the ticket. "local" =
+                # the configured-model pipeline (+ cloud escalation chain)
+                # cleared it.
                 "handled_by": handled_by,
-                **({"claude_fix": fix_meta} if fix_meta else {}),
                 **({
                     "live_verifier_ok": (lv or {}).get("ok"),
                     "live_verifier_rationale": (lv or {}).get("rationale"),
@@ -1502,9 +1414,8 @@ def _process_one_ticket() -> bool:
     except Exception as exc:
         log.exception("ticket=%s failed during ADK run: %s",
                       ticket.identifier, exc)
-        # Even on ADK failure, the Doer (especially claude_local using
-        # native CLI tools) may have written real files before the
-        # orchestrator stalled. Surface that work as a draft PR for
+        # Even on ADK failure, the Doer may have written real files
+        # before the orchestrator stalled. Surface that work as a draft PR for
         # human review instead of dropping it. The function
         # short-circuits with pr_skip_reason=no_changes on a clean tree.
         rescue_meta: dict[str, Any] = {}

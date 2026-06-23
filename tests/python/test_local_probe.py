@@ -80,25 +80,16 @@ def test_cache_hits_skip_http(monkeypatch: pytest.MonkeyPatch) -> None:
 # ─── maybe_substitute_primary ────────────────────────────────────────
 
 
-def _make_cfg(api_base: str, claude_cli: bool = False) -> dict:
+def _make_cfg(api_base: str) -> dict:
     return {
         "model_id": "openai//Users/foo/Qwen3-Coder",
         "api_base": api_base,
         "api_key": "lm-studio",
-        **({"_claude_cli": True} if claude_cli else {}),
     }
 
 
-def test_substitute_skips_claude_cli() -> None:
-    """ClaudeSubscriptionLlm runs as a subprocess — there's nothing to
-    HTTP-probe, leave the cfg alone."""
-    cfg = _make_cfg("claude:cli", claude_cli=True)
-    out = lp.maybe_substitute_primary("doer", cfg)
-    assert out is cfg
-
-
 def test_substitute_skips_remote_endpoint() -> None:
-    """An ollama_cloud / anthropic primary isn't probed — those have
+    """An ollama_cloud primary isn't probed — those have
     their own SLAs. Only the local mlx-lm endpoint can plausibly be
     off because the operator forgot to start LM Studio."""
     cfg = _make_cfg("https://ollama.com/v1")

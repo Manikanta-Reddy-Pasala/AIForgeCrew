@@ -111,7 +111,7 @@ def test_resolve_stage_attribution_returns_model_provider() -> None:
     from aiforge_core.runtime import observability as o
 
     attr = o._resolve_stage_attribution("doer")
-    assert attr["effective_provider"] in {"local", "claude_local",
+    assert attr["effective_provider"] in {"local", "openai_compatible",
                                           "ollama_cloud", "openrouter"}
     assert attr["model_configured"] is not None
     # No leading slash — long LM Studio paths are stripped to the leaf.
@@ -121,10 +121,10 @@ def test_resolve_stage_attribution_returns_model_provider() -> None:
 def test_resolve_stage_attribution_force_provider_wins(monkeypatch) -> None:
     from aiforge_core.runtime import observability as o, pipeline as p
 
-    monkeypatch.setattr(p, "_FORCE_PROVIDER", "claude_local")
+    monkeypatch.setattr(p, "_FORCE_PROVIDER", "ollama_cloud")
     attr = o._resolve_stage_attribution("doer")
-    assert attr["effective_provider"] == "claude_local"
-    assert attr["force_provider"] == "claude_local"
+    assert attr["effective_provider"] == "ollama_cloud"
+    assert attr["force_provider"] == "ollama_cloud"
 
 
 def test_resolve_stage_attribution_unknown_role_returns_safe_default() -> None:

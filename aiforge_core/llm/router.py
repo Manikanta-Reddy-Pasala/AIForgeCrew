@@ -4,12 +4,12 @@ Resolution order (highest priority first):
 
 1. ``AIFORGE_<ROLE>_PROVIDER`` env var — operator final-say override.
 2. ``agent_config.json`` per-role entry (Settings UI persists here).
-   Allows the UI to flip e.g. Architect to Anthropic while everything
+   Allows the UI to flip e.g. Planner to Ollama Cloud while everything
    else stays local.
 3. ``AIFORGE_PRIMARY_BACKEND`` env var (legacy global default).
 4. Hardcoded default ``"local"``.
 
-If the chosen provider isn't available (e.g. ``anthropic`` selected
+If the chosen provider isn't available (e.g. ``ollama_cloud`` selected
 but no API key), the router silently falls through to ``"local"``
 rather than crashing. The chosen ``model`` overrides whatever the
 provider would default to — so per-archetype model pins also apply.
@@ -103,7 +103,7 @@ def fallback(role: str) -> Endpoint | None:
 # A role currently on a non-cloud provider can be promoted to one of
 # these when the request looks too big for local capacity.
 _CLOUD_PROVIDERS: tuple[str, ...] = (
-    "anthropic", "ollama_cloud", "openai", "gemini",
+    "ollama_cloud", "openai", "gemini",
 )
 
 # Local context windows assumed when no role-specific cap configured.
@@ -143,7 +143,7 @@ def escalate(role: str, *, reason: str = "context_overflow",
 
     Honoured envs:
       - ``AIFORGE_ESCALATE_DISABLE=1``  hard-disable escalation
-      - ``AIFORGE_<ROLE>_CLOUD_PROVIDER=anthropic`` pin cloud target
+      - ``AIFORGE_<ROLE>_CLOUD_PROVIDER=ollama_cloud`` pin cloud target
       - ``AIFORGE_CLOUD_PROVIDER=...``  global cloud preference
 
     Decision is intentionally side-effect-free — caller (client.py)
