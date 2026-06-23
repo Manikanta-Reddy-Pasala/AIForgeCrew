@@ -235,7 +235,11 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
             last = exc
             if not retry or attempt >= max_attempts:
                 _log.warning(
-                    "llm.transport_error",
+                    "llm.transport_error role=%s provider=%s model=%s "
+                    "url=%s/chat/completions label=%s attempt=%d err=%s",
+                    role, ep.provider, ep.model,
+                    str(ep.base_url).rstrip("/"), label, attempt,
+                    str(exc)[:300],
                     extra={"aiforge": {"role": role, "provider": ep.provider,
                                        "model": ep.model, "source": source,
                                        "attempt": attempt, "label": label,
@@ -259,7 +263,10 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
             # Add jitter to avoid thundering herd against shared providers.
             sleep_s += random.uniform(0, 0.25)
             _log.info(
-                "llm.transport_retry",
+                "llm.transport_retry provider=%s url=%s label=%s attempt=%d "
+                "sleep=%.2fs err=%s",
+                ep.provider, str(ep.base_url).rstrip("/"), label, attempt,
+                sleep_s, str(exc)[:300],
                 extra={"aiforge": {"role": role, "provider": ep.provider,
                                    "source": source, "attempt": attempt,
                                    "label": label,
@@ -401,8 +408,10 @@ def complete(role: str, messages: list[dict], *,
             return out[0]
 
     raise RuntimeError(
-        f"llm.exhausted role={role} primary={primary.provider} "
+        f"llm.exhausted role={role} primary={primary.provider}"
+        f"@{primary.base_url} model={primary.model} "
         f"fallback={fb.provider if fb else 'none'} "
         f"cloud={cloud.provider if cloud else 'none'} "
-        f"— all providers returned transport error or empty content"
+        f"— all providers returned transport error or empty content "
+        f"(see the llm.transport_error line above for the underlying cause)"
     )
