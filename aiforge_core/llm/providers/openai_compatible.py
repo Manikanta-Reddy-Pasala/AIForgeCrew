@@ -104,8 +104,17 @@ class OpenAICompatibleProvider:
         )
 
 
+def _probe_timeout(explicit: float | None) -> float:
+    if explicit is not None:
+        return explicit
+    try:
+        return float(os.environ.get("AIFORGE_LLM_PROBE_TIMEOUT_S", "15"))
+    except ValueError:
+        return 15.0
+
+
 def probe(base_url: str, api_key: str | None = None,
-          timeout: float = 6.0, insecure: bool = False) -> dict:
+          timeout: float | None = None, insecure: bool = False) -> dict:
     """Test-connection helper for the home page. GETs ``{base}/models``
     and returns ``{ok, models: [ids], error?}``. Never raises.
 
@@ -145,7 +154,8 @@ def probe(base_url: str, api_key: str | None = None,
         else:
             ctx = _ssl_context_for(url)
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+        with urllib.request.urlopen(
+                req, timeout=_probe_timeout(timeout), context=ctx) as r:
             payload = json.loads(r.read())
     except Exception as exc:  # noqa: BLE001
         log.warning("probe FAILED url=%s tls=%s: %s", url, tls_mode, exc)

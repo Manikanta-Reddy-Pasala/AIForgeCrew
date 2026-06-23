@@ -357,7 +357,7 @@ def complete(role: str, messages: list[dict], *,
              max_tokens: int | None = None,
              top_p: float | None = None,
              extras: dict | None = None,
-             timeout_s: int = 180) -> str:
+             timeout_s: int | None = None) -> str:
     """Issue one chat-completion call for ``role`` with full retry chain.
 
     Order:
@@ -369,6 +369,13 @@ def complete(role: str, messages: list[dict], *,
       5. Exhausted: raise the original transport error if there was one,
          else RuntimeError("llm.exhausted").
     """
+    # Default request timeout. Self-hosted reasoning models (e.g. 122B with
+    # long chain-of-thought) routinely need minutes — a short timeout shows
+    # up as intermittent "timeout" transport errors. Generous default,
+    # tunable via AIFORGE_LLM_TIMEOUT_S.
+    if timeout_s is None:
+        timeout_s = _int_env("AIFORGE_LLM_TIMEOUT_S", 600)
+
     primary: Endpoint = resolve(role)
 
     # Pre-flight escalation — if we can estimate token weight before

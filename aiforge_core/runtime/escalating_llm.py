@@ -99,6 +99,19 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
             or _llm_ssl.auto_relax_internal(api_base)
         ):
             kwargs["ssl_verify"] = False
+    # Match the urllib client path: a generous request timeout (self-hosted
+    # reasoning models need minutes) and a non-default User-Agent (some
+    # proxies/WAFs reject httpx/litellm's default). Both env-tunable. Applied
+    # to the team-flow / ticket pipeline (LiteLLM) so it agrees with simple
+    # chat (client._post).
+    import os as _os
+    try:
+        kwargs["timeout"] = float(_os.environ.get("AIFORGE_LLM_TIMEOUT_S", "600"))
+    except ValueError:
+        kwargs["timeout"] = 600.0
+    kwargs["extra_headers"] = {
+        "User-Agent": _os.environ.get("AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)"),
+    }
     return LiteLlm(**kwargs)
 
 
