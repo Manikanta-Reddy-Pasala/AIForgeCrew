@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from aiforge_core.runtime.sandbox import root
+from aiforge_core.runtime.sandbox import resolve_inside_root, root  # noqa: F401
 
 log = logging.getLogger("aiforge.tools.format")
 
@@ -52,7 +52,12 @@ def format(path: str) -> dict[str, Any]:
     rel = (path or "").strip()
     if not rel:
         return {"ok": False, "error": "empty_path"}
-    abs_path = (root() / rel).resolve()
+    # Containment: a formatter run with -w would rewrite a file OUTSIDE the
+    # worktree if the path escaped (../../). resolve_inside_root rejects that.
+    try:
+        abs_path = resolve_inside_root(rel)
+    except PermissionError:
+        return {"ok": False, "error": "path_outside_root", "path": rel}
     suffix = abs_path.suffix.lower()
     cmd_tmpl = _FORMATTERS.get(suffix)
     if not cmd_tmpl:

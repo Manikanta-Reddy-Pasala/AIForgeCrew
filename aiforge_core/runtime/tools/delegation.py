@@ -70,6 +70,26 @@ async def _run_delegate_async(
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
     )
+    # Key the delegate's tool sessions to its run so we can tear them down —
+    # a delegate inherits the full Doer toolset (bash/kernel/browser) and
+    # would otherwise leak those per-run resources (this hand-rolled runner
+    # doesn't register the production runner's finish callbacks).
+    try:
+        from aiforge_core.runtime.tools.bash import set_run_id as _bash_set_run_id
+        _bash_set_run_id(session.id)
+    except Exception:  # noqa: BLE001
+        pass
+
+    def _cleanup_delegate_sessions() -> None:
+        for mod, fn in (("bash", "destroy_session"),
+                        ("ipython_kernel", "destroy_kernel"),
+                        ("browser", "destroy_context")):
+            try:
+                m = __import__(f"aiforge_core.runtime.tools.{mod}",
+                               fromlist=[fn])
+                getattr(m, fn)(session.id)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _drive():
         output_parts: list[str] = []
@@ -86,6 +106,8 @@ async def _run_delegate_async(
         output_parts = await asyncio.wait_for(_drive(), timeout=timeout)
     except asyncio.TimeoutError:
         return {"ok": False, "error": "timeout", "role": role}
+    finally:
+        _cleanup_delegate_sessions()
 
     session = await session_svc.get_session(
         app_name="aiforge-delegate", user_id="delegator",

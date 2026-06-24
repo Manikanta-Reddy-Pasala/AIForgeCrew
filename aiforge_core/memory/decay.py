@@ -63,7 +63,10 @@ def _decay_postgres(age_days: int, batch: int) -> int:
         WITH stale AS (
           SELECT id FROM memories
           WHERE created_at < NOW() - (%s || ' days')::interval
-            AND COALESCE((metadata->>'hit_count')::int, 0) = 0
+            -- Guard the ::int cast — a non-numeric hit_count would otherwise
+            -- abort the whole decay transaction.
+            AND COALESCE(CASE WHEN metadata->>'hit_count' ~ '^[0-9]+$'
+                              THEN (metadata->>'hit_count')::int END, 0) = 0
             AND COALESCE(status, 'active') = 'active'
           ORDER BY created_at ASC
           LIMIT %s

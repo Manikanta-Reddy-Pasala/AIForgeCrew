@@ -14,9 +14,11 @@ Sources merged (each contributes, soft-fail individually):
 6. docs_index.lookup_doc — external library docs (top library guessed
    from query: spring/react/mongodb/...)
 
-Ranking: each source emits ``score`` in [0, 1]; we normalise per
-source and take top-K by combined score (per-source weight tunable
-via ``AIFORGE_UMEM_WEIGHT_<source>``).
+Ranking: each source emits a ``score`` (roughly [0, 1]); we multiply by
+the per-source weight (tunable via ``AIFORGE_UMEM_WEIGHT_<source>``) and
+take top-K by the weighted score. NOTE: this is weight-scaled, not
+min-max normalised — a source with a fixed high score + weight > 1 can
+outrank a relevance hit from a [0,1]-cosine source.
 
 Public surface:
 - ``query(text, *, ticket=None, role=None, limit=8) -> dict``

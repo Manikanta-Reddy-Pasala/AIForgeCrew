@@ -50,18 +50,42 @@ def _allowlist_ok(url: str) -> bool:
     return False
 
 
+def _teardown_globals() -> None:
+    """Close + null the shared browser/playwright handles (best-effort)."""
+    global _pw_handle, _browser
+    if _browser is not None:
+        try:
+            _browser.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _browser = None
+    if _pw_handle is not None:
+        try:
+            _pw_handle.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        _pw_handle = None
+
+
 def _get_context(run_id: str) -> Any:
     """Lazy-create the per-run BrowserContext. Returns the context or raises."""
     global _pw_handle, _browser
     if run_id in _contexts:
         return _contexts[run_id]
     from playwright.sync_api import sync_playwright
-    if _pw_handle is None:
-        _pw_handle = sync_playwright().start()
-    if _browser is None:
-        _browser = _pw_handle.chromium.launch(headless=True)
-    ctx = _browser.new_context()
-    page = ctx.new_page()
+    # On ANY partial-init failure, tear down + null the shared handles so a
+    # half-launched browser doesn't leak its driver subprocess and poison
+    # every later call (which would reuse the dead _browser forever).
+    try:
+        if _pw_handle is None:
+            _pw_handle = sync_playwright().start()
+        if _browser is None:
+            _browser = _pw_handle.chromium.launch(headless=True)
+        ctx = _browser.new_context()
+        page = ctx.new_page()
+    except Exception:
+        _teardown_globals()
+        raise
     _contexts[run_id] = (ctx, page)
     emit("Browse", {"action": "context_created", "run_id": run_id})
     return _contexts[run_id]
@@ -69,28 +93,19 @@ def _get_context(run_id: str) -> Any:
 
 def destroy_context(run_id: str) -> None:
     """Close BrowserContext + cleanup global handles when last run is gone."""
-    global _pw_handle, _browser
     pair = _contexts.pop(run_id, None)
-    if pair is None:
-        return
-    ctx, _page = pair
-    try:
-        ctx.close()
-    except Exception:  # noqa: BLE001 — best-effort cleanup
-        pass
-    emit("Browse", {"action": "context_destroyed", "run_id": run_id})
-    if not _contexts and _browser is not None:
+    if pair is not None:
+        ctx, _page = pair
         try:
-            _browser.close()
-        except Exception:  # noqa: BLE001
+            ctx.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
             pass
-        _browser = None
-        if _pw_handle is not None:
-            try:
-                _pw_handle.stop()
-            except Exception:  # noqa: BLE001
-                pass
-            _pw_handle = None
+        emit("Browse", {"action": "context_destroyed", "run_id": run_id})
+    # Tear down the shared browser whenever no contexts remain — even if this
+    # run never successfully created one (a partial-init failure would
+    # otherwise leave the launched browser/driver running forever).
+    if not _contexts:
+        _teardown_globals()
 
 
 def _goto(page: Any, url: str) -> dict[str, Any]:

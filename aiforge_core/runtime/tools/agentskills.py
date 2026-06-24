@@ -119,6 +119,15 @@ def create_file(path: str, content: str = "") -> str:
 
 def run_cmd(cmd: str, timeout: int = 60) -> dict:
     """Run a shell command and return ``{ok, stdout, stderr, returncode}``."""
+    # Honour the same delete policy as the bash tool — this kernel-injected
+    # helper must not be a bypass for the confirm-before-delete guard.
+    try:
+        from aiforge_core.runtime.tools import delete_guard
+        if not delete_guard.allow_delete() \
+                and delete_guard.is_destructive_delete(cmd):
+            return {"ok": False, "blocked": "delete", "error": delete_guard.REFUSAL}
+    except Exception:  # noqa: BLE001
+        pass
     try:
         proc = subprocess.run(
             cmd, shell=True, cwd=_repo_root(),

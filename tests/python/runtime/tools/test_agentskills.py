@@ -44,3 +44,21 @@ def test_helpers_work_when_executed(tmp_path, monkeypatch):
 
     hits = ns["search_file"]("c", "foo.py")
     assert hits == [{"line": 3, "text": "c"}]
+
+
+def test_run_cmd_honours_delete_guard(tmp_path, monkeypatch):
+    # kernel-injected run_cmd must not bypass the confirm-before-delete guard
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
+    monkeypatch.delenv("AIFORGE_ALLOW_DELETE", raising=False)
+    ns: dict = {}
+    exec(compile(bootstrap_code(), "<test>", "exec"), ns)
+    out = ns["run_cmd"]("rm -rf something")
+    assert out["ok"] is False and out.get("blocked") == "delete"
+    assert ns["run_cmd"]("echo hi")["ok"] is True
+
+
+def test_format_rejects_path_outside_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
+    from aiforge_core.runtime.tools.format import format as fmt
+    out = fmt("../../etc/passwd.py")
+    assert out["ok"] is False and out["error"] == "path_outside_root"

@@ -38,9 +38,22 @@ def typecheck() -> dict[str, Any]:
     Tool missing from PATH → ``{ok: False, error: "missing_tool"}``.
     """
     repo = root()
+
+    def _marker_present(marker: str) -> bool:
+        if (repo / marker).is_file():
+            return True
+        # Short-circuit the recursive walk (``list(glob)`` exhausts it) AND
+        # skip vendor dirs so a stray marker in node_modules/target doesn't
+        # mis-detect the stack.
+        _skip = {"node_modules", ".venv", "venv", "target", "dist", "build",
+                 ".git", "__pycache__", ".gradle"}
+        for hit in repo.rglob(marker):
+            if not any(part in _skip for part in hit.relative_to(repo).parts):
+                return True
+        return False
+
     for marker, cmd, lang in _DETECTORS:
-        if not (repo / marker).is_file() and \
-                not list(repo.glob(f"**/{marker}"))[:1]:
+        if not _marker_present(marker):
             continue
         tool = cmd[0]
         if shutil.which(tool) is None:
