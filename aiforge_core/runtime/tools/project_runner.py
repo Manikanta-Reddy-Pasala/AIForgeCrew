@@ -184,7 +184,17 @@ def _exec(cmd: str, cwd: str, timeout: int) -> dict:
             _kill(proc)
             return {"cmd": cmd, "ok": False, "error": f"timeout after {timeout}s"}
         time.sleep(0.2)
-    out, _ = proc.communicate()
+    # The main process exited — but a daemon grandchild (mvn/gradle/npm) can
+    # still hold the stdout pipe, hanging communicate() past the deadline.
+    # Bound it; on hang, kill the group and return what we have.
+    try:
+        out, _ = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        _kill(proc)
+        try:
+            out, _ = proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001
+            out = ""
     return {"cmd": cmd, "ok": proc.returncode == 0, "code": proc.returncode,
             "output": (out or "")[-_CAP:]}
 

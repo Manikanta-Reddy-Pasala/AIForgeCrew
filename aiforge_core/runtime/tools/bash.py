@@ -18,12 +18,12 @@ backgrounds the job and returns immediately.
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import re
 import shutil
 import subprocess
 import time
-import uuid
 from typing import Any
 
 from aiforge_core.runtime.sandbox import root
@@ -37,6 +37,32 @@ _PROMPT_PS1 = r"PS1='__AIFORGE_PROMPT_$?__\n'"
 _SENTINEL_RE = re.compile(r"__AIFORGE_PROMPT_(\d+)__")
 
 _active_sessions: dict[str, str] = {}
+
+# The run a tool call belongs to. ADK FunctionTools don't pass ``_run_id``, so
+# the runner sets this to the ADK session id before the run; bash() reads it
+# when no explicit id is given. This keeps ONE persistent session per run AND
+# lets ``destroy_session(session.id)`` actually match it (a per-call uuid never
+# would → a leaked tmux session on every bash call). Falls back to a STABLE
+# "default" so even an unset run reuses one session instead of spawning many.
+_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "bash_run_id", default=None)
+
+
+def set_run_id(run_id: str | None) -> None:
+    _RUN_ID.set(run_id)
+
+
+def _effective_run_id(explicit: str | None) -> str:
+    return explicit or _RUN_ID.get() or "default"
+
+
+def _err_result(command: str, error: str, **extra: Any) -> dict[str, Any]:
+    """Error dict with the SAME key set the success path returns, so callers
+    that read ``returncode``/``stdout``/``truncated`` never KeyError."""
+    base = {"ok": False, "command": command, "error": error,
+            "returncode": None, "stdout": "", "stderr": "", "truncated": False}
+    base.update(extra)
+    return base
 
 
 def _tmux_available() -> bool:
@@ -124,7 +150,7 @@ def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
     from aiforge_core.runtime import chat_cancel
     sid = chat_cancel.active()
     if sid is not None and chat_cancel.is_cancelled(sid):
-        return {"ok": False, "error": "stopped by user", "command": command}
+        return _err_result(command, "stopped by user", stopped=True)
     if sid is not None:
         try:
             import time as _t
@@ -152,12 +178,10 @@ def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
             while proc_p.poll() is None:
                 if chat_cancel.is_cancelled(sid):
                     _kill_and_reap()
-                    return {"ok": False, "error": "stopped by user",
-                            "command": command}
+                    return _err_result(command, "stopped by user", stopped=True)
                 if _t.monotonic() > deadline:
                     _kill_and_reap()
-                    return {"ok": False, "error": "timeout", "command": command,
-                            "truncated": True}
+                    return _err_result(command, "timeout", truncated=True)
                 _t.sleep(0.2)
             out_b, err_b = proc_p.communicate()
             out_s = (out_b or b"").decode("utf-8", "replace")
@@ -171,7 +195,7 @@ def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
                     "truncated": (len(out_s) > _STDOUT_CAP_BYTES
                                   or len(err_s) > _STDOUT_CAP_BYTES)}
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": str(exc), "command": command}
+            return _err_result(command, str(exc))
     try:
         proc = subprocess.run(
             command, shell=True, cwd=root(),
@@ -217,27 +241,24 @@ def bash(
     error contract: failures return ``{ok: False, error, ...}``.
     """
     if not command or not command.strip():
-        return {"ok": False, "error": "empty_command"}
+        return _err_result(command or "", "empty_command")
     # Delete policy: autonomous for everything else, ask before deleting.
     from aiforge_core.runtime.tools import delete_guard
     if not delete_guard.allow_delete() \
             and delete_guard.is_destructive_delete(command):
-        return {"ok": False, "blocked": "delete", "error": delete_guard.REFUSAL}
+        return _err_result(command, delete_guard.REFUSAL, blocked="delete")
     # Optional Docker sandbox (sub #7) takes precedence when opted in.
     from aiforge_core.runtime import docker_sandbox
     if docker_sandbox.is_enabled():
-        if _run_id is None:
-            _run_id = "default-" + uuid.uuid4().hex[:8]
         return docker_sandbox.exec_in_container(
-            _run_id, command, timeout=timeout,
+            _effective_run_id(_run_id), command, timeout=timeout,
         )
 
     if not _tmux_available():
         emit("BashFallback", {"reason": "tmux_missing"})
         return _fallback_run(command, timeout)
 
-    if _run_id is None:
-        _run_id = "default-" + uuid.uuid4().hex[:8]
+    _run_id = _effective_run_id(_run_id)
 
     name = _session_name(_run_id)
     if restart and _session_exists(name):
@@ -266,10 +287,8 @@ def bash(
         )
         time.sleep(0.5)
         partial, _rc2, _t2 = _drain_until_prompt(name, 2)
-        return {
-            "ok": False, "error": "timeout", "command": command,
-            "stdout": partial[:_STDOUT_CAP_BYTES], "truncated": True,
-        }
+        return _err_result(command, "timeout",
+                           stdout=partial[:_STDOUT_CAP_BYTES], truncated=True)
     return {
         "ok": (rc == 0),
         "returncode": rc,

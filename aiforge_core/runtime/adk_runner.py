@@ -650,6 +650,13 @@ async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
     )
+    # Key the bash tool's persistent session to THIS run so destroy_session
+    # below actually matches it (otherwise bash mints a per-call id and leaks).
+    try:
+        from aiforge_core.runtime.tools.bash import set_run_id as _bash_set_run_id
+        _bash_set_run_id(session.id)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         async for event in runner.run_async(
             user_id="aiforge-runner",

@@ -98,7 +98,10 @@ def _decay_neo4j(age_days: int, batch: int) -> int:
         return 0
     cy = (
         "MATCH (m:Memory) "
-        "WHERE m.status IS NULL OR m.status = 'active' "
+        # Parenthesize the status clause — without it, AND binds tighter than
+        # OR and the rule degrades to "status IS NULL OR (active AND hit=0 AND
+        # old)", archiving EVERY status-less legacy node regardless of hits/age.
+        "WHERE (m.status IS NULL OR m.status = 'active') "
         "  AND coalesce(m.hit_count, 0) = 0 "
         "  AND m.created_at IS NOT NULL "
         "  AND m.created_at < datetime() - duration({days: $days}) "

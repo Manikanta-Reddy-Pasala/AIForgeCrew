@@ -154,7 +154,20 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None) -> list[dict]:
             "score": max(0.0, min(1.0, score)),
         })
     scored.sort(key=lambda h: -h["score"])
-    return scored[:limit]
+    # Dedup by text (keep the highest score) — the same learning can exist
+    # both repo-scoped and repo-agnostic (write_unit dedup is per-(repo,text)),
+    # and recall unions repo + NULL rows, so identical text would surface twice.
+    seen: set[str] = set()
+    out: list[dict] = []
+    for h in scored:
+        key = h["text"]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(h)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def stats() -> dict:

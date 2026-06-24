@@ -197,8 +197,13 @@ def persist_facts(
     semantic_dedupe = (
         os.environ.get("AIFORGE_SEMANTIC_DEDUPE", "1") not in {"0", "false", ""}
     )
-    hard = float(os.environ.get("AIFORGE_SEMANTIC_DEDUPE_HARD", "0.95"))
-    soft = float(os.environ.get("AIFORGE_SEMANTIC_DEDUPE_SOFT", "0.85"))
+    def _envf(key: str, default: float) -> float:
+        try:
+            return float(os.environ.get(key, str(default)))
+        except (ValueError, TypeError):
+            return default
+    hard = _envf("AIFORGE_SEMANTIC_DEDUPE_HARD", 0.95)
+    soft = _envf("AIFORGE_SEMANTIC_DEDUPE_SOFT", 0.85)
 
     embed_fn = None
     if semantic_dedupe:

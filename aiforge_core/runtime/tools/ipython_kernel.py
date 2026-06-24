@@ -76,13 +76,22 @@ def destroy_kernel(run_id: str) -> None:
 
 def _drain_iopub(client: Any, msg_id: str, timeout: int) -> dict[str, Any]:
     """Collect stdout / stderr / result from a single execute request."""
+    import time as _t
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
     result: str = ""
     timed_out = False
+    # WALL-CLOCK deadline — not a per-message idle timeout. Otherwise a cell
+    # that prints continuously (``while True: print(x)``) resets the timeout
+    # on every message and never terminates.
+    deadline = _t.monotonic() + max(1, timeout)
     while True:
+        remaining = deadline - _t.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
         try:
-            msg = client.get_iopub_msg(timeout=timeout)
+            msg = client.get_iopub_msg(timeout=min(timeout, remaining))
         except Exception:  # noqa: BLE001 — Empty / queue timeout
             timed_out = True
             break
@@ -134,8 +143,18 @@ def execute_ipython_cell(
         return {"ok": False, "error": "kernel_boot_failed",
                 "detail": str(exc)[:300]}
 
-    msg_id = client.execute(code)
-    drained = _drain_iopub(client, msg_id, timeout)
+    try:
+        msg_id = client.execute(code)
+        drained = _drain_iopub(client, msg_id, timeout)
+    except Exception as exc:  # noqa: BLE001 — dead kernel / ZMQ error
+        return {"ok": False, "error": "cell_exec_failed",
+                "detail": str(exc)[:300]}
+    if drained.get("timed_out"):
+        # Stop a runaway cell so it doesn't keep burning the kernel.
+        try:
+            _km.interrupt_kernel()
+        except Exception:  # noqa: BLE001
+            pass
     stdout = drained["stdout"][:_STDOUT_CAP_BYTES]
     stderr = drained["stderr"][:_STDOUT_CAP_BYTES]
     truncated = (

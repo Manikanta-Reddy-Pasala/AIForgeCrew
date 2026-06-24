@@ -131,3 +131,23 @@ def test_chat_learn_skill_tool(tmp_path, monkeypatch):
 def test_doer_skill_tools_exported():
     from aiforge_core.runtime import doer_tools as dt
     assert hasattr(dt, "skill_search") and hasattr(dt, "learn_skill")
+
+
+def test_md_store_bullet_dedup_is_line_based(tmp_path, monkeypatch):
+    # audit fix: a short bullet that's a SUBSTRING of an existing longer one
+    # must NOT be treated as a duplicate.
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path / "mem"))
+    monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
+    import importlib
+    from aiforge_core.memory import md_store
+    importlib.reload(md_store)
+    md_store.append_bullet(source="rules:x", title="x", bullet="use yarn always")
+    md_store.append_bullet(source="rules:x", title="x", bullet="use yarn")  # substring
+    p = md_store._find_by_source("rules:x")
+    body = md_store._parse(p)["body"]
+    assert "- use yarn always" in body
+    assert "- use yarn\n" in body + "\n"        # the short one was NOT dropped
+    # exact same line IS deduped
+    md_store.append_bullet(source="rules:x", title="x", bullet="use yarn")
+    assert md_store._parse(md_store._find_by_source("rules:x"))["body"].count("- use yarn\n") <= 1

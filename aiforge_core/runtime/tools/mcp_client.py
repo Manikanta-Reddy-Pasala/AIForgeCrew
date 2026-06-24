@@ -53,6 +53,12 @@ def _load_endpoints() -> dict[str, str]:
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    # Only HTTP(S) is supported here; a stdio endpoint (e.g. "npx server-...")
+    # would make urllib.request.Request raise ValueError("unknown url type"),
+    # which the callers don't catch → it escapes into the agent loop. Reject
+    # cleanly via OSError so the existing soft-error handlers cover it.
+    if not str(url).lower().startswith(("http://", "https://")):
+        raise OSError(f"unsupported MCP transport (http/https only): {url}")
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,

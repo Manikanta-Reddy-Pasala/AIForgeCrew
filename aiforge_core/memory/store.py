@@ -72,8 +72,20 @@ CREATE INDEX IF NOT EXISTS idx_proposals_status ON memory_proposals(status);
 """
 
 
-def _vec_literal(v: list[float]) -> str:
+def _vec_literal(v: "list[float] | None") -> "str | None":
+    if not v:
+        return None          # → NULL::vector (sidecar down / empty text)
     return "[" + ",".join(f"{x:.6f}" for x in v) + "]"
+
+
+def _safe_embed(text: str) -> "list[float] | None":
+    """Embed text, degrading to None when the embed sidecar is unreachable
+    so write paths persist the row (NULL embedding) instead of crashing the
+    whole pipeline. Re-embed later to make it vector-searchable."""
+    try:
+        return embed_mod.embed(text)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @dataclass
@@ -121,7 +133,7 @@ class Store:
         metadata: dict[str, Any] | None = None,
     ) -> int:
         """Append an episodic T1 row for a given parent ticket. Returns id."""
-        vec = embed_mod.embed(text)
+        vec = _safe_embed(text)
         wing = f"ticket/{parent_id}"
         with self._connect() as c, c.cursor() as cur:
             cur.execute(
@@ -237,7 +249,7 @@ class Store:
             )
 
             if approve:
-                vec = embed_mod.embed(text)
+                vec = _safe_embed(text)
                 cur.execute(
                     """INSERT INTO memories
                        (tier, wing, kind, title, text, embedding, metadata)
@@ -257,7 +269,7 @@ class Store:
         symbol: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        vec = embed_mod.embed(text)
+        vec = _safe_embed(text)
         wing = f"code/{repo}"
         source = f"{path}" + (f"#{symbol}" if symbol else "")
         md = dict(metadata or {})
@@ -313,7 +325,9 @@ class Store:
         from .retrieval import Hit
         if tier not in VALID_TIERS:
             raise ValueError(tier)
-        qvec = embed_mod.embed(query)
+        qvec = _safe_embed(query)
+        if not qvec:
+            return []          # embed sidecar down → no vector search this call
         vlit = _vec_literal(qvec)
         sql = (
             "SELECT id, tier, source, title, text, metadata, "
@@ -340,7 +354,9 @@ class Store:
                     wing_prefix: str | None = None) -> list[Memory]:
         if tier not in VALID_TIERS:
             raise ValueError(f"bad tier {tier}")
-        qvec = embed_mod.embed(query)
+        qvec = _safe_embed(query)
+        if not qvec:
+            return []
         vlit = _vec_literal(qvec)
         sql_final = (
             "SELECT id, tier, wing, parent_id, kind, source, title, text, "

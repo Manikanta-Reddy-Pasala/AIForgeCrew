@@ -18,9 +18,16 @@ import datetime
 import hashlib
 import os
 import re
+import threading
 from pathlib import Path
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
+
+# Serialize read-modify-write on the .md files — two concurrent chat turns
+# (or a chat turn + the auto-memory upsert) writing the same source file
+# would otherwise lose one update (both read the same raw, both append, last
+# write wins). Covers concurrency within this process.
+_WRITE_LOCK = threading.Lock()
 
 
 def memory_dir() -> Path:
@@ -150,31 +157,32 @@ def upsert_section(*, source: str, title: str, section_title: str,
     file per session that grows with each run, then re-ingested whole.
     """
     tags = list(tags or [])
-    existing = _find_by_source(source)
-    if existing is not None:
-        raw = existing.read_text(encoding="utf-8", errors="replace").rstrip()
-        existing.write_text(
-            raw + f"\n\n## {section_title}\n\n{section_body.strip()}\n",
-            encoding="utf-8")
-        path = existing
-    else:
-        stem = _slug(title)
-        path = memory_dir() / f"{stem}.md"
-        i = 1
-        while path.exists():       # different session, same title → suffix
-            path = memory_dir() / f"{stem}-{i}.md"
-            i += 1
-        fm = (
-            "---\n"
-            f"title: {title}\n"
-            f"kind: {kind}\n"
-            f"tags: {', '.join(tags)}\n"
-            f"source: {source}\n"
-            f"created: {_now_iso()}\n"
-            "---\n\n"
-        )
-        path.write_text(fm + f"## {section_title}\n\n{section_body.strip()}\n",
-                        encoding="utf-8")
+    with _WRITE_LOCK:
+        existing = _find_by_source(source)
+        if existing is not None:
+            raw = existing.read_text(encoding="utf-8", errors="replace").rstrip()
+            existing.write_text(
+                raw + f"\n\n## {section_title}\n\n{section_body.strip()}\n",
+                encoding="utf-8")
+            path = existing
+        else:
+            stem = _slug(title)
+            path = memory_dir() / f"{stem}.md"
+            i = 1
+            while path.exists():       # different session, same title → suffix
+                path = memory_dir() / f"{stem}-{i}.md"
+                i += 1
+            fm = (
+                "---\n"
+                f"title: {title}\n"
+                f"kind: {kind}\n"
+                f"tags: {', '.join(tags)}\n"
+                f"source: {source}\n"
+                f"created: {_now_iso()}\n"
+                "---\n\n"
+            )
+            path.write_text(fm + f"## {section_title}\n\n{section_body.strip()}\n",
+                            encoding="utf-8")
     d = _parse(path)
     _ingest_unit(title=d["title"], body=d["body"], kind=kind,
                  tags=d["tags"] or tags, source=source, repo=repo)
@@ -190,30 +198,33 @@ def append_bullet(*, source: str, title: str, bullet: str,
     and apply every session."""
     tags = list(tags or [])
     line = "- " + bullet.strip()
-    existing = _find_by_source(source)
-    if existing is not None:
-        raw = existing.read_text(encoding="utf-8", errors="replace").rstrip()
-        if line in raw:                      # already there — dedup
-            d = _parse(existing); d.pop("body", None); return d
-        existing.write_text(raw + "\n" + line + "\n", encoding="utf-8")
-        path = existing
-    else:
-        stem = _slug(title)
-        path = memory_dir() / f"{stem}.md"
-        i = 1
-        while path.exists():
-            path = memory_dir() / f"{stem}-{i}.md"
-            i += 1
-        fm = (
-            "---\n"
-            f"title: {title}\n"
-            f"kind: {kind}\n"
-            f"tags: {', '.join(tags)}\n"
-            f"source: {source}\n"
-            f"created: {_now_iso()}\n"
-            "---\n\n"
-        )
-        path.write_text(fm + line + "\n", encoding="utf-8")
+    with _WRITE_LOCK:
+        existing = _find_by_source(source)
+        if existing is not None:
+            raw = existing.read_text(encoding="utf-8", errors="replace").rstrip()
+            # Dedup against existing BULLET LINES (exact), not a raw substring
+            # — a short bullet that's a substring of a longer one is not a dup.
+            if line in raw.splitlines():
+                d = _parse(existing); d.pop("body", None); return d
+            existing.write_text(raw + "\n" + line + "\n", encoding="utf-8")
+            path = existing
+        else:
+            stem = _slug(title)
+            path = memory_dir() / f"{stem}.md"
+            i = 1
+            while path.exists():
+                path = memory_dir() / f"{stem}-{i}.md"
+                i += 1
+            fm = (
+                "---\n"
+                f"title: {title}\n"
+                f"kind: {kind}\n"
+                f"tags: {', '.join(tags)}\n"
+                f"source: {source}\n"
+                f"created: {_now_iso()}\n"
+                "---\n\n"
+            )
+            path.write_text(fm + line + "\n", encoding="utf-8")
     d = _parse(path)
     _ingest_unit(title=d["title"], body=d["body"], kind=kind,
                  tags=d["tags"] or tags, source=source, repo=repo)

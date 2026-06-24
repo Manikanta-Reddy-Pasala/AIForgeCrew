@@ -14,6 +14,19 @@ def repo_root(tmp_path, monkeypatch):
     return tmp_path
 
 
+# ─── error-shape consistency (audit fix) ───────────────────────────────
+
+
+def test_error_returns_have_consistent_shape(repo_root, monkeypatch):
+    # empty + delete-blocked errors must carry the same keys the success path
+    # does (callers/tests read truncated/returncode without KeyError).
+    for r in (bm.bash(""), bm.bash("rm -rf /tmp/x")):
+        assert r["ok"] is False
+        for k in ("command", "error", "returncode", "stdout", "stderr", "truncated"):
+            assert k in r, (k, r)
+    assert bm.bash("rm -rf /tmp/x").get("blocked") == "delete"
+
+
 # ─── fallback path (no tmux) ────────────────────────────────────────────
 
 
