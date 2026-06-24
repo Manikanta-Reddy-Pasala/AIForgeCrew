@@ -862,6 +862,8 @@ export default function Home() {
       <div className="card" style={{ marginTop: 16 }}>
         <h2 style={{ fontSize: 14 }}>Integrations</h2>
         <ConfluenceCard />
+        <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '16px 0' }} />
+        <JiraCard />
       </div>
 
       {/* provider reference */}
@@ -974,6 +976,109 @@ function ConfluenceCard() {
         </div>
         <div className="xs muted">
           Create a token in Confluence: avatar → Settings → Personal Access Tokens → Create token.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Jira integration card ────────────────────────────────────────────────────
+function JiraCard() {
+  const [baseUrl, setBaseUrl] = useState('');
+  const [token, setToken] = useState('');
+  const [user, setUser] = useState('');
+  const [authMode, setAuthMode] = useState<'pat' | 'basic'>('pat');
+  const [insecure, setInsecure] = useState(false);
+  const [hasToken, setHasToken] = useState(false);
+  const [envManaged, setEnvManaged] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    integrationsApi.getJira().then(c => {
+      setBaseUrl(c.base_url || '');
+      setUser(c.user || '');
+      setAuthMode(c.user ? 'basic' : 'pat');   // a stored user ⇒ basic was used
+      setInsecure(!!c.insecure_tls);
+      setHasToken(!!c.has_token);
+      setEnvManaged(!!c.env_managed);
+    }).catch(() => { /* endpoint may be absent on old API */ });
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    try {
+      // PAT/Bearer ⇒ ALWAYS clear the user (a non-empty user forces Basic
+      // auth on the server, which a PAT can't satisfy → 401).
+      const c = await integrationsApi.setJira({
+        base_url: baseUrl.trim(),
+        user: authMode === 'basic' ? user.trim() : '',
+        insecure_tls: insecure,
+        ...(token.trim() ? { token: token.trim() } : {}),
+      });
+      setHasToken(!!c.has_token);
+      setToken('');
+      toast.success('Jira settings saved');
+    } catch (e: any) {
+      toast.error(`Save failed: ${e.message}`);
+    } finally { setBusy(false); }
+  }
+
+  async function test() {
+    setBusy(true);
+    try {
+      const r = await integrationsApi.testJira();
+      if (r.ok) toast.success(`Connected to ${r.base_url || 'Jira'} as ${r.user || '?'} (${r.auth} auth)`);
+      else {
+        const extra = r.denied_reason ? ` [${r.denied_reason}]` : (r.detail ? ` — ${r.detail}` : '');
+        toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ` — ${r.hint}` : ''}`, { duration: 14000 });
+      }
+    } catch (e: any) {
+      toast.error(`Test failed: ${e.message}`);
+    } finally { setBusy(false); }
+  }
+
+  const inputStyle = { width: '100%', maxWidth: 460, padding: '6px 8px', fontSize: 13 };
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        <strong>Jira</strong> (Server / Data Center) — chat tools to search, read,
+        create, update &amp; comment on issues. Writes go through the chat approval gate.
+        {envManaged && <span style={{ color: 'var(--warn, #f59e0b)' }}> · currently set via env (overrides this form)</span>}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
+        <label className="small">Base URL
+          <input style={inputStyle} placeholder="https://jira.yourco.internal"
+                 value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+        </label>
+        <label className="small">Auth
+          <select style={inputStyle} value={authMode}
+                  onChange={e => setAuthMode(e.target.value as 'pat' | 'basic')}>
+            <option value="pat">Personal Access Token (Bearer) — recommended</option>
+            <option value="basic">Username + Password (Basic)</option>
+          </select>
+        </label>
+        <label className="small">{authMode === 'pat' ? 'Personal Access Token' : 'Password'}
+          <input style={inputStyle} type="password"
+                 placeholder={hasToken ? '•••••• (leave blank to keep)' : (authMode === 'pat' ? 'paste PAT' : 'password')}
+                 value={token} onChange={e => setToken(e.target.value)} />
+        </label>
+        {authMode === 'basic' && (
+          <label className="small">Username
+            <input style={inputStyle} placeholder="you@company.com"
+                   value={user} onChange={e => setUser(e.target.value)} />
+          </label>
+        )}
+        <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
+          <input type="checkbox" checked={insecure} onChange={e => setInsecure(e.target.checked)} />
+          Skip TLS verify (self-signed internal cert)
+        </label>
+        <div className="row" style={{ gap: 8 }}>
+          <button onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
+          <button className="ghost" onClick={test} disabled={busy}>Test connection</button>
+        </div>
+        <div className="xs muted">
+          Create a token in Jira: avatar → Profile → Personal Access Tokens → Create token.
         </div>
       </div>
     </div>

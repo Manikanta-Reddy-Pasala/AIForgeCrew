@@ -378,6 +378,31 @@ def _t_confluence_update(args: dict, cwd: str) -> dict:
     return confluence.confluence_update(args, cwd)
 
 
+def _t_jira_search(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_search(args, cwd)
+
+
+def _t_jira_read(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_read(args, cwd)
+
+
+def _t_jira_create(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_create(args, cwd)
+
+
+def _t_jira_update(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_update(args, cwd)
+
+
+def _t_jira_comment(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_comment(args, cwd)
+
+
 def _t_skill_search(args: dict, cwd: str) -> dict:
     """Search the skill registry (SKILL.md playbooks) by relevance."""
     try:
@@ -429,11 +454,17 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "confluence_read": _t_confluence_read,
     "confluence_create": _t_confluence_create,
     "confluence_update": _t_confluence_update,
+    "jira_search": _t_jira_search,
+    "jira_read": _t_jira_read,
+    "jira_create": _t_jira_create,
+    "jira_update": _t_jira_update,
+    "jira_comment": _t_jira_comment,
 }
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
 _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
-                   "skill_search", "confluence_search", "confluence_read")
+                   "skill_search", "confluence_search", "confluence_read",
+                   "jira_search", "jira_read")
 
 _PLAN_BANNER = (
     "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
@@ -505,6 +536,11 @@ Tool arguments:
 - confluence_read   {{"id": "12345"}}  or  {{"title": "Page Title", "space": "ENG"}}      (read a page; body is storage XHTML)
 - confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page — needs your Approve)
 - confluence_update {{"id": "12345", "body": "<p>new storage XHTML</p>", "title": "optional"}}              (edit a page — needs your Approve)
+- jira_search   {{"query": "..."}}  or  {{"jql": "project = ENG AND status = Open"}}   (find issues)
+- jira_read     {{"key": "ENG-123"}}                                                    (read an issue: fields + comments)
+- jira_create   {{"project": "ENG", "summary": "...", "issuetype": "Task", "description": "..."}}   (new issue — needs your Approve)
+- jira_update   {{"key": "ENG-123", "summary": "...", "description": "...", "labels": ["a","b"]}}     (edit fields — needs your Approve)
+- jira_comment  {{"key": "ENG-123", "body": "comment text"}}                            (add a comment — needs your Approve)
 
 When you are done and ready to reply to the user:
 THOUGHT: <reasoning>

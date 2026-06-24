@@ -366,6 +366,8 @@ export type ConfluenceCfg = {
   has_token: boolean; env_managed: boolean;
 };
 
+export type JiraCfg = ConfluenceCfg;
+
 export const integrationsApi = {
   getConfluence: () => j<ConfluenceCfg>('/integrations/confluence'),
   setConfluence: (cfg: { base_url?: string; token?: string; user?: string; insecure_tls?: boolean }) =>
@@ -377,6 +379,17 @@ export const integrationsApi = {
   testConfluence: () =>
     j<{ ok: boolean; base_url?: string; auth?: string; error?: string; detail?: string; hint?: string; denied_reason?: string }>(
       '/integrations/confluence/test', { method: 'POST' }),
+
+  getJira: () => j<JiraCfg>('/integrations/jira'),
+  setJira: (cfg: { base_url?: string; token?: string; user?: string; insecure_tls?: boolean }) =>
+    j<JiraCfg>('/integrations/jira', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    }),
+  testJira: () =>
+    j<{ ok: boolean; base_url?: string; auth?: string; user?: string; error?: string; detail?: string; hint?: string; denied_reason?: string }>(
+      '/integrations/jira/test', { method: 'POST' }),
 };
 
 export function chatSessionMessageURL(id: number): string {

@@ -2251,6 +2251,53 @@ def integrations_confluence_test() -> dict:
     return confluence_test()
 
 
+class _JiraCfg(BaseModel):
+    base_url: str | None = None
+    token: str | None = None       # write-only; omitted on read
+    user: str | None = None
+    insecure_tls: bool | None = None
+
+
+@app.get("/api/integrations/jira")
+def integrations_jira_get() -> dict:
+    """Current Jira settings (token masked). Reflects env override."""
+    from aiforge_core.config import integrations
+    stored = integrations.get("jira")
+    env_token = bool(os.environ.get("JIRA_TOKEN"))
+    return {
+        "base_url": os.environ.get("JIRA_BASE_URL") or stored.get("base_url", ""),
+        "user": os.environ.get("JIRA_USER") or stored.get("user", ""),
+        "insecure_tls": bool(stored.get("insecure_tls")),
+        "has_token": env_token or bool(stored.get("token")),
+        "env_managed": bool(os.environ.get("JIRA_BASE_URL") or env_token),
+    }
+
+
+@app.put("/api/integrations/jira")
+def integrations_jira_set(body: _JiraCfg) -> dict:
+    """Persist Jira settings. An empty/omitted token keeps the existing one
+    (so re-saving the form doesn't wipe the secret)."""
+    from aiforge_core.config import integrations
+    patch: dict = {}
+    if body.base_url is not None:
+        patch["base_url"] = body.base_url.strip().rstrip("/")
+    if body.user is not None:
+        patch["user"] = body.user.strip()
+    if body.insecure_tls is not None:
+        patch["insecure_tls"] = bool(body.insecure_tls)
+    if body.token:                       # only overwrite when a new token is given
+        patch["token"] = body.token.strip()
+    integrations.set_("jira", patch)
+    return integrations_jira_get()
+
+
+@app.post("/api/integrations/jira/test")
+def integrations_jira_test() -> dict:
+    """Live connectivity + auth check against the configured Jira."""
+    from aiforge_core.runtime.tools.jira import jira_test
+    return jira_test()
+
+
 @app.post("/api/chat/sessions/{session_id}/ticket", status_code=201)
 def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
     """Pipeline mode: turn a chat message into a real ticket that runs the

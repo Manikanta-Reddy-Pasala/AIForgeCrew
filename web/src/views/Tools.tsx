@@ -72,6 +72,18 @@ const TOOLS: Tool[] = [
     args: [{ name: 'title', placeholder: 'page title', required: true }] },
   { name: 'confluence_update', category: 'Confluence', desc: 'Update a page body (needs Approve).',
     args: [{ name: 'id', placeholder: 'page id', required: true }] },
+
+  // Jira (chat) — writes go through the approval gate
+  { name: 'jira_search', category: 'Jira', desc: 'Find issues (full-text or JQL).',
+    args: [{ name: 'query', placeholder: 'text, or use jql' }] },
+  { name: 'jira_read', category: 'Jira', desc: 'Read an issue (fields + comments).',
+    args: [{ name: 'key', placeholder: 'ENG-123', required: true }] },
+  { name: 'jira_create', category: 'Jira', desc: 'Create an issue (needs Approve).',
+    args: [{ name: 'project', placeholder: 'project key', required: true }] },
+  { name: 'jira_update', category: 'Jira', desc: 'Update issue fields (needs Approve).',
+    args: [{ name: 'key', placeholder: 'ENG-123', required: true }] },
+  { name: 'jira_comment', category: 'Jira', desc: 'Add a comment to an issue (needs Approve).',
+    args: [{ name: 'key', placeholder: 'ENG-123', required: true }] },
 ];
 
 export default function Tools() {
