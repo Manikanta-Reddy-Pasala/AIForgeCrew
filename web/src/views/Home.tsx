@@ -882,6 +882,7 @@ function ConfluenceCard() {
   const [baseUrl, setBaseUrl] = useState('');
   const [token, setToken] = useState('');
   const [user, setUser] = useState('');
+  const [authMode, setAuthMode] = useState<'pat' | 'basic'>('pat');
   const [insecure, setInsecure] = useState(false);
   const [hasToken, setHasToken] = useState(false);
   const [envManaged, setEnvManaged] = useState(false);
@@ -891,6 +892,7 @@ function ConfluenceCard() {
     integrationsApi.getConfluence().then(c => {
       setBaseUrl(c.base_url || '');
       setUser(c.user || '');
+      setAuthMode(c.user ? 'basic' : 'pat');   // a stored user ⇒ basic was used
       setInsecure(!!c.insecure_tls);
       setHasToken(!!c.has_token);
       setEnvManaged(!!c.env_managed);
@@ -900,9 +902,11 @@ function ConfluenceCard() {
   async function save() {
     setBusy(true);
     try {
+      // PAT/Bearer ⇒ ALWAYS clear the user (a non-empty user forces Basic
+      // auth on the server, which a PAT can't satisfy → 401).
       const c = await integrationsApi.setConfluence({
         base_url: baseUrl.trim(),
-        user: user.trim(),
+        user: authMode === 'basic' ? user.trim() : '',
         insecure_tls: insecure,
         ...(token.trim() ? { token: token.trim() } : {}),
       });
@@ -942,15 +946,24 @@ function ConfluenceCard() {
           <input style={inputStyle} placeholder="https://confluence.yourco.internal"
                  value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
         </label>
-        <label className="small">Personal Access Token
+        <label className="small">Auth
+          <select style={inputStyle} value={authMode}
+                  onChange={e => setAuthMode(e.target.value as 'pat' | 'basic')}>
+            <option value="pat">Personal Access Token (Bearer) — recommended</option>
+            <option value="basic">Username + Password (Basic)</option>
+          </select>
+        </label>
+        <label className="small">{authMode === 'pat' ? 'Personal Access Token' : 'Password'}
           <input style={inputStyle} type="password"
-                 placeholder={hasToken ? '•••••• (leave blank to keep)' : 'paste PAT'}
+                 placeholder={hasToken ? '•••••• (leave blank to keep)' : (authMode === 'pat' ? 'paste PAT' : 'password')}
                  value={token} onChange={e => setToken(e.target.value)} />
         </label>
-        <label className="small">User <span className="muted">(leave BLANK for a Personal Access Token; fill only for username+password Basic auth)</span>
-          <input style={inputStyle} placeholder="blank for PAT"
-                 value={user} onChange={e => setUser(e.target.value)} />
-        </label>
+        {authMode === 'basic' && (
+          <label className="small">Username
+            <input style={inputStyle} placeholder="you@company.com"
+                   value={user} onChange={e => setUser(e.target.value)} />
+          </label>
+        )}
         <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={insecure} onChange={e => setInsecure(e.target.checked)} />
           Skip TLS verify (self-signed internal cert)
