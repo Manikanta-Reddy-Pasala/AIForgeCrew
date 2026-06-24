@@ -358,6 +358,26 @@ def _t_project(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_confluence_search(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_search(args, cwd)
+
+
+def _t_confluence_read(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_read(args, cwd)
+
+
+def _t_confluence_create(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_create(args, cwd)
+
+
+def _t_confluence_update(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_update(args, cwd)
+
+
 def _t_skill_search(args: dict, cwd: str) -> dict:
     """Search the skill registry (SKILL.md playbooks) by relevance."""
     try:
@@ -405,11 +425,15 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "memory_write": _t_memory_write,
     "skill_search": _t_skill_search,
     "learn_skill": _t_learn_skill,
+    "confluence_search": _t_confluence_search,
+    "confluence_read": _t_confluence_read,
+    "confluence_create": _t_confluence_create,
+    "confluence_update": _t_confluence_update,
 }
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
 _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
-                   "skill_search")
+                   "skill_search", "confluence_search", "confluence_read")
 
 _PLAN_BANNER = (
     "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
@@ -477,6 +501,10 @@ Tool arguments:
 - skill_search {{"query": "..."}}                        (find reusable SKILL.md playbooks)
 - learn_skill  {{"name": "...", "description": "when to use it", "body": "the step-by-step playbook", "triggers": ["word1","word2"], "scope": "global|repo"}}
                 (author a reusable skill after solving something non-trivial — also recorded in memory)
+- confluence_search {{"query": "..."}}  or  {{"cql": "space = ENG AND text ~ 'foo'"}}   (find pages)
+- confluence_read   {{"id": "12345"}}  or  {{"title": "Page Title", "space": "ENG"}}      (read a page; body is storage XHTML)
+- confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page — needs your Approve)
+- confluence_update {{"id": "12345", "body": "<p>new storage XHTML</p>", "title": "optional"}}              (edit a page — needs your Approve)
 
 When you are done and ready to reply to the user:
 THOUGHT: <reasoning>

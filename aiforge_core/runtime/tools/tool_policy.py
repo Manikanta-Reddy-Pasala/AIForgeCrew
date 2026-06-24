@@ -33,6 +33,10 @@ _VALID = {ALLOW, ASK, DENY}
 _CMD_TOOLS = {"run_command", "bash", "shell", "run_shell"}
 _CMD_ARG_KEYS = ("cmd", "command", "input")
 
+# Tools that mutate something external/durable → default to ASK (human
+# approval) unless the operator explicitly overrides via AIFORGE_TOOL_POLICY.
+_DEFAULT_ASK = {"confluence_create", "confluence_update"}
+
 
 def _parse_map(raw: str) -> dict[str, str]:
     out: dict[str, str] = {}
@@ -73,8 +77,13 @@ def decide(tool: str, args: dict | None = None) -> dict:
     ``policy`` ∈ {allow, ask, deny}. ``reason`` explains an ask/deny
     (e.g. the risk verdict) so the UI can show *why* approval is needed.
     """
-    configured = _configured().get(tool, ALLOW)
+    cfg = _configured()
+    # Mutating-external tools default to ASK; an explicit env policy still wins.
+    default = ASK if tool in _DEFAULT_ASK else ALLOW
+    configured = cfg.get(tool, default)
     policy, reason = configured, ""
+    if tool in _DEFAULT_ASK and tool not in cfg:
+        reason = f"'{tool}' writes to an external system — confirm first"
 
     # Risk escalation for command-running tools.
     if tool in _CMD_TOOLS:

@@ -62,6 +62,16 @@ const TOOLS: Tool[] = [
   // Docs
   { name: 'find_doc', category: 'Docs', desc: 'Full-text search across docs (any *.md).',
     args: [{ name: 'query', placeholder: 'search text', required: true }] },
+
+  // Confluence (chat) — writes go through the approval gate
+  { name: 'confluence_search', category: 'Confluence', desc: 'Find pages (full-text or CQL).',
+    args: [{ name: 'query', placeholder: 'text, or use cql' }] },
+  { name: 'confluence_read', category: 'Confluence', desc: 'Read a page (by id, or title + space).',
+    args: [{ name: 'id', placeholder: 'page id' }] },
+  { name: 'confluence_create', category: 'Confluence', desc: 'Create a page (needs Approve).',
+    args: [{ name: 'title', placeholder: 'page title', required: true }] },
+  { name: 'confluence_update', category: 'Confluence', desc: 'Update a page body (needs Approve).',
+    args: [{ name: 'id', placeholder: 'page id', required: true }] },
 ];
 
 export default function Tools() {

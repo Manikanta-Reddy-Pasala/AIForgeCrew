@@ -95,7 +95,16 @@ AIFORGE_SKILLS_DIR             skill registry root (default ~/.aiforge/skills)
 # Storage (optional "pro" backends; embedded SQLite by default)
 AIFORGE_PG_URL                 Postgres tickets
 NEO4J_URI                      graph memory
+
+# Confluence (chat tools: search/read/create/update pages; Server/Data Center)
+CONFLUENCE_BASE_URL            e.g. https://confluence.internal
+CONFLUENCE_TOKEN               Personal Access Token (Bearer)
+CONFLUENCE_USER                set ⇒ Basic auth (user + token) instead of Bearer
+CONFLUENCE_INSECURE_TLS=1      skip TLS verify for a self-signed internal cert
 ```
+
+Confluence writes (`confluence_create`/`confluence_update`) go through the chat
+**approval gate** by default — the agent proposes, you Approve/Reject.
 
 ## Project layout
 
