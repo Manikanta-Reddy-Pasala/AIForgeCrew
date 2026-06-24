@@ -2202,6 +2202,55 @@ class _SessionTicketBody(BaseModel):
     project: str | None = Field(None, description="target repo; defaults to session cwd name")
 
 
+# ─────────────────────────── Integrations ───────────────────────────
+
+class _ConfluenceCfg(BaseModel):
+    base_url: str | None = None
+    token: str | None = None       # write-only; omitted on read
+    user: str | None = None
+    insecure_tls: bool | None = None
+
+
+@app.get("/api/integrations/confluence")
+def integrations_confluence_get() -> dict:
+    """Current Confluence settings (token masked). Reflects env override."""
+    from aiforge_core.config import integrations
+    stored = integrations.get("confluence")
+    env_token = bool(os.environ.get("CONFLUENCE_TOKEN"))
+    return {
+        "base_url": os.environ.get("CONFLUENCE_BASE_URL") or stored.get("base_url", ""),
+        "user": os.environ.get("CONFLUENCE_USER") or stored.get("user", ""),
+        "insecure_tls": bool(stored.get("insecure_tls")),
+        "has_token": env_token or bool(stored.get("token")),
+        "env_managed": bool(os.environ.get("CONFLUENCE_BASE_URL") or env_token),
+    }
+
+
+@app.put("/api/integrations/confluence")
+def integrations_confluence_set(body: _ConfluenceCfg) -> dict:
+    """Persist Confluence settings. An empty/omitted token keeps the existing
+    one (so re-saving the form doesn't wipe the secret)."""
+    from aiforge_core.config import integrations
+    patch: dict = {}
+    if body.base_url is not None:
+        patch["base_url"] = body.base_url.strip().rstrip("/")
+    if body.user is not None:
+        patch["user"] = body.user.strip()
+    if body.insecure_tls is not None:
+        patch["insecure_tls"] = bool(body.insecure_tls)
+    if body.token:                       # only overwrite when a new token is given
+        patch["token"] = body.token.strip()
+    integrations.set_("confluence", patch)
+    return integrations_confluence_get()
+
+
+@app.post("/api/integrations/confluence/test")
+def integrations_confluence_test() -> dict:
+    """Live connectivity + auth check against the configured Confluence."""
+    from aiforge_core.runtime.tools.confluence import confluence_test
+    return confluence_test()
+
+
 @app.post("/api/chat/sessions/{session_id}/ticket", status_code=201)
 def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
     """Pipeline mode: turn a chat message into a real ticket that runs the

@@ -112,6 +112,32 @@ def test_basic_auth_when_user_set(monkeypatch):
     assert seen["headers"].get("Authorization", "").startswith("Basic ")
 
 
+def test_reads_stored_config_when_env_absent(tmp_path, monkeypatch):
+    for k in ("CONFLUENCE_BASE_URL", "CONFLUENCE_TOKEN", "CONFLUENCE_USER"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    from aiforge_core.config import integrations
+    integrations.set_("confluence",
+                      {"base_url": "https://s.internal", "token": "stored-tok"})
+    seen = _capture(monkeypatch, {"results": []})
+    assert cf.confluence_search({"query": "x"})["ok"]
+    assert seen["headers"]["Authorization"] == "Bearer stored-tok"
+    assert "s.internal" in seen["url"]
+
+
+def test_env_wins_over_stored(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    from aiforge_core.config import integrations
+    integrations.set_("confluence",
+                      {"base_url": "https://stored", "token": "stored"})
+    monkeypatch.setenv("CONFLUENCE_BASE_URL", "https://env.internal")
+    monkeypatch.setenv("CONFLUENCE_TOKEN", "env-tok")
+    seen = _capture(monkeypatch, {"results": []})
+    cf.confluence_search({"query": "x"})
+    assert "env.internal" in seen["url"]
+    assert seen["headers"]["Authorization"] == "Bearer env-tok"
+
+
 def test_writes_default_to_ask_policy(monkeypatch):
     monkeypatch.delenv("AIFORGE_TOOL_POLICY", raising=False)
     monkeypatch.delenv("AIFORGE_CHAT_TOOL_POLICY", raising=False)

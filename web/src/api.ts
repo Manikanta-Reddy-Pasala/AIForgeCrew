@@ -361,6 +361,24 @@ export const chatApi = {
       }),
 };
 
+export type ConfluenceCfg = {
+  base_url: string; user: string; insecure_tls: boolean;
+  has_token: boolean; env_managed: boolean;
+};
+
+export const integrationsApi = {
+  getConfluence: () => j<ConfluenceCfg>('/integrations/confluence'),
+  setConfluence: (cfg: { base_url?: string; token?: string; user?: string; insecure_tls?: boolean }) =>
+    j<ConfluenceCfg>('/integrations/confluence', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    }),
+  testConfluence: () =>
+    j<{ ok: boolean; base_url?: string; error?: string; detail?: string }>(
+      '/integrations/confluence/test', { method: 'POST' }),
+};
+
 export function chatSessionMessageURL(id: number): string {
   return `${BASE}/chat/sessions/${id}/message`;
 }

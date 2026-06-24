@@ -4,6 +4,7 @@ import {
   api,
   AgentRole,
   AgentRoleConfig,
+  integrationsApi,
   ProviderCatalog,
   ProviderId,
   ProviderModel,
@@ -857,6 +858,12 @@ export default function Home() {
             })}
       </div>
 
+      {/* Integrations */}
+      <div className="card" style={{ marginTop: 16 }}>
+        <h2 style={{ fontSize: 14 }}>Integrations</h2>
+        <ConfluenceCard />
+      </div>
+
       {/* provider reference */}
       <div className="card" style={{ marginTop: 16 }}>
         <h2 style={{ fontSize: 14 }}>Providers</h2>
@@ -867,5 +874,92 @@ export default function Home() {
         </ul>
       </div>
     </>
+  );
+}
+
+// ── Confluence integration card ──────────────────────────────────────────────
+function ConfluenceCard() {
+  const [baseUrl, setBaseUrl] = useState('');
+  const [token, setToken] = useState('');
+  const [user, setUser] = useState('');
+  const [insecure, setInsecure] = useState(false);
+  const [hasToken, setHasToken] = useState(false);
+  const [envManaged, setEnvManaged] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    integrationsApi.getConfluence().then(c => {
+      setBaseUrl(c.base_url || '');
+      setUser(c.user || '');
+      setInsecure(!!c.insecure_tls);
+      setHasToken(!!c.has_token);
+      setEnvManaged(!!c.env_managed);
+    }).catch(() => { /* endpoint may be absent on old API */ });
+  }, []);
+
+  async function save() {
+    setBusy(true);
+    try {
+      const c = await integrationsApi.setConfluence({
+        base_url: baseUrl.trim(),
+        user: user.trim(),
+        insecure_tls: insecure,
+        ...(token.trim() ? { token: token.trim() } : {}),
+      });
+      setHasToken(!!c.has_token);
+      setToken('');
+      toast.success('Confluence settings saved');
+    } catch (e: any) {
+      toast.error(`Save failed: ${e.message}`);
+    } finally { setBusy(false); }
+  }
+
+  async function test() {
+    setBusy(true);
+    try {
+      const r = await integrationsApi.testConfluence();
+      if (r.ok) toast.success(`Connected to ${r.base_url || 'Confluence'}`);
+      else toast.error(`Test failed: ${r.error || ''}${r.detail ? ` — ${r.detail}` : ''}`);
+    } catch (e: any) {
+      toast.error(`Test failed: ${e.message}`);
+    } finally { setBusy(false); }
+  }
+
+  const inputStyle = { width: '100%', maxWidth: 460, padding: '6px 8px', fontSize: 13 };
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        <strong>Confluence</strong> (Server / Data Center) — chat tools to search, read,
+        create &amp; update pages. Writes go through the chat approval gate.
+        {envManaged && <span style={{ color: 'var(--warn, #f59e0b)' }}> · currently set via env (overrides this form)</span>}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
+        <label className="small">Base URL
+          <input style={inputStyle} placeholder="https://confluence.yourco.internal"
+                 value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+        </label>
+        <label className="small">Personal Access Token
+          <input style={inputStyle} type="password"
+                 placeholder={hasToken ? '•••••• (leave blank to keep)' : 'paste PAT'}
+                 value={token} onChange={e => setToken(e.target.value)} />
+        </label>
+        <label className="small">User <span className="muted">(optional — set ⇒ Basic auth)</span>
+          <input style={inputStyle} placeholder="you@company.com (optional)"
+                 value={user} onChange={e => setUser(e.target.value)} />
+        </label>
+        <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
+          <input type="checkbox" checked={insecure} onChange={e => setInsecure(e.target.checked)} />
+          Skip TLS verify (self-signed internal cert)
+        </label>
+        <div className="row" style={{ gap: 8 }}>
+          <button onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
+          <button className="ghost" onClick={test} disabled={busy}>Test connection</button>
+        </div>
+        <div className="xs muted">
+          Create a token in Confluence: avatar → Settings → Personal Access Tokens → Create token.
+        </div>
+      </div>
+    </div>
   );
 }

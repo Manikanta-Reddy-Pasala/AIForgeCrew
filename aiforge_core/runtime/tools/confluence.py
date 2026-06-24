@@ -27,34 +27,54 @@ _TIMEOUT_S = 20
 _BODY_CAP = 200_000
 
 
+def _truthy(v) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _conf() -> dict:
+    """Resolve config: env var WINS, else the UI-persisted store."""
+    try:
+        from aiforge_core.config import integrations
+        stored = integrations.get("confluence")
+    except Exception:  # noqa: BLE001
+        stored = {}
+    return {
+        "base_url": (os.environ.get("CONFLUENCE_BASE_URL")
+                     or stored.get("base_url") or "").rstrip("/"),
+        "token": os.environ.get("CONFLUENCE_TOKEN") or stored.get("token") or "",
+        "user": (os.environ.get("CONFLUENCE_USER") or stored.get("user") or "").strip(),
+        "insecure_tls": (_truthy(os.environ.get("CONFLUENCE_INSECURE_TLS", ""))
+                         or bool(stored.get("insecure_tls"))),
+    }
+
+
 def _base() -> str:
-    return (os.environ.get("CONFLUENCE_BASE_URL") or "").rstrip("/")
+    return _conf()["base_url"]
 
 
 def _configured() -> bool:
-    return bool(_base() and os.environ.get("CONFLUENCE_TOKEN"))
+    c = _conf()
+    return bool(c["base_url"] and c["token"])
 
 
 def _headers() -> dict[str, str]:
-    tok = os.environ.get("CONFLUENCE_TOKEN", "")
-    user = os.environ.get("CONFLUENCE_USER", "").strip()
+    c = _conf()
     h = {"Content-Type": "application/json", "Accept": "application/json",
          "User-Agent": "AIForgeCrew-Confluence/1.0"}
-    if user:
+    if c["user"]:
         h["Authorization"] = "Basic " + base64.b64encode(
-            f"{user}:{tok}".encode()).decode()
+            f"{c['user']}:{c['token']}".encode()).decode()
     else:
-        h["Authorization"] = "Bearer " + tok
+        h["Authorization"] = "Bearer " + c["token"]
     return h
 
 
 def _ssl_ctx():
-    if os.environ.get("CONFLUENCE_INSECURE_TLS", "").strip().lower() in (
-            "1", "true", "yes", "on"):
-        c = ssl.create_default_context()
-        c.check_hostname = False
-        c.verify_mode = ssl.CERT_NONE
-        return c
+    if _conf()["insecure_tls"]:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
     return None
 
 
@@ -194,5 +214,15 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
             "url": _page_url(rd)}
 
 
-__all__ = ["confluence_search", "confluence_read",
-           "confluence_create", "confluence_update"]
+def confluence_test() -> dict:
+    """Connectivity + auth check for the Settings UI. Hits a cheap endpoint."""
+    if not _configured():
+        return {"ok": False, "error": "confluence_not_configured"}
+    r = _request("GET", "/rest/api/space", params={"limit": 1})
+    if not r["ok"]:
+        return r
+    return {"ok": True, "base_url": _base()}
+
+
+__all__ = ["confluence_search", "confluence_read", "confluence_create",
+           "confluence_update", "confluence_test"]
