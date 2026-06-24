@@ -918,7 +918,8 @@ function ConfluenceCard() {
     setBusy(true);
     try {
       const r = await integrationsApi.testConfluence();
-      if (r.ok) toast.success(`Connected to ${r.base_url || 'Confluence'}`);
+      if (r.ok) toast.success(`Connected to ${r.base_url || 'Confluence'} (${r.auth} auth)`);
+      else if (r.hint) toast.error(`${r.error || 'Test failed'} — ${r.hint}`, { duration: 12000 });
       else toast.error(`Test failed: ${r.error || ''}${r.detail ? ` — ${r.detail}` : ''}`);
     } catch (e: any) {
       toast.error(`Test failed: ${e.message}`);
@@ -944,8 +945,8 @@ function ConfluenceCard() {
                  placeholder={hasToken ? '•••••• (leave blank to keep)' : 'paste PAT'}
                  value={token} onChange={e => setToken(e.target.value)} />
         </label>
-        <label className="small">User <span className="muted">(optional — set ⇒ Basic auth)</span>
-          <input style={inputStyle} placeholder="you@company.com (optional)"
+        <label className="small">User <span className="muted">(leave BLANK for a Personal Access Token; fill only for username+password Basic auth)</span>
+          <input style={inputStyle} placeholder="blank for PAT"
                  value={user} onChange={e => setUser(e.target.value)} />
         </label>
         <label className="row small" style={{ gap: 6, alignItems: 'center' }}>

@@ -40,12 +40,19 @@ def _conf() -> dict:
         stored = {}
     return {
         "base_url": (os.environ.get("CONFLUENCE_BASE_URL")
-                     or stored.get("base_url") or "").rstrip("/"),
-        "token": os.environ.get("CONFLUENCE_TOKEN") or stored.get("token") or "",
+                     or stored.get("base_url") or "").strip().rstrip("/"),
+        # strip whitespace/newlines a pasted token often carries — a stray
+        # "\n" in the Authorization header value yields a 401.
+        "token": (os.environ.get("CONFLUENCE_TOKEN")
+                  or stored.get("token") or "").strip(),
         "user": (os.environ.get("CONFLUENCE_USER") or stored.get("user") or "").strip(),
         "insecure_tls": (_truthy(os.environ.get("CONFLUENCE_INSECURE_TLS", ""))
                          or bool(stored.get("insecure_tls"))),
     }
+
+
+def _auth_scheme() -> str:
+    return "basic" if _conf()["user"] else "bearer"
 
 
 def _base() -> str:
@@ -215,13 +222,29 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
 
 
 def confluence_test() -> dict:
-    """Connectivity + auth check for the Settings UI. Hits a cheap endpoint."""
+    """Connectivity + auth check for the Settings UI. Hits a cheap endpoint
+    and, on auth failure, explains the most likely cause."""
     if not _configured():
         return {"ok": False, "error": "confluence_not_configured"}
+    scheme = _auth_scheme()
     r = _request("GET", "/rest/api/space", params={"limit": 1})
-    if not r["ok"]:
-        return r
-    return {"ok": True, "base_url": _base()}
+    if r.get("ok"):
+        return {"ok": True, "base_url": _base(), "auth": scheme}
+    # Enrich auth errors with an actionable hint.
+    err = str(r.get("error", ""))
+    out = {**r, "auth": scheme, "base_url": _base()}
+    if err.startswith("http 401") or err.startswith("http 403"):
+        if scheme == "basic":
+            out["hint"] = ("Using BASIC auth (User field is filled). A Personal "
+                           "Access Token must be sent as Bearer — clear the User "
+                           "field to use the token directly. Only fill User for "
+                           "username+password basic auth.")
+        else:
+            out["hint"] = ("Bearer/PAT rejected. Check the token is a Confluence "
+                           "Personal Access Token (not an API key/password), not "
+                           "expired, and has read scope; and that Base URL has no "
+                           "extra context path (e.g. trailing /wiki is Cloud only).")
+    return out
 
 
 __all__ = ["confluence_search", "confluence_read", "confluence_create",

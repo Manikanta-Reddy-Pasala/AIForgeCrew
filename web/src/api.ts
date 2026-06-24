@@ -375,7 +375,7 @@ export const integrationsApi = {
       body: JSON.stringify(cfg),
     }),
   testConfluence: () =>
-    j<{ ok: boolean; base_url?: string; error?: string; detail?: string }>(
+    j<{ ok: boolean; base_url?: string; auth?: string; error?: string; detail?: string; hint?: string }>(
       '/integrations/confluence/test', { method: 'POST' }),
 };
 
