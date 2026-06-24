@@ -104,7 +104,18 @@ def _request(method: str, path: str, *, params: dict | None = None,
             detail = exc.read(2000).decode("utf-8", "replace")
         except Exception:  # noqa: BLE001
             pass
-        return {"ok": False, "error": f"http {exc.code}", "detail": detail[:500]}
+        out = {"ok": False, "error": f"http {exc.code}", "detail": detail[:500]}
+        # Confluence DC explains an auth denial in these response headers
+        # (CAPTCHA challenge, expired/invalid token, SSO, etc.).
+        try:
+            for hk in ("X-Authentication-Denied-Reason", "WWW-Authenticate",
+                       "X-Seraph-LoginReason"):
+                hv = exc.headers.get(hk)
+                if hv:
+                    out.setdefault("denied_reason", f"{hk}: {hv}")
+        except Exception:  # noqa: BLE001
+            pass
+        return out
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
     text = raw[:_BODY_CAP].decode("utf-8", "replace")

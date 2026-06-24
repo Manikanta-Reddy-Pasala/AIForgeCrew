@@ -919,8 +919,10 @@ function ConfluenceCard() {
     try {
       const r = await integrationsApi.testConfluence();
       if (r.ok) toast.success(`Connected to ${r.base_url || 'Confluence'} (${r.auth} auth)`);
-      else if (r.hint) toast.error(`${r.error || 'Test failed'} — ${r.hint}`, { duration: 12000 });
-      else toast.error(`Test failed: ${r.error || ''}${r.detail ? ` — ${r.detail}` : ''}`);
+      else {
+        const extra = r.denied_reason ? ` [${r.denied_reason}]` : (r.detail ? ` — ${r.detail}` : '');
+        toast.error(`${r.error || 'Test failed'} (${r.auth} auth)${extra}${r.hint ? ` — ${r.hint}` : ''}`, { duration: 14000 });
+      }
     } catch (e: any) {
       toast.error(`Test failed: ${e.message}`);
     } finally { setBusy(false); }
