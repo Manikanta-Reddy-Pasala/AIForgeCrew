@@ -104,3 +104,18 @@ def test_fetch_rejects_non_http():
 
 def test_fetch_requires_url():
     assert ws.web_fetch({})["error"] == "missing 'url'"
+
+
+def test_search_block_without_snippet_does_not_bleed(monkeypatch):
+    # First result has NO snippet; the second result's snippet must NOT be
+    # mis-attributed to the first (the old two-findall zip would desync here).
+    page = (
+        '<a class="result__a" href="https://first.example/x">First</a>'
+        '<a class="result__a" href="https://second.example/y">Second</a>'
+        '<a class="result__snippet">snippet for second</a>'
+    )
+    _mock(monkeypatch, page)
+    out = ws.web_search({"query": "x"})
+    assert out["results"][0]["url"] == "https://first.example/x"
+    assert out["results"][0]["snippet"] == ""                    # no bleed
+    assert out["results"][1]["snippet"] == "snippet for second"

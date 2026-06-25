@@ -110,17 +110,21 @@ def web_search(args: dict, cwd: str | None = None) -> dict:
             OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}
 
-    titles = _RESULT_A.findall(body)
-    snippets = [_strip_tags(s) for s in _SNIPPET.findall(body)]
+    # Pair each result link with the snippet that falls BETWEEN it and the
+    # next result link — robust even when a block has no snippet (ads /
+    # zero-click cards), unlike two independent findall lists that desync.
+    matches = list(_RESULT_A.finditer(body))
     results: list[dict] = []
-    for i, (href, title_html) in enumerate(titles):
-        title = _strip_tags(title_html)
+    for idx, m in enumerate(matches):
+        title = _strip_tags(m.group(2))
         if not title:
             continue
+        next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        sm = _SNIPPET.search(body, m.end(), next_start)
         results.append({
             "title": title,
-            "url": _ddg_real_url(href),
-            "snippet": snippets[i] if i < len(snippets) else "",
+            "url": _ddg_real_url(m.group(1)),
+            "snippet": _strip_tags(sm.group(1)) if sm else "",
         })
         if len(results) >= limit:
             break
