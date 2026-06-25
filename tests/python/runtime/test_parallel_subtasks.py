@@ -189,3 +189,22 @@ def test_inflight_guard_rejects_second_run(monkeypatch):
         assert r["ok"] is False and "already running" in r["error"]
     finally:
         ps._INFLIGHT.discard(999)
+
+
+def test_parallel_does_not_mutate_global_ticket_env(monkeypatch, tmp_path):
+    """Cross-ticket safety: the parallel path must NOT write the process-global
+    AIFORGE_CURRENT_TICKET (two different tickets would clobber each other)."""
+    import os
+    from aiforge_core.tickets import subtasks as st
+    monkeypatch.setattr(st, "get_subtasks", lambda tid: [{"slug": "a", "goal": "a"}])
+    monkeypatch.setattr(ps, "ensure_branch_and_worktree", lambda t: None, raising=False)
+    # patch the imported name inside the function via the workspace module
+    import aiforge_core.runtime.workspace as ws
+    monkeypatch.setattr(ws, "ensure_branch_and_worktree", lambda t: None)
+    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "ONE-SENTINEL")
+
+    class T:
+        id = 4242
+        identifier = "ONE-4242"
+    ps.run_subtasks_parallel(T())                    # returns early (no worktree)
+    assert os.environ["AIFORGE_CURRENT_TICKET"] == "ONE-SENTINEL"  # untouched

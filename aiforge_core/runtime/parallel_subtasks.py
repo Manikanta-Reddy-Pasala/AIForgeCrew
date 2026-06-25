@@ -352,8 +352,6 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         if tid in _INFLIGHT:
             return {"ok": False, "error": "already running for this ticket"}
         _INFLIGHT.add(tid)
-    ident = getattr(ticket, "identifier", "") or ""
-    prev_ct = os.environ.get("AIFORGE_CURRENT_TICKET")
     try:
         wt = ensure_branch_and_worktree(ticket)
         if not wt:
@@ -363,10 +361,13 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         # orchestration relative to wt so merges land on the right branch.
         cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], wt)
         base_branch = (cur.stdout or "").strip() or "HEAD"
-        # Expose the ticket so the per-subtask Doer's subtask_update tool
-        # targets THIS ticket (the worker threads share this process env).
-        if ident:
-            os.environ["AIFORGE_CURRENT_TICKET"] = ident
+        # NOTE: we do NOT touch the process-global AIFORGE_CURRENT_TICKET here.
+        # That env is shared across the whole process, so setting it would let
+        # a second (different-ticket) concurrent run clobber it and mis-route
+        # subtask updates. The orchestrator tracks each subtask's status with
+        # an EXPLICIT ticket_id (run_parallel arg → _update) — thread-safe, no
+        # global state. The per-subtask Doer's focused prompt has no subtickets
+        # array, so it never calls the env-based subtask_update tool.
         agg = run_parallel(wt, base_branch, getattr(ticket, "id", None),
                            subs, run_one or default_run_one,
                            validate_one=default_validate_one,
@@ -376,11 +377,6 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
               ("total", "done", "validated", "failed", "merged", "conflicts")})
         return agg
     finally:
-        # restore the prior current-ticket env so it can't leak to a later run
-        if prev_ct is None:
-            os.environ.pop("AIFORGE_CURRENT_TICKET", None)
-        else:
-            os.environ["AIFORGE_CURRENT_TICKET"] = prev_ct
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(tid)
 
