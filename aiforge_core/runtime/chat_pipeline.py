@@ -231,6 +231,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 pass
             final = ""
             by_role: dict[str, str] = {}
+            emitted_subtasks = False
             agen = runner.run_async(**kw)
             async for event in agen:
                 if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -257,6 +258,23 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                     # JSON, which runs last and would otherwise win.
                     if ev.get("type") == "thought" and ev.get("role") and ev.get("text"):
                         by_role[ev["role"]] = ev["text"]
+                        # When the Planner decomposes a big task, surface the
+                        # subtasks as a live task list in the chat UI (chat is
+                        # ticketless, so this is ephemeral — the managed chart +
+                        # parallel execution live on a ticket).
+                        if ev["role"] == "planner" and not emitted_subtasks:
+                            try:
+                                from .subtasks_callback import _extract_subtickets
+                                subs = _extract_subtickets(ev["text"])
+                            except Exception:  # noqa: BLE001
+                                subs = []
+                            if subs:
+                                emitted_subtasks = True
+                                q.put({"type": "subtasks", "items": [
+                                    {"slug": s.get("slug") or f"sub-{i+1}",
+                                     "goal": s.get("goal") or s.get("title") or "",
+                                     "status": "pending"}
+                                    for i, s in enumerate(subs)]})
                 t = _event_text(event)
                 if t:
                     final = t

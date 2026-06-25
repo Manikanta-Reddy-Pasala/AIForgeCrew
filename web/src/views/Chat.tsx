@@ -11,6 +11,8 @@ type AgentStep =
   | { kind: 'tool'; name: string; args: object; result: object; role?: string }
   | { kind: 'error'; text: string; role?: string };
 
+type SubtaskItem = { slug: string; goal: string; status: string };
+
 // A "live" turn: the in-progress assistant turn while streaming.
 type LiveTurn = {
   role: 'assistant';
@@ -19,7 +21,34 @@ type LiveTurn = {
   streaming: boolean;
   elapsedSec?: number;
   awaiting?: boolean;   // agent asked a question — waiting for your reply
+  subtasks?: SubtaskItem[];   // Planner decomposition (team mode)
 };
+
+const SUBTASK_COLORS: Record<string, string> = {
+  done: '#3fb950', skipped: '#5a6472', running: '#6aa6ff',
+  failed: '#e5534b', pending: '#8892a0',
+};
+
+function SubtaskList({ items }: { items: SubtaskItem[] }) {
+  const done = items.filter(s => s.status === 'done' || s.status === 'skipped').length;
+  return (
+    <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '8px 10px', margin: '6px 0', background: 'var(--bg-1,#0d1117)' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+        Plan → {items.length} subtasks <span style={{ color: '#8892a0' }}>({done}/{items.length} done)</span>
+      </div>
+      {items.map((s, i) => (
+        <div key={s.slug || i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '2px 0' }}>
+          <span style={{ flexShrink: 0, width: 58, textAlign: 'center', fontSize: 10, fontWeight: 600,
+            color: SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending,
+            border: `1px solid ${SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending}`, borderRadius: 4, padding: '1px 3px' }}>{s.status}</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ color: '#8892a0', fontFamily: 'monospace', marginRight: 6 }}>{s.slug}</span>{s.goal}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ── Elapsed time formatter ────────────────────────────────────────────────────
 
@@ -480,6 +509,13 @@ export default function Chat() {
 
         setLiveTurn(prev => {
           if (!prev) return prev;
+          if (evt.type === 'subtasks') {
+            return { ...prev, subtasks: evt.items || [] };
+          }
+          if (evt.type === 'subtask_update' && prev.subtasks) {
+            return { ...prev, subtasks: prev.subtasks.map(s =>
+              s.slug === evt.slug ? { ...s, status: evt.status } : s) };
+          }
           if (evt.type === 'thought') {
             return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
           }
@@ -841,6 +877,7 @@ export default function Chat() {
                       steps={liveTurn.steps}
                       streaming={liveTurn.streaming}
                       elapsedSec={liveTurn.streaming ? elapsedSec : liveTurn.elapsedSec}
+                      subtasks={liveTurn.subtasks}
                     />
                     {liveTurn.awaiting && (
                       <div style={{
@@ -991,14 +1028,17 @@ function AssistantBubble({
   steps,
   streaming,
   elapsedSec,
+  subtasks,
 }: {
   text: string;
   steps: AgentStep[];
   streaming: boolean;
   elapsedSec?: number;
+  subtasks?: SubtaskItem[];
 }) {
   return (
     <div>
+      {subtasks && subtasks.length > 0 && <SubtaskList items={subtasks} />}
       {steps.length > 0 && (
         <div style={{ marginBottom: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
           {steps.map((s, i) => (
