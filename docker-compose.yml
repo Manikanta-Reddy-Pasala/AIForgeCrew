@@ -117,6 +117,10 @@ services:
       # at a PEM to keep verification ON. Default secure (verify).
       AIFORGE_LLM_SSL_VERIFY: ${AIFORGE_LLM_SSL_VERIFY:-true}
       AIFORGE_LLM_CA_BUNDLE: ${AIFORGE_LLM_CA_BUNDLE:-}
+      # Chat team mode: lean=1 skips the researcher + ctx_conventions fan-out so
+      # the run reaches the Planner (+ the subtask decomposition the UI charts)
+      # fast on slower local models. 0 = full context (richer splits, slower).
+      AIFORGE_CHAT_LEAN: ${AIFORGE_CHAT_LEAN:-0}
       AIFORGE_CONFIG_DIR: /data/aiforge
     volumes:
       - app_state:/data/aiforge
