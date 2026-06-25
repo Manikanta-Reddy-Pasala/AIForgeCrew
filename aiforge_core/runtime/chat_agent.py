@@ -590,6 +590,27 @@ def _change_diff(old: str, new: str, label: str) -> str:
     return _fence(d[:4000], "diff") if d.strip() else "_(no change)_"
 
 
+def _fetch_current(fn, args: dict, cwd: str, timeout: float = 4.0) -> dict:
+    """Best-effort fetch of an item's CURRENT state for the approval diff,
+    HARD-bounded so a slow/down integration API can't stall the approval gate
+    (the tool's own 20s read timeout is too long to block the operator). Runs
+    the read in a worker thread and abandons it after ``timeout`` seconds —
+    the preview then just shows the new content with no diff."""
+    import concurrent.futures
+    # NOTE: a `with ThreadPoolExecutor()` block would call shutdown(wait=True)
+    # on exit and re-block until the (possibly hung) read finished — defeating
+    # the timeout. Shut down WITHOUT waiting so we return immediately; the
+    # worker thread finishes on its own (bounded by the tool's own 20s read).
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        r = ex.submit(fn, args, cwd).result(timeout=timeout)
+        return r if isinstance(r, dict) and r.get("ok") else {}
+    except Exception:  # noqa: BLE001 — timeout / read error → no diff, not a stall
+        return {}
+    finally:
+        ex.shutdown(wait=False)
+
+
 def _diff_preview(tool: str, args: dict, cwd: str) -> str:
     """Markdown preview of a mutating action for the approval gate.
 
@@ -630,14 +651,9 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
         if tool == "confluence_update":
             pid = args.get("id", "?")
             new_md = _xhtml_to_md(str(args.get("body", "")))
-            cur_md = ""
-            try:
-                from aiforge_core.runtime.tools import confluence
-                cur = confluence.confluence_read({"id": pid}, cwd)
-                if isinstance(cur, dict) and cur.get("ok"):
-                    cur_md = _xhtml_to_md(str(cur.get("body") or ""))
-            except Exception:  # noqa: BLE001
-                pass
+            from aiforge_core.runtime.tools import confluence
+            cur = _fetch_current(confluence.confluence_read, {"id": pid}, cwd)
+            cur_md = _xhtml_to_md(str(cur.get("body") or "")) if cur else ""
             out = f"### Update Confluence page `{pid}`\n\n"
             if args.get("title"):
                 out += f"**New title:** {args['title']}\n\n"
@@ -658,14 +674,8 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
             return md
         if tool == "jira_update":
             key = args.get("key", "?")
-            cur: dict = {}
-            try:
-                from aiforge_core.runtime.tools import jira
-                r = jira.jira_read({"key": key}, cwd)
-                if isinstance(r, dict) and r.get("ok"):
-                    cur = r
-            except Exception:  # noqa: BLE001
-                pass
+            from aiforge_core.runtime.tools import jira
+            cur = _fetch_current(jira.jira_read, {"key": key}, cwd)
             md = f"### Update Jira issue `{key}`\n\n"
             if args.get("summary"):
                 md += (f"**Summary:** {cur.get('summary', '(current)')} "
@@ -692,14 +702,8 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
             return md
         if tool == "gitlab_update":
             proj, iid = args.get("project", "?"), args.get("iid", "?")
-            cur = {}
-            try:
-                from aiforge_core.runtime.tools import gitlab
-                r = gitlab.gitlab_read({"project": proj, "iid": iid}, cwd)
-                if isinstance(r, dict) and r.get("ok"):
-                    cur = r
-            except Exception:  # noqa: BLE001
-                pass
+            from aiforge_core.runtime.tools import gitlab
+            cur = _fetch_current(gitlab.gitlab_read, {"project": proj, "iid": iid}, cwd)
             md = f"### Update GitLab issue `{proj}#{iid}`\n\n"
             if args.get("title"):
                 md += (f"**Title:** {cur.get('title', '(current)')} "

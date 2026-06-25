@@ -62,13 +62,12 @@ def http_request(method: str, url: str, *, headers: dict,
         except Exception:  # noqa: BLE001
             pass
         out = {"ok": False, "error": f"http {exc.code}", "detail": detail[:500]}
-        for hk in capture_headers:
-            try:
-                hv = exc.headers.get(hk)
-            except Exception:  # noqa: BLE001
-                hv = None
-            if hv:
-                out.setdefault("denied_reason", f"{hk}: {hv}")
+        hdrs = getattr(exc, "headers", None)
+        if hdrs is not None:
+            for hk in capture_headers:
+                hv = hdrs.get(hk)
+                if hv:
+                    out.setdefault("denied_reason", f"{hk}: {hv}")
         return out
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         return {"ok": False, "error": str(exc)}

@@ -400,90 +400,99 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
     out_files: list[str] = []
     summarized_files: list[str] = []
     moved = 0
+
+    # ── Phase 1: build each group's body OUTSIDE the write lock ──────────
+    # The LLM summarisation here can take minutes; holding _WRITE_LOCK across
+    # it would freeze every concurrent chat-turn memory write
+    # (upsert_section / append_bullet / write). Only the file archive+write
+    # (Phase 2) needs the lock.
+    prepared: list[dict] = []
+    for key, items in sorted(planned.items()):
+        items.sort(key=lambda d: d.get("created") or "")
+        all_tags = sorted({t for d in items for t in d.get("tags") or []})
+        title = f"{key.replace('-', ' ').strip().capitalize()} memory (compacted)"
+        stem = f"compacted-{_slug(key)}"
+        path = memory_dir() / f"{stem}.md"
+
+        # Existing consolidated body (re-compaction) — fed back so it gets
+        # RE-SUMMARISED with the new notes, keeping the file bounded.
+        existing_body = ""
+        if path.exists():
+            prev = path.read_text(encoding="utf-8", errors="replace")
+            pm = _FM_RE.match(prev)
+            existing_body = (pm.group(2).strip() if pm else prev.strip())
+
+        sections, blocks = [], []
+        if existing_body:
+            blocks.append("### (previous consolidated)\n\n" + existing_body)
+        for d in items:
+            meta = (f"_source: {d.get('source') or 'manual'} · "
+                    f"created: {d.get('created') or '?'}_")
+            sections.append(
+                f"## {d['title']}\n\n{meta}\n\n"
+                f"{_demote_headings(d['body']).strip()}".rstrip())
+            blocks.append(f"### {d['title']}\n\n{d['body'].strip()}")
+        merged_prefix = (existing_body + "\n\n---\n\n") if existing_body \
+            else f"# {title}\n\n"
+        merged_body = merged_prefix + "\n\n---\n\n".join(sections)
+
+        body = None
+        did_summarize = False
+        if summarize:
+            summary = _summarize_notes(blocks, model_role)   # SLOW — no lock held
+            if summary:
+                body = f"# {title}\n\n{summary}"
+                did_summarize = True
+        if body is None:
+            body = merged_body
+            # Bound the deterministic-merge fallback so an always-down model
+            # can't grow the file every run (the "file too big" problem).
+            # Keep head + most-recent content; originals stay in archive/.
+            if len(body) > _COMPACT_BODY_CAP:
+                head = f"# {title}\n\n"
+                keep = max(1000, _COMPACT_BODY_CAP - len(head) - 80)  # never negative
+                body = (head + "_…older entries trimmed (kept in archive/); "
+                        "configure a model so compaction can summarise._\n\n"
+                        "---\n\n" + body[-keep:])
+
+        fm = (
+            "---\n"
+            f"title: {title}\n"
+            "kind: compacted\n"
+            f"tags: {', '.join(all_tags)}\n"
+            f"source: compacted:{stem}\n"
+            f"created: {_now_iso()}\n"
+            f"count: {len(items)}\n"
+            f"summarized: {str(did_summarize).lower()}\n"
+            "---\n\n"
+        )
+        prepared.append({"items": items, "path": path, "stem": stem,
+                         "tags": all_tags, "content": fm + body.strip() + "\n",
+                         "summarized": did_summarize})
+
+    # ── Phase 2: archive originals + write consolidated files UNDER lock ──
     with _WRITE_LOCK:
         archive.mkdir(parents=True, exist_ok=True)
-        for key, items in sorted(planned.items()):
-            items.sort(key=lambda d: d.get("created") or "")
-            created = _now_iso()
-            all_tags = sorted({t for d in items for t in d.get("tags") or []})
-            title = f"{key.replace('-', ' ').strip().capitalize()} memory (compacted)"
-            stem = f"compacted-{_slug(key)}"
-            path = memory_dir() / f"{stem}.md"
-
-            # Existing consolidated body (re-compaction) — pulled in so its
-            # content is RE-SUMMARISED with the new notes, keeping the file
-            # bounded instead of ever-growing.
-            existing_body = ""
-            if path.exists():
-                prev = path.read_text(encoding="utf-8", errors="replace")
-                pm = _FM_RE.match(prev)
-                existing_body = (pm.group(2).strip() if pm else prev.strip())
-
-            # Deterministic merge — the fallback body + the LLM input blocks.
-            sections = []
-            blocks = []
-            if existing_body:
-                blocks.append("### (previous consolidated)\n\n" + existing_body)
-            for d in items:
-                meta = (f"_source: {d.get('source') or 'manual'} · "
-                        f"created: {d.get('created') or '?'}_")
-                sections.append(
-                    f"## {d['title']}\n\n{meta}\n\n"
-                    f"{_demote_headings(d['body']).strip()}".rstrip())
-                blocks.append(f"### {d['title']}\n\n{d['body'].strip()}")
-            merged_prefix = (existing_body + "\n\n---\n\n") if existing_body \
-                else f"# {title}\n\n"
-            merged_body = merged_prefix + "\n\n---\n\n".join(sections)
-
-            # Preferred: LLM consolidation (small, deduped). Falls back to the
-            # deterministic merge when no model is reachable.
-            body = None
-            did_summarize = False
-            if summarize:
-                summary = _summarize_notes(blocks, model_role)
-                if summary:
-                    body = f"# {title}\n\n{summary}"
-                    did_summarize = True
-            if body is None:
-                body = merged_body
-                # Bound the deterministic-merge fallback. When the LLM is
-                # never reachable, re-compaction keeps folding the prior
-                # consolidated body back in → the file would grow every run
-                # (the exact "file too big" problem summarization solves).
-                # Cap it: keep the head + the most RECENT content (newest
-                # sections are last) and flag the trim. Originals stay in
-                # archive/, so nothing is lost.
-                if len(body) > _COMPACT_BODY_CAP:
-                    head = f"# {title}\n\n"
-                    tail = body[-(_COMPACT_BODY_CAP - len(head) - 80):]
-                    body = (head + "_…older entries trimmed (kept in archive/); "
-                            "configure a model so compaction can summarise._\n\n"
-                            "---\n\n" + tail)
-
-            fm = (
-                "---\n"
-                f"title: {title}\n"
-                "kind: compacted\n"
-                f"tags: {', '.join(all_tags)}\n"
-                f"source: compacted:{stem}\n"
-                f"created: {created}\n"
-                f"count: {len(items)}\n"
-                f"summarized: {str(did_summarize).lower()}\n"
-                "---\n\n"
-            )
-            for d in items:
+        for p in prepared:
+            for d in p["items"]:
                 try:
                     shutil.move(str(d["_path"]), str(archive / d["file"]))
                     moved += 1
                 except Exception:  # noqa: BLE001
                     pass
-            path.write_text(fm + body.strip() + "\n", encoding="utf-8")
-            out_files.append(path.name)
-            if did_summarize:
-                summarized_files.append(path.name)
-            doc = _parse(path)
+            p["path"].write_text(p["content"], encoding="utf-8")
+            out_files.append(p["path"].name)
+            if p["summarized"]:
+                summarized_files.append(p["path"].name)
+
+    # ── Phase 3: re-ingest into the search backend (outside the lock) ────
+    for p in prepared:
+        try:
+            doc = _parse(p["path"])
             _ingest_unit(title=doc["title"], body=doc["body"], kind="compacted",
-                         tags=all_tags, source=f"compacted:{stem}", repo="notes")
+                         tags=p["tags"], source=f"compacted:{p['stem']}", repo="notes")
+        except Exception:  # noqa: BLE001
+            pass
 
     return {
         "ok": True, "dry_run": False, "group_by": group_by,

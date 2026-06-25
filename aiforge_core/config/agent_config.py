@@ -418,8 +418,13 @@ def load_all() -> dict[str, dict[str, Any]]:
                                 else (same_provider
                                       and bool(seed.get("insecure_tls")))),
                         }
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Corrupt / truncated agent_config.json → fall back to defaults,
+            # but say so once (silent fallback made "my config vanished"
+            # impossible to diagnose).
+            logging.getLogger("aiforge.agent_config").warning(
+                "agent_config.json unreadable (%s) — using defaults; "
+                "fix or reset the file (run.sh --reset-config).", exc)
     # Env override: AIFORGE_<ROLE>_MODEL / AIFORGE_<ROLE>_PROVIDER /
     # AIFORGE_<ROLE>_BASE_URL / AIFORGE_<ROLE>_API_KEY. Always wins over
     # persisted JSON — ops escape hatch.
