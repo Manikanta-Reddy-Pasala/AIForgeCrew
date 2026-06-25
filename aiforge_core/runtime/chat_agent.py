@@ -540,8 +540,7 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "skill_search", "confluence_search", "confluence_read",
                    "jira_search", "jira_read",
                    "gitlab_search", "gitlab_read",
-                   "web_search", "web_fetch",
-                   "skill_search", "workflow_search")
+                   "web_search", "web_fetch", "workflow_search")
 
 _PLAN_BANNER = (
     "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
@@ -636,7 +635,7 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                 from aiforge_core.runtime.tools import confluence
                 cur = confluence.confluence_read({"id": pid}, cwd)
                 if isinstance(cur, dict) and cur.get("ok"):
-                    cur_md = _xhtml_to_md(str(cur.get("body", "")))
+                    cur_md = _xhtml_to_md(str(cur.get("body") or ""))
             except Exception:  # noqa: BLE001
                 pass
             out = f"### Update Confluence page `{pid}`\n\n"
@@ -676,7 +675,7 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                     md += f"**{k.capitalize()}:** {args[k]}\n\n"
             if args.get("description") is not None:
                 md += ("**Description changes:**\n\n"
-                       + _change_diff(str(cur.get("description", "")),
+                       + _change_diff(str(cur.get("description") or ""),
                                       str(args["description"]), "description"))
             return md
         if tool == "jira_comment":
@@ -710,7 +709,7 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                     md += f"**{k.replace('_', ' ').capitalize()}:** {args[k]}\n\n"
             if args.get("description") is not None:
                 md += ("**Description changes:**\n\n"
-                       + _change_diff(str(cur.get("description", "")),
+                       + _change_diff(str(cur.get("description") or ""),
                                       str(args["description"]), "description"))
             return md
         if tool == "gitlab_comment":

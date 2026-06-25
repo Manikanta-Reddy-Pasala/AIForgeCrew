@@ -274,6 +274,8 @@ _SUMMARY_SYS = (
     "no surrounding code fence."
 )
 _SUMMARY_INPUT_CAP = 28_000     # chars of notes per LLM call (map-reduce above)
+_COMPACT_BODY_CAP = 60_000      # max chars of a deterministic-merge consolidated
+                                # file (bounds growth when no model is reachable)
 
 
 def _summarize_block(text: str, role: str) -> str | None:
@@ -444,6 +446,19 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                     did_summarize = True
             if body is None:
                 body = merged_body
+                # Bound the deterministic-merge fallback. When the LLM is
+                # never reachable, re-compaction keeps folding the prior
+                # consolidated body back in → the file would grow every run
+                # (the exact "file too big" problem summarization solves).
+                # Cap it: keep the head + the most RECENT content (newest
+                # sections are last) and flag the trim. Originals stay in
+                # archive/, so nothing is lost.
+                if len(body) > _COMPACT_BODY_CAP:
+                    head = f"# {title}\n\n"
+                    tail = body[-(_COMPACT_BODY_CAP - len(head) - 80):]
+                    body = (head + "_…older entries trimmed (kept in archive/); "
+                            "configure a model so compaction can summarise._\n\n"
+                            "---\n\n" + tail)
 
             fm = (
                 "---\n"

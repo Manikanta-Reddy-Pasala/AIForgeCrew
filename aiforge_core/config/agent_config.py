@@ -539,14 +539,18 @@ def reset(*, keep_default: bool = False) -> dict:
             return {"ok": True, "removed": False, "path": str(p),
                     "note": "no saved config to reset"}
         if keep_default:
+            # NEVER delete the file in keep_default mode — strip only the
+            # per-role rows, preserving the global _default (write back an
+            # empty/`{}` map when there was no _default, so the request is
+            # honoured exactly rather than nuking everything).
             try:
                 disk = json.loads(p.read_text()) or {}
             except Exception:  # noqa: BLE001
                 disk = {}
             kept = {k: v for k, v in disk.items() if k == _DEFAULT_KEY}
-            if kept:
-                p.write_text(json.dumps(kept, indent=2))
-                return {"ok": True, "removed": "per-role rows", "path": str(p)}
+            p.write_text(json.dumps(kept, indent=2))
+            return {"ok": True, "removed": "per-role rows", "path": str(p),
+                    "kept_default": bool(kept)}
         try:
             p.unlink()
         except Exception as exc:  # noqa: BLE001
