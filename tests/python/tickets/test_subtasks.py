@@ -76,3 +76,24 @@ def test_callback_skips_noop_replan(env, monkeypatch):
     asyncio.run(callback(callback_context=Ctx(plan)))
     cur = {s["slug"]: s["status"] for s in subtasks.get_subtasks(t.id)}
     assert cur["a"] == "done", "no-op replan wiped progress"
+
+
+def test_extract_subtickets_from_markdown_phases():
+    from aiforge_core.runtime.subtasks_callback import _extract_subtickets
+    # planner often writes phases as numbered markdown in plan_md, not a
+    # subtickets JSON array — must still decompose.
+    plan = ('{"plan_md": "## Plan\\n### Phases (5)\\n'
+            '1. **Project Init** — scaffold layout.\\n'
+            '2. **DB Models** — define Url entity.\\n'
+            '3. **Base62** — slug helpers.\\n'
+            '4. **Routers** — POST /shorten, GET /{slug}.\\n'
+            '5. **Tests** — pytest suite."}')
+    subs = _extract_subtickets(plan)
+    assert len(subs) == 5
+    assert subs[0]["slug"] == "project-init"
+    assert "scaffold" in subs[0]["goal"]
+    # structured JSON array still takes priority
+    assert len(_extract_subtickets('{"subtickets":[{"slug":"a","goal":"x"}'
+                                    ',{"slug":"b","goal":"y"}]}')) == 2
+    # a lone numbered line in prose is NOT a decomposition
+    assert _extract_subtickets('{"plan_md":"do step 1. now"}') == []

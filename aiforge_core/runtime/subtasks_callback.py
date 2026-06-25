@@ -36,9 +36,52 @@ def _extract_subtickets(plan: object) -> list[dict]:
             except Exception:  # noqa: BLE001
                 return []
     if not isinstance(obj, dict):
-        return []
+        # A bare markdown plan with no JSON wrapper — still try the phases.
+        return _phases_from_markdown(str(plan)) if isinstance(plan, str) else []
     subs = obj.get("subtickets")
-    return [s for s in subs if isinstance(s, dict)] if isinstance(subs, list) else []
+    if isinstance(subs, list) and subs:
+        out = [s for s in subs if isinstance(s, dict)]
+        if out:
+            return out
+    # Fallback: the model often writes the breakdown as a NUMBERED MARKDOWN list
+    # inside plan_md ("1. **Title** — desc") instead of a subtickets array.
+    # Parse those phases so the subtask panel shows regardless of format.
+    return _phases_from_markdown(str(obj.get("plan_md") or ""))
+
+
+# "1. **Title** — description"  /  "2. Title: description"  /  "3) Title"
+_PHASE_RE = re.compile(
+    r"^\s*\d+[.)]\s+(?:\*\*(?P<t1>[^*]+?)\*\*|(?P<t2>[^:—\-\n]+?))"
+    r"(?:\s*[—:\-]\s*(?P<desc>.+))?$",
+    re.MULTILINE)
+
+
+def _slugify(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s[:40] or "step"
+
+
+def _phases_from_markdown(md: str) -> list[dict]:
+    """Extract numbered phases from a markdown plan body as subtasks."""
+    if not md:
+        return []
+    out: list[dict] = []
+    seen: set = set()
+    for m in _PHASE_RE.finditer(md):
+        title = (m.group("t1") or m.group("t2") or "").strip().strip("*` ")
+        desc = (m.group("desc") or "").strip().strip("*` ")
+        if not title or len(title) > 120:
+            continue
+        slug = _slugify(title)
+        if slug in seen:
+            continue
+        seen.add(slug)
+        out.append({"slug": slug, "goal": desc or title})
+        if len(out) >= 12:        # cap — a plan shouldn't have 20+ phases
+            break
+    # Require >=2 phases to treat it as a real decomposition (avoid a lone
+    # numbered line in prose becoming a "1-subtask" plan).
+    return out if len(out) >= 2 else []
 
 
 def make_planner_subtasks_callback():
