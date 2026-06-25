@@ -201,8 +201,15 @@ def _quiet_adk_tracebacks() -> None:
     """
     if _truthy_env("AIFORGE_ADK_TRACEBACKS"):
         return
+    # Every ADK logger that dumps a full chained stack on a recoverable /
+    # already-surfaced failure: the workflow node runner, the top-level
+    # runner ("Root node X failed.", exc_info=True), and the tool-call flow
+    # ("Error in event_id ...", logger.exception). Each filter runs at emit
+    # time on its originating logger, so the one-line message survives and
+    # only the redundant traceback is stripped.
     for name in ("google_adk.google.adk.workflow._node_runner",
-                 "google_adk.google.adk.flows.llm_flows.base_llm_flow"):
+                 "google_adk.google.adk.runners",
+                 "google_adk.google.adk.flows.llm_flows.functions"):
         lg = logging.getLogger(name)
         if not any(isinstance(f, _StripTracebackFilter) for f in lg.filters):
             lg.addFilter(_StripTracebackFilter())

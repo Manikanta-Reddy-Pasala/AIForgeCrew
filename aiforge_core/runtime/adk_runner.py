@@ -1416,8 +1416,18 @@ def _process_one_ticket() -> bool:
                  ticket.identifier, new_status, outcome)
 
     except Exception as exc:
-        log.exception("ticket=%s failed during ADK run: %s",
-                      ticket.identifier, exc)
+        # The concrete cause is already surfaced concisely upstream
+        # (EscalatingLlm's ``llm.exhausted`` / ``llm.attempt_failed`` lines).
+        # A full chained traceback here is redundant noise for the common
+        # case (flaky/down model). Log a meaningful one-liner; restore the
+        # raw stack with AIFORGE_ADK_TRACEBACKS=1 for novel failures.
+        if str(os.environ.get("AIFORGE_ADK_TRACEBACKS", "")).strip().lower() in (
+                "1", "true", "yes", "on"):
+            log.exception("ticket=%s failed during ADK run: %s",
+                          ticket.identifier, exc)
+        else:
+            log.error("ticket=%s failed during ADK run: %s: %s",
+                      ticket.identifier, type(exc).__name__, str(exc)[:400])
         # Even on ADK failure, the Doer may have written real files
         # before the orchestrator stalled. Surface that work as a draft PR for
         # human review instead of dropping it. The function
