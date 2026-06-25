@@ -51,14 +51,10 @@ for _envf in .env aiforge.env; do
   fi
 done
 
-# Also source the UI-persisted runtime overrides (~/.aiforge/runtime.env),
-# written by in-app toggles (LLM backend, Force full pipeline, …) so they
-# survive a restart. Project .env above wins for keys it sets (sourced first).
-_runtime_env="${AIFORGE_RUNTIME_ENV:-$HOME/.aiforge/runtime.env}"
-if [[ -f "$_runtime_env" ]]; then
-  echo "==> loading UI-persisted overrides from $_runtime_env"
-  set -a; . "$_runtime_env"; set +a
-fi
+# NOTE: ~/.aiforge/runtime.env (UI-persisted toggles) is intentionally NOT
+# sourced here — sourcing it would execute any shell metacharacters a value
+# contains. The API loads it itself with a plain KEY=VALUE parser at startup
+# (no shell eval), so the toggles still survive a restart, safely.
 
 # Secure-by-default: verification stays ON unless the env file flips it.
 # Exporting (without override) makes the value visible to the app + probe.

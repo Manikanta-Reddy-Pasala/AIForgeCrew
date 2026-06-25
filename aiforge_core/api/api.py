@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import UTC
 from typing import Any
 
@@ -68,6 +69,29 @@ def _ensure_skill_workflow_dirs() -> None:
     try:
         from aiforge_core.runtime import workflows
         workflows.ensure_dirs()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.on_event("startup")
+def _load_runtime_env() -> None:
+    """Restore UI-persisted toggles (runtime.env) into the process env on boot
+    using a plain KEY=VALUE parser — NOT a shell source — so a value can never
+    be executed. A real env var / project .env already in the environment WINS
+    (setdefault), keeping them the operator's explicit escape hatch."""
+    try:
+        path = _RUNTIME_ENV_PATH
+        if not os.path.isfile(path):
+            return
+        with open(path) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                if k and k not in os.environ:        # don't clobber real env/.env
+                    os.environ[k] = v.strip()
     except Exception:  # noqa: BLE001
         pass
 
@@ -737,31 +761,39 @@ def intervene(identifier: str, payload: dict) -> dict:
 _RUNTIME_ENV_PATH = os.path.expanduser(
     os.environ.get("AIFORGE_RUNTIME_ENV", "~/.aiforge/runtime.env")
 )
+_RUNTIME_ENV_LOCK = threading.Lock()
 
 
 def _persist_env(key: str, value: str) -> None:
-    """Upsert ``key=value`` into runtime.env so it survives a restart
-    (run.sh sources it). KISS: line-replace; preserves order. Creates the
-    file (and its dir) when absent — otherwise a UI toggle was silently lost
-    on the first persist because the file didn't exist yet."""
-    try:
-        os.makedirs(os.path.dirname(_RUNTIME_ENV_PATH), exist_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
-    lines: list[str] = []
-    if os.path.isfile(_RUNTIME_ENV_PATH):
-        with open(_RUNTIME_ENV_PATH) as _f:
-            lines = _f.read().splitlines()
-    found = False
-    for i, line in enumerate(lines):
-        if line.startswith(f"{key}="):
-            lines[i] = f"{key}={value}"
-            found = True
-            break
-    if not found:
-        lines.append(f"{key}={value}")
-    with open(_RUNTIME_ENV_PATH, "w") as f:
-        f.write("\n".join(lines) + "\n")
+    """Upsert ``key=value`` into runtime.env so it survives a restart (the API
+    reloads it with a plain KEY=VALUE parser at startup — see _load_runtime_env;
+    it is NOT shell-sourced). Line-replace, order-preserving. Creates the file
+    + dir when absent. Sanitises so the file stays a clean KEY=VALUE store:
+    keys restricted to env-name chars; CR/LF stripped from the value (a newline
+    could otherwise smuggle a second assignment into the file)."""
+    key = re.sub(r"[^A-Za-z0-9_]", "", str(key))
+    if not key:
+        return
+    value = str(value).replace("\r", " ").replace("\n", " ")
+    with _RUNTIME_ENV_LOCK:                       # serialize concurrent PUTs
+        try:
+            os.makedirs(os.path.dirname(_RUNTIME_ENV_PATH), exist_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+        lines: list[str] = []
+        if os.path.isfile(_RUNTIME_ENV_PATH):
+            with open(_RUNTIME_ENV_PATH) as _f:
+                lines = _f.read().splitlines()
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith(f"{key}="):
+                lines[i] = f"{key}={value}"
+                found = True
+                break
+        if not found:
+            lines.append(f"{key}={value}")
+        with open(_RUNTIME_ENV_PATH, "w") as f:
+            f.write("\n".join(lines) + "\n")
 
 
 @app.get("/api/runtime/token_usage")
