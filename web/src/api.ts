@@ -43,6 +43,8 @@ export const api = {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ body, author: 'human' }),
   }),
+  runParallel: (id: string) =>
+    j<{ started: boolean; subtasks: number }>(`/tickets/${id}/run-parallel`, { method: 'POST' }),
   memoryStats:  () => j<any>('/memory/stats'),
   memorySearch: (q: string, role = 'planner', topK = 12) =>
     j<any[]>(`/memory/search?q=${encodeURIComponent(q)}&role=${role}&top_k=${topK}`),

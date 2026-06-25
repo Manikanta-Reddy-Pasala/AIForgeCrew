@@ -83,7 +83,17 @@ export default function TicketDetail() {
       </div>
 
       {data.subtasks?.length > 0 && (
-        <SubtaskProgress subtasks={data.subtasks} progress={data.subtask_progress} />
+        <SubtaskProgress
+          subtasks={data.subtasks}
+          progress={data.subtask_progress}
+          onRunParallel={async () => {
+            try {
+              const r = await api.runParallel(id);
+              toast.success(`Running ${r.subtasks} subtasks in parallel…`);
+              qc.invalidateQueries({ queryKey: ['ticket', id] });
+            } catch (e: any) { toast.error(e.message); }
+          }}
+        />
       )}
 
       <div className="row" style={{ gap: 8, marginBottom: 12 }}>
@@ -795,12 +805,13 @@ const SUBTASK_COLORS: Record<string, string> = {
 };
 
 function SubtaskProgress(
-  { subtasks, progress }:
-  { subtasks: any[]; progress?: { total: number; done: number; fraction: number; counts: Record<string, number> } },
+  { subtasks, progress, onRunParallel }:
+  { subtasks: any[]; progress?: { total: number; done: number; fraction: number; counts: Record<string, number> }; onRunParallel?: () => void },
 ) {
   const total = progress?.total ?? subtasks.length;
   const done = progress?.done ?? 0;
   const counts = progress?.counts ?? {};
+  const anyRunning = (counts['running'] || 0) > 0;
   // ordered segments for the stacked bar
   const order = ['done', 'skipped', 'running', 'failed', 'pending'];
   return (
@@ -809,12 +820,18 @@ function SubtaskProgress(
         <h2 style={{ fontSize: 14, margin: 0 }}>
           Subtasks <span className="muted">({done}/{total} done)</span>
         </h2>
-        <div className="row" style={{ gap: 8, fontSize: 'var(--fs-xs)' }}>
+        <div className="row" style={{ gap: 10, fontSize: 'var(--fs-xs)', alignItems: 'center' }}>
           {order.filter(k => counts[k]).map(k => (
             <span key={k} style={{ color: SUBTASK_COLORS[k] }}>
               ● {k} {counts[k]}
             </span>
           ))}
+          {onRunParallel && done < total && (
+            <button className="ghost sm" onClick={onRunParallel} disabled={anyRunning}
+                    title="Run the subtasks concurrently, each in its own worktree, then merge">
+              {anyRunning ? 'Running…' : '⇉ Run in parallel'}
+            </button>
+          )}
         </div>
       </div>
       {/* stacked progress bar */}

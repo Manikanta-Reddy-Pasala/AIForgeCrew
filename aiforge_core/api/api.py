@@ -687,6 +687,31 @@ def override_route(identifier: str, payload: RouteUpdate) -> dict:
     })
 
 
+@app.post("/api/tickets/{identifier}/run-parallel", status_code=202)
+def run_subtasks_parallel(identifier: str) -> dict:
+    """Run this ticket's subtasks CONCURRENTLY (each in its own worktree),
+    merging successful branches back. Runs in the background; the subtask
+    progress chart updates live. Requires the ticket to have planned subtasks."""
+    t = tickets_mod.get(identifier)
+    if t is None:
+        raise HTTPException(404, f"ticket {identifier} not found")
+    from aiforge_core.tickets import subtasks as _st
+    subs = _st.get_subtasks(t.id)
+    if not subs:
+        raise HTTPException(400, "ticket has no planned subtasks to run")
+    import threading
+
+    def _bg():
+        try:
+            from aiforge_core.runtime.parallel_subtasks import run_subtasks_parallel as _run
+            _run(t)
+        except Exception as exc:  # noqa: BLE001
+            _af_log.warning("run-parallel failed for %s: %s", identifier, exc)
+
+    threading.Thread(target=_bg, name=f"parallel-{identifier}", daemon=True).start()
+    return {"started": True, "identifier": identifier, "subtasks": len(subs)}
+
+
 @app.post("/api/tickets/{identifier}/comments", status_code=201)
 def add_comment(identifier: str, payload: CommentCreate) -> dict:
     t = tickets_mod.get(identifier)
