@@ -36,7 +36,8 @@ _CMD_ARG_KEYS = ("cmd", "command", "input")
 # Tools that mutate something external/durable → default to ASK (human
 # approval) unless the operator explicitly overrides via AIFORGE_TOOL_POLICY.
 _DEFAULT_ASK = {"confluence_create", "confluence_update",
-                "jira_create", "jira_update", "jira_comment"}
+                "jira_create", "jira_update", "jira_comment",
+                "gitlab_create", "gitlab_update", "gitlab_comment"}
 
 
 def _parse_map(raw: str) -> dict[str, str]:

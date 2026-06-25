@@ -2298,6 +2298,57 @@ def integrations_jira_test() -> dict:
     return jira_test()
 
 
+class _GitlabCfg(BaseModel):
+    base_url: str | None = None
+    token: str | None = None       # write-only; omitted on read
+    project: str | None = None     # default project (id or "group/proj")
+    oauth: bool | None = None      # token sent as Bearer instead of PRIVATE-TOKEN
+    insecure_tls: bool | None = None
+
+
+@app.get("/api/integrations/gitlab")
+def integrations_gitlab_get() -> dict:
+    """Current GitLab settings (token masked). Reflects env override."""
+    from aiforge_core.config import integrations
+    stored = integrations.get("gitlab")
+    env_token = bool(os.environ.get("GITLAB_TOKEN"))
+    return {
+        "base_url": os.environ.get("GITLAB_BASE_URL") or stored.get("base_url", ""),
+        "project": os.environ.get("GITLAB_PROJECT") or stored.get("project", ""),
+        "oauth": bool(stored.get("oauth")),
+        "insecure_tls": bool(stored.get("insecure_tls")),
+        "has_token": env_token or bool(stored.get("token")),
+        "env_managed": bool(os.environ.get("GITLAB_BASE_URL") or env_token),
+    }
+
+
+@app.put("/api/integrations/gitlab")
+def integrations_gitlab_set(body: _GitlabCfg) -> dict:
+    """Persist GitLab settings. An empty/omitted token keeps the existing one
+    (so re-saving the form doesn't wipe the secret)."""
+    from aiforge_core.config import integrations
+    patch: dict = {}
+    if body.base_url is not None:
+        patch["base_url"] = body.base_url.strip().rstrip("/")
+    if body.project is not None:
+        patch["project"] = body.project.strip()
+    if body.oauth is not None:
+        patch["oauth"] = bool(body.oauth)
+    if body.insecure_tls is not None:
+        patch["insecure_tls"] = bool(body.insecure_tls)
+    if body.token:                       # only overwrite when a new token is given
+        patch["token"] = body.token.strip()
+    integrations.set_("gitlab", patch)
+    return integrations_gitlab_get()
+
+
+@app.post("/api/integrations/gitlab/test")
+def integrations_gitlab_test() -> dict:
+    """Live connectivity + auth check against the configured GitLab."""
+    from aiforge_core.runtime.tools.gitlab import gitlab_test
+    return gitlab_test()
+
+
 @app.post("/api/chat/sessions/{session_id}/ticket", status_code=201)
 def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
     """Pipeline mode: turn a chat message into a real ticket that runs the

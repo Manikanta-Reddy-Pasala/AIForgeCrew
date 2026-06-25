@@ -84,6 +84,18 @@ const TOOLS: Tool[] = [
     args: [{ name: 'key', placeholder: 'ENG-123', required: true }] },
   { name: 'jira_comment', category: 'Jira', desc: 'Add a comment to an issue (needs Approve).',
     args: [{ name: 'key', placeholder: 'ENG-123', required: true }] },
+
+  // GitLab (chat) — writes go through the approval gate
+  { name: 'gitlab_search', category: 'GitLab', desc: 'Find issues (full-text; optional project/state).',
+    args: [{ name: 'query', placeholder: 'text to search' }] },
+  { name: 'gitlab_read', category: 'GitLab', desc: 'Read an issue (fields + comments).',
+    args: [{ name: 'iid', placeholder: '42', required: true }] },
+  { name: 'gitlab_create', category: 'GitLab', desc: 'Create an issue (needs Approve).',
+    args: [{ name: 'title', placeholder: 'issue title', required: true }] },
+  { name: 'gitlab_update', category: 'GitLab', desc: 'Update issue fields (needs Approve).',
+    args: [{ name: 'iid', placeholder: '42', required: true }] },
+  { name: 'gitlab_comment', category: 'GitLab', desc: 'Add a comment to an issue (needs Approve).',
+    args: [{ name: 'iid', placeholder: '42', required: true }] },
 ];
 
 export default function Tools() {

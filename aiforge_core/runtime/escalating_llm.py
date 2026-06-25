@@ -110,6 +110,7 @@ def _install_adk_toolarg_repair() -> None:
     _ll._message_to_generate_content_response = _patched
     _ll._aiforge_toolarg_patched = True
     _quiet_litellm()
+    _quiet_adk_tracebacks()
 
 
 def _quiet_litellm() -> None:
@@ -173,9 +174,48 @@ def _quiet_litellm() -> None:
         pass
 
 
+class _StripTracebackFilter(logging.Filter):
+    """Keep a record's one-line message but drop its multi-page traceback.
+
+    ADK's ``_node_runner`` calls ``logger.exception("Node execution failed
+    with exception")`` for EVERY node error — dumping the full chained
+    litellm/httpx stack into the console even though the failure is already
+    captured (a) in the ADK error_event and (b) by our own concise
+    ``llm.exhausted`` ERROR line. The raw stack is pure noise to the operator,
+    so we strip ``exc_info`` and let the meaningful one-liners stand.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        record.exc_info = None
+        record.exc_text = None
+        return True
+
+
+def _quiet_adk_tracebacks() -> None:
+    """Silence ADK's node-runner full-traceback dumps (idempotent).
+
+    Operator sees the concise ``llm.exhausted`` / ``llm.attempt_failed`` lines
+    instead of a chained httpx→openai→litellm stack for every flaky call.
+    Override with ``AIFORGE_ADK_TRACEBACKS=1`` to restore the raw dumps when
+    debugging a genuinely novel node failure.
+    """
+    if _truthy_env("AIFORGE_ADK_TRACEBACKS"):
+        return
+    for name in ("google_adk.google.adk.workflow._node_runner",
+                 "google_adk.google.adk.flows.llm_flows.base_llm_flow"):
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, _StripTracebackFilter) for f in lg.filters):
+            lg.addFilter(_StripTracebackFilter())
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in ("1", "true", "yes", "on")
+
+
 # Apply at import — before ANY litellm call / team run — so the worker is
 # never even created (not just lazily when the first LiteLlm is built).
 _quiet_litellm()
+_quiet_adk_tracebacks()
 
 
 # Substrings that mark a TRANSIENT failure worth retrying the SAME endpoint
