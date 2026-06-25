@@ -74,3 +74,33 @@ def test_upsert_distinct_sources_distinct_files(md):
     md.upsert_section(source="chat-session:2", title="Same Name",
                       section_title="y", section_body="b")
     assert len(list(md.memory_dir().glob("*.md"))) == 2
+
+
+def test_compact_groups_by_kind(md):
+    for i in range(3):
+        md.write(f"Session {i}", f"# Hdr\n\nbody {i}", kind="session", tags=["chat"])
+    md.write("Note A", "a note", kind="note")
+    md.write("Note B", "b note", kind="note")
+    md.write("Lonely", "single", kind="rule")
+    plan = md.compact(group_by="kind", dry_run=True)
+    assert plan["groups"] == {"note": 2, "session": 3} and plan["files_out"] == 2
+    r = md.compact(group_by="kind")
+    after = {f["file"] for f in md.list_files()}
+    assert "compacted-session.md" in after and "compacted-note.md" in after
+    assert not any(f.startswith("session-") for f in after)   # originals archived
+    assert any("lonely" in f for f in after)                  # singleton kept
+    body = md.read_file("compacted-session.md")["body"]
+    assert body.count("## Session") == 3 and "### Hdr" in body  # heading demoted
+
+
+def test_compact_idempotent_singletons(md):
+    md.write("One", "x", kind="note")
+    assert md.compact(group_by="kind")["files_out"] == 0     # nothing to merge
+
+
+def test_compact_dry_run_writes_nothing(md):
+    for i in range(2):
+        md.write(f"S{i}", "x", kind="session")
+    before = {f["file"] for f in md.list_files()}
+    md.compact(group_by="kind", dry_run=True)
+    assert {f["file"] for f in md.list_files()} == before

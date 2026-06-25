@@ -1117,6 +1117,19 @@ def memory_files_ingest() -> dict:
     return md_store.ingest_dir()
 
 
+@app.post("/api/memory/files/compact")
+def memory_files_compact(group_by: str = Query("kind"),
+                         min_group: int = Query(2, ge=2),
+                         dry_run: bool = Query(False)) -> dict:
+    """Consolidate per-session md memories into fewer standardized files.
+
+    Group by ``kind`` (default), ``tag``, or ``source``. ``dry_run=true``
+    returns the plan without writing. Originals are archived (reversible)."""
+    from aiforge_core.memory import md_store
+    return md_store.compact(group_by=group_by, min_group=min_group,
+                            dry_run=dry_run)
+
+
 @app.delete("/api/memory/files/{name}")
 def memory_files_delete(name: str) -> dict:
     from aiforge_core.memory import md_store

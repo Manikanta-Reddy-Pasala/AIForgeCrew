@@ -55,6 +55,15 @@ export const api = {
       body: JSON.stringify(body),
     }),
   memoryFilesIngest: () => j<any>('/memory/files/ingest', { method: 'POST' }),
+  memoryFilesCompact: (opts?: { group_by?: string; dry_run?: boolean }) => {
+    const p = new URLSearchParams();
+    if (opts?.group_by) p.set('group_by', opts.group_by);
+    if (opts?.dry_run) p.set('dry_run', 'true');
+    return j<{ ok: boolean; dry_run: boolean; group_by: string;
+      groups: Record<string, number>; files_in: number; files_out: number;
+      compacted?: string[]; archive?: string; note?: string }>(
+      `/memory/files/compact?${p.toString()}`, { method: 'POST' });
+  },
   memoryFileDelete: (name: string) =>
     j<any>(`/memory/files/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   memorySources: () => j<MemorySource[]>('/memory/sources'),

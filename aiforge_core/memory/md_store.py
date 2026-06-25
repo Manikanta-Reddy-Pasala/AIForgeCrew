@@ -250,6 +250,137 @@ def ingest_dir() -> dict:
     return {"ok": True, "ingested": n, "dir": str(memory_dir())}
 
 
+def _demote_headings(body: str, by: int = 2) -> str:
+    """Push every markdown heading in ``body`` ``by`` levels deeper (capped at
+    h6) so an embedded ``# Title`` doesn't collide with the ``##`` section
+    wrapper a compacted file gives each source note."""
+    out = []
+    for line in body.splitlines():
+        m = re.match(r"^(#{1,6})(\s)", line)
+        if m:
+            lvl = min(6, len(m.group(1)) + by)
+            out.append("#" * lvl + line[len(m.group(1)):])
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _group_key(d: dict, group_by: str) -> str:
+    if group_by == "tag":
+        return (d["tags"][0] if d.get("tags") else "untagged")
+    if group_by == "source":
+        # the leading token of the source key (e.g. "chat", "md", "ticket")
+        return (d.get("source") or "manual").split(":", 1)[0].split("-", 1)[0]
+    return d.get("kind") or "note"
+
+
+def compact(*, group_by: str = "kind", min_group: int = 2,
+            dry_run: bool = False) -> dict:
+    """Consolidate the sprawl of per-session ``.md`` memories into ONE
+    standardized file per group, so the Memory folder stays legible.
+
+    Grouping key (``group_by``): ``kind`` (default), ``tag``, or ``source``.
+    Only groups with at least ``min_group`` files are compacted; singletons
+    are left alone. Each source note becomes a ``## <title>`` section (its own
+    headings demoted to fit) under a ``# <Group> memory (compacted)`` file
+    with standard frontmatter. Originals are MOVED into
+    ``<memory>/archive/<ts>/`` (reversible — never deleted) and the merged
+    file is re-ingested into the searchable backend.
+
+    ``dry_run`` returns the plan (group → file count) without touching disk.
+    """
+    import shutil
+
+    files: list[dict] = []
+    for p in memory_dir().glob("*.md"):
+        try:
+            d = _parse(p)
+            d["_path"] = p
+            files.append(d)
+        except Exception:  # noqa: BLE001
+            continue
+
+    groups: dict[str, list[dict]] = {}
+    for d in files:
+        # never fold an already-compacted file back into a group (idempotent)
+        if d["file"].startswith("compacted-"):
+            continue
+        groups.setdefault(_group_key(d, group_by), []).append(d)
+
+    planned = {k: v for k, v in groups.items() if len(v) >= min_group}
+
+    if dry_run:
+        return {
+            "ok": True, "dry_run": True, "group_by": group_by,
+            "groups": {k: len(v) for k, v in sorted(planned.items())},
+            "files_in": sum(len(v) for v in planned.values()),
+            "files_out": len(planned),
+        }
+
+    if not planned:
+        return {"ok": True, "dry_run": False, "group_by": group_by,
+                "groups": {}, "files_in": 0, "files_out": 0,
+                "note": "nothing to compact (no group ≥ min_group)"}
+
+    archive = memory_dir() / "archive" / _now_iso().replace(":", "")
+    out_files: list[str] = []
+    moved = 0
+    with _WRITE_LOCK:
+        archive.mkdir(parents=True, exist_ok=True)
+        for key, items in sorted(planned.items()):
+            items.sort(key=lambda d: d.get("created") or "")
+            sections = []
+            for d in items:
+                meta = (f"_source: {d.get('source') or 'manual'} · "
+                        f"created: {d.get('created') or '?'}_")
+                sections.append(
+                    f"## {d['title']}\n\n{meta}\n\n"
+                    f"{_demote_headings(d['body']).strip()}".rstrip())
+            merged = "\n\n---\n\n".join(sections)
+            created = _now_iso()
+            all_tags = sorted({t for d in items for t in d.get("tags") or []})
+            title = f"{key.replace('-', ' ').strip().capitalize()} memory (compacted)"
+            stem = f"compacted-{_slug(key)}"
+            path = memory_dir() / f"{stem}.md"
+            # Re-compaction: fold new sections under the existing consolidated
+            # file rather than spawning compacted-<key>-1.md.
+            prefix = ""
+            if path.exists():
+                prev = path.read_text(encoding="utf-8", errors="replace")
+                pm = _FM_RE.match(prev)
+                prefix = (pm.group(2).strip() if pm else prev.strip()) + "\n\n---\n\n"
+            else:
+                prefix = f"# {title}\n\n"
+            fm = (
+                "---\n"
+                f"title: {title}\n"
+                "kind: compacted\n"
+                f"tags: {', '.join(all_tags)}\n"
+                f"source: compacted:{stem}\n"
+                f"created: {created}\n"
+                f"count: {len(items)}\n"
+                "---\n\n"
+            )
+            for d in items:
+                try:
+                    shutil.move(str(d["_path"]), str(archive / d["file"]))
+                    moved += 1
+                except Exception:  # noqa: BLE001
+                    pass
+            path.write_text(fm + prefix + merged + "\n", encoding="utf-8")
+            out_files.append(path.name)
+            doc = _parse(path)
+            _ingest_unit(title=doc["title"], body=doc["body"], kind="compacted",
+                         tags=all_tags, source=f"compacted:{stem}", repo="notes")
+
+    return {
+        "ok": True, "dry_run": False, "group_by": group_by,
+        "groups": {k: len(v) for k, v in sorted(planned.items())},
+        "files_in": moved, "files_out": len(out_files),
+        "compacted": out_files, "archive": str(archive),
+    }
+
+
 def delete_file(name: str) -> bool:
     p = memory_dir() / (name if name.endswith(".md") else f"{name}.md")
     if p.is_file() and p.parent == memory_dir():

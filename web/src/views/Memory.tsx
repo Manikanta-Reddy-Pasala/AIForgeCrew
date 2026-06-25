@@ -372,6 +372,24 @@ function NotesPanel() {
   async function del(name: string) {
     await api.memoryFileDelete(name); setOpen(null); load();
   }
+  async function compact() {
+    setBusy(true);
+    try {
+      const plan = await api.memoryFilesCompact({ group_by: 'kind', dry_run: true });
+      const groups = Object.entries(plan.groups || {});
+      if (!groups.length) { toast('Nothing to compact — no group has 2+ files.'); return; }
+      const summary = groups.map(([k, n]) => `${k} (${n})`).join(', ');
+      if (!window.confirm(
+        `Compact ${plan.files_in} files → ${plan.files_out} grouped files?\n\n` +
+        `Groups: ${summary}\n\nOriginals are archived (not deleted) and can be restored.`,
+      )) return;
+      const r = await api.memoryFilesCompact({ group_by: 'kind' });
+      toast.success(`Compacted ${r.files_in} → ${r.files_out} files (${(r.compacted || []).join(', ')})`);
+      load();
+    } catch (e: any) {
+      toast.error(`Compact failed: ${e.message}`);
+    } finally { setBusy(false); }
+  }
 
   return (
     <div className="card">
@@ -386,6 +404,10 @@ function NotesPanel() {
         <button onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Note'}</button>
         <button className="ghost" onClick={() => api.memoryFilesIngest().then(load)}>
           Re-ingest folder
+        </button>
+        <button className="ghost" onClick={compact} disabled={busy}
+                title="Group per-session notes into fewer standardized .md files (originals archived)">
+          Compact
         </button>
         <button className="ghost" onClick={load}>Refresh</button>
       </div>
