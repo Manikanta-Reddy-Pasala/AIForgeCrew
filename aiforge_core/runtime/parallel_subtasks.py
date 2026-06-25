@@ -347,26 +347,45 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
     triggered (and gated by AIFORGE_PARALLEL_SUBTASKS for the auto path) so the
     default single-Doer pipeline is never disturbed."""
     from aiforge_core.runtime.workspace import ensure_branch_and_worktree
+    from aiforge_core.tickets import store as _store
     from aiforge_core.tickets import subtasks as _st
     tid = getattr(ticket, "id", ticket)
     subs = _st.get_subtasks(tid)
+    # Decompose on demand: a fresh ticket has no subtasks yet — split its
+    # title+body so "Run in parallel" works straight from `todo`.
     if not subs:
-        return {"ok": True, "total": 0, "note": "no subtasks to run"}
+        prompt = (f"{getattr(ticket, 'title', '')}\n\n"
+                  f"{getattr(ticket, 'body', '')}").strip()
+        decomposed = _decompose(prompt)
+        if len(decomposed) >= 2:
+            subs = _st.set_subtasks(tid, decomposed, role="planner")
+    if not subs:
+        return {"ok": True, "total": 0, "note": "could not decompose into subtasks"}
     # Guard against a second parallel run for the SAME ticket (concurrent
     # POSTs would collide on the per-slug worktree paths).
     with _INFLIGHT_LOCK:
         if tid in _INFLIGHT:
             return {"ok": False, "error": "already running for this ticket"}
         _INFLIGHT.add(tid)
+    # Move the ticket into the working state so its lifecycle status reflects
+    # the run (todo → in_progress → done/blocked).
+    try:
+        _store.update_status(tid, "in_progress", role="doer")
+    except Exception:  # noqa: BLE001
+        pass
     try:
         wt = ensure_branch_and_worktree(ticket)
-        if not wt:
-            return {"ok": False, "error": "no worktree/repo for ticket"}
-        # The merge target must be a worktree that has base_branch checked out;
-        # ``wt`` is exactly that (the ticket's working branch). Run the whole
-        # orchestration relative to wt so merges land on the right branch.
-        cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], wt)
-        base_branch = (cur.stdout or "").strip() or "HEAD"
+        if wt:
+            # Ticket targets a real repo — merge into its working branch.
+            cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], wt)
+            base_branch = (cur.stdout or "").strip() or "HEAD"
+        else:
+            # No project repo (e.g. a standalone ticket) — use a per-ticket
+            # git workspace so the parallel run still works end-to-end.
+            ident = getattr(ticket, "identifier", str(tid))
+            cfg = os.environ.get("AIFORGE_CONFIG_DIR", os.path.expanduser("~/.aiforge"))
+            wt = os.path.join(os.path.expanduser(cfg), "ticket-workspaces", ident)
+            base_branch = _ensure_git_workspace(wt)
         # NOTE: we do NOT touch the process-global AIFORGE_CURRENT_TICKET here.
         # That env is shared across the whole process, so setting it would let
         # a second (different-ticket) concurrent run clobber it and mis-route
@@ -381,7 +400,19 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         _emit(getattr(ticket, "id", None), "*", "parallel_review",
               agg.get("review", ""), {k: agg.get(k) for k in
               ("total", "done", "validated", "failed", "merged", "conflicts")})
+        # Reflect the outcome on the ticket lifecycle status.
+        try:
+            _store.update_status(tid, "done" if agg.get("ok") else "blocked",
+                                 role="doer")
+        except Exception:  # noqa: BLE001
+            pass
         return agg
+    except Exception:
+        try:
+            _store.update_status(tid, "blocked", role="doer")
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     finally:
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(tid)
