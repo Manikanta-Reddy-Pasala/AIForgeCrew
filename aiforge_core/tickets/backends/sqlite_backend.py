@@ -231,6 +231,19 @@ class SqliteBackend:
             cur = c.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
             return (cur.rowcount or 0) > 0
 
+    def reset_all_tickets(self) -> int:
+        """Delete ALL tickets + events and reset the ONE-<n> counter to its
+        seed (100) and the row autoincrement, so the sequence starts over."""
+        with self._conn() as c:
+            n = c.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
+            c.execute("DELETE FROM ticket_events")
+            c.execute("DELETE FROM tickets")
+            c.execute("UPDATE ticket_counter SET next_n = 100 WHERE singleton = 1")
+            # reset AUTOINCREMENT so row ids restart at 1 too
+            c.execute("DELETE FROM sqlite_sequence WHERE name IN "
+                      "('tickets', 'ticket_events')")
+            return int(n or 0)
+
     def set_route(self, ident_or_id, route, workflow, source, confidence) -> "dict | None":
         where = "id = ?" if isinstance(ident_or_id, int) else "identifier = ?"
         with self._conn() as c:

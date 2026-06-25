@@ -38,6 +38,8 @@ export const api = {
   delete:   (id: string) => j<any>(`/tickets/${id}`, {
     method: 'DELETE',
   }),
+  resetTickets: () => j<{ ok: boolean; deleted: number }>('/tickets/reset', { method: 'POST' }),
+  resetChats:   () => j<{ ok: boolean; deleted: number }>('/chat/sessions/reset', { method: 'POST' }),
   comment:  (id: string, body: string) => j<any>(`/tickets/${id}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

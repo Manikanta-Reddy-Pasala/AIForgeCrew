@@ -175,6 +175,20 @@ export default function Tickets() {
           <button onClick={() => setCreating(c => !c)}>
             {creating ? <><Icon.X size={14} /> Cancel</> : <><Icon.Plus size={14} /> New ticket</>}
           </button>
+          <button
+            className="danger"
+            title="Delete every ticket and reset the ONE-<n> counter. Memory, skills, workflows and rules are NOT touched."
+            onClick={async () => {
+              if (!window.confirm('Delete ALL tickets and reset the sequence (ONE-100…)? This removes every ticket + its events. Memory, skills, workflows and rules are kept.')) return;
+              try {
+                const r = await api.resetTickets();
+                toast.success(`Deleted ${r.deleted} tickets · sequence reset`);
+                qc.invalidateQueries({ queryKey: ['tickets'] });
+              } catch (e: any) { toast.error(e.message); }
+            }}
+          >
+            <Icon.Trash size={14} /> Delete all & reset
+          </button>
         </div>
       </div>
 

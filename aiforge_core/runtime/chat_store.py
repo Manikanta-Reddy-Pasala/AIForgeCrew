@@ -184,5 +184,18 @@ def rename_session(session_id: int, title: str) -> "dict | None":
 
 def delete_session(session_id: int) -> bool:
     with _conn() as c:
+        c.execute("DELETE FROM chat_messages WHERE session_id=?", (session_id,))
         cur = c.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
     return cur.rowcount > 0
+
+
+def delete_all_sessions() -> int:
+    """Delete EVERY chat session + its messages and reset the id autoincrement
+    so new sessions start at 1. Returns the count of sessions deleted."""
+    with _conn() as c:
+        n = c.execute("SELECT COUNT(*) FROM chat_sessions").fetchone()[0]
+        c.execute("DELETE FROM chat_messages")
+        c.execute("DELETE FROM chat_sessions")
+        c.execute("DELETE FROM sqlite_sequence WHERE name IN "
+                  "('chat_sessions', 'chat_messages')")
+    return int(n or 0)

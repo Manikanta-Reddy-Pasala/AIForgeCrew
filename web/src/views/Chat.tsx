@@ -616,10 +616,29 @@ export default function Chat() {
     <div className="chat-shell-v2">
       {/* ── Left sidebar: sessions list ─────────────────────────────────────── */}
       <div className="chat-sessions-sidebar">
-        <div className="chat-sessions-header">
-          <button onClick={handleNewChat} disabled={busy}>
+        <div className="chat-sessions-header" style={{ display: 'flex', gap: 6 }}>
+          <button onClick={handleNewChat} disabled={busy} style={{ flex: 1 }}>
             <Icon.Plus size={13} /> New chat
           </button>
+          {sessions.length > 0 && (
+            <button
+              className="danger"
+              title="Delete every chat session. Memory, skills, workflows and rules are NOT touched."
+              disabled={busy}
+              onClick={async () => {
+                if (!window.confirm('Delete ALL chat sessions? Memory, skills, workflows and rules are kept.')) return;
+                try {
+                  const r = await api.resetChats();
+                  toast.success(`Deleted ${r.deleted} chats`);
+                  setMessages([]); setLiveTurn(null); setActiveId(null);
+                  localStorage.removeItem(LS_SESSION_KEY);
+                  await loadSessions();
+                } catch (e: any) { toast.error(e.message); }
+              }}
+            >
+              <Icon.Trash size={13} />
+            </button>
+          )}
         </div>
         <div className="chat-sessions-list">
           {sessionsLoading ? (

@@ -65,6 +65,12 @@ class StoreBackend(Protocol):
         removed. Does NOT touch worktrees / branches / PRs."""
         ...
 
+    def reset_all_tickets(self) -> int:
+        """Delete ALL tickets + events and reset the ONE-<n> counter (and row
+        ids) to the seed, so identifiers start over. Returns the count deleted.
+        Does NOT touch worktrees / branches / PRs."""
+        ...
+
     def set_route(self, ident_or_id: "str | int", route: str,
                   workflow: "str | None", source: str,
                   confidence: "float | None") -> "dict | None":

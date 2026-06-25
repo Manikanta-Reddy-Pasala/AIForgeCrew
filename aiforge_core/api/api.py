@@ -721,6 +721,13 @@ def add_comment(identifier: str, payload: CommentCreate) -> dict:
     return {"event_id": eid}
 
 
+@app.post("/api/tickets/reset")
+def tickets_reset() -> dict:
+    """Delete ALL tickets + events and reset the ONE-<n> counter so the next
+    ticket restarts the sequence. Worktrees / branches / PRs are NOT touched."""
+    return {"ok": True, "deleted": tickets_mod.reset_all()}
+
+
 @app.delete("/api/tickets/{identifier}", status_code=204)
 def delete_ticket(identifier: str) -> None:
     """Delete a ticket and its events. Worktree, branch, and any open PR
@@ -2135,6 +2142,13 @@ def chat_session_create(body: _NewSessionBody) -> dict:
 def chat_session_list() -> list[dict]:
     from aiforge_core.runtime import chat_store
     return chat_store.list_sessions()
+
+
+@app.post("/api/chat/sessions/reset")
+def chat_sessions_reset() -> dict:
+    """Delete ALL chat sessions + messages and reset the id sequence."""
+    from aiforge_core.runtime import chat_store
+    return {"ok": True, "deleted": chat_store.delete_all_sessions()}
 
 
 @app.get("/api/chat/sessions/{session_id}")

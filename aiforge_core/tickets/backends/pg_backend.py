@@ -207,6 +207,17 @@ class PgBackend:
             c.commit()
         return deleted
 
+    def reset_all_tickets(self) -> int:
+        """Delete ALL tickets + events and reset the ONE-<n> counter to its
+        seed (100) and the row identity, so the sequence starts over."""
+        with self._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM tickets")
+            n = cur.fetchone()[0]
+            cur.execute("TRUNCATE ticket_events, tickets RESTART IDENTITY CASCADE")
+            cur.execute("UPDATE ticket_counter SET next_n = 100 WHERE singleton")
+            c.commit()
+        return int(n or 0)
+
     def set_route(self, ident_or_id, route, workflow, source, confidence) -> "dict | None":
         where = "id=%s" if isinstance(ident_or_id, int) else "identifier=%s"
         with self._conn() as c, c.cursor(row_factory=dict_row) as cur:

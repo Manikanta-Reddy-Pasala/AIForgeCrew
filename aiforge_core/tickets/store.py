@@ -273,6 +273,12 @@ def delete(ident_or_id: "str | int") -> bool:
     return get_backend().delete_ticket(t.id)
 
 
+def reset_all() -> int:
+    """Delete ALL tickets + events and reset the ONE-<n> counter so the next
+    ticket starts the sequence over. Returns the count deleted."""
+    return get_backend().reset_all_tickets()
+
+
 def add_comment(ticket_id: int, role: str | None, body: str,
                 metadata: dict | None = None) -> int:
     return add_event(ticket_id, role, "comment", body, metadata)
