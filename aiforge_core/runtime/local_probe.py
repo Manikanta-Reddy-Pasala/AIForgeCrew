@@ -40,6 +40,12 @@ log = logging.getLogger("aiforge.local_probe")
 # pipeline build in this process reuses the result.
 _CACHE: dict[str, tuple[bool, float]] = {}
 
+# Endpoints we've already emitted the "dead, no rescue" WARNING for — the
+# pipeline builds ~16 roles against the SAME dead local endpoint, so without
+# this the operator gets the identical warning 16× per ticket. Reset whenever
+# the probe cache for that endpoint expires (see :func:`is_alive`).
+_DEAD_WARNED: set[str] = set()
+
 
 def _timeout() -> float:
     raw = os.environ.get("AIFORGE_LOCAL_PROBE_TIMEOUT_S", "2.0")
@@ -90,6 +96,7 @@ def is_alive(api_base: str) -> bool:
     _CACHE[api_base] = (alive, now + _ttl())
     if alive:
         log.debug("local_probe: %s alive", api_base)
+        _DEAD_WARNED.discard(api_base)   # recovered → allow a fresh warn later
     return alive
 
 
@@ -117,42 +124,57 @@ def maybe_substitute_primary(role: str, primary_cfg: dict) -> dict:
     if is_alive(api_base):
         return primary_cfg
 
+    # The pipeline builds ~16 roles against the SAME dead endpoint per
+    # ticket. Do the expensive/loud work (SSH auto-start, warnings) ONCE per
+    # dead endpoint; subsequent roles reuse the verdict quietly.
+    first = api_base not in _DEAD_WARNED
+
     # Local is dead — try to bring it up via SSH before falling back.
     # Auto-start is opt-in (needs AIFORGE_LMS_HOST configured) and
     # only runs once per process; if it succeeds we keep the local
     # primary cfg and the rest of the pipeline runs on fast mlx-lm.
-    try:
-        from .local_starter import try_start as _try_start
-        if _try_start(api_base):
-            log.info(
-                "local_probe: %s back online via lms_autostart, "
-                "keeping local primary for role=%s", api_base, role,
-            )
-            return primary_cfg
-    except Exception as exc:  # noqa: BLE001 — never break ticket flow
-        log.warning("local_probe: auto-start raised: %s", exc)
+    if first:
+        try:
+            from .local_starter import try_start as _try_start
+            if _try_start(api_base):
+                log.info(
+                    "local_probe: %s back online via lms_autostart, "
+                    "keeping local primary for role=%s", api_base, role,
+                )
+                return primary_cfg
+        except Exception as exc:  # noqa: BLE001 — never break ticket flow
+            log.warning("local_probe: auto-start raised: %s", exc)
 
     # Auto-start declined / failed → fall back to cloud default.
     try:
         from aiforge_core.config.agent_config import cloud_default_for_local
         substitute = cloud_default_for_local(role)
     except Exception as exc:
-        log.warning("local_probe: cloud_default lookup failed: %s", exc)
+        if first:
+            log.warning("local_probe: cloud_default lookup failed: %s", exc)
+        _DEAD_WARNED.add(api_base)
         return primary_cfg
     if substitute is None:
-        log.warning(
-            "local_probe: %s dead but no cloud default available "
-            "for role=%s — keeping dead primary, chain will rescue",
-            api_base, role,
-        )
+        if first:
+            log.warning(
+                "local_probe: %s dead and no fallback configured — every "
+                "role will fail until you (a) start LM Studio/mlx-lm there, "
+                "(b) point AIFORGE_LM_BASE_URL at a live endpoint, or (c) set "
+                "a cloud fallback (e.g. OLLAMA_CLOUD_API_KEY / an "
+                "openai_compatible global default). Suppressing per-role "
+                "repeats.", api_base,
+            )
+        _DEAD_WARNED.add(api_base)
         return primary_cfg
 
-    log.info(
-        "local_probe: %s dead → substituting primary for role=%s with "
-        "%s (%s)", api_base, role,
-        substitute.get("_provider", "cloud"),
-        substitute.get("model_id"),
-    )
+    if first:
+        log.info(
+            "local_probe: %s dead → substituting primary with %s (%s) for "
+            "this run", api_base,
+            substitute.get("_provider", "cloud"),
+            substitute.get("model_id"),
+        )
+    _DEAD_WARNED.add(api_base)
     return substitute
 
 

@@ -355,13 +355,33 @@ def load_all() -> dict[str, dict[str, Any]]:
             if isinstance(disk, dict):
                 for role, row in disk.items():
                     if role in _ROLES and isinstance(row, dict):
+                        # ``cfg[role]`` is the global-default seed (or local
+                        # fallback). A per-role row overlays it — but a row
+                        # that OMITS base_url / api_key / insecure_tls must
+                        # INHERIT them from the seed rather than null them.
+                        # Without this, applying a profile (or a per-role
+                        # Save) writes rows with base_url=None, which then
+                        # shadow the operator's global endpoint and silently
+                        # send every role back to http://127.0.0.1:1234 —
+                        # the "I set one URL but it probes localhost" bug.
+                        # An explicit per-role base_url still wins (lets us
+                        # run mlx-lm on per-role ports). Inheritance of the
+                        # endpoint only applies when the provider matches the
+                        # seed (don't paste a cloud URL onto a local row).
+                        seed = cfg[role]
+                        provider = row.get("provider") or seed["provider"]
+                        same_provider = provider == seed["provider"]
+                        row_base = row.get("base_url")
+                        row_key = row.get("api_key")
                         cfg[role] = {
-                            "provider": row.get("provider") or
-                                        cfg[role]["provider"],
-                            "model": row.get("model") or cfg[role]["model"],
-                            "base_url": row.get("base_url"),
-                            "api_key": row.get("api_key"),
-                            "insecure_tls": bool(row.get("insecure_tls")),
+                            "provider": provider,
+                            "model": row.get("model") or seed["model"],
+                            "base_url": row_base or (
+                                seed.get("base_url") if same_provider else None),
+                            "api_key": row_key or (
+                                seed.get("api_key") if same_provider else None),
+                            "insecure_tls": bool(row.get("insecure_tls")) or (
+                                same_provider and bool(seed.get("insecure_tls"))),
                         }
         except Exception:
             pass
