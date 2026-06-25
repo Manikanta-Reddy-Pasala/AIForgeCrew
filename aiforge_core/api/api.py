@@ -1120,14 +1120,18 @@ def memory_files_ingest() -> dict:
 @app.post("/api/memory/files/compact")
 def memory_files_compact(group_by: str = Query("kind"),
                          min_group: int = Query(2, ge=2),
-                         dry_run: bool = Query(False)) -> dict:
+                         dry_run: bool = Query(False),
+                         summarize: bool = Query(True)) -> dict:
     """Consolidate per-session md memories into fewer standardized files.
 
-    Group by ``kind`` (default), ``tag``, or ``source``. ``dry_run=true``
-    returns the plan without writing. Originals are archived (reversible)."""
+    Group by ``kind`` (default), ``tag``, or ``source``. With ``summarize``
+    (default) an available LLM rewrites each group into a compact, deduped
+    document so the file stays small; falls back to a plain merge when no
+    model is reachable. ``dry_run=true`` returns the plan without writing.
+    Originals are archived (reversible)."""
     from aiforge_core.memory import md_store
     return md_store.compact(group_by=group_by, min_group=min_group,
-                            dry_run=dry_run)
+                            dry_run=dry_run, summarize=summarize)
 
 
 @app.delete("/api/memory/files/{name}")

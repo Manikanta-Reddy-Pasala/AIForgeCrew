@@ -265,6 +265,72 @@ def _demote_headings(body: str, by: int = 2) -> str:
     return "\n".join(out)
 
 
+_SUMMARY_SYS = (
+    "You consolidate engineering memory notes. Merge the notes below into ONE "
+    "concise markdown document. Deduplicate ruthlessly, group related points "
+    "under '## ' section headings, and KEEP every concrete fact, decision, "
+    "gotcha, file path, command, id and number. Drop chit-chat, repetition and "
+    "filler. Do not invent anything. Output ONLY the markdown body — no preamble, "
+    "no surrounding code fence."
+)
+_SUMMARY_INPUT_CAP = 28_000     # chars of notes per LLM call (map-reduce above)
+
+
+def _summarize_block(text: str, role: str) -> str | None:
+    """One LLM consolidation call. Returns markdown, or None on any failure
+    (model down / unknown role / empty) so the caller falls back to merge."""
+    try:
+        from aiforge_core.llm.client import complete
+        out = complete(
+            role,
+            [{"role": "system", "content": _SUMMARY_SYS},
+             {"role": "user", "content": text}],
+            temperature=0.2, max_tokens=4096,
+        )
+    except Exception:  # noqa: BLE001 — any failure → deterministic merge
+        return None
+    out = (out or "").strip()
+    # strip an accidental wrapping ```/```md fence
+    if out.startswith("```"):
+        out = re.sub(r"^```[a-zA-Z0-9]*\s*\n?", "", out)
+        out = re.sub(r"\n?```\s*$", "", out).strip()
+    return out or None
+
+
+def _summarize_notes(blocks: list[str], role: str) -> str | None:
+    """Map-reduce consolidation: summarize the notes (batched to fit the input
+    cap), then summarize the partial summaries if there was more than one
+    batch. Returns markdown or None (→ caller merges deterministically)."""
+    if not blocks:
+        return None
+    # Greedily batch blocks under the input cap.
+    batches: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for b in blocks:
+        if cur and cur_len + len(b) > _SUMMARY_INPUT_CAP:
+            batches.append("\n\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(b)
+        cur_len += len(b)
+    if cur:
+        batches.append("\n\n".join(cur))
+
+    partials: list[str] = []
+    for batch in batches:
+        s = _summarize_block(batch, role)
+        if s is None:
+            return None          # bail whole op → deterministic merge
+        partials.append(s)
+    if len(partials) == 1:
+        return partials[0]
+    # reduce step — combine the partial summaries
+    combined = "\n\n---\n\n".join(partials)
+    if len(combined) <= _SUMMARY_INPUT_CAP:
+        return _summarize_block(combined, role) or combined
+    return combined          # already summarized; accept as-is if still huge
+
+
 def _group_key(d: dict, group_by: str) -> str:
     if group_by == "tag":
         return (d["tags"][0] if d.get("tags") else "untagged")
@@ -275,17 +341,23 @@ def _group_key(d: dict, group_by: str) -> str:
 
 
 def compact(*, group_by: str = "kind", min_group: int = 2,
-            dry_run: bool = False) -> dict:
+            dry_run: bool = False, summarize: bool = True,
+            model_role: str = "learner") -> dict:
     """Consolidate the sprawl of per-session ``.md`` memories into ONE
     standardized file per group, so the Memory folder stays legible.
 
     Grouping key (``group_by``): ``kind`` (default), ``tag``, or ``source``.
     Only groups with at least ``min_group`` files are compacted; singletons
-    are left alone. Each source note becomes a ``## <title>`` section (its own
-    headings demoted to fit) under a ``# <Group> memory (compacted)`` file
-    with standard frontmatter. Originals are MOVED into
-    ``<memory>/archive/<ts>/`` (reversible — never deleted) and the merged
-    file is re-ingested into the searchable backend.
+    are left alone.
+
+    ``summarize`` (default True): an available LLM (``model_role``'s primary →
+    cloud chain) rewrites each group into a deduplicated, concise document, so
+    the consolidated file stays SMALL instead of growing every run. On a
+    re-compact the existing consolidated body is fed back in and re-summarised,
+    keeping size bounded. If no model is reachable (or ``summarize=False``) it
+    falls back to a deterministic merge (one ``## <title>`` section per note,
+    appended). Originals are MOVED into ``<memory>/archive/<ts>/`` (reversible —
+    never deleted) and the result is re-ingested into the searchable backend.
 
     ``dry_run`` returns the plan (group → file count) without touching disk.
     """
@@ -324,33 +396,55 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
 
     archive = memory_dir() / "archive" / _now_iso().replace(":", "")
     out_files: list[str] = []
+    summarized_files: list[str] = []
     moved = 0
     with _WRITE_LOCK:
         archive.mkdir(parents=True, exist_ok=True)
         for key, items in sorted(planned.items()):
             items.sort(key=lambda d: d.get("created") or "")
+            created = _now_iso()
+            all_tags = sorted({t for d in items for t in d.get("tags") or []})
+            title = f"{key.replace('-', ' ').strip().capitalize()} memory (compacted)"
+            stem = f"compacted-{_slug(key)}"
+            path = memory_dir() / f"{stem}.md"
+
+            # Existing consolidated body (re-compaction) — pulled in so its
+            # content is RE-SUMMARISED with the new notes, keeping the file
+            # bounded instead of ever-growing.
+            existing_body = ""
+            if path.exists():
+                prev = path.read_text(encoding="utf-8", errors="replace")
+                pm = _FM_RE.match(prev)
+                existing_body = (pm.group(2).strip() if pm else prev.strip())
+
+            # Deterministic merge — the fallback body + the LLM input blocks.
             sections = []
+            blocks = []
+            if existing_body:
+                blocks.append("### (previous consolidated)\n\n" + existing_body)
             for d in items:
                 meta = (f"_source: {d.get('source') or 'manual'} · "
                         f"created: {d.get('created') or '?'}_")
                 sections.append(
                     f"## {d['title']}\n\n{meta}\n\n"
                     f"{_demote_headings(d['body']).strip()}".rstrip())
-            merged = "\n\n---\n\n".join(sections)
-            created = _now_iso()
-            all_tags = sorted({t for d in items for t in d.get("tags") or []})
-            title = f"{key.replace('-', ' ').strip().capitalize()} memory (compacted)"
-            stem = f"compacted-{_slug(key)}"
-            path = memory_dir() / f"{stem}.md"
-            # Re-compaction: fold new sections under the existing consolidated
-            # file rather than spawning compacted-<key>-1.md.
-            prefix = ""
-            if path.exists():
-                prev = path.read_text(encoding="utf-8", errors="replace")
-                pm = _FM_RE.match(prev)
-                prefix = (pm.group(2).strip() if pm else prev.strip()) + "\n\n---\n\n"
-            else:
-                prefix = f"# {title}\n\n"
+                blocks.append(f"### {d['title']}\n\n{d['body'].strip()}")
+            merged_prefix = (existing_body + "\n\n---\n\n") if existing_body \
+                else f"# {title}\n\n"
+            merged_body = merged_prefix + "\n\n---\n\n".join(sections)
+
+            # Preferred: LLM consolidation (small, deduped). Falls back to the
+            # deterministic merge when no model is reachable.
+            body = None
+            did_summarize = False
+            if summarize:
+                summary = _summarize_notes(blocks, model_role)
+                if summary:
+                    body = f"# {title}\n\n{summary}"
+                    did_summarize = True
+            if body is None:
+                body = merged_body
+
             fm = (
                 "---\n"
                 f"title: {title}\n"
@@ -359,6 +453,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 f"source: compacted:{stem}\n"
                 f"created: {created}\n"
                 f"count: {len(items)}\n"
+                f"summarized: {str(did_summarize).lower()}\n"
                 "---\n\n"
             )
             for d in items:
@@ -367,8 +462,10 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                     moved += 1
                 except Exception:  # noqa: BLE001
                     pass
-            path.write_text(fm + prefix + merged + "\n", encoding="utf-8")
+            path.write_text(fm + body.strip() + "\n", encoding="utf-8")
             out_files.append(path.name)
+            if did_summarize:
+                summarized_files.append(path.name)
             doc = _parse(path)
             _ingest_unit(title=doc["title"], body=doc["body"], kind="compacted",
                          tags=all_tags, source=f"compacted:{stem}", repo="notes")
@@ -377,7 +474,8 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         "ok": True, "dry_run": False, "group_by": group_by,
         "groups": {k: len(v) for k, v in sorted(planned.items())},
         "files_in": moved, "files_out": len(out_files),
-        "compacted": out_files, "archive": str(archive),
+        "compacted": out_files, "summarized": summarized_files,
+        "archive": str(archive),
     }
 
 

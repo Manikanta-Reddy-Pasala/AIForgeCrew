@@ -380,8 +380,14 @@ def load_all() -> dict[str, dict[str, Any]]:
                                 seed.get("base_url") if same_provider else None),
                             "api_key": row_key or (
                                 seed.get("api_key") if same_provider else None),
-                            "insecure_tls": bool(row.get("insecure_tls")) or (
-                                same_provider and bool(seed.get("insecure_tls"))),
+                            # Respect an EXPLICIT per-role insecure_tls (incl.
+                            # a deliberate ``false`` to keep strict TLS) — only
+                            # inherit the seed's flag when the row omits it.
+                            "insecure_tls": (
+                                bool(row["insecure_tls"])
+                                if row.get("insecure_tls") is not None
+                                else (same_provider
+                                      and bool(seed.get("insecure_tls")))),
                         }
         except Exception:
             pass

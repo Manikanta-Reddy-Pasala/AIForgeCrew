@@ -384,7 +384,10 @@ function NotesPanel() {
         `Groups: ${summary}\n\nOriginals are archived (not deleted) and can be restored.`,
       )) return;
       const r = await api.memoryFilesCompact({ group_by: 'kind' });
-      toast.success(`Compacted ${r.files_in} → ${r.files_out} files (${(r.compacted || []).join(', ')})`);
+      const how = (r.summarized && r.summarized.length)
+        ? `LLM-summarized ${r.summarized.length}/${r.files_out}`
+        : 'merged (no model reachable)';
+      toast.success(`Compacted ${r.files_in} → ${r.files_out} files · ${how}`);
       load();
     } catch (e: any) {
       toast.error(`Compact failed: ${e.message}`);
