@@ -19,6 +19,7 @@ const Agents       = lazy(() => import('./views/Agents'));
 const Logs         = lazy(() => import('./views/Logs'));
 const Memory       = lazy(() => import('./views/Memory'));
 const Chat         = lazy(() => import('./views/Chat'));
+const Library      = lazy(() => import('./views/Library'));
 const Tools        = lazy(() => import('./views/Tools'));
 const Kanban       = lazy(() => import('./views/Kanban'));
 const Trace        = lazy(() => import('./views/Trace'));
@@ -60,14 +61,17 @@ const NAV: { group: string; items: NavItem[] }[] = [
       { to: '/dashboard', label: 'Dashboard',  icon: 'Dashboard' },
       { to: '/board',     label: 'Board',      icon: 'Board' },
       { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },
+      { to: '/chat',      label: 'Chat',       icon: 'Chat' },
     ],
   },
   {
     group: 'Reason',
     items: [
-      { to: '/chat',    label: 'Chat',       icon: 'Chat' },
-      { to: '/tools',   label: 'MCP Tools',  icon: 'Tool' },
-      { to: '/memory',  label: 'Memory',     icon: 'Memory' },
+      { to: '/tools',     label: 'MCP Tools',  icon: 'Tool' },
+      { to: '/memory',    label: 'Memory',     icon: 'Memory' },
+      { to: '/skills',    label: 'Skills',     icon: 'Tool' },
+      { to: '/workflows', label: 'Workflows',  icon: 'Tool' },
+      { to: '/rules',     label: 'Rules',      icon: 'Tool' },
     ],
   },
   {
@@ -89,6 +93,9 @@ const TITLE_MAP: Record<string, string> = {
   '/chat':       'Chat',
   '/tools':      'MCP Tools',
   '/memory':     'Memory',
+  '/skills':     'Skills',
+  '/workflows':  'Workflows',
+  '/rules':      'Rules',
   '/agents':     'Agents',
   '/workflow':   'Workflow',
   '/perf':       'Perf',
@@ -167,6 +174,9 @@ function Shell() {
             <Route path="/tickets" element={<Tickets />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/chat" element={<Chat />} />
+            <Route path="/skills" element={<Library kind="skills" />} />
+            <Route path="/workflows" element={<Library kind="workflows" />} />
+            <Route path="/rules" element={<Library kind="rules" />} />
             <Route path="/tools" element={<Tools />} />
             <Route path="/agents" element={<Agents />} />
             <Route path="/logs" element={<Logs />} />

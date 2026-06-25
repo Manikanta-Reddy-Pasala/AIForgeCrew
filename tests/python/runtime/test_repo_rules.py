@@ -9,11 +9,15 @@ from aiforge_core.runtime import repo_rules
 
 
 @pytest.fixture(autouse=True)
-def _unified_query_isolation():
+def _unified_query_isolation(tmp_path, monkeypatch):
     """Tests here import adk_runner/pipeline, which transitively cache
     unified_query on its parent package — defeating test_doer_tools'
     sys.modules-patch isolation (the landmine test_unified_query_afm
-    documents). Clean after every test in this file."""
+    documents). Clean after every test in this file.
+
+    Also isolate the operator global-rules dir to an empty tmp dir so a real
+    ~/.aiforge/rules/*.md doesn't leak into load_rules/collect assertions."""
+    monkeypatch.setenv("AIFORGE_RULES_DIR", str(tmp_path / "_empty_rules"))
     yield
     import sys
 

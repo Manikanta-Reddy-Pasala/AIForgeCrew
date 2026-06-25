@@ -40,6 +40,13 @@ export const api = {
   }),
   resetTickets: () => j<{ ok: boolean; deleted: number }>('/tickets/reset', { method: 'POST' }),
   resetChats:   () => j<{ ok: boolean; deleted: number }>('/chat/sessions/reset', { method: 'POST' }),
+  libraryList:   (kind: string) => j<any[]>(`/library/${kind}`),
+  libraryCreate: (kind: string, body: any) => j<any>(`/library/${kind}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }),
+  libraryGenerate: (kind: string, prompt: string) => j<{ ok: boolean; draft: string }>(`/library/${kind}/generate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }),
+  }),
   comment:  (id: string, body: string) => j<any>(`/tickets/${id}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

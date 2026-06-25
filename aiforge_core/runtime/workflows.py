@@ -163,8 +163,10 @@ def ensure_dirs() -> dict:
     deleted, and we never overwrite a file they edited."""
     builtin = Path(__file__).resolve().parent / "builtin_playbooks"
     out: dict = {}
+    from . import repo_rules as _rr
     for label, dest, sub in (("skills", _sk._global_dir(), "skills"),
-                             ("workflows", _global_dir(), "workflows")):
+                             ("workflows", _global_dir(), "workflows"),
+                             ("rules", _rr._global_rules_dir(), "rules")):
         try:
             dest.mkdir(parents=True, exist_ok=True)
             marker = dest / ".builtins_seeded"

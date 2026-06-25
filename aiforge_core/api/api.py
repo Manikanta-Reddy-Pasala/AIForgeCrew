@@ -30,7 +30,7 @@ from datetime import UTC
 from typing import Any
 
 import psycopg
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -639,6 +639,96 @@ def list_workflows() -> list[dict]:
     dropdown on the new-ticket form."""
     from aiforge_core.workflows import list_all
     return [w.to_public_dict() for w in list_all()]
+
+
+# ─────────── Playbook Library: skills · workflows · rules ──────────────
+# Operator-managed instruction library (separate from the ticket-routing
+# /api/workflows registry above). Display all + create from text or via the
+# configured LLM. These are the auto_context sources the agents pull from.
+
+def _skill_dict(s) -> dict:
+    return {"name": s.name, "description": s.description,
+            "triggers": list(getattr(s, "triggers", []) or []),
+            "body": s.body, "source": getattr(s, "source", ""),
+            "always": bool(getattr(s, "always", False))}
+
+
+@app.get("/api/library/{kind}")
+def library_list(kind: str) -> list[dict]:
+    """List all skills / workflows / rules."""
+    if kind == "skills":
+        from aiforge_core.runtime import skills
+        return [_skill_dict(s) for s in skills.load()]
+    if kind == "workflows":
+        from aiforge_core.runtime import workflows
+        return [_skill_dict(w) for w in workflows.load()]
+    if kind == "rules":
+        from aiforge_core.runtime import repo_rules
+        return [{"name": r.name, "body": r.body, "source": r.source,
+                 "globs": list(r.globs), "always": r.always}
+                for r in repo_rules.load_global_rules()]
+    raise HTTPException(404, f"unknown kind {kind!r}")
+
+
+@app.post("/api/library/{kind}", status_code=201)
+def library_create(kind: str, payload: dict = Body(...)) -> dict:
+    """Create/overwrite a skill / workflow / rule from text."""
+    name = (payload.get("name") or "").strip()
+    body = (payload.get("body") or "").strip()
+    desc = (payload.get("description") or "").strip()
+    triggers = payload.get("triggers") or []
+    if isinstance(triggers, str):
+        triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+    if not name or not body:
+        raise HTTPException(400, "name and body are required")
+    if kind == "skills":
+        from aiforge_core.runtime import skills
+        res = skills.write_skill(name, desc, body, triggers)
+    elif kind == "workflows":
+        from aiforge_core.runtime import workflows
+        res = workflows.write_workflow(name, desc, body, triggers)
+    elif kind == "rules":
+        from aiforge_core.runtime import repo_rules
+        res = repo_rules.write_rule(name, body, globs=payload.get("globs"),
+                                    always=bool(payload.get("always", True)))
+    else:
+        raise HTTPException(404, f"unknown kind {kind!r}")
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error", "write failed"))
+    return res
+
+
+_LIBRARY_GEN_PROMPT = {
+    "skills": ("Write a SKILL.md. Output ONLY a markdown doc with YAML "
+               "frontmatter (name, description, triggers: [..]) then a concise "
+               "instruction body the agent follows. Topic: "),
+    "workflows": ("Write a WORKFLOW.md: YAML frontmatter (name, description, "
+                  "triggers: [..]) then numbered end-to-end steps. Topic: "),
+    "rules": ("Write a coding RULE as a short markdown doc: one '# Title' then "
+              "tight imperative bullet points the agent must follow. Topic: "),
+}
+
+
+@app.post("/api/library/{kind}/generate")
+def library_generate(kind: str, payload: dict = Body(...)) -> dict:
+    """Draft a skill / workflow / rule from a text description using the
+    configured LLM. Returns the draft markdown for review before saving."""
+    if kind not in _LIBRARY_GEN_PROMPT:
+        raise HTTPException(404, f"unknown kind {kind!r}")
+    prompt = (payload.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+    role = payload.get("role") or "architect"
+    try:
+        from aiforge_core.llm import client
+        draft = client.complete(role, [
+            {"role": "system", "content": "You author concise, high-signal "
+             "agent instruction docs. Output ONLY the markdown, no preamble."},
+            {"role": "user", "content": _LIBRARY_GEN_PROMPT[kind] + prompt},
+        ], max_tokens=1200)
+    except Exception as exc:  # noqa: BLE001 — surface model/credit errors
+        raise HTTPException(502, f"LLM generate failed: {exc}")
+    return {"ok": True, "draft": draft}
 
 
 @app.post("/api/workflows/preview")

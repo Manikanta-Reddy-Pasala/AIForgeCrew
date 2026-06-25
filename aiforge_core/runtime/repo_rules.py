@@ -81,10 +81,55 @@ def _parse_rule_file(path: Path) -> Rule | None:
     )
 
 
-def load_rules(repo_root: str | Path) -> list[Rule]:
-    """Scan the repo's rule sources. Soft — missing dirs return []."""
-    root = Path(repo_root)
+def _global_rules_dir() -> Path:
+    base = os.environ.get("AIFORGE_RULES_DIR")
+    if base:
+        return Path(base).expanduser()
+    cfg = os.environ.get("AIFORGE_CONFIG_DIR", os.path.expanduser("~/.aiforge"))
+    return Path(cfg).expanduser() / "rules"
+
+
+def load_global_rules() -> list[Rule]:
+    """Operator-authored rules in ~/.aiforge/rules/*.md (UI-managed)."""
     rules: list[Rule] = []
+    d = _global_rules_dir()
+    if d.is_dir():
+        for path in sorted(d.glob("*.md")):
+            r = _parse_rule_file(path)
+            if r is not None:
+                rules.append(r)
+    return rules
+
+
+def write_rule(name: str, body: str, *, globs: list[str] | None = None,
+               always: bool = True) -> dict:
+    """Author/overwrite a global rule at ~/.aiforge/rules/<slug>.md with Cursor-
+    style frontmatter. Returns ``{ok, name, path}`` or ``{ok: False, error}``."""
+    name = (name or "").strip()
+    body = (body or "").strip()
+    if not name or not body:
+        return {"ok": False, "error": "name and body are required"}
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "rule"
+    d = _global_rules_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        gl = [g.strip() for g in (globs or []) if str(g).strip()]
+        front = ["---", f"name: {name}", f"alwaysApply: {str(bool(always)).lower()}"]
+        if gl:
+            front.append("globs: " + ", ".join(gl))
+        front.append("---")
+        path = d / f"{slug}.md"
+        path.write_text("\n".join(front) + "\n\n" + body + "\n", encoding="utf-8")
+        return {"ok": True, "name": name, "path": str(path)}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def load_rules(repo_root: str | Path) -> list[Rule]:
+    """Scan the repo's rule sources + the operator's global rules
+    (~/.aiforge/rules, UI-managed). Soft — missing dirs return []."""
+    root = Path(repo_root)
+    rules: list[Rule] = list(load_global_rules())   # operator global rules first
     for pattern in (".aiforge/rules/*.md", ".cursor/rules/*.mdc",
                     ".cursor/rules/*.md"):
         for path in sorted(root.glob(pattern)):
