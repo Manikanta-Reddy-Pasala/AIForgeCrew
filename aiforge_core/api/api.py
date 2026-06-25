@@ -60,6 +60,18 @@ if not any(getattr(h, "_aiforge_diag", False) for h in _af_log.handlers):
 
 app = FastAPI(title="AIForge API")
 
+
+@app.on_event("startup")
+def _ensure_skill_workflow_dirs() -> None:
+    """Create the skills + workflows folders on boot so they exist for the
+    operator (and the agent) to add ``SKILL.md`` / ``WORKFLOW.md`` files into."""
+    try:
+        from aiforge_core.runtime import workflows
+        workflows.ensure_dirs()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # dev only

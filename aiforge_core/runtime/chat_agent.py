@@ -469,6 +469,36 @@ def _t_learn_skill(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_workflow_search(args: dict, cwd: str) -> dict:
+    """Search the workflow registry (WORKFLOW.md procedures) by relevance."""
+    try:
+        from aiforge_core.runtime import workflows as _wf
+        q = args.get("query") or args.get("q") or ""
+        return {"ok": True, "workflows": _wf.search(q, cwd, k=int(args.get("k", 5)))}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def _t_learn_workflow(args: dict, cwd: str) -> dict:
+    """Author a reusable workflow (WORKFLOW.md) — an end-to-end procedure —
+    so future sessions (or the user) can reuse it. scope: 'global' or 'repo'."""
+    try:
+        from aiforge_core.runtime import workflows as _wf
+        triggers = args.get("triggers") or []
+        if isinstance(triggers, str):
+            triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+        return _wf.write_workflow(
+            name=args.get("name", ""),
+            description=args.get("description", ""),
+            body=args.get("body") or args.get("content") or "",
+            triggers=list(triggers),
+            cwd=cwd,
+            scope=(args.get("scope") or "global").lower(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_read": _t_file_read,
     "file_write": _t_file_write,
@@ -501,6 +531,8 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "gitlab_comment": _t_gitlab_comment,
     "web_search": _t_web_search,
     "web_fetch": _t_web_fetch,
+    "workflow_search": _t_workflow_search,
+    "learn_workflow": _t_learn_workflow,
 }
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
@@ -508,7 +540,8 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "skill_search", "confluence_search", "confluence_read",
                    "jira_search", "jira_read",
                    "gitlab_search", "gitlab_read",
-                   "web_search", "web_fetch")
+                   "web_search", "web_fetch",
+                   "skill_search", "workflow_search")
 
 _PLAN_BANNER = (
     "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
@@ -647,6 +680,9 @@ Tool arguments:
 - skill_search {{"query": "..."}}                        (find reusable SKILL.md playbooks)
 - learn_skill  {{"name": "...", "description": "when to use it", "body": "the step-by-step playbook", "triggers": ["word1","word2"], "scope": "global|repo"}}
                 (author a reusable skill after solving something non-trivial — also recorded in memory)
+- workflow_search {{"query": "..."}}                     (find reusable WORKFLOW.md end-to-end procedures)
+- learn_workflow  {{"name": "...", "description": "when to use it", "body": "the end-to-end steps", "triggers": ["word1"], "scope": "global|repo"}}
+                (author a reusable multi-step workflow when the user asks or after running a repeatable procedure)
 - confluence_search {{"query": "..."}}  or  {{"cql": "space = ENG AND text ~ 'foo'"}}   (find pages)
 - confluence_read   {{"id": "12345"}}  or  {{"title": "Page Title", "space": "ENG"}}      (read a page; body is storage XHTML)
 - confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page — needs your Approve)
