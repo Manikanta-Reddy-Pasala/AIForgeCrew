@@ -299,7 +299,7 @@ def _relations(notes: RepoNotes) -> dict[str, list[str]]:
     NATS subjects (these are the cross-repo contracts) + outbound
     HTTP URLs that mention other known service names."""
     rel: dict[str, list[str]] = defaultdict(list)
-    base = os.environ.get("AIFORGE_REPOS_BASE", "/home/mani/codeRepo")
+    base = os.environ.get("AIFORGE_REPOS_BASE", os.path.expanduser("~/codeRepo"))
     sibling_repos = []
     try:
         sibling_repos = [
@@ -442,7 +442,7 @@ def generate_repo_notes(repo: str, *, write: bool = True) -> str:
     """Build + optionally write `<repo>/.aiforge/REPO_NOTES.md`.
     Returns the on-disk path (when ``write`` is True) or the rendered
     markdown body otherwise."""
-    base = os.environ.get("AIFORGE_REPOS_BASE", "/home/mani/codeRepo")
+    base = os.environ.get("AIFORGE_REPOS_BASE", os.path.expanduser("~/codeRepo"))
     worktree = os.path.join(base, repo)
     if not os.path.isdir(worktree):
         raise FileNotFoundError(f"repo not found: {worktree}")

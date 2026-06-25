@@ -673,10 +673,10 @@ import glob as _glob_mod  # local alias to avoid leaking name
 
 def _resolve_active_task_dirs(identifier: str) -> list[str]:
     """Return GA temp dirs that match a running agent for this ticket."""
+    # AIFORGE_GA_DIR override first, else the genericagent checkout in the
+    # running user's home — no hardcoded per-operator absolute paths.
     ga_root_candidates = (
         os.environ.get("AIFORGE_GA_DIR", ""),
-        "/home/mani/genericagent",
-        "/Users/manikanta/genericagent",
         os.path.expanduser("~/genericagent"),
     )
     for root in ga_root_candidates:
@@ -1734,7 +1734,7 @@ def _call_mcp_sync(tool: str, args: dict, timeout: int = 15) -> dict | None:
     import subprocess
     cmd = [os.environ.get(
         "AIFORGE_MCP_BIN",
-        "/home/mani/AIForgeCrew/.venv/bin/aiforge-graph-mcp",
+        "aiforge-graph-mcp",
     )]
     payload = "\n".join(json.dumps(m) for m in [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -2446,7 +2446,7 @@ async def mcp_tool_call(body: _McpCallBody) -> dict:
         raise HTTPException(400, f"tool '{body.tool}' not in allowlist")
     cmd = [
         os.environ.get("AIFORGE_MCP_BIN",
-                       "/home/mani/AIForgeCrew/.venv/bin/aiforge-graph-mcp"),
+                       "aiforge-graph-mcp"),
     ]
     env = {
         **os.environ,

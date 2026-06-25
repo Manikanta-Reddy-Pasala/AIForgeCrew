@@ -230,7 +230,7 @@ def learn_repo(repo: str, *,
     - ``sleep_s``: delay between LLM calls (rate-limit guard for
       shared LM Studio).
     """
-    base = os.environ.get("AIFORGE_REPOS_BASE", "/home/mani/codeRepo")
+    base = os.environ.get("AIFORGE_REPOS_BASE", os.path.expanduser("~/codeRepo"))
     worktree = os.path.join(base, repo)
     if not os.path.isdir(worktree):
         return {"repo": repo, "error": f"not a dir: {worktree}"}

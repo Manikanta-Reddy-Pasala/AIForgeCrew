@@ -76,8 +76,12 @@ def _build_context_bundle(ticket_title: str, role: str) -> str:
     """Shells out to aiforge-deep-context CLI. Budgeted at 120s."""
     try:
         env = {**os.environ, "ROLE": role}
+        # Resolve from PATH by default (works on any host); override with
+        # AIFORGE_DEEP_CONTEXT_BIN for a non-standard install location.
+        bin_path = os.environ.get("AIFORGE_DEEP_CONTEXT_BIN",
+                                  "aiforge-deep-context")
         proc = subprocess.run(
-            ["/Users/manikanta/.local/bin/aiforge-deep-context", ticket_title],
+            [bin_path, ticket_title],
             capture_output=True, text=True, timeout=150, env=env, check=False,
         )
         return proc.stdout or f"(deep-context empty; stderr={proc.stderr[:500]})"
