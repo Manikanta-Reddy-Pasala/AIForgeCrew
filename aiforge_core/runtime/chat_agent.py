@@ -736,9 +736,9 @@ You work by emitting ONE step at a time in this exact text format.
 
 To use a tool:
 THOUGHT: <your reasoning>
-ACTION: <one of: file_read, file_write, file_create, file_patch, list_dir,
-         find, grep, run_command, ensure_runtime, project, remember_rule,
-         memory_lookup, memory_write>
+ACTION: <any one tool name listed under "Tool arguments" below — files, shell,
+         memory, skills/workflows, Confluence/Jira/GitLab, and web search are
+         all available>
 ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
