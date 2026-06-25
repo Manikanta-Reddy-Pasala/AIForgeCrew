@@ -23,6 +23,7 @@ against ``Edge.route``.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 # Route label constants — keep in sync with the edge wiring in pipeline.py.
@@ -156,9 +157,20 @@ def _feedback_passed(state: Any) -> bool:
 # Each takes the workflow Context (param named ``ctx`` is bound to the
 # Context, not to state) and sets ``ctx.route``.
 
+def _force_full_pipeline() -> bool:
+    return str(os.environ.get("AIFORGE_FORCE_FULL_PIPELINE", "")).strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
 async def _triage_gate(ctx):  # type: ignore[no-untyped-def]
     complexity = _read_complexity(ctx.state)
-    route = ROUTE_TRIVIAL if complexity == "trivial" else ROUTE_FULL
+    # Fast-path skips enhancer→research→planner→verifiers straight to the Doer
+    # for a 'trivial' ticket. Set AIFORGE_FORCE_FULL_PIPELINE=1 to always take
+    # the full path (every agent runs/shows) regardless of triage complexity.
+    if _force_full_pipeline():
+        route = ROUTE_FULL
+    else:
+        route = ROUTE_TRIVIAL if complexity == "trivial" else ROUTE_FULL
     ctx.state["graph_route"] = {"complexity": complexity, "route": route}
     ctx.route = route
     _trace(":GraphRoute", {"complexity": complexity, "route": route})
