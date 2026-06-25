@@ -2307,6 +2307,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     ]
     cwd = session.get("cwd") or _default_cwd()
     team = body.mode == "team"
+    from aiforge_core.runtime import parallel_subtasks as _psub
+    _parallel_team = team and _psub.enabled()
     agent_mode = "plan" if body.mode == "plan" else "act"
     prompt = body.content.strip()
 
@@ -2334,6 +2336,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     def _events():
         # Team mode → full ADK agent flow (planner→…→learner) for complex
         # builds. Simple mode → single conversational agent for quick work.
+        # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
+        # subtasks CONCURRENTLY in isolated worktrees with live status.
+        if team and _parallel_team:
+            from aiforge_core.runtime.parallel_subtasks import stream_parallel_team
+            return stream_parallel_team(prompt, cwd=cwd)
         if team:
             return stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
                                         history=history)
@@ -2368,7 +2375,9 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # persist a partial here (and finishing the token here would
             # orphan a still-running ADK run on Stop). SIMPLE mode runs inline
             # in this generator, so finish + persist here.
-            if not team:
+            # Parallel team mode is a self-contained generator (not the
+            # background ADK driver), so persist it inline like simple mode.
+            if not team or _parallel_team:
                 chat_cancel.finish(session_id)
                 from aiforge_core.runtime import chat_approve, chat_persist
                 chat_approve.finish(session_id)

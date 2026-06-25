@@ -116,13 +116,13 @@ def _attempt(subtask: dict, wt: str, slug: str, run_one, validate_one) -> dict:
 
 
 def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
-                 subtask: dict, run_one, validate_one) -> dict:
+                 subtask: dict, run_one, validate_one, on_status=None) -> dict:
     slug = subtask.get("slug") or "sub"
-    _update(ticket_id, slug, "running")
+    _update(ticket_id, slug, "running", on_status)
     try:
         wt, branch = _make_worktree(repo, base_branch, slug)
     except Exception as exc:  # noqa: BLE001
-        _update(ticket_id, slug, "failed")
+        _update(ticket_id, slug, "failed", on_status)
         return {"slug": slug, "ok": False, "error": str(exc), "branch": None}
 
     # Retry the whole run+validate on failure/crash — subtasks are the risky
@@ -145,7 +145,7 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
           f"{slug} validation {'passed' if last.get('validated') else 'failed'}",
           {"slug": slug, "validated": last.get("validated"),
            "attempts": i + 1})
-    _update(ticket_id, slug, "done" if ok else "failed")
+    _update(ticket_id, slug, "done" if ok else "failed", on_status)
     return {"slug": slug, "ok": ok, "ran": last.get("ran"),
             "validated": last.get("validated"), "attempts": i + 1,
             "branch": branch, "worktree": wt,
@@ -200,7 +200,13 @@ def _emit(ticket_id, slug, kind, body, md) -> None:
         pass
 
 
-def _update(ticket_id, slug, status) -> None:
+def _update(ticket_id, slug, status, on_status=None) -> None:
+    # Persist to the ticket (chart) AND/OR stream to a live consumer (chat SSE).
+    if on_status is not None:
+        try:
+            on_status(slug, status)
+        except Exception:  # noqa: BLE001
+            pass
     if ticket_id is None:
         return
     try:
@@ -223,7 +229,7 @@ def _merge_branch(repo: str, base_branch: str, branch: str) -> tuple[bool, str]:
 
 def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                  subtasks: list[dict], run_one, *, validate_one=None,
-                 integration_test=None, merge: bool = True) -> dict:
+                 integration_test=None, on_status=None, merge: bool = True) -> dict:
     """Run ``subtasks`` concurrently (each in its own worktree), VALIDATE each
     (build/tests green), then merge the validated branches into ``base_branch``
     sequentially. Returns an aggregate incl. a review summary.
@@ -237,7 +243,7 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
     results: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
         futs = [ex.submit(_run_subtask, repo_root, base_branch, ticket_id, s,
-                          run_one, validate_one)
+                          run_one, validate_one, on_status)
                 for s in subs]
         for f in concurrent.futures.as_completed(futs):
             try:
@@ -257,7 +263,7 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                 merged += 1
             else:
                 conflicts.append(r["slug"])
-                _update(ticket_id, r["slug"], "failed")
+                _update(ticket_id, r["slug"], "failed", on_status)
 
     # Best-effort worktree cleanup.
     for r in results:
@@ -381,5 +387,109 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
             _INFLIGHT.discard(tid)
 
 
+# ─────────────── Parallel chat mode (decompose → fan-out → merge) ──────────
+
+_DECOMPOSE_SYS = (
+    "You are a planner. Break the user's task into 3-8 INDEPENDENT subtasks that "
+    "can be implemented in parallel (separate files where possible). Output ONLY "
+    "a JSON object: {\"subtickets\": [{\"slug\": \"kebab-id\", \"goal\": \"one "
+    "sentence\"}, ...]}. No prose."
+)
+
+
+def _decompose(prompt: str) -> list[dict]:
+    """One planner LLM call → subtasks list (JSON array or markdown phases)."""
+    try:
+        from aiforge_core.llm import client
+        from aiforge_core.runtime.subtasks_callback import _extract_subtickets
+        out = client.complete("planner", [
+            {"role": "system", "content": _DECOMPOSE_SYS},
+            {"role": "user", "content": prompt}], max_tokens=1500)
+        return _extract_subtickets(out)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("parallel decompose failed: %s", exc)
+        return []
+
+
+def _ensure_git_workspace(cwd: str) -> str:
+    """Make ``cwd`` a git repo with a committed baseline so worktrees can branch
+    off it. Returns the base branch name."""
+    os.makedirs(cwd, exist_ok=True)
+    if _git(["rev-parse", "--git-dir"], cwd).returncode != 0:
+        _git(["init"], cwd)
+        _git(["config", "user.email", "aiforge@local"], cwd)
+        _git(["config", "user.name", "aiforge"], cwd)
+    # need at least one commit for `worktree add <base>` to resolve
+    if _git(["rev-parse", "HEAD"], cwd).returncode != 0:
+        readme = os.path.join(cwd, ".aiforge-workspace")
+        if not os.path.exists(readme):
+            with open(readme, "w") as f:
+                f.write("aiforge chat workspace\n")
+        _git(["add", "-A"], cwd)
+        _git(["commit", "-m", "workspace baseline"], cwd)
+    cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    return (cur.stdout or "").strip() or "main"
+
+
+def stream_parallel_team(prompt: str, cwd: str):
+    """Chat 'parallel team' mode: decompose the task, then run the subtasks
+    CONCURRENTLY in isolated worktrees under ``cwd``, streaming live status.
+    Yields SSE-ready dicts (subtasks / subtask_update / thought / message)."""
+    import queue as _queue
+
+    yield {"type": "thought", "role": "planner",
+           "text": "Decomposing into parallel subtasks…"}
+    subs = _decompose(prompt)
+    if len(subs) < 2:
+        yield {"type": "message", "text":
+               "Couldn't split this into parallel subtasks — run it in normal "
+               "team mode (sequential) instead."}
+        return
+    yield {"type": "subtasks", "items": [
+        {"slug": s.get("slug") or f"sub-{i+1}",
+         "goal": s.get("goal") or "", "status": "pending"}
+        for i, s in enumerate(subs)]}
+    yield {"type": "thought", "role": "system",
+           "text": f"Running {len(subs)} subtasks in parallel worktrees "
+                   f"(max {_max_workers()} at once)…"}
+
+    base = _ensure_git_workspace(cwd)
+    q: "_queue.Queue" = _queue.Queue()
+    result: dict = {}
+
+    def on_status(slug, status):
+        q.put({"type": "subtask_update", "slug": slug, "status": status})
+
+    def _runner():
+        try:
+            result["agg"] = run_parallel(cwd, base, None, subs,
+                                         default_run_one,
+                                         validate_one=default_validate_one,
+                                         integration_test=default_integration_test,
+                                         on_status=on_status)
+        except Exception as exc:  # noqa: BLE001
+            result["err"] = str(exc)
+        finally:
+            q.put(None)
+
+    t = threading.Thread(target=_runner, name="parallel-chat", daemon=True)
+    t.start()
+    while True:
+        item = q.get()
+        if item is None:
+            break
+        yield item
+
+    agg = result.get("agg") or {}
+    if result.get("err"):
+        yield {"type": "message", "text": f"Parallel run error: {result['err']}"}
+        return
+    yield {"type": "message", "text":
+           f"**Parallel run complete** — {agg.get('review', 'done')}.\n\n"
+           f"All work merged into the chat workspace. "
+           f"{agg.get('done', 0)}/{agg.get('total', 0)} subtasks done."}
+
+
 __all__ = ["run_parallel", "run_subtasks_parallel", "default_run_one",
-           "default_validate_one", "default_integration_test", "enabled"]
+           "default_validate_one", "default_integration_test",
+           "stream_parallel_team", "enabled"]
