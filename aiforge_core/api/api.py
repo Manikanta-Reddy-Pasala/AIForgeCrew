@@ -2348,6 +2348,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         steps: list[dict] = []
         final_text = ""
         awaiting = False   # turn ended with a question / pause, not an outcome
+        _subtasks: list[dict] = []   # live subtask panel state, persisted so it
+        #                              survives a navigate-away / reload
         _auto_checkpoint()   # snapshot first (off the response-open path)
         try:
             for ev in _events():
@@ -2356,9 +2358,18 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     awaiting = bool(ev.get("awaiting_input"))
                 elif ev.get("type") in ("thought", "tool", "error"):
                     steps.append(ev)
+                elif ev.get("type") == "subtasks":
+                    _subtasks = list(ev.get("items") or [])
+                elif ev.get("type") == "subtask_update":
+                    for _s in _subtasks:
+                        if _s.get("slug") == ev.get("slug"):
+                            _s["status"] = ev.get("status")
                 yield f"data: {json.dumps(ev)}\n\n"
                 if chat_cancel.is_cancelled(session_id):
                     break
+            # Persist the final subtask panel as a step so reload restores it.
+            if _subtasks:
+                steps.insert(0, {"type": "subtasks", "items": _subtasks})
         except Exception as exc:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"

@@ -179,8 +179,28 @@ def _build_or_test(worktree: str) -> dict:
 
 
 def default_validate_one(subtask: dict, worktree: str) -> dict:
-    """Objective per-subtask validation in its worktree (tests-strict)."""
-    return _build_or_test(worktree)
+    """Per-subtask validation = COMPILE/BUILD only.
+
+    A subtask runs in an ISOLATED single-file worktree, so it can't pass
+    cross-file tests (db.py alone has no tests; test_app.py alone imports files
+    that live in other subtasks' worktrees). Gating each subtask on the full
+    test suite would fail every one. So per-subtask we only check the written
+    code COMPILES; the integration test (after merge, all files together) runs
+    the real test suite. Set AIFORGE_PARALLEL_STRICT_VALIDATE=1 to test per
+    subtask instead."""
+    if os.environ.get("AIFORGE_PARALLEL_STRICT_VALIDATE", "0") in ("1", "true"):
+        return _build_or_test(worktree)
+    try:
+        from aiforge_core.runtime.tools.project_runner import detect, project
+        stacks = (detect(worktree) or {}).get("stacks") or []
+        if not stacks:
+            return {"ok": True, "via": "no-project"}
+        build = project(action="build", cwd=worktree)
+        ok = bool(isinstance(build, dict) and build.get("ok"))
+        return {"ok": ok, "via": "build-only",
+                "detail": None if ok else (build or {}).get("error")}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
 
 
 def default_integration_test(repo_root: str) -> dict:
