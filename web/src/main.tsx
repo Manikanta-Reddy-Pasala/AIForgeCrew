@@ -104,14 +104,6 @@ function useTitle(pathname: string): string {
 function TopBar({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const loc = useLocation();
   const title = useTitle(loc.pathname);
-  const [health, setHealth] = useState<any>(null);
-  useEffect(() => {
-    let alive = true;
-    const tick = () => api.health().then(h => alive && setHealth(h)).catch(() => alive && setHealth({ ok: false }));
-    tick();
-    const id = setInterval(tick, 15_000);
-    return () => { alive = false; clearInterval(id); };
-  }, []);
 
   return (
     <div className="topbar">
@@ -122,20 +114,7 @@ function TopBar({ onToggleSidebar }: { onToggleSidebar: () => void }) {
         <div className="topbar-title">{title}</div>
       </div>
       <div className="topbar-spacer" />
-      <div className="topbar-health">
-        <HealthPill label="Postgres"  on={!!health?.postgres} />
-        <HealthPill label="mlx-lm" on={!!health?.lm_studio} />
-      </div>
     </div>
-  );
-}
-
-function HealthPill({ label, on }: { label: string; on: boolean }) {
-  return (
-    <span className={`health-dot ${on ? '' : 'down'}`}>
-      <span className="dot" />
-      {label}
-    </span>
   );
 }
 

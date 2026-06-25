@@ -66,9 +66,9 @@ export default function Dashboard() {
         />
         <Metric
           label="Runtime"
-          value={health.data?.postgres && health.data?.lm_studio ? 'Healthy' : 'Degraded'}
-          sub={`pg ${health.data?.postgres ? 'ok' : 'down'} · lm ${health.data?.lm_studio ? 'ok' : 'down'}`}
-          tone={health.data?.postgres && health.data?.lm_studio ? 'ok' : 'err'}
+          value={health.data?.ok ? 'Healthy' : 'Degraded'}
+          sub={health.data?.ok ? 'API reachable' : 'API unreachable'}
+          tone={health.data?.ok ? 'ok' : 'err'}
         />
       </div>
 
