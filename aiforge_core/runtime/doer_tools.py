@@ -509,6 +509,26 @@ def web_fetch(url: str) -> dict:
     return fetch_url(url)
 
 
+def serve(cmd: str, port: int = 0, wait_s: float = 12.0) -> dict:
+    """Start a server/app in the BACKGROUND (returns pid + detected URL) so you
+    can run the thing you built and hand back an endpoint. NOT for one-shot
+    commands (use run_shell). Stop it with stop_service(pid)."""
+    try:
+        from aiforge_core.runtime.tools import serve as _serve
+        return _serve.serve({"cmd": cmd, "port": port or None, "wait_s": wait_s})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def stop_service(pid: int) -> dict:
+    """Stop a service started by serve(), by pid."""
+    try:
+        from aiforge_core.runtime.tools import serve as _serve
+        return _serve.stop_service({"pid": pid})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def web_search(query: str, k: int = 5) -> dict:
     """Search the open web (DuckDuckGo, no API key) when you're stuck — an
     unfamiliar error, a library API you can't recall, a config flag. Returns
@@ -643,7 +663,7 @@ def adk_function_tools() -> list:
                         grep_repo, repo_map, impacted_tests, fetch_url,
                         git_commit, memory_lookup, graphify_lookup,
                         skill_search, learn_skill,
-                        workflow_search, learn_workflow, web_search]
+                        workflow_search, learn_workflow, web_search, serve, stop_service]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -655,7 +675,7 @@ __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup", "skill_search", "learn_skill",
-    "workflow_search", "learn_workflow", "web_search",
+    "workflow_search", "learn_workflow", "web_search", "serve", "stop_service",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
     "commit", "git_add_commit",
