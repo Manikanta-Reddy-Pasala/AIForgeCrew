@@ -839,11 +839,13 @@ export default function Chat() {
                     <div className="muted xs" style={{ marginBottom: 6 }}>{pendingApproval.reason}</div>
                   )}
                   {pendingApproval.preview && (
-                    <pre style={{
-                      maxHeight: 220, overflow: 'auto', fontSize: 11,
+                    <div className="md-body" style={{
+                      maxHeight: 260, overflow: 'auto', fontSize: 12,
                       background: 'var(--bg-2)', padding: 8, borderRadius: 6,
-                      whiteSpace: 'pre-wrap', margin: '0 0 8px',
-                    }}>{pendingApproval.preview}</pre>
+                      margin: '0 0 8px',
+                    }}>
+                      <MdLite text={pendingApproval.preview} />
+                    </div>
                   )}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => resolveApproval('approve')}>✓ Approve</button>

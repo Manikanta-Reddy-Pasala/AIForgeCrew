@@ -1,30 +1,56 @@
-/* mdlite — a tiny markdown-ish renderer for chat answers.
- * Handles: fenced ```code``` blocks, inline `code`, `- `/`* ` bullet lists,
- * blank-line paragraphs. No tables, no links beyond bare URLs which stay
- * as plain text. Designed to stay under 60 lines and produce React nodes.
+/* mdlite — a compact, zero-dependency markdown renderer for chat answers
+ * and action previews.
+ *
+ * Block level:  # headings, fenced ```code``` (with language label), GFM
+ *   tables, > blockquotes, --- horizontal rules, ordered (1.) and unordered
+ *   (-, *) lists, blank-line paragraphs.
+ * Inline level: **bold**, *italic* / _italic_, `code`, [text](url), and bare
+ *   http(s) URLs (auto-linked). Formatting nests (bold inside a list item,
+ *   code inside bold, …) except inside `code` and links, which stay literal.
+ *
+ * Kept dependency-free on purpose (deploy-anywhere clone-and-run) — no
+ * react-markdown / remark transitive tree.
  */
 import React from 'react';
 
-function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
-  let i = 0;
-  let buf = '';
+// ── inline ──────────────────────────────────────────────────────────────────
+// Earliest-match tokenizer. Order in the alternation matters: ** before *,
+// __ before _, so bold wins over italic.
+const INLINE_RE =
+  /(`[^`]+`)|(\*\*[\s\S]+?\*\*)|(__[\s\S]+?__)|(\*[^*\n]+?\*)|(_[^_\n]+?_)|(\[[^\]]+\]\([^)\s]+\))|(\bhttps?:\/\/[^\s<>()]+)/;
+
+function renderInline(text: string, key: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let rest = text;
   let n = 0;
-  while (i < text.length) {
-    if (text[i] === '`') {
-      if (buf) { nodes.push(buf); buf = ''; }
-      const end = text.indexOf('`', i + 1);
-      if (end === -1) { buf += text[i]; i++; continue; }
-      nodes.push(<code key={`${keyPrefix}-c-${n++}`}>{text.slice(i + 1, end)}</code>);
-      i = end + 1;
-    } else {
-      buf += text[i++];
+  while (rest) {
+    const m = INLINE_RE.exec(rest);
+    if (!m) { out.push(rest); break; }
+    if (m.index > 0) out.push(rest.slice(0, m.index));
+    const tok = m[0];
+    const kk = `${key}-${n++}`;
+    if (tok.startsWith('`')) {
+      out.push(<code key={kk}>{tok.slice(1, -1)}</code>);
+    } else if (tok.startsWith('**') || tok.startsWith('__')) {
+      out.push(<strong key={kk}>{renderInline(tok.slice(2, -2), kk)}</strong>);
+    } else if (tok.startsWith('[')) {
+      const mm = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok)!;
+      out.push(<a key={kk} href={mm[2]} target="_blank" rel="noopener noreferrer">{mm[1]}</a>);
+    } else if (/^https?:\/\//.test(tok)) {
+      out.push(<a key={kk} href={tok} target="_blank" rel="noopener noreferrer">{tok}</a>);
+    } else { // * or _ italic
+      out.push(<em key={kk}>{renderInline(tok.slice(1, -1), kk)}</em>);
     }
+    rest = rest.slice(m.index + tok.length);
   }
-  if (buf) nodes.push(buf);
-  return nodes;
+  return out;
 }
 
+function splitRow(line: string): string[] {
+  return line.replace(/^\s*\|?/, '').replace(/\|?\s*$/, '').split('|').map(c => c.trim());
+}
+
+// ── block ───────────────────────────────────────────────────────────────────
 export function MdLite({ text }: { text: string }) {
   if (!text) return null;
   const out: React.ReactNode[] = [];
@@ -33,16 +59,90 @@ export function MdLite({ text }: { text: string }) {
   let k = 0;
   while (i < lines.length) {
     const line = lines[i];
-    // fenced code
-    if (/^```/.test(line)) {
-      const fenceEnd = lines.findIndex((l, j) => j > i && /^```/.test(l));
-      const end = fenceEnd === -1 ? lines.length : fenceEnd;
-      const body = lines.slice(i + 1, end).join('\n');
-      out.push(<pre key={`p-${k++}`}><code>{body}</code></pre>);
-      i = end + 1;
+
+    // fenced code (```lang ... ```)
+    if (/^\s*```/.test(line)) {
+      const lang = line.replace(/^\s*```/, '').trim();
+      const end = lines.findIndex((l, j) => j > i && /^\s*```/.test(l));
+      const stop = end === -1 ? lines.length : end;
+      const body = lines.slice(i + 1, stop).join('\n');
+      out.push(
+        <pre key={`p-${k++}`} data-lang={lang || undefined}>
+          <code>{body}</code>
+        </pre>,
+      );
+      i = stop + 1;
       continue;
     }
-    // list block
+
+    // heading (# … ######)
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      const lvl = h[1].length;
+      const Tag = (`h${lvl}` as keyof JSX.IntrinsicElements);
+      out.push(<Tag key={`h-${k++}`}>{renderInline(h[2], `h-${k}`)}</Tag>);
+      i++;
+      continue;
+    }
+
+    // horizontal rule
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+      out.push(<hr key={`hr-${k++}`} />);
+      i++;
+      continue;
+    }
+
+    // GFM table: header row + |---|---| separator
+    if (line.includes('|') && i + 1 < lines.length &&
+        /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) &&
+        lines[i + 1].includes('-')) {
+      const header = splitRow(line);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      out.push(
+        <table key={`tb-${k++}`} className="md-table">
+          <thead><tr>{header.map((c, j) => <th key={j}>{renderInline(c, `th-${k}-${j}`)}</th>)}</tr></thead>
+          <tbody>
+            {rows.map((r, ri) => (
+              <tr key={ri}>{header.map((_, ci) => <td key={ci}>{renderInline(r[ci] ?? '', `td-${k}-${ri}-${ci}`)}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>,
+      );
+      continue;
+    }
+
+    // blockquote (collapse consecutive > lines)
+    if (/^\s*>\s?/.test(line)) {
+      const buf: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ''));
+        i++;
+      }
+      out.push(<blockquote key={`bq-${k++}`}>{renderInline(buf.join(' '), `bq-${k}`)}</blockquote>);
+      continue;
+    }
+
+    // ordered list (1. 2. …)
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+        i++;
+      }
+      out.push(
+        <ol key={`ol-${k++}`}>
+          {items.map((it, j) => <li key={j}>{renderInline(it, `oli-${k}-${j}`)}</li>)}
+        </ol>,
+      );
+      continue;
+    }
+
+    // unordered list (- or *)
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
       while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
@@ -51,30 +151,42 @@ export function MdLite({ text }: { text: string }) {
       }
       out.push(
         <ul key={`ul-${k++}`}>
-          {items.map((it, j) => (
-            <li key={j}>{renderInline(it, `li-${k}-${j}`)}</li>
-          ))}
+          {items.map((it, j) => <li key={j}>{renderInline(it, `li-${k}-${j}`)}</li>)}
         </ul>,
       );
       continue;
     }
-    // blank line → paragraph break (flush by appending a <p/>)
-    if (!line.trim()) {
-      i++;
-      continue;
-    }
-    // paragraph: gather until blank or list/fence
+
+    // blank line → paragraph break
+    if (!line.trim()) { i++; continue; }
+
+    // paragraph: gather until a blank line or a block starter
     const pLines: string[] = [];
     while (
       i < lines.length &&
       lines[i].trim() &&
-      !/^```/.test(lines[i]) &&
+      !/^\s*```/.test(lines[i]) &&
+      !/^#{1,6}\s/.test(lines[i]) &&
+      !/^\s*>\s?/.test(lines[i]) &&
+      !/^\s*\d+\.\s+/.test(lines[i]) &&
       !/^\s*[-*]\s+/.test(lines[i])
     ) {
       pLines.push(lines[i]);
       i++;
     }
-    out.push(<p key={`para-${k++}`}>{renderInline(pLines.join(' '), `p-${k}`)}</p>);
+    // Preserve intentional soft line breaks inside a paragraph (the
+    // container is no longer white-space:pre-wrap) while still running each
+    // line through the inline tokenizer.
+    out.push(
+      <p key={`para-${k++}`}>
+        {pLines.map((pl, j) => (
+          <React.Fragment key={j}>
+            {j > 0 && <br />}
+            {renderInline(pl, `p-${k}-${j}`)}
+          </React.Fragment>
+        ))}
+      </p>,
+    );
   }
   return <>{out}</>;
 }
