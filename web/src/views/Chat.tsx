@@ -30,13 +30,26 @@ const SUBTASK_COLORS: Record<string, string> = {
 };
 
 function SubtaskList({ items }: { items: SubtaskItem[] }) {
-  const done = items.filter(s => s.status === 'done' || s.status === 'skipped').length;
+  const [open, setOpen] = useState(true);
+  const counts = items.reduce((m, s) => { m[s.status] = (m[s.status] || 0) + 1; return m; }, {} as Record<string, number>);
+  const done = (counts['done'] || 0) + (counts['skipped'] || 0);
+  const order = ['done', 'running', 'failed', 'pending', 'skipped'];
   return (
     <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '8px 10px', margin: '6px 0', background: 'var(--bg-1,#0d1117)' }}>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-        Plan → {items.length} subtasks <span style={{ color: '#8892a0' }}>({done}/{items.length} done)</span>
+      <div onClick={() => setOpen(v => !v)}
+        style={{ fontSize: 12, fontWeight: 600, marginBottom: open ? 6 : 0, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>{open ? '▾' : '▸'} Plan → {items.length} subtasks <span style={{ color: '#8892a0' }}>({done}/{items.length} done)</span></span>
+        <span style={{ display: 'flex', gap: 8, fontSize: 10, fontWeight: 500 }}>
+          {order.filter(k => counts[k]).map(k => (
+            <span key={k} style={{ color: SUBTASK_COLORS[k] }}>● {counts[k]}</span>
+          ))}
+        </span>
       </div>
-      {items.map((s, i) => (
+      {/* progress bar */}
+      <div style={{ display: open ? 'flex' : 'none', height: 5, borderRadius: 3, overflow: 'hidden', background: 'var(--bg-2,#222)', marginBottom: 8 }}>
+        {order.map(k => counts[k] ? <div key={k} style={{ width: `${(counts[k] / items.length) * 100}%`, background: SUBTASK_COLORS[k] }} /> : null)}
+      </div>
+      {open && items.map((s, i) => (
         <div key={s.slug || i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '2px 0' }}>
           <span style={{ flexShrink: 0, width: 58, textAlign: 'center', fontSize: 10, fontWeight: 600,
             color: SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending,
