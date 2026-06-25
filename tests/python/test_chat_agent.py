@@ -404,3 +404,23 @@ def test_compact_convo_noop_under_budget(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "48000")
     convo = [{"role": "system", "content": "s"}, {"role": "user", "content": "hi"}]
     assert ca._compact_convo(convo) is convo               # untouched
+
+
+def test_compact_convo_sentinel_strip_is_exact(monkeypatch):
+    # A condense block is stripped by unique sentinel, so a legit look-alike
+    # phrase elsewhere in the system message is never eaten, and the block
+    # can't accumulate across repeated condenses.
+    from aiforge_core.runtime import chat_agent as ca
+    monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "800")
+    sysc = ("KEEP_ME. mentions '[earlier conversation auto-condensed ... "
+            "this point.]' literally. KEEP_END.")
+    convo = [{"role": "system", "content": sysc}]
+    for i in range(20):
+        convo.append({"role": "assistant", "content": "ACTION: grep\nARGS_JSON: {}"})
+        convo.append({"role": "user", "content": "OBS " + "z" * 100})
+    out = ca._compact_convo(convo)
+    out = ca._compact_convo(out)          # re-condense
+    out = ca._compact_convo(out)
+    s = out[0]["content"]
+    assert "KEEP_ME" in s and "KEEP_END" in s          # legit text preserved
+    assert s.count(ca._CONDENSE_OPEN) == 1             # exactly one block

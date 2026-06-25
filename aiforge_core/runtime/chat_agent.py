@@ -933,6 +933,10 @@ _LOOP_REPEAT = 4
 _OUTPUT_REPEAT = 3
 
 
+_CONDENSE_OPEN = "<<AIFORGE_CTX_CONDENSED>>"
+_CONDENSE_CLOSE = "<</AIFORGE_CTX_CONDENSED>>"
+
+
 def _ctx_budget_chars() -> int:
     """Char budget for the running conversation before auto-condensing.
     ~48k chars ≈ ~12k tokens — safe headroom under most context windows.
@@ -969,17 +973,21 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 12) -> list[dict]:
     import collections as _c
     used = ", ".join(f"{t}×{n}" for t, n in _c.Counter(tools).most_common(8)) \
         or "discussion + reads"
-    note = ("[earlier conversation auto-condensed to fit the context window — "
+    # Wrap the breadcrumb in a unique sentinel so the next condense can strip
+    # exactly THIS block (not a look-alike phrase a rule/skill might contain).
+    note = (f"{_CONDENSE_OPEN}\n"
+            "[earlier conversation auto-condensed to fit the context window — "
             f"{len(middle)} messages omitted. Work done so far: {used}. "
             "Re-read a file or ask the user if you need detail from before "
-            "this point.]")
+            f"this point.]\n{_CONDENSE_CLOSE}")
     # Fold the breadcrumb INTO the system message rather than inserting a
     # separate 'user' turn — that avoids two consecutive same-role messages
-    # (some providers reject those) and keeps the assistant/user alternation
-    # of the tail intact. Strip any prior breadcrumb first so the system
-    # message can't grow unbounded across repeated condenses.
-    sys_text = re.sub(r"\n*\[earlier conversation auto-condensed.*?\]\s*$", "",
-                      convo[0].get("content") or "", flags=re.S)
+    # (some providers reject those) and keeps the tail's alternation intact.
+    # Strip any prior sentinel block first so the system message can't grow
+    # unbounded across repeated condenses.
+    sys_text = re.sub(
+        re.escape(_CONDENSE_OPEN) + r".*?" + re.escape(_CONDENSE_CLOSE),
+        "", convo[0].get("content") or "", flags=re.S).rstrip()
     head = [{"role": "system", "content": (sys_text + "\n\n" + note).strip()}]
     return head + tail
 
