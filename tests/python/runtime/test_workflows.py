@@ -48,3 +48,11 @@ def test_handwritten_workflow_picked_up(wf):
         "---\nname: Manual flow\ndescription: dropped by hand\ntriggers: [onboard]\n---\n\n## steps\ndo it")
     hits = wf.search("onboard")
     assert any(h["name"] == "Manual flow" for h in hits)
+
+
+def test_auto_context_surfaces_relevant(wf):
+    wf.write_workflow("Release cut", "ship a release",
+                      "## Steps\n1. tag\n2. push", triggers=["release", "deploy"])
+    block = wf.auto_context("how do we cut a release")
+    assert "RELEVANT WORKFLOWS" in block and "Release cut" in block
+    assert wf.auto_context("unrelated quantum chromodynamics") == ""

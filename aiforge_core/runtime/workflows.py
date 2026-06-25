@@ -82,6 +82,30 @@ def search(query: str, cwd: str | None = None, k: int = 5) -> list[dict]:
     return _sk.search(query, cwd, k=k, skills=load(cwd))
 
 
+def auto_context(query: str, cwd: str | None = None, k: int = 3) -> str:
+    """Injection block: the top-``k`` workflows most relevant to ``query`` (plus
+    any always-on ones), so the chat agent is reminded of reusable end-to-end
+    procedures the same way it gets skills. Bodies are capped — the agent calls
+    ``workflow_search`` for the full text. Empty when none apply."""
+    pool = load(cwd)
+    if not pool:
+        return ""
+    chosen: dict[str, Skill] = {w.name: w for w in pool if w.always}
+    for hit in search(query, cwd, k=k):
+        w = next((x for x in pool if x.name == hit["name"]), None)
+        if w is not None:
+            chosen[w.name] = w
+    if not chosen:
+        return ""
+    parts = []
+    for w in sorted(chosen.values(), key=lambda s: -s.priority):
+        head = f"### {w.name}" + (f" — {w.description}" if w.description else "")
+        parts.append(f"{head}\n{w.body[:1200]}")
+    return ("RELEVANT WORKFLOWS (reusable end-to-end procedures — follow when "
+            "they fit; call workflow_search for the full text):\n"
+            + "\n\n".join(parts))
+
+
 def write_workflow(name: str, description: str, body: str,
                    triggers: list[str] | None = None, *,
                    cwd: str | None = None, scope: str = "global") -> dict:
@@ -144,4 +168,4 @@ def ensure_dirs() -> dict:
     return out
 
 
-__all__ = ["load", "search", "write_workflow", "ensure_dirs"]
+__all__ = ["load", "search", "write_workflow", "ensure_dirs", "auto_context"]

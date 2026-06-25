@@ -1094,6 +1094,16 @@ def run_chat_agent(
             sys_msg += "\n\n" + sk_block
     except Exception:  # noqa: BLE001
         pass
+    # Workflows registry: same treatment as skills — surface the relevant
+    # reusable end-to-end procedures so the agent applies them (it can also
+    # workflow_search / learn_workflow at runtime).
+    try:
+        from aiforge_core.runtime import workflows as _workflows
+        wf_block = _workflows.auto_context(last_user, cwd)
+        if wf_block:
+            sys_msg += "\n\n" + wf_block
+    except Exception:  # noqa: BLE001
+        pass
     # @-mentions (#4): user-referenced files/folders/urls/problems.
     try:
         from aiforge_core.runtime import mentions as _mentions
