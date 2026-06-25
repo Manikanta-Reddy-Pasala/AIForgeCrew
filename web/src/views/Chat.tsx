@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { chatApi, chatSessionMessageURL, chatSessionStop, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionStop, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -99,6 +99,18 @@ export default function Chat() {
   // Composer
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // Force-full-pipeline toggle (team mode): disable the triage 'trivial'
+  // fast-path so every agent runs. Persisted server-side.
+  const [fullPipeline, setFullPipeline] = useState(false);
+  useEffect(() => {
+    api.getForceFullPipeline().then(r => setFullPipeline(!!r.enabled)).catch(() => {});
+  }, []);
+  async function toggleFullPipeline(next: boolean) {
+    setFullPipeline(next);
+    try { await api.setForceFullPipeline(next); }
+    catch { setFullPipeline(!next); }   // revert on failure
+  }
 
   // Rename state: { id, value }
   const [renaming, setRenaming] = useState<{ id: number; value: string } | null>(null);
@@ -674,6 +686,23 @@ export default function Chat() {
                 Team (full flow)
               </button>
             </div>
+
+            {/* Team-mode: force the full pipeline (no triage fast-path) */}
+            {chatMode === 'team' && (
+              <label
+                title="Run every agent (enhancer→research→planner→verifiers→doer→…) instead of letting triage fast-path trivial requests straight to the Doer."
+                style={{ display: 'flex', alignItems: 'center', gap: 5,
+                         fontSize: 'var(--fs-xs)', color: 'var(--fg-2)', cursor: 'pointer' }}
+              >
+                <input
+                  type="checkbox"
+                  checked={fullPipeline}
+                  onChange={e => toggleFullPipeline(e.target.checked)}
+                  disabled={busy}
+                />
+                Force full pipeline
+              </label>
+            )}
 
             {/* Model selector — less relevant in team mode, so hide it */}
             {chatMode !== 'team' && (

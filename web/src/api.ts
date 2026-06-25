@@ -149,6 +149,15 @@ export const api = {
       { method: 'POST' },
     ),
 
+  getForceFullPipeline: () =>
+    j<{ enabled: boolean }>('/runtime/force_full_pipeline'),
+  setForceFullPipeline: (enabled: boolean) =>
+    j<{ enabled: boolean; persisted: boolean }>('/runtime/force_full_pipeline', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }),
+
   // Test an OpenAI-compatible endpoint reachability. `insecure_tls` skips
   // TLS verification for this probe (self-signed / internal HTTPS box).
   // `role` lets the server fill a blank base_url/api_key from that role's

@@ -874,6 +874,30 @@ def set_doer_backend_alias(payload: dict) -> dict:
     return set_llm_backend(payload)
 
 
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in ("1", "true", "yes", "on")
+
+
+@app.get("/api/runtime/force_full_pipeline")
+def get_force_full_pipeline() -> dict:
+    """Whether the triage fast-path is disabled (every agent always runs)."""
+    return {"enabled": _env_truthy("AIFORGE_FORCE_FULL_PIPELINE")}
+
+
+@app.put("/api/runtime/force_full_pipeline")
+def set_force_full_pipeline(payload: dict) -> dict:
+    """Toggle running the FULL pipeline (skip the triage 'trivial' fast-path).
+    Affects runs started after this call."""
+    enabled = bool(payload.get("enabled"))
+    val = "1" if enabled else "0"
+    os.environ["AIFORGE_FORCE_FULL_PIPELINE"] = val
+    try:
+        _persist_env("AIFORGE_FORCE_FULL_PIPELINE", val)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"enabled": enabled, "persisted": True}
+
+
 @app.post("/api/runtime/session_param")
 def session_param(payload: dict) -> dict:
     """Per-role LLM param tuning at runtime (GA /session.key=value, commit
