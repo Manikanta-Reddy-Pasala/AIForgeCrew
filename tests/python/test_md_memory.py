@@ -154,3 +154,28 @@ def test_compact_rerun_resummarizes_existing(md, monkeypatch):
         md.write(f"B{i}", "b", kind="session")
     md.compact(group_by="kind", summarize=True)
     assert seen["had_prev"], "re-compaction must feed the existing body back for re-summary"
+
+
+def test_compact_concurrent_no_data_loss(md):
+    import threading
+    for i in range(4):
+        md.write(f"S{i}", f"body {i}", kind="session")
+    results = []
+    def run(): results.append(md.compact(group_by="kind", summarize=False))
+    t1, t2 = threading.Thread(target=run), threading.Thread(target=run)
+    t1.start(); t2.start(); t1.join(); t2.join()
+    files = {f["file"] for f in md.list_files()}
+    assert "compacted-session.md" in files
+    assert not any(f.startswith("session-") for f in files)   # no orphans
+    body = md.read_file("compacted-session.md")["body"]
+    assert all(f"## S{i}" in body for i in range(4))           # all notes kept
+
+
+def test_compact_body_cap_trims_when_merge(md):
+    big = "x" * 40000
+    for i in range(3):
+        md.write(f"S{i}", big, kind="session")
+    md.compact(group_by="kind", summarize=False)
+    body = md.read_file("compacted-session.md")["body"]
+    assert len(body) <= md._COMPACT_BODY_CAP + 200
+    assert "older entries trimmed" in body

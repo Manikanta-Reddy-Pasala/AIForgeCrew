@@ -740,12 +740,18 @@ _RUNTIME_ENV_PATH = os.path.expanduser(
 
 
 def _persist_env(key: str, value: str) -> None:
-    """Upsert ``key=value`` into runtime.env so graph-runner picks it up
-    on next poll-cycle restart. KISS: line-replace; preserves order."""
-    if not os.path.isfile(_RUNTIME_ENV_PATH):
-        return
-    with open(_RUNTIME_ENV_PATH) as _f:
-        lines = _f.read().splitlines()
+    """Upsert ``key=value`` into runtime.env so it survives a restart
+    (run.sh sources it). KISS: line-replace; preserves order. Creates the
+    file (and its dir) when absent — otherwise a UI toggle was silently lost
+    on the first persist because the file didn't exist yet."""
+    try:
+        os.makedirs(os.path.dirname(_RUNTIME_ENV_PATH), exist_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+    lines: list[str] = []
+    if os.path.isfile(_RUNTIME_ENV_PATH):
+        with open(_RUNTIME_ENV_PATH) as _f:
+            lines = _f.read().splitlines()
     found = False
     for i, line in enumerate(lines):
         if line.startswith(f"{key}="):

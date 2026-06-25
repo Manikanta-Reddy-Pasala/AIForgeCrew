@@ -538,6 +538,12 @@ def reset(*, keep_default: bool = False) -> dict:
     shadowing it. ``keep_default=True`` preserves the global ``_default`` row
     and clears only the per-role rows. Returns ``{ok, removed, path}``.
     """
+    # Drop in-process caches so a reconfigure right after a reset isn't served
+    # a stale local-model id / catalog from the 5-minute TTL caches.
+    _LOCAL_DEFAULT_CACHE[0] = 0.0
+    _LOCAL_DEFAULT_CACHE[1] = None
+    with _CATALOG_LOCK:
+        _CATALOG_CACHE.clear()
     with _LOCK:
         p = _path()
         if not p.exists():

@@ -584,8 +584,13 @@ def _change_diff(old: str, new: str, label: str) -> str:
     """Unified diff of ``old`` → ``new`` as a fenced ```diff block (renders as
     a colored monospace block). ``_(no change)_`` when identical."""
     import difflib
+    # Bound the inputs: difflib is ~O(n·m), so a 200KB↔200KB rewrite could
+    # freeze the approval gate for tens of seconds. Cap to ~20k chars each —
+    # the preview is a human glance, not a full audit (the full body is still
+    # what gets written/sent).
+    old, new = (old or "")[:20_000], (new or "")[:20_000]
     d = "\n".join(difflib.unified_diff(
-        (old or "").splitlines(), (new or "").splitlines(),
+        old.splitlines(), new.splitlines(),
         fromfile=f"current {label}", tofile=f"new {label}", lineterm=""))
     return _fence(d[:4000], "diff") if d.strip() else "_(no change)_"
 

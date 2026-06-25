@@ -135,3 +135,32 @@ def test_reset_wipes_config(tmp_path, monkeypatch):
     assert ac.reset()["removed"] is True
     assert not (tmp_path / "agent_config.json").exists()
     assert ac.reset()["removed"] is False
+
+
+def test_reset_clears_caches(tmp_path, monkeypatch):
+    import importlib
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    import aiforge_core.config.agent_config as ac
+    importlib.reload(ac)
+    ac._LOCAL_DEFAULT_CACHE[0] = 9e9
+    ac._LOCAL_DEFAULT_CACHE[1] = "stale-model"
+    ac._CATALOG_CACHE["local"] = (9e9, [{"id": "stale"}])
+    ac.reset()
+    assert ac._LOCAL_DEFAULT_CACHE[1] is None
+    assert not ac._CATALOG_CACHE
+
+
+def test_explicit_insecure_tls_false_not_overridden(tmp_path, monkeypatch):
+    import json
+    import importlib
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("AIFORGE_PLANNER_BASE_URL", raising=False)
+    (tmp_path / "agent_config.json").write_text(json.dumps({
+        "_default": {"provider": "openai_compatible", "model": "m",
+                     "base_url": "https://x/v1", "insecure_tls": True},
+        "planner": {"provider": "openai_compatible", "model": "m",
+                    "base_url": "https://x/v1", "insecure_tls": False},
+    }))
+    import aiforge_core.config.agent_config as ac
+    importlib.reload(ac)
+    assert ac.get("planner")["insecure_tls"] is False   # explicit false preserved
