@@ -48,6 +48,14 @@ aiforge-agents-tb = "aiforge_core.memory.trial_balance:main"
 [tool.setuptools.packages.find]
 include = ["aiforge_core*"]
 
+[tool.setuptools.package-data]
+# Bundle the default skill/workflow playbooks so they ship in a wheel install,
+# not just the repo checkout (ensure_dirs seeds them on first run).
+"aiforge_core" = [
+    "runtime/builtin_playbooks/skills/*.md",
+    "runtime/builtin_playbooks/workflows/*.md",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

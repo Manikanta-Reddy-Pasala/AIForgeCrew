@@ -156,13 +156,29 @@ def write_workflow(name: str, description: str, body: str,
 
 
 def ensure_dirs() -> dict:
-    """Create the global skills + workflows folders so they exist for the user
-    to drop files into (and the registries to scan). Idempotent; best-effort."""
-    out = {}
-    for label, d in (("skills", _sk._global_dir()), ("workflows", _global_dir())):
+    """Create the global skills + workflows folders and SEED the bundled
+    default playbooks (software-dev + architect) into them ONCE, so a fresh
+    install ships with useful skills/workflows. Idempotent: a per-dir
+    ``.builtins_seeded`` marker means we never re-create a default the user
+    deleted, and we never overwrite a file they edited."""
+    builtin = Path(__file__).resolve().parent / "builtin_playbooks"
+    out: dict = {}
+    for label, dest, sub in (("skills", _sk._global_dir(), "skills"),
+                             ("workflows", _global_dir(), "workflows")):
         try:
-            d.mkdir(parents=True, exist_ok=True)
-            out[label] = str(d)
+            dest.mkdir(parents=True, exist_ok=True)
+            marker = dest / ".builtins_seeded"
+            src = builtin / sub
+            seeded = 0
+            if src.is_dir() and not marker.exists():
+                for f in sorted(src.glob("*.md")):
+                    target = dest / f.name
+                    if not target.exists():
+                        target.write_text(f.read_text(encoding="utf-8"),
+                                          encoding="utf-8")
+                        seeded += 1
+                marker.write_text("seeded\n", encoding="utf-8")
+            out[label] = {"dir": str(dest), "seeded": seeded}
         except Exception as exc:  # noqa: BLE001
             out[label] = f"error: {exc}"
     return out

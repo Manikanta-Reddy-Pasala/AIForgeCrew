@@ -56,3 +56,26 @@ def test_auto_context_surfaces_relevant(wf):
     block = wf.auto_context("how do we cut a release")
     assert "RELEVANT WORKFLOWS" in block and "Release cut" in block
     assert wf.auto_context("unrelated quantum chromodynamics") == ""
+
+
+def test_ensure_dirs_seeds_default_playbooks(wf, monkeypatch, tmp_path):
+    from aiforge_core.runtime import skills as sk
+    res = wf.ensure_dirs()
+    assert res["skills"]["seeded"] >= 3 and res["workflows"]["seeded"] >= 3
+    sk_names = {s.name for s in sk.load()}
+    wf_names = {w.name for w in wf.load()}
+    assert {"systematic-debugging", "test-driven-development",
+            "safe-refactoring"} <= sk_names
+    assert {"ship-a-feature", "fix-a-bug", "architecture-decision"} <= wf_names
+    # idempotent: second call seeds nothing
+    assert wf.ensure_dirs()["workflows"]["seeded"] == 0
+
+
+def test_seeded_default_deletion_sticks(wf, tmp_path):
+    import os
+    wf.ensure_dirs()
+    f = wf._global_dir() / "ship-a-feature.md"
+    assert f.exists()
+    os.remove(f)
+    wf.ensure_dirs()                       # marker prevents re-seed
+    assert not f.exists()
