@@ -559,6 +559,38 @@ def _fence(body: str, lang: str = "") -> str:
     return f"```{lang}\n{body}\n```"
 
 
+def _xhtml_to_md(xhtml: str) -> str:
+    """Light Confluence storage-XHTML → readable markdown, so the approval
+    preview shows formatted text instead of raw ``<p>…</ac:…>`` tags."""
+    import html
+    import re
+    s = xhtml or ""
+    for i in range(6, 0, -1):                       # headings
+        s = re.sub(rf"<h{i}[^>]*>(.*?)</h{i}>",
+                   lambda m, i=i: "\n" + "#" * i + " " + m.group(1).strip() + "\n",
+                   s, flags=re.I | re.S)
+    s = re.sub(r"<(strong|b)[^>]*>(.*?)</\1>", r"**\2**", s, flags=re.I | re.S)
+    s = re.sub(r"<(em|i)[^>]*>(.*?)</\1>", r"*\2*", s, flags=re.I | re.S)
+    s = re.sub(r'''<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>''', r"[\2](\1)",
+               s, flags=re.I | re.S)
+    s = re.sub(r"<li[^>]*>(.*?)</li>", r"\n- \1", s, flags=re.I | re.S)
+    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
+    s = re.sub(r"</(p|div|ul|ol|h[1-6]|tr|table|ac:[\w-]+)>", "\n\n", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", "", s)                    # strip remaining tags + macros
+    s = html.unescape(s)
+    return re.sub(r"\n{3,}", "\n\n", s).strip()
+
+
+def _change_diff(old: str, new: str, label: str) -> str:
+    """Unified diff of ``old`` → ``new`` as a fenced ```diff block (renders as
+    a colored monospace block). ``_(no change)_`` when identical."""
+    import difflib
+    d = "\n".join(difflib.unified_diff(
+        (old or "").splitlines(), (new or "").splitlines(),
+        fromfile=f"current {label}", tofile=f"new {label}", lineterm=""))
+    return _fence(d[:4000], "diff") if d.strip() else "_(no change)_"
+
+
 def _diff_preview(tool: str, args: dict, cwd: str) -> str:
     """Markdown preview of a mutating action for the approval gate.
 
@@ -594,13 +626,26 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
             return (f"### Create Confluence page\n\n"
                     f"**Space:** `{args.get('space', '?')}` · "
                     f"**Title:** {args.get('title', '?')}\n\n"
-                    f"_Body (storage XHTML):_\n\n"
-                    + _fence(str(args.get('body', ''))[:3000], "xml"))
+                    f"**Body:**\n\n"
+                    + _xhtml_to_md(str(args.get('body', '')))[:3000])
         if tool == "confluence_update":
-            return (f"### Update Confluence page `{args.get('id', '?')}`\n\n"
-                    + (f"**New title:** {args['title']}\n\n" if args.get('title') else "")
-                    + "_New body (storage XHTML):_\n\n"
-                    + _fence(str(args.get('body', ''))[:3000], "xml"))
+            pid = args.get("id", "?")
+            new_md = _xhtml_to_md(str(args.get("body", "")))
+            cur_md = ""
+            try:
+                from aiforge_core.runtime.tools import confluence
+                cur = confluence.confluence_read({"id": pid}, cwd)
+                if isinstance(cur, dict) and cur.get("ok"):
+                    cur_md = _xhtml_to_md(str(cur.get("body", "")))
+            except Exception:  # noqa: BLE001
+                pass
+            out = f"### Update Confluence page `{pid}`\n\n"
+            if args.get("title"):
+                out += f"**New title:** {args['title']}\n\n"
+            if args.get("body") is not None:
+                out += ("**Body changes:**\n\n" + _change_diff(cur_md, new_md, "body")
+                        if cur_md else "**New body:**\n\n" + new_md[:3000])
+            return out
         if tool == "jira_create":
             md = (f"### Create Jira issue\n\n"
                   f"**Project:** `{args.get('project', '?')}` · "
@@ -613,12 +658,26 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                 md += f"\n**Labels:** {args['labels']}\n"
             return md
         if tool == "jira_update":
-            md = f"### Update Jira issue `{args.get('key', '?')}`\n\n"
-            for k in ("summary", "priority", "assignee", "labels"):
+            key = args.get("key", "?")
+            cur: dict = {}
+            try:
+                from aiforge_core.runtime.tools import jira
+                r = jira.jira_read({"key": key}, cwd)
+                if isinstance(r, dict) and r.get("ok"):
+                    cur = r
+            except Exception:  # noqa: BLE001
+                pass
+            md = f"### Update Jira issue `{key}`\n\n"
+            if args.get("summary"):
+                md += (f"**Summary:** {cur.get('summary', '(current)')} "
+                       f"→ **{args['summary']}**\n\n")
+            for k in ("priority", "assignee", "labels"):
                 if args.get(k):
                     md += f"**{k.capitalize()}:** {args[k]}\n\n"
             if args.get("description") is not None:
-                md += f"**Description:**\n\n{str(args['description'])[:3000]}\n"
+                md += ("**Description changes:**\n\n"
+                       + _change_diff(str(cur.get("description", "")),
+                                      str(args["description"]), "description"))
             return md
         if tool == "jira_comment":
             return (f"### Comment on Jira `{args.get('key', '?')}`\n\n"
@@ -633,13 +692,26 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                 md += f"\n**Labels:** {args['labels']}\n"
             return md
         if tool == "gitlab_update":
-            md = (f"### Update GitLab issue "
-                  f"`{args.get('project', '?')}#{args.get('iid', '?')}`\n\n")
-            for k in ("title", "labels", "state_event"):
+            proj, iid = args.get("project", "?"), args.get("iid", "?")
+            cur = {}
+            try:
+                from aiforge_core.runtime.tools import gitlab
+                r = gitlab.gitlab_read({"project": proj, "iid": iid}, cwd)
+                if isinstance(r, dict) and r.get("ok"):
+                    cur = r
+            except Exception:  # noqa: BLE001
+                pass
+            md = f"### Update GitLab issue `{proj}#{iid}`\n\n"
+            if args.get("title"):
+                md += (f"**Title:** {cur.get('title', '(current)')} "
+                       f"→ **{args['title']}**\n\n")
+            for k in ("labels", "state_event"):
                 if args.get(k):
                     md += f"**{k.replace('_', ' ').capitalize()}:** {args[k]}\n\n"
             if args.get("description") is not None:
-                md += f"**Description:**\n\n{str(args['description'])[:3000]}\n"
+                md += ("**Description changes:**\n\n"
+                       + _change_diff(str(cur.get("description", "")),
+                                      str(args["description"]), "description"))
             return md
         if tool == "gitlab_comment":
             return (f"### Comment on GitLab "
