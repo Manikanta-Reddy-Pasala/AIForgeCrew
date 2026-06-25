@@ -814,12 +814,18 @@ ambiguous request.
 all sessions", or states a standing rule about the folder/repo/workflow, \
 immediately call remember_rule (scope=repo for this repo, scope=global for \
 everywhere). Any RULES shown above are user rules — always obey them.
-- LEARN skills: when you solve a non-trivial, repeatable problem (a fix \
-recipe, a setup sequence, a gotcha + workaround), call learn_skill to save \
-a reusable SKILL.md playbook — name it, give a one-line description of WHEN \
-to use it, the step-by-step body, and trigger words. Before tackling \
-unfamiliar work, skill_search first — a past skill may already solve it. \
-RELEVANT SKILLS shown above are auto-loaded; apply them when they fit.
+- PLAN then act, and RECAP: for any multi-step task, open your first THOUGHT \
+with a short numbered PLAN (the steps you intend to take) so the user sees \
+the approach before you change anything. End your FINAL with a one-line \
+"Done:" recap of the steps you actually took. Keep both brief.
+- LEARN skills + workflows (auto-improve): when you solve a non-trivial, \
+repeatable problem, call learn_skill to save a reusable SKILL.md (a small \
+how-to); for a full end-to-end procedure you just ran, call learn_workflow \
+to save a WORKFLOW.md. Name it, give a one-line WHEN-to-use description, the \
+step body, and trigger words. Before tackling unfamiliar work, skill_search \
+AND workflow_search first — a saved playbook may already solve it. The \
+RELEVANT SKILLS / RELEVANT WORKFLOWS shown above are auto-selected for this \
+request by relevance — apply them when they fit.
 - SCOPE before reading: when asked to check/review/understand code, first \
 narrow to the FEW files that actually matter — use `grep`/`find` (and \
 list_dir) to locate the relevant symbols/files, then read only those. Do \
@@ -925,6 +931,49 @@ def _parse(out: str) -> dict:
 # tune with AIFORGE_CHAT_SAFETY_CAP), not a normal stopping point.
 _LOOP_REPEAT = 4
 _OUTPUT_REPEAT = 3
+
+
+def _ctx_budget_chars() -> int:
+    """Char budget for the running conversation before auto-condensing.
+    ~48k chars ≈ ~12k tokens — safe headroom under most context windows.
+    0 disables. Tunable via AIFORGE_CHAT_CONTEXT_BUDGET_CHARS."""
+    try:
+        return int(os.environ.get("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "48000"))
+    except ValueError:
+        return 48000
+
+
+def _compact_convo(convo: list[dict], *, keep_recent: int = 12) -> list[dict]:
+    """Auto-condense a long chat history so the context can't overflow.
+
+    Keeps the system message + the last ``keep_recent`` turns verbatim and
+    collapses everything in between into ONE breadcrumb note (count of omitted
+    messages + the tools used so far). Structural only — no extra LLM call, so
+    it's cheap and runs every turn. The agent can re-read files / ask the user
+    if it needs detail from before the condense point."""
+    budget = _ctx_budget_chars()
+    if budget <= 0 or len(convo) <= keep_recent + 2:
+        return convo
+    if sum(len(m.get("content") or "") for m in convo) <= budget:
+        return convo
+    head, tail = convo[:1], convo[-keep_recent:]
+    middle = convo[1:-keep_recent]
+    if not middle:
+        return convo
+    tools: list[str] = []
+    for m in middle:
+        if m.get("role") == "assistant":
+            mt = _ACTION_RE.search(m.get("content") or "")
+            if mt:
+                tools.append(mt.group(1))
+    import collections as _c
+    used = ", ".join(f"{t}×{n}" for t, n in _c.Counter(tools).most_common(8)) \
+        or "discussion + reads"
+    note = ("[earlier conversation auto-condensed to fit the context window — "
+            f"{len(middle)} messages omitted. Work done so far: {used}. "
+            "Re-read a file or ask the user if you need detail from before "
+            "this point.]")
+    return head + [{"role": "user", "content": note}] + tail
 
 
 def _build_repo_map(cwd: str, max_entries: int = 240, max_depth: int = 3) -> str:
@@ -1142,6 +1191,14 @@ def run_chat_agent(
             yield {"type": "error", "text": "stopped by user"}
             yield {"type": "done"}
             return
+        # Auto-condense the running history before the call so a long session
+        # can't overflow the model's context window (MUST). Tell the user it
+        # happened (one-time per condense) for transparency.
+        _before = len(convo)
+        convo = _compact_convo(convo)
+        if len(convo) < _before:
+            yield {"type": "thought", "role": "system",
+                   "text": "⚙ condensed earlier context to stay within the window"}
         try:
             out = complete_fn(role, convo)
         except Exception as exc:  # noqa: BLE001

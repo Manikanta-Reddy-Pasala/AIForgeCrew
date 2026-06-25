@@ -374,3 +374,27 @@ def test_update_previews_show_a_diff(monkeypatch):
     p = ca._diff_preview("jira_update",
                          {"key": "ENG-1", "description": "new body"}, "/tmp")
     assert "```diff" in p and "-old body" in p and "+new body" in p
+
+
+def test_compact_convo_condenses_long_history(monkeypatch):
+    from aiforge_core.runtime import chat_agent as ca
+    monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "2000")
+    convo = [{"role": "system", "content": "S" * 100}]
+    for i in range(30):
+        convo.append({"role": "assistant",
+                      "content": "THOUGHT: t\nACTION: file_read\nARGS_JSON: {}"})
+        convo.append({"role": "user", "content": "OBSERVATION: " + "x" * 200})
+    out = ca._compact_convo(convo, keep_recent=8)
+    assert out[0]["role"] == "system"                      # system preserved
+    assert "auto-condensed" in out[1]["content"]           # breadcrumb
+    assert "file_read" in out[1]["content"]                # actions summarized
+    assert len(out) == 1 + 1 + 8                           # system + note + recent
+    assert sum(len(m["content"]) for m in out) < \
+        sum(len(m["content"]) for m in convo)
+
+
+def test_compact_convo_noop_under_budget(monkeypatch):
+    from aiforge_core.runtime import chat_agent as ca
+    monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "48000")
+    convo = [{"role": "system", "content": "s"}, {"role": "user", "content": "hi"}]
+    assert ca._compact_convo(convo) is convo               # untouched
