@@ -841,6 +841,24 @@ function SubtaskProgress(
                style={{ width: `${(counts[k] / total) * 100}%`, background: SUBTASK_COLORS[k] }} />
         ) : null)}
       </div>
+      {/* review verdict — each done subtask is build/test-validated */}
+      {(() => {
+        const failed = counts['failed'] || 0;
+        const remaining = total - done - failed;
+        const verdict = done === total ? 'All subtasks done & validated ✓'
+          : failed > 0 ? 'Some subtasks failed — needs attention'
+          : remaining > 0 ? 'In progress' : 'Review';
+        const tone = done === total ? '#3fb950' : failed > 0 ? '#e5534b' : '#6aa6ff';
+        return (
+          <div className="row" style={{ marginTop: 8, justifyContent: 'space-between',
+               alignItems: 'center', fontSize: 12 }}>
+            <span style={{ color: tone, fontWeight: 600 }}>{verdict}</span>
+            <span className="muted">
+              ✓ {done} done &amp; validated · ✗ {failed} failed · ◷ {remaining} remaining
+            </span>
+          </div>
+        );
+      })()}
       {/* per-subtask list */}
       <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {subtasks.map((s, i) => (

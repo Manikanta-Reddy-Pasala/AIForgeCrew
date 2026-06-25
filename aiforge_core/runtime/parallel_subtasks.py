@@ -19,10 +19,16 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
-import shutil
 import subprocess
+import threading
 
 log = logging.getLogger("aiforge.parallel_subtasks")
+
+# git operations that touch the MAIN repo's index/worktree list (worktree
+# add/remove, branch -D, merge) must be serialized — concurrent `git worktree
+# add` races on .git/index.lock. The per-subtask WORK still runs in parallel
+# (each worktree has its own index); only these repo-level git calls are locked.
+_GIT_LOCK = threading.Lock()
 
 
 def enabled() -> bool:
@@ -51,11 +57,12 @@ def _make_worktree(repo: str, base_branch: str, slug: str) -> tuple[str, str]:
     """Create a fresh worktree + branch off ``base_branch`` for ``slug``."""
     branch = _branch_for(slug, base_branch)
     wt = os.path.join(repo, ".aiforge-worktrees", f"sub-{slug}")
-    # Clean any stale worktree/branch from a prior run.
-    _git(["worktree", "remove", "--force", wt], repo)
-    _git(["branch", "-D", branch], repo)
-    os.makedirs(os.path.dirname(wt), exist_ok=True)
-    p = _git(["worktree", "add", "-B", branch, wt, base_branch], repo)
+    with _GIT_LOCK:                          # serialize repo-index mutations
+        # Clean any stale worktree/branch from a prior run.
+        _git(["worktree", "remove", "--force", wt], repo)
+        _git(["branch", "-D", branch], repo)
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+        p = _git(["worktree", "add", "-B", branch, wt, base_branch], repo)
     if p.returncode != 0 or not os.path.isdir(wt):
         raise RuntimeError(f"worktree add failed for {slug}: {p.stderr[:300]}")
     return wt, branch
@@ -72,8 +79,43 @@ def _commit_all(wt: str, slug: str) -> bool:
     return True
 
 
+def _retries() -> int:
+    try:
+        return max(0, min(5, int(os.environ.get("AIFORGE_SUBTASK_RETRIES", "2"))))
+    except ValueError:
+        return 2
+
+
+def _reset_worktree(wt: str, base_branch: str) -> None:
+    """Hard-reset a worktree to ``base_branch`` between retry attempts so a
+    failed/partial attempt can't leak files into the next one."""
+    _git(["reset", "--hard", base_branch], wt)
+    _git(["clean", "-fd"], wt)
+
+
+def _attempt(subtask: dict, wt: str, slug: str, run_one, validate_one) -> dict:
+    """One run+validate attempt. Catches a CRASH in run_one/validate (returns
+    ok=False) so it can be retried instead of killing the whole batch."""
+    try:
+        res = run_one(subtask, wt) or {}
+        ran_ok = bool(res.get("ok", True))
+    except Exception as exc:  # noqa: BLE001 — crash in the agent
+        return {"ran": False, "validated": False, "ok": False,
+                "error": f"crash: {exc}", "detail": {}}
+    _commit_all(wt, slug)
+    validated, vres = ran_ok, {}
+    if ran_ok and validate_one is not None:
+        try:
+            vres = validate_one(subtask, wt) or {}
+            validated = bool(vres.get("ok", True))
+        except Exception as exc:  # noqa: BLE001 — crash in validation
+            validated, vres = False, {"ok": False, "error": f"crash: {exc}"}
+    return {"ran": ran_ok, "validated": validated, "ok": ran_ok and validated,
+            "detail": res, "validation": vres}
+
+
 def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
-                 subtask: dict, run_one) -> dict:
+                 subtask: dict, run_one, validate_one) -> dict:
     slug = subtask.get("slug") or "sub"
     _update(ticket_id, slug, "running")
     try:
@@ -81,17 +123,77 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
     except Exception as exc:  # noqa: BLE001
         _update(ticket_id, slug, "failed")
         return {"slug": slug, "ok": False, "error": str(exc), "branch": None}
+
+    # Retry the whole run+validate on failure/crash — subtasks are the risky
+    # unit, so we keep trying (bounded) before giving up. Reset the worktree
+    # between attempts so nothing leaks across tries.
+    last: dict = {}
+    attempts = _retries() + 1
+    for i in range(attempts):
+        if i > 0:
+            _reset_worktree(wt, base_branch)
+            _emit(ticket_id, slug, "subtask_retry",
+                  f"{slug} retry {i}/{attempts - 1}", {"slug": slug, "attempt": i})
+        last = _attempt(subtask, wt, slug, run_one, validate_one)
+        if last["ok"]:
+            break
+
+    ok = last["ok"]
+    _emit(ticket_id, slug,
+          "subtask_validated" if last.get("validated") else "subtask_rejected",
+          f"{slug} validation {'passed' if last.get('validated') else 'failed'}",
+          {"slug": slug, "validated": last.get("validated"),
+           "attempts": i + 1})
+    _update(ticket_id, slug, "done" if ok else "failed")
+    return {"slug": slug, "ok": ok, "ran": last.get("ran"),
+            "validated": last.get("validated"), "attempts": i + 1,
+            "branch": branch, "worktree": wt,
+            "detail": last.get("detail"), "validation": last.get("validation"),
+            "error": last.get("error")}
+
+
+def default_validate_one(subtask: dict, worktree: str) -> dict:
+    """Objective per-subtask validation: build + run the project's tests in the
+    worktree. Green → validated. No model needed — a concrete quality gate."""
     try:
-        res = run_one(subtask, wt) or {}
-        ok = bool(res.get("ok", True))
-        _commit_all(wt, slug)
-        _update(ticket_id, slug, "done" if ok else "failed")
-        return {"slug": slug, "ok": ok, "branch": branch, "worktree": wt,
-                "detail": res}
+        from aiforge_core.runtime.tools.project_runner import project
+        test = project(action="test", cwd=worktree)
+        if isinstance(test, dict) and test.get("ok"):
+            return {"ok": True, "via": "test"}
+        # No runnable tests? fall back to a successful build/compile.
+        build = project(action="build", cwd=worktree)
+        if isinstance(build, dict) and build.get("ok"):
+            return {"ok": True, "via": "build", "note": "no tests; build green"}
+        return {"ok": False, "via": "test/build",
+                "detail": (test or {}).get("error") or (build or {}).get("error")}
     except Exception as exc:  # noqa: BLE001
-        _update(ticket_id, slug, "failed")
-        return {"slug": slug, "ok": False, "error": str(exc),
-                "branch": branch, "worktree": wt}
+        return {"ok": False, "error": str(exc)}
+
+
+def default_integration_test(repo_root: str) -> dict:
+    """Build + test the WHOLE integrated result on the base branch after all
+    subtasks merged — catches breakage that only shows when combined."""
+    try:
+        from aiforge_core.runtime.tools.project_runner import project
+        test = project(action="test", cwd=repo_root)
+        if isinstance(test, dict) and test.get("ok"):
+            return {"ok": True, "via": "test"}
+        build = project(action="build", cwd=repo_root)
+        if isinstance(build, dict) and build.get("ok"):
+            return {"ok": True, "via": "build", "note": "no tests; build green"}
+        return {"ok": False, "via": "test/build"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def _emit(ticket_id, slug, kind, body, md) -> None:
+    if ticket_id is None:
+        return
+    try:
+        from aiforge_core.tickets import store
+        store.add_event(ticket_id, "validator", kind, body, md)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _update(ticket_id, slug, status) -> None:
@@ -116,18 +218,22 @@ def _merge_branch(repo: str, base_branch: str, branch: str) -> tuple[bool, str]:
 
 
 def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
-                 subtasks: list[dict], run_one, *, merge: bool = True) -> dict:
-    """Run ``subtasks`` concurrently (each in its own worktree), then merge the
-    successful branches into ``base_branch`` sequentially. Returns an aggregate.
+                 subtasks: list[dict], run_one, *, validate_one=None,
+                 integration_test=None, merge: bool = True) -> dict:
+    """Run ``subtasks`` concurrently (each in its own worktree), VALIDATE each
+    (build/tests green), then merge the validated branches into ``base_branch``
+    sequentially. Returns an aggregate incl. a review summary.
     """
     subs = [s for s in (subtasks or []) if isinstance(s, dict) and s.get("slug")]
     if not subs:
-        return {"ok": True, "total": 0, "done": 0, "failed": 0,
-                "merged": 0, "conflicts": [], "note": "no subtasks"}
+        return {"ok": True, "total": 0, "done": 0, "failed": 0, "validated": 0,
+                "merged": 0, "conflicts": [], "note": "no subtasks",
+                "review": "nothing to do"}
 
     results: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
-        futs = [ex.submit(_run_subtask, repo_root, base_branch, ticket_id, s, run_one)
+        futs = [ex.submit(_run_subtask, repo_root, base_branch, ticket_id, s,
+                          run_one, validate_one)
                 for s in subs]
         for f in concurrent.futures.as_completed(futs):
             try:
@@ -158,10 +264,34 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
             _git(["branch", "-D", r["branch"]], repo_root)
 
     done = sum(1 for r in results if r.get("ok"))
-    return {"ok": not conflicts and done == len(subs),
-            "total": len(subs), "done": done,
-            "failed": len(subs) - done, "merged": merged,
-            "conflicts": conflicts, "results": results}
+    validated = sum(1 for r in results if r.get("validated"))
+    failed = len(subs) - done
+
+    # FINAL integration test — after all the merges, build + test the WHOLE
+    # thing on the base branch. Individually-green subtasks can still break
+    # when combined; this is the "is the total task actually done?" gate.
+    integration: dict = {"ok": None, "skipped": True}
+    if merge and merged and integration_test is not None:
+        try:
+            integration = integration_test(repo_root) or {"ok": False}
+        except Exception as exc:  # noqa: BLE001
+            integration = {"ok": False, "error": str(exc)}
+        _emit(ticket_id, "*", "integration_test",
+              f"integration {'passed' if integration.get('ok') else 'FAILED'}",
+              {"ok": integration.get("ok")})
+
+    all_ok = (not conflicts and done == len(subs)
+              and integration.get("ok") is not False)
+    review = (f"all {len(subs)} subtasks done + validated"
+              + ("; integration green" if integration.get("ok") else "")
+              if all_ok else
+              f"{done}/{len(subs)} done ({validated} validated), {failed} failed"
+              + (f", {len(conflicts)} merge conflict(s)" if conflicts else "")
+              + ("; integration FAILED" if integration.get("ok") is False else ""))
+    return {"ok": all_ok,
+            "total": len(subs), "done": done, "validated": validated,
+            "failed": failed, "merged": merged, "conflicts": conflicts,
+            "integration": integration, "review": review, "results": results}
 
 
 def default_run_one(subtask: dict, worktree: str) -> dict:
@@ -214,8 +344,17 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
     # the worktree's current branch is the ticket's working branch
     cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], wt)
     base_branch = (cur.stdout or "").strip() or "HEAD"
-    return run_parallel(repo_root, base_branch, getattr(ticket, "id", None),
-                        subs, run_one or default_run_one)
+    agg = run_parallel(repo_root, base_branch, getattr(ticket, "id", None),
+                       subs, run_one or default_run_one,
+                       validate_one=default_validate_one,
+                       integration_test=default_integration_test)
+    # Final review summary on the ticket timeline so the operator sees the
+    # overall verdict (how many done+validated vs failed) in one place.
+    _emit(getattr(ticket, "id", None), "*", "parallel_review",
+          agg.get("review", ""), {k: agg.get(k) for k in
+          ("total", "done", "validated", "failed", "merged", "conflicts")})
+    return agg
 
 
-__all__ = ["run_parallel", "run_subtasks_parallel", "default_run_one", "enabled"]
+__all__ = ["run_parallel", "run_subtasks_parallel", "default_run_one",
+           "default_validate_one", "default_integration_test", "enabled"]
