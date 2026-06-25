@@ -77,3 +77,41 @@ def test_apply_profile_local_resolves_dynamic(monkeypatch):
 def test_model_router_removed():
     with pytest.raises(ImportError):
         import aiforge_core.runtime.model_router  # noqa: F401
+
+
+def test_stale_bare_local_row_does_not_shadow_cloud_global(tmp_path, monkeypatch):
+    """The reported bug: operator sets a cloud/internal global default, but a
+    leftover bare-local per-role row keeps that role on 127.0.0.1:1234."""
+    import json
+    import importlib
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    for k in ("AIFORGE_TRIAGE_BASE_URL", "AIFORGE_TRIAGE_PROVIDER",
+              "AIFORGE_TRIAGE_MODEL", "AIFORGE_LM_BASE_URL"):
+        monkeypatch.delenv(k, raising=False)
+    (tmp_path / "agent_config.json").write_text(json.dumps({
+        "_default": {"provider": "openai_compatible", "model": "qwen35-122b",
+                     "base_url": "https://chat.ai.internal/v1"},
+        "triage": {"provider": "local", "model": "/old/mlx/path",
+                   "base_url": None, "api_key": None, "insecure_tls": False},
+    }))
+    import aiforge_core.config.agent_config as ac
+    importlib.reload(ac)
+    r = ac.resolve_litellm("triage")
+    assert "chat.ai.internal" in r["api_base"]
+    assert "qwen35-122b" in r["model_id"]
+
+
+def test_explicit_per_role_local_url_still_wins_over_global(tmp_path, monkeypatch):
+    import json
+    import importlib
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("AIFORGE_TRIAGE_BASE_URL", raising=False)
+    (tmp_path / "agent_config.json").write_text(json.dumps({
+        "_default": {"provider": "openai_compatible", "model": "x",
+                     "base_url": "https://chat.ai.internal/v1"},
+        "triage": {"provider": "local", "model": "m",
+                   "base_url": "http://127.0.0.1:1235/v1"},
+    }))
+    import aiforge_core.config.agent_config as ac
+    importlib.reload(ac)
+    assert "1235" in ac.resolve_litellm("triage")["api_base"]

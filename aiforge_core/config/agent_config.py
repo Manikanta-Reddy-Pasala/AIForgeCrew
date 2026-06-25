@@ -363,12 +363,27 @@ def load_all() -> dict[str, dict[str, Any]]:
     p = _path()
     cfg: dict[str, dict[str, Any]] = {k: dict(v)
                                       for k, v in _defaults().items()}
+    gd = _global_default_row()
     if p.exists():
         try:
             disk = json.loads(p.read_text())
             if isinstance(disk, dict):
                 for role, row in disk.items():
                     if role in _ROLES and isinstance(row, dict):
+                        # A configured NON-LOCAL global default (cloud /
+                        # internal endpoint) must win over a STALE "bare local"
+                        # per-role row — provider=local with no base_url and no
+                        # api_key, i.e. a leftover from an old profile-apply or
+                        # auto-discovery. Without this, you set your endpoint
+                        # (e.g. https://chat.ai.internal/...) but triage keeps
+                        # hitting 127.0.0.1:1234 on the old default model. Keep
+                        # the seed (= the global default) for such rows.
+                        if gd and gd.get("provider") and gd["provider"] != "local":
+                            row_prov = row.get("provider") or "local"
+                            if (row_prov == "local"
+                                    and not row.get("base_url")
+                                    and not row.get("api_key")):
+                                continue   # cfg[role] already = global default
                         # ``cfg[role]`` is the global-default seed (or local
                         # fallback). A per-role row overlays it — but a row
                         # that OMITS base_url / api_key / insecure_tls must
