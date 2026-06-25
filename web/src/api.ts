@@ -143,6 +143,11 @@ export const api = {
       `/agents/v2/profile/${name}`,
       { method: 'PUT' },
     ),
+  resetAgentsV2: (keepDefault = false) =>
+    j<{ ok: boolean; removed?: boolean | string; path?: string; note?: string }>(
+      `/agents/v2/reset${keepDefault ? '?keep_default=true' : ''}`,
+      { method: 'POST' },
+    ),
 
   // Test an OpenAI-compatible endpoint reachability. `insecure_tls` skips
   // TLS verification for this probe (self-signed / internal HTTPS box).

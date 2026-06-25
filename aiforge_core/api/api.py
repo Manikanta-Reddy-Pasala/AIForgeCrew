@@ -1700,6 +1700,16 @@ def agents_v2_profile_apply(name: str) -> dict:
     return {"profile": name, "roles": out}
 
 
+@app.post("/api/agents/v2/reset")
+def agents_v2_reset(keep_default: bool = Query(False)) -> dict:
+    """Wipe the saved per-role agent config for a clean reconfigure.
+
+    Removes stale per-role rows that can shadow a newly-set global default.
+    ``keep_default=true`` preserves the global ``_default`` row and clears only
+    the per-role overrides."""
+    return _acfg.reset(keep_default=keep_default)
+
+
 # ─────────────────────────── Chat ask (LLM synthesis) ───────────────────
 #
 # /api/chat/ask is the "smart" chat endpoint: gather from all memory

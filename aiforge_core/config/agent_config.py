@@ -524,6 +524,36 @@ def set_role(role: str, provider: str, model: str,
     return get(role)
 
 
+def reset(*, keep_default: bool = False) -> dict:
+    """Wipe the persisted per-role config for a clean reconfigure.
+
+    Deletes ``agent_config.json`` so every role reverts to defaults (the
+    global ``_default`` if env-set, else the neutral local placeholder) — the
+    operator then sets one endpoint fresh, with no stale per-role rows
+    shadowing it. ``keep_default=True`` preserves the global ``_default`` row
+    and clears only the per-role rows. Returns ``{ok, removed, path}``.
+    """
+    with _LOCK:
+        p = _path()
+        if not p.exists():
+            return {"ok": True, "removed": False, "path": str(p),
+                    "note": "no saved config to reset"}
+        if keep_default:
+            try:
+                disk = json.loads(p.read_text()) or {}
+            except Exception:  # noqa: BLE001
+                disk = {}
+            kept = {k: v for k, v in disk.items() if k == _DEFAULT_KEY}
+            if kept:
+                p.write_text(json.dumps(kept, indent=2))
+                return {"ok": True, "removed": "per-role rows", "path": str(p)}
+        try:
+            p.unlink()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "path": str(p)}
+        return {"ok": True, "removed": True, "path": str(p)}
+
+
 def resolve_litellm(role: str) -> dict[str, Any]:
     """Return the kwargs needed to build a LiteLLMModel for this role.
 

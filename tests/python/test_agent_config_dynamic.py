@@ -115,3 +115,23 @@ def test_explicit_per_role_local_url_still_wins_over_global(tmp_path, monkeypatc
     import aiforge_core.config.agent_config as ac
     importlib.reload(ac)
     assert "1235" in ac.resolve_litellm("triage")["api_base"]
+
+
+def test_reset_wipes_config(tmp_path, monkeypatch):
+    import json
+    import importlib
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    import aiforge_core.config.agent_config as ac
+    importlib.reload(ac)
+    (tmp_path / "agent_config.json").write_text(json.dumps({
+        "_default": {"provider": "openai_compatible", "model": "m", "base_url": "https://x/v1"},
+        "triage": {"provider": "local", "model": "stale", "base_url": None},
+    }))
+    # keep_default → only per-role rows removed
+    ac.reset(keep_default=True)
+    left = json.loads((tmp_path / "agent_config.json").read_text())
+    assert list(left.keys()) == ["_default"]
+    # full reset → file gone, then idempotent
+    assert ac.reset()["removed"] is True
+    assert not (tmp_path / "agent_config.json").exists()
+    assert ac.reset()["removed"] is False

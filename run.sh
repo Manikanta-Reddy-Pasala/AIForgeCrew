@@ -18,6 +18,9 @@
 #                AIForge containers first, then `up -d --build` so a code
 #                change rebuilds the image before (re)starting. Exits after.
 #   --no-build   with --docker: skip the image rebuild (just (re)start)
+#   --reset-config  wipe ~/.aiforge/agent_config.json (backs it up) so stale
+#                per-role rows can't shadow the model you set next. Run once,
+#                then reconfigure the model on the home page.
 #   --test       probe the configured model endpoint with the current SSL
 #                settings (OK/FAIL + error), then exit. Use to verify a
 #                self-hosted HTTPS endpoint reaches AND its TLS is accepted.
@@ -67,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --test) TEST=1 ;;
     --docker) DOCKER=1 ;;
     --no-build) NO_BUILD=1 ;;
+    --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
     -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
@@ -74,6 +78,22 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+# ── Reset saved agent config (--reset-config) ─────────────────────────
+# Wipe ~/.aiforge/agent_config.json so stale per-role rows can't shadow the
+# endpoint you set next. Run ONCE, then reconfigure the model on the home
+# page (or via env). Honours AIFORGE_CONFIG_DIR.
+if [[ "${RESET_CONFIG:-0}" == "1" ]]; then
+  _cfg_dir="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
+  _cfg_file="$_cfg_dir/agent_config.json"
+  if [[ -f "$_cfg_file" ]]; then
+    mv -f "$_cfg_file" "$_cfg_file.bak.$(date +%s)" 2>/dev/null \
+      && echo "==> agent config reset (backed up): $_cfg_file" \
+      || { rm -f "$_cfg_file"; echo "==> agent config reset: $_cfg_file"; }
+  else
+    echo "==> no saved agent config to reset ($_cfg_file)"
+  fi
+fi
 
 # ── Docker stack (--docker) ───────────────────────────────────────────
 # Full Postgres + Neo4j + sidecars + api + runner via docker compose.

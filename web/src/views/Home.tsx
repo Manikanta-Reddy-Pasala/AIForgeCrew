@@ -386,6 +386,24 @@ export default function Home() {
       setProfileBusy(null);
     }
   }
+  async function resetConfig() {
+    if (profileBusy) return;
+    if (!window.confirm(
+      'Reset all agent config? This deletes every saved per-role setting so '
+      + 'stale rows can\'t shadow the model you set next. You\'ll reconfigure '
+      + 'from a clean slate.')) return;
+    setProfileBusy('__reset__');
+    try {
+      const r = await api.resetAgentsV2(false);
+      toast.success(r.removed ? 'Agent config reset — configure your model below.'
+                              : (r.note || 'Nothing to reset.'));
+      await load(true);
+    } catch (e: any) {
+      toast.error(`Reset failed: ${e?.message || 'unknown'}`);
+    } finally {
+      setProfileBusy(null);
+    }
+  }
 
   // ── runtime-wide backend toggle (fallback chain for every agent) ─────
   const [doerBackend, setDoerBackend] = useState<string>('local');
@@ -603,6 +621,15 @@ export default function Home() {
                 </span>
               </button>
             ))}
+            <button
+              className="ghost"
+              onClick={resetConfig}
+              disabled={!!profileBusy}
+              title="Delete all saved per-role config so stale rows can't shadow the model you set next"
+              style={{ marginLeft: 'auto', color: 'var(--err, #ef4444)' }}
+            >
+              {profileBusy === '__reset__' ? 'Resetting…' : '↺ Reset all config'}
+            </button>
           </div>
         </div>
       )}
