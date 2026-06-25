@@ -428,6 +428,16 @@ def _t_gitlab_comment(args: dict, cwd: str) -> dict:
     return gitlab.gitlab_comment(args, cwd)
 
 
+def _t_web_search(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import web_search
+    return web_search.web_search(args, cwd)
+
+
+def _t_web_fetch(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import web_search
+    return web_search.web_fetch(args, cwd)
+
+
 def _t_skill_search(args: dict, cwd: str) -> dict:
     """Search the skill registry (SKILL.md playbooks) by relevance."""
     try:
@@ -489,13 +499,16 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "gitlab_create": _t_gitlab_create,
     "gitlab_update": _t_gitlab_update,
     "gitlab_comment": _t_gitlab_comment,
+    "web_search": _t_web_search,
+    "web_fetch": _t_web_fetch,
 }
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
 _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "skill_search", "confluence_search", "confluence_read",
                    "jira_search", "jira_read",
-                   "gitlab_search", "gitlab_read")
+                   "gitlab_search", "gitlab_read",
+                   "web_search", "web_fetch")
 
 _PLAN_BANNER = (
     "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
@@ -577,6 +590,11 @@ Tool arguments:
 - gitlab_create {{"project": "group/proj", "title": "...", "description": "...", "labels": ["a","b"]}}   (new issue — needs your Approve)
 - gitlab_update {{"project": "group/proj", "iid": 42, "title": "...", "labels": ["x"], "state_event": "close"}}   (edit — needs your Approve)
 - gitlab_comment{{"project": "group/proj", "iid": 42, "body": "comment text"}}            (add a comment — needs your Approve)
+- web_search    {{"query": "rust tokio select! cancellation", "limit": 5}}   (search the open web — no key — when you're stuck / need current docs)
+- web_fetch     {{"url": "https://...", "max_chars": 6000}}                  (read a result page's text)
+
+When stuck on an unfamiliar error, a library API, or a config flag, use \
+web_search then web_fetch the most relevant hit instead of guessing.
 
 When you are done and ready to reply to the user:
 THOUGHT: <reasoning>

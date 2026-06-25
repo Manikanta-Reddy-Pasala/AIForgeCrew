@@ -96,6 +96,12 @@ const TOOLS: Tool[] = [
     args: [{ name: 'iid', placeholder: '42', required: true }] },
   { name: 'gitlab_comment', category: 'GitLab', desc: 'Add a comment to an issue (needs Approve).',
     args: [{ name: 'iid', placeholder: '42', required: true }] },
+
+  // Web (chat) — keyless DuckDuckGo; read-only
+  { name: 'web_search', category: 'Web', desc: 'Search the open web (DuckDuckGo, no API key).',
+    args: [{ name: 'query', placeholder: 'what to search', required: true }] },
+  { name: 'web_fetch', category: 'Web', desc: "Fetch a page and return its readable text.",
+    args: [{ name: 'url', placeholder: 'https://…', required: true }] },
 ];
 
 export default function Tools() {
