@@ -576,6 +576,30 @@ def learn_skill(name: str, body: str, description: str = "",
         return {"ok": False, "error": str(exc)}
 
 
+def workflow_search(query: str, k: int = 5) -> dict:
+    """Search the workflow registry (WORKFLOW.md end-to-end procedures) by
+    relevance — find a reusable multi-step recipe before improvising one."""
+    try:
+        from aiforge_core.runtime import workflows as _workflows
+        return {"ok": True, "workflows": _workflows.search(query, None, k=int(k or 5))}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def learn_workflow(name: str, body: str, description: str = "",
+                   triggers: str = "", scope: str = "global") -> dict:
+    """Author a reusable WORKFLOW.md after running a repeatable end-to-end
+    procedure, so future tickets reuse it. Also recorded in knowledge memory."""
+    try:
+        from aiforge_core.runtime import workflows as _workflows
+        trig = [t.strip() for t in (triggers or "").split(",") if t.strip()]
+        return _workflows.write_workflow(name=name, description=description,
+                                         body=body, triggers=trig, cwd=None,
+                                         scope=(scope or "global").lower())
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -607,7 +631,8 @@ def adk_function_tools() -> list:
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
                         grep_repo, repo_map, impacted_tests, fetch_url,
                         git_commit, memory_lookup, graphify_lookup,
-                        skill_search, learn_skill]
+                        skill_search, learn_skill,
+                        workflow_search, learn_workflow]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -619,6 +644,7 @@ __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup", "skill_search", "learn_skill",
+    "workflow_search", "learn_workflow",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
     "commit", "git_add_commit",

@@ -171,7 +171,7 @@ class PgBackend:
                 "SELECT * FROM tickets "
                 "WHERE status='todo' "
                 "  AND (project IS NULL OR project <> ALL(%s)) "
-                f"ORDER BY {_PRIORITY_ORDER}, created_at ASC LIMIT 1 "
+                f"ORDER BY {_PRIORITY_ORDER}, created_at ASC, id ASC LIMIT 1 "
                 "FOR UPDATE SKIP LOCKED",
                 (excluded_projects,),
             )
@@ -250,7 +250,7 @@ class PgBackend:
             cur.execute(
                 "SELECT id, ticket_id, created_at, agent_role, kind, body, metadata "
                 "FROM ticket_events WHERE ticket_id=%s "
-                "ORDER BY created_at ASC LIMIT %s",
+                "ORDER BY created_at ASC, id ASC LIMIT %s",
                 (ticket_id, limit),
             )
             return list(cur.fetchall())
@@ -290,7 +290,7 @@ class PgBackend:
     def fetch_children(self, parent_id) -> list[dict]:
         with self._conn() as c, c.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                "SELECT * FROM tickets WHERE parent_id=%s ORDER BY created_at ASC",
+                "SELECT * FROM tickets WHERE parent_id=%s ORDER BY created_at ASC, id ASC",
                 (parent_id,),
             )
             return list(cur.fetchall())
@@ -302,14 +302,14 @@ class PgBackend:
                     "SELECT * FROM tickets "
                     "WHERE lower(title)=%s AND project=%s "
                     "AND status = ANY(%s) "
-                    "ORDER BY created_at ASC LIMIT 20",
+                    "ORDER BY created_at ASC, id ASC LIMIT 20",
                     (needle, project, statuses),
                 )
             else:
                 cur.execute(
                     "SELECT * FROM tickets WHERE lower(title)=%s "
                     "AND status = ANY(%s) "
-                    "ORDER BY created_at ASC LIMIT 20",
+                    "ORDER BY created_at ASC, id ASC LIMIT 20",
                     (needle, statuses),
                 )
             return list(cur.fetchall())

@@ -59,6 +59,16 @@ export default function Kanban() {
     return g;
   }, [data, q, roleFilter, optimistic]);
 
+  // Defensive: surface any status the backend emits that isn't a known column
+  // (e.g. a future status) in an extra lane instead of silently dropping it.
+  const allColumns = useMemo(() => {
+    const known = new Set(COLUMNS.map(c => c.key));
+    const extra = Object.keys(grouped)
+      .filter(k => !known.has(k) && (grouped[k] || []).length > 0)
+      .map(k => ({ key: k, title: k, color: '#8892a0' }));
+    return [...COLUMNS, ...extra];
+  }, [grouped]);
+
   const roles = useMemo(() => {
     const s = new Set<string>();
     for (const t of data) if (t.assignee_role) s.add(t.assignee_role);
@@ -137,7 +147,7 @@ export default function Kanban() {
         onDragEnd={onDragEnd}
       >
         <div className="kanban-board">
-          {COLUMNS.map(col => (
+          {allColumns.map(col => (
             <Column
               key={col.key}
               col={col}

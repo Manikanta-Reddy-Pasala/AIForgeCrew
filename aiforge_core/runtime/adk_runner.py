@@ -990,6 +990,17 @@ def _build_prompt(ticket, memory_md: str) -> str:
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.debug("skills.inject failed: %s", exc)
 
+    # Workflows injection — same treatment as skills, so the pipeline agents
+    # see relevant reusable end-to-end procedures (parity with the chat agent).
+    try:
+        from aiforge_core.runtime import workflows as _workflows
+        wf_block = _workflows.auto_context(
+            f"{ticket.title or ''} {ticket.body or ''}", None)
+        if wf_block:
+            out = wf_block + "\n\n" + out
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("workflows.inject failed: %s", exc)
+
     # Vision attach hint (sub #6). When the ticket has image attachments
     # AND the active Doer model supports vision, list them with a flag so
     # the model knows it can request a multimodal turn. Actual content-
