@@ -956,7 +956,7 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 12) -> list[dict]:
         return convo
     if sum(len(m.get("content") or "") for m in convo) <= budget:
         return convo
-    head, tail = convo[:1], convo[-keep_recent:]
+    tail = convo[-keep_recent:]
     middle = convo[1:-keep_recent]
     if not middle:
         return convo
@@ -973,7 +973,15 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 12) -> list[dict]:
             f"{len(middle)} messages omitted. Work done so far: {used}. "
             "Re-read a file or ask the user if you need detail from before "
             "this point.]")
-    return head + [{"role": "user", "content": note}] + tail
+    # Fold the breadcrumb INTO the system message rather than inserting a
+    # separate 'user' turn — that avoids two consecutive same-role messages
+    # (some providers reject those) and keeps the assistant/user alternation
+    # of the tail intact. Strip any prior breadcrumb first so the system
+    # message can't grow unbounded across repeated condenses.
+    sys_text = re.sub(r"\n*\[earlier conversation auto-condensed.*?\]\s*$", "",
+                      convo[0].get("content") or "", flags=re.S)
+    head = [{"role": "system", "content": (sys_text + "\n\n" + note).strip()}]
+    return head + tail
 
 
 def _build_repo_map(cwd: str, max_entries: int = 240, max_depth: int = 3) -> str:
@@ -1183,6 +1191,7 @@ def run_chat_agent(
 
     action_counts: dict[str, int] = {}
     recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)
+    condensed_notified = False
 
     n = 0
     while n < safety:
@@ -1196,7 +1205,8 @@ def run_chat_agent(
         # happened (one-time per condense) for transparency.
         _before = len(convo)
         convo = _compact_convo(convo)
-        if len(convo) < _before:
+        if len(convo) < _before and not condensed_notified:
+            condensed_notified = True   # notify ONCE, not every over-budget turn
             yield {"type": "thought", "role": "system",
                    "text": "⚙ condensed earlier context to stay within the window"}
         try:

@@ -386,9 +386,15 @@ def test_compact_convo_condenses_long_history(monkeypatch):
         convo.append({"role": "user", "content": "OBSERVATION: " + "x" * 200})
     out = ca._compact_convo(convo, keep_recent=8)
     assert out[0]["role"] == "system"                      # system preserved
-    assert "auto-condensed" in out[1]["content"]           # breadcrumb
-    assert "file_read" in out[1]["content"]                # actions summarized
-    assert len(out) == 1 + 1 + 8                           # system + note + recent
+    # breadcrumb folded INTO the system message (no separate user turn → no
+    # consecutive same-role messages); actions summarized.
+    assert "auto-condensed" in out[0]["content"]
+    assert "file_read" in out[0]["content"]
+    assert len(out) == 1 + 8                               # system + recent tail
+    # no two consecutive non-system same-role messages
+    roles = [m["role"] for m in out]
+    assert not any(roles[i] == roles[i+1] != "system" for i in range(len(roles)-1))
+    assert roles[-1] == "user"                             # model continues
     assert sum(len(m["content"]) for m in out) < \
         sum(len(m["content"]) for m in convo)
 
