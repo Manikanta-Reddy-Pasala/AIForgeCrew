@@ -1056,14 +1056,32 @@ function AssistantBubble({
   elapsedSec?: number;
   subtasks?: SubtaskItem[];
 }) {
+  // Agent steps collapse by default once the turn is done (keeps the chat
+  // clean — the plan/subtasks + final answer are what matter); auto-expanded
+  // while streaming so the live flow is visible.
+  const [showSteps, setShowSteps] = useState(streaming);
   return (
     <div>
       {subtasks && subtasks.length > 0 && <SubtaskList items={subtasks} />}
       {steps.length > 0 && (
-        <div style={{ marginBottom: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {steps.map((s, i) => (
-            <AgentStepRow key={i} step={s} />
-          ))}
+        <div style={{ marginBottom: text ? 8 : 0 }}>
+          <button
+            onClick={() => setShowSteps(v => !v)}
+            style={{
+              background: 'transparent', border: '1px solid var(--border-1)',
+              borderRadius: 4, padding: '2px 8px', fontSize: 'var(--fs-xs)',
+              color: 'var(--fg-3)', cursor: 'pointer', marginBottom: showSteps ? 6 : 0,
+            }}
+          >
+            {showSteps ? '▾' : '▸'} {steps.length} agent step{steps.length === 1 ? '' : 's'}
+          </button>
+          {showSteps && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {steps.map((s, i) => (
+                <AgentStepRow key={i} step={s} />
+              ))}
+            </div>
+          )}
         </div>
       )}
       {text && (

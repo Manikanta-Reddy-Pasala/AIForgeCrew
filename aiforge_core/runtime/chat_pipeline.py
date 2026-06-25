@@ -349,7 +349,15 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     stopped = False
     saw_real = False     # any substantive (non-error) event from the pipeline
     while True:
-        item = q.get()
+        try:
+            # Heartbeat: a slow local model can leave minute-long gaps between
+            # agent steps. Without periodic output the SSE connection idles and
+            # the browser/proxy drops it ("network error"). Emit a ping so the
+            # stream stays warm; the UI ignores unknown event types.
+            item = q.get(timeout=10)
+        except queue.Empty:
+            yield {"type": "ping"}
+            continue
         if item is _SENTINEL:
             break
         if item.get("type") == "error":

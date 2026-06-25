@@ -61,13 +61,36 @@ def _slugify(text: str) -> str:
     return s[:40] or "step"
 
 
+# A numbered list item, capturing the leading number so we can detect a
+# SECOND list (the planner often writes a summary list AND a detailed list —
+# we want only the first one, not both concatenated).
+_NUM_ITEM_RE = re.compile(
+    r"^\s*(?P<n>\d+)[.)]\s+(?:\*\*(?P<t1>[^*]+?)\*\*|(?P<t2>[^:—\-\n]+?))"
+    r"(?:\s*[—:\-]\s*(?P<desc>.+))?$")
+
+
 def _phases_from_markdown(md: str) -> list[dict]:
-    """Extract numbered phases from a markdown plan body as subtasks."""
+    """Extract the FIRST numbered list from a markdown plan body as subtasks.
+
+    Stops when the numbering resets (n <= previous) — that's a second list
+    (e.g. a detailed breakdown repeating the summary), which would otherwise
+    duplicate every phase.
+    """
     if not md:
         return []
     out: list[dict] = []
     seen: set = set()
-    for m in _PHASE_RE.finditer(md):
+    prev_n = 0
+    started = False
+    for line in md.splitlines():
+        m = _NUM_ITEM_RE.match(line)
+        if not m:
+            continue
+        n = int(m.group("n"))
+        if started and n <= prev_n:
+            break                      # numbering reset → a second list; stop
+        started = True
+        prev_n = n
         title = (m.group("t1") or m.group("t2") or "").strip().strip("*` ")
         desc = (m.group("desc") or "").strip().strip("*` ")
         if not title or len(title) > 120:
@@ -77,7 +100,7 @@ def _phases_from_markdown(md: str) -> list[dict]:
             continue
         seen.add(slug)
         out.append({"slug": slug, "goal": desc or title})
-        if len(out) >= 12:        # cap — a plan shouldn't have 20+ phases
+        if len(out) >= 12:
             break
     # Require >=2 phases to treat it as a real decomposition (avoid a lone
     # numbered line in prose becoming a "1-subtask" plan).
