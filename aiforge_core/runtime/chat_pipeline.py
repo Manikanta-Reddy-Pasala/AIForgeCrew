@@ -209,7 +209,18 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
 
             from .pipeline import build_pipeline
 
-            pipeline = build_pipeline(project=None)
+            # Full context by default — the Researcher + context gatherers feed
+            # the Planner so it decomposes into well-scoped subtasks (this IS
+            # useful, especially for splitting). Opt into a LEAN run with
+            # AIFORGE_CHAT_LEAN=1 when you want the Planner/subtasks fast on a
+            # slow local model (skips researcher + ctx_conventions; the Doer
+            # still has grep/read to pull repo context on demand).
+            _lean = os.environ.get("AIFORGE_CHAT_LEAN", "0") in ("1", "true")
+            pipeline = build_pipeline(
+                project=None,
+                skip_researcher=_lean,
+                skip_conventions=_lean,
+            )
             svc = InMemorySessionService()
             runner = Runner(agent=pipeline, app_name="aiforge-chat",
                             session_service=svc, auto_create_session=True)
