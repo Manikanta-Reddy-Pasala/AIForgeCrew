@@ -329,3 +329,20 @@ def test_rule_book_injected_into_system_prompt(tmp_path, monkeypatch):
                                    cwd=str(tmp_path), complete_fn=fake))
     assert "NEVER delete prod data" in seen["sys"]
     assert seen["sys"].index("RULES") < seen["sys"].index("You are AIForge")  # rules first
+
+
+def test_diff_preview_is_markdown_not_json_string():
+    from aiforge_core.runtime import chat_agent as ca
+    # integration write → readable markdown (heading + fields), not a JSON blob
+    p = ca._diff_preview("jira_create",
+                         {"project": "ENG", "summary": "Fix", "description": "## D"},
+                         "/tmp")
+    assert p.startswith("### Create Jira issue")
+    assert "**Project:**" in p and "## D" in p
+    assert not p.lstrip().startswith("{")        # NOT a raw json dump
+    # command / diff / unknown → fenced code so the renderer shows monospace
+    assert "```bash" in ca._diff_preview("run_command", {"cmd": "ls"}, "/tmp")
+    assert "```json" in ca._diff_preview("weird_tool", {"a": 1}, "/tmp")
+    gl = ca._diff_preview("gitlab_comment",
+                          {"project": "g/p", "iid": 5, "body": "looks good"}, "/tmp")
+    assert gl.startswith("### Comment on GitLab") and "looks good" in gl

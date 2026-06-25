@@ -520,8 +520,19 @@ _PLAN_BANNER = (
 )
 
 
+def _fence(body: str, lang: str = "") -> str:
+    """Wrap text in a fenced code block so the markdown renderer shows it as a
+    monospace block (diffs, commands, JSON) instead of reflowed prose."""
+    return f"```{lang}\n{body}\n```"
+
+
 def _diff_preview(tool: str, args: dict, cwd: str) -> str:
-    """Human-readable preview of a mutating action for the approval gate."""
+    """Markdown preview of a mutating action for the approval gate.
+
+    Returns markdown (the chat UI renders it): diffs/commands/JSON go in fenced
+    code blocks; the integration write tools (Confluence/Jira/GitLab) get a
+    readable heading + fields + body so the operator reviews formatted content,
+    not a raw ``{"...": "..."}`` string dump."""
     import difflib
     try:
         if tool in ("file_write", "file_create"):
@@ -534,16 +545,76 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
             diff = "".join(difflib.unified_diff(
                 old.splitlines(keepends=True), new.splitlines(keepends=True),
                 fromfile=f"a/{path}", tofile=f"b/{path}"))
-            return diff[:4000] or f"(new file {path}, {len(new)} bytes)"
+            if diff:
+                return f"**Write `{path}`**\n\n" + _fence(diff[:4000], "diff")
+            return f"**New file `{path}`** ({len(new)} bytes)\n\n" + _fence(
+                str(new)[:2000])
         if tool == "file_patch":
-            return (f"--- {args.get('path', '?')}\n"
-                    f"- {str(args.get('old_text', ''))[:500]}\n"
-                    f"+ {str(args.get('new_text', ''))[:500]}")
+            return (f"**Patch `{args.get('path', '?')}`**\n\n" + _fence(
+                f"- {str(args.get('old_text', ''))[:1000]}\n"
+                f"+ {str(args.get('new_text', ''))[:1000]}", "diff"))
         if tool in ("run_command", "bash", "shell"):
-            return "$ " + str(args.get("cmd", ""))
+            return "**Run command**\n\n" + _fence(str(args.get("cmd", "")), "bash")
+
+        # ── integration writes → formatted markdown, not a JSON blob ──────
+        if tool == "confluence_create":
+            return (f"### Create Confluence page\n\n"
+                    f"**Space:** `{args.get('space', '?')}` · "
+                    f"**Title:** {args.get('title', '?')}\n\n"
+                    f"_Body (storage XHTML):_\n\n"
+                    + _fence(str(args.get('body', ''))[:3000], "xml"))
+        if tool == "confluence_update":
+            return (f"### Update Confluence page `{args.get('id', '?')}`\n\n"
+                    + (f"**New title:** {args['title']}\n\n" if args.get('title') else "")
+                    + "_New body (storage XHTML):_\n\n"
+                    + _fence(str(args.get('body', ''))[:3000], "xml"))
+        if tool == "jira_create":
+            md = (f"### Create Jira issue\n\n"
+                  f"**Project:** `{args.get('project', '?')}` · "
+                  f"**Type:** {args.get('issuetype', 'Task')}"
+                  + (f" · **Priority:** {args['priority']}" if args.get('priority') else "")
+                  + f"\n\n**Summary:** {args.get('summary', '?')}\n")
+            if args.get("description"):
+                md += f"\n{str(args['description'])[:3000]}\n"
+            if args.get("labels"):
+                md += f"\n**Labels:** {args['labels']}\n"
+            return md
+        if tool == "jira_update":
+            md = f"### Update Jira issue `{args.get('key', '?')}`\n\n"
+            for k in ("summary", "priority", "assignee", "labels"):
+                if args.get(k):
+                    md += f"**{k.capitalize()}:** {args[k]}\n\n"
+            if args.get("description") is not None:
+                md += f"**Description:**\n\n{str(args['description'])[:3000]}\n"
+            return md
+        if tool == "jira_comment":
+            return (f"### Comment on Jira `{args.get('key', '?')}`\n\n"
+                    f"{str(args.get('body', ''))[:3000]}")
+        if tool == "gitlab_create":
+            md = (f"### Create GitLab issue\n\n"
+                  f"**Project:** `{args.get('project', '?')}`\n\n"
+                  f"**Title:** {args.get('title', '?')}\n")
+            if args.get("description"):
+                md += f"\n{str(args['description'])[:3000]}\n"
+            if args.get("labels"):
+                md += f"\n**Labels:** {args['labels']}\n"
+            return md
+        if tool == "gitlab_update":
+            md = (f"### Update GitLab issue "
+                  f"`{args.get('project', '?')}#{args.get('iid', '?')}`\n\n")
+            for k in ("title", "labels", "state_event"):
+                if args.get(k):
+                    md += f"**{k.replace('_', ' ').capitalize()}:** {args[k]}\n\n"
+            if args.get("description") is not None:
+                md += f"**Description:**\n\n{str(args['description'])[:3000]}\n"
+            return md
+        if tool == "gitlab_comment":
+            return (f"### Comment on GitLab "
+                    f"`{args.get('project', '?')}#{args.get('iid', '?')}`\n\n"
+                    f"{str(args.get('body', ''))[:3000]}")
     except Exception:  # noqa: BLE001
         pass
-    return json.dumps(args, default=str)[:1000]
+    return _fence(json.dumps(args, default=str, indent=2)[:2000], "json")
 
 _SYSTEM = """You are AIForge, an autonomous coding assistant with FULL access to \
 the user's filesystem and shell in the working directory {cwd}.
