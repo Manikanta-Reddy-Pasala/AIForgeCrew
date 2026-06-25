@@ -337,6 +337,73 @@ def default_run_one(subtask: dict, worktree: str) -> dict:
     return {"ok": ok}
 
 
+_FILE_BLOCK_RE = None  # lazy-compiled in _parse_file_blocks
+
+
+def _parse_file_blocks(text: str) -> dict:
+    """Parse ``=== path/to/file ===\\n<content>`` blocks (also fenced ``)."""
+    import re
+    blocks: dict = {}
+    # === path === markers
+    for m in re.finditer(r"^===\s*([^\n=]+?)\s*===\n(.*?)(?=^===\s*[^\n=]+?\s*===|\Z)",
+                         text, re.MULTILINE | re.DOTALL):
+        path = m.group(1).strip().strip("`")
+        body = m.group(2).strip()
+        # strip a leading ```lang and trailing ``` fence if present
+        body = re.sub(r"^```[\w.+-]*\n", "", body)
+        body = re.sub(r"\n```\s*$", "", body)
+        if path and body:
+            blocks[path] = body + "\n"
+    return blocks
+
+
+def lightweight_run_one(subtask: dict, worktree: str) -> dict:
+    """Fast per-subtask runner: ONE LLM call to implement the subtask as
+    complete file(s), written into the worktree. Far cheaper than the full
+    ReAct Doer loop — so N subtasks actually finish on a shared local model."""
+    try:
+        from aiforge_core.llm.client import complete as _complete
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    goal = subtask.get("goal") or subtask.get("slug") or "implement the subtask"
+    prompt = (
+        f"Implement this subtask as COMPLETE, runnable Python file(s).\n\n"
+        f"SUBTASK: {goal}\n\n"
+        "Output ONLY the file(s), each as:\n=== relative/path.py ===\n"
+        "<full file content>\n\nNo prose, no explanation. If multiple files are "
+        "needed, emit multiple === path === blocks.")
+    try:
+        out = _complete("doer", [
+            {"role": "system", "content": "You are a senior engineer. Output "
+             "complete, working code files only, in the === path === format."},
+            {"role": "user", "content": prompt}], max_tokens=2048)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    files = _parse_file_blocks(out or "")
+    if not files:
+        return {"ok": False, "error": "no file blocks produced"}
+    written = 0
+    for rel, content in files.items():
+        rel = rel.lstrip("/").replace("..", "")
+        dest = os.path.join(worktree, rel)
+        try:
+            os.makedirs(os.path.dirname(dest) or worktree, exist_ok=True)
+            with open(dest, "w") as f:
+                f.write(content)
+            written += 1
+        except OSError:
+            continue
+    return {"ok": written > 0, "files": list(files)}
+
+
+def _default_subtask_runner():
+    """Lightweight single-shot by default (fast, completes on shared models);
+    set AIFORGE_PARALLEL_FULL_DOER=1 for the heavier multi-step Doer loop."""
+    if os.environ.get("AIFORGE_PARALLEL_FULL_DOER", "0") in ("1", "true"):
+        return default_run_one
+    return lightweight_run_one
+
+
 _INFLIGHT: set = set()
 _INFLIGHT_LOCK = threading.Lock()
 
@@ -394,7 +461,7 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         # global state. The per-subtask Doer's focused prompt has no subtickets
         # array, so it never calls the env-based subtask_update tool.
         agg = run_parallel(wt, base_branch, getattr(ticket, "id", None),
-                           subs, run_one or default_run_one,
+                           subs, run_one or _default_subtask_runner(),
                            validate_one=default_validate_one,
                            integration_test=default_integration_test)
         _emit(getattr(ticket, "id", None), "*", "parallel_review",
@@ -494,7 +561,7 @@ def stream_parallel_team(prompt: str, cwd: str):
     def _runner():
         try:
             result["agg"] = run_parallel(cwd, base, None, subs,
-                                         default_run_one,
+                                         _default_subtask_runner(),
                                          validate_one=default_validate_one,
                                          integration_test=default_integration_test,
                                          on_status=on_status)
