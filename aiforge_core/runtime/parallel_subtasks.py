@@ -90,7 +90,8 @@ def _reset_worktree(wt: str, base_branch: str) -> None:
     """Hard-reset a worktree to ``base_branch`` between retry attempts so a
     failed/partial attempt can't leak files into the next one."""
     _git(["reset", "--hard", base_branch], wt)
-    _git(["clean", "-fd"], wt)
+    _git(["clean", "-fdx"], wt)        # -x also clears ignored files a failed
+    #                                    attempt may have left (full isolation)
 
 
 def _attempt(subtask: dict, wt: str, slug: str, run_one, validate_one) -> dict:
@@ -152,38 +153,41 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
             "error": last.get("error")}
 
 
-def default_validate_one(subtask: dict, worktree: str) -> dict:
-    """Objective per-subtask validation: build + run the project's tests in the
-    worktree. Green → validated. No model needed — a concrete quality gate."""
+def _build_or_test(worktree: str) -> dict:
+    """Quality gate for a checkout: if the project HAS tests, gate strictly on
+    the test result (FAILING tests do NOT pass via a build fallback); only when
+    there are NO tests do we accept a green build. No project → nothing to gate.
+    """
     try:
-        from aiforge_core.runtime.tools.project_runner import project
-        test = project(action="test", cwd=worktree)
-        if isinstance(test, dict) and test.get("ok"):
-            return {"ok": True, "via": "test"}
-        # No runnable tests? fall back to a successful build/compile.
+        from aiforge_core.runtime.tools.project_runner import (
+            _has_tests, detect, project,
+        )
+        stacks = (detect(worktree) or {}).get("stacks") or []
+        if not stacks:
+            return {"ok": True, "via": "no-project", "note": "nothing to build/test"}
+        if _has_tests(worktree, stacks):
+            test = project(action="test", cwd=worktree)
+            ok = bool(isinstance(test, dict) and test.get("ok"))
+            return {"ok": ok, "via": "test",
+                    "detail": None if ok else (test or {}).get("error")}
         build = project(action="build", cwd=worktree)
-        if isinstance(build, dict) and build.get("ok"):
-            return {"ok": True, "via": "build", "note": "no tests; build green"}
-        return {"ok": False, "via": "test/build",
-                "detail": (test or {}).get("error") or (build or {}).get("error")}
+        ok = bool(isinstance(build, dict) and build.get("ok"))
+        return {"ok": ok, "via": "build", "note": "no tests",
+                "detail": None if ok else (build or {}).get("error")}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+def default_validate_one(subtask: dict, worktree: str) -> dict:
+    """Objective per-subtask validation in its worktree (tests-strict)."""
+    return _build_or_test(worktree)
 
 
 def default_integration_test(repo_root: str) -> dict:
     """Build + test the WHOLE integrated result on the base branch after all
-    subtasks merged — catches breakage that only shows when combined."""
-    try:
-        from aiforge_core.runtime.tools.project_runner import project
-        test = project(action="test", cwd=repo_root)
-        if isinstance(test, dict) and test.get("ok"):
-            return {"ok": True, "via": "test"}
-        build = project(action="build", cwd=repo_root)
-        if isinstance(build, dict) and build.get("ok"):
-            return {"ok": True, "via": "build", "note": "no tests; build green"}
-        return {"ok": False, "via": "test/build"}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
+    subtasks merged — catches breakage that only shows when combined. Like the
+    per-subtask gate, FAILING tests do not pass via a build fallback."""
+    return _build_or_test(repo_root)
 
 
 def _emit(ticket_id, slug, kind, body, md) -> None:
@@ -327,6 +331,10 @@ def default_run_one(subtask: dict, worktree: str) -> dict:
     return {"ok": ok}
 
 
+_INFLIGHT: set = set()
+_INFLIGHT_LOCK = threading.Lock()
+
+
 def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
     """Entry point: decompose-aware parallel run for one ticket. Loads its
     subtasks + working branch, fans them out concurrently, merges. Operator-
@@ -334,26 +342,47 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
     default single-Doer pipeline is never disturbed."""
     from aiforge_core.runtime.workspace import ensure_branch_and_worktree
     from aiforge_core.tickets import subtasks as _st
-    subs = _st.get_subtasks(getattr(ticket, "id", ticket))
+    tid = getattr(ticket, "id", ticket)
+    subs = _st.get_subtasks(tid)
     if not subs:
         return {"ok": True, "total": 0, "note": "no subtasks to run"}
-    wt = ensure_branch_and_worktree(ticket)
-    if not wt:
-        return {"ok": False, "error": "no worktree/repo for ticket"}
-    repo_root = os.environ.get("AIFORGE_REPO_ROOT") or wt
-    # the worktree's current branch is the ticket's working branch
-    cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], wt)
-    base_branch = (cur.stdout or "").strip() or "HEAD"
-    agg = run_parallel(repo_root, base_branch, getattr(ticket, "id", None),
-                       subs, run_one or default_run_one,
-                       validate_one=default_validate_one,
-                       integration_test=default_integration_test)
-    # Final review summary on the ticket timeline so the operator sees the
-    # overall verdict (how many done+validated vs failed) in one place.
-    _emit(getattr(ticket, "id", None), "*", "parallel_review",
-          agg.get("review", ""), {k: agg.get(k) for k in
-          ("total", "done", "validated", "failed", "merged", "conflicts")})
-    return agg
+    # Guard against a second parallel run for the SAME ticket (concurrent
+    # POSTs would collide on the per-slug worktree paths).
+    with _INFLIGHT_LOCK:
+        if tid in _INFLIGHT:
+            return {"ok": False, "error": "already running for this ticket"}
+        _INFLIGHT.add(tid)
+    ident = getattr(ticket, "identifier", "") or ""
+    prev_ct = os.environ.get("AIFORGE_CURRENT_TICKET")
+    try:
+        wt = ensure_branch_and_worktree(ticket)
+        if not wt:
+            return {"ok": False, "error": "no worktree/repo for ticket"}
+        # The merge target must be a worktree that has base_branch checked out;
+        # ``wt`` is exactly that (the ticket's working branch). Run the whole
+        # orchestration relative to wt so merges land on the right branch.
+        cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], wt)
+        base_branch = (cur.stdout or "").strip() or "HEAD"
+        # Expose the ticket so the per-subtask Doer's subtask_update tool
+        # targets THIS ticket (the worker threads share this process env).
+        if ident:
+            os.environ["AIFORGE_CURRENT_TICKET"] = ident
+        agg = run_parallel(wt, base_branch, getattr(ticket, "id", None),
+                           subs, run_one or default_run_one,
+                           validate_one=default_validate_one,
+                           integration_test=default_integration_test)
+        _emit(getattr(ticket, "id", None), "*", "parallel_review",
+              agg.get("review", ""), {k: agg.get(k) for k in
+              ("total", "done", "validated", "failed", "merged", "conflicts")})
+        return agg
+    finally:
+        # restore the prior current-ticket env so it can't leak to a later run
+        if prev_ct is None:
+            os.environ.pop("AIFORGE_CURRENT_TICKET", None)
+        else:
+            os.environ["AIFORGE_CURRENT_TICKET"] = prev_ct
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.discard(tid)
 
 
 __all__ = ["run_parallel", "run_subtasks_parallel", "default_run_one",

@@ -56,3 +56,23 @@ def test_callback_extracts_subtickets_from_plan_json():
     md = "Here is the plan:\n```json\n" + plan + "\n```\ndone."
     assert len(_extract_subtickets(md)) == 2
     assert _extract_subtickets("no json here") == []
+
+
+def test_callback_skips_noop_replan(env, monkeypatch):
+    store, subtasks = env
+    t = store.create(title="Big", body="x" * 3000, project="p")
+    from aiforge_core.runtime import subtasks_callback as cb
+    import asyncio
+
+    class Ctx:
+        def __init__(self, plan):
+            self.state = {"plan_md": plan, "ticket_identifier": t.identifier}
+
+    plan = '{"subtickets": [{"slug": "a", "goal": "x"}, {"slug": "b", "goal": "y"}]}'
+    callback = cb.make_planner_subtasks_callback()
+    asyncio.run(callback(callback_context=Ctx(plan)))
+    subtasks.update_subtask(t.id, "a", "done")
+    # re-run the callback with the SAME slugs → must NOT reset 'a' progress
+    asyncio.run(callback(callback_context=Ctx(plan)))
+    cur = {s["slug"]: s["status"] for s in subtasks.get_subtasks(t.id)}
+    assert cur["a"] == "done", "no-op replan wiped progress"

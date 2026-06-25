@@ -58,6 +58,7 @@ def _setup_ticket_workspace(ticket) -> tuple[str | None, dict]:
     prior = {
         "AIFORGE_REPO_ROOT": os.environ.get("AIFORGE_REPO_ROOT"),
         "AIFORGE_AFM_REPO": os.environ.get("AIFORGE_AFM_REPO"),
+        "AIFORGE_CURRENT_TICKET": os.environ.get("AIFORGE_CURRENT_TICKET"),
     }
     project = (getattr(ticket, "project", "") or "").strip()
     if project:

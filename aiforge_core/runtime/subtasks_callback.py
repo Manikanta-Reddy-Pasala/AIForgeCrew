@@ -58,6 +58,12 @@ def make_planner_subtasks_callback():
             t = store.get(ident)
             if t is None:
                 return None
+            # Skip a no-op replan: if the same slugs are already recorded, don't
+            # re-emit subtasks_planned (which would reset in-flight progress).
+            new_slugs = [str(s.get("slug") or "").strip() for s in subs]
+            cur_slugs = [s.get("slug") for s in subtasks.get_subtasks(t.id)]
+            if cur_slugs and cur_slugs == new_slugs:
+                return None
             subtasks.set_subtasks(t.id, subs, role="planner")
             log.info("subtasks.recorded ticket=%s count=%d", ident, len(subs))
         except Exception as exc:  # noqa: BLE001 — never break the pipeline

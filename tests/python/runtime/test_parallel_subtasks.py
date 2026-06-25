@@ -157,3 +157,35 @@ def test_no_subtasks_noop(tmp_path):
     repo, _ = _repo(tmp_path)
     r = ps.run_parallel(repo, "work", None, [], _writer())
     assert r["total"] == 0 and r["ok"]
+
+
+def test_validation_tests_strict(monkeypatch):
+    """Failing tests must NOT pass via the build fallback."""
+    import aiforge_core.runtime.tools.project_runner as pr
+    monkeypatch.setattr(pr, "detect", lambda cwd: {"stacks": ["python"]})
+    monkeypatch.setattr(pr, "_has_tests", lambda cwd, stacks: True)
+    monkeypatch.setattr(pr, "project",
+                        lambda action, cwd: {"ok": action != "test"})
+    assert ps._build_or_test("/x")["ok"] is False        # tests failed → fail
+    # no tests + green build → pass
+    monkeypatch.setattr(pr, "_has_tests", lambda cwd, stacks: False)
+    monkeypatch.setattr(pr, "project", lambda action, cwd: {"ok": action == "build"})
+    assert ps._build_or_test("/x")["ok"] is True
+    # no project → nothing to gate
+    monkeypatch.setattr(pr, "detect", lambda cwd: {"stacks": []})
+    assert ps._build_or_test("/x")["ok"] is True
+
+
+def test_inflight_guard_rejects_second_run(monkeypatch):
+    from aiforge_core.tickets import subtasks as st
+    monkeypatch.setattr(st, "get_subtasks", lambda tid: [{"slug": "a", "goal": "a"}])
+
+    class T:
+        id = 999
+        identifier = "ONE-999"
+    ps._INFLIGHT.add(999)               # pretend a run is already in flight
+    try:
+        r = ps.run_subtasks_parallel(T())
+        assert r["ok"] is False and "already running" in r["error"]
+    finally:
+        ps._INFLIGHT.discard(999)
