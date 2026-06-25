@@ -214,7 +214,8 @@ def gitlab_create(args: dict, cwd: str | None = None) -> dict:
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
-    return {"ok": True, "iid": d.get("iid"), "url": d.get("web_url")}
+    return {"ok": True, "iid": d.get("iid"), "url": d.get("web_url"),
+            "written": {"title": args.get("title"), "description": args.get("description")}}
 
 
 def gitlab_update(args: dict, cwd: str | None = None) -> dict:
@@ -248,7 +249,9 @@ def gitlab_update(args: dict, cwd: str | None = None) -> dict:
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
-    return {"ok": True, "iid": d.get("iid") or iid, "url": d.get("web_url")}
+    return {"ok": True, "iid": d.get("iid") or iid, "url": d.get("web_url"),
+            "written": {k: args[k] for k in ("title", "description", "labels",
+                        "state_event") if args.get(k) is not None}}
 
 
 def gitlab_comment(args: dict, cwd: str | None = None) -> dict:
@@ -267,7 +270,8 @@ def gitlab_comment(args: dict, cwd: str | None = None) -> dict:
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
-    return {"ok": True, "iid": iid, "id": d.get("id")}
+    return {"ok": True, "iid": iid, "id": d.get("id"),
+            "written": {"comment": str(args["body"])[:2000]}}
 
 
 def gitlab_test() -> dict:

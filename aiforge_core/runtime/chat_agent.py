@@ -438,6 +438,21 @@ def _t_web_fetch(args: dict, cwd: str) -> dict:
     return web_search.web_fetch(args, cwd)
 
 
+def _t_serve(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import serve
+    return serve.serve(args, cwd)
+
+
+def _t_stop_service(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import serve
+    return serve.stop_service(args, cwd)
+
+
+def _t_list_services(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import serve
+    return serve.list_services(args, cwd)
+
+
 def _t_skill_search(args: dict, cwd: str) -> dict:
     """Search the skill registry (SKILL.md playbooks) by relevance."""
     try:
@@ -533,6 +548,9 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "web_fetch": _t_web_fetch,
     "workflow_search": _t_workflow_search,
     "learn_workflow": _t_learn_workflow,
+    "serve": _t_serve,
+    "stop_service": _t_stop_service,
+    "list_services": _t_list_services,
 }
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
@@ -777,8 +795,14 @@ Tool arguments:
 - gitlab_create {{"project": "group/proj", "title": "...", "description": "...", "labels": ["a","b"]}}   (new issue — needs your Approve)
 - gitlab_update {{"project": "group/proj", "iid": 42, "title": "...", "labels": ["x"], "state_event": "close"}}   (edit — needs your Approve)
 - gitlab_comment{{"project": "group/proj", "iid": 42, "body": "comment text"}}            (add a comment — needs your Approve)
+After any Confluence/Jira/GitLab create/update/comment SUCCEEDS, show the user a \
+short AFTER preview of what was written (the `written` field in the result) plus \
+the page/issue link — so they can confirm the change without opening it.
 - web_search    {{"query": "rust tokio select! cancellation", "limit": 5}}   (search the open web — no key — when you're stuck / need current docs)
 - web_fetch     {{"url": "https://...", "max_chars": 6000}}                  (read a result page's text)
+- serve         {{"cmd": "npm run dev", "port": 5173}}   (START a server/app in the BACKGROUND; returns its pid + the URL to open — use this to run the app, NOT run_command which would block)
+- stop_service  {{"pid": 12345}}                          (stop a service you started with serve)
+- list_services {{}}                                      (list services you started + whether each is alive)
 
 When stuck on an unfamiliar error, a library API, or a config flag, use \
 web_search then web_fetch the most relevant hit instead of guessing.
@@ -836,6 +860,16 @@ auto-detects the stack (maven/gradle/node/react/next/vite/python/go/rust), \
 installs the toolchain, and runs the right command. For anything it \
 doesn't cover, fall back to run_command and do every step yourself \
 (install deps → build → run). Execute, don't just describe.
+- PROVE IT RUNS — don't make the user ask. After you write/change code (a \
+POC, a feature, a bug fix), do NOT stop at "code written". Proactively: \
+(1) build/compile, (2) run the tests (write them if missing — a POC still \
+needs at least one test), (3) START the app with `serve` (it returns the \
+pid + the URL), and (4) in your FINAL give the operator the exact \
+endpoint/URL to open AND the commands to run it themselves, plus how to stop \
+it (stop_service(pid)). If there are TWO services (e.g. an API + a web UI), \
+`serve` BOTH and give both URLs and how they connect. Use `serve` for \
+long-running servers (run_command would block); use run_command for \
+one-shot build/test commands.
 - WRONG/VAGUE path: if you're unsure of a folder/file name or a path \
 errors, use `find` to locate it first (partial name is fine), then read or \
 `grep`. `grep` already searches the whole project if the given path is \

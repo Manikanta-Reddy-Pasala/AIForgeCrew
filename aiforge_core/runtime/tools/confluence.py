@@ -166,7 +166,9 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
     return {"ok": True, "id": d.get("id"), "title": d.get("title"),
-            "url": _page_url(d)}
+            "url": _page_url(d),
+            "written": {"title": d.get("title") or args["title"],
+                        "body": str(args["body"])[:2000]}}
 
 
 def confluence_update(args: dict, cwd: str | None = None) -> dict:
@@ -194,7 +196,8 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
         return r
     rd = r["data"] if isinstance(r["data"], dict) else {}
     return {"ok": True, "id": pid, "version": next_ver, "title": title,
-            "url": _page_url(rd)}
+            "url": _page_url(rd),
+            "written": {"title": title, "body": str(args["body"])[:2000]}}
 
 
 def confluence_test() -> dict:

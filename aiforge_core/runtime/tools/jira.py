@@ -182,7 +182,9 @@ def jira_create(args: dict, cwd: str | None = None) -> dict:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
     key = d.get("key", "")
-    return {"ok": True, "key": key, "url": _issue_url(key)}
+    return {"ok": True, "key": key, "url": _issue_url(key),
+            "written": {"summary": args.get("summary"),
+                        "description": args.get("description")}}
 
 
 def jira_update(args: dict, cwd: str | None = None) -> dict:
@@ -214,7 +216,9 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
                  body={"fields": fields})
     if not r["ok"]:
         return r
-    return {"ok": True, "key": key, "url": _issue_url(key)}
+    return {"ok": True, "key": key, "url": _issue_url(key),
+            "written": {k: args[k] for k in ("summary", "description",
+                        "priority", "labels", "assignee") if args.get(k) is not None}}
 
 
 def jira_comment(args: dict, cwd: str | None = None) -> dict:
@@ -229,7 +233,8 @@ def jira_comment(args: dict, cwd: str | None = None) -> dict:
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
-    return {"ok": True, "key": key, "id": d.get("id"), "url": _issue_url(key)}
+    return {"ok": True, "key": key, "id": d.get("id"), "url": _issue_url(key),
+            "written": {"comment": str(args["body"])[:2000]}}
 
 
 def jira_test() -> dict:
