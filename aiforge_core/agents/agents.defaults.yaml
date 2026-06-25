@@ -13,7 +13,7 @@
 # AIFORGE_<ROLE>_TEMPERATURE / AIFORGE_<ROLE>_TOP_P env vars.
 archetypes:
   understander:
-    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
+    model: local-model-unconfigured
     temperature: 0.7
     top_p: 0.8
     top_k: 20
@@ -24,7 +24,7 @@ archetypes:
     prompt_version: v1
 
   planner:
-    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit   # reasoning model
+    model: local-model-unconfigured   # reasoning model
     temperature: 0.7
     top_p: 0.8
     top_k: 20
@@ -36,7 +36,7 @@ archetypes:
     prompt_version: v1
 
   verifier:
-    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
+    model: local-model-unconfigured
     temperature: 0.7
     grammar: verify.json
     max_tokens: 4000
@@ -50,7 +50,7 @@ archetypes:
     prompt_version: v1
 
   doer:
-    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
+    model: local-model-unconfigured
     temperature: 0.7
     top_p: 0.8
     top_k: 20
@@ -69,7 +69,7 @@ archetypes:
     prompt_version: v1
 
   tester:
-    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
+    model: local-model-unconfigured
     temperature: 0.7
     top_p: 0.8
     top_k: 20
@@ -80,7 +80,7 @@ archetypes:
     prompt_version: v1
 
   architect:
-    model: /Users/manikanta/.lmstudio/models/lmstudio-community/Qwen3-Coder-Next-MLX-4bit
+    model: local-model-unconfigured
     temperature: 0.7
     grammar: review.json
     max_tokens: 12000

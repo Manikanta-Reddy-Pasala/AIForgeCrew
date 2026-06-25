@@ -42,7 +42,7 @@ agents:
   enhancer:
     identity:
       runtime: adk_agent_direct_litellm
-      model: Qwen3-Coder-Next-MLX-4bit
+      model: local-model-unconfigured
       backend: direct_litellm
       base_url: http://127.0.0.1:1234/v1
       ctx_window: 128000
@@ -200,7 +200,7 @@ agents:
   verifier:
     identity:
       runtime: adk_agent_direct_litellm
-      model: Qwen3-Coder-Next-MLX-4bit
+      model: local-model-unconfigured
       backend: direct_litellm
       base_url: http://127.0.0.1:1234/v1
       ctx_window: 128000
@@ -246,7 +246,7 @@ agents:
   doer:
     identity:
       runtime: adk_agent_with_ga
-      model: Qwen3-Coder-Next-MLX-4bit
+      model: local-model-unconfigured
       backend: genericagent_text_protocol
       base_url: http://127.0.0.1:1234/v1
       ctx_window: 128000
@@ -584,7 +584,7 @@ agents:
   validator:
     identity:
       runtime: adk_agent_direct_litellm
-      model: Qwen3-Coder-Next-MLX-4bit
+      model: local-model-unconfigured
       backend: direct_litellm
       base_url: http://127.0.0.1:1234/v1
       ctx_window: 128000
@@ -622,7 +622,7 @@ agents:
   live_verifier:
     identity:
       runtime: adk_agent_direct_litellm
-      model: Qwen3-Coder-Next-MLX-4bit
+      model: local-model-unconfigured
       backend: direct_litellm
       base_url: http://127.0.0.1:1234/v1
       ctx_window: 128000
@@ -794,7 +794,7 @@ agents:
   verify_correctness:
     identity:
       runtime: adk_agent_direct_litellm
-      model: Qwen3-Coder-Next-MLX-4bit
+      model: local-model-unconfigured
       backend: direct_litellm
       base_url: http://127.0.0.1:1234/v1
       ctx_window: 128000
@@ -825,7 +825,7 @@ agents:
   verify_scope:
     identity:
       runtime: adk_agent_direct_litellm
-      model: Qwen3-Coder-Next-MLX-4bit
+      model: local-model-unconfigured
       backend: direct_litellm
       base_url: http://127.0.0.1:1234/v1
       ctx_window: 128000
@@ -856,7 +856,7 @@ agents:
   verify_risk:
     identity:
       runtime: adk_agent_direct_litellm
-      model: Qwen3-Coder-Next-MLX-4bit
+      model: local-model-unconfigured
       backend: direct_litellm
       base_url: http://127.0.0.1:1234/v1
       ctx_window: 128000
