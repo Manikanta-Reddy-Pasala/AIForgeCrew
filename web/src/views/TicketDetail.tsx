@@ -82,6 +82,10 @@ export default function TicketDetail() {
         </div>
       </div>
 
+      {data.subtasks?.length > 0 && (
+        <SubtaskProgress subtasks={data.subtasks} progress={data.subtask_progress} />
+      )}
+
       <div className="row" style={{ gap: 8, marginBottom: 12 }}>
         <Link to={`/trace/${id}`} className="ghost sm" style={{
           padding: '4px 10px', border: '1px solid var(--border-1)', borderRadius: 4,
@@ -780,6 +784,61 @@ function AttachmentsBlock({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Subtask progress (Planner decomposition, tracked internally) ──────────────
+const SUBTASK_COLORS: Record<string, string> = {
+  done: '#3fb950', skipped: '#5a6472', running: '#6aa6ff',
+  failed: '#e5534b', pending: '#8892a0',
+};
+
+function SubtaskProgress(
+  { subtasks, progress }:
+  { subtasks: any[]; progress?: { total: number; done: number; fraction: number; counts: Record<string, number> } },
+) {
+  const total = progress?.total ?? subtasks.length;
+  const done = progress?.done ?? 0;
+  const counts = progress?.counts ?? {};
+  // ordered segments for the stacked bar
+  const order = ['done', 'skipped', 'running', 'failed', 'pending'];
+  return (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <h2 style={{ fontSize: 14, margin: 0 }}>
+          Subtasks <span className="muted">({done}/{total} done)</span>
+        </h2>
+        <div className="row" style={{ gap: 8, fontSize: 'var(--fs-xs)' }}>
+          {order.filter(k => counts[k]).map(k => (
+            <span key={k} style={{ color: SUBTASK_COLORS[k] }}>
+              ● {k} {counts[k]}
+            </span>
+          ))}
+        </div>
+      </div>
+      {/* stacked progress bar */}
+      <div style={{ display: 'flex', height: 10, borderRadius: 5, overflow: 'hidden', background: 'var(--bg-2,#222)' }}>
+        {order.map(k => counts[k] ? (
+          <div key={k} title={`${k}: ${counts[k]}`}
+               style={{ width: `${(counts[k] / total) * 100}%`, background: SUBTASK_COLORS[k] }} />
+        ) : null)}
+      </div>
+      {/* per-subtask list */}
+      <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {subtasks.map((s, i) => (
+          <div key={s.slug || i} className="row" style={{ gap: 8, alignItems: 'center', fontSize: 13 }}>
+            <span style={{
+              flexShrink: 0, width: 64, textAlign: 'center', fontSize: 11, fontWeight: 600,
+              color: SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending,
+              border: `1px solid ${SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending}`,
+              borderRadius: 4, padding: '1px 4px',
+            }}>{s.status}</span>
+            <span className="mono muted" style={{ flexShrink: 0, fontSize: 11 }}>{s.slug}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.goal}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

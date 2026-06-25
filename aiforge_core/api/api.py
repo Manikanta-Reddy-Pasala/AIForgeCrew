@@ -356,11 +356,21 @@ def get_ticket(identifier: str) -> dict:
                 if k not in ("stage", "duration_s")
             },
         })
+    # Internal subtasks (Planner decomposition, event-sourced) + progress, so
+    # the UI can chart the breakdown.
+    try:
+        from aiforge_core.tickets import subtasks as _subtasks
+        _subs = _subtasks.get_subtasks(ticket_id)
+        _subprog = _subtasks.progress(_subs)
+    except Exception:  # noqa: BLE001
+        _subs, _subprog = [], {"total": 0, "done": 0, "counts": {}, "fraction": 0.0}
     return {
         "ticket": _ticket_row_out(t),
         "events": events,
         "children": children,
         "timings": timings,
+        "subtasks": _subs,
+        "subtask_progress": _subprog,
     }
 
 

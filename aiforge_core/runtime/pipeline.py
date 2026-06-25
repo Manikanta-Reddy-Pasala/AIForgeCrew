@@ -345,6 +345,12 @@ def build_pipeline(*, skip_researcher: bool = False,
     from .learner_persist import make_learner_after_callback
     _append_after(learner, make_learner_after_callback())
 
+    # Record the Planner's decomposition as internal subtasks on the ticket
+    # (event-sourced) so the UI charts the breakdown + the Doer flips each
+    # subtask's status as it works through them.
+    from .subtasks_callback import make_planner_subtasks_callback
+    _append_after(planner, make_planner_subtasks_callback())
+
     # LOC-plateau watcher on the Refiner — sees each loop turn AFTER the Doer
     # reported file_diffs. Sets state['loop_budget_kill'] which loop_gate
     # reads to exit the Doer loop early. (The old LoopAgent before-callback

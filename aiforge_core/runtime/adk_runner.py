@@ -62,6 +62,9 @@ def _setup_ticket_workspace(ticket) -> tuple[str | None, dict]:
     project = (getattr(ticket, "project", "") or "").strip()
     if project:
         os.environ["AIFORGE_AFM_REPO"] = project
+    # Expose the current ticket so doer tools (e.g. subtask_update) can flip
+    # this ticket's internal subtask status as the agent works.
+    os.environ["AIFORGE_CURRENT_TICKET"] = getattr(ticket, "identifier", "") or ""
     worktree = ensure_branch_and_worktree(ticket)
     if worktree:
         os.environ["AIFORGE_REPO_ROOT"] = worktree

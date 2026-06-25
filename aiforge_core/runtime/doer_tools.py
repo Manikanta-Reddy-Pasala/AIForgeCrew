@@ -509,6 +509,24 @@ def web_fetch(url: str) -> dict:
     return fetch_url(url)
 
 
+def subtask_update(slug: str, status: str) -> dict:
+    """Flip ONE subtask's status as you work through the plan's subtickets:
+    'running' when you start it, 'done' when its acceptance is met, 'failed' if
+    blocked. The UI charts this live. ``slug`` is the subticket's slug from the
+    plan. Status ∈ pending|running|done|failed|skipped."""
+    try:
+        ident = os.environ.get("AIFORGE_CURRENT_TICKET", "")
+        if not ident:
+            return {"ok": False, "error": "no current ticket in context"}
+        from aiforge_core.tickets import store, subtasks
+        t = store.get(ident)
+        if t is None:
+            return {"ok": False, "error": f"ticket not found: {ident}"}
+        return subtasks.update_subtask(t.id, slug, status, role="doer")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def serve(cmd: str, port: int = 0, wait_s: float = 12.0) -> dict:
     """Start a server/app in the BACKGROUND (returns pid + detected URL) so you
     can run the thing you built and hand back an endpoint. NOT for one-shot
@@ -663,7 +681,8 @@ def adk_function_tools() -> list:
                         grep_repo, repo_map, impacted_tests, fetch_url,
                         git_commit, memory_lookup, graphify_lookup,
                         skill_search, learn_skill,
-                        workflow_search, learn_workflow, web_search, serve, stop_service]
+                        workflow_search, learn_workflow, web_search, serve, stop_service,
+                        subtask_update]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -676,6 +695,7 @@ __all__ = [
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup", "skill_search", "learn_skill",
     "workflow_search", "learn_workflow", "web_search", "serve", "stop_service",
+    "subtask_update",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
     "commit", "git_add_commit",
