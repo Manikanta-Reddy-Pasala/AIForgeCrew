@@ -252,6 +252,18 @@ def _is_transient_llm_error(exc: Exception) -> bool:
     return any(m in s for m in _TRANSIENT_MARKERS)
 
 
+def _api_base_of(model: Any) -> str:
+    """Best-effort endpoint URL for a built model. ADK's LiteLlm doesn't expose
+    ``api_base`` directly — it lives in ``_additional_args`` — so ``getattr``
+    alone logged ``?`` and the LM-crash recovery couldn't find the endpoint."""
+    base = getattr(model, "api_base", None)
+    if not base:
+        extra = getattr(model, "_additional_args", None)
+        if isinstance(extra, dict):
+            base = extra.get("api_base")
+    return base or ""
+
+
 def _is_empty(resp: LlmResponse) -> bool:
     """A 200-OK that's actually useless — no text, no tool calls."""
     if resp.error_code:
@@ -491,7 +503,7 @@ class EscalatingLlm(BaseLlm):
                     "llm.attempt_failed role=%s attempt=%s model=%s "
                     "api_base=%s errtype=%s err=%s",
                     self.role, label, getattr(model, "model", "?"),
-                    getattr(model, "api_base", "?"),
+                    _api_base_of(model) or "?",
                     type(exc).__name__, err_str[:800],
                 )
                 # LM Studio MLX crash mid-pipeline ("model has crashed"
@@ -505,7 +517,7 @@ class EscalatingLlm(BaseLlm):
                     from . import local_starter
                     if local_starter.looks_like_lm_crash(err_str):
                         self.lm_recovery_tried = True
-                        api_base = getattr(model, "api_base", "") or ""
+                        api_base = _api_base_of(model)
                         recovered = local_starter.try_recover(api_base)
                         log.warning(
                             "llm.lm_crash_recovery role=%s recovered=%s",

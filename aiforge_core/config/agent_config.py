@@ -19,6 +19,7 @@ Storage: ``$AIFORGE_CONFIG_DIR/agent_config.json`` (default ``~/.aiforge``).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -57,14 +58,15 @@ _ROLES = _ARCHETYPES
 # Local default — resolved dynamically, in order:
 #   1. AIFORGE_LOCAL_DEFAULT_MODEL env (operator pin)
 #   2. first model id served by the local /v1/models endpoint (5-min cache)
-#   3. legacy hardcoded path (only when the server is unreachable AND no
-#      env pin exists — keeps cold-start behavior identical to before)
-_LOCAL_FALLBACK_MODEL = (
-    "/Users/manikanta/.lmstudio/models/lmstudio-community/"
-    "Qwen3-Coder-Next-MLX-4bit"
-)
+#   3. neutral placeholder (only when the server is unreachable AND no env
+#      pin AND nothing configured) — a generic id, NOT a hardcoded absolute
+#      model path from one operator's laptop (that phantom path was confusing
+#      on every other host and produced "Connection error" against a model
+#      nobody configured).
+_LOCAL_FALLBACK_MODEL = "local-model-unconfigured"
 _LOCAL_DEFAULT_CACHE: list[Any] = [0.0, None]  # [ts, model_id]
 _LOCAL_DEFAULT_TTL_S = 300.0
+_FALLBACK_WARNED = [False]
 
 
 def _local_default_model() -> str:
@@ -84,6 +86,18 @@ def _local_default_model() -> str:
         _LOCAL_DEFAULT_CACHE[0] = now
         _LOCAL_DEFAULT_CACHE[1] = discovered[0]["id"]
         return _LOCAL_DEFAULT_CACHE[1]
+    # Nothing configured, env unset, and the local endpoint served no models
+    # (down / empty). Don't fabricate a real-looking model — return a neutral
+    # placeholder and tell the operator once how to fix it.
+    if not _FALLBACK_WARNED[0]:
+        _FALLBACK_WARNED[0] = True
+        logging.getLogger("aiforge.agent_config").warning(
+            "no local model configured and the local endpoint served no "
+            "models — using placeholder '%s' (every call will fail). Fix: set "
+            "a model in the UI (Home → Agents), pin AIFORGE_LOCAL_DEFAULT_MODEL, "
+            "point AIFORGE_LM_BASE_URL at a live LM Studio/mlx-lm, or configure "
+            "a cloud fallback (e.g. OLLAMA_CLOUD_API_KEY).",
+            _LOCAL_FALLBACK_MODEL)
     return _LOCAL_FALLBACK_MODEL
 
 PROVIDERS: dict[str, dict[str, Any]] = {
