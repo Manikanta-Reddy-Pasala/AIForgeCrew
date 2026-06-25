@@ -14,14 +14,90 @@ chat_cancel) AND an explicit stop_service both kill the whole process group.
 """
 from __future__ import annotations
 
+import atexit
 import os
 import re
 import signal
 import subprocess
+import threading
 import time
 
-# pid → {proc, cmd, url, port, log_path, pgid}
+# pid → {proc, cmd, url, port, log_path, pgid, started_at, ttl}
 _SERVICES: dict[int, dict] = {}
+_REAPER_STARTED = False
+_REAPER_LOCK = threading.Lock()
+
+
+def _default_ttl() -> float:
+    """Max lifetime (seconds) for a served process before auto-cleanup, so a
+    forgotten dev server doesn't linger forever. 0 disables. Default 30 min."""
+    try:
+        return float(os.environ.get("AIFORGE_SERVE_TTL_S", "1800"))
+    except ValueError:
+        return 1800.0
+
+
+def _kill_pgid(pid: int, pgid: int | None) -> None:
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid if pgid is not None else os.getpgid(pid), sig)
+            time.sleep(0.2)
+        except ProcessLookupError:
+            return
+        except Exception:  # noqa: BLE001
+            try:
+                os.kill(pid, sig)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _reap() -> int:
+    """Kill services past their TTL or already dead. Returns count reaped."""
+    now = time.monotonic()
+    reaped = 0
+    for pid, s in list(_SERVICES.items()):
+        dead = s["proc"].poll() is not None
+        ttl = s.get("ttl") or 0
+        expired = ttl > 0 and (now - s.get("started_at", now)) > ttl
+        if dead:
+            _SERVICES.pop(pid, None)
+        elif expired:
+            _kill_pgid(pid, s.get("pgid"))
+            _SERVICES.pop(pid, None)
+            reaped += 1
+    return reaped
+
+
+def _ensure_reaper() -> None:
+    """Start a single daemon thread that reaps expired services every 60s, so
+    a forgotten server is cleaned up even with no further tool calls."""
+    global _REAPER_STARTED
+    with _REAPER_LOCK:
+        if _REAPER_STARTED:
+            return
+        _REAPER_STARTED = True
+
+        def _loop() -> None:
+            while True:
+                time.sleep(60)
+                try:
+                    _reap()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        t = threading.Thread(target=_loop, name="aiforge-serve-reaper",
+                             daemon=True)
+        t.start()
+
+
+@atexit.register
+def _stop_all_on_exit() -> None:
+    """Kill every still-running served process when the host process exits, so
+    none are orphaned on shutdown/restart."""
+    for pid, s in list(_SERVICES.items()):
+        if s["proc"].poll() is None:
+            _kill_pgid(pid, s.get("pgid"))
+        _SERVICES.pop(pid, None)
 
 # Common "I'm listening" lines emitted by frameworks on startup.
 _URL_RE = re.compile(r"https?://[\w.\-]+:\d+(?:/\S*)?", re.IGNORECASE)
@@ -48,7 +124,14 @@ def serve(args: dict, cwd: str | None = None) -> dict:
         wait_s = float(args.get("wait_s", 12))
     except (TypeError, ValueError):
         wait_s = 12.0
+    try:
+        ttl = float(args["ttl_s"]) if args.get("ttl_s") is not None \
+            else _default_ttl()
+    except (TypeError, ValueError):
+        ttl = _default_ttl()
     port_hint = str(args.get("port") or "").strip()
+    _ensure_reaper()        # auto-cleanup forgotten services
+    _reap()                 # opportunistically clear dead/expired first
 
     log_path = os.path.join(
         os.environ.get("AIFORGE_CONFIG_DIR", os.path.expanduser("~/.aiforge")),
@@ -73,7 +156,8 @@ def serve(args: dict, cwd: str | None = None) -> dict:
         pgid = None
     _SERVICES[proc.pid] = {"proc": proc, "cmd": cmd, "url": None,
                            "port": port_hint or None, "log_path": log_path,
-                           "pgid": pgid}
+                           "pgid": pgid, "started_at": time.monotonic(),
+                           "ttl": ttl}
     try:
         from aiforge_core.runtime import chat_cancel
         sid = chat_cancel.active()
@@ -107,11 +191,14 @@ def serve(args: dict, cwd: str | None = None) -> dict:
     if proc.pid in _SERVICES:
         _SERVICES[proc.pid]["url"] = url
         _SERVICES[proc.pid]["port"] = port_hint or None
+    ttl_note = (f" · auto-stops after {int(ttl // 60)} min if you forget"
+                if ttl > 0 else "")
     return {"ok": True, "pid": proc.pid, "url": url,
             "port": port_hint or None, "log": log_path, "cmd": cmd,
+            "ttl_s": ttl,
             "hint": (f"running — open {url}" if url else
                      "running (no URL detected; check the log)")
-                    + f" · stop with stop_service(pid={proc.pid})"}
+                    + f" · stop with stop_service(pid={proc.pid}){ttl_note}"}
 
 
 def _read_log(path: str) -> str:
@@ -130,28 +217,14 @@ def stop_service(args: dict, cwd: str | None = None) -> dict:
     except (TypeError, ValueError):
         return {"ok": False, "error": "missing/invalid 'pid'"}
     svc = _SERVICES.get(pid)
-    pgid = (svc or {}).get("pgid")
-    killed = False
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(pgid if pgid is not None else os.getpgid(pid), sig)
-            killed = True
-            time.sleep(0.3)
-        except ProcessLookupError:
-            killed = True
-            break
-        except Exception:  # noqa: BLE001
-            try:
-                os.kill(pid, sig)
-                killed = True
-            except Exception:  # noqa: BLE001
-                pass
+    _kill_pgid(pid, (svc or {}).get("pgid"))
     _SERVICES.pop(pid, None)
-    return {"ok": killed, "stopped": killed, "pid": pid}
+    return {"ok": True, "stopped": True, "pid": pid}
 
 
 def list_services(args: dict | None = None, cwd: str | None = None) -> dict:
     """List services started this session + whether each is still alive."""
+    _reap()        # drop dead/expired before listing
     out = []
     for pid, s in list(_SERVICES.items()):
         alive = s["proc"].poll() is None
