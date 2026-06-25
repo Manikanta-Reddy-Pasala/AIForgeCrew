@@ -30,6 +30,8 @@ PROMPT = (
     "  - graphify_lookup(...)             — code graph lookup\n"
     "  - skill_search(query) / learn_skill(...)        — reuse/author SKILL.md\n"
     "  - workflow_search(query) / learn_workflow(...)  — reuse/author WORKFLOW.md\n"
+    "  - web_search(query)                — search the open web (no key) when "
+    "stuck; then fetch_url the best hit\n"
     "If you call a tool by any other name (e.g. 'read', 'edit', 'bash', "
     "'grep', 'http_get', 'commit') the runtime now silently aliases it, "
     "but DO NOT rely on that — emit the canonical name above so traces "

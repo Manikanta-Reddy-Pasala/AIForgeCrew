@@ -509,6 +509,17 @@ def web_fetch(url: str) -> dict:
     return fetch_url(url)
 
 
+def web_search(query: str, k: int = 5) -> dict:
+    """Search the open web (DuckDuckGo, no API key) when you're stuck — an
+    unfamiliar error, a library API you can't recall, a config flag. Returns
+    ranked {title, url, snippet}; follow up with fetch_url on the best hit."""
+    try:
+        from aiforge_core.runtime.tools import web_search as _ws
+        return _ws.web_search({"query": query, "limit": int(k or 5)})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def commit(message: str) -> dict:
     """Alias for :func:`git_commit`."""
     return git_commit(message)
@@ -632,7 +643,7 @@ def adk_function_tools() -> list:
                         grep_repo, repo_map, impacted_tests, fetch_url,
                         git_commit, memory_lookup, graphify_lookup,
                         skill_search, learn_skill,
-                        workflow_search, learn_workflow]
+                        workflow_search, learn_workflow, web_search]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -644,7 +655,7 @@ __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup", "skill_search", "learn_skill",
-    "workflow_search", "learn_workflow",
+    "workflow_search", "learn_workflow", "web_search",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
     "commit", "git_add_commit",
