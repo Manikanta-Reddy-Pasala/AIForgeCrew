@@ -16,19 +16,15 @@ raises into the agent loop.
 from __future__ import annotations
 
 import base64
-import json
 import os
-import ssl
-import urllib.error
 import urllib.parse
-import urllib.request
+
+from . import _http_integration as _http
 
 _TIMEOUT_S = 20
 _BODY_CAP = 200_000
 
-
-def _truthy(v) -> bool:
-    return str(v).strip().lower() in ("1", "true", "yes", "on")
+_truthy = _http.truthy
 
 
 def _conf() -> dict:
@@ -77,12 +73,7 @@ def _headers() -> dict[str, str]:
 
 
 def _ssl_ctx():
-    if _conf()["insecure_tls"]:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
-    return None
+    return _http.ssl_context(_conf()["insecure_tls"])
 
 
 def _request(method: str, path: str, *, params: dict | None = None,
@@ -93,38 +84,10 @@ def _request(method: str, path: str, *, params: dict | None = None,
     url = _base() + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, headers=_headers(), method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_S, context=_ssl_ctx()) as r:
-            raw = r.read(_BODY_CAP + 1)
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read(2000).decode("utf-8", "replace")
-        except Exception:  # noqa: BLE001
-            pass
-        out = {"ok": False, "error": f"http {exc.code}", "detail": detail[:500]}
-        # Jira DC explains an auth denial in these response headers
-        # (CAPTCHA challenge, expired/invalid token, SSO, etc.).
-        try:
-            for hk in ("X-Authentication-Denied-Reason", "WWW-Authenticate",
-                       "X-Seraph-LoginReason"):
-                hv = exc.headers.get(hk)
-                if hv:
-                    out.setdefault("denied_reason", f"{hk}: {hv}")
-        except Exception:  # noqa: BLE001
-            pass
-        return out
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        return {"ok": False, "error": str(exc)}
-    text = raw[:_BODY_CAP].decode("utf-8", "replace")
-    if not text.strip():           # 204 No Content (update/comment success)
-        return {"ok": True, "data": {}}
-    try:
-        return {"ok": True, "data": json.loads(text)}
-    except ValueError:
-        return {"ok": True, "data": text}
+    return _http.http_request(method, url, headers=_headers(), body=body,
+                              timeout=_TIMEOUT_S, body_cap=_BODY_CAP,
+                              context=_ssl_ctx(),
+                              capture_headers=_http.ATLASSIAN_DENIED_HEADERS)
 
 
 def _issue_url(key: str) -> str:
