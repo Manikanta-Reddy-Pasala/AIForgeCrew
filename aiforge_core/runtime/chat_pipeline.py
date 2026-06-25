@@ -220,6 +220,9 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 project=None,
                 skip_researcher=_lean,
                 skip_conventions=_lean,
+                skip_repomap=_lean,   # the repomap agent can runaway-loop on an
+                                      # empty chat workspace; lean skips it so the
+                                      # Planner (and subtask decomposition) runs.
             )
             svc = InMemorySessionService()
             runner = Runner(agent=pipeline, app_name="aiforge-chat",
@@ -281,11 +284,15 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                                 subs = []
                             if subs:
                                 emitted_subtasks = True
-                                q.put({"type": "subtasks", "items": [
+                                _sub_ev = {"type": "subtasks", "items": [
                                     {"slug": s.get("slug") or f"sub-{i+1}",
                                      "goal": s.get("goal") or s.get("title") or "",
                                      "status": "pending"}
-                                    for i, s in enumerate(subs)]})
+                                    for i, s in enumerate(subs)]}
+                                q.put(_sub_ev)
+                                # Persist with the turn's steps so the subtask
+                                # panel survives a navigate-away / reload.
+                                steps.append(_sub_ev)
                 t = _event_text(event)
                 if t:
                     final = t

@@ -876,6 +876,7 @@ export default function Chat() {
                         text={msg.content}
                         steps={(msg.steps || []).map(toAgentStep).filter((s): s is AgentStep => s !== null)}
                         streaming={false}
+                        subtasks={(msg.steps || []).find((s: any) => s?.type === 'subtasks')?.items}
                       />
                     ) : (
                       <div className="bubble-body">

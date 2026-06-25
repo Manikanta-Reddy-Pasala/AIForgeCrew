@@ -152,6 +152,7 @@ def build_litellm_model(role: str):
 
 def build_pipeline(*, skip_researcher: bool = False,
                     skip_conventions: bool = False,
+                    skip_repomap: bool = False,
                     project: str | None = None):
     """Construct the v6 ``Workflow`` graph. Returns the root node ready
     for ``Runner(agent=..., session_service=...)``.
@@ -289,7 +290,7 @@ def build_pipeline(*, skip_researcher: bool = False,
     # paid ctx_conventions LLM branch is dropped.
     context_branches = build_context_branches(
         build_litellm_model, skip_researcher=skip_researcher,
-        skip_conventions=skip_conventions)
+        skip_conventions=skip_conventions, skip_repomap=skip_repomap)
     verifier_branches = build_verifier_branches(build_litellm_model)
 
     # As ``Workflow`` graph nodes, LlmAgents default to single_turn
@@ -396,21 +397,26 @@ def build_pipeline(*, skip_researcher: bool = False,
     # can re-enter it and re-fire ALL branches in one scheduler wave
     # (JoinNode re-arm requirement).
     edges.append(Edge(from_node=enhancer, to_node=research_entry))
-    for br in context_branches:
-        edges.append(Edge(from_node=research_entry, to_node=br))
-        edges.append(Edge(from_node=br, to_node=context_join))
-    edges.append(Edge(from_node=context_join, to_node=merge_context))
-    if gap_gate is not None:
-        # merge_context → gap_eval → gap_gate ─┬ research_ok  → planner
-        #                                       └ research_gap → research_entry
-        edges.append(Edge(from_node=merge_context, to_node=gap_eval))
-        edges.append(Edge(from_node=gap_eval, to_node=gap_gate))
-        edges.append(Edge(from_node=gap_gate, to_node=planner,
-                          route=ROUTE_RESEARCH_OK))
-        edges.append(Edge(from_node=gap_gate, to_node=research_entry,
-                          route=ROUTE_RESEARCH_GAP))
+    if not context_branches:
+        # Lean: no context gatherers at all → go straight to the Planner.
+        # (research_entry is a no-op fan-out source; it just passes through.)
+        edges.append(Edge(from_node=research_entry, to_node=planner))
     else:
-        edges.append(Edge(from_node=merge_context, to_node=planner))
+        for br in context_branches:
+            edges.append(Edge(from_node=research_entry, to_node=br))
+            edges.append(Edge(from_node=br, to_node=context_join))
+        edges.append(Edge(from_node=context_join, to_node=merge_context))
+        if gap_gate is not None:
+            # merge_context → gap_eval → gap_gate ─┬ research_ok  → planner
+            #                                       └ research_gap → research_entry
+            edges.append(Edge(from_node=merge_context, to_node=gap_eval))
+            edges.append(Edge(from_node=gap_eval, to_node=gap_gate))
+            edges.append(Edge(from_node=gap_gate, to_node=planner,
+                              route=ROUTE_RESEARCH_OK))
+            edges.append(Edge(from_node=gap_gate, to_node=research_entry,
+                              route=ROUTE_RESEARCH_GAP))
+        else:
+            edges.append(Edge(from_node=merge_context, to_node=planner))
     # planner → plan_promote (parse plan JSON → scope_allowlist_globs in
     # state) → verifier fan-out → join → merge → verifier_gate
     edges.append(Edge(from_node=planner, to_node=plan_promote))

@@ -2169,6 +2169,8 @@ def chat_models() -> dict:
 class _ChatModelBody(BaseModel):
     model: str = Field(..., min_length=1)
     provider: str | None = Field(None)
+    apply_all: bool = Field(True, description="also set the global _default so "
+                            "TEAM mode (all agents) uses this model")
 
 
 @app.put("/api/chat/model")
@@ -2185,10 +2187,19 @@ def chat_model_set(body: _ChatModelBody) -> dict:
         cfg = _acfg.set_role("chat", provider, body.model,
                              base_url=cur.get("base_url"),
                              insecure_tls=bool(cur.get("insecure_tls")))
+        # Apply to ALL agents by default: the picked model also becomes the
+        # global _default so TEAM mode (triage/planner/doer/…) uses it too —
+        # otherwise electing a bigger model only changes single-agent chat.
+        if body.apply_all:
+            gd = _acfg.get("_default") if "_default" in _acfg.archetypes() else {}
+            _acfg.set_role("_default", provider, body.model,
+                           base_url=cur.get("base_url") or gd.get("base_url"),
+                           insecure_tls=bool(cur.get("insecure_tls")))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     served = _served_model_ids_for_role("chat")
     return {"provider": cfg.get("provider"), "model": cfg.get("model"),
+            "applied_to": "all agents" if body.apply_all else "chat only",
             "active": (cfg.get("model") in served) if served else True}
 
 

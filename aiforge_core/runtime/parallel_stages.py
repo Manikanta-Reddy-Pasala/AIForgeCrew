@@ -149,7 +149,8 @@ async def research_entry(ctx):  # type: ignore[no-untyped-def]
 # ── builders ────────────────────────────────────────────────────────────
 
 def build_context_branches(model_factory, *, skip_researcher: bool = False,
-                           skip_conventions: bool = False):
+                           skip_conventions: bool = False,
+                           skip_repomap: bool = False):
     """Return the parallel context-gatherer agent nodes (chat-mode).
 
     ``skip_conventions`` drops the ctx_conventions LLM branch — used when
@@ -165,7 +166,8 @@ def build_context_branches(model_factory, *, skip_researcher: bool = False,
     # result seeds state['memory_brief_md'], injected DIRECTLY into the
     # doer/planner/enhancer/verify_risk prompts (not merged here — the
     # trivial path skips this merge node).
-    branches.append(_ctx_repomap_mod.build(model_factory))
+    if not skip_repomap:
+        branches.append(_ctx_repomap_mod.build(model_factory))
     if not skip_conventions:
         branches.append(_ctx_conventions_mod.build(model_factory))
     return branches
