@@ -7,11 +7,18 @@ from aiforge_core.cli import connectivity_test as ct
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
+    # Isolate from any saved operator config (~/.aiforge/agent_config.json) so
+    # a global _default (e.g. a configured OpenRouter endpoint) can't shadow the
+    # per-test base-url env and make a "should fail" probe resolve to a real,
+    # reachable endpoint.
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     for var in (
         "AIFORGE_LLM_SSL_VERIFY", "AIFORGE_LLM_CA_BUNDLE",
         "AIFORGE_LM_BASE_URL", "AIFORGE_DOER_BASE_URL",
         "AIFORGE_OPENAI_COMPAT_BASE_URL",
+        "AIFORGE_DEFAULT_PROVIDER", "AIFORGE_DEFAULT_BASE_URL",
+        "AIFORGE_DEFAULT_MODEL", "AIFORGE_DEFAULT_API_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
     yield

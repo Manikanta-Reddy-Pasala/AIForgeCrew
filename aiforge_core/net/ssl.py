@@ -119,8 +119,11 @@ def _configured_service_hosts() -> set[str]:
     return hosts
 
 
-def _is_trusted_internal_host(host: str | None) -> bool:
-    """True for loopback / private-IP / .local-style / configured hosts."""
+def _is_intrinsically_internal_host(host: str | None) -> bool:
+    """True ONLY for hosts that are internal by their NAME/IP alone — loopback,
+    private-IP, link-local, ``.local``/``.lan``/… suffixes, or a bare label
+    (no dot). Does NOT consult the configured base-urls, so a public SaaS host
+    you merely configured is never classed internal here."""
     if not host:
         return False
     host = host.lower()
@@ -137,7 +140,21 @@ def _is_trusted_internal_host(host: str | None) -> bool:
             return True
     except ValueError:
         pass  # not an IP literal
-    return host in _configured_service_hosts()
+    return False
+
+
+def _is_trusted_internal_host(host: str | None) -> bool:
+    """Intrinsically-internal OR an explicitly-configured service host.
+
+    Used by the EXPLICIT opt-out path (``context_for`` — gated on the operator
+    having set ``AIFORGE_LLM_SSL_VERIFY=false``), where trusting a host the
+    operator pointed a base-url at is reasonable. The default-on auto-relax
+    path uses :func:`_is_intrinsically_internal_host` instead so a configured
+    public SaaS endpoint is NOT silently un-verified.
+    """
+    if _is_intrinsically_internal_host(host):
+        return True
+    return bool(host) and host.lower() in _configured_service_hosts()
 
 
 def auto_relax_internal(url: str | None) -> bool:
@@ -164,7 +181,10 @@ def auto_relax_internal(url: str | None) -> bool:
     raw = os.environ.get("AIFORGE_LLM_TLS_STRICT_INTERNAL", "")
     if raw.strip().lower() not in _FALSEY:
         return False  # operator forced strict for internal hosts
-    return _is_trusted_internal_host(_host_of(url))
+    # Default-on path: relax ONLY intrinsically-internal hosts. A configured
+    # public SaaS endpoint (openrouter.ai, api.openai.com) must keep verifying
+    # unless the operator explicitly opts out (insecure_tls / SSL_VERIFY=false).
+    return _is_intrinsically_internal_host(_host_of(url))
 
 
 def insecure_context() -> ssl.SSLContext:

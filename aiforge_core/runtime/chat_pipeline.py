@@ -230,6 +230,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             except Exception:
                 pass
             final = ""
+            by_role: dict[str, str] = {}
             agen = runner.run_async(**kw)
             async for event in agen:
                 if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -251,8 +252,11 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                     q.put(ev)
                     if ev.get("type") in ("thought", "tool", "error"):
                         steps.append(ev)
-                # Track the latest substantive text — the last agent's
-                # output is the conversational answer.
+                    # Track latest substantive text PER ROLE so the final
+                    # answer can be the Doer's work — NOT the Learner's facts
+                    # JSON, which runs last and would otherwise win.
+                    if ev.get("type") == "thought" and ev.get("role") and ev.get("text"):
+                        by_role[ev["role"]] = ev["text"]
                 t = _event_text(event)
                 if t:
                     final = t
@@ -262,8 +266,12 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 st = dict(sess.state or {})
             except Exception:
                 st = {}
-            msg = (final or st.get("doer_summary") or st.get("validator_summary")
-                   or "Done.")
+            # The Doer's output is the conversational answer (the actual work).
+            # Learner/validator/refiner emit JSON verdicts, not user-facing
+            # prose, and run AFTER the Doer — so never let them be the answer.
+            msg = (by_role.get("doer") or st.get("doer_summary")
+                   or by_role.get("researcher") or st.get("validator_summary")
+                   or final or "Done.")
             final_text = msg
             q.put({"type": "message", "text": msg})
         except Exception as exc:  # noqa: BLE001
