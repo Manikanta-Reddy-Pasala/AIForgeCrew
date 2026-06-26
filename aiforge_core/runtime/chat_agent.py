@@ -1369,12 +1369,30 @@ def run_chat_agent(
         # approval gate for any mutating tool even if policy would auto-allow.
         _force_review = (session_id is not None and name in _MUTATING
                          and chat_approve.review_edits(session_id))
-        if verdict["policy"] == tool_policy.ASK or _force_review:
+        # Destructive delete (rm -rf, etc): the run_command tool has its OWN
+        # confirm_delete arg gate (delete_guard). If we don't route it through
+        # the approval gate AND mark it confirmed on approve, the tool keeps
+        # refusing ("re-issue with confirm_delete=true") and the model loops
+        # asking the user to "type yes" forever. So always gate it, and let the
+        # human's Approve BE the confirmation.
+        _destructive_del = False
+        if name in ("run_command", "bash", "run_shell", "shell"):
+            try:
+                from aiforge_core.runtime.tools import delete_guard
+                _cmd = args.get("cmd") or args.get("command") or ""
+                _destructive_del = (not delete_guard.allow_delete(
+                    ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
+                    and delete_guard.is_destructive_delete(_cmd))
+            except Exception:  # noqa: BLE001
+                _destructive_del = False
+        if verdict["policy"] == tool_policy.ASK or _force_review or _destructive_del:
             # Approval gate (#1): surface the action + diff preview, block on
             # the user's Approve/Reject (POST /api/chat/sessions/{id}/approve).
             preview = _diff_preview(name, args, cwd)
             seq = chat_approve.request(session_id) if session_id is not None else 0
             _reason = (verdict["reason"] if verdict["policy"] == tool_policy.ASK
+                       else "Confirm this destructive delete before it runs."
+                       if _destructive_del
                        else "Review edits: confirm this file change before it lands.")
             yield {"type": "approval", "id": seq, "name": name, "args": args,
                    "reason": _reason, "preview": preview}
@@ -1392,6 +1410,11 @@ def run_chat_agent(
                                          "(the user rejected it — do NOT retry; "
                                          "adjust or ASK what they want instead.)"})
                 continue
+            # Approved → the human's Accept IS the delete confirmation, so
+            # satisfy the run_command tool's confirm_delete gate (otherwise it
+            # re-refuses and the model loops asking the user again).
+            if _destructive_del:
+                args["confirm_delete"] = True
 
         fn = TOOLS.get(name)
         if fn is None:

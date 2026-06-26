@@ -165,3 +165,34 @@ def test_run_chat_agent_injects_drained_steer(tmp_path):
     assert [e for e in evs if e["type"] == "message"][0]["text"] == "done"
     # Drained — nothing left to leak into the next turn.
     assert ci.drain(123) == []
+
+
+def test_destructive_delete_approve_sets_confirm_delete(tmp_path, monkeypatch):
+    """Approving the popup for a destructive delete must satisfy the
+    run_command confirm_delete gate — otherwise the tool re-refuses and the
+    model loops asking the user to 'type yes' forever."""
+    import aiforge_core.runtime.chat_approve as approve
+    # Auto-approve any gate that opens.
+    monkeypatch.setattr(approve, "wait", lambda sid: {"decision": "approve", "note": ""})
+    captured = {"args": None}
+
+    def _fake_run_command(args, cwd):
+        captured["args"] = dict(args)
+        return {"ok": True, "stdout": "removed"}
+
+    monkeypatch.setitem(ca.TOOLS, "run_command", _fake_run_command)
+
+    calls = {"n": 0}
+
+    def _fn(role, messages, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 'ACTION: run_command\nARGS_JSON: {"cmd": "rm -rf build"}'
+        return "FINAL: done"
+
+    list(ca.run_chat_agent(
+        [{"role": "user", "content": "remove the build dir"}],
+        cwd=str(tmp_path), complete_fn=_fn, session_id=777))
+
+    assert captured["args"] is not None, "run_command never executed (gate looped/blocked)"
+    assert captured["args"].get("confirm_delete") is True, captured["args"]
