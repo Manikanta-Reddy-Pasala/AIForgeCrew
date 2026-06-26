@@ -21,7 +21,16 @@ _DELETE_PATTERNS = [
     r"\bfind\b.*-delete\b",
     r"\bdrop\s+(table|database)\b",
     r"\btruncate\s+table\b",
+    r"\btruncate\s+-",                # coreutils: truncate -s 0 file
+    # `dd ... of=<file>` overwrites/truncates the target (raw disk OR a file);
+    # of=/dev/null is a harmless sink so exclude it.
+    r"\bdd\b.*\bof=(?!/dev/null\b)",
+    r"\bcp\s+/dev/null\s",           # cp /dev/null file → truncates file
     r">\s*/dev/sd",                   # writing over a raw disk
+    # Bare `>` redirection truncates its target file. Match a single `>`
+    # (NOT `>>` append, NOT `>&`/`2>&1` fd-dup, NOT a digit-prefixed stderr
+    # redirect like `2>`, NOT `> /dev/...` sinks like `/dev/null`).
+    r"(?<![>\d&])>(?!>)(?!&)\s*(?!/dev/)\S",
     r"\bmkfs\b", r"\bshred\b",
     r"\bdocker\s+(rm|rmi|volume\s+rm|system\s+prune)\b",
     r"\bkubectl\s+delete\b",

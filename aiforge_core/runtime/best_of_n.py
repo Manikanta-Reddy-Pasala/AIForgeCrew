@@ -24,6 +24,7 @@ import os
 import re
 import uuid
 
+from aiforge_core.runtime.git_pr import _EXCLUDE_DIR_SEGMENTS
 from aiforge_core.runtime.parallel_subtasks import (
     _commit_all,
     _default_subtask_runner,
@@ -110,7 +111,7 @@ def _parse_grade(out: str | None) -> dict:
 
 def _attempt(spec: str, repo: str, base: str, i: int, run_one,
              on_status=None, run_token: str | None = None,
-             session_id: int | None = None) -> dict:
+             session_id: int | None = None, cancel_event=None) -> dict:
     """Run ONE independent attempt in its own worktree, then grade its diff.
 
     Returns ``{slug, score, why, branch, worktree, ok, graded}``. A crash in the
@@ -121,16 +122,24 @@ def _attempt(spec: str, repo: str, base: str, i: int, run_one,
     ``run_token`` makes the worktree dir + branch RUN-UNIQUE so concurrent
     best-of-N runs in the SAME cwd can't collide on fixed paths (CC1).
 
-    ``session_id``: when the chat Stop button cancelled the session, a queued
-    attempt that hasn't started yet bails BEFORE creating its worktree / running
-    the LLM — so cancellation actually saves work instead of running all N."""
+    ``session_id`` / ``cancel_event``: when the chat Stop button cancelled the
+    session, a queued attempt that hasn't started yet bails BEFORE creating its
+    worktree / running the LLM — so cancellation actually saves work instead of
+    running all N. The RUN-SCOPED ``cancel_event`` is the authoritative signal
+    (it survives the session token being popped by ``_gen``'s finally); the
+    session token is consulted as a secondary trigger."""
     slug = f"bestof-{i}"
-    if session_id is not None:
+    _cancel = False
+    if cancel_event is not None and cancel_event.is_set():
+        _cancel = True
+    elif session_id is not None:
         from aiforge_core.runtime import chat_cancel
         if chat_cancel.is_cancelled(session_id):
-            return {"slug": slug, "score": 0, "why": "cancelled",
-                    "branch": None, "worktree": None, "ok": False,
-                    "graded": False}
+            _cancel = True
+    if _cancel:
+        return {"slug": slug, "score": 0, "why": "cancelled",
+                "branch": None, "worktree": None, "ok": False,
+                "graded": False}
     _update(None, slug, "running", on_status)
     try:
         wt, branch = _make_worktree(repo, base, slug, run_token)
@@ -196,8 +205,10 @@ def _disk_preflight(cwd: str, n: int, *, safety: float = 1.2) -> str | None:
         total = 0
         scanned = 0
         for root, dirs, files in os.walk(cwd):
-            dirs[:] = [d for d in dirs
-                       if d not in (".git", ".aiforge-worktrees")]
+            # Prune heavy artifact/dependency dirs (node_modules, .venv, dist,
+            # build, .git, worktrees, caches…) so the estimate isn't inflated
+            # and the walk doesn't crawl into them — same set git_pr uses.
+            dirs[:] = [d for d in dirs if d not in _EXCLUDE_DIR_SEGMENTS]
             for f in files:
                 try:
                     total += os.path.getsize(os.path.join(root, f))
@@ -223,7 +234,8 @@ def _disk_preflight(cwd: str, n: int, *, safety: float = 1.2) -> str | None:
 
 
 def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
-              on_status=None, session_id: int | None = None) -> dict:
+              on_status=None, session_id: int | None = None,
+              cancel_event=None) -> dict:
     """Run ``spec`` ``n`` independent times in isolated worktrees, grade each,
     merge the best, discard the rest.
 
@@ -238,6 +250,11 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
                    run / grade / win — mirrors ``parallel_subtasks._update``.
         session_id: when set, the chat Stop button (``chat_cancel``) halts the
                    run — no new attempts launch and the merge is skipped.
+        cancel_event: RUN-SCOPED ``threading.Event`` (created by
+                   ``stream_best_of_n``). Authoritative cancel signal: it stays
+                   meaningful even after ``_gen``'s finally pops the session
+                   token, so a detached worker can't keep launching attempts /
+                   merging after Stop (the session-token race).
 
     Returns ``{ok, n, winner, attempts, review, warnings, cancelled}``.
     """
@@ -261,7 +278,18 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
     from aiforge_core.runtime import chat_cancel
 
     def _cancelled() -> bool:
-        return session_id is not None and chat_cancel.is_cancelled(session_id)
+        # The RUN-SCOPED event is authoritative. The session token is a
+        # secondary trigger — when it fires we LATCH the event so cancellation
+        # sticks even after ``_gen``'s finally later pops the token (the race
+        # this fix closes): a detached worker reading a freshly-cleared token
+        # would otherwise see "not cancelled" and run all N + merge.
+        if cancel_event is not None and cancel_event.is_set():
+            return True
+        if session_id is not None and chat_cancel.is_cancelled(session_id):
+            if cancel_event is not None:
+                cancel_event.set()
+            return True
+        return False
 
     results: list[dict] = []
     cancelled = False
@@ -273,7 +301,8 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
                 cancelled = True
                 break
             futs.append(ex.submit(_attempt, spec, cwd, base, i, runner,
-                                  on_status, run_token, session_id))
+                                  on_status, run_token, session_id,
+                                  cancel_event))
         for f in concurrent.futures.as_completed(futs):
             try:
                 results.append(f.result())
@@ -287,6 +316,15 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
     # Cancelled → skip the merge, clean up every worktree, return a cancelled
     # result (best-effort, like team mode).
     if cancelled:
+        # Item E — reconcile the subtask panel: any attempt row still "pending"
+        # or "running" (never submitted, or cancelled before reaching a terminal
+        # status) would otherwise stay pending forever in the UI. Mark every slug
+        # that didn't complete with a real diff as "failed" so the panel settles.
+        _done = {r.get("slug") for r in results if r.get("ok")}
+        for i in range(n):
+            slug = f"bestof-{i}"
+            if slug not in _done:
+                _update(None, slug, "failed", on_status)
         for r in results:
             _cleanup(cwd, r)
         return {
@@ -397,6 +435,13 @@ def stream_best_of_n(spec: str, cwd: str, n: int | None = None,
 
     q: "_queue.Queue" = _queue.Queue()
     result: dict = {}
+    # RUN-SCOPED cancel signal (item A). The detached worker polls THIS, not the
+    # session-global token — so it can't race ``_gen``'s finally, which pops the
+    # token (after which chat_cancel.is_cancelled reads False) while this daemon
+    # is still mid-run. We SET it the moment we observe session cancellation
+    # while draining, AND in the finally below if the consumer stops (the
+    # generator is closed → GeneratorExit) — either way the worker halts.
+    cancel_event = _threading.Event()
 
     def on_status(slug, status, files=None):
         q.put({"type": "subtask_update", "slug": slug, "status": status})
@@ -404,7 +449,8 @@ def stream_best_of_n(spec: str, cwd: str, n: int | None = None,
     def _runner():
         try:
             result["agg"] = best_of_n(spec, cwd, n=n, on_status=on_status,
-                                      session_id=session_id)
+                                      session_id=session_id,
+                                      cancel_event=cancel_event)
         except Exception as exc:  # noqa: BLE001
             result["err"] = str(exc)
         finally:
@@ -412,11 +458,24 @@ def stream_best_of_n(spec: str, cwd: str, n: int | None = None,
 
     t = _threading.Thread(target=_runner, name="best-of-n", daemon=True)
     t.start()
-    while True:
-        item = q.get()
-        if item is None:
-            break
-        yield item
+    try:
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            # If the session was cancelled while we're draining, latch the
+            # run-scoped event NOW (before the consumer breaks on the next
+            # cancel-check and abandons us) so the worker stops even after the
+            # token is later cleared.
+            if session_id is not None:
+                from aiforge_core.runtime import chat_cancel
+                if chat_cancel.is_cancelled(session_id):
+                    cancel_event.set()
+            yield item
+    finally:
+        # Consumer stopped (GeneratorExit on close) OR we fell through — make
+        # sure the detached worker can never keep launching attempts / merging.
+        cancel_event.set()
 
     if result.get("err"):
         yield {"type": "message", "text": f"Best-of-N run error: {result['err']}"}

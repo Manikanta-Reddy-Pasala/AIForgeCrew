@@ -2477,6 +2477,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 _path["parallel"] = True
                 yield from _pp.stream_parallel_team(_spec, cwd=cwd, subtasks=_subs,
                                                     enhanced=True)
+                # stream_parallel_team emits no terminal `done`; synthesize one
+                # so a UI waiting on `done` doesn't hang (exactly one — the
+                # exception path in _gen only fires on error).
+                yield {"type": "done"}
                 return
             # Couldn't split into ≥2 distinct files → it's really ONE task.
             # Best-of-N (Gap C, opt-in): when AIFORGE_BEST_OF_N is set, run the
@@ -2490,6 +2494,9 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 _path["parallel"] = True
                 yield from _bon.stream_best_of_n(_spec, cwd,
                                                  session_id=session_id)
+                # stream_best_of_n emits no terminal `done`; synthesize one so a
+                # UI waiting on `done` doesn't hang (exactly one).
+                yield {"type": "done"}
                 return
             _af_log.info("parallel decompose <2 subtasks — sequential fallback")
         if team:
@@ -2504,19 +2511,21 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # SIMPLE and PLAN modes — the Enhancer is MANDATORY here.
         yield {"type": "thought", "role": "enhancer",
                "text": "Enhancing request + gathering context…"}
-        # Do NOT fold `history` into the spec here: the enriched spec REPLACES
-        # only the LAST user turn while the prior raw turns REMAIN in
-        # `_enriched_history` below — so `_enhance`'s history block would fold
-        # the same recent turns the model already sees, doubling the context.
-        # The raw prior turns carry the conversation; the spec is built from the
-        # prompt + memory + README only.
-        _enriched = _pp._enhance(prompt, cwd=cwd)
-        # Build enriched history: replace the LAST user message with the spec.
-        _enriched_history = [dict(m) for m in history]
-        for _m in reversed(_enriched_history):
-            if _m.get("role") == "user":
-                _m["content"] = _enriched
-                break
+        # Fold `history` INTO the spec (restores referent resolution: a
+        # context-dependent follow-up like "no, use postgres instead" or "fix
+        # that bug" must be resolved against the prior turns, else the enhancer
+        # fabricates a context-free spec that REPLACES the user's words).
+        _enriched = _pp._enhance(prompt, history=history, cwd=cwd)
+        # Avoid the double-fold: `_enhance`'s `_history_block` already folded the
+        # recent prior turns (history[:-1][-3:]) into the spec, so those SAME
+        # turns must NOT also appear raw. Keep only the OLDER turns (before the
+        # folded window) and append the enriched spec as the final user turn —
+        # which replaces the last user message.
+        _prior = history[:-1]
+        _folded = min(3, len(_prior))      # matches _history_block's recent[-3:]
+        _older = _prior[:len(_prior) - _folded] if _folded else list(_prior)
+        _enriched_history = [dict(m) for m in _older]
+        _enriched_history.append({"role": "user", "content": _enriched})
         if agent_mode == "plan":
             _subs = _pp._decompose(_enriched)       # Planner
             if _subs:

@@ -271,7 +271,12 @@ def _dirty_warning(cwd: str) -> str | None:
     the check itself fails. Best-effort: the artifact pathspecs are excluded so
     a stray ``.aiforge`` file never trips the warning."""
     try:
-        st = _git(["status", "--porcelain", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
+        # ``.gitignore`` is excluded: _ensure_git_workspace appends the
+        # agent-artifact lines via ensure_artifact_gitignore BEFORE this check,
+        # so on every default run the tree shows ` M .gitignore` and would
+        # falsely warn. The agent's own gitignore edit isn't an operator change.
+        st = _git(["status", "--porcelain", "--", ".", *_EXCLUDE_PATHSPECS,
+                   ":(exclude).gitignore"], cwd)
     except Exception:  # noqa: BLE001
         return None
     if (st.stdout or "").strip():

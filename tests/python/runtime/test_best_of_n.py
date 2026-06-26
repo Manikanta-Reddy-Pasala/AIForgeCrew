@@ -266,6 +266,124 @@ def test_best_of_n_cancelled_skips_merge(tmp_path, monkeypatch):
         assert os.listdir(wt_dir) == []
 
 
+# ── item A: run-scoped cancel Event is honoured WITHOUT a session token ────────
+# The race: _gen's finally pops the session token (chat_cancel.finish) while the
+# detached best-of-N worker is still polling it → it would read "not cancelled"
+# and run all N + merge. The run-scoped Event must cancel the worker even with
+# NO live session token.
+def test_cancel_event_independent_of_session_token(tmp_path):
+    import os
+    import threading
+
+    ev = threading.Event()
+    ev.set()                                # cancelled; NO session_id/token
+    launched = {"n": 0}
+
+    def run_one(subtask, wt):
+        launched["n"] += 1                  # must never run
+        open(os.path.join(wt, subtask["slug"] + ".txt"), "w").write("x\n")
+        return {"ok": True}
+
+    r = bon.best_of_n("x", str(tmp_path), n=3, run_one=run_one,
+                      session_id=None, cancel_event=ev)
+    assert r["cancelled"] is True and r["ok"] is False
+    assert launched["n"] == 0               # no attempts launched, no merge
+    assert not any(f.endswith(".txt") for f in os.listdir(str(tmp_path)))
+
+
+# ── item A: session-token cancel LATCHES the run-scoped Event (so it sticks
+#    after the token is later popped) ──────────────────────────────────────────
+def test_session_cancel_latches_run_event(tmp_path):
+    import threading
+
+    from aiforge_core.runtime import chat_cancel
+    sid = 9101
+    chat_cancel.start(sid)
+    chat_cancel.cancel(sid)
+    ev = threading.Event()
+    bon.best_of_n("x", str(tmp_path), n=2, run_one=_writer(),
+                  session_id=sid, cancel_event=ev)
+    chat_cancel.finish(sid)
+    assert ev.is_set()                      # token-cancel propagated to the Event
+
+
+# ── item E: cancelled run marks every still-pending attempt row "failed" ──────
+def test_cancel_marks_pending_rows_failed(tmp_path):
+    import threading
+
+    ev = threading.Event()
+    ev.set()
+    seen: list = []
+    bon.best_of_n("x", str(tmp_path), n=3, run_one=_writer(),
+                  on_status=lambda slug, status, *a: seen.append((slug, status)),
+                  cancel_event=ev)
+    failed = {slug for slug, st in seen if st == "failed"}
+    assert failed == {"bestof-0", "bestof-1", "bestof-2"}
+
+
+# ── item A: stream wrapper passes a run-scoped Event + latches it on close ─────
+def test_stream_best_of_n_close_latches_cancel_event(tmp_path, monkeypatch):
+    import threading
+
+    captured: dict = {}
+    gate = threading.Event()
+
+    def fake(spec, cwd, *, n, on_status, session_id, cancel_event):
+        captured["event"] = cancel_event
+        on_status("bestof-0", "running")    # push one event so the loop yields
+        gate.wait(3)                        # keep the worker mid-run
+        return {"ok": False, "n": n, "winner": {}, "attempts": [],
+                "warnings": [], "cancelled": True, "review": "x"}
+
+    monkeypatch.setattr(bon, "best_of_n", fake)
+    gen = bon.stream_best_of_n("spec", str(tmp_path), n=2)
+    try:
+        # Drain setup yields until the first worker status update arrives.
+        for ev in gen:
+            if ev.get("type") == "subtask_update":
+                break
+        assert captured.get("event") is not None
+        assert not captured["event"].is_set()
+        gen.close()                          # consumer stops → finally latches
+        assert captured["event"].is_set()
+    finally:
+        gate.set()                           # release the fake worker thread
+
+
+# ── item D: disk preflight prunes heavy artifact dirs (node_modules, .venv) ───
+def test_disk_preflight_prunes_heavy_dirs(tmp_path, monkeypatch):
+    import collections
+    import os
+
+    nm = tmp_path / "node_modules"
+    nm.mkdir()
+    (nm / "big.bin").write_bytes(b"x" * 5_000_000)   # 5 MB — must be pruned
+    (tmp_path / "app.py").write_text("print(1)\n")    # the only real file
+
+    # Report just 1 MB free. If node_modules were counted (5MB × 6 × 1.2 = 36MB)
+    # this would warn; pruned, the estimate is a few bytes → no warning.
+    Stat = collections.namedtuple("Stat", "f_bavail f_frsize")
+    monkeypatch.setattr(os, "statvfs", lambda p: Stat(1_000_000, 1))
+    assert bon._disk_preflight(str(tmp_path), n=6) is None
+
+
+# ── item C: the agent's own .gitignore edit does NOT trip the dirty warning ───
+def test_dirty_warning_ignores_artifact_gitignore(tmp_path):
+    from aiforge_core.runtime import parallel_subtasks as ps
+
+    # _ensure_git_workspace appends artifact lines to .gitignore (and commits a
+    # baseline). A fresh default run must NOT report uncommitted changes even
+    # though .gitignore was just written by ensure_artifact_gitignore.
+    ps._ensure_git_workspace(str(tmp_path))
+    # Re-write .gitignore so it shows as modified vs HEAD, mimicking a run where
+    # the artifact lines are appended AFTER the baseline commit.
+    (tmp_path / ".gitignore").write_text("# user\nnode_modules/\n.aiforge/\n")
+    assert ps._dirty_warning(str(tmp_path)) is None
+    # A real source change still warns.
+    (tmp_path / "real.txt").write_text("uncommitted\n")
+    assert "uncommitted changes" in (ps._dirty_warning(str(tmp_path)) or "")
+
+
 # ── B3: dirty-cwd warning surfaced in the result ──────────────────────────────
 def test_dirty_warning_detects_and_ignores_artifacts(tmp_path):
     import os

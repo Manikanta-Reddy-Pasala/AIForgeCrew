@@ -119,6 +119,17 @@ def serve(args: dict, cwd: str | None = None) -> dict:
     cmd = (args.get("cmd") or "").strip()
     if not cmd:
         return {"ok": False, "error": "missing 'cmd'"}
+    # Destructive-delete backstop: serve runs `cmd` via a shell, so it must
+    # honour the same delete gate as run_command/bash — otherwise an `rm -rf`
+    # (or any destructive form) smuggled in as a "server" command runs with no
+    # confirmation. Refuse unless the user confirmed (confirm_delete) or the
+    # env override is set. Normal dev-server commands (npm run dev, etc) pass.
+    from aiforge_core.runtime.tools import delete_guard
+    _confirmed = bool(args.get("confirm_delete")) or delete_guard.allow_delete(
+        ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
+    if not _confirmed and delete_guard.is_destructive_delete(cmd):
+        return {"ok": False, "error": delete_guard.REFUSAL
+                + " (re-issue with confirm_delete=true once the user agrees)"}
     base = _root(args.get("cwd") or cwd)
     try:
         wait_s = float(args.get("wait_s", 12))

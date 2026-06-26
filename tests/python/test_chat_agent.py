@@ -509,7 +509,11 @@ def test_run_chat_agent_commits_only_agent_changes(tmp_path):
 
     fn = _scripted([
         'ACTION: file_write\nARGS_JSON: {"path": "mine.py", "content": "x = 1\\n"}',
-        'ACTION: run_command\nARGS_JSON: {"cmd": "echo y > shellmade.txt"}',
+        # `cp` (not `echo > file`): a bare `>` redirection now trips the
+        # destructive-delete gate (it truncates its target) and, with no
+        # session, the gate auto-rejects it. `cp` writes the file without the
+        # gate, keeping this test about baseline-diff commit behaviour.
+        'ACTION: run_command\nARGS_JSON: {"cmd": "cp seed.txt shellmade.txt"}',
         'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
         "FINAL: done",
     ])

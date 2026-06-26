@@ -777,7 +777,7 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     # image attachments AND the Doer model supports vision.
     if ticket is not None:
         try:
-            from aiforge_core.config.agent_config import get_config
+            from aiforge_core.config.agent_config import load_all as get_config
             from aiforge_core.runtime.vision_adk import inject_image_parts
 
             cfg = get_config()
@@ -1011,7 +1011,7 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # block conversion lives in vision.attach_image; wiring it through
     # ADK's LlmRequest.contents shape is a follow-up.
     try:
-        from aiforge_core.config.agent_config import get_config
+        from aiforge_core.config.agent_config import load_all as get_config
         from aiforge_core.runtime.vision import supports_vision
         cfg = get_config()
         doer_model = (cfg.get("doer", {}) or {}).get("model", "")

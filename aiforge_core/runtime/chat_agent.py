@@ -1708,7 +1708,7 @@ def run_chat_agent(
         # asking the user to "type yes" forever. So always gate it, and let the
         # human's Approve BE the confirmation.
         _destructive_del = False
-        if name in ("run_command", "bash", "run_shell", "shell"):
+        if name in ("run_command", "bash", "run_shell", "shell", "serve"):
             try:
                 from aiforge_core.runtime.tools import delete_guard
                 _cmd = args.get("cmd") or args.get("command") or ""

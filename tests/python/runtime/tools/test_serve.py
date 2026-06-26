@@ -54,3 +54,36 @@ def test_serve_ttl_auto_cleanup(srv):
     srv._reap()                          # the reaper thread does this every 60s
     assert not _alive(pid)               # forgotten service auto-killed
     assert srv.list_services()["services"] == []
+
+
+# ── item F: serve routes its cmd through the destructive-delete gate ──────────
+def test_serve_refuses_destructive_cmd(srv, monkeypatch):
+    monkeypatch.delenv("AIFORGE_CHAT_ALLOW_DELETE", raising=False)
+    monkeypatch.delenv("AIFORGE_ALLOW_DELETE", raising=False)
+    r = srv.serve({"cmd": "rm -rf build && npm run dev"})
+    assert r["ok"] is False and "deletes files" in r["error"]
+    # nothing was launched.
+    assert srv.list_services()["services"] == []
+
+
+def test_serve_destructive_allowed_with_confirm(srv):
+    # confirm_delete=true (the human's Approve) lets it through the guard; use a
+    # benign command that simply exits so we don't actually delete anything.
+    r = srv.serve({"cmd": "rm -rf /nonexistent/aiforge-test-xyz; exit 0",
+                   "confirm_delete": True, "wait_s": 1})
+    # Passed the gate (it tried to start — exited on startup, not refused).
+    assert "deletes files" not in (r.get("error") or "")
+
+
+def test_serve_destructive_allowed_with_env(srv, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_ALLOW_DELETE", "1")
+    r = srv.serve({"cmd": "rm -rf /nonexistent/aiforge-test-xyz; exit 0",
+                   "wait_s": 1})
+    assert "deletes files" not in (r.get("error") or "")
+
+
+def test_serve_normal_cmd_passes_gate(srv):
+    r = srv.serve({"cmd": "python3 -m http.server 8784", "port": 8784,
+                   "wait_s": 1, "ttl_s": 9999})
+    assert r["ok"] is True
+    srv.stop_service({"pid": r["pid"]})
