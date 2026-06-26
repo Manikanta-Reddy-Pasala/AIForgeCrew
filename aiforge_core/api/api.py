@@ -2570,7 +2570,9 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # Terminal subtask statuses — a cancelled run coerces any non-terminal
         # row to "failed" so the persisted/reloaded panel never shows a row
         # stuck pending/running after a Stop.
-        _TERMINAL = {"done", "failed", "skipped", "won"}
+        # "planned" is a settled, never-executed plan-mode state — NOT in-flight,
+        # so a cancel must not flip it to "failed".
+        _TERMINAL = {"done", "failed", "skipped", "won", "planned"}
         emitted_done = False   # forwarded a terminal `done` to the client yet?
         try:
             for ev in _events():
@@ -2603,17 +2605,20 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # Persist the final subtask panel as a step so reload restores it.
             if _subtasks:
                 steps.insert(0, {"type": "subtasks", "items": _subtasks})
+            # The UI unblocks on a terminal `done`. A cancelled parallel/
+            # best-of-N run breaks before its synthesized `done`, so guarantee
+            # exactly one here when none was forwarded (non-cancel paths already
+            # emit their own — don't double-emit). MUST be here at try-end, NOT
+            # in `finally`: yielding during a client-disconnect GeneratorExit
+            # raises RuntimeError and skips persistence + gate cleanup below.
+            if not emitted_done:
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                emitted_done = True
         except Exception as exc:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             emitted_done = True
         finally:
-            # The UI unblocks on a terminal `done`. A cancelled parallel/
-            # best-of-N run breaks before its synthesized `done`, so guarantee
-            # exactly one here when none was forwarded (non-cancel paths already
-            # emit their own — don't double-emit).
-            if not emitted_done:
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
             # Capture cancellation BEFORE finishing the token (finish pops
             # it, after which is_cancelled always reads False).
             cancelled = chat_cancel.is_cancelled(session_id)

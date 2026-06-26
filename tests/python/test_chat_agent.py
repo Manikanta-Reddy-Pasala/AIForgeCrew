@@ -426,96 +426,43 @@ def test_compact_convo_sentinel_strip_is_exact(monkeypatch):
     assert s.count(ca._CONDENSE_OPEN) == 1             # exactly one block
 
 
-# ── commit hygiene — BASELINE-DIFF rewrite of a blanket git stage ─────────────
-
-_ROOT = "/repo"
+# ── commit hygiene — REFUSE blanket git stages (no rewrite/baseline) ──────────
 
 
-def test_rewrite_blanket_git_add_forms():
-    f = lambda c, p: ca._rewrite_blanket_git(c, _ROOT, p)
-    new, note = f("git add -A", ["a.py", "b.py"])
-    assert new == "git -C /repo add -- a.py b.py" and note and "a.py" in note
-    assert f("git add .", ["x.py"])[0] == "git -C /repo add -- x.py"
-    assert f("git add --all", ["x.py"])[0] == "git -C /repo add -- x.py"
-    assert f("git add -A .", ["x.py"])[0] == "git -C /repo add -- x.py"
-    assert f("git add -- .", ["x.py"])[0] == "git -C /repo add -- x.py"
+def test_is_blanket_git_refuses_blanket_forms():
+    refuse = [
+        "git add -A", "git add .", "git add --all", "git add -A .",
+        "git add -- .", 'git commit -am "x"', "git commit -a",
+        'git commit --all -m "x"', "git commit -a -m msg",
+        "(git add -A)", "(git add -A && git commit)",
+        "(git add -A && git commit -am x)",
+        "{ git add . ; git commit -m y ; }",
+        "sudo git add -A", "FOO=bar git add -A", "git -C foo add -A",
+        "git add -A && git commit && git push", "cd sub && git add -A",
+    ]
+    for c in refuse:
+        assert ca._is_blanket_git(c) is True, f"should refuse: {c!r}"
 
 
-def test_rewrite_git_commit_a_forms():
-    # A commit always gets a `git -C <root> reset -q` prepended (item 4c) so the
-    # user's pre-STAGED index is cleared before the agent's targeted add.
-    f = lambda c, p: ca._rewrite_blanket_git(c, _ROOT, p)[0]
-    assert f('git commit -am "msg"', ["a.py"]) == \
-        'git -C /repo reset -q && git -C /repo add -- a.py && git commit -m "msg"'
-    assert f('git commit -a -m "msg"', ["a.py"]) == \
-        'git -C /repo reset -q && git -C /repo add -- a.py && git commit -m "msg"'
-    assert f('git commit --all -m "x"', ["a.py"]) == \
-        'git -C /repo reset -q && git -C /repo add -- a.py && git commit -m "x"'
-    assert f("git commit -a", ["a.py"]) == \
-        "git -C /repo reset -q && git -C /repo add -- a.py && git commit"
+def test_is_blanket_git_allows_targeted_and_quoted():
+    allow = [
+        "git add foo.py bar.py", "git commit -m x",
+        "git add foo.py && git commit -m x",
+        "git status && git add -- specific.py", "sudo git add -- only.py",
+        'git commit -m "fixed -a flag"',            # -a only inside the message
+        'echo "git add -A"',                        # quoted text, not a command
+        "echo git add -A",                          # echo arg, not a git command
+    ]
+    for c in allow:
+        assert ca._is_blanket_git(c) is False, f"should allow: {c!r}"
 
 
-def test_rewrite_drops_blanket_when_no_agent_changes():
-    # Empty agent set → DROP the blanket add (→ `true`), NEVER fall back to
-    # add -A (that's the sweep bug). With a commit present, a `reset -q` is
-    # prepended so the commit can't pick up the user's pre-staged index.
-    new, note = ca._rewrite_blanket_git("git add -A && git commit -m wip", _ROOT, [])
-    assert new == "git -C /repo reset -q && true && git commit -m wip"
-    assert note and "dropped" in note
-    # commit -a with no agent changes → strip -a, stage nothing.
-    new2, _ = ca._rewrite_blanket_git('git commit -am "x"', _ROOT, [])
-    assert new2 == 'git -C /repo reset -q && true && git commit -m "x"'
-
-
-def test_rewrite_leaves_targeted_git_alone():
-    # A non-blanket git command must not be mangled.
-    new, note = ca._rewrite_blanket_git(
-        "git status && git add -- specific.py", _ROOT, ["a.py"])
-    assert new == "git status && git add -- specific.py" and note is None
-    # A commit message that merely mentions -a must not be rewritten.
-    new2, note2 = ca._rewrite_blanket_git(
-        'git commit -m "fixed flag"', _ROOT, ["a.py"])
-    assert new2 == 'git commit -m "fixed flag"' and note2 is None
-
-
-def test_detect_blanket_skips_heredoc_and_echo():
-    # A blanket add inside a heredoc BODY is data, not a command — not detected.
+def test_is_blanket_git_skips_heredoc_body():
+    # A blanket add inside a heredoc BODY is data, not a command.
     heredoc = "cat > script.sh <<'EOF'\ngit add -A\ngit commit -am all\nEOF"
-    assert ca._detect_blanket_git(heredoc) is False
-    # A blanket add inside an echo/quoted argument — not detected.
-    assert ca._detect_blanket_git('echo "git add -A"') is False
-    assert ca._detect_blanket_git("echo git add -A") is False
-    # The real top-level forms ARE detected.
-    assert ca._detect_blanket_git("git add -A && git commit -m x") is True
-    assert ca._detect_blanket_git("cd sub && git add -A") is True
-    # And a heredoc body left of a real command still detects the real one.
-    assert ca._detect_blanket_git(heredoc + "\ngit add -A") is True
-
-
-def test_detect_blanket_sees_through_prefixes_and_subshell():
-    # item 4b — `sudo` / `env=val` / `git -C <dir>` / `(`-subshell wrappers
-    # must NOT let a blanket add slip past undetected (which would SWEEP).
-    assert ca._detect_blanket_git("sudo git add -A") is True
-    assert ca._detect_blanket_git("FOO=bar git add -A") is True
-    assert ca._detect_blanket_git("git -C foo add -A") is True
-    assert ca._detect_blanket_git("(git add -A && git commit -am x)") is True
-    assert ca._detect_blanket_git("{ git add . ; git commit -m y ; }") is True
-    # a targeted add behind a prefix is still left alone
-    assert ca._detect_blanket_git("sudo git add -- only.py") is False
-
-
-def test_rewrite_neutralizes_prefixed_blanket_adds():
-    # item 4b — with no agent changes the prefixed/wrapped blanket add becomes a
-    # `true` no-op (never `add -A`), preserving the benign prefix so a wrapping
-    # `(` still balances its `)`.
-    f = lambda c: ca._rewrite_blanket_git(c, _ROOT, [])[0]
-    assert f("sudo git add -A") == "sudo true"
-    assert f("FOO=bar git add -A") == "FOO=bar true"
-    assert f("git -C foo add -A") == "true"
-    # subshell: blanket add → true, the single reset rides the first staging
-    # segment, commit keeps its trailing `)` so the subshell stays balanced.
-    out = f("(git add -A && git commit -am x)")
-    assert out == "( git -C /repo reset -q && true && true && git commit -m x)"
+    assert ca._is_blanket_git(heredoc) is False
+    # …but a real blanket add to the right of the heredoc IS still caught.
+    assert ca._is_blanket_git(heredoc + "\ngit add -A") is True
 
 
 def _git_init(repo):
@@ -525,163 +472,9 @@ def _git_init(repo):
         subprocess.run(["git", *args], cwd=repo, capture_output=True)
 
 
-def test_run_chat_agent_commits_only_agent_changes(tmp_path):
-    """Baseline-diff: pre-existing user dirt is NOT committed; the agent's
-    file_write AND shell-written file ARE."""
-    import subprocess
-    repo = str(tmp_path)
-    _git_init(repo)
-    (tmp_path / "seed.txt").write_text("seed\n")
-    subprocess.run(["git", "add", "seed.txt"], cwd=repo, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
-    # An unrelated dirty file a blanket `git add -A` would have swept in.
-    (tmp_path / "unrelated.txt").write_text("noise\n")
-
-    fn = _scripted([
-        'ACTION: file_write\nARGS_JSON: {"path": "mine.py", "content": "x = 1\\n"}',
-        # Plain `>` output redirection is creation/overwrite, NOT a delete
-        # (item 1) — the autonomous agent runs it without an approval gate.
-        'ACTION: run_command\nARGS_JSON: {"cmd": "echo made > shellmade.txt"}',
-        'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
-        "FINAL: done",
-    ])
-    evs = _collect(ca.run_chat_agent(
-        [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
-    show = subprocess.run(["git", "show", "--name-status", "--format=", "HEAD"],
-                          cwd=repo, capture_output=True, text=True).stdout
-    assert "mine.py" in show                 # agent's file_write committed
-    assert "shellmade.txt" in show           # agent's shell-written file committed
-    assert "unrelated.txt" not in show       # user's pre-existing dirt NOT swept
-    # The unrelated user file is still dirty/untracked afterwards.
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
-                            capture_output=True, text=True).stdout
-    assert "unrelated.txt" in status
-    cmd_tools = [e for e in evs if e["type"] == "tool" and e["name"] == "run_command"]
-    note = next((t["result"].get("note") for t in cmd_tools
-                 if t["result"].get("note")), "")
-    assert "hygiene" in note
-
-
-def test_run_command_blanket_stages_deletion(tmp_path):
-    """A file the agent deleted AFTER the baseline snapshot is committed as a
-    deletion by the baseline-diff blanket rewrite. (Tested through the
-    run_command tool directly — an interactive `rm` is separately gated by the
-    risk-approval policy, orthogonal to commit hygiene.)"""
-    import subprocess
-    repo = str(tmp_path)
-    _git_init(repo)
-    (tmp_path / "todelete.txt").write_text("bye\n")
-    (tmp_path / "keep.txt").write_text("keep\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
-    # Snapshot baseline on the CLEAN repo, then the agent deletes a file.
-    ca._set_chat_baseline(repo)
-    (tmp_path / "todelete.txt").unlink()
-    res = ca._t_run_command(
-        {"cmd": "git add -A && git commit -m wip"}, repo)
-    assert res["ok"], res
-    show = subprocess.run(["git", "show", "--name-status", "--format=", "HEAD"],
-                          cwd=repo, capture_output=True, text=True).stdout
-    assert "D\ttodelete.txt" in show         # deletion committed
-    assert "keep.txt" not in show            # untouched file not re-committed
-
-
-def test_run_chat_agent_cd_subdir_blanket_anchored(tmp_path):
-    """`cd sub && git add -A` stages the right repo-relative path even though
-    the add runs from a subdir — the rewrite anchors it at the repo root."""
-    import subprocess
-    repo = str(tmp_path)
-    _git_init(repo)
-    (tmp_path / "sub").mkdir()
-    fn = _scripted([
-        'ACTION: file_write\nARGS_JSON: {"path": "sub/mine.py", "content": "x=1\\n"}',
-        'ACTION: run_command\nARGS_JSON: {"cmd": "cd sub && git add -A && cd .. && git commit -m wip"}',
-        "FINAL: done",
-    ])
-    _collect(ca.run_chat_agent(
-        [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
-    show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
-                          cwd=repo, capture_output=True, text=True).stdout
-    assert "sub/mine.py" in show
-
-
-def test_run_chat_agent_empty_agent_change_no_sweep(tmp_path):
-    """Agent changes nothing but issues a blanket add → the user's dirty file
-    is NOT swept; the commit is a no-op."""
-    import subprocess
-    repo = str(tmp_path)
-    _git_init(repo)
-    (tmp_path / "seed.txt").write_text("s\n")
-    subprocess.run(["git", "add", "seed.txt"], cwd=repo, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
-    (tmp_path / "userfile.txt").write_text("user edit\n")   # pre-existing dirt
-    fn = _scripted([
-        'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
-        "FINAL: done",
-    ])
-    _collect(ca.run_chat_agent(
-        [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
-    # HEAD is still the seed commit (no new commit landed with userfile).
-    show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
-                          cwd=repo, capture_output=True, text=True).stdout
-    assert "userfile.txt" not in show
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
-                            capture_output=True, text=True).stdout
-    assert "userfile.txt" in status         # still dirty, untouched
-
-
-def test_run_chat_agent_concurrent_baseline_isolation(tmp_path):
-    """Two concurrent run_chat_agent calls over two repos must not
-    cross-contaminate their baselines (ContextVar isolation)."""
-    import subprocess
-    import threading
-
-    def _mk_repo(name):
-        repo = tmp_path / name
-        repo.mkdir()
-        _git_init(str(repo))
-        # pre-existing user dirt unique to each repo
-        (repo / f"user_{name}.txt").write_text("dirt\n")
-        return str(repo)
-
-    repo_a = _mk_repo("a")
-    repo_b = _mk_repo("b")
-
-    def _run(repo, mine):
-        # If baselines leaked across threads, the other repo's dirt would
-        # show up in this repo's commit.
-        def fn(role, convo, **kw):
-            return _run.scripts[repo].pop(0)
-        _run.scripts.setdefault(repo, [
-            f'ACTION: file_write\nARGS_JSON: {{"path": "{mine}", "content": "x=1\\n"}}',
-            'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
-            "FINAL: done",
-        ])
-        list(ca.run_chat_agent([{"role": "user", "content": "go"}],
-                               cwd=repo, complete_fn=fn))
-
-    _run.scripts = {}
-    ta = threading.Thread(target=_run, args=(repo_a, "mine_a.py"))
-    tb = threading.Thread(target=_run, args=(repo_b, "mine_b.py"))
-    ta.start(); tb.start(); ta.join(); tb.join()
-
-    for repo, mine, other_dirt in ((repo_a, "mine_a.py", "user_a.txt"),
-                                   (repo_b, "mine_b.py", "user_b.txt")):
-        show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
-                              cwd=repo, capture_output=True, text=True).stdout
-        assert mine in show
-        assert other_dirt not in show       # own user dirt not committed
-        # nothing from the OTHER repo leaked in
-        assert "mine_a.py" not in show or repo == repo_a
-        assert "mine_b.py" not in show or repo == repo_b
-
-
-# ── item 4: baseline-diff fail-safe — absent baseline NEVER sweeps ────────────
-
-def test_absent_baseline_neutralizes_blanket_add(tmp_path):
-    """item 4a — a direct run_command with NO run baseline (unknown, default
-    ContextVar) must NEUTRALIZE the blanket add, never treat absent as clean
-    and sweep the user's dirt."""
+def test_run_command_refuses_blanket_add_without_executing(tmp_path):
+    """A blanket `git add -A && git commit` is NOT executed: the user's dirty
+    file is never swept, no commit lands, and a soft block dict is returned."""
     import subprocess
     repo = str(tmp_path)
     _git_init(repo)
@@ -689,57 +482,66 @@ def test_absent_baseline_neutralizes_blanket_add(tmp_path):
     subprocess.run(["git", "add", "seed.txt"], cwd=repo, capture_output=True)
     subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
     (tmp_path / "userdirt.txt").write_text("user edit\n")   # pre-existing dirt
-    # Reset the ContextVar to the unknown default (no _set_chat_baseline call).
-    ca._CHAT_BASELINE.set((None, None))
+
     res = ca._t_run_command({"cmd": "git add -A && git commit -m wip"}, repo)
-    # The commit is a no-op (nothing the agent staged); userdirt NOT swept.
-    show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
-                          cwd=repo, capture_output=True, text=True).stdout
-    assert "userdirt.txt" not in show
+    assert res["ok"] is False
+    assert res["blocked"] == "blanket_git"
+    assert "git add" in res["error"]
+    # No new commit landed; the user's dirt is untouched and still untracked.
+    log = subprocess.run(["git", "log", "--oneline"], cwd=repo,
+                         capture_output=True, text=True).stdout
+    assert log.count("\n") == 1                # only the seed commit
     status = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
                             capture_output=True, text=True).stdout
-    assert "userdirt.txt" in status            # still dirty, untouched
-    assert "no run baseline" in (res.get("note") or "")
+    assert "userdirt.txt" in status
 
 
-def test_prestaged_user_file_not_committed_by_agent(tmp_path):
-    """item 4c — a blanket add+commit must reset the user's pre-STAGED index so
-    only the agent's targeted file lands, not the user's staged file."""
+def test_run_command_allows_targeted_add(tmp_path):
+    """A targeted `git add <path>` is executed normally (not refused)."""
     import subprocess
     repo = str(tmp_path)
     _git_init(repo)
-    (tmp_path / "seed.txt").write_text("s\n")
-    subprocess.run(["git", "add", "seed.txt"], cwd=repo, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
-    # User pre-stages their own file BEFORE the agent run.
-    (tmp_path / "userstaged.txt").write_text("user\n")
-    subprocess.run(["git", "add", "userstaged.txt"], cwd=repo, capture_output=True)
-    # Baseline snapshot now sees userstaged.txt as pre-existing.
-    ca._set_chat_baseline(repo)
-    # Agent writes its own file then issues a blanket add+commit.
-    (tmp_path / "agent.py").write_text("x=1\n")
-    res = ca._t_run_command({"cmd": "git add -A && git commit -m wip"}, repo)
-    assert res["ok"], res
-    show = subprocess.run(["git", "show", "--name-status", "--format=", "HEAD"],
-                          cwd=repo, capture_output=True, text=True).stdout
-    assert "agent.py" in show                  # agent's file committed
-    assert "userstaged.txt" not in show        # user's pre-staged file NOT swept
+    (tmp_path / "mine.py").write_text("x = 1\n")
+    res = ca._t_run_command({"cmd": "git add mine.py"}, repo)
+    assert res["ok"] is True, res
+    staged = subprocess.run(["git", "diff", "--cached", "--name-only"], cwd=repo,
+                            capture_output=True, text=True).stdout
+    assert "mine.py" in staged
 
 
-def test_prefixed_blanket_add_neutralized_no_baseline(tmp_path):
-    """item 4b — sudo / env / git -C / subshell blanket adds are neutralized
-    (not run unrewritten) when there's no trustworthy baseline."""
+def test_run_command_blanket_subshell_no_separator_refused(tmp_path):
+    """The no-separator `(git add -A)` form is caught and refused — it does
+    NOT slip past as one unrecognized token."""
     import subprocess
     repo = str(tmp_path)
     _git_init(repo)
-    (tmp_path / "seed.txt").write_text("s\n")
-    subprocess.run(["git", "add", "seed.txt"], cwd=repo, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
     (tmp_path / "userdirt.txt").write_text("dirt\n")
-    for cmd in ("FOO=bar git add -A && git commit -m wip",
-                "git -C . add -A && git commit -m wip"):
-        ca._CHAT_BASELINE.set((None, None))    # unknown baseline each time
-        ca._t_run_command({"cmd": cmd}, repo)
-        show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
-                              cwd=repo, capture_output=True, text=True).stdout
-        assert "userdirt.txt" not in show, f"swept by: {cmd}"
+    for cmd in ("(git add -A)", "(git add -A && git commit -m wip)",
+                "sudo git add -A", "git add -A && git commit && git push"):
+        res = ca._t_run_command({"cmd": cmd}, repo)
+        assert res.get("blocked") == "blanket_git", f"not refused: {cmd}"
+        # nothing was staged
+        staged = subprocess.run(["git", "diff", "--cached", "--name-only"],
+                                cwd=repo, capture_output=True, text=True).stdout
+        assert staged.strip() == "", f"swept by: {cmd}"
+
+
+def test_run_chat_agent_blanket_becomes_observation(tmp_path):
+    """End-to-end: a blanket add issued by the model surfaces as a tool result
+    with blocked=blanket_git (an OBSERVATION) and never commits."""
+    import subprocess
+    repo = str(tmp_path)
+    _git_init(repo)
+    (tmp_path / "userdirt.txt").write_text("noise\n")
+    fn = _scripted([
+        'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
+        "FINAL: done",
+    ])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
+    cmd_tools = [e for e in evs if e["type"] == "tool" and e["name"] == "run_command"]
+    assert cmd_tools and cmd_tools[0]["result"].get("blocked") == "blanket_git"
+    # No commit created in the fresh (commit-less) repo.
+    log = subprocess.run(["git", "log", "--oneline"], cwd=repo,
+                         capture_output=True, text=True)
+    assert log.returncode != 0 or log.stdout.strip() == ""

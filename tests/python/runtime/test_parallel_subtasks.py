@@ -159,6 +159,21 @@ def test_no_subtasks_noop(tmp_path):
     assert r["total"] == 0 and r["ok"]
 
 
+def test_plan_files_same_basename_distinct_slugs():
+    """Two architect files sharing a basename (a/db.py + b/db.py) must get
+    DISTINCT slugs — same slug → same worktree dir/branch → workers collide."""
+    plan = ps._plan_files([
+        {"path": "a/db.py", "purpose": "store A"},
+        {"path": "b/db.py", "purpose": "store B"},
+    ])
+    slugs = [p["slug"] for p in plan]
+    assert len(plan) == 2
+    assert len(set(slugs)) == 2, slugs            # unique within the plan
+    assert slugs[0].startswith("db")              # base slug preserved for the first
+    # distinct full paths still both present in the goals
+    assert {"a/db.py", "b/db.py"} == {p["goal"].split(":")[0] for p in plan}
+
+
 # ── CC1: run-unique worktree dirs + branches (concurrent runs don't collide) ──
 def test_make_worktree_run_unique(tmp_path):
     repo, _ = _repo(tmp_path)

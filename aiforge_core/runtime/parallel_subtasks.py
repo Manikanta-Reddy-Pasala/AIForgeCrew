@@ -879,14 +879,27 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
 
 
 def _plan_files(files: list[dict]) -> list[dict]:
-    """Architect file list → one subtask per file (guaranteed distinct files)."""
-    out, seen = [], set()
+    """Architect file list → one subtask per file (guaranteed distinct files).
+
+    The slug must be UNIQUE within the plan: it names the worktree dir + branch,
+    so two files sharing a basename (``a/db.py`` + ``b/db.py``) slugging to the
+    same ``db`` would collide on one worktree → two workers clobber each other.
+    On a slug collision we disambiguate with a short hash of the FULL path."""
+    import hashlib
+    out, seen_paths, seen_slugs = [], set(), set()
     for f in files:
         path = str(f.get("path") or "").strip().lstrip("/")
-        if not path or path in seen:
+        if not path or path in seen_paths:
             continue
-        seen.add(path)
-        out.append({"slug": _slugify(path.rsplit("/", 1)[-1].rsplit(".", 1)[0] or path),
+        seen_paths.add(path)
+        slug = _slugify(path.rsplit("/", 1)[-1].rsplit(".", 1)[0] or path)
+        if slug in seen_slugs:
+            # Same basename as an earlier file — append a short stable hash of
+            # the full path so the worktree dir/branch stays unique.
+            suffix = hashlib.sha1(path.encode("utf-8")).hexdigest()[:6]
+            slug = f"{slug}-{suffix}"
+        seen_slugs.add(slug)
+        out.append({"slug": slug,
                     "goal": f"{path}: {f.get('purpose') or 'implement'}"})
     return out
 
