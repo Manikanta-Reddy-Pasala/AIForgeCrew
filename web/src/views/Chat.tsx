@@ -167,6 +167,9 @@ export default function Chat() {
 
   // Pending approval gate (#1) + checkpoints panel (#3).
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  // Plan→approve→execute (Gap B): set when a plan-mode run emits a plan_ready
+  // event carrying the approved spec the user can one-click execute as a team run.
+  const [planReady, setPlanReady] = useState<{ spec: string } | null>(null);
   const [checkpoints, setCheckpoints] = useState<Array<{ sha: string; label: string; when: string }> | null>(null);
 
   // Model selector
@@ -454,10 +457,13 @@ export default function Chat() {
 
   // ── SSE streaming send ────────────────────────────────────────────────────
 
-  async function send() {
-    const q = input.trim();
+  async function send(overrideContent?: string, overrideMode?: ChatMode) {
+    const q = (overrideContent ?? input).trim();
     if (!q || busy) return;
-    setInput('');
+    // A fresh run supersedes any pending plan-approval (Gap B).
+    setPlanReady(null);
+    if (overrideContent === undefined) setInput('');
+    const runMode: ChatMode = overrideMode ?? chatMode;
 
     // Ensure we have a session
     let sessionId = activeId;
@@ -498,7 +504,7 @@ export default function Chat() {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: q, mode: chatMode }),
+        body: JSON.stringify({ content: q, mode: runMode }),
         signal: ctrl.signal,
       });
 
@@ -527,6 +533,12 @@ export default function Chat() {
           return;
         }
         if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);
+
+        // Plan ready (Gap B): a plan-mode run produced an approvable spec.
+        if (evt.type === 'plan_ready') {
+          setPlanReady({ spec: evt.spec || '' });
+          return;
+        }
 
         setLiveTurn(prev => {
           if (!prev) return prev;
@@ -1034,11 +1046,30 @@ export default function Chat() {
                     ↳ Steer
                   </button>
                 ) : (
-                  <button onClick={send} disabled={!input.trim()}>
+                  <button onClick={() => send()} disabled={!input.trim()}>
                     <Icon.Agents size={14} /> Run
                   </button>
                 )}
               </div>
+              {/* Plan→approve→execute (Gap B): one-click run the approved plan
+                  as a team build. */}
+              {planReady && !busy && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8,
+                              marginTop: 8, padding: '8px 10px',
+                              border: '1px solid var(--accent, #6366f1)',
+                              borderRadius: 6, background: 'var(--bg-2)' }}>
+                  <span className="small muted" style={{ flex: 1 }}>
+                    Plan ready. Approve to execute it as a team build.
+                  </span>
+                  <button onClick={() => setPlanReady(null)} className="ghost"
+                          style={{ whiteSpace: 'nowrap' }}>Dismiss</button>
+                  <button onClick={() => send(planReady.spec, 'team')}
+                          title="Run the approved plan as a full team build"
+                          style={{ whiteSpace: 'nowrap' }}>
+                    ✓ Approve &amp; Execute
+                  </button>
+                </div>
+              )}
             </div>
           </>
         )}
@@ -1065,7 +1096,7 @@ export default function Chat() {
                   ■ Stop
                 </button>
               )}
-              <button onClick={send} disabled={busy || !input.trim()}>
+              <button onClick={() => send()} disabled={busy || !input.trim()}>
                 <Icon.Agents size={14} /> Run
               </button>
             </div>

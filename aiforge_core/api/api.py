@@ -2473,6 +2473,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                      "goal": s.get("goal") or s.get("title") or "",
                      "status": "pending"}
                     for i, s in enumerate(_subs)]}
+            yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
+                                      session_id=session_id, mode="plan")
+            # Plan→approve→execute (Gap B): hand the approved spec to the UI so
+            # the user can one-click "Approve & Execute" — which re-sends this
+            # enriched spec as a TEAM run. Persisted so the button survives a
+            # reload until the plan is acted on.
+            yield {"type": "plan_ready", "spec": _enriched}
+            return
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
                                   session_id=session_id, mode=agent_mode)
 
@@ -2496,6 +2504,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     for _s in _subtasks:
                         if _s.get("slug") == ev.get("slug"):
                             _s["status"] = ev.get("status")
+                elif ev.get("type") == "plan_ready":
+                    # Persist the approvable plan (Gap B) so the "Approve &
+                    # Execute" button survives a reload.
+                    steps.append(ev)
                 yield f"data: {json.dumps(ev)}\n\n"
                 if chat_cancel.is_cancelled(session_id):
                     break
