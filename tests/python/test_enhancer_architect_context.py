@@ -133,14 +133,15 @@ def test_enhance_reads_repo_readme(monkeypatch, tmp_path):
 
 
 def test_enhance_skips_trivial_short_prompt(monkeypatch):
-    # Short prompt → enhancer is skipped entirely (no memory, no LLM).
+    # Pure-length floor (very short) + all-ack → enhancer skipped (no LLM).
     def _must_not_call(*a, **k):
         raise AssertionError("LLM/memory must not run for a trivial prompt")
 
     monkeypatch.setattr("aiforge_core.memory.unified_query.query", _must_not_call)
     monkeypatch.setattr("aiforge_core.llm.client.complete", _must_not_call)
     assert pp._enhance("hi") == "hi"
-    assert pp._enhance("fix the bug") == "fix the bug"   # < 24 chars
+    assert pp._enhance("thanks") == "thanks"
+    assert pp._enhance("ok thanks") == "ok thanks"   # all-ack whole message
 
 
 def test_enhance_skips_conversational_prompt(monkeypatch):
@@ -149,9 +150,22 @@ def test_enhance_skips_conversational_prompt(monkeypatch):
 
     monkeypatch.setattr("aiforge_core.memory.unified_query.query", _must_not_call)
     monkeypatch.setattr("aiforge_core.llm.client.complete", _must_not_call)
-    for p in ("thanks, that works great!", "good morning, how are you",
-              "ok cool", "who are you"):
+    # Whole-message conversational: a multi-word opener OR a string of acks.
+    for p in ("good morning", "thank you", "ok cool", "who are you",
+              "yeah cool", "ok"):
         assert pp._enhance(p) == p
+
+
+def test_enhance_runs_for_short_real_imperatives(monkeypatch):
+    # M7 false-negatives the old gate swallowed: short build requests and
+    # ack-PREFIXED real instructions must be ENHANCED, not skipped.
+    monkeypatch.setattr("aiforge_core.memory.unified_query.query",
+                        lambda *a, **k: {"hits": [], "errors": []})
+    monkeypatch.setattr("aiforge_core.llm.client.complete",
+                        lambda *a, **k: "enhanced")
+    for p in ("add a test", "fix the typo in app.py", "add dark mode",
+              "ok, refactor X", "no, use postgres instead"):
+        assert pp._enhance(p) == "enhanced", p
 
 
 def test_enhance_min_chars_env_override(monkeypatch):

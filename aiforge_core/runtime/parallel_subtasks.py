@@ -407,6 +407,17 @@ def _parse_file_blocks(text: str) -> dict:
     return blocks
 
 
+def _in_scope(rel: str, globs: list[str]) -> bool:
+    """True if relative path ``rel`` matches any allowlist glob (fnmatch)."""
+    import fnmatch
+    rel = (rel or "").lstrip("/")
+    for g in globs:
+        g = str(g or "").lstrip("/")
+        if g and (fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(rel, g + "/*")):
+            return True
+    return False
+
+
 def lightweight_run_one(subtask: dict, worktree: str) -> dict:
     """Fast per-subtask runner: ONE LLM call to implement the subtask as
     complete file(s), written into the worktree. Far cheaper than the full
@@ -432,18 +443,35 @@ def lightweight_run_one(subtask: dict, worktree: str) -> dict:
     files = _parse_file_blocks(out or "")
     if not files:
         return {"ok": False, "error": "no file blocks produced"}
+    # SAFETY: if the subtask carries a scope allowlist, REJECT writes whose
+    # relative path doesn't match any glob — out-of-scope files never land.
+    # No allowlist → preserve current behavior (don't break the common case).
+    scope = subtask.get("scope_allowlist_globs") or []
     written = 0
+    written_files: list[str] = []
+    rejected: list[str] = []
     for rel, content in files.items():
         rel = rel.lstrip("/").replace("..", "")
+        if scope and not _in_scope(rel, scope):
+            rejected.append(rel)
+            continue
         dest = os.path.join(worktree, rel)
         try:
             os.makedirs(os.path.dirname(dest) or worktree, exist_ok=True)
             with open(dest, "w") as f:
                 f.write(content)
             written += 1
+            written_files.append(rel)
         except OSError:
             continue
-    return {"ok": written > 0, "files": list(files)}
+    if rejected and written == 0:
+        return {"ok": False,
+                "error": "all writes out of scope: " + ", ".join(rejected),
+                "rejected": rejected}
+    res = {"ok": written > 0, "files": written_files}
+    if rejected:
+        res["rejected"] = rejected
+    return res
 
 
 def _default_subtask_runner():
@@ -555,18 +583,32 @@ _ENHANCE_SYS = (
 )
 
 
+def _orchestrator_timeout_s() -> int:
+    """Wall-clock budget for the blocking pre-stream orchestrator LLM calls
+    (enhancer / architect / decompose). A hung endpoint must not block every
+    non-trivial chat turn for minutes under the default 600s × retries.
+    Tunable via AIFORGE_ENHANCER_TIMEOUT_S (default 30)."""
+    try:
+        return max(1, int(os.environ.get("AIFORGE_ENHANCER_TIMEOUT_S", "30")))
+    except (TypeError, ValueError):
+        return 30
+
+
 def _enhancer_disabled() -> bool:
     return os.environ.get("AIFORGE_ENHANCER_DISABLE", "").strip().lower() \
         in ("1", "true")
 
 
 def _enhancer_min_chars() -> int:
-    """Below this length a prompt is treated as trivial and skips the enhancer.
-    Tunable via AIFORGE_ENHANCER_MIN_CHARS (default 24)."""
+    """Pure-length floor: below this many chars a prompt is trivial-by-length
+    (no build signal can fit). Kept VERY low so short real imperatives ("add a
+    test", "fix the typo in app.py") fall through and ARE enhanced — only the
+    whole-message conversational set short-circuits greetings/acks.
+    Tunable via AIFORGE_ENHANCER_MIN_CHARS (default 8)."""
     try:
-        return max(0, int(os.environ.get("AIFORGE_ENHANCER_MIN_CHARS", "24")))
+        return max(0, int(os.environ.get("AIFORGE_ENHANCER_MIN_CHARS", "8")))
     except (TypeError, ValueError):
-        return 24
+        return 8
 
 
 # Conversational / non-build openers — greetings, thanks, acks, short meta
@@ -580,22 +622,37 @@ _CONVERSATIONAL = (
 )
 
 
+def _whole_conversational(low: str) -> bool:
+    """True only when the WHOLE message is conversational — a greeting/ack and
+    nothing else. Matches a multi-word opener directly (``head == pat``, e.g.
+    "good morning", "thank you") OR a string of single-word acks (e.g.
+    "ok thanks", "yeah cool"). Crucially it does NOT fire on ack-PREFIXED real
+    instructions like "ok, refactor X" (the "refactor"/"X" tokens aren't acks)."""
+    import re
+    head = low.rstrip("!.?, ")
+    if head in _CONVERSATIONAL:
+        return True
+    toks = [t for t in re.split(r"[\s,]+", head) if t]
+    return bool(toks) and all(t in _CONVERSATIONAL for t in toks)
+
+
 def _is_trivial_prompt(prompt: str) -> bool:
-    """True when ``prompt`` is too short or clearly conversational/non-build, so
-    the enhancer (memory fan-out + an LLM call) should be skipped. Keeps latency
-    low and avoids reshaping chit-chat into a fake build spec."""
+    """True when ``prompt`` is too short to carry a build signal, or the WHOLE
+    message is conversational/non-build — so the enhancer (memory fan-out + an
+    LLM call) is skipped. Keeps latency low and avoids reshaping chit-chat into
+    a fake build spec, WITHOUT swallowing short real imperatives ("add a test")
+    or ack-prefixed instructions ("ok, refactor X")."""
     p = (prompt or "").strip()
     if not p:
         return True
     low = p.lower()
+    # Pure-length floor (very low): only the shortest fragments. Real short
+    # imperatives are longer than this and fall through to be enhanced.
     if len(p) < _enhancer_min_chars():
         return True
-    # Short, punctuation-light conversational opener (e.g. "thanks, that works").
-    if len(p) < 64:
-        head = low.rstrip("!.?,")
-        for pat in _CONVERSATIONAL:
-            if head == pat or low.startswith(pat + " ") or low.startswith(pat + ","):
-                return True
+    # Whole-message conversational opener (greeting/ack only), any length.
+    if len(p) < 64 and _whole_conversational(low):
+        return True
     return False
 
 
@@ -695,7 +752,8 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
         from aiforge_core.llm import client
         out = client.complete("enhancer", [
             {"role": "system", "content": _ENHANCE_SYS},
-            {"role": "user", "content": user_msg}], max_tokens=900)
+            {"role": "user", "content": user_msg}], max_tokens=900,
+            timeout_s=_orchestrator_timeout_s())
         return (out or "").strip() or prompt
     except Exception:  # noqa: BLE001
         return prompt
@@ -753,7 +811,8 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
         from aiforge_core.llm import client
         out = client.complete("architect", [
             {"role": "system", "content": _ARCHITECT_SYS},
-            {"role": "user", "content": user_msg}], max_tokens=1000)
+            {"role": "user", "content": user_msg}], max_tokens=1000,
+            timeout_s=_orchestrator_timeout_s())
         m = _re.search(r"\{.*\}", out or "", _re.DOTALL)
         obj = _json.loads(m.group(0)) if m else {}
         files = obj.get("files") if isinstance(obj, dict) else None
@@ -786,7 +845,8 @@ def _decompose(prompt: str, tries: int = 2) -> list[dict]:
             from aiforge_core.llm import client
             out = client.complete("planner", [
                 {"role": "system", "content": _DECOMPOSE_SYS},
-                {"role": "user", "content": prompt}], max_tokens=1500)
+                {"role": "user", "content": prompt}], max_tokens=1500,
+                timeout_s=_orchestrator_timeout_s())
             subs = _extract_subtickets(out)
             if len(subs) >= 2:
                 return subs

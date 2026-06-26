@@ -19,13 +19,39 @@ from pathlib import Path
 
 _MAX_PREVIEW_CHARS = 3000
 
+# Returned in place of file content when ``path`` resolves OUTSIDE the repo
+# root — reading it would leak secrets (e.g. /etc/passwd, ~/.aiforge config)
+# into the approval preview / transcript.
+_SUPPRESSED = "[diff preview suppressed: path outside repo]"
 
-def _resolve(path: str, cwd: str) -> Path:
-    """Resolve ``path`` against AIFORGE_REPO_ROOT (preferred) or ``cwd``."""
-    if os.path.isabs(path):
-        return Path(path)
-    base = os.environ.get("AIFORGE_REPO_ROOT") or cwd or os.getcwd()
-    return Path(base).expanduser() / path
+
+def _root() -> str:
+    """The repo root the preview is confined to (realpath-resolved)."""
+    base = os.environ.get("AIFORGE_REPO_ROOT") or os.getcwd()
+    return os.path.realpath(os.path.expanduser(base))
+
+
+def _resolve(path: str, cwd: str) -> Path | None:
+    """Resolve ``path`` to a real path and REFUSE anything outside the repo.
+
+    Returns the resolved ``Path`` when it is contained within the repo root,
+    or ``None`` when it escapes (absolute outside path, ``../`` traversal,
+    symlink pointing out). Never raises.
+    """
+    try:
+        root = os.path.realpath(
+            os.path.expanduser(os.environ.get("AIFORGE_REPO_ROOT")
+                               or cwd or os.getcwd()))
+        if os.path.isabs(path):
+            target = os.path.realpath(os.path.expanduser(path))
+        else:
+            target = os.path.realpath(os.path.join(root, path))
+        # Contained iff target == root or target is under root/.
+        if target == root or target.startswith(root + os.sep):
+            return Path(target)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def unified_preview(path: str, new_text: str, cwd: str = "",
@@ -34,11 +60,20 @@ def unified_preview(path: str, new_text: str, cwd: str = "",
 
     Reads the existing file (empty string if it doesn't exist → a new-file
     diff with all ``+`` lines). Capped to ``max_chars``. Never raises.
+
+    SECURITY: only files CONTAINED within the repo root are read. A ``path``
+    that resolves outside the repo (absolute outside path, ``../`` traversal,
+    or an escaping symlink) is refused — the preview shows a redacted
+    placeholder instead of the file's contents, so secrets never leak into
+    the approval preview / transcript.
     """
     path = str(path or "?")
     new = new_text if isinstance(new_text, str) else str(new_text or "")
+    resolved = _resolve(path, cwd)
+    if resolved is None:
+        return _SUPPRESSED
     try:
-        old = _resolve(path, cwd).read_text(encoding="utf-8", errors="replace")
+        old = resolved.read_text(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001 — missing file / read error → treat as new
         old = ""
     # Bound difflib's O(n·m) cost on huge rewrites — this is a human glance.

@@ -2446,9 +2446,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             pass
 
     # Records which path the run actually took, so the persistence gate below
-    # matches (parallel path self-persists inline; the sequential team driver
-    # persists itself).
-    _path = {"parallel": False}
+    # matches. ``driver`` is True ONLY once the sequential team ADK driver
+    # (chat_pipeline) has been launched — it self-persists and owns the run's
+    # lifetime. Every other path (simple/plan, parallel, best-of-N, OR a team
+    # run that crashes in the pre-stream orchestrator before the driver starts)
+    # persists + cleans up inline here.
+    _path = {"parallel": False, "driver": False}
 
     def _events():
         # Team mode → full ADK agent flow (planner→…→learner) for complex
@@ -2456,6 +2459,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
         # subtasks CONCURRENTLY in isolated worktrees with live status.
         from aiforge_core.runtime import parallel_subtasks as _pp
+        # Review-edits is only honored by the simple/plan inline ReAct gate.
+        # Team / parallel / best-of-N runners never consult it, so surface a
+        # one-time notice (mirror the steer "unsupported" pattern) instead of
+        # lighting the pill while edits land unreviewed.
+        if team and body.review_edits:
+            yield {"type": "thought", "role": "system",
+                   "text": "Review-edits is not supported in team/parallel mode "
+                           "— edits are not held for approval in this run."}
         if team and _parallel_team:
             # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
             _spec = _pp._enhance(prompt, history=history, cwd=cwd)  # 1. clean spec
@@ -2482,7 +2493,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             _af_log.info("parallel decompose <2 subtasks — sequential fallback")
         if team:
             # Sequential team pipeline already has its own ADK enhancer agent;
-            # don't double-enhance here.
+            # don't double-enhance here. Mark the driver launched ONLY here —
+            # so a crash in the parallel pre-steps above (which never reach this
+            # line) still persists + cleans up inline in _gen's finally.
+            _path["driver"] = True
             yield from stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
                                             history=history)
             return
@@ -2499,10 +2513,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         if agent_mode == "plan":
             _subs = _pp._decompose(_enriched)       # Planner
             if _subs:
+                # Plan mode shows a STATIC plan it never executes — mark them
+                # "planned" (not "pending") so the UI doesn't render them as
+                # stuck-forever pending-execution rows.
                 yield {"type": "subtasks", "items": [
                     {"slug": s.get("slug") or f"sub-{i+1}",
                      "goal": s.get("goal") or s.get("title") or "",
-                     "status": "pending"}
+                     "status": "planned"}
                     for i, s in enumerate(_subs)]}
             yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
                                       session_id=session_id, mode="plan")
@@ -2561,7 +2578,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # Parallel team mode is a self-contained generator (not the
             # background ADK driver), so persist it inline like simple mode.
             # The sequential fallback uses the team driver, which self-persists.
-            if not team or _path["parallel"]:
+            # Gate on whether that driver actually LAUNCHED — a team run that
+            # crashes in the pre-stream orchestrator (enhance/architect/
+            # decompose) never starts the driver, so it must clean up here too.
+            if not _path["driver"]:
                 chat_cancel.finish(session_id)
                 from aiforge_core.runtime import chat_interject
                 chat_interject.clear(session_id)   # no stale steers next turn

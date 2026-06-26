@@ -26,7 +26,7 @@ type LiveTurn = {
 
 const SUBTASK_COLORS: Record<string, string> = {
   done: '#3fb950', skipped: '#5a6472', running: '#6aa6ff',
-  failed: '#e5534b', pending: '#8892a0',
+  failed: '#e5534b', pending: '#8892a0', planned: '#a371f7',
 };
 
 function SubtaskList({ items }: { items: SubtaskItem[] }) {
@@ -119,6 +119,69 @@ function toAgentStep(raw: any): AgentStep | null {
   return null;
 }
 
+// ── awaiting-reply detection (FE1) ────────────────────────────────────────────
+// The agent can end a turn "awaiting" the user's reply. On the live turn that
+// flag lives on liveTurn.awaiting; once persisted it must be recovered from the
+// stored ChatMsg (top-level flag OR a message/awaiting step) so the affordance
+// survives loadSession.
+function msgAwaiting(msg: any): boolean {
+  if (!msg || typeof msg !== 'object') return false;
+  if (msg.awaiting_input === true || msg.awaiting === true) return true;
+  const steps: any[] = Array.isArray(msg.steps) ? msg.steps : [];
+  return steps.some(s => s && typeof s === 'object' &&
+    (s.awaiting_input === true || s.type === 'awaiting' ||
+     ((s.type === 'message' || s.kind === 'message') && s.awaiting_input === true)));
+}
+
+// ── durable plan dismissal (FE3) ──────────────────────────────────────────────
+// loadSession rehydrates the "Approve & Execute" pill from the last assistant
+// message's plan_ready step on every load. Remember the message ids the user
+// dismissed (per session) so the pill doesn't resurrect on reload / switch / Stop.
+const LS_DISMISSED_PLAN_PREFIX = 'aiforge.chat.dismissedPlan.';
+function getDismissedPlans(sessionId: number): Set<number> {
+  try {
+    const raw = localStorage.getItem(LS_DISMISSED_PLAN_PREFIX + sessionId);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
+}
+function addDismissedPlan(sessionId: number, msgId: number): void {
+  try {
+    const s = getDismissedPlans(sessionId);
+    s.add(msgId);
+    localStorage.setItem(LS_DISMISSED_PLAN_PREFIX + sessionId, JSON.stringify([...s]));
+  } catch { /* ignore */ }
+}
+
+// ── unified-diff renderer (FE4) ───────────────────────────────────────────────
+// Approval/edit previews are raw unified diffs. Rendering them through MdLite
+// mangles `-`/`+`/`@@` lines (treated as bullets/emphasis), so render them in a
+// monospace block with +/- line coloring and preserved whitespace instead.
+function DiffView({ text }: { text: string }) {
+  const lines = text.split('\n');
+  return (
+    <pre style={{
+      margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.45,
+    }}>
+      {lines.map((ln, i) => {
+        let color: string | undefined;
+        let background: string | undefined;
+        if (/^\+\+\+/.test(ln) || /^---/.test(ln) || /^(diff |index )/.test(ln)) {
+          color = 'var(--fg-3)';
+        } else if (/^\+/.test(ln)) {
+          color = 'var(--ok, #3fb950)'; background = 'rgba(63,185,80,0.10)';
+        } else if (/^-/.test(ln)) {
+          color = 'var(--err, #e5534b)'; background = 'rgba(229,83,75,0.10)';
+        } else if (/^@@/.test(ln)) {
+          color = '#6aa6ff';
+        }
+        return <div key={i} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
+      })}
+    </pre>
+  );
+}
+
 // ── Chat component ─────────────────────────────────────────────────────────────
 
 export default function Chat() {
@@ -142,6 +205,8 @@ export default function Chat() {
   // Composer
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // Guards the Steer POST against double-fire (FE6).
+  const [steering, setSteering] = useState(false);
 
   // Force-full-pipeline toggle (team mode): disable the triage 'trivial'
   // fast-path so every agent runs. Persisted server-side.
@@ -176,7 +241,7 @@ export default function Chat() {
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   // Plan→approve→execute (Gap B): set when a plan-mode run emits a plan_ready
   // event carrying the approved spec the user can one-click execute as a team run.
-  const [planReady, setPlanReady] = useState<{ spec: string } | null>(null);
+  const [planReady, setPlanReady] = useState<{ spec: string; msgId?: number } | null>(null);
   const [checkpoints, setCheckpoints] = useState<Array<{ sha: string; label: string; when: string }> | null>(null);
 
   // Model selector
@@ -292,7 +357,10 @@ export default function Chat() {
         const isLastTurn = msgs.length > 0 && msgs[msgs.length - 1] === lastAssistant;
         if (lastAssistant && isLastTurn) {
           const pr = (lastAssistant.steps || []).find((s: any) => s?.type === 'plan_ready');
-          if (pr) setPlanReady({ spec: pr.spec || '' });
+          // FE3: skip rehydration if the user already dismissed THIS plan.
+          if (pr && !getDismissedPlans(id).has(lastAssistant.id)) {
+            setPlanReady({ spec: pr.spec || '', msgId: lastAssistant.id });
+          }
         }
       } catch { /* best-effort rehydrate — ignore */ }
     } catch (e: any) {
@@ -665,34 +733,57 @@ export default function Chat() {
   // a new turn. The server echoes a role:'steer' thought when it's applied.
   async function steer() {
     const q = input.trim();
-    if (!q || !busy || activeId === null) return;
+    // FE2: never steer a gated run (resolve the approval first).
+    // FE6: ignore re-entry while a steer POST is already in flight.
+    if (!q || !busy || activeId === null || pendingApproval || steering) return;
+    setSteering(true);
     setInput('');
-    const r = await chatSessionSteer(activeId, q);
-    if (r.queued) {
-      setLiveTurn(prev => prev ? {
-        ...prev,
-        steps: [...prev.steps, { kind: 'thought' as const, text: `↳ steer queued: ${q}`, role: 'steer' }],
-      } : prev);
-      toast('Steer queued — applies at the next step');
-    } else if (r.unsupported) {
-      setInput(q);   // restore — nothing was queued
-      toast('Steering not available in team mode');
-    } else {
-      setInput(q);   // restore so the user can retry or Stop
-      toast('Could not steer (the run may have ended)');
-    }
-  }
-
-  function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      if (busy) steer(); else send();
+    try {
+      const r = await chatSessionSteer(activeId, q);
+      if (r.queued) {
+        // FE5: rely on the server's role:'steer' echo instead of an
+        // optimistic note that's never reconciled if the run ends first.
+        toast('Steer queued — applies at the next step');
+      } else if (r.unsupported) {
+        setInput(q);   // restore — nothing was queued
+        toast('Steering not available in team mode');
+      } else {
+        setInput(q);   // restore so the user can retry or Stop
+        toast('Could not steer (the run may have ended)');
+      }
+    } finally {
+      setSteering(false);
     }
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const activeSession = sessions.find(s => s.id === activeId) || null;
+
+  // Composer state machine (FE1/FE2): `busy` conflates three states. Steering is
+  // only valid while ACTUALLY running — not while a turn is awaiting the user's
+  // reply, and not while an approval gate is open.
+  const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant') || null;
+  const isLastTurn = messages.length > 0 && lastAssistantMsg === messages[messages.length - 1];
+  const persistedAwaiting = !!(isLastTurn && lastAssistantMsg && msgAwaiting(lastAssistantMsg));
+  // The current turn is waiting for the user to answer — Enter/primary button
+  // must SEND a reply (a normal turn), not steer.
+  const awaitingReply = !!liveTurn?.awaiting || persistedAwaiting;
+  // Steering is only valid while genuinely running (not awaiting, not gated).
+  const canSteer = busy && !awaitingReply && !pendingApproval;
+
+  function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (awaitingReply) { send(); return; }   // FE1: reply, not steer
+      if (busy) {
+        if (pendingApproval) return;            // FE2: resolve the gate first
+        steer();
+      } else {
+        send();
+      }
+    }
+  }
 
   return (
     <div className="chat-shell-v2">
@@ -996,12 +1087,24 @@ export default function Chat() {
                   <div className="bubble-avatar">{msg.role === 'user' ? 'You' : 'AI'}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     {msg.role === 'assistant' ? (
-                      <AssistantBubble
-                        text={msg.content}
-                        steps={(msg.steps || []).map(toAgentStep).filter((s): s is AgentStep => s !== null)}
-                        streaming={false}
-                        subtasks={(msg.steps || []).find((s: any) => s?.type === 'subtasks')?.items}
-                      />
+                      <>
+                        <AssistantBubble
+                          text={msg.content}
+                          steps={(msg.steps || []).map(toAgentStep).filter((s): s is AgentStep => s !== null)}
+                          streaming={false}
+                          subtasks={(msg.steps || []).find((s: any) => s?.type === 'subtasks')?.items}
+                        />
+                        {/* FE1: awaiting affordance survives loadSession — shown
+                            on the last assistant turn when it ended awaiting. */}
+                        {msg === lastAssistantMsg && persistedAwaiting && (
+                          <div style={{
+                            marginTop: 6, fontSize: 12, fontWeight: 600,
+                            color: 'var(--accent, #2563eb)',
+                          }}>
+                            ❓ Waiting for your reply — answer below to continue.
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <div className="bubble-body">
                         <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
@@ -1049,12 +1152,13 @@ export default function Chat() {
                     <div className="muted xs" style={{ marginBottom: 6 }}>{pendingApproval.reason}</div>
                   )}
                   {pendingApproval.preview && (
-                    <div className="md-body" style={{
+                    <div style={{
                       maxHeight: 260, overflow: 'auto', fontSize: 12,
                       background: 'var(--bg-2)', padding: 8, borderRadius: 6,
                       margin: '0 0 8px',
                     }}>
-                      <MdLite text={pendingApproval.preview} />
+                      {/* FE4: raw unified diff — render monospace, NOT via MdLite. */}
+                      <DiffView text={pendingApproval.preview} />
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: 8 }}>
@@ -1070,9 +1174,14 @@ export default function Chat() {
                 <textarea
                   ref={textareaRef}
                   rows={4}
-                  placeholder={busy
-                    ? "Steer the running agent — type guidance, Enter to inject (no Stop needed)…"
-                    : "Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"}
+                  placeholder={
+                    pendingApproval
+                      ? "Resolve the approval above first (Approve / Reject)…"
+                      : awaitingReply
+                        ? "The agent is waiting for your reply — type your answer, Enter to send…"
+                        : busy
+                          ? "Steer the running agent — type guidance, Enter to inject (no Stop needed)…"
+                          : "Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"}
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={onKey}
@@ -1085,15 +1194,25 @@ export default function Chat() {
                     ■ Stop
                   </button>
                 )}
-                {busy ? (
-                  <button onClick={steer} disabled={!input.trim()}
+                {canSteer ? (
+                  <button onClick={steer} disabled={!input.trim() || steering}
                           title="Inject this guidance into the running agent without stopping it"
                           style={{ whiteSpace: 'nowrap' }}>
                     ↳ Steer
                   </button>
+                ) : busy && !awaitingReply ? (
+                  // Running but gated on an approval: steering is disabled until
+                  // the user resolves the gate above (FE2).
+                  <button disabled
+                          title="Resolve the approval above before steering"
+                          style={{ whiteSpace: 'nowrap' }}>
+                    ↳ Steer
+                  </button>
                 ) : (
-                  <button onClick={() => send()} disabled={!input.trim()}>
-                    <Icon.Agents size={14} /> Run
+                  // Idle, or awaiting the user's reply — primary action sends a
+                  // normal turn (FE1).
+                  <button onClick={() => send()} disabled={busy || !input.trim()}>
+                    <Icon.Agents size={14} /> {awaitingReply ? 'Reply' : 'Run'}
                   </button>
                 )}
               </div>
@@ -1107,7 +1226,14 @@ export default function Chat() {
                   <span className="small muted" style={{ flex: 1 }}>
                     Plan ready. Approve to execute it as a team build.
                   </span>
-                  <button onClick={() => setPlanReady(null)} className="ghost"
+                  <button onClick={() => {
+                            // FE3: remember the dismissal so loadSession (reload /
+                            // session switch / Stop) doesn't resurrect the pill.
+                            if (activeId !== null && planReady.msgId != null) {
+                              addDismissedPlan(activeId, planReady.msgId);
+                            }
+                            setPlanReady(null);
+                          }} className="ghost"
                           style={{ whiteSpace: 'nowrap' }}>Dismiss</button>
                   <button onClick={() => send(planReady.spec, 'team')}
                           title="Run the approved plan as a full team build"
