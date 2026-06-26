@@ -120,20 +120,30 @@ def _attempt(spec: str, repo: str, base: str, i: int, run_one,
         log.warning("best_of_n attempt %s crashed: %s", slug, exc)
         ran_ok = False
 
-    _commit_all(wt, slug)
-    # Diff of the attempt's branch vs base — what this attempt actually changed.
-    diff = (_git(["diff", base, "HEAD"], wt).stdout or "")
-    if not diff.strip() or not ran_ok:
-        _update(None, slug, "failed", on_status)
-        return {"slug": slug, "score": 0,
-                "why": "no diff produced" if not diff.strip() else "runner failed",
-                "branch": branch, "worktree": wt, "ok": False}
+    # Everything past worktree creation MUST carry branch+worktree back in its
+    # result even on failure, so the caller can clean it up. A bare git timeout
+    # in _commit_all/_git would otherwise raise out of here, the future would be
+    # recorded with branch=None/worktree=None, and the worktree would orphan.
+    try:
+        _commit_all(wt, slug)
+        # Diff of the attempt's branch vs base — what this attempt changed.
+        diff = (_git(["diff", base, "HEAD"], wt).stdout or "")
+        if not diff.strip() or not ran_ok:
+            _update(None, slug, "failed", on_status)
+            return {"slug": slug, "score": 0,
+                    "why": "no diff produced" if not diff.strip() else "runner failed",
+                    "branch": branch, "worktree": wt, "ok": False}
 
-    _update(None, slug, "grading", on_status)
-    graded = _grade(spec, diff)
-    _update(None, slug, "graded", on_status)
-    return {"slug": slug, "score": graded["score"], "why": graded["why"],
-            "branch": branch, "worktree": wt, "ok": True}
+        _update(None, slug, "grading", on_status)
+        graded = _grade(spec, diff)
+        _update(None, slug, "graded", on_status)
+        return {"slug": slug, "score": graded["score"], "why": graded["why"],
+                "branch": branch, "worktree": wt, "ok": True}
+    except Exception as exc:  # noqa: BLE001 — keep branch+worktree for cleanup
+        log.warning("best_of_n post-worktree step failed for %s: %s", slug, exc)
+        _update(None, slug, "failed", on_status)
+        return {"slug": slug, "score": 0, "why": f"post-worktree error: {exc}",
+                "branch": branch, "worktree": wt, "ok": False}
 
 
 def _cleanup(repo: str, attempt: dict) -> None:
@@ -190,12 +200,13 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
         merged = ok
         _update(None, winner["slug"], "won" if ok else "failed", on_status)
 
-    # Discard every loser's worktree (and the winner's now-merged worktree too).
+    # Discard EVERY attempt's worktree + branch unconditionally. Losers always
+    # leak otherwise; the winner leaks too when ``merged`` is False (all attempts
+    # failed, or the merge itself failed) — that branch matched neither arm of
+    # the old loop. A merged winner's commits already live on ``base``, so its
+    # worktree/branch are spent; an unmerged winner has nothing worth keeping.
     for r in results:
-        if r is winner and merged:
-            _cleanup(cwd, r)            # winner merged → its worktree is spent
-        elif r is not winner:
-            _cleanup(cwd, r)
+        _cleanup(cwd, r)
 
     attempts = [{"slug": r["slug"], "score": r["score"], "why": r["why"]}
                 for r in results]

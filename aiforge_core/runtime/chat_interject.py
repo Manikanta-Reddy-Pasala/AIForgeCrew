@@ -24,6 +24,30 @@ import threading
 
 _LOCK = threading.Lock()
 _QUEUES: dict[int, list[str]] = {}
+# Sessions whose in-flight run actually DRAINS the steer queue (the simple/plan
+# ReAct loop in chat_agent). Team / parallel / best-of-N runs never drain, so a
+# steer there would queue forever — the /steer endpoint reports it unsupported
+# instead of falsely claiming "queued". Marked by the message handler per run.
+_STEERABLE: set[int] = set()
+
+
+def set_steerable(session_id: int, on: bool) -> None:
+    """Mark whether ``session_id``'s current run can consume steer messages."""
+    if session_id is None:
+        return
+    with _LOCK:
+        if on:
+            _STEERABLE.add(session_id)
+        else:
+            _STEERABLE.discard(session_id)
+
+
+def is_steerable(session_id: int) -> bool:
+    """True if the session's in-flight run drains the steer queue."""
+    if session_id is None:
+        return False
+    with _LOCK:
+        return session_id in _STEERABLE
 
 
 def push(session_id: int, text: str) -> bool:
@@ -69,3 +93,4 @@ def clear(session_id: int) -> None:
         return
     with _LOCK:
         _QUEUES.pop(session_id, None)
+        _STEERABLE.discard(session_id)

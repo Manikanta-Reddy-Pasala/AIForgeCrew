@@ -28,7 +28,12 @@ from aiforge_core.runtime.tools import tool_policy
 
 log = logging.getLogger("aiforge.tool_gate")
 
-_MUTATING = {"editor", "file_write", "file_patch", "file_create"}
+# Canonical mutating tools AND the ADK Doer's edit aliases (doer_tools.py):
+# write→file_write, patch/edit/str_replace→file_patch. The gate sees the alias
+# NAME the model called, so the aliases must be listed here too or review-mode
+# edits made via an alias would skip the human Approve/Reject gate.
+_MUTATING = {"editor", "file_write", "file_patch", "file_create",
+             "write", "patch", "edit", "str_replace"}
 
 
 def _preview(tool_name: str, args: dict) -> str:

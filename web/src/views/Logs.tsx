@@ -21,6 +21,7 @@ import { Icon } from '../icons';
 const ROLES = [
   'intent', 'supervisor', 'enhancer', 'architect', 'planner', 'doer',
   'feedback', 'learner', 'publish', 'integration',
+  'triage', 'researcher', 'refiner', 'verifier',
   'adk_runner',
 ] as const;
 type Role = typeof ROLES[number];
@@ -37,6 +38,10 @@ const ROLE_COLOR: Record<Role, string> = {
   learner:     '#f472b6',
   publish:     '#84cc16',
   integration: '#f97316',
+  triage:      '#38bdf8',
+  researcher:  '#818cf8',
+  refiner:     '#fb923c',
+  verifier:    '#4ade80',
   adk_runner:  '#94a3b8',
 };
 

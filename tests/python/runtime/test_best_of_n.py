@@ -136,3 +136,13 @@ def test_all_fail_no_diff(tmp_path, monkeypatch):
     assert r["ok"] is False
     assert "all 2 attempts failed" in r["review"]
     assert all(a["score"] == 0 for a in r["attempts"])
+    # M5 — nothing merged → the winner row matched neither old cleanup arm and
+    # its worktree+branch leaked. Now EVERY attempt is cleaned unconditionally.
+    import os
+    wt_dir = os.path.join(str(tmp_path), ".aiforge-worktrees")
+    if os.path.isdir(wt_dir):
+        assert os.listdir(wt_dir) == []
+    import subprocess
+    branches = subprocess.run(["git", "branch"], cwd=str(tmp_path),
+                              capture_output=True, text=True).stdout
+    assert "-sub-" not in branches and "bestof-" not in branches

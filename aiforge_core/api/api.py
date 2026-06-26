@@ -240,6 +240,16 @@ def list_agents() -> list[dict]:
     except Exception:
         roles = list(ROLES.keys())
 
+    # Drop non-agent archetypes — the chat slot, the synthetic default, and the
+    # context/verifier/eval SUB-roles that are internal pipeline helpers, not
+    # standalone agents the roster should advertise.
+    _NON_AGENT = {
+        "chat", "_default", "gap_eval", "live_verifier",
+        "ctx_memory", "ctx_repomap", "ctx_conventions",
+        "verify_correctness", "verify_scope", "verify_risk",
+    }
+    roles = [r for r in roles if r not in _NON_AGENT]
+
     for name in roles:
         rc = ROLES.get(name)
         try:
@@ -2406,6 +2416,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
 
     from aiforge_core.runtime import chat_cancel
     chat_cancel.start(session_id)
+    # Only the simple/plan ReAct loop drains mid-run steers; team / parallel /
+    # best-of-N runs never do. Mark steerability up front so /steer can tell the
+    # user it's unsupported instead of silently queueing a never-read message.
+    from aiforge_core.runtime import chat_interject as _chat_interject
+    _chat_interject.set_steerable(session_id, not team)
     # Gap D — arm/disarm the pre-apply review gate for this run. Cleared on
     # chat_approve.finish() in every termination path (simple/parallel here,
     # team in chat_pipeline), so it never leaks into the next turn.
@@ -2580,8 +2595,15 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
     """Inject a steer message into the IN-FLIGHT run for this session WITHOUT
     stopping it (Gap A — mid-run steering). The message is queued and folded
     into the agent's working context at its next safe step, so the agent
-    adjusts course mid-run. No-op (queued:false) for blank content."""
+    adjusts course mid-run. No-op (queued:false) for blank content.
+
+    Team / parallel runs don't drain the steer queue, so steering there would
+    queue a message no loop ever reads. Detect that and report it unsupported
+    rather than falsely claiming the steer was queued."""
     from aiforge_core.runtime import chat_interject
+    if not chat_interject.is_steerable(session_id):
+        return {"queued": False, "unsupported": True, "session_id": session_id,
+                "reason": "steering not available in team mode"}
     queued = chat_interject.push(session_id, body.content)
     return {"queued": queued, "session_id": session_id}
 

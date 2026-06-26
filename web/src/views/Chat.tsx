@@ -278,10 +278,23 @@ export default function Chat() {
     setMessages([]);
     setLiveTurn(null);
     setPendingApproval(null);   // don't carry a card across sessions/loads
+    setPlanReady(null);         // don't let session A's plan execute in session B
     setCheckpoints(null);
     try {
       const res = await chatApi.sessionGet(id);
       setMessages(res.messages);
+      // M4 — rehydrate the "Approve & Execute" button if the LAST assistant
+      // turn ended with an un-acted plan_ready step (persisted server-side but
+      // dropped by toAgentStep). Only the last turn — older plans are stale.
+      try {
+        const msgs = res.messages || [];
+        const lastAssistant = [...msgs].reverse().find((m: any) => m.role === 'assistant');
+        const isLastTurn = msgs.length > 0 && msgs[msgs.length - 1] === lastAssistant;
+        if (lastAssistant && isLastTurn) {
+          const pr = (lastAssistant.steps || []).find((s: any) => s?.type === 'plan_ready');
+          if (pr) setPlanReady({ spec: pr.spec || '' });
+        }
+      } catch { /* best-effort rehydrate — ignore */ }
     } catch (e: any) {
       toast.error(`Failed to load session: ${e.message}`);
       // Session may have been deleted; clear active
@@ -661,6 +674,9 @@ export default function Chat() {
         steps: [...prev.steps, { kind: 'thought' as const, text: `↳ steer queued: ${q}`, role: 'steer' }],
       } : prev);
       toast('Steer queued — applies at the next step');
+    } else if (r.unsupported) {
+      setInput(q);   // restore — nothing was queued
+      toast('Steering not available in team mode');
     } else {
       setInput(q);   // restore so the user can retry or Stop
       toast('Could not steer (the run may have ended)');

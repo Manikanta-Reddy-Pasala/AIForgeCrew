@@ -473,7 +473,7 @@ export function chatSessionStop(id: number): Promise<{ stopped: boolean }> {
 
 // Steer the IN-FLIGHT run without stopping it (Gap A — mid-run steering).
 // The message is queued and folded into the agent's context at its next step.
-export function chatSessionSteer(id: number, content: string): Promise<{ queued: boolean }> {
+export function chatSessionSteer(id: number, content: string): Promise<{ queued: boolean; unsupported?: boolean; reason?: string }> {
   return fetch(`${BASE}/chat/sessions/${id}/steer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

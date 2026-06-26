@@ -1267,7 +1267,14 @@ def run_chat_agent(
         # shows the steer was applied.
         if session_id is not None:
             for steer in chat_interject.drain(session_id):
-                convo.append({"role": "user", "content": f"[steer] {steer}"})
+                # If the last turn is already a user message (e.g. the
+                # OBSERVATION we just appended after a tool step), MERGE the
+                # steer into it — two consecutive user turns break some
+                # providers (claude_local). Otherwise append a fresh user turn.
+                if convo and convo[-1].get("role") == "user":
+                    convo[-1]["content"] += f"\n\n[steer] {steer}"
+                else:
+                    convo.append({"role": "user", "content": f"[steer] {steer}"})
                 yield {"type": "thought", "role": "steer", "text": steer}
         # Auto-condense the running history before the call so a long session
         # can't overflow the model's context window (MUST). Tell the user it

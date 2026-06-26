@@ -71,6 +71,53 @@ def test_none_session_safe():
     ci.clear(None)   # must not raise
 
 
+def test_steerable_registry():
+    # M2 — only sessions whose run drains the queue are reported steerable.
+    assert ci.is_steerable(7) is False
+    ci.set_steerable(7, True)
+    assert ci.is_steerable(7) is True
+    ci.set_steerable(7, False)
+    assert ci.is_steerable(7) is False
+    # Cleared by clear() too (no leak across turns).
+    ci.set_steerable(7, True)
+    ci.clear(7)
+    assert ci.is_steerable(7) is False
+    # None session is safe.
+    assert ci.is_steerable(None) is False
+    ci.set_steerable(None, True)   # no-op, must not raise
+
+
+def test_steer_merges_into_trailing_user_turn(tmp_path):
+    """M1 — a steer drained when the last turn is already a user message (the
+    OBSERVATION after a tool step) merges into it instead of creating a second
+    consecutive user turn."""
+    calls = {"n": 0}
+    captured = {"msgs": None}
+
+    def _fn(role, messages, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            ci.push(123, "go faster")
+            return 'ACTION: file_write\nARGS_JSON: {"path": "a.txt", "content": "hi"}'
+        captured["msgs"] = [dict(m) for m in messages]
+        return "FINAL: done"
+
+    list(ca.run_chat_agent(
+        [{"role": "user", "content": "build it"}],
+        cwd=str(tmp_path), complete_fn=_fn, session_id=123))
+
+    msgs = captured["msgs"]
+    # No two consecutive user turns.
+    roles = [m.get("role") for m in msgs]
+    assert not any(roles[i] == "user" and roles[i + 1] == "user"
+                   for i in range(len(roles) - 1)), roles
+    # The steer landed folded into the OBSERVATION user turn.
+    merged = [m for m in msgs if m.get("role") == "user"
+              and "OBSERVATION" in (m.get("content") or "")
+              and "[steer] go faster" in (m.get("content") or "")]
+    assert merged, msgs
+
+
 def test_run_chat_agent_injects_drained_steer(tmp_path):
     """A steer pushed mid-run is drained at the next step, folded into the
     working convo as a '[steer] ...' user turn, and echoed as a steer thought."""
@@ -84,9 +131,11 @@ def test_run_chat_agent_injects_drained_steer(tmp_path):
             # at the TOP of the next step, before this fn is called again.
             ci.push(123, "go faster")
             return 'ACTION: file_write\nARGS_JSON: {"path": "a.txt", "content": "hi"}'
-        # Second turn: the steer must already be in the working context.
+        # Second turn: the steer must already be in the working context. It is
+        # MERGED into the trailing user turn (the OBSERVATION we just appended)
+        # rather than added as a second consecutive user message (M1).
         seen["convo_has_steer"] = any(
-            (m.get("content") or "") == "[steer] go faster" for m in messages)
+            "[steer] go faster" in (m.get("content") or "") for m in messages)
         return "FINAL: done"
 
     evs = list(ca.run_chat_agent(

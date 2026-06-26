@@ -560,6 +560,45 @@ def _enhancer_disabled() -> bool:
         in ("1", "true")
 
 
+def _enhancer_min_chars() -> int:
+    """Below this length a prompt is treated as trivial and skips the enhancer.
+    Tunable via AIFORGE_ENHANCER_MIN_CHARS (default 24)."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_ENHANCER_MIN_CHARS", "24")))
+    except (TypeError, ValueError):
+        return 24
+
+
+# Conversational / non-build openers — greetings, thanks, acks, short meta
+# questions. Matched case-insensitively against the (stripped) prompt START.
+_CONVERSATIONAL = (
+    "hi", "hii", "hey", "hello", "yo", "sup", "gm", "good morning",
+    "good evening", "good afternoon", "thanks", "thank you", "thx", "ty",
+    "ok", "okay", "cool", "nice", "great", "got it", "sounds good",
+    "yes", "yep", "yeah", "no", "nope", "lol", "haha", "bye", "cheers",
+    "who are you", "what can you do", "how are you", "what's up", "whats up",
+)
+
+
+def _is_trivial_prompt(prompt: str) -> bool:
+    """True when ``prompt`` is too short or clearly conversational/non-build, so
+    the enhancer (memory fan-out + an LLM call) should be skipped. Keeps latency
+    low and avoids reshaping chit-chat into a fake build spec."""
+    p = (prompt or "").strip()
+    if not p:
+        return True
+    low = p.lower()
+    if len(p) < _enhancer_min_chars():
+        return True
+    # Short, punctuation-light conversational opener (e.g. "thanks, that works").
+    if len(p) < 64:
+        head = low.rstrip("!.?,")
+        for pat in _CONVERSATIONAL:
+            if head == pat or low.startswith(pat + " ") or low.startswith(pat + ","):
+                return True
+    return False
+
+
 def _memory_block(prompt: str, repo: str | None) -> str:
     """RELEVANT MEMORY block from unified recall (memory + ticket + code RAG).
     Cheap, soft-fail — never raises, capped ~1200 chars."""
@@ -631,6 +670,12 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
     the raw ``prompt`` on any error or empty output. Disable entirely via
     ``AIFORGE_ENHANCER_DISABLE=1``."""
     if _enhancer_disabled():
+        return prompt
+    # Triviality / intent gate: greetings, thanks, short questions and other
+    # non-build chit-chat are returned UNCHANGED — skip the memory fan-out and
+    # the LLM call (latency) and don't reshape conversational turns into fake
+    # build specs.
+    if _is_trivial_prompt(prompt):
         return prompt
     # Gather context — each block is independently soft-failing.
     blocks = [b for b in (

@@ -336,20 +336,24 @@ def complete(role: str, messages: list[dict], *,
     """Timed wrapper around the LLM call — records wall-ms under family "LLM"
     keyed by ``role`` (stable), then delegates to the real implementation.
     Perf recording soft-fails and never affects the call result."""
+    # Only the IMPORT is guarded — an exception raised from inside
+    # _complete_impl must propagate, never trigger a SECOND (double-cost) call.
     try:
         from aiforge_core.runtime import perf_recorder
+    except Exception:  # noqa: BLE001 — perf recording is optional
+        perf_recorder = None
+    if perf_recorder is not None:
         with perf_recorder.timed("LLM", role):
             return _complete_impl(
                 role, messages, temperature=temperature,
                 max_tokens=max_tokens, top_p=top_p, extras=extras,
                 timeout_s=timeout_s,
             )
-    except ImportError:
-        return _complete_impl(
-            role, messages, temperature=temperature,
-            max_tokens=max_tokens, top_p=top_p, extras=extras,
-            timeout_s=timeout_s,
-        )
+    return _complete_impl(
+        role, messages, temperature=temperature,
+        max_tokens=max_tokens, top_p=top_p, extras=extras,
+        timeout_s=timeout_s,
+    )
 
 
 def _complete_impl(role: str, messages: list[dict], *,

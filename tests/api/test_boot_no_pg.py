@@ -70,7 +70,15 @@ def test_agents_endpoint_does_not_500_on_sqlite(client):
     c, _ = client
     r = c.get("/api/agents")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    rows = r.json()
+    assert isinstance(rows, list)
+    # M8 — roster excludes non-agent archetypes (chat slot, synthetic default,
+    # context/verifier/eval sub-roles).
+    names = {row["role"] for row in rows}
+    denied = {"chat", "_default", "gap_eval", "live_verifier",
+              "ctx_memory", "ctx_repomap", "ctx_conventions",
+              "verify_correctness", "verify_scope", "verify_risk"}
+    assert not (names & denied), names & denied
 
 
 def test_memory_stats_embedded(client):

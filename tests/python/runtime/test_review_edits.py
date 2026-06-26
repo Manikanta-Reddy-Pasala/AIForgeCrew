@@ -150,6 +150,38 @@ def test_gate_review_on_approve_lets_tool_proceed(monkeypatch):
     chat_cancel.set_active(None)
 
 
+def test_gate_review_on_gates_doer_edit_aliases(monkeypatch):
+    # H1 — the ADK Doer registers edit ALIASES (write→file_write,
+    # patch/edit/str_replace→file_patch). Review-mode must gate those too, or a
+    # mutating edit made via an alias would skip the human Approve/Reject.
+    monkeypatch.delenv("AIFORGE_TOOL_POLICY", raising=False)
+    for i, alias in enumerate(("write", "patch", "edit", "str_replace")):
+        sid = 7030 + i
+        events: list = []
+        chat_approve.set_emitter(sid, events.append)
+        chat_approve.set_review_edits(sid, True)
+        chat_cancel.set_active(sid)
+
+        def _auto(_sid=sid):
+            for _ in range(80):
+                if chat_approve.resolve(_sid, "reject"):
+                    return
+                time.sleep(0.02)
+
+        t = threading.Thread(target=_auto)
+        t.start()
+        cb = tool_gate.make_approval_gate_callback()
+        out = _run(cb(tool=_FakeTool(alias),
+                      args={"path": "a.txt", "old_text": "x", "new_text": "y"},
+                      tool_context=None))
+        t.join(timeout=3)
+        assert any(e.get("type") == "approval" for e in events), alias
+        assert out and out.get("rejected") is True, alias
+        chat_approve.clear_emitter(sid)
+        chat_approve.finish(sid)
+        chat_cancel.set_active(None)
+
+
 def test_gate_review_ignores_nonmutating_tool(monkeypatch):
     # A read tool is never gated by review-edits, even with emitter + flag on.
     monkeypatch.delenv("AIFORGE_TOOL_POLICY", raising=False)
