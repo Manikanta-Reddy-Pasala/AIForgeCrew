@@ -145,7 +145,8 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
           f"{slug} validation {'passed' if last.get('validated') else 'failed'}",
           {"slug": slug, "validated": last.get("validated"),
            "attempts": i + 1})
-    _update(ticket_id, slug, "done" if ok else "failed", on_status)
+    _files = (last.get("detail") or {}).get("files") if isinstance(last.get("detail"), dict) else None
+    _update(ticket_id, slug, "done" if ok else "failed", on_status, _files)
     return {"slug": slug, "ok": ok, "ran": last.get("ran"),
             "validated": last.get("validated"), "attempts": i + 1,
             "branch": branch, "worktree": wt,
@@ -220,11 +221,14 @@ def _emit(ticket_id, slug, kind, body, md) -> None:
         pass
 
 
-def _update(ticket_id, slug, status, on_status=None) -> None:
+def _update(ticket_id, slug, status, on_status=None, files=None) -> None:
     # Persist to the ticket (chart) AND/OR stream to a live consumer (chat SSE).
+    # ``files`` (on done) lets the consumer show what the worker produced.
     if on_status is not None:
         try:
-            on_status(slug, status)
+            on_status(slug, status, files)
+        except TypeError:
+            on_status(slug, status)   # back-compat 2-arg callbacks
         except Exception:  # noqa: BLE001
             pass
     if ticket_id is None:
@@ -630,8 +634,11 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     q: "_queue.Queue" = _queue.Queue()
     result: dict = {}
 
-    def on_status(slug, status):
+    def on_status(slug, status, files=None):
         q.put({"type": "subtask_update", "slug": slug, "status": status})
+        if files:   # show what the worker produced (expandable action)
+            q.put({"type": "tool", "role": slug, "name": "wrote files",
+                   "args": {"subtask": slug}, "result": {"files": files}})
 
     def _runner():
         try:
