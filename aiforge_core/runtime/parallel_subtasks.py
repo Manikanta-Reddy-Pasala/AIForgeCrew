@@ -555,37 +555,160 @@ _ENHANCE_SYS = (
 )
 
 
-def _enhance(prompt: str) -> str:
-    """Layer-1 step 1: analyze + enhance the raw request into a clean spec the
-    planner can split well. Falls back to the raw prompt on any error."""
+def _enhancer_disabled() -> bool:
+    return os.environ.get("AIFORGE_ENHANCER_DISABLE", "").strip().lower() \
+        in ("1", "true")
+
+
+def _memory_block(prompt: str, repo: str | None) -> str:
+    """RELEVANT MEMORY block from unified recall (memory + ticket + code RAG).
+    Cheap, soft-fail — never raises, capped ~1200 chars."""
+    try:
+        from aiforge_core.memory import unified_query
+        res = unified_query.query(prompt, repo=repo, limit=5) or {}
+        hits = res.get("hits") or []
+        lines: list[str] = []
+        for h in hits:
+            txt = (h.get("text") or "").strip()
+            if txt:
+                lines.append(f"- {txt}")
+        if not lines:
+            return ""
+        block = "\n".join(lines)
+        return "RELEVANT MEMORY:\n" + block[:1200]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _history_block(history: list[dict] | None) -> str:
+    """RECENT CONVERSATION block: last ~3 turns excluding the current (last)
+    user message. Soft-fail, capped ~800 chars."""
+    try:
+        if not history:
+            return ""
+        prior = history[:-1]            # drop the current user message
+        recent = prior[-3:]
+        lines: list[str] = []
+        for m in recent:
+            role = (m.get("role") or "").strip() or "user"
+            content = (m.get("content") or "").strip()
+            if content:
+                lines.append(f"{role}: {content}")
+        if not lines:
+            return ""
+        block = "\n".join(lines)
+        return "RECENT CONVERSATION:\n" + block[:800]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _readme_block(cwd: str | None) -> str:
+    """REPO README block: head of a README in ``cwd``. Soft-fail, capped
+    ~800 chars. Empty when no README present."""
+    try:
+        if not cwd:
+            return ""
+        for name in ("README.md", "README.rst", "README"):
+            path = os.path.join(cwd, name)
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    head = f.read(800)
+                head = head.strip()
+                if head:
+                    return f"REPO README ({name}):\n{head}"
+        return ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _enhance(prompt: str, *, history: list[dict] | None = None,
+             cwd: str | None = None, repo: str | None = None) -> str:
+    """Layer-1 step 1: fix spelling/grammar, write proper sentences, RECALL
+    context (memory + recent conversation + repo README), and fold it all into
+    a clear, concrete build spec the planner/doer can act on.
+
+    Backward compatible: existing callers pass just ``prompt``. Falls back to
+    the raw ``prompt`` on any error or empty output. Disable entirely via
+    ``AIFORGE_ENHANCER_DISABLE=1``."""
+    if _enhancer_disabled():
+        return prompt
+    # Gather context — each block is independently soft-failing.
+    blocks = [b for b in (
+        _memory_block(prompt, repo),
+        _history_block(history),
+        _readme_block(cwd),
+    ) if b]
+    context = ("\n\n".join(blocks)) if blocks else ""
+    user_msg = (
+        f"USER REQUEST:\n{prompt}\n\n"
+        + (context + "\n\n" if context else "")
+        + "Fix spelling and grammar, write proper sentences, and fold any of "
+          "the context above that is relevant into a clear, concrete build "
+          "spec. Output ONLY the spec."
+    )
     try:
         from aiforge_core.llm import client
         out = client.complete("enhancer", [
             {"role": "system", "content": _ENHANCE_SYS},
-            {"role": "user", "content": prompt}], max_tokens=600)
+            {"role": "user", "content": user_msg}], max_tokens=900)
         return (out or "").strip() or prompt
     except Exception:  # noqa: BLE001
         return prompt
 
 
+# Public alias for clear imports elsewhere (api.py, etc.).
+enhance = _enhance
+
+
 _ARCHITECT_SYS = (
     "You are the architect. Given a build spec, design the FILE STRUCTURE: list "
     "the files to create, each with its single responsibility. Files must be "
-    "DISJOINT (no shared concern). Output ONLY JSON: {\"files\": [{\"path\": "
-    "\"db.py\", \"purpose\": \"SQLite store + models\"}, ...]}. No prose."
+    "DISJOINT (no shared concern). Honor any provided skills, workflows, and "
+    "repo rules — design within their constraints. Output ONLY JSON: {\"files\": "
+    "[{\"path\": \"db.py\", \"purpose\": \"SQLite store + models\"}, ...]}. No prose."
 )
 
 
-def _architect(spec: str) -> list[dict]:
-    """Orchestrator agent 2: design the file structure (disjoint files). Returns
-    [{path, purpose}, ...] — the single source of truth for the split."""
+def _architect_context(spec: str, cwd: str | None) -> str:
+    """Gather SKILLS / WORKFLOWS / REPO RULES blocks for the architect. Each
+    source is independently soft-failing and capped ~1000 chars."""
+    def _safe(fn) -> str:
+        try:
+            return (fn() or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    from aiforge_core.runtime import repo_rules, skills, workflows
+    parts: list[str] = []
+    sk = _safe(lambda: skills.auto_context(spec, cwd))
+    if sk:
+        parts.append("SKILLS:\n" + sk[:1000])
+    wf = _safe(lambda: workflows.auto_context(spec, cwd))
+    if wf:
+        parts.append("WORKFLOWS:\n" + wf[:1000])
+    rl = _safe(lambda: repo_rules.collect(cwd) if cwd else "")
+    if rl:
+        parts.append("REPO RULES:\n" + rl[:1000])
+    return "\n\n".join(parts)
+
+
+def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
+    """Orchestrator agent 2: design the file structure (disjoint files), guided
+    by the repo's skills/workflows/rules. Returns [{path, purpose}, ...] — the
+    single source of truth for the split. Backward compatible (cwd optional)."""
     import json as _json
     import re as _re
+    context = ""
+    try:
+        context = _architect_context(spec, cwd)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("architect context gather failed: %s", exc)
+    user_msg = spec + (("\n\n" + context) if context else "")
     try:
         from aiforge_core.llm import client
         out = client.complete("architect", [
             {"role": "system", "content": _ARCHITECT_SYS},
-            {"role": "user", "content": spec}], max_tokens=1000)
+            {"role": "user", "content": user_msg}], max_tokens=1000)
         m = _re.search(r"\{.*\}", out or "", _re.DOTALL)
         obj = _json.loads(m.group(0)) if m else {}
         files = obj.get("files") if isinstance(obj, dict) else None

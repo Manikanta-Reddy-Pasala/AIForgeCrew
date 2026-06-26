@@ -2408,25 +2408,47 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # builds. Simple mode → single conversational agent for quick work.
         # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
         # subtasks CONCURRENTLY in isolated worktrees with live status.
+        from aiforge_core.runtime import parallel_subtasks as _pp
         if team and _parallel_team:
-            from aiforge_core.runtime import parallel_subtasks as _pp
             # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
-            _spec = _pp._enhance(prompt)            # 1. analyze → clean spec
-            _files = _pp._architect(_spec)          # 2. design file structure
+            _spec = _pp._enhance(prompt, history=history, cwd=cwd)  # 1. clean spec
+            _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
             _subs = _pp._plan_files(_files) if len(_files) >= 2 \
                 else _pp._decompose(_spec)          # 3. split (per file, or plan)
             if len(_subs) >= 2:
                 _path["parallel"] = True
-                return _pp.stream_parallel_team(_spec, cwd=cwd, subtasks=_subs,
-                                                enhanced=True)
+                yield from _pp.stream_parallel_team(_spec, cwd=cwd, subtasks=_subs,
+                                                    enhanced=True)
+                return
             # Couldn't split → fall back to the sequential team pipeline instead
             # of dead-ending, so the user always gets a result.
             _af_log.info("parallel decompose <2 subtasks — sequential fallback")
         if team:
-            return stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
-                                        history=history)
-        return run_chat_agent(history, cwd=cwd, role=role, session_id=session_id,
-                              mode=agent_mode)
+            # Sequential team pipeline already has its own ADK enhancer agent;
+            # don't double-enhance here.
+            yield from stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
+                                            history=history)
+            return
+        # SIMPLE and PLAN modes — the Enhancer is MANDATORY here.
+        yield {"type": "thought", "role": "enhancer",
+               "text": "Enhancing request + gathering context…"}
+        _enriched = _pp._enhance(prompt, history=history, cwd=cwd)
+        # Build enriched history: replace the LAST user message with the spec.
+        _enriched_history = [dict(m) for m in history]
+        for _m in reversed(_enriched_history):
+            if _m.get("role") == "user":
+                _m["content"] = _enriched
+                break
+        if agent_mode == "plan":
+            _subs = _pp._decompose(_enriched)       # Planner
+            if _subs:
+                yield {"type": "subtasks", "items": [
+                    {"slug": s.get("slug") or f"sub-{i+1}",
+                     "goal": s.get("goal") or s.get("title") or "",
+                     "status": "pending"}
+                    for i, s in enumerate(_subs)]}
+        yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
+                                  session_id=session_id, mode=agent_mode)
 
     def _gen():
         steps: list[dict] = []
