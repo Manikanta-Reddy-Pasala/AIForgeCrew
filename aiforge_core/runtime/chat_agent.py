@@ -1557,16 +1557,39 @@ def run_chat_agent(
         # asking the user to "type yes" forever. So always gate it, and let the
         # human's Approve BE the confirmation.
         _destructive_del = False
+        # Captured-rule "never re-ask" flags (rule_capture.apply_behavioral):
+        # a standing "commit directly" rule auto-approves git commit/add/push;
+        # "delete without asking" auto-confirms a destructive delete — for the
+        # scope (session → repo → global precedence). Honored here so the
+        # approval popup never re-fires for an intent the user already granted.
+        _auto_commit = False
         if name in ("run_command", "bash", "run_shell", "shell", "serve"):
+            _cmd = args.get("cmd") or args.get("command") or ""
             try:
                 from aiforge_core.runtime.tools import delete_guard
-                _cmd = args.get("cmd") or args.get("command") or ""
                 _destructive_del = (not delete_guard.allow_delete(
                     ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
                     and delete_guard.is_destructive_delete(_cmd))
             except Exception:  # noqa: BLE001
                 _destructive_del = False
-        if verdict["policy"] == tool_policy.ASK or _force_review or _destructive_del:
+            try:
+                from aiforge_core.runtime import rule_capture as _rc
+                _repo = _repo_name(cwd)
+                if _rc.is_commit_command(_cmd) and _rc.flag_active(
+                        "commit_auto_approve", repo=_repo, session_id=session_id):
+                    _auto_commit = True
+                if _destructive_del and _rc.flag_active(
+                        "allow_delete", repo=_repo, session_id=session_id):
+                    _destructive_del = False
+                    args["confirm_delete"] = True
+            except Exception:  # noqa: BLE001
+                pass
+        _gate = (verdict["policy"] == tool_policy.ASK or _force_review
+                 or _destructive_del)
+        if _gate and _auto_commit:
+            # User granted "commit directly" for this scope — don't re-ask.
+            _gate = False
+        if _gate:
             # Approval gate (#1): surface the action + diff preview, block on
             # the user's Approve/Reject (POST /api/chat/sessions/{id}/approve).
             preview = _diff_preview(name, args, cwd)

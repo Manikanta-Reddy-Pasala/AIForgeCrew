@@ -2454,6 +2454,31 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     _path = {"parallel": False, "driver": False}
 
     def _events():
+        # Rule / Memory / Feedback capture (deterministic, always-on) — runs
+        # BEFORE any agent, independent of the agent's model, so a directive /
+        # fact / correction stated in passing is captured + applied. FAILS OPEN:
+        # any error here is swallowed and the normal run proceeds.
+        try:
+            from aiforge_core.runtime import rule_capture as _rc
+            _repo = os.path.basename(os.path.normpath(cwd)) or "repo"
+            _cls = _rc.classify(prompt, repo=_repo, session_id=session_id)
+            if _cls.get("category") != "none":
+                _stored = _rc.store(_cls, repo=_repo, session_id=session_id,
+                                    repo_root=cwd)
+                _flags = _rc.apply_behavioral(_cls, repo=_repo,
+                                              session_id=session_id)
+                yield {"type": "captured", "id": _stored.get("id"),
+                       "category": _cls["category"], "scope": _cls["scope"],
+                       "text": _cls.get("canonical", ""), "flags": _flags}
+                # PURE capture (no actionable task) → brief ack, skip the agent.
+                if not _cls.get("task_present", True):
+                    yield {"type": "message",
+                           "text": f"Got it — saved as {_cls['category']} "
+                                   f"({_cls['scope']})."}
+                    yield {"type": "done"}
+                    return
+        except Exception as _exc:  # noqa: BLE001 — capture must never break a turn
+            _af_log.debug("rule_capture pre-agent pass failed: %s", _exc)
         # Team mode → full ADK agent flow (planner→…→learner) for complex
         # builds. Simple mode → single conversational agent for quick work.
         # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
@@ -2591,6 +2616,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     # Persist the approvable plan (Gap B) so the "Approve &
                     # Execute" button survives a reload.
                     steps.append(ev)
+                elif ev.get("type") == "captured":
+                    # Persist the capture pill so the inline "Saved RULE · scope"
+                    # note (change-scope / undo) survives a reload.
+                    steps.append(ev)
                 if ev.get("type") == "done":
                     emitted_done = True
                 yield f"data: {json.dumps(ev)}\n\n"
@@ -2701,6 +2730,39 @@ def chat_session_approve(session_id: int, body: _ApproveBody) -> dict:
     from aiforge_core.runtime import chat_approve
     ok = chat_approve.resolve(session_id, body.decision, body.note or "", body.id)
     return {"resolved": ok, "decision": body.decision, "session_id": session_id}
+
+
+# ── Rule / Memory / Feedback capture transparency ────────────────────────────
+
+@app.get("/api/rules")
+def list_captured_rules(repo: str | None = None,
+                        session_id: int | None = None) -> dict:
+    """Captured rules/memories/feedback for the transparency panel, grouped by
+    scope. Optional ``repo`` / ``session_id`` filters."""
+    from aiforge_core.runtime import rule_capture
+    items = rule_capture.list_captured(repo=repo, session_id=session_id)
+    by_scope: dict[str, list] = {}
+    for it in items:
+        by_scope.setdefault(it.get("scope") or "global", []).append(it)
+    return {"items": items, "by_scope": by_scope}
+
+
+class _RuleScopeBody(BaseModel):
+    scope: str = Field(..., description="'global' | 'project' | 'session'")
+
+
+@app.put("/api/rules/{rule_id}/scope")
+def rescope_captured_rule(rule_id: str, body: _RuleScopeBody) -> dict:
+    """Re-file a captured item under a new scope (correcting a misclass)."""
+    from aiforge_core.runtime import rule_capture
+    return rule_capture.rescope(rule_id, body.scope)
+
+
+@app.delete("/api/rules/{rule_id}")
+def delete_captured_rule(rule_id: str) -> dict:
+    """Undo a captured item — removes it from its store (best-effort)."""
+    from aiforge_core.runtime import rule_capture
+    return {"ok": rule_capture.undo(rule_id)}
 
 
 class _CheckpointBody(BaseModel):

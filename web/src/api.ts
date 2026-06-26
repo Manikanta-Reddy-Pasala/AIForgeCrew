@@ -483,6 +483,40 @@ export function chatSessionSteer(id: number, content: string): Promise<{ queued:
     .catch(() => ({ queued: false }));
 }
 
+// ── Rule / Memory / Feedback capture transparency ──────────────────────────
+export type CapturedRule = {
+  id: string;
+  category: string;
+  scope: string;
+  canonical?: string;
+  text?: string;
+  repo?: string | null;
+  flags?: string[];
+};
+
+export function rules(params?: { repo?: string; session_id?: number }):
+  Promise<{ items: CapturedRule[]; by_scope: Record<string, CapturedRule[]> }> {
+  const qs = new URLSearchParams();
+  if (params?.repo) qs.set('repo', params.repo);
+  if (params?.session_id != null) qs.set('session_id', String(params.session_id));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return j(`/rules${suffix}`);
+}
+
+export function setRuleScope(id: string, scope: string): Promise<any> {
+  return j(`/rules/${id}/scope`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope }),
+  });
+}
+
+export function deleteRule(id: string): Promise<{ ok: boolean }> {
+  return fetch(`${BASE}/rules/${id}`, { method: 'DELETE' })
+    .then(r => r.ok ? r.json() : { ok: false })
+    .catch(() => ({ ok: false }));
+}
+
 export function chatSessionTicket(
   id: number,
   content: string,

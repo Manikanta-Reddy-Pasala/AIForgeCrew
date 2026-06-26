@@ -110,6 +110,20 @@ def make_approval_gate_callback():
             )
             if policy == tool_policy.ALLOW and not force_review:
                 return None
+            # Captured-rule "never re-ask": a standing "commit directly" rule
+            # auto-approves git commit/add/push without an approval emit (for
+            # the session → global scope). Keep DENY hard; only relax ASK.
+            if policy != tool_policy.DENY:
+                try:
+                    from aiforge_core.runtime import rule_capture as _rc
+                    _cmd = (args or {}).get("cmd") or (args or {}).get("command") or ""
+                    _repo = os.path.basename(os.path.normpath(
+                        os.environ.get("AIFORGE_REPO_ROOT", ""))) or None
+                    if _rc.is_commit_command(_cmd) and _rc.flag_active(
+                            "commit_auto_approve", repo=_repo, session_id=sid):
+                        return None
+                except Exception:  # noqa: BLE001
+                    pass
             if policy == tool_policy.DENY:
                 log.warning("tool_gate.deny tool=%s reason=%s", name, verdict["reason"])
                 return {"ok": False, "blocked": "policy",

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionStop, chatSessionSteer, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionStop, chatSessionSteer, setRuleScope, deleteRule, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -13,6 +13,16 @@ type AgentStep =
 
 type SubtaskItem = { slug: string; goal: string; status: string };
 
+// A captured Rule / Memory / Feedback (deterministic capture pass). Rendered
+// as an inline pill with change-scope / undo affordances.
+type CapturedItem = {
+  id: string;
+  category: string;
+  scope: string;
+  text: string;
+  flags?: string[];
+};
+
 // A "live" turn: the in-progress assistant turn while streaming.
 type LiveTurn = {
   role: 'assistant';
@@ -22,6 +32,7 @@ type LiveTurn = {
   elapsedSec?: number;
   awaiting?: boolean;   // agent asked a question — waiting for your reply
   subtasks?: SubtaskItem[];   // Planner decomposition (team mode)
+  captured?: CapturedItem[];  // Rule/Memory/Feedback captured this turn
 };
 
 const SUBTASK_COLORS: Record<string, string> = {
@@ -650,6 +661,19 @@ export default function Chat() {
           return;
         }
 
+        // Rule/Memory/Feedback captured (deterministic capture pass): render an
+        // inline pill (change-scope / undo). Append to the live turn.
+        if (evt.type === 'captured') {
+          setLiveTurn(prev => prev ? {
+            ...prev,
+            captured: [...(prev.captured || []), {
+              id: evt.id, category: evt.category, scope: evt.scope,
+              text: evt.text || '', flags: evt.flags || [],
+            }],
+          } : prev);
+          return;
+        }
+
         setLiveTurn(prev => {
           if (!prev) return prev;
           if (evt.type === 'subtasks') {
@@ -1116,6 +1140,9 @@ export default function Chat() {
                           steps={(msg.steps || []).map(toAgentStep).filter((s): s is AgentStep => s !== null)}
                           streaming={false}
                           subtasks={(msg.steps || []).find((s: any) => s?.type === 'subtasks')?.items}
+                          captured={(msg.steps || []).filter((s: any) => s?.type === 'captured').map((s: any) => ({
+                            id: s.id, category: s.category, scope: s.scope, text: s.text || '', flags: s.flags || [],
+                          }))}
                         />
                         {/* FE1: awaiting affordance survives loadSession — shown
                             on the last assistant turn when it ended awaiting. */}
@@ -1148,6 +1175,7 @@ export default function Chat() {
                       streaming={liveTurn.streaming}
                       elapsedSec={liveTurn.streaming ? elapsedSec : liveTurn.elapsedSec}
                       subtasks={liveTurn.subtasks}
+                      captured={liveTurn.captured}
                     />
                     {liveTurn.awaiting && (
                       <div style={{
@@ -1342,6 +1370,79 @@ export default function Chat() {
   );
 }
 
+// ── CapturedPill — inline "Saved RULE · scope" note (change-scope / undo) ─────
+
+const CAPTURED_FLAG_LABEL: Record<string, string> = {
+  commit_auto_approve: 'commits auto-approved',
+  allow_delete: 'deletes auto-approved',
+};
+
+function CapturedPill({ item }: { item: CapturedItem }) {
+  const [scope, setScope] = useState(item.scope);
+  const [removed, setRemoved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (removed) return null;
+
+  async function changeScope(next: string) {
+    if (next === scope || busy) return;
+    setBusy(true);
+    const prev = scope;
+    setScope(next);
+    try { await setRuleScope(item.id, next); }
+    catch { setScope(prev); toast.error('Could not change scope'); }
+    finally { setBusy(false); }
+  }
+  async function undo() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await deleteRule(item.id);
+      if (r.ok) setRemoved(true); else toast.error('Could not undo');
+    } catch { toast.error('Could not undo'); }
+    finally { setBusy(false); }
+  }
+
+  const flags = (item.flags || []).map(f => CAPTURED_FLAG_LABEL[f] || f);
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+      border: '1px solid var(--border-1)', borderRadius: 6,
+      padding: '5px 10px', margin: '4px 0', fontSize: 12,
+      background: 'var(--bg-1,#0d1117)',
+    }}>
+      <span style={{ color: '#3fb950', fontWeight: 600 }}>✓ Saved</span>
+      <span style={{
+        fontFamily: 'var(--font-mono)', fontWeight: 600, textTransform: 'uppercase',
+        fontSize: 10, padding: '1px 6px', borderRadius: 999,
+        color: '#a371f7', border: '1px solid #a371f7',
+      }}>{item.category}</span>
+      {item.text && (
+        <span style={{ color: 'var(--fg-2,#8892a0)', overflow: 'hidden',
+          textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320 }}
+          title={item.text}>{item.text}</span>
+      )}
+      <span style={{ color: '#8892a0' }}>·</span>
+      <select value={scope} disabled={busy} onChange={e => changeScope(e.target.value)}
+        title="change scope"
+        style={{ fontSize: 11, background: 'var(--bg-2,#161b22)',
+          color: 'var(--fg-1)', border: '1px solid var(--border-1)',
+          borderRadius: 4, padding: '1px 4px' }}>
+        <option value="global">global</option>
+        <option value="project">project</option>
+        <option value="session">session</option>
+      </select>
+      {flags.length > 0 && (
+        <span style={{ color: '#d4a72c', fontSize: 11 }}>· {flags.join(', ')}</span>
+      )}
+      <button onClick={undo} disabled={busy}
+        style={{ marginLeft: 'auto', background: 'transparent',
+          border: '1px solid var(--border-1)', borderRadius: 4,
+          padding: '1px 8px', fontSize: 11, color: 'var(--fg-3)',
+          cursor: busy ? 'default' : 'pointer' }}>undo</button>
+    </div>
+  );
+}
+
 // ── AssistantBubble — renders steps + final text ──────────────────────────────
 
 function AssistantBubble({
@@ -1350,12 +1451,14 @@ function AssistantBubble({
   streaming,
   elapsedSec,
   subtasks,
+  captured,
 }: {
   text: string;
   steps: AgentStep[];
   streaming: boolean;
   elapsedSec?: number;
   subtasks?: SubtaskItem[];
+  captured?: CapturedItem[];
 }) {
   // Agent steps collapse by default once the turn is done (keeps the chat
   // clean — the plan/subtasks + final answer are what matter); auto-expanded
@@ -1363,6 +1466,7 @@ function AssistantBubble({
   const [showSteps, setShowSteps] = useState(streaming);
   return (
     <div>
+      {captured && captured.map(c => <CapturedPill key={c.id} item={c} />)}
       {subtasks && subtasks.length > 0 && <SubtaskList items={subtasks} />}
       {steps.length > 0 && (
         <div style={{ marginBottom: text ? 8 : 0 }}>
