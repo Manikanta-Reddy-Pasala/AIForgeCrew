@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionStop, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionStop, chatSessionSteer, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -622,10 +622,31 @@ export default function Chat() {
 
   }
 
+  // ── Mid-run steering (Gap A) ───────────────────────────────────────────────
+  // While a run is streaming, the Enter/Send action injects guidance into the
+  // LIVE run (queued + folded in at the agent's next step) instead of opening
+  // a new turn. The server echoes a role:'steer' thought when it's applied.
+  async function steer() {
+    const q = input.trim();
+    if (!q || !busy || activeId === null) return;
+    setInput('');
+    const r = await chatSessionSteer(activeId, q);
+    if (r.queued) {
+      setLiveTurn(prev => prev ? {
+        ...prev,
+        steps: [...prev.steps, { kind: 'thought' as const, text: `↳ steer queued: ${q}`, role: 'steer' }],
+      } : prev);
+      toast('Steer queued — applies at the next step');
+    } else {
+      setInput(q);   // restore so the user can retry or Stop
+      toast('Could not steer (the run may have ended)');
+    }
+  }
+
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      send();
+      if (busy) steer(); else send();
     }
   }
 
@@ -991,11 +1012,12 @@ export default function Chat() {
                 <textarea
                   ref={textareaRef}
                   rows={4}
-                  placeholder="Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"
+                  placeholder={busy
+                    ? "Steer the running agent — type guidance, Enter to inject (no Stop needed)…"
+                    : "Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"}
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={onKey}
-                  disabled={busy}
                   style={{ flex: 1 }}
                 />
                 {busy && (
@@ -1005,9 +1027,17 @@ export default function Chat() {
                     ■ Stop
                   </button>
                 )}
-                <button onClick={send} disabled={busy || !input.trim()}>
-                  <Icon.Agents size={14} /> {busy ? 'Running…' : 'Run'}
-                </button>
+                {busy ? (
+                  <button onClick={steer} disabled={!input.trim()}
+                          title="Inject this guidance into the running agent without stopping it"
+                          style={{ whiteSpace: 'nowrap' }}>
+                    ↳ Steer
+                  </button>
+                ) : (
+                  <button onClick={send} disabled={!input.trim()}>
+                    <Icon.Agents size={14} /> Run
+                  </button>
+                )}
               </div>
             </div>
           </>

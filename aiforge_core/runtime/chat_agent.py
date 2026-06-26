@@ -1159,7 +1159,7 @@ def run_chat_agent(
     if complete_fn is None:
         from aiforge_core.llm.client import complete as complete_fn  # type: ignore
 
-    from aiforge_core.runtime import chat_approve, chat_cancel
+    from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
     from aiforge_core.runtime.tools import tool_policy
     chat_cancel.set_active(session_id)
     plan_mode = (mode or "act").lower() == "plan"
@@ -1242,6 +1242,14 @@ def run_chat_agent(
             yield {"type": "error", "text": "stopped by user"}
             yield {"type": "done"}
             return
+        # Mid-run steering (Gap A): fold any user-injected guidance into the
+        # working context as a user turn BEFORE the next model call, so the
+        # agent adjusts course without a Stop + new turn. Surface it so the UI
+        # shows the steer was applied.
+        if session_id is not None:
+            for steer in chat_interject.drain(session_id):
+                convo.append({"role": "user", "content": f"[steer] {steer}"})
+                yield {"type": "thought", "role": "steer", "text": steer}
         # Auto-condense the running history before the call so a long session
         # can't overflow the model's context window (MUST). Tell the user it
         # happened (one-time per condense) for transparency.

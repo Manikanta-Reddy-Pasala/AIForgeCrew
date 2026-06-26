@@ -380,10 +380,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 except Exception:  # noqa: BLE001
                     pass
             if session_id is not None:
-                from aiforge_core.runtime import chat_approve
+                from aiforge_core.runtime import chat_approve, chat_interject
                 chat_approve.clear_emitter(session_id)
                 chat_approve.finish(session_id)
                 chat_cancel.finish(session_id)
+                # Team mode does NOT fold steers in mid-run (see note below) —
+                # but still clear so a queued steer can't leak into the next turn.
+                chat_interject.clear(session_id)
             q.put(_SENTINEL)
 
     t = threading.Thread(target=lambda: _run_async_in_thread(_drive), daemon=True)
@@ -442,6 +445,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                     final_text=fb_final, steps=fb_steps, team=False,
                     cancelled=cancelled_fb, awaiting=False)
                 _cc.finish(session_id)
+                from aiforge_core.runtime import chat_interject as _ci
+                _ci.clear(session_id)
         except Exception:
             pass
     yield {"type": "done"}

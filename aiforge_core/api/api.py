@@ -2494,6 +2494,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # The sequential fallback uses the team driver, which self-persists.
             if not team or _path["parallel"]:
                 chat_cancel.finish(session_id)
+                from aiforge_core.runtime import chat_interject
+                chat_interject.clear(session_id)   # no stale steers next turn
                 from aiforge_core.runtime import chat_approve, chat_persist
                 chat_approve.finish(session_id)
                 chat_persist.persist_turn(
@@ -2513,6 +2515,21 @@ def chat_session_stop(session_id: int) -> dict:
     active = chat_cancel.cancel(session_id)
     chat_approve.cancel(session_id)   # unblock any pending approval gate
     return {"stopped": active, "session_id": session_id}
+
+
+class _SteerBody(BaseModel):
+    content: str = Field(..., description="mid-run guidance to fold in")
+
+
+@app.post("/api/chat/sessions/{session_id}/steer")
+def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
+    """Inject a steer message into the IN-FLIGHT run for this session WITHOUT
+    stopping it (Gap A — mid-run steering). The message is queued and folded
+    into the agent's working context at its next safe step, so the agent
+    adjusts course mid-run. No-op (queued:false) for blank content."""
+    from aiforge_core.runtime import chat_interject
+    queued = chat_interject.push(session_id, body.content)
+    return {"queued": queued, "session_id": session_id}
 
 
 class _ApproveBody(BaseModel):
