@@ -515,18 +515,23 @@ _DECOMPOSE_SYS = (
 )
 
 
-def _decompose(prompt: str) -> list[dict]:
-    """One planner LLM call → subtasks list (JSON array or markdown phases)."""
-    try:
-        from aiforge_core.llm import client
-        from aiforge_core.runtime.subtasks_callback import _extract_subtickets
-        out = client.complete("planner", [
-            {"role": "system", "content": _DECOMPOSE_SYS},
-            {"role": "user", "content": prompt}], max_tokens=1500)
-        return _extract_subtickets(out)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("parallel decompose failed: %s", exc)
-        return []
+def _decompose(prompt: str, tries: int = 2) -> list[dict]:
+    """Planner LLM call → subtasks list (JSON array or markdown phases).
+    Retries once: a single shot occasionally returns an unparseable format on a
+    local model, so we try again before giving up."""
+    from aiforge_core.runtime.subtasks_callback import _extract_subtickets
+    for attempt in range(max(1, tries)):
+        try:
+            from aiforge_core.llm import client
+            out = client.complete("planner", [
+                {"role": "system", "content": _DECOMPOSE_SYS},
+                {"role": "user", "content": prompt}], max_tokens=1500)
+            subs = _extract_subtickets(out)
+            if len(subs) >= 2:
+                return subs
+        except Exception as exc:  # noqa: BLE001
+            log.warning("parallel decompose attempt %d failed: %s", attempt, exc)
+    return []
 
 
 def _ensure_git_workspace(cwd: str) -> str:
@@ -549,19 +554,22 @@ def _ensure_git_workspace(cwd: str) -> str:
     return (cur.stdout or "").strip() or "main"
 
 
-def stream_parallel_team(prompt: str, cwd: str):
-    """Chat 'parallel team' mode: decompose the task, then run the subtasks
-    CONCURRENTLY in isolated worktrees under ``cwd``, streaming live status.
-    Yields SSE-ready dicts (subtasks / subtask_update / thought / message)."""
+def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = None):
+    """Chat 'parallel team' mode: run the (pre-decomposed) subtasks CONCURRENTLY
+    in isolated worktrees under ``cwd``, streaming live status. If ``subtasks``
+    isn't supplied, decompose here. Yields SSE-ready dicts."""
     import queue as _queue
 
-    yield {"type": "thought", "role": "planner",
-           "text": "Decomposing into parallel subtasks…"}
-    subs = _decompose(prompt)
+    subs = subtasks
+    if not subs:
+        yield {"type": "thought", "role": "planner",
+               "text": "Decomposing into parallel subtasks…"}
+        subs = _decompose(prompt)
     if len(subs) < 2:
+        # Caller normally falls back to sequential team mode before reaching
+        # here; this is the last-resort guard.
         yield {"type": "message", "text":
-               "Couldn't split this into parallel subtasks — run it in normal "
-               "team mode (sequential) instead."}
+               "Couldn't split this into parallel subtasks — running normally."}
         return
     yield {"type": "subtasks", "items": [
         {"slug": s.get("slug") or f"sub-{i+1}",

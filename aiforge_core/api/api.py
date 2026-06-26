@@ -2330,14 +2330,25 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         except Exception:  # noqa: BLE001
             pass
 
+    # Records which path the run actually took, so the persistence gate below
+    # matches (parallel path self-persists inline; the sequential team driver
+    # persists itself).
+    _path = {"parallel": False}
+
     def _events():
         # Team mode → full ADK agent flow (planner→…→learner) for complex
         # builds. Simple mode → single conversational agent for quick work.
         # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
         # subtasks CONCURRENTLY in isolated worktrees with live status.
         if team and _parallel_team:
-            from aiforge_core.runtime.parallel_subtasks import stream_parallel_team
-            return stream_parallel_team(prompt, cwd=cwd)
+            from aiforge_core.runtime import parallel_subtasks as _pp
+            _subs = _pp._decompose(prompt)
+            if len(_subs) >= 2:
+                _path["parallel"] = True
+                return _pp.stream_parallel_team(prompt, cwd=cwd, subtasks=_subs)
+            # Couldn't split → fall back to the sequential team pipeline instead
+            # of dead-ending, so the user always gets a result.
+            _af_log.info("parallel decompose <2 subtasks — sequential fallback")
         if team:
             return stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
                                         history=history)
@@ -2385,7 +2396,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # in this generator, so finish + persist here.
             # Parallel team mode is a self-contained generator (not the
             # background ADK driver), so persist it inline like simple mode.
-            if not team or _parallel_team:
+            # The sequential fallback uses the team driver, which self-persists.
+            if not team or _path["parallel"]:
                 chat_cancel.finish(session_id)
                 from aiforge_core.runtime import chat_approve, chat_persist
                 chat_approve.finish(session_id)
