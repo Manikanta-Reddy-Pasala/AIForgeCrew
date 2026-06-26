@@ -35,6 +35,25 @@ log = logging.getLogger("aiforge.tool_gate")
 _MUTATING = {"editor", "file_write", "file_patch", "file_create",
              "write", "patch", "edit", "str_replace"}
 
+# The Anthropic ``editor`` tool multiplexes read + write sub-commands on one
+# tool NAME (view/create/str_replace/insert/undo_edit). Only the WRITE
+# sub-commands mutate — ``view`` (and any read/list) must NOT trip the
+# review-edits gate.
+_EDITOR_READONLY_CMDS = {"view", "read", "list", "ls", "cat", "open"}
+
+
+def _is_mutating(name: str, args: dict | None) -> bool:
+    """True when a tool call actually writes. For ``editor`` this depends on its
+    ``command`` sub-command (view → read-only); every other mutating tool name
+    always mutates."""
+    if name not in _MUTATING:
+        return False
+    if name == "editor":
+        cmd = str((args or {}).get("command")
+                  or (args or {}).get("sub_command") or "").strip().lower()
+        return cmd not in _EDITOR_READONLY_CMDS
+    return True
+
 
 def _preview(tool_name: str, args: dict) -> str:
     """Human-readable preview of a tool call for the approval prompt.
@@ -85,7 +104,7 @@ def make_approval_gate_callback():
             # autonomous run with no human still degrades to allow, below).
             force_review = (
                 policy != tool_policy.DENY
-                and name in _MUTATING
+                and _is_mutating(name, args or {})
                 and chat_approve.review_edits(sid)
                 and chat_approve.has_emitter(sid)
             )

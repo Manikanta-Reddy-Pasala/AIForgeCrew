@@ -200,6 +200,67 @@ def test_gate_review_ignores_nonmutating_tool(monkeypatch):
     chat_cancel.set_active(None)
 
 
+# ─── item 5: editor read sub-commands are NOT gated by review-edits ────
+
+def test_gate_review_editor_view_not_gated(monkeypatch):
+    # editor command="view" is read-only — review-edits must let it through.
+    monkeypatch.delenv("AIFORGE_TOOL_POLICY", raising=False)
+    sid = 7040
+    events: list = []
+    chat_approve.set_emitter(sid, events.append)
+    chat_approve.set_review_edits(sid, True)
+    chat_cancel.set_active(sid)
+    cb = tool_gate.make_approval_gate_callback()
+    out = _run(cb(tool=_FakeTool("editor"),
+                  args={"command": "view", "path": "a.txt"}, tool_context=None))
+    assert out is None          # not gated
+    assert not events           # no approval prompt emitted
+    chat_approve.clear_emitter(sid)
+    chat_approve.finish(sid)
+    chat_cancel.set_active(None)
+
+
+def test_gate_review_editor_write_is_gated(monkeypatch):
+    # editor command="str_replace" mutates → review-edits must force approval.
+    monkeypatch.delenv("AIFORGE_TOOL_POLICY", raising=False)
+    sid = 7041
+    events: list = []
+    chat_approve.set_emitter(sid, events.append)
+    chat_approve.set_review_edits(sid, True)
+    chat_cancel.set_active(sid)
+
+    def _auto():
+        for _ in range(80):
+            if chat_approve.resolve(sid, "reject"):
+                return
+            time.sleep(0.02)
+
+    t = threading.Thread(target=_auto)
+    t.start()
+    cb = tool_gate.make_approval_gate_callback()
+    out = _run(cb(tool=_FakeTool("editor"),
+                  args={"command": "str_replace", "path": "a.txt",
+                        "old_str": "x", "new_str": "y"}, tool_context=None))
+    t.join(timeout=3)
+    assert any(e.get("type") == "approval" for e in events)
+    assert out and out.get("rejected") is True
+    chat_approve.clear_emitter(sid)
+    chat_approve.finish(sid)
+    chat_cancel.set_active(None)
+
+
+def test_is_mutating_helpers_editor_view():
+    # Both gate sites share the same view→read-only rule.
+    from aiforge_core.runtime import chat_agent as ca
+    assert tool_gate._is_mutating("editor", {"command": "view"}) is False
+    assert tool_gate._is_mutating("editor", {"command": "str_replace"}) is True
+    assert tool_gate._is_mutating("file_write", {}) is True
+    assert ca._is_mutating("editor", {"command": "view"}) is False
+    assert ca._is_mutating("editor", {"command": "insert"}) is True
+    assert ca._is_mutating("file_patch", {}) is True
+    assert ca._is_mutating("file_read", {}) is False
+
+
 # ─── (d) inline simple-chat gate honors review-edits ──────────────────
 
 def test_simple_chat_loop_review_on_forces_approval_then_reject(tmp_path):

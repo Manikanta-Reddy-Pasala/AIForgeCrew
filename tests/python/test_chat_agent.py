@@ -424,3 +424,63 @@ def test_compact_convo_sentinel_strip_is_exact(monkeypatch):
     s = out[0]["content"]
     assert "KEEP_ME" in s and "KEEP_END" in s          # legit text preserved
     assert s.count(ca._CONDENSE_OPEN) == 1             # exactly one block
+
+
+# ── item 6: commit hygiene — rewrite blanket git stage to touched-only ────────
+
+def test_rewrite_blanket_git_add_forms():
+    f = lambda c, t: ca._rewrite_blanket_git(c, t)
+    new, note = f("git add -A", ["a.py", "b.py"])
+    assert new == "git add -- a.py b.py" and note and "a.py" in note
+    assert f("git add .", ["x.py"])[0] == "git add -- x.py"
+    assert f("git add --all", ["x.py"])[0] == "git add -- x.py"
+    assert f("git add -A .", ["x.py"])[0] == "git add -- x.py"
+
+
+def test_rewrite_git_commit_a_forms():
+    f = lambda c, t: ca._rewrite_blanket_git(c, t)[0]
+    assert f('git commit -am "msg"', ["a.py"]) == 'git add -- a.py && git commit -m "msg"'
+    assert f('git commit -a -m "msg"', ["a.py"]) == 'git add -- a.py && git commit -m "msg"'
+    assert f('git commit --all -m "x"', ["a.py"]) == 'git add -- a.py && git commit -m "x"'
+    assert f("git commit -a", ["a.py"]) == "git add -- a.py && git commit"
+
+
+def test_rewrite_noop_when_nothing_touched():
+    # No touched paths → leave the command verbatim (gitignore is the fallback).
+    new, note = ca._rewrite_blanket_git("git add -A", [])
+    assert new == "git add -A" and note is None
+
+
+def test_rewrite_leaves_targeted_git_alone():
+    # A non-blanket git command must not be mangled.
+    new, note = ca._rewrite_blanket_git("git status && git add -- specific.py",
+                                        ["a.py"])
+    assert new == "git status && git add -- specific.py" and note is None
+    # A commit message that merely mentions -a must not be rewritten.
+    new2, note2 = ca._rewrite_blanket_git('git commit -m "fixed flag"', ["a.py"])
+    assert new2 == 'git commit -m "fixed flag"' and note2 is None
+
+
+def test_run_chat_agent_commits_only_touched(tmp_path):
+    import subprocess
+    repo = str(tmp_path)
+    for args in (["init"], ["config", "user.email", "t@t"],
+                 ["config", "user.name", "t"]):
+        subprocess.run(["git", *args], cwd=repo, capture_output=True)
+    # An unrelated dirty file a blanket `git add -A` would have swept in.
+    (tmp_path / "unrelated.txt").write_text("noise\n")
+    fn = _scripted([
+        'ACTION: file_write\nARGS_JSON: {"path": "mine.py", "content": "x = 1\\n"}',
+        'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
+        "FINAL: done",
+    ])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
+    # The commit holds mine.py, NOT the operator's unrelated.txt.
+    show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
+                          cwd=repo, capture_output=True, text=True).stdout
+    assert "mine.py" in show
+    assert "unrelated.txt" not in show
+    # The rewrite is surfaced in the tool result note.
+    cmd_tools = [e for e in evs if e["type"] == "tool" and e["name"] == "run_command"]
+    assert cmd_tools and "hygiene" in (cmd_tools[0]["result"].get("note") or "")

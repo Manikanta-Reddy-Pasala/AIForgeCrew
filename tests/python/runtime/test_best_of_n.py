@@ -237,6 +237,83 @@ def test_tie_break_deterministic(tmp_path, monkeypatch):
     assert winners[0] == "bestof-0"                # lowest slug wins the tie
 
 
+# ── item 1: Stop cancels best-of-N — no attempts launched, merge skipped ──────
+def test_best_of_n_cancelled_skips_merge(tmp_path, monkeypatch):
+    import os
+
+    from aiforge_core.runtime import chat_cancel
+    sid = 9001
+    chat_cancel.start(sid)
+    chat_cancel.cancel(sid)                 # cancel BEFORE the run launches
+    launched = {"n": 0}
+
+    def run_one(subtask, wt):
+        launched["n"] += 1                  # must never be called
+        open(os.path.join(wt, subtask["slug"] + ".txt"), "w").write("x\n")
+        return {"ok": True}
+
+    r = bon.best_of_n("x", str(tmp_path), n=3, run_one=run_one, session_id=sid)
+    chat_cancel.finish(sid)
+
+    assert r["cancelled"] is True and r["ok"] is False
+    assert "cancelled" in r["review"]
+    assert launched["n"] == 0               # no attempts launched
+    # Nothing merged into the workspace.
+    assert not any(f.endswith(".txt") for f in os.listdir(str(tmp_path)))
+    # Worktrees cleaned up.
+    wt_dir = os.path.join(str(tmp_path), ".aiforge-worktrees")
+    if os.path.isdir(wt_dir):
+        assert os.listdir(wt_dir) == []
+
+
+# ── B3: dirty-cwd warning surfaced in the result ──────────────────────────────
+def test_dirty_warning_detects_and_ignores_artifacts(tmp_path):
+    import os
+
+    from aiforge_core.runtime import parallel_subtasks as ps
+    ps._ensure_git_workspace(str(tmp_path))
+    assert ps._dirty_warning(str(tmp_path)) is None        # clean baseline
+    # An artifact change must NOT trip the warning.
+    os.makedirs(tmp_path / ".aiforge", exist_ok=True)
+    (tmp_path / ".aiforge" / "junk").write_text("x")
+    assert ps._dirty_warning(str(tmp_path)) is None
+    # A real uncommitted change does.
+    (tmp_path / "dirty.txt").write_text("uncommitted\n")
+    assert "uncommitted changes" in (ps._dirty_warning(str(tmp_path)) or "")
+
+
+def test_best_of_n_warns_on_dirty_cwd(tmp_path, monkeypatch):
+    from aiforge_core.runtime import parallel_subtasks as ps
+    _patch_grader(monkeypatch, _grader({"bestof-0": 10, "bestof-1": 90}))
+    ps._ensure_git_workspace(str(tmp_path))
+    (tmp_path / "dirty.txt").write_text("uncommitted\n")
+    r = bon.best_of_n("x", str(tmp_path), n=2, run_one=_writer())
+    assert any("uncommitted changes" in w for w in (r.get("warnings") or []))
+
+
+# ── B6/B7: disk-space preflight (soft warning, never blocks) ──────────────────
+def test_disk_preflight_warns_when_insufficient(tmp_path):
+    (tmp_path / "f.bin").write_bytes(b"x" * 10_000)
+    # An absurd safety factor forces the projected need above any real free space.
+    msg = bon._disk_preflight(str(tmp_path), n=6, safety=10 ** 12)
+    assert msg and "low disk" in msg
+
+
+def test_disk_preflight_ok_normally(tmp_path):
+    (tmp_path / "f.bin").write_bytes(b"x" * 100)
+    assert bon._disk_preflight(str(tmp_path), n=2) is None
+
+
+def test_best_of_n_warns_includes_disk(tmp_path, monkeypatch):
+    from aiforge_core.runtime import best_of_n as _bon
+    _patch_grader(monkeypatch, _grader({"bestof-0": 10, "bestof-1": 90}))
+    # Force the preflight to report a shortfall.
+    monkeypatch.setattr(_bon, "_disk_preflight",
+                        lambda *a, **k: "low disk: free≈1 < needed≈999")
+    r = _bon.best_of_n("x", str(tmp_path), n=2, run_one=_writer())
+    assert any("low disk" in w for w in (r.get("warnings") or []))
+
+
 # ── CC1: worktree dirs are run-unique (token-prefixed), not fixed paths ───────
 def test_best_of_n_worktree_paths_run_unique(tmp_path, monkeypatch):
     _patch_grader(monkeypatch, _grader({"bestof-0": 1, "bestof-1": 2}))

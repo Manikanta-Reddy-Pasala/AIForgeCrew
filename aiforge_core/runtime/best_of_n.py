@@ -27,6 +27,7 @@ import uuid
 from aiforge_core.runtime.parallel_subtasks import (
     _commit_all,
     _default_subtask_runner,
+    _dirty_warning,
     _ensure_git_workspace,
     _git,
     _make_worktree,
@@ -108,7 +109,8 @@ def _parse_grade(out: str | None) -> dict:
 
 
 def _attempt(spec: str, repo: str, base: str, i: int, run_one,
-             on_status=None, run_token: str | None = None) -> dict:
+             on_status=None, run_token: str | None = None,
+             session_id: int | None = None) -> dict:
     """Run ONE independent attempt in its own worktree, then grade its diff.
 
     Returns ``{slug, score, why, branch, worktree, ok, graded}``. A crash in the
@@ -117,8 +119,18 @@ def _attempt(spec: str, repo: str, base: str, i: int, run_one,
     grade is unavailable carries ``ok=True, graded=False, score=None``.
 
     ``run_token`` makes the worktree dir + branch RUN-UNIQUE so concurrent
-    best-of-N runs in the SAME cwd can't collide on fixed paths (CC1)."""
+    best-of-N runs in the SAME cwd can't collide on fixed paths (CC1).
+
+    ``session_id``: when the chat Stop button cancelled the session, a queued
+    attempt that hasn't started yet bails BEFORE creating its worktree / running
+    the LLM — so cancellation actually saves work instead of running all N."""
     slug = f"bestof-{i}"
+    if session_id is not None:
+        from aiforge_core.runtime import chat_cancel
+        if chat_cancel.is_cancelled(session_id):
+            return {"slug": slug, "score": 0, "why": "cancelled",
+                    "branch": None, "worktree": None, "ok": False,
+                    "graded": False}
     _update(None, slug, "running", on_status)
     try:
         wt, branch = _make_worktree(repo, base, slug, run_token)
@@ -172,8 +184,46 @@ def _cleanup(repo: str, attempt: dict) -> None:
         _git(["branch", "-D", attempt["branch"]], repo)
 
 
+def _disk_preflight(cwd: str, n: int, *, safety: float = 1.2) -> str | None:
+    """B6/B7 — best-effort disk-space preflight before creating N worktrees.
+
+    Estimates the working-tree size (sum of file sizes, EXCLUDING ``.git`` and
+    existing worktrees) and compares ``n × tree × safety`` against the free
+    bytes on the filesystem (``os.statvfs``). On a likely shortfall logs a clear
+    warning with the numbers and returns it; NEVER blocks (the check itself
+    soft-fails). No heavy deps — a bounded ``os.walk``."""
+    try:
+        total = 0
+        scanned = 0
+        for root, dirs, files in os.walk(cwd):
+            dirs[:] = [d for d in dirs
+                       if d not in (".git", ".aiforge-worktrees")]
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+                scanned += 1
+            if scanned > 50_000:        # cap the walk on huge trees
+                break
+        if total <= 0:
+            return None
+        st = os.statvfs(cwd)
+        free = st.f_bavail * st.f_frsize
+        need = total * n * safety
+        if free < need:
+            msg = (f"low disk: free≈{free} bytes < needed≈{int(need)} "
+                   f"(tree≈{total} × n={n} × {safety}); {n} worktrees may run "
+                   "out of space")
+            log.warning("best_of_n %s", msg)
+            return msg
+    except Exception as exc:  # noqa: BLE001 — preflight must never block
+        log.debug("best_of_n disk preflight skipped: %s", exc)
+    return None
+
+
 def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
-              on_status=None) -> dict:
+              on_status=None, session_id: int | None = None) -> dict:
     """Run ``spec`` ``n`` independent times in isolated worktrees, grade each,
     merge the best, discard the rest.
 
@@ -186,8 +236,10 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
                    Defaults to ``parallel_subtasks._default_subtask_runner()``.
         on_status: optional ``(slug, status)`` callback emitted as attempts
                    run / grade / win — mirrors ``parallel_subtasks._update``.
+        session_id: when set, the chat Stop button (``chat_cancel``) halts the
+                   run — no new attempts launch and the merge is skipped.
 
-    Returns ``{ok, n, winner, attempts, review}``.
+    Returns ``{ok, n, winner, attempts, review, warnings, cancelled}``.
     """
     n = _guard_n(n if n is not None else _default_n())
     runner = run_one or _default_subtask_runner()
@@ -196,11 +248,32 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
     # branches, so two concurrent runs in the SAME cwd never collide (CC1).
     run_token = uuid.uuid4().hex[:8]
 
+    # B3 — warn (don't block) if the operator's cwd has uncommitted changes the
+    # winner's merge might collide with. B6/B7 — disk-space preflight.
+    warnings: list[str] = []
+    dirty = _dirty_warning(cwd)
+    if dirty:
+        warnings.append(dirty)
+    disk = _disk_preflight(cwd, n)
+    if disk:
+        warnings.append(disk)
+
+    from aiforge_core.runtime import chat_cancel
+
+    def _cancelled() -> bool:
+        return session_id is not None and chat_cancel.is_cancelled(session_id)
+
     results: list[dict] = []
+    cancelled = False
     with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
-        futs = [ex.submit(_attempt, spec, cwd, base, i, runner, on_status,
-                          run_token)
-                for i in range(n)]
+        futs = []
+        for i in range(n):
+            # Stop launching new attempts once cancelled (item 1).
+            if _cancelled():
+                cancelled = True
+                break
+            futs.append(ex.submit(_attempt, spec, cwd, base, i, runner,
+                                  on_status, run_token, session_id))
         for f in concurrent.futures.as_completed(futs):
             try:
                 results.append(f.result())
@@ -208,6 +281,23 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
                 results.append({"slug": "?", "score": 0, "why": str(exc),
                                 "branch": None, "worktree": None, "ok": False,
                                 "graded": False})
+    if _cancelled():
+        cancelled = True
+
+    # Cancelled → skip the merge, clean up every worktree, return a cancelled
+    # result (best-effort, like team mode).
+    if cancelled:
+        for r in results:
+            _cleanup(cwd, r)
+        return {
+            "ok": False, "n": n, "cancelled": True,
+            "winner": {"slug": None, "score": None, "why": "cancelled",
+                       "branch": None},
+            "attempts": [{"slug": r.get("slug"), "score": r.get("score"),
+                          "why": r.get("why")} for r in results],
+            "merge_error": None, "warnings": warnings,
+            "review": f"best of {n}: cancelled by user before merge",
+        }
 
     # Deterministic winner selection (B1/B5). Sort key, all DESCENDING priority
     # except the final slug tie-break (ASCENDING for reproducibility):
@@ -274,19 +364,30 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
                    "why": winner.get("why"), "branch": preserve_branch},
         "attempts": attempts,
         "merge_error": (merge_info or "merge failed") if preserve_branch else None,
+        "warnings": warnings,
+        "cancelled": False,
         "review": review,
     }
 
 
-def stream_best_of_n(spec: str, cwd: str, n: int | None = None):
+def stream_best_of_n(spec: str, cwd: str, n: int | None = None,
+                     session_id: int | None = None):
     """Streaming wrapper for the chat surface: yields SSE-ready dicts
     (``thought`` / ``subtask_update`` / ``message``) like
     ``parallel_subtasks.stream_parallel_team`` so a UI can show each attempt
-    run → grade → win live."""
+    run → grade → win live.
+
+    ``session_id`` threads chat cancellation through so the Stop button halts
+    the run (item 1)."""
     import queue as _queue
     import threading as _threading
 
     n = _guard_n(n if n is not None else _default_n())
+    # B3 — surface a dirty-cwd warning up front (before the run) so the operator
+    # sees it whether or not the merge later fails.
+    _warn = _dirty_warning(cwd)
+    if _warn:
+        yield {"type": "thought", "role": "system", "text": "⚠ " + _warn}
     yield {"type": "thought", "role": "system",
            "text": f"Running {n} independent attempts, grading each, "
                    f"keeping the best (max {_max_workers()} at once)…"}
@@ -302,7 +403,8 @@ def stream_best_of_n(spec: str, cwd: str, n: int | None = None):
 
     def _runner():
         try:
-            result["agg"] = best_of_n(spec, cwd, n=n, on_status=on_status)
+            result["agg"] = best_of_n(spec, cwd, n=n, on_status=on_status,
+                                      session_id=session_id)
         except Exception as exc:  # noqa: BLE001
             result["err"] = str(exc)
         finally:
@@ -320,12 +422,20 @@ def stream_best_of_n(spec: str, cwd: str, n: int | None = None):
         yield {"type": "message", "text": f"Best-of-N run error: {result['err']}"}
         return
     agg = result.get("agg") or {}
+    # Surface any merge-blocking warning (dirty cwd / low disk) the run carried.
+    for w_msg in agg.get("warnings") or []:
+        yield {"type": "thought", "role": "system", "text": "⚠ " + w_msg}
+    if agg.get("cancelled"):
+        yield {"type": "message", "text": "Best-of-N cancelled by user."}
+        return
     w = agg.get("winner") or {}
+    _merge_err = agg.get("merge_error")
     yield {"type": "message", "text":
            f"**Best-of-{agg.get('n', n)} complete** — {agg.get('review', 'done')}.\n\n"
            + (f"Winner `{w.get('slug')}` (score {w.get('score')}) merged into the "
               f"workspace." if agg.get("ok") else
-              "No attempt produced a mergeable result.")}
+              (f"No attempt merged — git said: {_merge_err}" if _merge_err else
+               "No attempt produced a mergeable result."))}
 
 
 __all__ = ["best_of_n", "stream_best_of_n"]

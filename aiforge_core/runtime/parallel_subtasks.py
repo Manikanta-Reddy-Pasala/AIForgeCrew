@@ -263,6 +263,23 @@ def _update(ticket_id, slug, status, on_status=None, files=None) -> None:
         pass
 
 
+def _dirty_warning(cwd: str) -> str | None:
+    """B3 — warn (don't block) when ``cwd`` has uncommitted changes (EXCLUDING
+    the agent's own artifacts) that a winner/branch merge could collide with.
+
+    Returns a clear operator-facing message, or None when the tree is clean /
+    the check itself fails. Best-effort: the artifact pathspecs are excluded so
+    a stray ``.aiforge`` file never trips the warning."""
+    try:
+        st = _git(["status", "--porcelain", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
+    except Exception:  # noqa: BLE001
+        return None
+    if (st.stdout or "").strip():
+        return ("workspace has uncommitted changes — merge may fail; "
+                "commit or stash first")
+    return None
+
+
 def _merge_branch(repo: str, base_branch: str, branch: str) -> tuple[bool, str]:
     """Merge ``branch`` into ``base_branch`` (checked out in ``repo``). Returns
     (ok, info). On conflict, aborts cleanly and reports."""
@@ -324,8 +341,16 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
             by_slug[r.get("slug")] = r      # latest result wins
     results: list[dict] = [by_slug[s["slug"]] for s in subs if s["slug"] in by_slug]
 
+    # B3 — warn (don't block) if the base tree is dirty before we merge into it.
+    warnings: list[str] = []
+    if merge:
+        _dirty = _dirty_warning(repo_root)
+        if _dirty:
+            warnings.append(_dirty)
+
     merged = 0
     conflicts: list[str] = []
+    conflict_details: list[str] = []   # surface git stderr, don't swallow it (B3)
     if merge:
         # Sequential merge in the planner's original order (dependencies first).
         order = {s.get("slug"): i for i, s in enumerate(subs)}
@@ -336,6 +361,7 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                 merged += 1
             else:
                 conflicts.append(r["slug"])
+                conflict_details.append(f"{r['slug']}: {info}")
                 _update(ticket_id, r["slug"], "failed", on_status)
 
     # Best-effort worktree cleanup.
@@ -370,10 +396,12 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
               if all_ok else
               f"{done}/{len(subs)} done ({validated} validated), {failed} failed"
               + (f", {len(conflicts)} merge conflict(s)" if conflicts else "")
+              + (" — " + "; ".join(conflict_details) if conflict_details else "")
               + ("; integration FAILED" if integration.get("ok") is False else ""))
     return {"ok": all_ok,
             "total": len(subs), "done": done, "validated": validated,
             "failed": failed, "merged": merged, "conflicts": conflicts,
+            "conflict_details": conflict_details, "warnings": warnings,
             "integration": integration, "review": review, "results": results}
 
 
@@ -932,6 +960,10 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                    f"(max {_max_workers()} at once)…"}
 
     base = _ensure_git_workspace(cwd)
+    # B3 — surface a dirty-cwd warning before merging into it.
+    _warn = _dirty_warning(cwd)
+    if _warn:
+        yield {"type": "thought", "role": "system", "text": "⚠ " + _warn}
     q: "_queue.Queue" = _queue.Queue()
     result: dict = {}
 

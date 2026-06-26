@@ -2488,7 +2488,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 from aiforge_core.runtime import best_of_n as _bon
                 _af_log.info("parallel decompose <2 subtasks — best-of-N route")
                 _path["parallel"] = True
-                yield from _bon.stream_best_of_n(_spec, cwd)
+                yield from _bon.stream_best_of_n(_spec, cwd,
+                                                 session_id=session_id)
                 return
             _af_log.info("parallel decompose <2 subtasks — sequential fallback")
         if team:
@@ -2503,7 +2504,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # SIMPLE and PLAN modes — the Enhancer is MANDATORY here.
         yield {"type": "thought", "role": "enhancer",
                "text": "Enhancing request + gathering context…"}
-        _enriched = _pp._enhance(prompt, history=history, cwd=cwd)
+        # Do NOT fold `history` into the spec here: the enriched spec REPLACES
+        # only the LAST user turn while the prior raw turns REMAIN in
+        # `_enriched_history` below — so `_enhance`'s history block would fold
+        # the same recent turns the model already sees, doubling the context.
+        # The raw prior turns carry the conversation; the spec is built from the
+        # prompt + memory + README only.
+        _enriched = _pp._enhance(prompt, cwd=cwd)
         # Build enriched history: replace the LAST user message with the spec.
         _enriched_history = [dict(m) for m in history]
         for _m in reversed(_enriched_history):
@@ -2521,13 +2528,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                      "goal": s.get("goal") or s.get("title") or "",
                      "status": "planned"}
                     for i, s in enumerate(_subs)]}
-            yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
-                                      session_id=session_id, mode="plan")
             # Plan→approve→execute (Gap B): hand the approved spec to the UI so
             # the user can one-click "Approve & Execute" — which re-sends this
             # enriched spec as a TEAM run. Persisted so the button survives a
-            # reload until the plan is acted on.
+            # reload until the plan is acted on. Emit plan_ready BEFORE the
+            # agent's terminal `done` reaches the client (hold the `done`, yield
+            # plan_ready, then release `done`) so the UI sees the plan, not a
+            # finished turn with no plan.
+            _pending_done = None
+            for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
+                                      session_id=session_id, mode="plan"):
+                if _ev.get("type") == "done":
+                    _pending_done = _ev
+                    continue
+                yield _ev
             yield {"type": "plan_ready", "spec": _enriched}
+            if _pending_done is not None:
+                yield _pending_done
             return
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
                                   session_id=session_id, mode=agent_mode)
@@ -2589,7 +2606,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 chat_approve.finish(session_id)
                 chat_persist.persist_turn(
                     session_id=session_id, cwd=cwd, prompt=prompt,
-                    final_text=final_text, steps=steps, team=False,
+                    final_text=final_text, steps=steps,
+                    team=(team or _path["parallel"]),
                     cancelled=cancelled, awaiting=awaiting)
 
     return StreamingResponse(_gen(), media_type="text/event-stream")

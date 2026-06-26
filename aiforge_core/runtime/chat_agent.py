@@ -43,6 +43,106 @@ _THOUGHT_RE = re.compile(r"THOUGHT:\s*(.*?)(?:\n[A-Z_]+:|$)", re.IGNORECASE | re
 _MAX_OBS = 6000  # truncate tool output fed back to the model
 
 
+# ─── Chat-side touched-path tracker (commit hygiene, item 6) ────────────
+#
+# The chat agent commits via the SHELL ``run_command`` tool, so the "only
+# commit changed files" rule can't rely on doer_tools' per-call git_commit.
+# We record every file the chat tools MUTATE (file_write / file_patch / the
+# editor write sub-commands) here, then rewrite a blanket ``git add -A`` /
+# ``git add .`` / ``git commit -a`` in a run_command into a touched-files-only
+# stage — code-enforcing the rule instead of trusting the prompt.
+import threading as _threading  # noqa: E402
+
+_CHAT_TOUCHED: set[str] = set()        # absolute paths mutated this run
+_CHAT_TOUCHED_LOCK = _threading.Lock()
+
+
+def _record_chat_touch(p) -> None:
+    """Record an absolute path the chat tools mutated. Best-effort."""
+    try:
+        with _CHAT_TOUCHED_LOCK:
+            _CHAT_TOUCHED.add(str(p))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _reset_chat_touched() -> None:
+    """Clear the tracker at the start of a chat run so stale paths from a
+    previous turn aren't staged."""
+    with _CHAT_TOUCHED_LOCK:
+        _CHAT_TOUCHED.clear()
+
+
+def _chat_touched_rel(base: str) -> list[str]:
+    """Touched paths as repo-relative (to ``base``) strings, excluding agent
+    artifacts/junk and anything outside ``base``. Sorted + de-duped."""
+    from aiforge_core.runtime.git_pr import is_excluded_path
+    with _CHAT_TOUCHED_LOCK:
+        paths = list(_CHAT_TOUCHED)
+    out: set[str] = set()
+    for ap in paths:
+        try:
+            rel = os.path.relpath(ap, base)
+        except Exception:  # noqa: BLE001
+            continue
+        rel = rel.replace("\\", "/")
+        if rel.startswith("..") or os.path.isabs(rel):
+            continue                       # outside the repo we're staging
+        if is_excluded_path(rel):
+            continue
+        out.add(rel)
+    return sorted(out)
+
+
+# git stage forms that sweep in EVERYTHING — rewritten to a touched-only stage.
+_GIT_ADD_BLANKET_RE = re.compile(
+    r"\bgit\s+add\s+(?:-A|--all|\.)(?:\s+(?:-A|--all|\.))*(?=\s|;|&|\||$)")
+
+
+def _rewrite_blanket_git(cmd: str, touched: list[str]) -> tuple[str, str | None]:
+    """Rewrite a blanket ``git add -A|.|--all`` / ``git commit -a|-am|--all`` in
+    ``cmd`` so it stages ONLY ``touched``. Returns ``(new_cmd, note)`` — ``note``
+    is None when nothing was rewritten. With NO touched paths we leave the
+    command untouched (the artifact ``.gitignore`` is the fallback guard)."""
+    if not touched:
+        return cmd, None
+    import shlex
+    spec = " ".join(shlex.quote(f) for f in touched)
+    changed = False
+
+    def _add(_m):
+        nonlocal changed
+        changed = True
+        return f"git add -- {spec}"
+
+    new = _GIT_ADD_BLANKET_RE.sub(_add, cmd)
+
+    # git commit -a / -am / -av… → stage the touched files first, drop the 'a'
+    # (the message-bearing short flags glued after it are preserved as group 1).
+    def _commit_short(m):
+        nonlocal changed
+        changed = True
+        rest = m.group(1)        # e.g. "m" in -am, "" in a bare -a
+        tail = f" -{rest}" if rest else ""
+        return f"git add -- {spec} && git commit{tail}"
+
+    new = re.sub(r"\bgit\s+commit\s+-a([A-Za-z]*)\b", _commit_short, new)
+
+    # git commit --all → same, just strip --all.
+    def _commit_all(_m):
+        nonlocal changed
+        changed = True
+        return f"git add -- {spec} && git commit"
+
+    new = re.sub(r"\bgit\s+commit\s+--all\b", _commit_all, new)
+
+    note = None
+    if changed and new != cmd:
+        note = ("[hygiene] rewrote a blanket git stage to commit ONLY the files "
+                f"changed this turn: {', '.join(touched)}")
+    return new, note
+
+
 def _workspace_root() -> Path | None:
     raw = os.environ.get("AIFORGE_WORKSPACE_DIR")
     return Path(os.path.expanduser(raw)).resolve() if raw else None
@@ -72,6 +172,7 @@ def _t_file_write(args: dict, cwd: str) -> dict:
     p = _resolve(cwd, args["path"])
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(args.get("content", ""), encoding="utf-8")
+    _record_chat_touch(p)
     return {"ok": True, "path": str(p), "bytes": len(args.get("content", ""))}
 
 
@@ -87,6 +188,7 @@ def _t_file_patch(args: dict, cwd: str) -> dict:
     if n > 1:
         return {"ok": False, "error": "ambiguous_match", "occurrences": n}
     p.write_text(body.replace(old, args["new_text"], 1), encoding="utf-8")
+    _record_chat_touch(p)
     return {"ok": True, "path": str(p)}
 
 
@@ -115,6 +217,12 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     root = _workspace_root()
     if root is not None:
         base = str(root)
+    # Commit hygiene (item 6): code-enforce "only commit changed files" — rewrite
+    # a blanket `git add -A|.|--all` / `git commit -a|-am|--all` into a stage of
+    # ONLY the files this run mutated. No-op when nothing was tracked (the
+    # artifact .gitignore is then the fallback guard).
+    _rewrite_note = None
+    cmd, _rewrite_note = _rewrite_blanket_git(cmd, _chat_touched_rel(base))
     # Default generous so dependency installs / builds (npm ci, mvn package,
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
@@ -149,8 +257,11 @@ def _t_run_command(args: dict, cwd: str) -> dict:
                     "(pass a larger \"timeout\" arg for long builds)"}
         _time.sleep(0.2)
     out, err = proc.communicate()
-    return {"ok": proc.returncode == 0, "code": proc.returncode,
-            "stdout": (out or "")[-_MAX_OBS:], "stderr": (err or "")[-_MAX_OBS:]}
+    res = {"ok": proc.returncode == 0, "code": proc.returncode,
+           "stdout": (out or "")[-_MAX_OBS:], "stderr": (err or "")[-_MAX_OBS:]}
+    if _rewrite_note:
+        res["note"] = _rewrite_note
+    return res
 
 
 def _kill_proc(proc) -> None:
@@ -578,6 +689,27 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
 # File-mutating tools that the pre-apply "Review edits" gate (Gap D) holds for
 # human Approve/Reject even when policy would auto-allow them.
 _MUTATING = ("file_write", "file_create", "file_patch", "editor")
+
+# The ``editor`` tool multiplexes read + write sub-commands on one tool NAME;
+# only the WRITE sub-commands mutate (view/read/list are read-only and must
+# NOT be held by the review-edits gate).
+_EDITOR_READONLY_CMDS = ("view", "read", "list", "ls", "cat", "open")
+
+
+def _editor_is_write(args: dict) -> bool:
+    cmd = str((args or {}).get("command")
+              or (args or {}).get("sub_command") or "").strip().lower()
+    return cmd not in _EDITOR_READONLY_CMDS
+
+
+def _is_mutating(name: str, args: dict) -> bool:
+    """True when this tool call actually writes — ``editor`` view/read is
+    read-only; every other name in ``_MUTATING`` always mutates."""
+    if name not in _MUTATING:
+        return False
+    if name == "editor":
+        return _editor_is_write(args)
+    return True
 
 _PLAN_BANNER = (
     "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
@@ -1192,6 +1324,7 @@ def run_chat_agent(
     from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
     from aiforge_core.runtime.tools import tool_policy
     chat_cancel.set_active(session_id)
+    _reset_chat_touched()   # fresh touched-path tracker for this run (item 6)
     plan_mode = (mode or "act").lower() == "plan"
 
     import collections
@@ -1370,7 +1503,7 @@ def run_chat_agent(
             continue
         # Pre-apply review mode (Gap D): when armed for this session, force the
         # approval gate for any mutating tool even if policy would auto-allow.
-        _force_review = (session_id is not None and name in _MUTATING
+        _force_review = (session_id is not None and _is_mutating(name, args)
                          and chat_approve.review_edits(session_id))
         # Destructive delete (rm -rf, etc): the run_command tool has its OWN
         # confirm_delete arg gate (delete_guard). If we don't route it through
