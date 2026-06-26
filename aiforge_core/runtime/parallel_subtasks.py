@@ -528,10 +528,13 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
 # ─────────────── Parallel chat mode (decompose → fan-out → merge) ──────────
 
 _DECOMPOSE_SYS = (
-    "You are a planner. Break the user's task into 3-8 INDEPENDENT subtasks that "
-    "can be implemented in parallel (separate files where possible). Output ONLY "
-    "a JSON object: {\"subtickets\": [{\"slug\": \"kebab-id\", \"goal\": \"one "
-    "sentence\"}, ...]}. No prose."
+    "You are a planner. Split the task into 3-8 subtasks that run IN PARALLEL. "
+    "CRITICAL: each subtask must own a DISTINCT file (or files) — NO two subtasks "
+    "may edit the same file, or they will merge-conflict. Put the target file in "
+    "the goal, e.g. 'db.py: SQLite store + models'. One file per concern "
+    "(db.py, models.py, slug.py, routes.py, main.py, test_app.py, README.md). "
+    "Output ONLY: {\"subtickets\": [{\"slug\": \"kebab-id\", \"goal\": "
+    "\"<file>: <what>\"}, ...]}. No prose."
 )
 
 
