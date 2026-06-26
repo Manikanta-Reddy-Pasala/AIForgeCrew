@@ -837,6 +837,14 @@ THOUGHT: <why you need input>
 ASK: <one concise, specific question>
 The turn ends and the user's next message answers you.
 
+NEVER use ASK to request permission or confirmation to proceed. Do NOT say \
+things like "type yes to confirm", "shall I proceed?", "is it OK if I…", or \
+"let me know if you want me to continue". Risky/mutating actions are gated \
+automatically — the user gets an Approve/Reject prompt for those, so you must \
+not also ask. Just emit the ACTION; the harness handles approval. ASK is ONLY \
+for missing facts you genuinely cannot proceed without (which file, what \
+behaviour, scope) — never for permission.
+
 Rules: emit exactly one ACTION or one FINAL per turn. After each ACTION you \
 receive an OBSERVATION with the tool result, then continue. Keep going until \
 the task is complete, then give FINAL. Do real work — read and edit files, run \
