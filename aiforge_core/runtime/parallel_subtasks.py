@@ -515,6 +515,26 @@ _DECOMPOSE_SYS = (
 )
 
 
+_ENHANCE_SYS = (
+    "You are a senior engineer. Rewrite the user's request as a clear, concrete "
+    "build spec: 1-2 lines of goal, then the key components/files and acceptance "
+    "criteria as tight bullets. Keep it short. Output ONLY the spec, no preamble."
+)
+
+
+def _enhance(prompt: str) -> str:
+    """Layer-1 step 1: analyze + enhance the raw request into a clean spec the
+    planner can split well. Falls back to the raw prompt on any error."""
+    try:
+        from aiforge_core.llm import client
+        out = client.complete("enhancer", [
+            {"role": "system", "content": _ENHANCE_SYS},
+            {"role": "user", "content": prompt}], max_tokens=600)
+        return (out or "").strip() or prompt
+    except Exception:  # noqa: BLE001
+        return prompt
+
+
 def _decompose(prompt: str, tries: int = 2) -> list[dict]:
     """Planner LLM call → subtasks list (JSON array or markdown phases).
     Retries once: a single shot occasionally returns an unparseable format on a
@@ -554,12 +574,16 @@ def _ensure_git_workspace(cwd: str) -> str:
     return (cur.stdout or "").strip() or "main"
 
 
-def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = None):
+def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = None,
+                         enhanced: bool = False):
     """Chat 'parallel team' mode: run the (pre-decomposed) subtasks CONCURRENTLY
     in isolated worktrees under ``cwd``, streaming live status. If ``subtasks``
     isn't supplied, decompose here. Yields SSE-ready dicts."""
     import queue as _queue
 
+    if enhanced:
+        # Show the layer-1 spec (analyze → enhance) the planner split.
+        yield {"type": "thought", "role": "enhancer", "text": prompt[:800]}
     subs = subtasks
     if not subs:
         yield {"type": "thought", "role": "planner",

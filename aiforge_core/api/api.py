@@ -2342,10 +2342,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # subtasks CONCURRENTLY in isolated worktrees with live status.
         if team and _parallel_team:
             from aiforge_core.runtime import parallel_subtasks as _pp
-            _subs = _pp._decompose(prompt)
+            # Layer 1: analyze → enhance → split. Layer 2 (the workers) runs in
+            # stream_parallel_team.
+            _spec = _pp._enhance(prompt)
+            _subs = _pp._decompose(_spec)
             if len(_subs) >= 2:
                 _path["parallel"] = True
-                return _pp.stream_parallel_team(prompt, cwd=cwd, subtasks=_subs)
+                return _pp.stream_parallel_team(_spec, cwd=cwd, subtasks=_subs,
+                                                enhanced=True)
             # Couldn't split → fall back to the sequential team pipeline instead
             # of dead-ending, so the user always gets a result.
             _af_log.info("parallel decompose <2 subtasks — sequential fallback")
