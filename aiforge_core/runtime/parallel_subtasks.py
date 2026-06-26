@@ -260,16 +260,36 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                 "merged": 0, "conflicts": [], "note": "no subtasks",
                 "review": "nothing to do"}
 
-    results: list[dict] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
-        futs = [ex.submit(_run_subtask, repo_root, base_branch, ticket_id, s,
-                          run_one, validate_one, on_status)
-                for s in subs]
-        for f in concurrent.futures.as_completed(futs):
-            try:
-                results.append(f.result())
-            except Exception as exc:  # noqa: BLE001
-                results.append({"slug": "?", "ok": False, "error": str(exc)})
+    def _pass(batch: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
+            futs = [ex.submit(_run_subtask, repo_root, base_branch, ticket_id, s,
+                              run_one, validate_one, on_status) for s in batch]
+            for f in concurrent.futures.as_completed(futs):
+                try:
+                    out.append(f.result())
+                except Exception as exc:  # noqa: BLE001
+                    out.append({"slug": "?", "ok": False, "error": str(exc)})
+        return out
+
+    # Orchestrator-level RESTART rounds: after the first pass, re-dispatch the
+    # still-failed subtasks in fresh worktrees (transient failures / contention
+    # often clear on a retry). Bounded by AIFORGE_PARALLEL_RERUN_ROUNDS (1).
+    by_slug: dict = {}
+    for r in _pass(subs):
+        by_slug[r.get("slug")] = r
+    try:
+        rounds = max(0, min(3, int(os.environ.get("AIFORGE_PARALLEL_RERUN_ROUNDS", "1"))))
+    except ValueError:
+        rounds = 1
+    for _ in range(rounds):
+        failed = [s for s in subs if not (by_slug.get(s["slug"]) or {}).get("ok")]
+        if not failed:
+            break
+        log.info("orchestrator re-run round: %d failed subtask(s)", len(failed))
+        for r in _pass(failed):
+            by_slug[r.get("slug")] = r      # latest result wins
+    results: list[dict] = [by_slug[s["slug"]] for s in subs if s["slug"] in by_slug]
 
     merged = 0
     conflicts: list[str] = []
