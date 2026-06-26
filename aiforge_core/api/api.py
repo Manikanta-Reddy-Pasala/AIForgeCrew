@@ -2932,10 +2932,16 @@ async def mcp_tool_call(body: _McpCallBody) -> dict:
 # ─────────────────────────── Workflow topology (DAG view) ──────────────
 @app.get("/api/runtime/perf")
 def runtime_perf(reset: bool = False) -> dict:
-    """Per-step perf snapshot. Empty under new aiforge_agents pipeline
-    until the orchestrator's audit log is wired into a perf aggregator.
-    The legacy GA hooks module was removed."""
-    return {"rows": [], "reset": bool(reset)}
+    """Per-step perf snapshot, backed by the ndjson perf recorder.
+
+    Samples are appended by ``aiforge_core.runtime.perf_recorder`` at the LLM
+    call boundary and at each chat/doer tool dispatch. ``reset`` truncates the
+    recorder's ndjson and returns an empty snapshot."""
+    from aiforge_core.runtime import perf_recorder
+    if reset:
+        perf_recorder.reset()
+        return {"rows": [], "reset": True}
+    return {"rows": perf_recorder.aggregate(), "reset": False}
 
 
 def _static_topology() -> dict:

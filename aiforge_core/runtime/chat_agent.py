@@ -30,6 +30,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -552,6 +553,20 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "stop_service": _t_stop_service,
     "list_services": _t_list_services,
 }
+
+_SEARCH_TOOLS = ("grep", "find", "repo_map", "graphify_lookup", "memory_lookup")
+_FILE_TOOLS = ("file_read", "file_write", "file_create", "file_patch",
+               "list_dir", "editor")
+
+
+def _perf_family(name: str) -> str:
+    """Map a tool name to a Perf-page family label (Search / File / Tool)."""
+    if name in _SEARCH_TOOLS or "search" in name:
+        return "Search"
+    if name in _FILE_TOOLS:
+        return "File"
+    return "Tool"
+
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
 _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
@@ -1357,12 +1372,20 @@ def run_chat_agent(
         if fn is None:
             result = {"ok": False, "error": f"unknown tool: {name}"}
         else:
+            _perf_t0 = time.perf_counter()
             try:
                 result = fn(args, cwd)
             except KeyError as exc:
                 result = {"ok": False, "error": f"missing arg: {exc}"}
             except Exception as exc:  # noqa: BLE001
                 result = {"ok": False, "error": str(exc)}
+            try:
+                from aiforge_core.runtime import perf_recorder
+                perf_recorder.record(
+                    _perf_family(name), name,
+                    (time.perf_counter() - _perf_t0) * 1000.0)
+            except Exception:  # noqa: BLE001 — perf must never break a run
+                pass
         yield {"type": "tool", "name": name, "args": args, "result": result}
         obs = json.dumps(result)[:_MAX_OBS]
         convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})

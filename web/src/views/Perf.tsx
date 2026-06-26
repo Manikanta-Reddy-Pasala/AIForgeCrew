@@ -30,6 +30,10 @@ const FAMILY_COLOR: Record<FamilyKey, string> = {
 };
 
 function familyOf(event: string): FamilyKey {
+  // The perf recorder writes the family label verbatim into `event`
+  // ("LLM" / "Tool" / "Search" / "File" / "Edit cycle"). Match those first.
+  if ((FAMILY_KEYS as string[]).includes(event)) return event as FamilyKey;
+  // Legacy GA-hook event names (pre_/post_ phases).
   if (event === 'post_search' || event === 'pre_search')           return 'Search';
   if (event === 'post_llm'    || event === 'pre_llm')              return 'LLM';
   if (event.startsWith('post_file') || event.startsWith('pre_file')) return 'File';

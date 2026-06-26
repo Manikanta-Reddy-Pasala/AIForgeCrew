@@ -333,6 +333,31 @@ def complete(role: str, messages: list[dict], *,
              top_p: float | None = None,
              extras: dict | None = None,
              timeout_s: int | None = None) -> str:
+    """Timed wrapper around the LLM call — records wall-ms under family "LLM"
+    keyed by ``role`` (stable), then delegates to the real implementation.
+    Perf recording soft-fails and never affects the call result."""
+    try:
+        from aiforge_core.runtime import perf_recorder
+        with perf_recorder.timed("LLM", role):
+            return _complete_impl(
+                role, messages, temperature=temperature,
+                max_tokens=max_tokens, top_p=top_p, extras=extras,
+                timeout_s=timeout_s,
+            )
+    except ImportError:
+        return _complete_impl(
+            role, messages, temperature=temperature,
+            max_tokens=max_tokens, top_p=top_p, extras=extras,
+            timeout_s=timeout_s,
+        )
+
+
+def _complete_impl(role: str, messages: list[dict], *,
+                   temperature: float | None = None,
+                   max_tokens: int | None = None,
+                   top_p: float | None = None,
+                   extras: dict | None = None,
+                   timeout_s: int | None = None) -> str:
     """Issue one chat-completion call for ``role`` with full retry chain.
 
     Order:
