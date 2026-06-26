@@ -52,6 +52,10 @@ _ARCHETYPES: tuple[str, ...] = (
     # Conversational chat agent (2026-06-21) — the UI chat's own model
     # slot, configured on the home page; independent of the pipeline.
     "chat",
+    # Parallel orchestrator layer-1 agents (2026-06-26): enhancer (analyze →
+    # spec) and architect (file/structure plan) → planner splits. Configurable
+    # so the splitter can run on a stronger reasoning model than the workers.
+    "enhancer",
 )
 _ROLES = _ARCHETYPES
 

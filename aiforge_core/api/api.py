@@ -2200,6 +2200,38 @@ def chat_model_set(body: _ChatModelBody) -> dict:
             "active": (cfg.get("model") in served) if served else True}
 
 
+# Orchestrator = the 2 layer-1 agents (enhancer + planner) that analyze/enhance
+# the request and split it into subtasks. Lets you run the splitter on a
+# different (e.g. stronger reasoning) model than the workers.
+_ORCHESTRATOR_ROLES = ("enhancer", "architect", "planner")
+
+
+@app.get("/api/chat/orchestrator-model")
+def orchestrator_model_get() -> dict:
+    row = _acfg.get("planner") if "planner" in _acfg.archetypes() else {}
+    served = _served_model_ids_for_role("planner")
+    return {"provider": row.get("provider"), "model": row.get("model"),
+            "roles": list(_ORCHESTRATOR_ROLES),
+            "models": [{"id": m, "label": m.split("/")[-1]} for m in sorted(served)]}
+
+
+@app.put("/api/chat/orchestrator-model")
+def orchestrator_model_set(body: _ChatModelBody) -> dict:
+    """Set the model for the orchestrator's 2 agents (enhancer + planner)."""
+    cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
+    provider = body.provider or cur.get("provider") or "local"
+    try:
+        for role in _ORCHESTRATOR_ROLES:
+            rc = _acfg.get(role) if role in _acfg.archetypes() else {}
+            _acfg.set_role(role, provider, body.model,
+                           base_url=rc.get("base_url") or cur.get("base_url"),
+                           insecure_tls=bool(rc.get("insecure_tls")
+                                             or cur.get("insecure_tls")))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "model": body.model, "roles": list(_ORCHESTRATOR_ROLES)}
+
+
 class _RenameBody(BaseModel):
     title: str = Field(..., min_length=1)
 
@@ -2342,10 +2374,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # subtasks CONCURRENTLY in isolated worktrees with live status.
         if team and _parallel_team:
             from aiforge_core.runtime import parallel_subtasks as _pp
-            # Layer 1: analyze → enhance → split. Layer 2 (the workers) runs in
-            # stream_parallel_team.
-            _spec = _pp._enhance(prompt)
-            _subs = _pp._decompose(_spec)
+            # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
+            _spec = _pp._enhance(prompt)            # 1. analyze → clean spec
+            _files = _pp._architect(_spec)          # 2. design file structure
+            _subs = _pp._plan_files(_files) if len(_files) >= 2 \
+                else _pp._decompose(_spec)          # 3. split (per file, or plan)
             if len(_subs) >= 2:
                 _path["parallel"] = True
                 return _pp.stream_parallel_team(_spec, cwd=cwd, subtasks=_subs,

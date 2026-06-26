@@ -176,6 +176,9 @@ export default function Chat() {
     try { return localStorage.getItem(LS_MODEL_KEY) || ''; } catch { return ''; }
   });
   const [modelActive, setModelActive] = useState<boolean>(true);
+  // Orchestrator model (enhancer + planner — the layer-1 splitter agents)
+  const [orchModel, setOrchModel] = useState<string>('');
+  const [orchOptions, setOrchOptions] = useState<{ id: string; label: string }[]>([]);
 
   // Elapsed timer for the live streaming turn
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -310,6 +313,11 @@ export default function Chat() {
         setModelActive(resp.current_active ?? true);
       }
     }).catch(() => { /* backend may not have the endpoint yet — ignore */ });
+
+    chatApi.orchestratorModel().then(r => {
+      setOrchModel(r.model || '');
+      setOrchOptions(r.models || []);
+    }).catch(() => { /* endpoint optional — ignore */ });
 
     loadSessions().then(() => {
       // sessions loaded; if there's an activeId, load it
@@ -820,6 +828,30 @@ export default function Chat() {
                       </option>
                     ))
                   )}
+                </select>
+              </label>
+            )}
+
+            {/* Orchestrator model — the enhancer + planner (layer-1 splitter).
+                Shown in team mode where those agents run. */}
+            {chatMode === 'team' && orchOptions.length > 0 && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}
+                     title="Model for the orchestrator (enhancer + planner) — the agents that analyze & split the task">
+                Orchestrator
+                <select
+                  className="chat-model-select"
+                  value={orchModel}
+                  disabled={busy}
+                  onChange={async e => {
+                    const m = e.target.value;
+                    setOrchModel(m);
+                    try {
+                      await chatApi.setOrchestratorModel(m, chatProvider || undefined);
+                      toast.success('Orchestrator model updated (enhancer + planner)');
+                    } catch (err: any) { toast.error(err.message); }
+                  }}
+                >
+                  {orchOptions.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
                 </select>
               </label>
             )}

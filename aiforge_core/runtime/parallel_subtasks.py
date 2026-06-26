@@ -48,6 +48,12 @@ def _git(args: list[str], cwd: str) -> subprocess.CompletedProcess:
                           text=True, timeout=120)
 
 
+def _slugify(text: str) -> str:
+    import re
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s[:40] or "step"
+
+
 def _branch_for(slug: str, base_branch: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in slug)[:40]
     return f"{base_branch}-sub-{safe}"
@@ -560,6 +566,46 @@ def _enhance(prompt: str) -> str:
         return (out or "").strip() or prompt
     except Exception:  # noqa: BLE001
         return prompt
+
+
+_ARCHITECT_SYS = (
+    "You are the architect. Given a build spec, design the FILE STRUCTURE: list "
+    "the files to create, each with its single responsibility. Files must be "
+    "DISJOINT (no shared concern). Output ONLY JSON: {\"files\": [{\"path\": "
+    "\"db.py\", \"purpose\": \"SQLite store + models\"}, ...]}. No prose."
+)
+
+
+def _architect(spec: str) -> list[dict]:
+    """Orchestrator agent 2: design the file structure (disjoint files). Returns
+    [{path, purpose}, ...] — the single source of truth for the split."""
+    import json as _json
+    import re as _re
+    try:
+        from aiforge_core.llm import client
+        out = client.complete("architect", [
+            {"role": "system", "content": _ARCHITECT_SYS},
+            {"role": "user", "content": spec}], max_tokens=1000)
+        m = _re.search(r"\{.*\}", out or "", _re.DOTALL)
+        obj = _json.loads(m.group(0)) if m else {}
+        files = obj.get("files") if isinstance(obj, dict) else None
+        return [f for f in (files or []) if isinstance(f, dict) and f.get("path")]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("architect step failed: %s", exc)
+        return []
+
+
+def _plan_files(files: list[dict]) -> list[dict]:
+    """Architect file list → one subtask per file (guaranteed distinct files)."""
+    out, seen = [], set()
+    for f in files:
+        path = str(f.get("path") or "").strip().lstrip("/")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        out.append({"slug": _slugify(path.rsplit("/", 1)[-1].rsplit(".", 1)[0] or path),
+                    "goal": f"{path}: {f.get('purpose') or 'implement'}"})
+    return out
 
 
 def _decompose(prompt: str, tries: int = 2) -> list[dict]:

@@ -352,6 +352,15 @@ export const chatApi = {
       body: JSON.stringify({ model, ...(provider ? { provider } : {}) }),
     }),
 
+  orchestratorModel: () =>
+    j<{ provider: string; model: string; roles: string[]; models: { id: string; label: string }[] }>('/chat/orchestrator-model'),
+  setOrchestratorModel: (model: string, provider?: string) =>
+    j<{ ok: boolean; model: string; roles: string[] }>('/chat/orchestrator-model', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, ...(provider ? { provider } : {}) }),
+    }),
+
   sessionCreate: (body?: { title?: string; cwd?: string }) =>
     j<ChatSession>('/chat/sessions', {
       method: 'POST',
