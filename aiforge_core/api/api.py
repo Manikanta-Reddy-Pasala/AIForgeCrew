@@ -2446,8 +2446,18 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 yield from _pp.stream_parallel_team(_spec, cwd=cwd, subtasks=_subs,
                                                     enhanced=True)
                 return
-            # Couldn't split → fall back to the sequential team pipeline instead
-            # of dead-ending, so the user always gets a result.
+            # Couldn't split into ≥2 distinct files → it's really ONE task.
+            # Best-of-N (Gap C, opt-in): when AIFORGE_BEST_OF_N is set, run the
+            # single task N independent times in isolated worktrees, grade each,
+            # keep the best. Otherwise fall back to the sequential team pipeline
+            # so the user always gets a result. Default flow (flag unset) is
+            # unchanged.
+            if os.environ.get("AIFORGE_BEST_OF_N"):
+                from aiforge_core.runtime import best_of_n as _bon
+                _af_log.info("parallel decompose <2 subtasks — best-of-N route")
+                _path["parallel"] = True
+                yield from _bon.stream_best_of_n(_spec, cwd)
+                return
             _af_log.info("parallel decompose <2 subtasks — sequential fallback")
         if team:
             # Sequential team pipeline already has its own ADK enhancer agent;
