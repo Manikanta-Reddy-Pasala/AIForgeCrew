@@ -22,6 +22,14 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health:   () => j<any>('/health'),
   agents:   () => j<any[]>('/agents'),
+  llmSettings: () =>
+    j<{ max_output_tokens: number; context_window: number }>('/runtime/llm-settings'),
+  setLlmSettings: (vals: { max_output_tokens?: number; context_window?: number }) =>
+    j<{ max_output_tokens: number; context_window: number }>('/runtime/llm-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(vals),
+    }),
   tickets:  (qs: Record<string, string> = {}) =>
     j<any[]>(`/tickets?${new URLSearchParams(qs).toString()}`),
   ticket:   (id: string) => j<any>(`/tickets/${id}`),

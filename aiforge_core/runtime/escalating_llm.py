@@ -299,11 +299,18 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     # Generous output budget so a tool call carrying file content isn't
     # truncated mid-string (→ malformed JSON args). Tunable; some endpoints
     # cap it, so keep it overridable.
-    import os as _os_mt
+    # Operator-tunable generation cap (UI → runtime_settings.json → env →
+    # default). Too small truncates a doer's file-write tool-call args.
     try:
-        kwargs["max_tokens"] = int(_os_mt.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192"))
-    except ValueError:
-        kwargs["max_tokens"] = 8192
+        from aiforge_core.config import runtime_settings as _rs
+        kwargs["max_tokens"] = _rs.get("max_output_tokens")
+    except Exception:  # noqa: BLE001 — never block a build on settings
+        import os as _os_mt
+        try:
+            kwargs["max_tokens"] = int(
+                _os_mt.environ.get("AIFORGE_LLM_MAX_TOKENS", "32768"))
+        except ValueError:
+            kwargs["max_tokens"] = 32768
     api_base = cfg.get("api_base") or ""
     if api_base:
         kwargs["api_base"] = api_base

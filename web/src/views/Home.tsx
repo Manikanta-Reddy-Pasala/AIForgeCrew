@@ -548,6 +548,9 @@ export default function Home() {
       {/* ── Orchestrator model (enhancer + architect + planner) ── */}
       <OrchestratorModelCard />
 
+      {/* ── Global LLM token knobs (output cap + input window) ── */}
+      <LlmSettingsCard />
+
       {/* ── Per-archetype config table ─────────────────────────── */}
       <div className="settings-table">
         <div className="settings-table-head">
@@ -867,6 +870,80 @@ function OrchestratorModelCard() {
           </span>
         )}
         {busy && <span className="small muted">switching…</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Global LLM token knobs ───────────────────────────────────────────────────
+// Operator-chosen, no hardcoded constant wins over an explicit value.
+// max_output_tokens = generation cap (the doer's file-write budget — too low
+// truncates writes); context_window = assumed input window (escalation sizing).
+function LlmSettingsCard() {
+  const [out, setOut] = useState<number | ''>('');
+  const [ctx, setCtx] = useState<number | ''>('');
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.llmSettings().then(s => {
+      setOut(s.max_output_tokens);
+      setCtx(s.context_window);
+    }).catch(() => { /* endpoint optional on old API */ })
+      .finally(() => setLoaded(true));
+  }, []);
+
+  async function save() {
+    const vals: { max_output_tokens?: number; context_window?: number } = {};
+    if (typeof out === 'number') vals.max_output_tokens = out;
+    if (typeof ctx === 'number') vals.context_window = ctx;
+    if (!vals.max_output_tokens && !vals.context_window) return;
+    setBusy(true);
+    try {
+      const s = await api.setLlmSettings(vals);
+      setOut(s.max_output_tokens);
+      setCtx(s.context_window);
+      toast.success('LLM token settings saved');
+    } catch (e: any) {
+      toast.error(`Save failed: ${e?.message || 'unknown'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h2 style={{ fontSize: 14 }}>LLM token limits</h2>
+      <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
+        Global, applied to all agents. You choose the values — nothing is
+        hardcoded over your input.
+      </div>
+      <div className="row" style={{ gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="small muted" title="Generation cap. Too low truncates a doer's file writes mid-string.">
+            Max output tokens
+          </span>
+          <input
+            type="number" min={256} step={1024}
+            value={out} disabled={busy || !loaded}
+            onChange={e => setOut(e.target.value === '' ? '' : Number(e.target.value))}
+            style={{ width: 160 }}
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="small muted" title="Assumed input context window (tokens). Match it to what the served model allows.">
+            Context window (input)
+          </span>
+          <input
+            type="number" min={1024} step={1024}
+            value={ctx} disabled={busy || !loaded}
+            onChange={e => setCtx(e.target.value === '' ? '' : Number(e.target.value))}
+            style={{ width: 160 }}
+          />
+        </label>
+        <button className="btn" onClick={save} disabled={busy || !loaded}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
       </div>
     </div>
   );

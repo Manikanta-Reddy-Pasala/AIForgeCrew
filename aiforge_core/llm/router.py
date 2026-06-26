@@ -113,19 +113,21 @@ _LOCAL_CTX_DEFAULT: int = 32_000
 
 def _local_ctx_window(role: str) -> int:
     import os
+    # Per-role env override still wins (lets one role run a smaller window).
     raw = os.environ.get(f"AIFORGE_{role.upper()}_CTX_WINDOW")
     if raw:
         try:
             return int(raw)
         except ValueError:
             pass
-    raw = os.environ.get("AIFORGE_LOCAL_CTX_WINDOW")
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return _LOCAL_CTX_DEFAULT
+    # Global: operator-chosen value (UI → runtime_settings.json → env →
+    # default). runtime_settings also reads AIFORGE_LOCAL_CTX_WINDOW for
+    # back-compat.
+    try:
+        from aiforge_core.config import runtime_settings as _rs
+        return _rs.get("context_window")
+    except Exception:  # noqa: BLE001
+        return _LOCAL_CTX_DEFAULT
 
 
 def escalate(role: str, *, reason: str = "context_overflow",

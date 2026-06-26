@@ -2242,6 +2242,32 @@ def orchestrator_model_set(body: _ChatModelBody) -> dict:
     return {"ok": True, "model": body.model, "roles": list(_ORCHESTRATOR_ROLES)}
 
 
+# Global LLM token knobs — operator-chosen, no hardcoded constant wins over
+# an explicit value. max_output_tokens = generation cap (file-write budget);
+# context_window = assumed input window (escalation sizing).
+class _RuntimeSettingsBody(BaseModel):
+    max_output_tokens: int | None = Field(None, ge=256, le=1_000_000)
+    context_window: int | None = Field(None, ge=1024, le=10_000_000)
+
+
+@app.get("/api/runtime/llm-settings")
+def llm_settings_get() -> dict:
+    from aiforge_core.config import runtime_settings as _rs
+    return _rs.all_settings()
+
+
+@app.put("/api/runtime/llm-settings")
+def llm_settings_set(body: _RuntimeSettingsBody) -> dict:
+    from aiforge_core.config import runtime_settings as _rs
+    vals = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not vals:
+        raise HTTPException(400, "no settings provided")
+    try:
+        return _rs.set_many(vals)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 class _RenameBody(BaseModel):
     title: str = Field(..., min_length=1)
 
