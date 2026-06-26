@@ -480,7 +480,7 @@ class EscalatingLlm(BaseLlm):
             # actually serving this call.
             from aiforge_core.config import model_overrides
             req_for_attempt = model_overrides.apply(
-                target_model, req_for_attempt)
+                target_model, req_for_attempt, role=self.role)
             buffered: list[LlmResponse] = []
             try:
                 # Bounded retry-with-backoff on the SAME endpoint for

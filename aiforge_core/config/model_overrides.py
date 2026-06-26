@@ -91,12 +91,30 @@ def lookup(model_id: str | None) -> dict[str, Any] | None:
     return None
 
 
-def apply(model_id: str | None, llm_request):
+# Roles that emit long, structured output (file contents, full plans,
+# multi-step diffs). The anti-think recipe was validated on SHORT-answer
+# judges (triage/verify/feedback/validator); its 2500-token cap truncates
+# a doer's file-write tool-call args mid-string ("repaired malformed
+# tool-call args" → broken files), and its "thinking forbidden" suffix
+# kneecaps a coding/planning role. So skip the override entirely for these
+# when the SAME model is also serving a judge — the cap only ever made
+# sense per-judge-role, not per-model.
+_GENERATIVE_ROLES: frozenset[str] = frozenset({
+    "doer", "refiner", "planner", "enhancer", "architect",
+    "learner", "researcher",
+})
+
+
+def apply(model_id: str | None, llm_request, role: str | None = None):
     """Return *llm_request* with the model's overrides applied.
 
-    Returns the original request untouched when no override matches.
-    Never raises — a broken override must not kill the pipeline.
+    Returns the original request untouched when no override matches OR
+    when *role* is a long-output generative role (the recipe is for
+    short-answer judges only). Never raises — a broken override must not
+    kill the pipeline.
     """
+    if role and role.lower() in _GENERATIVE_ROLES:
+        return llm_request
     override = lookup(model_id)
     if not override:
         return llm_request

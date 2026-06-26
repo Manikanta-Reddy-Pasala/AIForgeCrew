@@ -54,6 +54,24 @@ def test_apply_untouched_for_unknown_model():
     assert out is req
 
 
+def test_apply_skips_generative_roles():
+    # The 2500-cap / anti-think recipe is for short judges; applying it to
+    # the doer truncates file-write tool-call args. Generative roles must
+    # pass through untouched even on an overridden model.
+    for role in ("doer", "planner", "refiner", "enhancer", "architect",
+                 "learner", "researcher", "DOER"):
+        req = _req(system="You are the doer.", max_out=16384)
+        out = mo.apply("qwen3.5-122b", req, role=role)
+        assert out is req, role
+        assert out.config.max_output_tokens == 16384, role
+
+
+def test_apply_still_applies_to_judge_roles():
+    out = mo.apply("qwen3.5-122b", _req(max_out=None), role="triage")
+    assert out.config.max_output_tokens == 2500
+    assert mo.NO_REASONING_SUFFIX in str(out.config.system_instruction)
+
+
 def test_file_overrides_merge(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     (tmp_path / "model_overrides.json").write_text(json.dumps({
