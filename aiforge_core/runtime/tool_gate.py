@@ -32,6 +32,12 @@ _MUTATING = {"editor", "file_write", "file_patch", "file_create"}
 
 
 def _preview(tool_name: str, args: dict) -> str:
+    """Human-readable preview of a tool call for the approval prompt.
+
+    File-mutating tools show a REAL unified diff against the file currently on
+    disk (resolved via AIFORGE_REPO_ROOT) so the operator reviews the change,
+    not just the new body."""
+    from aiforge_core.runtime.diff_preview import unified_preview
     try:
         if tool_name in ("bash", "run_command", "run_shell", "shell"):
             return "$ " + str(args.get("cmd") or args.get("command") or "")
@@ -39,14 +45,16 @@ def _preview(tool_name: str, args: dict) -> str:
             cmd = args.get("command", "")
             path = args.get("path", "?")
             body = args.get("file_text") or args.get("new_str") or ""
-            return f"editor {cmd} {path}\n{str(body)[:1500]}"
+            return (f"**editor {cmd} `{path}`**\n\n```diff\n"
+                    + unified_preview(path, str(body), "") + "\n```")
         if tool_name in ("file_write", "file_create"):
-            return (f"write {args.get('path', '?')}\n"
-                    f"{str(args.get('content', ''))[:1500]}")
+            path = args.get("path", "?")
+            return (f"**Write `{path}`**\n\n```diff\n"
+                    + unified_preview(path, str(args.get("content", "")), "") + "\n```")
         if tool_name == "file_patch":
-            return (f"patch {args.get('path', '?')}\n"
-                    f"- {str(args.get('old_text', ''))[:400]}\n"
-                    f"+ {str(args.get('new_text', ''))[:400]}")
+            return (f"**Patch `{args.get('path', '?')}`**\n\n```diff\n"
+                    f"- {str(args.get('old_text', ''))[:1000]}\n"
+                    f"+ {str(args.get('new_text', ''))[:1000]}\n```")
     except Exception:  # noqa: BLE001
         pass
     return json.dumps(args, default=str)[:800]
@@ -65,21 +73,33 @@ def make_approval_gate_callback():
             name = getattr(tool, "name", "") or ""
             verdict = tool_policy.decide(name, args or {})
             policy = verdict["policy"]
-            if policy == tool_policy.ALLOW:
+            sid = chat_cancel.active()
+            # Gap D — pre-apply review mode: force human Approve/Reject for any
+            # file-mutating tool, even when policy would ALLOW it. Only when the
+            # session has it armed AND an interactive approver is attached (an
+            # autonomous run with no human still degrades to allow, below).
+            force_review = (
+                policy != tool_policy.DENY
+                and name in _MUTATING
+                and chat_approve.review_edits(sid)
+                and chat_approve.has_emitter(sid)
+            )
+            if policy == tool_policy.ALLOW and not force_review:
                 return None
             if policy == tool_policy.DENY:
                 log.warning("tool_gate.deny tool=%s reason=%s", name, verdict["reason"])
                 return {"ok": False, "blocked": "policy",
                         "error": f"'{name}' is denied by policy: {verdict['reason']}"}
-            # policy == ASK — need a human. Preserve autonomy when none.
-            sid = chat_cancel.active()
+            # policy == ASK (or forced review) — need a human. Preserve autonomy.
             if not chat_approve.has_emitter(sid):
                 # autonomous run: no approver attached → don't hang, allow.
                 return None
+            reason = (verdict["reason"] if policy == tool_policy.ASK
+                      else "Review edits: confirm this file change before it lands.")
             seq = chat_approve.request(sid)
             chat_approve.emit(sid, {
                 "type": "approval", "id": seq, "name": name,
-                "args": args or {}, "reason": verdict["reason"],
+                "args": args or {}, "reason": reason,
                 "preview": _preview(name, args or {}),
             })
             # Block off the event loop so /approve (another thread) can resolve.

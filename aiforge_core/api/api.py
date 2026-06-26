@@ -2302,6 +2302,7 @@ class _SessionMsgBody(BaseModel):
     content: str = Field(..., min_length=1)
     role: str | None = Field(None, description="override the session's model (archetype)")
     mode: str = Field("simple", description="'simple' (single agent) | 'plan' (read-only single agent) | 'team' (full ADK flow)")
+    review_edits: bool = Field(False, description="Gap D — hold every file-mutating tool call for human Approve/Reject (with diff) before it lands")
 
 
 def _chat_workspace_root() -> str:
@@ -2405,6 +2406,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
 
     from aiforge_core.runtime import chat_cancel
     chat_cancel.start(session_id)
+    # Gap D — arm/disarm the pre-apply review gate for this run. Cleared on
+    # chat_approve.finish() in every termination path (simple/parallel here,
+    # team in chat_pipeline), so it never leaks into the next turn.
+    from aiforge_core.runtime import chat_approve as _chat_approve
+    _chat_approve.set_review_edits(session_id, bool(body.review_edits))
 
     def _auto_checkpoint():
         # Snapshot the working dir at turn start so the user can roll back

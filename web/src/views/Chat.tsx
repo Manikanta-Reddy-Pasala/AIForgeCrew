@@ -75,6 +75,7 @@ function fmtElapsed(sec: number): string {
 const LS_SESSION_KEY = 'aiforge.chat.activeSessionId';
 const LS_MODEL_KEY = 'aiforge.chat.model';
 const LS_MODE_KEY = 'aiforge.chat.flowmode';
+const LS_REVIEW_KEY = 'aiforge.chat.reviewEdits';
 
 type ChatMode = 'simple' | 'plan' | 'team';
 
@@ -163,6 +164,12 @@ export default function Chat() {
       const v = localStorage.getItem(LS_MODE_KEY);
       return (v === 'team' || v === 'plan' ? v : 'simple') as ChatMode;
     } catch { return 'simple'; }
+  });
+
+  // Pre-apply "Review edits" mode (Gap D): when on, every file-mutating tool
+  // call is held for Approve/Reject (with a diff) before it lands.
+  const [reviewEdits, setReviewEdits] = useState<boolean>(() => {
+    try { return localStorage.getItem(LS_REVIEW_KEY) === '1'; } catch { return false; }
   });
 
   // Pending approval gate (#1) + checkpoints panel (#3).
@@ -352,6 +359,11 @@ export default function Chat() {
     try { localStorage.setItem(LS_MODE_KEY, chatMode); } catch { /* ignore */ }
   }, [chatMode]);
 
+  // Persist the "Review edits" toggle
+  useEffect(() => {
+    try { localStorage.setItem(LS_REVIEW_KEY, reviewEdits ? '1' : '0'); } catch { /* ignore */ }
+  }, [reviewEdits]);
+
   // Auto-scroll on new messages / live turn updates
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
@@ -504,7 +516,7 @@ export default function Chat() {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: q, mode: runMode }),
+        body: JSON.stringify({ content: q, mode: runMode, review_edits: reviewEdits }),
         signal: ctrl.signal,
       });
 
@@ -795,6 +807,24 @@ export default function Chat() {
                 Team (full flow)
               </button>
             </div>
+
+            {/* Review edits (Gap D): hold every file edit for Approve/Reject */}
+            <label
+              className={reviewEdits ? 'chat-review-pill active' : 'chat-review-pill'}
+              title="Review edits: pause before every file write/patch and show a diff for you to Approve or Reject before it lands."
+              style={{ display: 'flex', alignItems: 'center', gap: 5,
+                       fontSize: 'var(--fs-xs)',
+                       color: reviewEdits ? 'var(--accent, #6366f1)' : 'var(--fg-2)',
+                       cursor: 'pointer' }}
+            >
+              <input
+                type="checkbox"
+                checked={reviewEdits}
+                onChange={e => setReviewEdits(e.target.checked)}
+                disabled={busy}
+              />
+              Review edits
+            </label>
 
             {/* Team-mode: force the full pipeline (no triage fast-path) */}
             {chatMode === 'team' && (

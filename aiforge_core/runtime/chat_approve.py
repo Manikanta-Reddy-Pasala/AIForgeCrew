@@ -35,6 +35,33 @@ class _Pending:
 _LOCK = threading.Lock()
 _PENDING: dict[int, _Pending] = {}
 
+# Per-session "review edits" flag (Gap D). When True, EVERY file-mutating
+# tool call is held for human Approve/Reject (with a real diff preview) before
+# it lands — even when the permission policy would auto-allow it. Opt-in per
+# run via the chat message body; default off → behavior unchanged. Cleared on
+# :func:`finish` alongside the pending-approval and emitter state so it can't
+# leak into the next turn.
+_REVIEW_EDITS: dict[int, bool] = {}
+
+
+def set_review_edits(session_id: int | None, on: bool) -> None:
+    """Turn the pre-apply review gate on/off for ``session_id``."""
+    if session_id is None:
+        return
+    with _LOCK:
+        if on:
+            _REVIEW_EDITS[session_id] = True
+        else:
+            _REVIEW_EDITS.pop(session_id, None)
+
+
+def review_edits(session_id: int | None) -> bool:
+    """True if the pre-apply review gate is armed for ``session_id``."""
+    if session_id is None:
+        return False
+    with _LOCK:
+        return bool(_REVIEW_EDITS.get(session_id))
+
 # Per-session event emitter. The simple chat loop yields approval events
 # itself; the TEAM pipeline runs in a background thread whose tool-gate
 # callback can't yield — it pushes the approval event through this emitter
@@ -144,6 +171,7 @@ def finish(session_id: int) -> None:
     # leave an executor thread blocked until the 900s timeout.
     with _LOCK:
         p = _PENDING.pop(session_id, None)
+        _REVIEW_EDITS.pop(session_id, None)   # no stale review flag next turn
     if p is not None and not p.event.is_set():
         p.decision = "reject"
         p.note = "run finished"
@@ -151,4 +179,5 @@ def finish(session_id: int) -> None:
 
 
 __all__ = ["request", "wait", "resolve", "cancel", "finish",
-           "set_emitter", "clear_emitter", "has_emitter", "emit"]
+           "set_emitter", "clear_emitter", "has_emitter", "emit",
+           "set_review_edits", "review_edits"]

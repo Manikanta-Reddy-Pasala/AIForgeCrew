@@ -575,6 +575,10 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "gitlab_search", "gitlab_read",
                    "web_search", "web_fetch", "workflow_search")
 
+# File-mutating tools that the pre-apply "Review edits" gate (Gap D) holds for
+# human Approve/Reject even when policy would auto-allow them.
+_MUTATING = ("file_write", "file_create", "file_patch", "editor")
+
 _PLAN_BANNER = (
     "PLAN MODE — you are READ-ONLY this turn. You may inspect the repo "
     "(file_read, list_dir, find, grep) and recall memory (memory_lookup), but "
@@ -1346,13 +1350,19 @@ def run_chat_agent(
             convo.append({"role": "user",
                           "content": f"OBSERVATION: {json.dumps(result)}"})
             continue
-        if verdict["policy"] == tool_policy.ASK:
+        # Pre-apply review mode (Gap D): when armed for this session, force the
+        # approval gate for any mutating tool even if policy would auto-allow.
+        _force_review = (session_id is not None and name in _MUTATING
+                         and chat_approve.review_edits(session_id))
+        if verdict["policy"] == tool_policy.ASK or _force_review:
             # Approval gate (#1): surface the action + diff preview, block on
             # the user's Approve/Reject (POST /api/chat/sessions/{id}/approve).
             preview = _diff_preview(name, args, cwd)
             seq = chat_approve.request(session_id) if session_id is not None else 0
+            _reason = (verdict["reason"] if verdict["policy"] == tool_policy.ASK
+                       else "Review edits: confirm this file change before it lands.")
             yield {"type": "approval", "id": seq, "name": name, "args": args,
-                   "reason": verdict["reason"], "preview": preview}
+                   "reason": _reason, "preview": preview}
             if session_id is None:
                 decision = {"decision": "reject", "note": "no session"}
             else:
