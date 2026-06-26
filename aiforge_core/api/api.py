@@ -2208,9 +2208,18 @@ _ORCHESTRATOR_ROLES = ("enhancer", "architect", "planner")
 
 @app.get("/api/chat/orchestrator-model")
 def orchestrator_model_get() -> dict:
+    # The orchestrator picks from the SAME model universe as the worker/chat
+    # slot — that's the real multi-model endpoint. Do NOT probe the planner
+    # role: its base_url may be a per-model proxy (e.g. /proxy/<model>) that
+    # serves one model and returns no /v1/models list, which would empty the
+    # dropdown and spam "probe FAILED". Always include the current model so
+    # the dropdown never renders empty.
     row = _acfg.get("planner") if "planner" in _acfg.archetypes() else {}
-    served = _served_model_ids_for_role("planner")
-    return {"provider": row.get("provider"), "model": row.get("model"),
+    served = set(_served_model_ids_for_role("chat"))
+    current = row.get("model")
+    if current:
+        served.add(current)
+    return {"provider": row.get("provider"), "model": current,
             "roles": list(_ORCHESTRATOR_ROLES),
             "models": [{"id": m, "label": m.split("/")[-1]} for m in sorted(served)]}
 
@@ -2222,11 +2231,12 @@ def orchestrator_model_set(body: _ChatModelBody) -> dict:
     provider = body.provider or cur.get("provider") or "local"
     try:
         for role in _ORCHESTRATOR_ROLES:
-            rc = _acfg.get(role) if role in _acfg.archetypes() else {}
+            # Point at the CHAT slot's endpoint — the working multi-model
+            # server. Reusing the role's own base_url would preserve a stale
+            # per-model proxy (/proxy/<model>) and the picked model would 404.
             _acfg.set_role(role, provider, body.model,
-                           base_url=rc.get("base_url") or cur.get("base_url"),
-                           insecure_tls=bool(rc.get("insecure_tls")
-                                             or cur.get("insecure_tls")))
+                           base_url=cur.get("base_url"),
+                           insecure_tls=bool(cur.get("insecure_tls")))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"ok": True, "model": body.model, "roles": list(_ORCHESTRATOR_ROLES)}
