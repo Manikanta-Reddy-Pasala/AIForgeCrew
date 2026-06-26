@@ -84,3 +84,40 @@ def test_parallel_team_path_emits_single_done(app_client, monkeypatch):
     r = client.post(f"/api/chat/sessions/{sid}/message",
                     json={"content": "build two files", "mode": "team"})
     assert _done_count(r.text) == 1
+
+
+def test_cancelled_best_of_n_one_done_and_no_stuck_rows(app_client, monkeypatch):
+    """item 3 — a Stop mid best-of-N still yields exactly one terminal done AND
+    persists no pending/running subtask rows (they're reconciled to failed)."""
+    client, api = app_client
+    from aiforge_core.runtime import best_of_n as bon
+    from aiforge_core.runtime import chat_cancel
+    from aiforge_core.runtime import parallel_subtasks as pp
+    monkeypatch.setattr(pp, "_enhance", lambda *a, **k: "spec")
+    monkeypatch.setattr(pp, "_architect", lambda *a, **k: [])
+    monkeypatch.setattr(pp, "_plan_files", lambda *a, **k: [])
+    monkeypatch.setattr(pp, "_decompose", lambda *a, **k: [])     # <2 → best-of-N
+
+    def fake_best(*a, **k):
+        sid = k.get("session_id")
+        yield {"type": "subtasks", "items": [
+            {"slug": "s1", "goal": "g1", "status": "running"},
+            {"slug": "s2", "goal": "g2", "status": "pending"}]}
+        chat_cancel.cancel(sid)          # user presses Stop mid-run
+        yield {"type": "message", "text": "partial"}
+        yield {"type": "done"}           # never reached — loop breaks first
+    monkeypatch.setattr(bon, "stream_best_of_n", fake_best)
+
+    sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
+    r = client.post(f"/api/chat/sessions/{sid}/message",
+                    json={"content": "build one hard thing", "mode": "team"})
+    assert _done_count(r.text) == 1      # exactly one terminal done, UI unblocks
+
+    # Persisted/reloaded panel has NO stuck pending/running rows.
+    from aiforge_core.runtime import chat_store
+    msgs = chat_store.get_messages(sid)
+    panels = [s for m in msgs if m["role"] == "assistant"
+              for s in m["steps"] if s.get("type") == "subtasks"]
+    assert panels, "subtask panel was persisted"
+    statuses = {it["status"] for p in panels for it in p["items"]}
+    assert statuses and statuses <= {"done", "failed", "skipped", "won"}, statuses

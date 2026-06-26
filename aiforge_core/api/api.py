@@ -2516,16 +2516,18 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # that bug" must be resolved against the prior turns, else the enhancer
         # fabricates a context-free spec that REPLACES the user's words).
         _enriched = _pp._enhance(prompt, history=history, cwd=cwd)
-        # Avoid the double-fold: `_enhance`'s `_history_block` already folded the
-        # recent prior turns (history[:-1][-3:]) into the spec, so those SAME
-        # turns must NOT also appear raw. Keep only the OLDER turns (before the
-        # folded window) and append the enriched spec as the final user turn —
-        # which replaces the last user message.
-        _prior = history[:-1]
-        _folded = min(3, len(_prior))      # matches _history_block's recent[-3:]
-        _older = _prior[:len(_prior) - _folded] if _folded else list(_prior)
-        _enriched_history = [dict(m) for m in _older]
-        _enriched_history.append({"role": "user", "content": _enriched})
+        # Replace the LAST user turn's content with the enriched spec, keeping
+        # every prior turn intact. Trimming the recent turns (an earlier "avoid
+        # the double-fold" attempt) broke claude_local's user/assistant
+        # alternation and dropped context when `_enhance` no-ops on a trivial
+        # follow-up ("yes"/"no"). The residual double-fold (recent turns appear
+        # raw AND folded into the spec) is benign token redundancy, not semantic
+        # harm; alternation stays intact and no turn is ever dropped.
+        _enriched_history = [dict(m) for m in history]
+        for _m in reversed(_enriched_history):
+            if _m.get("role") == "user":
+                _m["content"] = _enriched
+                break
         if agent_mode == "plan":
             _subs = _pp._decompose(_enriched)       # Planner
             if _subs:
@@ -2565,6 +2567,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         _subtasks: list[dict] = []   # live subtask panel state, persisted so it
         #                              survives a navigate-away / reload
         _auto_checkpoint()   # snapshot first (off the response-open path)
+        # Terminal subtask statuses — a cancelled run coerces any non-terminal
+        # row to "failed" so the persisted/reloaded panel never shows a row
+        # stuck pending/running after a Stop.
+        _TERMINAL = {"done", "failed", "skipped", "won"}
+        emitted_done = False   # forwarded a terminal `done` to the client yet?
         try:
             for ev in _events():
                 if ev.get("type") == "message":
@@ -2582,8 +2589,16 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     # Persist the approvable plan (Gap B) so the "Approve &
                     # Execute" button survives a reload.
                     steps.append(ev)
+                if ev.get("type") == "done":
+                    emitted_done = True
                 yield f"data: {json.dumps(ev)}\n\n"
                 if chat_cancel.is_cancelled(session_id):
+                    # Stop pressed mid-stream (parallel / best-of-N break out
+                    # BEFORE their synthesized `done`): reconcile any in-flight
+                    # subtask row to a terminal state so nothing reloads stuck.
+                    for _s in _subtasks:
+                        if _s.get("status") not in _TERMINAL:
+                            _s["status"] = "failed"
                     break
             # Persist the final subtask panel as a step so reload restores it.
             if _subtasks:
@@ -2591,7 +2606,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         except Exception as exc:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            emitted_done = True
         finally:
+            # The UI unblocks on a terminal `done`. A cancelled parallel/
+            # best-of-N run breaks before its synthesized `done`, so guarantee
+            # exactly one here when none was forwarded (non-cancel paths already
+            # emit their own — don't double-emit).
+            if not emitted_done:
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
             # Capture cancellation BEFORE finishing the token (finish pops
             # it, after which is_cancelled always reads False).
             cancelled = chat_cancel.is_cancelled(session_id)

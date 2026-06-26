@@ -70,6 +70,24 @@ def test_afm_bundle_caps_chunks_at_5(uq) -> None:
     assert len(chunk_rows) == 5
 
 
+def test_afm_chunks_have_distinct_groups(uq) -> None:
+    # item 7c — each chunk gets its OWN group so _diversify's per-group cap
+    # doesn't collapse 5 doer-evidence chunks down to 3.
+    chunks = [{"file_path": f"f{i}.py", "text": f"chunk{i}"} for i in range(5)]
+    bundle = _make_bundle(chunks=chunks)
+    with patch("aiforge_memory.api.http.context_bundle_object",
+               return_value=bundle, create=True):
+        rows = uq._afm_bundle("any", repo="X", role="doer")
+    chunk_rows = [r for r in rows if "[afm/chunk" in r["text"]]
+    groups = [r["group"] for r in chunk_rows]
+    assert len(set(groups)) == 5             # all distinct, not one shared group
+    assert all(g.startswith("afm:chunk:") for g in groups)
+    # the per-group cap (3) no longer drops any of the 5 chunks
+    kept = [r for r in uq._diversify(list(chunk_rows), per_group=3)
+            if "[afm/chunk" in r["text"]]
+    assert len(kept) == 5
+
+
 def test_afm_bundle_skips_chunks_missing_path_or_body(uq) -> None:
     bundle = _make_bundle(chunks=[
         {"file_path": "", "text": "no path"},

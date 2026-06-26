@@ -59,9 +59,12 @@ _MAX_OBS = 6000  # truncate tool output fed back to the model
 # snapshot and cannot corrupt one another (each thread sees its own value).
 import contextvars  # noqa: E402
 
-# (repo_root | None, frozenset[str] baseline-paths). Default = no repo / empty.
+# (repo_root | None, frozenset[str] | None baseline-paths). The path-set is
+# ``None`` when the baseline is UNKNOWN (no run-init yet, capture failed, or
+# not in a repo) — distinct from an empty frozenset ("clean repo, no dirt").
+# Default = unknown, so a direct tool call with no run-init NEVER looks clean.
 _CHAT_BASELINE: contextvars.ContextVar[tuple] = contextvars.ContextVar(
-    "aiforge_chat_baseline", default=(None, frozenset()))
+    "aiforge_chat_baseline", default=(None, None))
 
 
 def _git_repo_root(base: str) -> str | None:
@@ -111,28 +114,35 @@ def _parse_porcelain(text: str) -> set[str]:
     return paths
 
 
-def _git_status_paths(repo_root: str) -> set[str]:
-    """Set of repo-relative dirty/untracked paths. Empty set on any error."""
+def _git_status_paths(repo_root: str) -> set[str] | None:
+    """Set of repo-relative dirty/untracked paths, or ``None`` on ANY error
+    (timeout / index.lock / non-zero exit). ``None`` means 'unknown' and MUST
+    be distinguished from an empty set ('clean repo') by callers — treating a
+    failed capture as clean would let ``current − ∅`` sweep the whole worktree."""
     try:
         proc = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=repo_root, capture_output=True, text=True, timeout=30)
     except Exception:  # noqa: BLE001
-        return set()
+        return None
     if proc.returncode != 0:
-        return set()
+        return None
     return _parse_porcelain(proc.stdout)
 
 
 def _set_chat_baseline(base: str) -> None:
     """Capture the run BASELINE — repo root + already-dirty paths — into the
-    ContextVar at run start, REPLACING any prior value in this context. Soft-
-    fails to ``(None, empty)`` when ``base`` isn't a git repo."""
+    ContextVar at run start, REPLACING any prior value in this context. Stores a
+    ``None`` path-set (baseline UNKNOWN) when ``base`` isn't a git repo OR the
+    status capture failed — so the blanket-add guard refuses to sweep rather
+    than mistaking 'unknown' for 'clean'."""
     repo_root = _git_repo_root(base)
     if repo_root is None:
-        _CHAT_BASELINE.set((None, frozenset()))
+        _CHAT_BASELINE.set((None, None))
         return
-    _CHAT_BASELINE.set((repo_root, frozenset(_git_status_paths(repo_root))))
+    paths = _git_status_paths(repo_root)
+    _CHAT_BASELINE.set(
+        (repo_root, frozenset(paths) if paths is not None else None))
 
 
 def _get_chat_baseline() -> tuple:
@@ -220,36 +230,104 @@ def _top_level_segments(cmd: str) -> list[tuple[int, int]]:
 
 
 _BLANKET_ADD_SELECTORS = frozenset({"-A", "--all", "."})
+# `git` global options that consume a following value (so we can skip past a
+# leading `-C <dir>` etc. to reach the SUBCOMMAND).
+_GIT_GLOBAL_VALUE_OPTS = frozenset(
+    {"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _split_seg_prefix(text: str) -> tuple[str, str]:
+    """Peel benign leading prefixes off a stripped segment so the real command
+    underneath is classifiable: subshell/group openers ``(`` / ``{``, ``env=val``
+    assignments, and a leading ``sudo`` (with its dash-flags). Returns
+    ``(prefix, remainder)`` — the prefix is re-emitted verbatim by the rewriter
+    so a wrapping ``(`` (and its later ``)``) survives. Without this,
+    ``sudo git add -A`` / ``FOO=bar git add -A`` / ``(git add -A && …)`` would
+    slip past ``toks[0]=='git'`` and run the blanket add unrewritten = SWEEP."""
+    prefix = ""
+    rest = text
+    moved = True
+    while moved and rest:
+        moved = False
+        if rest[0] in "({":
+            prefix += rest[0] + " "
+            rest = rest[1:].lstrip()
+            moved = True
+            continue
+        head = rest.split(None, 1)[0]
+        if _ENV_ASSIGN_RE.match(head):
+            prefix += head + " "
+            rest = rest[len(head):].lstrip()
+            moved = True
+            continue
+        if head == "sudo":
+            prefix += "sudo "
+            rest = rest[len("sudo"):].lstrip()
+            while rest and rest.split(None, 1)[0].startswith("-"):
+                h = rest.split(None, 1)[0]
+                prefix += h + " "
+                rest = rest[len(h):].lstrip()
+            moved = True
+    return prefix, rest
 
 
 def _classify_segment(text: str) -> tuple[str | None, object]:
-    """Classify one (already-stripped) command segment:
+    """Classify one (already-stripped) command segment after peeling benign
+    prefixes (``sudo`` / ``env=val`` / ``(`` / ``{``) and any ``git`` global
+    options (``-C <dir>`` …):
 
-    * ``("add", None)``           — a blanket ``git add -A|.|--all|-- .``
-    * ``("commit", (flag, idx))`` — a ``git commit`` that auto-stages via
-      ``-a`` / ``-am…`` / ``--all`` (the flag token + its index)
-    * ``(None, None)``            — anything else (left untouched)
+    * ``("add", {prefix})``                     — a blanket ``git add -A|.|--all``
+    * ``("commit", {prefix, toks, flag, idx})`` — a ``git commit`` that
+      auto-stages via ``-a`` / ``-am…`` / ``--all``
+    * ``(None, None)``                          — anything else (left untouched)
 
-    Only fires when ``git`` is the segment's FIRST word, so ``echo git add
-    -A`` and quoted/heredoc occurrences never match."""
-    toks = text.split()
+    Only fires when ``git`` is the real first word of the command, so ``echo
+    git add -A`` and quoted/heredoc occurrences never match."""
+    prefix, rest = _split_seg_prefix(text)
+    toks = rest.split()
     if len(toks) < 2 or toks[0] != "git":
         return None, None
-    if toks[1] == "add":
-        rest = toks[2:]
-        allowed = _BLANKET_ADD_SELECTORS | {"--"}
-        if rest and all(t in allowed for t in rest) \
-                and any(t in _BLANKET_ADD_SELECTORS for t in rest):
-            return "add", None
+    i = 1                                   # skip leading `-C <dir>` / globals
+    while i < len(toks) and toks[i].startswith("-"):
+        if toks[i] in _GIT_GLOBAL_VALUE_OPTS:
+            i += 2
+        else:
+            i += 1
+    if i >= len(toks):
         return None, None
-    if toks[1] == "commit":
-        for idx, t in enumerate(toks[2:], start=2):
+    sub = toks[i]
+    after = toks[i + 1:]
+    if sub == "add":
+        allowed = _BLANKET_ADD_SELECTORS | {"--"}
+        if after and all(t in allowed for t in after) \
+                and any(t in _BLANKET_ADD_SELECTORS for t in after):
+            return "add", {"prefix": prefix}
+        return None, None
+    if sub == "commit":
+        for j, t in enumerate(after):
             if t == "--all":
-                return "commit", ("--all", idx)
+                return "commit", {"prefix": prefix, "toks": toks,
+                                  "flag": "--all", "idx": i + 1 + j}
             if t.startswith("-") and not t.startswith("--") and "a" in t:
-                return "commit", (t, idx)
+                return "commit", {"prefix": prefix, "toks": toks,
+                                  "flag": t, "idx": i + 1 + j}
         return None, None
     return None, None
+
+
+def _is_git_commit_segment(text: str) -> bool:
+    """True when the segment is any ``git commit`` (with or without ``-a``) —
+    used to decide whether a pre-commit ``git reset -q`` is needed so the commit
+    never picks up the user's pre-STAGED index."""
+    _prefix, rest = _split_seg_prefix(text)
+    toks = rest.split()
+    if len(toks) < 2 or toks[0] != "git":
+        return False
+    i = 1
+    while i < len(toks) and toks[i].startswith("-"):
+        i += 2 if toks[i] in _GIT_GLOBAL_VALUE_OPTS else 1
+    return i < len(toks) and toks[i] == "commit"
 
 
 def _detect_blanket_git(cmd: str) -> bool:
@@ -263,7 +341,8 @@ def _detect_blanket_git(cmd: str) -> bool:
 
 
 def _rewrite_blanket_git(cmd: str, repo_root: str | None,
-                         agent_paths: list[str]) -> tuple[str, str | None]:
+                         agent_paths: list[str],
+                         *, reason: str = "") -> tuple[str, str | None]:
     """Rewrite a blanket ``git add -A|.|--all`` / ``git commit -a|-am|--all``
     so it stages ONLY ``agent_paths`` (the agent's changes this run), anchored
     at ``repo_root`` via ``git -C <root> add -- …`` so a ``cd subdir &&``
@@ -272,20 +351,40 @@ def _rewrite_blanket_git(cmd: str, repo_root: str | None,
     * ``agent_paths`` non-empty → the blanket add becomes
       ``git -C <root> add -- <paths>``; a ``git commit -a`` gets the stage
       prepended and its ``-a`` / ``--all`` stripped.
-    * ``agent_paths`` EMPTY → the blanket add is DROPPED (replaced with a
+    * ``agent_paths`` EMPTY → the blanket add is NEUTRALIZED (replaced with a
       ``true`` no-op — it NEVER falls back to ``add -A``, which is the sweep
-      bug); the commit then stages nothing and is a correct no-op.
+      bug). Use ``reason`` to flag WHY (e.g. no run baseline) in the note.
 
-    Returns ``(new_cmd, note)``; ``note`` is None when nothing matched.
-    Targeted ``git add <specific paths>`` and unrelated commands are left
-    untouched."""
+    When the command also contains a ``git commit``, a ``git reset -q`` is
+    prepended (unstage) so the commit captures ONLY the agent's targeted files,
+    never the user's pre-existing STAGED index.
+
+    Returns ``(new_cmd, note)``; ``note`` is None when nothing matched. Benign
+    leading prefixes (``sudo`` / ``env=val`` / ``(`` …) are preserved so a
+    subshell wrapper's later ``)`` still balances. Targeted ``git add <paths>``
+    and unrelated commands are left untouched."""
     import shlex
     spec = " ".join(shlex.quote(p) for p in agent_paths)
     if agent_paths:
-        add_cmd = (f"git -C {shlex.quote(repo_root)} add -- {spec}"
-                   if repo_root else f"git add -- {spec}")
+        add_body = (f"git -C {shlex.quote(repo_root)} add -- {spec}"
+                    if repo_root else f"git add -- {spec}")
     else:
-        add_cmd = "true"
+        add_body = "true"
+    # If a commit happens anywhere in this command, clear the user's pre-staged
+    # index first so the commit only contains the agent's targeted files. The
+    # reset is prepended to the FIRST staging segment only (segments run
+    # left-to-right, staging precedes the commit), so it's emitted exactly once.
+    has_commit = any(_is_git_commit_segment(cmd[s:e].strip())
+                     for s, e in _top_level_segments(cmd))
+    reset_cmd = (f"git -C {shlex.quote(repo_root)} reset -q"
+                 if repo_root else "git reset -q")
+    reset_used = [False]
+
+    def _stage() -> str:
+        if has_commit and not reset_used[0]:
+            reset_used[0] = True
+            return reset_cmd + " && " + add_body
+        return add_body
 
     edits: list[tuple[int, int, str]] = []
     for s, e in _top_level_segments(cmd):
@@ -297,10 +396,13 @@ def _rewrite_blanket_git(cmd: str, repo_root: str | None,
         trail = seg[len(seg.rstrip()):]
         kind, info = _classify_segment(stripped)
         if kind == "add":
-            edits.append((s, e, lead + add_cmd + trail))
+            prefix = info["prefix"]          # type: ignore[index]
+            edits.append((s, e, lead + prefix + _stage() + trail))
         elif kind == "commit":
-            flag, idx = info        # type: ignore[misc]
-            toks = stripped.split()
+            prefix = info["prefix"]          # type: ignore[index]
+            toks = list(info["toks"])        # type: ignore[index]
+            flag = info["flag"]              # type: ignore[index]
+            idx = info["idx"]                # type: ignore[index]
             if flag == "--all":
                 new_toks = toks[:idx] + toks[idx + 1:]
             else:
@@ -310,7 +412,8 @@ def _rewrite_blanket_git(cmd: str, repo_root: str | None,
                 else:
                     new_toks = toks[:idx] + [stripped_flag] + toks[idx + 1:]
             commit_cmd = " ".join(new_toks)
-            edits.append((s, e, lead + add_cmd + " && " + commit_cmd + trail))
+            edits.append((s, e,
+                          lead + prefix + _stage() + " && " + commit_cmd + trail))
 
     if not edits:
         return cmd, None
@@ -320,6 +423,8 @@ def _rewrite_blanket_git(cmd: str, repo_root: str | None,
     if agent_paths:
         note = ("[hygiene] rewrote a blanket git stage to commit ONLY the "
                 f"files the agent changed this run: {', '.join(agent_paths)}")
+    elif reason:
+        note = f"[hygiene] {reason}"
     else:
         note = ("[hygiene] the agent changed no files this run — dropped the "
                 "blanket git stage so the user's pre-existing changes aren't "
@@ -410,8 +515,17 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         repo_root, baseline = _get_chat_baseline()
         if repo_root is None:                       # direct tool call / no run init
             repo_root = _git_repo_root(base)
-        if repo_root is not None:
-            current = _git_status_paths(repo_root)
+        current = _git_status_paths(repo_root) if repo_root is not None else None
+        if baseline is None or current is None:
+            # No trustworthy baseline (absent / capture failed) OR can't read the
+            # current status. NEVER treat absent baseline as clean — current−∅
+            # would sweep ALL the user's dirt. Neutralize the blanket add and
+            # tell the agent to stage specific files.
+            cmd, _rewrite_note = _rewrite_blanket_git(
+                cmd, repo_root, [],
+                reason="blanket `git add` disabled (no run baseline) — "
+                       "stage specific files")
+        else:
             agent_paths = sorted(
                 p for p in (current - baseline) if not is_excluded_path(p))
             cmd, _rewrite_note = _rewrite_blanket_git(

@@ -27,13 +27,14 @@ type LiveTurn = {
 const SUBTASK_COLORS: Record<string, string> = {
   done: '#3fb950', skipped: '#5a6472', running: '#6aa6ff',
   failed: '#e5534b', pending: '#8892a0', planned: '#a371f7',
+  won: '#d4a72c',
 };
 
 function SubtaskList({ items }: { items: SubtaskItem[] }) {
   const [open, setOpen] = useState(true);
   const counts = items.reduce((m, s) => { m[s.status] = (m[s.status] || 0) + 1; return m; }, {} as Record<string, number>);
-  const done = (counts['done'] || 0) + (counts['skipped'] || 0);
-  const order = ['done', 'running', 'failed', 'pending', 'skipped'];
+  const done = (counts['done'] || 0) + (counts['won'] || 0) + (counts['skipped'] || 0);
+  const order = ['done', 'won', 'running', 'failed', 'planned', 'pending', 'skipped'];
   return (
     <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '8px 10px', margin: '6px 0', background: 'var(--bg-1,#0d1117)' }}>
       <div onClick={() => setOpen(v => !v)}
@@ -158,7 +159,10 @@ function addDismissedPlan(sessionId: number, msgId: number): void {
 // mangles `-`/`+`/`@@` lines (treated as bullets/emphasis), so render them in a
 // monospace block with +/- line coloring and preserved whitespace instead.
 function DiffView({ text }: { text: string }) {
-  const lines = text.split('\n');
+  const CAP = 400;
+  const allLines = text.split('\n');
+  const lines = allLines.slice(0, CAP);
+  const overflow = allLines.length - lines.length;
   return (
     <pre style={{
       margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
@@ -178,6 +182,11 @@ function DiffView({ text }: { text: string }) {
         }
         return <div key={i} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
       })}
+      {overflow > 0 && (
+        <div style={{ color: 'var(--fg-3)', padding: '0 4px', fontStyle: 'italic' }}>
+          …(truncated, {overflow} more line{overflow === 1 ? '' : 's'})
+        </div>
+      )}
     </pre>
   );
 }
@@ -276,7 +285,15 @@ export default function Chat() {
     if (timerRef.current !== null) { clearInterval(timerRef.current); timerRef.current = null; }
     setBusy(false);
     setPendingApproval(null);   // don't leave a resolvable card on a killed run
-    setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
+    // Optimistically mark any still-running/pending subtasks as failed so the
+    // panel doesn't show perpetually-running rows before the reload settles.
+    const TERMINAL = new Set(['done', 'failed', 'skipped', 'won']);
+    setLiveTurn(prev => prev ? {
+      ...prev,
+      streaming: false,
+      subtasks: prev.subtasks?.map(s =>
+        TERMINAL.has(s.status) ? s : { ...s, status: 'failed' }),
+    } : null);
     toast('Stopping run…');
     // Pull whatever the server persisted once it unwinds.
     if (activeId !== null) setTimeout(() => loadSession(activeId), 800);
@@ -915,20 +932,26 @@ export default function Chat() {
               </button>
             </div>
 
-            {/* Review edits (Gap D): hold every file edit for Approve/Reject */}
+            {/* Review edits (Gap D): hold every file edit for Approve/Reject.
+                Not honored in team mode — disable so the user isn't misled. */}
             <label
-              className={reviewEdits ? 'chat-review-pill active' : 'chat-review-pill'}
-              title="Review edits: pause before every file write/patch and show a diff for you to Approve or Reject before it lands."
+              className={reviewEdits && chatMode !== 'team' ? 'chat-review-pill active' : 'chat-review-pill'}
+              title={chatMode === 'team'
+                ? 'Review edits is not supported in team mode (only simple/plan).'
+                : 'Review edits: pause before every file write/patch and show a diff for you to Approve or Reject before it lands.'}
               style={{ display: 'flex', alignItems: 'center', gap: 5,
                        fontSize: 'var(--fs-xs)',
-                       color: reviewEdits ? 'var(--accent, #6366f1)' : 'var(--fg-2)',
-                       cursor: 'pointer' }}
+                       color: chatMode === 'team'
+                         ? 'var(--fg-3)'
+                         : (reviewEdits ? 'var(--accent, #6366f1)' : 'var(--fg-2)'),
+                       cursor: chatMode === 'team' ? 'not-allowed' : 'pointer',
+                       opacity: chatMode === 'team' ? 0.5 : 1 }}
             >
               <input
                 type="checkbox"
-                checked={reviewEdits}
+                checked={reviewEdits && chatMode !== 'team'}
                 onChange={e => setReviewEdits(e.target.checked)}
-                disabled={busy}
+                disabled={busy || chatMode === 'team'}
               />
               Review edits
             </label>

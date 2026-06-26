@@ -80,12 +80,13 @@ _EXCLUDE_DIR_SEGMENTS = frozenset({
     "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
     "node_modules", ".venv", "venv", ".git",
 })
-# Build-output dirs excluded ONLY when they are the first path segment, to
-# agree with the top-level `:(exclude)build|dist|target` pathspecs (which do
-# NOT match nested dirs like `myapp/build/`). `env` is intentionally NOT here
-# — only the `.env` FILE (a basename) is an artifact, the `env/` package dir
-# is legitimate source.
-_EXCLUDE_TOPLEVEL = frozenset({"build", "dist", "target"})
+# Build-output / virtualenv dirs excluded ONLY when they are the first path
+# segment, to agree with the top-level `:(exclude)build|dist|target` pathspecs
+# (which do NOT match nested dirs like `myapp/build/`). `env` is here as a
+# TOP-LEVEL-only entry: a top-level `env/` is the common virtualenv and must be
+# excluded, while a nested `myapp/env/settings.py` is legitimate source and
+# still commits. (The `.env` FILE is also excluded via `_EXCLUDE_BASENAMES`.)
+_EXCLUDE_TOPLEVEL = frozenset({"build", "dist", "target", "env"})
 _EXCLUDE_BASENAMES = frozenset({
     ".DS_Store", ".aiforge-workspace", ".env", "perf.ndjson",
 })
@@ -188,9 +189,14 @@ _TEST_ALWAYS_PATHS = (
 
 def _is_test_path(path: str) -> bool:
     p = path.lower()
-    # Normalise so leading-segment matches work for both ``tests/foo``
-    # and ``./tests/foo``-style git outputs.
-    norm = "/" + p.lstrip("./")
+    # Normalise so leading-segment matches work for both ``tests/foo`` and
+    # ``./tests/foo``-style git outputs. Strip ONLY a leading ``./`` (loop),
+    # never ``lstrip("./")`` which would also eat leading dots/slashes and turn
+    # ``.tests`` into ``tests`` (mirrors is_excluded_path's documented fix).
+    stripped = p
+    while stripped.startswith("./"):
+        stripped = stripped[2:]
+    norm = "/" + stripped
     if any(p.startswith(t) or t in p for t in _TEST_ALWAYS_PATHS):
         return True
     if any(frag in norm for frag in _TEST_PATH_FRAGMENTS):

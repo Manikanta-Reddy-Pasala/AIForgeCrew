@@ -323,6 +323,25 @@ def test_checkpoint_outside_git(tmp_path):
     assert checkpoints.snapshot(str(tmp_path))["ok"] is False
 
 
+def test_repo_key_uses_cwd_not_env(tmp_path, monkeypatch):
+    # item 6 — the sidecar key must come from the session's real cwd (its git
+    # toplevel), NOT a global AIFORGE_WORKSPACE_DIR pointing elsewhere; keying
+    # off the env files metadata under the wrong repo on deploy hosts.
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    _git_repo(str(repo))
+    monkeypatch.setenv("AIFORGE_WORKSPACE_DIR", str(tmp_path / "other-deploy-dir"))
+    assert checkpoints._repo_key(str(repo)) == "myrepo"
+    # a subdir of the repo still keys to the repo toplevel basename
+    sub = repo / "pkg"
+    sub.mkdir()
+    assert checkpoints._repo_key(str(sub)) == "myrepo"
+    # outside any git repo → falls back to the cwd basename (not the env)
+    plain = tmp_path / "plaincwd"
+    plain.mkdir()
+    assert checkpoints._repo_key(str(plain)) == "plaincwd"
+
+
 # ─── chat_persist (team persistence survives disconnect) ──────────────
 
 def test_persist_skips_empty_turn(monkeypatch):

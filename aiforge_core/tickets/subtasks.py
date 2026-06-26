@@ -28,10 +28,15 @@ def set_subtasks(ticket_id: int, items: list[dict], *,
         if not isinstance(it, dict):
             continue
         slug = str(it.get("slug") or it.get("id") or f"sub-{i + 1}").strip()
+        # Normalize + validate status so a planner emitting "Done"/"In-Progress"
+        # doesn't leak an unknown status that breaks progress() counting.
+        status = str(it.get("status") or "pending").strip().lower()
+        if status not in _VALID:
+            status = "pending"
         subs.append({
             "slug": slug,
             "goal": str(it.get("goal") or it.get("title") or slug)[:300],
-            "status": (it.get("status") or "pending"),
+            "status": status,
         })
     if not subs:
         return []

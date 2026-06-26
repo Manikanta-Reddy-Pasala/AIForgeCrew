@@ -38,7 +38,13 @@ def _has_head(cwd: str) -> bool:
 
 
 def _repo_key(cwd: str) -> str:
-    root = os.environ.get("AIFORGE_WORKSPACE_DIR") or cwd
+    # Key the sidecar off the session's REAL ``cwd`` (its git toplevel, or the
+    # cwd basename) — NOT the global ``AIFORGE_WORKSPACE_DIR`` env. Refs are
+    # created in ``cwd``; on deploy hosts where the env points elsewhere,
+    # keying off the env would file metadata under the wrong sidecar (restore
+    # fails / cross-repo collision).
+    top = _git(cwd, "rev-parse", "--show-toplevel").stdout.strip()
+    root = top or cwd
     return os.path.basename(os.path.abspath(root).rstrip(os.sep)) or "repo"
 
 

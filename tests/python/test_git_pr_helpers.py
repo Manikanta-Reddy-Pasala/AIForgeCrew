@@ -254,6 +254,15 @@ def test_is_test_path_pycache_always() -> None:
     assert gp._is_test_path("foo/__pycache__/x.pyc") is True
 
 
+def test_is_test_path_strips_only_dot_slash() -> None:
+    # item 7b — strip a leading "./" only; the old lstrip("./") footgun ate
+    # leading dots, turning a `.test/` config dir into `test/` and wrongly
+    # flagging it as a test path.
+    assert gp._is_test_path("./tests/test_x.py") is True     # ./ stripped
+    assert gp._is_test_path(".test/config.py") is False      # NOT a test path
+    assert gp._is_test_path(".github/workflows/ci.yml") is False
+
+
 def test_is_test_path_fixtures() -> None:
     assert gp._is_test_path("src/test/resources/fixtures/credit-note.xml") is True
     assert gp._is_test_path("src/main/resources/config.xml") is False
@@ -386,10 +395,13 @@ def test_is_excluded_path_real_files() -> None:
 
 
 def test_is_excluded_path_toplevel_build_dirs() -> None:
-    # build/dist/target excluded ONLY at the top level (agrees with the
-    # top-level `:(exclude)build|dist|target` pathspecs).
-    for p in ("build/out.o", "dist/app.js", "target/classes/A.class"):
+    # build/dist/target/env excluded ONLY at the top level (agrees with the
+    # top-level pathspecs). A TOP-LEVEL `env/` is the common virtualenv.
+    for p in ("build/out.o", "dist/app.js", "target/classes/A.class",
+              "env/lib/python3.12/site-packages/foo.py", "env/bin/activate"):
         assert gp.is_excluded_path(p) is True, p
+    # ...but nested env/ is legit source and must NOT be excluded (item 5).
+    assert gp.is_excluded_path("myapp/env/settings.py") is False
 
 
 def test_is_excluded_path_empty() -> None:

@@ -37,6 +37,22 @@ def test_invalid_status_rejected(env):
     assert subtasks.update_subtask(t.id, "a", "bogus")["ok"] is False
 
 
+def test_set_subtasks_normalizes_status(env):
+    # item 7a — a planner emitting "Done"/"In-Progress" must not leak an unknown
+    # status that breaks progress(); normalize case + fall back to "pending".
+    store, subtasks = env
+    t = store.create(title="x", body="y")
+    subtasks.set_subtasks(t.id, [
+        {"slug": "a", "goal": "a", "status": "Done"},        # cased → done
+        {"slug": "b", "goal": "b", "status": "In-Progress"}, # unknown → pending
+        {"slug": "c", "goal": "c"},                          # missing → pending
+    ])
+    cur = {s["slug"]: s["status"] for s in subtasks.get_subtasks(t.id)}
+    assert cur == {"a": "done", "b": "pending", "c": "pending"}
+    p = subtasks.progress(subtasks.get_subtasks(t.id))
+    assert p["counts"] == {"done": 1, "pending": 2} and p["done"] == 1
+
+
 def test_replan_resets(env):
     store, subtasks = env
     t = store.create(title="x", body="y")

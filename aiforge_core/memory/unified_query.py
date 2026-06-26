@@ -544,8 +544,10 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
         if not path or not body:
             continue
         out.append({
+            # Per-chunk group (not a shared "afm:chunk") so _diversify's
+            # per-group cap doesn't drop 5 doer-evidence chunks down to 3.
             "text": f"[afm/chunk {path}]\n{body[:800]}",
-            "group": "afm:chunk",
+            "group": f"afm:chunk:{path}",
             "score": 0.85,
             "source_uri": f"afm://{repo}/{path}",
         })

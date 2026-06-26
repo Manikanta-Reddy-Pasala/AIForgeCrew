@@ -27,10 +27,9 @@ _DELETE_PATTERNS = [
     r"\bdd\b.*\bof=(?!/dev/null\b)",
     r"\bcp\s+/dev/null\s",           # cp /dev/null file → truncates file
     r">\s*/dev/sd",                   # writing over a raw disk
-    # Bare `>` redirection truncates its target file. Match a single `>`
-    # (NOT `>>` append, NOT `>&`/`2>&1` fd-dup, NOT a digit-prefixed stderr
-    # redirect like `2>`, NOT `> /dev/...` sinks like `/dev/null`).
-    r"(?<![>\d&])>(?!>)(?!&)\s*(?!/dev/)\S",
+    # NOTE: plain `>` output redirection (`cat x > out.txt`, `npm build > log`)
+    # is creation/overwrite, NOT a delete — and the autonomous Doer has no
+    # approval path, so flagging it would hard-fail every redirect. Not matched.
     r"\bmkfs\b", r"\bshred\b",
     r"\bdocker\s+(rm|rmi|volume\s+rm|system\s+prune)\b",
     r"\bkubectl\s+delete\b",

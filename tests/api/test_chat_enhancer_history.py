@@ -1,11 +1,14 @@
-"""item H — the simple/plan enhancer must SEE the conversation history (so a
+"""item 2 — the simple/plan enhancer must SEE the conversation history (so a
 context-dependent follow-up like "no, use postgres instead" resolves against
-the prior turns) WITHOUT double-folding those turns (folded into the spec AND
-left raw in the history handed to the agent).
+the prior turns). The earlier "drop folded turns" trim was a REGRESSION: it
+produced two consecutive user turns (breaking claude_local alternation) and
+lost context when `_enhance` no-ops on a trivial follow-up. The fix replaces
+the LAST user turn's content in-place and keeps every prior turn.
 
 Asserts: (1) `_enhance` is called with `history=` carrying the prior turns;
-(2) the history passed to `run_chat_agent` drops the folded recent turns and
-ends with the enriched spec as the final user turn.
+(2) the history passed to `run_chat_agent` keeps all prior turns, replaces only
+the last user turn with the enriched spec, and never has two consecutive user
+turns.
 """
 import importlib
 
@@ -71,10 +74,15 @@ def test_followup_enhancer_sees_history_no_double_fold(app_client, monkeypatch):
     joined = " ".join(m.get("content", "") for m in hist)
     assert "todo app" in joined          # context available to the enhancer
 
-    # (2) No double-fold: the history handed to the agent ends with the enriched
-    # spec and does NOT also carry the folded recent raw turns. With only 2 prior
-    # turns (both folded), the older window is empty → exactly one entry: the spec.
+    # (2) Replace-in-place: the history handed to the agent KEEPS every prior
+    # turn, with only the LAST user turn's content swapped for the enriched
+    # spec. No turn is dropped, and alternation stays intact (no two consecutive
+    # user turns).
     agent_hist = agent_histories[-1]
     assert agent_hist[-1]["role"] == "user"
     assert agent_hist[-1]["content"] == "SPEC<no, use postgres instead>"
-    assert len(agent_hist) == 1          # folded turns dropped, not duplicated
+    # the original turn-1 user message is still present (context not lost)
+    assert any(m["content"] == "build a todo app" for m in agent_hist)
+    # no two consecutive same-role turns (would break claude_local alternation)
+    roles = [m["role"] for m in agent_hist]
+    assert all(roles[i] != roles[i + 1] for i in range(len(roles) - 1))
