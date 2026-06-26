@@ -74,3 +74,36 @@ def test_history_preamble_threads_prior_turns():
     assert "now Y" not in pre                      # current msg excluded
     assert _history_preamble([]) == ""
     assert _history_preamble(None) == ""
+
+
+# ── subtask panel reconciliation (chat tasks stay tracked) ────────────────────
+from aiforge_core.runtime.chat_pipeline import _finalize_subtasks
+
+
+def test_finalize_marks_done_on_success():
+    items = [{"slug": "a", "status": "pending"},
+             {"slug": "b", "status": "pending"}]
+    evs = _finalize_subtasks(items, run_ok=True, cancelled=False)
+    assert all(i["status"] == "done" for i in items)
+    assert evs == [
+        {"type": "subtask_update", "slug": "a", "status": "done"},
+        {"type": "subtask_update", "slug": "b", "status": "done"},
+    ]
+
+
+def test_finalize_marks_failed_on_error():
+    items = [{"slug": "a", "status": "pending"}]
+    evs = _finalize_subtasks(items, run_ok=False, cancelled=False)
+    assert items[0]["status"] == "failed"
+    assert evs[0]["status"] == "failed"
+
+
+def test_finalize_marks_failed_on_cancel():
+    items = [{"slug": "a", "status": "pending"}]
+    _finalize_subtasks(items, run_ok=True, cancelled=True)
+    assert items[0]["status"] == "failed"
+
+
+def test_finalize_noop_without_items():
+    assert _finalize_subtasks(None, True, False) == []
+    assert _finalize_subtasks([], True, False) == []

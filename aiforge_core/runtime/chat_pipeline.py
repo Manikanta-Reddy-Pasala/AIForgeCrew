@@ -135,6 +135,30 @@ def _history_preamble(history: list[dict] | None) -> str:
     return "CONVERSATION SO FAR (continue with this context):\n" + "\n".join(lines)
 
 
+def _finalize_subtasks(items: list[dict] | None, run_ok: bool,
+                       cancelled: bool) -> list[dict]:
+    """Reconcile the Planner's subtask panel to the run outcome.
+
+    The chat (sequential team) pipeline shows a Planner-decomposed task
+    list but the Doer executes it in one pass — there's no per-subtask
+    completion signal, so without this the panel sits at "0/N pending"
+    after the run reports complete. Mutates each item's status in place
+    (the same dicts are persisted in ``steps`` → reload agrees) and
+    returns the matching ``subtask_update`` events to stream live.
+
+    done on a clean finish; failed on error / user-stop.
+    """
+    if not items:
+        return []
+    status = "done" if (run_ok and not cancelled) else "failed"
+    out: list[dict] = []
+    for it in items:
+        it["status"] = status
+        out.append({"type": "subtask_update",
+                    "slug": it.get("slug"), "status": status})
+    return out
+
+
 def stream_chat_pipeline(prompt: str, *, cwd: str,
                          session_id: int | None = None,
                          history: list[dict] | None = None) -> Iterator[dict]:
@@ -201,6 +225,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
         steps: list[dict] = []
         final_text = ""
+        # Subtask panel tracking: the Planner emits a plan (all pending); the
+        # Doer then executes it monolithically, so we don't get a per-subtask
+        # signal. We reconcile the panel to the RUN OUTCOME at the end (done on
+        # success, failed on error/stop) — otherwise the panel is frozen at
+        # "0/N pending" even after the run reports complete.
+        _sub_items: list[dict] | None = None
+        _run_ok = False
         try:
             os.environ["AIFORGE_REPO_ROOT"] = cwd
             from google.adk.runners import Runner
@@ -289,6 +320,11 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                                      "goal": s.get("goal") or s.get("title") or "",
                                      "status": "pending"}
                                     for i, s in enumerate(subs)]}
+                                # Keep a handle so the finally block can reconcile
+                                # these same item dicts to the run outcome (the
+                                # SAME objects live in `steps`, so mutating them
+                                # updates what gets persisted on reload).
+                                _sub_items = _sub_ev["items"]
                                 q.put(_sub_ev)
                                 # Persist with the turn's steps so the subtask
                                 # panel survives a navigate-away / reload.
@@ -309,6 +345,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                    or by_role.get("researcher") or st.get("validator_summary")
                    or final or "Done.")
             final_text = msg
+            _run_ok = True
             q.put({"type": "message", "text": msg})
         except Exception as exc:  # noqa: BLE001
             q.put({"type": "error", "text": f"pipeline: {exc}"})
@@ -327,6 +364,12 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             # partial one.
             cancelled = bool(session_id is not None
                              and chat_cancel.is_cancelled(session_id))
+            # Reconcile the subtask panel to the outcome so it doesn't sit at
+            # "0/N pending" after the run finishes. done on a clean finish,
+            # failed on error/stop. Emit live updates AND mutate the persisted
+            # item dicts (same objects in `steps`) so a reload shows the same.
+            for _ev in _finalize_subtasks(_sub_items, _run_ok, cancelled):
+                q.put(_ev)
             if session_id is not None:
                 try:
                     from aiforge_core.runtime import chat_persist
