@@ -24,15 +24,12 @@ from aiforge_core.net.ssl import context_for as _ssl_context_for
 
 from ._trace import emit
 
-# Default endpoints — matches oneshell-mcp QA tier on NUC (memory:
-# project_oneshell_mcp_2026-04-24). Override via env CSV
-# AIFORGE_MCP_ENDPOINTS="name=url,name=url,...".
-_DEFAULT_ENDPOINTS = (
-    ("oneshell-mongo", "http://192.168.70.115:8810"),
-    ("oneshell-k8s",   "http://192.168.70.115:8811"),
-    ("oneshell-tekton", "http://192.168.70.115:8812"),
-    ("oneshell-tally", "http://192.168.70.115:8813"),
-)
+# No servers ship by default (operator reset 2026-06-26). Endpoints come
+# ONLY from the env CSV AIFORGE_MCP_ENDPOINTS="name=url,name=url,..."; with
+# none configured the `mcp` tool fail-softs without any network probing.
+_DEFAULT_ENDPOINTS: tuple[tuple[str, str], ...] = ()
+
+_NO_SERVERS_ERROR = "no MCP servers configured"
 
 _HTTP_TIMEOUT_S = 15
 _RESPONSE_CAP_BYTES = 16 * 1024
@@ -93,6 +90,8 @@ def list_endpoints() -> dict[str, Any]:
 def list_tools(endpoint: str) -> dict[str, Any]:
     """List MCP tools exposed by ``endpoint`` (FastMCP JSON-RPC tools/list)."""
     endpoints = _load_endpoints()
+    if not endpoints:
+        return {"ok": False, "error": _NO_SERVERS_ERROR}
     url = endpoints.get(endpoint)
     if url is None:
         return {"ok": False, "error": "unknown_endpoint",
@@ -123,6 +122,8 @@ def call_tool(
 ) -> dict[str, Any]:
     """Invoke ``tool`` on ``endpoint`` with ``arguments`` (JSON-RPC tools/call)."""
     endpoints = _load_endpoints()
+    if not endpoints:
+        return {"ok": False, "error": _NO_SERVERS_ERROR}
     url = endpoints.get(endpoint)
     if url is None:
         return {"ok": False, "error": "unknown_endpoint",
@@ -162,6 +163,9 @@ def mcp(
     """Dispatcher: ``list_endpoints`` | ``list_tools`` | ``call_tool``."""
     if command == "list_endpoints":
         return list_endpoints()
+    # No servers configured → fail-soft with a clean message and zero network.
+    if command in ("list_tools", "call_tool") and not _load_endpoints():
+        return {"ok": False, "error": _NO_SERVERS_ERROR}
     if command == "list_tools":
         if not endpoint:
             return {"ok": False, "error": "missing_endpoint"}

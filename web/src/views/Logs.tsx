@@ -19,7 +19,7 @@ import { logStreamURL } from '../api';
 import { Icon } from '../icons';
 
 const ROLES = [
-  'intent', 'supervisor', 'planner', 'doer',
+  'intent', 'supervisor', 'enhancer', 'architect', 'planner', 'doer',
   'feedback', 'learner', 'publish', 'integration',
   'adk_runner',
 ] as const;
@@ -29,6 +29,8 @@ type RoleSelection = 'ALL' | Role;
 const ROLE_COLOR: Record<Role, string> = {
   intent:      '#22d3ee',
   supervisor:  '#a78bfa',
+  enhancer:    '#2dd4bf',
+  architect:   '#c084fc',
   planner:     '#60a5fa',
   doer:        '#34d399',
   feedback:    '#fbbf24',

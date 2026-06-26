@@ -236,7 +236,7 @@ export interface MemorySource {
 // ── agent v2 config types ─────────────────────────────────────────
 
 export type AgentRole =
-  | 'architect' | 'planner' | 'verifier' | 'doer' | 'feedback' | 'learner';
+  | 'enhancer' | 'architect' | 'planner' | 'verifier' | 'doer' | 'feedback' | 'learner';
 
 export type ProviderId = 'openai_compatible';
 export type ModelTier = 'fast' | 'balanced' | 'premium';

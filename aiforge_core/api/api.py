@@ -227,14 +227,39 @@ def list_agents() -> list[dict]:
         except Exception:
             return (None, 0, [])
 
-    for name, rc in ROLES.items():
+    # Enumerate the REAL archetype list (config.agent_config) — not the 5
+    # legacy env.py ROLES — so the page shows enhancer/architect/planner and
+    # every other configured agent. Per-role model/provider come from
+    # agent_config; max_turns/tool_allowlist only exist for the legacy ROLES
+    # (default sensibly when absent). Activity stats default to 0/null for
+    # roles that never fired.
+    from aiforge_core.config import agent_config as _acfg
+
+    try:
+        roles = _acfg.archetypes()
+    except Exception:
+        roles = list(ROLES.keys())
+
+    for name in roles:
+        rc = ROLES.get(name)
+        try:
+            cfg = _acfg.get(name)
+        except Exception:
+            cfg = {}
+        model = (cfg.get("model") if isinstance(cfg, dict) else None) \
+            or (rc.model if rc else "")
+        # "transport" doubles as the provider chip in the UI: legacy roles
+        # report their transport; new orchestrator roles report the provider.
+        transport = (rc.transport if rc
+                     else (cfg.get("provider") if isinstance(cfg, dict) else None)
+                     or "openai_compatible")
         last_iso, turns, active = _activity(name)
         out.append({
             "role": name,
-            "model": rc.model,
-            "transport": rc.transport,
-            "max_turns": rc.max_turns,
-            "tool_allowlist": list(rc.tool_allowlist),
+            "model": model,
+            "transport": transport,
+            "max_turns": rc.max_turns if rc else None,
+            "tool_allowlist": list(rc.tool_allowlist) if rc else [],
             "last_activity": last_iso,
             "lifetime_turns": turns,
             "active_tickets": active,
@@ -1416,7 +1441,8 @@ def _resolve_role_log(role: str) -> str:
     return candidates[0]   # let the tailer wait for the primary to appear
 
 
-_EXTRA_LOG_ROLES = {"intent", "publish", "integration", "adk_runner"}
+_EXTRA_LOG_ROLES = {"intent", "publish", "integration", "adk_runner",
+                    "enhancer", "architect", "verifier"}
 
 
 @app.get("/api/logs/{role}/stream")
@@ -2879,7 +2905,10 @@ async def mcp_tool_call(body: _McpCallBody) -> dict:
         except Exception: pass
         raise HTTPException(504, "MCP server timed out")
     except FileNotFoundError:
-        raise HTTPException(503, f"MCP binary not found: {cmd[0]}")
+        # No MCP server binary installed (operator reset 2026-06-26). Fail
+        # soft so the UI shows a clean empty state instead of a 500.
+        return {"ok": False, "error": "MCP not configured",
+                "detail": f"binary not found: {cmd[0]}"}
 
     # Scan stdout line by line for the JSON-RPC response to id=2.
     result: dict | None = None
@@ -2912,8 +2941,11 @@ def runtime_perf(reset: bool = False) -> dict:
 def _static_topology() -> dict:
     """Static v6 pipeline DAG — fallback when no live topology module is
     present, so the Workflow view renders instead of erroring."""
-    stages = ["triage", "planner", "verifier", "researcher",
-              "doer", "refiner", "feedback", "learner"]
+    # Mirror the live v6 pipeline order (runtime.workflow_topology). Linear
+    # projection of the real DAG: triage → enhancer → context/research →
+    # planner → verifier → doer loop → validator → learner.
+    stages = ["triage", "enhancer", "researcher", "planner", "verifier",
+              "doer", "refiner", "feedback", "validator", "learner"]
     nodes = [{"id": s, "label": s, "type": "agent", "tools": [],
               "status": "idle", "last_event_at": None} for s in stages]
     edges = [{"from": stages[i], "to": stages[i + 1], "label": ""}
