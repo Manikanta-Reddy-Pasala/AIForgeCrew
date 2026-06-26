@@ -374,8 +374,22 @@ def test_is_excluded_path_real_files() -> None:
         "README.md",
         "tests/test_x.py",
         "pyproject.toml",
+        # legit source under ambiguously-named dirs — must NOT be excluded
+        # (the bare `env`/`build`/`dist`/`target` any-segment match was the bug)
+        "myapp/env/settings.py",
+        "svc/build/generated.go",
+        "pkg/dist/index.ts",
+        "module/target/Main.java",
+        "config/env/prod.yaml",
     ):
         assert gp.is_excluded_path(p) is False, p
+
+
+def test_is_excluded_path_toplevel_build_dirs() -> None:
+    # build/dist/target excluded ONLY at the top level (agrees with the
+    # top-level `:(exclude)build|dist|target` pathspecs).
+    for p in ("build/out.o", "dist/app.js", "target/classes/A.class"):
+        assert gp.is_excluded_path(p) is True, p
 
 
 def test_is_excluded_path_empty() -> None:

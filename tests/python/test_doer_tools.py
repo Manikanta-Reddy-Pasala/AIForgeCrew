@@ -517,11 +517,11 @@ def test_file_patch_records_touch(tmp_path: Path) -> None:
     assert "a.txt" in dt.touched_paths()
 
 
-def test_git_commit_stages_only_touched_files(
+def test_git_commit_stages_all_worktree_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Real tmp git repo: two files written, only ONE recorded as touched
-    → git_commit must stage exactly that one (not the other)."""
+    """Isolated worktree ⇒ everything changed is the agent's work: both a
+    file-tool write AND a shell-written file get staged + committed."""
     if shutil.which("git") is None:
         pytest.skip("git binary not on PATH")
     _git_init(tmp_path)
@@ -535,36 +535,30 @@ def test_git_commit_stages_only_touched_files(
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
 
     dt.reset_touched()
-    # tracked write
-    dt.file_write("tracked.py", "x = 1\n")
-    # untracked write (simulates the Doer writing via the shell tool)
-    (tmp_path / "untracked.py").write_text("y = 2\n")
+    dt.file_write("tracked.py", "x = 1\n")            # via file tool
+    (tmp_path / "untracked.py").write_text("y = 2\n")  # via the shell
 
-    res = dt.git_commit("feat: only tracked")
+    res = dt.git_commit("feat: all changes")
     assert res["ok"] is True, res
-    assert res["staged_via"] == "touched"
-    assert res["staged"] == ["tracked.py"]
-    # untracked.py must remain UNstaged / uncommitted
+    assert res["staged_via"] == "add_all"
+    assert set(res["staged"]) == {"tracked.py", "untracked.py"}
     show = _sp.run(["git", "show", "--name-only", "--format=", "HEAD"],
                    cwd=tmp_path, capture_output=True, text=True, check=True)
     assert "tracked.py" in show.stdout
-    assert "untracked.py" not in show.stdout
-    status = _sp.run(["git", "status", "--porcelain"], cwd=tmp_path,
-                     capture_output=True, text=True, check=True)
-    assert "untracked.py" in status.stdout
+    assert "untracked.py" in show.stdout
 
 
-def test_git_commit_fallback_add_all_when_no_touched(
+def test_git_commit_stages_deletions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No touched paths tracked → fall back to add -A so a shell-only
-    Doer still commits its work."""
+    """A file written then removed in the worktree must be committed as a
+    DELETION (the old touched-list path dropped deletes)."""
     if shutil.which("git") is None:
         pytest.skip("git binary not on PATH")
     _git_init(tmp_path)
-    (tmp_path / "seed.txt").write_text("seed\n")
+    (tmp_path / "gone.txt").write_text("bye\n")
     import subprocess as _sp
-    _sp.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+    _sp.run(["git", "add", "gone.txt"], cwd=tmp_path, check=True)
     _sp.run(["git", "commit", "-m", "init", "-q"], cwd=tmp_path, check=True)
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
@@ -572,13 +566,15 @@ def test_git_commit_fallback_add_all_when_no_touched(
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
 
     dt.reset_touched()
-    (tmp_path / "shell_a.py").write_text("a = 1\n")
-    (tmp_path / "shell_b.py").write_text("b = 2\n")
+    dt.file_write("added.py", "a = 1\n")
+    (tmp_path / "gone.txt").unlink()                 # delete a tracked file
 
-    res = dt.git_commit("feat: shell writes")
+    res = dt.git_commit("feat: add + delete")
     assert res["ok"] is True, res
-    assert res["staged_via"] == "add_all_fallback"
-    assert set(res["staged"]) == {"shell_a.py", "shell_b.py"}
+    show = _sp.run(["git", "show", "--name-status", "--format=", "HEAD"],
+                   cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert "A\tadded.py" in show.stdout
+    assert "D\tgone.txt" in show.stdout
 
 
 def test_git_commit_excludes_artifacts_from_touched(

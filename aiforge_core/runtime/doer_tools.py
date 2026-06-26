@@ -31,16 +31,18 @@ from .syntax_guard import validate_syntax
 # imported here (instead of mirrored) to kill the drift the two copies
 # used to suffer. ``is_excluded_path`` is the plain-path predicate for
 # filtering the touched-file list.
-from .git_pr import _EXCLUDE_PATHSPECS, is_excluded_path  # noqa: E402
+from .git_pr import _EXCLUDE_PATHSPECS  # noqa: E402
 
 
-# ─── Touched-path tracker ──────────────────────────────────────────────
+# ─── Touched-path tracker (informational only) ─────────────────────────
 #
-# The Doer's file tools (file_write / file_patch / the editor's
-# write/create/str_replace) record every repo-relative path they mutate
-# here so ``git_commit`` (and the end-of-ticket PR step) stage ONLY those
-# files — never a blanket ``git add -A`` that sweeps the operator's
-# unrelated changes and the agent's own artifacts into the commit.
+# The Doer's file tools still record every repo-relative path they mutate
+# here, but staging NO LONGER depends on it: the Doer runs in an ISOLATED
+# git worktree branched from a clean base, so "everything changed in the
+# worktree" == "the agent's work". ``git_commit`` and the end-of-ticket PR
+# step therefore stage with ``git add -A`` (artifact pathspecs excluded),
+# which also captures deletions/renames the touched-list used to drop. The
+# tracker is kept as a harmless record (other tooling/tests reference it).
 _TOUCHED: set[str] = set()
 _TOUCHED_LOCK = threading.Lock()
 
@@ -407,17 +409,15 @@ def fetch_url(url: str) -> dict:
 def git_commit(message: str) -> dict:
     """Stage Doer-authored changes and commit with ``message``.
 
-    Stages ONLY the files the Doer recorded touching this run (via
-    :func:`record_touch` — file_write / file_patch / editor), each still
-    filtered through the artifact excludes so none of the agent's own
-    junk lands. When NO touched paths were tracked (e.g. the Doer wrote
-    via the shell tool) it FALLS BACK to
-    ``git add -A -- . <_EXCLUDE_PATHSPECS>`` so we never silently commit
-    nothing. Then ``git commit -m <message>`` inside :func:`sandbox.root`.
-    The staged file list is returned in the result. Same soft-error
-    contract as the other Doer tools — failure returns
-    ``{ok: False, error: ...}`` rather than raising so the agent loop
-    survives a flaky workspace.
+    The Doer runs in an ISOLATED git worktree branched from a clean base,
+    so everything changed there IS the agent's work. Stages with
+    ``git add -A -- . <_EXCLUDE_PATHSPECS>`` — the ``-A`` captures
+    modifications, additions, DELETIONS and renames, and the artifact
+    pathspecs keep the agent's own junk out. Then ``git commit -m
+    <message>`` inside :func:`sandbox.root`. The staged file list is
+    returned in the result. Same soft-error contract as the other Doer
+    tools — failure returns ``{ok: False, error: ...}`` rather than
+    raising so the agent loop survives a flaky workspace.
 
     Skip-empty: if nothing is staged after ``git add`` (i.e.
     ``git diff --cached --quiet`` exits 0), returns
@@ -435,19 +435,10 @@ def git_commit(message: str) -> dict:
         return {"ok": False, "error": "empty commit message"}
     cwd = str(root())
 
-    # Prefer staging ONLY the files the Doer touched this run; fall back
-    # to `git add -A` (excludes applied) when nothing was tracked.
-    # Existence-filter so a stale path left over from a prior run (which
-    # never reset the tracker, e.g. a ticket that failed before the PR
-    # step) can't fail `git add` against a now-different workspace.
-    touched = [
-        p for p in touched_paths()
-        if not is_excluded_path(p) and os.path.exists(os.path.join(cwd, p))
-    ]
-    if touched:
-        add_args = ["git", "add", "--", *touched]
-    else:
-        add_args = ["git", "add", "-A", "--", ".", *_EXCLUDE_PATHSPECS]
+    # Isolated worktree ⇒ everything changed in it is the agent's work.
+    # `git add -A` captures deletions/renames too (the old touched-list
+    # dropped them); the artifact pathspecs keep agent junk out.
+    add_args = ["git", "add", "-A", "--", ".", *_EXCLUDE_PATHSPECS]
     add_proc = subprocess.run(
         add_args, cwd=cwd, capture_output=True, timeout=60,
     )
@@ -497,7 +488,7 @@ def git_commit(message: str) -> dict:
         "ok": True,
         "message": str(message),
         "staged": staged,
-        "staged_via": "touched" if touched else "add_all_fallback",
+        "staged_via": "add_all",
         "stdout": commit_proc.stdout.decode("utf-8", "replace")[:2000],
     }
 

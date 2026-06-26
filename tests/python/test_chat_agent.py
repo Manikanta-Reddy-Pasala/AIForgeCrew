@@ -426,61 +426,219 @@ def test_compact_convo_sentinel_strip_is_exact(monkeypatch):
     assert s.count(ca._CONDENSE_OPEN) == 1             # exactly one block
 
 
-# ── item 6: commit hygiene — rewrite blanket git stage to touched-only ────────
+# ── commit hygiene — BASELINE-DIFF rewrite of a blanket git stage ─────────────
+
+_ROOT = "/repo"
+
 
 def test_rewrite_blanket_git_add_forms():
-    f = lambda c, t: ca._rewrite_blanket_git(c, t)
+    f = lambda c, p: ca._rewrite_blanket_git(c, _ROOT, p)
     new, note = f("git add -A", ["a.py", "b.py"])
-    assert new == "git add -- a.py b.py" and note and "a.py" in note
-    assert f("git add .", ["x.py"])[0] == "git add -- x.py"
-    assert f("git add --all", ["x.py"])[0] == "git add -- x.py"
-    assert f("git add -A .", ["x.py"])[0] == "git add -- x.py"
+    assert new == "git -C /repo add -- a.py b.py" and note and "a.py" in note
+    assert f("git add .", ["x.py"])[0] == "git -C /repo add -- x.py"
+    assert f("git add --all", ["x.py"])[0] == "git -C /repo add -- x.py"
+    assert f("git add -A .", ["x.py"])[0] == "git -C /repo add -- x.py"
+    assert f("git add -- .", ["x.py"])[0] == "git -C /repo add -- x.py"
 
 
 def test_rewrite_git_commit_a_forms():
-    f = lambda c, t: ca._rewrite_blanket_git(c, t)[0]
-    assert f('git commit -am "msg"', ["a.py"]) == 'git add -- a.py && git commit -m "msg"'
-    assert f('git commit -a -m "msg"', ["a.py"]) == 'git add -- a.py && git commit -m "msg"'
-    assert f('git commit --all -m "x"', ["a.py"]) == 'git add -- a.py && git commit -m "x"'
-    assert f("git commit -a", ["a.py"]) == "git add -- a.py && git commit"
+    f = lambda c, p: ca._rewrite_blanket_git(c, _ROOT, p)[0]
+    assert f('git commit -am "msg"', ["a.py"]) == \
+        'git -C /repo add -- a.py && git commit -m "msg"'
+    assert f('git commit -a -m "msg"', ["a.py"]) == \
+        'git -C /repo add -- a.py && git commit -m "msg"'
+    assert f('git commit --all -m "x"', ["a.py"]) == \
+        'git -C /repo add -- a.py && git commit -m "x"'
+    assert f("git commit -a", ["a.py"]) == "git -C /repo add -- a.py && git commit"
 
 
-def test_rewrite_noop_when_nothing_touched():
-    # No touched paths → leave the command verbatim (gitignore is the fallback).
-    new, note = ca._rewrite_blanket_git("git add -A", [])
-    assert new == "git add -A" and note is None
+def test_rewrite_drops_blanket_when_no_agent_changes():
+    # Empty agent set → DROP the blanket add (→ `true`), NEVER fall back to
+    # add -A (that's the sweep bug). Commit becomes a correct no-op.
+    new, note = ca._rewrite_blanket_git("git add -A && git commit -m wip", _ROOT, [])
+    assert new == "true && git commit -m wip"
+    assert note and "dropped" in note
+    # commit -a with no agent changes → strip -a, stage nothing.
+    new2, _ = ca._rewrite_blanket_git('git commit -am "x"', _ROOT, [])
+    assert new2 == 'true && git commit -m "x"'
 
 
 def test_rewrite_leaves_targeted_git_alone():
     # A non-blanket git command must not be mangled.
-    new, note = ca._rewrite_blanket_git("git status && git add -- specific.py",
-                                        ["a.py"])
+    new, note = ca._rewrite_blanket_git(
+        "git status && git add -- specific.py", _ROOT, ["a.py"])
     assert new == "git status && git add -- specific.py" and note is None
     # A commit message that merely mentions -a must not be rewritten.
-    new2, note2 = ca._rewrite_blanket_git('git commit -m "fixed flag"', ["a.py"])
+    new2, note2 = ca._rewrite_blanket_git(
+        'git commit -m "fixed flag"', _ROOT, ["a.py"])
     assert new2 == 'git commit -m "fixed flag"' and note2 is None
 
 
-def test_run_chat_agent_commits_only_touched(tmp_path):
+def test_detect_blanket_skips_heredoc_and_echo():
+    # A blanket add inside a heredoc BODY is data, not a command — not detected.
+    heredoc = "cat > script.sh <<'EOF'\ngit add -A\ngit commit -am all\nEOF"
+    assert ca._detect_blanket_git(heredoc) is False
+    # A blanket add inside an echo/quoted argument — not detected.
+    assert ca._detect_blanket_git('echo "git add -A"') is False
+    assert ca._detect_blanket_git("echo git add -A") is False
+    # The real top-level forms ARE detected.
+    assert ca._detect_blanket_git("git add -A && git commit -m x") is True
+    assert ca._detect_blanket_git("cd sub && git add -A") is True
+    # And a heredoc body left of a real command still detects the real one.
+    assert ca._detect_blanket_git(heredoc + "\ngit add -A") is True
+
+
+def _git_init(repo):
     import subprocess
-    repo = str(tmp_path)
-    for args in (["init"], ["config", "user.email", "t@t"],
+    for args in (["init", "-q"], ["config", "user.email", "t@t"],
                  ["config", "user.name", "t"]):
         subprocess.run(["git", *args], cwd=repo, capture_output=True)
+
+
+def test_run_chat_agent_commits_only_agent_changes(tmp_path):
+    """Baseline-diff: pre-existing user dirt is NOT committed; the agent's
+    file_write AND shell-written file ARE."""
+    import subprocess
+    repo = str(tmp_path)
+    _git_init(repo)
+    (tmp_path / "seed.txt").write_text("seed\n")
+    subprocess.run(["git", "add", "seed.txt"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
     # An unrelated dirty file a blanket `git add -A` would have swept in.
     (tmp_path / "unrelated.txt").write_text("noise\n")
+
     fn = _scripted([
         'ACTION: file_write\nARGS_JSON: {"path": "mine.py", "content": "x = 1\\n"}',
+        'ACTION: run_command\nARGS_JSON: {"cmd": "echo y > shellmade.txt"}',
         'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
         "FINAL: done",
     ])
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
-    # The commit holds mine.py, NOT the operator's unrelated.txt.
+    show = subprocess.run(["git", "show", "--name-status", "--format=", "HEAD"],
+                          cwd=repo, capture_output=True, text=True).stdout
+    assert "mine.py" in show                 # agent's file_write committed
+    assert "shellmade.txt" in show           # agent's shell-written file committed
+    assert "unrelated.txt" not in show       # user's pre-existing dirt NOT swept
+    # The unrelated user file is still dirty/untracked afterwards.
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
+                            capture_output=True, text=True).stdout
+    assert "unrelated.txt" in status
+    cmd_tools = [e for e in evs if e["type"] == "tool" and e["name"] == "run_command"]
+    note = next((t["result"].get("note") for t in cmd_tools
+                 if t["result"].get("note")), "")
+    assert "hygiene" in note
+
+
+def test_run_command_blanket_stages_deletion(tmp_path):
+    """A file the agent deleted AFTER the baseline snapshot is committed as a
+    deletion by the baseline-diff blanket rewrite. (Tested through the
+    run_command tool directly — an interactive `rm` is separately gated by the
+    risk-approval policy, orthogonal to commit hygiene.)"""
+    import subprocess
+    repo = str(tmp_path)
+    _git_init(repo)
+    (tmp_path / "todelete.txt").write_text("bye\n")
+    (tmp_path / "keep.txt").write_text("keep\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
+    # Snapshot baseline on the CLEAN repo, then the agent deletes a file.
+    ca._set_chat_baseline(repo)
+    (tmp_path / "todelete.txt").unlink()
+    res = ca._t_run_command(
+        {"cmd": "git add -A && git commit -m wip"}, repo)
+    assert res["ok"], res
+    show = subprocess.run(["git", "show", "--name-status", "--format=", "HEAD"],
+                          cwd=repo, capture_output=True, text=True).stdout
+    assert "D\ttodelete.txt" in show         # deletion committed
+    assert "keep.txt" not in show            # untouched file not re-committed
+
+
+def test_run_chat_agent_cd_subdir_blanket_anchored(tmp_path):
+    """`cd sub && git add -A` stages the right repo-relative path even though
+    the add runs from a subdir — the rewrite anchors it at the repo root."""
+    import subprocess
+    repo = str(tmp_path)
+    _git_init(repo)
+    (tmp_path / "sub").mkdir()
+    fn = _scripted([
+        'ACTION: file_write\nARGS_JSON: {"path": "sub/mine.py", "content": "x=1\\n"}',
+        'ACTION: run_command\nARGS_JSON: {"cmd": "cd sub && git add -A && cd .. && git commit -m wip"}',
+        "FINAL: done",
+    ])
+    _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
     show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
                           cwd=repo, capture_output=True, text=True).stdout
-    assert "mine.py" in show
-    assert "unrelated.txt" not in show
-    # The rewrite is surfaced in the tool result note.
-    cmd_tools = [e for e in evs if e["type"] == "tool" and e["name"] == "run_command"]
-    assert cmd_tools and "hygiene" in (cmd_tools[0]["result"].get("note") or "")
+    assert "sub/mine.py" in show
+
+
+def test_run_chat_agent_empty_agent_change_no_sweep(tmp_path):
+    """Agent changes nothing but issues a blanket add → the user's dirty file
+    is NOT swept; the commit is a no-op."""
+    import subprocess
+    repo = str(tmp_path)
+    _git_init(repo)
+    (tmp_path / "seed.txt").write_text("s\n")
+    subprocess.run(["git", "add", "seed.txt"], cwd=repo, capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], cwd=repo, capture_output=True)
+    (tmp_path / "userfile.txt").write_text("user edit\n")   # pre-existing dirt
+    fn = _scripted([
+        'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
+        "FINAL: done",
+    ])
+    _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "go"}], cwd=repo, complete_fn=fn))
+    # HEAD is still the seed commit (no new commit landed with userfile).
+    show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
+                          cwd=repo, capture_output=True, text=True).stdout
+    assert "userfile.txt" not in show
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo,
+                            capture_output=True, text=True).stdout
+    assert "userfile.txt" in status         # still dirty, untouched
+
+
+def test_run_chat_agent_concurrent_baseline_isolation(tmp_path):
+    """Two concurrent run_chat_agent calls over two repos must not
+    cross-contaminate their baselines (ContextVar isolation)."""
+    import subprocess
+    import threading
+
+    def _mk_repo(name):
+        repo = tmp_path / name
+        repo.mkdir()
+        _git_init(str(repo))
+        # pre-existing user dirt unique to each repo
+        (repo / f"user_{name}.txt").write_text("dirt\n")
+        return str(repo)
+
+    repo_a = _mk_repo("a")
+    repo_b = _mk_repo("b")
+
+    def _run(repo, mine):
+        # If baselines leaked across threads, the other repo's dirt would
+        # show up in this repo's commit.
+        def fn(role, convo, **kw):
+            return _run.scripts[repo].pop(0)
+        _run.scripts.setdefault(repo, [
+            f'ACTION: file_write\nARGS_JSON: {{"path": "{mine}", "content": "x=1\\n"}}',
+            'ACTION: run_command\nARGS_JSON: {"cmd": "git add -A && git commit -m wip"}',
+            "FINAL: done",
+        ])
+        list(ca.run_chat_agent([{"role": "user", "content": "go"}],
+                               cwd=repo, complete_fn=fn))
+
+    _run.scripts = {}
+    ta = threading.Thread(target=_run, args=(repo_a, "mine_a.py"))
+    tb = threading.Thread(target=_run, args=(repo_b, "mine_b.py"))
+    ta.start(); tb.start(); ta.join(); tb.join()
+
+    for repo, mine, other_dirt in ((repo_a, "mine_a.py", "user_a.txt"),
+                                   (repo_b, "mine_b.py", "user_b.txt")):
+        show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
+                              cwd=repo, capture_output=True, text=True).stdout
+        assert mine in show
+        assert other_dirt not in show       # own user dirt not committed
+        # nothing from the OTHER repo leaked in
+        assert "mine_a.py" not in show or repo == repo_a
+        assert "mine_b.py" not in show or repo == repo_b

@@ -53,6 +53,7 @@ _EXCLUDE_PATHSPECS: tuple[str, ...] = (
     ":(exclude,glob)**/node_modules/**",
     ":(exclude)dist",
     ":(exclude)build",
+    ":(exclude)target",
     # Python bytecode + caches — slipped into TallyConnector#10/#11
     # because those repos lacked a Python .gitignore. Belt-and-braces
     # at git add time so the target repo's own ignores are irrelevant.
@@ -67,14 +68,24 @@ _EXCLUDE_PATHSPECS: tuple[str, ...] = (
 
 
 # Artifact / junk directory segments + basenames + suffixes. Used by
-# :func:`is_excluded_path` to filter the per-file touched list the Doer
-# tools record (the pathspec form above is only usable as a `git add`
-# argument, not as a plain-path predicate).
+# :func:`is_excluded_path` to filter a repo-relative path list (the pathspec
+# form above is only usable as a `git add` argument, not as a plain-path
+# predicate). These match as ANY path segment, so they MUST be unambiguous
+# artifact names — the bare words `env`/`build`/`dist`/`target` were removed
+# because they wrongly dropped legit source like `myapp/env/settings.py` or
+# `pkg/build/mod.go`. Those four are excluded only at the TOP LEVEL (see
+# :data:`_EXCLUDE_TOPLEVEL`), matching their top-level-only pathspecs above.
 _EXCLUDE_DIR_SEGMENTS = frozenset({
     "graphify-out", ".aiforge", ".aiforge-worktrees", ".idea", ".vscode",
     "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
-    "node_modules", "dist", "build", "target", ".venv", "venv", "env",
+    "node_modules", ".venv", "venv", ".git",
 })
+# Build-output dirs excluded ONLY when they are the first path segment, to
+# agree with the top-level `:(exclude)build|dist|target` pathspecs (which do
+# NOT match nested dirs like `myapp/build/`). `env` is intentionally NOT here
+# — only the `.env` FILE (a basename) is an artifact, the `env/` package dir
+# is legitimate source.
+_EXCLUDE_TOPLEVEL = frozenset({"build", "dist", "target"})
 _EXCLUDE_BASENAMES = frozenset({
     ".DS_Store", ".aiforge-workspace", ".env", "perf.ndjson",
 })
@@ -83,8 +94,11 @@ _EXCLUDE_SUFFIXES = (".pyc", ".pyo", ".pyd", ".class", ".log")
 
 def is_excluded_path(rel: str) -> bool:
     """True when ``rel`` (a repo-relative path) is an agent artifact / junk
-    file that must never be staged — mirrors :data:`_EXCLUDE_PATHSPECS` but
-    as a plain-path predicate so the touched-file list can be filtered."""
+    file that must never be staged — reconciled with :data:`_EXCLUDE_PATHSPECS`
+    as a plain-path predicate: unambiguous artifact dirs match at any depth,
+    while ``build``/``dist``/``target`` match only at the top level (so legit
+    nested source like ``myapp/env/settings.py`` or ``svc/build/gen.go`` is
+    kept)."""
     if not rel:
         return True
     norm = str(rel).strip().replace("\\", "/")
@@ -97,6 +111,8 @@ def is_excluded_path(rel: str) -> bool:
         return True
     segments = norm.split("/")
     if any(seg in _EXCLUDE_DIR_SEGMENTS for seg in segments):
+        return True
+    if segments[0] in _EXCLUDE_TOPLEVEL:
         return True
     base = segments[-1]
     if base in _EXCLUDE_BASENAMES:
@@ -393,24 +409,15 @@ def _ensure_gitignore(repo_root: str) -> None:
 
 
 def _stage_doer_changes(repo_root: str) -> list[str]:
-    """Stage ONLY the files the Doer recorded touching (via
-    :mod:`doer_tools`), each filtered through the artifact excludes.
+    """Stage every change in the (isolated) Doer worktree, with the artifact
+    pathspecs excluded.
 
-    Falls back to ``git add -- . <_EXCLUDE_PATHSPECS>`` when no touched
-    paths were tracked (e.g. the Doer wrote via the shell tool) so we
-    never silently commit nothing. Returns the explicit file list when
-    the touched-path path was taken, else ``[]`` (fallback)."""
-    touched: list[str] = []
-    try:
-        from aiforge_core.runtime import doer_tools
-        touched = [p for p in doer_tools.touched_paths()
-                   if not is_excluded_path(p)]
-    except Exception:  # noqa: BLE001
-        touched = []
-    if touched:
-        run_git(["git", "add", "--", *touched], repo_root)
-        return touched
-    run_git(["git", "add", "--", ".", *_EXCLUDE_PATHSPECS], repo_root)
+    The Doer runs in a worktree branched from a clean base, so everything
+    that changed there is the agent's work. ``git add -A`` captures
+    modifications, additions, DELETIONS and renames (the old touched-path
+    list silently dropped deletes); the excludes keep agent junk out.
+    Returns ``[]`` — the staged set is whatever git resolved."""
+    run_git(["git", "add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], repo_root)
     return []
 
 
@@ -614,13 +621,6 @@ def commit_push_open_pr(ticket) -> dict:
     except Exception:  # noqa: BLE001
         pass
     _fire_delta_ingest(ticket, repo_root)
-    # Clear the touched-path tracker so the NEXT ticket/run starts clean
-    # instead of inheriting this run's staged file set.
-    try:
-        from aiforge_core.runtime import doer_tools
-        doer_tools.reset_touched()
-    except Exception:  # noqa: BLE001
-        pass
     return {"branch_pushed": True, "pr_url": pr_url}
 
 

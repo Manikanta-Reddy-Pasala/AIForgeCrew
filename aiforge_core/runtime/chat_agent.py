@@ -43,103 +43,287 @@ _THOUGHT_RE = re.compile(r"THOUGHT:\s*(.*?)(?:\n[A-Z_]+:|$)", re.IGNORECASE | re
 _MAX_OBS = 6000  # truncate tool output fed back to the model
 
 
-# ─── Chat-side touched-path tracker (commit hygiene, item 6) ────────────
+# ─── Chat-side commit hygiene: BASELINE-DIFF (replaces touched-tracker) ──
 #
-# The chat agent commits via the SHELL ``run_command`` tool, so the "only
-# commit changed files" rule can't rely on doer_tools' per-call git_commit.
-# We record every file the chat tools MUTATE (file_write / file_patch / the
-# editor write sub-commands) here, then rewrite a blanket ``git add -A`` /
-# ``git add .`` / ``git commit -a`` in a run_command into a touched-files-only
-# stage — code-enforcing the rule instead of trusting the prompt.
-import threading as _threading  # noqa: E402
+# The chat agent runs in the user's (possibly dirty) repo and writes files
+# via BOTH the file tools AND the shell, so tracking individual writes is
+# unreliable. Instead we snapshot the repo's already-dirty/untracked paths
+# at run start (the run BASELINE), and when the agent issues a blanket
+# ``git add -A`` / ``git commit -a`` we stage ONLY
+# ``(current dirty paths) − baseline`` — i.e. exactly what the AGENT changed
+# this run, never the user's pre-existing edits, never artifacts.
+#
+# The baseline lives in a ``contextvars.ContextVar`` (NOT a module global) so
+# concurrent ``run_chat_agent`` calls — parallel_subtasks / best_of_n
+# ThreadPoolExecutor workers, multiple chat sessions — each get an isolated
+# snapshot and cannot corrupt one another (each thread sees its own value).
+import contextvars  # noqa: E402
 
-_CHAT_TOUCHED: set[str] = set()        # absolute paths mutated this run
-_CHAT_TOUCHED_LOCK = _threading.Lock()
+# (repo_root | None, frozenset[str] baseline-paths). Default = no repo / empty.
+_CHAT_BASELINE: contextvars.ContextVar[tuple] = contextvars.ContextVar(
+    "aiforge_chat_baseline", default=(None, frozenset()))
 
 
-def _record_chat_touch(p) -> None:
-    """Record an absolute path the chat tools mutated. Best-effort."""
+def _git_repo_root(base: str) -> str | None:
+    """Absolute repo root for ``base`` (``git rev-parse --show-toplevel``),
+    or None when ``base`` isn't inside a git repo. Soft-fails to None."""
     try:
-        with _CHAT_TOUCHED_LOCK:
-            _CHAT_TOUCHED.add(str(p))
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=base, capture_output=True, text=True, timeout=15)
     except Exception:  # noqa: BLE001
-        pass
+        return None
+    if proc.returncode != 0:
+        return None
+    out = (proc.stdout or "").strip()
+    return out or None
 
 
-def _reset_chat_touched() -> None:
-    """Clear the tracker at the start of a chat run so stale paths from a
-    previous turn aren't staged."""
-    with _CHAT_TOUCHED_LOCK:
-        _CHAT_TOUCHED.clear()
-
-
-def _chat_touched_rel(base: str) -> list[str]:
-    """Touched paths as repo-relative (to ``base``) strings, excluding agent
-    artifacts/junk and anything outside ``base``. Sorted + de-duped."""
-    from aiforge_core.runtime.git_pr import is_excluded_path
-    with _CHAT_TOUCHED_LOCK:
-        paths = list(_CHAT_TOUCHED)
-    out: set[str] = set()
-    for ap in paths:
+def _unquote_git_path(p: str) -> str:
+    """Decode git's C-style path quoting (paths with special chars come back
+    wrapped in double quotes with backslash escapes)."""
+    p = p.strip()
+    if len(p) >= 2 and p[0] == '"' and p[-1] == '"':
         try:
-            rel = os.path.relpath(ap, base)
+            import codecs
+            return codecs.escape_decode(
+                p[1:-1].encode("utf-8"))[0].decode("utf-8", "replace")
         except Exception:  # noqa: BLE001
+            return p[1:-1]
+    return p
+
+
+def _parse_porcelain(text: str) -> set[str]:
+    """Repo-relative paths from ``git status --porcelain`` output. Handles
+    rename/copy lines (``orig -> new`` → BOTH paths) and quoted paths."""
+    paths: set[str] = set()
+    for line in (text or "").splitlines():
+        if len(line) < 4:
             continue
-        rel = rel.replace("\\", "/")
-        if rel.startswith("..") or os.path.isabs(rel):
-            continue                       # outside the repo we're staging
-        if is_excluded_path(rel):
+        rest = line[3:]                     # strip the 'XY ' status prefix
+        if " -> " in rest:                  # rename / copy
+            orig, new = rest.split(" -> ", 1)
+            paths.add(_unquote_git_path(orig))
+            paths.add(_unquote_git_path(new))
+        else:
+            paths.add(_unquote_git_path(rest))
+    paths.discard("")
+    return paths
+
+
+def _git_status_paths(repo_root: str) -> set[str]:
+    """Set of repo-relative dirty/untracked paths. Empty set on any error."""
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root, capture_output=True, text=True, timeout=30)
+    except Exception:  # noqa: BLE001
+        return set()
+    if proc.returncode != 0:
+        return set()
+    return _parse_porcelain(proc.stdout)
+
+
+def _set_chat_baseline(base: str) -> None:
+    """Capture the run BASELINE — repo root + already-dirty paths — into the
+    ContextVar at run start, REPLACING any prior value in this context. Soft-
+    fails to ``(None, empty)`` when ``base`` isn't a git repo."""
+    repo_root = _git_repo_root(base)
+    if repo_root is None:
+        _CHAT_BASELINE.set((None, frozenset()))
+        return
+    _CHAT_BASELINE.set((repo_root, frozenset(_git_status_paths(repo_root))))
+
+
+def _get_chat_baseline() -> tuple:
+    return _CHAT_BASELINE.get()
+
+
+# ─── Blanket git-stage detection + rewrite (BASELINE-DIFF) ──────────────
+
+def _top_level_segments(cmd: str) -> list[tuple[int, int]]:
+    """``(start, end)`` char spans of the TOP-LEVEL command segments in a
+    shell string — split on unquoted ``&&`` / ``||`` / ``;`` / ``|`` /
+    newline. Heredoc bodies and quoted/escaped regions are SKIPPED, so a
+    ``git add -A`` living inside a heredoc body or an ``echo "…"`` argument
+    is never mistaken for a real command."""
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(cmd)
+    seg_start = 0
+    pending: list[tuple[str, bool]] = []   # (heredoc delimiter, strip-tabs)
+    while i < n:
+        ch = cmd[i]
+        two = cmd[i:i + 2]
+        if ch == "\n" and pending:
+            spans.append((seg_start, i))
+            i += 1
+            for delim, strip_tabs in pending:
+                while i < n:
+                    eol = cmd.find("\n", i)
+                    line_end = eol if eol != -1 else n
+                    line = cmd[i:line_end]
+                    i = line_end + 1 if eol != -1 else n
+                    cmp_line = line.lstrip("\t") if strip_tabs else line
+                    if cmp_line.strip() == delim:
+                        break
+            pending = []
+            seg_start = i
             continue
-        out.add(rel)
-    return sorted(out)
+        if ch == "'":
+            j = cmd.find("'", i + 1)
+            i = (j + 1) if j != -1 else n
+            continue
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if cmd[j] == "\\":
+                    j += 2
+                    continue
+                if cmd[j] == '"':
+                    break
+                j += 1
+            i = j + 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if two == "<<":
+            m = re.match(r"<<-?", cmd[i:])
+            op = m.group(0)
+            i += len(op)
+            while i < n and cmd[i] in " \t":
+                i += 1
+            dm = re.match(r"""(["']?)([A-Za-z_][A-Za-z0-9_]*)\1""", cmd[i:])
+            if dm:
+                pending.append((dm.group(2), op.endswith("-")))
+                i += dm.end()
+            continue
+        if two in ("&&", "||"):
+            spans.append((seg_start, i))
+            i += 2
+            seg_start = i
+            continue
+        if ch in (";", "|"):
+            spans.append((seg_start, i))
+            i += 1
+            seg_start = i
+            continue
+        if ch == "\n":
+            spans.append((seg_start, i))
+            i += 1
+            seg_start = i
+            continue
+        i += 1
+    if seg_start < n:
+        spans.append((seg_start, n))
+    return spans
 
 
-# git stage forms that sweep in EVERYTHING — rewritten to a touched-only stage.
-_GIT_ADD_BLANKET_RE = re.compile(
-    r"\bgit\s+add\s+(?:-A|--all|\.)(?:\s+(?:-A|--all|\.))*(?=\s|;|&|\||$)")
+_BLANKET_ADD_SELECTORS = frozenset({"-A", "--all", "."})
 
 
-def _rewrite_blanket_git(cmd: str, touched: list[str]) -> tuple[str, str | None]:
-    """Rewrite a blanket ``git add -A|.|--all`` / ``git commit -a|-am|--all`` in
-    ``cmd`` so it stages ONLY ``touched``. Returns ``(new_cmd, note)`` — ``note``
-    is None when nothing was rewritten. With NO touched paths we leave the
-    command untouched (the artifact ``.gitignore`` is the fallback guard)."""
-    if not touched:
-        return cmd, None
+def _classify_segment(text: str) -> tuple[str | None, object]:
+    """Classify one (already-stripped) command segment:
+
+    * ``("add", None)``           — a blanket ``git add -A|.|--all|-- .``
+    * ``("commit", (flag, idx))`` — a ``git commit`` that auto-stages via
+      ``-a`` / ``-am…`` / ``--all`` (the flag token + its index)
+    * ``(None, None)``            — anything else (left untouched)
+
+    Only fires when ``git`` is the segment's FIRST word, so ``echo git add
+    -A`` and quoted/heredoc occurrences never match."""
+    toks = text.split()
+    if len(toks) < 2 or toks[0] != "git":
+        return None, None
+    if toks[1] == "add":
+        rest = toks[2:]
+        allowed = _BLANKET_ADD_SELECTORS | {"--"}
+        if rest and all(t in allowed for t in rest) \
+                and any(t in _BLANKET_ADD_SELECTORS for t in rest):
+            return "add", None
+        return None, None
+    if toks[1] == "commit":
+        for idx, t in enumerate(toks[2:], start=2):
+            if t == "--all":
+                return "commit", ("--all", idx)
+            if t.startswith("-") and not t.startswith("--") and "a" in t:
+                return "commit", (t, idx)
+        return None, None
+    return None, None
+
+
+def _detect_blanket_git(cmd: str) -> bool:
+    """True when ``cmd`` has a real TOP-LEVEL blanket ``git add`` /
+    ``git commit -a`` (never one inside a heredoc body or quoted string)."""
+    for s, e in _top_level_segments(cmd):
+        kind, _ = _classify_segment(cmd[s:e].strip())
+        if kind:
+            return True
+    return False
+
+
+def _rewrite_blanket_git(cmd: str, repo_root: str | None,
+                         agent_paths: list[str]) -> tuple[str, str | None]:
+    """Rewrite a blanket ``git add -A|.|--all`` / ``git commit -a|-am|--all``
+    so it stages ONLY ``agent_paths`` (the agent's changes this run), anchored
+    at ``repo_root`` via ``git -C <root> add -- …`` so a ``cd subdir &&``
+    prefix can't desync the (repo-relative) pathspecs.
+
+    * ``agent_paths`` non-empty → the blanket add becomes
+      ``git -C <root> add -- <paths>``; a ``git commit -a`` gets the stage
+      prepended and its ``-a`` / ``--all`` stripped.
+    * ``agent_paths`` EMPTY → the blanket add is DROPPED (replaced with a
+      ``true`` no-op — it NEVER falls back to ``add -A``, which is the sweep
+      bug); the commit then stages nothing and is a correct no-op.
+
+    Returns ``(new_cmd, note)``; ``note`` is None when nothing matched.
+    Targeted ``git add <specific paths>`` and unrelated commands are left
+    untouched."""
     import shlex
-    spec = " ".join(shlex.quote(f) for f in touched)
-    changed = False
+    spec = " ".join(shlex.quote(p) for p in agent_paths)
+    if agent_paths:
+        add_cmd = (f"git -C {shlex.quote(repo_root)} add -- {spec}"
+                   if repo_root else f"git add -- {spec}")
+    else:
+        add_cmd = "true"
 
-    def _add(_m):
-        nonlocal changed
-        changed = True
-        return f"git add -- {spec}"
+    edits: list[tuple[int, int, str]] = []
+    for s, e in _top_level_segments(cmd):
+        seg = cmd[s:e]
+        stripped = seg.strip()
+        if not stripped:
+            continue
+        lead = seg[:len(seg) - len(seg.lstrip())]
+        trail = seg[len(seg.rstrip()):]
+        kind, info = _classify_segment(stripped)
+        if kind == "add":
+            edits.append((s, e, lead + add_cmd + trail))
+        elif kind == "commit":
+            flag, idx = info        # type: ignore[misc]
+            toks = stripped.split()
+            if flag == "--all":
+                new_toks = toks[:idx] + toks[idx + 1:]
+            else:
+                stripped_flag = "-" + flag[1:].replace("a", "", 1)
+                if stripped_flag == "-":            # a bare -a
+                    new_toks = toks[:idx] + toks[idx + 1:]
+                else:
+                    new_toks = toks[:idx] + [stripped_flag] + toks[idx + 1:]
+            commit_cmd = " ".join(new_toks)
+            edits.append((s, e, lead + add_cmd + " && " + commit_cmd + trail))
 
-    new = _GIT_ADD_BLANKET_RE.sub(_add, cmd)
-
-    # git commit -a / -am / -av… → stage the touched files first, drop the 'a'
-    # (the message-bearing short flags glued after it are preserved as group 1).
-    def _commit_short(m):
-        nonlocal changed
-        changed = True
-        rest = m.group(1)        # e.g. "m" in -am, "" in a bare -a
-        tail = f" -{rest}" if rest else ""
-        return f"git add -- {spec} && git commit{tail}"
-
-    new = re.sub(r"\bgit\s+commit\s+-a([A-Za-z]*)\b", _commit_short, new)
-
-    # git commit --all → same, just strip --all.
-    def _commit_all(_m):
-        nonlocal changed
-        changed = True
-        return f"git add -- {spec} && git commit"
-
-    new = re.sub(r"\bgit\s+commit\s+--all\b", _commit_all, new)
-
-    note = None
-    if changed and new != cmd:
-        note = ("[hygiene] rewrote a blanket git stage to commit ONLY the files "
-                f"changed this turn: {', '.join(touched)}")
+    if not edits:
+        return cmd, None
+    new = cmd
+    for s, e, repl in sorted(edits, reverse=True):
+        new = new[:s] + repl + new[e:]
+    if agent_paths:
+        note = ("[hygiene] rewrote a blanket git stage to commit ONLY the "
+                f"files the agent changed this run: {', '.join(agent_paths)}")
+    else:
+        note = ("[hygiene] the agent changed no files this run — dropped the "
+                "blanket git stage so the user's pre-existing changes aren't "
+                "swept into the commit.")
     return new, note
 
 
@@ -172,7 +356,6 @@ def _t_file_write(args: dict, cwd: str) -> dict:
     p = _resolve(cwd, args["path"])
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(args.get("content", ""), encoding="utf-8")
-    _record_chat_touch(p)
     return {"ok": True, "path": str(p), "bytes": len(args.get("content", ""))}
 
 
@@ -188,7 +371,6 @@ def _t_file_patch(args: dict, cwd: str) -> dict:
     if n > 1:
         return {"ok": False, "error": "ambiguous_match", "occurrences": n}
     p.write_text(body.replace(old, args["new_text"], 1), encoding="utf-8")
-    _record_chat_touch(p)
     return {"ok": True, "path": str(p)}
 
 
@@ -217,12 +399,23 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     root = _workspace_root()
     if root is not None:
         base = str(root)
-    # Commit hygiene (item 6): code-enforce "only commit changed files" — rewrite
-    # a blanket `git add -A|.|--all` / `git commit -a|-am|--all` into a stage of
-    # ONLY the files this run mutated. No-op when nothing was tracked (the
-    # artifact .gitignore is then the fallback guard).
+    # Commit hygiene (BASELINE-DIFF): when the agent issues a blanket
+    # `git add -A` / `git commit -a`, rewrite it to stage ONLY the paths the
+    # AGENT changed this run = (current dirty paths) − (run baseline), with
+    # artifacts excluded. Never sweeps the user's pre-existing changes; when
+    # the agent changed nothing the blanket add is DROPPED (never `add -A`).
     _rewrite_note = None
-    cmd, _rewrite_note = _rewrite_blanket_git(cmd, _chat_touched_rel(base))
+    if _detect_blanket_git(cmd):
+        from aiforge_core.runtime.git_pr import is_excluded_path
+        repo_root, baseline = _get_chat_baseline()
+        if repo_root is None:                       # direct tool call / no run init
+            repo_root = _git_repo_root(base)
+        if repo_root is not None:
+            current = _git_status_paths(repo_root)
+            agent_paths = sorted(
+                p for p in (current - baseline) if not is_excluded_path(p))
+            cmd, _rewrite_note = _rewrite_blanket_git(
+                cmd, repo_root, agent_paths)
     # Default generous so dependency installs / builds (npm ci, mvn package,
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
@@ -1324,7 +1517,10 @@ def run_chat_agent(
     from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
     from aiforge_core.runtime.tools import tool_policy
     chat_cancel.set_active(session_id)
-    _reset_chat_touched()   # fresh touched-path tracker for this run (item 6)
+    # Snapshot the repo's already-dirty/untracked paths NOW so a later blanket
+    # `git add -A` stages only what the agent changes AFTER this point. Stored
+    # in a ContextVar → isolated per concurrent run (parallel workers/sessions).
+    _set_chat_baseline(str(_workspace_root() or cwd))
     plan_mode = (mode or "act").lower() == "plan"
 
     import collections
