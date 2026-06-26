@@ -43,10 +43,12 @@ def test_router_resolves_chat_from_v2_config(cfg):
     assert (ep.extras or {}).get("insecure_tls") is True
 
 
-def test_router_still_defaults_local_when_unset(cfg):
+def test_router_defaults_openai_compatible_when_unset(cfg):
+    # openai_compatible is the only provider now — an unconfigured role
+    # resolves to it (no more `local` fallback).
     _, router = cfg
     ep = router.resolve("doer")
-    assert ep.provider == "local"
+    assert ep.provider == "openai_compatible"
 
 
 def test_global_default_applies_to_all_pipeline_roles(cfg):

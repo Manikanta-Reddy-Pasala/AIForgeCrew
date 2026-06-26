@@ -7,12 +7,12 @@ Resolution order (highest priority first):
    Allows the UI to flip e.g. Planner to Ollama Cloud while everything
    else stays local.
 3. ``AIFORGE_PRIMARY_BACKEND`` env var (legacy global default).
-4. Hardcoded default ``"local"``.
+4. Hardcoded default ``"openai_compatible"``.
 
-If the chosen provider isn't available (e.g. ``ollama_cloud`` selected
-but no API key), the router silently falls through to ``"local"``
-rather than crashing. The chosen ``model`` overrides whatever the
-provider would default to — so per-archetype model pins also apply.
+If the chosen provider isn't available, the router silently falls
+through to ``"openai_compatible"`` rather than crashing. The chosen
+``model`` overrides whatever the provider would default to — so
+per-archetype model pins also apply.
 
 :func:`fallback` returns the OTHER side for retry chains.
 """
@@ -28,7 +28,7 @@ def _global_default() -> str:
     return (
         os.environ.get("AIFORGE_PRIMARY_BACKEND")
         or os.environ.get("AIFORGE_DOER_PRIMARY_BACKEND")
-        or "local"
+        or "openai_compatible"
     ).lower()
 
 
@@ -66,8 +66,8 @@ def resolve(role: str) -> Endpoint:
     ).lower()
     prov = _providers.get(name)
     if prov is None or not prov.is_available():
-        prov = _providers.get("local")
-    assert prov is not None  # local always registers + is_available
+        prov = _providers.get("openai_compatible")
+    assert prov is not None  # openai_compatible always registers + is_available
     ep = prov.endpoint(role)
     # Override model if the agent_config entry pinned one.
     if cfg and cfg.get("model") and ep is not None:
@@ -99,15 +99,11 @@ def fallback(role: str) -> Endpoint | None:
     return None
 
 
-# Providers considered "cloud" for auto-escalation. Order = preference.
-# A role currently on a non-cloud provider can be promoted to one of
-# these when the request looks too big for local capacity.
-# Keep in sync with agent_config._CLOUD_PROVIDERS_ORDERED — only providers
-# the agent stack is actually wired + keyed for. ``ollama_cloud`` is the
-# supported cloud target post provider-purge.
-_CLOUD_PROVIDERS: tuple[str, ...] = (
-    "ollama_cloud",
-)
+# Providers considered "cloud" for auto-escalation. Empty now that
+# ``openai_compatible`` is the only provider — :func:`escalate` no-ops
+# gracefully (returns None) so the caller stays on the primary endpoint.
+# Keep in sync with agent_config._CLOUD_PROVIDERS_ORDERED.
+_CLOUD_PROVIDERS: tuple[str, ...] = ()
 
 # Local context windows assumed when no role-specific cap configured.
 # Used by ``escalate(role, est_tokens=...)`` to decide whether to flip

@@ -30,14 +30,17 @@ def test_unknown_role_resolves_to_global_default(cfg):
         assert out["insecure_tls"] is True
 
 
-def test_unknown_role_defaults_local_without_global(cfg):
-    # No global default set → unknown role resolves (via _row_for) to local.
-    assert cfg.resolve_litellm("enhancer")["model_id"].startswith("openai/")
-    assert cfg._row_for("enhancer")["provider"] == "local"
-    # get() stays strict (observability depends on the raise)
+def test_unknown_role_defaults_openai_compatible_without_global(cfg):
+    # No global default → unknown role resolves (via _row_for) to the only
+    # provider, openai_compatible.
+    assert cfg.resolve_litellm("some_future_role")["model_id"].startswith("openai/")
+    assert cfg._row_for("some_future_role")["provider"] == "openai_compatible"
+    # get() stays strict for a genuinely-unknown role (observability
+    # depends on the raise). "enhancer" is a real archetype now, so it
+    # resolves instead of raising.
     import pytest as _pt
     with _pt.raises(ValueError):
-        cfg.get("enhancer")
+        cfg.get("some_future_role")
 
 
 # ── ensure_runtime ───────────────────────────────────────────────────

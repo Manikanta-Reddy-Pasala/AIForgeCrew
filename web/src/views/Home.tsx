@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   api,
+  chatApi,
   AgentRole,
   AgentRoleConfig,
   integrationsApi,
@@ -32,11 +33,10 @@ const ROLE_HINTS: Record<AgentRole, string> = {
   learner:   'Runs only on verdict=pass. Writes :Fact rows to memory.',
 };
 
-// Providers where base_url should be visible by default
-const PROVIDERS_WITH_BASE_URL = new Set<ProviderId>(['openai_compatible', 'local']);
-// Providers where api_key field is shown
+// openai_compatible is the only provider — base URL, API key and the
+// Test button all apply to it.
+const PROVIDERS_WITH_BASE_URL = new Set<ProviderId>(['openai_compatible']);
 const PROVIDERS_WITH_API_KEY = new Set<ProviderId>(['openai_compatible']);
-// Providers where "Test connection" button appears
 const PROVIDERS_WITH_TEST = new Set<ProviderId>(['openai_compatible']);
 
 interface RowState {
@@ -106,7 +106,7 @@ export default function Home() {
     useState<Record<AgentRole, AgentRoleConfig> | null>(null);
   const [rows, setRows] = useState<Record<AgentRole, RowState>>(() =>
     Object.fromEntries(
-      ROLE_ORDER.map(r => [r, emptyRow('local', '', null)]),
+      ROLE_ORDER.map(r => [r, emptyRow('openai_compatible', '', null)]),
     ) as Record<AgentRole, RowState>,
   );
   const [loading, setLoading] = useState(true);
@@ -121,7 +121,7 @@ export default function Home() {
 
   // bulk "apply to all" widget
   const [bulk, setBulk] = useState<BulkState>({
-    provider: 'local',
+    provider: 'openai_compatible',
     model: '',
     base_url: '',
     api_key: '',
@@ -363,36 +363,15 @@ export default function Home() {
     else toast.error('Apply failed for all steps');
   }
 
-  // ── profile presets — bulk-assign one (provider, model) to all roles ─
-  const [profiles, setProfiles] = useState<
-    Array<{ name: string; provider: string; model: string }>
-  >([]);
-  const [profileBusy, setProfileBusy] = useState<string | null>(null);
-  useEffect(() => {
-    api.agentsV2Profiles()
-      .then(d => setProfiles(d.profiles || []))
-      .catch(() => { /* surface only on apply failure */ });
-  }, []);
-  async function applyProfile(name: string) {
-    if (profileBusy) return;
-    setProfileBusy(name);
-    try {
-      await api.applyAgentV2Profile(name);
-      toast.success(`Profile "${name}" applied to all archetypes`);
-      await load(true);
-    } catch (e: any) {
-      toast.error(`Profile apply failed: ${e?.message || 'unknown'}`);
-    } finally {
-      setProfileBusy(null);
-    }
-  }
+  // ── reset all saved per-role config (clean reconfigure) ─────────────
+  const [resetBusy, setResetBusy] = useState(false);
   async function resetConfig() {
-    if (profileBusy) return;
+    if (resetBusy) return;
     if (!window.confirm(
       'Reset all agent config? This deletes every saved per-role setting so '
       + 'stale rows can\'t shadow the model you set next. You\'ll reconfigure '
       + 'from a clean slate.')) return;
-    setProfileBusy('__reset__');
+    setResetBusy(true);
     try {
       const r = await api.resetAgentsV2(false);
       toast.success(r.removed ? 'Agent config reset — configure your model below.'
@@ -401,48 +380,7 @@ export default function Home() {
     } catch (e: any) {
       toast.error(`Reset failed: ${e?.message || 'unknown'}`);
     } finally {
-      setProfileBusy(null);
-    }
-  }
-
-  // ── runtime-wide backend toggle (fallback chain for every agent) ─────
-  const [doerBackend, setDoerBackend] = useState<string>('local');
-  const [backendOptions, setBackendOptions] = useState<string[]>(['local']);
-  const [doerBackendBusy, setDoerBackendBusy] = useState(false);
-  useEffect(() => {
-    fetch('/api/runtime/llm_backend')
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (!d) return;
-        setDoerBackend(d.backend || 'local');
-        if (Array.isArray(d.options) && d.options.length > 0) {
-          setBackendOptions(d.options);
-        }
-      })
-      .catch(() => { /* endpoint might not exist on this build */ });
-  }, []);
-  const BACKEND_LABEL: Record<string, string> = {
-    local:        'local (mlx-lm)',
-    ollama_cloud: 'ollama cloud',
-    openai:       'openai (API)',
-    gemini:       'gemini (cloud Flash)',
-  };
-  async function changeDoerBackend(next: string) {
-    setDoerBackendBusy(true);
-    try {
-      const r = await fetch('/api/runtime/llm_backend', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backend: next }),
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
-      setDoerBackend(d.backend);
-      toast.success(`Runtime backend → ${d.backend}`);
-    } catch (e: any) {
-      toast.error(`Switch failed: ${e.message}`);
-    } finally {
-      setDoerBackendBusy(false);
+      setResetBusy(false);
     }
   }
 
@@ -464,6 +402,15 @@ export default function Home() {
         <div className="row" style={{ gap: 8 }}>
           <button className="ghost" onClick={() => load()} disabled={loading}>
             <Icon.Refresh size={14} /> Reload
+          </button>
+          <button
+            className="ghost"
+            onClick={resetConfig}
+            disabled={resetBusy}
+            title="Delete all saved per-role config so stale rows can't shadow the model you set next"
+            style={{ color: 'var(--err, #ef4444)' }}
+          >
+            {resetBusy ? 'Resetting…' : '↺ Reset all config'}
           </button>
         </div>
       </div>
@@ -598,65 +545,8 @@ export default function Home() {
         )}
       </div>
 
-      {/* ── Profile presets (bundled provider+model combos) ────── */}
-      {profiles.length > 0 && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <h2 style={{ fontSize: 14 }}>Profile preset</h2>
-          <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
-            One-click assign a bundled provider + model to every archetype.
-            Individual rows below can still be overridden afterwards.
-          </div>
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            {profiles.map(p => (
-              <button
-                key={p.name}
-                className="ghost"
-                onClick={() => applyProfile(p.name)}
-                disabled={!!profileBusy}
-                title={`${p.provider} → ${p.model}`}
-              >
-                {profileBusy === p.name ? `Applying ${p.name}…` : `Apply ${p.name}`}
-                <span className="small muted" style={{ marginLeft: 6 }}>
-                  ({p.provider})
-                </span>
-              </button>
-            ))}
-            <button
-              className="ghost"
-              onClick={resetConfig}
-              disabled={!!profileBusy}
-              title="Delete all saved per-role config so stale rows can't shadow the model you set next"
-              style={{ marginLeft: 'auto', color: 'var(--err, #ef4444)' }}
-            >
-              {profileBusy === '__reset__' ? 'Resetting…' : '↺ Reset all config'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Runtime-wide backend (fallback chain for every agent) ── */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 14 }}>LLM backend (all agents)</h2>
-        <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
-          Default backend used by every agent when its archetype row below
-          has no explicit override. Options reflect what's actually
-          installed/reachable on this host.
-        </div>
-        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
-          <label className="small muted">Backend</label>
-          <select
-            value={doerBackend}
-            onChange={e => changeDoerBackend(e.target.value)}
-            disabled={doerBackendBusy}
-            style={{ minWidth: 240 }}
-          >
-            {backendOptions.map(opt => (
-              <option key={opt} value={opt}>{BACKEND_LABEL[opt] || opt}</option>
-            ))}
-          </select>
-          {doerBackendBusy && <span className="small muted">switching…</span>}
-        </div>
-      </div>
+      {/* ── Orchestrator model (enhancer + architect + planner) ── */}
+      <OrchestratorModelCard />
 
       {/* ── Per-archetype config table ─────────────────────────── */}
       <div className="settings-table">
@@ -773,11 +663,7 @@ export default function Home() {
                           value={row.base_url}
                           onChange={e => patch(role, { base_url: e.target.value, testResult: null })}
                           disabled={row.busy}
-                          placeholder={
-                            row.provider === 'local'
-                              ? 'http://127.0.0.1:1234/v1 (default)'
-                              : 'https://your-api.example.com/v1'
-                          }
+                          placeholder="http://127.0.0.1:1234/v1 or https://your-api.example.com/v1"
                           aria-label={`${role} base url`}
                           style={{ flex: 1, minWidth: 0 }}
                         />
@@ -899,12 +785,90 @@ export default function Home() {
       <div className="card" style={{ marginTop: 16 }}>
         <h2 style={{ fontSize: 14 }}>Providers</h2>
         <ul className="small muted" style={{ marginTop: 6, paddingLeft: 18 }}>
-          <li><code>local</code> — mlx-lm on Mac Studio. Catalog auto-discovered from <code>http://127.0.0.1:1234/v1/models</code>.</li>
-          <li><code>ollama_cloud</code> — Ollama Cloud. Requires <code>OLLAMA_CLOUD_API_KEY</code>; catalog cached for 5 min.</li>
-          <li><code>openai_compatible</code> — Any OpenAI-compatible endpoint (OpenRouter, Groq, Together, vLLM, cloud-with-key). Enter a base URL and optional API key; use <em>Test</em> to verify.</li>
+          <li><code>openai_compatible</code> — Any OpenAI-compatible endpoint (local LM Studio / mlx-lm, OpenRouter, Groq, Together, vLLM, cloud-with-key). Enter a base URL and optional API key; use <em>Test</em> to verify.</li>
         </ul>
       </div>
     </>
+  );
+}
+
+// ── Orchestrator model card ──────────────────────────────────────────────────
+// The orchestrator = the layer-1 agents (enhancer + architect + planner) that
+// analyze/enhance a request and split it into subtasks. Picking a model here
+// sets all of them at once via PUT /api/chat/orchestrator-model — letting the
+// splitter run on a stronger reasoning model than the workers.
+function OrchestratorModelCard() {
+  const [models, setModels] = useState<Array<{ id: string; label: string }>>([]);
+  const [current, setCurrent] = useState<string>('');
+  const [roles, setRoles] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  async function load() {
+    try {
+      const d = await chatApi.orchestratorModel();
+      setModels(d.models || []);
+      setCurrent(d.model || '');
+      setRoles(d.roles || []);
+    } catch {
+      /* endpoint absent on this build — card stays empty */
+    } finally {
+      setLoaded(true);
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function change(next: string) {
+    if (!next || next === current) return;
+    setBusy(true);
+    try {
+      await chatApi.setOrchestratorModel(next);
+      setCurrent(next);
+      toast.success(`Orchestrator model → ${next}`);
+    } catch (e: any) {
+      toast.error(`Switch failed: ${e?.message || 'unknown'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Make sure the current selection is always present as an option.
+  const opts = current && !models.some(m => m.id === current)
+    ? [{ id: current, label: current.split('/').pop() || current }, ...models]
+    : models;
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h2 style={{ fontSize: 14 }}>Orchestrator model</h2>
+      <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
+        Model used by the orchestrator{roles.length ? ` (${roles.join(' + ')})` : ''} —
+        the agents that enhance the request and split it into subtasks. Picks
+        from the same model universe as chat.
+      </div>
+      <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+        <label className="small muted">Model</label>
+        {opts.length > 0 ? (
+          <select
+            value={current}
+            onChange={e => change(e.target.value)}
+            disabled={busy || !loaded}
+            style={{ minWidth: 280 }}
+            aria-label="orchestrator model"
+          >
+            {!current && <option value="">— select a model —</option>}
+            {opts.map(m => (
+              <option key={m.id} value={m.id}>{m.label || m.id}</option>
+            ))}
+          </select>
+        ) : (
+          <span className="small muted">
+            {loaded ? 'No models available — configure an endpoint above first.'
+                    : 'Loading…'}
+          </span>
+        )}
+        {busy && <span className="small muted">switching…</span>}
+      </div>
+    </div>
   );
 }
 

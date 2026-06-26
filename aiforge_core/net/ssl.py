@@ -96,7 +96,6 @@ def _configured_service_hosts() -> set[str]:
             _add(val)
     for key in (
         "AIFORGE_LM_BASE_URL", "AIFORGE_OPENAI_COMPAT_BASE_URL",
-        "AIFORGE_OLLAMA_CLOUD_BASE_URL",
         "AIFORGE_EMBED_URL", "AIFORGE_RERANK_URL",
         "AIFORGE_API_BASE", "AIFORGE_MEMORY_URL",
         "NEO4J_HTTP_URL", "NEO4J_URI",

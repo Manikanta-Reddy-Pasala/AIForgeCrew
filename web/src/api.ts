@@ -230,7 +230,7 @@ export interface MemorySource {
 export type AgentRole =
   | 'architect' | 'planner' | 'verifier' | 'doer' | 'feedback' | 'learner';
 
-export type ProviderId = 'local' | 'ollama_cloud' | 'openai_compatible';
+export type ProviderId = 'openai_compatible';
 export type ModelTier = 'fast' | 'balanced' | 'premium';
 
 export interface ProviderModel {

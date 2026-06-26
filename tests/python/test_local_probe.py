@@ -110,35 +110,25 @@ def test_substitute_keeps_alive_local() -> None:
     assert out is cfg
 
 
-def test_substitute_swaps_dead_local_for_cloud_default(
+def test_substitute_is_noop_for_dead_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LM Studio is off → probe says dead → maybe_substitute returns
-    the cloud default cfg from agent_config."""
-    monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
-    # hermetic: the suite often runs with AIFORGE_ESCALATE_DISABLE=1,
-    # which makes cloud_default_for_local return None and no swap happen
+    """openai_compatible is the only provider now — there is no cloud
+    default to swap to, so maybe_substitute_primary is a pure no-op and
+    returns the original cfg even when the local endpoint is dead. The
+    per-call EscalatingLlm retry chain surfaces the error instead."""
     monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "0")
     cfg = _make_cfg("http://127.0.0.1:1234/v1")
-    import urllib.error
-    with patch("urllib.request.urlopen",
-               side_effect=urllib.error.URLError("dead")):
-        out = lp.maybe_substitute_primary("doer", cfg)
-    assert out is not cfg
-    assert out.get("_provider") == "ollama_cloud"
-    assert "qwen3-coder-next" in out["model_id"]
+    out = lp.maybe_substitute_primary("doer", cfg)
+    assert out is cfg
 
 
 def test_substitute_keeps_dead_when_no_cloud_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No cloud key + AIFORGE_ESCALATE_DISABLE=1 means the helper has
-    nothing to swap to. Caller falls back to the chain's per-call
-    rescue path."""
+    """No cloud default configured → the helper has nothing to swap to.
+    Caller falls back to the chain's per-call rescue path."""
     monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "1")
     cfg = _make_cfg("http://127.0.0.1:1234/v1")
-    import urllib.error
-    with patch("urllib.request.urlopen",
-               side_effect=urllib.error.URLError("dead")):
-        out = lp.maybe_substitute_primary("doer", cfg)
+    out = lp.maybe_substitute_primary("doer", cfg)
     assert out is cfg

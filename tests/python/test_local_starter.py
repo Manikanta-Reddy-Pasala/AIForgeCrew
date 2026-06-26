@@ -214,25 +214,17 @@ def test_dead_local_recovered_via_autostart(
     assert out is cfg
 
 
-def test_dead_local_autostart_fails_falls_back_to_cloud(
+def test_dead_local_maybe_substitute_is_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Probe dead → starter SSH 1xx → still dead → cfg swapped to
-    cloud default."""
+    """openai_compatible is the only provider now — maybe_substitute_primary
+    is a no-op: a dead local endpoint is no longer swapped for a cloud
+    default. It returns the cfg unchanged and never SSH-autostarts."""
     monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
     monkeypatch.setenv("AIFORGE_LMS_WARMUP_S", "0")
-    monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
-    # hermetic: AIFORGE_ESCALATE_DISABLE=1 (common suite env) disables
-    # cloud_default_for_local → no swap → spurious failure
     monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "0")
-    import urllib.error
 
     cfg = {"model_id": "openai//Users/foo", "api_base": "http://127.0.0.1:1234/v1",
            "api_key": "lm-studio"}
-    with patch("subprocess.run", return_value=_proc_fail()), \
-         patch("urllib.request.urlopen",
-               side_effect=urllib.error.URLError("dead")), \
-         patch("time.sleep"):
-        out = lp.maybe_substitute_primary("doer", cfg)
-    assert out is not cfg
-    assert out.get("_provider") == "ollama_cloud"
+    out = lp.maybe_substitute_primary("doer", cfg)
+    assert out is cfg

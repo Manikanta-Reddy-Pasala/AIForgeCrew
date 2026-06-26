@@ -26,28 +26,18 @@ def test_env_pin_wins(monkeypatch):
     assert ac._local_default_model() == "my/pinned-model"
 
 
-def test_discovery_first_id_used(monkeypatch):
-    monkeypatch.setattr(
-        ac, "_discover_local_models",
-        lambda: [{"id": "served/model-a"}, {"id": "served/model-b"}],
-    )
-    assert ac._local_default_model() == "served/model-a"
-    # cached on second call even if discovery would now fail
-    monkeypatch.setattr(ac, "_discover_local_models",
-                        lambda: (_ for _ in ()).throw(RuntimeError))
-    assert ac._local_default_model() == "served/model-a"
-
-
-def test_fallback_when_server_dead(monkeypatch):
-    monkeypatch.setattr(ac, "_discover_local_models", lambda: [])
+def test_fallback_when_unconfigured(monkeypatch):
+    # No env pin → neutral placeholder (model discovery is UI-driven now).
+    monkeypatch.delenv("AIFORGE_LOCAL_DEFAULT_MODEL", raising=False)
+    ac._FALLBACK_WARNED[0] = False
     assert ac._local_default_model() == ac._LOCAL_FALLBACK_MODEL
 
 
-def test_defaults_use_dynamic_model(monkeypatch):
+def test_defaults_use_openai_compatible(monkeypatch):
     monkeypatch.setenv("AIFORGE_LOCAL_DEFAULT_MODEL", "dyn/model")
     cfg = ac.load_all()
     assert cfg["doer"]["model"] == "dyn/model"
-    assert cfg["planner"]["provider"] == "local"
+    assert cfg["planner"]["provider"] == "openai_compatible"
 
 
 def test_role_env_override_still_wins(monkeypatch):
@@ -58,20 +48,22 @@ def test_role_env_override_still_wins(monkeypatch):
     assert cfg["verifier"]["model"] == "dyn/model"
 
 
-def test_local_catalog_is_discovery_only():
-    assert ac.MODEL_CATALOG["local"] == []
+def test_only_openai_compatible_in_catalog():
+    assert list(ac.MODEL_CATALOG) == ["openai_compatible"]
+    assert ac.MODEL_CATALOG["openai_compatible"] == []
 
 
-def test_list_providers_local_default_resolves(monkeypatch):
-    monkeypatch.setenv("AIFORGE_LOCAL_DEFAULT_MODEL", "dyn/model")
-    row = next(p for p in ac.list_providers() if p["id"] == "local")
-    assert row["default_model"] == "dyn/model"
+def test_list_providers_only_openai_compatible():
+    provs = ac.list_providers()
+    assert [p["id"] for p in provs] == ["openai_compatible"]
 
 
-def test_apply_profile_local_resolves_dynamic(monkeypatch):
-    monkeypatch.setenv("AIFORGE_LOCAL_DEFAULT_MODEL", "dyn/model")
-    out = ac.apply_profile("local")
-    assert all(row["model"] == "dyn/model" for row in out.values())
+def test_apply_profile_raises_no_profiles():
+    # No profiles are bundled anymore.
+    assert ac.profiles() == []
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        ac.apply_profile("local")
 
 
 def test_model_router_removed():

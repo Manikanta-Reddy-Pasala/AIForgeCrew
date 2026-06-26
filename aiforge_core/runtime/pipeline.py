@@ -116,8 +116,6 @@ def _forced_primary_cfg(role: str, provider: str) -> dict | None:
     cfg: dict = {
         "model_id": model, "api_base": prov.get("base_url"), "api_key": api_key,
     }
-    if provider == "ollama_cloud":
-        cfg["custom_llm_provider"] = "openai"
     return cfg
 
 

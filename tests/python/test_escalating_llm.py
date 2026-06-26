@@ -50,15 +50,16 @@ def test_chain_skips_providers_without_api_key(
     assert providers == []
 
 
-def test_chain_includes_ollama_when_key_set(
+def test_chain_empty_no_cloud_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """openai_compatible is the only provider now and there is no built-in
+    cloud chain — even with legacy keys set, the chain stays empty."""
     _force_primary_local(monkeypatch)
     monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     chain = ac.cloud_escalation_chain("doer")
-    providers = [c["_provider"] for c in chain]
-    assert "ollama_cloud" in providers
+    assert chain == []
 
 
 def test_chain_skips_primary_provider(
@@ -82,13 +83,16 @@ def test_chain_disabled_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ac.cloud_escalation_chain("doer") == []
 
 
-def test_chain_pinned_provider_first(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chain_pinned_unknown_provider_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pin to a provider that no longer exists (ollama_cloud) is skipped
+    cleanly — the chain stays empty rather than crashing."""
     _force_primary_local(monkeypatch)
     monkeypatch.setenv("OLLAMA_CLOUD_API_KEY", "k")
     monkeypatch.setenv("AIFORGE_DOER_CLOUD_PROVIDER", "ollama_cloud")
     chain = ac.cloud_escalation_chain("doer")
-    providers = [c["_provider"] for c in chain]
-    assert providers[0] == "ollama_cloud"
+    assert chain == []
 
 
 # ─── EscalatingLlm — retry decision logic ─────────────────────────────

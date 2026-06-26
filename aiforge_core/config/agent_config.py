@@ -22,9 +22,6 @@ import json
 import logging
 import os
 import threading
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -74,50 +71,33 @@ _FALLBACK_WARNED = [False]
 
 
 def _local_default_model() -> str:
-    """Resolve the local provider's default model id at call time."""
+    """Resolve a fallback model id when none is configured.
+
+    ``openai_compatible`` is the only provider now; its model list comes
+    from the per-role ``/v1/models`` probe (UI-driven), so there is no
+    discovery here. Returns the operator's env pin, else a neutral
+    placeholder (with a one-time warning) when nothing is configured.
+    """
     env = os.environ.get("AIFORGE_LOCAL_DEFAULT_MODEL")
     if env and env.strip():
         return env.strip()
-    now = time.time()
-    if _LOCAL_DEFAULT_CACHE[1] and (now - _LOCAL_DEFAULT_CACHE[0]) < \
-            _LOCAL_DEFAULT_TTL_S:
-        return _LOCAL_DEFAULT_CACHE[1]
-    try:
-        discovered = _discover_local_models()
-    except Exception:
-        discovered = []
-    if discovered:
-        _LOCAL_DEFAULT_CACHE[0] = now
-        _LOCAL_DEFAULT_CACHE[1] = discovered[0]["id"]
-        return _LOCAL_DEFAULT_CACHE[1]
-    # Nothing configured, env unset, and the local endpoint served no models
-    # (down / empty). Don't fabricate a real-looking model — return a neutral
-    # placeholder and tell the operator once how to fix it.
+    # Nothing configured and env unset. Don't fabricate a real-looking model
+    # — return a neutral placeholder and tell the operator once how to fix it.
     if not _FALLBACK_WARNED[0]:
         _FALLBACK_WARNED[0] = True
         logging.getLogger("aiforge.agent_config").warning(
-            "no local model configured and the local endpoint served no "
-            "models — using placeholder '%s' (every call will fail). Fix: set "
-            "a model in the UI (Home → Agents), pin AIFORGE_LOCAL_DEFAULT_MODEL, "
-            "point AIFORGE_LM_BASE_URL at a live LM Studio/mlx-lm, or configure "
-            "a cloud fallback (e.g. OLLAMA_CLOUD_API_KEY).",
+            "no model configured — using placeholder '%s' (every call will "
+            "fail). Fix: set a model in the UI (Home), pin "
+            "AIFORGE_LOCAL_DEFAULT_MODEL, or point a role's base_url at a live "
+            "OpenAI-compatible endpoint.",
             _LOCAL_FALLBACK_MODEL)
     return _LOCAL_FALLBACK_MODEL
 
 PROVIDERS: dict[str, dict[str, Any]] = {
-    "local": {
-        "label": "Local (LM Studio / mlx-lm on Mac Studio)",
-        "litellm_prefix": "openai",
-        # Resolved at call time by _local_default_model() — see
-        # list_providers() / _defaults(). None here means "dynamic".
-        "default_model": None,
-        "api_key_env": "LM_STUDIO_API_KEY",
-        "api_key_default": "lm-studio",
-    },
-    # Generic OpenAI-compatible endpoint — the deploy-anywhere provider.
-    # User supplies base_url (+ optional api_key) per role via the home
-    # page. Covers OSS-no-token, LM Studio, OpenRouter, Groq, Together,
-    # vLLM, and cloud-with-key. Blank key = no token.
+    # Generic OpenAI-compatible endpoint — the only provider. User supplies
+    # base_url (+ optional api_key) per role via the home page. Covers
+    # OSS-no-token, LM Studio, OpenRouter, Groq, Together, vLLM, and
+    # cloud-with-key. Blank key = no token.
     "openai_compatible": {
         "label": "OpenAI-compatible (any base URL — OSS / LM Studio / OpenRouter / cloud)",
         "litellm_prefix": "openai",
@@ -125,19 +105,6 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "api_key_env": "AIFORGE_OPENAI_COMPAT_API_KEY",
         "api_key_default": "not-needed",  # OSS endpoints ignore the key
         "base_url": None,               # required per-role (UI-set)
-    },
-    "ollama_cloud": {
-        "label": "Ollama Cloud",
-        "litellm_prefix": "openai",
-        # Colon-delimited model ids (e.g. ``llama3.1:70b``) trigger
-        # LiteLLM's Ollama auto-detector even with the ``openai/`` prefix
-        # and route to ``/api/generate`` instead of the OpenAI-compat
-        # ``/chat/completions`` ollama.com actually exposes. Pin a name
-        # without ``:`` so LiteLLM stays on the openai code path.
-        "default_model": "qwen3-coder-next",
-        "api_key_env": "OLLAMA_CLOUD_API_KEY",
-        "api_key_default": "",
-        "base_url": "https://ollama.com/v1",
     },
 }
 
@@ -206,153 +173,36 @@ def _defaults() -> dict[str, dict[str, Any]]:
         }
     model = _local_default_model()
     return {
-        role: {"provider": "local", "model": model, "base_url": None}
+        role: {"provider": "openai_compatible", "model": model,
+               "base_url": None}
         for role in _ROLES
     }
 
 
 # ────────────────────────── Model catalog ──────────────────────────────
-# Hardcoded curated catalog. Local + ollama_cloud get enriched at call
-# time by hitting the respective /v1/models endpoint (best-effort, with
-# a short cache to avoid hammering the upstream on every UI refresh).
+# openai_compatible is fully dynamic — the model list depends on the
+# per-role base_url, so the UI fetches it on demand via the provider-probe
+# endpoint (/v1/models) rather than from this static catalog.
 
 MODEL_CATALOG: dict[str, list[dict[str, Any]]] = {
-    # local is fully dynamic — populated by _discover_local_models()
-    # hitting /v1/models on the configured endpoints. No hardcoded
-    # paths: stale entries for deleted models caused phantom catalog
-    # rows (Qwen3.6-27B / gemma-4-31b were removed from disk long ago).
-    "local": [],
-    # openai_compatible is fully dynamic too — the model list depends on
-    # the per-role base_url, so the UI fetches it on demand via the
-    # provider-probe endpoint rather than from this static catalog.
     "openai_compatible": [],
-    "ollama_cloud": [
-        {"id": "qwen3-coder:480b", "label": "Qwen3 Coder 480B",
-         "context": 128000, "tier": "premium"},
-        {"id": "glm-4.7", "label": "GLM 4.7",
-         "context": 128000, "tier": "premium"},
-        {"id": "gpt-oss:120b", "label": "GPT-OSS 120B",
-         "context": 128000, "tier": "balanced"},
-        {"id": "kimi-k2:1t", "label": "Kimi K2 1T",
-         "context": 128000, "tier": "premium"},
-        {"id": "deepseek-v3.2", "label": "DeepSeek V3.2",
-         "context": 128000, "tier": "premium"},
-        {"id": "gemma4:31b", "label": "Gemma 4 31B",
-         "context": 64000, "tier": "balanced"},
-    ],
 }
 
-# Module-level cache for dynamic model discovery. Keyed by provider id;
-# value is (timestamp, list_of_model_dicts). 5-minute TTL.
+# Module-level cache retained for the reset() cache-clear contract (and
+# tests) — no longer populated now that catalog discovery is UI-driven.
 _CATALOG_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _CATALOG_TTL_S = 300.0
 _CATALOG_LOCK = threading.Lock()
 
 
-def _http_get_json(url: str, *, headers: dict[str, str] | None = None,
-                   timeout: float = 3.0) -> dict | None:
-    """Tiny helper. Returns parsed JSON dict on 200, None on any failure.
-    Uses urllib so we add no new deps."""
-    from aiforge_core.net.ssl import context_for as _ssl_context_for
-    req = urllib.request.Request(url, headers=headers or {})
-    try:
-        with urllib.request.urlopen(
-            req, timeout=timeout, context=_ssl_context_for(url)
-        ) as r:
-            if r.getcode() != 200:
-                return None
-            return json.loads(r.read().decode("utf-8", "replace"))
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
-            ValueError, TimeoutError):
-        return None
-
-
-def _discover_local_models() -> list[dict[str, Any]]:
-    """Probe the two LM Studio ports we run on Mac Studio.
-
-    Doer typically lives on :1234, planner on :1235 (mlx-lm only serves
-    one model per process). Each /v1/models response gives us the
-    actual ids the server will accept. Failures fall through silently —
-    the static catalog is good enough.
-    """
-    bases: list[str] = []
-    primary = os.environ.get("AIFORGE_LM_BASE_URL", "http://127.0.0.1:1234")
-    bases.append(primary.rstrip("/").rstrip("/v1"))
-    # Always also probe the planner port unless the caller's primary is
-    # already 1235.
-    if "1235" not in primary:
-        bases.append("http://127.0.0.1:1235")
-
-    seen: set[str] = set()
-    out: list[dict[str, Any]] = []
-    for base in bases:
-        data = _http_get_json(f"{base}/v1/models") or {}
-        for m in data.get("data") or []:
-            mid = m.get("id") or m.get("name")
-            if not mid or mid in seen:
-                continue
-            seen.add(mid)
-            label = mid.split("/")[-1] if "/" in mid else mid
-            out.append({
-                "id": mid, "label": label,
-                "context": m.get("context_length"),
-                "tier": "balanced",
-            })
-    return out
-
-
-def _discover_ollama_cloud_models() -> list[dict[str, Any]]:
-    """Hit Ollama Cloud's /v1/models endpoint when an API key is set."""
-    api_key = os.environ.get("OLLAMA_CLOUD_API_KEY")
-    if not api_key:
-        return []
-    data = _http_get_json(
-        "https://ollama.com/v1/models",
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=4.0,
-    ) or {}
-    out: list[dict[str, Any]] = []
-    for m in data.get("data") or data.get("models") or []:
-        mid = m.get("id") or m.get("name")
-        if not mid:
-            continue
-        out.append({
-            "id": mid,
-            "label": m.get("display_name") or mid,
-            "context": m.get("context_length") or m.get("context"),
-            "tier": "balanced",
-        })
-    return out
-
-
 def _enriched_catalog(provider: str) -> list[dict[str, Any]]:
-    """Static curated list, optionally augmented with dynamically
-    discovered models. 5-minute cache. Failures keep the static list."""
-    static = list(MODEL_CATALOG.get(provider) or [])
-    if provider not in ("local", "ollama_cloud"):
-        return static
-    with _CATALOG_LOCK:
-        cached = _CATALOG_CACHE.get(provider)
-        now = time.time()
-        if cached and (now - cached[0]) < _CATALOG_TTL_S:
-            return cached[1]
-        try:
-            if provider == "local":
-                discovered = _discover_local_models()
-            else:
-                discovered = _discover_ollama_cloud_models()
-        except Exception:
-            discovered = []
-        # Merge: static first (curated order preserved), then any
-        # discovered ids we don't already know about.
-        known = {m["id"] for m in static}
-        merged = list(static)
-        for m in discovered:
-            if m["id"] not in known:
-                merged.append(m)
-                known.add(m["id"])
-        _CATALOG_CACHE[provider] = (now, merged)
-        return merged
+    """Static curated list for a provider.
+
+    ``openai_compatible`` carries no static catalog — its model list is
+    discovered per-role from the configured endpoint's ``/v1/models`` via
+    the UI provider-probe, not from here.
+    """
+    return list(MODEL_CATALOG.get(provider) or [])
 
 
 def _path() -> Path:
@@ -473,7 +323,7 @@ def _row_for(role: str) -> dict[str, Any]:
         return {"provider": gd["provider"], "model": model,
                 "base_url": gd.get("base_url"), "api_key": gd.get("api_key"),
                 "insecure_tls": bool(gd.get("insecure_tls"))}
-    return {"provider": "local", "model": _local_default_model(),
+    return {"provider": "openai_compatible", "model": _local_default_model(),
             "base_url": None, "api_key": None, "insecure_tls": False}
 
 
@@ -584,7 +434,7 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     ``_default`` via :func:`_row_for` rather than raising.
     """
     row = _row_for(role)
-    prov = PROVIDERS.get(row["provider"]) or PROVIDERS["local"]
+    prov = PROVIDERS.get(row["provider"]) or PROVIDERS["openai_compatible"]
     prefix = prov["litellm_prefix"]
     model = row["model"]
     # Always add LiteLLM provider prefix unless caller already supplied one.
@@ -599,43 +449,20 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     # AIFORGE_<ROLE>_BASE_URL is reflected in row["base_url"] before we
     # get here.
     stored = row.get("base_url")
-    base_url = stored or prov.get("base_url")
-    if row["provider"] == "local":
-        # Per-role override → global override → stored → default. Lets us
-        # run one mlx-lm server per role on different ports (planner=1235,
-        # doer=1234) since mlx-lm only serves one model per process.
-        base_url = (
-            os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
-            or stored
-            or os.environ.get("AIFORGE_LM_BASE_URL")
-            or "http://127.0.0.1:1234/v1"
-        )
-    elif row["provider"] == "ollama_cloud":
-        base_url = (
-            os.environ.get(f"AIFORGE_{role.upper()}_OLLAMA_CLOUD_BASE_URL")
-            or os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
-            or stored
-            or os.environ.get("AIFORGE_OLLAMA_CLOUD_BASE_URL")
-            or prov.get("base_url")
-        )
-    else:
-        base_url = (
-            os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
-            or stored
-            or prov.get("base_url")
-        )
-    if row["provider"] == "openai_compatible":
-        # env > per-role env > stored config key > provider default
-        # ("not-needed" sentinel so OSS-no-token endpoints still get a
-        # non-empty key, which the OpenAI client requires).
-        api_key = (
-            os.environ.get(prov["api_key_env"])
-            or os.environ.get(f"AIFORGE_{role.upper()}_API_KEY")
-            or row.get("api_key")
-            or prov["api_key_default"]
-        )
-    else:
-        api_key = os.environ.get(prov["api_key_env"]) or prov["api_key_default"]
+    base_url = (
+        os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
+        or stored
+        or prov.get("base_url")
+    )
+    # env > per-role env > stored config key > provider default
+    # ("not-needed" sentinel so OSS-no-token endpoints still get a
+    # non-empty key, which the OpenAI client requires).
+    api_key = (
+        os.environ.get(prov["api_key_env"])
+        or os.environ.get(f"AIFORGE_{role.upper()}_API_KEY")
+        or row.get("api_key")
+        or prov["api_key_default"]
+    )
     return {
         "model_id": model, "api_base": base_url, "api_key": api_key,
         # Per-role TLS opt-out for a self-signed / internal HTTPS endpoint.
@@ -646,11 +473,11 @@ def resolve_litellm(role: str) -> dict[str, Any]:
 
 
 # Auto-escalation chain — preferred order when the primary fails.
-# Cloud providers only; runtime falls through to the first one with a
-# usable api_key.
-_CLOUD_PROVIDERS_ORDERED: tuple[str, ...] = (
-    "ollama_cloud",
-)
+# ``openai_compatible`` is the only provider and has no blind-usable
+# default model, so there is no built-in cloud chain. An operator can
+# still pin one via AIFORGE_<ROLE>_CLOUD_PROVIDER, but with no default
+# model it is skipped. Kept empty so the chain helpers no-op gracefully.
+_CLOUD_PROVIDERS_ORDERED: tuple[str, ...] = ()
 
 
 def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
@@ -709,27 +536,18 @@ def cloud_escalation_chain(role: str) -> list[dict[str, Any]]:
             "model_id": model, "api_base": base_url, "api_key": api_key,
             "_provider": name,
         }
-        # Ollama Cloud sits at https://ollama.com/v1 (OpenAI-compat) but
-        # LiteLLM detects the ollama.com domain + treats it as an Ollama
-        # endpoint, posting to /api/generate which 404s. Force the
-        # openai code path explicitly.
-        if name == "ollama_cloud":
-            entry["custom_llm_provider"] = "openai"
         out.append(entry)
     return out
 
 
 def cloud_default_for_local(role: str) -> dict[str, Any] | None:
-    """Return a cloud-shaped cfg to use when the ``local`` primary is
-    unreachable.
+    """Return a cloud-shaped cfg to use when the primary is unreachable.
 
-    Picked the same way :func:`cloud_escalation_chain` picks chain
-    entries — first cloud provider (currently ``ollama_cloud``) that has
-    a key configured. Honours the per-role / global pin envs so an
-    operator can force a specific OpenAI-compatible cloud here.
-
-    Returns ``None`` when no cloud is configured (caller keeps the
-    dead local cfg + relies on the chain to rescue per-call).
+    With ``openai_compatible`` the only provider (no blind-usable default
+    model) there is no built-in cloud default, so this returns ``None``
+    unless an operator pins a provider that happens to carry a default
+    model. Caller keeps the primary cfg + relies on the per-call retry
+    chain.
     """
     if os.environ.get("AIFORGE_ESCALATE_DISABLE", "0") in ("1", "true"):
         return None
@@ -762,8 +580,6 @@ def cloud_default_for_local(role: str) -> dict[str, Any] | None:
             "api_key": api_key,
             "_provider": name,
         }
-        if name == "ollama_cloud":
-            entry["custom_llm_provider"] = "openai"
         return entry
     return None
 
@@ -782,9 +598,7 @@ def list_providers() -> list[dict[str, Any]]:
         {
             "id": pid,
             "label": prov["label"],
-            "default_model": (prov["default_model"]
-                              or (_local_default_model()
-                                  if pid == "local" else None)),
+            "default_model": prov["default_model"],
         }
         for pid, prov in PROVIDERS.items()
     ]
@@ -798,49 +612,28 @@ def list_models(provider: str) -> list[dict[str, Any]]:
 
 
 # ────────────────────────── Profile presets ────────────────────────────
-# A profile assigns one (provider, model) pair to all 9 archetypes at
-# once — the "everything on Ollama Cloud" or "all local" knob. After
-# applying, individual archetypes can still be flipped via set_role() or
-# env vars (mix-and-match).
+# Profiles used to bulk-switch every archetype between provider stacks
+# (local / Ollama Cloud). With ``openai_compatible`` the only provider
+# there is nothing meaningful to preset, so the dict is empty — the "Apply
+# to all" widget (per-role bulk set) covers the same need. Kept as an empty
+# dict so callers (profiles() / apply_profile() / the API) don't break.
 
-PROFILES: dict[str, dict[str, str]] = {
-    # Full Ollama Cloud stack — paid hosted, ~128K ctx, Qwen3-Coder 480B.
-    "ollama_cloud": {
-        "provider": "ollama_cloud",
-        "model": "qwen3-coder:480b",
-    },
-    # Full local stack — single LM Studio process serves all archetypes.
-    # Tune AIFORGE_LM_BASE_URL (default 1234) for per-role port routing.
-    # model="" means "resolve dynamically at apply time" — see
-    # apply_profile().
-    "local": {
-        "provider": "local",
-        "model": "",
-    },
-}
+PROFILES: dict[str, dict[str, str]] = {}
 
 
 def profiles() -> list[str]:
-    """Names of the bundled profiles."""
+    """Names of the bundled profiles (none — see PROFILES)."""
     return list(PROFILES.keys())
 
 
 def apply_profile(name: str) -> dict[str, dict[str, Any]]:
     """Bulk-assign one (provider, model) pair to every archetype.
 
-    Returns the resulting per-role config map. Existing per-role base_url
-    overrides are cleared — the profile is meant as a clean slate. After
-    applying, callers can still call ``set_role()`` to mix-and-match.
-
-    Raises ``ValueError`` on unknown profile name.
+    No profiles are bundled anymore (``openai_compatible`` is the only
+    provider). Always raises ``ValueError`` so the API surfaces a clean
+    404 rather than crashing.
     """
-    if name not in PROFILES:
-        raise ValueError(
-            f"unknown profile: {name!r}. known: {sorted(PROFILES)}"
-        )
-    spec = PROFILES[name]
-    model = spec["model"] or _local_default_model()
-    out: dict[str, dict[str, Any]] = {}
-    for role in _ARCHETYPES:
-        out[role] = set_role(role, spec["provider"], model)
-    return out
+    raise ValueError(
+        f"unknown profile: {name!r}. no profiles are bundled — use "
+        f"'Apply to all' on the Home page instead."
+    )

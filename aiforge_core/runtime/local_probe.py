@@ -101,81 +101,17 @@ def is_alive(api_base: str) -> bool:
 
 
 def maybe_substitute_primary(role: str, primary_cfg: dict) -> dict:
-    """If ``primary_cfg`` points at a dead local endpoint, swap it for
-    a cloud default. Returns the original dict unchanged otherwise.
+    """No-op now that ``openai_compatible`` is the only provider.
 
-    Substitution rule: only acts on the ``local`` provider. Cloud
-    providers always go through. The cloud default is read from
-    :func:`aiforge_core.config.agent_config.cloud_default_for_local`
-    so the operator can pin a different OpenAI-compatible fallback via
-    env without code changes.
+    This used to swap a dead local mlx-lm primary for a cloud default,
+    but there is no ``local`` provider and no built-in cloud fallback
+    anymore. Returns ``primary_cfg`` unchanged so existing callers
+    (pipeline build) keep working without a behaviour change — when the
+    configured endpoint is down, the per-call retry chain in
+    ``EscalatingLlm`` surfaces the error. :func:`is_alive` is retained
+    for the standalone liveness checks that still use it.
     """
-    api_base = primary_cfg.get("api_base", "")
-    # mlx-lm / LM Studio defaults to localhost:1234. The local provider
-    # is the only one that can plausibly be off; everything else has
-    # an SLA from a remote service.
-    is_local = (
-        "127.0.0.1:1234" in api_base
-        or "localhost:1234" in api_base
-        or "10.10.10" in api_base  # operator's direct-LAN Mac Studio
-    )
-    if not is_local:
-        return primary_cfg
-    if is_alive(api_base):
-        return primary_cfg
-
-    # The pipeline builds ~16 roles against the SAME dead endpoint per
-    # ticket. Do the expensive/loud work (SSH auto-start, warnings) ONCE per
-    # dead endpoint; subsequent roles reuse the verdict quietly.
-    first = api_base not in _DEAD_WARNED
-
-    # Local is dead — try to bring it up via SSH before falling back.
-    # Auto-start is opt-in (needs AIFORGE_LMS_HOST configured) and
-    # only runs once per process; if it succeeds we keep the local
-    # primary cfg and the rest of the pipeline runs on fast mlx-lm.
-    if first:
-        try:
-            from .local_starter import try_start as _try_start
-            if _try_start(api_base):
-                log.info(
-                    "local_probe: %s back online via lms_autostart, "
-                    "keeping local primary for role=%s", api_base, role,
-                )
-                return primary_cfg
-        except Exception as exc:  # noqa: BLE001 — never break ticket flow
-            log.warning("local_probe: auto-start raised: %s", exc)
-
-    # Auto-start declined / failed → fall back to cloud default.
-    try:
-        from aiforge_core.config.agent_config import cloud_default_for_local
-        substitute = cloud_default_for_local(role)
-    except Exception as exc:
-        if first:
-            log.warning("local_probe: cloud_default lookup failed: %s", exc)
-        _DEAD_WARNED.add(api_base)
-        return primary_cfg
-    if substitute is None:
-        if first:
-            log.warning(
-                "local_probe: %s dead and no fallback configured — every "
-                "role will fail until you (a) start LM Studio/mlx-lm there, "
-                "(b) point AIFORGE_LM_BASE_URL at a live endpoint, or (c) set "
-                "a cloud fallback (e.g. OLLAMA_CLOUD_API_KEY / an "
-                "openai_compatible global default). Suppressing per-role "
-                "repeats.", api_base,
-            )
-        _DEAD_WARNED.add(api_base)
-        return primary_cfg
-
-    if first:
-        log.info(
-            "local_probe: %s dead → substituting primary with %s (%s) for "
-            "this run", api_base,
-            substitute.get("_provider", "cloud"),
-            substitute.get("model_id"),
-        )
-    _DEAD_WARNED.add(api_base)
-    return substitute
+    return primary_cfg
 
 
 __all__ = ["is_alive", "maybe_substitute_primary"]

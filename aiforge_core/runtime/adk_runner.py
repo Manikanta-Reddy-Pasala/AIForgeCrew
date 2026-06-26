@@ -1142,19 +1142,23 @@ def _process_one_ticket() -> bool:
         log.debug("clarify gate skipped: %s", exc)
 
     # LM Studio liveness check + opportunistic tunnel restart. ONLY
-    # relevant when the Doer is actually pinned to the ``local`` provider —
-    # if the operator configured a remote OpenAI-compatible / cloud
-    # endpoint, the local 127.0.0.1:1234 box is irrelevant and we must NOT
-    # probe it. ``AIFORGE_LM_HEALTH=0`` opts out entirely. When local is
-    # unreachable the per-call EscalatingLlm chain
-    # (``cloud_default_for_local`` → Ollama Cloud) rescues
-    # the run automatically — no whole-pipeline force needed here.
+    # relevant when the Doer points at the loopback mlx-lm box
+    # (127.0.0.1:1234) — if the operator configured a remote
+    # OpenAI-compatible endpoint, that local box is irrelevant and we must
+    # NOT probe it. ``AIFORGE_LM_HEALTH=0`` opts out entirely. When the
+    # endpoint is unreachable the per-call EscalatingLlm retry chain
+    # surfaces the error — no whole-pipeline force needed here.
     try:
         from aiforge_core.config import agent_config as _acfg
-        _doer_provider = _acfg.get("doer").get("provider")
+        _doer_base = (_acfg.get("doer") or {}).get("base_url") or ""
     except Exception:  # noqa: BLE001
-        _doer_provider = "local"
-    if (_doer_provider == "local"
+        _doer_base = ""
+    _doer_is_loopback = (
+        not _doer_base
+        or "127.0.0.1:1234" in _doer_base
+        or "localhost:1234" in _doer_base
+    )
+    if (_doer_is_loopback
             and os.environ.get("AIFORGE_LM_HEALTH", "1") in {"1", "true"}):
         try:
             from aiforge_core.runtime.lm_health import check_lm_health
@@ -1162,7 +1166,7 @@ def _process_one_ticket() -> bool:
             if not health.get("doer_ok"):
                 log.warning(
                     "ticket=%s local LM unreachable — pipeline relies on the "
-                    "configured cloud escalation chain (restarted=%s)",
+                    "configured retry chain (restarted=%s)",
                     ticket.identifier, health.get("restarted"))
         except Exception as exc:  # noqa: BLE001
             log.debug("lm_health probe skipped: %s", exc)
@@ -1294,10 +1298,10 @@ def _process_one_ticket() -> bool:
             except Exception:
                 validator_out = {"raw": validator_out[:400]}
 
-        # The local Doer (running on the operator's configured model +
-        # the cloud escalation chain) is the only path that finishes a
-        # ticket now — kept for ops-dashboard / training provenance.
-        handled_by = "local"
+        # The Doer (running on the operator's configured model + retry
+        # chain) is the only path that finishes a ticket now — kept for
+        # ops-dashboard / training provenance.
+        handled_by = "pipeline"
 
         # PR gate: anything that ISN'T an explicit scope_violation is
         # eligible. `commit_push_open_pr` itself short-circuits on a
@@ -1415,9 +1419,8 @@ def _process_one_ticket() -> bool:
                     "validator_regression_risk":
                         (validator_out or {}).get("regression_risk")}
                    if validator_out else {}),
-                # Provenance: which agent finished the ticket. "local" =
-                # the configured-model pipeline (+ cloud escalation chain)
-                # cleared it.
+                # Provenance: which path finished the ticket. "pipeline" =
+                # the configured-model pipeline (+ retry chain) cleared it.
                 "handled_by": handled_by,
                 **({
                     "live_verifier_ok": (lv or {}).get("ok"),
