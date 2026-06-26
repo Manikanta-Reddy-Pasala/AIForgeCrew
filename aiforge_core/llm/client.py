@@ -80,8 +80,12 @@ def _build_body(ep: Endpoint, messages: list[dict],
                  if k not in _NON_BODY_EXTRA_KEYS})
     if extras:
         body.update(extras)
-    # LM Studio rejects response_format.type=json_object — only json_schema or text.
-    if ep.provider == "local":
+    # Strict OpenAI-compatible servers (LM Studio, and the operator's
+    # self-hosted proxy) reject response_format.type=json_object — they
+    # accept only json_schema or text. openai_compatible is the only
+    # provider now, so always normalise json_object → a permissive
+    # json_schema. (Real OpenAI accepts json_schema too, so this is safe.)
+    if ep.provider == "openai_compatible":
         rf = body.get("response_format")
         if isinstance(rf, dict) and rf.get("type") == "json_object":
             body["response_format"] = {
@@ -158,6 +162,22 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _http_err_body(exc: Exception) -> str:
+    """Best-effort read of an HTTPError response body (the proxy's actual
+    rejection detail, e.g. which param it didn't like). urllib's HTTPError
+    is a file-like; reading it is one-shot, so guard against re-reads."""
+    if not isinstance(exc, urllib.error.HTTPError):
+        return ""
+    try:
+        raw = exc.read()
+    except Exception:
+        return ""
+    try:
+        return raw.decode("utf-8", "replace")[:600]
+    except Exception:
+        return str(raw)[:600]
+
+
 def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
     """Return (retry?, label) for transport exceptions.
 
@@ -200,17 +220,19 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
             retry, label = _is_transient_exc(exc)
             last = exc
             if not retry or attempt >= max_attempts:
+                _body = _http_err_body(exc)
                 _log.warning(
                     "llm.transport_error role=%s provider=%s model=%s "
-                    "url=%s/chat/completions label=%s attempt=%d err=%s",
+                    "url=%s/chat/completions label=%s attempt=%d err=%s%s",
                     role, ep.provider, ep.model,
                     str(ep.base_url).rstrip("/"), label, attempt,
                     str(exc)[:300],
+                    f" body={_body}" if _body else "",
                     extra={"aiforge": {"role": role, "provider": ep.provider,
                                        "model": ep.model, "source": source,
                                        "attempt": attempt, "label": label,
                                        "fatal": not retry,
-                                       "error": str(exc)[:200]}},
+                                       "error": (str(exc) + " " + _body)[:300]}},
                 )
                 raise
             # Honour Retry-After header for 429 if present + parseable.

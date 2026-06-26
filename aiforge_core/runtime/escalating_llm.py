@@ -368,6 +368,15 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     kwargs["extra_headers"] = {
         "User-Agent": _os.environ.get("AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)"),
     }
+    # ADK's LiteLlm hardcodes ``stream_options={"include_usage": True}`` on
+    # every streaming completion. Strict OpenAI-compatible proxies (e.g. a
+    # self-hosted gateway that buffers and drops ``stream:true``) then reject
+    # the request with "Stream options can only be defined when stream=True".
+    # stream_options only carries usage-in-stream accounting, so drop it at
+    # the litellm layer for all attempts. ``drop_params`` additionally lets
+    # litellm silently shed any other param the endpoint doesn't accept.
+    kwargs["drop_params"] = True
+    kwargs["additional_drop_params"] = ["stream_options"]
     return LiteLlm(**kwargs)
 
 
