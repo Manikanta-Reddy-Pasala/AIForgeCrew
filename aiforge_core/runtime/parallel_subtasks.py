@@ -22,6 +22,8 @@ import os
 import subprocess
 import threading
 
+from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS, ensure_artifact_gitignore
+
 log = logging.getLogger("aiforge.parallel_subtasks")
 
 # git operations that touch the MAIN repo's index/worktree list (worktree
@@ -88,7 +90,10 @@ def _make_worktree(repo: str, base_branch: str, slug: str,
 def _commit_all(wt: str, slug: str) -> bool:
     """Commit any work the runner left uncommitted. Returns True if the branch
     has a new commit relative to its base (i.e. there is work to merge)."""
-    _git(["add", "-A"], wt)
+    # Excludes keep .aiforge-worktrees/ + junk out even though this runs in
+    # an isolated worktree (touched-path tracking isn't shared across the
+    # per-subtask worktrees, so excludes are the right guard here).
+    _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], wt)
     st = _git(["status", "--porcelain"], wt)
     if st.stdout.strip():
         _git(["commit", "-m", f"subtask: {slug}"], wt)
@@ -881,13 +886,17 @@ def _ensure_git_workspace(cwd: str) -> str:
         _git(["init"], cwd)
         _git(["config", "user.email", "aiforge@local"], cwd)
         _git(["config", "user.name", "aiforge"], cwd)
+    # A fresh workspace is born with the agent's own artifacts gitignored.
+    ensure_artifact_gitignore(cwd)
     # need at least one commit for `worktree add <base>` to resolve
     if _git(["rev-parse", "HEAD"], cwd).returncode != 0:
         readme = os.path.join(cwd, ".aiforge-workspace")
         if not os.path.exists(readme):
             with open(readme, "w") as f:
                 f.write("aiforge chat workspace\n")
-        _git(["add", "-A"], cwd)
+        # .gitignore is the committed baseline (the workspace marker is
+        # excluded); excludes keep any stray junk out of the baseline too.
+        _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
         _git(["commit", "-m", "workspace baseline"], cwd)
     cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
     return (cur.stdout or "").strip() or "main"

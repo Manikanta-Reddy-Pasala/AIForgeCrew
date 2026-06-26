@@ -920,9 +920,12 @@ If you CANNOT determine how to test (no test framework/files — check \
 `project` detect's has_tests), ASK the user: where and how should I test \
 this, or should I skip tests? Do not silently skip verification.
 - When asked to PUSH (or "commit and push"): use run_command with git — \
-`git add -A`, `git commit -m "<concise message>"`, then `git push`. If not on \
-a branch or push is rejected, create/switch a branch and push that. Report \
-the branch + result in FINAL.
+stage ONLY the specific files you created or edited \
+(`git add <those exact paths>`), then `git commit -m "<concise message>"`, \
+then `git push`. NEVER `git add -A` or `git add .` — that sweeps in unrelated \
+changes and the agent's own artifacts. If not on a branch or push is \
+rejected, create/switch a branch and push that. Report the branch + result \
+in FINAL.
 - Verify before claiming done: re-run the build/test/run command and confirm \
 it succeeded from the OBSERVATION, then summarize what you did in FINAL."""
 

@@ -38,19 +38,114 @@ _EXCLUDE_PATHSPECS: tuple[str, ...] = (
     ":(exclude)graphify-out",
     ":(exclude).aiforge",
     ":(exclude).aiforge-worktrees",
+    ":(exclude).aiforge-workspace",
     ":(exclude).idea",
     ":(exclude).vscode",
     ":(exclude).DS_Store",
+    ":(exclude).env",
+    ":(exclude).venv",
+    ":(exclude)venv",
+    ":(exclude,glob)**/perf.ndjson",
+    # Common build/dependency junk so "whatever is available" never
+    # gets swept into a Doer commit when the target repo lacks a
+    # matching .gitignore.
+    ":(exclude)node_modules",
+    ":(exclude,glob)**/node_modules/**",
+    ":(exclude)dist",
+    ":(exclude)build",
     # Python bytecode + caches — slipped into TallyConnector#10/#11
     # because those repos lacked a Python .gitignore. Belt-and-braces
     # at git add time so the target repo's own ignores are irrelevant.
     ":(exclude,glob)**/__pycache__/**",
     ":(exclude,glob)**/*.py[cod]",
     ":(exclude,glob)**/*.class",
+    ":(exclude,glob)**/*.log",
     ":(exclude,glob)**/.pytest_cache/**",
     ":(exclude,glob)**/.ruff_cache/**",
     ":(exclude,glob)**/.mypy_cache/**",
 )
+
+
+# Artifact / junk directory segments + basenames + suffixes. Used by
+# :func:`is_excluded_path` to filter the per-file touched list the Doer
+# tools record (the pathspec form above is only usable as a `git add`
+# argument, not as a plain-path predicate).
+_EXCLUDE_DIR_SEGMENTS = frozenset({
+    "graphify-out", ".aiforge", ".aiforge-worktrees", ".idea", ".vscode",
+    "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    "node_modules", "dist", "build", "target", ".venv", "venv", "env",
+})
+_EXCLUDE_BASENAMES = frozenset({
+    ".DS_Store", ".aiforge-workspace", ".env", "perf.ndjson",
+})
+_EXCLUDE_SUFFIXES = (".pyc", ".pyo", ".pyd", ".class", ".log")
+
+
+def is_excluded_path(rel: str) -> bool:
+    """True when ``rel`` (a repo-relative path) is an agent artifact / junk
+    file that must never be staged — mirrors :data:`_EXCLUDE_PATHSPECS` but
+    as a plain-path predicate so the touched-file list can be filtered."""
+    if not rel:
+        return True
+    norm = str(rel).strip().replace("\\", "/")
+    # Strip a leading "./" prefix WITHOUT eating dotfile/dotdir leading
+    # dots (lstrip("./") would turn ".aiforge" into "aiforge").
+    while norm.startswith("./"):
+        norm = norm[2:]
+    norm = norm.lstrip("/")
+    if not norm or norm == ".":
+        return True
+    segments = norm.split("/")
+    if any(seg in _EXCLUDE_DIR_SEGMENTS for seg in segments):
+        return True
+    base = segments[-1]
+    if base in _EXCLUDE_BASENAMES:
+        return True
+    if base.endswith(_EXCLUDE_SUFFIXES):
+        return True
+    return False
+
+
+# Agent-artifact lines an initialised workspace's .gitignore should carry.
+_ARTIFACT_IGNORE_LINES: tuple[str, ...] = (
+    ".aiforge/",
+    ".aiforge-worktrees/",
+    ".aiforge-workspace",
+    "graphify-out/",
+    "perf.ndjson",
+)
+
+
+def ensure_artifact_gitignore(repo_root: str) -> list[str]:
+    """Idempotently ensure the agent-artifact lines live in ``.gitignore``.
+
+    Appends ONLY the missing lines (never duplicates, never clobbers the
+    user's existing content). Returns the list of lines actually added
+    (empty when everything was already present). Soft-fails to ``[]``.
+    """
+    gi = os.path.join(repo_root, ".gitignore")
+    existing = ""
+    if os.path.exists(gi):
+        try:
+            with open(gi, encoding="utf-8") as f:
+                existing = f.read()
+        except OSError:
+            return []
+    have = {ln.strip() for ln in existing.splitlines() if ln.strip()}
+    missing = [ln for ln in _ARTIFACT_IGNORE_LINES if ln not in have]
+    if not missing:
+        return []
+    chunk = ""
+    if existing and not existing.endswith("\n"):
+        chunk += "\n"
+    chunk += "# AIForgeCrew agent artifacts\n" + "\n".join(missing) + "\n"
+    try:
+        with open(gi, "a", encoding="utf-8") as f:
+            f.write(chunk)
+    except OSError as exc:
+        log.warning("ensure_artifact_gitignore failed: %s", exc)
+        return []
+    return missing
 
 
 # File-path heuristics for classifying a diff as test-only. Conservative:
@@ -297,14 +392,33 @@ def _ensure_gitignore(repo_root: str) -> None:
         log.warning("git_pr.gitignore_write_failed: %s", exc)
 
 
+def _stage_doer_changes(repo_root: str) -> list[str]:
+    """Stage ONLY the files the Doer recorded touching (via
+    :mod:`doer_tools`), each filtered through the artifact excludes.
+
+    Falls back to ``git add -- . <_EXCLUDE_PATHSPECS>`` when no touched
+    paths were tracked (e.g. the Doer wrote via the shell tool) so we
+    never silently commit nothing. Returns the explicit file list when
+    the touched-path path was taken, else ``[]`` (fallback)."""
+    touched: list[str] = []
+    try:
+        from aiforge_core.runtime import doer_tools
+        touched = [p for p in doer_tools.touched_paths()
+                   if not is_excluded_path(p)]
+    except Exception:  # noqa: BLE001
+        touched = []
+    if touched:
+        run_git(["git", "add", "--", *touched], repo_root)
+        return touched
+    run_git(["git", "add", "--", ".", *_EXCLUDE_PATHSPECS], repo_root)
+    return []
+
+
 def _commit_changes(repo_root: str, identifier: str, title: str) -> str:
     """Stage Doer changes (transient dirs excluded) and commit. Returns
     ``""`` on success or a ``pr_skip_reason`` on failure."""
     _ensure_gitignore(repo_root)
-    run_git(
-        ["git", "add", "--", ".", *_EXCLUDE_PATHSPECS],
-        repo_root,
-    )
+    _stage_doer_changes(repo_root)
     msg = (
         f"feat({identifier}): {title}\n\n"
         f"Generated by AIForgeCrew v6 pipeline."
@@ -500,6 +614,13 @@ def commit_push_open_pr(ticket) -> dict:
     except Exception:  # noqa: BLE001
         pass
     _fire_delta_ingest(ticket, repo_root)
+    # Clear the touched-path tracker so the NEXT ticket/run starts clean
+    # instead of inheriting this run's staged file set.
+    try:
+        from aiforge_core.runtime import doer_tools
+        doer_tools.reset_touched()
+    except Exception:  # noqa: BLE001
+        pass
     return {"branch_pushed": True, "pr_url": pr_url}
 
 
@@ -557,4 +678,6 @@ def merge_pr(pr_url: str, *, squash: bool = True) -> dict:
     return {"merged": False, "reason": out[:300]}
 
 
-__all__ = ["run_git", "commit_push_open_pr", "merge_pr"]
+__all__ = ["run_git", "commit_push_open_pr", "merge_pr",
+           "is_excluded_path", "ensure_artifact_gitignore",
+           "_EXCLUDE_PATHSPECS"]

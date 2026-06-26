@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 import urllib.error
 import urllib.request
 
@@ -26,17 +27,52 @@ from .memory_lookup_tool import memory_lookup
 from .sandbox import resolve_inside_root, root
 from .syntax_guard import validate_syntax
 
-# Pathspecs to keep transient cache dirs out of Doer-created commits.
-# Mirrors ``runtime.git_pr._EXCLUDE_PATHSPECS`` so manual commits
-# behave like the auto-PR step at end-of-ticket.
-_EXCLUDE_PATHSPECS: tuple[str, ...] = (
-    ":(exclude)graphify-out",
-    ":(exclude).aiforge",
-    ":(exclude).aiforge-worktrees",
-    ":(exclude).idea",
-    ":(exclude).vscode",
-    ":(exclude).DS_Store",
-)
+# Single source of truth for the artifact excludes lives in ``git_pr`` —
+# imported here (instead of mirrored) to kill the drift the two copies
+# used to suffer. ``is_excluded_path`` is the plain-path predicate for
+# filtering the touched-file list.
+from .git_pr import _EXCLUDE_PATHSPECS, is_excluded_path  # noqa: E402
+
+
+# ─── Touched-path tracker ──────────────────────────────────────────────
+#
+# The Doer's file tools (file_write / file_patch / the editor's
+# write/create/str_replace) record every repo-relative path they mutate
+# here so ``git_commit`` (and the end-of-ticket PR step) stage ONLY those
+# files — never a blanket ``git add -A`` that sweeps the operator's
+# unrelated changes and the agent's own artifacts into the commit.
+_TOUCHED: set[str] = set()
+_TOUCHED_LOCK = threading.Lock()
+
+
+def record_touch(path: str) -> None:
+    """Record ``path`` (normalised repo-relative) as Doer-mutated.
+
+    Uses the same sandbox normalisation the tools use so the recorded
+    path matches what ``git`` sees. Soft: a path outside the root is
+    stored best-effort rather than raising into the tool call."""
+    if not path:
+        return
+    try:
+        rel = str(resolve_inside_root(path).relative_to(root()))
+    except Exception:  # noqa: BLE001
+        rel = str(path).strip().lstrip("/")
+    if rel and rel != ".":
+        with _TOUCHED_LOCK:
+            _TOUCHED.add(rel)
+
+
+def touched_paths() -> list[str]:
+    """Sorted list of repo-relative paths the Doer has mutated this run."""
+    with _TOUCHED_LOCK:
+        return sorted(_TOUCHED)
+
+
+def reset_touched() -> None:
+    """Clear the tracker at the start of a new ticket/run so stale paths
+    from a prior run don't get staged."""
+    with _TOUCHED_LOCK:
+        _TOUCHED.clear()
 
 
 def file_read(path: str) -> dict:
@@ -79,6 +115,7 @@ def file_write(path: str, content: str) -> dict:
                 }
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
+        record_touch(path)
         return {"ok": True, "path": path,
                 "bytes": len(content.encode("utf-8"))}
     except (PermissionError, OSError) as exc:
@@ -104,6 +141,7 @@ def file_patch(path: str, old_text: str, new_text: str) -> dict:
             return {"ok": False, "error": "ambiguous_match",
                     "occurrences": count}
         p.write_text(body.replace(old_text, new_text, 1), encoding="utf-8")
+        record_touch(path)
         return {"ok": True, "path": path, "replaced": True}
     except (PermissionError, OSError) as exc:
         return {"ok": False, "error": str(exc)}
@@ -369,9 +407,15 @@ def fetch_url(url: str) -> dict:
 def git_commit(message: str) -> dict:
     """Stage Doer-authored changes and commit with ``message``.
 
-    Runs ``git add -A -- . <_EXCLUDE_PATHSPECS>`` then
-    ``git commit -m <message>`` inside :func:`sandbox.root`. Same
-    soft-error contract as the other Doer tools — failure returns
+    Stages ONLY the files the Doer recorded touching this run (via
+    :func:`record_touch` — file_write / file_patch / editor), each still
+    filtered through the artifact excludes so none of the agent's own
+    junk lands. When NO touched paths were tracked (e.g. the Doer wrote
+    via the shell tool) it FALLS BACK to
+    ``git add -A -- . <_EXCLUDE_PATHSPECS>`` so we never silently commit
+    nothing. Then ``git commit -m <message>`` inside :func:`sandbox.root`.
+    The staged file list is returned in the result. Same soft-error
+    contract as the other Doer tools — failure returns
     ``{ok: False, error: ...}`` rather than raising so the agent loop
     survives a flaky workspace.
 
@@ -391,9 +435,21 @@ def git_commit(message: str) -> dict:
         return {"ok": False, "error": "empty commit message"}
     cwd = str(root())
 
+    # Prefer staging ONLY the files the Doer touched this run; fall back
+    # to `git add -A` (excludes applied) when nothing was tracked.
+    # Existence-filter so a stale path left over from a prior run (which
+    # never reset the tracker, e.g. a ticket that failed before the PR
+    # step) can't fail `git add` against a now-different workspace.
+    touched = [
+        p for p in touched_paths()
+        if not is_excluded_path(p) and os.path.exists(os.path.join(cwd, p))
+    ]
+    if touched:
+        add_args = ["git", "add", "--", *touched]
+    else:
+        add_args = ["git", "add", "-A", "--", ".", *_EXCLUDE_PATHSPECS]
     add_proc = subprocess.run(
-        ["git", "add", "-A", "--", ".", *_EXCLUDE_PATHSPECS],
-        cwd=cwd, capture_output=True, timeout=60,
+        add_args, cwd=cwd, capture_output=True, timeout=60,
     )
     if add_proc.returncode != 0:
         return {
@@ -417,6 +473,15 @@ def git_commit(message: str) -> dict:
             "stderr": diff_proc.stderr.decode("utf-8", "replace")[:2000],
         }
 
+    # Capture the exact staged file list so the caller / UI sees what
+    # was committed (and not the whole tree).
+    staged_proc = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=cwd, capture_output=True, timeout=30,
+    )
+    staged = [ln for ln in staged_proc.stdout.decode(
+        "utf-8", "replace").splitlines() if ln.strip()]
+
     commit_proc = subprocess.run(
         ["git", "commit", "-m", str(message)],
         cwd=cwd, capture_output=True, timeout=60,
@@ -431,6 +496,8 @@ def git_commit(message: str) -> dict:
     return {
         "ok": True,
         "message": str(message),
+        "staged": staged,
+        "staged_via": "touched" if touched else "add_all_fallback",
         "stdout": commit_proc.stdout.decode("utf-8", "replace")[:2000],
     }
 
@@ -691,6 +758,7 @@ def adk_function_tools() -> list:
 
 
 __all__ = [
+    "record_touch", "touched_paths", "reset_touched",
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
     "memory_lookup", "graphify_lookup", "skill_search", "learn_skill",

@@ -28,6 +28,17 @@ _DIR_LISTING_DEPTH = 2
 _UNDO_RING_DEPTH = 5
 
 
+def _record_touch(path: str) -> None:
+    """Record a mutated path in the Doer touched-file tracker so the
+    commit/PR step stages only what changed. Lazy import + soft-fail so
+    the editor stays usable even if doer_tools can't load."""
+    try:
+        from aiforge_core.runtime.doer_tools import record_touch
+        record_touch(path)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _undo_dir_for(abs_path: Path) -> Path:
     sha = hashlib.sha1(str(abs_path).encode("utf-8")).hexdigest()
     base = Path.home() / ".aiforge" / "editor_undo" / sha
@@ -127,6 +138,7 @@ def _create(path: str, file_text: str | None) -> dict[str, Any]:
     _push_snapshot(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(file_text, encoding="utf-8")
+    _record_touch(path)
     return {"ok": True, "path": path, "bytes": len(file_text.encode("utf-8"))}
 
 
@@ -154,6 +166,7 @@ def _str_replace(
                 "hint": "fix syntax and call editor str_replace again"}
     _push_snapshot(p)
     p.write_text(new_body, encoding="utf-8")
+    _record_touch(path)
     return {"ok": True, "path": path, "replaced": True}
 
 
@@ -181,6 +194,7 @@ def _insert(
                 "hint": "fix syntax and call editor insert again"}
     _push_snapshot(p)
     p.write_text(new_body, encoding="utf-8")
+    _record_touch(path)
     return {"ok": True, "path": path, "inserted_at": insert_line}
 
 

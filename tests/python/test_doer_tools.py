@@ -19,6 +19,9 @@ from aiforge_core.runtime import doer_tools as dt
 def _isolated_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     monkeypatch.delenv("AIFORGE_DOER_SKIP_SYNTAX", raising=False)
+    # The touched-path tracker is module-global; clear it so each test
+    # starts clean and doesn't inherit paths from a prior test's writes.
+    dt.reset_touched()
     return tmp_path
 
 
@@ -480,3 +483,128 @@ def test_todo_write_is_noop_ok() -> None:
     from aiforge_core.runtime import doer_tools as dt
     assert dt.todo_write("[x] do thing")["ok"] is True
     assert dt.task("spawn researcher")["ok"] is True
+
+
+# ─── touched-path tracker + scoped git_commit ─────────────────────────
+
+
+def test_record_touch_and_paths_roundtrip(tmp_path: Path) -> None:
+    dt.reset_touched()
+    assert dt.touched_paths() == []
+    dt.record_touch("a/b.py")
+    dt.record_touch("c.txt")
+    dt.record_touch("a/b.py")           # dedup
+    assert dt.touched_paths() == ["a/b.py", "c.txt"]
+
+
+def test_reset_touched_clears(tmp_path: Path) -> None:
+    dt.record_touch("x.py")
+    assert dt.touched_paths()
+    dt.reset_touched()
+    assert dt.touched_paths() == []
+
+
+def test_file_write_records_touch(tmp_path: Path) -> None:
+    dt.reset_touched()
+    dt.file_write("mod.py", "x = 1\n")
+    assert "mod.py" in dt.touched_paths()
+
+
+def test_file_patch_records_touch(tmp_path: Path) -> None:
+    dt.reset_touched()
+    (tmp_path / "a.txt").write_text("hello world")
+    dt.file_patch("a.txt", "world", "there")
+    assert "a.txt" in dt.touched_paths()
+
+
+def test_git_commit_stages_only_touched_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real tmp git repo: two files written, only ONE recorded as touched
+    → git_commit must stage exactly that one (not the other)."""
+    if shutil.which("git") is None:
+        pytest.skip("git binary not on PATH")
+    _git_init(tmp_path)
+    (tmp_path / "seed.txt").write_text("seed\n")
+    import subprocess as _sp
+    _sp.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+    _sp.run(["git", "commit", "-m", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+
+    dt.reset_touched()
+    # tracked write
+    dt.file_write("tracked.py", "x = 1\n")
+    # untracked write (simulates the Doer writing via the shell tool)
+    (tmp_path / "untracked.py").write_text("y = 2\n")
+
+    res = dt.git_commit("feat: only tracked")
+    assert res["ok"] is True, res
+    assert res["staged_via"] == "touched"
+    assert res["staged"] == ["tracked.py"]
+    # untracked.py must remain UNstaged / uncommitted
+    show = _sp.run(["git", "show", "--name-only", "--format=", "HEAD"],
+                   cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert "tracked.py" in show.stdout
+    assert "untracked.py" not in show.stdout
+    status = _sp.run(["git", "status", "--porcelain"], cwd=tmp_path,
+                     capture_output=True, text=True, check=True)
+    assert "untracked.py" in status.stdout
+
+
+def test_git_commit_fallback_add_all_when_no_touched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No touched paths tracked → fall back to add -A so a shell-only
+    Doer still commits its work."""
+    if shutil.which("git") is None:
+        pytest.skip("git binary not on PATH")
+    _git_init(tmp_path)
+    (tmp_path / "seed.txt").write_text("seed\n")
+    import subprocess as _sp
+    _sp.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+    _sp.run(["git", "commit", "-m", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+
+    dt.reset_touched()
+    (tmp_path / "shell_a.py").write_text("a = 1\n")
+    (tmp_path / "shell_b.py").write_text("b = 2\n")
+
+    res = dt.git_commit("feat: shell writes")
+    assert res["ok"] is True, res
+    assert res["staged_via"] == "add_all_fallback"
+    assert set(res["staged"]) == {"shell_a.py", "shell_b.py"}
+
+
+def test_git_commit_excludes_artifacts_from_touched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An artifact path recorded as touched must be filtered out of the
+    staged set."""
+    if shutil.which("git") is None:
+        pytest.skip("git binary not on PATH")
+    _git_init(tmp_path)
+    (tmp_path / "seed.txt").write_text("seed\n")
+    import subprocess as _sp
+    _sp.run(["git", "add", "seed.txt"], cwd=tmp_path, check=True)
+    _sp.run(["git", "commit", "-m", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Test")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_COMMITTER_NAME", "Test")
+    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+
+    dt.reset_touched()
+    dt.file_write("good.py", "x = 1\n")
+    # An agent artifact slips into the tracker; create it on disk too.
+    (tmp_path / ".aiforge-worktrees").mkdir()
+    (tmp_path / ".aiforge-worktrees" / "junk.txt").write_text("junk\n")
+    dt.record_touch(".aiforge-worktrees/junk.txt")
+
+    res = dt.git_commit("feat: good only")
+    assert res["ok"] is True, res
+    assert res["staged"] == ["good.py"]

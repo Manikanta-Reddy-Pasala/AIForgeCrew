@@ -342,3 +342,81 @@ def test_merge_pr_already_merged(monkeypatch) -> None:
     out = gp.merge_pr("https://github.com/o/r/pull/1")
     assert out["merged"] is True
     assert out["reason"] == "already_merged"
+
+
+# ─── is_excluded_path ─────────────────────────────────────────────────
+
+
+def test_is_excluded_path_artifacts() -> None:
+    for p in (
+        ".aiforge-worktrees/sub/x.txt",
+        "graphify-out/report.html",
+        ".aiforge/state.db",
+        "node_modules/pkg/index.js",
+        "src/__pycache__/m.cpython-311.pyc",
+        "build/out.o",
+        "dist/app.js",
+        ".venv/lib/foo.py",
+        "a/b/c.pyc",
+        "logs/run.log",
+        ".DS_Store",
+        ".aiforge-workspace",
+        ".env",
+        "perf.ndjson",
+    ):
+        assert gp.is_excluded_path(p) is True, p
+
+
+def test_is_excluded_path_real_files() -> None:
+    for p in (
+        "src/main/java/Foo.java",
+        "app/db.py",
+        "README.md",
+        "tests/test_x.py",
+        "pyproject.toml",
+    ):
+        assert gp.is_excluded_path(p) is False, p
+
+
+def test_is_excluded_path_empty() -> None:
+    assert gp.is_excluded_path("") is True
+    assert gp.is_excluded_path(".") is True
+
+
+# ─── ensure_artifact_gitignore ────────────────────────────────────────
+
+
+def test_ensure_artifact_gitignore_creates(tmp_path: Path) -> None:
+    added = gp.ensure_artifact_gitignore(str(tmp_path))
+    assert ".aiforge-worktrees/" in added
+    body = (tmp_path / ".gitignore").read_text()
+    for line in (".aiforge/", ".aiforge-worktrees/", ".aiforge-workspace",
+                 "graphify-out/", "perf.ndjson"):
+        assert line in body
+
+
+def test_ensure_artifact_gitignore_idempotent(tmp_path: Path) -> None:
+    first = gp.ensure_artifact_gitignore(str(tmp_path))
+    assert first                       # lines added on first call
+    before = (tmp_path / ".gitignore").read_text()
+    second = gp.ensure_artifact_gitignore(str(tmp_path))
+    assert second == []                # nothing to add the second time
+    after = (tmp_path / ".gitignore").read_text()
+    assert before == after             # file unchanged (no duplicates)
+
+
+def test_ensure_artifact_gitignore_appends_preserving_existing(tmp_path: Path) -> None:
+    gi = tmp_path / ".gitignore"
+    gi.write_text("*.tmp\nmy_secret\n")
+    added = gp.ensure_artifact_gitignore(str(tmp_path))
+    body = gi.read_text()
+    # user's existing lines preserved
+    assert "*.tmp" in body
+    assert "my_secret" in body
+    # artifact lines appended
+    assert "perf.ndjson" in body
+    assert "perf.ndjson" in added
+    # existing artifact lines aren't duplicated on a re-run
+    again = gp.ensure_artifact_gitignore(str(tmp_path))
+    assert again == []
+    assert body.count("perf.ndjson") == 1
