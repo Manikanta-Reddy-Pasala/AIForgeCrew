@@ -50,10 +50,17 @@ def is_steerable(session_id: int) -> bool:
         return session_id in _STEERABLE
 
 
-def push(session_id: int, text: str) -> bool:
+def push(session_id: int, text: str, *, require_steerable: bool = False) -> bool:
     """Queue a steer message for ``session_id``. Empty/blank text is a no-op.
 
     Returns True if the message was queued.
+
+    When ``require_steerable`` is True the steerability check and the enqueue
+    happen under the SAME lock acquisition — an atomic test-and-set. This closes
+    the /steer TOCTOU (CC3): a separate ``is_steerable()`` then ``push()`` could
+    let a steer be queued the instant a run-end ``clear()`` flips the session
+    un-steerable, leaking a stale steer into the next turn. The endpoint now
+    relies on this return value instead of a pre-check.
     """
     if session_id is None:
         return False
@@ -63,6 +70,8 @@ def push(session_id: int, text: str) -> bool:
     if not text:
         return False
     with _LOCK:
+        if require_steerable and session_id not in _STEERABLE:
+            return False
         _QUEUES.setdefault(session_id, []).append(text)
     return True
 

@@ -2621,11 +2621,17 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
     queue a message no loop ever reads. Detect that and report it unsupported
     rather than falsely claiming the steer was queued."""
     from aiforge_core.runtime import chat_interject
-    if not chat_interject.is_steerable(session_id):
-        return {"queued": False, "unsupported": True, "session_id": session_id,
-                "reason": "steering not available in team mode"}
-    queued = chat_interject.push(session_id, body.content)
-    return {"queued": queued, "session_id": session_id}
+    # Atomic test-and-set: push() itself checks steerability under its lock, so
+    # there's no window between the check and the enqueue for a run-end clear()
+    # to slip a stale steer into the next turn (CC3).
+    queued = chat_interject.push(session_id, body.content, require_steerable=True)
+    if queued:
+        return {"queued": True, "session_id": session_id}
+    # Refused — distinguish blank content from a non-steerable (team-mode) run.
+    if not (body.content or "").strip():
+        return {"queued": False, "session_id": session_id, "reason": "empty content"}
+    return {"queued": False, "unsupported": True, "session_id": session_id,
+            "reason": "steering not available in team mode"}
 
 
 class _ApproveBody(BaseModel):

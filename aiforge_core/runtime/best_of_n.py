@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import uuid
 
 from aiforge_core.runtime.parallel_subtasks import (
     _commit_all,
@@ -58,60 +59,74 @@ def _guard_n(n: int) -> int:
     return max(2, min(6, int(n)))
 
 
+_GRADE_FAILED = {"score": None, "why": "grade failed", "graded": False}
+
+
 def _grade(spec: str, diff: str) -> dict:
     """LLM grader: score a diff against the spec, 0-100, with a one-line why.
 
-    Returns ``{"score": int, "why": str}``. Parses strict JSON defensively and
-    SOFT-FAILS to ``{"score": 0, "why": "grade failed"}`` on any error (no LLM,
-    empty/garbage output, unparseable JSON) so one bad grade never sinks a run."""
+    Returns ``{"score": int|None, "why": str, "graded": bool}``. On success
+    ``graded`` is True and ``score`` is an int 0-100. On ANY failure (no LLM,
+    empty/garbage output, unparseable JSON) it returns ``graded=False`` /
+    ``score=None`` — a "grader unavailable" signal that is DISTINCT from a real
+    score of 0, so the caller can fall back to keeping a real diff instead of
+    discarding everything when grading is offline (B5)."""
     capped = (diff or "")[:_DIFF_CAP]
     try:
         from aiforge_core.llm import client
-        out = client.complete("reviewer", [
+        # CF5 — label the grader call "grader" (not "reviewer") so the Perf
+        # page attributes grading latency to the grader, not the reviewer role.
+        out = client.complete("grader", [
             {"role": "system", "content": _GRADER_SYS},
             {"role": "user", "content": f"SPEC:\n{spec}\n\nDIFF:\n{capped}"}],
             max_tokens=300)
     except Exception as exc:  # noqa: BLE001 — grader is best-effort
         log.warning("best_of_n grade LLM call failed: %s", exc)
-        return {"score": 0, "why": "grade failed"}
+        return dict(_GRADE_FAILED)
     return _parse_grade(out)
 
 
 def _parse_grade(out: str | None) -> dict:
-    """Pull ``{"score":int,"why":str}`` out of an LLM response defensively."""
+    """Pull ``{"score":int,"why":str}`` out of an LLM response defensively.
+    Returns ``graded=False``/``score=None`` when nothing parseable is found."""
     m = re.search(r"\{.*\}", out or "", re.DOTALL)
     if not m:
-        return {"score": 0, "why": "grade failed"}
+        return dict(_GRADE_FAILED)
     try:
         obj = json.loads(m.group(0))
     except (ValueError, TypeError):
-        return {"score": 0, "why": "grade failed"}
+        return dict(_GRADE_FAILED)
     if not isinstance(obj, dict):
-        return {"score": 0, "why": "grade failed"}
+        return dict(_GRADE_FAILED)
     try:
         score = int(obj.get("score", 0))
     except (TypeError, ValueError):
         score = 0
     score = max(0, min(100, score))
     why = str(obj.get("why") or "").strip()[:200]
-    return {"score": score, "why": why}
+    return {"score": score, "why": why, "graded": True}
 
 
 def _attempt(spec: str, repo: str, base: str, i: int, run_one,
-             on_status=None) -> dict:
+             on_status=None, run_token: str | None = None) -> dict:
     """Run ONE independent attempt in its own worktree, then grade its diff.
 
-    Returns ``{slug, score, why, branch, worktree, ok}``. A crash in the runner
-    is caught (score 0) so it can't kill the whole batch."""
+    Returns ``{slug, score, why, branch, worktree, ok, graded}``. A crash in the
+    runner is caught (ok=False) so it can't kill the whole batch. ``graded`` is
+    True only when the LLM grader actually returned a score; a real diff whose
+    grade is unavailable carries ``ok=True, graded=False, score=None``.
+
+    ``run_token`` makes the worktree dir + branch RUN-UNIQUE so concurrent
+    best-of-N runs in the SAME cwd can't collide on fixed paths (CC1)."""
     slug = f"bestof-{i}"
     _update(None, slug, "running", on_status)
     try:
-        wt, branch = _make_worktree(repo, base, slug)
+        wt, branch = _make_worktree(repo, base, slug, run_token)
     except Exception as exc:  # noqa: BLE001
         log.warning("best_of_n worktree add failed for %s: %s", slug, exc)
         _update(None, slug, "failed", on_status)
         return {"slug": slug, "score": 0, "why": f"worktree failed: {exc}",
-                "branch": None, "worktree": None, "ok": False}
+                "branch": None, "worktree": None, "ok": False, "graded": False}
 
     try:
         res = run_one({"slug": slug, "goal": spec}, wt) or {}
@@ -132,18 +147,19 @@ def _attempt(spec: str, repo: str, base: str, i: int, run_one,
             _update(None, slug, "failed", on_status)
             return {"slug": slug, "score": 0,
                     "why": "no diff produced" if not diff.strip() else "runner failed",
-                    "branch": branch, "worktree": wt, "ok": False}
+                    "branch": branch, "worktree": wt, "ok": False, "graded": False}
 
         _update(None, slug, "grading", on_status)
         graded = _grade(spec, diff)
         _update(None, slug, "graded", on_status)
         return {"slug": slug, "score": graded["score"], "why": graded["why"],
-                "branch": branch, "worktree": wt, "ok": True}
+                "branch": branch, "worktree": wt, "ok": True,
+                "graded": bool(graded.get("graded"))}
     except Exception as exc:  # noqa: BLE001 — keep branch+worktree for cleanup
         log.warning("best_of_n post-worktree step failed for %s: %s", slug, exc)
         _update(None, slug, "failed", on_status)
         return {"slug": slug, "score": 0, "why": f"post-worktree error: {exc}",
-                "branch": branch, "worktree": wt, "ok": False}
+                "branch": branch, "worktree": wt, "ok": False, "graded": False}
 
 
 def _cleanup(repo: str, attempt: dict) -> None:
@@ -176,54 +192,88 @@ def best_of_n(spec: str, cwd: str, *, n: int = 3, run_one=None,
     n = _guard_n(n if n is not None else _default_n())
     runner = run_one or _default_subtask_runner()
     base = _ensure_git_workspace(cwd)
+    # ONE run-unique token per best_of_n run → run-unique worktree dirs +
+    # branches, so two concurrent runs in the SAME cwd never collide (CC1).
+    run_token = uuid.uuid4().hex[:8]
 
     results: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
-        futs = [ex.submit(_attempt, spec, cwd, base, i, runner, on_status)
+        futs = [ex.submit(_attempt, spec, cwd, base, i, runner, on_status,
+                          run_token)
                 for i in range(n)]
         for f in concurrent.futures.as_completed(futs):
             try:
                 results.append(f.result())
             except Exception as exc:  # noqa: BLE001
                 results.append({"slug": "?", "score": 0, "why": str(exc),
-                                "branch": None, "worktree": None, "ok": False})
+                                "branch": None, "worktree": None, "ok": False,
+                                "graded": False})
 
-    # Pick the highest score (ties → first/stable). An attempt that produced no
-    # diff scores 0 and can still "win" only when EVERY attempt failed.
-    results.sort(key=lambda r: r.get("score", 0), reverse=True)
+    # Deterministic winner selection (B1/B5). Sort key, all DESCENDING priority
+    # except the final slug tie-break (ASCENDING for reproducibility):
+    #   1. ok            — a real diff (ok=True) always beats a no-diff attempt;
+    #                      a no-diff attempt is NEVER chosen over a real diff.
+    #   2. graded        — a graded attempt beats an ungraded one (so a real
+    #                      score wins when grading worked for at least one).
+    #   3. score         — highest grade wins among graded attempts.
+    #   4. slug          — stable, reproducible tie-break.
+    # B5 fallback falls out naturally: when grading is unavailable for ALL
+    # attempts, every ok=True attempt has graded=False/score=None, so the top
+    # of the sort is simply an ok=True attempt (a real diff) rather than nothing.
+    def _sort_key(r: dict):
+        score = r.get("score")
+        score = score if isinstance(score, (int, float)) else -1
+        return (-(1 if r.get("ok") else 0),
+                -(1 if r.get("graded") else 0),
+                -score,
+                str(r.get("slug") or ""))
+
+    results.sort(key=_sort_key)
     winner = results[0] if results else {"slug": None, "score": 0,
-                                         "why": "no attempts", "branch": None}
+                                         "why": "no attempts", "branch": None,
+                                         "ok": False, "graded": False}
 
     merged = False
-    if winner.get("ok") and winner.get("branch"):
-        ok, _info = _merge_branch(cwd, base, winner["branch"])
-        merged = ok
-        _update(None, winner["slug"], "won" if ok else "failed", on_status)
+    merge_info = ""
+    winner_real = bool(winner.get("ok") and winner.get("branch"))
+    if winner_real:
+        merged, merge_info = _merge_branch(cwd, base, winner["branch"])
+        _update(None, winner["slug"], "won" if merged else "failed", on_status)
 
-    # Discard EVERY attempt's worktree + branch unconditionally. Losers always
-    # leak otherwise; the winner leaks too when ``merged`` is False (all attempts
-    # failed, or the merge itself failed) — that branch matched neither arm of
-    # the old loop. A merged winner's commits already live on ``base``, so its
-    # worktree/branch are spent; an unmerged winner has nothing worth keeping.
+    # B2 — clean up losers + a SUCCESSFULLY-merged winner, but PRESERVE the
+    # winner's branch + worktree when its merge FAILED so the work is
+    # recoverable (the merge stderr is surfaced in ``review`` / ``merge_error``).
+    # A merged winner's commits already live on ``base``; an all-failed run's
+    # "winner" produced no diff, so nothing is worth keeping there.
+    preserve_branch = winner["branch"] if (winner_real and not merged) else None
     for r in results:
+        if preserve_branch and r.get("branch") == preserve_branch:
+            continue
         _cleanup(cwd, r)
 
     attempts = [{"slug": r["slug"], "score": r["score"], "why": r["why"]}
                 for r in results]
     any_ok = any(r.get("ok") for r in results)
-    review = (
-        f"best of {n}: winner {winner.get('slug')} "
-        f"scored {winner.get('score', 0)}"
-        + (f" — {winner.get('why')}" if winner.get("why") else "")
-        + ("; merged" if merged else "; nothing merged")
-        if any_ok else
-        f"best of {n}: all {n} attempts failed (no diff produced)")
+    w_score = winner.get("score")
+    score_str = "ungraded" if w_score is None else str(w_score)
+    why_str = f" — {winner.get('why')}" if winner.get("why") else ""
+    if not any_ok:
+        review = f"best of {n}: all {n} attempts failed (no diff produced)"
+    elif merged:
+        review = (f"best of {n}: winner {winner.get('slug')} scored "
+                  f"{score_str}{why_str}; merged")
+    else:
+        # Real diff but the merge failed — branch kept for recovery.
+        review = (f"best of {n}: winner {winner.get('slug')} scored "
+                  f"{score_str}{why_str}; merge FAILED (winner branch kept): "
+                  f"{merge_info or 'unknown'}")
     return {
         "ok": bool(merged),
         "n": n,
-        "winner": {"slug": winner.get("slug"), "score": winner.get("score", 0),
-                   "why": winner.get("why")},
+        "winner": {"slug": winner.get("slug"), "score": w_score,
+                   "why": winner.get("why"), "branch": preserve_branch},
         "attempts": attempts,
+        "merge_error": (merge_info or "merge failed") if preserve_branch else None,
         "review": review,
     }
 

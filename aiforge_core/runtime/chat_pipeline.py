@@ -445,6 +445,11 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                     final_text=fb_final, steps=fb_steps, team=False,
                     cancelled=cancelled_fb, awaiting=False)
                 _cc.finish(session_id)
+                # CC4 — also finish the approval gate; a fallback torn down
+                # mid-approval would otherwise leak _PENDING/_REVIEW_EDITS for
+                # this session into the next turn.
+                from aiforge_core.runtime import chat_approve as _ca
+                _ca.finish(session_id)
                 from aiforge_core.runtime import chat_interject as _ci
                 _ci.clear(session_id)
         except Exception:

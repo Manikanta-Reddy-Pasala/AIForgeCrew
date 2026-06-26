@@ -159,6 +159,41 @@ def test_no_subtasks_noop(tmp_path):
     assert r["total"] == 0 and r["ok"]
 
 
+# ── CC1: run-unique worktree dirs + branches (concurrent runs don't collide) ──
+def test_make_worktree_run_unique(tmp_path):
+    repo, _ = _repo(tmp_path)
+    # Same slug, two different run tokens → DISTINCT worktree dirs + branches,
+    # both existing at once (one run can't force-remove the other's, CC1).
+    wt1, b1 = ps._make_worktree(repo, "work", "a", "tok11111")
+    wt2, b2 = ps._make_worktree(repo, "work", "a", "tok22222")
+    assert wt1 != wt2 and b1 != b2
+    assert "tok11111" in wt1 and "tok11111" in b1
+    assert "tok22222" in wt2 and "tok22222" in b2
+    assert os.path.isdir(wt1) and os.path.isdir(wt2)   # coexist, no destruction
+    # Back-compat: no token → legacy fixed path/branch.
+    wt3, b3 = ps._make_worktree(repo, "work", "b")
+    assert wt3.endswith(os.path.join(".aiforge-worktrees", "sub-b"))
+    assert b3 == "work-sub-b"
+
+
+def test_run_parallel_uses_run_unique_worktrees(tmp_path):
+    repo, _ = _repo(tmp_path)
+    seen: list = []
+
+    def run_one(subtask, wt):
+        seen.append(os.path.basename(wt))
+        open(os.path.join(wt, f"{subtask['slug']}.txt"), "w").write("x\n")
+        return {"ok": True}
+
+    ps.run_parallel(repo, "work", None,
+                    [{"slug": s, "goal": s} for s in ("a", "b")], run_one)
+    # Each worktree dir is token-prefixed (e.g. "<token>-a"), not "sub-a", and
+    # all subtasks in one run share the SAME token (CC1).
+    assert seen and not any(n.startswith("sub-") for n in seen)
+    tokens = {n.rsplit("-", 1)[0] for n in seen}
+    assert len(tokens) == 1 and tokens.pop()
+
+
 def test_validation_tests_strict(monkeypatch):
     """Failing tests must NOT pass via the build fallback."""
     import aiforge_core.runtime.tools.project_runner as pr

@@ -87,6 +87,22 @@ def test_steerable_registry():
     ci.set_steerable(None, True)   # no-op, must not raise
 
 
+def test_push_require_steerable_noop_when_not_steerable():
+    # CC3 — push(require_steerable=True) is an atomic test-and-set: a no-op when
+    # the session isn't currently steerable, enqueues only when it is. This
+    # closes the /steer TOCTOU (check + push were two lock acquisitions).
+    ci.set_steerable(7, False)
+    assert ci.push(7, "x", require_steerable=True) is False
+    assert ci.drain(7) == []                       # nothing leaked in
+    ci.set_steerable(7, True)
+    assert ci.push(7, "x", require_steerable=True) is True
+    assert ci.drain(7) == ["x"]
+    # Default (no flag) still queues regardless — back-compat for the run loop.
+    ci.set_steerable(7, False)
+    assert ci.push(7, "y") is True
+    assert ci.drain(7) == ["y"]
+
+
 def test_steer_merges_into_trailing_user_turn(tmp_path):
     """M1 — a steer drained when the last turn is already a user message (the
     OBSERVATION after a tool step) merges into it instead of creating a second

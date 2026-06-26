@@ -108,3 +108,52 @@ def test_timed_records_on_exception(tmp_path):
     rows = perf_recorder.aggregate()
     assert len(rows) == 1
     assert rows[0]["name"] == "boom"
+
+
+def test_maybe_trim_concurrent_no_corruption(tmp_path, monkeypatch):
+    """CC2 — concurrent trims + appends must never produce a torn/corrupted
+    file. The atomic temp-file + os.replace swap guarantees readers see a whole
+    file; every surviving line stays valid JSON."""
+    import threading
+
+    # Shrink the cap so trimming triggers on a small file.
+    monkeypatch.setattr(perf_recorder, "_MAX_BYTES", 2000)
+    monkeypatch.setattr(perf_recorder, "_TRIM_KEEP", 10)   # kept lines < cap
+    path = tmp_path / "perf.ndjson"
+    with open(path, "w", encoding="utf-8") as fh:
+        for i in range(500):                       # seed well past the cap
+            fh.write(json.dumps({"family": "LLM", "name": "x",
+                                 "ms": float(i), "ts": 0.0}) + "\n")
+
+    errors: list = []
+
+    def trimmer():
+        try:
+            for _ in range(30):
+                perf_recorder._maybe_trim(str(path))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def appender():
+        try:
+            for _ in range(60):
+                perf_recorder.record("LLM", "y", 1.0)   # writes to same path
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = ([threading.Thread(target=trimmer) for _ in range(4)]
+               + [threading.Thread(target=appender) for _ in range(4)])
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    # No torn writes: every non-blank line parses as JSON.
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            json.loads(line)
+    # A final trim brings it under the cap (atomic last-write-wins).
+    perf_recorder._maybe_trim(str(path))
+    assert path.stat().st_size <= perf_recorder._MAX_BYTES

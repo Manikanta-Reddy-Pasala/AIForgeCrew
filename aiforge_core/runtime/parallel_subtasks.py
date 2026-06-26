@@ -54,15 +54,26 @@ def _slugify(text: str) -> str:
     return s[:40] or "step"
 
 
-def _branch_for(slug: str, base_branch: str) -> str:
+def _branch_for(slug: str, base_branch: str, run_token: str | None = None) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in slug)[:40]
+    # ``run_token`` makes the branch RUN-UNIQUE so concurrent runs in the SAME
+    # repo don't collide on a fixed ``{base}-sub-{slug}`` name (CC1).
+    if run_token:
+        return f"{base_branch}-{run_token}-sub-{safe}"
     return f"{base_branch}-sub-{safe}"
 
 
-def _make_worktree(repo: str, base_branch: str, slug: str) -> tuple[str, str]:
-    """Create a fresh worktree + branch off ``base_branch`` for ``slug``."""
-    branch = _branch_for(slug, base_branch)
-    wt = os.path.join(repo, ".aiforge-worktrees", f"sub-{slug}")
+def _make_worktree(repo: str, base_branch: str, slug: str,
+                   run_token: str | None = None) -> tuple[str, str]:
+    """Create a fresh worktree + branch off ``base_branch`` for ``slug``.
+
+    ``run_token`` (a short uuid4 hex per run) makes BOTH the worktree dir and
+    the branch run-unique so two concurrent parallel / best-of-N runs sharing
+    one repo can't destroy each other's in-flight worktree (CC1). The ``slug``
+    itself is unchanged (still used for display/status)."""
+    branch = _branch_for(slug, base_branch, run_token)
+    name = f"{run_token}-{slug}" if run_token else f"sub-{slug}"
+    wt = os.path.join(repo, ".aiforge-worktrees", name)
     with _GIT_LOCK:                          # serialize repo-index mutations
         # Clean any stale worktree/branch from a prior run.
         _git(["worktree", "remove", "--force", wt], repo)
@@ -122,11 +133,12 @@ def _attempt(subtask: dict, wt: str, slug: str, run_one, validate_one) -> dict:
 
 
 def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
-                 subtask: dict, run_one, validate_one, on_status=None) -> dict:
+                 subtask: dict, run_one, validate_one, on_status=None,
+                 run_token: str | None = None) -> dict:
     slug = subtask.get("slug") or "sub"
     _update(ticket_id, slug, "running", on_status)
     try:
-        wt, branch = _make_worktree(repo, base_branch, slug)
+        wt, branch = _make_worktree(repo, base_branch, slug, run_token)
     except Exception as exc:  # noqa: BLE001
         _update(ticket_id, slug, "failed", on_status)
         return {"slug": slug, "ok": False, "error": str(exc), "branch": None}
@@ -270,11 +282,17 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                 "merged": 0, "conflicts": [], "note": "no subtasks",
                 "review": "nothing to do"}
 
+    # ONE run-unique token per run → run-unique worktree dirs + branches, so
+    # concurrent parallel runs sharing this repo never collide (CC1).
+    import uuid as _uuid
+    run_token = _uuid.uuid4().hex[:8]
+
     def _pass(batch: list[dict]) -> list[dict]:
         out: list[dict] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
             futs = [ex.submit(_run_subtask, repo_root, base_branch, ticket_id, s,
-                              run_one, validate_one, on_status) for s in batch]
+                              run_one, validate_one, on_status, run_token)
+                    for s in batch]
             for f in concurrent.futures.as_completed(futs):
                 try:
                     out.append(f.result())

@@ -20,12 +20,22 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from contextlib import contextmanager
 
 # Soft size cap (~5 MB). When exceeded we keep only the last _TRIM_KEEP lines.
 _MAX_BYTES = 5 * 1024 * 1024
 _TRIM_KEEP = 5000
+
+# Serializes the read-modify-write of _maybe_trim and reset() so concurrent
+# callers can't corrupt or lose samples (CC2). record()'s append stays
+# lock-free (O_APPEND is atomic per line).
+_TRIM_LOCK = threading.Lock()
+# Only stat+trim every Nth record so the over-cap check (and its lock) isn't
+# taken on the hot path of every single append — shrinks the racy window.
+_TRIM_CHECK_EVERY = 64
+_record_count = 0
 
 
 def _config_dir() -> str:
@@ -49,22 +59,35 @@ def record(family: str, name: str, ms: float) -> None:
         })
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
-        _maybe_trim(path)
+        # Only check size every Nth record (a plain counter — an exact value
+        # doesn't matter, it just throttles how often we stat + lock).
+        global _record_count
+        _record_count += 1
+        if _record_count % _TRIM_CHECK_EVERY == 0:
+            _maybe_trim(path)
     except Exception:
         # Perf must never break a run.
         pass
 
 
 def _maybe_trim(path: str) -> None:
-    """Trim the ndjson to the last _TRIM_KEEP lines if it grew past the cap."""
+    """Trim the ndjson to the last _TRIM_KEEP lines if it grew past the cap.
+
+    Serialized under _TRIM_LOCK and committed via a temp file + os.replace so a
+    concurrent trim/reset can't interleave a truncate-in-place and lose or
+    corrupt samples (CC2). os.replace is an atomic swap: readers see either the
+    whole old file or the whole new one, never a torn write."""
     try:
-        if os.path.getsize(path) <= _MAX_BYTES:
-            return
-        with open(path, "r", encoding="utf-8") as fh:
-            lines = fh.readlines()
-        keep = lines[-_TRIM_KEEP:]
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.writelines(keep)
+        with _TRIM_LOCK:
+            if os.path.getsize(path) <= _MAX_BYTES:
+                return
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+            keep = lines[-_TRIM_KEEP:]
+            tmp = f"{path}.trim.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.writelines(keep)
+            os.replace(tmp, path)
     except Exception:
         pass
 
@@ -118,11 +141,15 @@ def aggregate() -> list[dict]:
 
 
 def reset() -> None:
-    """Truncate the ndjson file. Soft-fail: never raises."""
+    """Truncate the ndjson file. Soft-fail: never raises.
+
+    Serialized under the same lock as _maybe_trim (CC2) so a reset can't race a
+    concurrent trim's read-modify-write."""
     try:
         path = _perf_path()
-        if os.path.exists(path):
-            open(path, "w", encoding="utf-8").close()
+        with _TRIM_LOCK:
+            if os.path.exists(path):
+                open(path, "w", encoding="utf-8").close()
     except Exception:
         pass
 
