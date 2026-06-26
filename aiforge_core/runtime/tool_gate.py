@@ -110,17 +110,32 @@ def make_approval_gate_callback():
             )
             if policy == tool_policy.ALLOW and not force_review:
                 return None
-            # Captured-rule "never re-ask": a standing "commit directly" rule
-            # auto-approves git commit/add/push without an approval emit (for
-            # the session → global scope). Keep DENY hard; only relax ASK.
-            if policy != tool_policy.DENY:
+            # Captured-rule "never re-ask": an EXPLICITLY-enabled "commit
+            # directly" flag auto-approves a WHOLE-command git commit/add/push
+            # (is_commit_command rejects any chained/expanded command). Keep DENY
+            # hard and never bypass a forced review. An AUTONOMOUS run (sid None)
+            # ignores chat-set flags entirely (flag_active returns False), so it
+            # is never weakened here. The bypass is AUDITED, not invisible.
+            if policy != tool_policy.DENY and not force_review:
                 try:
                     from aiforge_core.runtime import rule_capture as _rc
                     _cmd = (args or {}).get("cmd") or (args or {}).get("command") or ""
-                    _repo = os.path.basename(os.path.normpath(
-                        os.environ.get("AIFORGE_REPO_ROOT", ""))) or None
+                    _repo = _rc.repo_key(os.environ.get("AIFORGE_REPO_ROOT", ""))
                     if _rc.is_commit_command(_cmd) and _rc.flag_active(
                             "commit_auto_approve", repo=_repo, session_id=sid):
+                        _scope = _rc.flag_active_scope(
+                            "commit_auto_approve", repo=_repo, session_id=sid)
+                        log.warning(
+                            "tool_gate.auto_approved tool=%s flag=%s scope=%s",
+                            name, "commit_auto_approve", _scope)
+                        try:
+                            if chat_approve.has_emitter(sid):
+                                chat_approve.emit(sid, {
+                                    "type": "auto_approved", "name": name,
+                                    "flag": "commit_auto_approve",
+                                    "scope": _scope})
+                        except Exception:  # noqa: BLE001
+                            pass
                         return None
                 except Exception:  # noqa: BLE001
                     pass

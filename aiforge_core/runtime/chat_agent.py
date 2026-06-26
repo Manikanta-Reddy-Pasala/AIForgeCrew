@@ -1557,11 +1557,11 @@ def run_chat_agent(
         # asking the user to "type yes" forever. So always gate it, and let the
         # human's Approve BE the confirmation.
         _destructive_del = False
-        # Captured-rule "never re-ask" flags (rule_capture.apply_behavioral):
-        # a standing "commit directly" rule auto-approves git commit/add/push;
-        # "delete without asking" auto-confirms a destructive delete — for the
-        # scope (session → repo → global precedence). Honored here so the
-        # approval popup never re-fires for an intent the user already granted.
+        # Captured-rule "never re-ask" flags — set ONLY by an EXPLICIT user
+        # opt-in (rule_capture.set_gate_flag), never by the classifier. A
+        # commit_auto_approve flag auto-approves a whole-command git commit/add/
+        # push; allow_delete auto-confirms a destructive delete — for the scope
+        # (session → repo precedence; autonomous runs ignore chat-set flags).
         _auto_commit = False
         if name in ("run_command", "bash", "run_shell", "shell", "serve"):
             _cmd = args.get("cmd") or args.get("command") or ""
@@ -1586,9 +1586,23 @@ def run_chat_agent(
                 pass
         _gate = (verdict["policy"] == tool_policy.ASK or _force_review
                  or _destructive_del)
-        if _gate and _auto_commit:
-            # User granted "commit directly" for this scope — don't re-ask.
+        # A captured "commit directly" flag may auto-approve the gate ONLY when
+        # the SOLE reason to gate is a pure whole-command git commit/add/push —
+        # NEVER when a destructive delete (or any non-commit risk: forced review,
+        # DENY) co-occurs. So `git commit && rm -rf` is NOT auto-approved.
+        if _gate and _auto_commit and not _destructive_del and not _force_review \
+                and verdict["policy"] != tool_policy.DENY:
             _gate = False
+            # Audit: emit an attributable record of the bypass (not invisible).
+            try:
+                from aiforge_core.runtime import rule_capture as _rc2
+                _ascope = _rc2.flag_active_scope(
+                    "commit_auto_approve", repo=_repo_name(cwd),
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001
+                _ascope = None
+            yield {"type": "auto_approved", "name": name,
+                   "flag": "commit_auto_approve", "scope": _ascope}
         if _gate:
             # Approval gate (#1): surface the action + diff preview, block on
             # the user's Approve/Reject (POST /api/chat/sessions/{id}/approve).

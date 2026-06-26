@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionStop, chatSessionSteer, setRuleScope, deleteRule, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionStop, chatSessionSteer, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -20,8 +20,22 @@ type CapturedItem = {
   category: string;
   scope: string;
   text: string;
-  flags?: string[];
+  repo?: string | null;
+  // Set when the captured rule LOOKS like a gate-disable request — the pill then
+  // OFFERS an explicit, scoped opt-in. A gate is NEVER disabled by capture.
+  gate_intent?: 'commit' | 'delete';
 };
+
+// Shared, server-truth state for captured-rule pills so undo/rescope SURVIVE a
+// reload (the persisted pill hydrates from this rather than its stale step).
+type RuleState = {
+  byId: Record<string, CapturedRule>;   // current persisted truth
+  loaded: boolean;                       // has the index been fetched at least once
+  sessionId: number | null;
+  flags: GateFlags | null;               // active gate-disable flags
+  refresh: () => void;
+};
+const RuleStateCtx = createContext<RuleState | null>(null);
 
 // A "live" turn: the in-progress assistant turn while streaming.
 type LiveTurn = {
@@ -221,6 +235,27 @@ export default function Chat() {
 
   // Live turn (the assistant response being streamed right now)
   const [liveTurn, setLiveTurn] = useState<LiveTurn | null>(null);
+
+  // Captured-rule server truth (so pills survive reload) + active gate flags.
+  const [ruleById, setRuleById] = useState<Record<string, CapturedRule>>({});
+  const [ruleLoaded, setRuleLoaded] = useState(false);
+  const [gateFlags, setGateFlags] = useState<GateFlags | null>(null);
+  function refreshRules() {
+    fetchRules(activeId != null ? { session_id: activeId } : undefined)
+      .then(r => {
+        const m: Record<string, CapturedRule> = {};
+        (r.items || []).forEach(it => { m[it.id] = it; });
+        setRuleById(m);
+        setRuleLoaded(true);
+      })
+      .catch(() => setRuleLoaded(true));
+    ruleFlags().then(setGateFlags).catch(() => {});
+  }
+  useEffect(() => { refreshRules(); /* eslint-disable-next-line */ }, [activeId]);
+  const ruleState: RuleState = {
+    byId: ruleById, loaded: ruleLoaded, sessionId: activeId,
+    flags: gateFlags, refresh: refreshRules,
+  };
 
   // Composer
   const [input, setInput] = useState('');
@@ -668,7 +703,8 @@ export default function Chat() {
             ...prev,
             captured: [...(prev.captured || []), {
               id: evt.id, category: evt.category, scope: evt.scope,
-              text: evt.text || '', flags: evt.flags || [],
+              text: evt.text || '', repo: evt.repo,
+              gate_intent: evt.gate_intent,
             }],
           } : prev);
           return;
@@ -827,6 +863,7 @@ export default function Chat() {
   }
 
   return (
+    <RuleStateCtx.Provider value={ruleState}>
     <div className="chat-shell-v2">
       {/* ── Left sidebar: sessions list ─────────────────────────────────────── */}
       <div className="chat-sessions-sidebar">
@@ -1118,6 +1155,7 @@ export default function Chat() {
         ) : (
           <>
             <div className="chat-log" ref={logRef}>
+              <AutoApprovalsPanel />
               {messages.length === 0 && !liveTurn && !busy && (
                 <div className="chat-empty-state" style={{ flex: 'none' }}>
                   <div className="empty-icon">✨</div>
@@ -1141,7 +1179,8 @@ export default function Chat() {
                           streaming={false}
                           subtasks={(msg.steps || []).find((s: any) => s?.type === 'subtasks')?.items}
                           captured={(msg.steps || []).filter((s: any) => s?.type === 'captured').map((s: any) => ({
-                            id: s.id, category: s.category, scope: s.scope, text: s.text || '', flags: s.flags || [],
+                            id: s.id, category: s.category, scope: s.scope, text: s.text || '',
+                            repo: s.repo, gate_intent: s.gate_intent,
                           }))}
                         />
                         {/* FE1: awaiting affordance survives loadSession — shown
@@ -1367,42 +1406,86 @@ export default function Chat() {
         )}
       </div>
     </div>
+    </RuleStateCtx.Provider>
   );
 }
 
 // ── CapturedPill — inline "Saved RULE · scope" note (change-scope / undo) ─────
+//
+// A captured rule is REMEMBERED (rule book) on capture. If it ALSO looks like a
+// request to stop asking before commits/deletes (`gate_intent`), the pill shows
+// a DISTINCT, explicit opt-in to disable that gate for THIS session or THIS repo
+// — never global (global needs the dedicated panel + confirm). The opt-in is the
+// ONLY thing that disables a gate; capture itself never does.
 
-const CAPTURED_FLAG_LABEL: Record<string, string> = {
+const GATE_INTENT_FLAG: Record<string, string> = {
+  commit: 'commit_auto_approve',
+  delete: 'allow_delete',
+};
+const GATE_INTENT_LABEL: Record<string, string> = {
+  commit: 'Also stop asking before commits?',
+  delete: 'Also stop asking before deletes?',
+};
+const FLAG_LABEL: Record<string, string> = {
   commit_auto_approve: 'commits auto-approved',
   allow_delete: 'deletes auto-approved',
 };
 
 function CapturedPill({ item }: { item: CapturedItem }) {
-  const [scope, setScope] = useState(item.scope);
+  const rs = useContext(RuleStateCtx);
+  // Hydrate from server truth so undo/rescope SURVIVE a reload: a persisted pill
+  // whose id is gone from the index was deleted; otherwise use its current scope.
+  const hydrated = rs?.byId[item.id];
+  const wasDeleted = rs?.loaded && !hydrated && item.scope !== 'session';
+  const scope = hydrated?.scope || item.scope;
+  const appliedFlags = hydrated?.applied_flags || [];
+
   const [removed, setRemoved] = useState(false);
   const [busy, setBusy] = useState(false);
-  if (removed) return null;
+  if (removed || wasDeleted) return null;
+
+  const flagName = item.gate_intent ? GATE_INTENT_FLAG[item.gate_intent] : '';
+  const flagApplied = appliedFlags.some(f => f.name === flagName);
 
   async function changeScope(next: string) {
     if (next === scope || busy) return;
     setBusy(true);
-    const prev = scope;
-    setScope(next);
-    try { await setRuleScope(item.id, next); }
-    catch { setScope(prev); toast.error('Could not change scope'); }
+    try {
+      await setRuleScope(item.id, next);
+      rs?.refresh();
+    } catch { toast.error('Could not change scope'); }
     finally { setBusy(false); }
   }
   async function undo() {
     if (busy) return;
     setBusy(true);
     try {
+      // DELETE clears the rule AND revokes any gate flag it enabled.
       const r = await deleteRule(item.id);
-      if (r.ok) setRemoved(true); else toast.error('Could not undo');
+      if (r.ok) { setRemoved(true); rs?.refresh(); }
+      else toast.error('Could not undo');
     } catch { toast.error('Could not undo'); }
     finally { setBusy(false); }
   }
+  async function optIn(scopeKind: 'session' | 'project') {
+    if (busy || !flagName) return;
+    setBusy(true);
+    try {
+      const opts: { rule_id: string; session_id?: number; repo?: string } = { rule_id: item.id };
+      if (scopeKind === 'session') {
+        if (rs?.sessionId == null) { toast.error('No active session'); return; }
+        opts.session_id = rs.sessionId;
+      } else {
+        if (!item.repo) { toast.error('No repo for this rule'); return; }
+        opts.repo = item.repo;
+      }
+      const res = await setGateFlag(flagName, scopeKind, opts);
+      if (res.applied) { toast.success('Gate disabled for this ' + (scopeKind === 'session' ? 'session' : 'repo')); rs?.refresh(); }
+      else toast.error(res.reason || 'Could not enable');
+    } catch { toast.error('Could not enable'); }
+    finally { setBusy(false); }
+  }
 
-  const flags = (item.flags || []).map(f => CAPTURED_FLAG_LABEL[f] || f);
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
@@ -1431,14 +1514,89 @@ function CapturedPill({ item }: { item: CapturedItem }) {
         <option value="project">project</option>
         <option value="session">session</option>
       </select>
-      {flags.length > 0 && (
-        <span style={{ color: '#d4a72c', fontSize: 11 }}>· {flags.join(', ')}</span>
-      )}
       <button onClick={undo} disabled={busy}
         style={{ marginLeft: 'auto', background: 'transparent',
           border: '1px solid var(--border-1)', borderRadius: 4,
           padding: '1px 8px', fontSize: 11, color: 'var(--fg-3)',
           cursor: busy ? 'default' : 'pointer' }}>undo</button>
+
+      {/* Explicit gate-disable opt-in (only when the rule reads like one) */}
+      {item.gate_intent && (
+        <div style={{
+          flexBasis: '100%', display: 'flex', alignItems: 'center', gap: 6,
+          marginTop: 4, paddingTop: 4, borderTop: '1px dashed var(--border-1)',
+          color: '#d4a72c', fontSize: 11,
+        }}>
+          {flagApplied ? (
+            <span>⚠ {FLAG_LABEL[flagName]} (enabled — undo to revoke)</span>
+          ) : (
+            <>
+              <span>⚠ {GATE_INTENT_LABEL[item.gate_intent]}</span>
+              <button onClick={() => optIn('session')} disabled={busy}
+                style={{ background: 'transparent', border: '1px solid #d4a72c',
+                  borderRadius: 4, padding: '1px 8px', fontSize: 11,
+                  color: '#d4a72c', cursor: busy ? 'default' : 'pointer' }}>
+                This session</button>
+              {item.repo && (
+                <button onClick={() => optIn('project')} disabled={busy}
+                  style={{ background: 'transparent', border: '1px solid #d4a72c',
+                    borderRadius: 4, padding: '1px 8px', fontSize: 11,
+                    color: '#d4a72c', cursor: busy ? 'default' : 'pointer' }}>
+                  This repo</button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── AutoApprovalsPanel — active gate-disable flags, with Revoke ───────────────
+// The audit surface: every disabled gate is visible and revocable here. No way
+// to ENABLE a global flag from the UI — that stays a deliberate, separate step.
+
+function AutoApprovalsPanel() {
+  const rs = useContext(RuleStateCtx);
+  const flags = rs?.flags?.by_scope;
+  if (!flags) return null;
+  type Row = { name: string; scope: string; repo?: string; session?: string; label: string };
+  const rows: Row[] = [];
+  Object.keys(flags.global || {}).forEach(n => rows.push({ name: n, scope: 'global', label: 'global' }));
+  Object.entries(flags.repo || {}).forEach(([repo, d]) =>
+    Object.keys(d || {}).forEach(n => rows.push({ name: n, scope: 'project', repo, label: `repo ${repo}` })));
+  Object.entries(flags.session || {}).forEach(([sid, d]) =>
+    Object.keys(d || {}).forEach(n => rows.push({ name: n, scope: 'session', session: sid, label: `session ${sid}` })));
+  if (rows.length === 0) return null;
+
+  async function revoke(r: Row) {
+    try {
+      await clearGateFlag(r.name, r.scope,
+        { repo: r.repo, session_id: r.session != null ? Number(r.session) : undefined });
+      rs?.refresh();
+    } catch { toast.error('Could not revoke'); }
+  }
+
+  return (
+    <div style={{
+      border: '1px solid #d4a72c', borderRadius: 6, padding: '6px 10px',
+      margin: '6px 0', fontSize: 12, background: 'rgba(212,167,44,0.06)',
+    }}>
+      <div style={{ fontWeight: 600, color: '#d4a72c', marginBottom: 4 }}>
+        ⚠ Auto-approvals active ({rows.length})
+      </div>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+          <span style={{ color: 'var(--fg-2,#8892a0)' }}>
+            {FLAG_LABEL[r.name] || r.name} · <span style={{ fontFamily: 'var(--font-mono)' }}>{r.label}</span>
+          </span>
+          <button onClick={() => revoke(r)}
+            style={{ marginLeft: 'auto', background: 'transparent',
+              border: '1px solid var(--border-1)', borderRadius: 4,
+              padding: '1px 8px', fontSize: 11, color: 'var(--fg-3)', cursor: 'pointer' }}>
+            Revoke</button>
+        </div>
+      ))}
     </div>
   );
 }

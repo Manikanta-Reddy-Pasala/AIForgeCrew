@@ -2460,23 +2460,55 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # any error here is swallowed and the normal run proceeds.
         try:
             from aiforge_core.runtime import rule_capture as _rc
-            _repo = os.path.basename(os.path.normpath(cwd)) or "repo"
-            _cls = _rc.classify(prompt, repo=_repo, session_id=session_id)
-            if _cls.get("category") != "none":
-                _stored = _rc.store(_cls, repo=_repo, session_id=session_id,
-                                    repo_root=cwd)
-                _flags = _rc.apply_behavioral(_cls, repo=_repo,
-                                              session_id=session_id)
-                yield {"type": "captured", "id": _stored.get("id"),
-                       "category": _cls["category"], "scope": _cls["scope"],
-                       "text": _cls.get("canonical", ""), "flags": _flags}
-                # PURE capture (no actionable task) → brief ack, skip the agent.
-                if not _cls.get("task_present", True):
-                    yield {"type": "message",
-                           "text": f"Got it — saved as {_cls['category']} "
-                                   f"({_cls['scope']})."}
-                    yield {"type": "done"}
-                    return
+            _repo = _rc.repo_key(cwd) or "repo"
+            # PRE-FILTER: only spend an LLM classify when the message carries a
+            # preference/directive cue. Ordinary turns ("hi", "fix the bug")
+            # skip the classifier entirely — no per-turn LLM cost.
+            if _rc.should_classify(prompt):
+                import concurrent.futures as _cf
+
+                def _capture_pass():
+                    _c = _rc.classify(prompt, repo=_repo, session_id=session_id)
+                    if _c.get("category") == "none":
+                        return None
+                    _s = _rc.store(_c, repo=_repo, session_id=session_id,
+                                   repo_root=cwd)
+                    # Recognition ONLY: detect a possible gate-disable request so
+                    # the UI can OFFER an explicit opt-in. It sets NO flag.
+                    _i = _rc.recognize_gate_intent(_c)
+                    return _c, _s, _i
+
+                # HARD wall-clock bound on the whole capture pass so a degraded
+                # LLM can never stall the chat turn. Fully fail-open + fail-fast.
+                _res = None
+                _ex = _cf.ThreadPoolExecutor(max_workers=1)
+                try:
+                    _budget = float(os.environ.get("AIFORGE_CAPTURE_BUDGET_S", "6"))
+                    _res = _ex.submit(_capture_pass).result(timeout=_budget)
+                except Exception as _cexc:  # noqa: BLE001 — timeout/any → no capture
+                    _af_log.debug("rule_capture pass timed out/failed: %s", _cexc)
+                finally:
+                    _ex.shutdown(wait=False)
+
+                if _res is not None:
+                    _cls, _stored, _intent = _res
+                    _ev = {"type": "captured", "id": _stored.get("id"),
+                           "category": _cls["category"], "scope": _cls["scope"],
+                           "text": _cls.get("canonical", ""), "repo": _repo}
+                    if _intent:
+                        _ev["gate_intent"] = _intent     # UI offers opt-in pill
+                    yield _ev
+                    # PURE capture (no actionable task) → brief ack, skip the
+                    # agent — UNLESS a deterministic actionable-intent backstop
+                    # fires (e.g. "...and now fix the bug"): never drop a real
+                    # task on the classifier's say-so.
+                    if not _cls.get("task_present", True) \
+                            and not _rc.looks_actionable(prompt):
+                        yield {"type": "message",
+                               "text": f"Got it — saved as {_cls['category']} "
+                                       f"({_cls['scope']})."}
+                        yield {"type": "done"}
+                        return
         except Exception as _exc:  # noqa: BLE001 — capture must never break a turn
             _af_log.debug("rule_capture pre-agent pass failed: %s", _exc)
         # Team mode → full ADK agent flow (planner→…→learner) for complex
@@ -2749,20 +2781,70 @@ def list_captured_rules(repo: str | None = None,
 
 class _RuleScopeBody(BaseModel):
     scope: str = Field(..., description="'global' | 'project' | 'session'")
+    repo_root: str | None = Field(
+        None, description="repo root so a →project rescope writes .aiforge/rules")
 
 
 @app.put("/api/rules/{rule_id}/scope")
 def rescope_captured_rule(rule_id: str, body: _RuleScopeBody) -> dict:
-    """Re-file a captured item under a new scope (correcting a misclass)."""
+    """Re-file a captured item under a new scope (correcting a misclass). Any
+    gate flag the rule enabled moves with it (and a deleted/undone one is
+    revoked)."""
     from aiforge_core.runtime import rule_capture
-    return rule_capture.rescope(rule_id, body.scope)
+    repo_root = body.repo_root or os.environ.get("AIFORGE_REPO_ROOT") or None
+    return rule_capture.rescope(rule_id, body.scope, repo_root=repo_root)
 
 
 @app.delete("/api/rules/{rule_id}")
 def delete_captured_rule(rule_id: str) -> dict:
-    """Undo a captured item — removes it from its store (best-effort)."""
+    """Undo a captured item — removes it from its store AND revokes any gate
+    flag it enabled (so the approval gate is re-enabled)."""
     from aiforge_core.runtime import rule_capture
     return {"ok": rule_capture.undo(rule_id)}
+
+
+# ── Explicit gate-disable flags (the EXPLICIT, scoped, revocable opt-in) ──────
+#
+# A gate is NEVER disabled by the classifier — only by an explicit user action
+# through these endpoints. The capture path merely OFFERS the opt-in (gate_intent
+# on the `captured` event); the UI pill calls POST here when the user clicks it.
+
+@app.get("/api/rules/flags")
+def list_gate_flags() -> dict:
+    """Active gate-disable flags grouped by scope, for the Auto-approvals
+    panel."""
+    from aiforge_core.runtime import rule_capture
+    return {"by_scope": rule_capture.list_flags()}
+
+
+class _GateFlagBody(BaseModel):
+    name: str = Field(..., description="'commit_auto_approve' | 'allow_delete'")
+    scope: str = Field(..., description="'session' | 'project' (global needs confirm)")
+    repo: str | None = None
+    session_id: int | None = None
+    rule_id: str | None = None
+    allow_global: bool = False
+
+
+@app.post("/api/rules/flags")
+def set_gate_flag_ep(body: _GateFlagBody) -> dict:
+    """EXPLICITLY enable a gate-disable flag for a scope (user-confirmed opt-in).
+    Refuses global unless allow_global is set."""
+    from aiforge_core.runtime import rule_capture
+    return rule_capture.set_gate_flag(
+        body.name, scope=body.scope, repo=body.repo,
+        session_id=body.session_id, rule_id=body.rule_id,
+        allow_global=body.allow_global)
+
+
+@app.delete("/api/rules/flags/{name}")
+def clear_gate_flag_ep(name: str, scope: str, repo: str | None = None,
+                       session_id: int | None = None) -> dict:
+    """Revoke a gate-disable flag for a scope (re-enables the gate)."""
+    from aiforge_core.runtime import rule_capture
+    ok = rule_capture.clear_gate_flag(name, scope=scope, repo=repo,
+                                      session_id=session_id)
+    return {"ok": ok}
 
 
 class _CheckpointBody(BaseModel):
