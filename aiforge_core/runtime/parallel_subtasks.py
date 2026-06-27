@@ -643,9 +643,15 @@ def _orchestrator_timeout_s() -> int:
     """Wall-clock budget for the blocking pre-stream orchestrator LLM calls
     (enhancer / architect / decompose). A hung endpoint must not block every
     non-trivial chat turn for minutes under the default 600s × retries.
-    Tunable via AIFORGE_ENHANCER_TIMEOUT_S (default 30)."""
+
+    Default 180s: slow *thinking* enhancer models (e.g. qwythos) burn
+    300-600 reasoning tokens before emitting the spec and clock 60-150s on
+    a real request — a 30s budget timed them out and silently fell back to
+    the RAW prompt, dropping all memory/history enrichment. 180s lets a
+    reasoning model finish while still bounding a truly hung endpoint.
+    Tunable via AIFORGE_ENHANCER_TIMEOUT_S (default 180)."""
     try:
-        return max(1, int(os.environ.get("AIFORGE_ENHANCER_TIMEOUT_S", "30")))
+        return max(1, int(os.environ.get("AIFORGE_ENHANCER_TIMEOUT_S", "180")))
     except (TypeError, ValueError):
         return 30
 
@@ -808,7 +814,7 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
         from aiforge_core.llm import client
         out = client.complete("enhancer", [
             {"role": "system", "content": _ENHANCE_SYS},
-            {"role": "user", "content": user_msg}], max_tokens=900,
+            {"role": "user", "content": user_msg}], max_tokens=2048,
             timeout_s=_orchestrator_timeout_s())
         return (out or "").strip() or prompt
     except Exception:  # noqa: BLE001
