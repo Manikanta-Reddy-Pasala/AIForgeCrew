@@ -184,6 +184,75 @@ def test_only_one_attempt_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["n"] == 1
 
 
+# ─── Operator-driven explicit (re)load: load_model_now ────────────────
+
+
+def test_load_model_now_builds_reload_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock:
+        out = ls.load_model_now("qwythos", 1048576)
+    assert out["ok"] is True
+    assert out["context_length"] == 1048576
+    args = run_mock.call_args[0][0]
+    assert args[0] == "ssh" and "user@studio" in args
+    joined = " ".join(args)
+    assert "lms server start" in joined
+    assert "lms unload qwythos" in joined          # reload unloads first
+    assert "lms load qwythos" in joined
+    assert "--context-length 1048576" in joined
+    assert "--parallel 1" in joined
+    assert "-y" in joined
+    assert "--ttl" not in joined                   # ttl=0 → no flag
+
+
+def test_load_model_now_no_host_returns_error() -> None:
+    with patch("subprocess.run", side_effect=AssertionError("called")):
+        out = ls.load_model_now("m", 131072)
+    assert out["ok"] is False and "AIFORGE_LMS_HOST" in out["error"]
+
+
+def test_load_model_now_clamps_to_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock:
+        out = ls.load_model_now("m", 8192)         # below 64K floor
+    assert out["context_length"] == 65536
+    joined = " ".join(run_mock.call_args[0][0])
+    assert "--context-length 65536" in joined
+    assert "--context-length 8192" not in joined
+
+
+def test_load_model_now_ttl_appends_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run", return_value=_proc_ok()) as run_mock:
+        ls.load_model_now("m", 131072, ttl=43200)
+    assert "--ttl 43200" in " ".join(run_mock.call_args[0][0])
+
+
+def test_load_model_now_failure_reports_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run", return_value=_proc_fail()):
+        out = ls.load_model_now("m", 131072)
+    assert out["ok"] is False and "boom" in out["error"]
+
+
+def test_load_model_now_ssh_timeout_reports_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIFORGE_LMS_HOST", "user@studio")
+    with patch("subprocess.run",
+               side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=10)):
+        out = ls.load_model_now("m", 131072)
+    assert out["ok"] is False and "timeout" in out["error"]
+
+
 # ─── End-to-end with maybe_substitute_primary ─────────────────────────
 
 

@@ -203,6 +203,78 @@ def try_start(api_base: str) -> bool:
     return alive
 
 
+# ─── Operator-driven explicit (re)load ────────────────────────────────
+
+
+# Hard floor shared with try_start: never load below 64K — smaller risks
+# the original 4K-truncation bug regardless of operator intent.
+_CTX_FLOOR = 65536
+
+
+def load_model_now(
+    model: str,
+    context_length: int,
+    *,
+    ttl: int = 0,
+    parallel: int | None = None,
+    host: str | None = None,
+    ssh_timeout: int = 300,
+) -> dict:
+    """Explicitly (re)load ``model`` on the LM Studio host at a chosen
+    context length and report the SSH outcome.
+
+    Unlike :func:`try_start` this is an operator action (the UI "set
+    context window" control): no per-process cache, no warmup probe —
+    it unloads any running copy so the new ctx takes effect, issues the
+    load, and returns ``{"ok": bool, ...}``. Blocking until ``lms load``
+    returns or ``ssh_timeout`` elapses.
+    """
+    host = host or _ssh_host()
+    if not host:
+        return {"ok": False, "error": "no AIFORGE_LMS_HOST configured"}
+    if not model:
+        return {"ok": False, "error": "model required"}
+
+    bin_name = os.environ.get("AIFORGE_LMS_BIN", "lms")
+    ctx = max(int(context_length), _CTX_FLOOR)
+    par = max(parallel if parallel is not None
+              else _int_env("AIFORGE_LMS_PARALLEL", 1), 1)
+    load_cmd = (
+        f"{bin_name} load {model} "
+        f"--context-length {ctx} --parallel {par} -y"
+    )
+    if ttl and ttl > 0:
+        load_cmd += f" --ttl {ttl}"
+    # Unload the existing instance first (ignore failure if not loaded)
+    # so the new context length actually takes effect on reload.
+    remote = (
+        f"{bin_name} server start && "
+        f"{bin_name} unload {model} 2>/dev/null; {load_cmd}"
+    )
+
+    log.info("lms_load_now: ssh %s -> %s (timeout=%ds)",
+             host, remote, ssh_timeout)
+    try:
+        proc = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+             host, remote],
+            capture_output=True, text=True, timeout=ssh_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"ssh timeout after {ssh_timeout}s"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"ssh failed: {exc}"}
+
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "error": (proc.stderr or proc.stdout or "").strip()[:300],
+            "model": model, "context_length": ctx,
+        }
+    return {"ok": True, "model": model, "context_length": ctx,
+            "parallel": par, "ttl": ttl}
+
+
 # ─── Mid-pipeline crash recovery ───────────────────────────────────────
 
 

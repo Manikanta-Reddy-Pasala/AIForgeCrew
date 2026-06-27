@@ -360,6 +360,15 @@ export const chatApi = {
       body: JSON.stringify({ model, ...(provider ? { provider } : {}) }),
     }),
 
+  // (Re)load a model on the LM Studio host at a chosen context window.
+  reloadModel: (model: string, context_length: number, ttl?: number) =>
+    j<{ ok: boolean; model: string; context_length: number; parallel: number; ttl: number }>(
+      '/chat/model/reload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, context_length, ...(ttl ? { ttl } : {}) }),
+    }),
+
   orchestratorModel: () =>
     j<{ provider: string; model: string; roles: string[]; models: { id: string; label: string }[] }>('/chat/orchestrator-model'),
   setOrchestratorModel: (model: string, provider?: string) =>

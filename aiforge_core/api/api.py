@@ -2236,6 +2236,31 @@ def chat_model_set(body: _ChatModelBody) -> dict:
             "active": (cfg.get("model") in served) if served else True}
 
 
+class _ModelReloadBody(BaseModel):
+    model: str = Field(..., min_length=1)
+    context_length: int = Field(..., ge=1024, le=2_097_152,
+                                description="LM Studio --context-length; "
+                                "clamped up to the 64K project floor")
+    ttl: int = Field(0, ge=0, description="--ttl seconds; 0 = no idle unload")
+
+
+@app.post("/api/chat/model/reload")
+def chat_model_reload(body: _ModelReloadBody) -> dict:
+    """(Re)load a model on the LM Studio host at a chosen context window.
+
+    Powers the UI 'context window' control: SSHes to AIFORGE_LMS_HOST,
+    unloads any running copy of the model, then ``lms load`` at the
+    requested ctx. Blocking until the load returns. 503 when no LMS host
+    is configured (e.g. a cloud-only deploy), 502 on SSH/load failure."""
+    from aiforge_core.runtime import local_starter as _ls
+    res = _ls.load_model_now(body.model, body.context_length, ttl=body.ttl)
+    if not res.get("ok"):
+        err = res.get("error", "reload failed")
+        code = 503 if "AIFORGE_LMS_HOST" in err else 502
+        raise HTTPException(code, err)
+    return res
+
+
 # Orchestrator = the 2 layer-1 agents (enhancer + planner) that analyze/enhance
 # the request and split it into subtasks. Lets you run the splitter on a
 # different (e.g. stronger reasoning) model than the workers.
