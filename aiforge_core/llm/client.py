@@ -66,6 +66,18 @@ def _build_body(ep: Endpoint, messages: list[dict],
         "model": ep.model,
         "messages": messages,
     }
+    # When the caller didn't pin a temperature, honour a model-keyed forced
+    # temperature from the quirk sheet (e.g. qwythos -> 0.0). This is the
+    # only path the direct client.complete callers (enhancer / architect /
+    # decompose) take — EscalatingLlm applies the same sheet separately.
+    if temperature is None:
+        try:
+            from aiforge_core.config import model_overrides as _mo
+            _ov = _mo.lookup(ep.model)
+            if _ov and _ov.get("temperature") is not None:
+                temperature = _ov["temperature"]
+        except Exception:  # noqa: BLE001 — overrides must never break a call
+            pass
     if temperature is not None:
         body["temperature"] = temperature
     if max_tokens is not None:

@@ -54,16 +54,41 @@ def test_apply_untouched_for_unknown_model():
     assert out is req
 
 
-def test_apply_skips_generative_roles():
+def test_apply_skips_suffix_and_cap_for_generative_roles():
     # The 2500-cap / anti-think recipe is for short judges; applying it to
-    # the doer truncates file-write tool-call args. Generative roles must
-    # pass through untouched even on an overridden model.
+    # the doer truncates file-write tool-call args. Generative roles must NOT
+    # get the suffix or the cap — but the benign temperature still applies.
     for role in ("doer", "planner", "refiner", "enhancer", "architect",
                  "learner", "researcher", "DOER"):
         req = _req(system="You are the doer.", max_out=16384)
         out = mo.apply("qwen3.5-122b", req, role=role)
-        assert out is req, role
-        assert out.config.max_output_tokens == 16384, role
+        assert out.config.max_output_tokens == 16384, role   # cap NOT applied
+        assert mo.NO_REASONING_SUFFIX not in str(
+            out.config.system_instruction), role             # suffix NOT applied
+        assert out.config.temperature == 0.1, role           # temp IS applied
+
+
+def test_apply_skips_entirely_for_generative_without_temp(monkeypatch, tmp_path):
+    # An override with no temperature key has nothing benign for a generative
+    # role -> request returned untouched (identity preserved).
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "model_overrides.json").write_text(json.dumps({
+        "cap-only-model": {"max_output_tokens": 1000},
+    }))
+    req = _req(system="r", max_out=16384)
+    out = mo.apply("cap-only-model", req, role="doer")
+    assert out is req
+    assert out.config.max_output_tokens == 16384
+
+
+def test_qwythos_forces_temperature_zero_all_roles():
+    assert mo.lookup("qwythos-9b-claude-mythos-5-1m-mxfp8-mlx")["temperature"] == 0.0
+    # Applies on both a judge role and a generative role.
+    for role in ("triage", "planner", "enhancer", "architect"):
+        out = mo.apply("qwythos-9b-claude-mythos-5-1m-mxfp8-mlx",
+                       _req(max_out=16384), role=role)
+        assert out.config.temperature == 0.0, role
+        assert out.config.max_output_tokens == 16384, role   # no cap leak
 
 
 def test_apply_still_applies_to_judge_roles():

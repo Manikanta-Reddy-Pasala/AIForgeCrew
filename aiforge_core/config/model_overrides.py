@@ -53,9 +53,20 @@ _QWEN35_MOE_OVERRIDE: dict[str, Any] = {
 
 # Substring (lowercased) -> override dict. First match wins; order
 # matters for overlapping patterns, so keep the more specific first.
+# qwythos is a thinking model whose reasoning channel destabilizes with
+# heat: a temperature sweep (2026-06-28) showed T=0 = tight + correct,
+# T>=1.0 = runaway reasoning that never emits an answer even at a 3000-token
+# budget. Force temp 0 so it stays deterministic + cheap across ALL its
+# roles (chat/enhancer/architect/planner). Temperature-only override — no
+# anti-think suffix or token cap (those would kneecap its generative roles).
+_QWYTHOS_OVERRIDE: dict[str, Any] = {
+    "temperature": 0.0,
+}
+
 _BUILTIN: dict[str, dict[str, Any]] = {
     "nex-n2-mini": _QWEN35_MOE_OVERRIDE,
     "qwen3.5-122b": _QWEN35_MOE_OVERRIDE,
+    "qwythos": _QWYTHOS_OVERRIDE,
     # qwen3-coder-next: thoroughness nudge for judge-style asks is
     # handled at the prompt layer (role prompts), not here — the model
     # has no reasoning channel to suppress and benefits from defaults.
@@ -108,33 +119,41 @@ _GENERATIVE_ROLES: frozenset[str] = frozenset({
 def apply(model_id: str | None, llm_request, role: str | None = None):
     """Return *llm_request* with the model's overrides applied.
 
-    Returns the original request untouched when no override matches OR
-    when *role* is a long-output generative role (the recipe is for
-    short-answer judges only). Never raises — a broken override must not
-    kill the pipeline.
+    The ``system_suffix`` + ``max_output_tokens`` recipe is for short-answer
+    judges only — it forbids thinking / truncates output, which kneecaps a
+    long-output generative role, so it is SKIPPED for generative roles.
+    ``temperature`` is benign (low temp helps thinking models everywhere and
+    never truncates), so it applies to ALL roles. Returns the original
+    request untouched when no override matches, or when a generative role's
+    override carries nothing benign to apply. Never raises — a broken
+    override must not kill the pipeline.
     """
-    if role and role.lower() in _GENERATIVE_ROLES:
-        return llm_request
     override = lookup(model_id)
     if not override:
+        return llm_request
+    generative = bool(role and role.lower() in _GENERATIVE_ROLES)
+    has_temp = override.get("temperature") is not None
+    # Generative role + no benign (temperature) key => nothing to do.
+    if generative and not has_temp:
         return llm_request
     try:
         req = llm_request.model_copy(deep=True)
         cfg = req.config
-        suffix = override.get("system_suffix")
-        if suffix:
-            existing = cfg.system_instruction or ""
-            if suffix not in str(existing):
-                cfg.system_instruction = (
-                    f"{existing}\n\n{suffix}".strip())
-        cap = override.get("max_output_tokens")
-        if cap and (not cfg.max_output_tokens
-                    or cfg.max_output_tokens > cap):
-            cfg.max_output_tokens = cap
-        if override.get("temperature") is not None:
+        if has_temp:
             cfg.temperature = override["temperature"]
-        log.debug("model_overrides.applied model=%s keys=%s",
-                  model_id, sorted(override))
+        if not generative:
+            suffix = override.get("system_suffix")
+            if suffix:
+                existing = cfg.system_instruction or ""
+                if suffix not in str(existing):
+                    cfg.system_instruction = (
+                        f"{existing}\n\n{suffix}".strip())
+            cap = override.get("max_output_tokens")
+            if cap and (not cfg.max_output_tokens
+                        or cfg.max_output_tokens > cap):
+                cfg.max_output_tokens = cap
+        log.debug("model_overrides.applied model=%s role=%s generative=%s",
+                  model_id, role, generative)
         return req
     except Exception as exc:  # noqa: BLE001
         log.warning("model_overrides.apply failed for %s: %s",
