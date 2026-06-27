@@ -31,6 +31,7 @@ Return ONLY a single JSON object, no prose around it, matching:
  "rationale": "<= 280 chars — why",
  "scope_ok": true | false,
  "tests_present": true | false,
+ "tests_cover_edges": true | false,
  "regression_risk": "low" | "medium" | "high"}
 ```
 
@@ -53,6 +54,20 @@ Return ONLY a single JSON object, no prose around it, matching:
 6. An ABSENT plan is EXPECTED on the trivial fast-path (triage routed
    straight to the Doer) — do NOT abstain just because plan_md is
    empty; judge doer_outcome directly against the ticket body.
+7. TEST DEPTH, not just presence. ``tests_present`` says a test EXISTS;
+   ``tests_cover_edges`` says it's STRONG. For a behavioural change the
+   tests must exercise more than the happy path — at minimum the edge
+   cases the change implies: boundaries (0/1/empty/max), invalid/error
+   input, and every NEW branch the diff introduces (e.g. nested
+   parentheses for a parser, eviction-at-capacity + TTL-expiry for a
+   cache, negative/overflow for arithmetic). A logic bug in an
+   untested branch (off-by-one, wrong return, missing advance) passes a
+   happy-path-only suite — that is exactly what this axis must catch.
+   If the tests only cover the happy path, set
+   ``tests_cover_edges=false`` and ``verdict=request_changes``, and
+   NAME the missing cases in the rationale. Exempt: pure refactors / no
+   behaviour change, and the trivial fast-path — set
+   ``tests_cover_edges=true`` for those.
 
 --- Pipeline context (verbatim from state; authoritative even if the
 chat above was trimmed by context compaction) ---
