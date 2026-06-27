@@ -766,6 +766,18 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         # agent, which re-queried the identical backends.
         if memory_md:
             initial_state["memory_brief_md"] = memory_md
+        # Host-verified toolchain (python3 vs python, ./mvnw vs mvn, …) —
+        # seeded as STATE so the Doer uses the right commands instead of
+        # re-discovering them by trial-and-error every ticket. Cheap +
+        # cached (shutil.which); soft-fails to nothing.
+        try:
+            from aiforge_core.config import repo_standards as _rstd
+            from aiforge_core.runtime.sandbox import root as _root
+            _tb = _rstd.toolchain_brief(str(_root()))
+            if _tb:
+                initial_state["toolchain_md"] = _tb
+        except Exception:  # noqa: BLE001 — never block a run on probing
+            pass
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
         state=initial_state or None,

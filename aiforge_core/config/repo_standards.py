@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import glob as _glob
 import os
+import shutil
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Iterable
 
@@ -113,6 +114,96 @@ _DEFAULTS_BY_LANG: dict[str, dict[str, str]] = {
 }
 
 
+# ───────── toolchain probe (cache discovered interpreters/tools) ──────
+#
+# The static defaults above hardcode ``python`` / ``mvn``. On a host where
+# only ``python3`` exists, that makes the Doer run ``python …``, fail, then
+# re-discover ``python3`` from scratch EVERY ticket. We probe the real
+# tool ONCE per (lang, worktree), cache it, and feed it into the manifest
+# so the injected command matches reality and is never re-discovered.
+_TOOLCHAIN_CACHE: dict[tuple[str, str], dict[str, str]] = {}
+
+
+def _reset_toolchain_cache() -> None:
+    """Test-only — clear the probe cache."""
+    _TOOLCHAIN_CACHE.clear()
+
+
+def _first_on_path(*candidates: str) -> str | None:
+    for c in candidates:
+        if shutil.which(c):
+            return c
+    return None
+
+
+def resolve_toolchain(lang: str, worktree: str | None = None) -> dict[str, str]:
+    """Return host-resolved command overrides for ``lang`` (cached).
+
+    Resolves the actual interpreter/build tool present so the Doer never
+    re-discovers it: ``python3`` when ``python`` is absent, the ``./mvnw``
+    wrapper when checked in, ``yarn``/``pnpm`` per lockfile, etc. Pure
+    ``shutil.which`` + lockfile checks — no subprocess, soft-fails to the
+    static default by returning an empty dict.
+    """
+    key = (lang or "", os.path.abspath(worktree) if worktree else "")
+    if key in _TOOLCHAIN_CACHE:
+        return _TOOLCHAIN_CACHE[key]
+    out: dict[str, str] = {}
+    lk = (lang or "").lower()
+    try:
+        if lk == "python":
+            py = _first_on_path("python3", "python") or "python3"
+            out = {
+                "compile_cmd": f"{py} -m compileall -q .",
+                "test_cmd":    f"{py} -m pytest -q",
+            }
+        elif lk == "java":
+            if worktree and os.path.isfile(os.path.join(worktree, "mvnw")):
+                mvn = "./mvnw"
+            else:
+                mvn = _first_on_path("mvn") or "./mvnw"
+            out = {
+                "build_cmd":   f"{mvn} clean package -DskipTests",
+                "compile_cmd": f"{mvn} -q -DskipTests compile",
+                "test_cmd":    f"{mvn} test",
+            }
+        elif lk in ("node", "react"):
+            if worktree and os.path.isfile(os.path.join(worktree, "yarn.lock")):
+                pm = "yarn"
+            elif worktree and os.path.isfile(
+                    os.path.join(worktree, "pnpm-lock.yaml")):
+                pm = "pnpm"
+            else:
+                pm = _first_on_path("npm", "pnpm", "yarn") or "npm"
+            out = {"build_cmd": f"{pm} run build", "test_cmd": f"{pm} test"}
+    except Exception:  # noqa: BLE001 — probing must never break standards
+        out = {}
+    _TOOLCHAIN_CACHE[key] = out
+    return out
+
+
+def toolchain_brief(worktree: str | None) -> str:
+    """Doer-facing 'use these, don't re-discover' block of host-resolved
+    commands for the repo at ``worktree``. Empty when the language can't
+    be fingerprinted. Seeded into doer state so the agent never re-probes
+    python/python3/build tools per ticket."""
+    if not worktree:
+        return ""
+    lang = detect_lang(worktree)
+    if not lang:
+        return ""
+    tc = resolve_toolchain(lang, worktree)
+    if not tc:
+        return ""
+    lines = [f"- {k.replace('_cmd', '').replace('_', ' ')}: `{v}`"
+             for k, v in tc.items()]
+    return (
+        f"DETECTED TOOLCHAIN ({lang}, host-verified — use these EXACT "
+        "commands; do NOT re-probe for python/python3 or the build tool):\n"
+        + "\n".join(lines)
+    )
+
+
 def detect_lang(worktree_path: str) -> str:
     """Best-effort language fingerprint based on marker files in *worktree_path*.
 
@@ -168,7 +259,7 @@ def get(repo_name: str, *, worktree: str | None = None) -> Standards:
             std.lang = guessed
             if std.source == "default":
                 std.source = "auto-detect"
-    _apply_defaults(std)
+    _apply_defaults(std, worktree)
     if not std.source:
         std.source = "default"
     return std
@@ -264,12 +355,19 @@ def _apply(std: Standards, src: dict | None) -> None:
         std.source = src["source"]
 
 
-def _apply_defaults(std: Standards) -> None:
+def _apply_defaults(std: Standards, worktree: str | None = None) -> None:
     lang_key = (std.lang or "").lower()
-    if lang_key in _DEFAULTS_BY_LANG:
-        for k, v in _DEFAULTS_BY_LANG[lang_key].items():
-            if not getattr(std, k):
-                setattr(std, k, v)
+    if lang_key not in _DEFAULTS_BY_LANG:
+        return
+    # Static defaults, then overlay the host-resolved toolchain (python3 vs
+    # python, ./mvnw vs mvn, yarn vs npm) so the injected commands match the
+    # machine and the Doer never re-discovers them. Operator/Neo4j/worktree
+    # values set earlier still win — we only fill EMPTY fields.
+    merged = dict(_DEFAULTS_BY_LANG[lang_key])
+    merged.update(resolve_toolchain(lang_key, worktree))
+    for k, v in merged.items():
+        if not getattr(std, k):
+            setattr(std, k, v)
 
 
 def _from_neo4j(repo_name: str) -> dict | None:
