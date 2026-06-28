@@ -778,6 +778,15 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
                 initial_state["toolchain_md"] = _tb
         except Exception:  # noqa: BLE001 — never block a run on probing
             pass
+        # Durable user preferences (gap #9) — global, cross-repo. Seeded so
+        # the agent honours "I always want X" without being re-told.
+        try:
+            from aiforge_core.runtime import user_prefs as _up
+            _pb = _up.preferences_block()
+            if _pb:
+                initial_state["user_prefs_md"] = _pb
+        except Exception:  # noqa: BLE001
+            pass
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
         state=initial_state or None,

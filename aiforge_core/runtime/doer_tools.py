@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 
 from .graphify_lookup_tool import graphify_lookup
+from .memory_block_tool import memory_block
 from .memory_lookup_tool import memory_lookup
 from .sandbox import resolve_inside_root, root
 from .syntax_guard import validate_syntax
@@ -757,7 +758,7 @@ def adk_function_tools() -> list:
     new_canonical = [editor, new_bash, think, finish, ensure_runtime, project]
     legacy_canonical = [file_read, file_write, file_patch, list_dir, run_shell,
                         grep_repo, repo_map, impacted_tests, fetch_url,
-                        git_commit, memory_lookup, graphify_lookup,
+                        git_commit, memory_lookup, memory_block, graphify_lookup,
                         skill_search, learn_skill,
                         workflow_search, learn_workflow, web_search, serve, stop_service,
                         subtask_update]
@@ -772,7 +773,7 @@ __all__ = [
     "record_touch", "touched_paths", "reset_touched",
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
-    "memory_lookup", "graphify_lookup", "skill_search", "learn_skill",
+    "memory_lookup", "memory_block", "graphify_lookup", "skill_search", "learn_skill",
     "workflow_search", "learn_workflow", "web_search", "serve", "stop_service",
     "subtask_update",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",

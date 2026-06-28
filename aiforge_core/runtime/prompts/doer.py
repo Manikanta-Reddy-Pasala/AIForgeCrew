@@ -154,6 +154,8 @@ PROMPT = (
     "for python/python3 or the build tool):\n"
     "{toolchain_md?}\n"
     "\n"
+    "{user_prefs_md?}\n"
+    "\n"
     "REPO RULES (glob-scoped house rules from the target repo — follow "
     "them exactly):\n"
     "{rules_md?}\n"
