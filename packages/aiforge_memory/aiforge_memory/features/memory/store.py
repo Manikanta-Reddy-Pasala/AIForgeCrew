@@ -565,128 +565,151 @@ def find_semantic_dup(
     return None
 
 
-# Gap-6 (PPR-lite): personalized-PageRank-style rerank without
-# requiring the GDS plugin. Vector recall picks seeds; we then expand
-# 1-hop via :MENTIONS to neighbouring Files/Symbols and lift any
-# *other* Observation that points at the same neighbours, weighted by
-# overlap. Final score = ``$alpha * vector_score + (1-$alpha) *
-# overlap_score``, normalized to [0..1].
-#
-# Real PPR runs many damped iterations; this is 1 iteration with a
-# fixed teleport mass on the seed set. Adequate for "find observations
-# topologically near my seed" without dragging GDS in. Index migration
-# can swap to ``gds.pageRank.stream`` later — same return contract.
-_RECALL_OBSERVATIONS_PPR = """
-// 1. Vector recall over Observation_v2 → seed set with score.
-CALL db.index.vector.queryNodes('codemem_observation_embed', $seed_k_query, $vec)
-YIELD node AS seed_node, score AS vec_score
-WHERE seed_node.repo = $repo
-  AND (seed_node.status IS NULL OR seed_node.status = 'active')
-  AND (seed_node.invalid_at IS NULL OR seed_node.invalid_at > datetime())
-WITH collect({obs_id: seed_node.id, vec: vec_score}) AS seeds
+# Gap #7 (PPR, HippoRAG-2 style): DUAL-SEED personalized-PageRank rerank
+# without GDS. Seeds come from BOTH dense (vector) AND sparse (fulltext)
+# recall — HippoRAG-2's key lift over single-source seeding — then we
+# expand 1-hop via :MENTIONS to neighbouring Files/Symbols and lift any
+# *other* Observation pointing at the same neighbours, weighted by overlap.
+# Final = ``alpha * seed_score + (1-alpha) * overlap_norm``. Seeding +
+# scoring are orchestrated in Python (small, testable) over three focused
+# Cypher reads instead of one mega-query.
 
-// 2. Re-fetch seeds as node bindings + carry vector score.
-UNWIND seeds AS s
-MATCH (seed:Observation_v2 {id: s.obs_id, repo: $repo})
-WITH seeds, seed, s.vec AS seed_vec
+_PPR_VECTOR_SEEDS = """
+CALL db.index.vector.queryNodes('codemem_observation_embed', $k_query, $vec)
+YIELD node AS o, score
+WHERE o.repo = $repo
+  AND (o.status IS NULL OR o.status = 'active')
+  AND (o.invalid_at IS NULL OR o.invalid_at > datetime())
+RETURN o.id AS id, score AS score ORDER BY score DESC LIMIT $k
+"""
 
-// 3. 1-hop neighbours of every seed via :MENTIONS.
+_PPR_FULLTEXT_SEEDS = """
+CALL db.index.fulltext.queryNodes('codemem_observation_ft', $q, {limit: $k})
+YIELD node AS o, score
+WHERE o.repo = $repo
+  AND (o.status IS NULL OR o.status = 'active')
+  AND (o.invalid_at IS NULL OR o.invalid_at > datetime())
+RETURN o.id AS id, score AS score
+"""
+
+# Candidate rows = every Observation sharing a 1-hop MENTIONS neighbour
+# with a seed, plus overlap count. Seeds with no neighbours are added
+# back from the seed set in Python (so direct hits still rank).
+_PPR_EXPAND = """
+UNWIND $seed_ids AS sid
+MATCH (seed:Observation_v2 {id: sid, repo: $repo})
 OPTIONAL MATCH (seed)-[:MENTIONS]->(nbr)
 WHERE nbr:File_v2 OR nbr:Symbol_v2
-WITH seeds, collect(DISTINCT nbr) AS neighbour_set
-
-// 4. Find every Observation_v2 in the same repo that mentions at
-//    least one of those neighbours; count overlap per candidate.
-UNWIND neighbour_set AS n
+WITH collect(DISTINCT nbr) AS neighbours
+UNWIND neighbours AS n
 MATCH (cand:Observation_v2 {repo: $repo})-[:MENTIONS]->(n)
 WHERE (cand.status IS NULL OR cand.status = 'active')
   AND (cand.invalid_at IS NULL OR cand.invalid_at > datetime())
-WITH seeds, cand, count(DISTINCT n) AS overlap
-
-// 5. Aggregate one row per candidate so we can normalize overlap.
-WITH seeds, cand, max(overlap) AS overlap
-
-// 6. Compute max_overlap across the candidate set so we can scale
-//    overlap into [0..1].
-WITH seeds, collect({cand: cand, overlap: overlap}) AS rows
-WITH seeds, rows,
-     reduce(m = 0, r IN rows |
-        CASE WHEN r.overlap > m THEN r.overlap ELSE m END) AS max_overlap
-
-// 7. Also gather every seed even if it had no MENTIONS neighbour,
-//    so direct vector hits without neighbours still show up.
-UNWIND seeds AS s
-OPTIONAL MATCH (seed_node:Observation_v2 {id: s.obs_id, repo: $repo})
-WITH rows, max_overlap, s.obs_id AS sid, s.vec AS sv, seed_node
-WITH rows, max_overlap,
-     collect({cand: seed_node, overlap: 0,
-              is_seed: true, vec: sv}) AS seed_rows
-WITH rows + seed_rows AS merged, max_overlap
-
-// 8. Score each candidate, picking the highest vector score across
-//    duplicates so seed appearances win over neighbour-only rows.
-UNWIND merged AS m
-WITH m.cand AS cand, m.overlap AS overlap, max_overlap,
-     coalesce(m.vec, 0.0) AS vec
-WHERE cand IS NOT NULL
-WITH cand,
-     max(vec) AS direct_vec,
-     max(overlap) AS overlap,
-     max_overlap
-WITH cand, direct_vec,
-     CASE WHEN max_overlap = 0 THEN 0.0
-          ELSE toFloat(overlap) / toFloat(max_overlap) END AS overlap_norm
-WITH cand,
-     ($alpha * direct_vec) +
-     ((1.0 - $alpha) * overlap_norm) AS ppr_score,
-     direct_vec, overlap_norm
-
-RETURN cand.id AS id,
-       cand.text AS text,
-       cand.kind AS kind,
-       coalesce(cand.tags, []) AS tags,
-       ppr_score AS score,
-       direct_vec AS vec_score,
-       overlap_norm AS overlap_score,
+WITH cand, count(DISTINCT n) AS overlap
+RETURN cand.id AS id, cand.text AS text, cand.kind AS kind,
+       coalesce(cand.tags, []) AS tags, overlap,
        coalesce(cand.importance, 0.5) AS importance,
        coalesce(cand.confidence, 1.0) AS confidence,
        cand.created_at.epochSeconds AS created_at_epoch
-ORDER BY ppr_score DESC
-LIMIT $k
 """
+
+_PPR_NODES_BY_ID = """
+UNWIND $ids AS i
+MATCH (o:Observation_v2 {id: i, repo: $repo})
+RETURN o.id AS id, o.text AS text, o.kind AS kind,
+       coalesce(o.tags, []) AS tags,
+       coalesce(o.importance, 0.5) AS importance,
+       coalesce(o.confidence, 1.0) AS confidence,
+       o.created_at.epochSeconds AS created_at_epoch
+"""
+
+
+def _norm_scores(rows: list[dict]) -> dict[str, float]:
+    """id -> score normalized to [0,1] by the max in this batch."""
+    if not rows:
+        return {}
+    mx = max((float(r.get("score") or 0.0) for r in rows), default=0.0)
+    if mx <= 0:
+        return {r["id"]: 0.0 for r in rows}
+    return {r["id"]: float(r.get("score") or 0.0) / mx for r in rows}
+
+
+def _blend_ppr(seed_score: dict[str, float], cand_rows: list[dict],
+               seed_rows: list[dict], *, alpha: float, k: int) -> list[dict]:
+    """Pure scorer: blend seed (teleport) mass with neighbour overlap.
+
+    ``seed_score`` id->[0,1] dual-seed score; ``cand_rows`` overlap rows;
+    ``seed_rows`` node details for seeds (so direct hits without neighbours
+    still surface). Returns top-k ``{id,text,kind,tags,score,vec_score,
+    overlap_score,importance,confidence,created_at_epoch}``."""
+    by_id: dict[str, dict] = {}
+    overlaps: dict[str, int] = {}
+    for r in seed_rows:
+        by_id.setdefault(r["id"], dict(r))
+    for r in cand_rows:
+        by_id.setdefault(r["id"], dict(r))
+        overlaps[r["id"]] = max(overlaps.get(r["id"], 0),
+                                int(r.get("overlap") or 0))
+    max_overlap = max(overlaps.values(), default=0)
+    out: list[dict] = []
+    for cid, node in by_id.items():
+        direct = float(seed_score.get(cid, 0.0))
+        ov = overlaps.get(cid, 0)
+        ov_norm = (ov / max_overlap) if max_overlap else 0.0
+        node = dict(node)
+        node["vec_score"] = direct
+        node["overlap_score"] = ov_norm
+        node["score"] = alpha * direct + (1.0 - alpha) * ov_norm
+        node.pop("overlap", None)
+        out.append(node)
+    out.sort(key=lambda d: d["score"], reverse=True)
+    return out[:k]
 
 
 def recall_observations_ppr(
     driver, *, repo: str, query_vec: list[float],
+    query_text: str | None = None,
     k: int = 10, seed_k: int = 25, alpha: float = 0.6,
 ) -> list[dict]:
-    """Vector recall + 1-iteration personalized-PageRank rerank.
+    """Dual-seed (vector ∪ fulltext) 1-hop personalized-PageRank rerank.
 
     Args:
-        repo: scope all reads to one repo.
-        query_vec: 1024-d bge-m3 vector.
-        k: number of results to return.
-        seed_k: vector-recall fan-in before graph rerank.
-        alpha: ``score = alpha * vec_score + (1 - alpha) *
-            overlap_score``. ``alpha=1.0`` collapses to vanilla
-            vector recall; ``alpha=0.0`` ranks purely by neighbour
-            overlap (rarely what you want).
+        query_vec: 1024-d dense seed vector (required — [] returns []).
+        query_text: optional sparse seed query; when given, fulltext hits
+            over Observation text/tags JOIN the vector seeds (HippoRAG-2
+            dual seeding). None → vector-only seeds (old behaviour).
+        seed_k: per-source seed fan-in. alpha: seed vs overlap blend.
 
-    Returns a list of ``{id, text, kind, tags, score, vec_score,
-    overlap_score}`` dicts ordered by descending blended score.
-    Empty ``query_vec`` returns ``[]``.
-
-    See :sql:`_RECALL_OBSERVATIONS_PPR` for the Cypher implementation.
-    """
+    Returns ``{id,text,kind,tags,score,vec_score,overlap_score,importance,
+    confidence,created_at_epoch}`` sorted by blended score, top-k."""
     if not query_vec:
         return []
     with driver.session() as s:
-        return [dict(r) for r in s.run(
-            _RECALL_OBSERVATIONS_PPR,
-            repo=repo, vec=query_vec,
-            seed_k_query=vector_overfetch_k(seed_k),
-            k=k, alpha=float(alpha),
-        )]
+        vec_rows = [dict(r) for r in s.run(
+            _PPR_VECTOR_SEEDS, repo=repo, vec=query_vec,
+            k=seed_k, k_query=vector_overfetch_k(seed_k))]
+        ft_rows: list[dict] = []
+        if query_text and query_text.strip():
+            try:
+                ft_rows = [dict(r) for r in s.run(
+                    _PPR_FULLTEXT_SEEDS, repo=repo,
+                    q=query_text.strip(), k=seed_k)]
+            except Exception:  # noqa: BLE001 — fulltext optional, never fatal
+                ft_rows = []
+        vec_norm = _norm_scores(vec_rows)
+        ft_norm = _norm_scores(ft_rows)
+        # Union seeds: take the stronger of the two normalized signals.
+        seed_score: dict[str, float] = dict(vec_norm)
+        for cid, sc in ft_norm.items():
+            seed_score[cid] = max(seed_score.get(cid, 0.0), sc)
+        if not seed_score:
+            return []
+        seed_ids = list(seed_score)
+        cand_rows = [dict(r) for r in s.run(
+            _PPR_EXPAND, repo=repo, seed_ids=seed_ids)]
+        seed_rows = [dict(r) for r in s.run(
+            _PPR_NODES_BY_ID, repo=repo, ids=seed_ids)]
+    return _blend_ppr(seed_score, cand_rows, seed_rows, alpha=alpha, k=k)
 
 
 # ─── M1: recency / importance-weighted rerank (pure) ──────────────────
