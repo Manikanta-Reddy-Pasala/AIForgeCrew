@@ -26,7 +26,6 @@ POLY = HERE.parent.parent / "features" / "symbol" / "tests" / "fixtures" / "poly
 pytestmark = pytest.mark.live_neo4j
 
 REPO = "l7_gate"
-_FAKE_VEC = [0.05] * 1024
 _FILE_SUMMARY_RESPONSE = json.dumps({
     "summary": "Demo source file used by codemem fixtures.",
     "purpose_tags": ["fixture", "demo"],
@@ -76,9 +75,7 @@ def driver():
          patch("aiforge_memory.features.flow.runner.service_extract.extract_services",
                return_value=services), \
          patch("aiforge_memory.features.file.extract._call_llm",
-               return_value=_FILE_SUMMARY_RESPONSE), \
-         patch("aiforge_memory.features.chunk.embed._embed",
-               return_value=_FAKE_VEC):
+               return_value=_FILE_SUMMARY_RESPONSE):
         flow.ingest_repo(
             repo_name=REPO, repo_path=str(POLY),
             driver=drv, state_conn=state, force=True,
@@ -93,9 +90,7 @@ def driver():
 
 def test_l7_bundle_with_translator_grounding(driver) -> None:
     """LLM grounding picks valid candidates → bundle hydrates and renders."""
-    with patch("aiforge_memory.query.translator._embed_query",
-               return_value=_FAKE_VEC), \
-         patch("aiforge_memory.query.translator._call_llm",
+    with patch("aiforge_memory.query.translator._call_llm",
                return_value=_TRANSLATOR_RESPONSE):
         b = bundle.query(
             "fix payment processing in api",
@@ -118,9 +113,7 @@ def test_l7_bundle_with_translator_grounding(driver) -> None:
 
 def test_l7_fastpath_for_explicit_symbol(driver) -> None:
     """Query with `Class.method` triggers fastpath, hydrates symbol directly."""
-    with patch("aiforge_memory.query.translator._embed_query",
-               return_value=_FAKE_VEC), \
-         patch("aiforge_memory.query.translator._call_llm",
+    with patch("aiforge_memory.query.translator._call_llm",
                return_value=json.dumps({"intent":"investigate","services":[],"files":[],"symbols":[],"hops":1,"keywords":[]})):
         b = bundle.query(
             "trace PaymentService.process",
@@ -140,9 +133,7 @@ def test_l7_translator_hallucination_dropped(driver) -> None:
         "symbols": ["fake::symbol"],
         "hops": 1, "keywords": [],
     })
-    with patch("aiforge_memory.query.translator._embed_query",
-               return_value=_FAKE_VEC), \
-         patch("aiforge_memory.query.translator._call_llm",
+    with patch("aiforge_memory.query.translator._call_llm",
                return_value=bad_response):
         b = bundle.query("anything", repo=REPO, driver=driver)
     # Hallucinated names should NOT appear

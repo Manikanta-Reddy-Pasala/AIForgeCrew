@@ -48,8 +48,10 @@ def driver():
 def test_l5_gate(driver, tmp_path) -> None:
     state = sdb.open_db(tmp_path / "state.db")
     sdb.migrate(state)
-    fake_vec = [0.01] * 1024
 
+    # Code-chunk embedding was removed (2026-06-11) — chunk_and_embed only
+    # chunks now (fulltext-indexed), so there is no embed call to mock and
+    # no codemem_chunk_embed vector index to assert.
     with patch("aiforge_memory.features.flow.runner.pack_repo.pack",
                return_value=("# pack", "sha-L5")), \
          patch("aiforge_memory.features.flow.runner.repo_summary.summarize",
@@ -57,9 +59,7 @@ def test_l5_gate(driver, tmp_path) -> None:
          patch("aiforge_memory.features.flow.runner.service_extract.extract_services",
                return_value=[]), \
          patch("aiforge_memory.features.flow.runner.file_summary.summarize_files",
-               return_value=[]), \
-         patch("aiforge_memory.features.chunk.embed._embed",
-               return_value=fake_vec):
+               return_value=[]):
         result = flow.ingest_repo(
             repo_name="l5_gate", repo_path=str(POLY),
             driver=driver, state_conn=state,
@@ -80,16 +80,10 @@ def test_l5_gate(driver, tmp_path) -> None:
         ).single()["c"]
         assert chunked_edges >= 5
 
-        vidx = s.run(
-            "SHOW INDEXES YIELD name WHERE name='codemem_chunk_embed'"
-        ).single()
-        assert vidx is not None
-
 
 def test_l5_idempotent_re_ingest(driver, tmp_path) -> None:
     state = sdb.open_db(tmp_path / "state.db")
     sdb.migrate(state)
-    fake_vec = [0.05] * 1024
 
     with patch("aiforge_memory.features.flow.runner.pack_repo.pack",
                return_value=("# pack", "sha-L5-IDEMP")), \
@@ -98,9 +92,7 @@ def test_l5_idempotent_re_ingest(driver, tmp_path) -> None:
          patch("aiforge_memory.features.flow.runner.service_extract.extract_services",
                return_value=[]), \
          patch("aiforge_memory.features.flow.runner.file_summary.summarize_files",
-               return_value=[]), \
-         patch("aiforge_memory.features.chunk.embed._embed",
-               return_value=fake_vec):
+               return_value=[]):
         first = flow.ingest_repo(
             repo_name="l5_gate", repo_path=str(POLY),
             driver=driver, state_conn=state,
