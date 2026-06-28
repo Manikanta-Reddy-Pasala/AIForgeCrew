@@ -134,7 +134,7 @@ def _global_default_row() -> dict[str, Any] | None:
     p = _path()
     if p.exists():
         try:
-            disk = json.loads(p.read_text()) or {}
+            disk = _fc.read_json(p) or {}
             d = disk.get(_DEFAULT_KEY)
             if isinstance(d, dict) and d.get("provider"):
                 return d
@@ -205,6 +205,9 @@ def _enriched_catalog(provider: str) -> list[dict[str, Any]]:
     return list(MODEL_CATALOG.get(provider) or [])
 
 
+from aiforge_core.config import _filecache as _fc
+
+
 def _path() -> Path:
     root = Path(os.environ.get("AIFORGE_CONFIG_DIR",
                                os.path.expanduser("~/.aiforge")))
@@ -220,7 +223,7 @@ def load_all() -> dict[str, dict[str, Any]]:
     gd = _global_default_row()
     if p.exists():
         try:
-            disk = json.loads(p.read_text())
+            disk = _fc.read_json(p)
             if isinstance(disk, dict):
                 for role, row in disk.items():
                     if role in _ROLES and isinstance(row, dict):
@@ -357,7 +360,7 @@ def set_role(role: str, provider: str, model: str,
         disk: dict[str, dict[str, Any]] = {}
         if p.exists():
             try:
-                disk = json.loads(p.read_text()) or {}
+                disk = _fc.read_json(p) or {}
             except Exception:
                 disk = {}
         row: dict[str, Any] = {
@@ -398,6 +401,7 @@ def reset(*, keep_default: bool = False) -> dict:
     _LOCAL_DEFAULT_CACHE[1] = None
     with _CATALOG_LOCK:
         _CATALOG_CACHE.clear()
+    _fc.clear()
     with _LOCK:
         p = _path()
         if not p.exists():
@@ -409,7 +413,7 @@ def reset(*, keep_default: bool = False) -> dict:
             # empty/`{}` map when there was no _default, so the request is
             # honoured exactly rather than nuking everything).
             try:
-                disk = json.loads(p.read_text()) or {}
+                disk = _fc.read_json(p) or {}
             except Exception:  # noqa: BLE001
                 disk = {}
             kept = {k: v for k, v in disk.items() if k == _DEFAULT_KEY}

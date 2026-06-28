@@ -51,12 +51,15 @@ def _path() -> Path:
     return root / "runtime_settings.json"
 
 
+from aiforge_core.config import _filecache as _fc
+
+
 def _read_store() -> dict[str, Any]:
     p = _path()
     if not p.exists():
         return {}
     try:
-        data = json.loads(p.read_text())
+        data = _fc.read_json(p)
         return data if isinstance(data, dict) else {}
     except Exception as exc:  # noqa: BLE001
         log.warning("runtime_settings.json unreadable: %s", exc)

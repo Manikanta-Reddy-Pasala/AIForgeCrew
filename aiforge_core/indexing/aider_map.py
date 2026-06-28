@@ -250,20 +250,44 @@ def render_repo_map_cached(cfg: AiderMapConfig) -> str:
     return digest
 
 
-def _cache_key(cfg: AiderMapConfig) -> tuple | None:
-    """Build hash key from worktree HEAD + focus-file mtimes.
+# git HEAD changes rarely; the subprocess (~20-50ms) ran on EVERY
+# render_repo_map_cached() call — even cache hits — just to build the key.
+# TTL-cache it per root. File mtimes stay in the key, so edits bust the
+# map cache regardless of this window.
+_HEAD_CACHE: dict[str, tuple[float, str]] = {}
+_HEAD_TTL_S = 5.0
 
-    Returns None on git/stat errors so caller treats it as a miss.
-    """
+
+def _git_head(root) -> str:
+    import time as _time
+    k = str(root)
+    now = _time.monotonic()
+    hit = _HEAD_CACHE.get(k)
+    if hit is not None and (now - hit[0]) < _HEAD_TTL_S:
+        return hit[1]
     try:
         import subprocess as _sp
         head = _sp.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=str(cfg.root), capture_output=True, text=True,
+            cwd=str(root), capture_output=True, text=True,
             timeout=2, check=False,
         ).stdout.strip()
     except Exception:
         head = ""
+    _HEAD_CACHE[k] = (now, head)
+    return head
+
+
+def _cache_key(cfg: AiderMapConfig) -> tuple | None:
+    """Build hash key from worktree HEAD + focus + focus-file mtimes.
+
+    Returns None on git/stat errors so caller treats it as a miss.
+    """
+    head = _git_head(cfg.root)
+    # Include the focus string: ctx_repomap personalises PageRank on the
+    # ticket goal, the Doer on its own work — different focus must NOT share
+    # one cached digest (was a silent wrong-context bug).
+    focus = getattr(cfg, "user_text", "") or ""
 
     paths = list(cfg.chat_files) + list(cfg.other_files)[:200]
     fp: list[tuple[str, int]] = []
@@ -276,7 +300,7 @@ def _cache_key(cfg: AiderMapConfig) -> tuple | None:
             continue
     if not fp:
         return None
-    return (str(cfg.root), head, cfg.map_tokens, frozenset(fp))
+    return (str(cfg.root), head, focus, cfg.map_tokens, frozenset(fp))
 
 
 # ─────────────────────────── Internals ─────────────────────────────────

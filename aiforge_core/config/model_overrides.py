@@ -73,6 +73,9 @@ _BUILTIN: dict[str, dict[str, Any]] = {
 }
 
 
+from aiforge_core.config import _filecache as _fc
+
+
 def _file_overrides() -> dict[str, dict[str, Any]]:
     root = Path(os.environ.get("AIFORGE_CONFIG_DIR",
                                os.path.expanduser("~/.aiforge")))
@@ -80,7 +83,7 @@ def _file_overrides() -> dict[str, dict[str, Any]]:
     if not p.exists():
         return {}
     try:
-        data = json.loads(p.read_text())
+        data = _fc.read_json(p)
         if isinstance(data, dict):
             return {str(k).lower(): v for k, v in data.items()
                     if isinstance(v, dict)}

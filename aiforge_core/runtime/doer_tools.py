@@ -77,17 +77,37 @@ def reset_touched() -> None:
         _TOUCHED.clear()
 
 
+# Per-process read cache so the doer↔refiner↔feedback loop doesn't re-read
+# unchanged files every iteration. Keyed by (abspath, mtime_ns): a
+# file_write/file_patch bumps mtime → auto-miss → fresh read, so a stale
+# entry can never be served. Bounded FIFO.
+_READ_CACHE: dict[str, tuple[int, str]] = {}
+_READ_CACHE_MAX = 256
+
+
 def file_read(path: str) -> dict:
     """Read a UTF-8 text file relative to the repo root.
 
     Returns ``{ok, path, content, bytes}`` on success, or
-    ``{ok: False, error}``.
+    ``{ok: False, error}``. Cached per (path, mtime) within the run.
     """
     try:
         p = resolve_inside_root(path)
         if not p.is_file():
             return {"ok": False, "error": f"not a file: {path}"}
-        text = p.read_text(encoding="utf-8", errors="replace")
+        ap = str(p)
+        try:
+            mt = p.stat().st_mtime_ns
+        except OSError:
+            mt = -1
+        hit = _READ_CACHE.get(ap)
+        if hit is not None and hit[0] == mt:
+            text = hit[1]
+        else:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            if len(_READ_CACHE) >= _READ_CACHE_MAX:
+                _READ_CACHE.pop(next(iter(_READ_CACHE)))
+            _READ_CACHE[ap] = (mt, text)
         return {"ok": True, "path": path,
                 "content": text, "bytes": len(text.encode("utf-8"))}
     except (PermissionError, OSError) as exc:
