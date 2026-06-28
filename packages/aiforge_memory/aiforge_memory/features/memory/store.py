@@ -119,11 +119,17 @@ SET o.repo        = $repo,
     o.embed_model = $embed_model,
     o.media_refs  = $media_refs,
     o.confidence  = $confidence,
+    o.importance  = $importance,
     o.entities    = $entities,
     o.event_time  = CASE
         WHEN $event_time IS NULL
         THEN datetime({epochSeconds: toInteger($now)})
         ELSE datetime({epochSeconds: toInteger($event_time)})
+    END,
+    o.valid_at    = CASE
+        WHEN $valid_at IS NULL
+        THEN datetime({epochSeconds: toInteger($now)})
+        ELSE datetime({epochSeconds: toInteger($valid_at)})
     END,
     o.updated_at  = datetime({epochSeconds: toInteger($now)})
 WITH o
@@ -188,7 +194,9 @@ def upsert_observation(
     embed_model: str = "bge-m3",
     media_refs: list[str] | None = None,
     event_time: float | None = None,
+    valid_at: float | None = None,
     confidence: float = 1.0,
+    importance: float = 0.5,
     id: str | None = None,
     dedupe: bool = True,
     supersedes: list[str] | None = None,
@@ -262,8 +270,14 @@ def upsert_observation(
         "embed_vec": embed_vec, "embed_model": embed_model,
         "media_refs": media_refs,
         "confidence": _clamp01(confidence),
+        "importance": _clamp01(importance),
         "entities": entities,
         "event_time": event_time,
+        # valid_at (bi-temporal): when the fact STARTED being true. Defaults
+        # to event_time (real-world work time) so a fact about past work is
+        # valid from then, not from ingest. invalid_at stays unset (= still
+        # valid) until a supersede/invalidate time-bounds it.
+        "valid_at": valid_at if valid_at is not None else event_time,
         "schema_version": _SCHEMA_VERSION, "now": time.time(),
     }
     with driver.session() as s:
@@ -458,8 +472,12 @@ CALL db.index.vector.queryNodes('codemem_observation_embed', $k_query, $vec)
 YIELD node AS o, score
 WHERE o.repo = $repo
   AND (o.status IS NULL OR o.status = 'active')
+  AND (o.invalid_at IS NULL OR o.invalid_at > datetime())
 RETURN o.id AS id, o.text AS text, o.kind AS kind,
-       coalesce(o.tags,[]) AS tags, score
+       coalesce(o.tags,[]) AS tags, score,
+       coalesce(o.importance, 0.5) AS importance,
+       coalesce(o.confidence, 1.0) AS confidence,
+       o.created_at.epochSeconds AS created_at_epoch
 ORDER BY score DESC LIMIT $k
 """
 
@@ -473,8 +491,38 @@ MATCH (a:Observation_v2 {id:$a}), (b:Observation_v2 {id:$b, repo:$repo})
 MERGE (a)-[:SUPERSEDES]->(b)
 SET b.status = 'superseded',
     b.superseded_by = $a,
+    b.invalid_at = datetime({epochSeconds: toInteger($now)}),
     b.updated_at = datetime({epochSeconds: toInteger($now)})
 """
+
+
+# Bi-temporal, replacement-free invalidation (Zep model): a fact that
+# stopped being true with NO superseding fact. Non-destructive — sets
+# invalid_at + status so recall drops it, but the node + its history
+# survive for time-travel / audit ("valid from X until Y").
+_INVALIDATE_OBSERVATION = """
+MATCH (o:Observation_v2 {id:$id, repo:$repo})
+SET o.status = 'superseded',
+    o.invalid_at = datetime({epochSeconds: toInteger($now)}),
+    o.invalid_reason = $reason,
+    o.updated_at = datetime({epochSeconds: toInteger($now)})
+RETURN o.id AS id
+"""
+
+
+def invalidate_observation(
+    driver, *, repo: str, node_id: str, reason: str = "",
+) -> dict:
+    """Time-bound a fact that is no longer true without a replacement.
+
+    Non-destructive (Zep-style): sets ``invalid_at`` + ``status`` so the
+    fact drops out of recall, but the node and its ``valid_at``..``invalid_at``
+    window survive for audit / time-travel. Use ``supersedes=`` on a new
+    upsert instead when there IS a correcting fact."""
+    with driver.session() as s:
+        row = s.run(_INVALIDATE_OBSERVATION, id=node_id, repo=repo,
+                    reason=reason or "", now=time.time()).single()
+    return {"id": row["id"] if row else node_id, "invalidated": bool(row)}
 
 
 def recall_observations(
@@ -534,6 +582,7 @@ CALL db.index.vector.queryNodes('codemem_observation_embed', $seed_k_query, $vec
 YIELD node AS seed_node, score AS vec_score
 WHERE seed_node.repo = $repo
   AND (seed_node.status IS NULL OR seed_node.status = 'active')
+  AND (seed_node.invalid_at IS NULL OR seed_node.invalid_at > datetime())
 WITH collect({obs_id: seed_node.id, vec: vec_score}) AS seeds
 
 // 2. Re-fetch seeds as node bindings + carry vector score.
@@ -551,6 +600,7 @@ WITH seeds, collect(DISTINCT nbr) AS neighbour_set
 UNWIND neighbour_set AS n
 MATCH (cand:Observation_v2 {repo: $repo})-[:MENTIONS]->(n)
 WHERE (cand.status IS NULL OR cand.status = 'active')
+  AND (cand.invalid_at IS NULL OR cand.invalid_at > datetime())
 WITH seeds, cand, count(DISTINCT n) AS overlap
 
 // 5. Aggregate one row per candidate so we can normalize overlap.
@@ -597,7 +647,10 @@ RETURN cand.id AS id,
        coalesce(cand.tags, []) AS tags,
        ppr_score AS score,
        direct_vec AS vec_score,
-       overlap_norm AS overlap_score
+       overlap_norm AS overlap_score,
+       coalesce(cand.importance, 0.5) AS importance,
+       coalesce(cand.confidence, 1.0) AS confidence,
+       cand.created_at.epochSeconds AS created_at_epoch
 ORDER BY ppr_score DESC
 LIMIT $k
 """
@@ -645,24 +698,30 @@ def rerank_by_recency(
     half_life_days: float = 30.0,
     w_recency: float = 0.2,
     w_conf: float = 0.1,
+    w_importance: float = 0.15,
 ) -> list[dict]:
-    """Re-rank recall ``rows`` blending raw relevance with recency and
-    confidence — a pure, driver-free post-processor callers apply on top
-    of any recall (``recall_observations`` / ``recall_observations_ppr``).
+    """Re-rank recall ``rows`` blending raw relevance with recency,
+    confidence and importance — a pure, driver-free post-processor callers
+    apply on top of any recall (``recall_observations`` /
+    ``recall_observations_ppr``).
 
     Each row is expected to carry ``score`` (relevance) and optionally
-    ``created_at_epoch`` (epoch seconds) + ``confidence`` (0..1). The new
-    score is::
+    ``created_at_epoch`` (epoch seconds), ``confidence`` (0..1), and
+    ``importance`` (0..1, salience). The new score is::
 
         final = score
-              + w_recency * exp(-age_days / half_life_days)
-              + w_conf    * (confidence - 1)
+              + w_recency    * exp(-age_days / half_life_days)
+              + w_conf       * (confidence - 1)
+              + w_importance * (importance - 0.5)
 
-    so fresher facts get a positive recency bump and low-confidence facts
-    get a (negative) penalty relative to a fully-trusted (conf=1) fact.
-    Rows missing ``created_at_epoch`` get no recency bonus; rows missing
-    ``confidence`` default to 1.0 (no penalty). Returns a new list of the
-    same dicts (each gains a ``final_score`` key) sorted descending."""
+    so fresher facts get a positive recency bump, low-confidence facts a
+    (negative) penalty vs a fully-trusted (conf=1) fact, and high-salience
+    facts (importance > 0.5) get a boost while low-salience ones (< 0.5)
+    are pushed down — both relative to the neutral 0.5 default. Rows
+    missing ``created_at_epoch`` get no recency bonus; missing
+    ``confidence``/``importance`` default to 1.0 / 0.5 (no effect).
+    Returns a new list of the same dicts (each gains a ``final_score``
+    key) sorted descending."""
     out: list[dict] = []
     half = half_life_days if half_life_days > 0 else 1.0
     for row in rows:
@@ -676,7 +735,10 @@ def rerank_by_recency(
             recency = 0.0
         conf = r.get("confidence")
         conf = 1.0 if conf is None else float(conf)
-        final = score + w_recency * recency + w_conf * (conf - 1.0)
+        imp = r.get("importance")
+        imp = 0.5 if imp is None else float(imp)
+        final = (score + w_recency * recency + w_conf * (conf - 1.0)
+                 + w_importance * (imp - 0.5))
         r["final_score"] = final
         out.append(r)
     out.sort(key=lambda d: d["final_score"], reverse=True)
