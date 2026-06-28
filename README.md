@@ -56,12 +56,53 @@ docker compose up -d --build      # api+ui on :8799, postgres, neo4j, embed, rer
 - **Skills** — reusable `SKILL.md` playbooks (agentskills.io standard), relevance-
   searched and auto-injected; the agent **authors new skills** when it solves
   something (`learn_skill`), which also land in memory.
-- **Memory** — hybrid recall (vector + full-text + graph); learns facts, decisions,
-  and per-repo project summaries across sessions.
+- **Memory** — frontier agent-memory that learns across runs (see **[Memory](#memory)**).
 - **Context @-mentions** — `@file`, `@folder`, `@url`, `@problems`.
 - **Repo microagents** — repo-shipped conventions auto-injected by trigger word.
 - **Providers** — local (LM Studio / mlx-lm) or any OpenAI-compatible endpoint, with
   automatic cloud escalation; per-role model assignment + bulk profiles.
+
+## Agents
+
+A ticket (or Team chat) flows through specialized agents — each on the model you pick,
+with automatic cloud fail-over. Pick any provider per role.
+
+**Pipeline (ticket → PR)**
+- **Triage** — sizes the work; routes trivial tasks straight to the Doer.
+- **Enhancer** — fixes the prompt + folds in memory/history/repo context → a clean spec.
+- **Architect** — designs the file structure (disjoint responsibilities).
+- **Planner** — breaks the spec into scoped subtasks.
+- **Verifier** — one multi-axis plan critic (correctness · scope · risk).
+- **Doer ↔ Refiner ↔ Feedback** — the build loop: edits in an isolated git worktree,
+  runs build/tests, self-corrects until the change holds.
+- **Validator** — final pre-PR gate incl. a **test-depth** check (rejects happy-path-only tests).
+- **Live-verifier** — runs the project's real recipe to confirm it *works*, not just compiles.
+- **Learner** — writes back facts/decisions/skills; auto-mines the run for durable memory.
+
+**Context gatherers (parallel)** — **Researcher**, **Repo-map** (AST PageRank), **Conventions**.
+
+**Chat** — full-filesystem coding agent in **Simple** / **Plan** (read-only) / **Team** modes.
+
+## Memory
+
+Frontier agent-memory — on par with Mem0 / Zep / Letta and **ahead** on code intelligence.
+
+- **Hybrid retrieval** — vector + full-text + graph fused (RRF + cross-encoder rerank),
+  diversified, role-scoped.
+- **Auto write-path** — every passing run is *mined*: extract durable facts → decide
+  **ADD / UPDATE / DELETE / NOOP** vs existing (dedup + contradiction resolution) → write
+  a reflection. No manual fact-logging.
+- **Bi-temporal** — facts carry `valid_at`/`invalid_at`; corrections **supersede**
+  non-destructively (history kept for audit, dropped from recall).
+- **Importance + decay** — salience-weighted ranking, recency decay, **sleep-time
+  consolidation** (`aiforge-memory maintain`).
+- **Self-editing blocks** — the agent keeps its own persistent working-notes block per repo.
+- **User preferences** — durable, cross-repo prefs injected so "always do X" sticks.
+- **Code intelligence** *(ahead of the field)* — AST symbols, call-graph, LSP, repo-map,
+  domains/flows/guided tours, cross-repo links, incremental delta-indexing.
+- **Procedural** — auto-authored **Skills** + pattern-mining of repeated wins.
+- **Tiers** — T1 episodic · T2 semantic · T3 procedural · T4 code; embedded SQLite by
+  default, Postgres + Neo4j for the pro stack.
 
 ## How it works & improves
 
