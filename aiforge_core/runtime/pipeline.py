@@ -15,9 +15,8 @@ Graph shape::
                   └► ctx_conv? ───┘  (conv skipped when repo rules exist)
                                                                      │
                                                                      ▼
-        planner ─┬► verify_correctness ─┐                        planner
-                 ├► verify_scope ───────┤ (parallel) → verifier_join
-                 └► verify_risk ────────┘        → merge_verdicts → doer
+        planner → verifier (1 call: correctness+scope+risk) → verifier_gate
+                 ──pass──► doer    ──replan──► planner
         doer → refiner → feedback → loop_gate ──loop──► doer
                                              └──exit──► validator
         validator → validator_gate ──replan──► planner   (once)
@@ -73,6 +72,9 @@ from aiforge_core.agents import (
 )
 from aiforge_core.agents import (
     validator as _validator_mod,
+)
+from aiforge_core.agents import (
+    verifier as _verifier_mod,
 )
 from aiforge_core.config import agent_config as _acfg
 
@@ -194,12 +196,9 @@ def build_pipeline(*, skip_researcher: bool = False,
     from .loop_budget import build_loop_budget_callbacks
     from .parallel_stages import (
         build_context_branches,
-        build_verifier_branches,
         make_context_join,
         make_merge_context_node,
-        make_merge_verdicts_node,
         make_research_entry_node,
-        make_verifier_join,
     )
 
     # ── leaf agents ─────────────────────────────────────────────────────
@@ -289,7 +288,10 @@ def build_pipeline(*, skip_researcher: bool = False,
     context_branches = build_context_branches(
         build_litellm_model, skip_researcher=skip_researcher,
         skip_conventions=skip_conventions, skip_repomap=skip_repomap)
-    verifier_branches = build_verifier_branches(build_litellm_model)
+    # Single multi-axis plan verifier (one LLM call judging correctness +
+    # scope + risk) — replaced the 3 parallel verify_* branches. They ran
+    # in parallel (no latency win) but cost 3x tokens to judge one plan.
+    verifier = _verifier_mod.build(build_litellm_model)
 
     # As ``Workflow`` graph nodes, LlmAgents default to single_turn
     # (include_contents='none'), which would blind each stage to the prior
@@ -309,7 +311,7 @@ def build_pipeline(*, skip_researcher: bool = False,
     # massively (3 verifiers × full history × up to 4 planner epochs,
     # plus the validator) and re-creates the ONE-117 KV pressure.
     # single_turn → include_contents='none'.
-    _single_turn = [triage, validator, *verifier_branches]
+    _single_turn = [triage, validator, verifier]
     if gap_eval is not None:
         _single_turn.append(gap_eval)
     for _a in _single_turn:
@@ -325,7 +327,7 @@ def build_pipeline(*, skip_researcher: bool = False,
         from google.adk.workflow import RetryConfig
         _branch_retry = RetryConfig(max_attempts=2, initial_delay=1.0,
                                     backoff_factor=2.0)
-        for _b in (*context_branches, *verifier_branches):
+        for _b in (*context_branches, verifier):
             _b.retry_config = _branch_retry
         # The serial chokepoints too: enhancer/validator/planner/doer/triage
         # sit on the critical path — a single transient exception in any
@@ -370,8 +372,6 @@ def build_pipeline(*, skip_researcher: bool = False,
     triage_gate = make_triage_gate()
     context_join = make_context_join()
     merge_context = make_merge_context_node()
-    verifier_join = make_verifier_join()
-    merge_verdicts = make_merge_verdicts_node()
     loop_gate = make_loop_gate()
     validator_gate = make_validator_gate()
     verifier_gate = make_verifier_gate()
@@ -418,13 +418,12 @@ def build_pipeline(*, skip_researcher: bool = False,
     # planner → plan_promote (parse plan JSON → scope_allowlist_globs in
     # state) → verifier fan-out → join → merge → verifier_gate
     edges.append(Edge(from_node=planner, to_node=plan_promote))
-    for br in verifier_branches:
-        edges.append(Edge(from_node=plan_promote, to_node=br))
-        edges.append(Edge(from_node=br, to_node=verifier_join))
-    edges.append(Edge(from_node=verifier_join, to_node=merge_verdicts))
-    # verifier_gate ACTS on the merged verdict: a rejected plan loops back
-    # to the planner once (bounded); a passing plan proceeds to the Doer.
-    edges.append(Edge(from_node=merge_verdicts, to_node=verifier_gate))
+    # plan_promote → single verifier (judges correctness+scope+risk in one
+    # call, writes verifier_verdict) → verifier_gate.
+    edges.append(Edge(from_node=plan_promote, to_node=verifier))
+    # verifier_gate ACTS on the verdict: a rejected plan loops back to the
+    # planner once (bounded); a passing plan proceeds to the Doer.
+    edges.append(Edge(from_node=verifier, to_node=verifier_gate))
     edges.append(Edge(from_node=verifier_gate, to_node=doer,
                       route=ROUTE_VERIFY_PASS))
     edges.append(Edge(from_node=verifier_gate, to_node=planner,

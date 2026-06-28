@@ -28,6 +28,7 @@ def _make_stub(role: str, calls: list):
                      '"regression_risk": "low"}',
         "planner": 'PLAN: {"subtickets": '
                    '[{"scope_allowlist_globs": ["src/a/**"]}]}',
+        "verifier": '{"verdict": "pass", "rationale": "ok"}',
     }
 
     class _Stub(BaseLlm):
@@ -79,14 +80,14 @@ def test_full_graph_executes_every_stage(_stub_pipeline) -> None:
     # every stage fired, in causal order
     assert calls[0] == "triage"
     for stage in ("enhancer", "ctx_repomap",
-                  "ctx_conventions", "planner", "verify_correctness",
-                  "verify_scope", "verify_risk", "doer", "refiner",
+                  "ctx_conventions", "planner", "verifier",
+                  "doer", "refiner",
                   "feedback", "validator", "learner"):
         assert stage in calls, f"{stage} never ran — graph stalled. {calls}"
     assert calls.index("planner") < calls.index("doer")
     assert calls.index("doer") < calls.index("validator")
     # state flowed: plan_promote pulled globs out of the plan,
-    # merge_verdicts produced the legacy verdict shape
+    # the single verifier wrote the verdict shape
     assert state.get("scope_allowlist_globs") == ["src/a/**"]
     assert state.get("verifier_verdict", {}).get("verdict") == "pass"
     assert str(state.get("feedback_verdict", "")).startswith("pass")

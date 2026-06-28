@@ -29,10 +29,12 @@ def test_pipeline_is_workflow_graph_with_core_nodes() -> None:
     names = {n.name for n in p.graph.nodes}
     # core agents + routers + joins present
     for n in ("triage", "enhancer", "planner", "doer", "validator", "learner",
-              "triage_gate", "loop_gate", "validator_gate",
-              "context_join", "verifier_join", "merge_context",
-              "merge_verdicts"):
+              "verifier", "triage_gate", "loop_gate", "validator_gate",
+              "context_join", "merge_context"):
         assert n in names, (n, names)
+    # 3-axis verify fan-out collapsed to ONE verifier call (token win) —
+    # the parallel join/merge nodes are gone from the live DAG.
+    assert "verifier_join" not in names and "merge_verdicts" not in names
     # live_verifier runs standalone post-PR, not in the graph
     assert "live_verifier" not in names
 

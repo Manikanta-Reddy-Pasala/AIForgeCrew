@@ -170,14 +170,14 @@ def test_pipeline_modes_and_retry(monkeypatch) -> None:
     from aiforge_core.runtime.pipeline import build_pipeline
     p = build_pipeline(skip_researcher=True)
     nodes = {n.name: n for n in p.graph.nodes}
-    for judge in ("triage", "validator", "verify_correctness",
-                  "verify_scope", "verify_risk"):
+    # 3-axis verify fan-out collapsed to ONE single-turn verifier call.
+    for judge in ("triage", "validator", "verifier"):
         assert nodes[judge].mode == "single_turn", judge
     for chatty in ("enhancer", "planner", "doer", "refiner", "feedback",
                    "learner"):
         assert nodes[chatty].mode == "chat", chatty
     for guarded in ("triage", "enhancer", "planner", "doer", "validator",
-                    "verify_scope"):
+                    "verifier"):
         assert nodes[guarded].retry_config is not None, guarded
 
 

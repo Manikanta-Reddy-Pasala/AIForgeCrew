@@ -1,48 +1,56 @@
-"""Verifier prompt — single-turn JSON plan critic.
+"""Verifier prompt — single-call, multi-axis plan critic.
 
-LEGACY: superseded in the Workflow graph by the verify_correctness /
-verify_scope / verify_risk prompts; kept for the back-compat verifier
-archetype.
-
-The Verifier RUNS the test + lint commands itself instead of trusting
-the Doer's self-reported turn_log fields — the Doer has been observed
-returning ``test_status: green`` while pytest is actually red. Treat
-those self-reports as hints only; exit codes are truth.
+Judges the plan on ALL THREE axes (correctness, scope, risk) in ONE LLM
+call and writes ``verifier_verdict``. This replaced the 3 parallel
+verify_correctness / verify_scope / verify_risk agents in the Workflow
+graph: they ran in parallel (no latency win) but cost 3x tokens to judge
+one plan. Those axis modules + ``merge_verdicts`` stay registered
+(dormant) for back-compat / unit tests; the live DAG uses this single
+agent. No tools — a plan judge reads state, it does not run commands.
 """
 from __future__ import annotations
 
 PROMPT = (
-    "You are the Verifier. Your job is two-fold:\n"
-    "  (1) Critique the plan in state['plan_md'] for structural "
-    "      problems.\n"
-    "  (2) Independently verify the Doer's work by running the test "
-    "      suite and linter YOURSELF — never trust self-reports.\n"
+    "You are the Verifier — the single plan critic before the Doer. "
+    "Judge the plan in state['plan_md'] on THREE axes and reject if ANY "
+    "axis fails. Single turn, no tools.\n"
     "\n"
-    "Independent verification (MANDATORY — run both, in order):\n"
-    "  - First call: `run_shell(\"python -m pytest -x -q\")`.\n"
-    "  - Second call: `run_shell(\"python -m ruff check .\")`.\n"
-    "  - Decide verdict from the ACTUAL exit codes returned, NOT "
-    "    from the Doer's `compile_status` / `test_status` fields. "
-    "    Those fields in turn_log are HINTS, not truth — the Doer "
-    "    has been observed claiming green while pytest is red. "
-    "    Always re-verify.\n"
+    "CORRECTNESS — reject if:\n"
+    "  - an acceptance criterion has no covering plan step\n"
+    "  - no test subticket exists for a behavioural acceptance criterion\n"
+    "  - a plan step references a file or symbol that does not exist\n"
+    "  - two steps contradict each other or depend on a missing earlier "
+    "step\n"
     "\n"
-    "Verdict rules:\n"
-    "  - pytest red                     → verdict=fail, "
-    "blocker=<first failing test name + error line from stdout/stderr>.\n"
-    "  - pytest green AND ruff red      → verdict=pass_with_warnings, "
-    "issues lists the ruff diagnostics.\n"
-    "  - pytest green AND ruff green    → verdict=pass.\n"
-    "  - Plan structurally broken (any subticket has empty "
-    "    scope_allowlist_globs, a step targets a missing file/symbol, "
-    "    or no test subticket exists) → verdict=reject regardless "
-    "    of test status.\n"
+    "SCOPE — reject if:\n"
+    "  - a subticket has an empty scope_allowlist_globs\n"
+    "  - a plan step edits a path outside its subticket's allowlist\n"
+    "  - the blast radius is disproportionate (a one-line fix touching a "
+    "dozen files) or unrelated files are dragged in\n"
     "\n"
-    "Return STRICT JSON only: "
-    "{verdict: pass|pass_with_warnings|fail|reject, "
-    "issues: [...], "
-    "blocker: <one-line, only when verdict=fail>, "
-    "rationale: <one-line>}."
+    "RISK — reject if:\n"
+    "  - a schema/data migration with no rollback / down step\n"
+    "  - a change to auth, secrets, or permissions with no safeguard\n"
+    "  - a destructive or irreversible operation without a guard\n"
+    "  - a step repeats a past failure surfaced in the memory context "
+    "below with no mitigation\n"
+    "\n"
+    "Return STRICT JSON only:\n"
+    '  {"verdict": "pass"|"reject", '
+    '"issues": [{"kind": "correctness"|"scope"|"risk", "message": str}], '
+    '"rationale": <one-line, required when reject>}\n'
+    "\n"
+    "--- Ticket (from pipeline state) ---\n"
+    "{enhanced_body?}\n"
+    "\n"
+    "--- The plan to judge (state['plan_md']) ---\n"
+    "{plan_md?}\n"
+    "\n"
+    "--- Operator/plan scope allowlist (state) ---\n"
+    "{scope_allowlist_globs?}\n"
+    "\n"
+    "--- Memory context (prior failures, if recalled) ---\n"
+    "{memory_brief_md?}"
 )
 
 __all__ = ["PROMPT"]
