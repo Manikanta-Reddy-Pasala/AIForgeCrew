@@ -346,6 +346,16 @@ def build_pipeline(*, skip_researcher: bool = False,
     from .learner_persist import make_learner_after_callback
     _append_after(learner, make_learner_after_callback())
 
+    # Auto-consolidation after-callback on the Learner — mines the finished
+    # run's trajectory for durable facts (extract → decide ADD/UPDATE/DELETE/
+    # NOOP vs existing → reflect), complementing the explicit facts_json
+    # path above. Soft-fail; neo4j-only; feature-flagged.
+    try:
+        from .memory_consolidate import make_consolidate_after_callback
+        _append_after(learner, make_consolidate_after_callback())
+    except Exception:
+        pass  # consolidation wiring never blocks pipeline boot
+
     # Record the Planner's decomposition as internal subtasks on the ticket
     # (event-sourced) so the UI charts the breakdown + the Doer flips each
     # subtask's status as it works through them.
