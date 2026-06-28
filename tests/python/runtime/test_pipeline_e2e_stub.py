@@ -89,7 +89,12 @@ def test_full_graph_executes_every_stage(_stub_pipeline) -> None:
     # state flowed: plan_promote pulled globs out of the plan,
     # the single verifier wrote the verdict shape
     assert state.get("scope_allowlist_globs") == ["src/a/**"]
-    assert state.get("verifier_verdict", {}).get("verdict") == "pass"
+    # verifier_verdict is now the single verifier's raw output (a JSON
+    # string the gate parses), not a merge_verdicts-built dict.
+    import json as _json
+    _vv = state.get("verifier_verdict")
+    _vv = _vv if isinstance(_vv, dict) else _json.loads(_vv)
+    assert _vv.get("verdict") == "pass"
     assert str(state.get("feedback_verdict", "")).startswith("pass")
 
 
