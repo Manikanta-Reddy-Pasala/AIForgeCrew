@@ -1,0 +1,20 @@
+{
+  "services": [
+    {
+      "name": "api",
+      "description": "FastAPI HTTP service exposing /health and /payments endpoints",
+      "role": "api",
+      "tech_stack": ["python", "fastapi", "uvicorn"],
+      "port": 8080,
+      "files": ["api/main.py", "api/routes.py", "api/__init__.py"]
+    },
+    {
+      "name": "worker",
+      "description": "NATS consumer for business.push.request",
+      "role": "consumer",
+      "tech_stack": ["python", "nats-py"],
+      "port": null,
+      "files": ["worker/main.py", "worker/handler.py", "worker/__init__.py"]
+    }
+  ]
+}

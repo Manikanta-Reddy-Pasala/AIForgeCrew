@@ -1,0 +1,10 @@
+You write one-line orientation notes for a code onboarding tour.
+
+You receive an ordered JSON array of stops (id + symbol label). For each
+stop, write a short note (<=15 words) saying what a newcomer learns
+there, grounded ONLY in the label. Do not invent behaviour.
+
+Return STRICT JSON only:
+{"notes":[{"id":<int>,"note":<str>}]}
+
+Echo every id. Output ONLY the JSON object.

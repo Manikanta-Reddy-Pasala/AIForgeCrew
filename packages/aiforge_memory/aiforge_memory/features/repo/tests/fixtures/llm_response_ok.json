@@ -1,0 +1,10 @@
+{
+  "lang_primary": "python",
+  "build_cmd": "make build",
+  "test_cmd": "make test",
+  "lint_cmd": "",
+  "run_cmd": "make run",
+  "portforward_cmds": ["kubectl port-forward svc/tiny-repo 8080:8080 -n default"],
+  "conventions_md": "## Conventions\n- Python 3.11\n- Tests under tests/\n",
+  "runbook_md": "## Tiny Repo Runbook\n\n### Clone\n```\ngit clone <repo>\n```\n\n### Build\n```\nmake build\n```\n\n### Test\n```\nmake test\n```\n\n### Run\n```\nmake run\n```\n\n### Port-forward\n```\nkubectl port-forward svc/tiny-repo 8080:8080 -n default\n```\n"
+}

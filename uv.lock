@@ -5,7 +5,7 @@ requires-python = ">=3.11"
 [[package]]
 name = "aiforge-memory"
 version = "0.1.2"
-source = { git = "https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git?rev=main#f41af96c5b7f2e746d1f86561366da0397c23200" }
+source = { editable = "packages/aiforge_memory" }
 dependencies = [
     { name = "httpx" },
     { name = "neo4j" },
@@ -14,6 +14,21 @@ dependencies = [
     { name = "tree-sitter" },
     { name = "tree-sitter-language-pack" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.110" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "neo4j", specifier = ">=5.20" },
+    { name = "openai", specifier = ">=1.50" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
+    { name = "tree-sitter", specifier = ">=0.23,<0.26" },
+    { name = "tree-sitter-language-pack", specifier = ">=0.13,<1.0" },
+    { name = "uvicorn", marker = "extra == 'ui'", specifier = ">=0.27" },
+]
+provides-extras = ["dev", "ui"]
 
 [[package]]
 name = "aiforgecrew"
@@ -48,7 +63,7 @@ xlsx = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiforge-memory", git = "https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git?rev=main" },
+    { name = "aiforge-memory", editable = "packages/aiforge_memory" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "google-adk", specifier = ">=2.1.0,<2.2" },
     { name = "httpx", specifier = ">=0.27" },

@@ -26,7 +26,9 @@ dependencies = [
   # breaking build_pipeline. 2.1.x builds the graph correctly. Revisit
   # when the graph is reworked for the newer constraint.
   "google-adk>=2.1.0,<2.2",
-  "aiforge-memory @ git+https://github.com/Manikanta-Reddy-Pasala/AiForgeMemory.git@main",
+  # Vendored into packages/aiforge_memory/ (was a git dependency); resolved
+  # from the local path via [tool.uv.sources] below.
+  "aiforge-memory",
   # Doer runtime tools: execute_ipython_cell (jupyter kernel) + browse
   # (playwright). Declared here so `uv sync` stops pruning them — they
   # were previously hand-installed on the host and vanished on every sync.
@@ -34,6 +36,11 @@ dependencies = [
   "ipykernel>=6.29",
   "playwright>=1.44",
 ]
+
+[tool.uv.sources]
+# aiforge-memory is vendored in-repo (packages/aiforge_memory/) rather than
+# pulled from its own git repo. uv installs it editable from this path.
+aiforge-memory = { path = "packages/aiforge_memory", editable = true }
 
 [project.optional-dependencies]
 dev = [

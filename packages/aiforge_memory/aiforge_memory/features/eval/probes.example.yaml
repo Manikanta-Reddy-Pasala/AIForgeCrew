@@ -1,0 +1,31 @@
+# AiForgeMemory eval probes — example
+# Run: aiforge-memory eval PosClientBackend --probes path/to/probes.yaml
+#
+# Each probe has a NL query + a small set of expected files / symbols.
+# Recall@K and MRR are computed against these expected sets.
+
+repo: PosClientBackend
+probes:
+  - query: "where is JWT auth handled"
+    expected_files:
+      - src/main/java/com/pos/backend/feature/login/LogInValidationServiceImpl.java
+    expected_symbols:
+      - "com.pos.backend.feature.login.LogInValidationServiceImpl::getUserToken"
+
+  - query: "data sync push flow"
+    expected_files:
+      - src/main/java/com/pos/backend/dataSync/PosServerBackendService.java
+
+  - query: "validation rules for sales transaction"
+    expected_files:
+      - src/main/java/com/pos/backend/saga/workflows/SalesWorkflow.java
+    expected_symbols:
+      - "com.pos.backend.saga.workflows.SalesWorkflow::validateSales"
+
+  - query: "Add ledgerCategory CRUD APIs"
+    expected_files:
+      - src/main/java/com/pos/backend/feature/ledger/LedgerMappingController.java
+
+  - query: "BusinessProductsController endpoints"
+    expected_files:
+      - src/main/java/com/pos/backend/feature/businessproducts/BusinessProductsController.java

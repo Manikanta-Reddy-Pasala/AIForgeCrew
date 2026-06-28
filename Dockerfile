@@ -12,7 +12,8 @@ RUN npm run build
 # ── python runtime ────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
-# git: the aiforge-memory dependency installs from a git URL.
+# git/curl for the runtime (worktrees, git_pr, gh). aiforge-memory is now
+# vendored in packages/aiforge_memory/ (no longer a git-URL dependency).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -28,6 +29,9 @@ ENV UV_SYSTEM_PYTHON=1 \
 # Full source + the pre-built UI, then install the package (editable).
 COPY . .
 COPY --from=web /web/dist ./web/dist
+# Install the vendored aiforge-memory first (editable) so the Crew install
+# below finds the dependency satisfied locally rather than reaching for git.
+RUN uv pip install --system -e ./packages/aiforge_memory
 RUN uv pip install --system -e .
 # Common dev tools so chat sessions can run/test the code they build
 # (the agent can pip-install anything else on demand).

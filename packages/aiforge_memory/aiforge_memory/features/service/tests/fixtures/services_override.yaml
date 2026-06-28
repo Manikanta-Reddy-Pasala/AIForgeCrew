@@ -1,0 +1,11 @@
+# Operator-curated overrides for multi_repo. Per-name replacement.
+services:
+  - name: api
+    description: "Operator-edited: FastAPI exposes payments + health"
+    role: api
+    tech_stack: [python, fastapi]
+    port: 8080
+    files:
+      - api/main.py
+      - api/routes.py
+      - api/__init__.py

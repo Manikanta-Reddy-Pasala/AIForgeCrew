@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AiForgeMemory</title>
+  <style>
+    /* Light mode — palette aligned with AiForgeCrew design tokens. */
+    :root {
+      --bg: #f4f6f9;          /* page background, deepest */
+      --card: #ffffff;        /* app shell + panels */
+      --hover: #f3f5f8;       /* hover / selected */
+      --code-bg: #f6f8fa;     /* code blocks + inputs */
+      --fg: #1d2332;          /* primary text */
+      --muted: #5f6878;       /* secondary text */
+      --border: #d9dee6;      /* visible borders on white */
+      --accent: #1f6feb;      /* AiForge blue */
+      --accent-soft: rgba(31,111,235,.10);
+      --good: #198754;
+      --good-soft: rgba(25,135,84,.12);
+      --bad:  #d1242f;
+      --bad-soft:  rgba(209,36,47,.10);
+      --warn: #c7851a;
+      --warn-soft: rgba(199,133,26,.14);
+      /* Badge tints — soft pastels that read on white */
+      --bdg-method:    rgba(31,111,235,.10);
+      --bdg-method-fg: #0d5de0;
+      --bdg-class:     rgba(155,89,182,.12);
+      --bdg-class-fg:  #6f42c1;
+      --bdg-field:     rgba(199,133,26,.14);
+      --bdg-field-fg:  #8b5a05;
+      --bdg-iface:     rgba(25,135,84,.12);
+      --bdg-iface-fg:  #146c43;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); font-size: 13px; }
+    body { display: grid; grid-template-rows: auto 1fr; }
+    header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--card); display: flex; align-items: center; gap: 16px; box-shadow: 0 1px 2px rgba(31,40,64,.06); }
+    header h1 { margin: 0; font-size: 14px; font-weight: 600; color: var(--accent); }
+    header .health { display: flex; gap: 8px; font-size: 11px; }
+    header .health .pill { padding: 2px 8px; border-radius: 10px; background: var(--hover); color: var(--muted); }
+    header .health .ok { background: var(--good-soft); color: var(--good); }
+    header .health .bad { background: var(--bad-soft); color: var(--bad); }
+    main { display: grid; grid-template-columns: 280px 1fr; overflow: hidden; }
+    aside { border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; background: var(--card); }
+    .pane { padding: 16px; overflow-y: auto; background: var(--bg); }
+    h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: 1px; }
+    .repo-row { padding: 6px 8px; border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .repo-row:hover { background: var(--hover); }
+    .repo-row.active { background: var(--accent-soft); color: var(--accent); }
+    .repo-row .name { font-weight: 600; }
+    .repo-row .meta { font-size: 10px; color: var(--muted); }
+    .search-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    .search-row input[type=text] { flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--fg); font-family: inherit; font-size: 13px; }
+    .search-row input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .search-row select { padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--fg); font-family: inherit; font-size: 13px; cursor: pointer; }
+    .search-row button { padding: 8px 16px; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent); color: #ffffff; font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .search-row button:hover { background: #0d5de0; border-color: #0d5de0; }
+    .search-row button:disabled { opacity: 0.5; cursor: wait; }
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+    .tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--muted); }
+    .tab:hover { color: var(--fg); }
+    .tab.active { border-bottom-color: var(--accent); color: var(--accent); }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(31,40,64,.04); }
+    .card .path { color: var(--accent); font-weight: 600; }
+    .card .summary { color: var(--muted); margin-top: 4px; font-size: 12px; }
+    .meta-grid { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; font-size: 12px; }
+    .meta-grid .k { color: var(--muted); }
+    pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5; font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; }
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; background: var(--hover); color: var(--muted); font-size: 10px; margin-right: 4px; }
+    .badge.method    { background: var(--bdg-method); color: var(--bdg-method-fg); }
+    .badge.class     { background: var(--bdg-class);  color: var(--bdg-class-fg); }
+    .badge.field     { background: var(--bdg-field);  color: var(--bdg-field-fg); }
+    .badge.interface { background: var(--bdg-iface);  color: var(--bdg-iface-fg); }
+    .err { color: var(--bad); font-size: 11px; }
+    .empty { color: var(--muted); padding: 24px; text-align: center; }
+    .latency { color: var(--muted); font-size: 11px; margin-left: 8px; }
+    a { color: var(--accent); text-decoration: none; cursor: pointer; }
+    a:hover { text-decoration: underline; }
+    .file-link { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; }
+    .scheduler-row { padding: 4px 0; font-size: 11px; border-bottom: 1px dotted var(--border); display: flex; gap: 8px; }
+    .status-ok  { color: var(--good); }
+    .status-bad { color: var(--bad); }
+    .status-meh { color: var(--warn); }
+    /* Spinner — used while async views load */
+    .spinner-wrap { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 32px; color: var(--muted); font-size: 12px; }
+    .spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .memory-filter { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .memory-filter label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .memory-filter select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--fg); font-size: 12px; cursor: pointer; }
+    .memory-counts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .memory-counts .pill-count { padding: 4px 10px; border-radius: 12px; background: var(--hover); font-size: 11px; color: var(--muted); }
+    .memory-counts .pill-count strong { color: var(--fg); }
+    /* Action buttons (Reindex / Delete / Add) */
+    .btn-ghost, .btn-danger, .btn-primary { padding: 6px 12px; border-radius: 4px; font-family: inherit; font-size: 12px; cursor: pointer; }
+    .btn-ghost { border: 1px solid var(--border); background: var(--card); color: var(--fg); }
+    .btn-ghost:hover { background: var(--hover); border-color: var(--accent); color: var(--accent); }
+    .btn-danger { border: 1px solid var(--bad); background: var(--card); color: var(--bad); margin-left: 6px; }
+    .btn-danger:hover { background: var(--bad-soft); }
+    .btn-primary { border: 1px solid var(--accent); background: var(--accent); color: #fff; font-weight: 600; }
+    .btn-primary:hover { background: #0d5de0; }
+    .add-repo-form { display: grid; grid-template-columns: 140px 1fr; gap: 8px 12px; align-items: center; }
+    .add-repo-form input[type=text], .add-repo-form input[type=number] { padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--fg); font-size: 12px; font-family: inherit; }
+    .add-repo-form input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .add-repo-form .k { color: var(--muted); font-size: 11px; }
+    .add-repo-form .full { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .add-repo-form label.cb { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); margin-right: 8px; }
+    .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 16px; border-radius: 6px; box-shadow: 0 4px 12px rgba(31,40,64,.15); font-size: 12px; max-width: 360px; z-index: 1000; animation: slideIn 0.2s ease-out; }
+    .toast.ok  { background: var(--good-soft); color: var(--good); border: 1px solid var(--good); }
+    .toast.bad { background: var(--bad-soft);  color: var(--bad);  border: 1px solid var(--bad); }
+    .score-pill { display: inline-block; padding: 1px 6px; margin-left: 6px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); font-size: 10px; font-family: "JetBrains Mono", monospace; }
+    /* Graphify tab — repo table + inline content panel */
+    .graph-toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .graph-toolbar input[type=text] { flex: 1; max-width: 360px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--fg); font-size: 12px; font-family: inherit; }
+    .graph-toolbar input[type=text]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    table.graph-tbl { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(31,40,64,.04); }
+    table.graph-tbl th, table.graph-tbl td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 12px; }
+    table.graph-tbl th { background: var(--hover); color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
+    table.graph-tbl tr:last-child td { border-bottom: none; }
+    table.graph-tbl tr:hover td { background: var(--hover); }
+    table.graph-tbl td.num { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--muted); text-align: right; }
+    table.graph-tbl td.actions { text-align: right; white-space: nowrap; }
+    table.graph-tbl td.actions a { margin-left: 8px; }
+    table.graph-tbl td.actions a.disabled { color: var(--muted); pointer-events: none; }
+    .graph-panel { margin-top: 16px; }
+    .graph-panel .panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .graph-panel .panel-head h3 { margin: 0; font-size: 13px; }
+    .graph-panel .panel-head .closer { margin-left: auto; cursor: pointer; color: var(--muted); }
+    .graph-panel .panel-head .closer:hover { color: var(--bad); }
+    .graph-panel iframe { width: 100%; height: 70vh; border: 1px solid var(--border); border-radius: 6px; background: var(--card); }
+    .graph-panel pre.md-render { white-space: pre-wrap; word-break: break-word; max-height: 70vh; overflow-y: auto; }
+    .param-pill { display: inline-block; padding: 2px 8px; margin: 2px 4px 2px 0; border-radius: 4px; background: var(--hover); color: var(--fg); font-size: 11px; border: 1px solid var(--border); font-family: "JetBrains Mono", "SF Mono", monospace; }
+    .param-pill code { color: var(--accent); background: transparent; padding: 0; }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: none; opacity: 1; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>aiforge-memory</h1>
+    <div class="health" id="health"></div>
+    <div style="margin-left:auto; font-size:11px; color:var(--muted)" id="schedstate"></div>
+  </header>
+  <main>
+    <aside>
+      <h2>Repos</h2>
+      <div id="repos"></div>
+    </aside>
+    <div class="pane">
+      <div class="search-row">
+        <input type="text" id="q" placeholder="Natural language query (e.g. 'how does retry work for failed sync messages')" />
+        <select id="repoSel"></select>
+        <button id="searchBtn">Search</button>
+      </div>
+      <div class="tabs">
+        <div class="tab active" data-view="search">Search</div>
+        <div class="tab" data-view="repo">Repo</div>
+        <div class="tab" data-view="memory">Memory</div>
+        <div class="tab" data-view="links">Links</div>
+        <div class="tab" data-view="graph">Graph</div>
+        <div class="tab" data-view="scheduler">Scheduler</div>
+      </div>
+      <div id="view"></div>
+    </div>
+  </main>
+
+<script>
+const $ = (s, ctx=document) => ctx.querySelector(s);
+const $$ = (s, ctx=document) => Array.from(ctx.querySelectorAll(s));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+let repos = [];
+let activeRepo = null;
+let activeView = 'search';
+
+async function api(path, opts={}) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`${path}: ${r.status}`);
+  return r.json();
+}
+
+function spinner(label) {
+  return `<div class="spinner-wrap"><div class="spinner"></div><span>${esc(label || 'loading…')}</span></div>`;
+}
+
+function toast(msg, kind='ok', ms=4000) {
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+async function reindexRepo(name, opts={}) {
+  let path = opts.path || '';
+  if (!confirm(`Reindex ${name}? This re-walks the repo and re-summarises files (LLM cost).`)) return;
+  let attempt = 0;
+  while (attempt < 2) {
+    try {
+      const r = await api('/api/repo/reindex', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name, path, force: true}),
+      });
+      const where = r.path_source ? ` (${r.path_source})` : '';
+      toast(`reindex queued · job ${r.job_id}${where} · ${r.path}`, 'ok');
+      pollJob(r.job_id, name);
+      return;
+    } catch (e) {
+      // 400 with no path resolvable → ask user for the local path.
+      const looksLikeNoPath = /no path known|not a directory|path required/i.test(e.message);
+      if (attempt === 0 && looksLikeNoPath) {
+        const guess = prompt(
+          `${name} has no path on this host yet.\n` +
+          `Enter the local path (e.g. /home/mani/codeRepo/${name}):`,
+          `/home/mani/codeRepo/${name}`,
+        );
+        if (!guess) { toast('reindex cancelled', 'bad', 3000); return; }
+        path = guess.trim();
+        attempt += 1;
+        continue;
+      }
+      toast(`reindex failed: ${e.message}`, 'bad', 6000);
+      return;
+    }
+  }
+}
+
+async function pollJob(jobId, name) {
+  for (let i = 0; i < 360; i++) {  // 30 min @ 5s
+    await new Promise(r => setTimeout(r, 5000));
+    let j;
+    try { j = await api(`/api/jobs/${jobId}`); }
+    catch { continue; }
+    if (j.status === 'ok') {
+      const c = j.result || {};
+      toast(`${name} reindex done · files=${c.files} sym=${c.symbols} chunks=${c.chunks}`, 'ok', 8000);
+      // Refresh repos sidebar to pick up new counts.
+      loadRepos();
+      return;
+    }
+    if (j.status === 'error') {
+      toast(`${name} reindex error: ${j.error}`, 'bad', 8000);
+      return;
+    }
+  }
+  toast(`${name} reindex still running after 30 min — check /api/jobs/${jobId}`, 'bad', 8000);
+}
+
+async function deleteRepo(name) {
+  if (!confirm(`Delete ${name}? This permanently drops Files / Symbols / Chunks / Memory nodes from the graph AND removes it from the scheduler. Cannot be undone.`)) return;
+  if (!confirm(`Last chance — really delete ${name}?`)) return;
+  try {
+    const r = await api(`/api/repo/${encodeURIComponent(name)}?purge=true&drop_schedule=true`, { method: 'DELETE' });
+    const d = r.deleted || {};
+    toast(`deleted ${name} · files=${d.files} sym=${d.symbols} chunks=${d.chunks} mem=${d.memory}`, 'ok', 6000);
+    if (activeRepo === name) activeRepo = null;
+    await loadRepos();
+    setView('scheduler');
+  } catch (e) {
+    toast(`delete failed: ${e.message}`, 'bad', 6000);
+  }
+}
+
+async function addRepoSubmit() {
+  const name = $('#ar-name').value.trim();
+  const path = $('#ar-path').value.trim();
+  if (!name || !path) { toast('name + path required', 'bad'); return; }
+  const payload = {
+    name, path,
+    interval_seconds: parseInt($('#ar-interval').value) || 600,
+    timeout_seconds:  parseInt($('#ar-timeout').value)  || 1800,
+    per_file_seconds: parseFloat($('#ar-perfile').value) || 0,
+    pull:           $('#ar-pull').checked,
+    skip_summaries: $('#ar-skipsum').checked,
+    skip_chunks:    $('#ar-skipchunks').checked,
+    use_lsp:        $('#ar-uselsp').checked,
+  };
+  try {
+    await api('/api/scheduler/add', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    toast(`added ${name} to scheduler`, 'ok');
+    // Trigger an immediate first ingest so user doesn't wait for next tick.
+    if (confirm(`Run first ingest for ${name} now?`)) {
+      reindexRepo(name, {path});
+    }
+    loadSchedulerView();
+  } catch (e) {
+    toast(`add failed: ${e.message}`, 'bad', 6000);
+  }
+}
+
+async function loadRepos() {
+  repos = await api('/api/repos');
+  const sel = $('#repoSel');
+  sel.innerHTML = repos.map(r => `<option value="${esc(r.name)}">${esc(r.name)}</option>`).join('');
+  $('#repos').innerHTML = repos.map(r => `
+    <div class="repo-row" data-name="${esc(r.name)}">
+      <div>
+        <div class="name">${esc(r.name)}</div>
+        <div class="meta">${r.lang||'?'} · ${r.files} files · ${r.symbols} sym · ${r.chunks} chunks</div>
+      </div>
+    </div>`).join('');
+  $$('.repo-row').forEach(el => el.addEventListener('click', () => {
+    activeRepo = el.dataset.name;
+    sel.value = activeRepo;
+    $$('.repo-row').forEach(x => x.classList.remove('active'));
+    el.classList.add('active');
+    setView('repo');
+  }));
+  if (!activeRepo && repos.length) {
+    activeRepo = repos[0].name;
+    sel.value = activeRepo;
+  }
+}
+
+async function loadHealth() {
+  try {
+    const h = await api('/api/health');
+    $('#health').innerHTML = h.checks.map(c =>
+      `<span class="pill ${c.ok ? 'ok' : 'bad'}">${esc(c.name)}</span>`
+    ).join('');
+  } catch (e) {
+    $('#health').innerHTML = `<span class="pill bad">UI ↔ Neo4j down</span>`;
+  }
+}
+
+async function loadSched() {
+  try {
+    const s = await api('/api/scheduler');
+    const pid = s.running ? `daemon pid ${s.pid}` : 'daemon STOPPED';
+    const cls = s.running ? 'status-ok' : 'status-bad';
+    $('#schedstate').innerHTML = `<span class="${cls}">${pid}</span>`;
+  } catch (e) {
+    $('#schedstate').innerHTML = `<span class="status-bad">scheduler unreachable</span>`;
+  }
+}
+
+// ── Views ─────────────────────────────────────────────────────────
+
+function setView(v) {
+  activeView = v;
+  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  if (v === 'search') renderSearchEmpty();
+  else if (v === 'repo') loadRepoView();
+  else if (v === 'memory') loadMemoryView();
+  else if (v === 'links') loadLinksView();
+  else if (v === 'graph') loadGraphView();
+  else if (v === 'scheduler') loadSchedulerView();
+}
+
+function renderSearchEmpty() {
+  $('#view').innerHTML = `<div class="empty">Type a question and press Search.</div>`;
+}
+
+async function search() {
+  const q = $('#q').value.trim();
+  const repo = $('#repoSel').value;
+  if (!q) return;
+  const btn = $('#searchBtn');
+  btn.disabled = true; btn.textContent = '…';
+  setView('search');
+  $('#view').innerHTML = spinner(`searching ${repo} — 10–25s with live LLM grounding`);
+  const t0 = performance.now();
+  try {
+    const r = await api('/api/search', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query: q, repo}),
+    });
+    const ms = Math.round(performance.now() - t0);
+    renderSearchResults(r, ms);
+  } catch (e) {
+    $('#view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Search';
+  }
+}
+
+function renderSearchResults(r, ms) {
+  const b = r.bundle;
+  const sec = (title, body) => body ? `<div class="card"><h2>${title}</h2>${body}</div>` : '';
+  let out = `<div style="margin-bottom:8px"><strong>${esc(r.query)}</strong> <span class="latency">${ms}ms · intent: ${esc(b.intent || '?')}</span></div>`;
+  const fmtScore = v => (typeof v === 'number' && v > 0)
+    ? `<span class="score-pill" title="retrieval confidence">${v.toFixed(3)}</span>` : '';
+  out += sec('Anchor files', (b.files || []).map(f => `
+    <div style="margin-bottom:6px">
+      <a class="file-link" onclick="openFile('${esc(r.repo)}','${esc(f.path)}')">${esc(f.path)}</a>
+      ${fmtScore(f.score)}
+      ${f.summary ? `<div class="summary">${esc(f.summary).slice(0, 280)}</div>` : ''}
+    </div>`).join(''));
+  out += sec('Symbols', (b.symbols || []).map(s => `
+    <div><span class="badge ${s.kind || ''}">${esc(s.kind||'sym')}</span><code>${esc(s.fqname)}</code>
+      ${fmtScore(s.score)}
+      <span class="summary">${esc(s.signature || '')}</span></div>
+  `).join(''));
+  out += sec('Decisions', (b.decisions || []).map(d => `
+    <div><strong>${esc(d.title)}</strong> <span class="badge">${esc(d.status)}</span>
+      <div class="summary">${esc(d.rationale || '')}</div></div>
+  `).join(''));
+  out += sec('Observations', (b.observations || []).map(o => `
+    <div><span class="badge">${esc(o.kind)}</span> ${esc(o.text)}</div>
+  `).join(''));
+  out += sec('Cross-repo edges', (b.cross_repo || []).map(e => `
+    <div><code>${esc(e.src)}</code> → <code>${esc(e.dst)}</code> via ${esc(e.via)} <span class="latency">conf ${(e.confidence||0).toFixed(2)}</span></div>
+  `).join(''));
+  if (b.runbook_md) out += sec('Runbook', `<pre>${esc(b.runbook_md.slice(0, 2000))}</pre>`);
+  out += `<div class="latency" style="margin-top:12px">sources: ${(b.sources_used||[]).join(', ')}${b.errors?.length ? ' · errors: ' + esc(b.errors.join('; ')) : ''}</div>`;
+  $('#view').innerHTML = out;
+}
+
+async function loadRepoView() {
+  if (!activeRepo) { $('#view').innerHTML = `<div class="empty">Click a repo on the left.</div>`; return; }
+  $('#view').innerHTML = spinner(`loading ${activeRepo}`);
+  try {
+    const r = await api(`/api/repo/${encodeURIComponent(activeRepo)}`);
+    let out = `<h2>${esc(activeRepo)}
+      <span style="float:right">
+        <button class="btn-ghost" onclick="reindexRepo('${esc(activeRepo)}')">⟳ Reindex</button>
+        <button class="btn-danger" onclick="deleteRepo('${esc(activeRepo)}')">🗑 Delete</button>
+      </span>
+    </h2>`;
+    out += `<div class="card"><div class="meta-grid">
+      <div class="k">path</div><div>${esc(r.meta.path || '')}</div>
+      <div class="k">lang</div><div>${esc(r.meta.lang_primary || '?')}</div>
+      <div class="k">branch</div><div>${esc(r.meta.branch || '?')} @ <code>${esc((r.meta.head_sha||'').slice(0,8))}</code></div>
+      <div class="k">remote</div><div>${esc(r.meta.remote_url || '')}</div>
+      <div class="k">last indexed</div><div>${esc(r.meta.last_indexed_at || '')}</div>
+      <div class="k">build / test / run</div><div><code>${esc(r.meta.build_cmd || '')}</code> · <code>${esc(r.meta.test_cmd || '')}</code> · <code>${esc(r.meta.run_cmd || '')}</code></div>
+    </div></div>`;
+    if (r.services?.length) {
+      out += `<h2>Services (${r.services.length})</h2>` + r.services.map(s => `
+        <div class="card"><div class="path">${esc(s.name)}</div>
+          <div class="summary">${esc(s.description || '')} · role: ${esc(s.role || '')}</div></div>
+      `).join('');
+    }
+    out += `<h2>Files (${r.files.length})</h2>` + r.files.slice(0, 100).map(f => `
+      <div class="card">
+        <a class="file-link" onclick="openFile('${esc(activeRepo)}','${esc(f.path)}')">${esc(f.path)}</a>
+        <span class="latency">${f.lines||'?'}L · ${f.lang||'?'}</span>
+        ${f.summary ? `<div class="summary">${esc(f.summary).slice(0, 220)}</div>` : ''}
+      </div>`).join('');
+    $('#view').innerHTML = out;
+  } catch (e) {
+    $('#view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+async function openFile(repo, path) {
+  $('#view').innerHTML = spinner(`loading ${path}`);
+  try {
+    const r = await api(`/api/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`);
+    let out = `<h2>${esc(path)}</h2>`;
+    out += `<div class="card"><div class="meta-grid">
+      <div class="k">repo</div><div>${esc(repo)}</div>
+      <div class="k">lang</div><div>${esc(r.meta.lang || '?')}</div>
+      <div class="k">lines</div><div>${esc(r.meta.lines || '?')}</div>
+      <div class="k">summary</div><div>${esc(r.meta.summary || '(none)')}</div>
+    </div></div>`;
+    if (r.symbols?.length) {
+      out += `<h2>Symbols (${r.symbols.length})</h2>` + r.symbols.map(s => {
+        const mods = (s.modifiers || []).join(' ');
+        const dep = s.deprecated ? ' <span class="badge" style="background:var(--bad-soft);color:var(--bad)">DEPRECATED</span>' : '';
+        const sumLine = s.summary ? `<div class="summary" style="margin-top:6px">💡 ${esc(s.summary)}</div>` : '';
+        const docLine = (!s.summary && s.doc) ? `<div class="summary" style="margin-top:6px;font-style:italic">📝 ${esc(s.doc)}</div>` : '';
+        const params = (s.params || []).map(p =>
+          `<span class="param-pill"><code>${esc(p.name||'?')}</code>: ${esc(p.type||'?')}</span>`
+        ).join('');
+        const paramLine = params ? `<div style="margin-top:6px">${params}</div>` : '';
+        return `<div class="card">
+          <span class="badge ${s.kind}">${esc(s.kind)}</span>
+          <code>${esc(s.fqname.split('::').pop())}</code>${dep}
+          <span class="latency">L${s.line_start}–${s.line_end} · ${esc(s.visibility || '')} ${esc(mods)} ${esc(s.return_type || '')}</span>
+          ${sumLine}
+          ${docLine}
+          ${paramLine}
+          <div class="summary"><code>${esc(s.signature || '')}</code></div>
+        </div>`;
+      }).join('');
+    }
+    if (r.chunks?.length) {
+      out += `<h2>Chunks (${r.chunks.length})</h2>` + r.chunks.map(c => `
+        <div class="card">
+          <span class="latency">L${c.line_start}–${c.line_end} · ${c.tokens} tok</span>
+          <pre>${esc(c.preview)}…</pre>
+        </div>`).join('');
+    }
+    $('#view').innerHTML = out;
+  } catch (e) {
+    $('#view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+let memoryFilter = '';   // '' | 'decision' | 'observation' | 'note' | 'doc'
+
+async function loadMemoryView() {
+  if (!activeRepo) { $('#view').innerHTML = `<div class="empty">Pick a repo first.</div>`; return; }
+  $('#view').innerHTML = spinner(`loading memory for ${activeRepo}`);
+  try {
+    // Fetch all + per-type counts in parallel.
+    const [all, dec, obs, note, doc] = await Promise.all([
+      api(`/api/memory?repo=${encodeURIComponent(activeRepo)}&limit=500`),
+      api(`/api/memory?repo=${encodeURIComponent(activeRepo)}&type=decision&limit=1`),
+      api(`/api/memory?repo=${encodeURIComponent(activeRepo)}&type=observation&limit=1`),
+      api(`/api/memory?repo=${encodeURIComponent(activeRepo)}&type=note&limit=1`),
+      api(`/api/memory?repo=${encodeURIComponent(activeRepo)}&type=doc&limit=1`),
+    ]);
+    // We can't get "count" cheaply from the API (it returns rows), so
+    // fall back to counting by label in `all`. Per-type fetches above
+    // just confirm the endpoint works for each label.
+    const counts = { decision: 0, observation: 0, note: 0, doc: 0 };
+    for (const r of all) {
+      const k = (r.label || '').toLowerCase().replace('_v2','');
+      if (k in counts) counts[k]++;
+    }
+    const rows = memoryFilter
+      ? all.filter(r => (r.label || '').toLowerCase().replace('_v2','') === memoryFilter)
+      : all;
+
+    let header = `<h2>Memory · ${esc(activeRepo)}</h2>`;
+    header += `<div class="memory-counts">`
+      + `<span class="pill-count">decisions <strong>${counts.decision}</strong></span>`
+      + `<span class="pill-count">observations <strong>${counts.observation}</strong></span>`
+      + `<span class="pill-count">notes <strong>${counts.note}</strong></span>`
+      + `<span class="pill-count">docs <strong>${counts.doc}</strong></span>`
+      + `</div>`;
+    header += `<div class="memory-filter">`
+      + `<label for="memTypeSel">filter</label>`
+      + `<select id="memTypeSel">`
+      + `<option value="">all</option>`
+      + `<option value="decision"${memoryFilter==='decision'?' selected':''}>decisions</option>`
+      + `<option value="observation"${memoryFilter==='observation'?' selected':''}>observations</option>`
+      + `<option value="note"${memoryFilter==='note'?' selected':''}>notes</option>`
+      + `<option value="doc"${memoryFilter==='doc'?' selected':''}>docs</option>`
+      + `</select>`
+      + `</div>`;
+
+    if (!rows.length) {
+      const reason = all.length === 0
+        ? `No memory nodes recorded yet. They get written by the agent pipeline (Decision/Observation/Note/Doc) and via <code>aiforge-memory record</code>.`
+        : `No <strong>${esc(memoryFilter)}</strong> entries for ${esc(activeRepo)}.`;
+      $('#view').innerHTML = header + `<div class="empty">${reason}</div>`;
+    } else {
+      $('#view').innerHTML = header + rows.map(r => `
+        <div class="card">
+          <span class="badge">${esc(r.label)}</span>
+          ${r.kind ? `<span class="badge">${esc(r.kind)}</span>` : ''}
+          <strong>${esc(r.title || '(no title)')}</strong>
+          <span class="latency">${esc(r.created_at || '')}</span>
+          <div class="summary">${esc((r.text || '').slice(0, 400))}</div>
+          <code class="latency">${esc(r.id)}</code>
+        </div>`).join('');
+    }
+    // Wire filter dropdown — re-render in place on change.
+    const sel = $('#memTypeSel');
+    if (sel) sel.addEventListener('change', e => {
+      memoryFilter = e.target.value;
+      loadMemoryView();
+    });
+  } catch (e) {
+    $('#view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+async function loadLinksView() {
+  $('#view').innerHTML = spinner('loading cross-repo edges');
+  try {
+    const params = activeRepo ? `?repo=${encodeURIComponent(activeRepo)}` : '';
+    const rows = await api(`/api/links${params}`);
+    if (!rows.length) { $('#view').innerHTML = `<div class="empty">No CALLS_REPO edges${activeRepo ? ' for ' + esc(activeRepo) : ''}.</div>`; return; }
+    $('#view').innerHTML = `<h2>Cross-repo edges</h2>` + rows.map(e => `
+      <div class="card">
+        <code>${esc(e.src)}</code> → <code>${esc(e.dst)}</code>
+        <span class="badge">${esc(e.via)}</span>
+        <span class="latency">conf ${(e.confidence||0).toFixed(2)}</span>
+        <div class="summary">evidence: ${(e.evidence||[]).slice(0,8).map(esc).join(', ')}${(e.evidence||[]).length > 8 ? '…' : ''}</div>
+      </div>`).join('');
+  } catch (e) {
+    $('#view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+// ── Graph (graphify-out browser) ──────────────────────────────────
+
+let graphRepos = [];
+let graphFilter = '';
+
+function fmtSize(kb) {
+  if (!kb) return '—';
+  if (kb < 1024) return `${kb} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+function fmtUpdated(iso) {
+  if (!iso) return '—';
+  // Show as YYYY-MM-DD HH:MM (local) — mimics scheduler row formatting.
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString();
+  } catch { return iso; }
+}
+
+async function loadGraphView() {
+  $('#view').innerHTML = spinner('scanning for graphify-out directories');
+  try {
+    graphRepos = await api('/api/graphify');
+  } catch (e) {
+    $('#view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    return;
+  }
+  renderGraphView();
+}
+
+function renderGraphView() {
+  const header = `<h2>Graphify <span class="latency">(${graphRepos.length} repos)</span></h2>`
+    + `<div class="graph-toolbar">`
+    + `<input type="text" id="gfFilter" placeholder="filter by repo name…" value="${esc(graphFilter)}">`
+    + `</div>`;
+
+  if (!graphRepos.length) {
+    $('#view').innerHTML = header + `<div class="empty">No repos have a <code>graphify-out</code> directory yet. Run <code>graphify update &lt;repo&gt;</code> from the repo root to generate one.</div>`;
+    wireGraphFilter();
+    return;
+  }
+
+  const filt = graphFilter.toLowerCase();
+  const rows = graphRepos.filter(r => !filt || r.repo.toLowerCase().includes(filt));
+
+  if (!rows.length) {
+    $('#view').innerHTML = header + `<div class="empty">No repos match <strong>${esc(graphFilter)}</strong>.</div>`
+      + `<div id="gfPanelHost"></div>`;
+    wireGraphFilter();
+    return;
+  }
+
+  let table = `<table class="graph-tbl">
+    <thead><tr>
+      <th>Repo</th>
+      <th style="text-align:right">Nodes</th>
+      <th style="text-align:right">Size</th>
+      <th>Updated</th>
+      <th>Path</th>
+      <th style="text-align:right">Actions</th>
+    </tr></thead><tbody>`;
+  table += rows.map(r => {
+    const repo = esc(r.repo);
+    const repoEnc = encodeURIComponent(r.repo);
+    const reportLink = r.has_report
+      ? `<a onclick="openGraphReport('${repo}')">Report</a>`
+      : `<a class="disabled">Report</a>`;
+    const jsonLink = r.has_graph_json
+      ? `<a href="/api/graphify/${repoEnc}/graph" target="_blank" rel="noopener">JSON</a>`
+      : `<a class="disabled">JSON</a>`;
+    const wikiLink = r.has_wiki
+      ? `<a onclick="openGraphWiki('${repo}')">Wiki</a>`
+      : `<a class="disabled">Wiki</a>`;
+    return `<tr>
+      <td><strong>${repo}</strong></td>
+      <td class="num">${r.node_count.toLocaleString()}</td>
+      <td class="num">${fmtSize(r.size_kb)}</td>
+      <td>${esc(fmtUpdated(r.updated_at))}</td>
+      <td><code class="file-link">${esc(r.path)}</code></td>
+      <td class="actions">${reportLink}${jsonLink}${wikiLink}</td>
+    </tr>`;
+  }).join('');
+  table += `</tbody></table>`;
+
+  $('#view').innerHTML = header + table + `<div id="gfPanelHost"></div>`;
+  wireGraphFilter();
+}
+
+function wireGraphFilter() {
+  const inp = $('#gfFilter');
+  if (!inp) return;
+  inp.addEventListener('input', e => {
+    graphFilter = e.target.value;
+    renderGraphView();
+    // Restore focus + caret position after re-render.
+    const again = $('#gfFilter');
+    if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+  });
+}
+
+async function openGraphReport(repo) {
+  const host = $('#gfPanelHost');
+  if (!host) return;
+  host.innerHTML = `<div class="card graph-panel">${spinner(`loading GRAPH_REPORT.md for ${repo}`)}</div>`;
+  try {
+    const r = await fetch(`/api/graphify/${encodeURIComponent(repo)}/report`);
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    const md = await r.text();
+    host.innerHTML = `<div class="card graph-panel">
+      <div class="panel-head">
+        <h3>${esc(repo)} · GRAPH_REPORT.md</h3>
+        <a href="/api/graphify/${encodeURIComponent(repo)}/report" target="_blank" rel="noopener" class="latency">open raw</a>
+        <span class="closer" onclick="closeGraphPanel()">close ✕</span>
+      </div>
+      <pre class="md-render">${esc(md)}</pre>
+    </div>`;
+    host.scrollIntoView({behavior: 'smooth', block: 'start'});
+  } catch (e) {
+    host.innerHTML = `<div class="card graph-panel"><div class="err">${esc(e.message)}</div></div>`;
+  }
+}
+
+function openGraphWiki(repo) {
+  const host = $('#gfPanelHost');
+  if (!host) return;
+  // Try index.md first; the server falls back to index.html if .md missing.
+  const url = `/graphify/${encodeURIComponent(repo)}/wiki/index.md`;
+  host.innerHTML = `<div class="card graph-panel">
+    <div class="panel-head">
+      <h3>${esc(repo)} · wiki</h3>
+      <a href="${url}" target="_blank" rel="noopener" class="latency">open in new tab</a>
+      <span class="closer" onclick="closeGraphPanel()">close ✕</span>
+    </div>
+    <iframe src="${url}" sandbox="allow-same-origin"></iframe>
+  </div>`;
+  host.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function closeGraphPanel() {
+  const host = $('#gfPanelHost');
+  if (host) host.innerHTML = '';
+}
+
+async function loadSchedulerView() {
+  try {
+    const s = await api('/api/scheduler');
+    let out = `<h2>Daemon</h2>`;
+    out += `<div class="card"><div class="meta-grid">
+      <div class="k">running</div><div class="${s.running ? 'status-ok' : 'status-bad'}">${s.running ? 'YES' : 'NO'}</div>
+      <div class="k">pid</div><div>${esc(s.pid || '(none)')}</div>
+      <div class="k">pid file</div><div><code>${esc(s.pid_file || '')}</code></div>
+    </div></div>`;
+    out += `<h2>Add repository</h2>
+      <div class="card"><div class="add-repo-form">
+        <div class="k">name</div>
+        <div><input type="text" id="ar-name" placeholder="e.g. MyService"></div>
+        <div class="k">path</div>
+        <div><input type="text" id="ar-path" placeholder="/home/mani/codeRepo/MyService"></div>
+        <div class="k">interval (s)</div>
+        <div><input type="number" id="ar-interval" value="600" style="width:100px"></div>
+        <div class="k">timeout floor (s)</div>
+        <div><input type="number" id="ar-timeout" value="1800" style="width:100px"></div>
+        <div class="k">per-file s</div>
+        <div><input type="number" id="ar-perfile" value="0" step="0.5" style="width:100px"> <span class="latency">0 = fixed timeout; &gt;0 scales by file count</span></div>
+        <div class="k">flags</div>
+        <div class="full">
+          <label class="cb"><input type="checkbox" id="ar-pull" checked> git pull</label>
+          <label class="cb"><input type="checkbox" id="ar-skipsum"> skip summaries</label>
+          <label class="cb"><input type="checkbox" id="ar-skipchunks"> skip chunks</label>
+          <label class="cb"><input type="checkbox" id="ar-uselsp"> use LSP</label>
+        </div>
+        <div></div>
+        <div><button class="btn-primary" onclick="addRepoSubmit()">Add to scheduler</button></div>
+      </div></div>`;
+    const repoEntries = Object.values(s.repos || {});
+    repoEntries.sort((a, b) => (b.last_run || 0) - (a.last_run || 0));
+    out += `<h2>Recent ticks (${repoEntries.length})</h2>`;
+    out += repoEntries.map(r => {
+      const cls = (r.last_status || '').includes('error') || r.last_status === 'neo4j_down' ? 'status-bad'
+                : r.last_status === 'timeout' ? 'status-meh'
+                : r.last_status === 'skipped_unchanged' || r.last_status === 'no_changes' ? 'status-ok'
+                : 'status-ok';
+      const when = r.last_run ? new Date(r.last_run * 1000).toLocaleString() : '(never)';
+      return `<div class="scheduler-row">
+        <span style="width:180px">${esc(r.name)}</span>
+        <span class="${cls}" style="width:120px">${esc(r.last_status || '?')}</span>
+        <span style="width:160px">${esc(when)}</span>
+        <span class="latency">behind ${r.last_behind || 0} · pulled ${r.last_pulled ? '✓' : '✗'}</span>
+        ${r.last_error ? `<span class="err">${esc(r.last_error.slice(0,80))}</span>` : ''}
+        <span style="margin-left:auto; display:flex; gap:4px">
+          <button class="btn-ghost" onclick="reindexRepo('${esc(r.name)}')">⟳</button>
+          <button class="btn-danger" onclick="deleteRepo('${esc(r.name)}')">🗑</button>
+        </span>
+      </div>`;
+    }).join('');
+    $('#view').innerHTML = out;
+  } catch (e) {
+    $('#view').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+
+$('#searchBtn').addEventListener('click', search);
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+$$('.tab').forEach(t => t.addEventListener('click', () => setView(t.dataset.view)));
+$('#repoSel').addEventListener('change', e => activeRepo = e.target.value);
+
+async function init() {
+  await loadRepos();
+  await loadHealth();
+  await loadSched();
+  setView('search');
+  setInterval(loadHealth, 30000);
+  setInterval(loadSched, 30000);
+}
+init();
+</script>
+</body>
+</html>
