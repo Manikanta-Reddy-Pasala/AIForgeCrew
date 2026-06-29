@@ -167,6 +167,33 @@ def vision_for(model: str, base_url: str = "") -> str | None:
     return None
 
 
+def sync_from_config() -> dict:
+    """Seed the registry from the agents' CURRENT per-role config — so a fresh
+    registry isn't empty when models are already wired (e.g. via the legacy flow
+    or env). Adds each distinct (model, base_url) that isn't registered yet.
+    Returns ``{added: [ids], count}``."""
+    try:
+        from aiforge_core.config import agent_config
+        cfg = agent_config.load_all()
+    except Exception:  # noqa: BLE001
+        return {"added": [], "count": 0}
+    have = {(r.get("model"), r.get("base_url") or "") for r in _load()}
+    added: list[str] = []
+    for _role, c in cfg.items():
+        model = (c.get("model") or "").strip()
+        if not model or model.startswith("local-model-unconfigured"):
+            continue
+        key = (model, c.get("base_url") or "")
+        if key in have:
+            continue
+        have.add(key)
+        row = add_model(label=model.split("/")[-1], model=model,
+                        base_url=c.get("base_url") or "", api_key=c.get("api_key"),
+                        insecure_tls=bool(c.get("insecure_tls", True)))
+        added.append(row["id"])
+    return {"added": added, "count": len(added)}
+
+
 def apply_to_roles(model_id: str, roles: list[str]) -> dict:
     """Point each role at this registry model (writes its connection details into
     agent_config). Returns ``{applied: [...], errors: {...}}``."""

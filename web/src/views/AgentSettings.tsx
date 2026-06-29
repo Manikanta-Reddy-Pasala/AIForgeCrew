@@ -186,9 +186,20 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
                  onChange={e => setCtx(e.target.value === '' ? '' : Number(e.target.value))} /></label>
       </div>
       <div className="xs muted" style={{ marginTop: 6 }}>TLS verification is skipped for these endpoints (self-hosted / self-signed).</div>
-      <button className="btn" onClick={add} disabled={busy} style={{ marginTop: 10 }}>
-        {busy ? 'Adding…' : '+ Add model'}
-      </button>
+      <div className="row" style={{ gap: 8, marginTop: 10 }}>
+        <button className="btn" onClick={add} disabled={busy}>
+          {busy ? 'Adding…' : '+ Add model'}
+        </button>
+        <button className="ghost" disabled={busy}
+                title="Populate this list from the models the agents are already configured with"
+                onClick={async () => {
+                  try { const r = await chatApi.syncModels(); reload();
+                    toast.success(r.count ? `Detected ${r.count} model${r.count === 1 ? '' : 's'}` : 'No new models found'); }
+                  catch (e: any) { toast.error(e.message); }
+                }}>
+          ⟳ Detect current models
+        </button>
+      </div>
 
       {models.length > 0 && (
         <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>

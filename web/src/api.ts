@@ -41,6 +41,7 @@ export const api = {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ roles }),
     }),
+  syncModels: () => j<{ added: string[]; count: number }>('/agents/models/sync', { method: 'POST' }),
 
   llmSettings: () =>
     j<{ max_output_tokens: number; context_window: number; vision_capable: number; cave_mode: number }>('/runtime/llm-settings'),

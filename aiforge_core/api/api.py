@@ -1937,6 +1937,14 @@ def models_delete(model_id: str) -> None:
         raise HTTPException(404, f"model {model_id} not found")
 
 
+@app.post("/api/agents/models/sync")
+def models_sync() -> dict:
+    """Populate the registry from the agents' current per-role config (so it's
+    not empty when models are already wired)."""
+    from aiforge_core.config import model_registry
+    return model_registry.sync_from_config()
+
+
 @app.post("/api/agents/models/{model_id}/apply")
 def models_apply(model_id: str, body: _ApplyModelBody) -> dict:
     from aiforge_core.config import model_registry
