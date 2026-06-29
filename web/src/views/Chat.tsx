@@ -1364,9 +1364,20 @@ export default function Chat() {
                     ))
                   )}
                 </select>
-                <CtxReload model={selectedModel} onLoaded={() => setModelActive(true)} />
               </label>
             )}
+
+            {/* Cave mode — promoted to the top bar (compact pill). */}
+            <button
+              onClick={() => toggleCave(!caveMode)}
+              title="Cave mode: send the agents the leanest useful context (smaller repo map, skip skills/workflows/@-mentions, condense sooner). Global — also applies to ticket runs."
+              className={caveMode ? 'chat-mode-toggle' : 'ghost sm'}
+              style={{ whiteSpace: 'nowrap', padding: '2px 8px',
+                       background: caveMode ? 'var(--accent, #6366f1)' : undefined,
+                       color: caveMode ? '#fff' : undefined }}
+            >
+              🦴 Cave{caveMode ? ' · on' : ''}
+            </button>
 
             {/* Orchestrator model — the enhancer + planner (layer-1 splitter).
                 Shown in team mode where those agents run. */}
@@ -1414,12 +1425,14 @@ export default function Chat() {
                            disabled={busy || chatMode === 'team'} />
                     Review edits before they land
                   </label>
-                  <label className="chat-menu-item" title="Cave mode: send the agents the leanest useful context (smaller repo map, skip skills/workflows/@-mentions, fewer memory hits, condense sooner). Global — also applies to ticket runs."
-                         style={menuItem}>
-                    <input type="checkbox" checked={caveMode}
-                           onChange={e => toggleCave(e.target.checked)} />
-                    🦴 Cave mode (lean context)
-                  </label>
+                  {/* Reload the chat model at a chosen context window. */}
+                  {chatMode !== 'team' && selectedModel && (
+                    <div className="chat-menu-item" style={{ ...menuItem, justifyContent: 'space-between' }}
+                         title="Reload this model at a chosen context window (K tokens)">
+                      <span>Reload model @ ctx</span>
+                      <CtxReload model={selectedModel} onLoaded={() => setModelActive(true)} />
+                    </div>
+                  )}
                   {chatMode === 'team' && (
                     <label className="chat-menu-item" title="Run every agent instead of letting triage fast-path trivial requests."
                            style={menuItem}>
