@@ -42,6 +42,23 @@ const STATUS_COLOR: Record<string, string> = {
   compile_ok:   '#2faa66',
 };
 
+// Node FILL encodes the node's TYPE (what it is); STATUS only drives the border
+// + a corner dot (what's happening) — so the two read as separate channels
+// instead of every box being the same dark slate.
+const TYPE_STYLE: Record<string, { fill: string; border: string }> = {
+  start:  { fill: '#11312a', border: '#34d399' },   // emerald
+  agent:  { fill: '#1e293b', border: '#60a5fa' },   // blue
+  gate:   { fill: '#2c2410', border: '#fbbf24' },   // amber = decision
+  branch: { fill: '#0f2e2b', border: '#2dd4bf' },   // teal = parallel
+  join:   { fill: '#241d33', border: '#a78bfa' },   // violet
+  merge:  { fill: '#241d33', border: '#a78bfa' },
+};
+const STATUS_ACCENT: Record<string, string> = {
+  stage_active: '#3b82f6', active: '#3b82f6', llm_turn: '#3b82f6', edit_block: '#3b82f6',
+  stage_done: '#22c55e', done: '#22c55e', ok: '#22c55e', compile_ok: '#22c55e',
+  failed: '#ef4444', blocked: '#ef4444',
+};
+
 function relTime(iso?: string | null): string {
   if (!iso) return '—';
   const t = new Date(iso).getTime();
@@ -183,21 +200,24 @@ export default function WorkflowGraph() {
   }
 
   const { depthMap, depths } = layout;
-  const W = 1200, NODE_W = 150, NODE_H = 78, COL_GAP = 40;
+  const NODE_W = 150, NODE_H = 78, COL_GAP = 90, ROW_GAP = 34;
   const colCount = depths.length || 1;
-  const colW = (W - COL_GAP) / colCount;
+  // Fixed per-column stride (was cramming every column into 1200px, so 150px
+  // nodes overlapped by ~90px → an illegible smear). Grow the canvas + scroll.
+  const colStride = NODE_W + COL_GAP;
+  const W = COL_GAP + colCount * colStride;
   const positions: Record<string, { x: number; y: number }> = {};
   depths.forEach((col, di) => {
     col.forEach((n, ni) => {
       positions[n.id] = {
-        x: di * colW + COL_GAP,
-        y: 60 + ni * (NODE_H + 30),
+        x: COL_GAP + di * colStride,
+        y: 60 + ni * (NODE_H + ROW_GAP),
       };
     });
   });
   const H = Math.max(
     260,
-    60 + Math.max(...depths.map(c => c.length)) * (NODE_H + 30) + 60,
+    60 + Math.max(...depths.map(c => c.length)) * (NODE_H + ROW_GAP) + 60,
   );
 
   return (
@@ -215,6 +235,7 @@ export default function WorkflowGraph() {
         </span>
       </div>
 
+      <div className="overflow-x-auto">
       <svg width={W} height={H} className="bg-slate-900 rounded">
         {topo.edges.map((e, i) => {
           const a = positions[e.from], b = positions[e.to];
@@ -254,40 +275,48 @@ export default function WorkflowGraph() {
 
         {topo.nodes.map(n => {
           const p = positions[n.id]; if (!p) return null;
-          const colour = STATUS_COLOR[n.status || 'idle'] || '#3b3b48';
+          const ts = TYPE_STYLE[n.type] || TYPE_STYLE.agent;
+          const accent = STATUS_ACCENT[n.status || ''];
           return (
             <g key={n.id} transform={`translate(${p.x},${p.y})`}>
               <rect width={NODE_W} height={NODE_H} rx={8}
-                    fill={colour} stroke="#222" strokeWidth={1} />
-              <text x={NODE_W / 2} y={22} textAnchor="middle"
+                    fill={ts.fill} stroke={accent || ts.border}
+                    strokeWidth={accent ? 2.5 : 1.5} />
+              {accent && <circle cx={NODE_W - 10} cy={10} r={4} fill={accent} />}
+              <text x={NODE_W / 2} y={24} textAnchor="middle"
                     className="fill-slate-100"
                     style={{ fontSize: 14, fontWeight: 600 }}>
                 {n.label}
               </text>
-              <text x={NODE_W / 2} y={40} textAnchor="middle"
-                    className="fill-slate-300" style={{ fontSize: 10 }}>
-                {n.type} · {n.tools.length} tools
+              <text x={NODE_W / 2} y={42} textAnchor="middle"
+                    style={{ fontSize: 10, fill: ts.border }}>
+                {n.type}{n.tools.length ? ` · ${n.tools.length} tools` : ''}
               </text>
-              <text x={NODE_W / 2} y={56} textAnchor="middle"
-                    className="fill-slate-200" style={{ fontSize: 10 }}>
+              <text x={NODE_W / 2} y={60} textAnchor="middle"
+                    className="fill-slate-300" style={{ fontSize: 10 }}>
                 {n.status || 'idle'}
               </text>
-              <text x={NODE_W / 2} y={70} textAnchor="middle"
-                    className="fill-slate-400" style={{ fontSize: 9 }}>
+              <text x={NODE_W / 2} y={73} textAnchor="middle"
+                    className="fill-slate-500" style={{ fontSize: 9 }}>
                 {relTime(n.last_event_at)}
               </text>
             </g>
           );
         })}
       </svg>
+      </div>
 
-      <div className="mt-3 text-xs text-slate-500 flex flex-wrap gap-4">
-        <span><span style={{ color: '#5fb' }}>━━</span> forward edge</span>
-        <span><span style={{ color: '#888' }}>┄┄</span> feedback / loop edge</span>
-        <span><span style={{ color: '#2a6cdf' }}>■</span> active</span>
-        <span><span style={{ color: '#2faa66' }}>■</span> done</span>
-        <span><span style={{ color: '#d44' }}>■</span> failed/blocked</span>
-        <span><span style={{ color: '#3b3b48' }}>■</span> idle</span>
+      <div className="mt-3 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
+        <span className="text-slate-400">Node type:</span>
+        <span><span style={{ color: '#34d399' }}>■</span> start</span>
+        <span><span style={{ color: '#60a5fa' }}>■</span> agent</span>
+        <span><span style={{ color: '#fbbf24' }}>◆</span> gate (decision)</span>
+        <span><span style={{ color: '#2dd4bf' }}>■</span> parallel branch</span>
+        <span><span style={{ color: '#a78bfa' }}>■</span> join / merge</span>
+        <span className="text-slate-400 ml-2">Status:</span>
+        <span><span style={{ color: '#3b82f6' }}>●</span> active</span>
+        <span><span style={{ color: '#22c55e' }}>●</span> done</span>
+        <span><span style={{ color: '#ef4444' }}>●</span> failed</span>
       </div>
     </div>
   );

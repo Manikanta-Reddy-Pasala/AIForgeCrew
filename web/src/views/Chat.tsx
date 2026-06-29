@@ -405,6 +405,14 @@ export default function Chat() {
   const [reviewEdits, setReviewEdits] = useState<boolean>(() => {
     try { return localStorage.getItem(LS_REVIEW_KEY) === '1'; } catch { return false; }
   });
+  // Cave mode (global lean-context flag) — toggled from the header ⋯ menu.
+  const [caveMode, setCaveMode] = useState(false);
+  useEffect(() => { api.llmSettings().then(s => setCaveMode(!!s.cave_mode)).catch(() => {}); }, []);
+  async function toggleCave(on: boolean) {
+    setCaveMode(on);
+    try { await api.setLlmSettings({ cave_mode: on ? 1 : 0 }); toast.success(on ? 'Cave mode on — leaner context' : 'Cave mode off'); }
+    catch (e: any) { toast.error(e.message); setCaveMode(!on); }
+  }
 
   // Pending approval gate (#1) + checkpoints panel (#3).
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
@@ -1405,6 +1413,12 @@ export default function Chat() {
                            onChange={e => setReviewEdits(e.target.checked)}
                            disabled={busy || chatMode === 'team'} />
                     Review edits before they land
+                  </label>
+                  <label className="chat-menu-item" title="Cave mode: send the agents the leanest useful context (smaller repo map, skip skills/workflows/@-mentions, fewer memory hits, condense sooner). Global — also applies to ticket runs."
+                         style={menuItem}>
+                    <input type="checkbox" checked={caveMode}
+                           onChange={e => toggleCave(e.target.checked)} />
+                    🦴 Cave mode (lean context)
                   </label>
                   {chatMode === 'team' && (
                     <label className="chat-menu-item" title="Run every agent instead of letting triage fast-path trivial requests."

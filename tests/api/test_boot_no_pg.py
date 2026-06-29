@@ -72,13 +72,13 @@ def test_agents_endpoint_does_not_500_on_sqlite(client):
     assert r.status_code == 200
     rows = r.json()
     assert isinstance(rows, list)
-    # M8 — roster excludes non-agent archetypes (chat slot, synthetic default,
-    # context/verifier/eval sub-roles).
     names = {row["role"] for row in rows}
-    denied = {"chat", "_default", "gap_eval", "live_verifier",
-              "ctx_memory", "ctx_repomap", "ctx_conventions",
-              "verify_correctness", "verify_scope", "verify_risk"}
-    assert not (names & denied), names & denied
+    # The roster now shows EVERY agent (grouped), incl. the chat slot + the
+    # context/verifier fan-out sub-agents; only the synthetic default is hidden.
+    assert "_default" not in names
+    assert {"chat", "ctx_memory", "verify_risk", "doer"} <= names
+    # Each row carries a group + description for the grouped UI.
+    assert all("group" in row and "description" in row for row in rows)
 
 
 def test_memory_stats_embedded(client):

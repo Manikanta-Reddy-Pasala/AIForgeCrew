@@ -122,16 +122,23 @@ export default function Perf() {
 
   return (
     <div className="p-4">
-      <div className="mb-3 flex items-center gap-3 text-sm text-slate-400 flex-wrap">
-        <h2 className="text-lg text-slate-200">Per-step performance</h2>
-        <span className="text-xs">
-          {totalRows} step buckets · grand total {fmt(grandTotal)} · auto-refresh 5s
-        </span>
-        <button
-          onClick={() => load(true)}
-          className="ml-auto px-2 py-0.5 rounded bg-slate-700 text-xs hover:bg-slate-600 text-slate-200">
-          Reset aggregator
-        </button>
+      <div className="mb-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h2 className="text-lg text-slate-200">Performance — where time goes</h2>
+          <button
+            onClick={() => load(true)}
+            className="ml-auto px-2 py-0.5 rounded bg-slate-700 text-xs hover:bg-slate-600 text-slate-200">
+            Clear stats
+          </button>
+        </div>
+        <p className="mt-1 text-xs text-slate-400 max-w-3xl">
+          Every LLM call and every file/tool action from your Chat and Doer runs is
+          timed and grouped here by kind of work, so you can see what dominates runtime.
+          Numbers accumulate across runs until you press “Clear stats”.
+        </p>
+        <p className="mt-0.5 text-xs text-slate-500">
+          {totalRows} operations tracked · {fmt(grandTotal)} total wall-clock · refreshes every 5s
+        </p>
       </div>
 
       {/* Family filter chips */}

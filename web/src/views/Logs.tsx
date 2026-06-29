@@ -19,15 +19,15 @@ import { logStreamURL } from '../api';
 import { Icon } from '../icons';
 
 const ROLES = [
-  'intent', 'supervisor', 'enhancer', 'architect', 'planner', 'doer',
-  'feedback', 'learner', 'publish', 'integration',
-  'triage', 'researcher', 'refiner', 'verifier',
-  'adk_runner',
+  'chat', 'adk_runner', 'enhancer', 'architect', 'planner', 'doer',
+  'verifier', 'feedback', 'learner', 'researcher', 'refiner', 'triage',
+  'intent', 'supervisor', 'publish', 'integration',
 ] as const;
 type Role = typeof ROLES[number];
 type RoleSelection = 'ALL' | Role;
 
 const ROLE_COLOR: Record<Role, string> = {
+  chat:        '#38bdf8',
   intent:      '#22d3ee',
   supervisor:  '#a78bfa',
   enhancer:    '#2dd4bf',

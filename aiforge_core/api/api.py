@@ -240,15 +240,44 @@ def list_agents() -> list[dict]:
     except Exception:
         roles = list(ROLES.keys())
 
-    # Drop non-agent archetypes — the chat slot, the synthetic default, and the
-    # context/verifier/eval SUB-roles that are internal pipeline helpers, not
-    # standalone agents the roster should advertise.
-    _NON_AGENT = {
-        "chat", "_default", "gap_eval", "live_verifier",
-        "ctx_memory", "ctx_repomap", "ctx_conventions",
-        "verify_correctness", "verify_scope", "verify_risk",
+    # Only the synthetic default is hidden — every real agent (incl. the chat
+    # slot + the context/verifier fan-out sub-agents) is shown, grouped.
+    roles = [r for r in roles if r != "_default"]
+
+    _DESC = {
+        "enhancer": "Cleans the raw request into a clear, unambiguous spec before planning.",
+        "architect": "Designs the file/module structure and approach for the spec.",
+        "triage": "Routes the work — trivial fast-path vs full pipeline.",
+        "planner": "Splits the design into ordered, concrete subtasks.",
+        "verifier": "Critiques the plan before code is written (merges the verify_* verdicts).",
+        "researcher": "Gathers the codebase/external context the plan needs.",
+        "doer": "Writes the actual code and runs the tools that implement each subtask.",
+        "refiner": "Polishes the doer's output — cleanup, edge cases — inside the work loop.",
+        "feedback": "In-loop reviewer: checks each pass and feeds corrections back.",
+        "learner": "Persists durable lessons/memory so future runs start smarter.",
+        "verify_correctness": "Axis critic: is the plan/code correct and complete?",
+        "verify_scope": "Axis critic: does it stay within the requested scope?",
+        "verify_risk": "Axis critic: flags risky, destructive, or fragile changes.",
+        "ctx_memory": "Parallel gatherer: pulls relevant past decisions / memory.",
+        "ctx_repomap": "Parallel gatherer: builds a map of the repo structure.",
+        "ctx_conventions": "Parallel gatherer: extracts the project's coding conventions.",
+        "gap_eval": "Research-completeness critic: drives the bounded re-search loop.",
+        "live_verifier": "Boots + exercises the built project against a live-verify recipe.",
+        "chat": "The dashboard chat assistant's own model slot (independent of the pipeline).",
     }
-    roles = [r for r in roles if r not in _NON_AGENT]
+    _ORCH = {"enhancer", "architect", "planner"}
+    _FANOUT = {"ctx_memory", "ctx_repomap", "ctx_conventions",
+               "verify_correctness", "verify_scope", "verify_risk",
+               "gap_eval", "live_verifier"}
+
+    def _group(r: str) -> str:
+        if r == "chat":
+            return "chat"
+        if r in _ORCH:
+            return "orchestrator"
+        if r in _FANOUT:
+            return "fanout"
+        return "pipeline"
 
     for name in roles:
         rc = ROLES.get(name)
@@ -266,6 +295,8 @@ def list_agents() -> list[dict]:
         last_iso, turns, active = _activity(name)
         out.append({
             "role": name,
+            "description": _DESC.get(name, ""),
+            "group": _group(name),
             "model": model,
             "transport": transport,
             "max_turns": rc.max_turns if rc else None,
@@ -1457,14 +1488,26 @@ _EXTRA_LOG_ROLES = {"intent", "publish", "integration", "adk_runner",
 
 @app.get("/api/logs/{role}/stream")
 def stream_role_log(role: str):
-    if role not in ROLES and role not in _EXTRA_LOG_ROLES:
-        raise HTTPException(404, f"unknown role {role!r}")
+    # Accept any role (sanitised) — an unknown role just tails an empty file
+    # rather than 404-ing the tab. Prevents path traversal.
+    role = re.sub(r"[^a-z0-9_]", "", (role or "").lower()) or "adk_runner"
     path = _resolve_role_log(role)
 
     async def gen():
+        # Backfill the last ~200 lines on connect so the page shows recent
+        # history immediately instead of a blank "waiting for events…".
         last_size = 0
         if os.path.exists(path):
-            last_size = os.path.getsize(path)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    tail = f.readlines()[-200:]
+                last_size = os.path.getsize(path)
+                for line in tail:
+                    line = line.strip()
+                    if line:
+                        yield f"data: {line}\n\n"
+            except Exception:  # noqa: BLE001
+                last_size = os.path.getsize(path) if os.path.exists(path) else 0
         try:
             while True:
                 await asyncio.sleep(1.5)
@@ -2926,6 +2969,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         awaiting = False   # turn ended with a question / pause, not an outcome
         _subtasks: list[dict] = []   # live subtask panel state, persisted so it
         #                              survives a navigate-away / reload
+        # Mirror chat activity into the observability NDJSON so the Logs page
+        # shows live runs (the page tails orchestrator-<role>.ndjson).
+        try:
+            from aiforge_core.observability.logging import emit, get_logger
+            _clog = get_logger("chat", ticket=f"chat-{session_id}")
+        except Exception:  # noqa: BLE001
+            _clog = None
+            emit = None  # type: ignore
         _auto_checkpoint()   # snapshot first (off the response-open path)
         # Terminal subtask statuses — a cancelled run coerces any non-terminal
         # row to "failed" so the persisted/reloaded panel never shows a row
@@ -2936,6 +2987,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         emitted_done = False   # forwarded a terminal `done` yet?
         try:
             for ev in _events():
+                if _clog is not None and emit is not None and \
+                        ev.get("type") in ("thought", "tool", "message", "error"):
+                    try:
+                        emit(_clog, ev["type"], name=ev.get("name"),
+                             text=(ev.get("text") or "")[:200],
+                             tool_ok=(ev.get("result") or {}).get("ok") if isinstance(ev.get("result"), dict) else None)
+                    except Exception:  # noqa: BLE001
+                        pass
                 if ev.get("type") == "message":
                     final_text = ev.get("text", "")
                     awaiting = bool(ev.get("awaiting_input"))
