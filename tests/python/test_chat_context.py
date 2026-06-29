@@ -61,3 +61,24 @@ def test_compress_prompt_disabled(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_COMPRESS_PROMPT", "0")
     text = "a\n\n\n\nb"
     assert ca._compress_prompt(text) == text
+
+
+def test_condense_summary_rolls_forward_across_two_condenses(monkeypatch):
+    """L-1: a 2nd condense keeps the FIRST window's asks (carried out of the
+    prior breadcrumb), not just the latest window's."""
+    monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "300")
+    # First condense: middle contains the original ask.
+    convo = [{"role": "system", "content": "SYS"},
+             {"role": "user", "content": "build the UNIQUEALPHA exporter"}]
+    for i in range(20):
+        convo.append({"role": "assistant", "content": "ACTION: grep\nq"})
+        convo.append({"role": "user", "content": "OBSERVATION: " + "x" * 40})
+    out1 = ca._compact_convo(convo, keep_recent=4)
+    assert "UNIQUEALPHA" in out1[0]["content"]
+    # Continue the session with NEW turns, then condense again.
+    for i in range(20):
+        out1.append({"role": "assistant", "content": "ACTION: grep\nq"})
+        out1.append({"role": "user", "content": "OBSERVATION: " + "y" * 40})
+    out2 = ca._compact_convo(out1, keep_recent=4)
+    # The original ask survived the second condense (rolled forward).
+    assert "UNIQUEALPHA" in out2[0]["content"]

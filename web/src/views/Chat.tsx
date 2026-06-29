@@ -1056,6 +1056,12 @@ export default function Chat() {
     setInput(lastUserMsg.content);
     setTimeout(() => textareaRef.current?.focus(), 30);
   }
+  // M2: copy with uniform feedback (clipboard may be absent in insecure HTTP).
+  function copyText(t: string) {
+    if (!navigator.clipboard) { toast.error('Copy needs HTTPS'); return; }
+    navigator.clipboard.writeText(t).then(() => toast.success('Copied'),
+                                          () => toast.error('Copy failed'));
+  }
   const isLastTurn = messages.length > 0 && lastAssistantMsg === messages[messages.length - 1];
   const persistedAwaiting = !!(isLastTurn && lastAssistantMsg && msgAwaiting(lastAssistantMsg));
   // The current turn is waiting for the user to answer — Enter/primary button
@@ -1441,8 +1447,7 @@ export default function Chat() {
                                     onClick={editLastUser}>✎ Edit</button>
                             <button className="ghost xs" title="Copy"
                                     style={{ padding: '0 4px', cursor: 'pointer' }}
-                                    onClick={() => navigator.clipboard?.writeText(msg.content).then(
-                                      () => toast.success('Copied'), () => {})}>⧉ Copy</button>
+                                    onClick={() => copyText(msg.content)}>⧉ Copy</button>
                           </div>
                         )}
                       </div>
@@ -1477,10 +1482,10 @@ export default function Chat() {
                       <div className="xs muted" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}
                            title={`~${Math.round(liveTurn.usage.chars / 1000)}k / ${Math.round(liveTurn.usage.budget / 1000)}k chars before auto-condense`}>
                         <span style={{ width: 60, height: 4, background: 'var(--bg-2,#222)', borderRadius: 2, overflow: 'hidden' }}>
-                          <span style={{ display: 'block', height: '100%', width: `${liveTurn.usage.pct}%`,
-                                         background: liveTurn.usage.pct > 85 ? 'var(--err,#e5534b)' : 'var(--accent,#2563eb)' }} />
+                          <span style={{ display: 'block', height: '100%', width: `${liveTurn.usage.pct ?? 0}%`,
+                                         background: (liveTurn.usage.pct ?? 0) > 85 ? 'var(--err,#e5534b)' : 'var(--accent,#2563eb)' }} />
                         </span>
-                        context {liveTurn.usage.pct}%
+                        context {liveTurn.usage.pct ?? 0}%
                       </div>
                     )}
                   </div>
@@ -1927,6 +1932,7 @@ function AssistantBubble({
           <div className="typing" style={{ padding: '4px 0' }}><span /><span /><span /></div>
         </div>
       )}
+      {(elapsedSec !== undefined || (!streaming && (text || onRegenerate))) && (
       <div style={{
         marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--fg-3)',
         display: 'flex', alignItems: 'center', gap: 8,
@@ -1939,8 +1945,10 @@ function AssistantBubble({
         {!streaming && text && (
           <button className="ghost xs" title="Copy answer"
                   style={{ padding: '0 4px', cursor: 'pointer' }}
-                  onClick={() => { navigator.clipboard?.writeText(text).then(
-                    () => toast.success('Copied'), () => toast.error('Copy failed')); }}>
+                  onClick={() => { navigator.clipboard
+                    ? navigator.clipboard.writeText(text).then(
+                        () => toast.success('Copied'), () => toast.error('Copy failed'))
+                    : toast.error('Copy needs HTTPS'); }}>
             ⧉ Copy
           </button>
         )}
@@ -1952,6 +1960,7 @@ function AssistantBubble({
           </button>
         )}
       </div>
+      )}
     </div>
   );
 }

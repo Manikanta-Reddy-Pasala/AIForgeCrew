@@ -53,17 +53,22 @@ def force_release_run_lock() -> bool:
     Bumps the owner generation so the wedged holder's finally becomes a no-op
     (it won't double-release the lock onto a new holder, nor restore the env
     root over a new run). Safe because kill-all also cancels every run, so the
-    wedged holder is being torn down anyway."""
+    wedged holder is being torn down anyway.
+
+    The gen-bump AND the lock release happen UNDER ``_RUN_LOCK_GEN_LOCK`` — the
+    same lock the holder's teardown takes — so the two are mutually exclusive.
+    Without that, a holder could pass its gen-check, get pre-empted before its
+    release, and then release a NEW holder's lock + clobber its env root."""
     global _RUN_LOCK_GEN
-    if _RUN_LOCK.locked():
-        with _RUN_LOCK_GEN_LOCK:
-            _RUN_LOCK_GEN += 1          # invalidate the current holder
+    with _RUN_LOCK_GEN_LOCK:
+        if not _RUN_LOCK.locked():
+            return False
+        _RUN_LOCK_GEN += 1              # invalidate the current holder
         try:
             _RUN_LOCK.release()
             return True
         except RuntimeError:
             return False
-    return False
 
 
 def _part_events(author: str, part) -> list[dict]:
@@ -401,16 +406,19 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             # If a kill-all force-released the lock out from under us, the
             # generation changed: another run (or none) now owns the lock + the
             # env root, so we must NOT release the lock again or restore our
-            # prev_root over theirs. Only tear down if we're still the owner.
-            if _run_lock_gen() == my_lock_gen:
-                if prev_root is None:
-                    os.environ.pop("AIFORGE_REPO_ROOT", None)
-                else:
-                    os.environ["AIFORGE_REPO_ROOT"] = prev_root
-                try:
-                    _RUN_LOCK.release()
-                except RuntimeError:
-                    pass
+            # prev_root over theirs. The gen-check + env-restore + release run
+            # together under _RUN_LOCK_GEN_LOCK (the same lock force_release
+            # takes) so the check can't go stale before the release (TOCTOU).
+            with _RUN_LOCK_GEN_LOCK:
+                if _RUN_LOCK_GEN == my_lock_gen:
+                    if prev_root is None:
+                        os.environ.pop("AIFORGE_REPO_ROOT", None)
+                    else:
+                        os.environ["AIFORGE_REPO_ROOT"] = prev_root
+                    try:
+                        _RUN_LOCK.release()
+                    except RuntimeError:
+                        pass
             # The team run owns BOTH the cancel-token lifetime AND persistence
             # — done HERE (background thread), not in the SSE generator, so a
             # client disconnect can't drop the real answer or persist a

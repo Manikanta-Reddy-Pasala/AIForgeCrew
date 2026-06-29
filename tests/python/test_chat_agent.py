@@ -390,7 +390,9 @@ def test_compact_convo_condenses_long_history(monkeypatch):
     # consecutive same-role messages); actions summarized.
     assert "auto-condensed" in out[0]["content"]
     assert "file_read" in out[0]["content"]
-    assert len(out) == 1 + 8                               # system + recent tail
+    # L-3: keep_recent is scaled DOWN to the (tiny 2000-char) budget — 8 turns
+    # of 200+ chars each wouldn't fit — so the tail is the adaptive 4, not 8.
+    assert len(out) == 1 + 4                               # system + adaptive tail
     # no two consecutive non-system same-role messages
     roles = [m["role"] for m in out]
     assert not any(roles[i] == roles[i+1] != "system" for i in range(len(roles)-1))
@@ -558,9 +560,9 @@ def test_usage_event_emitted(tmp_path):
     assert usage[0]["budget_chars"] > 0
 
 
-def test_cancellable_complete_returns_none_when_cancelled():
-    """H1: a cancel set while the LLM call runs makes the wrapper return None
-    promptly (the call is abandoned, not awaited to completion)."""
+def test_cancellable_complete_returns_sentinel_when_cancelled():
+    """H1: a cancel set while the LLM call runs makes the wrapper return the
+    _CANCELLED sentinel promptly (the call is abandoned, not awaited)."""
     import threading
     import time as _t
     from aiforge_core.runtime import chat_cancel
@@ -580,8 +582,20 @@ def test_cancellable_complete_returns_none_when_cancelled():
     chat_cancel.cancel(sid)  # Stop pressed mid-generation
     th.join(timeout=2)
     assert not th.is_alive(), "wrapper did not return promptly on cancel"
-    assert box["out"] is None
+    assert box["out"] is ca._CANCELLED
     chat_cancel.finish(sid)
+
+
+def test_cancellable_complete_passes_through_empty():
+    """A legitimately-empty completion is returned as-is (not the cancel
+    sentinel) when no cancel is set."""
+    from aiforge_core.runtime import chat_cancel
+    sid = 77124
+    chat_cancel.start(sid)
+    try:
+        assert ca._complete_cancellable(lambda r, m, **k: "", "doer", [], sid) == ""
+    finally:
+        chat_cancel.finish(sid)
 
 
 def test_condense_summary_includes_earlier_asks(monkeypatch):

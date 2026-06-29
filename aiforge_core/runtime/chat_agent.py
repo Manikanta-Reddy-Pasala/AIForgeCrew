@@ -1179,17 +1179,49 @@ _CONDENSE_OPEN = "<<AIFORGE_CTX_CONDENSED>>"
 _CONDENSE_CLOSE = "<</AIFORGE_CTX_CONDENSED>>"
 
 
+_CANCELLED = object()   # sentinel: generation abandoned because Stop was pressed
+
+# Bound on concurrent generation threads (live + abandoned-but-still-running).
+# H1 abandons a cancelled LLM call to a daemon thread; the underlying urllib
+# request can't be interrupted, so it keeps a connection until it returns/times
+# out (AIFORGE_LLM_TIMEOUT_S). This semaphore stops spam Stop+resend from
+# stacking UNBOUNDED zombie generations: a new one waits for a slot (i.e. for a
+# zombie to finish) — which matches reality on a serialized local backend. The
+# wait itself is cancellable.
+_GEN_SEM = None
+
+
+def _gen_sem():
+    global _GEN_SEM
+    if _GEN_SEM is None:
+        try:
+            _n = max(1, int(os.environ.get("AIFORGE_CHAT_MAX_INFLIGHT_GEN", "3")))
+        except ValueError:
+            _n = 3
+        _GEN_SEM = __import__("threading").BoundedSemaphore(_n)
+    return _GEN_SEM
+
+
 def _complete_cancellable(complete_fn, role, convo, session_id):
     """Run the (synchronous, uncancellable) LLM call on a side thread so a Stop
     can interrupt it. H1: previously the cancel flag was only checked between
     ReAct steps, so on a slow local model Stop appeared dead for the WHOLE
     generation (minutes). Now we poll the cancel token while the call runs and
-    return ``None`` the instant it's set — abandoning the call (it finishes in
-    the background, daemon thread, result ignored). No session → call inline."""
+    return the ``_CANCELLED`` sentinel the instant it's set — abandoning the
+    call (it finishes in the background, daemon thread, result ignored). The
+    sentinel (not ``None``) keeps a legitimately-empty completion distinct from
+    a cancel. No session → call inline."""
     from aiforge_core.runtime import chat_cancel
     if session_id is None:
         return complete_fn(role, convo)
     import threading as _th
+    sem = _gen_sem()
+    # Acquire a generation slot (cancellable wait). At the cap, a fresh
+    # generation blocks until a prior (possibly abandoned) one finishes.
+    while not sem.acquire(timeout=0.2):
+        if chat_cancel.is_cancelled(session_id):
+            return _CANCELLED
+
     box: dict = {}
 
     def _call():
@@ -1197,12 +1229,14 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
             box["out"] = complete_fn(role, convo)
         except Exception as exc:  # noqa: BLE001 — surfaced on the main thread
             box["err"] = exc
+        finally:
+            sem.release()        # free the slot when the call REALLY finishes
 
     t = _th.Thread(target=_call, daemon=True)
     t.start()
     while t.is_alive():
         if chat_cancel.is_cancelled(session_id):
-            return None      # abandon — caller sees cancel + stops the run
+            return _CANCELLED    # abandon — slot frees when the zombie ends
         t.join(timeout=0.2)
     if "err" in box:
         raise box["err"]
@@ -1269,7 +1303,13 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18) -> list[dict]:
     it's cheap and runs every turn. The agent can re-read files / ask the user
     if it needs detail from before the condense point."""
     budget = _ctx_budget_chars()
-    if budget <= 0 or len(convo) <= keep_recent + 2:
+    if budget <= 0:
+        return convo
+    # Scale the verbatim tail to the budget: on a SMALL window, keeping 18 turns
+    # could itself exceed the budget (condense fires but can't get under it).
+    # ~2k chars/turn heuristic, floor 4 so there's always a usable recent slice.
+    keep_recent = max(4, min(keep_recent, budget // 2000))
+    if len(convo) <= keep_recent + 2:
         return convo
     if sum(len(m.get("content") or "") for m in convo) <= budget:
         return convo
@@ -1296,13 +1336,28 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18) -> list[dict]:
     import collections as _c
     used = ", ".join(f"{t}×{n}" for t, n in _c.Counter(tools).most_common(8)) \
         or "discussion + reads"
+    # ROLLING summary: carry forward asks/outcomes from the PRIOR breadcrumb
+    # (if any) and merge with this window's, so a second+ condense doesn't drop
+    # the original thread. Capped slices ([-N:]) keep it bounded — no growth.
+    prior = convo[0].get("content") or ""
+    prior_block = re.search(
+        re.escape(_CONDENSE_OPEN) + r"(.*?)" + re.escape(_CONDENSE_CLOSE),
+        prior, flags=re.S)
+    if prior_block:
+        ptext = prior_block.group(1)
+        pa = re.search(r"Earlier asks: (.+)", ptext)
+        po = re.search(r"Earlier outcomes: (.+)", ptext)
+        if pa:
+            user_asks = [s.strip() for s in pa.group(1).split(" · ")] + user_asks
+        if po:
+            finals = [s.strip() for s in po.group(1).split(" · ")] + finals
     # Rolling SUMMARY of the dropped middle — earlier asks + outcomes, not just
     # tool counts — so condensation doesn't erase what was discussed/decided
     # (the agent stops "forgetting" the thread after a long session). Heuristic,
     # no extra LLM call.
     summary_bits: list[str] = []
     if user_asks:
-        summary_bits.append("Earlier asks: " + " · ".join(user_asks[-5:]))
+        summary_bits.append("Earlier asks: " + " · ".join(user_asks[-6:]))
     if finals:
         summary_bits.append("Earlier outcomes: " + " · ".join(finals[-4:]))
     summary = ("\n" + "\n".join(summary_bits)) if summary_bits else ""
@@ -1466,10 +1521,15 @@ def run_chat_agent(
     import collections
     safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
 
-    # Latest user message drives mentions (#4) + microagent triggers (#6).
+    # Latest user message drives mentions (#4) + microagent triggers (#6) +
+    # memory recall. In simple/plan mode the API augments the last user turn
+    # with an "[Interpreted request …]" enhancer block; key off the user's RAW
+    # words (split that marker off) so recall/skills/mentions aren't diluted by
+    # the boilerplate + restatement.
     last_user = next(
         (m.get("content") for m in reversed(messages)
          if (m.get("role") or "user") == "user" and m.get("content")), "")
+    last_user = last_user.split("\n\n---\n[Interpreted request")[0].strip() or last_user
 
     # Inject a fresh repo map every turn so the agent ALWAYS knows the
     # directory structure of the working dir without re-searching it on
@@ -1575,13 +1635,14 @@ def run_chat_agent(
             yield {"type": "done"}
             return
         # H1: Stop pressed DURING generation — the cancellable wrapper returned
-        # early (the abandoned LLM call finishes in the background, ignored).
+        # the sentinel (the abandoned LLM call finishes in the background,
+        # ignored). Distinct from a legitimately-empty completion below.
+        if out is _CANCELLED:
+            yield {"type": "error", "text": "stopped by user"}
+            yield {"type": "done"}
+            return
         if out is None:
-            if session_id is not None and chat_cancel.is_cancelled(session_id):
-                yield {"type": "error", "text": "stopped by user"}
-                yield {"type": "done"}
-                return
-            out = ""   # defensive — treat as empty turn
+            out = ""   # a real empty completion — treat as an empty turn
 
         # Stuck-output loop: identical model reply N times running. Rather
         # than just bailing, ASK the user for guidance (don't circle).
