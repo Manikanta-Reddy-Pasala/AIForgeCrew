@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
 import './styles.css';
 import { Icon } from './icons';
+import { ErrorBoundary } from './ErrorBoundary';
 import { api } from './api';
 
 // Dashboard is the biggest view (pulls recharts). Lazy-load so the
@@ -161,11 +162,14 @@ function Shell() {
   const [collapsed, setCollapsed] = useState(() =>
     window.matchMedia('(max-width: 900px)').matches,
   );
+  const location = useLocation();
   return (
     <div className={`shell${collapsed ? ' collapsed' : ''}`}>
       <Sidebar />
       <TopBar onToggleSidebar={() => setCollapsed(c => !c)} />
       <main className="page">
+        {/* key on the path so navigating away from a throwing view auto-resets. */}
+        <ErrorBoundary key={location.pathname}>
         <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route path="/" element={<Home />} />
@@ -190,6 +194,7 @@ function Shell() {
             <Route path="/perf"     element={<Perf />} />
           </Routes>
         </Suspense>
+        </ErrorBoundary>
       </main>
     </div>
   );

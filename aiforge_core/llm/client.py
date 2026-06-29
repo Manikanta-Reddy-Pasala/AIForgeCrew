@@ -407,10 +407,14 @@ def _try_post(ep: Endpoint, messages: list[dict],
     try:
         body = _post_with_retry(ep, payload, timeout_s,
                                 role=role, source=source)
+    except _LLMCancelled:
+        raise
     except (urllib.error.URLError, urllib.error.HTTPError,
-            OSError, TimeoutError):
-        # _post_with_retry already logged the final attempt — caller
-        # falls over to fallback() / escalate() per the retry chain.
+            OSError, TimeoutError, ValueError):
+        # ValueError covers a non-JSON 200 (proxy HTML error page, truncated /
+        # streaming body) so a malformed response falls back to the next
+        # provider instead of crashing complete(). _post_with_retry already
+        # logged; the caller falls over per the retry chain.
         return None
     _record_usage(role, body)
     text = _extract_text(body)

@@ -53,7 +53,7 @@ export default function AgentSettings() {
     const c = config[role];
     if (!c) return '';
     const m = models.find(x => x.model === c.model &&
-      (!x.base_url || x.base_url === (c.base_url || '')));
+      (x.base_url || '') === (c.base_url || ''));
     return m?.id || '';
   }
 
@@ -134,6 +134,7 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
   const [ctx, setCtx] = useState<number | ''>('');
   const [vision, setVision] = useState<'auto' | 'yes' | 'no'>('auto');
   const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const input = { width: '100%', padding: '6px 8px', fontSize: 13 };
 
   async function add() {
@@ -190,14 +191,16 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
         <button className="btn" onClick={add} disabled={busy}>
           {busy ? 'Adding…' : '+ Add model'}
         </button>
-        <button className="ghost" disabled={busy}
+        <button className="ghost" disabled={busy || syncing}
                 title="Populate this list from the models the agents are already configured with"
                 onClick={async () => {
+                  setSyncing(true);
                   try { const r = await chatApi.syncModels(); reload();
                     toast.success(r.count ? `Detected ${r.count} model${r.count === 1 ? '' : 's'}` : 'No new models found'); }
                   catch (e: any) { toast.error(e.message); }
+                  finally { setSyncing(false); }
                 }}>
-          ⟳ Detect current models
+          {syncing ? 'Detecting…' : '⟳ Detect current models'}
         </button>
       </div>
 

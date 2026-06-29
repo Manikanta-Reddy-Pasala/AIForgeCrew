@@ -121,8 +121,10 @@ def _fetch_attachments(attachments: list, role: str = "doer") -> list[dict]:
         if not url or not chat_media.supported_attachment(mime, name):
             continue
         try:
+            import urllib.parse as _up
             got = _http.http_get_bytes(url, headers=_headers(),
-                                       timeout=_TIMEOUT_S, context=_ssl_ctx())
+                                       timeout=_TIMEOUT_S, context=_ssl_ctx(),
+                                       allow_host=_up.urlsplit(_base()).hostname)
             if not got.get("ok"):
                 out.append({"filename": name, "description": "",
                             "error": got.get("error")})

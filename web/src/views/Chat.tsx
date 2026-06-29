@@ -714,6 +714,7 @@ export default function Chat() {
     if (id === activeId) return;
     abortRef.current?.abort();   // drop any in-flight stream on the old session
     abortRef.current = null;
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     setActiveId(id);
     activeIdRef.current = id;     // sync immediately so attachToRun's guard is right
     setLiveTurn(null);
@@ -1629,8 +1630,14 @@ export default function Chat() {
             </div>
 
             <MediaStrip media={media} vision={mediaVision}
-                        onDescribe={async (id, d) => { await chatMediaDescribe(id, d); if (activeId !== null) loadMedia(activeId); }}
-                        onDelete={async (id) => { await chatMediaDelete(id); if (activeId !== null) loadMedia(activeId); }} />
+                        onDescribe={async (id, d) => {
+                          try { await chatMediaDescribe(id, d); if (activeId !== null) loadMedia(activeId); }
+                          catch (e: any) { toast.error(`Save failed: ${e.message}`); }
+                        }}
+                        onDelete={async (id) => {
+                          try { await chatMediaDelete(id); if (activeId !== null) loadMedia(activeId); }
+                          catch (e: any) { toast.error(`Delete failed: ${e.message}`); }
+                        }} />
 
             <div className="chat-composer">
               <div style={{ display: 'flex', gap: 6 }}>
@@ -2026,6 +2033,7 @@ function MediaStrip({ media, vision, onDescribe, onDelete }: {
               <div className="xs" style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.filename}</div>
               {isImg ? (
                 <textarea
+                  key={`${m.id}:${m.description || ''}`}
                   defaultValue={m.description}
                   placeholder={vision ? 'description (auto/edit)…' : 'describe this image so it can be asked about…'}
                   onBlur={e => { if (e.target.value !== m.description) onDescribe(m.id, e.target.value); }}

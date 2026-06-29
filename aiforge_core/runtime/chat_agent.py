@@ -2177,7 +2177,8 @@ def run_chat_agent(
                 # (a blanket reject here silently broke sudo / -g installs /
                 # force-push in worktree-isolated autonomous runs).
                 _danger = bool(_destructive_del)
-                if not _danger and name in ("run_command", "run_shell"):
+                if not _danger and name in ("run_command", "run_shell", "serve",
+                                            "bash", "shell"):
                     try:
                         from aiforge_core.runtime.tools import command_risk
                         _lvl = command_risk.assess(
@@ -2216,7 +2217,9 @@ def run_chat_agent(
             if session_id is not None and chat_cancel.is_cancelled(session_id):
                 yield {"type": "tool", "name": name, "args": args,
                        "result": {"ok": False, "error": "cancelled"}}
-                break
+                # continue (not break) → the top-of-loop cancel check emits the
+                # accurate "stopped by user" rather than the safety-cap message.
+                continue
 
         fn = TOOLS.get(name)
         if fn is None:

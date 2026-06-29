@@ -4,15 +4,15 @@ const BASE = '/api';
 async function j<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${BASE}${path}`, init);
   if (!r.ok) {
-    // Try to surface the JSON `detail` field FastAPI returns on 4xx, so
-    // the UI can show an actionable message instead of "400 Bad Request".
+    // Read the body ONCE as text, then try to parse JSON — reading .json()
+    // first and .text() in the catch double-reads the stream ("body stream
+    // already read") and discards a non-JSON (proxy HTML) error body.
     let detail = '';
     try {
-      const body = await r.json();
-      detail = body?.detail || body?.error || '';
-    } catch {
-      try { detail = await r.text(); } catch { /* ignore */ }
-    }
+      const raw = await r.text();
+      try { const b = JSON.parse(raw); detail = b?.detail || b?.error || raw; }
+      catch { detail = raw; }
+    } catch { /* ignore */ }
     const suffix = detail ? ` — ${detail}` : '';
     throw new Error(`${r.status} ${r.statusText}${suffix}`);
   }
@@ -35,7 +35,9 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deleteModel: (id: string) =>
-    fetch(`${BASE}/agents/models/${id}`, { method: 'DELETE' }).then(() => undefined),
+    fetch(`${BASE}/agents/models/${id}`, { method: 'DELETE' }).then(r => {
+      if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
+    }),
   applyModel: (id: string, roles: string[]) =>
     j<{ applied: string[]; errors: Record<string, string> }>(`/agents/models/${id}/apply`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -555,7 +557,9 @@ export function chatMediaDescribe(mediaId: number, description: string): Promise
   });
 }
 export function chatMediaDelete(mediaId: number): Promise<void> {
-  return fetch(`${BASE}/chat/media/${mediaId}`, { method: 'DELETE' }).then(() => undefined);
+  return fetch(`${BASE}/chat/media/${mediaId}`, { method: 'DELETE' }).then(r => {
+    if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
+  });
 }
 export function chatMediaRawURL(mediaId: number): string {
   return `${BASE}/chat/media/${mediaId}/raw`;

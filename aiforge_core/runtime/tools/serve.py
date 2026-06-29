@@ -144,9 +144,13 @@ def serve(args: dict, cwd: str | None = None) -> dict:
     _ensure_reaper()        # auto-cleanup forgotten services
     _reap()                 # opportunistically clear dead/expired first
 
+    # Unique per invocation — a hash(cmd) name collides (two different cmds, or
+    # the same cmd served twice) and the URL/port detection then reads the wrong
+    # service's log.
+    import uuid as _uuid
     log_path = os.path.join(
         os.environ.get("AIFORGE_CONFIG_DIR", os.path.expanduser("~/.aiforge")),
-        f"serve-{abs(hash(cmd)) % 100000}.log")
+        f"serve-{_uuid.uuid4().hex[:10]}.log")
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         logf = open(log_path, "w+")

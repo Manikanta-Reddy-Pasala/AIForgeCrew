@@ -259,13 +259,20 @@ def load_all() -> dict[str, dict[str, Any]]:
                         same_provider = provider == seed["provider"]
                         row_base = row.get("base_url")
                         row_key = row.get("api_key")
+                        # Only inherit the seed's key when the row points at the
+                        # SAME host (a different base_url is a different trust
+                        # domain — don't leak the global cloud token to it). Since
+                        # openai_compatible is the only provider, same_provider is
+                        # always True, so the host check is what actually gates it.
+                        _same_host = (not row_base) or (
+                            row_base.strip() == (seed.get("base_url") or "").strip())
                         cfg[role] = {
                             "provider": provider,
                             "model": row.get("model") or seed["model"],
                             "base_url": row_base or (
                                 seed.get("base_url") if same_provider else None),
                             "api_key": row_key or (
-                                seed.get("api_key") if same_provider else None),
+                                seed.get("api_key") if (same_provider and _same_host) else None),
                             # Respect an EXPLICIT per-role insecure_tls (incl.
                             # a deliberate ``false`` to keep strict TLS) — only
                             # inherit the seed's flag when the row omits it.

@@ -80,14 +80,47 @@ def http_request(method: str, url: str, *, headers: dict,
         return {"ok": True, "data": text}
 
 
+class _StripAuthOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx that crosses hosts must NOT carry the Authorization header — the
+    default opener re-sends it everywhere, leaking the Bearer/PAT token to a
+    redirect target (a poisoned attachment URL → credential exfiltration)."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            try:
+                oh = urllib.parse.urlsplit(req.full_url).hostname
+                nh = urllib.parse.urlsplit(newurl).hostname
+                if oh != nh:
+                    for store in (new.headers, getattr(new, "unredirected_hdrs", {})):
+                        for k in [k for k in store if k.lower() == "authorization"]:
+                            store.pop(k, None)
+            except Exception:  # noqa: BLE001
+                pass
+        return new
+
+
 def http_get_bytes(url: str, *, headers: dict, timeout: int = 20,
-                   cap: int = 5 * 1024 * 1024, context=None) -> dict:
+                   cap: int = 5 * 1024 * 1024, context=None,
+                   allow_host: str | None = None) -> dict:
     """Fetch raw bytes (e.g. an image attachment). Returns ``{ok, bytes}`` or
-    ``{ok: False, error}``. Caps the body so a huge file can't blow up memory.
-    Never raises."""
+    ``{ok: False, error}``. Caps the body, strips auth on cross-host redirects,
+    and (when ``allow_host`` is given) refuses a URL on a different host than the
+    configured integration — so a model-supplied/poisoned attachment URL can't
+    SSRF an internal host or exfiltrate the token. Never raises."""
+    if allow_host:
+        try:
+            h = urllib.parse.urlsplit(url).hostname
+            if h and h.lower() != allow_host.lower():
+                return {"ok": False, "error": "host_not_allowed", "host": h}
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": "bad_url"}
     req = urllib.request.Request(url, headers=headers, method="GET")
+    handlers = [_StripAuthOnCrossHostRedirect()]
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    opener = urllib.request.build_opener(*handlers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=context) as r:
+        with opener.open(req, timeout=timeout) as r:
             raw = r.read(cap + 1)
     except urllib.error.HTTPError as exc:
         return {"ok": False, "error": f"http {exc.code}"}
