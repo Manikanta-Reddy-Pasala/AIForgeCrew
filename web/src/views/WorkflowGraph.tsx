@@ -128,29 +128,44 @@ export default function WorkflowGraph() {
     setParams(next, { replace: true });
   }
 
-  // Layout — column index = topological depth.
+  // Layout — column index = topological depth (longest path from start).
   const layout = useMemo(() => {
     if (!topo) return null;
+    // 1. Find the back-edges (loops: feedback→doer, replan, gap, loop) via DFS,
+    //    so they don't corrupt the depth pass. An edge to a node currently on
+    //    the recursion stack is a back-edge.
+    const adj: Record<string, string[]> = {};
+    topo.edges.forEach(e => { if (e.from !== e.to) (adj[e.from] ||= []).push(e.to); });
+    const state: Record<string, number> = {};   // 0 none · 1 on-stack · 2 done
+    const back = new Set<string>();
+    const dfs = (u: string) => {
+      state[u] = 1;
+      (adj[u] || []).forEach(v => {
+        if (state[v] === 1) back.add(`${u}>${v}`);
+        else if (!state[v]) dfs(v);
+      });
+      state[u] = 2;
+    };
+    topo.nodes.forEach(n => { if (!state[n.id]) dfs(n.id); });
+
+    // 2. Longest-path depth using only forward edges (relax until stable).
     const depthMap: Record<string, number> = {};
     topo.nodes.forEach(n => { depthMap[n.id] = 0; });
-    // Two passes — handles unsorted edge list better than one.
-    for (let i = 0; i < 2; i++) {
-      topo.edges.forEach(e => {
-        if (e.from === e.to) return;
-        const next = (depthMap[e.from] ?? 0) + 1;
-        if (next > (depthMap[e.to] ?? 0)) {
-          // Skip the back-edge feedback→doer so depth doesn't explode.
-          if ((depthMap[e.to] ?? 0) >= (depthMap[e.from] ?? 0)) return;
-          depthMap[e.to] = next;
-        }
+    const fwd = topo.edges.filter(e => e.from !== e.to && !back.has(`${e.from}>${e.to}`));
+    for (let pass = 0; pass < topo.nodes.length + 1; pass++) {
+      let changed = false;
+      fwd.forEach(e => {
+        const nd = (depthMap[e.from] ?? 0) + 1;
+        if (nd > (depthMap[e.to] ?? 0)) { depthMap[e.to] = nd; changed = true; }
       });
+      if (!changed) break;
     }
     const depths: Node[][] = [];
     topo.nodes.forEach(n => {
       const d = depthMap[n.id] ?? 0;
       (depths[d] ||= []).push(n);
     });
-    return { depthMap, depths };
+    return { depthMap, depths, back };
   }, [topo]);
 
   const TicketPicker = (
@@ -196,7 +211,7 @@ export default function WorkflowGraph() {
     );
   }
 
-  const { depthMap, depths } = layout;
+  const { depthMap, depths, back } = layout;
   const NODE_W = 150, NODE_H = 78, COL_GAP = 90, ROW_GAP = 34;
   const colCount = depths.length || 1;
   // Fixed per-column stride (was cramming every column into 1200px, so 150px
@@ -241,6 +256,7 @@ export default function WorkflowGraph() {
           const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2;
           const x2 = b.x,         y2 = b.y + NODE_H / 2;
           const isFeedback =
+            back.has(`${e.from}>${e.to}`) ||
             (depthMap[e.to] ?? 0) <= (depthMap[e.from] ?? 0);
           const stroke = isFeedback ? '#d4a72c' : '#94a3b8';
           const dasharray = isFeedback ? '6,4' : undefined;
