@@ -46,21 +46,40 @@ docker compose up -d --build      # api+ui on :8799, postgres, neo4j, embed, rer
 
 - **Ticket → PR pipeline** — a plain-language ticket runs a multi-agent flow
   (triage → enhance → plan → verify → doer-loop → learn → validate) and opens a PR.
-- **Chat** — a full-filesystem coding agent. Three modes: **Simple** (one agent),
+- **Chat coding agent** — a full-filesystem agent in three modes: **Simple** (one agent),
   **Plan** (read-only — proposes a plan before touching anything), **Team** (the full
-  pipeline, ticketless).
+  pipeline, ticketless). Same strong tool surface as the pipeline Doer (see
+  **[Coding agent tools](#coding-agent-tools)**).
+- **Structured editing** — a syntax-checked **editor** (str_replace / insert / **undo**),
+  **multi_edit** (batch find/replace across many files, validated then all-or-nothing),
+  **diff preview** before writes.
+- **Code intelligence** — **LSP** go-to-def / find-refs / hover, **typecheck**, **format**,
+  per-test **run_tests**, persistent **ipython** REPL, **glob** / **grep** / AST **repo-map**.
+- **Context engineering** — auto **compaction** (rolling summary near the window limit),
+  **dynamic per-turn context** (memory recall + `@-mentions` + repo-map injected every
+  turn), and **Cave mode** (lean context for small local models). See
+  **[Context engineering](#context-engineering)**.
 - **Human-in-the-loop** — per-tool **allow/ask/deny** policy + a command **risk**
-  classifier; risky/ask actions **pause for Approve/Reject** with a diff preview (in
-  chat *and* the team pipeline). Autonomous ticket runs never block.
+  classifier; risky/caution actions (sudo, force-push, chmod 777) **pause for
+  Approve/Reject** with a diff preview, by default, in chat *and* the pipeline.
+  Autonomous ticket runs never block.
+- **VCS** — open **GitHub PRs** (`gh`) and **GitLab MRs** from the agent; targeted
+  staging (blanket `git add -A` is refused).
+- **Integrations** — **Jira** / **Confluence** / **GitLab** (search/read/create/update,
+  incl. attached images + docs analysed as part of the task), **web search**
+  (keyed Tavily/Brave with DuckDuckGo fallback) + **web fetch**, **browser** automation,
+  **MCP** tools.
+- **Attachments & vision** — paste/attach **images, PDFs, xlsx, docx**; stored per
+  session, described + queryable all session; vision auto-detected or set per model.
 - **Workspace checkpoints** — auto-snapshot before each turn; one-click **restore**.
-- **Skills** — reusable `SKILL.md` playbooks (agentskills.io standard), relevance-
-  searched and auto-injected; the agent **authors new skills** when it solves
-  something (`learn_skill`), which also land in memory.
+- **Skills & workflows** — reusable `SKILL.md` / `WORKFLOW.md` playbooks, relevance-
+  searched + auto-injected; the agent **authors new ones** when it solves something.
 - **Memory** — frontier agent-memory that learns across runs (see **[Memory](#memory)**).
-- **Context @-mentions** — `@file`, `@folder`, `@url`, `@problems`.
-- **Repo microagents** — repo-shipped conventions auto-injected by trigger word.
+- **Resilient streaming** — navigate away and back without losing a running turn;
+  cancel/abort mid-generation; a **kill-all** to clear a wedged run.
 - **Providers** — local (LM Studio / mlx-lm) or any OpenAI-compatible endpoint, with
-  automatic cloud escalation; per-role model assignment + bulk profiles.
+  automatic cloud escalation; a **model registry** (add a model once, every agent picks
+  it by name) with per-model vision + context window.
 
 ## Agents
 
@@ -82,6 +101,59 @@ with automatic cloud fail-over. Pick any provider per role.
 **Context gatherers (parallel)** — **Researcher**, **Repo-map** (AST PageRank), **Conventions**.
 
 **Chat** — full-filesystem coding agent in **Simple** / **Plan** (read-only) / **Team** modes.
+
+## Coding agent tools
+
+The chat agent and the pipeline Doer share one tool surface (the chat agent speaks a
+plain-text ReAct protocol so it works on **any** OpenAI-compatible backend — no native
+tool-calling required):
+
+| Group | Tools |
+|-------|-------|
+| **Files** | `file_read` · `file_write`/`file_create` · `file_patch` · **`editor`** (view/create/str_replace/insert/**undo**, syntax-checked) · **`multi_edit`** (batch, many files, atomic) · `list_dir` |
+| **Search / nav** | `grep` (ripgrep) · `find` · **`glob`** · AST **`repo_map`** · **`lsp`** (goto-def / find-refs / hover) |
+| **Code** | `run_command` · **`run_tests`** (per-test) · **`typecheck`** · **`format`** · **`ipython`** (persistent REPL) · `project` (detect+build/test/run) · `serve` (background dev server) · `ensure_runtime` |
+| **VCS** | targeted `git` (via shell) · **`github_pr`** · **`gitlab_mr_create`** / `gitlab_mr_comment` |
+| **Integrations** | `jira_*` · `confluence_*` · `gitlab_*` · `web_search` · `web_fetch` · `browser` · `mcp` |
+| **Memory / learning** | `memory_lookup` · `memory_write` · `remember_rule` · `skill_search` / `learn_skill` · `workflow_search` / `learn_workflow` |
+
+Writes show a **diff**; risky/caution commands and external writes are **approval-gated**
+by default. An optional `AIFORGE_WORKSPACE_DIR` clamps file ops to a root for cautious
+deploys.
+
+## Context engineering
+
+How the agent stays coherent over long sessions on a finite window:
+
+- **Compaction** — when the running history approaches the model's context window
+  (`_ctx_budget_chars`, sized from the per-model window), older turns auto-collapse into
+  a **rolling summary** breadcrumb (earlier asks + outcomes + tools used) while the recent
+  tail stays verbatim. Heuristic — no extra LLM call — so it runs every turn for free.
+- **Dynamic context** — before **every** turn the agent injects fresh **memory recall**
+  (RAG over the knowledge graph, keyed to the current message), `@-mentions`, the
+  **repo-map**, the project summary, session files, and the user's rule book — so
+  follow-ups and post-compaction turns don't "forget".
+- **Cave mode** — a one-click lean-context toggle (chat top-bar / Settings): smaller
+  repo-map, skips the optional skills/workflows/mention blocks, fewer recall hits,
+  condenses sooner. Cheaper + faster on a small local model. Global, also applies to the
+  team pipeline.
+
+## UI
+
+- **Chat** — the coding agent: mode toggle, model picker, 🦴 Cave toggle, attachments
+  (image/pdf/xlsx/docx + paste), live steps, diff approvals, checkpoints, a `⋯` menu.
+- **Tickets / Board / Dashboard** — the ticket → PR pipeline and its runs.
+- **Workflow** — a live diagram of the pipeline graph: Triage → Orchestrator
+  (Enhancer → Planner) → parallel Context fan-out → Verify → Build loop → Validate →
+  Learn. Nodes colour-coded by type; hover for what each does.
+- **Agents** — every agent grouped (Orchestrator / Pipeline / Fan-out & helpers / Chat)
+  with a one-line description, its model, and live load.
+- **Settings** — **Agent** tab (a model registry — add a model once, point any agent at
+  it; per-model vision + context window) and **Integrations** tab (Jira / Confluence /
+  Git) + the LLM settings (max output, context window, vision, Cave mode).
+- **Memory / Skills / Workflows / Rules** — browse + author what the system has learned.
+- **Perf** — where time goes (LLM vs shell vs file I/O, live). **Logs** — per-agent live
+  stream.
 
 ## Memory
 
@@ -128,10 +200,15 @@ OLLAMA_CLOUD_API_KEY           key for the cloud escalation target
 # Chat controls
 AIFORGE_WORKSPACE_DIR          clamp file/exec to one dir (security)
 AIFORGE_TOOL_POLICY            e.g. "run_command=ask,file_write=deny"
-AIFORGE_RISK_ASK_CAUTION       1 = also prompt on caution-level commands
+AIFORGE_RISK_ASK_CAUTION       gate caution cmds (sudo/chmod 777/force-push); default ON, =0 to opt out
+AIFORGE_CAVE_MODE              1 = lean context (smaller repo-map, skip optional blocks, condense sooner)
 AIFORGE_CHAT_AUTO_CHECKPOINT   1 = snapshot before each turn (default)
 AIFORGE_CHAT_AUTO_MEMORY       1 = persist a memory note per turn (default)
 AIFORGE_SKILLS_DIR             skill registry root (default ~/.aiforge/skills)
+
+# Web search (optional keyed providers; falls back to keyless DuckDuckGo)
+AIFORGE_TAVILY_API_KEY         Tavily search key (preferred when set)
+AIFORGE_BRAVE_API_KEY          Brave Search key (fallback)
 
 # Storage (optional "pro" backends; embedded SQLite by default)
 AIFORGE_PG_URL                 Postgres tickets
