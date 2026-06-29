@@ -672,6 +672,66 @@ def _t_learn_workflow(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+# ─────────────────────────── shared "strong" tools ──────────────────────────
+# The OpenHands-parity tools (editor with undo + syntax-check, LSP, typecheck,
+# format, test-runner, IPython) lived only in the ADK team pipeline. These thin
+# adapters expose them to the deploy-anywhere chat agent too. They clamp to
+# sandbox.root(), so we point that at the session cwd for the call.
+
+def _with_root(cwd: str):
+    try:
+        from aiforge_core.runtime import sandbox
+        sandbox.set_root_override(cwd)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _t_editor(args: dict, cwd: str) -> dict:
+    _with_root(cwd)
+    from aiforge_core.runtime.tools.editor import editor
+    return editor(
+        command=str(args.get("command") or args.get("sub_command") or "view"),
+        path=str(args.get("path") or ""),
+        file_text=args.get("file_text") if args.get("file_text") is not None else args.get("content"),
+        old_str=args.get("old_str") if args.get("old_str") is not None else args.get("old_text"),
+        new_str=args.get("new_str") if args.get("new_str") is not None else args.get("new_text"),
+        insert_line=args.get("insert_line"),
+        view_range=args.get("view_range"),
+    )
+
+
+def _t_typecheck(args: dict, cwd: str) -> dict:
+    _with_root(cwd)
+    from aiforge_core.runtime.tools.typecheck import typecheck
+    return typecheck()
+
+
+def _t_format(args: dict, cwd: str) -> dict:
+    _with_root(cwd)
+    from aiforge_core.runtime.tools.format import format as _fmt
+    return _fmt(str(args.get("path") or "."))
+
+
+def _t_lsp(args: dict, cwd: str) -> dict:
+    _with_root(cwd)
+    from aiforge_core.runtime.tools.lsp import lsp
+    return lsp(command=str(args.get("command") or ""), path=str(args.get("path") or ""),
+               line=int(args.get("line") or 0), character=int(args.get("character") or 0))
+
+
+def _t_run_tests(args: dict, cwd: str) -> dict:
+    _with_root(cwd)
+    from aiforge_core.runtime.tools.test_runner import run_tests
+    return run_tests(mode=str(args.get("mode") or "fast"), pattern=str(args.get("pattern") or ""))
+
+
+def _t_ipython(args: dict, cwd: str) -> dict:
+    _with_root(cwd)
+    from aiforge_core.runtime.tools.ipython_kernel import execute_ipython_cell
+    return execute_ipython_cell(str(args.get("code") or ""),
+                                _run_id=f"chat-{args.get('_session_id') or 'default'}")
+
+
 TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "file_read": _t_file_read,
     "file_write": _t_file_write,
@@ -709,6 +769,14 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "serve": _t_serve,
     "stop_service": _t_stop_service,
     "list_services": _t_list_services,
+    # Shared "strong" tools (now available to the chat agent, not just the team
+    # pipeline): structured editor (undo + syntax-check), symbols, types, tests.
+    "editor": _t_editor,
+    "typecheck": _t_typecheck,
+    "format": _t_format,
+    "lsp": _t_lsp,
+    "run_tests": _t_run_tests,
+    "ipython": _t_ipython,
 }
 
 _SEARCH_TOOLS = ("grep", "find", "repo_map", "graphify_lookup", "memory_lookup")
@@ -730,7 +798,8 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "skill_search", "confluence_search", "confluence_read",
                    "jira_search", "jira_read",
                    "gitlab_search", "gitlab_read",
-                   "web_search", "web_fetch", "workflow_search")
+                   "web_search", "web_fetch", "workflow_search",
+                   "lsp", "typecheck")   # code-intel: read-only, OK in plan mode
 
 # File-mutating tools that the pre-apply "Review edits" gate (Gap D) holds for
 # human Approve/Reject even when policy would auto-allow them.
@@ -967,6 +1036,17 @@ Tool arguments:
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - project        {{"action": "build"}}    (detect+install+build/test/run:
                   maven, gradle, node/react/next/vite, python, go, rust)
+- editor         {{"command": "str_replace", "path": "...", "old_str": "...", "new_str": "..."}}
+                 (PREFER over file_patch for edits: structured file editor with
+                  syntax-check before write + UNDO. command: view | create
+                  {{"file_text"}} | str_replace {{"old_str","new_str"}} |
+                  insert {{"insert_line","new_str"}} | undo_edit)
+- run_tests      {{"mode": "fast", "pattern": "test_name"}}   (run the project's tests; mode fast|all|discover, optional -k/-Dtest pattern)
+- typecheck      {{}}                                        (run the project's type-checker — tsc/mypy/go vet etc.)
+- format         {{"path": "src/foo.py"}}                    (auto-format a file — ruff/prettier/gofmt)
+- lsp            {{"command": "goto_definition", "path": "src/x.py", "line": 0, "character": 0}}
+                 (symbol navigation: goto_definition | find_references | hover; 0-indexed)
+- ipython        {{"code": "import pandas as pd; df.head()"}}  (persistent Python REPL — state survives across calls)
 - remember_rule {{"text": "always use yarn", "scope": "repo"}}
                  (persist a user rule for every session; scope global|repo)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
