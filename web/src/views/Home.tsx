@@ -10,6 +10,7 @@ import {
   ProviderModel,
 } from '../api';
 import { Icon } from '../icons';
+import { IntegrationsPanel } from '../components/Integrations';
 
 // ── config-first Home page ─────────────────────────────────────────
 //
@@ -550,6 +551,11 @@ export default function Home() {
       {/* ── Global LLM token knobs (output cap + input window) ── */}
       <LlmSettingsCard />
 
+      {/* ── Integrations (Jira / Confluence / GitLab) — settings, grouped with
+            model + LLM config so it's all in one place ── */}
+      <IntegrationsPanel defaultOpen />
+
+
       {/* ── Per-archetype config table ─────────────────────────── */}
       <div className="settings-table">
         <div className="settings-table-head">
@@ -772,9 +778,6 @@ export default function Home() {
               );
             })}
       </div>
-
-      {/* Integrations moved to the Chat view (Integrations section below the
-          composer) — closest to where the chat tools they enable are used. */}
 
       {/* provider reference */}
       <div className="card" style={{ marginTop: 16 }}>

@@ -305,9 +305,9 @@ export function GitlabCard() {
 }
 
 // ── Grouped panel: all three integration cards, divider-separated ─────────────
-// Collapsible so it sits unobtrusively in a section below the Chat composer.
-export function IntegrationsPanel() {
-  const [open, setOpen] = useState(false);
+// Collapsible. `defaultOpen` expands it (Settings page); collapsed elsewhere.
+export function IntegrationsPanel({ defaultOpen = false }: { defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const divider = <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '16px 0' }} />;
   return (
     <div className="card" style={{ marginTop: 12 }}>
@@ -323,7 +323,7 @@ export function IntegrationsPanel() {
         <span className="small muted">{open ? '▾ hide' : '▸ Jira · Confluence · GitLab'}</span>
       </button>
       {open && (
-        <div style={{ marginTop: 8, maxHeight: '42vh', overflow: 'auto' }}>
+        <div style={{ marginTop: 8 }}>
           <ConfluenceCard />
           {divider}
           <JiraCard />

@@ -3,7 +3,6 @@ import { toast } from 'sonner';
 import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, chatMediaRawURL, ChatMedia, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
-import { IntegrationsPanel } from '../components/Integrations';
 
 // ── types ──────────────────────────────────────────────────────────────────────
 
@@ -1696,10 +1695,6 @@ export default function Chat() {
             </div>
           </div>
         )}
-
-        {/* Integrations (Jira / Confluence / GitLab) — collapsible section below
-            the composer, closest to where these chat tools get used. */}
-        <IntegrationsPanel />
 
         {/* Checkpoints panel (#3) */}
         {checkpoints !== null && (
