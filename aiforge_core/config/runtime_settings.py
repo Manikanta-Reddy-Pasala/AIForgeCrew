@@ -43,6 +43,18 @@ _SPEC: dict[str, tuple[str, int]] = {
     # tighter condense budget, harder prompt compression. Cheaper + faster on a
     # small local model; the agent can still grep/read on demand.
     "cave_mode": ("AIFORGE_CAVE_MODE", 0),
+    # 0/1: summarise the dropped middle with the model (code-aware) on condense,
+    # instead of the cheap heuristic breadcrumb. Swappable model: AIFORGE_COMPACT_ROLE.
+    "compact_llm": ("AIFORGE_COMPACT_LLM", 0),
+    # Dynamic-context injection knobs — each 0/1 DISABLE flag (default 0 = the
+    # block is injected every turn). Modelled as disable-flags because the store
+    # treats a stored 0 as "unset", so a default-ON toggle couldn't be turned off.
+    "ctx_no_recall": ("AIFORGE_CTX_NO_RECALL", 0),
+    "ctx_no_mentions": ("AIFORGE_CTX_NO_MENTIONS", 0),
+    "ctx_no_skills": ("AIFORGE_CTX_NO_SKILLS", 0),
+    "ctx_no_workflows": ("AIFORGE_CTX_NO_WORKFLOWS", 0),
+    "ctx_no_repomap": ("AIFORGE_CTX_NO_REPOMAP", 0),
+    "ctx_no_summary": ("AIFORGE_CTX_NO_SUMMARY", 0),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -52,6 +64,13 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     "context_window": (1024, 10_000_000),
     "vision_capable": (0, 1),
     "cave_mode": (0, 1),
+    "compact_llm": (0, 1),
+    "ctx_no_recall": (0, 1),
+    "ctx_no_mentions": (0, 1),
+    "ctx_no_skills": (0, 1),
+    "ctx_no_workflows": (0, 1),
+    "ctx_no_repomap": (0, 1),
+    "ctx_no_summary": (0, 1),
 }
 
 

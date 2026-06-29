@@ -2439,6 +2439,15 @@ class _RuntimeSettingsBody(BaseModel):
     vision_capable: int | None = Field(None, ge=0, le=1)
     # 0/1 — cave mode: send the agents the leanest useful context.
     cave_mode: int | None = Field(None, ge=0, le=1)
+    # 0/1 — LLM-written, code-aware compaction (else cheap heuristic breadcrumb).
+    compact_llm: int | None = Field(None, ge=0, le=1)
+    # 0/1 disable flags for each dynamic-context block (default 0 = injected).
+    ctx_no_recall: int | None = Field(None, ge=0, le=1)
+    ctx_no_mentions: int | None = Field(None, ge=0, le=1)
+    ctx_no_skills: int | None = Field(None, ge=0, le=1)
+    ctx_no_workflows: int | None = Field(None, ge=0, le=1)
+    ctx_no_repomap: int | None = Field(None, ge=0, le=1)
+    ctx_no_summary: int | None = Field(None, ge=0, le=1)
 
 
 @app.get("/api/runtime/llm-settings")

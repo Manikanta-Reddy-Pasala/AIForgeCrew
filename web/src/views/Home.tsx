@@ -926,6 +926,16 @@ function LlmSettingsCard() {
   const [ctx, setCtx] = useState<number | ''>('');
   const [vis, setVis] = useState(false);
   const [cave, setCave] = useState(false);
+  const [compactLlm, setCompactLlm] = useState(false);
+  // Dynamic-context blocks — UI shows "inject X" (on); backend stores the
+  // inverse ctx_no_X disable flag.
+  const BLOCKS = [
+    ['recall', 'Memory recall (RAG)'], ['repomap', 'Repo map'],
+    ['mentions', '@-mentions'], ['summary', 'Project summary'],
+    ['skills', 'Skills'], ['workflows', 'Workflows'],
+  ] as const;
+  const [blocks, setBlocks] = useState<Record<string, boolean>>(
+    Object.fromEntries(BLOCKS.map(([k]) => [k, true])));
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -935,16 +945,21 @@ function LlmSettingsCard() {
       setCtx(s.context_window);
       setVis(!!s.vision_capable);
       setCave(!!s.cave_mode);
+      setCompactLlm(!!s.compact_llm);
+      setBlocks(Object.fromEntries(BLOCKS.map(([k]) =>
+        [k, !(s as any)[`ctx_no_${k}`]])));
     }).catch(() => { /* endpoint optional on old API */ })
       .finally(() => setLoaded(true));
   }, []);
 
   async function save() {
-    const vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number; cave_mode?: number } = {};
+    const vals: Record<string, number> = {};
     if (typeof out === 'number') vals.max_output_tokens = out;
     if (typeof ctx === 'number') vals.context_window = ctx;
     vals.vision_capable = vis ? 1 : 0;
     vals.cave_mode = cave ? 1 : 0;
+    vals.compact_llm = compactLlm ? 1 : 0;
+    BLOCKS.forEach(([k]) => { vals[`ctx_no_${k}`] = blocks[k] ? 0 : 1; });
     setBusy(true);
     try {
       const s = await api.setLlmSettings(vals);
@@ -952,6 +967,9 @@ function LlmSettingsCard() {
       setCtx(s.context_window);
       setVis(!!s.vision_capable);
       setCave(!!s.cave_mode);
+      setCompactLlm(!!s.compact_llm);
+      setBlocks(Object.fromEntries(BLOCKS.map(([k]) =>
+        [k, !(s as any)[`ctx_no_${k}`]])));
       toast.success('LLM settings saved');
     } catch (e: any) {
       toast.error(`Save failed: ${e?.message || 'unknown'}`);
@@ -1002,6 +1020,33 @@ function LlmSettingsCard() {
                  onChange={e => setCave(e.target.checked)} />
           <span className="small muted">🦴 Cave mode (lean context)</span>
         </label>
+      </div>
+
+      {/* Context engineering — compaction + per-turn injection knobs. */}
+      <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border-1)' }}>
+        <h3 style={{ fontSize: 13, margin: '0 0 2px' }}>Context engineering</h3>
+        <div className="subtitle" style={{ marginBottom: 10 }}>
+          How the agent compacts long sessions + what it injects each turn.
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}
+               title="On condense, summarise the dropped older turns with the model (code-aware: keeps files, symbols, decisions, errors) instead of a cheap heuristic breadcrumb. Pick the summariser model with the AIFORGE_COMPACT_ROLE env (point it at a fast/cheap model).">
+          <input type="checkbox" checked={compactLlm} disabled={busy || !loaded}
+                 onChange={e => setCompactLlm(e.target.checked)} />
+          <span className="small muted">LLM-written, code-aware compaction (else fast heuristic)</span>
+        </label>
+        <div className="small muted" style={{ marginBottom: 6 }}>Inject each turn:</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
+          {BLOCKS.map(([k, label]) => (
+            <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={!!blocks[k]} disabled={busy || !loaded}
+                     onChange={e => setBlocks(b => ({ ...b, [k]: e.target.checked }))} />
+              <span className="small muted">{label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="row" style={{ marginTop: 14 }}>
         <button className="btn" onClick={save} disabled={busy || !loaded}>
           {busy ? 'Saving…' : 'Save'}
         </button>

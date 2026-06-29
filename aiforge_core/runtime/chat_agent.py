@@ -1509,7 +1509,55 @@ def _ctx_budget_chars(role: str | None = None) -> int:
     return 24000 if _cave_mode() else 48000
 
 
-def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None) -> list[dict]:
+def _compact_mode() -> str:
+    """'llm' = summarise the dropped middle with the model (code-aware);
+    'heuristic' (default) = cheap rolling breadcrumb, no extra LLM call."""
+    m = os.environ.get("AIFORGE_COMPACT_MODE", "").strip().lower()
+    if m in ("llm", "heuristic"):
+        return m
+    try:
+        from aiforge_core.config import runtime_settings
+        return "llm" if int(runtime_settings.get("compact_llm")) > 0 else "heuristic"
+    except Exception:  # noqa: BLE001
+        return "heuristic"
+
+
+_COMPACT_SYS = (
+    "You compress an earlier slice of a coding-assistant conversation into a "
+    "DENSE, CODE-AWARE summary the assistant can rely on after the raw turns are "
+    "dropped. Preserve, concretely: files/paths touched, function/class/symbol "
+    "names, decisions made + their rationale, errors hit + fixes, commands run + "
+    "outcomes, and any unresolved threads or the user's standing asks. Drop "
+    "pleasantries and dead ends. Output 4-12 terse bullet lines, no preamble.")
+
+
+def _llm_summarize_middle(middle: list[dict], complete_fn) -> str:
+    """Code-aware LLM summary of the dropped middle. Swappable model via
+    AIFORGE_COMPACT_ROLE (resolved through the router) — point it at a fast/cheap
+    model. Returns '' on any failure so the caller falls back to the heuristic."""
+    if complete_fn is None or not middle:
+        return ""
+    transcript = []
+    for m in middle:
+        r = (m.get("role") or "").upper()
+        c = (m.get("content") or "").strip()
+        if c:
+            transcript.append(f"{r}: {c}")
+    body = "\n".join(transcript)
+    if len(body) > 24000:        # bound the summariser's own input
+        body = body[:12000] + "\n…\n" + body[-12000:]
+    sum_role = os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "doer"
+    msgs = [{"role": "system", "content": _COMPACT_SYS},
+            {"role": "user", "content": "Summarise this slice:\n\n" + body}]
+    try:
+        out = complete_fn(sum_role, msgs)
+        return (out or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
+                   complete_fn=None) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
@@ -1576,13 +1624,25 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     if finals:
         summary_bits.append("Earlier outcomes: " + " · ".join(finals[-4:]))
     summary = ("\n" + "\n".join(summary_bits)) if summary_bits else ""
+    # Optional CODE-AWARE LLM summary of the dropped middle (swappable model via
+    # AIFORGE_COMPACT_ROLE). Falls back to the heuristic breadcrumb on failure.
+    llm_summary = ""
+    if _compact_mode() == "llm":
+        llm_summary = _llm_summarize_middle(middle, complete_fn)
     # Wrap the breadcrumb in a unique sentinel so the next condense can strip
     # exactly THIS block (not a look-alike phrase a rule/skill might contain).
-    note = (f"{_CONDENSE_OPEN}\n"
-            "[earlier conversation auto-condensed to fit the context window — "
-            f"{len(middle)} messages omitted. Work done so far: {used}.{summary}\n"
-            "Re-read a file or ask the user if you need detail from before "
-            f"this point.]\n{_CONDENSE_CLOSE}")
+    if llm_summary:
+        note = (f"{_CONDENSE_OPEN}\n"
+                f"[earlier conversation auto-condensed — {len(middle)} messages "
+                f"omitted. Summary of what happened:\n{llm_summary}\n"
+                "Re-read a file or ask the user if you need more detail.]\n"
+                f"{_CONDENSE_CLOSE}")
+    else:
+        note = (f"{_CONDENSE_OPEN}\n"
+                "[earlier conversation auto-condensed to fit the context window — "
+                f"{len(middle)} messages omitted. Work done so far: {used}.{summary}\n"
+                "Re-read a file or ask the user if you need detail from before "
+                f"this point.]\n{_CONDENSE_CLOSE}")
     # Fold the breadcrumb INTO the system message rather than inserting a
     # separate 'user' turn — that avoids two consecutive same-role messages
     # (some providers reject those) and keeps the tail's alternation intact.
@@ -1593,6 +1653,17 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
         "", convo[0].get("content") or "", flags=re.S).rstrip()
     head = [{"role": "system", "content": (sys_text + "\n\n" + note).strip()}]
     return head + tail
+
+
+def _ctx_on(block: str) -> bool:
+    """Is the dynamic-context ``block`` injected this turn? Operator knob —
+    ``ctx_no_{block}`` (runtime setting / env) = 1 turns it off. Default ON.
+    Blocks: recall · mentions · skills · workflows · repomap · summary."""
+    try:
+        from aiforge_core.config import runtime_settings
+        return int(runtime_settings.get(f"ctx_no_{block}")) == 0
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str:
@@ -1757,40 +1828,47 @@ def run_chat_agent(
         sys_msg = rules + "\n\n" + sys_msg
     if plan_mode:                   # plan banner second — constrains this turn
         sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
+    # Dynamic context blocks — each independently toggleable via _ctx_on().
     # Cave mode: a much smaller repo map (the agent still has find/grep/list).
-    sys_msg += "\n\n" + _repo_context(cwd) + "\n\n" + \
-        _build_repo_map(cwd, max_entries=(60 if cave else 160),
-                        max_depth=(2 if cave else 3))
+    if _ctx_on("summary"):
+        sys_msg += "\n\n" + _repo_context(cwd)
+    if _ctx_on("repomap"):
+        sys_msg += "\n\n" + _build_repo_map(cwd, max_entries=(60 if cave else 160),
+                                            max_depth=(2 if cave else 3))
     # Skills / workflows / @-mentions — OPTIONAL context blocks. Cave mode skips
-    # them (the agent can still skill_search / workflow_search on demand) to keep
-    # the prompt lean.
+    # them (the agent can still skill_search / workflow_search on demand); each is
+    # also independently toggleable.
     if not cave:
-        try:
-            from aiforge_core.runtime import skills as _skills
-            sk_block = _skills.auto_context(last_user, cwd)
-            if sk_block:
-                sys_msg += "\n\n" + sk_block
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from aiforge_core.runtime import workflows as _workflows
-            wf_block = _workflows.auto_context(last_user, cwd)
-            if wf_block:
-                sys_msg += "\n\n" + wf_block
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from aiforge_core.runtime import mentions as _mentions
-            ment_block, _toks = _mentions.expand(last_user, cwd)
-            if ment_block:
-                sys_msg += "\n\n" + ment_block
-        except Exception:  # noqa: BLE001
-            pass
+        if _ctx_on("skills"):
+            try:
+                from aiforge_core.runtime import skills as _skills
+                sk_block = _skills.auto_context(last_user, cwd)
+                if sk_block:
+                    sys_msg += "\n\n" + sk_block
+            except Exception:  # noqa: BLE001
+                pass
+        if _ctx_on("workflows"):
+            try:
+                from aiforge_core.runtime import workflows as _workflows
+                wf_block = _workflows.auto_context(last_user, cwd)
+                if wf_block:
+                    sys_msg += "\n\n" + wf_block
+            except Exception:  # noqa: BLE001
+                pass
+        if _ctx_on("mentions"):
+            try:
+                from aiforge_core.runtime import mentions as _mentions
+                ment_block, _toks = _mentions.expand(last_user, cwd)
+                if ment_block:
+                    sys_msg += "\n\n" + ment_block
+            except Exception:  # noqa: BLE001
+                pass
     # Self-learning recall — EVERY turn, keyed to the CURRENT user message. Cave
     # mode pulls fewer hits.
-    recall = _memory_recall(cwd, last_user, limit=(3 if cave else 6))
-    if recall:
-        sys_msg += "\n\n" + recall
+    if _ctx_on("recall"):
+        recall = _memory_recall(cwd, last_user, limit=(3 if cave else 6))
+        if recall:
+            sys_msg += "\n\n" + recall
     # SESSION IMAGES: descriptions of images the user attached, so the (maybe
     # text-only) model can answer questions about them all session long.
     _img_blocks: list[dict] = []
@@ -1848,7 +1926,7 @@ def run_chat_agent(
         # can't overflow the model's context window (MUST). Tell the user it
         # happened (one-time per condense) for transparency.
         _before = len(convo)
-        convo = _compact_convo(convo, role=role)
+        convo = _compact_convo(convo, role=role, complete_fn=complete_fn)
         if len(convo) < _before and not condensed_notified:
             condensed_notified = True   # notify ONCE, not every over-budget turn
             yield {"type": "thought", "role": "system",

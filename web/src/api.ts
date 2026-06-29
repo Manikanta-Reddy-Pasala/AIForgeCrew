@@ -44,9 +44,9 @@ export const api = {
   syncModels: () => j<{ added: string[]; count: number }>('/agents/models/sync', { method: 'POST' }),
 
   llmSettings: () =>
-    j<{ max_output_tokens: number; context_window: number; vision_capable: number; cave_mode: number }>('/runtime/llm-settings'),
-  setLlmSettings: (vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number; cave_mode?: number }) =>
-    j<{ max_output_tokens: number; context_window: number; vision_capable: number; cave_mode: number }>('/runtime/llm-settings', {
+    j<LlmSettings>('/runtime/llm-settings'),
+  setLlmSettings: (vals: Partial<LlmSettings>) =>
+    j<LlmSettings>('/runtime/llm-settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(vals),
@@ -283,6 +283,20 @@ export interface AgentRoleConfig {
   api_key_set?: boolean;
   insecure_tls?: boolean;
 }
+export interface LlmSettings {
+  max_output_tokens: number;
+  context_window: number;
+  vision_capable: number;
+  cave_mode: number;
+  compact_llm: number;
+  ctx_no_recall: number;
+  ctx_no_mentions: number;
+  ctx_no_skills: number;
+  ctx_no_workflows: number;
+  ctx_no_repomap: number;
+  ctx_no_summary: number;
+}
+
 export interface RegistryModel {
   id: string;
   label: string;

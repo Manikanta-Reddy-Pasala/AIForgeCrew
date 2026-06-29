@@ -23,7 +23,9 @@ def test_defaults(rs):
     assert rs.get("cave_mode") == 0
     assert rs.all_settings() == {
         "max_output_tokens": 32768, "context_window": 131072,
-        "vision_capable": 0, "cave_mode": 0}
+        "vision_capable": 0, "cave_mode": 0, "compact_llm": 0,
+        "ctx_no_recall": 0, "ctx_no_mentions": 0, "ctx_no_skills": 0,
+        "ctx_no_workflows": 0, "ctx_no_repomap": 0, "ctx_no_summary": 0}
 
 
 def test_env_overrides_default(rs, monkeypatch):
