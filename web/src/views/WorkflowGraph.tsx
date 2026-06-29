@@ -237,11 +237,7 @@ export default function WorkflowGraph() {
       <div className="page-header">
         <div>
           <h1>Workflow</h1>
-          <div className="subtitle">The agent pipeline — request to result. Live status overlays per ticket.</div>
-        </div>
-        <div className="row" style={{ gap: 8 }}>
-          {TicketPicker}
-          {ticket && <span className="chip">overlay: {ticket}</span>}
+          <div className="subtitle">The agent pipeline — how a request becomes a result.</div>
         </div>
       </div>
       <div className="small muted" style={{ marginBottom: 6 }}>
@@ -313,22 +309,17 @@ export default function WorkflowGraph() {
               <rect width={NODE_W} height={NODE_H} rx={8}
                     fill={ts.fill} stroke={accent || ts.border}
                     strokeWidth={accent ? 2.5 : 1.5} />
-              {accent && <circle cx={NODE_W - 10} cy={10} r={4} fill={accent} />}
-              <text x={NODE_W / 2} y={24} textAnchor="middle"
+              <text x={NODE_W / 2} y={30} textAnchor="middle"
                     style={{ fontSize: 14, fontWeight: 700, fill: '#0f172a' }}>
                 {n.label}
               </text>
-              <text x={NODE_W / 2} y={42} textAnchor="middle"
+              <text x={NODE_W / 2} y={48} textAnchor="middle"
                     style={{ fontSize: 10, fontWeight: 600, fill: ts.border }}>
                 {n.type}{n.tools.length ? ` · ${n.tools.length} tools` : ''}
               </text>
-              <text x={NODE_W / 2} y={60} textAnchor="middle"
-                    style={{ fontSize: 10, fill: accent || '#64748b' }}>
-                {n.status || 'idle'}
-              </text>
-              <text x={NODE_W / 2} y={73} textAnchor="middle"
+              <text x={NODE_W / 2} y={66} textAnchor="middle"
                     style={{ fontSize: 9, fill: '#94a3b8' }}>
-                {relTime(n.last_event_at)}
+                {(n as any).stage || ''}
               </text>
             </g>
           );
@@ -343,10 +334,6 @@ export default function WorkflowGraph() {
         <span><span style={{ color: '#f59e0b' }}>■</span> gate (decision)</span>
         <span><span style={{ color: '#14b8a6' }}>■</span> parallel branch</span>
         <span><span style={{ color: '#8b5cf6' }}>■</span> join / merge</span>
-        <span style={{ fontWeight: 600, marginLeft: 8 }}>Status:</span>
-        <span><span style={{ color: '#3b82f6' }}>●</span> active</span>
-        <span><span style={{ color: '#22c55e' }}>●</span> done</span>
-        <span><span style={{ color: '#ef4444' }}>●</span> failed</span>
       </div>
     </>
   );

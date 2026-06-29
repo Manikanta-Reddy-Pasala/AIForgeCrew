@@ -131,7 +131,10 @@ img, svg { display: block; max-width: 100%; }
 /* ---------- shell ---------- */
 .shell {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  /* minmax(0,1fr) (not 1fr) so the content column can shrink below its content
+     width — otherwise a wide child (e.g. the Workflow diagram) blows the whole
+     page out instead of scrolling inside its own panel. */
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   grid-template-rows: var(--topbar-h) 1fr;
   grid-template-areas:
     "sidebar topbar"
@@ -139,7 +142,7 @@ img, svg { display: block; max-width: 100%; }
   min-height: 100vh;
   transition: grid-template-columns var(--dur) var(--ease);
 }
-.shell.collapsed { grid-template-columns: var(--sidebar-w-collapsed) 1fr; }
+.shell.collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
 
 /* sidebar */
 .sidebar {
@@ -301,6 +304,8 @@ main.page {
   max-width: 1680px;
   width: 100%;
   margin: 0 auto;
+  min-width: 0;          /* let wide children scroll in their own panel */
+  overflow-x: hidden;    /* never push a page-level horizontal scrollbar */
 }
 
 /* ---------- typography ---------- */
