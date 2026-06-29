@@ -57,7 +57,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Operate',
     items: [
-      { to: '/',          label: 'Home / Setup', icon: 'Tool',    end: true },
+      { to: '/',          label: 'Settings',   icon: 'Tool',    end: true },
       { to: '/dashboard', label: 'Dashboard',  icon: 'Dashboard' },
       { to: '/board',     label: 'Board',      icon: 'Board' },
       { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },

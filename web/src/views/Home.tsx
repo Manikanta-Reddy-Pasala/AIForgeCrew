@@ -10,7 +10,7 @@ import {
   ProviderModel,
 } from '../api';
 import { Icon } from '../icons';
-import { IntegrationsPanel } from '../components/Integrations';
+import { JiraCard, ConfluenceCard, GitlabCard } from '../components/Integrations';
 
 // ── config-first Home page ─────────────────────────────────────────
 //
@@ -101,6 +101,7 @@ interface BulkState {
 }
 
 export default function Home() {
+  const [tab, setTab] = useState<'agent' | 'integrations'>('agent');
   const [providers, setProviders] = useState<ProviderCatalog[] | null>(null);
   const [snapshot, setSnapshot] =
     useState<Record<AgentRole, AgentRoleConfig> | null>(null);
@@ -392,27 +393,29 @@ export default function Home() {
     <>
       <div className="page-header">
         <div>
-          <h1>Home</h1>
+          <h1>Settings</h1>
           <div className="subtitle">
-            Configure the provider and model for each pipeline step. Changes
-            persist to <code>~/.aiforge/agent_config.json</code> and take
-            effect on the next agent run.
+            {tab === 'agent'
+              ? <>Configure the provider and model for each pipeline step. Changes persist to <code>~/.aiforge/agent_config.json</code> and take effect on the next agent run.</>
+              : <>Connect Jira, Confluence and GitLab so the chat agent can search, read and update them.</>}
           </div>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          <button className="ghost" onClick={() => load()} disabled={loading}>
-            <Icon.Refresh size={14} /> Reload
-          </button>
-          <button
-            className="ghost"
-            onClick={resetConfig}
-            disabled={resetBusy}
-            title="Delete all saved per-role config so stale rows can't shadow the model you set next"
-            style={{ color: 'var(--err, #ef4444)' }}
-          >
-            {resetBusy ? 'Resetting…' : '↺ Reset all config'}
-          </button>
-        </div>
+        {tab === 'agent' && (
+          <div className="row" style={{ gap: 8 }}>
+            <button className="ghost" onClick={() => load()} disabled={loading}>
+              <Icon.Refresh size={14} /> Reload
+            </button>
+            <button
+              className="ghost"
+              onClick={resetConfig}
+              disabled={resetBusy}
+              title="Delete all saved per-role config so stale rows can't shadow the model you set next"
+              style={{ color: 'var(--err, #ef4444)' }}
+            >
+              {resetBusy ? 'Resetting…' : '↺ Reset all config'}
+            </button>
+          </div>
+        )}
       </div>
 
       {pageError && (
@@ -424,6 +427,22 @@ export default function Home() {
           </button>
         </div>
       )}
+
+      {/* ── Settings tabs: Agent | Integrations ──────────────────── */}
+      <div className="row" style={{ gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border-1)' }}>
+        {(['agent', 'integrations'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+                  className={tab === t ? '' : 'ghost'}
+                  style={{ borderRadius: '6px 6px 0 0', textTransform: 'capitalize',
+                           fontWeight: tab === t ? 600 : 400 }}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'integrations' && <IntegrationsTab />}
+
+      {tab === 'agent' && (<>
 
       {/* ── Apply to all steps ─────────────────────────────────── */}
       <div className="card" style={{ marginBottom: 16 }}>
@@ -550,10 +569,6 @@ export default function Home() {
 
       {/* ── Global LLM token knobs (output cap + input window) ── */}
       <LlmSettingsCard />
-
-      {/* ── Integrations (Jira / Confluence / GitLab) — settings, grouped with
-            model + LLM config so it's all in one place ── */}
-      <IntegrationsPanel defaultOpen />
 
 
       {/* ── Per-archetype config table ─────────────────────────── */}
@@ -786,7 +801,30 @@ export default function Home() {
           <li><code>openai_compatible</code> — Any OpenAI-compatible endpoint (local LM Studio / mlx-lm, OpenRouter, Groq, Together, vLLM, cloud-with-key). Enter a base URL and optional API key; use <em>Test</em> to verify.</li>
         </ul>
       </div>
+
+      </>)}
     </>
+  );
+}
+
+// Integrations tab — pick Jira / Confluence / GitLab, configure one at a time.
+function IntegrationsTab() {
+  const [sub, setSub] = useState<'jira' | 'confluence' | 'gitlab'>('jira');
+  return (
+    <div className="card">
+      <div className="row" style={{ gap: 4, marginBottom: 12 }}>
+        {(['jira', 'confluence', 'gitlab'] as const).map(s => (
+          <button key={s} onClick={() => setSub(s)}
+                  className={sub === s ? '' : 'ghost'}
+                  style={{ textTransform: 'capitalize', fontWeight: sub === s ? 600 : 400 }}>
+            {s === 'gitlab' ? 'GitLab' : s}
+          </button>
+        ))}
+      </div>
+      {sub === 'jira' && <JiraCard />}
+      {sub === 'confluence' && <ConfluenceCard />}
+      {sub === 'gitlab' && <GitlabCard />}
+    </div>
   );
 }
 
