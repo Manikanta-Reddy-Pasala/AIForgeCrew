@@ -207,11 +207,24 @@ def vision_enabled(role: str = "chat", *, probe: bool = False) -> bool:
         return True
     try:
         from aiforge_core.llm.router import resolve
-        model = resolve(role).model or ""
+        ep = resolve(role)
+        model = ep.model or ""
+        base_url = getattr(ep, "base_url", "") or ""
     except Exception:  # noqa: BLE001
         return False
     if not model:
         return False
+    # An explicit per-model vision flag from the registry wins over probing
+    # (the user set it themselves for a model the probe can't resolve).
+    try:
+        from aiforge_core.config import model_registry
+        flag = model_registry.vision_for(model, base_url)
+        if flag == "yes":
+            return True
+        if flag == "no":
+            return False
+    except Exception:  # noqa: BLE001
+        pass
     if probe:
         return _probe_vision(model, role)
     return _VISION_CACHE.get(model, False)

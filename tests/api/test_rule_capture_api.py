@@ -129,13 +129,16 @@ def test_prefilter_skips_classify_for_trivial(app_client, monkeypatch):
     """A no-cue message ('fix the bug') never calls the LLM classifier."""
     client, api = app_client
     from aiforge_core.llm import client as llm_client
-    from aiforge_core.runtime import chat_agent, parallel_subtasks as pp
+    from aiforge_core.runtime import chat_agent, chat_title, parallel_subtasks as pp
     called = {"n": 0}
 
     def _complete(*a, **k):
         called["n"] += 1
         return "{}"
     monkeypatch.setattr(llm_client, "complete", _complete)
+    # Model-titling also calls the LLM on a fresh session — not the classifier;
+    # stub it so this test isolates the rule-capture prefilter.
+    monkeypatch.setattr(chat_title, "suggest_title", lambda *a, **k: "")
     monkeypatch.setattr(pp, "_enhance", lambda *a, **k: "spec")
     monkeypatch.setattr(chat_agent, "run_chat_agent",
                         lambda *a, **k: iter([{"type": "message", "text": "ok"},

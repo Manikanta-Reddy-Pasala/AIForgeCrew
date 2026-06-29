@@ -11,6 +11,7 @@ import {
 } from '../api';
 import { Icon } from '../icons';
 import { JiraCard, ConfluenceCard, GitlabCard } from '../components/Integrations';
+import AgentSettings from './AgentSettings';
 
 // ── config-first Home page ─────────────────────────────────────────
 //
@@ -443,6 +444,14 @@ export default function Home() {
       {tab === 'integrations' && <IntegrationsTab />}
 
       {tab === 'agent' && (<>
+        {/* Simplified: add models once, each agent picks one by name. */}
+        <AgentSettings />
+        {/* ── Global LLM token knobs (output cap + input window) ── */}
+        <LlmSettingsCard />
+      </>)}
+
+      {/* Legacy provider/archetype editor — superseded by AgentSettings. */}
+      {false && (<>
 
       {/* ── Apply to all steps ─────────────────────────────────── */}
       <div className="card" style={{ marginBottom: 16 }}>

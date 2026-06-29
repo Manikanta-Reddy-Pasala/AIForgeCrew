@@ -1873,6 +1873,75 @@ def agents_v2_providers() -> list[dict]:
     return out
 
 
+# ── Model registry (simplified Settings: add models once, agents pick one) ────
+
+class _ModelBody(BaseModel):
+    label: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    insecure_tls: bool | None = None
+    vision: str | None = Field(None, description="'auto' | 'yes' | 'no'")
+
+
+class _ApplyModelBody(BaseModel):
+    roles: list[str] = Field(..., description="agent roles to point at this model")
+
+
+@app.get("/api/agents/models")
+def models_list() -> dict:
+    from aiforge_core.config import model_registry
+    return {"models": model_registry.list_models()}
+
+
+@app.post("/api/agents/models", status_code=201)
+def models_add(body: _ModelBody) -> dict:
+    from aiforge_core.config import model_registry
+    if not (body.model or "").strip():
+        raise HTTPException(400, "model id is required")
+    try:
+        return model_registry.add_model(
+            label=body.label or body.model, model=body.model,
+            base_url=body.base_url or "", api_key=body.api_key,
+            insecure_tls=bool(body.insecure_tls),
+            vision=body.vision or "auto")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.put("/api/agents/models/{model_id}")
+def models_update(model_id: str, body: _ModelBody) -> dict:
+    from aiforge_core.config import model_registry
+    row = model_registry.update_model(
+        model_id, label=body.label, model=body.model, base_url=body.base_url,
+        api_key=body.api_key, insecure_tls=body.insecure_tls, vision=body.vision)
+    if row is None:
+        raise HTTPException(404, f"model {model_id} not found")
+    # A vision change invalidates the probe cache for that model.
+    try:
+        from aiforge_core.runtime import chat_media
+        chat_media.reset_vision_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    return row
+
+
+@app.delete("/api/agents/models/{model_id}", status_code=204)
+def models_delete(model_id: str) -> None:
+    from aiforge_core.config import model_registry
+    if not model_registry.remove_model(model_id):
+        raise HTTPException(404, f"model {model_id} not found")
+
+
+@app.post("/api/agents/models/{model_id}/apply")
+def models_apply(model_id: str, body: _ApplyModelBody) -> dict:
+    from aiforge_core.config import model_registry
+    try:
+        return model_registry.apply_to_roles(model_id, body.roles)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
 @app.put("/api/agents/v2/{role}/config")
 def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
     # "_default" is the global fallback every pipeline role inherits (the

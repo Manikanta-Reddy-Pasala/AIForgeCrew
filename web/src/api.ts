@@ -22,6 +22,26 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health:   () => j<any>('/health'),
   agents:   () => j<any[]>('/agents'),
+  // ── Model registry (simplified Settings) ────────────────────────
+  models: () => j<{ models: RegistryModel[] }>('/agents/models'),
+  addModel: (body: ModelInput) =>
+    j<RegistryModel>('/agents/models', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  updateModel: (id: string, body: ModelInput) =>
+    j<RegistryModel>(`/agents/models/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  deleteModel: (id: string) =>
+    fetch(`${BASE}/agents/models/${id}`, { method: 'DELETE' }).then(() => undefined),
+  applyModel: (id: string, roles: string[]) =>
+    j<{ applied: string[]; errors: Record<string, string> }>(`/agents/models/${id}/apply`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roles }),
+    }),
+
   llmSettings: () =>
     j<{ max_output_tokens: number; context_window: number; vision_capable: number }>('/runtime/llm-settings'),
   setLlmSettings: (vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number }) =>
@@ -261,6 +281,23 @@ export interface AgentRoleConfig {
   base_url: string | null;
   api_key_set?: boolean;
   insecure_tls?: boolean;
+}
+export interface RegistryModel {
+  id: string;
+  label: string;
+  model: string;
+  base_url: string;
+  insecure_tls: boolean;
+  vision: 'auto' | 'yes' | 'no';
+  api_key_set: boolean;
+}
+export interface ModelInput {
+  label?: string;
+  model?: string;
+  base_url?: string;
+  api_key?: string;
+  insecure_tls?: boolean;
+  vision?: 'auto' | 'yes' | 'no';
 }
 
 export interface AgentRoleConfigInput {
