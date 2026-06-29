@@ -22,10 +22,13 @@ Per-call kwargs map to OpenAI body fields:
 """
 from __future__ import annotations
 
+import contextvars
+import io
 import json
 import logging
 import os
 import random
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -40,6 +43,24 @@ from .router import escalate, fallback, resolve
 from .types import Endpoint
 
 _log = logging.getLogger("aiforge.llm.client")
+
+# Optional per-thread cancel token. When a caller (the chat agent's Stop path)
+# sets it on the thread that runs ``complete``, ``_post`` uses an interruptible
+# HTTP path that closes the connection the instant the event fires — so Stop
+# can abort an in-flight generation instead of waiting it out. Unset (the
+# default for every other caller) → the normal urllib path, byte-identical.
+_CANCEL: contextvars.ContextVar = contextvars.ContextVar(
+    "aiforge_llm_cancel", default=None)
+
+
+def set_cancel_event(ev) -> None:
+    """Bind a threading.Event as the cancel token for THIS thread's LLM call."""
+    _CANCEL.set(ev)
+
+
+class _LLMCancelled(Exception):
+    """Raised when a post is aborted because its cancel event fired — classified
+    non-retryable so the retry loop doesn't re-issue the cancelled call."""
 
 # Endpoint.extras keys that are transport/routing control — never sent as
 # OpenAI chat-completion body params (strict servers 400 on unknown keys).
@@ -120,6 +141,83 @@ def _estimate_tokens(payload: bytes) -> int:
     return max(1, len(payload) // 4)
 
 
+def _post_headers(ep: Endpoint) -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {ep.api_key}",
+        # Some proxies/WAFs reject the stdlib Python-urllib UA.
+        "User-Agent": os.environ.get(
+            "AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)"),
+    }
+
+
+def _post_ctx(ep: Endpoint):
+    # Per-endpoint TLS context. Skip verification when the role carries the
+    # explicit insecure_tls opt-out OR the host is trusted-internal (self-
+    # hosted LAN box, self-signed is normal). Public hosts verify; a CA
+    # bundle keeps verify ON. Otherwise honour AIFORGE_LLM_SSL_VERIFY / CA.
+    base = ep.base_url
+    insecure = bool((ep.extras or {}).get("insecure_tls"))
+    if str(base).lower().startswith("https://") and (
+        insecure or _ssl_auto_relax(base)
+    ) and not _ssl_ca_bundle():
+        return _ssl_insecure()
+    return _ssl_context_for(base)
+
+
+def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
+                      cancel) -> dict:
+    """POST via http.client so a watcher thread can close the connection the
+    instant ``cancel`` fires — interrupting an otherwise-blocking generation.
+    Used only when a cancel token is bound for this thread."""
+    import http.client
+    from urllib.parse import urlparse
+    url = f"{ep.base_url.rstrip('/')}/chat/completions"
+    p = urlparse(url)
+    host, port = p.hostname, (p.port or (443 if p.scheme == "https" else 80))
+    path = p.path or "/"
+    if p.query:
+        path += "?" + p.query
+    if p.scheme == "https":
+        conn = http.client.HTTPSConnection(host, port, timeout=timeout_s,
+                                           context=_post_ctx(ep))
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout_s)
+    stop = threading.Event()
+
+    def _watch():
+        while not stop.wait(0.15):
+            if cancel.is_set():
+                try:
+                    conn.close()   # unblocks getresponse() on the main thread
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+    threading.Thread(target=_watch, daemon=True).start()
+    try:
+        if cancel.is_set():
+            raise _LLMCancelled("cancelled before request")
+        conn.request("POST", path, body=payload, headers=_post_headers(ep))
+        resp = conn.getresponse()
+        data = resp.read()
+        if resp.status >= 400:
+            # Mimic urllib's HTTPError so the retry classifier handles it the
+            # same way (5xx/429 retry, other 4xx permanent).
+            raise urllib.error.HTTPError(
+                url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
+        return json.loads(data)
+    except (http.client.HTTPException, OSError) as exc:
+        if cancel.is_set():
+            raise _LLMCancelled("cancelled mid-request") from exc
+        raise
+    finally:
+        stop.set()
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
     # Rate-limit acquire BEFORE the post — blocks until budget allows.
     prov = _providers.get(ep.provider)
@@ -130,31 +228,17 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
         tokens_estimate=_estimate_tokens(payload),
         max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)),
     )
+    cancel = _CANCEL.get()
+    if cancel is not None:
+        return _post_cancellable(ep, payload, timeout_s, cancel)
     req = urllib.request.Request(
         f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {ep.api_key}",
-            # Some proxies/WAFs reject the stdlib Python-urllib UA.
-            "User-Agent": os.environ.get(
-                "AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)"),
-        },
+        headers=_post_headers(ep),
         method="POST",
     )
-    # Per-endpoint TLS context. Skip verification when the role carries the
-    # explicit insecure_tls opt-out OR the host is trusted-internal (self-
-    # hosted LAN box, self-signed is normal). Public hosts verify; a CA
-    # bundle keeps verify ON. Otherwise honour AIFORGE_LLM_SSL_VERIFY / CA.
-    base = ep.base_url
-    insecure = bool((ep.extras or {}).get("insecure_tls"))
-    if str(base).lower().startswith("https://") and (
-        insecure or _ssl_auto_relax(base)
-    ) and not _ssl_ca_bundle():
-        ctx = _ssl_insecure()
-    else:
-        ctx = _ssl_context_for(base)
-    with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as resp:
+    with urllib.request.urlopen(req, timeout=timeout_s,
+                                context=_post_ctx(ep)) as resp:
         return json.loads(resp.read())
 
 
@@ -197,6 +281,8 @@ def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
     HTTPError 4xx other → no retry (permanent: bad auth, bad model id).
     URLError / OSError / timeout / connection-reset → retry (transport flake).
     """
+    if isinstance(exc, _LLMCancelled):
+        return False, "cancelled"        # don't re-issue an aborted call
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code in _TRANSIENT_HTTP:
             return True, f"http_{exc.code}"

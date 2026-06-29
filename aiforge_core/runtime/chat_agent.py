@@ -1223,8 +1223,18 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
             return _CANCELLED
 
     box: dict = {}
+    ev = _th.Event()             # per-call abort signal for the client HTTP layer
 
     def _call():
+        # Bind the cancel token on THIS thread so the LLM client's HTTP layer
+        # aborts the in-flight request the instant Stop fires (true model-
+        # reclaim, not just abandoning the thread). Best-effort — a stub
+        # complete_fn that never reaches the client is simply unaffected.
+        try:
+            from aiforge_core.llm import client as _client
+            _client.set_cancel_event(ev)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             box["out"] = complete_fn(role, convo)
         except Exception as exc:  # noqa: BLE001 — surfaced on the main thread
@@ -1236,8 +1246,13 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
     t.start()
     while t.is_alive():
         if chat_cancel.is_cancelled(session_id):
-            return _CANCELLED    # abandon — slot frees when the zombie ends
+            ev.set()             # abort the in-flight HTTP request
+            return _CANCELLED    # slot frees when the (now-aborting) request ends
         t.join(timeout=0.2)
+    # The request may have been aborted just as it finished — treat any
+    # post-loop cancel as a cancel, not an error.
+    if chat_cancel.is_cancelled(session_id):
+        return _CANCELLED
     if "err" in box:
         raise box["err"]
     return box.get("out")
