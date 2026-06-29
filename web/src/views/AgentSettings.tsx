@@ -25,7 +25,6 @@ function VisionBadge({ v }: { v: RegistryModel['vision'] }) {
 export default function AgentSettings() {
   const [models, setModels] = useState<RegistryModel[]>([]);
   const [config, setConfig] = useState<Record<string, AgentRoleConfig>>({});
-  const [showAdv, setShowAdv] = useState(false);
 
   async function loadModels() {
     try { setModels((await chatApi.models()).models); } catch { /* */ }
@@ -109,17 +108,9 @@ export default function AgentSettings() {
 
         <h3 style={{ fontSize: 13, margin: '16px 0 8px' }}>Other agents</h3>
         <GroupApply roles={[...MAIN, ...advRoles]} label="all →" />
-        {MAIN.filter(r => allRoles.includes(r)).map(r => <RolePicker key={r} role={r} />)}
-
-        {advRoles.length > 0 && (
-          <>
-            <button className="ghost sm" style={{ marginTop: 10 }}
-                    onClick={() => setShowAdv(v => !v)}>
-              {showAdv ? '▾ hide' : '▸ show'} advanced ({advRoles.length})
-            </button>
-            {showAdv && advRoles.map(r => <RolePicker key={r} role={r} />)}
-          </>
-        )}
+        {/* Every other agent listed individually with its own model selector. */}
+        {[...MAIN.filter(r => allRoles.includes(r)), ...advRoles].map(r =>
+          <RolePicker key={r} role={r} />)}
       </div>
     </>
   );
@@ -130,7 +121,7 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
   const [model, setModel] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [insecure, setInsecure] = useState(false);
+  const [ctx, setCtx] = useState<number | ''>('');
   const [vision, setVision] = useState<'auto' | 'yes' | 'no'>('auto');
   const [busy, setBusy] = useState(false);
   const input = { width: '100%', padding: '6px 8px', fontSize: 13 };
@@ -141,8 +132,8 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
     try {
       await chatApi.addModel({ label: label.trim() || model.trim(), model: model.trim(),
         base_url: baseUrl.trim(), api_key: apiKey.trim() || undefined,
-        insecure_tls: insecure, vision });
-      setLabel(''); setModel(''); setBaseUrl(''); setApiKey(''); setInsecure(false); setVision('auto');
+        vision, context_window: typeof ctx === 'number' ? ctx : 0 });
+      setLabel(''); setModel(''); setBaseUrl(''); setApiKey(''); setCtx(''); setVision('auto');
       reload();
       toast.success('Model added');
     } catch (e: any) { toast.error(`Add failed: ${e.message}`); }
@@ -179,11 +170,12 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
             <option value="yes">Yes — supports images</option>
             <option value="no">No</option>
           </select></label>
-        <label className="row small" style={{ gap: 6, alignItems: 'center', alignSelf: 'end' }}>
-          <input type="checkbox" checked={insecure} onChange={e => setInsecure(e.target.checked)} />
-          Skip TLS verify
-        </label>
+        <label className="small">Context window <span className="muted">(tokens, optional)</span>
+          <input style={input} type="number" min={0} step={1024} value={ctx}
+                 placeholder="blank = use global"
+                 onChange={e => setCtx(e.target.value === '' ? '' : Number(e.target.value))} /></label>
       </div>
+      <div className="xs muted" style={{ marginTop: 6 }}>TLS verification is skipped for these endpoints (self-hosted / self-signed).</div>
       <button className="btn" onClick={add} disabled={busy} style={{ marginTop: 10 }}>
         {busy ? 'Adding…' : '+ Add model'}
       </button>
@@ -196,7 +188,7 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{m.label} <VisionBadge v={m.vision} /></div>
                 <div className="xs muted" style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {m.model} · {m.base_url || 'default url'}{m.api_key_set ? ' · 🔑' : ''}{m.insecure_tls ? ' · TLS-skip' : ''}
+                  {m.model} · {m.base_url || 'default url'}{m.api_key_set ? ' · 🔑' : ''}{m.context_window ? ` · ctx ${Math.round(m.context_window / 1000)}k` : ''}
                 </div>
               </div>
               <select value={m.vision} onChange={e => setVisionFor(m.id, e.target.value as any)}

@@ -1286,7 +1286,7 @@ def _compress_prompt(text: str) -> str:
     return "\n".join(out).strip()
 
 
-def _ctx_budget_chars() -> int:
+def _ctx_budget_chars(role: str | None = None) -> int:
     """Char budget for the running conversation before auto-condensing. 0
     disables. Explicit override: AIFORGE_CHAT_CONTEXT_BUDGET_CHARS. Otherwise
     SIZED TO THE CONFIGURED MODEL WINDOW (context_window tokens → ~4 chars/token,
@@ -1299,17 +1299,26 @@ def _ctx_budget_chars() -> int:
             return int(env)
         except ValueError:
             pass
-    try:
-        from aiforge_core.config import runtime_settings
-        win = int(runtime_settings.get("context_window"))
-        if win > 0:
-            return int(win * 4 * 0.55)
-    except Exception:  # noqa: BLE001
-        pass
+    win = 0
+    # Per-model context window (registry) for this role wins over the global.
+    if role:
+        try:
+            from aiforge_core.config import model_registry
+            win = int(model_registry.context_window_for_role(role))
+        except Exception:  # noqa: BLE001
+            win = 0
+    if win <= 0:
+        try:
+            from aiforge_core.config import runtime_settings
+            win = int(runtime_settings.get("context_window"))
+        except Exception:  # noqa: BLE001
+            win = 0
+    if win > 0:
+        return int(win * 4 * 0.55)
     return 48000
 
 
-def _compact_convo(convo: list[dict], *, keep_recent: int = 18) -> list[dict]:
+def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
@@ -1317,7 +1326,7 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18) -> list[dict]:
     messages + the tools used so far). Structural only — no extra LLM call, so
     it's cheap and runs every turn. The agent can re-read files / ask the user
     if it needs detail from before the condense point."""
-    budget = _ctx_budget_chars()
+    budget = _ctx_budget_chars(role)
     if budget <= 0:
         return convo
     # Scale the verbatim tail to the budget: on a SMALL window, keeping 18 turns
@@ -1650,7 +1659,7 @@ def run_chat_agent(
         # can't overflow the model's context window (MUST). Tell the user it
         # happened (one-time per condense) for transparency.
         _before = len(convo)
-        convo = _compact_convo(convo)
+        convo = _compact_convo(convo, role=role)
         if len(convo) < _before and not condensed_notified:
             condensed_notified = True   # notify ONCE, not every over-budget turn
             yield {"type": "thought", "role": "system",
@@ -1658,7 +1667,7 @@ def run_chat_agent(
         # M3: surface how full the context window is (char-estimate; ~4 chars/
         # token) so the user can see they're approaching the condense point.
         _ctx_chars = sum(len(m.get("content") or "") for m in convo)
-        _ctx_budget = _ctx_budget_chars()
+        _ctx_budget = _ctx_budget_chars(role)
         if _ctx_budget > 0:
             yield {"type": "usage", "context_chars": _ctx_chars,
                    "budget_chars": _ctx_budget,

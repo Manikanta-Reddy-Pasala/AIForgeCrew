@@ -1882,6 +1882,8 @@ class _ModelBody(BaseModel):
     api_key: str | None = None
     insecure_tls: bool | None = None
     vision: str | None = Field(None, description="'auto' | 'yes' | 'no'")
+    context_window: int | None = Field(None, ge=0, le=10_000_000,
+                                       description="per-model input window (tokens); 0 = use global")
 
 
 class _ApplyModelBody(BaseModel):
@@ -1903,8 +1905,9 @@ def models_add(body: _ModelBody) -> dict:
         return model_registry.add_model(
             label=body.label or body.model, model=body.model,
             base_url=body.base_url or "", api_key=body.api_key,
-            insecure_tls=bool(body.insecure_tls),
-            vision=body.vision or "auto")
+            insecure_tls=(True if body.insecure_tls is None else bool(body.insecure_tls)),
+            vision=body.vision or "auto",
+            context_window=body.context_window or 0)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -1914,7 +1917,8 @@ def models_update(model_id: str, body: _ModelBody) -> dict:
     from aiforge_core.config import model_registry
     row = model_registry.update_model(
         model_id, label=body.label, model=body.model, base_url=body.base_url,
-        api_key=body.api_key, insecure_tls=body.insecure_tls, vision=body.vision)
+        api_key=body.api_key, insecure_tls=body.insecure_tls, vision=body.vision,
+        context_window=body.context_window)
     if row is None:
         raise HTTPException(404, f"model {model_id} not found")
     # A vision change invalidates the probe cache for that model.

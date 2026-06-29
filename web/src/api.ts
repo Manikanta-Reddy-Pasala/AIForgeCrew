@@ -289,6 +289,7 @@ export interface RegistryModel {
   base_url: string;
   insecure_tls: boolean;
   vision: 'auto' | 'yes' | 'no';
+  context_window: number;
   api_key_set: boolean;
 }
 export interface ModelInput {
@@ -298,6 +299,7 @@ export interface ModelInput {
   api_key?: string;
   insecure_tls?: boolean;
   vision?: 'auto' | 'yes' | 'no';
+  context_window?: number;
 }
 
 export interface AgentRoleConfigInput {

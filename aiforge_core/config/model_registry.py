@@ -53,8 +53,9 @@ def _public(row: dict) -> dict:
     """Registry row without the raw key."""
     return {"id": row.get("id"), "label": row.get("label") or row.get("model"),
             "model": row.get("model"), "base_url": row.get("base_url") or "",
-            "insecure_tls": bool(row.get("insecure_tls")),
+            "insecure_tls": bool(row.get("insecure_tls", True)),
             "vision": row.get("vision") or "auto",
+            "context_window": int(row.get("context_window") or 0),
             "api_key_set": bool(row.get("api_key"))}
 
 
@@ -70,8 +71,8 @@ def get_model(model_id: str) -> dict | None:
 
 
 def add_model(*, label: str, model: str, base_url: str = "",
-              api_key: str | None = None, insecure_tls: bool = False,
-              vision: str = "auto") -> dict:
+              api_key: str | None = None, insecure_tls: bool = True,
+              vision: str = "auto", context_window: int = 0) -> dict:
     model = (model or "").strip()
     if not model:
         raise ValueError("model id is required")
@@ -87,7 +88,8 @@ def add_model(*, label: str, model: str, base_url: str = "",
             n += 1
         row = {"id": uid, "label": (label or model).strip(), "model": model,
                "base_url": (base_url or "").strip(), "api_key": api_key or "",
-               "insecure_tls": bool(insecure_tls), "vision": vision}
+               "insecure_tls": bool(insecure_tls), "vision": vision,
+               "context_window": max(0, int(context_window or 0))}
         rows.append(row)
         _save(rows)
         return _public(row)
@@ -106,6 +108,8 @@ def update_model(model_id: str, **fields: Any) -> dict | None:
                 r["insecure_tls"] = bool(fields["insecure_tls"])
             if fields.get("vision") in _VISION:
                 r["vision"] = fields["vision"]
+            if fields.get("context_window") is not None:
+                r["context_window"] = max(0, int(fields["context_window"] or 0))
             # Only overwrite the key when a non-empty one is supplied.
             if fields.get("api_key"):
                 r["api_key"] = fields["api_key"]
@@ -122,6 +126,34 @@ def remove_model(model_id: str) -> bool:
             return False
         _save(new)
         return True
+
+
+def context_for(model: str, base_url: str = "") -> int:
+    """Per-model context window (tokens) for a model matched by id+url, or 0
+    when unset (caller falls back to the global setting)."""
+    model = (model or "").strip()
+    for r in _load():
+        if r.get("model") == model and (not base_url or r.get("base_url") == base_url):
+            return int(r.get("context_window") or 0)
+    return 0
+
+
+def context_window_for_role(role: str) -> int:
+    """The effective input context window for ``role`` — the role's model's
+    per-model value if set, else the global runtime setting."""
+    try:
+        from aiforge_core.llm.router import resolve
+        ep = resolve(role)
+        per = context_for(ep.model or "", getattr(ep, "base_url", "") or "")
+        if per > 0:
+            return per
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from aiforge_core.config import runtime_settings
+        return int(runtime_settings.get("context_window"))
+    except Exception:  # noqa: BLE001
+        return 131072
 
 
 def vision_for(model: str, base_url: str = "") -> str | None:

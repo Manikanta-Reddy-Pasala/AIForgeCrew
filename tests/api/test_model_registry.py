@@ -68,3 +68,21 @@ def test_per_model_vision_flag_drives_vision_enabled(app_client):
     # Flip to 'no' → disabled.
     client.put(f"/api/agents/models/{mid}", json={"vision": "no"})
     assert chat_media.vision_enabled("chat") is False
+
+
+def test_per_model_context_and_tls_default(app_client):
+    client = app_client
+    # No insecure_tls passed → defaults to skip-verify (True); context stored.
+    r = client.post("/api/agents/models", json={
+        "model": "big-ctx", "base_url": "http://c/v1", "context_window": 262144})
+    m = r.json()
+    assert m["insecure_tls"] is True            # skip-TLS by default
+    assert m["context_window"] == 262144
+    client.post(f"/api/agents/models/{m['id']}/apply", json={"roles": ["chat"]})
+    from aiforge_core.config import model_registry
+    # Per-model context wins for that role.
+    assert model_registry.context_window_for_role("chat") == 262144
+    from aiforge_core.runtime import chat_agent
+    # The chat condense budget scales to the per-model window (262k tok).
+    assert chat_agent._ctx_budget_chars("chat") > chat_agent._ctx_budget_chars("doer") \
+        or model_registry.context_for("big-ctx", "http://c/v1") == 262144
