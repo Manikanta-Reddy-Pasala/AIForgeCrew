@@ -46,26 +46,100 @@ def _safe_name(name: str) -> str:
     return "".join(ch for ch in base if ch.isalnum() or ch in "._-") or "image"
 
 
-def save_image(session_id: int, filename: str, raw: bytes) -> dict:
-    """Validate + write an uploaded image to the session's media folder.
-    Returns ``{ok, path, mime, filename}`` or ``{ok: False, error}``."""
-    if len(raw) > _MAX_BYTES:
-        return {"ok": False, "error": "image_too_large",
-                "bytes": len(raw), "limit": _MAX_BYTES}
-    mime = vision._detect_mime(raw)
-    if mime is None:
-        return {"ok": False, "error": "unsupported_format"}
+_MAX_FILE_BYTES = 25 * 1024 * 1024     # docs can be bigger than images
+_DESC_CAP = 6000                       # extracted-text excerpt cap per doc
+
+_EXT_MIME = {
+    ".pdf": "application/pdf",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".csv": "text/csv", ".txt": "text/plain", ".md": "text/markdown",
+    ".json": "application/json", ".log": "text/plain", ".yaml": "text/yaml",
+    ".yml": "text/yaml", ".py": "text/x-python", ".js": "text/javascript",
+    ".ts": "text/plain", ".java": "text/x-java", ".go": "text/x-go",
+}
+_TEXT_EXTS = {".txt", ".md", ".csv", ".json", ".log", ".yaml", ".yml",
+              ".py", ".js", ".ts", ".java", ".go", ".sh", ".sql", ".html",
+              ".xml", ".toml", ".ini", ".cfg"}
+
+
+def _kind_for(mime: str, ext: str) -> str:
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("text/") or ext in _TEXT_EXTS:
+        return "text"
+    return "document"
+
+
+def save_file(session_id: int, filename: str, raw: bytes) -> dict:
+    """Validate + write an uploaded file (image OR document) to the session's
+    media folder. Returns ``{ok, path, mime, filename, kind}`` or
+    ``{ok: False, error}``."""
+    if len(raw) > _MAX_FILE_BYTES:
+        return {"ok": False, "error": "file_too_large",
+                "bytes": len(raw), "limit": _MAX_FILE_BYTES}
     name = _safe_name(filename)
-    # Avoid clobbering same-named uploads in one session.
+    ext = os.path.splitext(name)[1].lower()
+    # Prefer magic-byte detection (images); fall back to extension for docs.
+    mime = vision._detect_mime(raw) or _EXT_MIME.get(ext) or "application/octet-stream"
     dest = os.path.join(media_dir(session_id), name)
-    stem, ext = os.path.splitext(dest)
+    stem, dext = os.path.splitext(dest)
     n = 1
-    while os.path.exists(dest):
-        dest = f"{stem}_{n}{ext}"
+    while os.path.exists(dest):           # don't clobber same-named uploads
+        dest = f"{stem}_{n}{dext}"
         n += 1
     Path(dest).write_bytes(raw)
     return {"ok": True, "path": dest, "mime": mime,
-            "filename": os.path.basename(dest)}
+            "filename": os.path.basename(dest), "kind": _kind_for(mime, ext)}
+
+
+# Back-compat alias (older callers).
+save_image = save_file
+
+
+def extract_text(path: str, mime: str = "") -> str:
+    """Pull readable text from a document so the agent can analyse it. Handles
+    pdf / xlsx / docx / plain-text. Best-effort, capped, never raises."""
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".pdf" or mime == "application/pdf":
+            from pypdf import PdfReader
+            r = PdfReader(path)
+            return "\n".join((p.extract_text() or "") for p in r.pages[:30])
+        if ext == ".xlsx" or "spreadsheet" in mime:
+            from openpyxl import load_workbook
+            wb = load_workbook(path, read_only=True, data_only=True)
+            out: list[str] = []
+            for ws in wb.worksheets[:5]:
+                out.append(f"# sheet: {ws.title}")
+                for i, row in enumerate(ws.iter_rows(values_only=True)):
+                    if i >= 200:
+                        out.append("… (more rows)")
+                        break
+                    out.append(", ".join("" if c is None else str(c) for c in row))
+            return "\n".join(out)
+        if ext == ".docx" or "wordprocessing" in mime:
+            import docx
+            return "\n".join(p.text for p in docx.Document(path).paragraphs)
+        if mime.startswith("text/") or ext in _TEXT_EXTS:
+            return Path(path).read_text(encoding="utf-8", errors="ignore")
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+def describe_upload(path: str, filename: str, mime: str, role: str = "chat") -> str:
+    """The text that makes an attachment queryable: a vision caption for an
+    image, or an extracted-text excerpt for a document."""
+    if mime.startswith("image/"):
+        return describe_image(path, role)
+    txt = extract_text(path, mime).strip()
+    if not txt:
+        return ""
+    if len(txt) > _DESC_CAP:
+        txt = txt[:_DESC_CAP] + "\n… (truncated)"
+    return txt
 
 
 # 1x1 transparent PNG — the smallest valid image to probe with.
@@ -194,19 +268,22 @@ def analyze_attachment(filename: str, raw: bytes, role: str = "doer") -> dict:
 
 
 def context_block(session_id: int) -> str:
-    """The "SESSION IMAGES" text injected into every turn so the model can
-    answer questions about uploaded images even when it can't see them."""
+    """The "SESSION FILES" block injected into every turn so the model can
+    answer questions about attached files (images: caption; documents: their
+    extracted text), even when it can't see images directly."""
     from aiforge_core.runtime import chat_store
     rows = chat_store.list_media(session_id)
     if not rows:
         return ""
     lines = []
     for i, m in enumerate(rows, 1):
-        desc = (m.get("description") or "").strip() or "(no description yet)"
-        lines.append(f"{i}. {m['filename']}: {desc}")
-    return ("SESSION IMAGES — the user attached these images to this chat. Use "
-            "their descriptions to answer questions about them (you may not be "
-            "able to see the images directly):\n" + "\n".join(lines))
+        desc = (m.get("description") or "").strip() or "(no description/text yet)"
+        mime = m.get("mime") or ""
+        label = "image" if mime.startswith("image/") else "file"
+        lines.append(f"--- {label} {i}: {m['filename']} ---\n{desc}")
+    return ("SESSION FILES — the user attached these to this chat (images carry "
+            "a description, documents carry their extracted text). Use them to "
+            "answer questions about the attachments:\n" + "\n\n".join(lines))
 
 
 def image_blocks_for_turn(session_id: int, role: str = "chat") -> list[dict]:

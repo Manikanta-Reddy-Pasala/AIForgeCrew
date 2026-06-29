@@ -77,14 +77,34 @@ def test_context_block_carries_description(app_client):
                  json={"description": "UNIQUEMARKER bar chart"})
     from aiforge_core.runtime import chat_media
     block = chat_media.context_block(sid)
-    assert "SESSION IMAGES" in block and "UNIQUEMARKER bar chart" in block
+    assert "SESSION FILES" in block and "UNIQUEMARKER bar chart" in block
 
 
-def test_reject_non_image(app_client):
+def test_accepts_text_document_and_extracts_text(app_client):
+    """Non-image files (pdf/xls/docx/text) are now accepted; a text file's
+    content becomes its description (extracted text), queryable in-session."""
     client, _ = app_client
     sid = _new_session(client)
     r = client.post(f"/api/chat/sessions/{sid}/media",
-                    files={"file": ("x.txt", b"not an image", "text/plain")})
+                    files={"file": ("notes.txt",
+                                    b"deploy steps: pull, build, restart api",
+                                    "text/plain")})
+    assert r.status_code == 201, r.text
+    row = r.json()
+    assert row["kind"] == "text"
+    assert "deploy steps" in row["description"]      # text extracted
+    from aiforge_core.runtime import chat_media
+    assert "notes.txt" in chat_media.context_block(sid)
+
+
+def test_reject_oversize_file(app_client, monkeypatch):
+    from aiforge_core.runtime import chat_media
+    monkeypatch.setattr(chat_media, "_MAX_FILE_BYTES", 8)
+    client, _ = app_client
+    sid = _new_session(client)
+    r = client.post(f"/api/chat/sessions/{sid}/media",
+                    files={"file": ("big.txt", b"way too many bytes here",
+                                    "text/plain")})
     assert r.status_code == 400
 
 

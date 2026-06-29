@@ -297,17 +297,17 @@ export default function Chat() {
     } catch { /* best-effort */ }
   }
   async function uploadMedia(files: FileList | File[] | null) {
-    const list = files ? Array.from(files).filter(f => f.type.startsWith('image/')) : [];
+    const list = files ? Array.from(files) : [];
     if (!list.length) return;
     // Attach works even on a brand-new chat: create the session first so the
-    // image has somewhere to live (mirrors send()).
+    // file has somewhere to live (mirrors send()).
     let sid = activeId;
     if (sid === null) { sid = await createSession(); if (sid === null) return; }
     setUploadingMedia(true);
     try {
       for (const f of list) await chatMediaUpload(sid, f);
       await loadMedia(sid);
-      toast.success(list.length === 1 ? 'Image attached' : `${list.length} images attached`);
+      toast.success(list.length === 1 ? 'File attached' : `${list.length} files attached`);
     } catch (e: any) {
       toast.error(`Upload failed: ${e.message}`);
     } finally { setUploadingMedia(false); }
@@ -1426,7 +1426,8 @@ export default function Chat() {
 
         {/* Shared hidden file input — used by the attach button in either
             composer (active session or brand-new chat). */}
-        <input ref={mediaInputRef} type="file" accept="image/*" multiple
+        <input ref={mediaInputRef} type="file" multiple
+               accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,.json,.log,.yaml,.yml"
                style={{ display: 'none' }}
                onChange={e => { uploadMedia(e.target.files); e.target.value = ''; }} />
 
@@ -1598,9 +1599,9 @@ export default function Chat() {
                   style={{ flex: 1 }}
                 />
                 <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
-                        title="Attach image(s) to this chat — described + queryable all session"
+                        title="Attach a file — image, PDF, Word, Excel, text — queryable all session"
                         style={{ whiteSpace: 'nowrap' }}>
-                  {uploadingMedia ? '…' : '🖼'}
+                  {uploadingMedia ? '…' : '📎'}
                 </button>
                 {busy && (
                   <button onClick={stopRun} className="danger"
@@ -1678,9 +1679,9 @@ export default function Chat() {
                          fontSize: 14, lineHeight: 1.5, padding: 10 }}
               />
               <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
-                      title="Attach image(s) — starts a chat and keeps them queryable all session"
+                      title="Attach a file — image, PDF, Word, Excel, text — starts a chat, queryable all session"
                       style={{ whiteSpace: 'nowrap' }}>
-                {uploadingMedia ? '…' : '🖼'}
+                {uploadingMedia ? '…' : '📎'}
               </button>
               {busy && (
                 <button onClick={stopRun} className="danger"
@@ -1944,35 +1945,52 @@ function MediaStrip({ media, vision, onDescribe, onDelete }: {
   onDelete: (id: number) => void;
 }) {
   if (!media.length) return null;
+  const imgN = media.filter(m => (m.mime || '').startsWith('image/')).length;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0' }}>
       <div className="xs muted">
-        {media.length} image{media.length === 1 ? '' : 's'} in this session ·{' '}
-        {vision ? 'model can see them' : 'model reads the descriptions (not vision-capable)'}
+        {media.length} file{media.length === 1 ? '' : 's'} in this session
+        {imgN > 0 && <> · {vision ? 'model can see images' : 'image descriptions only (model not vision-capable)'}</>}
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {media.map(m => (
+        {media.map(m => {
+          const isImg = (m.mime || '').startsWith('image/');
+          return (
           <div key={m.id} style={{ display: 'flex', gap: 6, alignItems: 'flex-start',
                                     border: '1px solid var(--border-1)', borderRadius: 6, padding: 6, maxWidth: 320 }}>
-            <a href={chatMediaRawURL(m.id)} target="_blank" rel="noreferrer">
-              <img src={chatMediaRawURL(m.id)} alt={m.filename}
-                   style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4 }} />
+            <a href={chatMediaRawURL(m.id)} target="_blank" rel="noreferrer"
+               style={{ textDecoration: 'none' }}>
+              {isImg ? (
+                <img src={chatMediaRawURL(m.id)} alt={m.filename}
+                     style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4 }} />
+              ) : (
+                <div style={{ width: 48, height: 48, display: 'flex', alignItems: 'center',
+                              justifyContent: 'center', borderRadius: 4, fontSize: 22,
+                              background: 'var(--bg-2)' }}>📄</div>
+              )}
             </a>
             <div style={{ minWidth: 0, flex: 1 }}>
               <div className="xs" style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.filename}</div>
-              <textarea
-                defaultValue={m.description}
-                placeholder={vision ? 'description (auto/edit)…' : 'describe this image so it can be asked about…'}
-                onBlur={e => { if (e.target.value !== m.description) onDescribe(m.id, e.target.value); }}
-                rows={2}
-                style={{ width: '100%', fontSize: 11, resize: 'vertical', marginTop: 2 }}
-              />
+              {isImg ? (
+                <textarea
+                  defaultValue={m.description}
+                  placeholder={vision ? 'description (auto/edit)…' : 'describe this image so it can be asked about…'}
+                  onBlur={e => { if (e.target.value !== m.description) onDescribe(m.id, e.target.value); }}
+                  rows={2}
+                  style={{ width: '100%', fontSize: 11, resize: 'vertical', marginTop: 2 }}
+                />
+              ) : (
+                <div className="xs muted" style={{ marginTop: 2 }}>
+                  {m.description ? 'text extracted — queryable' : 'no readable text extracted'}
+                </div>
+              )}
             </div>
-            <button className="ghost xs" title="Remove image"
+            <button className="ghost xs" title="Remove"
                     style={{ padding: '0 4px', cursor: 'pointer' }}
                     onClick={() => onDelete(m.id)}>✕</button>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

@@ -2420,23 +2420,26 @@ def chat_session_delete(session_id: int) -> None:
 
 @app.post("/api/chat/sessions/{session_id}/media", status_code=201)
 async def chat_media_upload(session_id: int, file: UploadFile = File(...)) -> dict:
-    """Attach an image to a chat session: save it to the session's media
-    folder, auto-caption it when the model is vision-capable, and store the
-    row. The description is what makes it queryable later in the session."""
+    """Attach a file (image OR document — pdf/xlsx/docx/text) to a chat session:
+    save it to the session's media folder, derive a description (vision caption
+    for an image, extracted text for a document), and store the row. The
+    description is what makes it queryable later in the session."""
     from aiforge_core.runtime import chat_media, chat_store
     if not chat_store.get_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
     raw = await file.read()
-    saved = chat_media.save_image(session_id, file.filename or "image", raw)
+    saved = chat_media.save_file(session_id, file.filename or "file", raw)
     if not saved.get("ok"):
-        raise HTTPException(400, saved.get("error", "invalid image"))
+        raise HTTPException(400, saved.get("error", "invalid file"))
     role = (chat_store.get_session(session_id) or {}).get("role") or "chat"
     try:
-        desc = chat_media.describe_image(saved["path"], role)
-    except Exception:  # noqa: BLE001 — describe is best-effort
+        desc = chat_media.describe_upload(saved["path"], saved["filename"],
+                                          saved["mime"], role)
+    except Exception:  # noqa: BLE001 — describe/extract is best-effort
         desc = ""
     row = chat_store.add_media(session_id, saved["filename"], saved["path"],
                                mime=saved["mime"], description=desc)
+    row["kind"] = saved.get("kind")
     row["auto_described"] = bool(desc)
     return row
 

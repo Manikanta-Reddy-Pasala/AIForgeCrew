@@ -35,6 +35,11 @@ dependencies = [
   "jupyter-client>=8.6",
   "ipykernel>=6.29",
   "playwright>=1.44",
+  # Chat file attachments — extract text from pdf / xlsx / docx so the agent
+  # can read documents (pure-python, lightweight).
+  "pypdf>=4.2",
+  "openpyxl>=3.1",
+  "python-docx>=1.1",
 ]
 
 [tool.uv.sources]
