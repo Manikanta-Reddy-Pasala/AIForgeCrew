@@ -586,6 +586,44 @@ def _t_gitlab_comment(args: dict, cwd: str) -> dict:
     return gitlab.gitlab_comment(args, cwd)
 
 
+def _t_gitlab_mr_create(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import gitlab
+    return gitlab.gitlab_mr_create(args, cwd)
+
+
+def _t_gitlab_mr_comment(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import gitlab
+    return gitlab.gitlab_mr_comment(args, cwd)
+
+
+def _t_github_pr(args: dict, cwd: str) -> dict:
+    """Open a GitHub pull request from the current branch via the ``gh`` CLI.
+    Args: title (req), body, base (default 'main'), head (default current
+    branch), draft. Requires gh installed + authenticated in the repo."""
+    if not args.get("title"):
+        return {"ok": False, "error": "missing 'title'"}
+    import shutil
+    if not shutil.which("gh"):
+        return {"ok": False, "error": "gh_not_installed",
+                "hint": "install the GitHub CLI (gh) + `gh auth login`"}
+    cmd = ["gh", "pr", "create", "--title", str(args["title"]),
+           "--body", str(args.get("body") or "")]
+    cmd += ["--base", str(args.get("base") or "main")]
+    if args.get("head"):
+        cmd += ["--head", str(args["head"])]
+    if args.get("draft"):
+        cmd += ["--draft"]
+    try:
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=60)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    out = (p.stdout or "").strip()
+    if p.returncode != 0:
+        return {"ok": False, "error": (p.stderr or out or "gh failed").strip()[:800]}
+    return {"ok": True, "url": out, "written": {"title": args.get("title"),
+            "base": args.get("base") or "main"}}
+
+
 def _t_web_search(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import web_search
     return web_search.web_search(args, cwd)
@@ -807,6 +845,9 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_comment": _t_jira_comment,
     "gitlab_search": _t_gitlab_search,
     "gitlab_read": _t_gitlab_read,
+    "gitlab_mr_create": _t_gitlab_mr_create,
+    "gitlab_mr_comment": _t_gitlab_mr_comment,
+    "github_pr": _t_github_pr,
     "gitlab_create": _t_gitlab_create,
     "gitlab_update": _t_gitlab_update,
     "gitlab_comment": _t_gitlab_comment,
@@ -1123,6 +1164,9 @@ Tool arguments:
 - gitlab_create {{"project": "group/proj", "title": "...", "description": "...", "labels": ["a","b"]}}   (new issue — needs your Approve)
 - gitlab_update {{"project": "group/proj", "iid": 42, "title": "...", "labels": ["x"], "state_event": "close"}}   (edit — needs your Approve)
 - gitlab_comment{{"project": "group/proj", "iid": 42, "body": "comment text"}}            (add a comment — needs your Approve)
+- gitlab_mr_create {{"project": "group/proj", "source_branch": "feat/x", "target_branch": "main", "title": "...", "description": "..."}}   (open a merge request — needs your Approve)
+- gitlab_mr_comment{{"project": "group/proj", "iid": 7, "body": "..."}}                    (comment on an MR — needs your Approve)
+- github_pr     {{"title": "...", "body": "...", "base": "main", "draft": false}}          (open a GitHub PR from the current branch via gh CLI — needs your Approve)
 After any Confluence/Jira/GitLab create/update/comment SUCCEEDS, show the user a \
 short AFTER preview of what was written (the `written` field in the result) plus \
 the page/issue link — so they can confirm the change without opening it.

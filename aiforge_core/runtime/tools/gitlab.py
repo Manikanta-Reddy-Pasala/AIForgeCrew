@@ -274,6 +274,52 @@ def gitlab_comment(args: dict, cwd: str | None = None) -> dict:
             "written": {"comment": str(args["body"])[:2000]}}
 
 
+def gitlab_mr_create(args: dict, cwd: str | None = None) -> dict:
+    """Open a merge request. Required: ``project`` (or GITLAB_PROJECT),
+    ``source_branch``, ``title``. Optional: ``target_branch`` (default 'main'),
+    ``description``, ``labels`` (list/csv), ``remove_source_branch``."""
+    proj = _proj_id(args)
+    src = str(args.get("source_branch") or args.get("source") or "").strip()
+    if not proj:
+        return {"ok": False, "error": "missing 'project'"}
+    if not src:
+        return {"ok": False, "error": "missing 'source_branch'"}
+    if not args.get("title"):
+        return {"ok": False, "error": "missing 'title'"}
+    body: dict = {"source_branch": src,
+                  "target_branch": str(args.get("target_branch") or "main"),
+                  "title": args["title"]}
+    if args.get("description"):
+        body["description"] = args["description"]
+    if args.get("labels"):
+        labels = args["labels"]
+        body["labels"] = ",".join(str(x) for x in labels) if isinstance(labels, (list, tuple)) else labels
+    if args.get("remove_source_branch") is not None:
+        body["remove_source_branch"] = bool(args["remove_source_branch"])
+    r = _request("POST", f"/projects/{_enc_proj(proj)}/merge_requests", body=body)
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    return {"ok": True, "iid": d.get("iid"), "url": d.get("web_url"),
+            "written": {"title": args.get("title"),
+                        "source": src, "target": body["target_branch"]}}
+
+
+def gitlab_mr_comment(args: dict, cwd: str | None = None) -> dict:
+    """Comment on a merge request. Required: ``project`` + ``iid`` + ``body``."""
+    proj = _proj_id(args)
+    iid = str(args.get("iid") or args.get("id") or "").strip()
+    if not proj or not iid:
+        return {"ok": False, "error": "missing 'project'/'iid'"}
+    if not args.get("body"):
+        return {"ok": False, "error": "missing 'body'"}
+    r = _request("POST", f"/projects/{_enc_proj(proj)}/merge_requests/"
+                 f"{urllib.parse.quote(iid)}/notes", body={"body": args["body"]})
+    if not r["ok"]:
+        return r
+    return {"ok": True, "iid": iid, "written": {"comment": str(args["body"])[:2000]}}
+
+
 def gitlab_test() -> dict:
     """Connectivity + auth check for the Settings UI. Hits ``/user`` and, on
     auth failure, explains the most likely cause."""
@@ -297,4 +343,4 @@ def gitlab_test() -> dict:
 
 
 __all__ = ["gitlab_search", "gitlab_read", "gitlab_create", "gitlab_update",
-           "gitlab_comment", "gitlab_test"]
+           "gitlab_comment", "gitlab_mr_create", "gitlab_mr_comment", "gitlab_test"]

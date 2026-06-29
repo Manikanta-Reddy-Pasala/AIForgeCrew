@@ -37,7 +37,8 @@ _CMD_ARG_KEYS = ("cmd", "command", "input")
 # approval) unless the operator explicitly overrides via AIFORGE_TOOL_POLICY.
 _DEFAULT_ASK = {"confluence_create", "confluence_update",
                 "jira_create", "jira_update", "jira_comment",
-                "gitlab_create", "gitlab_update", "gitlab_comment"}
+                "gitlab_create", "gitlab_update", "gitlab_comment",
+                "gitlab_mr_create", "gitlab_mr_comment", "github_pr"}
 
 
 def _parse_map(raw: str) -> dict[str, str]:
