@@ -667,9 +667,33 @@ def todowrite(todos: str = "", **_kw) -> dict:
 
 
 def glob(pattern: str = "*", path: str = ".") -> dict:
-    """Claude-Code Glob → delegate to grep_repo's file search. Falls
-    back to list_dir when no pattern."""
-    return grep_repo(pattern, path)
+    """Find files by NAME pattern (Claude-Code Glob) — a real fnmatch walk,
+    not a content grep. ``pattern`` matches the basename OR the repo-relative
+    path (so ``**/*.py`` and ``*.py`` both work). Skips vcs/build noise."""
+    import fnmatch
+    from aiforge_core.runtime.sandbox import resolve_inside_root, root
+    _SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist",
+             "build", "target", ".next", ".idea", ".mypy_cache", ".pytest_cache"}
+    try:
+        base = resolve_inside_root(path) if path not in ("", ".") else root()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    pat = (pattern or "*").strip()
+    matches: list[str] = []
+    r = root()
+    for p in base.rglob("*"):
+        if any(part in _SKIP for part in p.parts):
+            continue
+        if not p.is_file():
+            continue
+        rel = str(p.relative_to(r))
+        if fnmatch.fnmatch(p.name, pat) or fnmatch.fnmatch(rel, pat) \
+                or fnmatch.fnmatch(rel, pat.lstrip("*/")):
+            matches.append(rel)
+            if len(matches) >= 500:
+                break
+    return {"ok": True, "pattern": pat, "count": len(matches),
+            "matches": sorted(matches)}
 
 
 def task(description: str = "", **_kw) -> dict:

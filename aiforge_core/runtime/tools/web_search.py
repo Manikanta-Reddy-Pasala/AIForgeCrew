@@ -93,9 +93,49 @@ _SNIPPET = re.compile(
     r'class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
 
 
+def _api_search(query: str, limit: int) -> "list[dict] | None":
+    """Reliable keyed providers, tried before the DDG HTML scrape when a key is
+    configured. Returns a results list, or None when no key / the call failed."""
+    import json as _json
+    tav = os.environ.get("AIFORGE_TAVILY_API_KEY", "").strip()
+    if tav:
+        try:
+            payload = _json.dumps({"api_key": tav, "query": query,
+                                   "max_results": limit}).encode()
+            req = urllib.request.Request(
+                "https://api.tavily.com/search", data=payload,
+                headers={"Content-Type": "application/json", "User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=_timeout(),
+                                        context=_ssl_context_for("https://api.tavily.com")) as r:
+                d = _json.loads(r.read().decode("utf-8", "replace"))
+            return [{"title": x.get("title", ""), "url": x.get("url", ""),
+                     "snippet": x.get("content", "")} for x in d.get("results", [])][:limit]
+        except Exception:  # noqa: BLE001 — fall through to next provider
+            pass
+    brave = os.environ.get("AIFORGE_BRAVE_API_KEY", "").strip()
+    if brave:
+        try:
+            url = "https://api.search.brave.com/res/v1/web/search?" + \
+                urllib.parse.urlencode({"q": query, "count": limit})
+            req = urllib.request.Request(url, headers={
+                "X-Subscription-Token": brave, "Accept": "application/json",
+                "User-Agent": _UA})
+            with urllib.request.urlopen(req, timeout=_timeout(),
+                                        context=_ssl_context_for("https://api.search.brave.com")) as r:
+                d = _json.loads(r.read().decode("utf-8", "replace"))
+            return [{"title": x.get("title", ""), "url": x.get("url", ""),
+                     "snippet": x.get("description", "")}
+                    for x in d.get("web", {}).get("results", [])][:limit]
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
 def web_search(args: dict, cwd: str | None = None) -> dict:
-    """Search the open web (DuckDuckGo, no API key). ``query`` required,
-    optional ``limit``. Returns ranked ``{title, url, snippet}``."""
+    """Search the open web. Uses a keyed provider (Tavily/Brave) when
+    AIFORGE_TAVILY_API_KEY / AIFORGE_BRAVE_API_KEY is set — more reliable than
+    HTML scraping — otherwise falls back to keyless DuckDuckGo. ``query``
+    required, optional ``limit``."""
     if _disabled():
         return {"ok": False, "error": "web_search_disabled",
                 "hint": "unset AIFORGE_WEB_SEARCH_DISABLE to enable"}
@@ -103,6 +143,9 @@ def web_search(args: dict, cwd: str | None = None) -> dict:
     if not query:
         return {"ok": False, "error": "missing 'query'"}
     limit = int(args.get("limit", _default_limit()))
+    api = _api_search(query, limit)
+    if api:
+        return {"ok": True, "query": query, "results": api, "provider": "api"}
     try:
         body = _get(_DDG_HTML, data=urllib.parse.urlencode(
             {"q": query, "kl": "us-en"}).encode())

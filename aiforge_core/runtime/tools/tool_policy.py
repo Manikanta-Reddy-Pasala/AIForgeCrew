@@ -91,8 +91,10 @@ def decide(tool: str, args: dict | None = None) -> dict:
     if tool in _CMD_TOOLS:
         verdict = command_risk.assess(_cmd_from_args(args))
         lvl = verdict["level"]
+        # Caution-tier (sudo, chmod 777, force-push, global installs…) gates for
+        # approval BY DEFAULT now; set AIFORGE_RISK_ASK_CAUTION=0 to run it free.
         ask_caution = os.environ.get(
-            "AIFORGE_RISK_ASK_CAUTION", "").strip().lower() in ("1", "true", "yes", "on")
+            "AIFORGE_RISK_ASK_CAUTION", "1").strip().lower() not in ("0", "false", "no", "off")
         if lvl == command_risk.DANGEROUS and _rank(policy) < _rank(ASK):
             policy, reason = ASK, verdict["reason"]
         elif lvl == command_risk.CAUTION and ask_caution and _rank(policy) < _rank(ASK):

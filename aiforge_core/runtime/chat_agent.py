@@ -700,6 +700,54 @@ def _t_editor(args: dict, cwd: str) -> dict:
     )
 
 
+def _t_multi_edit(args: dict, cwd: str) -> dict:
+    """Apply a BATCH of find/replace edits across one or more files in a single
+    call — validated first, then applied all-or-nothing. Each edit:
+    ``{"path","old_str","new_str","replace_all"?}``. Replaces the round-trip
+    pain of one-edit-per-turn and the "exactly one match" failures."""
+    edits = args.get("edits")
+    if not isinstance(edits, list) or not edits:
+        return {"ok": False, "error": "edits must be a non-empty list of "
+                "{path, old_str, new_str, replace_all?}"}
+    # Phase 1 — validate every edit against current disk content (no writes).
+    plans: list[tuple[str, str]] = []   # (abs_path, new_content)
+    pending: dict[str, str] = {}        # abs_path -> working content (chained)
+    rel_of: dict[str, str] = {}         # abs_path -> the path the model gave
+    for i, e in enumerate(edits):
+        if not isinstance(e, dict):
+            return {"ok": False, "error": f"edit #{i} is not an object"}
+        path = str(e.get("path") or "").strip()
+        old = e.get("old_str") if e.get("old_str") is not None else e.get("old_text")
+        new = e.get("new_str") if e.get("new_str") is not None else e.get("new_text")
+        if not path or old is None or new is None:
+            return {"ok": False, "error": f"edit #{i} needs path + old_str + new_str"}
+        try:
+            ap = str(_resolve(cwd, path))
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc)}
+        rel_of.setdefault(ap, path)
+        if ap not in pending:
+            try:
+                pending[ap] = Path(ap).read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:
+                return {"ok": False, "error": f"edit #{i}: file not found: {path}"}
+        body = pending[ap]
+        cnt = body.count(old)
+        if cnt == 0:
+            return {"ok": False, "error": f"edit #{i}: old_str not found in {path}"}
+        if cnt > 1 and not e.get("replace_all"):
+            return {"ok": False, "error": f"edit #{i}: old_str appears {cnt}× in "
+                    f"{path} — pass replace_all:true or make it unique"}
+        pending[ap] = body.replace(old, new) if e.get("replace_all") else body.replace(old, new, 1)
+    plans = list(pending.items())
+    # Phase 2 — all validated, write them.
+    written = []
+    for ap, content in plans:
+        Path(ap).write_text(content, encoding="utf-8")
+        written.append(rel_of.get(ap, ap))
+    return {"ok": True, "files": written, "edits_applied": len(edits)}
+
+
 def _t_typecheck(args: dict, cwd: str) -> dict:
     _with_root(cwd)
     from aiforge_core.runtime.tools.typecheck import typecheck
@@ -772,6 +820,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     # Shared "strong" tools (now available to the chat agent, not just the team
     # pipeline): structured editor (undo + syntax-check), symbols, types, tests.
     "editor": _t_editor,
+    "multi_edit": _t_multi_edit,
     "typecheck": _t_typecheck,
     "format": _t_format,
     "lsp": _t_lsp,
@@ -803,7 +852,7 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
 
 # File-mutating tools that the pre-apply "Review edits" gate (Gap D) holds for
 # human Approve/Reject even when policy would auto-allow them.
-_MUTATING = ("file_write", "file_create", "file_patch", "editor")
+_MUTATING = ("file_write", "file_create", "file_patch", "editor", "multi_edit")
 
 # The ``editor`` tool multiplexes read + write sub-commands on one tool NAME;
 # only the WRITE sub-commands mutate (view/read/list are read-only and must
@@ -1029,6 +1078,8 @@ Tool arguments:
 - file_read    {{"path": "rel/or/abs"}}
 - file_write   {{"path": "...", "content": "..."}}      (creates/overwrites)
 - file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}
+- multi_edit   {{"edits": [{{"path":"a.py","old_str":"foo","new_str":"bar"}}, {{"path":"b.py","old_str":"x","new_str":"y","replace_all":true}}]}}
+                (apply several find/replace edits across one or MANY files in ONE call — validated first, then all-or-nothing)
 - list_dir     {{"path": "."}}
 - find         {{"name": "controller", "kind": "dir"}}  (fuzzy-locate files/dirs by partial name)
 - grep         {{"pattern": "TODO", "path": "src"}}      (recursive; tolerates a wrong path)
