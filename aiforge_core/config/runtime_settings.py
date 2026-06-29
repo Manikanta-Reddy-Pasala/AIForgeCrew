@@ -34,6 +34,10 @@ log = logging.getLogger("aiforge.runtime_settings")
 _SPEC: dict[str, tuple[str, int]] = {
     "max_output_tokens": ("AIFORGE_LLM_MAX_TOKENS", 32768),
     "context_window": ("AIFORGE_LOCAL_CTX_WINDOW", 131072),
+    # 0/1 flag: force-treat the chat model as vision-capable (for a self-hosted
+    # multimodal model the allowlist doesn't recognise). Auto-detection by model
+    # id still applies when this is 0.
+    "vision_capable": ("AIFORGE_CHAT_VISION_CAPABLE", 0),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -41,6 +45,7 @@ _SPEC: dict[str, tuple[str, int]] = {
 _BOUNDS: dict[str, tuple[int, int]] = {
     "max_output_tokens": (256, 1_000_000),
     "context_window": (1024, 10_000_000),
+    "vision_capable": (0, 1),
 }
 
 

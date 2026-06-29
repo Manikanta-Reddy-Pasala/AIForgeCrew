@@ -225,7 +225,15 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             recall_ctx = _memory_recall(cwd, raw_prompt)
         except Exception:  # noqa: BLE001
             recall_ctx = ""
-    parts = [p for p in (rules_ctx, repo_ctx, recall_ctx, convo) if p]
+    # SESSION IMAGES — descriptions of attached images, queryable all session.
+    img_ctx = ""
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_media
+            img_ctx = chat_media.context_block(session_id)
+        except Exception:  # noqa: BLE001
+            img_ctx = ""
+    parts = [p for p in (rules_ctx, repo_ctx, recall_ctx, img_ctx, convo) if p]
     prompt = ("\n\n".join(parts) + f"\n\nCURRENT REQUEST:\n{prompt}"
               if parts else prompt)
 

@@ -2309,6 +2309,10 @@ def orchestrator_model_set(body: _ChatModelBody) -> dict:
 class _RuntimeSettingsBody(BaseModel):
     max_output_tokens: int | None = Field(None, ge=256, le=1_000_000)
     context_window: int | None = Field(None, ge=1024, le=10_000_000)
+    # 0/1 — force-treat the chat model as vision-capable (auto-detect still
+    # applies when 0). Lets the user enable image Q&A for a self-hosted
+    # multimodal model the allowlist doesn't recognise.
+    vision_capable: int | None = Field(None, ge=0, le=1)
 
 
 @app.get("/api/runtime/llm-settings")
@@ -2410,6 +2414,74 @@ def chat_session_delete(session_id: int) -> None:
     chat_runs.finish(session_id)
     if not chat_store.delete_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
+
+
+# ── Chat image attachments (upload + describe + query across the session) ─────
+
+@app.post("/api/chat/sessions/{session_id}/media", status_code=201)
+async def chat_media_upload(session_id: int, file: UploadFile = File(...)) -> dict:
+    """Attach an image to a chat session: save it to the session's media
+    folder, auto-caption it when the model is vision-capable, and store the
+    row. The description is what makes it queryable later in the session."""
+    from aiforge_core.runtime import chat_media, chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    raw = await file.read()
+    saved = chat_media.save_image(session_id, file.filename or "image", raw)
+    if not saved.get("ok"):
+        raise HTTPException(400, saved.get("error", "invalid image"))
+    role = (chat_store.get_session(session_id) or {}).get("role") or "chat"
+    try:
+        desc = chat_media.describe_image(saved["path"], role)
+    except Exception:  # noqa: BLE001 — describe is best-effort
+        desc = ""
+    row = chat_store.add_media(session_id, saved["filename"], saved["path"],
+                               mime=saved["mime"], description=desc)
+    row["auto_described"] = bool(desc)
+    return row
+
+
+@app.get("/api/chat/sessions/{session_id}/media")
+def chat_media_list(session_id: int) -> dict:
+    from aiforge_core.runtime import chat_media, chat_store
+    return {"media": chat_store.list_media(session_id),
+            "vision": chat_media.vision_enabled(
+                (chat_store.get_session(session_id) or {}).get("role") or "chat")}
+
+
+class _MediaDescBody(BaseModel):
+    description: str = Field("", description="user caption / edited description")
+
+
+@app.patch("/api/chat/media/{media_id}")
+def chat_media_describe(media_id: int, body: _MediaDescBody) -> dict:
+    from aiforge_core.runtime import chat_store
+    row = chat_store.set_media_description(media_id, body.description)
+    if row is None:
+        raise HTTPException(404, f"media {media_id} not found")
+    return row
+
+
+@app.delete("/api/chat/media/{media_id}", status_code=204)
+def chat_media_delete(media_id: int) -> None:
+    from aiforge_core.runtime import chat_store
+    row = chat_store.delete_media(media_id)
+    if row is None:
+        raise HTTPException(404, f"media {media_id} not found")
+    try:  # best-effort unlink the file
+        if row.get("path") and os.path.isfile(row["path"]):
+            os.remove(row["path"])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.get("/api/chat/media/{media_id}/raw")
+def chat_media_raw(media_id: int) -> FileResponse:
+    from aiforge_core.runtime import chat_store
+    row = chat_store.get_media(media_id)
+    if row is None or not os.path.isfile(row.get("path") or ""):
+        raise HTTPException(404, "media not found")
+    return FileResponse(row["path"], media_type=row.get("mime") or "image/png")
 
 
 def _step_digest(steps: list) -> str:

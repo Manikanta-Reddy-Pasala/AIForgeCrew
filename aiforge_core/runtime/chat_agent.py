@@ -1593,12 +1593,32 @@ def run_chat_agent(
     recall = _memory_recall(cwd, last_user)
     if recall:
         sys_msg += "\n\n" + recall
+    # SESSION IMAGES: descriptions of images the user attached, so the (maybe
+    # text-only) model can answer questions about them all session long.
+    _img_blocks: list[dict] = []
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_media
+            _img_ctx = chat_media.context_block(session_id)
+            if _img_ctx:
+                sys_msg += "\n\n" + _img_ctx
+            _img_blocks = chat_media.image_blocks_for_turn(session_id, role)
+        except Exception:  # noqa: BLE001 — images must never break a turn
+            _img_blocks = []
     sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
     convo: list[dict] = [{"role": "system", "content": sys_msg}]
     for m in messages:
         r = m.get("role") or "user"
         convo.append({"role": "assistant" if r == "assistant" else "user",
                       "content": m.get("content") or ""})
+    # When the model is vision-capable, fold the actual images into the latest
+    # user turn (multimodal content) so it can SEE them, not just their text.
+    if _img_blocks:
+        for _m in reversed(convo):
+            if _m.get("role") == "user":
+                _m["content"] = [{"type": "text", "text": _m.get("content") or ""},
+                                 *_img_blocks]
+                break
 
     action_counts: dict[str, int] = {}
     recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)

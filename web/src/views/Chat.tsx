@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, chatMediaRawURL, ChatMedia, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 import { IntegrationsPanel } from '../components/Integrations';
@@ -285,6 +285,33 @@ export default function Chat() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [msgsLoading, setMsgsLoading] = useState(false);
 
+  // Attached images for this session (+ whether the model can see them).
+  const [media, setMedia] = useState<ChatMedia[]>([]);
+  const [mediaVision, setMediaVision] = useState(false);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const mediaInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function loadMedia(id: number) {
+    try {
+      const r = await chatMediaList(id);
+      setMedia(r.media); setMediaVision(r.vision);
+    } catch { /* best-effort */ }
+  }
+  async function uploadMedia(files: FileList | null) {
+    if (!files || !files.length || activeId === null) return;
+    setUploadingMedia(true);
+    try {
+      for (const f of Array.from(files)) {
+        if (!f.type.startsWith('image/')) { toast.error(`${f.name}: not an image`); continue; }
+        await chatMediaUpload(activeId, f);
+      }
+      await loadMedia(activeId);
+      toast.success('Image attached');
+    } catch (e: any) {
+      toast.error(`Upload failed: ${e.message}`);
+    } finally { setUploadingMedia(false); }
+  }
+
   // Live turn (the assistant response being streamed right now)
   const [liveTurn, setLiveTurn] = useState<LiveTurn | null>(null);
 
@@ -484,9 +511,11 @@ export default function Chat() {
     setMsgsLoading(true);
     setMessages([]);
     setLiveTurn(null);
+    setMedia([]);               // reset attachments while the session loads
     setPendingApproval(null);   // don't carry a card across sessions/loads
     setPlanReady(null);         // don't let session A's plan execute in session B
     setCheckpoints(null);
+    loadMedia(id);              // pull this session's attached images
     try {
       const res = await chatApi.sessionGet(id);
       setMessages(res.messages);
@@ -640,6 +669,7 @@ export default function Chat() {
       activeIdRef.current = session.id;
       setMessages([]);
       setLiveTurn(null);
+      setMedia([]);                // fresh chat → no attachments yet
       setBusy(false);              // a fresh chat is never mid-run
       setPendingApproval(null);
       return session.id;
@@ -1523,7 +1553,14 @@ export default function Chat() {
               )}
             </div>
 
+            <MediaStrip media={media} vision={mediaVision}
+                        onDescribe={async (id, d) => { await chatMediaDescribe(id, d); if (activeId !== null) loadMedia(activeId); }}
+                        onDelete={async (id) => { await chatMediaDelete(id); if (activeId !== null) loadMedia(activeId); }} />
+
             <div className="chat-composer">
+              <input ref={mediaInputRef} type="file" accept="image/*" multiple
+                     style={{ display: 'none' }}
+                     onChange={e => { uploadMedia(e.target.files); e.target.value = ''; }} />
               <div style={{ display: 'flex', gap: 6 }}>
                 <textarea
                   ref={textareaRef}
@@ -1541,6 +1578,11 @@ export default function Chat() {
                   onKeyDown={onKey}
                   style={{ flex: 1 }}
                 />
+                <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
+                        title="Attach image(s) to this chat — described + queryable all session"
+                        style={{ whiteSpace: 'nowrap' }}>
+                  {uploadingMedia ? '…' : '🖼'}
+                </button>
                 {busy && (
                   <button onClick={stopRun} className="danger"
                           title="Stop all agents + processes for this run"
@@ -1870,6 +1912,50 @@ function AutoApprovalsPanel() {
 }
 
 // ── AssistantBubble — renders steps + final text ──────────────────────────────
+
+// Thumbnail strip of images attached to the session. Each shows the image, an
+// editable description (what makes it queryable when the model can't see it),
+// and a delete. A note clarifies whether the model can actually see images.
+function MediaStrip({ media, vision, onDescribe, onDelete }: {
+  media: ChatMedia[];
+  vision: boolean;
+  onDescribe: (id: number, d: string) => void;
+  onDelete: (id: number) => void;
+}) {
+  if (!media.length) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '6px 0' }}>
+      <div className="xs muted">
+        {media.length} image{media.length === 1 ? '' : 's'} in this session ·{' '}
+        {vision ? 'model can see them' : 'model reads the descriptions (not vision-capable)'}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {media.map(m => (
+          <div key={m.id} style={{ display: 'flex', gap: 6, alignItems: 'flex-start',
+                                    border: '1px solid var(--border-1)', borderRadius: 6, padding: 6, maxWidth: 320 }}>
+            <a href={chatMediaRawURL(m.id)} target="_blank" rel="noreferrer">
+              <img src={chatMediaRawURL(m.id)} alt={m.filename}
+                   style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4 }} />
+            </a>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="xs" style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.filename}</div>
+              <textarea
+                defaultValue={m.description}
+                placeholder={vision ? 'description (auto/edit)…' : 'describe this image so it can be asked about…'}
+                onBlur={e => { if (e.target.value !== m.description) onDescribe(m.id, e.target.value); }}
+                rows={2}
+                style={{ width: '100%', fontSize: 11, resize: 'vertical', marginTop: 2 }}
+              />
+            </div>
+            <button className="ghost xs" title="Remove image"
+                    style={{ padding: '0 4px', cursor: 'pointer' }}
+                    onClick={() => onDelete(m.id)}>✕</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function AssistantBubble({
   text,

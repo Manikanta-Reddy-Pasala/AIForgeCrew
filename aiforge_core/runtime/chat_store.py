@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS chat_messages_session ON chat_messages(session_id, id);
+CREATE TABLE IF NOT EXISTS chat_media (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    filename    TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    mime        TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS chat_media_session ON chat_media(session_id, id);
 """
 
 _NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
@@ -184,6 +194,7 @@ def rename_session(session_id: int, title: str) -> "dict | None":
 
 def delete_session(session_id: int) -> bool:
     with _conn() as c:
+        c.execute("DELETE FROM chat_media WHERE session_id=?", (session_id,))
         c.execute("DELETE FROM chat_messages WHERE session_id=?", (session_id,))
         cur = c.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
     return cur.rowcount > 0
@@ -194,8 +205,68 @@ def delete_all_sessions() -> int:
     so new sessions start at 1. Returns the count of sessions deleted."""
     with _conn() as c:
         n = c.execute("SELECT COUNT(*) FROM chat_sessions").fetchone()[0]
+        c.execute("DELETE FROM chat_media")
         c.execute("DELETE FROM chat_messages")
         c.execute("DELETE FROM chat_sessions")
         c.execute("DELETE FROM sqlite_sequence WHERE name IN "
-                  "('chat_sessions', 'chat_messages')")
+                  "('chat_sessions', 'chat_messages', 'chat_media')")
     return int(n or 0)
+
+
+# ── Chat media (uploaded images + their descriptions) ─────────────────────────
+
+def _media_row(r: sqlite3.Row) -> dict:
+    return {"id": r["id"], "session_id": r["session_id"],
+            "filename": r["filename"], "path": r["path"],
+            "mime": r["mime"], "description": r["description"],
+            "created_at": _iso(r["created_at"])}
+
+
+def add_media(session_id: int, filename: str, path: str,
+              mime: str = "", description: str = "") -> dict:
+    with _LOCK, _conn() as c:
+        cur = c.execute(
+            "INSERT INTO chat_media(session_id, filename, path, mime, description) "
+            "VALUES (?,?,?,?,?)",
+            (session_id, filename, path, mime or "", description or ""),
+        )
+        c.execute(f"UPDATE chat_sessions SET updated_at={_NOW} WHERE id=?",
+                  (session_id,))
+        r = c.execute("SELECT * FROM chat_media WHERE id=?",
+                      (cur.lastrowid,)).fetchone()
+    return _media_row(r)
+
+
+def list_media(session_id: int) -> list[dict]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM chat_media WHERE session_id=? ORDER BY id",
+            (session_id,)).fetchall()
+    return [_media_row(r) for r in rows]
+
+
+def get_media(media_id: int) -> "dict | None":
+    with _conn() as c:
+        r = c.execute("SELECT * FROM chat_media WHERE id=?",
+                      (media_id,)).fetchone()
+    return _media_row(r) if r else None
+
+
+def set_media_description(media_id: int, description: str) -> "dict | None":
+    with _conn() as c:
+        c.execute("UPDATE chat_media SET description=? WHERE id=?",
+                  (description or "", media_id))
+        r = c.execute("SELECT * FROM chat_media WHERE id=?",
+                      (media_id,)).fetchone()
+    return _media_row(r) if r else None
+
+
+def delete_media(media_id: int) -> "dict | None":
+    """Delete the row, returning it (so the caller can unlink the file)."""
+    with _conn() as c:
+        r = c.execute("SELECT * FROM chat_media WHERE id=?",
+                      (media_id,)).fetchone()
+        if r is None:
+            return None
+        c.execute("DELETE FROM chat_media WHERE id=?", (media_id,))
+    return _media_row(r)

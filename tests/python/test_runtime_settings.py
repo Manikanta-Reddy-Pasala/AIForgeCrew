@@ -19,8 +19,10 @@ def rs(monkeypatch, tmp_path):
 def test_defaults(rs):
     assert rs.get("max_output_tokens") == 32768
     assert rs.get("context_window") == 131072
+    assert rs.get("vision_capable") == 0
     assert rs.all_settings() == {
-        "max_output_tokens": 32768, "context_window": 131072}
+        "max_output_tokens": 32768, "context_window": 131072,
+        "vision_capable": 0}
 
 
 def test_env_overrides_default(rs, monkeypatch):

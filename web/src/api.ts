@@ -23,9 +23,9 @@ export const api = {
   health:   () => j<any>('/health'),
   agents:   () => j<any[]>('/agents'),
   llmSettings: () =>
-    j<{ max_output_tokens: number; context_window: number }>('/runtime/llm-settings'),
-  setLlmSettings: (vals: { max_output_tokens?: number; context_window?: number }) =>
-    j<{ max_output_tokens: number; context_window: number }>('/runtime/llm-settings', {
+    j<{ max_output_tokens: number; context_window: number; vision_capable: number }>('/runtime/llm-settings'),
+  setLlmSettings: (vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number }) =>
+    j<{ max_output_tokens: number; context_window: number; vision_capable: number }>('/runtime/llm-settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(vals),
@@ -478,6 +478,33 @@ export function chatSessionMessageURL(id: number): string {
 // event is {type:'attached', running} so the client knows if anything is live.
 export function chatSessionAttachURL(id: number): string {
   return `${BASE}/chat/sessions/${id}/attach`;
+}
+
+// ── Chat image attachments ────────────────────────────────────────────────
+export interface ChatMedia {
+  id: number; session_id: number; filename: string; path: string;
+  mime: string; description: string; created_at: string; auto_described?: boolean;
+}
+export function chatMediaUpload(sessionId: number, file: File): Promise<ChatMedia> {
+  const fd = new FormData();
+  fd.append('file', file);
+  return fetch(`${BASE}/chat/sessions/${sessionId}/media`, { method: 'POST', body: fd })
+    .then(async r => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `upload failed (${r.status})`); return r.json(); });
+}
+export function chatMediaList(sessionId: number): Promise<{ media: ChatMedia[]; vision: boolean }> {
+  return j(`/chat/sessions/${sessionId}/media`);
+}
+export function chatMediaDescribe(mediaId: number, description: string): Promise<ChatMedia> {
+  return j(`/chat/media/${mediaId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description }),
+  });
+}
+export function chatMediaDelete(mediaId: number): Promise<void> {
+  return fetch(`${BASE}/chat/media/${mediaId}`, { method: 'DELETE' }).then(() => undefined);
+}
+export function chatMediaRawURL(mediaId: number): string {
+  return `${BASE}/chat/media/${mediaId}/raw`;
 }
 
 // Stop the in-flight run for a session (halts agents + kills subprocesses).

@@ -874,6 +874,7 @@ function OrchestratorModelCard() {
 function LlmSettingsCard() {
   const [out, setOut] = useState<number | ''>('');
   const [ctx, setCtx] = useState<number | ''>('');
+  const [vis, setVis] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -881,21 +882,23 @@ function LlmSettingsCard() {
     api.llmSettings().then(s => {
       setOut(s.max_output_tokens);
       setCtx(s.context_window);
+      setVis(!!s.vision_capable);
     }).catch(() => { /* endpoint optional on old API */ })
       .finally(() => setLoaded(true));
   }, []);
 
   async function save() {
-    const vals: { max_output_tokens?: number; context_window?: number } = {};
+    const vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number } = {};
     if (typeof out === 'number') vals.max_output_tokens = out;
     if (typeof ctx === 'number') vals.context_window = ctx;
-    if (!vals.max_output_tokens && !vals.context_window) return;
+    vals.vision_capable = vis ? 1 : 0;
     setBusy(true);
     try {
       const s = await api.setLlmSettings(vals);
       setOut(s.max_output_tokens);
       setCtx(s.context_window);
-      toast.success('LLM token settings saved');
+      setVis(!!s.vision_capable);
+      toast.success('LLM settings saved');
     } catch (e: any) {
       toast.error(`Save failed: ${e?.message || 'unknown'}`);
     } finally {
@@ -932,6 +935,12 @@ function LlmSettingsCard() {
             onChange={e => setCtx(e.target.value === '' ? '' : Number(e.target.value))}
             style={{ width: 160 }}
           />
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+               title="Force-treat the chat model as vision-capable so attached chat images are sent to it. Auto-detected for known models (gpt-4o, gemini, qwen-vl…); enable here for a self-hosted multimodal model.">
+          <input type="checkbox" checked={vis} disabled={busy || !loaded}
+                 onChange={e => setVis(e.target.checked)} />
+          <span className="small muted">Model supports vision (images)</span>
         </label>
         <button className="btn" onClick={save} disabled={busy || !loaded}>
           {busy ? 'Saving…' : 'Save'}
