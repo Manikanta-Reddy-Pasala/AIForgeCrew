@@ -212,11 +212,39 @@ def _t_file_read(args: dict, cwd: str) -> dict:
     return {"ok": True, "content": p.read_text(encoding="utf-8", errors="replace")}
 
 
+# Code extensions where a syntax check is meaningful (so we never reject a
+# legit prose/data file for unbalanced braces). The guard is brace-balance for
+# most, compile() for .py.
+_SYNTAX_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".kts",
+                ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".php",
+                ".rb", ".swift", ".scala")
+
+
+def _syntax_check(path: str, content: str, args: dict) -> "str | None":
+    """Return an error string if ``content`` is broken code, else None. Only
+    runs for known code extensions, skips empty files, and honours force:true."""
+    if args.get("force") or not content.strip():
+        return None
+    if not str(path).lower().endswith(_SYNTAX_EXTS):
+        return None
+    try:
+        from aiforge_core.runtime.syntax_guard import validate_syntax
+        ok, err = validate_syntax(path, content)
+        return None if ok else err
+    except Exception:  # noqa: BLE001 — never let the guard break a write
+        return None
+
+
 def _t_file_write(args: dict, cwd: str) -> dict:
     p = _resolve(cwd, args["path"])
+    content = args.get("content", "")
+    bad = _syntax_check(str(p), content, args)
+    if bad:
+        return {"ok": False, "error": "syntax_invalid", "detail": bad,
+                "hint": "fix the syntax, or pass force:true to write anyway"}
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(args.get("content", ""), encoding="utf-8")
-    return {"ok": True, "path": str(p), "bytes": len(args.get("content", ""))}
+    p.write_text(content, encoding="utf-8")
+    return {"ok": True, "path": str(p), "bytes": len(content)}
 
 
 def _t_file_patch(args: dict, cwd: str) -> dict:
@@ -230,7 +258,12 @@ def _t_file_patch(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": "old_text_not_found"}
     if n > 1:
         return {"ok": False, "error": "ambiguous_match", "occurrences": n}
-    p.write_text(body.replace(old, args["new_text"], 1), encoding="utf-8")
+    new_body = body.replace(old, args["new_text"], 1)
+    bad = _syntax_check(str(p), new_body, args)
+    if bad:
+        return {"ok": False, "error": "syntax_invalid", "detail": bad,
+                "hint": "the edit would break the file; fix it or pass force:true"}
+    p.write_text(new_body, encoding="utf-8")
     return {"ok": True, "path": str(p)}
 
 
@@ -777,6 +810,12 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
             return {"ok": False, "error": f"edit #{i}: old_str appears {cnt}× in "
                     f"{path} — pass replace_all:true or make it unique"}
         pending[ap] = body.replace(old, new) if e.get("replace_all") else body.replace(old, new, 1)
+    # Syntax-guard each resulting code file (skipped for non-code / force:true).
+    for ap, content in pending.items():
+        bad = _syntax_check(ap, content, args)
+        if bad:
+            return {"ok": False, "error": "syntax_invalid", "file": rel_of.get(ap, ap),
+                    "detail": bad, "hint": "fix the edit or pass force:true"}
     plans = list(pending.items())
     # Phase 2 — all validated, write them.
     written = []
@@ -1117,8 +1156,8 @@ ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
 - file_read    {{"path": "rel/or/abs"}}
-- file_write   {{"path": "...", "content": "..."}}      (creates/overwrites)
-- file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}
+- file_write   {{"path": "...", "content": "..."}}      (creates/overwrites; code is syntax-checked before it lands — pass "force": true to override)
+- file_patch   {{"path": "...", "old_text": "...", "new_text": "..."}}   (syntax-checked result; "force": true overrides)
 - multi_edit   {{"edits": [{{"path":"a.py","old_str":"foo","new_str":"bar"}}, {{"path":"b.py","old_str":"x","new_str":"y","replace_all":true}}]}}
                 (apply several find/replace edits across one or MANY files in ONE call — validated first, then all-or-nothing)
 - list_dir     {{"path": "."}}
