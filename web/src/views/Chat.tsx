@@ -4,6 +4,17 @@ import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionS
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
+// Header overflow-menu item styles.
+const menuBtn: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
+  background: 'none', border: 'none', padding: '7px 10px', borderRadius: 6,
+  fontSize: 13, color: 'var(--fg-1)', cursor: 'pointer',
+};
+const menuItem: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px',
+  fontSize: 13, color: 'var(--fg-1)', cursor: 'pointer',
+};
+
 // ── types ──────────────────────────────────────────────────────────────────────
 
 type AgentStep =
@@ -421,6 +432,17 @@ export default function Chat() {
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  // Header overflow menu (secondary session actions).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [menuOpen]);
   // Aborts the in-flight chat stream (Stop button + cleanup on
   // unmount / session switch so a half-streamed turn doesn't leak).
   const abortRef = useRef<AbortController | null>(null);
@@ -1237,17 +1259,24 @@ export default function Chat() {
       <div className="chat-v2-main">
         {/* Topbar */}
         <div className="chat-topbar">
-          <div className="row">
-            <span className="topbar-title" style={{ fontSize: 'var(--fs-md)' }}>
-              {activeSession ? activeSession.title || 'Untitled' : 'Agent Chat'}
-            </span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}>
+            {/* Title — click to rename (no separate button). */}
+            <button
+              onClick={() => activeSession && setRenaming({ id: activeSession.id, value: activeSession.title })}
+              disabled={!activeSession}
+              title={activeSession ? 'Click to rename' : undefined}
+              style={{ background: 'none', border: 'none', padding: 0, cursor: activeSession ? 'pointer' : 'default',
+                       fontSize: 'var(--fs-md)', fontWeight: 600, color: 'var(--fg-1)',
+                       textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              {activeSession ? (activeSession.title || 'Untitled') : 'Agent Chat'}
+            </button>
             {activeSession && (
-              <span className="xs muted" style={{ fontFamily: 'var(--font-mono)' }}
-                    title={activeSession.cwd || 'default workspace'}>
-                {/* M1: show the session's working directory (was static text) */}
+              <span className="xs muted" title={activeSession.cwd || 'default workspace'}
+                    style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 📁 {activeSession.cwd
-                  ? (activeSession.cwd.length > 42 ? '…' + activeSession.cwd.slice(-40) : activeSession.cwd)
-                  : 'default workspace'} · reads & writes files
+                  ? (activeSession.cwd.length > 48 ? '…' + activeSession.cwd.slice(-46) : activeSession.cwd)
+                  : 'default workspace'}
               </span>
             )}
           </div>
@@ -1277,47 +1306,6 @@ export default function Chat() {
                 Team (full flow)
               </button>
             </div>
-
-            {/* Review edits (Gap D): hold every file edit for Approve/Reject.
-                Not honored in team mode — disable so the user isn't misled. */}
-            <label
-              className={reviewEdits && chatMode !== 'team' ? 'chat-review-pill active' : 'chat-review-pill'}
-              title={chatMode === 'team'
-                ? 'Review edits is not supported in team mode (only simple/plan).'
-                : 'Review edits: pause before every file write/patch and show a diff for you to Approve or Reject before it lands.'}
-              style={{ display: 'flex', alignItems: 'center', gap: 5,
-                       fontSize: 'var(--fs-xs)',
-                       color: chatMode === 'team'
-                         ? 'var(--fg-3)'
-                         : (reviewEdits ? 'var(--accent, #6366f1)' : 'var(--fg-2)'),
-                       cursor: chatMode === 'team' ? 'not-allowed' : 'pointer',
-                       opacity: chatMode === 'team' ? 0.5 : 1 }}
-            >
-              <input
-                type="checkbox"
-                checked={reviewEdits && chatMode !== 'team'}
-                onChange={e => setReviewEdits(e.target.checked)}
-                disabled={busy || chatMode === 'team'}
-              />
-              Review edits
-            </label>
-
-            {/* Team-mode: force the full pipeline (no triage fast-path) */}
-            {chatMode === 'team' && (
-              <label
-                title="Run every agent (enhancer→research→planner→verifiers→doer→…) instead of letting triage fast-path trivial requests straight to the Doer."
-                style={{ display: 'flex', alignItems: 'center', gap: 5,
-                         fontSize: 'var(--fs-xs)', color: 'var(--fg-2)', cursor: 'pointer' }}
-              >
-                <input
-                  type="checkbox"
-                  checked={fullPipeline}
-                  onChange={e => toggleFullPipeline(e.target.checked)}
-                  disabled={busy}
-                />
-                Force full pipeline
-              </label>
-            )}
 
             {/* Model selector — less relevant in team mode, so hide it */}
             {chatMode !== 'team' && (
@@ -1397,42 +1385,56 @@ export default function Chat() {
               </label>
             )}
 
-            {/* Always-available kill switch — recovers a wedged run that left a
-                session stuck busy or a new chat waiting on the team lock. */}
-            <button
-              className="ghost sm"
-              style={{ color: 'var(--warn, #f59e0b)' }}
-              onClick={killAll}
-              title="Force-stop every chat run and release the team lock — use if a new chat says a process is still running"
-            >
-              ⚠ Reset
-            </button>
-
-            {activeSession && (
-              <>
-                <button
-                  className="ghost sm"
-                  onClick={openCheckpoints}
-                  title="Workspace checkpoints — roll back this session's edits"
-                >
-                  ↶ Checkpoints
-                </button>
-                <button
-                  className="ghost sm"
-                  onClick={() => setRenaming({ id: activeSession.id, value: activeSession.title })}
-                  title="Rename this conversation"
-                >
-                  Rename
-                </button>
-                <button
-                  className="ghost sm"
-                  style={{ color: 'var(--err)' }}
-                  onClick={() => deleteSession(activeSession.id)}
-                >
-                  Delete
-                </button>
-              </>
-            )}
+            {/* Secondary actions tucked into an overflow menu — keeps the
+                header calm (just mode + model + ⋯). */}
+            <div ref={menuRef} style={{ position: 'relative' }}>
+              <button className="ghost sm" onClick={() => setMenuOpen(o => !o)}
+                      title="More" aria-label="More actions"
+                      style={{ fontSize: 18, lineHeight: 1, padding: '2px 8px' }}>⋯</button>
+              {menuOpen && (
+                <div role="menu" style={{
+                  position: 'absolute', right: 0, top: '110%', zIndex: 40, minWidth: 210,
+                  background: 'var(--bg-0)', border: '1px solid var(--border-1)',
+                  borderRadius: 8, padding: 6, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+                  display: 'flex', flexDirection: 'column', gap: 2,
+                }}>
+                  {/* Review edits — only meaningful in simple/plan */}
+                  <label className="chat-menu-item" title="Pause before every file write and show a diff to Approve/Reject."
+                         style={menuItem}>
+                    <input type="checkbox" checked={reviewEdits && chatMode !== 'team'}
+                           onChange={e => setReviewEdits(e.target.checked)}
+                           disabled={busy || chatMode === 'team'} />
+                    Review edits before they land
+                  </label>
+                  {chatMode === 'team' && (
+                    <label className="chat-menu-item" title="Run every agent instead of letting triage fast-path trivial requests."
+                           style={menuItem}>
+                      <input type="checkbox" checked={fullPipeline}
+                             onChange={e => toggleFullPipeline(e.target.checked)} disabled={busy} />
+                      Force full pipeline
+                    </label>
+                  )}
+                  {activeSession && (
+                    <button style={menuBtn} onClick={() => { setMenuOpen(false); openCheckpoints(); }}>
+                      ↶ Checkpoints
+                    </button>
+                  )}
+                  <button style={menuBtn} onClick={() => { setMenuOpen(false); killAll(); }}
+                          title="Force-stop every run + release the team lock">
+                    ⚠ Reset stuck runs
+                  </button>
+                  {activeSession && (
+                    <>
+                      <div style={{ height: 1, background: 'var(--border-1)', margin: '4px 0' }} />
+                      <button style={{ ...menuBtn, color: 'var(--err)' }}
+                              onClick={() => { setMenuOpen(false); deleteSession(activeSession.id); }}>
+                        🗑 Delete conversation
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

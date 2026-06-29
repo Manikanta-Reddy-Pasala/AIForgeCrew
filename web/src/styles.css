@@ -1593,3 +1593,7 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   --error-bg: var(--bg-3);
   --error-border: var(--err);
 }
+
+/* Chat header overflow menu — hover affordance */
+[role="menu"] > button:hover,
+[role="menu"] > label:hover { background: var(--bg-2); }
