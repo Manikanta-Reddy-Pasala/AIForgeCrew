@@ -48,6 +48,7 @@ type LiveTurn = {
   awaiting?: boolean;   // agent asked a question — waiting for your reply
   subtasks?: SubtaskItem[];   // Planner decomposition (team mode)
   captured?: CapturedItem[];  // Rule/Memory/Feedback captured this turn
+  usage?: { pct: number; chars: number; budget: number };  // context-window fill
 };
 
 const SUBTASK_COLORS: Record<string, string> = {
@@ -629,9 +630,9 @@ export default function Chat() {
 
   // ── Create a new session ──────────────────────────────────────────────────
 
-  async function createSession(): Promise<number | null> {
+  async function createSession(cwd?: string): Promise<number | null> {
     try {
-      const session = await chatApi.sessionCreate();
+      const session = await chatApi.sessionCreate(cwd ? { cwd } : undefined);
       setSessions(prev => [session, ...prev]);
       abortRef.current?.abort();   // drop any stream still tied to the old session
       abortRef.current = null;
@@ -650,6 +651,15 @@ export default function Chat() {
 
   async function handleNewChat() {
     await createSession();
+    setTimeout(() => textareaRef.current?.focus(), 50);
+  }
+
+  // M1: new chat with an explicit working directory (the agent reads/writes
+  // there). Blank = default isolated workspace.
+  async function handleNewChatHere() {
+    const dir = window.prompt('Working directory for this chat (absolute path; blank = default workspace):', '');
+    if (dir === null) return;   // cancelled
+    await createSession(dir.trim() || undefined);
     setTimeout(() => textareaRef.current?.focus(), 50);
   }
 
@@ -749,6 +759,32 @@ export default function Chat() {
         return;
       }
       if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);
+
+      // M4: a gate that timed out while the user was away — clear the card and
+      // leave an inline note so it's not a silent auto-reject.
+      if (evt.type === 'approval_expired') {
+        setPendingApproval(null);
+        setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps,
+          { kind: 'thought' as const, role: 'system',
+            text: `⏲ approval for ${evt.name} expired — action was not run` }] } : prev);
+        return;
+      }
+
+      // M5: an auto-approved (captured-flag) action — render the audit pill
+      // the backend emits for attributability (was dropped before).
+      if (evt.type === 'auto_approved') {
+        setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps,
+          { kind: 'thought' as const, role: 'system',
+            text: `⚡ auto-approved ${evt.name} (flag: ${evt.flag}${evt.scope ? ` · ${evt.scope}` : ''})` }] } : prev);
+        return;
+      }
+
+      // M3: context-window usage — keep the latest on the live turn for the
+      // footer meter.
+      if (evt.type === 'usage') {
+        setLiveTurn(prev => prev ? { ...prev, usage: { pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars } } : prev);
+        return;
+      }
 
       // Plan ready (Gap B): a plan-mode run produced an approvable spec.
       if (evt.type === 'plan_ready') {
@@ -1008,6 +1044,18 @@ export default function Chat() {
   // only valid while ACTUALLY running — not while a turn is awaiting the user's
   // reply, and not while an approval gate is open.
   const lastAssistantMsg = [...messages].reverse().find(m => m.role === 'assistant') || null;
+  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user') || null;
+  // M2: re-run the last request (re-asks; appends a fresh turn).
+  function regenerate() {
+    if (busy || !lastUserMsg?.content) return;
+    send(lastUserMsg.content);
+  }
+  // M2: pull the last user message back into the composer to edit + resend.
+  function editLastUser() {
+    if (busy || !lastUserMsg?.content) return;
+    setInput(lastUserMsg.content);
+    setTimeout(() => textareaRef.current?.focus(), 30);
+  }
   const isLastTurn = messages.length > 0 && lastAssistantMsg === messages[messages.length - 1];
   const persistedAwaiting = !!(isLastTurn && lastAssistantMsg && msgAwaiting(lastAssistantMsg));
   // The current turn is waiting for the user to answer — Enter/primary button
@@ -1038,6 +1086,9 @@ export default function Chat() {
           <button onClick={handleNewChat} disabled={busy} style={{ flex: 1 }}>
             <Icon.Plus size={13} /> New chat
           </button>
+          <button onClick={handleNewChatHere} disabled={busy}
+                  title="New chat with a specific working directory"
+                  style={{ padding: '0 8px' }}>📁</button>
           {sessions.length > 0 && (
             <button
               className="danger"
@@ -1128,8 +1179,12 @@ export default function Chat() {
               {activeSession ? activeSession.title || 'Untitled' : 'Agent Chat'}
             </span>
             {activeSession && (
-              <span className="xs muted" style={{ fontFamily: 'var(--font-mono)' }}>
-                reads & writes files · runs commands
+              <span className="xs muted" style={{ fontFamily: 'var(--font-mono)' }}
+                    title={activeSession.cwd || 'default workspace'}>
+                {/* M1: show the session's working directory (was static text) */}
+                📁 {activeSession.cwd
+                  ? (activeSession.cwd.length > 42 ? '…' + activeSession.cwd.slice(-40) : activeSession.cwd)
+                  : 'default workspace'} · reads & writes files
               </span>
             )}
           </div>
@@ -1362,6 +1417,7 @@ export default function Chat() {
                             id: s.id, category: s.category, scope: s.scope, text: s.text || '',
                             repo: s.repo, gate_intent: s.gate_intent,
                           }))}
+                          onRegenerate={msg === lastAssistantMsg && !busy ? regenerate : undefined}
                         />
                         {/* FE1: awaiting affordance survives loadSession — shown
                             on the last assistant turn when it ended awaiting. */}
@@ -1377,6 +1433,18 @@ export default function Chat() {
                     ) : (
                       <div className="bubble-body">
                         <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
+                        {/* M2: edit/copy the last user message */}
+                        {msg === lastUserMsg && !busy && (
+                          <div className="xs muted" style={{ marginTop: 4, display: 'flex', gap: 8 }}>
+                            <button className="ghost xs" title="Edit this message in the composer"
+                                    style={{ padding: '0 4px', cursor: 'pointer' }}
+                                    onClick={editLastUser}>✎ Edit</button>
+                            <button className="ghost xs" title="Copy"
+                                    style={{ padding: '0 4px', cursor: 'pointer' }}
+                                    onClick={() => navigator.clipboard?.writeText(msg.content).then(
+                                      () => toast.success('Copied'), () => {})}>⧉ Copy</button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1402,6 +1470,17 @@ export default function Chat() {
                         color: 'var(--accent, #2563eb)',
                       }}>
                         ❓ Waiting for your reply — answer below to continue.
+                      </div>
+                    )}
+                    {/* M3: context-window fill meter while streaming */}
+                    {liveTurn.streaming && liveTurn.usage && (
+                      <div className="xs muted" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}
+                           title={`~${Math.round(liveTurn.usage.chars / 1000)}k / ${Math.round(liveTurn.usage.budget / 1000)}k chars before auto-condense`}>
+                        <span style={{ width: 60, height: 4, background: 'var(--bg-2,#222)', borderRadius: 2, overflow: 'hidden' }}>
+                          <span style={{ display: 'block', height: '100%', width: `${liveTurn.usage.pct}%`,
+                                         background: liveTurn.usage.pct > 85 ? 'var(--err,#e5534b)' : 'var(--accent,#2563eb)' }} />
+                        </span>
+                        context {liveTurn.usage.pct}%
                       </div>
                     )}
                   </div>
@@ -1794,6 +1873,7 @@ function AssistantBubble({
   elapsedSec,
   subtasks,
   captured,
+  onRegenerate,
 }: {
   text: string;
   steps: AgentStep[];
@@ -1801,6 +1881,7 @@ function AssistantBubble({
   elapsedSec?: number;
   subtasks?: SubtaskItem[];
   captured?: CapturedItem[];
+  onRegenerate?: () => void;
 }) {
   // Agent steps collapse by default once the turn is done (keeps the chat
   // clean — the plan/subtasks + final answer are what matter); auto-expanded
@@ -1846,23 +1927,31 @@ function AssistantBubble({
           <div className="typing" style={{ padding: '4px 0' }}><span /><span /><span /></div>
         </div>
       )}
-      {elapsedSec !== undefined && (
-        <div style={{
-          marginTop: 6,
-          fontSize: 'var(--fs-xs)',
-          color: 'var(--fg-3)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
-          fontVariantNumeric: 'tabular-nums',
-        }}>
-          {streaming ? (
-            <span>⏱ {fmtElapsed(elapsedSec)}</span>
-          ) : (
-            <span className="muted xs">· {fmtElapsed(elapsedSec)}</span>
-          )}
-        </div>
-      )}
+      <div style={{
+        marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--fg-3)',
+        display: 'flex', alignItems: 'center', gap: 8,
+        fontVariantNumeric: 'tabular-nums',
+      }}>
+        {elapsedSec !== undefined && (streaming
+          ? <span>⏱ {fmtElapsed(elapsedSec)}</span>
+          : <span className="muted xs">· {fmtElapsed(elapsedSec)}</span>)}
+        {/* M2: copy the assistant's answer */}
+        {!streaming && text && (
+          <button className="ghost xs" title="Copy answer"
+                  style={{ padding: '0 4px', cursor: 'pointer' }}
+                  onClick={() => { navigator.clipboard?.writeText(text).then(
+                    () => toast.success('Copied'), () => toast.error('Copy failed')); }}>
+            ⧉ Copy
+          </button>
+        )}
+        {!streaming && onRegenerate && (
+          <button className="ghost xs" title="Re-run the previous request"
+                  style={{ padding: '0 4px', cursor: 'pointer' }}
+                  onClick={onRegenerate}>
+            ↻ Regenerate
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -1179,6 +1179,36 @@ _CONDENSE_OPEN = "<<AIFORGE_CTX_CONDENSED>>"
 _CONDENSE_CLOSE = "<</AIFORGE_CTX_CONDENSED>>"
 
 
+def _complete_cancellable(complete_fn, role, convo, session_id):
+    """Run the (synchronous, uncancellable) LLM call on a side thread so a Stop
+    can interrupt it. H1: previously the cancel flag was only checked between
+    ReAct steps, so on a slow local model Stop appeared dead for the WHOLE
+    generation (minutes). Now we poll the cancel token while the call runs and
+    return ``None`` the instant it's set — abandoning the call (it finishes in
+    the background, daemon thread, result ignored). No session → call inline."""
+    from aiforge_core.runtime import chat_cancel
+    if session_id is None:
+        return complete_fn(role, convo)
+    import threading as _th
+    box: dict = {}
+
+    def _call():
+        try:
+            box["out"] = complete_fn(role, convo)
+        except Exception as exc:  # noqa: BLE001 — surfaced on the main thread
+            box["err"] = exc
+
+    t = _th.Thread(target=_call, daemon=True)
+    t.start()
+    while t.is_alive():
+        if chat_cancel.is_cancelled(session_id):
+            return None      # abandon — caller sees cancel + stops the run
+        t.join(timeout=0.2)
+    if "err" in box:
+        raise box["err"]
+    return box.get("out")
+
+
 def _compress_prompt(text: str) -> str:
     """Squeeze whitespace bloat out of the assembled prompt before it hits the
     LLM — dense context fits a small local window better and costs fewer tokens
@@ -1208,13 +1238,26 @@ def _compress_prompt(text: str) -> str:
 
 
 def _ctx_budget_chars() -> int:
-    """Char budget for the running conversation before auto-condensing.
-    ~48k chars ≈ ~12k tokens — safe headroom under most context windows.
-    0 disables. Tunable via AIFORGE_CHAT_CONTEXT_BUDGET_CHARS."""
+    """Char budget for the running conversation before auto-condensing. 0
+    disables. Explicit override: AIFORGE_CHAT_CONTEXT_BUDGET_CHARS. Otherwise
+    SIZED TO THE CONFIGURED MODEL WINDOW (context_window tokens → ~4 chars/token,
+    keeping ~55% headroom for the system prompt + the model's own reply) instead
+    of a fixed 48k that's too high for a small window and needlessly low for a
+    big one."""
+    env = os.environ.get("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
     try:
-        return int(os.environ.get("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "48000"))
-    except ValueError:
-        return 48000
+        from aiforge_core.config import runtime_settings
+        win = int(runtime_settings.get("context_window"))
+        if win > 0:
+            return int(win * 4 * 0.55)
+    except Exception:  # noqa: BLE001
+        pass
+    return 48000
 
 
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18) -> list[dict]:
@@ -1235,19 +1278,39 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18) -> list[dict]:
     if not middle:
         return convo
     tools: list[str] = []
+    user_asks: list[str] = []
+    finals: list[str] = []
     for m in middle:
-        if m.get("role") == "assistant":
-            mt = _ACTION_RE.search(m.get("content") or "")
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if role == "assistant":
+            mt = _ACTION_RE.search(content)
             if mt:
                 tools.append(mt.group(1))
+            # An assistant FINAL (no ACTION:) is a substantive outcome — keep a
+            # short trace so the summary carries decisions, not just tool counts.
+            elif content and "ACTION:" not in content:
+                finals.append(content.replace("\n", " ")[:160])
+        elif role == "user" and content and not content.startswith("OBSERVATION:"):
+            user_asks.append(content.replace("\n", " ")[:120])
     import collections as _c
     used = ", ".join(f"{t}×{n}" for t, n in _c.Counter(tools).most_common(8)) \
         or "discussion + reads"
+    # Rolling SUMMARY of the dropped middle — earlier asks + outcomes, not just
+    # tool counts — so condensation doesn't erase what was discussed/decided
+    # (the agent stops "forgetting" the thread after a long session). Heuristic,
+    # no extra LLM call.
+    summary_bits: list[str] = []
+    if user_asks:
+        summary_bits.append("Earlier asks: " + " · ".join(user_asks[-5:]))
+    if finals:
+        summary_bits.append("Earlier outcomes: " + " · ".join(finals[-4:]))
+    summary = ("\n" + "\n".join(summary_bits)) if summary_bits else ""
     # Wrap the breadcrumb in a unique sentinel so the next condense can strip
     # exactly THIS block (not a look-alike phrase a rule/skill might contain).
     note = (f"{_CONDENSE_OPEN}\n"
             "[earlier conversation auto-condensed to fit the context window — "
-            f"{len(middle)} messages omitted. Work done so far: {used}. "
+            f"{len(middle)} messages omitted. Work done so far: {used}.{summary}\n"
             "Re-read a file or ask the user if you need detail from before "
             f"this point.]\n{_CONDENSE_CLOSE}")
     # Fold the breadcrumb INTO the system message rather than inserting a
@@ -1497,12 +1560,28 @@ def run_chat_agent(
             condensed_notified = True   # notify ONCE, not every over-budget turn
             yield {"type": "thought", "role": "system",
                    "text": "⚙ condensed earlier context to stay within the window"}
+        # M3: surface how full the context window is (char-estimate; ~4 chars/
+        # token) so the user can see they're approaching the condense point.
+        _ctx_chars = sum(len(m.get("content") or "") for m in convo)
+        _ctx_budget = _ctx_budget_chars()
+        if _ctx_budget > 0:
+            yield {"type": "usage", "context_chars": _ctx_chars,
+                   "budget_chars": _ctx_budget,
+                   "pct": min(100, round(_ctx_chars * 100 / _ctx_budget))}
         try:
-            out = complete_fn(role, convo)
+            out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
             yield {"type": "error", "text": f"llm error: {exc}"}
             yield {"type": "done"}
             return
+        # H1: Stop pressed DURING generation — the cancellable wrapper returned
+        # early (the abandoned LLM call finishes in the background, ignored).
+        if out is None:
+            if session_id is not None and chat_cancel.is_cancelled(session_id):
+                yield {"type": "error", "text": "stopped by user"}
+                yield {"type": "done"}
+                return
+            out = ""   # defensive — treat as empty turn
 
         # Stuck-output loop: identical model reply N times running. Rather
         # than just bailing, ASK the user for guidance (don't circle).
@@ -1641,6 +1720,11 @@ def run_chat_agent(
                 decision = {"decision": "reject", "note": "no session"}
             else:
                 decision = chat_approve.wait(session_id)
+            # M4: a gate left unanswered (user navigated away) auto-rejects on
+            # timeout — surface it explicitly so the UI shows "approval expired"
+            # instead of silently moving on with a rejected action.
+            if decision.get("note") == "approval timed out":
+                yield {"type": "approval_expired", "id": seq, "name": name}
             if decision.get("decision") != "approve":
                 result = {"ok": False, "rejected": True,
                           "error": "user rejected this action"

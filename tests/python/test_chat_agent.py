@@ -545,3 +545,55 @@ def test_run_chat_agent_blanket_becomes_observation(tmp_path):
     log = subprocess.run(["git", "log", "--oneline"], cwd=repo,
                          capture_output=True, text=True)
     assert log.returncode != 0 or log.stdout.strip() == ""
+
+
+# ── Backlog additions: usage event, cancellable LLM, condense summary ─────────
+
+def test_usage_event_emitted(tmp_path):
+    fn = _scripted(["THOUGHT: x\nFINAL: done"])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "hi"}], cwd=str(tmp_path), complete_fn=fn))
+    usage = [e for e in evs if e["type"] == "usage"]
+    assert usage and 0 <= usage[0]["pct"] <= 100
+    assert usage[0]["budget_chars"] > 0
+
+
+def test_cancellable_complete_returns_none_when_cancelled():
+    """H1: a cancel set while the LLM call runs makes the wrapper return None
+    promptly (the call is abandoned, not awaited to completion)."""
+    import threading
+    import time as _t
+    from aiforge_core.runtime import chat_cancel
+    sid = 77123
+    chat_cancel.start(sid)
+
+    def slow(role, messages, **kw):
+        _t.sleep(5)          # simulate a slow generation
+        return "FINAL: too late"
+
+    box = {}
+    def run():
+        box["out"] = ca._complete_cancellable(slow, "doer", [], sid)
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    _t.sleep(0.3)
+    chat_cancel.cancel(sid)  # Stop pressed mid-generation
+    th.join(timeout=2)
+    assert not th.is_alive(), "wrapper did not return promptly on cancel"
+    assert box["out"] is None
+    chat_cancel.finish(sid)
+
+
+def test_condense_summary_includes_earlier_asks(monkeypatch):
+    """A condensed middle carries earlier asks/outcomes, not just tool counts."""
+    monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "200")
+    convo = [{"role": "system", "content": "SYS"}]
+    convo.append({"role": "user", "content": "build the invoice exporter please"})
+    convo.append({"role": "assistant", "content": "ACTION: file_write\nfoo"})
+    for i in range(30):
+        convo.append({"role": "user", "content": f"OBSERVATION: {'x' * 50}"})
+        convo.append({"role": "assistant", "content": f"ACTION: grep\nq{i}"})
+    out = ca._compact_convo(convo, keep_recent=4)
+    sys_text = out[0]["content"]
+    assert "auto-condensed" in sys_text
+    assert "Earlier asks:" in sys_text and "invoice exporter" in sys_text
