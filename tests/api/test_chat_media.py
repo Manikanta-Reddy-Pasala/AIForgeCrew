@@ -135,3 +135,21 @@ def test_vision_probe_accepts_and_rejects(app_client, monkeypatch):
         raise RuntimeError("400 invalid image content for this model")
     monkeypatch.setattr(llm, "complete", _reject)
     assert chat_media._probe_vision("text-only-model", "chat") is False
+
+
+def test_analyze_attachment_handles_image_and_document(app_client):
+    """The shared analyser used by Jira/Confluence handles BOTH: a vision
+    caption for an image, extracted text for a document."""
+    from aiforge_core.runtime import chat_media
+    # Document (text) → extracted text becomes the description.
+    doc = chat_media.analyze_attachment("readme.txt", b"build then deploy",
+                                        mime="text/plain")
+    assert doc["filename"] == "readme.txt" and "build then deploy" in doc["description"]
+    # Image → routed to the vision path (no model in test → empty), but no crash.
+    img = chat_media.analyze_attachment("p.png", _PNG, mime="image/png")
+    assert img["filename"] == "p.png" and isinstance(img["description"], str)
+    # supported_attachment recognises images + docs, rejects video.
+    assert chat_media.supported_attachment("image/png", "a.png")
+    assert chat_media.supported_attachment("application/pdf", "a.pdf")
+    assert chat_media.supported_attachment("", "a.docx")
+    assert not chat_media.supported_attachment("video/mp4", "a.mp4")

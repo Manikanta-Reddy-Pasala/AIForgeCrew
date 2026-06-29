@@ -101,12 +101,14 @@ def _max_images() -> int:
         return 4
 
 
-def _fetch_images(attachments: list, role: str = "doer") -> list[dict]:
-    """Download image attachments + describe them (vision) so the agent can
-    analyse them as part of the task. Best-effort, capped, never raises."""
+def _fetch_attachments(attachments: list, role: str = "doer") -> list[dict]:
+    """Download issue attachments — images AND documents (pdf/xlsx/docx/text) —
+    and analyse them (vision caption for images, extracted text for docs) so the
+    agent can use them as part of the task. Best-effort, capped, never raises."""
     cap = _max_images()
     if cap <= 0 or not attachments:
         return []
+    from aiforge_core.runtime import chat_media
     out: list[dict] = []
     for a in attachments:
         if len(out) >= cap:
@@ -115,8 +117,8 @@ def _fetch_images(attachments: list, role: str = "doer") -> list[dict]:
             continue
         mime = (a.get("mimeType") or "").lower()
         url = a.get("content")
-        name = a.get("filename") or "image"
-        if not url or not mime.startswith("image/"):
+        name = a.get("filename") or "attachment"
+        if not url or not chat_media.supported_attachment(mime, name):
             continue
         try:
             got = _http.http_get_bytes(url, headers=_headers(),
@@ -125,9 +127,8 @@ def _fetch_images(attachments: list, role: str = "doer") -> list[dict]:
                 out.append({"filename": name, "description": "",
                             "error": got.get("error")})
                 continue
-            from aiforge_core.runtime import chat_media
-            info = chat_media.analyze_attachment(name, got["bytes"], role)
-            out.append(info)
+            out.append(chat_media.analyze_attachment(name, got["bytes"],
+                                                     role, mime=mime))
         except Exception as exc:  # noqa: BLE001
             out.append({"filename": name, "description": "", "error": str(exc)})
     return out
@@ -190,12 +191,12 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
            "labels": f.get("labels") or [],
            "description": (f.get("description") or "")[:_BODY_CAP],
            "comments": comments, "url": _issue_url(d.get("key", ""))}
-    # Pull image attachments + describe them so the agent analyses them as part
-    # of the task (opt out with images=false). Best-effort.
-    if _truthy(str(args.get("images", "true"))):
-        imgs = _fetch_images(f.get("attachment") or [])
-        if imgs:
-            out["images"] = imgs
+    # Pull attachments (images + documents) + analyse them so the agent uses
+    # them as part of the task (opt out with attachments=false). Best-effort.
+    if _truthy(str(args.get("attachments", args.get("images", "true")))):
+        atts = _fetch_attachments(f.get("attachment") or [])
+        if atts:
+            out["attachments"] = atts
     return out
 
 

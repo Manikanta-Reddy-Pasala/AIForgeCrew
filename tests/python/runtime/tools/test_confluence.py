@@ -149,39 +149,41 @@ def test_writes_default_to_ask_policy(monkeypatch):
     assert tool_policy.decide("confluence_update", {})["policy"] == tool_policy.ALLOW
 
 
-def test_fetch_images_describes_image_attachments(cfg, monkeypatch):
+def test_fetch_attachments_analyses_image_and_doc(cfg, monkeypatch):
     monkeypatch.setattr(cf, "_request", lambda *a, **k: {"ok": True, "data": {"results": [
         {"title": "chart.png", "extensions": {"mediaType": "image/png"},
          "_links": {"download": "/download/attachments/1/chart.png"}},
-        {"title": "doc.pdf", "extensions": {"mediaType": "application/pdf"},
+        {"title": "report.pdf", "extensions": {"mediaType": "application/pdf"},
+         "_links": {"download": "/download/attachments/2/report.pdf"}},
+        {"title": "clip.mp4", "extensions": {"mediaType": "video/mp4"},
          "_links": {"download": "/d"}}]}})
     monkeypatch.setattr(cf._http, "http_get_bytes",
-                        lambda *a, **k: {"ok": True, "bytes": b"IMG"})
+                        lambda *a, **k: {"ok": True, "bytes": b"DATA"})
     from aiforge_core.runtime import chat_media
     monkeypatch.setattr(chat_media, "analyze_attachment",
-                        lambda name, raw, role="doer": {"filename": name,
-                                                        "description": f"d:{name}"})
-    out = cf._fetch_images("123")
-    assert [i["filename"] for i in out] == ["chart.png"]   # pdf skipped
-    assert out[0]["description"] == "d:chart.png"
+                        lambda name, raw, role="doer", mime="": {"filename": name,
+                                                                 "description": f"d:{name}"})
+    out = cf._fetch_attachments("123")
+    assert [i["filename"] for i in out] == ["chart.png", "report.pdf"]  # video skipped
+    assert out[1]["description"] == "d:report.pdf"
 
 
-def test_read_attaches_images(cfg, monkeypatch):
+def test_read_attaches_files(cfg, monkeypatch):
     _capture(monkeypatch, {"id": "10", "title": "Page",
                            "body": {"storage": {"value": "<p>hi</p>"}},
                            "space": {"key": "ENG"}, "version": {"number": 3}})
-    monkeypatch.setattr(cf, "_fetch_images",
+    monkeypatch.setattr(cf, "_fetch_attachments",
                         lambda pid, role="doer": [{"filename": "c.png",
                                                    "description": "a chart"}])
     out = cf.confluence_read({"id": "10"})
-    assert out["ok"] and out["images"][0]["description"] == "a chart"
+    assert out["ok"] and out["attachments"][0]["description"] == "a chart"
 
 
-def test_read_images_can_be_disabled(cfg, monkeypatch):
+def test_read_attachments_can_be_disabled(cfg, monkeypatch):
     _capture(monkeypatch, {"id": "10", "title": "P",
                            "body": {"storage": {"value": "x"}}})
     called = {"n": 0}
-    monkeypatch.setattr(cf, "_fetch_images",
+    monkeypatch.setattr(cf, "_fetch_attachments",
                         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or [])
-    out = cf.confluence_read({"id": "10", "images": False})
-    assert "images" not in out and called["n"] == 0
+    out = cf.confluence_read({"id": "10", "attachments": False})
+    assert "attachments" not in out and called["n"] == 0

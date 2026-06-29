@@ -260,11 +260,47 @@ def describe_bytes(raw: bytes, role: str = "doer") -> str:
                 pass
 
 
-def analyze_attachment(filename: str, raw: bytes, role: str = "doer") -> dict:
-    """Describe one downloaded image attachment for inclusion in a tool result.
-    Returns ``{filename, description}``; description is "" when vision is off
-    (the agent still sees the filename, and can be told to enable vision)."""
-    return {"filename": filename, "description": describe_bytes(raw, role)}
+def supported_attachment(mime: str, filename: str) -> bool:
+    """Is this attachment one we can analyse — an image, or a document we can
+    extract text from (pdf / xlsx / docx / text)?"""
+    mime = (mime or "").lower()
+    ext = os.path.splitext(filename or "")[1].lower()
+    if mime.startswith("image/"):
+        return True
+    if mime in ("application/pdf",) or "spreadsheet" in mime or \
+            "wordprocessing" in mime or mime.startswith("text/"):
+        return True
+    return ext in {".pdf", ".xlsx", ".docx"} | _TEXT_EXTS
+
+
+def analyze_attachment(filename: str, raw: bytes, role: str = "doer",
+                       mime: str = "") -> dict:
+    """Analyse one downloaded attachment (image OR document) for inclusion in a
+    tool result. Returns ``{filename, description}`` — a vision caption for an
+    image, or extracted text for a document. "" when nothing could be read."""
+    # Image → vision caption.
+    if vision._detect_mime(raw) is not None or (mime or "").startswith("image/"):
+        return {"filename": filename, "description": describe_bytes(raw, role)}
+    # Document → extracted text excerpt.
+    import tempfile
+    ext = os.path.splitext(filename or "")[1].lower() or ".bin"
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+            f.write(raw)
+            tmp = f.name
+        txt = extract_text(tmp, mime).strip()
+        if len(txt) > _DESC_CAP:
+            txt = txt[:_DESC_CAP] + "\n… (truncated)"
+        return {"filename": filename, "description": txt}
+    except Exception:  # noqa: BLE001
+        return {"filename": filename, "description": ""}
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def context_block(session_id: int) -> str:

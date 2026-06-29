@@ -145,12 +145,12 @@ def confluence_read(args: dict, cwd: str | None = None) -> dict:
            "space": (d.get("space") or {}).get("key"),
            "version": (d.get("version") or {}).get("number"),
            "body": body[:_BODY_CAP], "url": _page_url(d)}
-    # Pull image attachments + describe them so the agent analyses them as part
-    # of the task (opt out with images=false). Best-effort.
-    if _truthy(str(args.get("images", "true"))):
-        imgs = _fetch_images(str(d.get("id") or pid))
-        if imgs:
-            out["images"] = imgs
+    # Pull attachments (images + documents) + analyse them so the agent uses
+    # them as part of the task (opt out with attachments=false). Best-effort.
+    if _truthy(str(args.get("attachments", args.get("images", "true")))):
+        atts = _fetch_attachments(str(d.get("id") or pid))
+        if atts:
+            out["attachments"] = atts
     return out
 
 
@@ -161,9 +161,10 @@ def _max_images() -> int:
         return 4
 
 
-def _fetch_images(pid: str, role: str = "doer") -> list[dict]:
-    """List a page's attachments, download the image ones, and describe them so
-    the agent analyses them as part of the task. Best-effort, capped."""
+def _fetch_attachments(pid: str, role: str = "doer") -> list[dict]:
+    """List a page's attachments, download images AND documents (pdf/xlsx/docx/
+    text), and analyse them (vision caption / extracted text) so the agent uses
+    them as part of the task. Best-effort, capped."""
     cap = _max_images()
     if cap <= 0 or not pid:
         return []
@@ -172,6 +173,7 @@ def _fetch_images(pid: str, role: str = "doer") -> list[dict]:
     if not r.get("ok"):
         return []
     results = (r["data"].get("results") if isinstance(r["data"], dict) else None) or []
+    from aiforge_core.runtime import chat_media
     out: list[dict] = []
     for a in results:
         if len(out) >= cap:
@@ -180,8 +182,8 @@ def _fetch_images(pid: str, role: str = "doer") -> list[dict]:
             continue
         mime = ((a.get("extensions") or {}).get("mediaType") or "").lower()
         dl = ((a.get("_links") or {}).get("download") or "")
-        name = a.get("title") or "image"
-        if not dl or not mime.startswith("image/"):
+        name = a.get("title") or "attachment"
+        if not dl or not chat_media.supported_attachment(mime, name):
             continue
         url = _base() + dl if dl.startswith("/") else dl
         try:
@@ -191,8 +193,8 @@ def _fetch_images(pid: str, role: str = "doer") -> list[dict]:
                 out.append({"filename": name, "description": "",
                             "error": got.get("error")})
                 continue
-            from aiforge_core.runtime import chat_media
-            out.append(chat_media.analyze_attachment(name, got["bytes"], role))
+            out.append(chat_media.analyze_attachment(name, got["bytes"],
+                                                     role, mime=mime))
         except Exception as exc:  # noqa: BLE001
             out.append({"filename": name, "description": "", "error": str(exc)})
     return out

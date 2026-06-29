@@ -57,11 +57,11 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Operate',
     items: [
-      { to: '/',          label: 'Settings',   icon: 'Tool',    end: true },
       { to: '/dashboard', label: 'Dashboard',  icon: 'Dashboard' },
       { to: '/board',     label: 'Board',      icon: 'Board' },
       { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },
       { to: '/chat',      label: 'Chat',       icon: 'Chat' },
+      { to: '/',          label: 'Settings',   icon: 'Tool',    end: true },
     ],
   },
   {
