@@ -925,6 +925,7 @@ function LlmSettingsCard() {
   const [out, setOut] = useState<number | ''>('');
   const [ctx, setCtx] = useState<number | ''>('');
   const [vis, setVis] = useState(false);
+  const [cave, setCave] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -933,21 +934,24 @@ function LlmSettingsCard() {
       setOut(s.max_output_tokens);
       setCtx(s.context_window);
       setVis(!!s.vision_capable);
+      setCave(!!s.cave_mode);
     }).catch(() => { /* endpoint optional on old API */ })
       .finally(() => setLoaded(true));
   }, []);
 
   async function save() {
-    const vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number } = {};
+    const vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number; cave_mode?: number } = {};
     if (typeof out === 'number') vals.max_output_tokens = out;
     if (typeof ctx === 'number') vals.context_window = ctx;
     vals.vision_capable = vis ? 1 : 0;
+    vals.cave_mode = cave ? 1 : 0;
     setBusy(true);
     try {
       const s = await api.setLlmSettings(vals);
       setOut(s.max_output_tokens);
       setCtx(s.context_window);
       setVis(!!s.vision_capable);
+      setCave(!!s.cave_mode);
       toast.success('LLM settings saved');
     } catch (e: any) {
       toast.error(`Save failed: ${e?.message || 'unknown'}`);
@@ -991,6 +995,12 @@ function LlmSettingsCard() {
           <input type="checkbox" checked={vis} disabled={busy || !loaded}
                  onChange={e => setVis(e.target.checked)} />
           <span className="small muted">Model supports vision (images)</span>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+               title="Cave mode: send the agents the leanest useful context — smaller repo map, skip optional skills/workflows/@-mentions, fewer memory hits, condense sooner. Cheaper + faster on a small model; the agent can still grep/read on demand.">
+          <input type="checkbox" checked={cave} disabled={busy || !loaded}
+                 onChange={e => setCave(e.target.checked)} />
+          <span className="small muted">🦴 Cave mode (lean context)</span>
         </label>
         <button className="btn" onClick={save} disabled={busy || !loaded}>
           {busy ? 'Saving…' : 'Save'}

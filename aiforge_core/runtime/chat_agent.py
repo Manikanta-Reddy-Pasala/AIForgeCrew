@@ -1258,6 +1258,20 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
     return box.get("out")
 
 
+def _cave_mode() -> bool:
+    """Cave mode = leanest useful context (smaller repo map, skip optional
+    skills/workflows/mentions blocks, fewer memory hits, tighter condense
+    budget). Env AIFORGE_CAVE_MODE wins; else the runtime setting."""
+    env = os.environ.get("AIFORGE_CAVE_MODE")
+    if env is not None:
+        return env not in ("0", "false", "")
+    try:
+        from aiforge_core.config import runtime_settings
+        return int(runtime_settings.get("cave_mode")) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _compress_prompt(text: str) -> str:
     """Squeeze whitespace bloat out of the assembled prompt before it hits the
     LLM — dense context fits a small local window better and costs fewer tokens
@@ -1313,9 +1327,11 @@ def _ctx_budget_chars(role: str | None = None) -> int:
             win = int(runtime_settings.get("context_window"))
         except Exception:  # noqa: BLE001
             win = 0
+    # Cave mode condenses sooner — keep far less of the running history.
+    headroom = 0.30 if _cave_mode() else 0.55
     if win > 0:
-        return int(win * 4 * 0.55)
-    return 48000
+        return int(win * 4 * headroom)
+    return 24000 if _cave_mode() else 48000
 
 
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None) -> list[dict]:
@@ -1559,47 +1575,45 @@ def run_chat_agent(
     # directory structure of the working dir without re-searching it on
     # each follow-up question (the conversation history only carries prior
     # answers, not the structure it discovered last turn).
+    cave = _cave_mode()
     rules = _rules_context(cwd)
     sys_msg = _SYSTEM.format(cwd=cwd)
     if rules:                       # user rule book first — highest priority
         sys_msg = rules + "\n\n" + sys_msg
     if plan_mode:                   # plan banner second — constrains this turn
         sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
-    sys_msg += "\n\n" + _repo_context(cwd) + "\n\n" + _build_repo_map(cwd)
-    # Skills registry: always-on skills + the ones most relevant to this
-    # request (SKILL.md standard, relevance-searched; folds in legacy
-    # microagents). The agent can also skill_search / learn_skill at runtime.
-    try:
-        from aiforge_core.runtime import skills as _skills
-        sk_block = _skills.auto_context(last_user, cwd)
-        if sk_block:
-            sys_msg += "\n\n" + sk_block
-    except Exception:  # noqa: BLE001
-        pass
-    # Workflows registry: same treatment as skills — surface the relevant
-    # reusable end-to-end procedures so the agent applies them (it can also
-    # workflow_search / learn_workflow at runtime).
-    try:
-        from aiforge_core.runtime import workflows as _workflows
-        wf_block = _workflows.auto_context(last_user, cwd)
-        if wf_block:
-            sys_msg += "\n\n" + wf_block
-    except Exception:  # noqa: BLE001
-        pass
-    # @-mentions (#4): user-referenced files/folders/urls/problems.
-    try:
-        from aiforge_core.runtime import mentions as _mentions
-        ment_block, _toks = _mentions.expand(last_user, cwd)
-        if ment_block:
-            sys_msg += "\n\n" + ment_block
-    except Exception:  # noqa: BLE001
-        pass
-    # Self-learning recall — EVERY turn, keyed to the CURRENT user message (not
-    # just the opening one). Mid-session follow-ups and post-condensation turns
-    # need relevant prior decisions/gotchas re-surfaced too; recalling only on
-    # turn 1 was a top cause of the agent "forgetting" earlier facts. Bounded +
-    # best-effort, so the per-turn cost is a small vector query.
-    recall = _memory_recall(cwd, last_user)
+    # Cave mode: a much smaller repo map (the agent still has find/grep/list).
+    sys_msg += "\n\n" + _repo_context(cwd) + "\n\n" + \
+        _build_repo_map(cwd, max_entries=(60 if cave else 160),
+                        max_depth=(2 if cave else 3))
+    # Skills / workflows / @-mentions — OPTIONAL context blocks. Cave mode skips
+    # them (the agent can still skill_search / workflow_search on demand) to keep
+    # the prompt lean.
+    if not cave:
+        try:
+            from aiforge_core.runtime import skills as _skills
+            sk_block = _skills.auto_context(last_user, cwd)
+            if sk_block:
+                sys_msg += "\n\n" + sk_block
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from aiforge_core.runtime import workflows as _workflows
+            wf_block = _workflows.auto_context(last_user, cwd)
+            if wf_block:
+                sys_msg += "\n\n" + wf_block
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from aiforge_core.runtime import mentions as _mentions
+            ment_block, _toks = _mentions.expand(last_user, cwd)
+            if ment_block:
+                sys_msg += "\n\n" + ment_block
+        except Exception:  # noqa: BLE001
+            pass
+    # Self-learning recall — EVERY turn, keyed to the CURRENT user message. Cave
+    # mode pulls fewer hits.
+    recall = _memory_recall(cwd, last_user, limit=(3 if cave else 6))
     if recall:
         sys_msg += "\n\n" + recall
     # SESSION IMAGES: descriptions of images the user attached, so the (maybe

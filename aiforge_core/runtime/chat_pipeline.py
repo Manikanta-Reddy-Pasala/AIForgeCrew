@@ -206,21 +206,23 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     raw_prompt = prompt   # the user's actual request (before context augmentation)
     # Build a context-rich prompt: project summary + prior conversation +
     # the current request, so the team pipeline isn't clueless on follow-ups.
+    cave = False
     try:
         from aiforge_core.runtime.chat_agent import (
-            _memory_recall, _repo_context, _rules_context,
+            _cave_mode, _memory_recall, _repo_context, _rules_context,
         )
+        cave = _cave_mode()
         rules_ctx = _rules_context(cwd)
-        repo_ctx = _repo_context(cwd)
+        # Cave mode drops the project-summary block (rules still kept).
+        repo_ctx = "" if cave else _repo_context(cwd)
     except Exception:  # noqa: BLE001
         rules_ctx = repo_ctx = ""
         _memory_recall = None  # type: ignore
     convo = _history_preamble(history)
-    # Self-learning recall EVERY turn, keyed to the CURRENT request (not just
-    # the opening one) — mid-session follow-ups need prior decisions/gotchas
-    # re-surfaced too, same as the lightweight agent. Bounded + best-effort.
+    # Self-learning recall EVERY turn, keyed to the CURRENT request. Cave mode
+    # skips it (the Doer can memory_lookup on demand).
     recall_ctx = ""
-    if _memory_recall is not None:
+    if _memory_recall is not None and not cave:
         try:
             recall_ctx = _memory_recall(cwd, raw_prompt)
         except Exception:  # noqa: BLE001

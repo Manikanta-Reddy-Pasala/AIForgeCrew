@@ -611,3 +611,28 @@ def test_condense_summary_includes_earlier_asks(monkeypatch):
     sys_text = out[0]["content"]
     assert "auto-condensed" in sys_text
     assert "Earlier asks:" in sys_text and "invoice exporter" in sys_text
+
+
+def test_cave_mode_skips_optional_blocks_and_shrinks_budget(tmp_path, monkeypatch):
+    """Cave mode drops skills/workflows/mentions blocks + condenses sooner."""
+    from aiforge_core.runtime import chat_agent as ca
+    seen = {"skills": 0, "workflows": 0, "mentions": 0}
+    import aiforge_core.runtime.skills as sk
+    import aiforge_core.runtime.workflows as wf
+    import aiforge_core.runtime.mentions as mn
+    monkeypatch.setattr(sk, "auto_context", lambda *a, **k: (seen.__setitem__("skills", seen["skills"] + 1), "SKILLS")[1])
+    monkeypatch.setattr(wf, "auto_context", lambda *a, **k: (seen.__setitem__("workflows", seen["workflows"] + 1), "WF")[1])
+    monkeypatch.setattr(mn, "expand", lambda *a, **k: (seen.__setitem__("mentions", seen["mentions"] + 1), ("M", 0))[1])
+
+    # Budget shrinks in cave mode.
+    monkeypatch.setenv("AIFORGE_CAVE_MODE", "0")
+    monkeypatch.delenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", raising=False)
+    normal = ca._ctx_budget_chars()
+    monkeypatch.setenv("AIFORGE_CAVE_MODE", "1")
+    assert ca._ctx_budget_chars() < normal
+
+    fn = _scripted(["FINAL: done"])
+    list(ca.run_chat_agent([{"role": "user", "content": "hi"}],
+                           cwd=str(tmp_path), complete_fn=fn))
+    # In cave mode the optional blocks were never assembled.
+    assert seen == {"skills": 0, "workflows": 0, "mentions": 0}

@@ -43,9 +43,9 @@ export const api = {
     }),
 
   llmSettings: () =>
-    j<{ max_output_tokens: number; context_window: number; vision_capable: number }>('/runtime/llm-settings'),
-  setLlmSettings: (vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number }) =>
-    j<{ max_output_tokens: number; context_window: number; vision_capable: number }>('/runtime/llm-settings', {
+    j<{ max_output_tokens: number; context_window: number; vision_capable: number; cave_mode: number }>('/runtime/llm-settings'),
+  setLlmSettings: (vals: { max_output_tokens?: number; context_window?: number; vision_capable?: number; cave_mode?: number }) =>
+    j<{ max_output_tokens: number; context_window: number; vision_capable: number; cave_mode: number }>('/runtime/llm-settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(vals),

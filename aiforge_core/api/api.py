@@ -2386,6 +2386,8 @@ class _RuntimeSettingsBody(BaseModel):
     # applies when 0). Lets the user enable image Q&A for a self-hosted
     # multimodal model the allowlist doesn't recognise.
     vision_capable: int | None = Field(None, ge=0, le=1)
+    # 0/1 — cave mode: send the agents the leanest useful context.
+    cave_mode: int | None = Field(None, ge=0, le=1)
 
 
 @app.get("/api/runtime/llm-settings")

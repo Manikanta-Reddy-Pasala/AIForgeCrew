@@ -38,6 +38,11 @@ _SPEC: dict[str, tuple[str, int]] = {
     # multimodal model the allowlist doesn't recognise). Auto-detection by model
     # id still applies when this is 0.
     "vision_capable": ("AIFORGE_CHAT_VISION_CAPABLE", 0),
+    # 0/1 "cave mode": send the agents the leanest useful context — smaller repo
+    # map, skip optional skills/workflows/mentions blocks, fewer memory hits,
+    # tighter condense budget, harder prompt compression. Cheaper + faster on a
+    # small local model; the agent can still grep/read on demand.
+    "cave_mode": ("AIFORGE_CAVE_MODE", 0),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -46,6 +51,7 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     "max_output_tokens": (256, 1_000_000),
     "context_window": (1024, 10_000_000),
     "vision_capable": (0, 1),
+    "cave_mode": (0, 1),
 }
 
 
