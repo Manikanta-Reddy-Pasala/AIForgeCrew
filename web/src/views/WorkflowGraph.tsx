@@ -244,8 +244,16 @@ export default function WorkflowGraph() {
           {ticket && <span className="chip">overlay: {ticket}</span>}
         </div>
       </div>
-      <div className="small muted" style={{ marginBottom: 10 }}>
+      <div className="small muted" style={{ marginBottom: 6 }}>
         {topo.nodes.length} nodes · {topo.edges.length} edges · live
+      </div>
+      {/* Flow caption — names the stages so the layers (orchestrator, the
+          parallel context fan-out, the build loop) are obvious. */}
+      <div className="small" style={{ marginBottom: 10, color: 'var(--fg-2)', lineHeight: 1.5 }}>
+        Triage → <b>Orchestrator</b> (Enhancer → Planner) → <b>parallel Context fan-out</b>
+        {' '}(Researcher + repo-map + conventions) → Verify → <b>Build loop</b>
+        {' '}(Doer → Refiner → Feedback) → Validate → Learn.
+        <span className="muted"> Hover any node for what it does.</span>
       </div>
 
       <div style={{ width: '100%', maxWidth: '100%', overflow: 'auto', maxHeight: '78vh',
@@ -301,6 +309,7 @@ export default function WorkflowGraph() {
           const accent = STATUS_ACCENT[n.status || ''];
           return (
             <g key={n.id} transform={`translate(${p.x},${p.y})`}>
+              <title>{(n as any).stage ? `${(n as any).stage} — ` : ''}{(n as any).desc || n.label}</title>
               <rect width={NODE_W} height={NODE_H} rx={8}
                     fill={ts.fill} stroke={accent || ts.border}
                     strokeWidth={accent ? 2.5 : 1.5} />
