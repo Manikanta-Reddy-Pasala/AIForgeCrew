@@ -307,13 +307,17 @@ export default function Chat() {
     try {
       for (const f of list) await chatMediaUpload(sid, f);
       await loadMedia(sid);
-      toast.success(list.length === 1 ? 'File attached' : `${list.length} files attached`);
+      toast.success(list.length === 1
+        ? `Attached: ${list[0].name}`
+        : `${list.length} files attached`);
     } catch (e: any) {
       toast.error(`Upload failed: ${e.message}`);
     } finally { setUploadingMedia(false); }
   }
 
-  // Paste an image straight into the composer (Cmd/Ctrl+V).
+  // Paste an image straight into the composer (Cmd/Ctrl+V). Clipboard images
+  // arrive with a generic/blank name, so give each a real, distinct filename
+  // (pasted-<timestamp>.<ext>) — shown in the attachment strip.
   function onPasteMedia(e: React.ClipboardEvent) {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -321,7 +325,12 @@ export default function Chat() {
     for (const it of Array.from(items)) {
       if (it.kind === 'file' && it.type.startsWith('image/')) {
         const f = it.getAsFile();
-        if (f) imgs.push(f);
+        if (!f) continue;
+        const hasName = f.name && f.name.toLowerCase() !== 'image.png';
+        if (hasName) { imgs.push(f); continue; }
+        const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        const ts = new Date().toISOString().slice(0, 19).replace(/\D/g, '');
+        imgs.push(new File([f], `pasted-${ts}.${ext}`, { type: f.type }));
       }
     }
     if (imgs.length) { e.preventDefault(); uploadMedia(imgs); }
