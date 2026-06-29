@@ -310,6 +310,11 @@ export default function Chat() {
   async function uploadMedia(files: FileList | File[] | null) {
     const list = files ? Array.from(files) : [];
     if (!list.length) return;
+    // Pre-flight size guard (server cap is 25MB) — fail fast with a clear
+    // message instead of spinning on a doomed multi-MB POST.
+    const MAX = 25 * 1024 * 1024;
+    const tooBig = list.find(f => f.size > MAX);
+    if (tooBig) { toast.error(`${tooBig.name} is too large (max 25 MB)`); return; }
     // Attach works even on a brand-new chat: create the session first so the
     // file has somewhere to live (mirrors send()).
     let sid = activeId;
@@ -333,6 +338,7 @@ export default function Chat() {
     const items = e.clipboardData?.items;
     if (!items) return;
     const imgs: File[] = [];
+    let pi = 0;
     for (const it of Array.from(items)) {
       if (it.kind === 'file' && it.type.startsWith('image/')) {
         const f = it.getAsFile();
@@ -340,8 +346,9 @@ export default function Chat() {
         const hasName = f.name && f.name.toLowerCase() !== 'image.png';
         if (hasName) { imgs.push(f); continue; }
         const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
-        const ts = new Date().toISOString().slice(0, 19).replace(/\D/g, '');
-        imgs.push(new File([f], `pasted-${ts}.${ext}`, { type: f.type }));
+        // Date.now() (ms) + a per-paste index so multiple images in one paste —
+        // or two pastes within the same second — don't collide on one filename.
+        imgs.push(new File([f], `pasted-${Date.now()}-${pi++}.${ext}`, { type: f.type }));
       }
     }
     if (imgs.length) { e.preventDefault(); uploadMedia(imgs); }
@@ -374,6 +381,11 @@ export default function Chat() {
   // Composer
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // Mirror busy into a ref so callbacks that run as .then() continuations (e.g.
+  // attachToRun after selectSession) see the CURRENT value, not the stale one
+  // captured at the render where the continuation was created.
+  const busyRef = useRef(false);
+  useEffect(() => { busyRef.current = busy; }, [busy]);
   // Guards the Steer POST against double-fire (FE6).
   const [steering, setSteering] = useState(false);
 
@@ -948,7 +960,7 @@ export default function Chat() {
   // for a live run and, if found, resumes streaming its progress so nothing is
   // lost. No-op when nothing is in flight.
   async function attachToRun(sessionId: number) {
-    if (busy) return;   // our own send is already streaming this session
+    if (busyRef.current) return;   // our own send is already streaming this session
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {

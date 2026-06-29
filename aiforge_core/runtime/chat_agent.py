@@ -756,6 +756,22 @@ def _t_learn_workflow(args: dict, cwd: str) -> dict:
 _ROOT_SCOPED_TOOLS = {"editor", "typecheck", "format", "lsp", "run_tests"}
 
 
+def _scoped_root(cwd: str) -> str:
+    """Root the strong tools should resolve against. Use the session ``cwd`` (so
+    they hit the SAME files as file_read/file_write/multi_edit, and each parallel
+    worktree stays isolated). Only when an AIFORGE_WORKSPACE_DIR jail is set AND
+    cwd escapes it do we clamp to the jail root — so the strong tools can't write
+    outside the jail, without collapsing every subtask onto one shared dir."""
+    try:
+        ws = _workspace_root()
+        if ws is None:
+            return cwd
+        c = Path(cwd).expanduser().resolve()
+        return str(c) if (c == ws or ws in c.parents) else str(ws)
+    except Exception:  # noqa: BLE001
+        return cwd
+
+
 def _coerce_int(v, default=None):
     try:
         return int(v) if v is not None and str(v).strip() != "" else default
@@ -1876,8 +1892,10 @@ def run_chat_agent(
     # words (split that marker off) so recall/skills/mentions aren't diluted by
     # the boilerplate + restatement.
     last_user = next(
-        (m.get("content") for m in reversed(messages)
+        (_text_of(m) for m in reversed(messages)
          if (m.get("role") or "user") == "user" and m.get("content")), "")
+    # _text_of flattens a multimodal (vision) turn's list content to text, so the
+    # .split() below can't crash on a list.
     last_user = last_user.split("\n\n---\n[Interpreted request")[0].strip() or last_user
 
     # Inject a fresh repo map every turn so the agent ALWAYS knows the
@@ -2153,7 +2171,23 @@ def run_chat_agent(
             yield {"type": "approval", "id": seq, "name": name, "args": args,
                    "reason": _reason, "preview": preview}
             if session_id is None:
-                decision = {"decision": "reject", "note": "no session"}
+                # Autonomous path (parallel sub-Doer) — no human to approve.
+                # Mirror run_shell's floor: auto-approve caution/review gates,
+                # hard-block only truly DANGEROUS commands + destructive deletes
+                # (a blanket reject here silently broke sudo / -g installs /
+                # force-push in worktree-isolated autonomous runs).
+                _danger = bool(_destructive_del)
+                if not _danger and name in ("run_command", "run_shell"):
+                    try:
+                        from aiforge_core.runtime.tools import command_risk
+                        _lvl = command_risk.assess(
+                            args.get("cmd") or args.get("command") or "")["level"]
+                        _danger = _lvl == command_risk.DANGEROUS
+                    except Exception:  # noqa: BLE001
+                        _danger = False
+                decision = ({"decision": "reject", "note": "autonomous: dangerous action blocked"}
+                            if _danger else
+                            {"decision": "approve", "note": "autonomous auto-approve"})
             else:
                 decision = chat_approve.wait(session_id)
             # M4: a gate left unanswered (user navigated away) auto-rejects on
@@ -2176,6 +2210,13 @@ def run_chat_agent(
             # re-refuses and the model loops asking the user again).
             if _destructive_del:
                 args["confirm_delete"] = True
+            # A Stop that landed WHILE the approval gate was open must not still
+            # write the file — the file tools have no subprocess for cancel() to
+            # kill, so re-check here before dispatching the (now-approved) tool.
+            if session_id is not None and chat_cancel.is_cancelled(session_id):
+                yield {"type": "tool", "name": name, "args": args,
+                       "result": {"ok": False, "error": "cancelled"}}
+                break
 
         fn = TOOLS.get(name)
         if fn is None:
@@ -2190,7 +2231,7 @@ def run_chat_agent(
             if name in _ROOT_SCOPED_TOOLS:
                 try:
                     from aiforge_core.runtime import sandbox as _sb
-                    _root_tok = _sb.set_root_override(_workspace_root() or cwd)
+                    _root_tok = _sb.set_root_override(_scoped_root(cwd))
                 except Exception:  # noqa: BLE001
                     _root_tok = None
             try:

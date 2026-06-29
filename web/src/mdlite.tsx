@@ -13,6 +13,17 @@
  */
 import React from 'react';
 
+// Allow only safe link schemes — reject javascript:/data:/vbscript: etc. so a
+// model-emitted [x](javascript:…) link can't run script in the app origin.
+// Returns the href if safe, or '' to drop it.
+function safeHref(url: string): string {
+  const u = (url || '').trim();
+  if (/^(https?:|mailto:|tel:)/i.test(u)) return u;       // explicit safe schemes
+  if (/^[/#?]/.test(u)) return u;                          // relative / anchor
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) return u;           // no scheme → relative
+  return '';                                               // any other scheme → drop
+}
+
 // ── inline ──────────────────────────────────────────────────────────────────
 // Earliest-match tokenizer. Order in the alternation matters: ** before *,
 // __ before _, so bold wins over italic.
@@ -35,7 +46,12 @@ function renderInline(text: string, key: string): React.ReactNode[] {
       out.push(<strong key={kk}>{renderInline(tok.slice(2, -2), kk)}</strong>);
     } else if (tok.startsWith('[')) {
       const mm = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok)!;
-      out.push(<a key={kk} href={mm[2]} target="_blank" rel="noopener noreferrer">{mm[1]}</a>);
+      // Only allow safe schemes — a model-emitted [x](javascript:…) link would
+      // otherwise execute script in the app origin on click (XSS).
+      const href = safeHref(mm[2]);
+      out.push(href
+        ? <a key={kk} href={href} target="_blank" rel="noopener noreferrer">{mm[1]}</a>
+        : <span key={kk}>{mm[1]}</span>);
     } else if (/^https?:\/\//.test(tok)) {
       out.push(<a key={kk} href={tok} target="_blank" rel="noopener noreferrer">{tok}</a>);
     } else { // * or _ italic

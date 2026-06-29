@@ -2688,6 +2688,17 @@ def _chat_history_for_agent(rows: list) -> list[dict]:
     return out
 
 
+# Global cap on concurrent chat producer threads — a producer keeps running
+# after the client disconnects (by design, for navigate-away survival), so
+# without a cap N fired sessions = N background agent loops driving the model
+# with nobody attached. Excess producers block at the start until a slot frees.
+try:
+    _PRODUCE_SEM = threading.BoundedSemaphore(
+        max(1, int(os.environ.get("AIFORGE_MAX_CHAT_RUNS", "8"))))
+except ValueError:
+    _PRODUCE_SEM = threading.BoundedSemaphore(8)
+
+
 @app.post("/api/chat/sessions/{session_id}/message")
 def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingResponse:
     """Append a user message, run the full-FS coding agent over the whole
@@ -2976,6 +2987,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     run = chat_runs.start(session_id)
 
     def _produce():
+        _PRODUCE_SEM.acquire()   # bounded — block until a producer slot frees
         steps: list[dict] = []
         final_text = ""
         awaiting = False   # turn ended with a question / pause, not an outcome
@@ -3085,6 +3097,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # may have already replaced it in the registry). Done LAST so a
             # re-attach during persistence still tails live.
             run.finish()
+            try:
+                _PRODUCE_SEM.release()
+            except (ValueError, RuntimeError):   # never over-release
+                pass
 
     threading.Thread(target=_produce, daemon=True).start()
 
@@ -3157,7 +3173,10 @@ def chat_kill_all() -> dict:
         chat_approve.cancel(sid)
         chat_approve.finish(sid)
         chat_interject.clear(sid)
-        chat_cancel.finish(sid)
+        # NOTE: do NOT chat_cancel.finish(sid) here — that pops the cancel token
+        # microseconds after cancel_all() set it, before the (slow, between-poll)
+        # producer can observe it, so the run kept executing. Leave the token
+        # SET; each run's own finally pops it once it has actually torn down.
     chat_runs.finish_all()
     lock_freed = chat_pipeline.force_release_run_lock()
     return {"killed": sessions, "count": len(sessions),

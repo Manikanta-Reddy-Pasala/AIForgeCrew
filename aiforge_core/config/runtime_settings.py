@@ -104,9 +104,12 @@ def get(name: str) -> int:
     stored = _read_store().get(name)
     # An EXPLICITLY stored value wins — including 0, so the UI can override an
     # env-set 0/1 knob back off (a stored 0 used to be discarded → env stuck it
-    # on). Safe for the int knobs: set_many's bounds reject 0 for those.
+    # on). Reject an out-of-bounds stored value (e.g. a hand-edited/corrupt 0 for
+    # max_output_tokens) so it can't wedge the pipeline — fall through to env/default.
     if isinstance(stored, int):
-        return stored
+        lo, hi = _BOUNDS.get(name, (None, None))
+        if lo is None or (lo <= stored <= hi):
+            return stored
     raw = os.environ.get(env_var)
     if raw:
         try:

@@ -89,7 +89,12 @@ def cancel(session_id: int) -> bool:
     if tok is None:
         return False
     tok.event.set()
-    for pgid in list(tok.pgids):
+    # Snapshot under the lock — track_pgid mutates this set concurrently, and a
+    # bare list() during that mutation can raise "set changed size during
+    # iteration" and abort the kill loop, leaving later pgids un-signalled.
+    with _LOCK:
+        _pgids = list(tok.pgids)
+    for pgid in _pgids:
         for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(pgid, sig)

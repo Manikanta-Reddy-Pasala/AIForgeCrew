@@ -356,26 +356,29 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
     merged = 0
     conflicts: list[str] = []
     conflict_details: list[str] = []   # surface git stderr, don't swallow it (B3)
-    if merge:
-        # Sequential merge in the planner's original order (dependencies first).
-        order = {s.get("slug"): i for i, s in enumerate(subs)}
-        for r in sorted([r for r in results if r.get("ok") and r.get("branch")],
-                        key=lambda r: order.get(r["slug"], 99)):
-            ok, info = _merge_branch(repo_root, base_branch, r["branch"])
-            if ok:
-                merged += 1
-            else:
-                conflicts.append(r["slug"])
-                conflict_details.append(f"{r['slug']}: {info}")
-                _update(ticket_id, r["slug"], "failed", on_status)
-
-    # Best-effort worktree cleanup.
-    for r in results:
-        wt = r.get("worktree")
-        if wt and os.path.isdir(wt):
-            _git(["worktree", "remove", "--force", wt], repo_root)
-        if r.get("branch"):
-            _git(["branch", "-D", r["branch"]], repo_root)
+    try:
+        if merge:
+            # Sequential merge in the planner's original order (dependencies first).
+            order = {s.get("slug"): i for i, s in enumerate(subs)}
+            for r in sorted([r for r in results if r.get("ok") and r.get("branch")],
+                            key=lambda r: order.get(r["slug"], 99)):
+                ok, info = _merge_branch(repo_root, base_branch, r["branch"])
+                if ok:
+                    merged += 1
+                else:
+                    conflicts.append(r["slug"])
+                    conflict_details.append(f"{r['slug']}: {info}")
+                    _update(ticket_id, r["slug"], "failed", on_status)
+    finally:
+        # ALWAYS clean up worktrees + branches — even if a merge raised — so a
+        # crashed run can't leak worktree dirs + metadata unbounded.
+        for r in results:
+            wt = r.get("worktree")
+            if wt and os.path.isdir(wt):
+                _git(["worktree", "remove", "--force", wt], repo_root)
+            if r.get("branch"):
+                _git(["branch", "-D", r["branch"]], repo_root)
+        _git(["worktree", "prune"], repo_root)
 
     done = sum(1 for r in results if r.get("ok"))
     validated = sum(1 for r in results if r.get("validated"))
@@ -437,7 +440,9 @@ def default_run_one(subtask: dict, worktree: str) -> dict:
             if ev.get("type") == "error":
                 return {"ok": False, "error": ev.get("text")}
             if ev.get("type") == "message" and not ev.get("awaiting_input"):
-                ok = True
+                # The runaway-safety-cap stop also emits a plain message — that's
+                # a FAILURE (the Doer thrashed without finishing), not success.
+                ok = not (ev.get("text") or "").startswith("(stopped:")
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     return {"ok": ok}

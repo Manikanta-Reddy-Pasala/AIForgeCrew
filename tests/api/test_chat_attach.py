@@ -143,7 +143,14 @@ def test_kill_all_cancels_runs_and_releases_team_lock(app_client):
         assert chat_runs.is_running(901) is False
         assert chat_runs.is_running(902) is False
         assert chat_pipeline._RUN_LOCK.locked() is False
+        # kill-all now leaves the cancel TOKEN set (so a live producer observes
+        # it before tearing down) instead of popping it immediately — the run's
+        # own finally pops it in production. These manual tokens have no
+        # producer, so clean them up here to not leak into the next test.
+        assert chat_cancel.is_cancelled(901) is True
     finally:
+        chat_cancel.finish(901)
+        chat_cancel.finish(902)
         if chat_pipeline._RUN_LOCK.locked():
             chat_pipeline._RUN_LOCK.release()
 
