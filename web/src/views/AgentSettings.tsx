@@ -7,11 +7,18 @@ import { chatApi, RegistryModel, AgentRole, AgentRoleConfig } from '../api';
 const ORCH: string[] = ['enhancer', 'architect', 'planner'];
 const MAIN: string[] = ['doer', 'verifier', 'feedback', 'learner', 'refiner',
                         'researcher', 'triage', 'chat'];
-// Internal fan-out slots — shown under an "Advanced" fold.
+// Internal fan-out slots (context gatherers + verifier critics).
+const ADVANCED: string[] = ['ctx_memory', 'ctx_repomap', 'ctx_conventions',
+                            'verify_correctness', 'verify_scope', 'verify_risk',
+                            'gap_eval', 'live_verifier'];
 const ROLE_LABEL: Record<string, string> = {
   enhancer: 'Enhancer', architect: 'Architect', planner: 'Planner',
   doer: 'Doer', verifier: 'Verifier', feedback: 'Feedback', learner: 'Learner',
   refiner: 'Refiner', researcher: 'Researcher', triage: 'Triage', chat: 'Chat',
+  ctx_memory: 'Ctx · memory', ctx_repomap: 'Ctx · repo map',
+  ctx_conventions: 'Ctx · conventions', verify_correctness: 'Verify · correctness',
+  verify_scope: 'Verify · scope', verify_risk: 'Verify · risk',
+  gap_eval: 'Gap eval', live_verifier: 'Live verifier',
 };
 
 function VisionBadge({ v }: { v: RegistryModel['vision'] }) {
@@ -34,8 +41,12 @@ export default function AgentSettings() {
   }
   useEffect(() => { loadModels(); loadConfig(); }, []);
 
-  const allRoles = Object.keys(config);
-  const advRoles = allRoles.filter(r => !ORCH.includes(r) && !MAIN.includes(r));
+  // Other agents = MAIN + ADVANCED, plus any extra configured role not already
+  // listed. Rendered from static lists so every agent shows even before it has
+  // explicit saved config (the v2 config only returns explicitly-set roles).
+  const known = new Set([...ORCH, ...MAIN, ...ADVANCED]);
+  const extraRoles = Object.keys(config).filter(r => !known.has(r));
+  const otherRoles = [...MAIN, ...ADVANCED, ...extraRoles];
 
   // Which registry model is a role currently pointed at (match model + url).
   function selectedId(role: string): string {
@@ -107,10 +118,9 @@ export default function AgentSettings() {
         {ORCH.map(r => <RolePicker key={r} role={r} />)}
 
         <h3 style={{ fontSize: 13, margin: '16px 0 8px' }}>Other agents</h3>
-        <GroupApply roles={[...MAIN, ...advRoles]} label="all →" />
+        <GroupApply roles={otherRoles} label="all →" />
         {/* Every other agent listed individually with its own model selector. */}
-        {[...MAIN.filter(r => allRoles.includes(r)), ...advRoles].map(r =>
-          <RolePicker key={r} role={r} />)}
+        {otherRoles.map(r => <RolePicker key={r} role={r} />)}
       </div>
     </>
   );
