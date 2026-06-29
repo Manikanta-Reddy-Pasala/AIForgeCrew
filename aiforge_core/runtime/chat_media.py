@@ -68,27 +68,86 @@ def save_image(session_id: int, filename: str, raw: bytes) -> dict:
             "filename": os.path.basename(dest)}
 
 
-def vision_enabled(role: str = "chat") -> bool:
-    """True when the session's model can see images — auto-detected from the
-    resolved model id OR force-enabled via the ``vision_capable`` setting."""
+# 1x1 transparent PNG — the smallest valid image to probe with.
+_PROBE_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+# model id -> probed vision capability. One live probe per model, then cached.
+_VISION_CACHE: dict[str, bool] = {}
+
+
+def _settings_override() -> bool:
     try:
         from aiforge_core.config import runtime_settings
-        if int(runtime_settings.get("vision_capable")) > 0:
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.llm.router import resolve
-        return vision.supports_vision(resolve(role).model or "")
+        return int(runtime_settings.get("vision_capable")) > 0
     except Exception:  # noqa: BLE001
         return False
+
+
+def _probe_vision(model: str, role: str) -> bool:
+    """Ask the OpenAI-compatible endpoint itself whether it accepts image input
+    — NO hardcoded model list. Sends one tiny multimodal request; a server that
+    can't do vision rejects the image content (4xx) → False, one that accepts
+    it → True. Cached per model so it costs one probe. Transport errors are
+    inconclusive (not cached)."""
+    if model in _VISION_CACHE:
+        return _VISION_CACHE[model]
+    import base64 as _b64
+    try:
+        from aiforge_core.llm import client
+        content = [
+            {"type": "text", "text": "Reply with the single word: ok"},
+            {"type": "image_url",
+             "image_url": {"url": "data:image/png;base64," + _PROBE_PNG}},
+        ]
+        # A non-vision server raises (4xx invalid content) → caught below.
+        client.complete(role, [{"role": "user", "content": content}],
+                        max_tokens=1, timeout_s=20)
+        _VISION_CACHE[model] = True
+        return True
+    except Exception as exc:  # noqa: BLE001
+        # Only a content/modality rejection is a definitive "no"; a transport
+        # blip shouldn't permanently mark the model non-vision.
+        msg = str(exc).lower()
+        definitive = any(t in msg for t in (
+            "image", "modal", "content", "vision", "unsupported",
+            "400", "422", "invalid"))
+        if definitive:
+            _VISION_CACHE[model] = False
+        return False
+
+
+def reset_vision_cache() -> None:
+    _VISION_CACHE.clear()
+
+
+def vision_enabled(role: str = "chat", *, probe: bool = False) -> bool:
+    """True when the session's model can see images. The user's manual setting
+    wins; otherwise it's probed from the OpenAI-compatible endpoint itself (no
+    hardcoded allowlist). ``probe=False`` (default) only consults the settings
+    override + a cached prior probe — fast, used on session-load. ``probe=True``
+    runs the one-time live probe — used on the upload path where a brief delay
+    is expected."""
+    if _settings_override():
+        return True
+    try:
+        from aiforge_core.llm.router import resolve
+        model = resolve(role).model or ""
+    except Exception:  # noqa: BLE001
+        return False
+    if not model:
+        return False
+    if probe:
+        return _probe_vision(model, role)
+    return _VISION_CACHE.get(model, False)
 
 
 def describe_image(path: str, role: str = "chat") -> str:
     """Auto-caption an image with the vision model. Best-effort — returns ""
     when vision is unavailable or the call fails (caller falls back to a
     user-typed caption)."""
-    if not vision_enabled(role):
+    if not vision_enabled(role, probe=True):
         return ""
     content = vision.attach_image(
         "Describe this image concisely (1-2 sentences) so it can be referenced "
@@ -124,7 +183,7 @@ def context_block(session_id: int) -> str:
 def image_blocks_for_turn(session_id: int, role: str = "chat") -> list[dict]:
     """Multimodal image blocks for ALL session images, to merge into the user
     turn — ONLY when the model is vision-capable. Empty otherwise."""
-    if not vision_enabled(role):
+    if not vision_enabled(role, probe=True):
         return []
     from aiforge_core.runtime import chat_store
     blocks: list[dict] = []

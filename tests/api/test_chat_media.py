@@ -95,3 +95,23 @@ def test_vision_setting_toggles_capability(app_client):
     assert chat_media.vision_enabled("chat") is True
     client.put("/api/runtime/llm-settings", json={"vision_capable": 0})
     assert chat_media.vision_enabled("chat") is False
+
+
+def test_vision_probe_accepts_and_rejects(app_client, monkeypatch):
+    """No hardcoded allowlist — capability is PROBED from the endpoint. A server
+    that accepts the image → vision; one that rejects image content → not."""
+    from aiforge_core.runtime import chat_media
+    from aiforge_core.llm import client as llm
+
+    # Accepting server → vision True (cached per model).
+    chat_media.reset_vision_cache()
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "ok")
+    assert chat_media._probe_vision("some-served-model", "chat") is True
+    assert chat_media._probe_vision("some-served-model", "chat") is True  # cached
+
+    # Rejecting server (image content invalid) → vision False.
+    chat_media.reset_vision_cache()
+    def _reject(*a, **k):
+        raise RuntimeError("400 invalid image content for this model")
+    monkeypatch.setattr(llm, "complete", _reject)
+    assert chat_media._probe_vision("text-only-model", "chat") is False

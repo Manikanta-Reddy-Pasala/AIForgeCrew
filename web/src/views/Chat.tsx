@@ -297,19 +297,35 @@ export default function Chat() {
       setMedia(r.media); setMediaVision(r.vision);
     } catch { /* best-effort */ }
   }
-  async function uploadMedia(files: FileList | null) {
-    if (!files || !files.length || activeId === null) return;
+  async function uploadMedia(files: FileList | File[] | null) {
+    const list = files ? Array.from(files).filter(f => f.type.startsWith('image/')) : [];
+    if (!list.length) return;
+    // Attach works even on a brand-new chat: create the session first so the
+    // image has somewhere to live (mirrors send()).
+    let sid = activeId;
+    if (sid === null) { sid = await createSession(); if (sid === null) return; }
     setUploadingMedia(true);
     try {
-      for (const f of Array.from(files)) {
-        if (!f.type.startsWith('image/')) { toast.error(`${f.name}: not an image`); continue; }
-        await chatMediaUpload(activeId, f);
-      }
-      await loadMedia(activeId);
-      toast.success('Image attached');
+      for (const f of list) await chatMediaUpload(sid, f);
+      await loadMedia(sid);
+      toast.success(list.length === 1 ? 'Image attached' : `${list.length} images attached`);
     } catch (e: any) {
       toast.error(`Upload failed: ${e.message}`);
     } finally { setUploadingMedia(false); }
+  }
+
+  // Paste an image straight into the composer (Cmd/Ctrl+V).
+  function onPasteMedia(e: React.ClipboardEvent) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imgs: File[] = [];
+    for (const it of Array.from(items)) {
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        const f = it.getAsFile();
+        if (f) imgs.push(f);
+      }
+    }
+    if (imgs.length) { e.preventDefault(); uploadMedia(imgs); }
   }
 
   // Live turn (the assistant response being streamed right now)
@@ -1409,6 +1425,12 @@ export default function Chat() {
           </div>
         </div>
 
+        {/* Shared hidden file input — used by the attach button in either
+            composer (active session or brand-new chat). */}
+        <input ref={mediaInputRef} type="file" accept="image/*" multiple
+               style={{ display: 'none' }}
+               onChange={e => { uploadMedia(e.target.files); e.target.value = ''; }} />
+
         {/* Message log or empty state */}
         {activeId === null ? (
           <div className="chat-empty-state">
@@ -1558,12 +1580,10 @@ export default function Chat() {
                         onDelete={async (id) => { await chatMediaDelete(id); if (activeId !== null) loadMedia(activeId); }} />
 
             <div className="chat-composer">
-              <input ref={mediaInputRef} type="file" accept="image/*" multiple
-                     style={{ display: 'none' }}
-                     onChange={e => { uploadMedia(e.target.files); e.target.value = ''; }} />
               <div style={{ display: 'flex', gap: 6 }}>
                 <textarea
                   ref={textareaRef}
+                  onPaste={onPasteMedia}
                   rows={4}
                   placeholder={
                     pendingApproval
@@ -1648,8 +1668,9 @@ export default function Chat() {
             <div style={{ display: 'flex', gap: 6 }}>
               <textarea
                 ref={textareaRef}
+                onPaste={onPasteMedia}
                 rows={4}
-                placeholder="Type a message to start a new conversation…  (Enter to send, Shift+Enter for newline)"
+                placeholder="Type a message to start a new conversation…  (Enter to send, paste or attach an image too)"
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={onKey}
@@ -1657,6 +1678,11 @@ export default function Chat() {
                 style={{ flex: 1, minHeight: 96, resize: 'vertical',
                          fontSize: 14, lineHeight: 1.5, padding: 10 }}
               />
+              <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
+                      title="Attach image(s) — starts a chat and keeps them queryable all session"
+                      style={{ whiteSpace: 'nowrap' }}>
+                {uploadingMedia ? '…' : '🖼'}
+              </button>
               {busy && (
                 <button onClick={stopRun} className="danger"
                         title="Stop all agents + processes for this run"
