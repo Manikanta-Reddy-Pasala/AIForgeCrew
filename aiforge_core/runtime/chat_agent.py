@@ -1179,6 +1179,34 @@ _CONDENSE_OPEN = "<<AIFORGE_CTX_CONDENSED>>"
 _CONDENSE_CLOSE = "<</AIFORGE_CTX_CONDENSED>>"
 
 
+def _compress_prompt(text: str) -> str:
+    """Squeeze whitespace bloat out of the assembled prompt before it hits the
+    LLM — dense context fits a small local window better and costs fewer tokens
+    (the user's 'caveman'-style ask). SAFE/structural only: collapses runs of
+    blank lines to one, strips trailing spaces, and drops consecutive duplicate
+    lines. No words removed, no reordering — semantics unchanged. Off with
+    AIFORGE_CHAT_COMPRESS_PROMPT=0."""
+    if os.environ.get("AIFORGE_CHAT_COMPRESS_PROMPT", "1") in ("0", "false"):
+        return text
+    out: list[str] = []
+    blanks = 0
+    prev = None
+    for raw in text.splitlines():
+        ln = raw.rstrip()
+        if not ln:
+            blanks += 1
+            if blanks > 1:
+                continue          # collapse multiple blank lines to one
+            out.append("")
+            continue
+        blanks = 0
+        if ln == prev:
+            continue              # drop an immediately-repeated line
+        out.append(ln)
+        prev = ln
+    return "\n".join(out).strip()
+
+
 def _ctx_budget_chars() -> int:
     """Char budget for the running conversation before auto-condensing.
     ~48k chars ≈ ~12k tokens — safe headroom under most context windows.
@@ -1189,7 +1217,7 @@ def _ctx_budget_chars() -> int:
         return 48000
 
 
-def _compact_convo(convo: list[dict], *, keep_recent: int = 12) -> list[dict]:
+def _compact_convo(convo: list[dict], *, keep_recent: int = 18) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
@@ -1234,7 +1262,7 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 12) -> list[dict]:
     return head + tail
 
 
-def _build_repo_map(cwd: str, max_entries: int = 240, max_depth: int = 3) -> str:
+def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str:
     """A compact directory tree of ``cwd`` for the system prompt, so the
     agent has the repo structure in context every turn (no re-searching).
     Skips junk dirs, caps entries + depth. Best-effort."""
@@ -1321,7 +1349,7 @@ def _repo_context(cwd: str) -> str:
             body = md_store._parse(p).get("body", "")
             if body.strip():
                 return (f"PROJECT SUMMARY — {repo} (what this repo is + what "
-                        f"prior sessions did):\n{body[:2500]}")
+                        f"prior sessions did):\n{body[:1800]}")
     except Exception:  # noqa: BLE001
         pass
     # Starter (first time): stack + README excerpt.
@@ -1419,20 +1447,15 @@ def run_chat_agent(
             sys_msg += "\n\n" + ment_block
     except Exception:  # noqa: BLE001
         pass
-    # SESSION START (self-learning): on a fresh session — before any
-    # assistant turn — proactively recall memory keyed to the opening
-    # request, so the agent starts informed by prior sessions (it already
-    # has the repo map + project summary above for files/folders). Once the
-    # conversation has assistant turns the recall has already happened.
-    is_init = not any((m.get("role") == "assistant") for m in messages)
-    if is_init:
-        first_user = next(
-            (m.get("content") for m in messages
-             if (m.get("role") or "user") == "user" and m.get("content")),
-            "")
-        recall = _memory_recall(cwd, first_user)
-        if recall:
-            sys_msg += "\n\n" + recall
+    # Self-learning recall — EVERY turn, keyed to the CURRENT user message (not
+    # just the opening one). Mid-session follow-ups and post-condensation turns
+    # need relevant prior decisions/gotchas re-surfaced too; recalling only on
+    # turn 1 was a top cause of the agent "forgetting" earlier facts. Bounded +
+    # best-effort, so the per-turn cost is a small vector query.
+    recall = _memory_recall(cwd, last_user)
+    if recall:
+        sys_msg += "\n\n" + recall
+    sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
     convo: list[dict] = [{"role": "system", "content": sys_msg}]
     for m in messages:
         r = m.get("role") or "user"

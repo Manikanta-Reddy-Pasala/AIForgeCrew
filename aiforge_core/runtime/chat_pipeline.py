@@ -30,6 +30,18 @@ _SENTINEL = object()
 # the env at a time. (Ticket runs execute in a separate runner process, so
 # they don't share this lock.)
 _RUN_LOCK = threading.Lock()
+# Owner generation for the team lock. A holder records the generation it
+# acquired under; a force-release (kill-all) bumps it, which invalidates the
+# wedged holder so its finally does NOT release the lock again (it would free a
+# NEW holder's lock — a plain Lock is unowned) nor restore AIFORGE_REPO_ROOT
+# over the new run. Guarded by its own tiny lock so reads/writes are atomic.
+_RUN_LOCK_GEN = 0
+_RUN_LOCK_GEN_LOCK = threading.Lock()
+
+
+def _run_lock_gen() -> int:
+    with _RUN_LOCK_GEN_LOCK:
+        return _RUN_LOCK_GEN
 
 
 def force_release_run_lock() -> bool:
@@ -38,10 +50,14 @@ def force_release_run_lock() -> bool:
     run wedged (e.g. blocked in an LLM call that outlives a Stop) and left the
     lock held, so a new chat sits forever on 'waiting for another team run'.
 
-    A plain ``threading.Lock`` is not owned, so release from any thread is legal;
-    only guard against releasing an already-free lock. Safe here because kill-all
-    also cancels every run, so the wedged holder is being torn down anyway."""
+    Bumps the owner generation so the wedged holder's finally becomes a no-op
+    (it won't double-release the lock onto a new holder, nor restore the env
+    root over a new run). Safe because kill-all also cancels every run, so the
+    wedged holder is being torn down anyway."""
+    global _RUN_LOCK_GEN
     if _RUN_LOCK.locked():
+        with _RUN_LOCK_GEN_LOCK:
+            _RUN_LOCK_GEN += 1          # invalidate the current holder
         try:
             _RUN_LOCK.release()
             return True
@@ -195,14 +211,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         rules_ctx = repo_ctx = ""
         _memory_recall = None  # type: ignore
     convo = _history_preamble(history)
-    # SESSION START (self-learning): on a fresh session (no prior turns)
-    # recall memory keyed to the opening request so the team arrives
-    # informed by earlier sessions, same as the lightweight agent.
+    # Self-learning recall EVERY turn, keyed to the CURRENT request (not just
+    # the opening one) — mid-session follow-ups need prior decisions/gotchas
+    # re-surfaced too, same as the lightweight agent. Bounded + best-effort.
     recall_ctx = ""
-    is_init = not convo
-    if is_init and _memory_recall is not None:
+    if _memory_recall is not None:
         try:
-            recall_ctx = _memory_recall(cwd, prompt)
+            recall_ctx = _memory_recall(cwd, raw_prompt)
         except Exception:  # noqa: BLE001
             recall_ctx = ""
     parts = [p for p in (rules_ctx, repo_ctx, recall_ctx, convo) if p]
@@ -229,6 +244,18 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                     from aiforge_core.runtime import chat_approve
                     chat_approve.clear_emitter(session_id)
                     chat_approve.finish(session_id)
+                    # Persist a stopped turn here — the api _produce finally
+                    # skips persistence for the team path (_path["driver"] is
+                    # already set), so without this a Stop while waiting on the
+                    # lock leaves the user msg with NO assistant turn on reload.
+                    try:
+                        from aiforge_core.runtime import chat_persist
+                        chat_persist.persist_turn(
+                            session_id=session_id, cwd=cwd, prompt=raw_prompt,
+                            final_text="(stopped before the run started)",
+                            steps=[], team=True, cancelled=True, awaiting=False)
+                    except Exception:  # noqa: BLE001
+                        pass
                     chat_cancel.finish(session_id)
                 q.put({"type": "error", "text": "stopped by user", "stopped": True})
                 q.put(_SENTINEL)
@@ -238,6 +265,9 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 waited = True
                 q.put({"type": "thought", "role": "system",
                        "text": "waiting for another team run to finish…"})
+        # Lock is held — record the owner generation so a kill-all force-release
+        # (which bumps the generation) can neutralise this holder's teardown.
+        my_lock_gen = _run_lock_gen()
         # Lock is held — everything from here is inside try/finally so the
         # env mutation can't leak the lock if it raises.
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
@@ -368,14 +398,19 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         except Exception as exc:  # noqa: BLE001
             q.put({"type": "error", "text": f"pipeline: {exc}"})
         finally:
-            if prev_root is None:
-                os.environ.pop("AIFORGE_REPO_ROOT", None)
-            else:
-                os.environ["AIFORGE_REPO_ROOT"] = prev_root
-            try:
-                _RUN_LOCK.release()
-            except RuntimeError:
-                pass
+            # If a kill-all force-released the lock out from under us, the
+            # generation changed: another run (or none) now owns the lock + the
+            # env root, so we must NOT release the lock again or restore our
+            # prev_root over theirs. Only tear down if we're still the owner.
+            if _run_lock_gen() == my_lock_gen:
+                if prev_root is None:
+                    os.environ.pop("AIFORGE_REPO_ROOT", None)
+                else:
+                    os.environ["AIFORGE_REPO_ROOT"] = prev_root
+                try:
+                    _RUN_LOCK.release()
+                except RuntimeError:
+                    pass
             # The team run owns BOTH the cancel-token lifetime AND persistence
             # — done HERE (background thread), not in the SSE generator, so a
             # client disconnect can't drop the real answer or persist a

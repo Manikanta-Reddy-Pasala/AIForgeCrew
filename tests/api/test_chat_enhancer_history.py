@@ -74,13 +74,15 @@ def test_followup_enhancer_sees_history_no_double_fold(app_client, monkeypatch):
     joined = " ".join(m.get("content", "") for m in hist)
     assert "todo app" in joined          # context available to the enhancer
 
-    # (2) Replace-in-place: the history handed to the agent KEEPS every prior
-    # turn, with only the LAST user turn's content swapped for the enriched
-    # spec. No turn is dropped, and alternation stays intact (no two consecutive
-    # user turns).
+    # (2) Augment-in-place: the history handed to the agent KEEPS every prior
+    # turn; the LAST user turn now carries BOTH the user's verbatim words AND
+    # the enriched spec (a distorted enhancement can't silently replace the
+    # ask). No turn dropped, alternation intact (no two consecutive user turns).
     agent_hist = agent_histories[-1]
     assert agent_hist[-1]["role"] == "user"
-    assert agent_hist[-1]["content"] == "SPEC<no, use postgres instead>"
+    last_content = agent_hist[-1]["content"]
+    assert "no, use postgres instead" in last_content     # verbatim words kept
+    assert "SPEC<no, use postgres instead>" in last_content  # enriched spec too
     # the original turn-1 user message is still present (context not lost)
     assert any(m["content"] == "build a todo app" for m in agent_hist)
     # no two consecutive same-role turns (would break claude_local alternation)

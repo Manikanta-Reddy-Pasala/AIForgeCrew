@@ -392,8 +392,15 @@ export default function Chat() {
         TERMINAL.has(s.status) ? s : { ...s, status: 'failed' }),
     } : null);
     toast('Stopping run…');
-    // Pull whatever the server persisted once it unwinds.
-    if (activeId !== null) setTimeout(() => loadSession(activeId), 800);
+    // The run keeps unwinding server-side (cancellation is cooperative — the
+    // current LLM call must return first), and the producer persists in its
+    // finally. Re-attach instead of a guessed 800ms reload: the attach tails
+    // the run to its real `done` then reconciles to the persisted turn, so the
+    // stopped partial is never wiped by reloading before persistence lands.
+    if (activeId !== null) {
+      const sid = activeId;
+      setTimeout(() => attachToRun(sid), 150);
+    }
   }
 
   // ── Kill all (force reset) ────────────────────────────────────────────────
@@ -650,13 +657,20 @@ export default function Chat() {
 
   async function deleteSession(id: number) {
     if (!window.confirm('Delete this conversation?')) return;
+    // Stop any run still in flight for this session before deleting it —
+    // otherwise the background producer keeps running and persists against a
+    // deleted session id. Stop server-side + drop our stream if it's active.
+    chatSessionStop(id);
+    if (activeId === id) { abortRef.current?.abort(); abortRef.current = null; }
     try {
       await chatApi.sessionDelete(id);
       setSessions(prev => prev.filter(s => s.id !== id));
       if (activeId === id) {
         setActiveId(null);
+        activeIdRef.current = null;
         setMessages([]);
         setLiveTurn(null);
+        setBusy(false);
       }
     } catch (e: any) {
       toast.error(`Delete failed: ${e.message}`);
@@ -706,15 +720,19 @@ export default function Chat() {
       let evt: any;
       try { evt = JSON.parse(line); } catch { return; }
 
+      // Heartbeat — keeps the SSE connection warm on a slow model. No-op.
+      if (evt.type === 'ping') return;
+
       // Re-attach handshake (first event from /attach): if a run is live,
       // bring the view back into the streaming state — busy spinner, a live
-      // turn for the replayed events to populate, and the elapsed timer.
+      // turn for the replayed events to populate, and the elapsed timer seeded
+      // from the run's TRUE start so the duration is continuous (not reset).
       if (evt.type === 'attached') {
         if (evt.running) {
           setBusy(true);
           setLiveTurn(prev => prev ?? { role: 'assistant', text: '', steps: [], streaming: true });
-          sendStartRef.current = Date.now();
-          setElapsedSec(0);
+          sendStartRef.current = evt.started_at ? evt.started_at * 1000 : Date.now();
+          setElapsedSec(Math.max(0, Math.floor((Date.now() - sendStartRef.current) / 1000)));
           if (timerRef.current !== null) clearInterval(timerRef.current);
           timerRef.current = setInterval(() => {
             setElapsedSec(Math.floor((Date.now() - sendStartRef.current) / 1000));
@@ -819,20 +837,26 @@ export default function Chat() {
       await pumpStream(res, sessionId);
       // If a run was live, the pump set busy/liveTurn via the `attached`
       // handler. Reconcile to the now-persisted turn (mirrors send()'s tail).
-      // The ref guard keeps a late-arriving attach from clobbering a session
-      // the user has since switched to.
-      if (activeIdRef.current === sessionId) {
+      // Only when WE are still the active stream (a send() that superseded this
+      // attach owns abortRef now) AND still on this session — otherwise we'd
+      // stomp the newer run or a switched-to session.
+      if (abortRef.current === ctrl && activeIdRef.current === sessionId) {
         if (timerRef.current !== null) { clearInterval(timerRef.current); timerRef.current = null; }
         await loadSession(sessionId);
         setLiveTurn(null);
         loadSessions(true);
       }
     } catch (e: any) {
-      // Abort (navigated away / session switch) is expected — not an error.
+      // Abort (navigated away / session switch / superseded by send) is
+      // expected — not an error.
       if (e?.name !== 'AbortError') { /* attach is best-effort; ignore */ }
     } finally {
-      if (abortRef.current === ctrl) abortRef.current = null;
-      if (activeIdRef.current === sessionId) setBusy(false);
+      // Only clear shared state if this attach is still the active stream — a
+      // send() that took over must not have its busy/abortRef cleared by us.
+      if (abortRef.current === ctrl) {
+        abortRef.current = null;
+        if (activeIdRef.current === sessionId) setBusy(false);
+      }
     }
   }
 
@@ -841,6 +865,12 @@ export default function Chat() {
   async function send(overrideContent?: string, overrideMode?: ChatMode) {
     const q = (overrideContent ?? input).trim();
     if (!q || busy) return;
+    // Abort any in-flight attach probe on this session first — an unresolved
+    // attach (kicked off by mount/selectSession) would otherwise keep its fetch
+    // alive and, on resolve, run its finally (setBusy(false) + loadSession +
+    // clear liveTurn) and stomp this fresh send mid-stream.
+    abortRef.current?.abort();
+    abortRef.current = null;
     // A fresh run supersedes any pending plan-approval (Gap B).
     setPlanReady(null);
     if (overrideContent === undefined) setInput('');

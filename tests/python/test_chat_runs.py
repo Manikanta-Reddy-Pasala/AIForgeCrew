@@ -115,7 +115,7 @@ def test_iter_subscription_yields_until_sentinel():
         run.finish()
 
     threading.Thread(target=producer, daemon=True).start()
-    got = list(cr.iter_subscription(103, q, ping_every=2.0))
+    got = list(cr.iter_subscription(run, q, ping_every=2.0))
     types = [e["type"] for e in got]
     assert "thought" in types and "done" in types
     # The subscriber is removed from the run on generator close.

@@ -82,7 +82,8 @@ def test_attach_live_run_replays_buffer_then_tails(app_client):
 
     r = client.get(f"/api/chat/sessions/{sid}/attach")
     evs = _events(r.text)
-    assert evs[0] == {"type": "attached", "running": True}
+    assert evs[0]["type"] == "attached" and evs[0]["running"] is True
+    assert "started_at" in evs[0]   # true run start → continuous reattach timer
     types = [e["type"] for e in evs]
     assert "thought" in types and "tool" in types          # buffer replayed
     assert any(e["type"] == "message" and e["text"] == "all done"
@@ -152,3 +153,18 @@ def test_kill_all_idempotent_when_nothing_running(app_client):
     r = client.post("/api/chat/kill-all").json()
     assert r["count"] == 0
     assert r["team_lock_released"] is False
+
+
+def test_overlapping_message_rejected_409(app_client):
+    """A 2nd message while a run is already in flight is rejected (409) — the
+    server-side backstop against the cancel-token hijack + double-persist."""
+    client, _ = app_client
+    from aiforge_core.runtime import chat_runs
+    sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
+    chat_runs.start(sid)   # simulate an in-flight run
+    try:
+        r = client.post(f"/api/chat/sessions/{sid}/message",
+                        json={"content": "second", "mode": "simple"})
+        assert r.status_code == 409
+    finally:
+        chat_runs.finish(sid)

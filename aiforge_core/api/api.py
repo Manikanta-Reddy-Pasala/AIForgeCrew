@@ -2399,9 +2399,80 @@ def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
 
 @app.delete("/api/chat/sessions/{session_id}", status_code=204)
 def chat_session_delete(session_id: int) -> None:
-    from aiforge_core.runtime import chat_store
+    from aiforge_core.runtime import (
+        chat_approve, chat_cancel, chat_interject, chat_runs, chat_store,
+    )
+    # Stop any in-flight run first so its background producer doesn't keep
+    # running + persisting against a session that no longer exists.
+    chat_cancel.cancel(session_id)
+    chat_approve.cancel(session_id)
+    chat_interject.clear(session_id)
+    chat_runs.finish(session_id)
     if not chat_store.delete_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
+
+
+def _step_digest(steps: list) -> str:
+    """One compact line summarising what an assistant turn DID — tool calls +
+    outcomes — so the next turn's history carries the agent's actions, not just
+    its final prose. Fixes the 'forgets what it just did' amnesia: persisted
+    `steps` were never fed back into context, so any work the model didn't
+    transcribe into its final answer vanished."""
+    if not isinstance(steps, list):
+        return ""
+    bits: list[str] = []
+    for s in steps:
+        if not isinstance(s, dict) or s.get("type") != "tool":
+            continue
+        name = s.get("name") or "tool"
+        res = s.get("result") or {}
+        # Tiny outcome marker: ok / err / a key field, kept short.
+        mark = ""
+        if isinstance(res, dict):
+            if res.get("ok") is False or res.get("error"):
+                mark = "✗"
+            elif res.get("ok") is True:
+                mark = "✓"
+        arg = ""
+        a = s.get("args") or {}
+        if isinstance(a, dict):
+            for k in ("path", "file", "cmd", "command", "query", "pattern"):
+                if a.get(k):
+                    arg = str(a[k])[:48]
+                    break
+        bits.append(f"{name}({arg}){mark}" if arg else f"{name}{mark}")
+        if len(bits) >= 12:
+            bits.append("…")
+            break
+    return ", ".join(bits)
+
+
+def _chat_history_for_agent(rows: list) -> list[dict]:
+    """Build the agent's conversation history from persisted messages.
+
+    Unlike a naive role+content copy, this (1) folds each assistant turn's tool
+    DIGEST into its content so the agent remembers its own prior actions, (2)
+    keeps assistant turns that did work but produced no final text (don't drop
+    them — that left a gap AND broke user/assistant alternation), and (3) merges
+    consecutive same-role turns (some providers reject two in a row)."""
+    out: list[dict] = []
+    for m in rows:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = (m.get("content") or "").strip()
+        if role == "assistant":
+            digest = _step_digest(m.get("steps") or [])
+            if digest:
+                content = (content + f"\n[did: {digest}]").strip() if content \
+                    else f"[did: {digest}]"
+        if not content:
+            continue   # truly empty (e.g. a user turn with no text) — skip
+        if out and out[-1]["role"] == role:
+            out[-1]["content"] += "\n\n" + content   # merge same-role
+        else:
+            out.append({"role": role, "content": content})
+    return out
 
 
 @app.post("/api/chat/sessions/{session_id}/message")
@@ -2419,6 +2490,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
 
+    # Reject an overlapping run for the same session (two tabs, or a reattach
+    # racing a send). Letting a 2nd producer start would replace this session's
+    # cancel/approve token, so the 1st run's Stop becomes a no-op and BOTH
+    # producers persist a turn (duplicate/garbled history). The client already
+    # guards on `busy`; this is the server-side backstop. Use /attach to watch
+    # the in-flight run instead.
+    from aiforge_core.runtime import chat_runs
+    if chat_runs.is_running(session_id):
+        raise HTTPException(409, "a run is already in progress for this session "
+                                 "— stop it or attach to it before sending again")
+
     role = body.role or session.get("role") or "chat"
     if body.role and body.role != session.get("role"):
         chat_store.set_session_role(session_id, body.role)
@@ -2427,11 +2509,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     if (session.get("title") or "New chat") == "New chat":
         chat_store.rename_session(session_id, body.content.strip()[:60])
 
-    history = [
-        {"role": m["role"], "content": m["content"]}
-        for m in chat_store.get_messages(session_id)
-        if m["role"] in ("user", "assistant") and m["content"]
-    ]
+    # Fold each assistant turn's tool digest into history + keep did-work-but-
+    # blank turns + merge same-role runs, so the agent remembers what it DID
+    # (not just what it said) on follow-ups.
+    history = _chat_history_for_agent(chat_store.get_messages(session_id))
     cwd = session.get("cwd") or _default_cwd()
     team = body.mode == "team"
     from aiforge_core.runtime import parallel_subtasks as _psub
@@ -2608,7 +2689,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         _enriched_history = [dict(m) for m in history]
         for _m in reversed(_enriched_history):
             if _m.get("role") == "user":
-                _m["content"] = _enriched
+                # AUGMENT, don't replace: keep the user's verbatim words and
+                # attach the enhancer's interpretation as a clearly-labelled
+                # block the model can cross-check. A distorted/hallucinated
+                # enhancement no longer silently becomes the request (the raw
+                # ask is right there). If _enhance no-ops, skip the block.
+                _raw = (_m.get("content") or "").strip()
+                if _enriched and _enriched.strip() and _enriched.strip() != _raw:
+                    _m["content"] = (
+                        f"{_raw}\n\n---\n[Interpreted request — a context-enriched "
+                        f"restatement; if it conflicts with my words above, my "
+                        f"words win:]\n{_enriched}")
                 break
         if agent_mode == "plan":
             _subs = _pp._decompose(_enriched)       # Planner
@@ -2648,8 +2739,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # kill the run — the thread runs to completion and persists the full turn.
     # The HTTP response (and any later /attach) just SUBSCRIBES and tails the
     # buffer. This is the same survive-the-disconnect pattern team mode already
-    # used internally, now applied to every mode.
-    from aiforge_core.runtime import chat_runs
+    # used internally, now applied to every mode. (chat_runs imported above for
+    # the is_running concurrency guard.)
     run = chat_runs.start(session_id)
 
     def _produce():
@@ -2750,7 +2841,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # Tail the live run as SSE. A client disconnect only closes this
         # subscriber — the producer thread keeps running.
         q = run.subscribe()
-        for ev in chat_runs.iter_subscription(session_id, q):
+        for ev in chat_runs.iter_subscription(run, q):
             yield f"data: {json.dumps(ev)}\n\n"
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
@@ -2771,16 +2862,17 @@ def chat_session_attach(session_id: int) -> StreamingResponse:
         # First event always tells the client whether there's a live run, so it
         # can decide to show progress (running) or just keep the persisted
         # history (not running) — no guessing from the event stream.
-        running = chat_runs.is_running(session_id)
-        yield f"data: {json.dumps({'type': 'attached', 'running': running})}\n\n"
-        if not running:
+        run = chat_runs.get(session_id)
+        running = bool(run and not run.done)
+        _att = {"type": "attached", "running": running}
+        if running and run is not None:
+            _att["started_at"] = run.started_at   # epoch secs → true elapsed
+        yield f"data: {json.dumps(_att)}\n\n"
+        if not running or run is None:
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return
-        q = chat_runs.subscribe(session_id)
-        if q is None:   # finished in the race between the check and subscribe
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            return
-        for ev in chat_runs.iter_subscription(session_id, q):
+        q = run.subscribe()
+        for ev in chat_runs.iter_subscription(run, q):
             yield f"data: {json.dumps(ev)}\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream")

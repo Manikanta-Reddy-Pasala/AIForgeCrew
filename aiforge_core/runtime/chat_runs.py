@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Any
 
 # Sentinel pushed onto every subscriber queue when a run completes, so a
@@ -46,6 +47,7 @@ class _Run:
         self.events: list[dict] = []          # full ordered buffer (replay)
         self.subscribers: set[queue.Queue] = set()
         self.done = False
+        self.started_at = time.time()         # epoch secs — for reattach timer
         self.lock = threading.Lock()
 
     # -- producer side -------------------------------------------------------
@@ -54,7 +56,11 @@ class _Run:
         with self.lock:
             if self.done:
                 return
-            self.events.append(event)
+            # Don't buffer heartbeats — iter_subscription generates its own per
+            # subscriber. Buffering the producer's pings would replay a growing
+            # pile of them to every re-attach. Forward live but don't store.
+            if event.get("type") != "ping":
+                self.events.append(event)
             for q in self.subscribers:
                 q.put(event)
 
@@ -165,14 +171,19 @@ def unsubscribe(session_id: int, q: queue.Queue) -> None:
         run.unsubscribe(q)
 
 
-def iter_subscription(session_id: int, q: queue.Queue,
+def iter_subscription(run: "_Run", q: queue.Queue,
                       ping_every: float = 10.0) -> Any:
     """Yield live events for a subscriber queue until the run ends.
 
-    Emits a ``{"type": "ping"}`` heartbeat on idle so a slow local model
-    can't let the SSE connection idle out behind a proxy. The terminal
-    sentinel ends the generator (the producer already forwards a real
-    ``done`` event before finishing, so callers needn't synthesise one)."""
+    Takes the captured ``_Run`` (NOT a session id) so cleanup unsubscribes from
+    the exact run the queue belongs to — a newer run may have replaced this one
+    in the registry, and unsubscribing by id would leak the queue on the old
+    run (it would keep ``put``-ing into an orphaned queue forever).
+
+    Emits a ``{"type": "ping"}`` heartbeat on idle so a slow local model can't
+    let the SSE connection idle out behind a proxy. The terminal sentinel ends
+    the generator (the producer already forwards a real ``done`` event before
+    finishing, so callers needn't synthesise one)."""
     try:
         while True:
             try:
@@ -184,7 +195,7 @@ def iter_subscription(session_id: int, q: queue.Queue,
                 return
             yield item
     finally:
-        unsubscribe(session_id, q)
+        run.unsubscribe(q)
 
 
 __all__ = [
