@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionStop, chatSessionSteer, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -274,6 +274,12 @@ export default function Chat() {
       return v ? Number(v) : null;
     } catch { return null; }
   });
+  // Always-current mirror of activeId so async re-attach handlers can tell
+  // whether the user has since switched sessions (closures capture a stale
+  // activeId; the ref doesn't). Guards a late attach from clobbering the
+  // session the user moved to.
+  const activeIdRef = useRef<number | null>(activeId);
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [msgsLoading, setMsgsLoading] = useState(false);
 
@@ -518,9 +524,10 @@ export default function Chat() {
     }).catch(() => { /* endpoint optional — ignore */ });
 
     loadSessions().then(() => {
-      // sessions loaded; if there's an activeId, load it
+      // sessions loaded; if there's an activeId, load it — then re-attach to
+      // any run still in flight server-side (navigated away mid-run + back).
       if (activeId !== null) {
-        loadSession(activeId);
+        loadSession(activeId).then(() => attachToRun(activeId));
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -584,9 +591,12 @@ export default function Chat() {
     abortRef.current?.abort();   // drop any in-flight stream on the old session
     abortRef.current = null;
     setActiveId(id);
+    activeIdRef.current = id;     // sync immediately so attachToRun's guard is right
     setLiveTurn(null);
     setBusy(false);
-    loadSession(id);
+    // Load history, then re-attach to any run still in flight for this session
+    // so switching back to it resumes the live progress instead of losing it.
+    loadSession(id).then(() => attachToRun(id));
   }
 
   // ── Create a new session ──────────────────────────────────────────────────
@@ -655,6 +665,151 @@ export default function Chat() {
     if (e.key === 'Escape') { setRenaming(null); }
   }
 
+  // ── SSE stream pump (shared by send + reattach) ───────────────────────────
+  // Reads the SSE body to completion, applying each event to the live turn.
+  // Used both by a fresh `send` and by `attachToRun` (resume after navigating
+  // away and back) — so a re-attached run renders identically to a live one.
+  async function pumpStream(res: Response, sessionId: number): Promise<void> {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    function applyEvent(raw: string) {
+      const line = raw.startsWith('data: ') ? raw.slice(6) : raw;
+      if (!line.trim()) return;
+      let evt: any;
+      try { evt = JSON.parse(line); } catch { return; }
+
+      // Re-attach handshake (first event from /attach): if a run is live,
+      // bring the view back into the streaming state — busy spinner, a live
+      // turn for the replayed events to populate, and the elapsed timer.
+      if (evt.type === 'attached') {
+        if (evt.running) {
+          setBusy(true);
+          setLiveTurn(prev => prev ?? { role: 'assistant', text: '', steps: [], streaming: true });
+          sendStartRef.current = Date.now();
+          setElapsedSec(0);
+          if (timerRef.current !== null) clearInterval(timerRef.current);
+          timerRef.current = setInterval(() => {
+            setElapsedSec(Math.floor((Date.now() - sendStartRef.current) / 1000));
+          }, 1000);
+        }
+        return;
+      }
+
+      // Approval gate (#1): the run is blocked server-side; surface the
+      // action + diff so the user can Approve/Reject. Cleared when the
+      // next tool/message event arrives (the run resumed).
+      if (evt.type === 'approval') {
+        setPendingApproval({ id: evt.id, sessionId, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview });
+        return;
+      }
+      if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);
+
+      // Plan ready (Gap B): a plan-mode run produced an approvable spec.
+      if (evt.type === 'plan_ready') {
+        setPlanReady({ spec: evt.spec || '' });
+        return;
+      }
+
+      // Rule/Memory/Feedback captured (deterministic capture pass): render an
+      // inline pill (change-scope / undo). Append to the live turn.
+      if (evt.type === 'captured') {
+        setLiveTurn(prev => prev ? {
+          ...prev,
+          captured: [...(prev.captured || []), {
+            id: evt.id, category: evt.category, scope: evt.scope,
+            text: evt.text || '', repo: evt.repo,
+            gate_intent: evt.gate_intent,
+          }],
+        } : prev);
+        return;
+      }
+
+      setLiveTurn(prev => {
+        if (!prev) return prev;
+        if (evt.type === 'subtasks') {
+          return { ...prev, subtasks: evt.items || [] };
+        }
+        if (evt.type === 'subtask_update' && prev.subtasks) {
+          return { ...prev, subtasks: prev.subtasks.map(s =>
+            s.slug === evt.slug ? { ...s, status: evt.status } : s) };
+        }
+        if (evt.type === 'thought') {
+          return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
+        }
+        if (evt.type === 'tool') {
+          return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
+        }
+        if (evt.type === 'message') {
+          if (evt.awaiting_input) setTimeout(() => textareaRef.current?.focus(), 30);
+          return { ...prev, text: evt.text, streaming: false, awaiting: !!evt.awaiting_input };
+        }
+        if (evt.type === 'error') {
+          return { ...prev, text: evt.text, steps: [...prev.steps, { kind: 'error' as const, text: evt.text }], streaming: false };
+        }
+        if (evt.type === 'done') {
+          return { ...prev, streaming: false };
+        }
+        return prev;
+      });
+    }
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        if (part.trim()) {
+          for (const line of part.split('\n')) {
+            if (line.startsWith('data: ')) applyEvent(line);
+          }
+        }
+      }
+    }
+
+    // Flush remaining buffer
+    if (buffer.trim()) {
+      for (const line of buffer.split('\n')) {
+        if (line.startsWith('data: ')) applyEvent(line);
+      }
+    }
+  }
+
+  // ── Re-attach to a run still in flight on the server ──────────────────────
+  // When the user navigates away from Chat and returns (or reloads), the run
+  // keeps executing server-side (it's on a background thread now). This probes
+  // for a live run and, if found, resumes streaming its progress so nothing is
+  // lost. No-op when nothing is in flight.
+  async function attachToRun(sessionId: number) {
+    if (busy) return;   // our own send is already streaming this session
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    try {
+      const res = await fetch(chatSessionAttachURL(sessionId), { signal: ctrl.signal });
+      if (!res.ok || !res.body) return;
+      await pumpStream(res, sessionId);
+      // If a run was live, the pump set busy/liveTurn via the `attached`
+      // handler. Reconcile to the now-persisted turn (mirrors send()'s tail).
+      // The ref guard keeps a late-arriving attach from clobbering a session
+      // the user has since switched to.
+      if (activeIdRef.current === sessionId) {
+        if (timerRef.current !== null) { clearInterval(timerRef.current); timerRef.current = null; }
+        await loadSession(sessionId);
+        setLiveTurn(null);
+        loadSessions(true);
+      }
+    } catch (e: any) {
+      // Abort (navigated away / session switch) is expected — not an error.
+      if (e?.name !== 'AbortError') { /* attach is best-effort; ignore */ }
+    } finally {
+      if (abortRef.current === ctrl) abortRef.current = null;
+      if (activeIdRef.current === sessionId) setBusy(false);
+    }
+  }
+
   // ── SSE streaming send ────────────────────────────────────────────────────
 
   async function send(overrideContent?: string, overrideMode?: ChatMode) {
@@ -715,95 +870,7 @@ export default function Chat() {
         throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`);
       }
 
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let buffer = '';
-
-      function applyEvent(raw: string) {
-        const line = raw.startsWith('data: ') ? raw.slice(6) : raw;
-        if (!line.trim()) return;
-        let evt: any;
-        try { evt = JSON.parse(line); } catch { return; }
-
-        // Approval gate (#1): the run is blocked server-side; surface the
-        // action + diff so the user can Approve/Reject. Cleared when the
-        // next tool/message event arrives (the run resumed).
-        if (evt.type === 'approval') {
-          setPendingApproval({ id: evt.id, sessionId, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview });
-          return;
-        }
-        if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);
-
-        // Plan ready (Gap B): a plan-mode run produced an approvable spec.
-        if (evt.type === 'plan_ready') {
-          setPlanReady({ spec: evt.spec || '' });
-          return;
-        }
-
-        // Rule/Memory/Feedback captured (deterministic capture pass): render an
-        // inline pill (change-scope / undo). Append to the live turn.
-        if (evt.type === 'captured') {
-          setLiveTurn(prev => prev ? {
-            ...prev,
-            captured: [...(prev.captured || []), {
-              id: evt.id, category: evt.category, scope: evt.scope,
-              text: evt.text || '', repo: evt.repo,
-              gate_intent: evt.gate_intent,
-            }],
-          } : prev);
-          return;
-        }
-
-        setLiveTurn(prev => {
-          if (!prev) return prev;
-          if (evt.type === 'subtasks') {
-            return { ...prev, subtasks: evt.items || [] };
-          }
-          if (evt.type === 'subtask_update' && prev.subtasks) {
-            return { ...prev, subtasks: prev.subtasks.map(s =>
-              s.slug === evt.slug ? { ...s, status: evt.status } : s) };
-          }
-          if (evt.type === 'thought') {
-            return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
-          }
-          if (evt.type === 'tool') {
-            return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
-          }
-          if (evt.type === 'message') {
-            if (evt.awaiting_input) setTimeout(() => textareaRef.current?.focus(), 30);
-            return { ...prev, text: evt.text, streaming: false, awaiting: !!evt.awaiting_input };
-          }
-          if (evt.type === 'error') {
-            return { ...prev, text: evt.text, steps: [...prev.steps, { kind: 'error' as const, text: evt.text }], streaming: false };
-          }
-          if (evt.type === 'done') {
-            return { ...prev, streaming: false };
-          }
-          return prev;
-        });
-      }
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() ?? '';
-        for (const part of parts) {
-          if (part.trim()) {
-            for (const line of part.split('\n')) {
-              if (line.startsWith('data: ')) applyEvent(line);
-            }
-          }
-        }
-      }
-
-      // Flush remaining buffer
-      if (buffer.trim()) {
-        for (const line of buffer.split('\n')) {
-          if (line.startsWith('data: ')) applyEvent(line);
-        }
-      }
+      await pumpStream(res, sessionId);
 
       // Ensure streaming is cleared; freeze the elapsed timer
       if (timerRef.current !== null) {

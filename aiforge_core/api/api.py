@@ -2642,7 +2642,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
                                   session_id=session_id, mode=agent_mode)
 
-    def _gen():
+    # The PRODUCER runs on a background daemon thread and publishes every event
+    # into the per-session run registry (chat_runs). It NO LONGER yields to the
+    # HTTP response, so a client that navigates away (aborting the fetch) can't
+    # kill the run — the thread runs to completion and persists the full turn.
+    # The HTTP response (and any later /attach) just SUBSCRIBES and tails the
+    # buffer. This is the same survive-the-disconnect pattern team mode already
+    # used internally, now applied to every mode.
+    from aiforge_core.runtime import chat_runs
+    run = chat_runs.start(session_id)
+
+    def _produce():
         steps: list[dict] = []
         final_text = ""
         awaiting = False   # turn ended with a question / pause, not an outcome
@@ -2655,7 +2665,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # "planned" is a settled, never-executed plan-mode state — NOT in-flight,
         # so a cancel must not flip it to "failed".
         _TERMINAL = {"done", "failed", "skipped", "won", "planned"}
-        emitted_done = False   # forwarded a terminal `done` to the client yet?
+        emitted_done = False   # forwarded a terminal `done` yet?
         try:
             for ev in _events():
                 if ev.get("type") == "message":
@@ -2679,7 +2689,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     steps.append(ev)
                 if ev.get("type") == "done":
                     emitted_done = True
-                yield f"data: {json.dumps(ev)}\n\n"
+                run.publish(ev)
                 if chat_cancel.is_cancelled(session_id):
                     # Stop pressed mid-stream (parallel / best-of-N break out
                     # BEFORE their synthesized `done`): reconcile any in-flight
@@ -2694,16 +2704,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # The UI unblocks on a terminal `done`. A cancelled parallel/
             # best-of-N run breaks before its synthesized `done`, so guarantee
             # exactly one here when none was forwarded (non-cancel paths already
-            # emit their own — don't double-emit). MUST be here at try-end, NOT
-            # in `finally`: yielding during a client-disconnect GeneratorExit
-            # raises RuntimeError and skips persistence + gate cleanup below.
+            # emit their own — don't double-emit).
             if not emitted_done:
-                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                run.publish({"type": "done"})
                 emitted_done = True
         except Exception as exc:  # noqa: BLE001
-            yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            emitted_done = True
+            run.publish({"type": "error", "text": str(exc)})
+            run.publish({"type": "done"})
         finally:
             # Capture cancellation BEFORE finishing the token (finish pops
             # it, after which is_cancelled always reads False).
@@ -2713,7 +2720,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # disconnect and holds the real final answer, so we must NOT
             # persist a partial here (and finishing the token here would
             # orphan a still-running ADK run on Stop). SIMPLE mode runs inline
-            # in this generator, so finish + persist here.
+            # in this producer thread, so finish + persist here.
             # Parallel team mode is a self-contained generator (not the
             # background ADK driver), so persist it inline like simple mode.
             # The sequential fallback uses the team driver, which self-persists.
@@ -2731,6 +2738,50 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     final_text=final_text, steps=steps,
                     team=(team or _path["parallel"]),
                     cancelled=cancelled, awaiting=awaiting)
+            # Wake every subscriber (this stream + any /attach) and close THIS
+            # run object (not by session id — a newer turn for the same session
+            # may have already replaced it in the registry). Done LAST so a
+            # re-attach during persistence still tails live.
+            run.finish()
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    def _stream():
+        # Tail the live run as SSE. A client disconnect only closes this
+        # subscriber — the producer thread keeps running.
+        q = run.subscribe()
+        for ev in chat_runs.iter_subscription(session_id, q):
+            yield f"data: {json.dumps(ev)}\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/chat/sessions/{session_id}/attach")
+def chat_session_attach(session_id: int) -> StreamingResponse:
+    """Re-attach to an in-flight run after navigating back to the Chat view.
+
+    Replays the run's buffered events (so the client rebuilds the live turn
+    from the start — thoughts, tools, subtasks, the in-progress answer) and
+    then tails live events to completion. If no run is in flight for this
+    session, emits a single ``done`` immediately so the client knows there's
+    nothing live to resume (and can just show the persisted history)."""
+    from aiforge_core.runtime import chat_runs
+
+    def _gen():
+        # First event always tells the client whether there's a live run, so it
+        # can decide to show progress (running) or just keep the persisted
+        # history (not running) — no guessing from the event stream.
+        running = chat_runs.is_running(session_id)
+        yield f"data: {json.dumps({'type': 'attached', 'running': running})}\n\n"
+        if not running:
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        q = chat_runs.subscribe(session_id)
+        if q is None:   # finished in the race between the check and subscribe
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            return
+        for ev in chat_runs.iter_subscription(session_id, q):
+            yield f"data: {json.dumps(ev)}\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
 

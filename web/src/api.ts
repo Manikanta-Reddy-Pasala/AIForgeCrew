@@ -473,6 +473,13 @@ export function chatSessionMessageURL(id: number): string {
   return `${BASE}/chat/sessions/${id}/message`;
 }
 
+// Re-attach to an in-flight run after navigating back to the Chat view. The
+// SSE stream replays the run's buffered events then tails live ones. The first
+// event is {type:'attached', running} so the client knows if anything is live.
+export function chatSessionAttachURL(id: number): string {
+  return `${BASE}/chat/sessions/${id}/attach`;
+}
+
 // Stop the in-flight run for a session (halts agents + kills subprocesses).
 export function chatSessionStop(id: number): Promise<{ stopped: boolean }> {
   return fetch(`${BASE}/chat/sessions/${id}/stop`, { method: 'POST' })
