@@ -60,8 +60,13 @@ def _push_snapshot(abs_path: Path) -> Path:
         ts += 1
         snap_path = snap_dir / f"{ts}.txt"
     snap_path.write_text(body, encoding="utf-8")
+    # Mark snapshots taken when the file DIDN'T EXIST, so undo of a `create`
+    # deletes the file rather than leaving an empty one behind.
+    if not abs_path.is_file():
+        (snap_dir / f"{snap_path.stem}.absent").write_text("", encoding="utf-8")
     snaps = sorted(snap_dir.glob("*.txt"))
     while len(snaps) > _UNDO_RING_DEPTH:
+        (snap_dir / f"{snaps[0].stem}.absent").unlink(missing_ok=True)
         snaps[0].unlink(missing_ok=True)
         snaps = snaps[1:]
     return snap_path
@@ -209,6 +214,15 @@ def _undo_edit(path: str) -> dict[str, Any]:
     if not snaps:
         return {"ok": False, "error": "no_history", "path": path}
     most_recent = snaps[-1]
+    absent_marker = snap_dir / f"{most_recent.stem}.absent"
+    if absent_marker.exists():
+        # The file didn't exist before this edit (it was a `create`) — undo by
+        # removing it, not by restoring an empty file.
+        p.unlink(missing_ok=True)
+        most_recent.unlink(missing_ok=True)
+        absent_marker.unlink(missing_ok=True)
+        emit("EditorUndo", {"path": path, "deleted": True})
+        return {"ok": True, "path": path, "deleted": True}
     body = most_recent.read_text(encoding="utf-8")
     p.write_text(body, encoding="utf-8")
     most_recent.unlink(missing_ok=True)
