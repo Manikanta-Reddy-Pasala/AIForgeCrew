@@ -45,13 +45,15 @@ const STATUS_COLOR: Record<string, string> = {
 // Node FILL encodes the node's TYPE (what it is); STATUS only drives the border
 // + a corner dot (what's happening) — so the two read as separate channels
 // instead of every box being the same dark slate.
+// Light tints (the app is light-themed) with a strong type-colored border, so
+// the node TYPE reads at a glance and the dark label text stays legible.
 const TYPE_STYLE: Record<string, { fill: string; border: string }> = {
-  start:  { fill: '#11312a', border: '#34d399' },   // emerald
-  agent:  { fill: '#1e293b', border: '#60a5fa' },   // blue
-  gate:   { fill: '#2c2410', border: '#fbbf24' },   // amber = decision
-  branch: { fill: '#0f2e2b', border: '#2dd4bf' },   // teal = parallel
-  join:   { fill: '#241d33', border: '#a78bfa' },   // violet
-  merge:  { fill: '#241d33', border: '#a78bfa' },
+  start:  { fill: '#ecfdf5', border: '#10b981' },   // emerald
+  agent:  { fill: '#eff6ff', border: '#3b82f6' },   // blue
+  gate:   { fill: '#fffbeb', border: '#f59e0b' },   // amber = decision
+  branch: { fill: '#f0fdfa', border: '#14b8a6' },   // teal = parallel
+  join:   { fill: '#f5f3ff', border: '#8b5cf6' },   // violet
+  merge:  { fill: '#f5f3ff', border: '#8b5cf6' },
 };
 const STATUS_ACCENT: Record<string, string> = {
   stage_active: '#3b82f6', active: '#3b82f6', llm_turn: '#3b82f6', edit_block: '#3b82f6',
@@ -155,8 +157,7 @@ export default function WorkflowGraph() {
     <select
       value={ticket}
       onChange={e => chooseTicket(e.target.value)}
-      className="bg-slate-800 text-slate-200 text-xs rounded px-2 py-1 border border-slate-700"
-      style={{ minWidth: 220 }}
+      style={{ minWidth: 220, fontSize: 13, padding: '4px 8px' }}
       title="Overlay per-node status from this ticket"
     >
       <option value="">— no overlay —</option>
@@ -170,32 +171,28 @@ export default function WorkflowGraph() {
 
   if (err) {
     return (
-      <div className="p-4">
-        <div className="text-red-400 text-sm mb-3">Topology error: {err}</div>
-        <div className="text-slate-500 text-xs">
-          /api/workflow/stream is unreachable. Check that aiforge-api is up.
-        </div>
+      <div className="page">
+        <div style={{ color: 'var(--err)', marginBottom: 8 }}>Topology error: {err}</div>
+        <div className="small muted">/api/workflow/stream is unreachable. Check that aiforge-api is up.</div>
       </div>
     );
   }
   if (!topo || !layout) {
-    return (
-      <div className="p-4 text-slate-400 text-sm">Loading topology…</div>
-    );
+    return <div className="page muted">Loading topology…</div>;
   }
 
   if (topo.nodes.length === 0) {
     return (
-      <div className="p-4">
-        <div className="mb-3 flex items-center gap-3 text-sm text-slate-400">
-          <h2 className="text-lg text-slate-200">Workflow</h2>
+      <>
+        <div className="page-header">
+          <div><h1>Workflow</h1></div>
           {TicketPicker}
         </div>
-        <div className="text-slate-500 text-sm">
+        <div className="small muted">
           No nodes returned by /api/workflow/topology. Has the orchestrator
           ever run? Fire a ticket via /tickets to populate.
         </div>
-      </div>
+      </>
     );
   }
 
@@ -221,22 +218,23 @@ export default function WorkflowGraph() {
   );
 
   return (
-    <div className="p-4">
-      <div className="mb-3 flex items-center gap-3 text-sm text-slate-400 flex-wrap">
-        <h2 className="text-lg text-slate-200">Workflow</h2>
-        {TicketPicker}
-        {ticket && (
-          <span className="px-2 py-0.5 rounded bg-slate-700 text-slate-200 text-xs">
-            overlay: {ticket}
-          </span>
-        )}
-        <span className="text-xs ml-auto">
-          nodes: {topo.nodes.length} · edges: {topo.edges.length} · live SSE
-        </span>
+    <>
+      <div className="page-header">
+        <div>
+          <h1>Workflow</h1>
+          <div className="subtitle">The agent pipeline — request to result. Live status overlays per ticket.</div>
+        </div>
+        <div className="row" style={{ gap: 8 }}>
+          {TicketPicker}
+          {ticket && <span className="chip">overlay: {ticket}</span>}
+        </div>
+      </div>
+      <div className="small muted" style={{ marginBottom: 10 }}>
+        {topo.nodes.length} nodes · {topo.edges.length} edges · live
       </div>
 
-      <div className="overflow-x-auto">
-      <svg width={W} height={H} className="bg-slate-900 rounded">
+      <div style={{ overflowX: 'auto', border: '1px solid var(--border-1)', borderRadius: 10 }}>
+      <svg width={W} height={H} style={{ background: 'var(--bg-1)', display: 'block' }}>
         {topo.edges.map((e, i) => {
           const a = positions[e.from], b = positions[e.to];
           if (!a || !b) return null;
@@ -244,7 +242,7 @@ export default function WorkflowGraph() {
           const x2 = b.x,         y2 = b.y + NODE_H / 2;
           const isFeedback =
             (depthMap[e.to] ?? 0) <= (depthMap[e.from] ?? 0);
-          const stroke = isFeedback ? '#888' : '#5fb';
+          const stroke = isFeedback ? '#d4a72c' : '#94a3b8';
           const dasharray = isFeedback ? '6,4' : undefined;
           const path = isFeedback
             ? `M ${x1} ${y1} C ${x1 + 30} ${y1 + 50} ${x2 - 30} ${y2 + 50} ${x2} ${y2}`
@@ -254,22 +252,28 @@ export default function WorkflowGraph() {
               <path d={path} stroke={stroke} strokeWidth={1.5}
                     strokeDasharray={dasharray} fill="none"
                     markerEnd={isFeedback ? 'url(#arrow-fb)' : 'url(#arrow)'} />
-              <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 6}
-                    textAnchor="middle" className="fill-slate-400"
-                    style={{ fontSize: 10 }}>
-                {e.label}
-              </text>
+              {e.label && (
+                <>
+                  <rect x={(x1 + x2) / 2 - e.label.length * 3.4 - 4} y={(y1 + y2) / 2 - 17}
+                        width={e.label.length * 6.8 + 8} height={14} rx={3}
+                        fill="var(--bg-0)" stroke="var(--border-1)" />
+                  <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 6}
+                        textAnchor="middle" style={{ fontSize: 10, fill: '#475569', fontWeight: 600 }}>
+                    {e.label}
+                  </text>
+                </>
+              )}
             </g>
           );
         })}
         <defs>
           <marker id="arrow" markerWidth="10" markerHeight="10"
                   refX="8" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L9,3 z" fill="#5fb" />
+            <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8" />
           </marker>
           <marker id="arrow-fb" markerWidth="10" markerHeight="10"
                   refX="8" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L9,3 z" fill="#888" />
+            <path d="M0,0 L0,6 L9,3 z" fill="#d4a72c" />
           </marker>
         </defs>
 
@@ -284,20 +288,19 @@ export default function WorkflowGraph() {
                     strokeWidth={accent ? 2.5 : 1.5} />
               {accent && <circle cx={NODE_W - 10} cy={10} r={4} fill={accent} />}
               <text x={NODE_W / 2} y={24} textAnchor="middle"
-                    className="fill-slate-100"
-                    style={{ fontSize: 14, fontWeight: 600 }}>
+                    style={{ fontSize: 14, fontWeight: 700, fill: '#0f172a' }}>
                 {n.label}
               </text>
               <text x={NODE_W / 2} y={42} textAnchor="middle"
-                    style={{ fontSize: 10, fill: ts.border }}>
+                    style={{ fontSize: 10, fontWeight: 600, fill: ts.border }}>
                 {n.type}{n.tools.length ? ` · ${n.tools.length} tools` : ''}
               </text>
               <text x={NODE_W / 2} y={60} textAnchor="middle"
-                    className="fill-slate-300" style={{ fontSize: 10 }}>
+                    style={{ fontSize: 10, fill: accent || '#64748b' }}>
                 {n.status || 'idle'}
               </text>
               <text x={NODE_W / 2} y={73} textAnchor="middle"
-                    className="fill-slate-500" style={{ fontSize: 9 }}>
+                    style={{ fontSize: 9, fill: '#94a3b8' }}>
                 {relTime(n.last_event_at)}
               </text>
             </g>
@@ -306,18 +309,18 @@ export default function WorkflowGraph() {
       </svg>
       </div>
 
-      <div className="mt-3 text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
-        <span className="text-slate-400">Node type:</span>
-        <span><span style={{ color: '#34d399' }}>■</span> start</span>
-        <span><span style={{ color: '#60a5fa' }}>■</span> agent</span>
-        <span><span style={{ color: '#fbbf24' }}>◆</span> gate (decision)</span>
-        <span><span style={{ color: '#2dd4bf' }}>■</span> parallel branch</span>
-        <span><span style={{ color: '#a78bfa' }}>■</span> join / merge</span>
-        <span className="text-slate-400 ml-2">Status:</span>
+      <div className="small muted" style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', columnGap: 16, rowGap: 4, alignItems: 'center' }}>
+        <span style={{ fontWeight: 600 }}>Type:</span>
+        <span><span style={{ color: '#10b981' }}>■</span> start</span>
+        <span><span style={{ color: '#3b82f6' }}>■</span> agent</span>
+        <span><span style={{ color: '#f59e0b' }}>■</span> gate (decision)</span>
+        <span><span style={{ color: '#14b8a6' }}>■</span> parallel branch</span>
+        <span><span style={{ color: '#8b5cf6' }}>■</span> join / merge</span>
+        <span style={{ fontWeight: 600, marginLeft: 8 }}>Status:</span>
         <span><span style={{ color: '#3b82f6' }}>●</span> active</span>
         <span><span style={{ color: '#22c55e' }}>●</span> done</span>
         <span><span style={{ color: '#ef4444' }}>●</span> failed</span>
       </div>
-    </div>
+    </>
   );
 }

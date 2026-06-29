@@ -113,159 +113,103 @@ export default function Perf() {
     setCollapsed(next);
   }
 
-  if (err) return <div className="p-4 text-red-400">Perf error: {err}</div>;
+  if (err) return <div className="page" style={{ color: 'var(--err)' }}>Perf error: {err}</div>;
 
   const visibleFamilies = FAMILY_KEYS.filter(
     f => active.has(f) && families[f].rows.length > 0,
   );
+  // Only families that actually have data get a chip (drop dead Edit cycle/Other).
+  const chipFamilies = FAMILY_KEYS.filter(f => families[f].rows.length > 0);
   const totalRows = rows.length;
 
   return (
-    <div className="p-4">
-      <div className="mb-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h2 className="text-lg text-slate-200">Performance — where time goes</h2>
-          <button
-            onClick={() => load(true)}
-            className="ml-auto px-2 py-0.5 rounded bg-slate-700 text-xs hover:bg-slate-600 text-slate-200">
-            Clear stats
-          </button>
+    <>
+      <div className="page-header">
+        <div>
+          <h1>Performance</h1>
+          <div className="subtitle">
+            Every LLM call and file/tool action from your Chat &amp; Doer runs is timed
+            and grouped by kind of work — so you can see what dominates runtime.
+          </div>
         </div>
-        <p className="mt-1 text-xs text-slate-400 max-w-3xl">
-          Every LLM call and every file/tool action from your Chat and Doer runs is
-          timed and grouped here by kind of work, so you can see what dominates runtime.
-          Numbers accumulate across runs until you press “Clear stats”.
-        </p>
-        <p className="mt-0.5 text-xs text-slate-500">
-          {totalRows} operations tracked · {fmt(grandTotal)} total wall-clock · refreshes every 5s
-        </p>
+        <button className="ghost" onClick={() => load(true)}>Clear stats</button>
+      </div>
+
+      <div className="small muted" style={{ marginBottom: 12 }}>
+        {totalRows} operations tracked · {fmt(grandTotal)} total wall-clock · refreshes every 5s
       </div>
 
       {/* Family filter chips */}
-      <div className="mb-3 flex items-center gap-2 flex-wrap">
-        {FAMILY_KEYS.map(f => {
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+        {chipFamilies.map(f => {
           const on = active.has(f);
           const fam = families[f];
           return (
-            <button
-              key={f}
-              onClick={() => toggleFamily(f)}
-              className="text-xs rounded px-2 py-1 border"
-              style={{
-                background:  on ? FAMILY_COLOR[f] : 'transparent',
-                color:       on ? '#0b1220' : '#94a3b8',
-                borderColor: on ? FAMILY_COLOR[f] : '#334155',
-                fontWeight:  on ? 600 : 400,
-                opacity:     fam.rows.length === 0 ? 0.4 : 1,
-              }}
+            <button key={f} onClick={() => toggleFamily(f)}
+              style={{ fontSize: 12, borderRadius: 6, padding: '3px 10px',
+                       border: `1px solid ${on ? FAMILY_COLOR[f] : 'var(--border-1)'}`,
+                       background: on ? FAMILY_COLOR[f] : 'transparent',
+                       color: on ? '#fff' : 'var(--fg-3)', fontWeight: on ? 600 : 400, cursor: 'pointer' }}
               title={`${fam.rows.length} buckets · ${fmt(fam.total)} total`}>
-              {f}
-              <span style={{ marginLeft: 6, opacity: 0.85 }}>
-                {fam.rows.length}
-              </span>
+              {f} <span style={{ opacity: 0.85, marginLeft: 4 }}>{fam.count.toLocaleString()}</span>
             </button>
           );
         })}
       </div>
 
       {totalRows === 0 ? (
-        <div className="rounded bg-slate-900 border border-slate-800 p-6 text-slate-400 text-sm">
-          <div className="text-slate-300 mb-1">No steps recorded yet.</div>
-          <div className="text-xs">
-            Hint: fire a chat at <code className="text-slate-300">/chat</code> or
-            run a doer ticket from <code className="text-slate-300">/tickets</code> to
-            populate this view. Toggle ndjson logging via
-            {' '}<code className="text-slate-300">AIFORGE_PERF_NDJSON=0</code>.
-          </div>
+        <div className="card" style={{ padding: 24, color: 'var(--fg-3)' }}>
+          <div style={{ color: 'var(--fg-2)', marginBottom: 4 }}>No activity recorded yet.</div>
+          <div className="small">Open a chat or run a ticket and this fills in automatically.</div>
         </div>
       ) : visibleFamilies.length === 0 ? (
-        <div className="text-slate-500 text-sm">
-          All families filtered out. Re-enable a chip above.
-        </div>
+        <div className="small muted">All families filtered out — re-enable a chip above.</div>
       ) : (
-        <div className="space-y-3">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {visibleFamilies.map(f => {
             const fam = families[f];
             const isCollapsed = collapsed.has(f);
-            const familyBarPct = (fam.total / heaviestFamily) * 100;
+            const pctOfTotal = grandTotal > 0 ? (fam.total / grandTotal) * 100 : 0;
             return (
-              <div key={f}
-                   className="rounded bg-slate-900 border border-slate-800 overflow-hidden">
-                {/* Family header */}
-                <button
-                  onClick={() => toggleCollapse(f)}
-                  className="w-full text-left px-3 py-2 flex items-center gap-3 hover:bg-slate-800/50">
-                  <span className="text-slate-200 text-sm font-semibold"
-                        style={{ minWidth: 90 }}>
-                    {isCollapsed ? '▸' : '▾'} {f}
+              <div key={f} className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                <button onClick={() => toggleCollapse(f)}
+                  style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none',
+                           padding: '10px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ width: 12, color: 'var(--fg-3)' }}>{isCollapsed ? '▸' : '▾'}</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 88, fontWeight: 600 }}>
+                    <span style={{ width: 9, height: 9, borderRadius: 2, background: FAMILY_COLOR[f] }} />
+                    {f}
                   </span>
-                  <span className="text-xs text-slate-400" style={{ minWidth: 240 }}>
-                    {fam.rows.length} bucket{fam.rows.length === 1 ? '' : 's'} ·
-                    {' '}{fam.count.toLocaleString()}× ·
-                    total {fmt(fam.total)} · max {fmt(fam.max)}
+                  <span className="small muted" style={{ minWidth: 230, fontVariantNumeric: 'tabular-nums' }}>
+                    {fam.count.toLocaleString()}× · total {fmt(fam.total)} · max {fmt(fam.max)}
                   </span>
-                  {/* Family-total bar */}
-                  <div className="flex-1 h-2 bg-slate-800 rounded overflow-hidden">
-                    <div className="h-full"
-                         style={{
-                           width: `${familyBarPct}%`,
-                           background: FAMILY_COLOR[f],
-                         }} />
-                  </div>
-                  <span className="text-xs text-slate-400 tabular-nums"
-                        style={{ minWidth: 56, textAlign: 'right' }}>
-                    {grandTotal > 0
-                      ? `${((fam.total / grandTotal) * 100).toFixed(0)}%`
-                      : '—'}
+                  <span style={{ flex: 1, height: 6, background: 'var(--bg-3)', borderRadius: 3, overflow: 'hidden' }}>
+                    <span style={{ display: 'block', height: '100%', width: `${pctOfTotal}%`, background: FAMILY_COLOR[f] }} />
+                  </span>
+                  <span className="small" style={{ minWidth: 44, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--fg-2)' }}>
+                    {pctOfTotal.toFixed(0)}%
                   </span>
                 </button>
 
-                {/* Rows */}
                 {!isCollapsed && (
-                  <div className="border-t border-slate-800">
+                  <div style={{ borderTop: '1px solid var(--border-1)' }}>
                     {fam.rows.map(r => {
                       const avg = r.count > 0 ? r.total_ms / r.count : 0;
-                      const widthPct = fam.total > 0
-                        ? (r.total_ms / fam.total) * 100 : 0;
+                      const widthPct = fam.total > 0 ? (r.total_ms / fam.total) * 100 : 0;
                       return (
                         <div key={`${r.event}:${r.name}`}
-                             className="px-3 py-1.5 flex items-center gap-3 border-b border-slate-800/50 last:border-b-0 hover:bg-slate-800/30">
-                          <span className="text-xs text-slate-500"
-                                style={{ minWidth: 110 }}>
-                            {r.event}
+                             style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 14px',
+                                      borderBottom: '1px solid var(--border-0)', fontSize: 12 }}>
+                          <span style={{ minWidth: 170, color: 'var(--fg-1)', fontFamily: 'var(--font-mono)',
+                                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                title={r.name}>{r.name}</span>
+                          <span style={{ flex: 1, height: 5, background: 'var(--bg-3)', borderRadius: 3, overflow: 'hidden' }}>
+                            <span style={{ display: 'block', height: '100%', width: `${Math.max(2, widthPct)}%`, background: FAMILY_COLOR[f], opacity: 0.75 }} />
                           </span>
-                          <span className="text-xs text-slate-200 truncate"
-                                style={{ minWidth: 200, maxWidth: 360 }}
-                                title={r.name}>
-                            {r.name}
-                          </span>
-                          <div className="flex-1 h-1.5 bg-slate-800 rounded overflow-hidden">
-                            <div className="h-full"
-                                 style={{
-                                   width: `${Math.max(2, widthPct)}%`,
-                                   background: FAMILY_COLOR[f],
-                                   opacity: 0.7,
-                                 }} />
-                          </div>
-                          <span className="text-xs text-slate-400 tabular-nums"
-                                style={{ minWidth: 60, textAlign: 'right' }}>
-                            {r.count.toLocaleString()}×
-                          </span>
-                          <span className="text-xs text-slate-300 tabular-nums"
-                                style={{ minWidth: 70, textAlign: 'right' }}
-                                title="average">
-                            avg {fmt(avg)}
-                          </span>
-                          <span className="text-xs text-slate-300 tabular-nums"
-                                style={{ minWidth: 70, textAlign: 'right' }}
-                                title="max">
-                            max {fmt(r.max_ms)}
-                          </span>
-                          <span className="text-xs text-slate-100 tabular-nums font-semibold"
-                                style={{ minWidth: 80, textAlign: 'right' }}
-                                title="total wall ms">
-                            {fmt(r.total_ms)}
-                          </span>
+                          <span className="muted" style={{ minWidth: 52, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.count.toLocaleString()}×</span>
+                          <span style={{ minWidth: 78, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--fg-2)' }}>avg {fmt(avg)}</span>
+                          <span style={{ minWidth: 78, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--fg-2)' }}>max {fmt(r.max_ms)}</span>
+                          <span style={{ minWidth: 82, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600, color: 'var(--fg-1)' }}>{fmt(r.total_ms)}</span>
                         </div>
                       );
                     })}
@@ -277,10 +221,9 @@ export default function Perf() {
         </div>
       )}
 
-      <div className="mt-3 text-xs text-slate-500">
-        Source: <code>~/.aiforge/perf.ndjson</code> + in-memory aggregator.
-        {reset && <span className="ml-2 text-amber-400">aggregator was just reset.</span>}
+      <div className="small muted" style={{ marginTop: 14 }}>
+        Source: <code>~/.aiforge/perf.ndjson</code>{reset && <span style={{ color: 'var(--warn)', marginLeft: 8 }}>· stats just cleared.</span>}
       </div>
-    </div>
+    </>
   );
 }
