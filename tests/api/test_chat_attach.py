@@ -119,3 +119,36 @@ def test_simple_run_persists_from_background_thread(app_client, monkeypatch):
     # And once done, the run is no longer reported as running.
     from aiforge_core.runtime import chat_runs
     assert chat_runs.is_running(sid) is False
+
+
+def test_kill_all_cancels_runs_and_releases_team_lock(app_client):
+    """The kill-all escape hatch cancels every tracked run, finishes the live-run
+    buffers, and force-releases the team run lock (the 'waiting for another team
+    run' wedge)."""
+    client, _ = app_client
+    from aiforge_core.runtime import chat_cancel, chat_pipeline, chat_runs
+
+    # Simulate two wedged runs + a held team lock.
+    chat_cancel.start(901)
+    chat_cancel.start(902)
+    chat_runs.start(901)
+    chat_runs.start(902)
+    chat_pipeline._RUN_LOCK.acquire()
+    try:
+        r = client.post("/api/chat/kill-all").json()
+        assert set(r["killed"]) >= {901, 902}
+        assert r["team_lock_released"] is True
+        # Runs cleared, lock free.
+        assert chat_runs.is_running(901) is False
+        assert chat_runs.is_running(902) is False
+        assert chat_pipeline._RUN_LOCK.locked() is False
+    finally:
+        if chat_pipeline._RUN_LOCK.locked():
+            chat_pipeline._RUN_LOCK.release()
+
+
+def test_kill_all_idempotent_when_nothing_running(app_client):
+    client, _ = app_client
+    r = client.post("/api/chat/kill-all").json()
+    assert r["count"] == 0
+    assert r["team_lock_released"] is False

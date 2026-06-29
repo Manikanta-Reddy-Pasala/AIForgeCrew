@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
+import { IntegrationsPanel } from '../components/Integrations';
 
 // ── types ──────────────────────────────────────────────────────────────────────
 
@@ -395,6 +396,26 @@ export default function Chat() {
     if (activeId !== null) setTimeout(() => loadSession(activeId), 800);
   }
 
+  // ── Kill all (force reset) ────────────────────────────────────────────────
+  // Escape hatch for a wedged run: cancels every run server-side, clears the
+  // gates, and force-releases the team run lock — so a new chat never sits on
+  // "waiting for another team run to finish". Also clears local run state.
+  async function killAll() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (timerRef.current !== null) { clearInterval(timerRef.current); timerRef.current = null; }
+    setBusy(false);
+    setLiveTurn(prev => prev ? { ...prev, streaming: false } : null);
+    setPendingApproval(null);
+    try {
+      const r = await chatKillAll();
+      toast.success(`Reset — ${r.count} run${r.count === 1 ? '' : 's'} stopped${r.team_lock_released ? ', team lock released' : ''}`);
+    } catch (e: any) {
+      toast.error(`Reset failed: ${e.message}`);
+    }
+    if (activeId !== null) setTimeout(() => loadSession(activeId), 600);
+  }
+
   // ── Approval gate (#1) ──────────────────────────────────────────────────────
   async function resolveApproval(decision: 'approve' | 'reject') {
     const p = pendingApproval;
@@ -605,9 +626,14 @@ export default function Chat() {
     try {
       const session = await chatApi.sessionCreate();
       setSessions(prev => [session, ...prev]);
+      abortRef.current?.abort();   // drop any stream still tied to the old session
+      abortRef.current = null;
       setActiveId(session.id);
+      activeIdRef.current = session.id;
       setMessages([]);
       setLiveTurn(null);
+      setBusy(false);              // a fresh chat is never mid-run
+      setPendingApproval(null);
       return session.id;
     } catch (e: any) {
       toast.error(`Failed to create session: ${e.message}`);
@@ -1223,6 +1249,17 @@ export default function Chat() {
               </label>
             )}
 
+            {/* Always-available kill switch — recovers a wedged run that left a
+                session stuck busy or a new chat waiting on the team lock. */}
+            <button
+              className="ghost sm"
+              style={{ color: 'var(--warn, #f59e0b)' }}
+              onClick={killAll}
+              title="Force-stop every chat run and release the team lock — use if a new chat says a process is still running"
+            >
+              ⚠ Reset
+            </button>
+
             {activeSession && (
               <>
                 <button
@@ -1477,6 +1514,10 @@ export default function Chat() {
             </div>
           </div>
         )}
+
+        {/* Integrations (Jira / Confluence / GitLab) — collapsible section below
+            the composer, closest to where these chat tools get used. */}
+        <IntegrationsPanel />
 
         {/* Checkpoints panel (#3) */}
         {checkpoints !== null && (

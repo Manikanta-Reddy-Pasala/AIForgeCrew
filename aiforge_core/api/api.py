@@ -2797,6 +2797,30 @@ def chat_session_stop(session_id: int) -> dict:
     return {"stopped": active, "session_id": session_id}
 
 
+@app.post("/api/chat/kill-all")
+def chat_kill_all() -> dict:
+    """Force-reset ALL in-flight chat state — the 'kill all' escape hatch.
+
+    Recovers from a wedged run that left a session looking busy or made a new
+    chat sit on 'waiting for another team run to finish' (the team run lock was
+    held by a run that won't release it). Cancels every tracked run, clears the
+    approval + steer gates, finishes every live-run buffer, and force-releases
+    the team run-serialization lock. Idempotent and safe to hit any time."""
+    from aiforge_core.runtime import (
+        chat_approve, chat_cancel, chat_interject, chat_pipeline, chat_runs,
+    )
+    sessions = chat_cancel.cancel_all()
+    for sid in sessions:
+        chat_approve.cancel(sid)
+        chat_approve.finish(sid)
+        chat_interject.clear(sid)
+        chat_cancel.finish(sid)
+    chat_runs.finish_all()
+    lock_freed = chat_pipeline.force_release_run_lock()
+    return {"killed": sessions, "count": len(sessions),
+            "team_lock_released": lock_freed}
+
+
 class _SteerBody(BaseModel):
     content: str = Field(..., description="mid-run guidance to fold in")
 

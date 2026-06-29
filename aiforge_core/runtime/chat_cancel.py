@@ -101,3 +101,20 @@ def cancel(session_id: int) -> bool:
 def finish(session_id: int) -> None:
     with _LOCK:
         _RUNS.pop(session_id, None)
+
+
+def active_sessions() -> list[int]:
+    """Session ids with a currently-tracked run (cancelled or not)."""
+    with _LOCK:
+        return list(_RUNS)
+
+
+def cancel_all() -> list[int]:
+    """Cancel EVERY tracked run (force-stop escape hatch). Returns the ids that
+    were signalled. Used by the chat 'reset / kill all' control to recover from
+    a run that wedged its session (e.g. a team run that won't release its
+    lock)."""
+    ids = active_sessions()
+    for sid in ids:
+        cancel(sid)
+    return ids

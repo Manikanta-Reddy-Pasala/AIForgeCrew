@@ -32,6 +32,24 @@ _SENTINEL = object()
 _RUN_LOCK = threading.Lock()
 
 
+def force_release_run_lock() -> bool:
+    """Escape hatch: drop the team run-serialization lock even if another thread
+    holds it. Used by the chat 'reset / kill all' control to recover when a team
+    run wedged (e.g. blocked in an LLM call that outlives a Stop) and left the
+    lock held, so a new chat sits forever on 'waiting for another team run'.
+
+    A plain ``threading.Lock`` is not owned, so release from any thread is legal;
+    only guard against releasing an already-free lock. Safe here because kill-all
+    also cancels every run, so the wedged holder is being torn down anyway."""
+    if _RUN_LOCK.locked():
+        try:
+            _RUN_LOCK.release()
+            return True
+        except RuntimeError:
+            return False
+    return False
+
+
 def _part_events(author: str, part) -> list[dict]:
     """Map a content part to the chat's existing event vocabulary
     (thought / tool) so no frontend change is needed. Each agent's

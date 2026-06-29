@@ -141,6 +141,16 @@ def finish(session_id: int) -> None:
         run.finish()
 
 
+def finish_all() -> list[int]:
+    """Finish (wake + close) every run. Part of the kill-all reset so no
+    subscriber tails a run whose producer is being torn down. Returns the ids."""
+    with _LOCK:
+        runs = list(_RUNS.items())
+    for _sid, run in runs:
+        run.finish()
+    return [sid for sid, _ in runs]
+
+
 def subscribe(session_id: int) -> queue.Queue | None:
     """Tail an active run (replay buffer, then live). ``None`` if no run."""
     run = get(session_id)
@@ -178,6 +188,6 @@ def iter_subscription(session_id: int, q: queue.Queue,
 
 
 __all__ = [
-    "start", "get", "is_running", "publish", "finish",
+    "start", "get", "is_running", "publish", "finish", "finish_all",
     "subscribe", "unsubscribe", "iter_subscription",
 ]

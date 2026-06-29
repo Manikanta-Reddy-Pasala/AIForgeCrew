@@ -487,6 +487,14 @@ export function chatSessionStop(id: number): Promise<{ stopped: boolean }> {
     .catch(() => ({ stopped: false }));
 }
 
+// Force-reset ALL chat runs (kill all) — recovers from a wedged run that left a
+// session stuck busy or a new chat waiting on the team run lock.
+export function chatKillAll(): Promise<{ killed: number[]; count: number; team_lock_released: boolean }> {
+  return fetch(`${BASE}/chat/kill-all`, { method: 'POST' })
+    .then(r => r.ok ? r.json() : { killed: [], count: 0, team_lock_released: false })
+    .catch(() => ({ killed: [], count: 0, team_lock_released: false }));
+}
+
 // Steer the IN-FLIGHT run without stopping it (Gap A — mid-run steering).
 // The message is queued and folded into the agent's context at its next step.
 export function chatSessionSteer(id: number, content: string): Promise<{ queued: boolean; unsupported?: boolean; reason?: string }> {
