@@ -94,6 +94,45 @@ def _issue_url(key: str) -> str:
     return f"{_base()}/browse/{key}" if key else ""
 
 
+def _max_images() -> int:
+    try:
+        return max(0, int(os.environ.get("AIFORGE_INTEGRATION_MAX_IMAGES", "4")))
+    except ValueError:
+        return 4
+
+
+def _fetch_images(attachments: list, role: str = "doer") -> list[dict]:
+    """Download image attachments + describe them (vision) so the agent can
+    analyse them as part of the task. Best-effort, capped, never raises."""
+    cap = _max_images()
+    if cap <= 0 or not attachments:
+        return []
+    out: list[dict] = []
+    for a in attachments:
+        if len(out) >= cap:
+            break
+        if not isinstance(a, dict):
+            continue
+        mime = (a.get("mimeType") or "").lower()
+        url = a.get("content")
+        name = a.get("filename") or "image"
+        if not url or not mime.startswith("image/"):
+            continue
+        try:
+            got = _http.http_get_bytes(url, headers=_headers(),
+                                       timeout=_TIMEOUT_S, context=_ssl_ctx())
+            if not got.get("ok"):
+                out.append({"filename": name, "description": "",
+                            "error": got.get("error")})
+                continue
+            from aiforge_core.runtime import chat_media
+            info = chat_media.analyze_attachment(name, got["bytes"], role)
+            out.append(info)
+        except Exception as exc:  # noqa: BLE001
+            out.append({"filename": name, "description": "", "error": str(exc)})
+    return out
+
+
 def _issue_summary(d: dict) -> dict:
     """Compact one-line view of an issue search hit."""
     f = d.get("fields") if isinstance(d.get("fields"), dict) else {}
@@ -133,7 +172,8 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
         return {"ok": False, "error": "missing 'key'"}
     r = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}",
                  params={"fields": "summary,description,status,issuetype,"
-                                   "assignee,reporter,priority,labels,comment"})
+                                   "assignee,reporter,priority,labels,comment,"
+                                   "attachment"})
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
@@ -141,15 +181,22 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
     comments = [{"author": ((c.get("author") or {}) or {}).get("displayName"),
                  "body": (c.get("body") or "")[:4000]}
                 for c in (((f.get("comment") or {}) or {}).get("comments") or [])]
-    return {"ok": True, "key": d.get("key"), "summary": f.get("summary"),
-            "type": ((f.get("issuetype") or {}) or {}).get("name"),
-            "status": ((f.get("status") or {}) or {}).get("name"),
-            "assignee": ((f.get("assignee") or {}) or {}).get("displayName"),
-            "reporter": ((f.get("reporter") or {}) or {}).get("displayName"),
-            "priority": ((f.get("priority") or {}) or {}).get("name"),
-            "labels": f.get("labels") or [],
-            "description": (f.get("description") or "")[:_BODY_CAP],
-            "comments": comments, "url": _issue_url(d.get("key", ""))}
+    out = {"ok": True, "key": d.get("key"), "summary": f.get("summary"),
+           "type": ((f.get("issuetype") or {}) or {}).get("name"),
+           "status": ((f.get("status") or {}) or {}).get("name"),
+           "assignee": ((f.get("assignee") or {}) or {}).get("displayName"),
+           "reporter": ((f.get("reporter") or {}) or {}).get("displayName"),
+           "priority": ((f.get("priority") or {}) or {}).get("name"),
+           "labels": f.get("labels") or [],
+           "description": (f.get("description") or "")[:_BODY_CAP],
+           "comments": comments, "url": _issue_url(d.get("key", ""))}
+    # Pull image attachments + describe them so the agent analyses them as part
+    # of the task (opt out with images=false). Best-effort.
+    if _truthy(str(args.get("images", "true"))):
+        imgs = _fetch_images(f.get("attachment") or [])
+        if imgs:
+            out["images"] = imgs
+    return out
 
 
 def jira_create(args: dict, cwd: str | None = None) -> dict:

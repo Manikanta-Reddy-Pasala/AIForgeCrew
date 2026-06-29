@@ -174,3 +174,34 @@ def test_writes_default_to_ask_policy(monkeypatch):
     # explicit override wins
     monkeypatch.setenv("AIFORGE_TOOL_POLICY", "jira_update=allow")
     assert tool_policy.decide("jira_update", {})["policy"] == tool_policy.ALLOW
+
+
+def test_read_fetches_and_describes_image_attachments(cfg, monkeypatch):
+    _capture(monkeypatch, {"key": "ENG-10", "fields": {
+        "summary": "S",
+        "attachment": [
+            {"filename": "diagram.png", "mimeType": "image/png",
+             "content": "https://jira.internal/secure/attachment/1/diagram.png"},
+            {"filename": "notes.txt", "mimeType": "text/plain",
+             "content": "https://jira.internal/secure/attachment/2/notes.txt"},
+        ]}})
+    monkeypatch.setattr(jr._http, "http_get_bytes",
+                        lambda *a, **k: {"ok": True, "bytes": b"IMG"})
+    from aiforge_core.runtime import chat_media
+    monkeypatch.setattr(chat_media, "analyze_attachment",
+                        lambda name, raw, role="doer": {"filename": name,
+                                                        "description": f"desc:{name}"})
+    out = jr.jira_read({"key": "ENG-10"})
+    assert out["ok"] and "images" in out
+    # Only the image attachment is fetched (txt skipped).
+    assert [i["filename"] for i in out["images"]] == ["diagram.png"]
+    assert out["images"][0]["description"] == "desc:diagram.png"
+
+
+def test_read_images_can_be_disabled(cfg, monkeypatch):
+    _capture(monkeypatch, {"key": "ENG-10", "fields": {
+        "summary": "S",
+        "attachment": [{"filename": "d.png", "mimeType": "image/png",
+                        "content": "https://jira.internal/x"}]}})
+    out = jr.jira_read({"key": "ENG-10", "images": False})
+    assert "images" not in out

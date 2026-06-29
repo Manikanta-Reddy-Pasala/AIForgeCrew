@@ -141,10 +141,61 @@ def confluence_read(args: dict, cwd: str | None = None) -> dict:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
     body = (((d.get("body") or {}).get("storage") or {}).get("value") or "")
-    return {"ok": True, "id": d.get("id"), "title": d.get("title"),
-            "space": (d.get("space") or {}).get("key"),
-            "version": (d.get("version") or {}).get("number"),
-            "body": body[:_BODY_CAP], "url": _page_url(d)}
+    out = {"ok": True, "id": d.get("id"), "title": d.get("title"),
+           "space": (d.get("space") or {}).get("key"),
+           "version": (d.get("version") or {}).get("number"),
+           "body": body[:_BODY_CAP], "url": _page_url(d)}
+    # Pull image attachments + describe them so the agent analyses them as part
+    # of the task (opt out with images=false). Best-effort.
+    if _truthy(str(args.get("images", "true"))):
+        imgs = _fetch_images(str(d.get("id") or pid))
+        if imgs:
+            out["images"] = imgs
+    return out
+
+
+def _max_images() -> int:
+    try:
+        return max(0, int(os.environ.get("AIFORGE_INTEGRATION_MAX_IMAGES", "4")))
+    except ValueError:
+        return 4
+
+
+def _fetch_images(pid: str, role: str = "doer") -> list[dict]:
+    """List a page's attachments, download the image ones, and describe them so
+    the agent analyses them as part of the task. Best-effort, capped."""
+    cap = _max_images()
+    if cap <= 0 or not pid:
+        return []
+    r = _request("GET", f"/rest/api/content/{pid}/child/attachment",
+                 params={"limit": 50})
+    if not r.get("ok"):
+        return []
+    results = (r["data"].get("results") if isinstance(r["data"], dict) else None) or []
+    out: list[dict] = []
+    for a in results:
+        if len(out) >= cap:
+            break
+        if not isinstance(a, dict):
+            continue
+        mime = ((a.get("extensions") or {}).get("mediaType") or "").lower()
+        dl = ((a.get("_links") or {}).get("download") or "")
+        name = a.get("title") or "image"
+        if not dl or not mime.startswith("image/"):
+            continue
+        url = _base() + dl if dl.startswith("/") else dl
+        try:
+            got = _http.http_get_bytes(url, headers=_headers(),
+                                       timeout=_TIMEOUT_S, context=_ssl_ctx())
+            if not got.get("ok"):
+                out.append({"filename": name, "description": "",
+                            "error": got.get("error")})
+                continue
+            from aiforge_core.runtime import chat_media
+            out.append(chat_media.analyze_attachment(name, got["bytes"], role))
+        except Exception as exc:  # noqa: BLE001
+            out.append({"filename": name, "description": "", "error": str(exc)})
+    return out
 
 
 def confluence_create(args: dict, cwd: str | None = None) -> dict:

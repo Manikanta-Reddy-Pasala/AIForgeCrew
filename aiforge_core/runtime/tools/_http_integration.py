@@ -80,4 +80,23 @@ def http_request(method: str, url: str, *, headers: dict,
         return {"ok": True, "data": text}
 
 
-__all__ = ["truthy", "ssl_context", "http_request", "ATLASSIAN_DENIED_HEADERS"]
+def http_get_bytes(url: str, *, headers: dict, timeout: int = 20,
+                   cap: int = 5 * 1024 * 1024, context=None) -> dict:
+    """Fetch raw bytes (e.g. an image attachment). Returns ``{ok, bytes}`` or
+    ``{ok: False, error}``. Caps the body so a huge file can't blow up memory.
+    Never raises."""
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as r:
+            raw = r.read(cap + 1)
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "error": f"http {exc.code}"}
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return {"ok": False, "error": str(exc)}
+    if len(raw) > cap:
+        return {"ok": False, "error": "too_large", "limit": cap}
+    return {"ok": True, "bytes": raw}
+
+
+__all__ = ["truthy", "ssl_context", "http_request", "http_get_bytes",
+           "ATLASSIAN_DENIED_HEADERS"]

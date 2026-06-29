@@ -164,6 +164,35 @@ def describe_image(path: str, role: str = "chat") -> str:
         return ""
 
 
+def describe_bytes(raw: bytes, role: str = "doer") -> str:
+    """Auto-caption raw image bytes (e.g. a Jira/Confluence attachment) via the
+    vision model. "" when not an image, vision is off, or the call fails."""
+    import tempfile
+    if vision._detect_mime(raw) is None:
+        return ""
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as f:
+            f.write(raw)
+            tmp = f.name
+        return describe_image(tmp, role)
+    except Exception:  # noqa: BLE001
+        return ""
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def analyze_attachment(filename: str, raw: bytes, role: str = "doer") -> dict:
+    """Describe one downloaded image attachment for inclusion in a tool result.
+    Returns ``{filename, description}``; description is "" when vision is off
+    (the agent still sees the filename, and can be told to enable vision)."""
+    return {"filename": filename, "description": describe_bytes(raw, role)}
+
+
 def context_block(session_id: int) -> str:
     """The "SESSION IMAGES" text injected into every turn so the model can
     answer questions about uploaded images even when it can't see them."""

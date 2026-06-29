@@ -147,3 +147,41 @@ def test_writes_default_to_ask_policy(monkeypatch):
     # explicit override wins
     monkeypatch.setenv("AIFORGE_TOOL_POLICY", "confluence_update=allow")
     assert tool_policy.decide("confluence_update", {})["policy"] == tool_policy.ALLOW
+
+
+def test_fetch_images_describes_image_attachments(cfg, monkeypatch):
+    monkeypatch.setattr(cf, "_request", lambda *a, **k: {"ok": True, "data": {"results": [
+        {"title": "chart.png", "extensions": {"mediaType": "image/png"},
+         "_links": {"download": "/download/attachments/1/chart.png"}},
+        {"title": "doc.pdf", "extensions": {"mediaType": "application/pdf"},
+         "_links": {"download": "/d"}}]}})
+    monkeypatch.setattr(cf._http, "http_get_bytes",
+                        lambda *a, **k: {"ok": True, "bytes": b"IMG"})
+    from aiforge_core.runtime import chat_media
+    monkeypatch.setattr(chat_media, "analyze_attachment",
+                        lambda name, raw, role="doer": {"filename": name,
+                                                        "description": f"d:{name}"})
+    out = cf._fetch_images("123")
+    assert [i["filename"] for i in out] == ["chart.png"]   # pdf skipped
+    assert out[0]["description"] == "d:chart.png"
+
+
+def test_read_attaches_images(cfg, monkeypatch):
+    _capture(monkeypatch, {"id": "10", "title": "Page",
+                           "body": {"storage": {"value": "<p>hi</p>"}},
+                           "space": {"key": "ENG"}, "version": {"number": 3}})
+    monkeypatch.setattr(cf, "_fetch_images",
+                        lambda pid, role="doer": [{"filename": "c.png",
+                                                   "description": "a chart"}])
+    out = cf.confluence_read({"id": "10"})
+    assert out["ok"] and out["images"][0]["description"] == "a chart"
+
+
+def test_read_images_can_be_disabled(cfg, monkeypatch):
+    _capture(monkeypatch, {"id": "10", "title": "P",
+                           "body": {"storage": {"value": "x"}}})
+    called = {"n": 0}
+    monkeypatch.setattr(cf, "_fetch_images",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or [])
+    out = cf.confluence_read({"id": "10", "images": False})
+    assert "images" not in out and called["n"] == 0
