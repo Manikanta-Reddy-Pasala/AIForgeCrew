@@ -745,44 +745,52 @@ def _t_learn_workflow(args: dict, cwd: str) -> dict:
 
 # ─────────────────────────── shared "strong" tools ──────────────────────────
 # The OpenHands-parity tools (editor with undo + syntax-check, LSP, typecheck,
-# format, test-runner, IPython) lived only in the ADK team pipeline. These thin
-# adapters expose them to the deploy-anywhere chat agent too. They clamp to
-# sandbox.root(), so we point that at the session cwd for the call.
+# format, test-runner) lived only in the ADK team pipeline. These thin adapters
+# expose them to the deploy-anywhere chat agent too. They resolve through
+# sandbox.root(); the dispatch loop scopes that override to the WORKSPACE root
+# (set+reset in finally) for exactly these names — so a path can't escape an
+# AIFORGE_WORKSPACE_DIR jail and a reused thread can't leak the dir.
+# (ipython is intentionally NOT exposed to chat: it ran ungated arbitrary shell
+#  in a single process-wide kernel that ignored the session cwd. It stays in the
+#  managed ADK pipeline only.)
+_ROOT_SCOPED_TOOLS = {"editor", "typecheck", "format", "lsp", "run_tests"}
 
-def _with_root(cwd: str):
+
+def _coerce_int(v, default=None):
     try:
-        from aiforge_core.runtime import sandbox
-        sandbox.set_root_override(cwd)
-    except Exception:  # noqa: BLE001
-        pass
+        return int(v) if v is not None and str(v).strip() != "" else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _t_editor(args: dict, cwd: str) -> dict:
-    _with_root(cwd)
     from aiforge_core.runtime.tools.editor import editor
+    vr = args.get("view_range")
+    if isinstance(vr, list):
+        vr = [_coerce_int(x) for x in vr]
+        if any(x is None for x in vr):
+            vr = None
     return editor(
         command=str(args.get("command") or args.get("sub_command") or "view"),
         path=str(args.get("path") or ""),
         file_text=args.get("file_text") if args.get("file_text") is not None else args.get("content"),
         old_str=args.get("old_str") if args.get("old_str") is not None else args.get("old_text"),
         new_str=args.get("new_str") if args.get("new_str") is not None else args.get("new_text"),
-        insert_line=args.get("insert_line"),
-        view_range=args.get("view_range"),
+        insert_line=_coerce_int(args.get("insert_line")),
+        view_range=vr,
     )
 
 
 def _t_multi_edit(args: dict, cwd: str) -> dict:
     """Apply a BATCH of find/replace edits across one or more files in a single
-    call — validated first, then applied all-or-nothing. Each edit:
-    ``{"path","old_str","new_str","replace_all"?}``. Replaces the round-trip
-    pain of one-edit-per-turn and the "exactly one match" failures."""
+    call — validated first, then applied atomically (snapshot + rollback). Each
+    edit: ``{"path","old_str","new_str","replace_all"?}``."""
     edits = args.get("edits")
     if not isinstance(edits, list) or not edits:
         return {"ok": False, "error": "edits must be a non-empty list of "
                 "{path, old_str, new_str, replace_all?}"}
-    # Phase 1 — validate every edit against current disk content (no writes).
-    plans: list[tuple[str, str]] = []   # (abs_path, new_content)
     pending: dict[str, str] = {}        # abs_path -> working content (chained)
+    original: dict[str, str] = {}       # abs_path -> pre-edit disk content (rollback)
     rel_of: dict[str, str] = {}         # abs_path -> the path the model gave
     for i, e in enumerate(edits):
         if not isinstance(e, dict):
@@ -792,6 +800,8 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
         new = e.get("new_str") if e.get("new_str") is not None else e.get("new_text")
         if not path or old is None or new is None:
             return {"ok": False, "error": f"edit #{i} needs path + old_str + new_str"}
+        if old == "":
+            return {"ok": False, "error": f"edit #{i}: old_str must be non-empty"}
         try:
             ap = str(_resolve(cwd, path))
         except PermissionError as exc:
@@ -800,6 +810,7 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
         if ap not in pending:
             try:
                 pending[ap] = Path(ap).read_text(encoding="utf-8", errors="replace")
+                original[ap] = pending[ap]
             except FileNotFoundError:
                 return {"ok": False, "error": f"edit #{i}: file not found: {path}"}
         body = pending[ap]
@@ -816,45 +827,43 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
         if bad:
             return {"ok": False, "error": "syntax_invalid", "file": rel_of.get(ap, ap),
                     "detail": bad, "hint": "fix the edit or pass force:true"}
-    plans = list(pending.items())
-    # Phase 2 — all validated, write them.
-    written = []
-    for ap, content in plans:
-        Path(ap).write_text(content, encoding="utf-8")
-        written.append(rel_of.get(ap, ap))
+    # Phase 2 — write atomically: on ANY failure, roll every file back.
+    written: list[str] = []
+    done: list[str] = []
+    try:
+        for ap, content in pending.items():
+            Path(ap).write_text(content, encoding="utf-8")
+            done.append(ap)
+            written.append(rel_of.get(ap, ap))
+    except Exception as exc:  # noqa: BLE001 — restore the pre-edit state
+        for ap in done:
+            try:
+                Path(ap).write_text(original[ap], encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+        return {"ok": False, "error": f"write failed, rolled back: {exc}"}
     return {"ok": True, "files": written, "edits_applied": len(edits)}
 
 
 def _t_typecheck(args: dict, cwd: str) -> dict:
-    _with_root(cwd)
     from aiforge_core.runtime.tools.typecheck import typecheck
     return typecheck()
 
 
 def _t_format(args: dict, cwd: str) -> dict:
-    _with_root(cwd)
     from aiforge_core.runtime.tools.format import format as _fmt
     return _fmt(str(args.get("path") or "."))
 
 
 def _t_lsp(args: dict, cwd: str) -> dict:
-    _with_root(cwd)
     from aiforge_core.runtime.tools.lsp import lsp
     return lsp(command=str(args.get("command") or ""), path=str(args.get("path") or ""),
-               line=int(args.get("line") or 0), character=int(args.get("character") or 0))
+               line=_coerce_int(args.get("line"), 0), character=_coerce_int(args.get("character"), 0))
 
 
 def _t_run_tests(args: dict, cwd: str) -> dict:
-    _with_root(cwd)
     from aiforge_core.runtime.tools.test_runner import run_tests
     return run_tests(mode=str(args.get("mode") or "fast"), pattern=str(args.get("pattern") or ""))
-
-
-def _t_ipython(args: dict, cwd: str) -> dict:
-    _with_root(cwd)
-    from aiforge_core.runtime.tools.ipython_kernel import execute_ipython_cell
-    return execute_ipython_cell(str(args.get("code") or ""),
-                                _run_id=f"chat-{args.get('_session_id') or 'default'}")
 
 
 TOOLS: dict[str, Callable[[dict, str], dict]] = {
@@ -905,7 +914,6 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "format": _t_format,
     "lsp": _t_lsp,
     "run_tests": _t_run_tests,
-    "ipython": _t_ipython,
 }
 
 _SEARCH_TOOLS = ("grep", "find", "repo_map", "graphify_lookup", "memory_lookup")
@@ -932,7 +940,7 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
 
 # File-mutating tools that the pre-apply "Review edits" gate (Gap D) holds for
 # human Approve/Reject even when policy would auto-allow them.
-_MUTATING = ("file_write", "file_create", "file_patch", "editor", "multi_edit")
+_MUTATING = ("file_write", "file_create", "file_patch", "editor", "multi_edit", "format")
 
 # The ``editor`` tool multiplexes read + write sub-commands on one tool NAME;
 # only the WRITE sub-commands mutate (view/read/list are read-only and must
@@ -1177,7 +1185,6 @@ Tool arguments:
 - format         {{"path": "src/foo.py"}}                    (auto-format a file — ruff/prettier/gofmt)
 - lsp            {{"command": "goto_definition", "path": "src/x.py", "line": 0, "character": 0}}
                  (symbol navigation: goto_definition | find_references | hover; 0-indexed)
-- ipython        {{"code": "import pandas as pd; df.head()"}}  (persistent Python REPL — state survives across calls)
 - remember_rule {{"text": "always use yarn", "scope": "repo"}}
                  (persist a user rule for every session; scope global|repo)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
@@ -1570,16 +1577,28 @@ _COMPACT_SYS = (
     "pleasantries and dead ends. Output 4-12 terse bullet lines, no preamble.")
 
 
-def _llm_summarize_middle(middle: list[dict], complete_fn) -> str:
+def _text_of(m: dict) -> str:
+    """Text of a chat message — handles the multimodal LIST form (a vision turn
+    rewrites content to ``[{type:text,...}, {image...}]``) so callers never call
+    .strip() on a list (which crashed the compactor)."""
+    c = m.get("content")
+    if isinstance(c, list):
+        return " ".join(p.get("text", "") for p in c
+                        if isinstance(p, dict) and p.get("type") == "text")
+    return c if isinstance(c, str) else ""
+
+
+def _llm_summarize_middle(middle: list[dict], complete_fn, session_id=None) -> str:
     """Code-aware LLM summary of the dropped middle. Swappable model via
-    AIFORGE_COMPACT_ROLE (resolved through the router) — point it at a fast/cheap
-    model. Returns '' on any failure so the caller falls back to the heuristic."""
+    AIFORGE_COMPACT_ROLE. Routed through _complete_cancellable so a Stop can
+    interrupt it (and it honours the generation cap). Returns '' on any failure
+    / cancel so the caller falls back to the heuristic."""
     if complete_fn is None or not middle:
         return ""
     transcript = []
     for m in middle:
         r = (m.get("role") or "").upper()
-        c = (m.get("content") or "").strip()
+        c = _text_of(m).strip()
         if c:
             transcript.append(f"{r}: {c}")
     body = "\n".join(transcript)
@@ -1589,14 +1608,16 @@ def _llm_summarize_middle(middle: list[dict], complete_fn) -> str:
     msgs = [{"role": "system", "content": _COMPACT_SYS},
             {"role": "user", "content": "Summarise this slice:\n\n" + body}]
     try:
-        out = complete_fn(sum_role, msgs)
-        return (out or "").strip()
+        out = _complete_cancellable(complete_fn, sum_role, msgs, session_id)
+        if out is _CANCELLED or not isinstance(out, str):
+            return ""
+        return out.strip()
     except Exception:  # noqa: BLE001
         return ""
 
 
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
-                   complete_fn=None) -> list[dict]:
+                   complete_fn=None, session_id=None) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
@@ -1613,7 +1634,7 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     keep_recent = max(4, min(keep_recent, budget // 2000))
     if len(convo) <= keep_recent + 2:
         return convo
-    if sum(len(m.get("content") or "") for m in convo) <= budget:
+    if sum(len(_text_of(m)) for m in convo) <= budget:
         return convo
     tail = convo[-keep_recent:]
     middle = convo[1:-keep_recent]
@@ -1623,9 +1644,9 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     user_asks: list[str] = []
     finals: list[str] = []
     for m in middle:
-        role = m.get("role")
-        content = (m.get("content") or "").strip()
-        if role == "assistant":
+        mrole = m.get("role")
+        content = _text_of(m).strip()
+        if mrole == "assistant":
             mt = _ACTION_RE.search(content)
             if mt:
                 tools.append(mt.group(1))
@@ -1633,7 +1654,7 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
             # short trace so the summary carries decisions, not just tool counts.
             elif content and "ACTION:" not in content:
                 finals.append(content.replace("\n", " ")[:160])
-        elif role == "user" and content and not content.startswith("OBSERVATION:"):
+        elif mrole == "user" and content and not content.startswith("OBSERVATION:"):
             user_asks.append(content.replace("\n", " ")[:120])
     import collections as _c
     used = ", ".join(f"{t}×{n}" for t, n in _c.Counter(tools).most_common(8)) \
@@ -1667,13 +1688,16 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     # AIFORGE_COMPACT_ROLE). Falls back to the heuristic breadcrumb on failure.
     llm_summary = ""
     if _compact_mode() == "llm":
-        llm_summary = _llm_summarize_middle(middle, complete_fn)
+        llm_summary = _llm_summarize_middle(middle, complete_fn, session_id)
     # Wrap the breadcrumb in a unique sentinel so the next condense can strip
     # exactly THIS block (not a look-alike phrase a rule/skill might contain).
     if llm_summary:
+        # Append the structured asks/outcomes tail so the NEXT condense's parser
+        # can still carry the thread forward (without it, repeated condenses in
+        # LLM mode silently dropped everything before the prior summary).
         note = (f"{_CONDENSE_OPEN}\n"
                 f"[earlier conversation auto-condensed — {len(middle)} messages "
-                f"omitted. Summary of what happened:\n{llm_summary}\n"
+                f"omitted. Summary of what happened:\n{llm_summary}\n{summary}\n"
                 "Re-read a file or ask the user if you need more detail.]\n"
                 f"{_CONDENSE_CLOSE}")
     else:
@@ -1965,7 +1989,8 @@ def run_chat_agent(
         # can't overflow the model's context window (MUST). Tell the user it
         # happened (one-time per condense) for transparency.
         _before = len(convo)
-        convo = _compact_convo(convo, role=role, complete_fn=complete_fn)
+        convo = _compact_convo(convo, role=role, complete_fn=complete_fn,
+                               session_id=session_id)
         if len(convo) < _before and not condensed_notified:
             condensed_notified = True   # notify ONCE, not every over-budget turn
             yield {"type": "thought", "role": "system",
@@ -2157,12 +2182,30 @@ def run_chat_agent(
             result = {"ok": False, "error": f"unknown tool: {name}"}
         else:
             _perf_t0 = time.perf_counter()
+            # Strong tools resolve through sandbox.root(); scope the override to
+            # the workspace root (NOT the raw cwd, so it can't escape an
+            # AIFORGE_WORKSPACE_DIR jail) and ALWAYS reset it in finally so a
+            # reused thread can't leak this session's dir into the next.
+            _root_tok = None
+            if name in _ROOT_SCOPED_TOOLS:
+                try:
+                    from aiforge_core.runtime import sandbox as _sb
+                    _root_tok = _sb.set_root_override(_workspace_root() or cwd)
+                except Exception:  # noqa: BLE001
+                    _root_tok = None
             try:
                 result = fn(args, cwd)
             except KeyError as exc:
                 result = {"ok": False, "error": f"missing arg: {exc}"}
             except Exception as exc:  # noqa: BLE001
                 result = {"ok": False, "error": str(exc)}
+            finally:
+                if _root_tok is not None:
+                    try:
+                        from aiforge_core.runtime import sandbox as _sb
+                        _sb.reset_root_override(_root_tok)
+                    except Exception:  # noqa: BLE001
+                        pass
             try:
                 from aiforge_core.runtime import perf_recorder
                 perf_recorder.record(

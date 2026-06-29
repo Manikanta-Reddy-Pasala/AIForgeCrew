@@ -23,9 +23,21 @@ _ROOT_OVERRIDE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "aiforge_root_override", default=None)
 
 
-def set_root_override(path: "str | os.PathLike | None") -> None:
-    """Point :func:`root` at ``path`` for this execution context (None clears)."""
-    _ROOT_OVERRIDE.set(str(path) if path else None)
+def set_root_override(path: "str | os.PathLike | None"):
+    """Point :func:`root` at ``path`` for this execution context (None clears).
+    Returns the contextvar Token so the caller can :func:`reset_root_override`
+    in a finally — critical on reused/pooled threads where a bare set() would
+    otherwise leak into the next task."""
+    return _ROOT_OVERRIDE.set(str(path) if path else None)
+
+
+def reset_root_override(token) -> None:
+    """Restore the override to its value before the matching set (token from
+    :func:`set_root_override`)."""
+    try:
+        _ROOT_OVERRIDE.reset(token)
+    except Exception:  # noqa: BLE001 — wrong-context token, never fatal
+        _ROOT_OVERRIDE.set(None)
 
 
 def root() -> Path:
@@ -54,4 +66,4 @@ def resolve_inside_root(rel: str) -> Path:
     return target
 
 
-__all__ = ["root", "resolve_inside_root", "set_root_override"]
+__all__ = ["root", "resolve_inside_root", "set_root_override", "reset_root_override"]

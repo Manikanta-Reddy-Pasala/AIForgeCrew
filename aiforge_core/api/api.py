@@ -1499,8 +1499,11 @@ def stream_role_log(role: str):
         last_size = 0
         if os.path.exists(path):
             try:
+                import collections as _coll
+                # deque(maxlen) holds only the last 200 lines instead of
+                # materialising the whole (append-only, unbounded) log file.
                 with open(path, encoding="utf-8") as f:
-                    tail = f.readlines()[-200:]
+                    tail = list(_coll.deque(f, maxlen=200))
                 last_size = os.path.getsize(path)
                 for line in tail:
                     line = line.strip()
@@ -2982,7 +2985,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # shows live runs (the page tails orchestrator-<role>.ndjson).
         try:
             from aiforge_core.observability.logging import emit, get_logger
-            _clog = get_logger("chat", ticket=f"chat-{session_id}")
+            # ONE shared "chat" logger (so the Logs "chat" tab tails one file).
+            # Don't stash a per-session ticket on the process-wide singleton —
+            # concurrent sessions would clobber it; stamp `session` per emit below.
+            _clog = get_logger("chat")
         except Exception:  # noqa: BLE001
             _clog = None
             emit = None  # type: ignore
@@ -2999,7 +3005,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 if _clog is not None and emit is not None and \
                         ev.get("type") in ("thought", "tool", "message", "error"):
                     try:
-                        emit(_clog, ev["type"], name=ev.get("name"),
+                        emit(_clog, ev["type"], session=session_id, name=ev.get("name"),
                              text=(ev.get("text") or "")[:200],
                              tool_ok=(ev.get("result") or {}).get("ok") if isinstance(ev.get("result"), dict) else None)
                     except Exception:  # noqa: BLE001

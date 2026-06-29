@@ -102,7 +102,10 @@ def get(name: str) -> int:
         raise KeyError(name)
     env_var, default = _SPEC[name]
     stored = _read_store().get(name)
-    if isinstance(stored, int) and stored > 0:
+    # An EXPLICITLY stored value wins — including 0, so the UI can override an
+    # env-set 0/1 knob back off (a stored 0 used to be discarded → env stuck it
+    # on). Safe for the int knobs: set_many's bounds reject 0 for those.
+    if isinstance(stored, int):
         return stored
     raw = os.environ.get(env_var)
     if raw:
@@ -135,6 +138,12 @@ def set_many(values: dict[str, Any]) -> dict[str, int]:
             raise ValueError(f"{name} must be between {lo} and {hi}")
         store[name] = ival
     _path().write_text(json.dumps(store, indent=2))
+    # Bust the mtime-keyed read cache so the just-saved values resolve
+    # immediately even if the write landed within the FS mtime granularity.
+    try:
+        _fc._CACHE.pop(str(_path()), None)
+    except Exception:  # noqa: BLE001
+        pass
     return all_settings()
 
 

@@ -229,7 +229,7 @@ export default function WorkflowGraph() {
   });
   const H = Math.max(
     260,
-    60 + Math.max(...depths.map(c => c.length)) * (NODE_H + ROW_GAP) + 60,
+    60 + Math.max(0, ...depths.map(c => c?.length ?? 0)) * (NODE_H + ROW_GAP) + 60,
   );
 
   return (

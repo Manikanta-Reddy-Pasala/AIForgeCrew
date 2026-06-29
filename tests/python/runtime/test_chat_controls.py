@@ -81,12 +81,13 @@ def test_policy_risk_escalates_to_ask(monkeypatch):
     assert d["reason"]
 
 
-def test_policy_caution_only_asks_when_opted_in(monkeypatch):
+def test_policy_caution_asks_by_default_optout_with_0(monkeypatch):
+    # Caution-tier (sudo/chmod 777/force-push) now gates for approval BY DEFAULT.
     monkeypatch.delenv("AIFORGE_TOOL_POLICY", raising=False)
     monkeypatch.delenv("AIFORGE_RISK_ASK_CAUTION", raising=False)
-    assert tool_policy.decide("run_command", {"cmd": "sudo x"})["policy"] == tool_policy.ALLOW
-    monkeypatch.setenv("AIFORGE_RISK_ASK_CAUTION", "1")
     assert tool_policy.decide("run_command", {"cmd": "sudo x"})["policy"] == tool_policy.ASK
+    monkeypatch.setenv("AIFORGE_RISK_ASK_CAUTION", "0")   # opt out → runs free
+    assert tool_policy.decide("run_command", {"cmd": "sudo x"})["policy"] == tool_policy.ALLOW
 
 
 # ─── #1 approval gate ─────────────────────────────────────────────────

@@ -1958,8 +1958,8 @@ function AutoApprovalsPanel() {
       <div style={{ fontWeight: 600, color: '#d4a72c', marginBottom: 4 }}>
         ⚠ Auto-approvals active ({rows.length})
       </div>
-      {rows.map((r, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+      {rows.map((r) => (
+        <div key={`${r.scope}:${r.name}:${r.label}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
           <span style={{ color: 'var(--fg-2,#8892a0)' }}>
             {FLAG_LABEL[r.name] || r.name} · <span style={{ fontFamily: 'var(--font-mono)' }}>{r.label}</span>
           </span>

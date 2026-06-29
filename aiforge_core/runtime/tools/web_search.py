@@ -143,8 +143,11 @@ def web_search(args: dict, cwd: str | None = None) -> dict:
     if not query:
         return {"ok": False, "error": "missing 'query'"}
     limit = int(args.get("limit", _default_limit()))
+    # `_api_search` returns None only when no key is set / the call FAILED; an
+    # empty list is an authoritative "no results" from a configured provider, so
+    # don't fall through to scraping DDG in that case.
     api = _api_search(query, limit)
-    if api:
+    if api is not None:
         return {"ok": True, "query": query, "results": api, "provider": "api"}
     try:
         body = _get(_DDG_HTML, data=urllib.parse.urlencode(
@@ -172,9 +175,9 @@ def web_search(args: dict, cwd: str | None = None) -> dict:
         if len(results) >= limit:
             break
     if not results:
-        return {"ok": True, "results": [],
+        return {"ok": True, "results": [], "provider": "ddg",
                 "note": "no results (query too narrow, or DDG markup changed)"}
-    return {"ok": True, "query": query, "results": results}
+    return {"ok": True, "query": query, "results": results, "provider": "ddg"}
 
 
 def web_fetch(args: dict, cwd: str | None = None) -> dict:

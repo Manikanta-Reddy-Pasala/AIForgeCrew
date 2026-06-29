@@ -183,7 +183,7 @@ def sync_from_config() -> dict:
         model = (c.get("model") or "").strip()
         if not model or model.startswith("local-model-unconfigured"):
             continue
-        key = (model, c.get("base_url") or "")
+        key = (model, (c.get("base_url") or "").strip())
         if key in have:
             continue
         have.add(key)

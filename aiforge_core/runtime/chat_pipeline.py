@@ -207,24 +207,28 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     # Build a context-rich prompt: project summary + prior conversation +
     # the current request, so the team pipeline isn't clueless on follow-ups.
     cave = False
+    _ctx_on = lambda _b: True  # noqa: E731 — replaced on successful import
     try:
         from aiforge_core.runtime.chat_agent import (
-            _cave_mode, _memory_recall, _repo_context, _rules_context,
+            _cave_mode, _ctx_on, _memory_recall, _repo_context, _rules_context,
         )
         cave = _cave_mode()
         rules_ctx = _rules_context(cwd)
-        # Cave mode drops the project-summary block (rules still kept).
-        repo_ctx = "" if cave else _repo_context(cwd)
+        # Mirror the single-agent path: honour the ctx_no_summary toggle (was
+        # ignored here, so the toggle silently did nothing in team mode). Keep
+        # the block in cave mode too (the leaner-not-dropped behaviour).
+        repo_ctx = _repo_context(cwd) if _ctx_on("summary") else ""
     except Exception:  # noqa: BLE001
         rules_ctx = repo_ctx = ""
         _memory_recall = None  # type: ignore
     convo = _history_preamble(history)
-    # Self-learning recall EVERY turn, keyed to the CURRENT request. Cave mode
-    # skips it (the Doer can memory_lookup on demand).
+    # Self-learning recall EVERY turn, keyed to the CURRENT request. Honours the
+    # ctx_no_recall toggle; cave mode pulls fewer hits (matching chat_agent),
+    # rather than dropping it entirely.
     recall_ctx = ""
-    if _memory_recall is not None and not cave:
+    if _memory_recall is not None and _ctx_on("recall"):
         try:
-            recall_ctx = _memory_recall(cwd, raw_prompt)
+            recall_ctx = _memory_recall(cwd, raw_prompt, limit=(3 if cave else 6))
         except Exception:  # noqa: BLE001
             recall_ctx = ""
     # SESSION IMAGES — descriptions of attached images, queryable all session.

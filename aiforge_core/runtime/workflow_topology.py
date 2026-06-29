@@ -106,9 +106,11 @@ _NODE_ROLE = {
     "triage": "triage", "enhancer": "architect", "researcher": "researcher",
     "gap_eval": "gap_eval", "ctx_repomap": "ctx_repomap",
     "ctx_conventions": "ctx_conventions", "planner": "planner",
-    "verify_correctness": "verify_correctness", "verify_scope": "verify_scope",
-    "verify_risk": "verify_risk", "doer": "doer", "refiner": "refiner",
-    "feedback": "feedback", "validator": "verifier", "learner": "learner",
+    # The 3 verify_* critics collapsed into one multi-axis `verifier` node — map
+    # it (and the validator, which reuses the verifier role) to that role.
+    "verifier": "verifier", "validator": "verifier",
+    "doer": "doer", "refiner": "refiner",
+    "feedback": "feedback", "learner": "learner",
 }
 
 

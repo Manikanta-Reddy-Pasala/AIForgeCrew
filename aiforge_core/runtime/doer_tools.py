@@ -195,7 +195,19 @@ def run_shell(cmd: str) -> dict:
 
     Hard timeout 90s; output truncated to 8 KB per stream so a runaway
     test suite cannot blow up session state.
+
+    Refuses DANGEROUS commands (rm -rf /, fork bombs, disk wipes, …) even in
+    the unattended pipeline — the interactive caution gate only covers chat, so
+    this is the pipeline's hard floor.
     """
+    try:
+        from aiforge_core.runtime.tools import command_risk
+        verdict = command_risk.assess(cmd)
+        if verdict.get("level") == command_risk.DANGEROUS:
+            return {"ok": False, "error": "blocked_dangerous_command",
+                    "reason": verdict.get("reason", ""), "returncode": -1}
+    except Exception:  # noqa: BLE001 — risk check must never crash the run
+        pass
     try:
         proc = subprocess.run(
             cmd, shell=True, cwd=root(),
@@ -679,21 +691,32 @@ def glob(pattern: str = "*", path: str = ".") -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     pat = (pattern or "*").strip()
+    # Normalise a leading "**/" so "**/*.py" also matches root-level files
+    # (fnmatch's * spans "/", so the raw "**/*.py" REQUIRES a slash → misses
+    # top-level files; str.lstrip("*/") over-strips to ".py").
+    bare = pat[3:] if pat.startswith("**/") else pat
     matches: list[str] = []
     r = root()
-    for p in base.rglob("*"):
-        if any(part in _SKIP for part in p.parts):
-            continue
-        if not p.is_file():
-            continue
-        rel = str(p.relative_to(r))
-        if fnmatch.fnmatch(p.name, pat) or fnmatch.fnmatch(rel, pat) \
-                or fnmatch.fnmatch(rel, pat.lstrip("*/")):
-            matches.append(rel)
-            if len(matches) >= 500:
-                break
+    import os as _os
+    capped = False
+    # Walk with in-place dir pruning so we never DESCEND into vcs/build noise
+    # (the previous post-hoc filter still walked millions of entries, and it
+    # tested ABSOLUTE path parts → a checkout under /venv/ skipped everything).
+    for dirpath, dirs, files in _os.walk(base):
+        dirs[:] = [d for d in dirs if d not in _SKIP]
+        for fn in files:
+            full = _os.path.join(dirpath, fn)
+            rel = _os.path.relpath(full, str(r))
+            if fnmatch.fnmatch(fn, bare) or fnmatch.fnmatch(rel, pat) \
+                    or fnmatch.fnmatch(rel, bare):
+                matches.append(rel)
+                if len(matches) >= 500:
+                    capped = True
+                    break
+        if capped:
+            break
     return {"ok": True, "pattern": pat, "count": len(matches),
-            "matches": sorted(matches)}
+            "truncated": capped, "matches": sorted(matches)}
 
 
 def task(description: str = "", **_kw) -> dict:
