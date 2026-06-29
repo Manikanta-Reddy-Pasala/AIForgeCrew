@@ -255,7 +255,8 @@ export default function WorkflowGraph() {
       <div style={{ width: '100%', maxWidth: '100%', overflow: 'auto', maxHeight: '78vh',
                     border: '1px solid var(--border-1)', borderRadius: 10,
                     boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}>
-      <svg width={W} height={H} style={{ background: 'var(--bg-1)', display: 'block' }}>
+      <svg width={W} height={H} style={{ background: 'var(--bg-1)', display: 'block',
+                                          maxWidth: 'none', flexShrink: 0 }}>
         {topo.edges.map((e, i) => {
           const a = positions[e.from], b = positions[e.to];
           if (!a || !b) return null;
