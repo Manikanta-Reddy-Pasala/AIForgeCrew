@@ -1034,6 +1034,9 @@ export default function Chat() {
       // Refresh sidebar (for auto-title on first message, and updated_at)
       if (isFirstMessage) {
         await loadSessions(true);
+        // The model-generated title lands from a concurrent thread; refresh
+        // again shortly to catch it if the run finished before titling did.
+        setTimeout(() => loadSessions(true), 3000);
       } else {
         // Silently update the session's updated_at in the list
         loadSessions(true);

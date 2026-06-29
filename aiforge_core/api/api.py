@@ -2581,7 +2581,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         chat_store.set_session_role(session_id, body.role)
 
     chat_store.add_message(session_id, "user", body.content)
-    if (session.get("title") or "New chat") == "New chat":
+    # Provisional title now (instant), upgraded to a model-generated one after
+    # the turn (see _produce). _fresh marks a still-unnamed session.
+    _fresh_title = (session.get("title") or "New chat") == "New chat"
+    if _fresh_title:
         chat_store.rename_session(session_id, body.content.strip()[:60])
 
     # Fold each assistant turn's tool digest into history + keep did-work-but-
@@ -2594,6 +2597,22 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     _parallel_team = team and _psub.enabled()
     agent_mode = "plan" if body.mode == "plan" else "act"
     prompt = body.content.strip()
+
+    # Upgrade a freshly-named session to a concise MODEL-generated title,
+    # CONCURRENTLY with the turn (a fast ~20-token call) so it neither blocks
+    # the response nor lingers the stream. The client's post-turn session
+    # refresh picks it up. Best-effort.
+    if _fresh_title:
+        def _gen_title():
+            try:
+                from aiforge_core.runtime import chat_store as _cs
+                from aiforge_core.runtime import chat_title
+                _t = chat_title.suggest_title(prompt, role=role)
+                if _t:
+                    _cs.rename_session(session_id, _t)
+            except Exception:  # noqa: BLE001 — titling must never break a run
+                pass
+        threading.Thread(target=_gen_title, daemon=True).start()
 
     from aiforge_core.runtime import chat_cancel
     chat_cancel.start(session_id)

@@ -148,6 +148,28 @@ def test_kill_all_cancels_runs_and_releases_team_lock(app_client):
             chat_pipeline._RUN_LOCK.release()
 
 
+def test_fresh_session_gets_model_title(app_client, monkeypatch):
+    """A first message on a fresh session upgrades the title to the model's
+    suggestion (not just the truncated message)."""
+    client, _ = app_client
+    from aiforge_core.runtime import chat_agent, chat_title, chat_store
+    monkeypatch.setattr(chat_agent, "run_chat_agent",
+                        lambda *a, **k: iter([{"type": "message", "text": "ok"},
+                                              {"type": "done"}]))
+    monkeypatch.setattr(chat_title, "suggest_title",
+                        lambda prompt, role="chat": "Deploy API To NUC")
+    sid = client.post("/api/chat/sessions", json={"title": "New chat"}).json()["id"]
+    client.post(f"/api/chat/sessions/{sid}/message",
+                json={"content": "how do I deploy the api", "mode": "simple"})
+    # Title is upgraded by a concurrent daemon thread → poll briefly.
+    import time as _t
+    for _ in range(50):
+        if chat_store.get_session(sid)["title"] == "Deploy API To NUC":
+            break
+        _t.sleep(0.02)
+    assert chat_store.get_session(sid)["title"] == "Deploy API To NUC"
+
+
 def test_kill_all_idempotent_when_nothing_running(app_client):
     client, _ = app_client
     r = client.post("/api/chat/kill-all").json()
