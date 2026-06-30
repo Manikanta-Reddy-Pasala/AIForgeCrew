@@ -199,9 +199,11 @@ def render(skills: list[Skill]) -> str:
             + "\n\n".join(parts))
 
 
-def auto_context(query: str, cwd: str | None = None, k: int = 4) -> str:
-    """Injection block: all always-on skills + the top-``k`` relevant ones
-    for ``query`` (by :func:`search`). Empty when none apply."""
+def select(query: str, cwd: str | None = None, k: int = 4) -> list[Skill]:
+    """The skills that :func:`auto_context` would inject for ``query``:
+    all always-on skills (capped) + the top-``k`` relevant ones, ordered by
+    priority. Factored out so callers can both render the block AND report
+    *which* skills fired (workflow-transparency)."""
     pool = load(cwd)
     # Cap always-on skills so a large registry can't blow the context budget
     # every turn (highest-priority always-on win).
@@ -213,8 +215,23 @@ def auto_context(query: str, cwd: str | None = None, k: int = 4) -> str:
         sk = next((s for s in pool if s.name == hit["name"]), None)
         if sk is not None:
             chosen[sk.name] = sk
-    ordered = sorted(chosen.values(), key=lambda s: -s.priority)
-    return render(ordered)
+    return sorted(chosen.values(), key=lambda s: -s.priority)
+
+
+def selected_names(query: str, cwd: str | None = None, k: int = 4) -> list[dict]:
+    """``[{name, why}]`` for the skills :func:`auto_context` injects — ``why``
+    is ``always`` (always-on) or ``match`` (relevance hit). Drives the
+    Workflow UI's "skills used" badge."""
+    always = {s.name for s in load(cwd) if s.always}
+    return [{"name": s.name,
+             "why": "always" if s.name in always else "match"}
+            for s in select(query, cwd, k)]
+
+
+def auto_context(query: str, cwd: str | None = None, k: int = 4) -> str:
+    """Injection block: all always-on skills + the top-``k`` relevant ones
+    for ``query`` (by :func:`search`). Empty when none apply."""
+    return render(select(query, cwd, k))
 
 
 def write_skill(name: str, description: str, body: str,
@@ -272,4 +289,5 @@ def write_skill(name: str, description: str, body: str,
     return {"ok": True, "name": name, "path": str(path), "memory": mem}
 
 
-__all__ = ["Skill", "load", "search", "render", "auto_context", "write_skill"]
+__all__ = ["Skill", "load", "search", "render", "select", "selected_names",
+           "auto_context", "write_skill"]

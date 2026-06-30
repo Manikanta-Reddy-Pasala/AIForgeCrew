@@ -243,4 +243,20 @@ def collect(repo_root: str | Path,
         return ""
 
 
-__all__ = ["Rule", "load_rules", "match_rules", "render", "collect"]
+def matched_names(repo_root: str | Path,
+                  scope_globs: list[str] | None = None) -> list[dict]:
+    """``[{name, source}]`` for the rules that apply to this scope — so the
+    Workflow UI can show which rules a run actually pulled in. Never raises."""
+    try:
+        rules = load_rules(repo_root)
+        if not rules:
+            return []
+        return [{"name": r.name, "source": getattr(r, "source", "") or ""}
+                for r in match_rules(rules, scope_globs)]
+    except Exception as exc:  # noqa: BLE001 — rules must never block a run
+        log.debug("repo_rules.matched_names failed: %s", exc)
+        return []
+
+
+__all__ = ["Rule", "load_rules", "match_rules", "render", "collect",
+           "matched_names"]

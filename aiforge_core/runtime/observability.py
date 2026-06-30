@@ -198,6 +198,32 @@ def emit_pr_opened(*, ticket_id: int, pr_url: str,
     )
 
 
+def emit_context_injected(
+    *, ticket_id: int, agent_role: str = "pipeline",
+    skills: list[dict] | None = None,
+    rules: list[dict] | None = None,
+    workflows: list[dict] | None = None,
+) -> None:
+    """Persist a ``context_injected`` event recording WHICH skills / rules /
+    workflows a run pulled into the agents' context, and HOW each was chosen
+    (``why`` = always / match for skills+workflows; rules carry ``source``).
+
+    This is the data the Workflow UI overlays onto its nodes so an operator
+    can read the graph and see exactly what extra knowledge each stage used.
+    No-op when nothing was injected."""
+    skills = skills or []
+    rules = rules or []
+    workflows = workflows or []
+    if not (skills or rules or workflows):
+        return
+    _emit(
+        ticket_id=ticket_id, agent_role=agent_role, kind="context_injected",
+        body=(f"injected: {len(skills)} skill(s), {len(rules)} rule(s), "
+              f"{len(workflows)} workflow(s)"),
+        metadata={"skills": skills, "rules": rules, "workflows": workflows},
+    )
+
+
 def emit_commit(*, ticket_id: int, sha: str, message: str,
                 role: str = "doer") -> None:
     """Persist a ``commit`` event when Doer fires the ``git_commit``
@@ -215,4 +241,5 @@ __all__ = [
     "make_stage_callbacks",
     "emit_pr_opened",
     "emit_commit",
+    "emit_context_injected",
 ]

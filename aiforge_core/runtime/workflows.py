@@ -82,23 +82,40 @@ def search(query: str, cwd: str | None = None, k: int = 5) -> list[dict]:
     return _sk.search(query, cwd, k=k, skills=load(cwd))
 
 
-def auto_context(query: str, cwd: str | None = None, k: int = 3) -> str:
-    """Injection block: the top-``k`` workflows most relevant to ``query`` (plus
-    any always-on ones), so the chat agent is reminded of reusable end-to-end
-    procedures the same way it gets skills. Bodies are capped — the agent calls
-    ``workflow_search`` for the full text. Empty when none apply."""
+def select(query: str, cwd: str | None = None, k: int = 3) -> list[Skill]:
+    """The workflows :func:`auto_context` would inject for ``query`` — always-on
+    + top-``k`` relevant, priority-ordered. Factored out so callers can both
+    render the block AND report which workflows fired (workflow-transparency)."""
     pool = load(cwd)
     if not pool:
-        return ""
+        return []
     chosen: dict[str, Skill] = {w.name: w for w in pool if w.always}
     for hit in search(query, cwd, k=k):
         w = next((x for x in pool if x.name == hit["name"]), None)
         if w is not None:
             chosen[w.name] = w
+    return sorted(chosen.values(), key=lambda s: -s.priority)
+
+
+def selected_names(query: str, cwd: str | None = None, k: int = 3) -> list[dict]:
+    """``[{name, why}]`` for the workflows :func:`auto_context` injects — ``why``
+    is ``always`` or ``match``. Drives the Workflow UI's "workflows used" badge."""
+    always = {w.name for w in load(cwd) if w.always}
+    return [{"name": w.name,
+             "why": "always" if w.name in always else "match"}
+            for w in select(query, cwd, k)]
+
+
+def auto_context(query: str, cwd: str | None = None, k: int = 3) -> str:
+    """Injection block: the top-``k`` workflows most relevant to ``query`` (plus
+    any always-on ones), so the chat agent is reminded of reusable end-to-end
+    procedures the same way it gets skills. Bodies are capped — the agent calls
+    ``workflow_search`` for the full text. Empty when none apply."""
+    chosen = select(query, cwd, k)
     if not chosen:
         return ""
     parts = []
-    for w in sorted(chosen.values(), key=lambda s: -s.priority):
+    for w in chosen:
         head = f"### {w.name}" + (f" — {w.description}" if w.description else "")
         parts.append(f"{head}\n{w.body[:1200]}")
     return ("RELEVANT WORKFLOWS (reusable end-to-end procedures — follow when "
@@ -186,4 +203,5 @@ def ensure_dirs() -> dict:
     return out
 
 
-__all__ = ["load", "search", "write_workflow", "ensure_dirs", "auto_context"]
+__all__ = ["load", "search", "select", "selected_names", "write_workflow",
+           "ensure_dirs", "auto_context"]

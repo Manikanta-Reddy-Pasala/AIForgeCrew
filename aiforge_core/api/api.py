@@ -2000,6 +2000,76 @@ def models_apply(model_id: str, body: _ApplyModelBody) -> dict:
         raise HTTPException(404, str(exc))
 
 
+# ─────────────────────── MCP marketplace / installer ───────────────────────
+class _McpInstallBody(BaseModel):
+    catalog_id: str = Field(..., min_length=1)
+    url: str | None = Field(None, description="override catalog url (required for custom)")
+    name: str | None = Field(None, description="override display name")
+    api_key: str | None = Field(None, description="optional bearer/api key")
+
+
+class _McpUpdateBody(BaseModel):
+    name: str | None = None
+    url: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    api_key: str | None = None
+
+
+@app.get("/api/mcp/catalog")
+def mcp_catalog() -> dict:
+    """The curated MCP marketplace catalog (browse → one-click install)."""
+    from aiforge_core.config import mcp_registry
+    return {"catalog": mcp_registry.load_catalog()}
+
+
+@app.get("/api/mcp/servers")
+def mcp_servers() -> dict:
+    """Installed MCP servers (secrets stripped)."""
+    from aiforge_core.config import mcp_registry
+    return {"servers": mcp_registry.list_servers()}
+
+
+@app.post("/api/mcp/servers", status_code=201)
+def mcp_server_install(body: _McpInstallBody) -> dict:
+    from aiforge_core.config import mcp_registry
+    try:
+        return mcp_registry.install_from_catalog(
+            body.catalog_id, url=body.url, api_key=body.api_key, name=body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.put("/api/mcp/servers/{server_id}")
+def mcp_server_update(server_id: str, body: _McpUpdateBody) -> dict:
+    from aiforge_core.config import mcp_registry
+    row = mcp_registry.update_server(
+        server_id, name=body.name, url=body.url, description=body.description,
+        enabled=body.enabled, api_key=body.api_key)
+    if row is None:
+        raise HTTPException(404, f"unknown MCP server: {server_id}")
+    return row
+
+
+@app.delete("/api/mcp/servers/{server_id}", status_code=204)
+def mcp_server_delete(server_id: str) -> None:
+    from aiforge_core.config import mcp_registry
+    if not mcp_registry.remove_server(server_id):
+        raise HTTPException(404, f"unknown MCP server: {server_id}")
+
+
+@app.post("/api/mcp/servers/{server_id}/test")
+def mcp_server_test(server_id: str) -> dict:
+    """Connectivity check — list the server's tools via the MCP client."""
+    from aiforge_core.config import mcp_registry
+    from aiforge_core.runtime.tools import mcp_client
+    row = mcp_registry.get_server(server_id)
+    if row is None:
+        raise HTTPException(404, f"unknown MCP server: {server_id}")
+    name = row.get("name") or row.get("id")
+    return mcp_client.list_tools(name)
+
+
 @app.put("/api/agents/v2/{role}/config")
 def agents_v2_set(role: str, body: _AgentConfigV2Body) -> dict:
     # "_default" is the global fallback every pipeline role inherits (the
@@ -2479,7 +2549,8 @@ class _SessionMsgBody(BaseModel):
     content: str = Field(..., min_length=1)
     role: str | None = Field(None, description="override the session's model (archetype)")
     mode: str = Field("simple", description="'simple' (single agent) | 'plan' (read-only single agent) | 'team' (full ADK flow)")
-    review_edits: bool = Field(False, description="Gap D — hold every file-mutating tool call for human Approve/Reject (with diff) before it lands")
+    review_edits: bool = Field(True, description="Gap D — ALWAYS ON (no UI toggle): every file-mutating tool call is held for human Approve/Reject (with diff) before it lands in simple/plan mode")
+    edit_from_message_id: int | None = Field(None, description="Edit-and-resend: truncate history at this user message (restoring the workspace to that turn's checkpoint) before running this new content")
 
 
 def _chat_workspace_root() -> str:
@@ -2729,7 +2800,24 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     if body.role and body.role != session.get("role"):
         chat_store.set_session_role(session_id, body.role)
 
-    chat_store.add_message(session_id, "user", body.content)
+    # Edit-and-resend: when the client edits an earlier user turn, restore the
+    # workspace to that turn's checkpoint (so the re-run starts from the same
+    # state the original did) and truncate the conversation at that message
+    # before appending the edited content. Best-effort restore — a missing
+    # checkpoint just means history truncation without a workspace rollback.
+    if body.edit_from_message_id:
+        try:
+            _cwd_er = session.get("cwd") or _default_cwd()
+            _sha = chat_store.message_checkpoint(session_id, body.edit_from_message_id)
+            if _sha:
+                from aiforge_core.runtime import checkpoints as _ckpt
+                _ckpt.restore(_cwd_er, _sha)
+            chat_store.delete_messages_from(session_id, body.edit_from_message_id)
+        except Exception as _exc:  # noqa: BLE001 — edit-resend must fail open
+            _af_log.warning("edit-resend failed (session=%s msg=%s): %s",
+                            session_id, body.edit_from_message_id, _exc)
+
+    _user_msg_id = chat_store.add_message(session_id, "user", body.content)
     # Provisional title now (instant), upgraded to a model-generated one after
     # the turn (see _produce). _fresh marks a still-unnamed session.
     _fresh_title = (session.get("title") or "New chat") == "New chat"
@@ -2774,7 +2862,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # chat_approve.finish() in every termination path (simple/parallel here,
     # team in chat_pipeline), so it never leaks into the next turn.
     from aiforge_core.runtime import chat_approve as _chat_approve
-    _chat_approve.set_review_edits(session_id, bool(body.review_edits))
+    # Review-edits is FORCED ON for simple/plan chat (no UI toggle): the ReAct
+    # gate always holds file-mutating tool calls for human Approve/Reject before
+    # they land. Team/parallel mode (the full pipeline) is left as-is — it
+    # doesn't hold edits, by design.
+    _chat_approve.set_review_edits(session_id, not team)
 
     def _auto_checkpoint():
         # Snapshot the working dir at turn start so the user can roll back
@@ -2788,9 +2880,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             import datetime as _dt
 
             from aiforge_core.runtime import checkpoints
-            checkpoints.snapshot(
+            _snap = checkpoints.snapshot(
                 cwd, label=f"before: {prompt[:50]}",
                 when=_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            # Stamp this turn's snapshot onto the user message so edit-resend
+            # can restore the workspace to exactly this turn's starting state.
+            if isinstance(_snap, dict) and _snap.get("ok") and _snap.get("sha"):
+                chat_store.set_message_checkpoint(_user_msg_id, _snap["sha"])
         except Exception:  # noqa: BLE001
             pass
 
@@ -2865,14 +2961,9 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
         # subtasks CONCURRENTLY in isolated worktrees with live status.
         from aiforge_core.runtime import parallel_subtasks as _pp
-        # Review-edits is only honored by the simple/plan inline ReAct gate.
-        # Team / parallel / best-of-N runners never consult it, so surface a
-        # one-time notice (mirror the steer "unsupported" pattern) instead of
-        # lighting the pill while edits land unreviewed.
-        if team and body.review_edits:
-            yield {"type": "thought", "role": "system",
-                   "text": "Review-edits is not supported in team/parallel mode "
-                           "— edits are not held for approval in this run."}
+        # Review-edits is a simple/plan-only feature (forced on there). Team /
+        # parallel / best-of-N runners run the full pipeline and don't hold
+        # edits — left as-is by design, no notice (avoids per-run noise).
         if team and _parallel_team:
             # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
             _spec = _pp._enhance(prompt, history=history, cwd=cwd)  # 1. clean spec
@@ -3340,17 +3431,27 @@ def chat_session_checkpoint_create(session_id: int, body: _CheckpointBody) -> di
 
 class _RestoreBody(BaseModel):
     sha: str = Field(..., min_length=4)
+    paths: list[str] | None = Field(
+        None, description="restore ONLY these paths (files-only / subset restore); "
+                          "omit to restore the whole snapshot")
+    delete_orphans: bool = Field(
+        False, description="full-state restore: also delete files created after "
+                           "the checkpoint so the tree exactly matches it")
 
 
 @app.post("/api/chat/sessions/{session_id}/checkpoints/restore")
 def chat_session_checkpoint_restore(session_id: int, body: _RestoreBody) -> dict:
-    """Restore the session's working dir to a checkpoint (#3)."""
+    """Restore the session's working dir to a checkpoint (#3).
+
+    Granularity: ``paths`` restores a subset; ``delete_orphans`` makes it a
+    full-state restore (matching the snapshot exactly)."""
     from aiforge_core.runtime import checkpoints, chat_store
     session = chat_store.get_session(session_id)
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
     cwd = session.get("cwd") or _default_cwd()
-    return checkpoints.restore(cwd, body.sha)
+    return checkpoints.restore(cwd, body.sha, paths=body.paths or None,
+                               delete_orphans=bool(body.delete_orphans))
 
 
 class _SessionTicketBody(BaseModel):
@@ -3689,10 +3790,12 @@ def _static_topology() -> dict:
     stages = ["triage", "enhancer", "researcher", "planner", "verifier",
               "doer", "refiner", "feedback", "validator", "learner"]
     nodes = [{"id": s, "label": s, "type": "agent", "tools": [],
-              "status": "idle", "last_event_at": None} for s in stages]
+              "status": "idle", "last_event_at": None,
+              "skills": [], "rules": [], "workflows": []} for s in stages]
     edges = [{"from": stages[i], "to": stages[i + 1], "label": ""}
              for i in range(len(stages) - 1)]
-    return {"nodes": nodes, "edges": edges, "ticket": None, "static": True}
+    return {"nodes": nodes, "edges": edges, "ticket": None, "static": True,
+            "context": {"skills": [], "rules": [], "workflows": []}}
 
 
 def _topology_snapshot(ticket: str | None) -> dict:

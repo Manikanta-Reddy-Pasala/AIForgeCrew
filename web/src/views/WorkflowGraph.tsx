@@ -6,6 +6,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
+type CtxSkill = { name: string; why?: string };
+type CtxRule = { name: string; source?: string };
+type RunContext = { skills: CtxSkill[]; rules: CtxRule[]; workflows: CtxSkill[] };
 type Node = {
   id: string;
   label: string;
@@ -13,9 +16,17 @@ type Node = {
   tools: string[];
   status?: string;
   last_event_at?: string | null;
+  // Workflow-transparency: the skills/rules/workflows this stage pulled into
+  // its context, and how each was chosen (why = always | match).
+  skills?: CtxSkill[];
+  rules?: CtxRule[];
+  workflows?: CtxSkill[];
 };
 type Edge = { from: string; to: string; label: string };
-type Topology = { nodes: Node[]; edges: Edge[]; ticket?: string | null };
+type Topology = {
+  nodes: Node[]; edges: Edge[]; ticket?: string | null;
+  context?: RunContext;
+};
 
 type Ticket = {
   identifier: string;
@@ -304,21 +315,39 @@ export default function WorkflowGraph() {
           const p = positions[n.id]; if (!p) return null;
           const ts = TYPE_STYLE[n.type] || TYPE_STYLE.agent;
           const accent = STATUS_ACCENT[n.status || ''];
+          const nSk = n.skills?.length || 0;
+          const nRu = n.rules?.length || 0;
+          const nWf = n.workflows?.length || 0;
+          const ctxN = nSk + nRu + nWf;
+          // Tooltip lists exactly what this stage used + how it was chosen.
+          const ctxTip = ctxN
+            ? '\nContext used:'
+              + (n.skills || []).map(s => `\n  • skill: ${s.name}${s.why ? ` (${s.why})` : ''}`).join('')
+              + (n.workflows || []).map(w => `\n  • workflow: ${w.name}${w.why ? ` (${w.why})` : ''}`).join('')
+              + (n.rules || []).map(r => `\n  • rule: ${r.name}${r.source ? ` (${r.source})` : ''}`).join('')
+            : '';
           return (
             <g key={n.id} transform={`translate(${p.x},${p.y})`}>
-              <title>{(n as any).stage ? `${(n as any).stage} — ` : ''}{(n as any).desc || n.label}</title>
+              <title>{(n as any).stage ? `${(n as any).stage} — ` : ''}{(n as any).desc || n.label}{ctxTip}</title>
               <rect width={NODE_W} height={NODE_H} rx={8}
                     fill={ts.fill} stroke={accent || ts.border}
                     strokeWidth={accent ? 2.5 : 1.5} />
-              <text x={NODE_W / 2} y={30} textAnchor="middle"
+              <text x={NODE_W / 2} y={28} textAnchor="middle"
                     style={{ fontSize: 14, fontWeight: 700, fill: '#0f172a' }}>
                 {n.label}
               </text>
-              <text x={NODE_W / 2} y={48} textAnchor="middle"
+              <text x={NODE_W / 2} y={45} textAnchor="middle"
                     style={{ fontSize: 10, fontWeight: 600, fill: ts.border }}>
                 {n.type}{n.tools.length ? ` · ${n.tools.length} tools` : ''}
               </text>
-              <text x={NODE_W / 2} y={66} textAnchor="middle"
+              {ctxN > 0 && (
+                <text x={NODE_W / 2} y={60} textAnchor="middle"
+                      style={{ fontSize: 9, fontWeight: 700, fill: '#7c3aed' }}>
+                  🧠 {[nSk && `${nSk} skill`, nWf && `${nWf} wf`, nRu && `${nRu} rule`]
+                        .filter(Boolean).join(' · ')}
+                </text>
+              )}
+              <text x={NODE_W / 2} y={ctxN > 0 ? 71 : 66} textAnchor="middle"
                     style={{ fontSize: 9, fill: '#94a3b8' }}>
                 {(n as any).stage || ''}
               </text>
@@ -336,6 +365,67 @@ export default function WorkflowGraph() {
         <span><span style={{ color: '#14b8a6' }}>■</span> parallel branch</span>
         <span><span style={{ color: '#8b5cf6' }}>■</span> join / merge</span>
       </div>
+
+      {/* Context panel — what extra knowledge this run pulled in, and HOW each
+          was chosen, so the workflow itself explains the skills/rules/workflows
+          the agents used. Only shown when a ticket overlay has context. */}
+      <ContextPanel ctx={topo.context} ticket={ticket} />
     </>
+  );
+}
+
+function ContextPanel({ ctx, ticket }: { ctx?: RunContext; ticket: string }) {
+  const skills = ctx?.skills || [];
+  const rules = ctx?.rules || [];
+  const workflows = ctx?.workflows || [];
+  const total = skills.length + rules.length + workflows.length;
+  if (!ticket) return null;
+  return (
+    <div style={{ marginTop: 16, padding: 12, border: '1px solid var(--border-1)',
+                  borderRadius: 10, background: 'var(--bg-1)' }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>
+        🧠 Knowledge this run used
+      </div>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        Skills, workflows and rules the agents pulled into context for{' '}
+        <b>{ticket}</b> — <i>always</i> = always-on, <i>match</i> = relevance hit,
+        rules show their source file. Empty until the run reaches the orchestrator.
+      </div>
+      {total === 0 ? (
+        <div className="small muted">No skills, workflows or rules injected yet.</div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18 }}>
+          <CtxColumn title="Skills" color="#3b82f6"
+                     items={skills.map(s => ({ name: s.name, tag: s.why }))} />
+          <CtxColumn title="Workflows" color="#14b8a6"
+                     items={workflows.map(w => ({ name: w.name, tag: w.why }))} />
+          <CtxColumn title="Rules" color="#f59e0b"
+                     items={rules.map(r => ({ name: r.name, tag: r.source ? r.source.split('/').pop() : undefined }))} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CtxColumn({ title, color, items }:
+  { title: string; color: string; items: { name: string; tag?: string }[] }) {
+  return (
+    <div style={{ minWidth: 160 }}>
+      <div style={{ fontWeight: 600, color, marginBottom: 4 }}>
+        {title} ({items.length})
+      </div>
+      {items.length === 0 ? (
+        <div className="small muted">—</div>
+      ) : (
+        <ul style={{ margin: 0, paddingLeft: 16 }}>
+          {items.map((it, i) => (
+            <li key={i} className="small">
+              {it.name}
+              {it.tag && <span className="muted"> · {it.tag}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

@@ -125,30 +125,55 @@ def _tools_for(role: str) -> list[str]:
     return []
 
 
+# Agent nodes that actually consume the seed-injected skills/workflows/rules
+# (the orchestrator + builder stages). The injection is pipeline-global, but we
+# attribute it to these nodes so the graph shows WHERE the context is used —
+# rather than smearing it across gates/joins that never read it.
+_CONTEXT_CONSUMERS = ("enhancer", "planner", "doer")
+
+
 def _base_nodes() -> list[dict]:
     out = []
     for n in _NODES:
         role = _NODE_ROLE.get(n["id"])
         out.append({**n, "tools": _tools_for(role) if role else [],
-                    "status": "idle", "last_event_at": None})
+                    "status": "idle", "last_event_at": None,
+                    "skills": [], "rules": [], "workflows": []})
     return out
 
 
-def _overlay_ticket(nodes: list[dict], ticket: str) -> None:
-    """Mark nodes done/active from the ticket's events."""
+def _overlay_ticket(nodes: list[dict], ticket: str) -> dict:
+    """Mark nodes done/active from the ticket's events AND attach the skills /
+    rules / workflows the run injected. Returns a run-level ``context`` summary
+    (``{skills, rules, workflows}``) the UI renders as a legend."""
+    context: dict[str, list] = {"skills": [], "rules": [], "workflows": []}
     try:
         from aiforge_core.tickets import store as _store
         t = _store.get(ticket)
         if not t:
-            return
+            return context
         events = _store.comments(t.id, 1000)
     except Exception:
-        return
+        return context
     # role/stage -> latest event time
     last: dict[str, str] = {}
+    # Accumulate context_injected metadata across all such events, de-duped by
+    # name (a replan re-injects the same skills — show each once).
+    seen: dict[str, set] = {"skills": set(), "rules": set(), "workflows": set()}
     for e in events:
         role = e.get("agent_role") or ""
         meta = e.get("metadata") or {}
+        if (e.get("kind") or "") == "context_injected":
+            for bucket in ("skills", "rules", "workflows"):
+                for item in (meta.get(bucket) or []):
+                    if not isinstance(item, dict):
+                        continue
+                    name = item.get("name")
+                    if not name or name in seen[bucket]:
+                        continue
+                    seen[bucket].add(name)
+                    context[bucket].append(item)
+            continue
         stage = meta.get("stage") or role
         ts = e.get("created_at")
         ts = ts.isoformat() if hasattr(ts, "isoformat") else ts
@@ -161,10 +186,19 @@ def _overlay_ticket(nodes: list[dict], ticket: str) -> None:
         if hit:
             n["status"] = "done"
             n["last_event_at"] = hit
+        # Attach injected context to the consuming stages so the graph shows
+        # where each skill/rule/workflow was used.
+        if n["id"] in _CONTEXT_CONSUMERS:
+            n["skills"] = context["skills"]
+            n["workflows"] = context["workflows"]
+            n["rules"] = context["rules"]
+    return context
 
 
 def snapshot(ticket: "str | None" = None) -> dict:
     nodes = _base_nodes()
+    context: dict[str, list] = {"skills": [], "rules": [], "workflows": []}
     if ticket:
-        _overlay_ticket(nodes, ticket)
-    return {"nodes": nodes, "edges": list(_EDGES), "ticket": ticket}
+        context = _overlay_ticket(nodes, ticket)
+    return {"nodes": nodes, "edges": list(_EDGES), "ticket": ticket,
+            "context": context}

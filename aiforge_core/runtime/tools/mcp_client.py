@@ -36,16 +36,24 @@ _RESPONSE_CAP_BYTES = 16 * 1024
 
 
 def _load_endpoints() -> dict[str, str]:
+    # Base = bundled defaults (currently none). The env CSV and the marketplace
+    # registry layer on top (registry wins on a name clash — it's the explicit
+    # user choice in the UI).
+    out: dict[str, str] = dict(_DEFAULT_ENDPOINTS)
     raw = os.environ.get("AIFORGE_MCP_ENDPOINTS", "").strip()
-    if not raw:
-        return dict(_DEFAULT_ENDPOINTS)
-    out: dict[str, str] = {}
     for entry in raw.split(","):
         entry = entry.strip()
         if not entry or "=" not in entry:
             continue
         name, url = entry.split("=", 1)
         out[name.strip()] = url.strip()
+    # Marketplace-installed + enabled HTTP servers (one-click installer). Soft:
+    # a missing/broken registry never breaks the env-configured endpoints.
+    try:
+        from aiforge_core.config import mcp_registry
+        out.update(mcp_registry.enabled_endpoints())
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
