@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 # Route label constants — keep in sync with the edge wiring in pipeline.py.
@@ -37,7 +38,12 @@ ROUTE_VERIFY_PASS = "verify_pass"
 ROUTE_VERIFY_REPLAN = "verify_replan"
 
 # Doer loop iteration cap (was LoopAgent.max_iterations=3).
-MAX_DOER_ITERS = 3
+MAX_DOER_ITERS = int(os.environ.get("AIFORGE_MAX_DOER_ITERS", "3") or 3)
+# Wall-clock budget for the WHOLE Doer loop (item-3 / slow 120B safety
+# valve). 0 = off. When set, the loop exits with a ``partial`` verdict once
+# elapsed exceeds this many seconds — so a model grinding unproductively for
+# minutes ships its partial diff instead of looping until the LLM-call cap.
+DOER_MAX_WALL_S = int(os.environ.get("AIFORGE_LOOP_MAX_WALL_S", "0") or 0)
 # Replan cap (was GraphPipeline.max_replans=1).
 MAX_REPLANS = 1
 # Verifier-reject → re-plan cap (bounded inner loop).
@@ -181,17 +187,29 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     iters = int(state.get("doer_iters", 0) or 0) + 1
     state["doer_iters"] = iters
     kill = bool(state.get("loop_budget_kill"))
-    if _feedback_passed(state) or kill or iters >= MAX_DOER_ITERS:
-        if kill and not _feedback_passed(state):
-            # LOC-plateau kill: progress stalled but work exists. Mark the
+    # Wall-clock kill — seed the loop start on the first pass, then bail if
+    # the whole loop has run past the budget. Independent of LOC churn, so it
+    # protects a slow model that's looping without making (or losing) lines.
+    wall_kill = False
+    if DOER_MAX_WALL_S > 0:
+        start = state.get("doer_loop_started_at")
+        now = time.time()
+        if not start:
+            state["doer_loop_started_at"] = now
+        elif (now - float(start)) > DOER_MAX_WALL_S:
+            wall_kill = True
+    if _feedback_passed(state) or kill or wall_kill or iters >= MAX_DOER_ITERS:
+        if (kill or wall_kill) and not _feedback_passed(state):
+            # Progress stalled / budget spent but work exists. Mark the
             # verdict ``partial`` so the runner ships the partial diff as a
             # PR (status review) instead of replaying the
             # whole pipeline. (Was the LoopAgent before-callback's job;
             # the migration moved the exit here but dropped the verdict.)
-            reason = str(state.get("loop_budget_reason", "loc plateau"))
+            reason = ("wall-clock budget" if wall_kill
+                      else str(state.get("loop_budget_reason", "loc plateau")))
             state["feedback_verdict"] = f"partial loop_budget_kill: {reason}"
         ctx.route = ROUTE_EXIT
-        _trace(":LoopExit", {"iters": iters, "kill": kill})
+        _trace(":LoopExit", {"iters": iters, "kill": kill, "wall_kill": wall_kill})
     else:
         ctx.route = ROUTE_LOOP
 
@@ -209,6 +227,7 @@ async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
         state["doer_iters"] = 0
         _clear_state(state, (
             "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
+            "doer_loop_started_at",
             "loc_history", "loc_first_seen", "doer_outcome",
             "verifier_verdict", "verify_correctness", "verify_scope",
             "verify_risk", "verify_replan_count",

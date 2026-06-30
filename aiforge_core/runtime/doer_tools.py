@@ -35,6 +35,15 @@ from .syntax_guard import validate_syntax
 from .git_pr import _EXCLUDE_PATHSPECS  # noqa: E402
 
 
+def _compact_digest(stdout: str, stderr: str, returncode) -> str:
+    """Soft wrapper around output_compactor.digest — never raises into a tool."""
+    try:
+        from .output_compactor import digest as _d
+        return _d(stdout, stderr, returncode)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 # ─── Touched-path tracker (informational only) ─────────────────────────
 #
 # The Doer's file tools still record every repo-relative path they mutate
@@ -214,17 +223,28 @@ def run_shell(cmd: str) -> dict:
             capture_output=True, timeout=90,
         )
     except subprocess.TimeoutExpired as exc:
-        return {"ok": False, "error": "timeout",
-                "stdout": (exc.stdout or b"").decode("utf-8", "replace")[:8000],
-                "stderr": (exc.stderr or b"").decode("utf-8", "replace")[:8000]}
+        _to_out = (exc.stdout or b"").decode("utf-8", "replace")
+        _to_err = (exc.stderr or b"").decode("utf-8", "replace")
+        _r = {"ok": False, "error": "timeout",
+              "stdout": _to_out[:8000], "stderr": _to_err[:8000]}
+        _d = _compact_digest(_to_out, _to_err, None)
+        if _d:
+            _r["digest"] = _d
+        return _r
     out = proc.stdout.decode("utf-8", "replace")
     err = proc.stderr.decode("utf-8", "replace")
-    return {
+    res = {
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
         "stdout": out[:8000], "stderr": err[:8000],
         "truncated": len(out) > 8000 or len(err) > 8000,
     }
+    # Signal-first digest (deterministic, no LLM) so a slow model leads with
+    # the error lines instead of scrollback. Additive — never replaces output.
+    digest = _compact_digest(out, err, proc.returncode)
+    if digest:
+        res["digest"] = digest
+    return res
 
 
 # ─── Repo grep ─────────────────────────────────────────────────────────
@@ -775,6 +795,79 @@ def learn_workflow(name: str, body: str, description: str = "",
         return {"ok": False, "error": str(exc)}
 
 
+# ─── Confluence / JIRA integration (pipeline-Doer parity with chat) ─────
+# These delegate to the same REST clients the chat agent uses
+# (aiforge_core.runtime.tools.{confluence,jira}). They live here as typed
+# wrappers so ADK FunctionTool can advertise them to the pipeline Doer — the
+# chat-side fn(args, cwd) signatures cannot be wrapped directly. The pipeline's
+# before_tool_callback + tool_policy already apply the ASK/approval gate by name.
+
+def confluence_search(query: str = "", cql: str = "", limit: int = 10) -> dict:
+    """Find Confluence pages. Pass ``query`` (full-text) OR ``cql`` (raw CQL)."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_search({"query": query, "cql": cql, "limit": limit}, str(root()))
+
+
+def confluence_read(id: str = "", title: str = "", space: str = "") -> dict:
+    """Read a Confluence page (storage XHTML body) by ``id`` or ``title`` (+``space``)."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_read({"id": id, "title": title, "space": space}, str(root()))
+
+
+def confluence_create(title: str, space: str, body: str, parent_id: str = "") -> dict:
+    """Create a Confluence page. ``body`` is storage XHTML. ``space`` = space key."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_create({"title": title, "space": space, "body": body,
+                                 "parent_id": parent_id}, str(root()))
+
+
+def confluence_update(id: str, body: str, title: str = "") -> dict:
+    """Update a Confluence page body (version auto-incremented). ``id`` required."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_update({"id": id, "body": body, "title": title}, str(root()))
+
+
+def jira_search(query: str = "", jql: str = "", limit: int = 10) -> dict:
+    """Find JIRA issues. Pass ``query`` (full-text) OR ``jql`` (raw JQL)."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_search({"query": query, "jql": jql, "limit": limit}, str(root()))
+
+
+def jira_read(key: str) -> dict:
+    """Read a JIRA issue by ``key`` (e.g. ENG-123). Returns fields + comments."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_read({"key": key}, str(root()))
+
+
+def jira_create(project: str, summary: str, description: str = "",
+                issuetype: str = "Task", labels: str = "") -> dict:
+    """Create a JIRA issue. ``project`` = project key. ``labels`` = comma-separated."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_create({"project": project, "summary": summary,
+                           "description": description, "issuetype": issuetype,
+                           "labels": labels}, str(root()))
+
+
+def jira_update(key: str, summary: str = "", description: str = "",
+                labels: str = "") -> dict:
+    """Update JIRA issue fields by ``key``. ``labels`` = comma-separated."""
+    from aiforge_core.runtime.tools import jira as _j
+    args: dict = {"key": key}
+    if summary:
+        args["summary"] = summary
+    if description:
+        args["description"] = description
+    if labels:
+        args["labels"] = labels
+    return _j.jira_update(args, str(root()))
+
+
+def jira_comment(key: str, body: str) -> dict:
+    """Add a comment to a JIRA issue by ``key``."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_comment({"key": key, "body": body}, str(root()))
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -808,7 +901,10 @@ def adk_function_tools() -> list:
                         git_commit, memory_lookup, memory_block, graphify_lookup,
                         skill_search, learn_skill,
                         workflow_search, learn_workflow, web_search, serve, stop_service,
-                        subtask_update]
+                        subtask_update,
+                        confluence_search, confluence_read, confluence_create,
+                        confluence_update, jira_search, jira_read, jira_create,
+                        jira_update, jira_comment]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -823,6 +919,8 @@ __all__ = [
     "memory_lookup", "memory_block", "graphify_lookup", "skill_search", "learn_skill",
     "workflow_search", "learn_workflow", "web_search", "serve", "stop_service",
     "subtask_update",
+    "confluence_search", "confluence_read", "confluence_create", "confluence_update",
+    "jira_search", "jira_read", "jira_create", "jira_update", "jira_comment",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch",
     "commit", "git_add_commit",

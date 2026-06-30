@@ -366,11 +366,86 @@ export default function WorkflowGraph() {
         <span><span style={{ color: '#8b5cf6' }}>■</span> join / merge</span>
       </div>
 
-      {/* Context panel — what extra knowledge this run pulled in, and HOW each
+      {/* Static guide — always visible. Explains what skills / workflows /
+          rules ARE, when each is selected, how it reaches the run, and which
+          agents are affected, independent of whether a ticket is selected. */}
+      <KnowledgeGuide />
+
+      {/* Context panel — what extra knowledge THIS run pulled in, and HOW each
           was chosen, so the workflow itself explains the skills/rules/workflows
           the agents used. Only shown when a ticket overlay has context. */}
       <ContextPanel ctx={topo.context} ticket={ticket} />
     </>
+  );
+}
+
+function KnowledgeGuide() {
+  const cards: { title: string; color: string; what: string;
+                 when: string; how: string; agents: string }[] = [
+    {
+      title: 'Skills', color: '#3b82f6',
+      what: 'Reusable SKILL.md playbooks — a named procedure the agent can follow (e.g. "add a REST endpoint", "write a migration").',
+      when: 'Selected by relevance to the ticket title + body (match), or marked always-on (always). Authored/extended at runtime via the learn_skill tool.',
+      how: 'The matched skill bodies are prepended to the seed prompt before the agents run.',
+      agents: 'Enhancer, Planner, Doer',
+    },
+    {
+      title: 'Workflows', color: '#14b8a6',
+      what: 'Reusable WORKFLOW.md end-to-end procedures — multi-step recipes spanning several tools/files for a repeatable job.',
+      when: 'Selected by relevance to the ticket title + body (match), or always-on (always). Authored at runtime via the learn_workflow tool.',
+      how: 'The matched workflow bodies are prepended to the seed prompt alongside skills.',
+      agents: 'Enhancer, Planner, Doer',
+    },
+    {
+      title: 'Rules', color: '#f59e0b',
+      what: 'Repo conventions & guardrails (AGENTS.md / CLAUDE.md / .cursorrules / scoped rule files) the agents must respect.',
+      when: 'Matched by the repo path + the ticket scope globs — not by ticket text. The source file is shown so you know where each came from.',
+      how: 'The matching rule text is injected into the run context before the build loop.',
+      agents: 'Enhancer, Planner, Doer',
+    },
+  ];
+  return (
+    <div style={{ marginTop: 16, padding: 12, border: '1px solid var(--border-1)',
+                  borderRadius: 10, background: 'var(--bg-1)' }}>
+      <div style={{ fontWeight: 700, marginBottom: 4 }}>
+        📚 How rules, skills & workflows feed the pipeline
+      </div>
+      <div className="small muted" style={{ marginBottom: 10 }}>
+        These are the knowledge sources injected into a run. They are gathered
+        at prompt-build time and prepended to the seed the agents see — so they
+        shape planning and implementation without you wiring them per ticket.
+        Pick a ticket above to see exactly what a given run pulled in.
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+        {cards.map(c => (
+          <div key={c.title} style={{ flex: '1 1 240px', minWidth: 220,
+                 border: '1px solid var(--border-1)', borderRadius: 8, padding: 10,
+                 background: 'var(--bg-0)' }}>
+            <div style={{ fontWeight: 700, color: c.color, marginBottom: 6 }}>
+              {c.title}
+            </div>
+            <div className="small" style={{ marginBottom: 6, lineHeight: 1.45 }}>
+              {c.what}
+            </div>
+            <div className="small muted" style={{ marginBottom: 4, lineHeight: 1.4 }}>
+              <b>When used:</b> {c.when}
+            </div>
+            <div className="small muted" style={{ marginBottom: 4, lineHeight: 1.4 }}>
+              <b>How injected:</b> {c.how}
+            </div>
+            <div className="small" style={{ lineHeight: 1.4 }}>
+              <b>Agents affected:</b>{' '}
+              <span style={{ color: '#7c3aed', fontWeight: 600 }}>{c.agents}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="small muted" style={{ marginTop: 10, lineHeight: 1.45 }}>
+        🧠 The badge on a node above counts what that stage actually used.
+        Only the <b>Enhancer</b>, <b>Planner</b> and <b>Doer</b> consume this
+        knowledge; gates, context-fan-out and the Validator/Learner do not.
+      </div>
+    </div>
   );
 }
 

@@ -1009,10 +1009,10 @@ function LlmSettingsCard() {
           />
         </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-               title="Force-treat the chat model as vision-capable so attached chat images are sent to it. Auto-detected for known models (gpt-4o, gemini, qwen-vl…); enable here for a self-hosted multimodal model.">
+               title="Fallback only — force-treat the active CHAT model as vision-capable when it isn't auto-detected. Per-agent model vision is set on each model in the Models list above; leave this off unless your chat model is multimodal but unrecognised.">
           <input type="checkbox" checked={vis} disabled={busy || !loaded}
                  onChange={e => setVis(e.target.checked)} />
-          <span className="small muted">Model supports vision (images)</span>
+          <span className="small muted">Chat model: force vision (fallback)</span>
         </label>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                title="Cave mode: send the agents the leanest useful context — smaller repo map, skip optional skills/workflows/@-mentions, fewer memory hits, condense sooner. Cheaper + faster on a small model; the agent can still grep/read on demand.">

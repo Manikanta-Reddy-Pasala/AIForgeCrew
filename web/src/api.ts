@@ -416,6 +416,7 @@ export const chatApi = {
   deleteModel: api.deleteModel,
   applyModel: api.applyModel,
   syncModels: api.syncModels,
+  providersTest: api.providersTest,
 
   chatModels: () => j<ChatModelsResponse>('/chat/models'),
 
