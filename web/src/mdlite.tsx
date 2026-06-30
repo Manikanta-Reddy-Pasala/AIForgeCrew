@@ -18,8 +18,9 @@ import React from 'react';
 // Returns the href if safe, or '' to drop it.
 function safeHref(url: string): string {
   const u = (url || '').trim();
+  if (u.startsWith('//')) return '';                       // protocol-relative → open-redirect, drop
   if (/^(https?:|mailto:|tel:)/i.test(u)) return u;       // explicit safe schemes
-  if (/^[/#?]/.test(u)) return u;                          // relative / anchor
+  if (/^[/#?]/.test(u)) return u;                          // relative path / anchor / query
   if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) return u;           // no scheme → relative
   return '';                                               // any other scheme → drop
 }

@@ -33,8 +33,14 @@ from ._trace import emit
 _STDOUT_CAP_BYTES = 8000
 _DEFAULT_TIMEOUT_S = 90
 _POLL_INTERVAL_S = 0.1
-_PROMPT_PS1 = r"PS1='__AIFORGE_PROMPT_$?__\n'"
-_SENTINEL_RE = re.compile(r"__AIFORGE_PROMPT_(\d+)__")
+# Per-boot random nonce in the prompt sentinel so a command whose OUTPUT happens
+# to contain "__AIFORGE_PROMPT_N__" can't be mis-parsed as a shell prompt
+# (wrong returncode / truncated stdout). The nonce is unpredictable, so program
+# output can't accidentally forge it.
+import secrets as _secrets
+_NONCE = _secrets.token_hex(4)
+_PROMPT_PS1 = rf"PS1='__AIFORGE_PROMPT_{_NONCE}_$?__\n'"
+_SENTINEL_RE = re.compile(rf"__AIFORGE_PROMPT_{_NONCE}_(\d+)__")
 
 _active_sessions: dict[str, str] = {}
 
@@ -127,7 +133,21 @@ def _drain_until_prompt(
     """
     deadline = time.monotonic() + timeout
     last_seen = ""
+    try:
+        from aiforge_core.runtime import chat_cancel as _cc
+        _sid = _cc.active()
+    except Exception:  # noqa: BLE001
+        _cc, _sid = None, None
     while time.monotonic() < deadline:
+        # Stop button: interrupt the running tmux command (the tmux path
+        # previously ignored cancellation, so Stop did nothing until timeout).
+        if _cc is not None and _sid is not None and _cc.is_cancelled(_sid):
+            try:
+                subprocess.run(["tmux", "send-keys", "-t", name, "C-c"],
+                               capture_output=True)
+            except Exception:  # noqa: BLE001
+                pass
+            return last_seen, -130, False   # SIGINT-style: cancelled, non-zero rc
         pane = _capture(name)
         matches = list(_SENTINEL_RE.finditer(pane))
         if expect_initial_only and len(matches) >= 1:
