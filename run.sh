@@ -118,6 +118,28 @@ if [[ $DOCKER -eq 1 ]]; then
   else
     echo "==> docker compose plugin not found." >&2; exit 1
   fi
+  # Many hosts run the Docker daemon as root and the invoking user is NOT in
+  # the 'docker' group → the socket is permission-denied and a bare
+  # `docker compose` silently fails the deploy. Auto-fall back to sudo when
+  # the daemon isn't reachable directly but passwordless sudo can reach it.
+  # Override with AIFORGE_DOCKER_SUDO=1 (force) / =0 (never).
+  case "${AIFORGE_DOCKER_SUDO:-auto}" in
+    1|true|yes|on)  DC=(sudo "${DC[@]}"); echo "==> using sudo for docker (forced)";;
+    0|false|no|off) : ;;
+    *)
+      if ! docker info >/dev/null 2>&1; then
+        if command -v sudo >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then
+          DC=(sudo "${DC[@]}")
+          echo "==> docker daemon needs elevation (user not in 'docker' group) — using sudo"
+        else
+          echo "==> cannot reach the Docker daemon. Either add your user to the" >&2
+          echo "    'docker' group:  sudo usermod -aG docker \"\$USER\"  (then re-login)" >&2
+          echo "    or enable passwordless sudo for docker, or set AIFORGE_DOCKER_SUDO=1." >&2
+          exit 1
+        fi
+      fi
+      ;;
+  esac
   echo "==> stopping any running AIForge containers"
   "${DC[@]}" down --remove-orphans || true
   if [[ $NO_BUILD -eq 1 ]]; then

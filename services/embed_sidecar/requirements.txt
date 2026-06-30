@@ -2,5 +2,10 @@ fastapi>=0.115,<1.0
 uvicorn[standard]>=0.32,<1.0
 onnxruntime>=1.19
 transformers>=4.46
+# bge-m3 ships a SentencePiece (XLM-RoBERTa) tokenizer — transformers needs
+# sentencepiece to build the fast tokenizer, else the sidecar crash-loops with
+# "Couldn't instantiate the backend tokenizer … need sentencepiece or tiktoken".
+sentencepiece>=0.2
+tiktoken>=0.7
 numpy>=1.26,<3.0
 huggingface-hub>=0.23
