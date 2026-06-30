@@ -407,6 +407,16 @@ export interface ChatMsg {
 export const chatApi = {
   sessions: () => j<ChatSession[]>('/chat/sessions'),
 
+  // ── Model registry — Settings page calls these via chatApi (the methods
+  // live on `api`; delegate so `chatApi.addModel`/`syncModels`/etc. resolve
+  // instead of throwing "$.addModel is not a function").
+  models: api.models,
+  addModel: api.addModel,
+  updateModel: api.updateModel,
+  deleteModel: api.deleteModel,
+  applyModel: api.applyModel,
+  syncModels: api.syncModels,
+
   chatModels: () => j<ChatModelsResponse>('/chat/models'),
 
   setChatModel: (model: string, provider?: string) =>
@@ -469,12 +479,14 @@ export const chatApi = {
     j<{ checkpoints: Array<{ sha: string; label: string; when: string }> }>(
       `/chat/sessions/${id}/checkpoints`),
 
-  checkpointRestore: (id: number, sha: string) =>
-    j<{ ok: boolean; restored?: string; left_in_place?: string[]; error?: string }>(
+  checkpointRestore: (id: number, sha: string,
+                      opts?: { paths?: string[]; delete_orphans?: boolean }) =>
+    j<{ ok: boolean; restored?: string; left_in_place?: string[];
+        deleted?: string[]; error?: string }>(
       `/chat/sessions/${id}/checkpoints/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sha }),
+        body: JSON.stringify({ sha, ...(opts || {}) }),
       }),
 };
 
@@ -488,6 +500,38 @@ export type JiraCfg = ConfluenceCfg;
 export type GitlabCfg = {
   base_url: string; project: string; oauth: boolean; insecure_tls: boolean;
   has_token: boolean; env_managed: boolean;
+};
+
+export type McpCatalogEntry = {
+  id: string; name: string; description: string; transport: string;
+  url: string; homepage?: string; needs_api_key?: boolean; category?: string;
+  installable: boolean;
+};
+export type McpServer = {
+  id: string; name: string; url: string; transport: string; enabled: boolean;
+  catalog_id: string; description: string; api_key_set: boolean;
+};
+
+export const mcpApi = {
+  catalog: () => j<{ catalog: McpCatalogEntry[] }>('/mcp/catalog'),
+  servers: () => j<{ servers: McpServer[] }>('/mcp/servers'),
+  install: (body: { catalog_id: string; url?: string; name?: string; api_key?: string }) =>
+    j<McpServer>('/mcp/servers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  update: (id: string, body: Partial<{ name: string; url: string; description: string; enabled: boolean; api_key: string }>) =>
+    j<McpServer>(`/mcp/servers/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  remove: (id: string) =>
+    fetch(`${BASE}/mcp/servers/${id}`, { method: 'DELETE' }).then(r => {
+      if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
+    }),
+  test: (id: string) =>
+    j<{ ok: boolean; endpoint?: string; tools?: { name: string; description: string }[]; error?: string }>(
+      `/mcp/servers/${id}/test`, { method: 'POST' }),
 };
 
 export const integrationsApi = {

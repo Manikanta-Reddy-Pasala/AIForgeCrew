@@ -113,7 +113,6 @@ function fmtElapsed(sec: number): string {
 const LS_SESSION_KEY = 'aiforge.chat.activeSessionId';
 const LS_MODEL_KEY = 'aiforge.chat.model';
 const LS_MODE_KEY = 'aiforge.chat.flowmode';
-const LS_REVIEW_KEY = 'aiforge.chat.reviewEdits';
 
 type ChatMode = 'simple' | 'plan' | 'team';
 
@@ -412,11 +411,11 @@ export default function Chat() {
     } catch { return 'simple'; }
   });
 
-  // Pre-apply "Review edits" mode (Gap D): when on, every file-mutating tool
-  // call is held for Approve/Reject (with a diff) before it lands.
-  const [reviewEdits, setReviewEdits] = useState<boolean>(() => {
-    try { return localStorage.getItem(LS_REVIEW_KEY) === '1'; } catch { return false; }
-  });
+  // Pre-apply "Review edits" mode (Gap D) is FORCED ON for every chat window —
+  // no UI toggle. Every file-mutating tool call is held for Approve/Reject
+  // (with a diff) before it lands in simple/plan mode. (Team/parallel runs
+  // can't hold edits; the server surfaces a one-time notice there.)
+  const reviewEdits = true;
   // Cave mode (global lean-context flag) — toggled from the header ⋯ menu.
   const [caveMode, setCaveMode] = useState(false);
   useEffect(() => { api.llmSettings().then(s => setCaveMode(!!s.cave_mode)).catch(() => {}); }, []);
@@ -432,6 +431,9 @@ export default function Chat() {
   // event carrying the approved spec the user can one-click execute as a team run.
   const [planReady, setPlanReady] = useState<{ spec: string; msgId?: number } | null>(null);
   const [checkpoints, setCheckpoints] = useState<Array<{ sha: string; label: string; when: string }> | null>(null);
+  // Edit-and-resend: the user-message id whose turn we're replacing (history is
+  // truncated there + workspace restored to that turn's checkpoint on send).
+  const [editingFrom, setEditingFrom] = useState<number | null>(null);
 
   // Model selector
   const [modelOptions, setModelOptions] = useState<ChatModelEntry[]>([]);
@@ -541,13 +543,20 @@ export default function Chat() {
     }
   }
 
-  async function restoreCheckpoint(sha: string) {
+  async function restoreCheckpoint(sha: string, deleteOrphans = false) {
     if (activeId === null) return;
-    if (!window.confirm('Restore the workspace to this checkpoint? Tracked files revert to the snapshot; files created after it are left in place.')) return;
+    const msg = deleteOrphans
+      ? 'FULL restore to this checkpoint? The tree is made to EXACTLY match the snapshot — files created after it are DELETED. This cannot be undone.'
+      : 'Restore the workspace to this checkpoint? Tracked files revert to the snapshot; files created after it are left in place.';
+    if (!window.confirm(msg)) return;
     try {
-      const res = await chatApi.checkpointRestore(activeId, sha);
+      const res = await chatApi.checkpointRestore(activeId, sha, { delete_orphans: deleteOrphans });
       if (res.ok) {
-        toast.success(`Restored${res.left_in_place && res.left_in_place.length ? ` (${res.left_in_place.length} newer file(s) left in place)` : ''}`);
+        const nLeft = res.left_in_place?.length || 0;
+        const nDel = res.deleted?.length || 0;
+        toast.success('Restored'
+          + (nDel ? ` (${nDel} newer file(s) deleted)` : '')
+          + (nLeft ? ` (${nLeft} newer file(s) left in place)` : ''));
         setCheckpoints(null);
       } else {
         toast.error(`Restore failed: ${res.error || 'unknown'}`);
@@ -677,11 +686,6 @@ export default function Chat() {
   useEffect(() => {
     try { localStorage.setItem(LS_MODE_KEY, chatMode); } catch { /* ignore */ }
   }, [chatMode]);
-
-  // Persist the "Review edits" toggle
-  useEffect(() => {
-    try { localStorage.setItem(LS_REVIEW_KEY, reviewEdits ? '1' : '0'); } catch { /* ignore */ }
-  }, [reviewEdits]);
 
   // Auto-scroll on new messages / live turn updates
   useEffect(() => {
@@ -1008,6 +1012,17 @@ export default function Chat() {
     setPlanReady(null);
     if (overrideContent === undefined) setInput('');
     const runMode: ChatMode = overrideMode ?? chatMode;
+    // Edit-and-resend: consume the pending "editing from" marker for this send.
+    const editFrom = editingFrom;
+    setEditingFrom(null);
+    // When replacing an earlier turn, drop the now-stale messages locally so the
+    // optimistic append doesn't show duplicates before the server truncation.
+    if (editFrom != null) {
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.id === editFrom);
+        return idx >= 0 ? prev.slice(0, idx) : prev;
+      });
+    }
 
     // Ensure we have a session
     let sessionId = activeId;
@@ -1048,7 +1063,8 @@ export default function Chat() {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: q, mode: runMode, review_edits: reviewEdits }),
+        body: JSON.stringify({ content: q, mode: runMode, review_edits: reviewEdits,
+                               ...(editFrom != null ? { edit_from_message_id: editFrom } : {}) }),
         signal: ctrl.signal,
       });
 
@@ -1153,7 +1169,15 @@ export default function Chat() {
   // M2: pull the last user message back into the composer to edit + resend.
   function editLastUser() {
     if (busy || !lastUserMsg?.content) return;
-    setInput(lastUserMsg.content);
+    editUserMessage(lastUserMsg);
+  }
+  // Edit-and-resend ANY earlier user turn: pull it into the composer and mark
+  // the turn so sending truncates history there (server also restores the
+  // workspace to that turn's checkpoint) before re-running.
+  function editUserMessage(msg: ChatMsg) {
+    if (busy || !msg?.content || msg.role !== 'user') return;
+    setInput(msg.content);
+    setEditingFrom(msg.id > 0 ? msg.id : null);
     setTimeout(() => textareaRef.current?.focus(), 30);
   }
   // M2: copy with uniform feedback (clipboard may be absent in insecure HTTP).
@@ -1430,14 +1454,17 @@ export default function Chat() {
                   borderRadius: 8, padding: 6, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
                   display: 'flex', flexDirection: 'column', gap: 2,
                 }}>
-                  {/* Review edits — only meaningful in simple/plan */}
-                  <label className="chat-menu-item" title="Pause before every file write and show a diff to Approve/Reject."
-                         style={menuItem}>
-                    <input type="checkbox" checked={reviewEdits && chatMode !== 'team'}
-                           onChange={e => setReviewEdits(e.target.checked)}
-                           disabled={busy || chatMode === 'team'} />
+                  {/* Review edits is ALWAYS ON for simple/plan (no toggle) — every
+                      file change is held for Approve/Reject before it lands. Team
+                      mode runs the full pipeline and doesn't hold edits. */}
+                  <div className="chat-menu-item" style={{ ...menuItem, opacity: 0.85, cursor: 'default' }}
+                       title="Every file change is held for Approve/Reject before it lands (simple/plan mode). Always on. Team mode runs the full pipeline and does not hold edits.">
+                    <span aria-hidden>✓</span>
                     Review edits before they land
-                  </label>
+                    <span className="muted" style={{ fontSize: 11 }}>
+                      · {chatMode === 'team' ? 'simple/plan only' : 'always on'}
+                    </span>
+                  </div>
                   {/* Reload the chat model at a chosen context window. */}
                   {chatMode !== 'team' && selectedModel && (
                     <div className="chat-menu-item" style={{ ...menuItem, justifyContent: 'space-between' }}
@@ -1545,12 +1572,17 @@ export default function Chat() {
                     ) : (
                       <div className="bubble-body">
                         <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
-                        {/* M2: edit/copy the last user message */}
-                        {msg === lastUserMsg && !busy && (
+                        {/* M2: edit/copy. Edit-and-resend works on ANY user turn
+                            (not just the last) — sending replaces it + everything
+                            after, restoring the workspace to that turn's checkpoint. */}
+                        {!busy && (
                           <div className="xs muted" style={{ marginTop: 4, display: 'flex', gap: 8 }}>
-                            <button className="ghost xs" title="Edit this message in the composer"
+                            <button className="ghost xs"
+                                    title={msg === lastUserMsg
+                                      ? 'Edit this message in the composer'
+                                      : 'Edit & resend from here — replaces this and all later turns'}
                                     style={{ padding: '0 4px', cursor: 'pointer' }}
-                                    onClick={editLastUser}>✎ Edit</button>
+                                    onClick={() => editUserMessage(msg)}>✎ Edit</button>
                             <button className="ghost xs" title="Copy"
                                     style={{ padding: '0 4px', cursor: 'pointer' }}
                                     onClick={() => copyText(msg.content)}>⧉ Copy</button>
@@ -1640,6 +1672,17 @@ export default function Chat() {
                         }} />
 
             <div className="chat-composer">
+              {editingFrom != null && (
+                <div className="xs" style={{
+                  marginBottom: 6, padding: '4px 8px', borderRadius: 6,
+                  background: 'var(--bg-1)', border: '1px solid var(--warn,#f59e0b)',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                }}>
+                  <span>✎ Editing an earlier message — sending replaces it and every later turn, and restores the workspace to that turn.</span>
+                  <button className="ghost xs" style={{ cursor: 'pointer' }}
+                          onClick={() => { setEditingFrom(null); setInput(''); }}>cancel</button>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 6 }}>
                 <textarea
                   ref={textareaRef}
@@ -1788,7 +1831,10 @@ export default function Chat() {
                         <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</div>
                         <div className="muted xs" style={{ fontFamily: 'var(--font-mono)' }}>{c.when} · {c.sha.slice(0, 8)}</div>
                       </div>
-                      <button className="ghost sm" onClick={() => restoreCheckpoint(c.sha)} title="Restore the workspace to this snapshot">↶ Restore</button>
+                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        <button className="ghost sm" onClick={() => restoreCheckpoint(c.sha)} title="Revert tracked files to this snapshot; keep files created after it">↶ Restore</button>
+                        <button className="ghost sm danger" onClick={() => restoreCheckpoint(c.sha, true)} title="Full restore: make the tree exactly match this snapshot — deletes files created after it">⤓ Full</button>
+                      </div>
                     </div>
                   ))}
                 </div>

@@ -139,11 +139,24 @@ def list_checkpoints(cwd: str) -> list[dict]:
     return list(reversed(_load(cwd)))
 
 
-def restore(cwd: str, sha: str) -> dict:
-    """Restore tracked snapshot paths to their checkpoint content.
+def restore(cwd: str, sha: str, *, paths: list[str] | None = None,
+            delete_orphans: bool = False) -> dict:
+    """Restore snapshot paths to their checkpoint content.
 
-    Files created AFTER the checkpoint are left untouched (never
-    auto-deleted) and reported in ``left_in_place``."""
+    Granularity (Cline-parity):
+      - ``paths=None`` (default): restore the whole tracked snapshot.
+      - ``paths=[...]``: restore ONLY those paths (a files-only / subset
+        restore) — everything else in the worktree is left as-is.
+
+    Orphans (files created AFTER the checkpoint, i.e. not in the snapshot
+    tree):
+      - ``delete_orphans=False`` (default): left untouched and reported in
+        ``left_in_place`` — the conservative behaviour.
+      - ``delete_orphans=True``: a full-state restore — orphaned files are
+        also deleted so the tree exactly matches the snapshot. When
+        ``paths`` is given, only orphans under those paths are deleted.
+
+    Returns ``{ok, restored, left_in_place, deleted}``."""
     if not _is_repo(cwd):
         return {"ok": False, "error": "not_a_git_repo"}
     if not sha or _git(cwd, "cat-file", "-e", sha).returncode != 0:
@@ -158,16 +171,37 @@ def restore(cwd: str, sha: str) -> dict:
     snap = {p for p in _git(cwd, "ls-tree", "-r", "--name-only", "-z", sha)
             .stdout.split("\0") if p}
     left = sorted(now - snap)
+
+    # Restrict orphan handling to the requested subset when paths are given.
+    def _under(p: str) -> bool:
+        if not paths:
+            return True
+        return any(p == t or p.startswith(t.rstrip("/") + "/") for t in paths)
+
     # Worktree-only restore — leave the real index untouched (``git checkout
     # <sha> -- .`` would also rewrite the staging area). ``git restore
     # --worktree`` is the non-intrusive form.
-    co = _git(cwd, "restore", "--source", sha, "--worktree", "--", ".")
+    targets = list(paths) if paths else ["."]
+    co = _git(cwd, "restore", "--source", sha, "--worktree", "--", *targets)
     if co.returncode != 0:
         # Fallback for older git without ``restore``.
-        co = _git(cwd, "checkout", sha, "--", ".")
+        co = _git(cwd, "checkout", sha, "--", *targets)
         if co.returncode != 0:
             return {"ok": False, "error": f"restore failed: {co.stderr[:200]}"}
-    return {"ok": True, "restored": sha, "left_in_place": left}
+
+    deleted: list[str] = []
+    if delete_orphans:
+        for rel in left:
+            if not _under(rel):
+                continue
+            try:
+                os.unlink(os.path.join(cwd, rel))
+                deleted.append(rel)
+            except OSError:
+                pass
+        left = [p for p in left if p not in set(deleted)]
+    return {"ok": True, "restored": sha, "left_in_place": left,
+            "deleted": deleted}
 
 
 __all__ = ["snapshot", "list_checkpoints", "restore"]

@@ -31,12 +31,13 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE TABLE IF NOT EXISTS chat_messages (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    role        TEXT NOT NULL,
-    content     TEXT NOT NULL DEFAULT '',
-    steps       TEXT NOT NULL DEFAULT '[]',
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id     INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role           TEXT NOT NULL,
+    content        TEXT NOT NULL DEFAULT '',
+    steps          TEXT NOT NULL DEFAULT '[]',
+    checkpoint_sha TEXT,
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS chat_messages_session ON chat_messages(session_id, id);
 CREATE TABLE IF NOT EXISTS chat_media (
@@ -79,6 +80,10 @@ def _conn() -> Iterator[sqlite3.Connection]:
         if "role" not in cols:
             c.execute("ALTER TABLE chat_sessions ADD COLUMN role TEXT "
                       "NOT NULL DEFAULT 'doer'")
+        # Migrate pre-checkpoint message tables (edit-resend / restore-to-turn).
+        mcols = {r[1] for r in c.execute("PRAGMA table_info(chat_messages)")}
+        if "checkpoint_sha" not in mcols:
+            c.execute("ALTER TABLE chat_messages ADD COLUMN checkpoint_sha TEXT")
         yield c
         c.commit()
     finally:
@@ -156,8 +161,9 @@ def get_session(session_id: int) -> "dict | None":
 def get_messages(session_id: int) -> list[dict]:
     with _conn() as c:
         rows = c.execute(
-            "SELECT id, role, content, steps, created_at FROM chat_messages "
-            "WHERE session_id=? ORDER BY id ASC", (session_id,),
+            "SELECT id, role, content, steps, checkpoint_sha, created_at "
+            "FROM chat_messages WHERE session_id=? ORDER BY id ASC",
+            (session_id,),
         ).fetchall()
     out = []
     for r in rows:
@@ -165,8 +171,12 @@ def get_messages(session_id: int) -> list[dict]:
             steps = json.loads(r["steps"] or "[]")
         except (ValueError, TypeError):
             steps = []
+        keys = r.keys()
         out.append({"id": r["id"], "role": r["role"], "content": r["content"],
-                    "steps": steps, "created_at": _iso(r["created_at"])})
+                    "steps": steps,
+                    "checkpoint_sha": (r["checkpoint_sha"]
+                                       if "checkpoint_sha" in keys else None),
+                    "created_at": _iso(r["created_at"])})
     return out
 
 
@@ -181,6 +191,38 @@ def add_message(session_id: int, role: str, content: str,
         c.execute(f"UPDATE chat_sessions SET updated_at={_NOW} WHERE id=?",
                   (session_id,))
         return int(cur.lastrowid)
+
+
+def set_message_checkpoint(message_id: int, sha: str) -> None:
+    """Stamp the workspace checkpoint sha taken just before this message — so
+    edit-resend can restore the tree to exactly that turn's state."""
+    with _conn() as c:
+        c.execute("UPDATE chat_messages SET checkpoint_sha=? WHERE id=?",
+                  (sha or None, message_id))
+
+
+def delete_messages_from(session_id: int, message_id: int) -> int:
+    """Delete this message and every message after it in the session (by the
+    stable autoincrement id ordering). Returns the number of rows removed.
+    Used by edit-and-resend: truncate history at the edited turn before re-running."""
+    with _LOCK, _conn() as c:
+        cur = c.execute(
+            "DELETE FROM chat_messages WHERE session_id=? AND id>=?",
+            (session_id, message_id),
+        )
+        c.execute(f"UPDATE chat_sessions SET updated_at={_NOW} WHERE id=?",
+                  (session_id,))
+        return cur.rowcount
+
+
+def message_checkpoint(session_id: int, message_id: int) -> "str | None":
+    """The checkpoint sha stamped on a given message, or None."""
+    with _conn() as c:
+        r = c.execute(
+            "SELECT checkpoint_sha FROM chat_messages WHERE id=? AND session_id=?",
+            (message_id, session_id),
+        ).fetchone()
+    return (r["checkpoint_sha"] if r else None) or None
 
 
 def rename_session(session_id: int, title: str) -> "dict | None":

@@ -759,6 +759,19 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         # widens the globs. Injected via {rules_md?} in prompts.
         if rules_md:
             initial_state["rules_md"] = rules_md
+            # Workflow-transparency: record which repo rules applied to this
+            # ticket's scope so the Workflow UI can surface them. Best-effort.
+            try:
+                from aiforge_core.runtime import observability as _obs
+                _rule_names = repo_rules.matched_names(
+                    os.environ.get("AIFORGE_REPO_ROOT", ""), _scope_seed)
+                _tid = getattr(ticket, "id", None)
+                if _tid is not None and _rule_names:
+                    _obs.emit_context_injected(
+                        ticket_id=_tid, agent_role="pipeline",
+                        rules=_rule_names)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("context_injected.emit (rules) failed: %s", exc)
         # Pre-flight memory recall — seeded as STATE, not stitched into
         # the seed prompt: ONE {memory_brief_md?} instruction copy per
         # consuming agent (enhancer/planner/doer/verify_risk) instead
@@ -1006,12 +1019,15 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # (SKILL.md playbooks, incl. ones the Doer authored via learn_skill) +
     # always-on repo skills, keyed on ticket title + body. Folds in legacy
     # microagents. Best-effort: parse failures swallowed.
+    hay = f"{ticket.title or ''} {ticket.body or ''}"
+    _used_skills: list[dict] = []
+    _used_workflows: list[dict] = []
     try:
         from aiforge_core.runtime import skills as _skills
-        hay = f"{ticket.title or ''} {ticket.body or ''}"
         sk_block = _skills.auto_context(hay, None)
         if sk_block:
             out = sk_block + "\n\n" + out
+            _used_skills = _skills.selected_names(hay, None)
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.debug("skills.inject failed: %s", exc)
 
@@ -1019,12 +1035,24 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # see relevant reusable end-to-end procedures (parity with the chat agent).
     try:
         from aiforge_core.runtime import workflows as _workflows
-        wf_block = _workflows.auto_context(
-            f"{ticket.title or ''} {ticket.body or ''}", None)
+        wf_block = _workflows.auto_context(hay, None)
         if wf_block:
             out = wf_block + "\n\n" + out
+            _used_workflows = _workflows.selected_names(hay, None)
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.debug("workflows.inject failed: %s", exc)
+
+    # Workflow-transparency: record which skills/workflows this run pulled in,
+    # so the Workflow UI can show it on the graph. Best-effort, never blocks.
+    try:
+        from aiforge_core.runtime import observability as _obs
+        _tid = getattr(ticket, "id", None)
+        if _tid is not None and (_used_skills or _used_workflows):
+            _obs.emit_context_injected(
+                ticket_id=_tid, agent_role="pipeline",
+                skills=_used_skills, workflows=_used_workflows)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.debug("context_injected.emit (skills/workflows) failed: %s", exc)
 
     # Vision attach hint (sub #6). When the ticket has image attachments
     # AND the active Doer model supports vision, list them with a flag so
