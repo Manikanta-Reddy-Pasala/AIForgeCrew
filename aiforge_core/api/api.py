@@ -2850,9 +2850,28 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     cwd = session.get("cwd") or _default_cwd()
     team = body.mode == "team"
     from aiforge_core.runtime import parallel_subtasks as _psub
-    _parallel_team = team and _psub.enabled()
     agent_mode = "plan" if body.mode == "plan" else "act"
     prompt = body.content.strip()
+
+    # Per-turn auto-route: once a team session has produced output, a small
+    # follow-up ("rename that", "add a test") shouldn't re-run the whole heavy
+    # pipeline (worktree + planner + verifier + slow Doer loop = minutes). A
+    # cheap classify downgrades simple follow-ups to the fast single-agent
+    # path. First team turn + genuinely complex follow-ups keep the pipeline.
+    # Safe by default: any classifier failure leaves team=True. Disable with
+    # AIFORGE_TEAM_AUTO_ROUTE=0.
+    _auto_downgraded = False
+    if team:
+        try:
+            from aiforge_core.runtime import turn_router as _tr
+            if _tr.should_downgrade_team(prompt, history, cwd):
+                team = False
+                _auto_downgraded = True
+                _af_log.info("chat: team turn auto-downgraded to simple "
+                             "(small follow-up) session=%s", session_id)
+        except Exception as _rexc:  # noqa: BLE001 — routing must never block a turn
+            _af_log.debug("turn_router skipped: %s", _rexc)
+    _parallel_team = team and _psub.enabled()
 
     # Upgrade a freshly-named session to a concise MODEL-generated title,
     # CONCURRENTLY with the turn (a fast ~20-token call) so it neither blocks
@@ -3025,6 +3044,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                                             history=history)
             return
         # SIMPLE and PLAN modes — the Enhancer is MANDATORY here.
+        if _auto_downgraded:
+            yield {"type": "thought", "role": "router",
+                   "text": "Small follow-up — handling directly (skipped the "
+                           "full pipeline for speed)."}
         yield {"type": "thought", "role": "enhancer",
                "text": "Enhancing request + gathering context…"}
         # Fold `history` INTO the spec (restores referent resolution: a
