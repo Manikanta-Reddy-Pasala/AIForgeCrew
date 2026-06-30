@@ -494,6 +494,31 @@ def _build_context_plugins() -> list:
     max_contents = int(os.environ.get("AIFORGE_CONTEXT_MAX_CONTENTS", "60"))
     strategy = os.environ.get("AIFORGE_CONDENSER_STRATEGY", "").strip()
 
+    # Token-aware budget (item-3 / 120B fix). Count-only trimming let a
+    # single huge tool result (e.g. file_read of a 4K-line file) blow the
+    # window regardless of how few contents we keep. Two guards:
+    #   1. per-content cap — truncate any one content over MAX_PART_CHARS
+    #      so one giant result can't dominate the prompt.
+    #   2. global token budget — after the count trim, drop more from the
+    #      head until the estimated token total is under the budget, which
+    #      defaults to ~55% of the role's context window.
+    def _int_env(key: str, default: int) -> int:
+        try:
+            return int(os.environ.get(key, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        from aiforge_core.config import runtime_settings as _rs
+        _ctx_win = int(_rs.get("context_window") or 131072)
+    except Exception:  # noqa: BLE001
+        _ctx_win = 131072
+    # ~4 chars/token; budget in tokens then converted to a char ceiling.
+    max_tokens = _int_env("AIFORGE_CONTEXT_MAX_TOKENS", int(_ctx_win * 0.55))
+    max_chars = max(4000, max_tokens * 4)
+    max_part_chars = _int_env("AIFORGE_CONTEXT_MAX_PART_CHARS", 24000)
+    min_keep = max(4, _int_env("AIFORGE_CONTEXT_MIN_KEEP", 8))
+
     def _text_of(c) -> str:
         try:
             return " ".join(p.text for p in (c.parts or [])
@@ -517,21 +542,93 @@ def _build_context_plugins() -> list:
             out.append(c)
         return out
 
-    def _tail_trim(contents):
-        """Dedupe seed echoes, then keep seed user message + last
-        ``max_contents`` contents."""
-        contents = _dedupe_adjacent_user(contents)
-        if max_contents <= 0 or len(contents) <= max_contents:
-            return contents
-        split = len(contents) - max_contents
+    def _content_chars(c) -> int:
+        """Estimate a content's character weight — text parts plus a rough
+        size for function_response payloads (the big tool results)."""
+        total = 0
+        for p in (getattr(c, "parts", None) or []):
+            t = getattr(p, "text", None)
+            if t:
+                total += len(t)
+                continue
+            fr = getattr(p, "function_response", None)
+            if fr is not None:
+                try:
+                    total += len(str(getattr(fr, "response", "") or ""))
+                except Exception:
+                    pass
+        return total
+
+    def _cap_content(c):
+        """Return ``c`` if within the per-content cap, else a rebuilt copy
+        with oversized text / function_response payloads truncated (head +
+        tail kept, middle elided). Falls back to the original on any error
+        so a structure we don't understand is never dropped."""
+        if max_part_chars <= 0 or _content_chars(c) <= max_part_chars:
+            return c
         try:
-            split = _adjust_split_index_to_avoid_orphaned_function_responses(
-                contents, split)
-        except Exception:
-            pass
-        head_seed = [c for c in contents[:split]
-                     if _is_human_user_content(c)][:1]
-        return head_seed + list(contents[split:])
+            from google.genai import types as gtypes
+            half = max(1000, max_part_chars // 2)
+
+            def _shorten(s: str) -> str:
+                if len(s) <= max_part_chars:
+                    return s
+                return (s[:half] + f"\n…[truncated {len(s) - max_part_chars} "
+                        f"chars to fit context]…\n" + s[-half:])
+
+            new_parts = []
+            for p in (getattr(c, "parts", None) or []):
+                t = getattr(p, "text", None)
+                if t and len(t) > max_part_chars:
+                    new_parts.append(gtypes.Part.from_text(text=_shorten(t)))
+                    continue
+                fr = getattr(p, "function_response", None)
+                if fr is not None:
+                    resp = getattr(fr, "response", None)
+                    sresp = str(resp or "")
+                    if len(sresp) > max_part_chars and isinstance(resp, dict):
+                        trimmed = {k: (_shorten(v) if isinstance(v, str)
+                                       and len(v) > half else v)
+                                   for k, v in resp.items()}
+                        new_parts.append(gtypes.Part.from_function_response(
+                            name=getattr(fr, "name", "") or "",
+                            response=trimmed))
+                        continue
+                new_parts.append(p)
+            return gtypes.Content(role=getattr(c, "role", "user"),
+                                  parts=new_parts)
+        except Exception:  # noqa: BLE001
+            return c
+
+    def _tail_trim(contents):
+        """Dedupe seed echoes, cap oversized contents, then keep the seed
+        user message + the most recent contents under BOTH the count cap
+        and the token budget (item-3: protect slow 120B models)."""
+        contents = _dedupe_adjacent_user(contents)
+        contents = [_cap_content(c) for c in contents]
+
+        def _window(n):
+            if n <= 0 or len(contents) <= n:
+                return list(contents)
+            split = len(contents) - n
+            try:
+                split = _adjust_split_index_to_avoid_orphaned_function_responses(
+                    contents, split)
+            except Exception:
+                pass
+            head_seed = [c for c in contents[:split]
+                         if _is_human_user_content(c)][:1]
+            return head_seed + list(contents[split:])
+
+        keep_n = max_contents if max_contents > 0 else len(contents)
+        out = _window(keep_n)
+        # Token-budget pass: if the kept window is still too heavy, shrink
+        # the tail window until under the char ceiling (or we hit min_keep).
+        while max_chars > 0 and keep_n > min_keep \
+                and sum(_content_chars(c) for c in out) > max_chars:
+            keep_n -= 4
+            out = _window(keep_n)
+        return out
 
     if strategy:
         # Sub #4: optional aggressive condenser layered over the

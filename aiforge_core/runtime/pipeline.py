@@ -346,6 +346,19 @@ def build_pipeline(*, skip_researcher: bool = False,
     from .learner_persist import make_learner_after_callback
     _append_after(learner, make_learner_after_callback())
 
+    # Executor context cleansing — the Doer/Refiner run in chat mode, which
+    # replays the planner/enhancer/researcher prologue into them every turn.
+    # That hand-off already reaches them via their templated prompt blocks
+    # ({plan_md?}/{context_brief_md?}/{rules_md?}/…), so strip the redundant
+    # prologue from the replayed history and keep only the seed + their own
+    # recent loop work. Big win for slow 120B models. Flag-guarded.
+    try:
+        from .executor_focus import make_executor_focus_callback
+        _append_before_model(doer, make_executor_focus_callback("doer"))
+        _append_before_model(refiner, make_executor_focus_callback("refiner"))
+    except Exception:
+        pass  # focus is best-effort; never block pipeline boot
+
     # Auto-consolidation after-callback on the Learner — mines the finished
     # run's trajectory for durable facts (extract → decide ADD/UPDATE/DELETE/
     # NOOP vs existing → reflect), complementing the explicit facts_json
@@ -499,6 +512,22 @@ def _append_after(agent, cb) -> None:
             merged.append(existing)
     merged.append(cb)
     agent.after_agent_callback = merged
+
+
+def _append_before_model(agent, cb) -> None:
+    """Append ``cb`` to ``agent.before_model_callback`` preserving existing
+    callback(s)."""
+    if cb is None:
+        return
+    existing = getattr(agent, "before_model_callback", None)
+    merged: list = []
+    if existing is not None:
+        if isinstance(existing, list):
+            merged.extend(existing)
+        else:
+            merged.append(existing)
+    merged.append(cb)
+    agent.before_model_callback = merged
 
 
 def build_live_verifier_agent(project: str | None = None):

@@ -3183,6 +3183,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     final_text=final_text, steps=steps,
                     team=(team or _path["parallel"]),
                     cancelled=cancelled, awaiting=awaiting)
+                # Single-chat (simple/plan) memory writeback. The team
+                # pipeline runs a Learner node + memory callbacks itself;
+                # the inline simple/plan path never did, so chat work never
+                # reached long-term memory. Distil + persist durable facts
+                # on a daemon thread (off the response path). Skip cancelled
+                # turns and the parallel-team path (its own runners cover it).
+                if not cancelled and not team and not _path["parallel"]:
+                    def _chat_learn():
+                        try:
+                            from aiforge_core.runtime import chat_learner, rule_capture
+                            _repo = rule_capture.repo_key(cwd) or "repo"
+                            chat_learner.learn_from_chat(
+                                prompt=prompt, final_text=final_text,
+                                steps=steps, repo=_repo, session_id=session_id)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    threading.Thread(target=_chat_learn, daemon=True).start()
             # Wake every subscriber (this stream + any /attach) and close THIS
             # run object (not by session id — a newer turn for the same session
             # may have already replaced it in the registry). Done LAST so a
