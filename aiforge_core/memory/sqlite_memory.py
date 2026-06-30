@@ -122,7 +122,7 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None) -> list[dict]:
     repo plus repo-agnostic rows when provided.
     """
     text = (text or "").strip()
-    if not text:
+    if not text or limit <= 0:
         return []
     qvec = local_embed.embed(text)
     if not any(qvec):

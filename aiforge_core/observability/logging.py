@@ -25,6 +25,10 @@ from aiforge_core.config.env import LOG_DIR
 
 _DEFAULT_FIELDS = ("ts", "level", "role", "ticket", "event")
 
+# LRU bound on per-ticket run loggers (each opens a FileHandler).
+_RUN_LOGGER_CAP = 48
+_run_logger_lru: list[str] = []
+
 
 class _JsonFormatter(logging.Formatter):
     """Minimal structured formatter — dumps record.__dict__['aiforge'] as the body."""
@@ -122,6 +126,22 @@ def get_run_logger(ticket_id: str, *, role: str = "orchestrator") -> Logger:
         fh = logging.FileHandler(str(target), encoding="utf-8")
         fh.setFormatter(_JsonFormatter())
         logger.addHandler(fh)
+        # LRU-evict old per-ticket loggers so a long-lived orchestrator that
+        # processes many tickets doesn't accumulate open FDs + logger objects
+        # unboundedly (each unique ticket = one never-closed FileHandler).
+        name = f"aiforge.run.{safe}"
+        if name not in _run_logger_lru:
+            _run_logger_lru.append(name)
+            while len(_run_logger_lru) > _RUN_LOGGER_CAP:
+                old = _run_logger_lru.pop(0)
+                ol = logging.getLogger(old)
+                for h in list(ol.handlers):
+                    try:
+                        h.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    ol.removeHandler(h)
+                logging.Logger.manager.loggerDict.pop(old, None)
     logger._aiforge_role = role  # type: ignore[attr-defined]
     logger._aiforge_ticket = ticket_id  # type: ignore[attr-defined]
     return logger

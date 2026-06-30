@@ -264,8 +264,17 @@ def load_all() -> dict[str, dict[str, Any]]:
                         # domain — don't leak the global cloud token to it). Since
                         # openai_compatible is the only provider, same_provider is
                         # always True, so the host check is what actually gates it.
+                        # Compare HOSTNAMES (not the raw URL) so a trailing slash /
+                        # case / explicit-port difference for the same endpoint
+                        # doesn't wrongly drop the inherited key.
+                        def _host(u: "str | None") -> "str | None":
+                            try:
+                                import urllib.parse as _up
+                                return (_up.urlsplit(u or "").hostname or "").lower()
+                            except Exception:  # noqa: BLE001
+                                return None
                         _same_host = (not row_base) or (
-                            row_base.strip() == (seed.get("base_url") or "").strip())
+                            _host(row_base) == _host(seed.get("base_url")))
                         cfg[role] = {
                             "provider": provider,
                             "model": row.get("model") or seed["model"],
@@ -389,7 +398,7 @@ def set_role(role: str, provider: str, model: str,
             row["api_key"] = (disk.get(role) or {}).get("api_key")
         row["insecure_tls"] = bool(insecure_tls)
         disk[role] = row
-        p.write_text(json.dumps(disk, indent=2))
+        _fc.write_json(p, disk)   # atomic + busts the read cache
     return get(role)
 
 
@@ -424,7 +433,7 @@ def reset(*, keep_default: bool = False) -> dict:
             except Exception:  # noqa: BLE001
                 disk = {}
             kept = {k: v for k, v in disk.items() if k == _DEFAULT_KEY}
-            p.write_text(json.dumps(kept, indent=2))
+            _fc.write_json(p, kept)
             return {"ok": True, "removed": "per-role rows", "path": str(p),
                     "kept_default": bool(kept)}
         try:

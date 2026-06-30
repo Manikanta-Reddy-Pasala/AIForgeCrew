@@ -127,6 +127,23 @@ class SqliteBackend:
 
     def ensure_schema(self) -> None:
         with self._conn() as c:
+            # Migrate the route columns onto a PRE-route table BEFORE running the
+            # DDL — CREATE TABLE IF NOT EXISTS is a no-op on the existing table,
+            # and the DDL's route index would otherwise fail on the missing
+            # column. Only ALTER when the table already exists (a fresh DB gets
+            # the columns from the DDL). pg_backend ALTERs the same set.
+            exists = c.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tickets'"
+            ).fetchone()
+            if exists:
+                have = {r[1] for r in c.execute("PRAGMA table_info(tickets)")}
+                for col, ddl in (
+                    ("route", "TEXT"), ("route_workflow", "TEXT"),
+                    ("route_source", "TEXT"), ("route_confidence", "REAL"),
+                ):
+                    if col not in have:
+                        c.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
+                c.commit()
             c.executescript(_DDL)
 
     def next_counter(self) -> int:

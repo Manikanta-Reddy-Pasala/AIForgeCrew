@@ -48,6 +48,10 @@ _DANGEROUS = [
     # fork bomb
     (r":\(\)\s*\{\s*:\s*\|\s*:", "fork bomb"),
     (r"\bshred\b", "irrecoverably shreds data"),
+    # obfuscated payloads: decode-then-execute (base64/xxd → shell/interpreter).
+    (r"\b(base64|xxd|openssl)\b[^\n]*\|[^\n]*\b(sh|bash|zsh|ksh|python[0-9.]*|perl|ruby|node)\b",
+     "decodes an encoded payload and pipes it into a shell (obfuscated RCE)"),
+    (r"\b(sh|bash|zsh|ksh)\b\s+-c\s+[\"']?\$\(", "runs a command-substitution payload via sh -c"),
 ]
 
 # ── caution: reversible-ish but worth a confirmation under ask policy ─────
@@ -67,7 +71,21 @@ _CAUTION = [
     (r"\bsystemctl\s+(stop|disable|mask)\b", "stops/disables a system service"),
     (r"\bcrontab\b", "edits scheduled jobs"),
     (r"\biptables\b", "changes firewall rules"),
+    (r"\beval\b", "eval of a constructed string (can hide a risky command)"),
 ]
+
+
+def _normalize(cmd: str) -> str:
+    """Defeat the cheap shell tricks that hide a token from a regex but that the
+    shell strips before running: ``${IFS}`` word-splitting, empty quote pairs
+    (``r''m``), and in-word backslashes (``r\\m``). Matching the normalized form
+    AS WELL catches ``rm${IFS}-rf`` / ``c''url|sh`` etc. (Not bulletproof — a
+    regex floor can't decode base64/chr(); pair with the sandbox/allowlist.)"""
+    s = re.sub(r"\$\{IFS[^}]*\}", " ", cmd)
+    s = re.sub(r"\$IFS\b", " ", s)
+    s = s.replace("''", "").replace('""', "")
+    s = re.sub(r"\\(?=[A-Za-z0-9])", "", s)
+    return s
 
 _DANGEROUS_C = [(re.compile(p, re.IGNORECASE), why) for p, why in _DANGEROUS]
 _CAUTION_C = [(re.compile(p, re.IGNORECASE), why) for p, why in _CAUTION]
@@ -91,13 +109,16 @@ def assess(cmd: str) -> dict:
     """
     if not cmd or _disabled():
         return {"level": SAFE, "reason": ""}
+    # Match the raw AND the de-obfuscated form so quote/IFS/backslash tricks
+    # can't smuggle a token past the regex.
+    forms = (cmd, _normalize(cmd))
     for rx, why in _DANGEROUS_C:
-        if rx.search(cmd):
+        if any(rx.search(f) for f in forms):
             return {"level": DANGEROUS, "reason": why}
-    if delete_guard.is_destructive_delete(cmd):
+    if any(delete_guard.is_destructive_delete(f) for f in forms):
         return {"level": DANGEROUS, "reason": "deletes files/data"}
     for rx, why in _CAUTION_C:
-        if rx.search(cmd):
+        if any(rx.search(f) for f in forms):
             return {"level": CAUTION, "reason": why}
     return {"level": SAFE, "reason": ""}
 

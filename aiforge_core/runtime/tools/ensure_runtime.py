@@ -69,6 +69,19 @@ def _sudo_prefix(mgr: str) -> list[str]:
     return ["sudo", "-n"] if shutil.which("sudo") else []
 
 
+def _sudo_install_allowed() -> bool:
+    """A privileged (sudo) install is ungated here (it doesn't pass through the
+    command_risk approval gate that a hand-typed ``sudo apt-get install`` would).
+    So when the cautious-deploy gate is on (default), require an explicit
+    AIFORGE_ALLOW_SUDO_INSTALL=1 opt-in before auto-running sudo."""
+    cautious = os.environ.get("AIFORGE_RISK_ASK_CAUTION", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+    if not cautious:
+        return True
+    return os.environ.get("AIFORGE_ALLOW_SUDO_INSTALL", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _install_cmds(mgr: str, pkg: str) -> list[list[str]]:
     pre = _sudo_prefix(mgr)
     if mgr == "apt-get":
@@ -141,6 +154,10 @@ def ensure_runtime(tools: list[str]) -> dict:
         pkg = pkg_map.get(tool, tool)
         install_err = None
         for cmd in _install_cmds(mgr, pkg):
+            if cmd[:1] == ["sudo"] and not _sudo_install_allowed():
+                install_err = ("privileged install blocked — set "
+                               "AIFORGE_ALLOW_SUDO_INSTALL=1 to allow sudo installs")
+                break
             try:
                 p = subprocess.run(cmd, capture_output=True, text=True,
                                    timeout=900)

@@ -44,6 +44,23 @@ def read_json(path: str | Path) -> Any | None:
     return copy.deepcopy(data)
 
 
+def write_json(path: str | Path, data: Any) -> None:
+    """ATOMICALLY persist ``data`` as JSON, then drop the cache entry.
+
+    tmp-write + ``os.replace`` so a crash/power-loss/ENOSPC mid-write can't
+    leave a truncated/empty file (which the readers silently treat as 'missing'
+    → fall back to defaults → silent config wipe). Also pops the mtime cache so
+    the new value resolves immediately even within the FS mtime granularity.
+    """
+    p = str(path)
+    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+    tmp = f"{p}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, p)
+    _CACHE.pop(p, None)
+
+
 def clear() -> None:
     """Test-only / reset hook — drop all cached parses."""
     _CACHE.clear()

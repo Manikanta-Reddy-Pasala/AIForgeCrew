@@ -70,6 +70,13 @@ def lsp(
                 "supported": ["goto_definition", "find_references", "hover"]}
     if not path:
         return {"ok": False, "error": "empty_path"}
+    # Containment check (format.py does this too) — reject ../ traversal so an
+    # LSP query can't read a file outside the repo root.
+    try:
+        from aiforge_core.runtime.sandbox import resolve_inside_root
+        resolve_inside_root(path)
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": "path_outside_root", "path": path}
     language = _detect(path)
     if language is None:
         return {"ok": False, "error": "unsupported_language",

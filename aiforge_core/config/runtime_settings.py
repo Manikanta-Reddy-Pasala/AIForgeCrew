@@ -140,13 +140,7 @@ def set_many(values: dict[str, Any]) -> dict[str, int]:
         if not (lo <= ival <= hi):
             raise ValueError(f"{name} must be between {lo} and {hi}")
         store[name] = ival
-    _path().write_text(json.dumps(store, indent=2))
-    # Bust the mtime-keyed read cache so the just-saved values resolve
-    # immediately even if the write landed within the FS mtime granularity.
-    try:
-        _fc._CACHE.pop(str(_path()), None)
-    except Exception:  # noqa: BLE001
-        pass
+    _fc.write_json(_path(), store)   # atomic + busts the read cache
     return all_settings()
 
 

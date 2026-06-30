@@ -168,8 +168,10 @@ function Shell() {
       <Sidebar />
       <TopBar onToggleSidebar={() => setCollapsed(c => !c)} />
       <main className="page">
-        {/* key on the path so navigating away from a throwing view auto-resets. */}
-        <ErrorBoundary key={location.pathname}>
+        {/* key on the first path SEGMENT so switching views resets the boundary,
+            but a param change within a view (/tickets/1→/tickets/2) doesn't
+            needlessly remount the view and drop its transient state. */}
+        <ErrorBoundary key={location.pathname.split('/').slice(0, 2).join('/')}>
         <Suspense fallback={<RouteFallback />}>
           <Routes>
             <Route path="/" element={<Home />} />

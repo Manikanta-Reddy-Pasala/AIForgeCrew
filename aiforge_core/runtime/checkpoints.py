@@ -150,7 +150,11 @@ def restore(cwd: str, sha: str) -> dict:
         return {"ok": False, "error": "unknown_checkpoint"}
     # Files in the worktree now but NOT in the snapshot tree → would-orphan.
     # NUL-delimited so paths with spaces/newlines don't split wrong.
+    # tracked AND untracked-but-not-ignored — so a NEW untracked file created
+    # after the snapshot is correctly reported in left_in_place (was tracked-only).
     now = {p for p in _git(cwd, "ls-files", "-z").stdout.split("\0") if p}
+    now |= {p for p in _git(cwd, "ls-files", "-o", "--exclude-standard", "-z")
+            .stdout.split("\0") if p}
     snap = {p for p in _git(cwd, "ls-tree", "-r", "--name-only", "-z", sha)
             .stdout.split("\0") if p}
     left = sorted(now - snap)
