@@ -453,25 +453,45 @@ def _derive_branch(identifier: str, title: str) -> str:
     return f"aiforge/{identifier}{('-' + slug) if slug else ''}"
 
 
-def _persist_ticket_attachments(
-    identifier: str, files: list[AttachedFile],
-) -> list[dict]:
-    """Decode + write each uploaded file under the workspace.
+def _ticket_files_base():
+    """Stable, PERSISTENT base dir for ticket attachments.
 
-    Files land at ``{AIFORGE_REPO_ROOT}/.aiforge/ticket-files/{id}/<name>``;
-    the runner later materializes them into the per-ticket worktree.
-    Returns a metadata-friendly list of ``{name, size, path}`` — path is
-    relative to the repo root so the Doer prompt can reference it without
-    leaking absolute filesystem layout.
+    Must not depend on ``AIFORGE_REPO_ROOT``: the runner rebinds it per
+    ticket, AND in Docker it is unset → defaults to ``HOME/aiforge_workspace``,
+    which is NOT a mounted volume, so every container recreate wiped uploads
+    (the "image not found" 404). Resolution order:
+      1. ``AIFORGE_TICKET_FILES_DIR``        explicit override
+      2. ``{AIFORGE_CONFIG_DIR}/ticket-files`` (a persistent volume in Docker)
+      3. ``{AIFORGE_REPO_ROOT|~/aiforge_workspace}/.aiforge/ticket-files``
+         (repo-relative for a local checkout)
     """
-    import base64
     import os as _os
     from pathlib import Path as _Path
-
+    explicit = _os.environ.get("AIFORGE_TICKET_FILES_DIR", "").strip()
+    if explicit:
+        return _Path(explicit).expanduser().resolve()
+    cfg = _os.environ.get("AIFORGE_CONFIG_DIR", "").strip()
+    if cfg:
+        return (_Path(cfg).expanduser() / "ticket-files").resolve()
     root = _Path(_os.path.expanduser(_os.environ.get(
         "AIFORGE_REPO_ROOT", "~/aiforge_workspace",
     ))).resolve()
-    target_dir = root / ".aiforge" / "ticket-files" / identifier
+    return (root / ".aiforge" / "ticket-files").resolve()
+
+
+def _persist_ticket_attachments(
+    identifier: str, files: list[AttachedFile],
+) -> list[dict]:
+    """Decode + write each uploaded file under the persistent ticket-files
+    base (see :func:`_ticket_files_base`); the runner later materializes them
+    into the per-ticket worktree by absolute path. Returns a metadata-friendly
+    list of ``{name, size, path, abs_path}`` — ``path`` is the worktree-view
+    path the Doer prompt references; ``abs_path`` is the real persistent file.
+    """
+    import base64
+    from pathlib import Path as _Path
+
+    target_dir = _ticket_files_base() / identifier
     target_dir.mkdir(parents=True, exist_ok=True)
 
     out: list[dict] = []
@@ -485,10 +505,13 @@ def _persist_ticket_attachments(
             continue
         dest = target_dir / safe_name
         dest.write_bytes(data)
-        rel = dest.relative_to(root).as_posix()
-        # ``abs_path`` stays valid even when downstream code (the
-        # runner) rebinds AIFORGE_REPO_ROOT to a per-ticket worktree,
-        # so the materializer can locate the upload from anywhere.
+        # Worktree-view path the Doer reads (the runner copies the file to
+        # this same relative location inside the worktree). Decoupled from
+        # the physical storage base so persistence can move without breaking
+        # the prompt reference.
+        rel = f".aiforge/ticket-files/{identifier}/{safe_name}"
+        # ``abs_path`` is the real persistent location — valid even when the
+        # runner rebinds AIFORGE_REPO_ROOT to a per-ticket worktree.
         out.append({
             "name": safe_name, "size": len(data),
             "path": rel, "abs_path": str(dest),
@@ -501,18 +524,14 @@ def _remove_ticket_attachments(
 ) -> list[str]:
     """Delete named files from a ticket's attachment dir.
 
-    Mirrors ``_persist_ticket_attachments`` path resolution. Each name
-    is reduced to its basename (``../`` traversal stripped) before
-    unlinking ``{root}/.aiforge/ticket-files/{id}/<name>``. A missing
-    file is a no-op. Returns the basenames actually removed.
+    Mirrors ``_persist_ticket_attachments`` path resolution (the shared
+    persistent base). Each name is reduced to its basename (``../`` traversal
+    stripped) before unlinking ``{base}/{id}/<name>``. A missing file is a
+    no-op. Returns the basenames actually removed.
     """
-    import os as _os
     from pathlib import Path as _Path
 
-    root = _Path(_os.path.expanduser(_os.environ.get(
-        "AIFORGE_REPO_ROOT", "~/aiforge_workspace",
-    ))).resolve()
-    target_dir = root / ".aiforge" / "ticket-files" / identifier
+    target_dir = _ticket_files_base() / identifier
 
     removed: list[str] = []
     for n in names:
@@ -3928,11 +3947,17 @@ def repo_standards_set(name: str, body: _StandardsBody) -> dict:
 # and offer download links for non-image files. Names were sanitized at
 # upload (``_Path(f.name).name``) so path-traversal is contained to the
 # per-ticket subdir.
-_TICKET_FILES_ROOT = os.path.join(
-    os.path.expanduser(os.environ.get("AIFORGE_REPO_ROOT", "~/aiforge_workspace")),
-    ".aiforge", "ticket-files",
-)
-os.makedirs(_TICKET_FILES_ROOT, exist_ok=True)
+# Serve from the SAME persistent base uploads are written to
+# (``_ticket_files_base``) — previously this used AIFORGE_REPO_ROOT, which in
+# Docker pointed at an ephemeral HOME dir, so attachments 404'd after any
+# container recreate.
+_TICKET_FILES_ROOT = str(_ticket_files_base())
+try:
+    os.makedirs(_TICKET_FILES_ROOT, exist_ok=True)
+except OSError:
+    # Never let an unwritable attachments dir crash API boot; the mount uses
+    # check_dir=False and uploads makedirs(parents=True) on demand.
+    pass
 app.mount(
     "/files",
     StaticFiles(directory=_TICKET_FILES_ROOT, check_dir=False),
