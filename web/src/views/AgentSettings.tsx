@@ -21,12 +21,31 @@ const ROLE_LABEL: Record<string, string> = {
   gap_eval: 'Gap eval', live_verifier: 'Live verifier',
 };
 
-function VisionBadge({ v }: { v: RegistryModel['vision'] }) {
-  const map = { yes: ['👁 vision', '#3fb950'], no: ['no vision', '#8b949e'],
-                auto: ['auto-detect', '#6aa6ff'] } as const;
+const VISION_ORDER: RegistryModel['vision'][] = ['auto', 'yes', 'no'];
+function nextVision(v: RegistryModel['vision']): RegistryModel['vision'] {
+  return VISION_ORDER[(VISION_ORDER.indexOf(v) + 1) % VISION_ORDER.length];
+}
+
+// Compact vision indicator. Static when `onCycle` is omitted; a click-to-cycle
+// pill (auto → yes → no) otherwise — replaces the full-width <select> that used
+// to dominate each model row.
+function VisionBadge({ v, onCycle }: {
+  v: RegistryModel['vision']; onCycle?: () => void;
+}) {
+  const map = { yes: ['👁 vision', '#3fb950'], no: ['🚫 no vision', '#8b949e'],
+                auto: ['✨ vision: auto', '#6aa6ff'] } as const;
   const [txt, col] = map[v];
-  return <span style={{ fontSize: 10, color: col, border: `1px solid ${col}`,
-                        borderRadius: 4, padding: '0 4px', marginLeft: 6 }}>{txt}</span>;
+  const base = { fontSize: 11, color: col, border: `1px solid ${col}`,
+                 borderRadius: 6, padding: '2px 8px', whiteSpace: 'nowrap' as const,
+                 flex: '0 0 auto' as const, lineHeight: 1.4 };
+  if (!onCycle) return <span style={{ ...base, marginLeft: 6 }}>{txt}</span>;
+  return (
+    <button type="button" onClick={onCycle}
+            title="Vision support — click to cycle: auto → yes → no"
+            style={{ ...base, cursor: 'pointer', background: 'transparent' }}>
+      {txt}
+    </button>
+  );
 }
 
 export default function AgentSettings() {
@@ -294,17 +313,13 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
             <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 10,
                                      padding: '6px 8px', border: '1px solid var(--border-1)', borderRadius: 6 }}>
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{m.label} <VisionBadge v={m.vision} /></div>
+                <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
+                              overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.label}</div>
                 <div className="xs muted" style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {m.model} · {m.base_url || 'default url'}{m.api_key_set ? ' · 🔑' : ''}{m.context_window ? ` · ctx ${Math.round(m.context_window / 1000)}k` : ''}
                 </div>
               </div>
-              <select value={m.vision} onChange={e => setVisionFor(m.id, e.target.value as any)}
-                      title="Vision support" style={{ fontSize: 12 }}>
-                <option value="auto">vision: auto</option>
-                <option value="yes">vision: yes</option>
-                <option value="no">vision: no</option>
-              </select>
+              <VisionBadge v={m.vision} onCycle={() => setVisionFor(m.id, nextVision(m.vision))} />
               <button className="ghost sm" disabled={loadingId === m.id}
                       title="Load this model on the LM Studio host (no-op for cloud / non-LMS backends)"
                       onClick={() => loadOnServer(m)}>
