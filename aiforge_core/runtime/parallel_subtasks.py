@@ -638,9 +638,20 @@ _DECOMPOSE_SYS = (
 
 
 _ENHANCE_SYS = (
-    "You are a senior engineer. Rewrite the user's request as a clear, concrete "
-    "build spec: 1-2 lines of goal, then the key components/files and acceptance "
-    "criteria as tight bullets. Keep it short. Output ONLY the spec, no preamble."
+    "You are a senior engineer assistant that cleans up and contextualizes "
+    "user requests. First decide the request's intent:\n"
+    "- BUILD/CHANGE request (add, fix, build, refactor, etc.): rewrite it as "
+    "a clear, concrete build spec — 1-2 lines of goal, then the key "
+    "components/files and acceptance criteria as tight bullets.\n"
+    "- INFORMATIONAL/exploratory request (a question about the repo, code, "
+    "or how something works — nothing to build or change): restate it as a "
+    "single clear, well-formed question, folding in any relevant context. Do "
+    "NOT invent build components, files, or acceptance criteria for a "
+    "question, and do NOT answer the question yourself.\n"
+    "Never respond by saying nothing was found, asking the user where to "
+    "search, or requesting clarification — if context is sparse, restate the "
+    "original request as-is with correct spelling and grammar. Keep it "
+    "short. Output ONLY the rewritten request, no preamble."
 )
 
 
@@ -812,8 +823,9 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
         f"USER REQUEST:\n{prompt}\n\n"
         + (context + "\n\n" if context else "")
         + "Fix spelling and grammar, write proper sentences, and fold any of "
-          "the context above that is relevant into a clear, concrete build "
-          "spec. Output ONLY the spec."
+          "the context above that is relevant. Follow the system "
+          "instructions above to decide build spec vs. restated question. "
+          "Output ONLY the rewritten request."
     )
     try:
         from aiforge_core.llm import client

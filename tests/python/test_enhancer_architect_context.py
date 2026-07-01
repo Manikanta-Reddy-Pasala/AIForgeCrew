@@ -168,6 +168,38 @@ def test_enhance_runs_for_short_real_imperatives(monkeypatch):
         assert pp._enhance(p) == "enhanced", p
 
 
+def test_enhance_system_prompt_branches_on_informational_intent():
+    """Regression for the 'tell me about this repository' bug: the enhancer's
+    system prompt hardcoded a build-spec framing (goal/components/acceptance
+    criteria) for EVERY request, so a pure informational question with sparse
+    context got mangled into a confused non-answer. The system prompt must
+    explicitly branch on intent and forbid refusing/asking the user back."""
+    sys_low = pp._ENHANCE_SYS.lower()
+    assert "informational" in sys_low or "question" in sys_low
+    assert "never" in sys_low or "do not" in sys_low
+
+
+def test_enhance_informational_question_not_forced_into_build_spec(monkeypatch):
+    """'tell me about this repository' is a question, not a change request —
+    the system prompt sent to the LLM must not force build-spec framing and
+    must explicitly forbid a refusal/ask-back response."""
+    seen: dict = {}
+    monkeypatch.setattr("aiforge_core.memory.unified_query.query",
+                        lambda *a, **k: {"hits": [], "errors": []})
+
+    def fake_complete(role, convo, **kw):
+        seen["system"] = convo[0]["content"]
+        seen["user"] = convo[-1]["content"]
+        return "What is this repository and what does it do?"
+
+    monkeypatch.setattr("aiforge_core.llm.client.complete", fake_complete)
+    out = pp._enhance("can you tell me about this repository?", cwd=None)
+    assert out == "What is this repository and what does it do?"
+    sys_low = seen["system"].lower()
+    assert "acceptance criteria" not in sys_low or "informational" in sys_low
+    assert "never" in sys_low or "do not" in sys_low
+
+
 def test_enhance_min_chars_env_override(monkeypatch):
     monkeypatch.setenv("AIFORGE_ENHANCER_MIN_CHARS", "5")
     monkeypatch.setattr("aiforge_core.memory.unified_query.query",
