@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 
 from aiforge_core.runtime import skills as _sk
-from aiforge_core.runtime.skills import Skill  # reuse the same dataclass
+from aiforge_core.runtime.skills import Selection, Skill  # reuse the same types
 
 _REPO_SUBDIRS = (".aiforge/workflows", ".claude/workflows", ".openhands/workflows")
 _FILENAME = "WORKFLOW.md"
@@ -95,6 +95,12 @@ def select(query: str, cwd: str | None = None, k: int = 3) -> list[Skill]:
         if w is not None:
             chosen[w.name] = w
     return sorted(chosen.values(), key=lambda s: -s.priority)
+
+
+def select_or_ask(query: str, cwd: str | None = None, k: int = 3) -> Selection:
+    """Like :func:`select` but returns ambiguous near-ties separately
+    instead of silently auto-picking (same scorer as skills.select_or_ask)."""
+    return _sk.select_or_ask(query, cwd, k=k, pool=load(cwd))
 
 
 def selected_names(query: str, cwd: str | None = None, k: int = 3) -> list[dict]:
@@ -203,5 +209,5 @@ def ensure_dirs() -> dict:
     return out
 
 
-__all__ = ["load", "search", "select", "selected_names", "write_workflow",
-           "ensure_dirs", "auto_context"]
+__all__ = ["load", "search", "select", "select_or_ask", "selected_names",
+           "write_workflow", "ensure_dirs", "auto_context"]
