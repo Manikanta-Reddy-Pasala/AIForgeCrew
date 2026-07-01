@@ -159,11 +159,17 @@ _SYS = (
     "Set \"task_present\" true when the message ALSO asks you to DO something "
     "now (build/fix/run/answer) in addition to stating the rule; false when it "
     "is PURELY a rule/fact/correction with no action requested.\n\n"
+    "For \"rule\" or \"feedback\" ONLY: if the rule is scoped to a specific "
+    "topic (e.g. deploys, a specific tool, a specific kind of file) rather "
+    "than a universal directive, set \"triggers\" to 1-3 short lowercase "
+    "topic words; leave it an empty list [] when the rule should ALWAYS "
+    "apply regardless of topic.\n\n"
     "Respond with STRICT JSON ONLY, no prose, no code fence:\n"
     '{\"category\":\"rule|memory|feedback|none\",'
     '\"scope\":\"global|project|session\",'
     '\"canonical\":\"<cleaned one-line directive/fact>\",'
-    '\"confidence\":0.0-1.0,\"task_present\":true|false}'
+    '\"confidence\":0.0-1.0,\"task_present\":true|false,'
+    '\"triggers\":[]}'
 )
 
 
@@ -225,8 +231,16 @@ def _parse_classification(raw: str) -> dict | None:
     task_present = obj.get("task_present")
     if not isinstance(task_present, bool):
         task_present = True
+    triggers_raw = obj.get("triggers") or []
+    if not isinstance(triggers_raw, list):
+        triggers_raw = []
+    triggers = [re.sub(r"[\[\],]", "", str(t)).strip().lower() for t in triggers_raw
+               if isinstance(t, str) and t.strip()][:3]
+    triggers = [t for t in triggers if t]  # drop anything that sanitized to empty
+    triggers = [t for t in triggers if re.search(r"[a-z0-9]", t)]  # drop pure-punctuation junk
     return {"category": cat, "scope": scope, "canonical": canonical,
-            "confidence": conf, "task_present": task_present}
+            "confidence": conf, "task_present": task_present,
+            "triggers": triggers}
 
 
 def classify(message: str, *, repo: str | None = None,
@@ -313,18 +327,23 @@ def _slug(text: str) -> str:
     return (s or "rule")[:60]
 
 
-def _write_repo_rule(repo_root: str, name: str, body: str) -> str | None:
+def _write_repo_rule(repo_root: str, name: str, body: str,
+                     triggers: list[str] | None = None) -> str | None:
     """Best-effort write of a Cursor-style rule into ``<repo_root>/.aiforge/
     rules/<slug>.md`` so the ticket/doer repo_rules pipeline honors it too.
+    ``triggers`` (if any) makes the rule topic-gated instead of always-on.
     Returns the path written, or None on any failure."""
     try:
         d = Path(repo_root).expanduser() / ".aiforge" / "rules"
         d.mkdir(parents=True, exist_ok=True)
         path = d / f"{_slug(name)}.md"
-        front = ("---\n"
-                 f"name: {name}\n"
-                 "alwaysApply: true\n"
-                 "---\n\n")
+        trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
+        front = "---\n" + f"name: {name}\n"
+        if trig:
+            front += "triggers: [" + ", ".join(trig) + "]\n"
+        else:
+            front += "alwaysApply: true\n"
+        front += "---\n\n"
         path.write_text(front + body.strip() + "\n", encoding="utf-8")
         return str(path)
     except Exception as exc:  # noqa: BLE001
@@ -348,7 +367,7 @@ def _do_store(c: dict, *, rid: str, repo: str | None, session_id,
         "id": rid, "category": cat, "scope": scope, "canonical": canonical,
         "repo": repo, "session_id": (str(session_id) if session_id is not None else None),
         "location": "", "md_source": None, "md_bullet": None,
-        "rule_path": None, "undone": False,
+        "rule_path": None, "undone": False, "triggers": [],
         # Gate-disable flags this captured item explicitly enabled (via an opt-in
         # pill). Recorded here so undo/rescope/delete can REVOKE them — a deleted
         # gate-disabling rule must re-enable the gate.
@@ -362,18 +381,24 @@ def _do_store(c: dict, *, rid: str, repo: str | None, session_id,
 
         from aiforge_core.memory import md_store
         if cat in ("rule", "feedback"):
+            triggers = c.get("triggers") or []
+            item["triggers"] = triggers
             if scope == "global":
                 src, title = "rules:global", "AIForge rules (all sessions)"
             else:  # project
                 r = repo or "project"
                 src, title = f"rules:{r}", f"{r} — rules"
-            md_store.append_bullet(source=src, title=title, bullet=canonical,
+            bullet_text = (
+                f"[triggers: {', '.join(triggers)}] {canonical}"
+                if triggers else canonical)
+            md_store.append_bullet(source=src, title=title, bullet=bullet_text,
                                    kind=cat, tags=[cat, scope])
             item["md_source"] = src
-            item["md_bullet"] = "- " + canonical
+            item["md_bullet"] = "- " + bullet_text
             item["location"] = f"md:{src}"
             if scope == "project" and repo_root:
-                rp = _write_repo_rule(repo_root, canonical[:60] or "rule", canonical)
+                rp = _write_repo_rule(repo_root, canonical[:60] or "rule",
+                                      canonical, triggers=triggers)
                 if rp:
                     item["rule_path"] = rp
         else:  # memory
