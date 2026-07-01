@@ -505,23 +505,69 @@ def _t_remember_rule(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _rules_context(cwd: str) -> str:
+_BULLET_TRIGGERS_RE = re.compile(r"^\[triggers:\s*([^\]]*)\]\s*(.*)$")
+
+
+def _parse_bullet(line: str) -> tuple[tuple[str, ...], str]:
+    """Strip a leading '- ' and an optional '[triggers: a, b]' prefix.
+    Returns (triggers, text). No triggers prefix → triggers=() (always-on,
+    backward compatible with every bullet written before this feature)."""
+    text = line[2:] if line.startswith("- ") else line
+    m = _BULLET_TRIGGERS_RE.match(text.strip())
+    if not m:
+        return (), text.strip()
+    trig = tuple(t.strip().lower() for t in m.group(1).split(",") if t.strip())
+    return trig, m.group(2).strip()
+
+
+def _rules_context(cwd: str, query: str = "") -> str:
     """The user's persistent rule book (global + this-repo), injected into
-    EVERY session so the rules are always honoured."""
+    EVERY session so the rules are always honoured. Untagged bullets are
+    always-on (legacy). Bullets tagged with an inline '[triggers: ...]'
+    prefix are gated by relevance to ``query`` via the shared scorer; a
+    near-tie among tagged bullets injects an ASK note instead of silently
+    picking one."""
     try:
         from aiforge_core.memory import md_store
-        blocks = []
+        from aiforge_core.runtime import skills as _sk
+        always_lines: list[str] = []
+        tagged: list[_sk.Skill] = []
         for src in ("rules:global", f"rules:{_repo_name(cwd)}"):
             p = md_store._find_by_source(src)
-            if p is not None:
-                body = md_store._parse(p).get("body", "")
-                if body.strip():
-                    blocks.append(body.strip())
+            if p is None:
+                continue
+            body = md_store._parse(p).get("body", "")
+            for line in body.splitlines():
+                if not line.strip():
+                    continue
+                trig, text = _parse_bullet(line)
+                if not trig:
+                    always_lines.append("- " + text)
+                else:
+                    tagged.append(_sk.Skill(
+                        name=text[:60], description="", triggers=trig,
+                        body=text, source=src, always=False, priority=0))
+        blocks: list[str] = list(always_lines)
+        ambiguous_note = ""
+        if tagged:
+            if query:
+                chosen, ambiguous = _sk.select_or_ask(
+                    query, pool=tagged, k=len(tagged))
+                blocks.extend("- " + s.body for s in chosen)
+                if ambiguous:
+                    names = " or ".join(f"'{s.body}'" for s in ambiguous[0])
+                    ambiguous_note = (
+                        "\nAMBIGUOUS RULE MATCH: " + names + " both matched "
+                        "— ASK the user which applies before proceeding, "
+                        "don't guess.")
+            else:
+                # No query to score against (defensive) — fail open.
+                blocks.extend("- " + s.body for s in tagged)
         if not blocks:
             return ""
         return ("RULES — the user told you to ALWAYS follow these, every "
                 "session (HIGHEST priority, override defaults):\n"
-                + "\n".join(blocks)[:1800])
+                + "\n".join(blocks)[:1800] + ambiguous_note)
     except Exception:  # noqa: BLE001
         return ""
 
@@ -1903,7 +1949,7 @@ def run_chat_agent(
     # each follow-up question (the conversation history only carries prior
     # answers, not the structure it discovered last turn).
     cave = _cave_mode()
-    rules = _rules_context(cwd)
+    rules = _rules_context(cwd, last_user)
     sys_msg = _SYSTEM.format(cwd=cwd)
     if rules:                       # user rule book first — highest priority
         sys_msg = rules + "\n\n" + sys_msg
