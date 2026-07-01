@@ -67,3 +67,6 @@ graphify-out/
 # aider tree-sitter repo-map cache (repo_map tool)
 .aider.tags.cache.v*/
 .aider.tags.cache*
+
+# git worktrees (superpowers:using-git-worktrees)
+.worktrees/
