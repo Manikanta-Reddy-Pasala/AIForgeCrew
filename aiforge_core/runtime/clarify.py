@@ -36,9 +36,33 @@ def _clarified(ticket) -> bool:
     return bool((ticket.metadata or {}).get("clarified"))
 
 
-def _ask_llm(ticket) -> list[str]:
+def _ambiguous_candidates(ticket) -> list[str]:
+    """Rule names that scored an unresolved near-tie against this ticket's
+    title+body — extra signal for the clarity check below. Soft-fail → []."""
+    try:
+        from aiforge_core.runtime import repo_rules
+        import os
+        query = f"{getattr(ticket, 'title', '') or ''}\n{getattr(ticket, 'body', '') or ''}"
+        md = getattr(ticket, "metadata", None) or {}
+        globs = md.get("scope_allowlist_globs") or []
+        if isinstance(globs, str):
+            globs = [g.strip() for g in globs.splitlines() if g.strip()]
+        _, ambiguous = repo_rules.collect_or_ask(
+            os.environ.get("AIFORGE_REPO_ROOT", ""), globs, query)
+        return [" or ".join(f"'{r.name}'" for r in group)
+               for group in ambiguous]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _ask_llm(ticket, ambiguous: list[str] | None = None) -> list[str]:
     from aiforge_core.llm.client import complete
     user = f"Title: {ticket.title}\n\nRequest:\n{ticket.body or ''}"
+    if ambiguous:
+        user += ("\n\nNote: these repo rules matched with near-equal "
+                 "confidence and could not be auto-selected: "
+                 + "; ".join(ambiguous) + ". If it matters to the "
+                 "implementation, ask which one applies.")
     out = complete("triage", [
         {"role": "system", "content": _SYS},
         {"role": "user", "content": user},
@@ -60,7 +84,8 @@ def maybe_clarify(ticket) -> bool:
     if not _interactive(ticket) or _clarified(ticket):
         return False
     try:
-        questions = _ask_llm(ticket)
+        ambiguous = _ambiguous_candidates(ticket)
+        questions = _ask_llm(ticket, ambiguous)
     except Exception as exc:  # noqa: BLE001
         log.warning("clarify.skip ticket=%s err=%s", ticket.identifier, exc)
         return False

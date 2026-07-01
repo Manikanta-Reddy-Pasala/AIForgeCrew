@@ -29,7 +29,8 @@ def test_clarify_skips_non_interactive(store, monkeypatch):
 
 def test_clarify_asks_then_parks(store, monkeypatch):
     import aiforge_core.runtime.clarify as cl; importlib.reload(cl)
-    monkeypatch.setattr(cl, "_ask_llm", lambda t: ["Which file?", "What framework?"])
+    monkeypatch.setattr(cl, "_ask_llm",
+                        lambda t, ambiguous=None: ["Which file?", "What framework?"])
     t = store.create(title="x", body="vague", assignee_role="doer", project="demo",
                      metadata={"interactive": True})
     assert cl.maybe_clarify(t) is True
@@ -41,7 +42,7 @@ def test_clarify_asks_then_parks(store, monkeypatch):
 
 def test_clarify_clear_proceeds(store, monkeypatch):
     import aiforge_core.runtime.clarify as cl; importlib.reload(cl)
-    monkeypatch.setattr(cl, "_ask_llm", lambda t: [])
+    monkeypatch.setattr(cl, "_ask_llm", lambda t, ambiguous=None: [])
     t = store.create(title="x", body="clear req", assignee_role="doer",
                      project="demo", metadata={"interactive": True})
     assert cl.maybe_clarify(t) is False
