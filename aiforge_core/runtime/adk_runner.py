@@ -778,6 +778,32 @@ async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
             pass
 
 
+def _emit_ambiguous_rule_notice(ticket, ambiguous: list) -> None:
+    """Autonomous tickets never block on an ambiguous rule match (an
+    interactive ticket already got asked via clarify.py before this code
+    runs) — best-guess is already baked into rules_md by collect_or_ask;
+    this only surfaces a visible, non-blocking notice on the trace."""
+    if not ambiguous:
+        return
+    md = getattr(ticket, "metadata", None) or {}
+    if md.get("interactive"):
+        return
+    for group in ambiguous:
+        names = " or ".join(f"'{r.name}'" for r in group)
+        try:
+            tickets_mod.add_event(
+                ticket.id, "pipeline", "ambiguous_rule_match",
+                f"Matched rules ambiguous: {names} — picked highest-priority, "
+                f"say so if wrong.", {"candidates": [r.name for r in group]})
+        except Exception as exc:  # noqa: BLE001
+            # This notice is the ONLY human-visible signal an autonomous
+            # ticket's ambiguous match ever produces — log loud (not the
+            # collect_or_ask wrapper's debug level) and keep processing the
+            # remaining groups rather than aborting the whole loop.
+            log.warning("ambiguous_rule_match notice failed ticket=%s: %s",
+                       getattr(ticket, "identifier", ticket.id), exc)
+
+
 async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
                         ticket=None, memory_md: str = "") -> dict:
     """Drive one ADK pipeline run and return the final session state.
@@ -811,8 +837,14 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     rules_md = ""
     try:
         from aiforge_core.runtime import repo_rules
-        rules_md = repo_rules.collect(
-            os.environ.get("AIFORGE_REPO_ROOT", ""), _scope_seed)
+        _query = ""
+        if ticket is not None:
+            _query = (f"{getattr(ticket, 'title', '') or ''}\n"
+                      f"{getattr(ticket, 'body', '') or ''}")
+        rules_md, _ambiguous_rules = repo_rules.collect_or_ask(
+            os.environ.get("AIFORGE_REPO_ROOT", ""), _scope_seed, _query)
+        if ticket is not None:
+            _emit_ambiguous_rule_notice(ticket, _ambiguous_rules)
     except Exception as exc:  # noqa: BLE001
         log.debug("repo_rules collect failed: %s", exc)
 
