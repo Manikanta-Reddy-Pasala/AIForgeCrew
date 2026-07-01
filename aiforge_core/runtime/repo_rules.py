@@ -50,6 +50,7 @@ class Rule:
     always: bool
     body: str
     source: str
+    triggers: tuple[str, ...] = ()   # NEW — optional topic gate (OR'd with globs)
 
 
 def _parse_rule_file(path: Path) -> Rule | None:
@@ -75,9 +76,15 @@ def _parse_rule_file(path: Path) -> Rule | None:
         raw_globs = [g.strip() for g in raw_globs.split(",") if g.strip()]
     globs = tuple(str(g) for g in raw_globs if g)
     always = bool(meta.get("alwaysApply", False))
+    raw_triggers = meta.get("triggers") or []
+    if isinstance(raw_triggers, str):
+        raw_triggers = [t.strip() for t in raw_triggers.split(",")]
+    triggers = tuple(str(t).lower() for t in raw_triggers
+                     if isinstance(t, str) and t.strip())
     return Rule(
         name=str(meta.get("description") or path.stem),
         globs=globs, always=always, body=body, source=str(path),
+        triggers=triggers,
     )
 
 
@@ -210,6 +217,66 @@ def match_rules(rules: list[Rule], scope_globs: list[str] | None) -> list[Rule]:
     return out
 
 
+def match_rules_with_triggers(
+    rules: list[Rule], scope_globs: list[str] | None, query: str,
+) -> tuple[list[Rule], list[list[Rule]]]:
+    """Like :func:`match_rules` but ALSO scores rules with no glob hit
+    against ``query`` (the ticket title+body) via the same trigger-scorer
+    skills/workflows use. Returns ``(matched, ambiguous_groups)`` — a rule
+    fires if its globs match (as before) OR its triggers score a confident
+    hit against ``query``; a near-tie among trigger-scored candidates is
+    reported in ``ambiguous_groups`` instead of silently picked (a
+    best-guess is still included in ``matched``, same contract as
+    :func:`aiforge_core.runtime.skills.select_or_ask`)."""
+    matched: list[Rule] = []
+    trigger_pool: list[Rule] = []
+    for r in rules:
+        # "no globs" only means always-applies when there are ALSO no
+        # triggers — a trigger-only rule (globs=() but triggers set) must
+        # still go through the trigger scorer below, not be treated as
+        # unconditional (that would silently bypass gating entirely).
+        if r.always or (not r.globs and not r.triggers):
+            matched.append(r)
+            continue
+        glob_hit = bool(r.globs) and any(
+            _globs_intersect(rg, sg) for rg in r.globs
+            for sg in (scope_globs or []))
+        if glob_hit:
+            matched.append(r)
+        elif r.triggers:
+            trigger_pool.append(r)
+    ambiguous: list[list[Rule]] = []
+    if query and trigger_pool:
+        from aiforge_core.runtime import skills as _sk
+        pool_skills = [
+            _sk.Skill(name=r.name, description="", triggers=r.triggers,
+                      body=r.body, source=r.source, always=False, priority=0)
+            for r in trigger_pool]
+        chosen_sk, amb_sk = _sk.select_or_ask(
+            query, k=len(trigger_pool), pool=pool_skills)
+        by_name = {r.name: r for r in trigger_pool}
+        matched.extend(by_name[s.name] for s in chosen_sk if s.name in by_name)
+        for grp in amb_sk:
+            ambiguous.append([by_name[s.name] for s in grp if s.name in by_name])
+    return matched, ambiguous
+
+
+def collect_or_ask(repo_root: str | Path, scope_globs: list[str] | None,
+                   query: str) -> tuple[str, list[list[Rule]]]:
+    """Like :func:`collect` but trigger-aware — rules with no glob hit are
+    also scored against ``query``. Returns ``(rendered_md, ambiguous_groups)``.
+    '' + [] on any error (rules must never block a run)."""
+    try:
+        rules = load_rules(repo_root)
+        if not rules:
+            return "", []
+        matched, ambiguous = match_rules_with_triggers(rules, scope_globs, query)
+        return render(matched), ambiguous
+    except Exception as exc:  # noqa: BLE001
+        log.debug("repo_rules.collect_or_ask failed: %s", exc)
+        return "", []
+
+
 def render(rules: list[Rule]) -> str:
     """One capped markdown block for ``state['rules_md']``."""
     if not rules:
@@ -259,4 +326,4 @@ def matched_names(repo_root: str | Path,
 
 
 __all__ = ["Rule", "load_rules", "match_rules", "render", "collect",
-           "matched_names"]
+           "matched_names", "match_rules_with_triggers", "collect_or_ask"]
