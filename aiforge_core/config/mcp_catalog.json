@@ -10,46 +10,6 @@
     "category": "docs"
   },
   {
-    "id": "oneshell-mongo-qa",
-    "name": "OneShell · MongoDB (QA)",
-    "description": "Query the OneShell MongoDB (QA tier) via the oneshell-mcp gateway.",
-    "transport": "http",
-    "url": "http://192.168.70.191:8810",
-    "homepage": "https://github.com/OneShellSolutions/oneshell-mcp",
-    "needs_api_key": false,
-    "category": "database"
-  },
-  {
-    "id": "oneshell-k8s-qa",
-    "name": "OneShell · Kubernetes (QA)",
-    "description": "Inspect the OneShell K8s cluster (QA tier) via oneshell-mcp.",
-    "transport": "http",
-    "url": "http://192.168.70.191:8811",
-    "homepage": "https://github.com/OneShellSolutions/oneshell-mcp",
-    "needs_api_key": false,
-    "category": "infra"
-  },
-  {
-    "id": "oneshell-tekton-qa",
-    "name": "OneShell · Tekton (QA)",
-    "description": "Inspect Tekton pipelines/builds (QA tier) via oneshell-mcp.",
-    "transport": "http",
-    "url": "http://192.168.70.191:8812",
-    "homepage": "https://github.com/OneShellSolutions/oneshell-mcp",
-    "needs_api_key": false,
-    "category": "ci"
-  },
-  {
-    "id": "oneshell-tally-qa",
-    "name": "OneShell · Tally (QA)",
-    "description": "Tally accounting sync data (QA tier) via oneshell-mcp.",
-    "transport": "http",
-    "url": "http://192.168.70.191:8813",
-    "homepage": "https://github.com/OneShellSolutions/oneshell-mcp",
-    "needs_api_key": false,
-    "category": "business"
-  },
-  {
     "id": "custom-http",
     "name": "Custom HTTP server",
     "description": "Point AIForge at any FastMCP/SSE HTTP MCP server you host. Set the URL after installing.",
