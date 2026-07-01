@@ -30,6 +30,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 try:
     import yaml
@@ -51,6 +52,14 @@ class Skill:
     source: str = ""
     always: bool = False
     priority: int = 0
+
+
+class Selection(NamedTuple):
+    """Return contract for :func:`select_or_ask` — self-documenting in
+    place of a bare ``tuple[list[Skill], list[list[Skill]]]``. Still
+    unpacks positionally (``chosen, ambiguous = select_or_ask(...)``)."""
+    chosen: list[Skill]
+    ambiguous_groups: list[list[Skill]]
 
 
 def _global_dir() -> Path:
@@ -199,23 +208,108 @@ def render(skills: list[Skill]) -> str:
             + "\n\n".join(parts))
 
 
+def _always_on(pool: list[Skill]) -> list[Skill]:
+    """Always-on skills from ``pool``, priority-ordered and capped by
+    AIFORGE_SKILLS_ALWAYS_CAP (default 8) — shared by select() and
+    select_or_ask() so a large registry can't blow the context budget."""
+    cap = int(os.environ.get("AIFORGE_SKILLS_ALWAYS_CAP", "8"))
+    return sorted((s for s in pool if s.always), key=lambda s: -s.priority)[:cap]
+
+
 def select(query: str, cwd: str | None = None, k: int = 4) -> list[Skill]:
     """The skills that :func:`auto_context` would inject for ``query``:
     all always-on skills (capped) + the top-``k`` relevant ones, ordered by
     priority. Factored out so callers can both render the block AND report
     *which* skills fired (workflow-transparency)."""
     pool = load(cwd)
-    # Cap always-on skills so a large registry can't blow the context budget
-    # every turn (highest-priority always-on win).
-    always_cap = int(os.environ.get("AIFORGE_SKILLS_ALWAYS_CAP", "8"))
-    always_on = sorted((s for s in pool if s.always),
-                       key=lambda s: -s.priority)[:always_cap]
+    always_on = _always_on(pool)
     chosen: dict[str, Skill] = {s.name: s for s in always_on}
     for hit in search(query, cwd, k=k, skills=pool):
         sk = next((s for s in pool if s.name == hit["name"]), None)
         if sk is not None:
             chosen[sk.name] = sk
     return sorted(chosen.values(), key=lambda s: -s.priority)
+
+
+def _ambiguity_margin() -> float:
+    """Fractional gap under which candidate[1] is considered a near-tie
+    with candidate[0] (0.15 = within 15% of the top score). 0 disables
+    ambiguity detection entirely (old silent-pick behavior).
+    Tunable via AIFORGE_AMBIGUITY_MARGIN (default 0.15)."""
+    try:
+        return max(0.0, float(os.environ.get("AIFORGE_AMBIGUITY_MARGIN", "0.15")))
+    except (TypeError, ValueError):
+        return 0.15
+
+
+def _ambiguity_floor() -> float:
+    """Minimum top score before a near-tie counts as real ambiguity — stops
+    two near-zero garbage matches from falsely tying.
+    Tunable via AIFORGE_AMBIGUITY_FLOOR (default 2.0)."""
+    try:
+        return max(0.0, float(os.environ.get("AIFORGE_AMBIGUITY_FLOOR", "2.0")))
+    except (TypeError, ValueError):
+        return 2.0
+
+
+def select_or_ask(query: str, cwd: str | None = None, k: int = 4,
+                  pool: list[Skill] | None = None,
+                  ) -> Selection:
+    """Like :func:`select` but separates out AMBIGUOUS near-ties instead of
+    silently auto-picking one. Returns a :class:`Selection` (still unpacks
+    as ``chosen, ambiguous_groups = select_or_ask(...)``):
+
+    - ``chosen`` — always-on items + top relevant matches ABOVE the noise
+      floor (see :func:`_ambiguity_floor`) — similar to :func:`select` but
+      floor-gated, so a weak single match ``select()`` would admit is
+      dropped here. When a near-tie is detected, ONE best-guess (highest
+      priority, ties broken by score) from that tie is still included here
+      — a caller that can't block (an autonomous run) still gets a usable
+      pick.
+    - ``ambiguous_groups`` — each entry is a list of 2+ Skills that scored
+      within :func:`_ambiguity_margin` of each other and needed a
+      best-guess instead of a confident pick. A caller that CAN ask a user
+      (a live chat turn, an interactive ticket) surfaces this for
+      disambiguation.
+
+    ``always``-on items always bypass this — they are never ambiguous."""
+    src_pool = pool if pool is not None else load(cwd)
+    always_on = _always_on(src_pool)
+    always_names = {s.name for s in always_on}
+    chosen: dict[str, Skill] = {s.name: s for s in always_on}
+    ambiguous: list[list[Skill]] = []
+    margin = _ambiguity_margin()
+    floor = _ambiguity_floor()
+    # Always-on items are unconditionally included regardless of score —
+    # exclude them from consideration entirely, otherwise a high-scoring
+    # always-on skill can falsely "tie" with an unrelated match (there's
+    # nothing to disambiguate: the always-on one applies no matter what).
+    # The floor filter applies to EVERY candidate, not just the ambiguity
+    # check — a weak, barely-nonzero token-overlap match (e.g. sharing only
+    # a common word like "to") must not leak into the final selection just
+    # because the pool happens to be small enough that top-k includes it.
+    hits = [h for h in search(query, cwd, k=max(k, 4), skills=src_pool)
+           if h["name"] not in always_names and h["score"] >= floor]
+    if not hits:
+        return Selection(sorted(chosen.values(), key=lambda s: -s.priority), ambiguous)
+    top_score = hits[0]["score"]
+    if (margin > 0 and len(hits) > 1
+            and hits[1]["score"] >= top_score * (1 - margin)):
+        near = [h for h in hits if h["score"] >= top_score * (1 - margin)]
+        near_names = {h["name"] for h in near}
+        group = [s for s in src_pool if s.name in near_names]
+        if len(group) > 1:
+            ambiguous.append(group)
+            score_by_name = {h["name"]: h["score"] for h in near}
+            best = sorted(
+                group, key=lambda s: (-s.priority, -score_by_name[s.name]))[0]
+            chosen[best.name] = best
+            hits = hits[len(near):]   # remaining non-ambiguous hits below
+    for h in hits[:k]:
+        sk_hit = next((s for s in src_pool if s.name == h["name"]), None)
+        if sk_hit is not None:
+            chosen[sk_hit.name] = sk_hit
+    return Selection(sorted(chosen.values(), key=lambda s: -s.priority), ambiguous)
 
 
 def selected_names(query: str, cwd: str | None = None, k: int = 4) -> list[dict]:
@@ -289,5 +383,5 @@ def write_skill(name: str, description: str, body: str,
     return {"ok": True, "name": name, "path": str(path), "memory": mem}
 
 
-__all__ = ["Skill", "load", "search", "render", "select", "selected_names",
-           "auto_context", "write_skill"]
+__all__ = ["Skill", "Selection", "load", "search", "render", "select",
+           "select_or_ask", "selected_names", "auto_context", "write_skill"]
