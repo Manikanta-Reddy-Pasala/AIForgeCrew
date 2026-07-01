@@ -123,8 +123,11 @@ No new plumbing — inject ambiguity info into surfaces that already ask:
   as extra signal for the existing clarity check. Same halt
   (`awaiting_input` + `clarify_questions`) / resume (`/answer`) path,
   unchanged.
-- **team/pipeline, autonomous tickets:** never block. Best-guess =
-  highest score, tie-break by `priority` (already a `Skill` field). Emit a
+- **team/pipeline, autonomous tickets:** never block. Best-guess = highest
+  `priority` (already a `Skill` field) among the tied group, ties within
+  equal priority broken by score — an ambiguous group is by definition
+  already near-tied on score, so an operator's explicit priority is the
+  more meaningful signal than noise in the last few score points. Emit a
   non-blocking notice event on the ticket's trace, e.g. *"Matched
   'deploy-staging' over 'deploy-prod' (ambiguous, picked highest-priority)
   — say so if wrong."* — same pattern as `turn_router.py`'s existing
