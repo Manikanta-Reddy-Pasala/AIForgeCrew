@@ -153,10 +153,20 @@ No new plumbing — inject ambiguity info into surfaces that already ask:
 - Flag: `AIFORGE_AMBIGUITY_MARGIN` (default `0.15`). Setting it to `0`
   disables ambiguity detection entirely (never ambiguous — old silent-pick
   behavior), consistent with every other feature flag in this codebase.
+- Flag: `AIFORGE_AMBIGUITY_FLOOR` (default `2.0`) — minimum score before a
+  near-tie counts as real ambiguity, so two near-zero garbage matches never
+  falsely trigger a disambiguation ask.
 - Single PR, no migration needed — all new fields are optional with
   backward-compatible defaults (untagged rule = always-on, globs-only rule
   unaffected, no schema change required for existing `.aiforge/rules/*.md`
   or memory-store bullets).
+- Skills/workflows chat surfacing (the `_skills.auto_context`/
+  `_workflows.auto_context` calls in `chat_agent.run_chat_agent`) still use
+  the silent-pick `select()` path — only the rules block was switched to
+  `select_or_ask()` this round. `workflows.select_or_ask()` (and the
+  ambiguity path of `skills.select_or_ask()` for the chat skills block) are
+  shipped and tested but have no chat-time caller yet. Deliberately
+  deferred, not a regression — see follow-up note below.
 
 ## Out of scope
 
@@ -164,3 +174,19 @@ No new plumbing — inject ambiguity info into surfaces that already ask:
   one store — orthogonal to gating; not needed to fix noise/ambiguity.
 - A "mini" chat mode — confirmed not to exist in the backend (only
   `simple`, `plan`, `team`); no work needed there.
+
+## Follow-ups (from final branch review, not blocking)
+
+- Wire `chat_agent.run_chat_agent`'s skills/workflows chat blocks from
+  `auto_context()` (silent-pick) to `select_or_ask()` (ambiguity-aware),
+  mirroring what the rules block already does — closes the gap noted in
+  Rollout above and gives `workflows.select_or_ask()` a real caller.
+- `rule_capture._write_repo_rule` writes an unquoted `name:` frontmatter
+  value; a colon in the canonical text (e.g. `"note: always use yarn"`)
+  breaks the YAML parse and silently drops that rule's `triggers` (fails
+  open — rule still applies, just ungated). Quote the value or emit
+  `triggers:` before `name:`.
+- `chat_agent._rules_context`'s ambiguity note only surfaces
+  `ambiguous[0]` — a tagged-bullet pool producing 2+ disjoint near-tie
+  groups would silently drop the rest from the ASK note (low-probability
+  in practice, but `clarify.py`/`adk_runner.py` both iterate every group).
