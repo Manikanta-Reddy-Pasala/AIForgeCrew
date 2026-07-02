@@ -1537,11 +1537,22 @@ step body, and trigger words. Before tackling unfamiliar work, skill_search \
 AND workflow_search first — a saved playbook may already solve it. The \
 RELEVANT SKILLS / RELEVANT WORKFLOWS shown above are auto-selected for this \
 request by relevance — apply them when they fit.
+- MEMORY FIRST (for understanding/explaining code): before grepping the \
+filesystem, call `memory_lookup(query)` — it semantically recalls the INDEXED \
+codebase (tree-sitter symbols, code/doc chunks, the graphify concept graph) \
+plus prior learnings and decisions from the knowledge memory. For any \
+"explain / how does X work / where is Y / walk me through" question, \
+memory_lookup FIRST (2-4 focused queries), use its hits to jump to the right \
+files, THEN grep/read to confirm details. It is faster and broader than blind \
+filesystem search. Only skip it if the memory returns nothing relevant, then \
+fall back to grep/find. (If the answer needs a specific repo, its code lives \
+under its real path — see RELEVANT SKILLS — not this chat's scratch cwd.)
 - SCOPE before reading: when asked to check/review/understand code, first \
-narrow to the FEW files that actually matter — use `grep`/`find` (and \
-list_dir) to locate the relevant symbols/files, then read only those. Do \
-NOT read every file in the repo; analysing irrelevant files wastes effort \
-and context. Read broadly only when the task genuinely spans the codebase.
+narrow to the FEW files that actually matter — use memory_lookup, then \
+`grep`/`find` (and list_dir) to locate the relevant symbols/files, then read \
+only those. Do NOT read every file in the repo; analysing irrelevant files \
+wastes effort and context. Read broadly only when the task genuinely spans \
+the codebase.
 - When asked to RUN/BUILD/TEST a project: prefer the `project` tool — it \
 auto-detects the stack (maven/gradle/node/react/next/vite/python/go/rust), \
 installs the toolchain, and runs the right command. For anything it \
