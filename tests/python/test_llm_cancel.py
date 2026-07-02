@@ -33,6 +33,9 @@ def test_cancelled_exc_is_non_retryable():
 def test_no_token_uses_default_path(monkeypatch):
     # With no cancel token bound, _post must take the urllib path. Stub urlopen
     # to prove it's used (and the cancellable http.client path is NOT).
+    # Disable the connect-preflight so this transport-stubbed test doesn't do a
+    # real TCP probe to the fake endpoint.
+    monkeypatch.setenv("AIFORGE_LLM_CONNECT_TIMEOUT_S", "0")
     c.set_cancel_event(None)
     called = {}
 

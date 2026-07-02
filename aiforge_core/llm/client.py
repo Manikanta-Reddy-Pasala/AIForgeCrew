@@ -170,6 +170,8 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
     """POST via http.client so a watcher thread can close the connection the
     instant ``cancel`` fires — interrupting an otherwise-blocking generation.
     Used only when a cancel token is bound for this thread."""
+    if not cancel.is_set():
+        _preflight(ep.base_url)   # skip if already cancelled → abort below
     import http.client
     from urllib.parse import urlparse
     url = f"{ep.base_url.rstrip('/')}/chat/completions"
@@ -231,6 +233,7 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
     cancel = _CANCEL.get()
     if cancel is not None:
         return _post_cancellable(ep, payload, timeout_s, cancel)
+    _preflight(ep.base_url)
     req = urllib.request.Request(
         f"{ep.base_url.rstrip('/')}/chat/completions",
         data=payload,
@@ -240,6 +243,36 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
     with urllib.request.urlopen(req, timeout=timeout_s,
                                 context=_post_ctx(ep)) as resp:
         return json.loads(resp.read())
+
+
+def _preflight(base_url: str) -> None:
+    """Fast TCP reachability check before a chat completion. urllib/http.client
+    apply a single scalar timeout to BOTH connect and read, so an unreachable
+    or asleep host (dropped SYN, no RST) blocks the FULL request timeout
+    (chat default 600s) just to fail the TCP connect — the simple-chat
+    equivalent of the pipeline retry-storm. A short connect probe fails an
+    unreachable endpoint in seconds instead. Reuses the same
+    AIFORGE_LLM_CONNECT_TIMEOUT_S knob as the pipeline (escalating_llm).
+    ``0`` disables the preflight. Raises ConnectionError when unreachable."""
+    ct = _float_env("AIFORGE_LLM_CONNECT_TIMEOUT_S", 8.0)
+    if ct <= 0:
+        return
+    import socket as _socket
+    from urllib.parse import urlparse as _urlparse
+    try:
+        u = _urlparse(base_url)
+        host = u.hostname
+        if not host:
+            return
+        port = u.port or (443 if u.scheme == "https" else 80)
+    except Exception:  # noqa: BLE001 — malformed url → let the real call surface it
+        return
+    try:
+        _socket.create_connection((host, port), timeout=ct).close()
+    except OSError as exc:
+        raise ConnectionError(
+            f"LLM endpoint unreachable ({host}:{port}) within {ct:g}s "
+            f"connect budget: {exc}") from exc
 
 
 def _int_env(name: str, default: int) -> int:
