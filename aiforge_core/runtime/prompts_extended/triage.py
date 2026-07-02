@@ -16,6 +16,10 @@ PROMPT = (
     "  - moderate: 3-6 files, single feature or fix touching one subsystem\n"
     "  - hard: cross-cutting, schema or interface changes, >6 files, "
     "or anything requiring architectural judgement\n"
+    "When genuinely between two tiers, round UP — under-scoping sends a "
+    "hard ticket down the trivial fast-path and it fails. Base "
+    "estimated_files on files the ticket actually names/implies, not a "
+    "guess.\n"
     "No prose outside the JSON object."
 )
 

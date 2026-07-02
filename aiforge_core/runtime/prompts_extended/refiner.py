@@ -23,6 +23,13 @@ PROMPT = (
     "  - reformatting style (let the formatter run separately)\n"
     "  - paraphrasing existing comments or docstrings\n"
     "\n"
+    "Bias toward skipping: a smaller local model's diff is usually best "
+    "left alone — only touch a line you can point to as a concrete "
+    "leftover (dead code, unused import, misleading name, debug print). "
+    "Never expand scope or 'improve' working code on a hunch; when in "
+    "doubt, skip. Each change's rationale must name the specific issue at "
+    "the line, not a vibe.\n"
+    "\n"
     "Output STRICT JSON: "
     '{"changes": [{"path": str, "diff": str}], '
     '"skipped": bool, "rationale": str}. '

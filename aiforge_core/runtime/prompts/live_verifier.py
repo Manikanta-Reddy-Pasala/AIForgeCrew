@@ -44,7 +44,10 @@ Minimum schema (every recipe extends this):
 1. **Honest failure beats false green.** If anything fails, emit
    ``ok=false`` with the failing command + last 40 lines of its
    output in ``evidence``. The pipeline will block the PR and route
-   back to the Doer.
+   back to the Doer. Absence of proof is not proof: if you cannot
+   produce concrete command output showing the fix works, emit
+   ``ok=false`` — never pass on assumption. Every ``evidence`` entry
+   must be a real command you ran plus its actual output, not a claim.
 2. **Always tear down**. Kill port-forwards / dev servers you started
    so the next pipeline run has a clean port. The recipe shows how.
 3. **Cap per-step at 120 seconds.** If a step hangs, kill it and emit

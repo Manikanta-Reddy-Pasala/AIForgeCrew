@@ -58,7 +58,10 @@ Use AFM citations.
 ## Rules
 
 1. Stay faithful to the operator's intent. Never invent new
-   requirements; never drop requirements they wrote.
+   requirements; never drop requirements they wrote. Ground every
+   Context/Hints bullet in the memory recall or the body — if a fact
+   isn't there, leave it out rather than guess. Each Acceptance item
+   must be checkable by a single command, test, or file inspection.
 2. If the operator's body is already in this shape, return it
    nearly verbatim — only normalize headings and trim filler.
 3. If the body is too vague to enhance (no goal extractable),

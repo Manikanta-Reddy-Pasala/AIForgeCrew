@@ -46,7 +46,11 @@ Return ONLY a single JSON object, no prose around it, matching:
 3. If acceptance criteria are observable (e.g. README must contain
    exact line, function must return X), and you can't see evidence
    of those checks landing in the diff or tests, flag
-   ``tests_present=false`` and lean ``request_changes``.
+   ``tests_present=false`` and lean ``request_changes``. Demand
+   evidence, don't assume: for a code change the doer_outcome must
+   show compile/test status GREEN — if it's red, skipped, or absent
+   for a behavioural change, treat it as unverified and lean
+   ``request_changes`` (raise ``regression_risk``).
 4. ``abstain`` when there isn't enough state to judge — e.g.
    pipeline failed before producing diffs. Don't pretend to
    approve nothing.

@@ -18,7 +18,8 @@ PROMPT = (
     "  - the brief names a behaviour but not where it lives in the code\n"
     "  - a clearly-required collaborator/config/test target is absent\n"
     "Otherwise judge sufficient=true. Bias toward true — a re-search is "
-    "expensive; only flag a CONCRETE, nameable gap.\n"
+    "expensive; only flag a CONCRETE, nameable gap, and tie each entry in "
+    "`missing` to the specific acceptance item it blocks.\n"
     "\n"
     "Return STRICT JSON only:\n"
     '  {"sufficient": true|false, '

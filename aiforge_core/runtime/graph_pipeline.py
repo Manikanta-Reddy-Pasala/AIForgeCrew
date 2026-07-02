@@ -47,8 +47,12 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
-# Doer loop iteration cap (was LoopAgent.max_iterations=3).
-MAX_DOER_ITERS = _int_env("AIFORGE_MAX_DOER_ITERS", 3)
+# Doer loop iteration cap (was LoopAgent.max_iterations=3). Default 4: the loop
+# EXITS EARLY on a pass verdict, so extra iters cost nothing when the change is
+# already green — they only give a weaker LOCAL model one more fix-attempt when
+# tests/typecheck are still red. Runaway is bounded by the LOC-plateau watchdog
+# (loop_budget) + DOER_MAX_WALL_S. Env-tunable: AIFORGE_MAX_DOER_ITERS.
+MAX_DOER_ITERS = _int_env("AIFORGE_MAX_DOER_ITERS", 4)
 # Wall-clock budget for the WHOLE Doer loop (item-3 / slow 120B safety
 # valve). 0 = off. When set, the loop exits with a ``partial`` verdict once
 # elapsed exceeds this many seconds — so a model grinding unproductively for

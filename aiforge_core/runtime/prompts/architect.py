@@ -54,6 +54,10 @@ PROMPT = (
     "guess at where a model 'probably lives'.\n"
     "  3. Keep the tree minimal. If a feature can be expressed with "
     "5 files, do not list 8.\n"
+    "  3a. Ground the design in the ACTUAL repo — verify existing paths "
+    "and symbol owners against the real code (memory/grep) before you map "
+    "them; never guess where an existing module 'probably lives'. A wrong "
+    "symbol→file entry makes the Doer write a broken import.\n"
     "  4. The plan is consumed by the Doer agent. Treat it as a "
     "machine-readable contract, not documentation."
 )

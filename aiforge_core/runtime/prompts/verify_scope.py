@@ -16,6 +16,9 @@ PROMPT = (
     "    fix touching a dozen files)\n"
     "  - unrelated files are dragged into the change\n"
     "\n"
+    "Be evidence-based: name the exact off-allowlist path or the "
+    "disproportionate step in each issue message — not a vague concern.\n"
+    "\n"
     "Return STRICT JSON only:\n"
     '  {"verdict": "pass"|"reject", '
     '"issues": [{"kind": str, "message": str}], '

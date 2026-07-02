@@ -44,7 +44,10 @@ PROMPT = (
     '              "prior_facts": [str],\n'
     '              "gotchas": [str]}]}\n'
     "Stop once every distinct goal/acceptance item has at least one "
-    "relevant_files entry — don't over-research.\n"
+    "relevant_files entry — don't over-research. Ground every "
+    "relevant_files path, related_symbol, and prior_fact in a tool result "
+    "you actually saw (repo_map/graphify/file_read/memory/web) — never a "
+    "guessed path; if unconfirmed, leave it out.\n"
     "\n"
     "--- Enhanced ticket (from pipeline state) ---\n"
     "{enhanced_body?}\n"

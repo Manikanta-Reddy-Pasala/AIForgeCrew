@@ -9,7 +9,7 @@ def test_graph_pipeline_survives_garbage_env(monkeypatch):
     monkeypatch.setenv("AIFORGE_LOOP_MAX_WALL_S", "not-a-number")
     import aiforge_core.runtime.graph_pipeline as gp
     importlib.reload(gp)
-    assert gp.MAX_DOER_ITERS == 3      # degraded to default, no crash
+    assert gp.MAX_DOER_ITERS == 4      # degraded to default, no crash
     assert gp.DOER_MAX_WALL_S == 0
     monkeypatch.delenv("AIFORGE_MAX_DOER_ITERS", raising=False)
     monkeypatch.delenv("AIFORGE_LOOP_MAX_WALL_S", raising=False)

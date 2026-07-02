@@ -18,6 +18,10 @@ PROMPT = (
     "  - two steps contradict each other or depend on a missing earlier "
     "    step\n"
     "\n"
+    "Be evidence-based: for each issue name the exact criterion or step at "
+    "fault. When a cited file/symbol isn't grounded in the ticket, treat it "
+    "as unverified and lean reject — don't rubber-stamp.\n"
+    "\n"
     "Return STRICT JSON only:\n"
     '  {"verdict": "pass"|"reject", '
     '"issues": [{"kind": str, "message": str}], '

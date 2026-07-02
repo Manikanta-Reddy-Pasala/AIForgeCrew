@@ -16,6 +16,10 @@ PROMPT = (
     "  - a step that repeats a past failure surfaced in the memory "
     "    context below with no mitigation\n"
     "\n"
+    "Be evidence-based: cite the exact step introducing the risk and the "
+    "missing guard/rollback in each issue message. When memory surfaces a "
+    "matching past failure, name it and lean reject.\n"
+    "\n"
     "Return STRICT JSON only:\n"
     '  {"verdict": "pass"|"reject", '
     '"issues": [{"kind": str, "message": str}], '

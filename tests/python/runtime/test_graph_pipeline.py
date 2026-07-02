@@ -90,12 +90,12 @@ def test_loop_gate_exits_on_pass() -> None:
 def test_loop_gate_loops_then_exits_at_cap() -> None:
     state = {"feedback_verdict": '{"verdict": "fail"}'}
     ctx = _FakeCtx(state)
-    _run(gp._loop_gate(ctx))
-    assert ctx.route == gp.ROUTE_LOOP and state["doer_iters"] == 1
-    _run(gp._loop_gate(ctx))
-    assert ctx.route == gp.ROUTE_LOOP and state["doer_iters"] == 2
-    _run(gp._loop_gate(ctx))  # hits MAX_DOER_ITERS=3
-    assert ctx.route == gp.ROUTE_EXIT and state["doer_iters"] == 3
+    # Loop while under the cap; exit exactly at MAX_DOER_ITERS (default 4).
+    for i in range(1, gp.MAX_DOER_ITERS):
+        _run(gp._loop_gate(ctx))
+        assert ctx.route == gp.ROUTE_LOOP and state["doer_iters"] == i
+    _run(gp._loop_gate(ctx))  # hits MAX_DOER_ITERS
+    assert ctx.route == gp.ROUTE_EXIT and state["doer_iters"] == gp.MAX_DOER_ITERS
 
 
 def test_loop_gate_kill_flag_exits() -> None:
