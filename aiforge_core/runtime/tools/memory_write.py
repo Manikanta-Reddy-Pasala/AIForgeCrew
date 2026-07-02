@@ -30,7 +30,8 @@ def _infer_repo() -> str | None:
     ``<root>/<project>/.aiforge-worktrees/<TICKET>`` so the second-
     -to-last path component is the project name (= AFM repo name).
     """
-    root = os.environ.get("AIFORGE_REPO_ROOT")
+    from aiforge_core.runtime import request_context
+    root = request_context.get_repo_root()
     if not root:
         return None
     parts = [p for p in root.split(os.sep) if p]

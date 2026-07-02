@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+from aiforge_core.runtime import request_context as rc
 from aiforge_core.runtime.tools import delegation as dlg
 
 
@@ -53,12 +54,18 @@ def test_delegate_timeout(monkeypatch):
 
 
 def test_delegation_depth_cap(monkeypatch):
+    # Depth is now request-scoped (contextvar), not process-global env — so
+    # concurrent chains can't clobber each other. Drive it up to the cap.
     async def _ok(role, prompt, timeout):
         return {"ok": True, "role": role, "output": "x", "state_keys": []}
     monkeypatch.setattr(dlg, "_run_delegate_async", _ok)
-    monkeypatch.setenv("AIFORGE_DELEGATION_DEPTH", "3")
     monkeypatch.setenv("AIFORGE_DELEGATION_MAX_DEPTH", "3")
-    out = dlg.delegate_to_agent("researcher", "do stuff")
+    toks = [rc.enter_delegation() for _ in range(3)]  # depth == 3 == max
+    try:
+        out = dlg.delegate_to_agent("researcher", "do stuff")
+    finally:
+        for t in reversed(toks):
+            rc.reset_delegation(t)
     assert out["ok"] is False
     assert out["error"] == "delegation_depth_exceeded"
     assert out["max_depth"] == 3
@@ -67,12 +74,14 @@ def test_delegation_depth_cap(monkeypatch):
 def test_delegation_depth_increments(monkeypatch):
     captured = {}
     async def _capture(role, prompt, timeout):
-        import os as _os
-        captured["depth_inside"] = _os.environ.get("AIFORGE_DELEGATION_DEPTH")
+        captured["depth_inside"] = rc.get_delegation_depth()
         return {"ok": True, "role": role, "output": "", "state_keys": []}
     monkeypatch.setattr(dlg, "_run_delegate_async", _capture)
-    monkeypatch.setenv("AIFORGE_DELEGATION_DEPTH", "1")
-    out = dlg.delegate_to_agent("planner", "plan")
+    tok = rc.enter_delegation()  # start at depth 1
+    try:
+        out = dlg.delegate_to_agent("planner", "plan")
+    finally:
+        rc.reset_delegation(tok)
     assert out["ok"]
-    assert captured["depth_inside"] == "2"  # incremented before async run
-    assert out["depth"] == 1                # outer call recorded its depth
+    assert captured["depth_inside"] == 2  # incremented before async run
+    assert out["depth"] == 1              # outer call recorded its depth

@@ -51,7 +51,8 @@ def _mentions_total_chars() -> int:
 
 
 def _root(cwd: str) -> str:
-    return os.environ.get("AIFORGE_WORKSPACE_DIR") or cwd
+    from aiforge_core.runtime import request_context
+    return request_context.get_workspace_dir() or cwd
 
 
 def _resolve_path(cwd: str, rel: str) -> str | None:

@@ -290,6 +290,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         # Lock is held — everything from here is inside try/finally so the
         # env mutation can't leak the lock if it raises.
         prev_root = os.environ.get("AIFORGE_REPO_ROOT")
+        # Request-scoped repo root: the contextvar isolates concurrent chats on
+        # different repos (the env below is process-global and clobbers). The
+        # contextvar propagates into the ADK run (same async task/thread) and
+        # into asyncio.to_thread tool dispatch (which copies the context); the
+        # os.environ set is kept for the subprocess graph-runner path + as a
+        # cross-thread fallback for any executor that doesn't copy context.
+        root_token = None
         steps: list[dict] = []
         final_text = ""
         # Subtask panel tracking: the Planner emits a plan (all pending); the
@@ -301,6 +308,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         _run_ok = False
         try:
             os.environ["AIFORGE_REPO_ROOT"] = cwd
+            from aiforge_core.runtime import request_context
+            root_token = request_context.set_repo_root(cwd)
             from google.adk.runners import Runner
             from google.adk.sessions import InMemorySessionService
             from google.genai import types as gtypes
@@ -417,6 +426,11 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         except Exception as exc:  # noqa: BLE001
             q.put({"type": "error", "text": f"pipeline: {exc}"})
         finally:
+            # The repo-root contextvar is thread-local to THIS run, so reset it
+            # unconditionally (no cross-run contamination like the shared env).
+            if root_token is not None:
+                from aiforge_core.runtime import request_context
+                request_context.reset_repo_root(root_token)
             # If a kill-all force-released the lock out from under us, the
             # generation changed: another run (or none) now owns the lock + the
             # env root, so we must NOT release the lock again or restore our

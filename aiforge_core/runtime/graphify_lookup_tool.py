@@ -35,7 +35,8 @@ _CACHE: dict[str, tuple[dict, dict, dict, dict]] = {}
 def _resolve_repo_root(repo_root: str | None) -> Path:
     if repo_root:
         return Path(repo_root).expanduser().resolve()
-    env = os.environ.get("AIFORGE_REPO_ROOT")
+    from aiforge_core.runtime import request_context
+    env = request_context.get_repo_root()
     if env:
         return Path(env).expanduser().resolve()
     # Fallback: walk up from this file until graphify-out/ exists.

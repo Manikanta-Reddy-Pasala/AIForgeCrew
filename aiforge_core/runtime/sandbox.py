@@ -41,11 +41,17 @@ def reset_root_override(token) -> None:
 
 
 def root() -> Path:
-    """Return the absolute, existing repo root (context override > env > default)."""
-    raw = _ROOT_OVERRIDE.get() or os.environ.get(
-        "AIFORGE_REPO_ROOT",
-        str(Path.home() / "aiforge_workspace"),
-    )
+    """Return the absolute, existing repo root.
+
+    Precedence: the chat per-turn override (:func:`set_root_override`) >
+    the request-scoped repo root (contextvar, then ``AIFORGE_REPO_ROOT`` env,
+    via :mod:`request_context`) > the default workspace. The request_context
+    getter is contextvar-first so concurrent chats on different repos don't
+    clobber each other through the process-global env.
+    """
+    from aiforge_core.runtime import request_context
+    raw = _ROOT_OVERRIDE.get() or request_context.get_repo_root() or str(
+        Path.home() / "aiforge_workspace")
     p = Path(raw).expanduser().resolve()
     p.mkdir(parents=True, exist_ok=True)
     return p

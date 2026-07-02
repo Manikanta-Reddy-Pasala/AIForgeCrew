@@ -188,7 +188,8 @@ def _is_blanket_git(cmd: str) -> bool:
 
 
 def _workspace_root() -> Path | None:
-    raw = os.environ.get("AIFORGE_WORKSPACE_DIR")
+    from aiforge_core.runtime import request_context
+    raw = request_context.get_workspace_dir()
     return Path(os.path.expanduser(raw)).resolve() if raw else None
 
 
