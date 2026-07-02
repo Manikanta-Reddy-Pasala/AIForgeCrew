@@ -416,14 +416,10 @@ export default function Chat() {
   // (with a diff) before it lands in simple/plan mode. (Team/parallel runs
   // can't hold edits; the server surfaces a one-time notice there.)
   const reviewEdits = true;
-  // Cave mode (global lean-context flag) — toggled from the header ⋯ menu.
-  const [caveMode, setCaveMode] = useState(false);
-  useEffect(() => { api.llmSettings().then(s => setCaveMode(!!s.cave_mode)).catch(() => {}); }, []);
-  async function toggleCave(on: boolean) {
-    setCaveMode(on);
-    try { await api.setLlmSettings({ cave_mode: on ? 1 : 0 }); toast.success(on ? 'Cave mode on — leaner context' : 'Cave mode off'); }
-    catch (e: any) { toast.error(e.message); setCaveMode(!on); }
-  }
+  // Cave mode (lean context) is now AUTO-enabled for small model windows
+  // (≤48K) server-side, so the per-chat toggle was removed — it's the
+  // default for local models. Advanced operators can still force it on/off
+  // from the Settings LLM card.
 
   // Pending approval gate (#1) + checkpoints panel (#3).
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
@@ -1404,17 +1400,8 @@ export default function Chat() {
               </label>
             )}
 
-            {/* Cave mode — promoted to the top bar (compact pill). */}
-            <button
-              onClick={() => toggleCave(!caveMode)}
-              title="Cave mode: send the agents the leanest useful context (smaller repo map, skip skills/workflows/@-mentions, condense sooner). Global — also applies to ticket runs."
-              className={caveMode ? 'chat-mode-toggle' : 'ghost sm'}
-              style={{ whiteSpace: 'nowrap', padding: '2px 8px',
-                       background: caveMode ? 'var(--accent, #6366f1)' : undefined,
-                       color: caveMode ? '#fff' : undefined }}
-            >
-              🦴 Cave{caveMode ? ' · on' : ''}
-            </button>
+            {/* Cave mode (lean context) is auto-on for small windows — the
+                per-chat pill was removed; override lives in Settings. */}
 
             {/* Orchestrator model — the enhancer + planner (layer-1 splitter).
                 Shown in team mode where those agents run. */}
