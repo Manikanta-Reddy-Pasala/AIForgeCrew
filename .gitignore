@@ -70,3 +70,6 @@ graphify-out/
 
 # git worktrees (superpowers:using-git-worktrees)
 .worktrees/
+
+# brainstorming visual companion
+.superpowers/
