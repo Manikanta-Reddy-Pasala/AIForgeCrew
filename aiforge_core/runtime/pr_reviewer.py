@@ -7,7 +7,6 @@ LiteLLM call against the planner model is enough.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -101,13 +100,22 @@ def _llm_review(prompt: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         log.warning("pr_reviewer LLM failed: %s", exc)
         return {}
-    # Extract first JSON object from possibly-markdown response.
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        return {}
+    return _extract_review_json(text)
+
+
+def _extract_review_json(text: str) -> dict[str, Any]:
+    """First balanced ``{...}`` object → dict, ``{}`` when none parses.
+
+    Replaces a greedy ``\\{.*\\}`` regex that mis-grabbed prose braces and
+    failed on nested/trailing text. A review that no longer parses reads as
+    "no findings" (a silent pass), so parse HARDER before emptying — only a
+    genuinely JSON-free response yields ``{}`` (which stays fail-open, never
+    fail-closed, so a flaky model can't wedge an autonomous run)."""
     try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
+        from aiforge_core.runtime.rule_capture import _extract_json
+        obj = _extract_json(text or "")
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
         return {}
 
 
@@ -265,6 +273,7 @@ def review_pr(
 
 __all__ = [
     "review_pr",
+    "_extract_review_json",
     "needs_revision",
     "extract_fix_list",
     "review_rounds",

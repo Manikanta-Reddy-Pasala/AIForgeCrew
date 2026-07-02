@@ -53,28 +53,93 @@ MAX_GAP_PASSES = 1
 ROUTE_RESEARCH_GAP = "research_gap"
 ROUTE_RESEARCH_OK = "research_ok"
 
+# Complexity tokens that take the trivial fast-path (skip enhancer→
+# research→plan→verify). A local triage model rarely emits the exact word
+# ``trivial`` — it says "simple"/"low"/"easy"/"minor"/"small" — so the gate
+# treats this whole synonym set as trivial. Everything else (moderate/high/
+# complex/…/unparseable) falls to the safe FULL path. Set
+# AIFORGE_TRIAGE_STRICT=1 to restore exact-"trivial"-only matching.
+_TRIVIAL_SYNONYMS = frozenset({
+    "trivial", "simple", "low", "easy", "minor", "small",
+})
+# Recognised complexity words — used to decide whether a BARE model token
+# (no JSON wrapper) is a genuine verdict vs prose noise. An unrecognised
+# bare token falls back to "moderate" (→ FULL), so garbage never fast-paths.
+_KNOWN_COMPLEXITY = _TRIVIAL_SYNONYMS | frozenset({
+    "moderate", "medium", "high", "complex", "hard", "large", "difficult",
+})
+# Surrounding junk a sloppy model may wrap a one-word verdict in
+# ("Trivial.", "**simple**", " low ", '"easy"').
+_COMPLEXITY_STRIP = "`\"'*_.,:;!?()[]{}<> \t\r\n"
+
+
+def _normalize_complexity(text: Any) -> str:
+    """Lowercase + strip surrounding whitespace/quotes/fences/punctuation.
+
+    Robust to a local model emitting ``"Trivial."`` / ``" simple "`` /
+    ``**easy**`` — all normalise to the bare token.
+    """
+    return str(text).strip().strip(_COMPLEXITY_STRIP).lower()
+
+
+def _coerce_complexity_token(text: Any) -> str:
+    """A bare (non-JSON) model token → a recognised complexity word.
+
+    Anything not in the known vocabulary defaults to ``"moderate"`` so a
+    stray sentence never triggers the fast path (fail toward FULL)."""
+    norm = _normalize_complexity(text)
+    return norm if norm in _KNOWN_COMPLEXITY else "moderate"
+
+
+def _triage_strict() -> bool:
+    """AIFORGE_TRIAGE_STRICT=1 restores exact-"trivial"-only fast-pathing."""
+    return str(os.environ.get("AIFORGE_TRIAGE_STRICT", "")).strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def _is_trivial(complexity: Any) -> bool:
+    """Whether a (normalised) complexity token takes the fast path."""
+    token = _normalize_complexity(complexity)
+    if _triage_strict():
+        return token == "trivial"
+    return token in _TRIVIAL_SYNONYMS
+
 
 def _read_complexity(state: Any) -> str:
     """Pull the triage complexity verdict from state if present.
 
     Accepts ``state['complexity']`` (pre-seeded) or the triage agent's
-    ``triage_verdict`` JSON. Defaults to ``"moderate"`` (full path) when
-    absent — the fast path only fires on an explicit ``trivial`` signal.
+    ``triage_verdict`` (a dict, a JSON string possibly wrapped in prose/
+    fences, or a bare one-word token). Defaults to ``"moderate"`` (full
+    path) when absent or unrecognised — the fast path only fires on a
+    trivial-synonym signal (see :data:`_TRIVIAL_SYNONYMS`).
     """
     try:
         c = state.get("complexity")
-        if isinstance(c, str) and c:
-            return c.lower()
+        if isinstance(c, str) and c.strip():
+            return _normalize_complexity(c) or "moderate"
         raw = state.get("triage_verdict")
         if isinstance(raw, dict):
-            return str(raw.get("complexity", "moderate")).lower()
+            return _normalize_complexity(
+                raw.get("complexity", "moderate")) or "moderate"
         if isinstance(raw, str) and raw.strip():
             text = raw.strip().strip("`")
             if text[:4].lower() == "json":
                 text = text[4:]
-            obj = json.loads(text)
-            if isinstance(obj, dict):
-                return str(obj.get("complexity", "moderate")).lower()
+            obj: Any = None
+            try:
+                obj = json.loads(text)
+            except Exception:
+                # prose {json} prose — brace-balanced fallback
+                try:
+                    from .rule_capture import _extract_json
+                    obj = _extract_json(raw)
+                except Exception:
+                    obj = None
+            if isinstance(obj, dict) and obj.get("complexity") is not None:
+                return _normalize_complexity(obj["complexity"]) or "moderate"
+            # No JSON at all → treat the raw text as a bare verdict token.
+            return _coerce_complexity_token(raw)
     except Exception:
         pass
     return "moderate"
@@ -176,7 +241,7 @@ async def _triage_gate(ctx):  # type: ignore[no-untyped-def]
     if _force_full_pipeline():
         route = ROUTE_FULL
     else:
-        route = ROUTE_TRIVIAL if complexity == "trivial" else ROUTE_FULL
+        route = ROUTE_TRIVIAL if _is_trivial(complexity) else ROUTE_FULL
     ctx.state["graph_route"] = {"complexity": complexity, "route": route}
     ctx.route = route
     _trace(":GraphRoute", {"complexity": complexity, "route": route})
@@ -426,4 +491,5 @@ __all__ = [
     "make_verifier_gate", "make_plan_promote", "make_gap_gate",
     "_read_complexity", "_validator_failed", "_feedback_passed",
     "_parse_verdict", "_gap_sufficient", "_render_gap_brief", "_gap_gate",
+    "_is_trivial", "_normalize_complexity", "_TRIVIAL_SYNONYMS",
 ]

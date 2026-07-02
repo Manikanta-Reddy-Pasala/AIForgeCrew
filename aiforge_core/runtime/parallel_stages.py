@@ -69,20 +69,36 @@ def _coerce_verdict(raw: Any) -> dict:
     """
     if isinstance(raw, dict):
         return raw
-    if isinstance(raw, str):
+    if isinstance(raw, str) and raw.strip():
         text = raw.strip()
         if text.startswith("```"):
             text = text.strip("`")
             if text[:4].lower() == "json":
                 text = text[4:]
+        # 1. clean parse (fenced or bare JSON object).
         try:
             obj = json.loads(text)
             if isinstance(obj, dict):
                 return obj
         except Exception:
-            head = text.lstrip("`*_-> ").lower()
-            if head.startswith("reject"):
-                return {"verdict": "reject", "rationale": text[:200]}
+            pass
+        # 2. brace-balanced extraction — survives ``prose {json} prose``
+        #    and trailing commentary a small local model tacks on. This is
+        #    the real hardening: a malformed-but-present REJECT still lands
+        #    as reject instead of silently defaulting to pass below.
+        try:
+            from aiforge_core.runtime.rule_capture import _extract_json
+            obj = _extract_json(raw)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+        # 3. bare leading ``reject`` token (no JSON at all).
+        head = text.lstrip("`*_-> ").lower()
+        if head.startswith("reject"):
+            return {"verdict": "reject", "rationale": text[:200]}
+    # 4. LAST resort: truly unparseable → fail OPEN (defensible for one
+    #    axis; the other axes + Feedback/Validator gates still apply).
     return {"verdict": "pass"}
 
 
