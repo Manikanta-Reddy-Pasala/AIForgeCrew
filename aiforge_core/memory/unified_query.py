@@ -14,11 +14,13 @@ Sources merged (each contributes, soft-fail individually):
 6. docs_index.lookup_doc — external library docs (top library guessed
    from query: spring/react/mongodb/...)
 
-Ranking: each source emits a ``score`` (roughly [0, 1]); we multiply by
-the per-source weight (tunable via ``AIFORGE_UMEM_WEIGHT_<source>``) and
-take top-K by the weighted score. NOTE: this is weight-scaled, not
-min-max normalised — a source with a fixed high score + weight > 1 can
-outrank a relevance hit from a [0,1]-cosine source.
+Ranking: each source emits a ``score`` (roughly [0, 1]); we min-max
+normalise it per source (so each source's top hit maps to its weight
+ceiling — comparable across sources), multiply by the per-source weight
+(tunable via ``AIFORGE_UMEM_WEIGHT_<source>``), then dedup identical
+content across sources and take top-K. Normalisation is monotonic within
+a source, so within-source order is unchanged; disable via
+``AIFORGE_UMEM_NORMALIZE=0`` to restore the legacy weight-scaled scores.
 
 Public surface:
 - ``query(text, *, ticket=None, role=None, limit=8) -> dict``
@@ -96,6 +98,8 @@ def query(
                 used.append("ticket")
                 raw_hits.append({
                     **row, "source": "ticket",
+                    "_raw_score": 1.0,
+                    "_weight": weights["ticket"],
                     "score": 1.0 * weights["ticket"],
                 })
         except Exception as exc:
@@ -193,11 +197,28 @@ def query(
         except Exception as exc:
             errors.append(f"xrepo: {exc}")
 
+    # Pre-rank fix: min-max normalize each source's scores to [0,1] before
+    # the weight applies, so a fixed-score source (ticket 1.0, afm 0.95…)
+    # can't auto-bury a real cosine-relevance hit. Soft-fail → un-normalized.
+    try:
+        raw_hits = _normalize_scores(raw_hits)
+    except Exception as exc:  # noqa: BLE001 — ranking must never break query
+        errors.append(f"normalize: {exc}")
+
     raw_hits.sort(key=lambda h: -float(h.get("score") or 0))
+
+    # Cross-source content dedup: the same doc can arrive from find_doc AND
+    # afm_bundle; keep the highest-scored copy. Soft-fail → un-deduped.
+    try:
+        raw_hits = _dedup(raw_hits)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"dedup: {exc}")
+
     # Gap #3: diversify so one ticket / source can't flood the block.
     # Cap per group (ticket id if present, else source) — agentmemory's
     # session-diversification analog. Knob: AIFORGE_DIVERSIFY_PER_GROUP
-    # (default 3, 0 disables).
+    # (default 3, 0 disables). Single-source recall (embedded SQLite) is
+    # exempt from the cap so it can't be squashed to 3 (see _diversify).
     raw_hits = _diversify(raw_hits)
     # Optional cross-encoder rerank pass over the top-30 — biggest
     # quality jump per hour for natural-language → exact-symbol
@@ -234,16 +255,96 @@ def _diversify(hits: list[dict], *, per_group: int | None = None) -> list[dict]:
             per_group = 3
     if per_group <= 0:
         return hits
+
+    def _key(h: dict) -> str:
+        return str(h.get("ticket") or h.get("group") or h.get("source") or "")
+
+    # Single-source case: when every hit collapses to ONE group (e.g. the
+    # embedded SQLite backend where recall rows all share source="doer"),
+    # capping would drop a limit=8 recall down to 3 real hits. Skip the cap
+    # and let the caller's [:limit] slice bound the result instead.
+    distinct = {_key(h) for h in hits}
+    if len(distinct) <= 1:
+        return hits
+
     seen: dict[str, int] = {}
     out: list[dict] = []
     for h in hits:
-        key = str(h.get("ticket") or h.get("group") or h.get("source") or "")
+        key = _key(h)
         n = seen.get(key, 0)
         if n >= per_group:
             continue
         seen[key] = n + 1
         out.append(h)
     return out
+
+
+def _dedup(hits: list[dict]) -> list[dict]:
+    """Drop duplicate content arriving from multiple sources, keeping the
+    highest-scored copy. Key = normalized text (strip+lower, first 200
+    chars) when present, else ``source_uri``, else object identity (so
+    distinct empty-text hits never merge). Relative order follows the
+    first appearance of each key; extra keys on the kept hit survive."""
+    def _score(h: dict) -> float:
+        try:
+            return float(h.get("score") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    order: list[object] = []
+    best: dict[object, dict] = {}
+    for h in hits:
+        text = (h.get("text") or "").strip().lower()
+        key: object = text[:200] if text else (h.get("source_uri") or id(h))
+        if key not in best:
+            best[key] = h
+            order.append(key)
+        elif _score(h) > _score(best[key]):
+            best[key] = h
+    return [best[k] for k in order]
+
+
+def _normalize_scores(hits: list[dict]) -> list[dict]:
+    """Min-max normalize each *source's* raw scores to [0,1], then apply
+    the per-source weight — so a source's top hit maps to its weight ceiling
+    and cross-source comparison is fair (a fixed-score ticket no longer
+    auto-outranks a real cosine hit).
+
+    Uses ``_raw_score`` / ``_weight`` stashed by :func:`_tag` (falls back to
+    the existing ``score`` for hits that never went through ``_tag``).
+    Monotonic within a source → within-source ordering is preserved (the
+    Neo4j/afm ranking order does not change, only its scale). Div-by-zero
+    guard: a source with a single hit or all-equal scores has span 0 →
+    normalized 1.0 (it *is* the top of its source), i.e. score = weight.
+
+    Gated by ``AIFORGE_UMEM_NORMALIZE`` (default on; set 0/false to keep the
+    legacy weight-scaled scores)."""
+    if not hits:
+        return hits
+    if os.environ.get("AIFORGE_UMEM_NORMALIZE", "1").strip().lower() in (
+            "0", "false", "no", "off"):
+        return hits
+
+    groups: dict[str, list[dict]] = {}
+    for h in hits:
+        groups.setdefault(str(h.get("source") or ""), []).append(h)
+
+    for group in groups.values():
+        raws = [_raw_of(h) for h in group]
+        lo, hi = min(raws), max(raws)
+        span = hi - lo
+        for h in group:
+            w = float(h.get("_weight", 1.0))
+            norm = 1.0 if span <= 0 else (_raw_of(h) - lo) / span
+            h["score"] = norm * w
+    return hits
+
+
+def _raw_of(h: dict) -> float:
+    try:
+        return float(h.get("_raw_score", h.get("score") or 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _rerank_top(hits: list[dict], *, query: str) -> list[dict] | None:
@@ -453,7 +554,14 @@ def _tag(rows: list[dict], *, source: str, weight: float) -> list[dict]:
     for r in rows:
         d = dict(r)
         d["source"] = d.get("source") or source
-        d["score"] = float(d.get("score") or 0.5) * weight
+        raw = float(d.get("score") or 0.5)
+        # Keep the pre-weight raw score + weight so _normalize_scores can
+        # min-max rescale per source before ranking (fixed-score sources
+        # otherwise auto-outrank real cosine hits). ``score`` stays as the
+        # provisional weight-scaled value for backward compat / soft-fail.
+        d["_raw_score"] = raw
+        d["_weight"] = weight
+        d["score"] = raw * weight
         out.append(d)
     return out
 

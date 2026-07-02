@@ -252,10 +252,22 @@ def test_diversify_caps_per_group(uq) -> None:
 
 
 def test_diversify_keys_by_source_without_ticket(uq) -> None:
+    # Two distinct sources so the single-source cap-skip doesn't apply;
+    # each source is still capped at per_group.
+    hits = [{"source": "doc", "text": str(i)} for i in range(4)]
+    hits += [{"source": "memory", "text": f"m{i}"} for i in range(4)]
+    out = uq._diversify(hits, per_group=2)
+    assert len(out) == 4
+    assert [h["text"] for h in out if h["source"] == "doc"] == ["0", "1"]
+
+
+def test_diversify_single_source_skips_cap(uq) -> None:
+    # All hits collapse to ONE group (source="doc") → cap is skipped so an
+    # embedded-SQLite-style single-source recall isn't squashed to per_group.
     hits = [{"source": "doc", "text": str(i)} for i in range(4)]
     out = uq._diversify(hits, per_group=2)
-    assert len(out) == 2
-    assert [h["text"] for h in out] == ["0", "1"]
+    assert len(out) == 4
+    assert [h["text"] for h in out] == ["0", "1", "2", "3"]
 
 
 def test_diversify_passthrough_under_cap(uq) -> None:

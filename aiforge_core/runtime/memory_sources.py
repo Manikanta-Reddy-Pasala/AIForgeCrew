@@ -12,6 +12,7 @@ Lives at ``$AIFORGE_SOURCES_DB_PATH`` (default
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS memory_sources (
     status       TEXT NOT NULL DEFAULT 'idle',
     units        INTEGER NOT NULL DEFAULT 0,
     error        TEXT,
+    detail       TEXT,
     last_indexed TEXT,
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -59,10 +61,20 @@ def _conn() -> Iterator[sqlite3.Connection]:
     c.execute("PRAGMA journal_mode=WAL")
     try:
         c.executescript(_DDL)
+        _migrate(c)
         yield c
         c.commit()
     finally:
         c.close()
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    """Add columns introduced after the initial schema to pre-existing DBs
+    (CREATE TABLE IF NOT EXISTS won't retro-add them). Idempotent."""
+    cols = {r[1] for r in c.execute(
+        "PRAGMA table_info(memory_sources)").fetchall()}
+    if "detail" not in cols:
+        c.execute("ALTER TABLE memory_sources ADD COLUMN detail TEXT")
 
 
 def _iso(v):
@@ -75,9 +87,11 @@ def _iso(v):
 
 
 def _row(r: sqlite3.Row) -> dict:
+    keys = r.keys()
     return {"id": r["id"], "kind": r["kind"], "name": r["name"],
             "location": r["location"], "status": r["status"],
             "units": r["units"], "error": r["error"],
+            "detail": (r["detail"] if "detail" in keys else None),
             "last_indexed": _iso(r["last_indexed"]),
             "created_at": _iso(r["created_at"])}
 
@@ -119,7 +133,8 @@ def delete(source_id: int) -> bool:
 
 
 def set_status(source_id: int, status: str, *, units: int | None = None,
-               error: str | None = None, indexed: bool = False) -> None:
+               error: str | None = None, indexed: bool = False,
+               layers: dict | None = None) -> None:
     sets = ["status = ?"]
     params: list = [status]
     if units is not None:
@@ -127,6 +142,16 @@ def set_status(source_id: int, status: str, *, units: int | None = None,
         params.append(units)
     sets.append("error = ?")
     params.append(error)
+    if layers is not None:
+        # Per-layer index outcome (code_chunks/doc_chunks/symbols/graphify →
+        # ok|skip:…|error:…) so the UI/operator can see which layer failed on
+        # a "partial" index. Stored as JSON; soft — a serialize failure just
+        # skips the column.
+        try:
+            sets.append("detail = ?")
+            params.append(json.dumps(layers))
+        except (TypeError, ValueError):
+            sets.pop()
     if indexed:
         sets.append(f"last_indexed = {_NOW}")
     params.append(source_id)

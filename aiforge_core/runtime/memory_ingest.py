@@ -72,7 +72,11 @@ def _chunks(text: str) -> list[str]:
 def _write(text: str, *, kind: str, repo: str, ref: str) -> bool:
     from aiforge_core.runtime.tools.memory_write import memory_write
     res = memory_write(text=text, kind=kind, tags=["ingest", ref], repo=repo)
-    return bool(res.get("ok"))
+    # Count only real inserts. A deduped write returns ok=True but id=0
+    # (embedded) or deduped=True (Neo4j) and persists nothing — counting it
+    # made a re-index of an unchanged repo report its full unit count while
+    # inserting zero rows.
+    return bool(res.get("id")) and not res.get("deduped")
 
 
 def _iter_files(root: Path, exts: set[str]):
@@ -351,9 +355,22 @@ def run_index(source_id: int) -> None:
         return
     _ms.set_status(source_id, "indexing", error=None)
     res = ingest_source(source)
+    layers = res.get("layers")
+    # A layer that errored (e.g. symbols=error:… while chunks=ok) must not
+    # be reported as a clean "done" — surface it as "partial" and carry the
+    # per-layer detail so the operator sees which layer failed.
+    failed = {}
+    if isinstance(layers, dict):
+        failed = {k: v for k, v in layers.items()
+                  if isinstance(v, str) and v.startswith("error:")}
     if res.get("error"):
         _ms.set_status(source_id, "error", units=res.get("units", 0),
-                       error=res["error"])
+                       error=res["error"], layers=layers)
+    elif failed:
+        detail = "partial index — " + "; ".join(
+            f"{k}={v}" for k, v in failed.items())
+        _ms.set_status(source_id, "partial", units=res.get("units", 0),
+                       error=detail, layers=layers, indexed=True)
     else:
         _ms.set_status(source_id, "done", units=res.get("units", 0),
-                       error=None, indexed=True)
+                       error=None, layers=layers, indexed=True)
