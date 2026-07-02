@@ -1658,7 +1658,14 @@ def _process_one_ticket() -> bool:
 
 def main() -> int:
     """Single-shot: claim one ticket, run it, exit."""
+    from aiforge_core.config import backends
+    # Hard-fail on a misconfigured data-driven deploy (runs every poll so a
+    # broken config never silently writes SQLite). Cheap + silent on success.
+    backends.require_data_backends()
     if _process_one_ticket():
+        # Announce the resolved backends only on polls that actually did work,
+        # so an idle queue (a fresh process every ~10s) doesn't spam the log.
+        backends.boot_log()
         return 0
     time.sleep(int(os.environ.get("AIFORGE_POLL_IDLE_S", "10")))
     return 0

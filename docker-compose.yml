@@ -135,6 +135,9 @@ services:
       AIFORGE_NEO4J_USER: neo4j
       AIFORGE_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-password}
       AIFORGE_MEMORY_BACKEND: neo4j
+      # Fail LOUD if any data store (tickets/memory/chat/jobs) resolves to
+      # embedded SQLite in this data-driven stack — no silent .db files.
+      AIFORGE_REQUIRE_DATA_BACKEND: "1"
       AIFORGE_EMBED_URL: http://127.0.0.1:8764
       AIFORGE_RERANK_URL: http://127.0.0.1:8765
       AIFORGE_LM_BASE_URL: ${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}

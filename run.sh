@@ -223,6 +223,9 @@ if [[ $TEST -eq 0 ]]; then
       export AIFORGE_NEO4J_USER="${AIFORGE_NEO4J_USER:-neo4j}"
       export AIFORGE_NEO4J_PASSWORD="${NEO4J_PASSWORD:-password}"
       export AIFORGE_MEMORY_BACKEND=neo4j
+      # Fail LOUD if any data store (tickets/memory/chat/jobs) resolves to
+      # embedded SQLite in this data-driven mode — no silent .db files.
+      export AIFORGE_REQUIRE_DATA_BACKEND=1
       export AIFORGE_EMBED_URL="http://127.0.0.1:8764"
       export AIFORGE_RERANK_URL="http://127.0.0.1:8765"
       export AIFORGE_REPO_ROOT="${AIFORGE_HOST_WORKSPACE:-$HOME/aiforge_workspace}"

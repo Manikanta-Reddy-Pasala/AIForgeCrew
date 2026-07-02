@@ -63,6 +63,17 @@ app = FastAPI(title="AIForge API")
 
 
 @app.on_event("startup")
+def _guard_and_announce_backends() -> None:
+    """FIRST boot step: in data-driven mode (AIFORGE_REQUIRE_DATA_BACKEND=1)
+    abort LOUD if any data store still resolves to embedded SQLite, then log
+    one line naming every backend. The guard is intentionally hard-fail; the
+    log is soft (never crashes boot)."""
+    from aiforge_core.config import backends
+    backends.require_data_backends()   # hard-fail on misconfigured data mode
+    backends.boot_log()                # soft one-line announcement
+
+
+@app.on_event("startup")
 def _ensure_skill_workflow_dirs() -> None:
     """Create the skills + workflows folders on boot so they exist for the
     operator (and the agent) to add ``SKILL.md`` / ``WORKFLOW.md`` files into."""
