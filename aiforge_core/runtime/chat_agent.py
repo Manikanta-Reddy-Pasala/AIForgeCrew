@@ -803,10 +803,13 @@ def _t_learn_workflow(args: dict, cwd: str) -> dict:
 # sandbox.root(); the dispatch loop scopes that override to the WORKSPACE root
 # (set+reset in finally) for exactly these names — so a path can't escape an
 # AIFORGE_WORKSPACE_DIR jail and a reused thread can't leak the dir.
-# (ipython is intentionally NOT exposed to chat: it ran ungated arbitrary shell
-#  in a single process-wide kernel that ignored the session cwd. It stays in the
-#  managed ADK pipeline only.)
-_ROOT_SCOPED_TOOLS = {"editor", "typecheck", "format", "lsp", "run_tests"}
+# ipython (execute_ipython_cell) IS exposed to chat for Claude-Code/Cursor
+# parity, but — because it runs arbitrary code in a kernel — it is
+# approval-gated (in tool_policy._DEFAULT_ASK → ASK in Act mode, blocked in
+# Plan mode) AND cwd-jailed here, so it can't run unapproved or escape the
+# AIFORGE_WORKSPACE_DIR root the way the old unmanaged version did.
+_ROOT_SCOPED_TOOLS = {"editor", "typecheck", "format", "lsp", "run_tests",
+                      "execute_ipython_cell"}
 
 
 def _scoped_root(cwd: str) -> str:

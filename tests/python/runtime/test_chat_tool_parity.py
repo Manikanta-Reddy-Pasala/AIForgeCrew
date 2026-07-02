@@ -108,3 +108,12 @@ def test_handlers_degrade_gracefully_when_dep_missing(monkeypatch):
     out = ca.TOOLS["browse"]({"command": "goto", "url": "http://x"}, "/cwd")
     assert out["ok"] is False
     assert "dep missing" in out["error"]
+
+
+def test_ipython_is_approval_gated_and_cwd_jailed():
+    # execute_ipython_cell runs arbitrary code — exposing it to chat (F1) must
+    # NOT leave it ungated/unsandboxed (the old design excluded it entirely).
+    # It must be approval-gated (ASK in Act mode) and in the cwd-jailed set.
+    from aiforge_core.runtime.tools import tool_policy
+    assert tool_policy.decide("execute_ipython_cell")["policy"] == tool_policy.ASK
+    assert "execute_ipython_cell" in ca._ROOT_SCOPED_TOOLS
