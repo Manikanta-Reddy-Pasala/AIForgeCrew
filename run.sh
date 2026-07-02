@@ -203,6 +203,17 @@ if [[ $TEST -eq 0 ]]; then
       # INFRA ONLY in docker; api + runner run on the host (fall through to the
       # host venv/web/launch path below — do NOT exit here).
       _docker_infra_up postgres neo4j embed rerank
+      # `up -d` returns before the DBs accept connections. Wait (bounded) so
+      # the host api/runner don't error on a cold start. Best-effort — proceed
+      # after the cap regardless (the app also retries).
+      echo "==> waiting for Postgres + Neo4j to accept connections…"
+      for _i in $(seq 1 "${AIFORGE_INFRA_WAIT_S:-60}"); do
+        _pg=0; _neo=0
+        "${DC[@]}" exec -T postgres pg_isready -q >/dev/null 2>&1 && _pg=1
+        { exec 3<>/dev/tcp/127.0.0.1/7687; exec 3>&-; } 2>/dev/null && _neo=1
+        [[ $_pg -eq 1 && $_neo -eq 1 ]] && { echo "==> infra ready"; break; }
+        sleep 1
+      done
       # Point the HOST api/runner at the dockerized infra over localhost.
       # Operator env wins everywhere (`:-`).
       export AIFORGE_PG_URL="postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:${PG_PORT:-5432}/${PG_DB:-aiforge}"
