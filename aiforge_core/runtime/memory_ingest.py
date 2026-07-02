@@ -323,7 +323,22 @@ def _index_repo_full(root: Path, repo: str) -> dict:
 
     units = code_units + doc_units
     error = None
-    if units == 0 and not any(layers.get(k) == "ok"
+    # Walk succeeded but produced NOTHING anywhere → almost always a wrong,
+    # empty, or (in Docker) unmounted path. Surface the RESOLVED abs path so the
+    # user sees where the indexer actually looked, instead of a silent "ok, 0".
+    if units == 0 and symbols == 0 and not any(
+            str(layers.get(k, "")).startswith("error:")
+            for k in ("code_chunks", "doc_chunks")):
+        try:
+            _abs = str(root.resolve())
+        except Exception:  # noqa: BLE001
+            _abs = str(root)
+        error = (f"indexed 0 files from {_abs} — the directory is empty from the "
+                 f"indexer's view. Check the path is correct and, if running the "
+                 f"api in Docker, that this repo is under the mounted workspace "
+                 f"(AIFORGE_HOST_WORKSPACE → /workspace).")
+        layers["code_chunks"] = "skip:no_files"
+    if error is None and units == 0 and not any(layers.get(k) == "ok"
                               for k in ("code_chunks", "doc_chunks")):
         error = "all chunk layers failed: " + \
             f"code={layers.get('code_chunks')} doc={layers.get('doc_chunks')}"
