@@ -44,6 +44,8 @@ def test_goto_missing_url(monkeypatch):
 
 
 def test_goto_happy(monkeypatch):
+    # Empty allowlist is deny-all under lockdown; opt in to reach example.com.
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     monkeypatch.setattr(br, "_playwright_available", lambda: True)
     page = MagicMock()
     page.goto.return_value = MagicMock(status=200)

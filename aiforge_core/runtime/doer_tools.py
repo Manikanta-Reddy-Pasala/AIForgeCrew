@@ -416,13 +416,30 @@ _FETCH_MAX_BYTES = 256 * 1024
 _FETCH_TIMEOUT_S = 15
 
 
+def _web_fetch_allowed() -> bool:
+    """Network+telemetry lockdown: arbitrary-URL fetch is OFF by default.
+
+    The only sanctioned agent egress is the researcher's ``web_search``
+    (its own gate) plus the configured LLM endpoint. Set
+    ``AIFORGE_ALLOW_WEB_FETCH=1`` to re-enable arbitrary fetch/http_get.
+    """
+    return str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def fetch_url(url: str) -> dict:
     """GET an http(s) URL and return the body as text.
 
     Used for fetching public docs / spec pages mid-task. NOT a browser:
     no cookies, no JS, no redirects to file://. Body capped at 256 KB,
     timeout 15s, http(s) only.
+
+    Gated behind ``AIFORGE_ALLOW_WEB_FETCH`` (default off) — under the
+    network lockdown, agents cannot fetch arbitrary URLs.
     """
+    if not _web_fetch_allowed():
+        return {"ok": False, "error": "web fetch disabled (set AIFORGE_ALLOW_WEB_FETCH=1)"}
     if not url or not url.lower().startswith(("http://", "https://")):
         return {"ok": False, "error": "url must be http(s)"}
     try:

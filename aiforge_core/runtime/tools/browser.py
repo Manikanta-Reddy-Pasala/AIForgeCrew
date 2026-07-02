@@ -40,7 +40,12 @@ def _playwright_available() -> bool:
 def _allowlist_ok(url: str) -> bool:
     raw = os.environ.get("AIFORGE_BROWSER_ALLOWLIST", "").strip()
     if not raw:
-        return True
+        # Network+telemetry lockdown: an EMPTY allowlist is DENY-all, not
+        # allow-all. The browser can only reach arbitrary sites when the
+        # operator opts in via AIFORGE_ALLOW_WEB_FETCH=1.
+        return str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() in (
+            "1", "true", "yes", "on",
+        )
     for pattern in raw.split(","):
         pattern = pattern.strip()
         if not pattern:

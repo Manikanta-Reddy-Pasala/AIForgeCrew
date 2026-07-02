@@ -49,7 +49,9 @@ services:
     restart: unless-stopped
     environment:
       NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/password}
-      NEO4J_PLUGINS: '["apoc","genai"]'
+      # apoc only — the genai plugin makes external AI-provider calls and is
+      # unused here; dropped under the network lockdown.
+      NEO4J_PLUGINS: '["apoc"]'
       NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-8G}
       NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-4G}
       NEO4J_server_default__listen__address: 0.0.0.0
@@ -76,6 +78,11 @@ services:
     restart: unless-stopped
     environment:
       BGE_M3_DIR: /models/bge-m3
+      # Offline + no HF telemetry — fail-closed instead of downloading at runtime.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
     volumes:
       # Bind-mount an existing bge-m3 model dir (offline, no HF download).
       # Defaults to a local dir for fresh installs.
@@ -89,6 +96,15 @@ services:
       network: host
     container_name: aiforge-rerank
     restart: unless-stopped
+    environment:
+      # Offline + no HF telemetry. NOTE: rerank normally downloads
+      # BAAI/bge-reranker-v2-m3 at runtime — with offline set it FAILS-CLOSED
+      # instead of silently downloading. The operator MUST pre-stage the model
+      # into the hf-cache (./data/hf-cache) for rerank to work offline.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
     volumes:
       - ${AIFORGE_DATA_DIR:-./data}/hf-cache:/root/.cache/huggingface
     ports:
@@ -131,6 +147,17 @@ services:
       # the run reaches the Planner (+ the subtask decomposition the UI charts)
       # fast on slower local models. 0 = full context (richer splits, slower).
       AIFORGE_CHAT_LEAN: ${AIFORGE_CHAT_LEAN:-0}
+      # ── Network + telemetry lockdown ──────────────────────────────────
+      # At runtime the ONLY sanctioned internet egress is the researcher's
+      # web-SEARCH plus the configured LLM endpoint. Everything else defaults
+      # to no-egress; each gate has an opt-in for power users.
+      AIFORGE_EXTERNAL_INGEST: "0"        # kill the auto ticket-URL/SaaS ingest driver
+      AIFORGE_DOCS_INDEX: "0"             # no external library-docs fetch
+      AIFORGE_ALLOW_WEB_FETCH: "0"        # agents can't fetch arbitrary URLs (researcher SEARCH stays on)
+      AIFORGE_BROWSER_ALLOWLIST: "127.0.0.1,localhost"
+      LITELLM_TELEMETRY: "False"
+      DO_NOT_TRACK: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
       AIFORGE_CONFIG_DIR: /data/aiforge
       # The agent's repo workspace — bind-mounted from the host below, so
       # worktrees/edits land on the host and persist. Point

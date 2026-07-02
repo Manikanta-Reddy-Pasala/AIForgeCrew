@@ -44,7 +44,9 @@ def _load():
                 "gracefully meanwhile)."
             )
             return
-        _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+        # local_files_only: never reach out to the HF Hub — the model must be
+        # pre-staged into MODEL_DIR. Network lockdown = no runtime downloads.
+        _tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True)
         providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
         _session = ort.InferenceSession(onnx_path, providers=providers)
         _load_error = None

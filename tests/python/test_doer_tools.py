@@ -213,14 +213,26 @@ def test_grep_repo_skips_excluded_dirs(tmp_path: Path) -> None:
 # ─── fetch_url ─────────────────────────────────────────────────────────
 
 
-def test_fetch_url_rejects_non_http() -> None:
+def test_fetch_url_rejects_non_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Opt in past the lockdown gate so we exercise the scheme check itself.
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     assert dt.fetch_url("file:///etc/passwd")["ok"] is False
     assert dt.fetch_url("ftp://example.com")["ok"] is False
     assert dt.fetch_url("")["ok"] is False
 
 
+def test_fetch_url_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lockdown default: arbitrary fetch is off, no request made."""
+    monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
+    res = dt.fetch_url("https://example.com")
+    assert res["ok"] is False
+    assert "web fetch disabled" in res["error"]
+
+
 def test_fetch_url_handles_urlerror(monkeypatch: pytest.MonkeyPatch) -> None:
     import urllib.error
+
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
 
     def _boom(*a, **kw):
         raise urllib.error.URLError("dns fail")
@@ -233,6 +245,7 @@ def test_fetch_url_handles_urlerror(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_fetch_url_caps_body_size(monkeypatch: pytest.MonkeyPatch) -> None:
     """Body larger than 256 KB → truncated=True, body capped."""
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
     big = b"X" * (300 * 1024)
 
     class _Resp:
@@ -266,6 +279,8 @@ def test_fetch_url_caps_body_size(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_fetch_url_handles_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     import urllib.error
+
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
 
     def _boom(*a, **kw):
         raise urllib.error.HTTPError(

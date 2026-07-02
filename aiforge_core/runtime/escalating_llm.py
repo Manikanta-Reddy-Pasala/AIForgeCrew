@@ -119,6 +119,12 @@ def _quiet_litellm() -> None:
     cancelled — e.g. on Stop). Idempotent, best-effort."""
     try:
         import litellm as _l
+        # Kill LiteLLM's phone-home telemetry (defaults True → posts anonymous
+        # usage to PostHog). Network+telemetry lockdown: no unsolicited egress.
+        try:
+            _l.telemetry = False
+        except Exception:  # noqa: BLE001
+            pass
         _l.suppress_debug_info = True
         _l.set_verbose = False
         _l.success_callback = []

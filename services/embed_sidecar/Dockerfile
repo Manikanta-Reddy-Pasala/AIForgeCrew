@@ -11,8 +11,10 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py ./
 
-# Model is fetched into BGE_M3_DIR on first boot (huggingface-hub) and
-# cached on the mounted /models volume.
+# Model must be PRE-STAGED into BGE_M3_DIR on the mounted /models volume.
+# The sidecar runs offline (local_files_only) and never downloads at runtime —
+# if the model is absent it stays up and returns 503 (graceful degrade).
 ENV BGE_M3_DIR=/models/bge-m3
+ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1
 EXPOSE 8764
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8764"]
