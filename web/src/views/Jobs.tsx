@@ -1,11 +1,22 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { api, type Job, type JobDraft, type JobPreview } from '../api';
 import { Icon } from '../icons';
 
+// Launch a chat-driven "builder" conversation. Each opens a fresh Chat session
+// in the given builder mode (the agent interviews you, then finalizes).
+const CHAT_BUILDERS: { kind: string; label: string; icon: keyof typeof Icon; title: string }[] = [
+  { kind: 'job',      label: 'New job via chat', icon: 'Refresh',  title: 'Chat with an agent to build & schedule a recurring job' },
+  { kind: 'skill',    label: 'New skill',        icon: 'Sparkles', title: 'Chat with an agent to capture a reusable SKILL.md' },
+  { kind: 'workflow', label: 'New workflow',     icon: 'Layers',   title: 'Chat with an agent to capture a WORKFLOW.md' },
+  { kind: 'rule',     label: 'New rule',         icon: 'Tool',     title: 'Chat with an agent to capture a standing rule' },
+];
+
 export default function Jobs() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const { data: jobs, isLoading } = useQuery({
     queryKey: ['jobs'], queryFn: api.listJobs, refetchInterval: 30_000,
   });
@@ -70,7 +81,20 @@ export default function Jobs() {
             {(jobs?.length ?? 0).toLocaleString()} job{jobs?.length === 1 ? '' : 's'}
           </div>
         </div>
-        <div className="row">
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {CHAT_BUILDERS.map(b => {
+            const I = Icon[b.icon];
+            return (
+              <button
+                key={b.kind}
+                className="ghost"
+                title={b.title}
+                onClick={() => navigate(`/chat?builder=${b.kind}`)}
+              >
+                <I size={14} /> {b.label}
+              </button>
+            );
+          })}
           <button onClick={() => setCreating(c => !c)}>
             {creating ? <><Icon.X size={14} /> Cancel</> : <><Icon.Plus size={14} /> New job</>}
           </button>
