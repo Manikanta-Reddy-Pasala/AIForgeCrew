@@ -1992,6 +1992,16 @@ def _repo_context(cwd: str) -> str:
     return out
 
 
+def _fire_stop(reason: str, cwd: str) -> None:
+    """Best-effort Stop lifecycle hook at a terminal loop exit. Soft-fail: a
+    hooks error must never break the turn's clean shutdown."""
+    try:
+        from aiforge_core.runtime import hooks as _hooks
+        _hooks.fire("Stop", {"reason": reason}, cwd)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -2135,6 +2145,7 @@ def run_chat_agent(
             yield {"type": "done"}
             return
         if _turn_deadline is not None and time.monotonic() > _turn_deadline:
+            _fire_stop("deadline", cwd)
             yield {"type": "message",
                    "text": f"(stopped: hit the {int(_turn_budget_s)}s turn "
                            "time budget — raise AIFORGE_CHAT_TURN_DEADLINE_S "
@@ -2206,6 +2217,7 @@ def run_chat_agent(
         convo.append({"role": "assistant", "content": out})
         step = _parse(out)
         if step["kind"] == "final":
+            _fire_stop("final", cwd)
             yield {"type": "message", "text": step["text"]}
             yield {"type": "done"}
             return
@@ -2374,8 +2386,24 @@ def run_chat_agent(
                 # accurate "stopped by user" rather than the safety-cap message.
                 continue
 
+        # Lifecycle hook (Claude Code parity): PreToolUse can block a tool
+        # (a `block_on_nonzero` hook that exits non-zero) — surface it like the
+        # plan-mode/policy blocks. Hooks soft-fail; a hooks error never breaks
+        # the turn.
+        _hook_block = None
+        try:
+            from aiforge_core.runtime import hooks as _hooks
+            _pre = _hooks.fire("PreToolUse", {"tool": name, "args": args}, cwd)
+            if _pre.get("blocked"):
+                _hook_block = _pre
+        except Exception:  # noqa: BLE001 — hooks must never break dispatch
+            _hook_block = None
+
         fn = TOOLS.get(name)
-        if fn is None:
+        if _hook_block is not None:
+            result = {"ok": False, "blocked": "hook", "hook": _hook_block,
+                      "error": f"'{name}' was blocked by a PreToolUse hook"}
+        elif fn is None:
             result = {"ok": False, "error": f"unknown tool: {name}"}
         else:
             _perf_t0 = time.perf_counter()
@@ -2410,10 +2438,18 @@ def run_chat_agent(
                     (time.perf_counter() - _perf_t0) * 1000.0)
             except Exception:  # noqa: BLE001 — perf must never break a run
                 pass
+        # PostToolUse hook (best-effort, never blocks).
+        try:
+            from aiforge_core.runtime import hooks as _hooks
+            _hooks.fire("PostToolUse",
+                        {"tool": name, "args": args, "result": result}, cwd)
+        except Exception:  # noqa: BLE001 — hooks must never break the turn
+            pass
         yield {"type": "tool", "name": name, "args": args, "result": result}
         obs = json.dumps(result)[:_MAX_OBS]
         convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
 
+    _fire_stop("cap", cwd)
     yield {"type": "message",
            "text": "(stopped: hit the runaway safety cap — "
                    "raise AIFORGE_CHAT_SAFETY_CAP if this was real work)"}
