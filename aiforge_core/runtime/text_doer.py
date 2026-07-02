@@ -115,6 +115,16 @@ def run_text_doer(
         from aiforge_core.runtime import chat_agent
 
         seed = _build_seed(state)
+        # Scope allowlist enforcement (Fix 3): the native Doer had a
+        # scope_guard before_tool_callback, which a FunctionNode can't carry —
+        # so on this LOCAL text path scope_allowlist_globs was NEVER enforced
+        # (only the worktree jail). Thread the ticket's globs into the chat
+        # loop so an out-of-scope file write/patch is refused before it lands.
+        # Empty/absent globs => no restriction (back-compat).
+        scope_raw = state.get("scope_allowlist_globs") or []
+        if isinstance(scope_raw, str):
+            scope_raw = [p.strip() for p in scope_raw.split(",") if p.strip()]
+        scope_globs = [g for g in scope_raw if isinstance(g, str) and g]
         signals: dict[str, bool] = {}
         last_msg = ""
         err_text = ""
@@ -122,6 +132,7 @@ def run_text_doer(
             [{"role": "user", "content": seed}],
             cwd=cwd, role=role, max_steps=max_steps,
             complete_fn=complete_fn, session_id=None, mode="act",
+            scope_globs=scope_globs or None,
         ):
             etype = ev.get("type")
             if etype == "tool":
@@ -182,6 +193,9 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
 
     state = ctx.state
     snapshot = {k: state.get(k) for k in _SEED_KEYS}
+    # Carry the ticket's scope allowlist so run_text_doer can enforce it on
+    # the write tools (Fix 3). Not a seed var (never rendered into the prompt).
+    snapshot["scope_allowlist_globs"] = state.get("scope_allowlist_globs")
     cwd = _resolve_cwd()
     # Restore the worktree jail: the native path had the C6 scope_guard
     # before_tool_callback, which a FunctionNode can't carry. The runner sets

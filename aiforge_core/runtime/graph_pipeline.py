@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -145,8 +146,26 @@ def _read_complexity(state: Any) -> str:
     return "moderate"
 
 
+# Recognised verdict tokens. NEGATIVE ones are scanned first so an
+# ambiguous / prose-wrapped verdict that CONTAINS a reject-shaped token
+# fails SAFE (→ replan / no-ship) rather than fail-open. Longer tokens
+# precede their prefixes (request_changes before … , pass_with_warnings
+# before pass) so the more specific verdict wins.
+_VERDICT_NEGATIVE = ("request_changes", "reject", "fail")
+_VERDICT_POSITIVE = ("pass_with_warnings", "approve", "pass")
+
+
 def _parse_verdict(raw: Any) -> str | None:
-    """Best-effort extract a verdict token from a dict / JSON / bare str."""
+    """Best-effort extract a verdict token from a dict / JSON / bare str.
+
+    Hardened against a local model wrapping the verdict in prose
+    (``I reject this because {"verdict":"reject"}``): after a clean
+    ``json.loads`` fails we brace-balance-extract an embedded object
+    (same helper ``parallel_stages._coerce_verdict`` uses), then scan for
+    a KNOWN verdict word ANYWHERE in the text — not just the first token.
+    A genuinely unparseable string returns ``None`` (the documented
+    default: callers treat None as neither pass nor fail — ``_feedback_
+    passed`` → False, ``_validator_failed`` → False)."""
     try:
         if isinstance(raw, dict):
             v = raw.get("verdict")
@@ -155,13 +174,30 @@ def _parse_verdict(raw: Any) -> str | None:
             text = raw.strip().strip("`")
             if text[:4].lower() == "json":
                 text = text[4:]
+            # 1. clean parse (fenced or bare JSON object).
             try:
                 obj = json.loads(text)
                 if isinstance(obj, dict) and obj.get("verdict") is not None:
                     return str(obj["verdict"]).lower()
             except Exception:
                 pass
-            return text.split()[0].lower() if text.split() else None
+            # 2. brace-balanced extraction — survives ``prose {json} prose``.
+            try:
+                from .rule_capture import _extract_json
+                obj = _extract_json(raw)
+                if isinstance(obj, dict) and obj.get("verdict") is not None:
+                    return str(obj["verdict"]).lower()
+            except Exception:
+                pass
+            # 3. bare-token scan anywhere. Negatives win over positives so
+            #    an ambiguous verdict fails safe (→ replan), never ships.
+            low = text.lower()
+            for tok in _VERDICT_NEGATIVE:
+                if re.search(rf"\b{tok}\b", low):
+                    return tok
+            for tok in _VERDICT_POSITIVE:
+                if re.search(rf"\b{tok}\b", low):
+                    return tok
     except Exception:
         pass
     return None
@@ -276,6 +312,14 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
         ctx.route = ROUTE_EXIT
         _trace(":LoopExit", {"iters": iters, "kill": kill, "wall_kill": wall_kill})
     else:
+        # Another Doer iteration is about to run. Clear the per-iteration
+        # quality signals so this next pass's Feedback gate reasons ONLY
+        # over the tools that fire THIS iteration — a stale tests_ok=True
+        # from a green iter-1 must not let a regressed iter-2 (that never
+        # re-ran the tests) sail through. Mirrors the validator replan
+        # reset (see _validator_gate). NOT cleared on the exit branch —
+        # the Validator needs the final pass's values.
+        _clear_state(state, ("tests_ok", "typecheck_ok", "lint_ok"))
         ctx.route = ROUTE_LOOP
 
 

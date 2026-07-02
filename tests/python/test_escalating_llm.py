@@ -196,10 +196,15 @@ def test_all_fail_raises_last_exception() -> None:
         _drive(e)
 
 
-def test_sticky_demotion_prefers_cloud_after_primary_fail() -> None:
+def test_sticky_demotion_prefers_cloud_after_primary_fail(monkeypatch) -> None:
     """First call: primary fails → demoted. Second call: cloud is tried
     BEFORE primary_retry, so a recovered primary doesn't pre-empt the
-    cheaper cloud path that's already proven to work."""
+    cheaper cloud path that's already proven to work.
+
+    Pinned to demote-after-1 (AIFORGE_PRIMARY_DEMOTE_AFTER=1) so this test
+    validates the sticky-demotion ROUTING independently of the default
+    streak threshold (which is 2 — see test_demote_streak)."""
+    monkeypatch.setenv("AIFORGE_PRIMARY_DEMOTE_AFTER", "1")
     primary = _StubModel(model="primary", error=RuntimeError("flaky"))
     cloud = _StubModel(model="cloud", script=[_resp("rescued")])
     e = EscalatingLlm(model="primary", role="doer",
@@ -222,10 +227,14 @@ def test_sticky_demotion_prefers_cloud_after_primary_fail() -> None:
     assert cloud.calls == 2
 
 
-def test_primary_retry_saves_run_when_cloud_unreachable() -> None:
+def test_primary_retry_saves_run_when_cloud_unreachable(monkeypatch) -> None:
     """Sticky-demoted primary still gets a last-chance shot after cloud
     fails — otherwise a single transient primary blip + a flaky cloud
-    chain would deadlock the pipeline."""
+    chain would deadlock the pipeline.
+
+    Pinned to demote-after-1 so the demotion assertions test the routing,
+    not the default streak threshold (see test_demote_streak for that)."""
+    monkeypatch.setenv("AIFORGE_PRIMARY_DEMOTE_AFTER", "1")
     primary = _StubModel(model="primary", error=RuntimeError("first blip"))
     cloud = _StubModel(model="cloud", error=RuntimeError("cloud down"))
     e = EscalatingLlm(model="primary", role="doer",

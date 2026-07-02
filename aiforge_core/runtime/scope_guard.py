@@ -43,9 +43,18 @@ def _path_from_args(tool_name: str, args: dict) -> list[str]:
             return []  # read-only, no scope hit
         p = args.get("path") or ""
         return [p] if p else []
-    if tool_name == "file_write" or tool_name == "file_patch":
+    if tool_name in ("file_write", "file_create", "file_patch"):
         p = args.get("path") or args.get("file") or ""
         return [p] if p else []
+    if tool_name == "multi_edit":
+        # batch edit: {"edits": [{"path", ...}, ...]} — every path counts.
+        out: list[str] = []
+        for e in (args.get("edits") or []):
+            if isinstance(e, dict):
+                p = str(e.get("path") or "").strip()
+                if p:
+                    out.append(p)
+        return out
     if tool_name == "git_commit":
         # commit touches the whole tree we already approved file by file
         return []
