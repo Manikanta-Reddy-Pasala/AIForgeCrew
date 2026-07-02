@@ -168,12 +168,26 @@ def _security_boot_guard() -> None:
     startup hook AND directly unit-testable."""
     token = _api_token()
     host = _bind_host()
-    if not _is_loopback_host(host) and not token:
+    # Escape hatch: the operator fronts the api with their OWN access layer
+    # (Cloudflare Access / a WireGuard-only reverse proxy / nginx auth) and
+    # accepts responsibility for exposure. Explicit opt-out so a bind to a
+    # tunnel/LAN interface works without the app requiring a token.
+    fronted = os.environ.get("AIFORGE_ALLOW_UNAUTH_NONLOOPBACK", "").strip().lower() \
+        in ("1", "true", "yes", "on")
+    if not _is_loopback_host(host) and not token and not fronted:
         raise RuntimeError(
             f"AIForge refuses to boot: binding to a non-loopback host ({host}) "
             "exposes a shell-running control plane. Set AIFORGE_API_TOKEN to a "
-            "shared secret (and configure the UI with it), or bind 127.0.0.1."
+            "shared secret (and configure the UI with it), bind 127.0.0.1, OR "
+            "set AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1 if you front it yourself "
+            "(Cloudflare / WireGuard-only proxy)."
         )
+    if not _is_loopback_host(host) and not token and fronted:
+        import logging
+        logging.getLogger("aiforge.boot").warning(
+            "api bound to %s WITHOUT a token (AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1) "
+            "— ensure your own access layer (Cloudflare/WireGuard/nginx) fronts it.",
+            host)
 
 
 @app.on_event("startup")

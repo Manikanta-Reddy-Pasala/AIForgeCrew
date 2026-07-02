@@ -78,10 +78,21 @@ def test_token_unset_loopback_is_open(monkeypatch, tmp_path):
 
 def test_boot_guard_refuses_non_loopback_without_token(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_API_TOKEN", raising=False)
+    monkeypatch.delenv("AIFORGE_ALLOW_UNAUTH_NONLOOPBACK", raising=False)
     monkeypatch.setenv("AIFORGE_BIND_HOST", "0.0.0.0")
     api = _fresh_app(monkeypatch, tmp_path)
     with pytest.raises(RuntimeError, match="non-loopback"):
         api._security_boot_guard()
+
+
+def test_boot_guard_escape_hatch_allows_fronted_nonloopback(monkeypatch, tmp_path):
+    # Operator fronts the api themselves (Cloudflare/WireGuard) → explicit
+    # opt-out allows a non-loopback bind without a token.
+    monkeypatch.delenv("AIFORGE_API_TOKEN", raising=False)
+    monkeypatch.setenv("AIFORGE_BIND_HOST", "0.0.0.0")
+    monkeypatch.setenv("AIFORGE_ALLOW_UNAUTH_NONLOOPBACK", "1")
+    api = _fresh_app(monkeypatch, tmp_path)
+    api._security_boot_guard()   # must NOT raise
 
 
 def test_boot_guard_allows_non_loopback_with_token(monkeypatch, tmp_path):
