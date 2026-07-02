@@ -25,8 +25,6 @@ Flags: `./run.sh --dev` (hot reload) · `--port N` · `--host H` · `--skip-web`
 docker compose up -d --build      # everything on :8799
 ```
 
-(Migrating an existing install without losing data: see `scripts/compose/CUTOVER.md`.)
-
 ---
 
 ## 2. Point it at an offline model
