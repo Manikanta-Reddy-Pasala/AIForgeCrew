@@ -280,11 +280,15 @@ def _chunk_label(text: str) -> str:
 
 
 def _sample_symbols(s, limit: int) -> dict:
+    # Symbol nodes are keyed by `fqn` (fully-qualified name), not `id`; the
+    # display name is `simple`. Label the node with the simple name, fall back
+    # to the last fqn segment.
     rows = list(s.run(
         "MATCH (n:Symbol) WITH n LIMIT $limit "
-        "RETURN n.id AS id, coalesce(n.name, n.id) AS label, n.kind AS kind",
+        "RETURN n.fqn AS id, coalesce(n.simple, n.fqn) AS label, n.kind AS kind",
         limit=limit))
-    nodes = [{"id": r["id"], "label": str(r["label"] or r["id"] or ""),
+    nodes = [{"id": r["id"],
+              "label": str(r["label"] or (r["id"] or "").split(".")[-1] or ""),
               "kind": r["kind"] or "symbol"}
              for r in rows if r["id"] is not None]
     ids = [n["id"] for n in nodes]
@@ -292,8 +296,8 @@ def _sample_symbols(s, limit: int) -> dict:
     if ids:
         erows = list(s.run(
             "MATCH (n:Symbol)-[r:CALLS|DEFINES|EXTENDS|IMPLEMENTS]->(m:Symbol) "
-            "WHERE n.id IN $ids AND m.id IN $ids "
-            "RETURN n.id AS a, m.id AS b, type(r) AS t LIMIT 500",
+            "WHERE n.fqn IN $ids AND m.fqn IN $ids "
+            "RETURN n.fqn AS a, m.fqn AS b, type(r) AS t LIMIT 500",
             ids=ids))
         edges = [{"from": r["a"], "to": r["b"], "type": r["t"]} for r in erows]
     return {"available": True, "nodes": nodes, "edges": edges}
