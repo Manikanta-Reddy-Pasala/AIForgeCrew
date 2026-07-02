@@ -25,23 +25,44 @@ BATCH_SIZE = int(os.environ.get("BGE_RERANKER_BATCH", "16"))
 
 _reranker = None
 _load_lock = threading.Lock()
+_load_error: "str | None" = None   # set when the model can't be loaded
 
 
 def _load() -> None:
-    global _reranker
+    global _reranker, _load_error
     with _load_lock:
         if _reranker is not None:
             return
-        from FlagEmbedding import FlagReranker
-        kwargs: dict = {"use_fp16": USE_FP16}
-        if DEVICE:
-            kwargs["devices"] = [DEVICE]
-        _reranker = FlagReranker(MODEL_NAME, **kwargs)
+        try:
+            from FlagEmbedding import FlagReranker
+            kwargs: dict = {"use_fp16": USE_FP16}
+            if DEVICE:
+                kwargs["devices"] = [DEVICE]
+            _reranker = FlagReranker(MODEL_NAME, **kwargs)
+            _load_error = None
+        except Exception as exc:  # noqa: BLE001
+            # The model isn't pre-staged (network lockdown = no runtime HF
+            # download). Do NOT crash — the sidecar stays up + returns 503 so
+            # reranking degrades gracefully (recall still works, just unranked).
+            _load_error = (
+                f"reranker model {MODEL_NAME!r} not available: {exc}. "
+                "Pre-stage it into the hf-cache (./data/hf-cache) or set "
+                "BGE_RERANKER_MODEL to a local dir; the sidecar stays up + "
+                "returns 503 until then.")
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    _load()
+    # NEVER raise out of startup — a crash makes the container crash-loop under
+    # restart:unless-stopped and spam logs. Load best-effort; report via
+    # /healthz, 503 from /rerank.
+    try:
+        _load()
+    except Exception as exc:  # noqa: BLE001
+        global _load_error
+        _load_error = f"reranker load failed: {exc}"
+        import logging
+        logging.getLogger("aiforge.rerank").warning(_load_error)
     yield
 
 
@@ -60,9 +81,10 @@ class RerankResponse(BaseModel):
 @app.get("/healthz")
 def healthz() -> dict:
     return {
-        "status": "ok",
+        "status": "ok" if _reranker is not None else "degraded",
         "model": MODEL_NAME,
         "loaded": _reranker is not None,
+        "load_error": _load_error,
         "fp16": USE_FP16,
     }
 
@@ -73,6 +95,10 @@ def rerank(req: RerankRequest) -> RerankResponse:
         return RerankResponse(scores=[])
     if _reranker is None:
         _load()
+    if _reranker is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503,
+                            detail=_load_error or "reranker unavailable")
     pairs = [[req.query, t] for t in req.texts]
     raw = _reranker.compute_score(
         pairs, normalize=True, batch_size=BATCH_SIZE,

@@ -282,7 +282,10 @@ def _index_symbols(root: Path, repo: str) -> "tuple[int, str]":
         seen = _stat_count(stats, "files_seen")
         n = _stat_count(stats, "symbols_written")
         if seen == 0:
-            return n, "skip:no_code"
+            # tree-sitter symbol extraction is Java-only today — a repo with no
+            # .java files (e.g. Kotlin/Go/TS) yields 0 even though its code was
+            # chunked. Say so, so it's not mistaken for a failed index.
+            return n, "skip:no_java_files (tree-sitter symbols are Java-only)"
         return n, "ok"
     except Exception as exc:  # noqa: BLE001
         log.warning("symbol index failed: %s", exc)
