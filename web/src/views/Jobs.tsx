@@ -7,11 +7,10 @@ import { Icon } from '../icons';
 
 // Launch a chat-driven "builder" conversation. Each opens a fresh Chat session
 // in the given builder mode (the agent interviews you, then finalizes).
+// Jobs screen only builds JOBS. Skill / workflow / rule builders live on the
+// Library page (their respective screens).
 const CHAT_BUILDERS: { kind: string; label: string; icon: keyof typeof Icon; title: string }[] = [
-  { kind: 'job',      label: 'New job via chat', icon: 'Refresh',  title: 'Chat with an agent to build & schedule a recurring job' },
-  { kind: 'skill',    label: 'New skill',        icon: 'Sparkles', title: 'Chat with an agent to capture a reusable SKILL.md' },
-  { kind: 'workflow', label: 'New workflow',     icon: 'Layers',   title: 'Chat with an agent to capture a WORKFLOW.md' },
-  { kind: 'rule',     label: 'New rule',         icon: 'Tool',     title: 'Chat with an agent to capture a standing rule' },
+  { kind: 'job', label: 'New job via chat', icon: 'Refresh', title: 'Chat with an agent to build & schedule a recurring job' },
 ];
 
 export default function Jobs() {

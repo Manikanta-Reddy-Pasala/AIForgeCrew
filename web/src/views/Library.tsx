@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { api } from '../api';
@@ -16,6 +17,7 @@ const LABEL: Record<Kind, { title: string; one: string; blurb: string }> = {
 export default function Library({ kind }: { kind: Kind }) {
   const qc = useQueryClient();
   const meta = LABEL[kind];
+  const navigate = useNavigate();
   const { data: items = [], isLoading } = useQuery({
     queryKey: ['library', kind],
     queryFn: () => api.libraryList(kind),
@@ -73,6 +75,10 @@ export default function Library({ kind }: { kind: Kind }) {
           <div className="subtitle">{items.length} {meta.one}{items.length === 1 ? '' : 's'} · {meta.blurb}</div>
         </div>
         <div className="row">
+          <button className="ghost" title={`Chat with an agent to build a ${meta.one}`}
+                  onClick={() => navigate(`/chat?builder=${meta.one}`)}>
+            <Icon.Chat size={14} /> New {meta.one} via chat
+          </button>
           <button onClick={() => setCreating(c => !c)}>
             {creating ? <><Icon.X size={14} /> Cancel</> : <><Icon.Plus size={14} /> New {meta.one}</>}
           </button>

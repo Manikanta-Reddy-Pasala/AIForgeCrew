@@ -1,91 +1,153 @@
-# AIForge — Quickstart
+# AIForgeCrew — Quickstart
 
-Run it, point it at a model, start chatting / building. No cloud account needed —
-works fully offline with a local model.
+Everything you need to go from clone → running → configured → doing real work.
+**Read this first.**
+
+- [1. Run it](#1-run-it)
+- [2. Configure models](#2-configure-models)
+- [3. Configure integrations](#3-configure-integrations)
+- [4. Create a scheduled Job](#4-create-a-scheduled-job)
+- [5. Create Rules, Skills & Workflows](#5-create-rules-skills--workflows)
+- [6. Index your code into Memory](#6-index-your-code-into-memory)
+- [7. Do work: Chat & Tickets](#7-do-work-chat--tickets)
+- [Data, security & where things live](#data-security--where-things-live)
 
 ---
 
 ## 1. Run it
 
-**Simplest (zero infra — embedded SQLite, no Postgres/Neo4j):**
+**Prereqs:** Docker (for the default + `--docker` modes), Node + npm (to build the
+UI), and one reachable model endpoint (e.g. LM Studio, OpenRouter, a cloud key).
 
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
 cd AIForgeCrew
-./run.sh
+./run.sh                 # DEFAULT = hybrid
 ```
 
-Open **http://127.0.0.1:8799/ui/**
+Open **http://127.0.0.1:8799/ui/**.
 
-Flags: `./run.sh --dev` (hot reload) · `--port N` · `--host H` · `--skip-web`.
+Three run modes:
 
-**Full stack (Postgres + Neo4j + sidecars) via Docker:**
+| Command | What runs where | Use when |
+|---|---|---|
+| `./run.sh` (default) | **hybrid** — Postgres + Neo4j + embed + rerank in Docker; **api + UI + runner on the host** | You want the agent to see the host filesystem/tools (coding). |
+| `./run.sh --docker` | **everything in containers** (agent isolated to the mounted workspace) | Shared / untrusted deploy. |
+| `./run.sh --lite` | **all on the host, embedded SQLite**, no Docker | Fastest "just try it", no infra. |
 
-```bash
-docker compose up -d --build      # everything on :8799
-```
-
----
-
-## 2. Point it at an offline model
-
-AIForge talks the **OpenAI-compatible** API, so any local server works. Pick one:
-
-### Option A — LM Studio (easiest desktop)
-1. Install [LM Studio](https://lmstudio.ai), download a model (e.g. `qwen/qwen3-coder-next`).
-2. **Load** the model and start its server: **Developer → Start Server** (defaults to `http://localhost:1234/v1`).
-   - Keep it loaded: LM Studio idle-unloads after a while — set a long TTL, or just re-load before use.
-3. In AIForge → **Home** page, for each step pick provider **OpenAI-compatible**, base URL `http://localhost:1234/v1`, leave the key blank, and choose the model. Hit **Test connection**.
-
-### Option B — Ollama
-1. `ollama serve` + `ollama pull qwen2.5-coder`.
-2. Home page → provider **OpenAI-compatible**, base URL `http://localhost:11434/v1`, key blank, model `qwen2.5-coder`.
-
-### Option C — vLLM / llama.cpp / LocalAI / any OpenAI-compatible server
-- Home page → **OpenAI-compatible**, paste its `…/v1` base URL, key blank (or a token if it needs one), model id.
-
-### Option D — a cloud endpoint
-- Same **OpenAI-compatible** entry, paste the cloud base URL + your API key, pick the model. (OpenRouter, Groq, Together, etc.)
-
-> **"No token"** = leave the API-key field empty. That's the OSS/local case.
+Handy flags: `--port N` · `--host 0.0.0.0` (LAN — needs `AIFORGE_API_TOKEN`, or
+`AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` if you front it yourself) · `--dev` (hot
+reload) · `--reset-config` (wipe saved model config) · `--test` (probe the model
+endpoint and exit).
 
 ---
 
-## 3. Use it
+## 2. Configure models
 
-### Chat (like a coding CLI, in the browser)
-- **Chat** page → **New chat**.
-- **Model** dropdown shows only models that are **loaded right now** — a green ● means active. Set it on the Home page's **Chat** row too.
-- **Simple** mode: one fast agent that reads/writes files + runs commands.
-- **Team (full flow)** mode: the full agent pipeline (planner → verifier → doer → feedback → learner) for bigger builds.
-- Each chat session gets its **own isolated workspace** — it can create files, run, and clean up there safely. A ⏱ timer shows how long each turn takes.
+The landing page and **Settings → Agents** are config-first. Each pipeline role
+(planner, doer, feedback, learner, supervisor) and the chat agent can point at its
+own model.
 
-### Tickets (tracked pipeline runs)
-- **Tickets** page → file a ticket; the pipeline runs it end-to-end. Watch progress on the ticket / **Workflow** view.
+1. **Pick a provider.** Choose **OpenAI-compatible** and paste any base URL:
+   - LM Studio: `http://localhost:1234/v1` (leave key blank)
+   - vLLM / Ollama / LocalAI / Together / Groq / OpenRouter / a cloud endpoint (+ key)
+2. **Test connection** — verifies reachability + that the served model answers.
+3. **Register a model** (Settings → Agents → add) with a label + the model id the
+   endpoint serves (e.g. `qwen/qwen3-coder-next`).
+4. **Apply it to roles** — assign a model per role, or use a **profile** to switch
+   all roles at once. The chat agent's model is set the same way.
 
-### Memory
-- **Memory** page: see what's indexed, and add **sources** — code repos, docs/markdown folders, URLs, or uploaded files — then **Index** them so chat + the pipeline can recall them.
-
----
-
-## 4. Configure models per step
-
-Every pipeline step (planner, doer, verifier, …) and the chat slot has its own model,
-set on the **Home** page. Mix and match: a big local coder for the Doer, a small fast
-model for triage, a cloud model for review — whatever you've got. "Apply to all steps"
-sets one model everywhere at once.
+> Tip: for a local setup, register several models (a fast coder + a bigger
+> reasoner) and assign the strong one to `planner`/`doer`. TLS on an internal
+> self-signed endpoint? set `AIFORGE_LLM_SSL_VERIFY=false`.
 
 ---
 
-## Env knobs (optional)
+## 3. Configure integrations
 
-| Var | What |
-|-----|------|
-| `AIFORGE_PG_URL` | use Postgres for tickets (else embedded SQLite) |
-| `NEO4J_URI` | use Neo4j graph memory (else embedded SQLite vector store) |
-| `AIFORGE_WORKSPACE_DIR` | clamp the agent's file/shell access to one dir (default: unrestricted) |
-| `AIFORGE_CHAT_WORKSPACE_ROOT` | where per-chat workspaces live (default `~/.aiforge/chat-workspaces`) |
-| `AIFORGE_<ROLE>_BASE_URL` / `_MODEL` / `_API_KEY` | per-step override at runtime |
+**Settings → Integrations** — connect tools the chat agent can then search/read/write
+(writes go through the chat approval gate):
 
-> ⚠️ By default the chat/agent has **full filesystem + shell access**. Set
-> `AIFORGE_WORKSPACE_DIR` to clamp it, or run in a container for shared use.
+| Tab | Fill in | Gives the agent |
+|---|---|---|
+| **Jira** | Base URL + Personal Access Token (or basic auth) | search / read / create / update / comment on issues |
+| **Confluence** | Base URL + token | search / read / create / update pages |
+| **GitLab** | Base URL + token | search / read / open & comment on MRs |
+| **Email** | SMTP host/port/user/pass/from + IMAP host/port/user/pass | send + read/search email |
+
+Hit **Test connection** on each. Secrets are write-only (never shown back), and an
+env var of the same name always overrides the stored value.
+
+---
+
+## 4. Create a scheduled Job
+
+**Jobs** page. A job fires on a cron schedule. Two kinds:
+
+- **Ticket job** — each fire creates a ticket the agent pipeline runs. Good for
+  "write code / do research"-style recurring work.
+- **Script job** — each fire runs a **deterministic shell script** (no LLM). Good
+  for ops: pull repos, back up a DB, rotate a log.
+
+**Easiest: build one by chatting.** Jobs → **New job via chat**. Describe the task;
+the builder interviews you, drafts the script, **dry-runs it**, and on your approval
+schedules it (the script is saved under `~/.aiforge/jobs/`, and only scripts in that
+folder are ever executed, with a timeout).
+
+---
+
+## 5. Create Rules, Skills & Workflows
+
+Go to the **Library** page — Skills / Workflows / Rules each have their own screen,
+with a **Default** tab (built-in, ships with AIForge) and a **Custom** tab (yours).
+On each screen, create from the form or with **"New … via chat"** (a guided builder
+that interviews you and saves it):
+
+- **Rules** — always-on coding constraints the agents must obey (e.g. "match existing
+  conventions", "no debug artifacts"). Scope: global or per-repo.
+- **Skills** — reusable how-to playbooks the agents pull in **automatically** when a
+  task matches the skill's triggers (e.g. "java-spring-boot", "systematic-debugging").
+- **Workflows** — end-to-end procedures the agents follow step by step (e.g. "ship a
+  feature", "fix a bug", "onboard to a new repo").
+
+---
+
+## 6. Index your code into Memory
+
+**Memory** page → **Add source** → point at a repo or docs folder. Indexing populates
+four layers (Neo4j backend):
+
+- **Tree-sitter symbols** — classes/methods + call/extends/implements edges
+- **Code / doc chunks** — embedded content for semantic recall
+- **Graphify** — a concept graph
+- **Facts** — observations/decisions the agents write during runs
+
+Then: **search across everything**, hit **Preview graph** / **Explore** for an
+in-app interactive graph (pan/zoom, click a node to expand), or **Open in Neo4j
+Browser**. The chat/coding agents recall this memory automatically ("memory-first")
+before searching files.
+
+---
+
+## 7. Do work: Chat & Tickets
+
+- **Chat** — a full-filesystem coding agent. For work on a specific repo, start the
+  chat **rooted at that repo** (the 📁 "new chat with a working directory" button) so
+  it operates there instead of an empty scratch dir. It uses memory + LSP + tests.
+- **Tickets** — file a plain-language ticket; the pipeline runs it end to end:
+  triage → enhance → plan → code (Doer loop with verify) → validate → learn → PR.
+
+---
+
+## Data, security & where things live
+
+- **Storage:** `--lite` = SQLite under `~/.aiforge/`. Hybrid/`--docker` = Postgres
+  (tickets/chat/jobs) + Neo4j (memory). Set `AIFORGE_PG_URL` / `NEO4J_URI` to force
+  the pro backends.
+- **Config + user data:** `~/.aiforge/` (agent config, chat db, jobs, skills,
+  workflows, rules, memory).
+- **Security:** by default the chat agent has **full unsandboxed filesystem + shell**
+  on the host. Set `AIFORGE_WORKSPACE_DIR=/path` to clamp it, and use `--docker` for
+  shared/untrusted deploys. Binding non-loopback (`--host 0.0.0.0`) requires
+  `AIFORGE_API_TOKEN` (or the explicit `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` opt-out
+  when you front it with your own auth/tunnel).

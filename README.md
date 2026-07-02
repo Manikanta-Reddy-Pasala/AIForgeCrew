@@ -3,6 +3,11 @@
 Autonomous code-fix pipeline. Plain-language ticket → enriched intent → PR.
 Plus a full-filesystem chat coding agent.
 
+> ### 👉 Read this first: **[QUICKSTART.md](QUICKSTART.md)**
+> The complete getting-started guide — **run it**, **configure models**,
+> **configure integrations**, and **create jobs / rules / skills / workflows**,
+> plus indexing code into memory and using chat & tickets.
+
 ## Quickstart (deploy anywhere)
 
 No Postgres, no Neo4j, no GPU — clone and run:
