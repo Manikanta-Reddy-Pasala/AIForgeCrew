@@ -161,6 +161,49 @@ def test_approve_cancel_rejects():
 
 # ─── #2 plan mode (chat integration) ──────────────────────────────────
 
+def test_turn_deadline_stops_a_churning_agent(tmp_path, monkeypatch):
+    # An agent that never FINALs (varies args so the exact-repeat stall
+    # guards don't fire) must be stopped by the wall-clock turn deadline,
+    # NOT run to the 2000-step cap ("goes forever" on a slow model).
+    monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "10")
+    calls = {"n": 0}
+
+    def fn(role, messages, **kw):
+        calls["n"] += 1
+        # A distinct command each step — evades varied-args stall detection.
+        return f'ACTION: run_command\nARGS_JSON: {{"command": "echo {calls["n"]}"}}'
+
+    # Deadline is computed once at start from monotonic(); make the clock
+    # jump past it on the first loop-top check so the test is instant.
+    real = time.monotonic
+    seq = iter([1000.0])                      # init: deadline = 1010
+
+    def fake_monotonic():
+        try:
+            return next(seq)
+        except StopIteration:
+            return 1_000_000.0               # every subsequent check: way past
+    monkeypatch.setattr(ca.time, "monotonic", fake_monotonic)
+
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "do endless work"}], cwd=str(tmp_path),
+        complete_fn=fn))
+    msgs = " ".join(e.get("text", "") for e in evs if e["type"] == "message")
+    assert "turn time budget" in msgs
+    assert calls["n"] <= 2                    # stopped almost immediately, not 2000
+    assert evs[-1]["type"] == "done"
+
+
+def test_turn_deadline_zero_disables(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_TURN_DEADLINE_S", "0")
+    fn = _scripted(["FINAL: done"])
+    evs = list(ca.run_chat_agent(
+        [{"role": "user", "content": "hi"}], cwd=str(tmp_path), complete_fn=fn))
+    # No deadline message; normal completion.
+    assert not any("turn time budget" in e.get("text", "") for e in evs)
+    assert evs[-1]["type"] == "done"
+
+
 def test_plan_mode_blocks_write(tmp_path):
     fn = _scripted([
         'ACTION: file_write\nARGS_JSON: {"path": "x.txt", "content": "hi"}',

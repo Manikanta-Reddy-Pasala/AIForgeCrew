@@ -1938,6 +1938,18 @@ def run_chat_agent(
 
     import collections
     safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
+    # Wall-clock turn backstop. The 2000-step cap is not a real stopping
+    # point on a slow local model — 2000 steps × seconds-to-minutes each is
+    # effectively "forever" from the user's chair. This deadline bounds the
+    # WHOLE turn regardless of step count, so a wandering or churning agent
+    # (evades the exact-repeat stall guards below by varying its args) can't
+    # run for hours. Generous default (1h) so it's a backstop, not a normal
+    # limit; 0 disables. Tunable via AIFORGE_CHAT_TURN_DEADLINE_S.
+    try:
+        _turn_budget_s = float(os.environ.get("AIFORGE_CHAT_TURN_DEADLINE_S", "3600"))
+    except (TypeError, ValueError):
+        _turn_budget_s = 3600.0
+    _turn_deadline = (time.monotonic() + _turn_budget_s) if _turn_budget_s > 0 else None
 
     # Latest user message drives mentions (#4) + microagent triggers (#6) +
     # memory recall. In simple/plan mode the API augments the last user turn
@@ -2039,6 +2051,13 @@ def run_chat_agent(
         n += 1
         if session_id is not None and chat_cancel.is_cancelled(session_id):
             yield {"type": "error", "text": "stopped by user"}
+            yield {"type": "done"}
+            return
+        if _turn_deadline is not None and time.monotonic() > _turn_deadline:
+            yield {"type": "message",
+                   "text": f"(stopped: hit the {int(_turn_budget_s)}s turn "
+                           "time budget — raise AIFORGE_CHAT_TURN_DEADLINE_S "
+                           "if this was real long-running work)"}
             yield {"type": "done"}
             return
         # Mid-run steering (Gap A): fold any user-injected guidance into the

@@ -369,9 +369,28 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     # chat (client._post).
     import os as _os
     try:
-        kwargs["timeout"] = float(_os.environ.get("AIFORGE_LLM_TIMEOUT_S", "600"))
+        _read_to = float(_os.environ.get("AIFORGE_LLM_TIMEOUT_S", "600"))
     except ValueError:
-        kwargs["timeout"] = 600.0
+        _read_to = 600.0
+    # Split connect from read. A scalar timeout applies to BOTH — so an
+    # unreachable/asleep host (dropped SYN, no RST) blocks the full read
+    # timeout (600s) just to fail the TCP connect, and with 3 attempt-retries
+    # × the candidate chain × node-level RetryConfig that compounds into a
+    # multi-HOUR retry storm that freezes the single-shot ticket runner (the
+    # "pipeline runs forever" symptom). A short CONNECT timeout fails an
+    # unreachable endpoint in seconds so escalation moves on immediately,
+    # while the generous READ timeout still lets a live reasoning model think
+    # for minutes. litellm forwards httpx.Timeout natively.
+    try:
+        _connect_to = float(_os.environ.get("AIFORGE_LLM_CONNECT_TIMEOUT_S", "8"))
+    except ValueError:
+        _connect_to = 8.0
+    try:
+        import httpx as _httpx
+        kwargs["timeout"] = _httpx.Timeout(
+            _read_to, connect=min(_connect_to, _read_to))
+    except Exception:  # noqa: BLE001 — fall back to the scalar if httpx absent
+        kwargs["timeout"] = _read_to
     kwargs["extra_headers"] = {
         "User-Agent": _os.environ.get("AIFORGE_LLM_USER_AGENT", "curl/8.5.0 (aiforge)"),
     }
