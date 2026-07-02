@@ -352,6 +352,250 @@ def _parse_java_file(path: Path, src: bytes, repo: str, sha1: str) -> FileParseR
     return result
 
 
+# ─────────────── generic tag-query extractor (non-java langs) ───────────────
+#
+# Java keeps its rich hand-written walker above. Every OTHER language is parsed
+# by a GENERIC engine that reuses aider's bundled tree-sitter *tags queries*
+# (aider.repomap.RepoMap.get_tags_raw) instead of a per-language AST walker —
+# aider ships tags queries for python/kotlin/cpp/c/typescript/tsx/… and yields
+# Tag(rel_fname, fname, line, name, kind) with kind ∈ {"def","ref"}. We map:
+#
+#   def  → :Symbol   (kind classified by re-querying the node's declaration
+#                     ancestor: class-like → "class"; callable → "method";
+#                     TitleCase fallback → "class", else "method")
+#   ref  → call_simples (callee simple-name; caller = nearest PRECEDING def by
+#                        line, else a file-level pseudo-fqn)
+#
+# extends/implements are NOT reliably recoverable from the generic tags across
+# languages, so they stay EMPTY on this path (Java keeps its rich edges). The
+# :Symbol nodes + :CALLS edges are the value here.
+
+# Node-type substrings that mark a definition's enclosing declaration. Matched
+# against tree-sitter node ``type`` names, which vary per grammar but are
+# stable within these families (e.g. ``class_declaration``, ``class_specifier``,
+# ``struct_specifier``, ``function_definition``, ``function_declarator``,
+# ``method_declaration``, ``object_declaration``).
+_CLASS_NODE_HINTS = (
+    "class", "struct", "interface", "enum", "trait", "object_declaration",
+    "record", "namespace", "type_alias", "module",
+)
+_FUNC_NODE_HINTS = ("function", "method", "constructor", "lambda", "subroutine")
+
+# aider is a declared dep, but guard the import so a broken/absent wheel
+# degrades the multi-language symbol path (returns empty results) instead of
+# crashing the whole repo ingest.
+_REPOMAP = None            # cached aider RepoMap instance
+_REPOMAP_FAILED = False     # sticky: once import/construct fails, stop retrying
+
+
+def _import_aider():
+    """Import aider's RepoMap + InputOutput. Factored out so tests can
+    monkeypatch it to simulate aider being unavailable."""
+    from aider.io import InputOutput
+    from aider.repomap import RepoMap
+    return RepoMap, InputOutput
+
+
+def _get_repomap():
+    """Lazy, cached ``aider.repomap.RepoMap``. Returns None (sticky) if aider
+    can't be imported/constructed, so the tag path degrades gracefully."""
+    global _REPOMAP, _REPOMAP_FAILED
+    if _REPOMAP is not None:
+        return _REPOMAP
+    if _REPOMAP_FAILED:
+        return None
+    try:
+        import tempfile
+        RepoMap, InputOutput = _import_aider()
+        # RepoMap.get_tags_raw takes an absolute fname and reads the file off
+        # disk itself; ``root`` only anchors its (unused-here) tags cache, so a
+        # throwaway temp dir keeps the cache out of any real repo.
+        root = tempfile.mkdtemp(prefix="aiforge-repomap-")
+        _REPOMAP = RepoMap(root=root, io=InputOutput(yes=True))
+    except Exception:  # noqa: BLE001 — missing/broken aider or grammars
+        _REPOMAP_FAILED = True
+        return None
+    return _REPOMAP
+
+
+def _tag_parser(lang: str):
+    """tree-sitter parser for ``lang`` via tree-sitter-language-pack (the same
+    grammar set aider uses). Returns None on any failure so classification
+    falls back to the name-shape heuristic."""
+    try:
+        from tree_sitter_language_pack import get_parser
+        return get_parser(lang)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _classify_def(root_node, name: str, line: int) -> str:
+    """Classify a definition as ``class`` or ``method`` by walking up from the
+    name node to its enclosing declaration. Callables are uniformly ``method``
+    (not split function/method) so the existing method-only :CALLS writer can
+    resolve cross-language calls. Falls back to name shape when the node can't
+    be located (TitleCase → class, else method)."""
+    if root_node is not None:
+        want = name.encode("utf-8", errors="replace")
+        # Collect candidate name nodes matching (text, line).
+        cands = []
+        stack = [root_node]
+        while stack:
+            n = stack.pop()
+            if n.is_named and n.start_point[0] == line and n.text == want:
+                cands.append(n)
+            stack.extend(n.children)
+        for nn in cands:
+            p = nn.parent
+            depth = 0
+            while p is not None and depth < 15:
+                t = p.type
+                if any(h in t for h in _CLASS_NODE_HINTS):
+                    return "class"
+                if any(h in t for h in _FUNC_NODE_HINTS):
+                    return "method"
+                p = p.parent
+                depth += 1
+    return "class" if name[:1].isupper() else "method"
+
+
+# Lightweight import scan (secondary signal — imports are only wired as
+# :IMPORTS edges when they match a :Symbol fqn, which is rare for external
+# libs, so this stays deliberately simple).
+_PY_IMPORT_RE = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))",
+                           re.MULTILINE)
+_JS_IMPORT_RE = re.compile(r"""import\s+.*?from\s+['"]([^'"]+)['"]""")
+
+
+def _scan_imports(text: str, lang: str) -> list[str]:
+    out: list[str] = []
+    try:
+        if lang == "python":
+            for m in _PY_IMPORT_RE.finditer(text):
+                mod = m.group(1) or m.group(2)
+                if mod:
+                    out.append(mod.strip())
+        elif lang in ("javascript", "typescript", "tsx", "jsx"):
+            out.extend(m.group(1).strip() for m in _JS_IMPORT_RE.finditer(text))
+    except Exception:  # noqa: BLE001
+        return []
+    # de-dup, preserve order
+    seen: set[str] = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def _module_for(fpath: Path, repo_root: "Path | None") -> str:
+    """Derive the module/package qualifier used in ``fqn`` and ``FileRecord.
+    package``. With ``repo_root`` the file's repo-relative path (slashes → dots,
+    extension dropped) — a python dotted module for .py, and a unique per-file
+    qualifier for others (avoids fqn collisions between same-stem files). Falls
+    back to the bare file stem when no root is available (unit tests)."""
+    if repo_root is not None:
+        try:
+            rel = fpath.resolve().relative_to(Path(repo_root).resolve())
+        except Exception:  # noqa: BLE001 — not under root
+            rel = Path(fpath.name)
+        parts = [p for p in rel.with_suffix("").parts if p not in ("", ".")]
+        if parts:
+            return ".".join(parts)
+    return fpath.stem
+
+
+def _parse_via_tags(
+    fpath: Path,
+    src: bytes,
+    repo: str,
+    sha1: str,
+    lang: str,
+    repo_root: "Path | None" = None,
+) -> FileParseResult:
+    """Parse ``fpath`` with the generic aider tag-query engine into the same
+    ``FileParseResult`` shape as ``_parse_java_file``. Soft-fails to an empty
+    result (never raises) so a bad file / missing aider / unsupported lang
+    degrades the symbol index instead of crashing the repo ingest."""
+    text = src.decode("utf-8", errors="replace")
+    loc = text.count("\n") + 1 if text else 0
+    module = _module_for(fpath, repo_root)
+    file_rec = FileRecord(
+        path=str(fpath), repo=repo, sha1=sha1, language=lang or "",
+        package=module, loc=loc,
+    )
+    result = FileParseResult(file=file_rec)
+
+    rm = _get_repomap()
+    if rm is None or not lang:
+        return result  # aider unavailable / unknown lang → empty, no crash
+
+    try:
+        tags = list(rm.get_tags_raw(str(fpath), fpath.name))
+    except Exception:  # noqa: BLE001 — parse/query failure on this file
+        return result
+
+    tree_root = None
+    parser = _tag_parser(lang)
+    if parser is not None:
+        try:
+            tree_root = parser.parse(src).root_node
+        except Exception:  # noqa: BLE001
+            tree_root = None
+
+    def _fqn(simple: str) -> str:
+        return f"{module}.{simple}" if module else simple
+
+    # DEFINITIONS (dedup by (name, line) — aider emits duplicate def tags).
+    seen_defs: set[tuple[str, int]] = set()
+    for tag in tags:
+        if tag.kind != "def":
+            continue
+        key = (tag.name, tag.line)
+        if key in seen_defs:
+            continue
+        seen_defs.add(key)
+        line1 = tag.line + 1 if tag.line >= 0 else 0
+        result.symbols.append(SymbolRecord(
+            fqn=_fqn(tag.name),
+            simple=tag.name,
+            kind=_classify_def(tree_root, tag.name, tag.line),
+            file_path=str(fpath),
+            repo=repo,
+            start_line=line1,
+            end_line=line1,
+        ))
+
+    # REFERENCES → call_simples. Caller = nearest def whose (0-based) line is
+    # <= the ref line (approximate lexical scope); pygments-backfilled refs
+    # (line == -1, e.g. cpp/c) and refs before any def use a file-level pseudo.
+    def_lines = sorted(((tag.line, tag.name) for tag in tags if tag.kind == "def"),
+                       key=lambda x: x[0])
+    pseudo_caller = f"{module}.<file>" if module else "<file>"
+
+    def _caller_for(ref_line: int) -> str:
+        best = None
+        if ref_line >= 0:
+            for dline, dname in def_lines:
+                if dline <= ref_line:
+                    best = dname
+                else:
+                    break
+        return _fqn(best) if best else pseudo_caller
+
+    seen_calls: set[tuple[str, str]] = set()
+    for tag in tags:
+        if tag.kind != "ref":
+            continue
+        callee = tag.name
+        if not callee:
+            continue
+        pair = (_caller_for(tag.line), callee)
+        if pair in seen_calls:
+            continue
+        seen_calls.add(pair)
+        result.call_simples.append(pair)
+
+    result.imports = _scan_imports(text, lang)
+    return result
+
+
 # ─────────────── disk traversal ───────────────
 
 def _sha1_bytes(data: bytes) -> str:
@@ -363,6 +607,25 @@ def _iter_java_files(repo_root: Path) -> Iterable[Path]:
         dirnames[:] = [d for d in dirnames if d not in DEFAULT_EXCLUDE_DIRS]
         for fn in filenames:
             if fn.endswith(".java"):
+                yield Path(dirpath) / fn
+
+
+# Source suffixes handled by the multi-language ingest, mapped to the language
+# key we hand the engine (java routes to the rich walker; the rest go through
+# _parse_via_tags with grep_ast.filename_to_lang deciding the actual grammar).
+_TAG_SUFFIXES = (
+    ".kt", ".kts", ".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs",
+    ".ts", ".tsx", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx",
+)
+_ALL_SOURCE_SUFFIXES = (".java",) + _TAG_SUFFIXES
+
+
+def _iter_source_files(repo_root: Path, suffixes: tuple[str, ...]) -> Iterable[Path]:
+    lowered = tuple(s.lower() for s in suffixes)
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in DEFAULT_EXCLUDE_DIRS]
+        for fn in filenames:
+            if fn.lower().endswith(lowered):
                 yield Path(dirpath) / fn
 
 
@@ -501,22 +764,57 @@ def _resolve_edges(session, parsed: FileParseResult, stats: IngestStats) -> None
 
 # ─────────────── public API ───────────────
 
+#: Default language set for a multi-language ingest. ``java`` routes to the
+#: rich hand-written walker; every other language goes through the generic
+#: aider tag-query engine (``_parse_via_tags``).
+DEFAULT_LANGUAGES = [
+    "java", "kotlin", "python", "javascript", "typescript", "tsx", "c", "cpp",
+]
+
+# Which on-disk suffixes each requested language contributes to the walk.
+_LANG_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "java": (".java",),
+    "kotlin": (".kt", ".kts"),
+    "python": (".py", ".pyi"),
+    "javascript": (".js", ".jsx", ".mjs", ".cjs"),
+    "jsx": (".jsx",),
+    "typescript": (".ts",),
+    "tsx": (".tsx",),
+    "c": (".c", ".h"),
+    "cpp": (".cc", ".cpp", ".cxx", ".hpp", ".hxx"),
+}
+
+
 def ingest_repo(
     driver,
     repo_root: Path,
     repo_name: str,
     languages: list[str] | None = None,
 ) -> IngestStats:
-    """Walk ``repo_root``, parse every file in ``languages``, write to Neo4j.
+    """Walk ``repo_root``, parse every source file in ``languages``, write to
+    Neo4j.
 
-    Currently supports ``["java"]`` only. ``languages`` accepted as an
-    explicit argument so the signature is stable when Python/TS land.
+    ``.java`` files go through the rich ``_parse_java_file`` walker (with its
+    extends/implements/field edges); every other supported language is parsed
+    by the generic aider tag-query engine (``_parse_via_tags``) which yields
+    the same ``FileParseResult`` shape, so the Neo4j writers are unchanged.
+    Unsupported/unknown languages are skipped (never crash the ingest).
     """
-    languages = languages or ["java"]
-    if languages != ["java"]:
-        raise NotImplementedError(
-            f"treesitter_ingest currently supports java only; got {languages!r}"
-        )
+    languages = languages or DEFAULT_LANGUAGES
+
+    # Resolve the union of suffixes to walk from the requested languages.
+    suffixes: list[str] = []
+    for lg in languages:
+        suffixes.extend(_LANG_SUFFIXES.get(lg, ()))
+    # `.h` is ambiguous C/C++; include it whenever either is requested.
+    if ("cpp" in languages or "c" in languages) and ".h" not in suffixes:
+        suffixes.append(".h")
+    suffixes_t = tuple(dict.fromkeys(suffixes)) or (".java",)
+
+    try:
+        from grep_ast import filename_to_lang
+    except Exception:  # noqa: BLE001 — grep_ast is a declared dep; degrade
+        filename_to_lang = None  # type: ignore
 
     log = get_logger("treesitter_ingest", ticket=None)
     stats = IngestStats(started_at=time.time())
@@ -524,7 +822,7 @@ def ingest_repo(
 
     # Phase 1: parse files, write :File + :Symbol + :DEFINES eagerly.
     with driver.session() as session:
-        for fpath in _iter_java_files(repo_root):
+        for fpath in _iter_source_files(repo_root, suffixes_t):
             stats.files_seen += 1
             try:
                 size = fpath.stat().st_size
@@ -542,7 +840,16 @@ def ingest_repo(
                     stats.files_skipped_unchanged += 1
                     continue
 
-                parsed = _parse_java_file(fpath, data, repo_name, sha1)
+                if fpath.suffix.lower() == ".java":
+                    if not TREESITTER_AVAILABLE:
+                        continue  # java grammar missing → skip java files
+                    parsed = _parse_java_file(fpath, data, repo_name, sha1)
+                else:
+                    lang = filename_to_lang(str(fpath)) if filename_to_lang else None
+                    if not lang:
+                        continue  # engine can't map this file → skip
+                    parsed = _parse_via_tags(
+                        fpath, data, repo_name, sha1, lang, repo_root=repo_root)
                 _write_file_payload(session, parsed, stats)
                 parsed_results.append(parsed)
                 stats.files_parsed += 1

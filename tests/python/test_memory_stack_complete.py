@@ -18,6 +18,14 @@ def test_tree_sitter_deps_declared():
         assert pkg in joined, f"{pkg} missing from pyproject dependencies"
 
 
+def test_multilang_symbol_deps_declared():
+    # The generic tag-query engine behind _parse_via_tags (kotlin/python/react/
+    # c/cpp symbol ingest). Must stay declared so `uv sync` can't prune them.
+    joined = " ".join(_deps())
+    for pkg in ("aider-chat", "grep-ast", "tree-sitter-language-pack"):
+        assert pkg in joined, f"{pkg} missing from pyproject dependencies"
+
+
 def test_core_memory_deps_declared():
     joined = " ".join(_deps())
     for pkg in ("aiforge-memory", "croniter", "numpy"):

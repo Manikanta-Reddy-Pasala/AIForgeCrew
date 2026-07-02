@@ -38,6 +38,15 @@ dependencies = [
   "tree-sitter>=0.21",
   "tree-sitter-java>=0.21",
   "tree-sitter-python>=0.21",
+  # Multi-language symbol ingest (kotlin/python/react/c/cpp). The generic
+  # tag-query engine (aider.repomap.RepoMap.get_tags_raw) drives
+  # treesitter_ingest._parse_via_tags — it reuses aider's bundled tree-sitter
+  # tags queries via grep-ast's filename_to_lang + the tree-sitter-language-pack
+  # grammars, so we don't hand-write a per-language AST walker. Declared so
+  # `uv sync` can't prune them out from under the symbol layer.
+  "aider-chat>=0.86",
+  "grep-ast>=0.9",
+  "tree-sitter-language-pack>=0.13",
   # Doer runtime tools: execute_ipython_cell (jupyter kernel) + browse
   # (playwright). Declared here so `uv sync` stops pruning them — they
   # were previously hand-installed on the host and vanished on every sync.

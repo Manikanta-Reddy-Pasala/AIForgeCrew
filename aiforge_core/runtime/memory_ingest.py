@@ -270,7 +270,9 @@ def _stat_count(stats, key: str) -> int:
 
 
 def _index_symbols(root: Path, repo: str) -> "tuple[int, str]":
-    """Layer B — tree-sitter symbol graph into Neo4j. Java-only today."""
+    """Layer B — tree-sitter symbol graph into Neo4j. Java uses the rich
+    walker; kotlin/python/react (js/ts/jsx/tsx)/c/cpp go through the generic
+    aider tag-query engine (treesitter_ingest._parse_via_tags)."""
     from aiforge_core.indexing import treesitter_ingest as tsi
     if not tsi.TREESITTER_AVAILABLE:
         return 0, "skip:treesitter_unavailable"
@@ -278,14 +280,17 @@ def _index_symbols(root: Path, repo: str) -> "tuple[int, str]":
     if driver is None:
         return 0, "skip:no_neo4j"
     try:
-        stats = tsi.ingest_repo(driver, Path(root), repo_name=repo)
+        stats = tsi.ingest_repo(
+            driver, Path(root), repo_name=repo,
+            languages=tsi.DEFAULT_LANGUAGES,
+        )
         seen = _stat_count(stats, "files_seen")
         n = _stat_count(stats, "symbols_written")
         if seen == 0:
-            # tree-sitter symbol extraction is Java-only today — a repo with no
-            # .java files (e.g. Kotlin/Go/TS) yields 0 even though its code was
-            # chunked. Say so, so it's not mistaken for a failed index.
-            return n, "skip:no_java_files (tree-sitter symbols are Java-only)"
+            # No java/kotlin/python/react/c/cpp source under the root — the
+            # symbol layer has nothing to extract even though the code text may
+            # have been chunked. Say so, so it's not mistaken for a failure.
+            return n, "skip:no_source_files (no supported source files found)"
         return n, "ok"
     except Exception as exc:  # noqa: BLE001
         log.warning("symbol index failed: %s", exc)
