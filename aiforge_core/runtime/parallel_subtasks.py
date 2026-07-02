@@ -744,12 +744,16 @@ _ACTION_VERBS = (
     "implement", "write", "create", "delete", "edit", "move",
 )
 _VERB_RE = re.compile(r"\b(?:" + "|".join(_ACTION_VERBS) + r")\b", re.I)
-# A token carrying a code file extension ("app.py", "src/parse.ts").
+# A token carrying a code file extension ("app.py", "src/parse.ts"). We
+# require a REAL extension (not a bare slash token): matching any "X/Y" path
+# over-fired on conceptual slash-phrases like "TCP/IP", "client/server",
+# "CI/CD", "read/write" — those name no file, so a verb + one of those wrongly
+# skipped enhancement and lost the memory/README context-fold. Concrete now
+# means "names an actual code file".
 _FILE_EXT_RE = re.compile(
     r"[\w./-]+\.(?:py|js|ts|tsx|jsx|java|go|rs|md|json|ya?ml|sql)\b", re.I)
-# A path-separated token with letters on both sides ("src/app") — excludes
-# bare numeric fractions like "1/2".
-_PATH_RE = re.compile(r"[A-Za-z][\w.-]*/[\w./-]*[A-Za-z]")
+# Multi-part connectors that mean "enhance, don't skip" (a list / sequence).
+_MULTIPART_RE = re.compile(r"\band\b|\bthen\b|;| & ", re.I)
 
 
 def _enhancer_skip_concrete_enabled() -> bool:
@@ -765,19 +769,20 @@ def _is_concrete_prompt(prompt: str) -> bool:
     verb — i.e. it's already actionable and does NOT need the enhancer LLM.
 
     Conservative by design (err toward enhancing): a vague, multi-part, or long
-    prompt returns False so its context still gets folded. Multi-part (``and`` /
-    ``;``), multi-line, and >200-char prompts are all rejected."""
+    prompt returns False so its context still gets folded. Multi-part
+    (``and``/``then``/``;``/``&``), multi-line, >200-char, and prompts that name
+    no actual code file are all rejected."""
     p = (prompt or "").strip()
     if not p or len(p) > 200:
         return False
     if "\n" in p:                       # multi-line → not a simple one-liner
         return False
     low = p.lower()
-    if " and " in low or ";" in p:      # multi-part → enhance instead
+    if _MULTIPART_RE.search(low):       # list / sequence → enhance instead
         return False
     if not _VERB_RE.search(low):        # no action verb → not an imperative
         return False
-    return bool(_FILE_EXT_RE.search(p) or _PATH_RE.search(p))
+    return bool(_FILE_EXT_RE.search(p))  # must name an actual code file
 
 
 def _memory_block(prompt: str, repo: str | None) -> str:

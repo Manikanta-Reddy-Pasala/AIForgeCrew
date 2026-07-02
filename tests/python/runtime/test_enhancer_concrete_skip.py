@@ -49,6 +49,13 @@ def test_concrete_true_for_action_plus_file(p):
     "parse json",                          # 'json' w/o dot, no verb
     "fix the bug in app.py because the whole thing keeps crashing on startup "
     "and we should really rethink the error handling strategy end to end here",  # too long
+    # Conceptual slash-phrases name NO file — must enhance (bug-hunt #1):
+    "add TCP/IP support to the server",
+    "fix the client/server handshake",
+    "implement read/write locking",
+    "update the CI/CD pipeline config",
+    # Sequenced multi-part with 'then' (bug-hunt #2):
+    "fix app.py, then also rewrite db.py",
 ])
 def test_concrete_false_for_vague_or_multipart_or_long(p):
     assert pp._is_concrete_prompt(p) is False, p
