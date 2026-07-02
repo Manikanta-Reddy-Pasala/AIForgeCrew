@@ -73,3 +73,18 @@ graphify-out/
 
 # brainstorming visual companion
 .superpowers/
+
+# Runtime data created by the app (local Docker binds + local runs) — never commit
+neo4j-data/
+neo4j-logs/
+data/
+pgdata/
+state/
+ticket-files/
+aiforge_workspace/
+# SQLite stores the app opens at runtime (jobs/chat/memory/checkpoints)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
