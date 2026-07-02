@@ -237,6 +237,13 @@ _TRANSIENT_MARKERS = (
     "500", "502", "503", "504", "bad gateway", "gateway", "overloaded",
     "internalservererror", "apiconnectionerror", "serviceunavailable",
     "jsondecodeerror", "unterminated", "remotedisconnected", "broken pipe",
+    # Model-lifecycle drops on ANY local OpenAI-compatible server (mlx-lm,
+    # ollama, llama.cpp, vLLM, LM Studio, …): idle-unload, OOM-evict, restart,
+    # or a not-yet-loaded model. Retrying (→ primary_retry / next candidate)
+    # lets the server reload it instead of hard-failing the run.
+    "model unloaded", "unloaded", "model not loaded", "not loaded",
+    "model not found", "model_not_found", "no model", "no models loaded",
+    "model is loading", "loading model", "model not ready", "still loading",
 )
 
 

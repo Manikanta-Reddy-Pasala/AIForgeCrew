@@ -207,7 +207,9 @@ def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
             # same way (5xx/429 retry, other 4xx permanent).
             raise urllib.error.HTTPError(
                 url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
-        return json.loads(data)
+        _body = json.loads(data)
+        _raise_if_model_dropped(_body)   # 200-OK error body → transient
+        return _body
     except (http.client.HTTPException, OSError) as exc:
         if cancel.is_set():
             raise _LLMCancelled("cancelled mid-request") from exc
@@ -242,7 +244,9 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int) -> dict:
     )
     with urllib.request.urlopen(req, timeout=timeout_s,
                                 context=_post_ctx(ep)) as resp:
-        return json.loads(resp.read())
+        _body = json.loads(resp.read())
+        _raise_if_model_dropped(_body)   # 200-OK error body → transient
+        return _body
 
 
 def _preflight(base_url: str) -> None:
@@ -307,18 +311,59 @@ def _http_err_body(exc: Exception) -> str:
         return str(raw)[:600]
 
 
+# Model-lifecycle phrases a local OpenAI-compatible server emits when the
+# model isn't resident (idle-unload / OOM-evict / restart / not-yet-loaded).
+# Endpoint-agnostic — mlx-lm, ollama, llama.cpp, vLLM, LM Studio all surface a
+# variant. A server may return these as a 200-OK error body OR a 4xx, so we
+# match the message text either way and RETRY (gives the server time to
+# reload) instead of hard-failing the run.
+_MODEL_DROP_MARKERS = (
+    "model unloaded", "unloaded", "model not loaded", "not loaded",
+    "model not found", "no model", "no models loaded", "model is loading",
+    "loading model", "model not ready", "still loading",
+)
+
+
+class _ModelReloading(Exception):
+    """Raised when the endpoint reports the model is unloaded/reloading — a
+    transient condition that should retry, not fail the run."""
+
+
+def _raise_if_model_dropped(body: object) -> None:
+    """If ``body`` is an OpenAI-style error whose message names a model drop,
+    raise :class:`_ModelReloading` so the retry loop re-issues the call."""
+    err = body.get("error") if isinstance(body, dict) else None
+    if err is None:
+        return
+    msg = (err.get("message") if isinstance(err, dict) else str(err)) or ""
+    low = msg.lower()
+    if any(m in low for m in _MODEL_DROP_MARKERS):
+        raise _ModelReloading(f"model unavailable (reloading?): {msg[:200]}")
+
+
 def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
     """Return (retry?, label) for transport exceptions.
 
     HTTPError 5xx / 408 / 429 → retry (server-side or rate-limit).
-    HTTPError 4xx other → no retry (permanent: bad auth, bad model id).
-    URLError / OSError / timeout / connection-reset → retry (transport flake).
+    HTTPError 4xx other → no retry, UNLESS its body names a model drop.
+    _ModelReloading → retry. URLError / OSError / timeout → retry.
     """
     if isinstance(exc, _LLMCancelled):
         return False, "cancelled"        # don't re-issue an aborted call
+    if isinstance(exc, _ModelReloading):
+        return True, "model_reloading"
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code in _TRANSIENT_HTTP:
             return True, f"http_{exc.code}"
+        # A 4xx whose body names a model drop is still transient (the server
+        # is reloading), not a permanent bad-request.
+        try:
+            _body = exc.read()
+            if _body and any(m in _body.decode("utf-8", "replace").lower()
+                             for m in _MODEL_DROP_MARKERS):
+                return True, "model_reloading_4xx"
+        except Exception:  # noqa: BLE001
+            pass
         return False, f"http_{exc.code}"
     if isinstance(exc, urllib.error.URLError):
         return True, "url_error"

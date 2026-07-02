@@ -56,6 +56,18 @@ def _agent_config_for(role: str) -> dict | None:
     return row
 
 
+def is_local_endpoint(role: str = "doer") -> bool:
+    """True when ``role`` resolves to a loopback (local) OpenAI-compatible
+    server — mlx-lm / ollama / llama.cpp / vLLM / LM Studio on 127.0.0.1 or
+    localhost. Used to make serial-serving assumptions (e.g. don't fan out
+    parallel calls to a single-model local box). Soft-fails to False."""
+    try:
+        base = (getattr(resolve(role), "base_url", "") or "").lower()
+        return ("127.0.0.1" in base) or ("localhost" in base)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def resolve(role: str) -> Endpoint:
     """Pick + build the endpoint for ``role``."""
     cfg = _agent_config_for(role)
