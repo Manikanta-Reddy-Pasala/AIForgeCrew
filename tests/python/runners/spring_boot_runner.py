@@ -31,9 +31,12 @@ from aiforge_core.observability.logging import emit
 _HOST_OVERRIDES: dict[str, dict] = {
     "spring.data.redis.host": "127.0.0.1",
     "spring.data.redis.port": 6379,
-    "spring.mongodb.uri": (
-        "mongodb://databaseAdmin:Mg%239vB%40kN3wQ5z@127.0.0.1:27017/"
-        "oneshell?ssl=false&authSource=admin&directConnection=true"
+    # Never hardcode a real credential (repo is public). Supply the live QA URI
+    # via AIFORGE_TEST_MONGO_URI; falls back to a throwaway local dev value.
+    "spring.mongodb.uri": os.environ.get(
+        "AIFORGE_TEST_MONGO_URI",
+        "mongodb://devuser:devpass@127.0.0.1:27017/"
+        "oneshell?ssl=false&authSource=admin&directConnection=true",
     ),
     "nats.local.url": "nats://127.0.0.1:4222",
     "nats.remote.url": "nats://127.0.0.1:4222",
