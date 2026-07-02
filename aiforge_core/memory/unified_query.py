@@ -41,6 +41,7 @@ _DEFAULT_WEIGHTS = {
     "external":   0.5,
     "afm_bundle": 1.1,   # AiForgeMemory ContextBundle (chunks + repo_map +
                          # conventions + notes/docs + vector observations)
+    "vector":     1.0,   # global (repo-agnostic) Observation_v2 vector/FT recall
     "xrepo":      0.7,   # AiForgeMemory CALLS_REPO cross-repo edges
     "chat":       0.6,   # prior chat-session message content (chat_store)
 }
@@ -190,6 +191,25 @@ def query(
                 )
         except Exception as exc:
             errors.append(f"afm_bundle: {exc}")
+
+    # 7b) Global (repo-agnostic) Observation_v2 vector + fulltext recall.
+    # The AFM bundle above only fires with a scoped repo, so a repo-less
+    # GLOBAL search (the Memory UI's "search across all wings", freshly
+    # ingested repos before any repo is pinned) never saw ingested code/doc
+    # observations. Query the vector + fulltext indexes directly across all
+    # repos. Neo4j-only (embedded SQLite recall is source 1); soft-fail.
+    if os.environ.get("AIFORGE_UMEM_GLOBAL_VECTOR", "1") == "1":
+        try:
+            from aiforge_core.memory import backend_select as _bsel
+            if not _bsel.embedded():
+                rows = _global_vector_recall(text, limit=limit)
+                if rows:
+                    used.append("vector")
+                    raw_hits.extend(
+                        _tag(rows, source="vector", weight=weights["vector"]),
+                    )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"vector: {exc}")
 
     # 8) Cross-repo CALLS_REPO neighbours (gap A7). Retrieval normally
     # stops at the worktree boundary; surface "repo Y calls repo X" edges
@@ -620,6 +640,65 @@ def _unpack_mcp_rows(raw: Any) -> list[dict]:
             for d in data if isinstance(d, (dict, str))
         ]
     return [{"text": str(data)[:1500], "score": 0.5}]
+
+
+def _global_vector_recall(text: str, *, limit: int) -> list[dict]:
+    """Repo-agnostic recall over ``Observation_v2`` on the Neo4j backend.
+
+    The AFM ContextBundle (source 7) only surfaces vector-recalled observations
+    when a ``repo`` is scoped. A GLOBAL memory search (the /api/memory/search UI,
+    ingested repos, cross-wing "search everything") passes no repo, so those
+    observations were invisible. This queries the ``codemem_observation_embed``
+    vector index directly (semantic) and unions the ``codemem_observation_ft``
+    fulltext index (lexical) across ALL repos. Soft-fail → []."""
+    from aiforge_core.runtime.memory_ingest import _neo4j_driver_or_none
+    drv = _neo4j_driver_or_none()
+    if drv is None:
+        return []
+    rows: list[dict] = []
+    seen: set[str] = set()
+    try:
+        with drv.session() as s:
+            try:
+                from aiforge_core.memory.embed import embed as _embed
+                qv = _embed(text)
+            except Exception:  # noqa: BLE001 — embed sidecar down → FT only
+                qv = None
+            if qv:
+                for r in s.run(
+                    "CALL db.index.vector.queryNodes"
+                    "('codemem_observation_embed', $k, $v) "
+                    "YIELD node, score "
+                    "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
+                    "node.repo AS repo, score AS score",
+                    k=min(limit, 20), v=qv,
+                ).data():
+                    if r.get("id") and r["id"] not in seen and r.get("text"):
+                        seen.add(r["id"])
+                        rows.append({"text": r["text"], "score": float(r.get("score") or 0.5),
+                                     "kind": r.get("kind"), "repo": r.get("repo")})
+            # Lexical union (catches exact tokens a paraphrased vector misses).
+            try:
+                for r in s.run(
+                    "CALL db.index.fulltext.queryNodes"
+                    "('codemem_observation_ft', $q) "
+                    "YIELD node, score "
+                    "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
+                    "node.repo AS repo, score AS score LIMIT $k",
+                    q=text, k=min(limit, 20),
+                ).data():
+                    if r.get("id") and r["id"] not in seen and r.get("text"):
+                        seen.add(r["id"])
+                        rows.append({"text": r["text"], "score": float(r.get("score") or 0.5),
+                                     "kind": r.get("kind"), "repo": r.get("repo")})
+            except Exception:  # noqa: BLE001 — FT query syntax on odd input
+                pass
+    finally:
+        try:
+            drv.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return rows
 
 
 def _tag(rows: list[dict], *, source: str, weight: float) -> list[dict]:
