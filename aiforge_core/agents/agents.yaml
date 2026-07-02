@@ -295,8 +295,6 @@ agents:
         - repo_map                  # tree-sitter PageRank repo map (AST, no vectors)
         - impacted_tests            # diff→covering-tests map (run targeted slice)
         - grep_repo                 # fast pattern search
-        - fetch_url                 # public-docs fetch
-        - web_search                # open-web search when stuck
         - serve                     # boot the built app in the background
         - stop_service              # stop a serve()'d process
         - subtask_update            # flip a subticket's live status

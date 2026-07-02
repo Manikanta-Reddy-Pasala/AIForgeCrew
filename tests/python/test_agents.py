@@ -67,9 +67,10 @@ def test_validate_shipped_yaml_has_no_violations() -> None:
 
 
 def test_doer_allowed_includes_oh_parity_tools() -> None:
-    """After sub-project #1, Doer's allowed set is editor/bash/think/finish
-    plus support tools; legacy file_write/file_patch/code_run are moved to
-    forbidden (see docs/superpowers/specs/2026-05-21-tool-surface-upgrade-design.md)."""
+    """Doer's allowed set = editor/bash/think/finish PLUS the real primary
+    file surface (file_write/file_patch/run_shell) — its prompt teaches those
+    and local models emit them, so they stay first-class (honest-config fix).
+    Genuinely non-doer tools (code_run/ask_user/create_child_ticket) filter out."""
     contracts = load_agents(SHIPPED_YAML)
     full_schema = [
         {"name": "editor", "description": "..."},
@@ -88,11 +89,11 @@ def test_doer_allowed_includes_oh_parity_tools() -> None:
     assert "bash" in names
     assert "think" in names
     assert "finish" in names
-    assert "file_write" not in names
-    assert "file_patch" not in names
-    assert "code_run" not in names
-    assert "ask_user" not in names
-    assert "create_child_ticket" not in names
+    assert "file_write" in names      # real primary surface (not forbidden)
+    assert "file_patch" in names      # real primary surface
+    assert "code_run" not in names    # genuinely not a doer tool
+    assert "ask_user" not in names            # forbidden
+    assert "create_child_ticket" not in names  # forbidden
 
 
 def test_doer_has_full_editor_access() -> None:
@@ -105,15 +106,18 @@ def test_doer_has_full_editor_access() -> None:
     assert "finish" in doer.tools.allowed
 
 
-def test_legacy_tools_moved_to_forbidden_for_doer() -> None:
+def test_doer_keeps_real_file_surface_not_forbidden() -> None:
+    """Honest-config fix: file_read/file_write/file_patch/run_shell are the
+    Doer's REAL primary surface (its prompt is built on them + local models
+    emit them) — they must be in `allowed`, NOT `forbidden`. Forbidding them
+    while the prompt teaches them would brick the Doer if enforcement flips on."""
     contracts = load_agents()
     doer = contracts["doer"]
+    allowed = set(doer.tools.allowed or [])
     forbidden = set(doer.tools.forbidden)
-    for legacy in ("file_read", "file_write", "file_patch",
-                   "run_shell", "code_run"):
-        assert legacy in forbidden, (
-            f"{legacy} must be forbidden for Doer post sub-project #1"
-        )
+    for real in ("file_read", "file_write", "file_patch", "run_shell"):
+        assert real in allowed, f"{real} is the Doer's real surface — must be allowed"
+        assert real not in forbidden, f"{real} must NOT be forbidden for the Doer"
 
 
 def test_view_only_roles_have_editor_commands_view() -> None:
