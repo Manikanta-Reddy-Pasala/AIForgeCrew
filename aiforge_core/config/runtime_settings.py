@@ -1,15 +1,20 @@
 """Operator-tunable runtime knobs, persisted + UI-editable.
 
 Two global LLM knobs the operator chooses (NO hardcoded constant wins
-over an explicit choice):
+over an explicit choice). Defaults are LOCAL-FIRST — sized so the product
+runs on a real small local box (a 32K-window quantized/mlx model) out of
+the box; an operator with a bigger model raises them via the env vars.
 
 * ``max_output_tokens`` — generation cap sent to the model. Too small
   truncates a doer's file-write tool-call args mid-string; too large
-  wastes budget. Default 32768.
+  reserves the whole window for output on a small model. Default 4096
+  (fits any window; a local tool-call turn rarely needs more). Raise via
+  ``AIFORGE_LLM_MAX_TOKENS``.
 * ``context_window``    — assumed input context window (tokens). Feeds
-  the router's escalation/threshold sizing and is surfaced so the
-  operator can match it to whatever the served model actually allows.
-  Default 131072.
+  the router's escalation/threshold sizing AND the chat condense budget,
+  so a too-large value makes the agent overflow a small window before the
+  auto-condense safety net fires. Default 32768 (the common local case).
+  Operators with a 128K model set ``AIFORGE_LOCAL_CTX_WINDOW=131072``.
 
 Resolution order for each knob (first that yields a value wins):
   1. ``runtime_settings.json`` (this store — the UI writes here)
@@ -32,8 +37,8 @@ log = logging.getLogger("aiforge.runtime_settings")
 
 # knob -> (env var consulted when the store has no value, built-in default)
 _SPEC: dict[str, tuple[str, int]] = {
-    "max_output_tokens": ("AIFORGE_LLM_MAX_TOKENS", 32768),
-    "context_window": ("AIFORGE_LOCAL_CTX_WINDOW", 131072),
+    "max_output_tokens": ("AIFORGE_LLM_MAX_TOKENS", 4096),
+    "context_window": ("AIFORGE_LOCAL_CTX_WINDOW", 32768),
     # 0/1 flag: force-treat the chat model as vision-capable (for a self-hosted
     # multimodal model the allowlist doesn't recognise). Auto-detection by model
     # id still applies when this is 0.

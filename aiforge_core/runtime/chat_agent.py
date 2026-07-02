@@ -1632,16 +1632,60 @@ def _complete_cancellable(complete_fn, role, convo, session_id):
     return box.get("out")
 
 
+# Below this resolved context window (tokens) a small local box gets lean
+# ("cave") context automatically — the operator needn't flip a setting.
+# Override the threshold with AIFORGE_CAVE_AUTO_WINDOW; a big-window model
+# stays above it and keeps the full context.
+_CAVE_AUTO_WINDOW_DEFAULT = 49152   # 48K
+
+
+def _cave_auto_window() -> int:
+    raw = os.environ.get("AIFORGE_CAVE_AUTO_WINDOW")
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return _CAVE_AUTO_WINDOW_DEFAULT
+
+
+def _resolved_window() -> int:
+    """The resolved (global) context window in tokens, for cave sizing."""
+    try:
+        from aiforge_core.config import runtime_settings
+        return int(runtime_settings.get("context_window"))
+    except Exception:  # noqa: BLE001
+        return 131072
+
+
 def _cave_mode() -> bool:
     """Cave mode = leanest useful context (smaller repo map, skip optional
     skills/workflows/mentions blocks, fewer memory hits, tighter condense
-    budget). Env AIFORGE_CAVE_MODE wins; else the runtime setting."""
+    budget).
+
+    Resolution — an EXPLICIT operator choice always wins, in order:
+      1. env ``AIFORGE_CAVE_MODE`` (1/0 force on/off)
+      2. an explicitly-stored ``cave_mode`` setting (UI wrote it — 1/0)
+    Only when NEITHER is set do we AUTO-enable cave for a small resolved
+    context window (<= ``AIFORGE_CAVE_AUTO_WINDOW``, default 48K), so a
+    small local box gets lean context without the operator flipping a
+    setting while a big-window model keeps the full context."""
     env = os.environ.get("AIFORGE_CAVE_MODE")
     if env is not None:
         return env not in ("0", "false", "")
     try:
         from aiforge_core.config import runtime_settings
-        return int(runtime_settings.get("cave_mode")) > 0
+        # Distinguish an explicitly-stored value from the unset default (a
+        # stored 0 = operator opted OUT and must be respected).
+        stored = runtime_settings._read_store().get("cave_mode")
+        if isinstance(stored, int):
+            return stored > 0
+    except Exception:  # noqa: BLE001
+        pass
+    # Unset → auto-enable when the window is small enough that the full
+    # context wouldn't fit comfortably.
+    try:
+        return _resolved_window() <= _cave_auto_window()
     except Exception:  # noqa: BLE001
         return False
 
@@ -1674,13 +1718,23 @@ def _compress_prompt(text: str) -> str:
     return "\n".join(out).strip()
 
 
+# Measured size of the built system prompt (``_SYSTEM``) in chars — reserved
+# out of the window so it isn't counted as available history.
+_SYSTEM_PROMPT_CHARS = 14000
+# Never let the history budget collapse to <=0 on a tiny window.
+_CTX_BUDGET_FLOOR_CHARS = 4000
+
+
 def _ctx_budget_chars(role: str | None = None) -> int:
     """Char budget for the running conversation before auto-condensing. 0
     disables. Explicit override: AIFORGE_CHAT_CONTEXT_BUDGET_CHARS. Otherwise
-    SIZED TO THE CONFIGURED MODEL WINDOW (context_window tokens → ~4 chars/token,
-    keeping ~55% headroom for the system prompt + the model's own reply) instead
-    of a fixed 48k that's too high for a small window and needlessly low for a
-    big one."""
+    SIZED TO THE CONFIGURED MODEL WINDOW (context_window tokens → ~4 chars/token)
+    MINUS the reservations that aren't available for history — the output cap
+    (``max_output_tokens``) and the system prompt (~14K chars) — so on a 32K
+    local window the budget leaves real room for INPUT instead of assuming the
+    whole window is history. A cave/non-cave headroom fraction is then applied
+    to the remaining usable space, and a floor keeps the budget positive on a
+    tiny window."""
     env = os.environ.get("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS")
     if env:
         try:
@@ -1704,7 +1758,16 @@ def _ctx_budget_chars(role: str | None = None) -> int:
     # Cave mode condenses sooner — keep far less of the running history.
     headroom = 0.30 if _cave_mode() else 0.55
     if win > 0:
-        return int(win * 4 * headroom)
+        # Reserve what the request needs beyond history: the model's own reply
+        # (output cap) and the system prompt. ~4 chars/token.
+        try:
+            from aiforge_core.config import runtime_settings
+            out_chars = int(runtime_settings.get("max_output_tokens")) * 4
+        except Exception:  # noqa: BLE001
+            out_chars = 4096 * 4
+        usable = win * 4 - out_chars - _SYSTEM_PROMPT_CHARS
+        budget = int(max(usable, _CTX_BUDGET_FLOOR_CHARS) * headroom)
+        return max(budget, _CTX_BUDGET_FLOOR_CHARS)
     return 24000 if _cave_mode() else 48000
 
 

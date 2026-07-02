@@ -17,12 +17,14 @@ def rs(monkeypatch, tmp_path):
 
 
 def test_defaults(rs):
-    assert rs.get("max_output_tokens") == 32768
-    assert rs.get("context_window") == 131072
+    # LOCAL-FIRST defaults: a generation cap that fits any window + a 32K
+    # window (the common small-local case). Operators raise both via env.
+    assert rs.get("max_output_tokens") == 4096
+    assert rs.get("context_window") == 32768
     assert rs.get("vision_capable") == 0
     assert rs.get("cave_mode") == 0
     assert rs.all_settings() == {
-        "max_output_tokens": 32768, "context_window": 131072,
+        "max_output_tokens": 4096, "context_window": 32768,
         "vision_capable": 0, "cave_mode": 0, "compact_llm": 0,
         "ctx_no_recall": 0, "ctx_no_mentions": 0, "ctx_no_skills": 0,
         "ctx_no_workflows": 0, "ctx_no_repomap": 0, "ctx_no_summary": 0}
