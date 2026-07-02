@@ -1729,6 +1729,33 @@ def memory_files_delete(name: str) -> dict:
     return {"deleted": md_store.delete_file(name), "name": name}
 
 
+def _spawn_index(source_id: int) -> None:
+    """Kick off ``run_index`` in a SEPARATE PROCESS, not a thread.
+
+    Indexing is CPU-bound (tree-sitter parsing + chunking) and holds the GIL
+    for long stretches; in an api thread it starves uvicorn's asyncio event
+    loop and wedges every request — health, the UI, and the public tunnel all
+    hang for the whole (minutes-long, CPU-embedding) index. A subprocess has
+    its own GIL, so the api stays responsive. Detached + non-blocking; the
+    child updates the source row's status itself."""
+    import subprocess
+    import sys
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "aiforge_core.runtime.memory_ingest",
+             str(source_id)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to a thread
+        import threading
+
+        from aiforge_core.runtime.memory_ingest import run_index
+        log.warning("index subprocess spawn failed (%s); using a thread", exc)
+        threading.Thread(target=run_index, args=(source_id,),
+                         daemon=True).start()
+
+
 @app.get("/api/memory/sources")
 def memory_sources_list() -> list[dict]:
     from aiforge_core.runtime import memory_sources as _ms
@@ -1740,18 +1767,14 @@ def memory_sources_create(body: _MemSourceBody) -> dict:
     """Register a memory source. ``repo``/``docs`` sources auto-start a full
     multi-layer background index immediately (chunks + tree-sitter symbols +
     graphify); ``url``/``file`` stay manual (cheap, index via /index)."""
-    import threading
-
     from aiforge_core.runtime import memory_sources as _ms
     try:
         src = _ms.create(body.kind, body.location, body.name)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     if body.kind in ("repo", "docs"):
-        from aiforge_core.runtime.memory_ingest import run_index
         _ms.set_status(src["id"], "indexing", error=None)
-        threading.Thread(target=run_index, args=(src["id"],),
-                         daemon=True).start()
+        _spawn_index(src["id"])
         src = {**src, "status": "indexing"}
     return src
 
@@ -1783,15 +1806,12 @@ def memory_sources_delete(source_id: int) -> None:
 @app.post("/api/memory/sources/{source_id}/index")
 def memory_sources_index(source_id: int) -> dict:
     """Kick off background indexing of a source into memory."""
-    import threading
-
     from aiforge_core.runtime import memory_sources as _ms
-    from aiforge_core.runtime.memory_ingest import run_index
     src = _ms.get(source_id)
     if not src:
         raise HTTPException(404, f"source {source_id} not found")
     _ms.set_status(source_id, "indexing", error=None)
-    threading.Thread(target=run_index, args=(source_id,), daemon=True).start()
+    _spawn_index(source_id)
     return {**src, "status": "indexing"}
 
 

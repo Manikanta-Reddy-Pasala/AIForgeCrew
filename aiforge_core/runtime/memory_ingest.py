@@ -485,3 +485,13 @@ def run_index(source_id: int) -> None:
     else:
         _ms.set_status(source_id, "done", units=res.get("units", 0),
                        error=None, layers=layers, indexed=True)
+
+
+if __name__ == "__main__":  # subprocess entrypoint: `python -m … <source_id>`
+    # Indexing is CPU-bound (tree-sitter parsing, chunking) and holds the GIL
+    # for long stretches; running it in an api THREAD starves uvicorn's asyncio
+    # loop and wedges every request (health, the UI, the public tunnel). The
+    # api dispatches this module as a SEPARATE PROCESS so its GIL is its own.
+    import sys
+    raise SystemExit(0 if (len(sys.argv) > 1 and run_index(int(sys.argv[1])) is None)
+                     else 1)
