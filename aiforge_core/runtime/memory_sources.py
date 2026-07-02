@@ -135,6 +135,38 @@ def delete(source_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def reset_all() -> int:
+    """Reset every registered source's index STATE (status→idle, units→0,
+    clear error/last_indexed) WITHOUT deleting the registration itself.
+
+    Used by the memory admin "clear data" actions: the indexed nodes/units are
+    wiped from the backend, but the user's registered repos/dirs survive so they
+    can simply be re-indexed to repopulate. Returns the count of sources reset.
+    """
+    with _LOCK, _conn() as c:
+        n = c.execute("SELECT COUNT(*) FROM memory_sources").fetchone()[0]
+        c.execute(
+            "UPDATE memory_sources SET status='idle', units=0, error=NULL, "
+            "last_indexed=NULL, detail=NULL WHERE status!='indexing'"
+        )
+    return int(n or 0)
+
+
+def status_counts() -> dict:
+    """``{status: count}`` across all registered sources. Soft — {} on error."""
+    try:
+        with _conn() as c:
+            return {
+                r["status"]: r["n"]
+                for r in c.execute(
+                    "SELECT status, COUNT(*) AS n FROM memory_sources "
+                    "GROUP BY status"
+                ).fetchall()
+            }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def claim_for_index(source_id: int) -> bool:
     """Atomically flip a source into ``indexing`` and stamp
     ``indexing_started_at``. Returns True only when THIS caller won the flip

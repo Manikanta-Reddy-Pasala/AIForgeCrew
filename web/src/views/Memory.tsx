@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
-import { api, MemorySource } from '../api';
+import { api, MemorySource, MemoryOverview, MemoryStoreSection } from '../api';
 import { Icon } from '../icons';
 
 const ROLES = ['supervisor', 'planner', 'doer', 'feedback', 'learner'];
@@ -91,6 +91,205 @@ function IndexedMemoryPanel() {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ─── Memory overview + per-datasource clear ──────────────────────────────────
+
+// One row per clearable datasource. `summary` turns the store's section into a
+// one-line "what it has" string; a section that is `available:false` renders as
+// unavailable (e.g. the graph stores when running on the SQLite backend).
+const OVERVIEW_STORES: {
+  key: string;
+  label: string;
+  hint: string;
+  summary: (s: MemoryStoreSection) => string;
+}[] = [
+  {
+    key: 'graph_facts', label: 'Neo4j graph — facts',
+    hint: 'observations / decisions / facts',
+    summary: s => labelSummary(s, 'nodes'),
+  },
+  {
+    key: 'symbols', label: 'Tree-sitter symbols',
+    hint: 'code symbols + call/extends/implements edges',
+    summary: s => {
+      const nodes = (s.total ?? 0).toLocaleString();
+      const rels = Object.values(s.relationships || {}).reduce((a, b) => a + b, 0);
+      return `${nodes} symbol nodes` + (rels ? `, ${rels.toLocaleString()} edges` : '');
+    },
+  },
+  {
+    key: 'graphify', label: 'Graphify',
+    hint: "graphify-tagged nodes (source='graphify')",
+    summary: s => `${(s.count ?? 0).toLocaleString()} nodes`,
+  },
+  {
+    key: 'chunks', label: 'Code / doc chunks',
+    hint: 'embedded content chunks',
+    summary: s => labelSummary(s, 'chunks'),
+  },
+  {
+    key: 'sqlite', label: 'SQLite memory',
+    hint: 'embedded units (learnings / failures / notes)',
+    summary: s => {
+      const total = (s.total ?? 0).toLocaleString();
+      const kinds = Object.entries(s.by_kind || {})
+        .map(([k, v]) => `${k} ${v}`).join(', ');
+      return `${total} units` + (kinds ? ` — ${kinds}` : '');
+    },
+  },
+  {
+    key: 'md_files', label: 'Markdown notes',
+    hint: 'human-readable .md memories on disk',
+    summary: s => `${(s.count ?? 0).toLocaleString()} files` +
+      (s.bytes ? ` · ${(s.bytes / 1024).toFixed(1)} KB` : ''),
+  },
+  {
+    key: 'chat', label: 'Chat sessions',
+    hint: 'saved conversations',
+    summary: s => `${(s.sessions ?? 0).toLocaleString()} sessions, ` +
+      `${(s.messages ?? 0).toLocaleString()} messages`,
+  },
+];
+
+function labelSummary(s: MemoryStoreSection, unit: string): string {
+  const total = (s.total ?? 0).toLocaleString();
+  const parts = Object.entries(s.labels || {})
+    .map(([k, v]) => `${k} ${v}`).join(', ');
+  return `${total} ${unit}` + (parts ? ` — ${parts}` : '');
+}
+
+function OverviewPanel() {
+  const [ov, setOv] = useState<MemoryOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try { setOv(await api.memoryOverview()); }
+    catch { /* backend may be offline */ }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function clearStore(key: string, label: string) {
+    if (!window.confirm(
+      `Delete all data in "${label}"? This cannot be undone.\n\n` +
+      `Your registered sources and configuration are preserved — ` +
+      `re-index to repopulate.`)) return;
+    setBusy(key);
+    try {
+      const r = await api.memoryClearStore(key);
+      if (r.ok === false) toast.error(`${label}: ${r.reason || 'clear failed'}`);
+      else toast.success(`${label}: cleared ${r.deleted ?? 0}`);
+      await load();
+    } catch (e: any) {
+      toast.error(`${label}: ${e?.message || 'clear failed'}`);
+    } finally { setBusy(null); }
+  }
+
+  async function wipeAll() {
+    if (!window.confirm(
+      'WIPE ALL MEMORY?\n\nThis deletes every indexed memory across the graph, ' +
+      'SQLite units, markdown notes and chat history. It CANNOT be undone.\n\n' +
+      'Registered sources + configuration are preserved (re-index to repopulate).'
+    )) return;
+    if (!window.confirm('Are you absolutely sure? Last chance.')) return;
+    setBusy('__all__');
+    try {
+      await api.memoryClearAll();
+      toast.success('All memory data wiped — sources preserved');
+      await load();
+    } catch (e: any) {
+      toast.error(`Wipe failed: ${e?.message || 'error'}`);
+    } finally { setBusy(null); }
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2>Memory overview</h2>
+        <div className="row tight" style={{ alignItems: 'center' }}>
+          {ov && <span className="muted small">backend: <code>{ov.backend}</code></span>}
+          <button
+            className="danger"
+            onClick={wipeAll}
+            disabled={busy !== null}
+            title="Delete all memory data (sources + config preserved)"
+          >
+            <Icon.Trash size={14} /> Wipe ALL memory
+          </button>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="row" style={{ gap: 8, padding: '8px 0' }}>
+          {[1, 2, 3].map(i => (
+            <div key={i} className="skeleton" style={{ height: 48, flex: 1, borderRadius: 8 }} />
+          ))}
+        </div>
+      )}
+
+      {!loading && !ov && (
+        <div className="muted small">Could not load overview — backend may be offline.</div>
+      )}
+
+      {!loading && ov && (
+        <div className="stack" style={{ gap: 8 }}>
+          {OVERVIEW_STORES.map(store => {
+            const s = ov.stores[store.key] || {};
+            const unavailable = s.available === false;
+            return (
+              <div
+                key={store.key}
+                className="row"
+                style={{
+                  justifyContent: 'space-between', alignItems: 'center',
+                  padding: '8px 0', borderBottom: '1px solid var(--border-0)',
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 500 }}>{store.label}</div>
+                  <div className="muted small" style={{ marginTop: 2 }}>
+                    {unavailable
+                      ? <span className="muted">unavailable: {s.reason || 'not configured'}</span>
+                      : store.summary(s)}
+                  </div>
+                  <div className="muted xs" style={{ marginTop: 2 }}>{store.hint}</div>
+                </div>
+                <button
+                  className="ghost danger"
+                  onClick={() => clearStore(store.key, store.label)}
+                  disabled={busy !== null || unavailable}
+                  title={unavailable ? 'store unavailable' : `Empty ${store.label}`}
+                >
+                  {busy === store.key ? 'Clearing…' : <><Icon.Trash size={13} /> Empty this</>}
+                </button>
+              </div>
+            );
+          })}
+
+          {/* Sources — VIEW ONLY (registrations are config, never cleared). */}
+          {ov.stores.sources && (
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '8px 0' }}>
+              <div>
+                <div style={{ fontWeight: 500 }}>Registered sources</div>
+                <div className="muted small" style={{ marginTop: 2 }}>
+                  {(ov.stores.sources.count ?? 0).toLocaleString()} registered
+                  {Object.keys(ov.stores.sources.by_status || {}).length > 0 &&
+                    ` — ${Object.entries(ov.stores.sources.by_status || {})
+                      .map(([k, v]) => `${k} ${v}`).join(', ')}`}
+                </div>
+                <div className="muted xs" style={{ marginTop: 2 }}>
+                  preserved across clears — re-index to repopulate
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -484,6 +683,9 @@ export default function Memory() {
           <div className="subtitle">Manage memory sources, view what's indexed, and search across all wings.</div>
         </div>
       </div>
+
+      {/* Per-datasource overview + clear */}
+      <OverviewPanel />
 
       {/* Indexed memory stats */}
       <IndexedMemoryPanel />

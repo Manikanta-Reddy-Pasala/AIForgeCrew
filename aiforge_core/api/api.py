@@ -1768,6 +1768,53 @@ def memory_sources_index(source_id: int) -> dict:
     return {**src, "status": "indexing"}
 
 
+# ─────────────────── Memory admin (overview + clear) ───────────────────────
+# High-level visibility into every memory datasource + a DESTRUCTIVE "empty
+# this store" per datasource. These DELETE indexed DATA (graph nodes / SQLite
+# units / on-disk notes / chat history) but NEVER the registered sources or
+# config. They inherit the API-token auth (middleware); each also requires an
+# explicit ``{"confirm": true}`` body so an accidental click can't wipe data.
+
+
+class _MemConfirmBody(BaseModel):
+    confirm: bool = Field(False, description="must be true to actually clear")
+
+
+@app.get("/api/memory/overview")
+def memory_overview_ep() -> dict:
+    """Per-datasource breakdown: graph (facts/symbols/graphify/chunks), SQLite
+    units, on-disk md notes, chat sessions, and registered sources. Each store
+    soft-fails independently."""
+    from aiforge_core.memory import admin as _admin
+    return _admin.memory_overview()
+
+
+@app.post("/api/memory/clear/{store}")
+def memory_clear_store_ep(store: str,
+                          body: "_MemConfirmBody | None" = None) -> dict:
+    """Clear ALL data in ONE store. ``store`` ∈ graph_facts | symbols |
+    graphify | chunks | sqlite | md_files | chat. Requires ``{confirm:true}``.
+    Registered sources + configuration are preserved."""
+    from aiforge_core.memory import admin as _admin
+    if not (body and body.confirm):
+        raise HTTPException(400, "confirm=true required to clear a memory store")
+    try:
+        return _admin.clear_store(store)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/memory/clear-all")
+def memory_clear_all_ep(body: "_MemConfirmBody | None" = None) -> dict:
+    """Wipe DATA across every memory store, preserving source registrations +
+    config (their index state is reset to idle so they can be re-indexed).
+    Requires ``{confirm:true}``."""
+    from aiforge_core.memory import admin as _admin
+    if not (body and body.confirm):
+        raise HTTPException(400, "confirm=true required to wipe all memory")
+    return _admin.clear_all()
+
+
 # ─────────────────────────── Logs SSE ───────────────────────────────────
 # Recognised log files (newest naming first). When no orchestrator-<role>
 # exists, fall back to the ADK-prefixed file (current convention) and

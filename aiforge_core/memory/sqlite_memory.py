@@ -175,6 +175,17 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None) -> list[dict]:
     return out
 
 
+def clear() -> int:
+    """Delete every memory unit and reset the id sequence. Returns the count
+    of rows removed. Idempotent — a second call returns 0. Used by the memory
+    admin "empty this store" action."""
+    with _LOCK, _conn() as c:
+        n = c.execute("SELECT COUNT(*) FROM memory_units").fetchone()[0]
+        c.execute("DELETE FROM memory_units")
+        c.execute("DELETE FROM sqlite_sequence WHERE name='memory_units'")
+    return int(n or 0)
+
+
 def stats() -> dict:
     """Counts for health / dashboard. Soft — returns zeros on error."""
     try:

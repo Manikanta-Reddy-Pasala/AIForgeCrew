@@ -134,6 +134,18 @@ export const api = {
     }
     return r.json();
   },
+  // Memory admin — per-datasource overview + DESTRUCTIVE clear (confirm-guarded).
+  memoryOverview: () => j<MemoryOverview>('/memory/overview'),
+  memoryClearStore: (store: string) =>
+    j<any>(`/memory/clear/${encodeURIComponent(store)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    }),
+  memoryClearAll: () =>
+    j<any>('/memory/clear-all', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    }),
   mcpTool:  (tool: string, args: Record<string, any> = {}) =>
     j<any>('/mcp/tool', {
       method: 'POST',
@@ -279,6 +291,35 @@ export interface MemorySource {
   error: string | null;
   last_indexed: string | null;
   created_at: string;
+}
+
+// ── memory overview (admin) types ─────────────────────────────────
+
+export interface MemoryStoreSection {
+  available?: boolean;
+  reason?: string;
+  // graph stores
+  labels?: Record<string, number>;
+  total?: number;
+  relationships?: Record<string, number>;
+  count?: number;
+  // sqlite
+  by_kind?: Record<string, number>;
+  path?: string;
+  // md
+  bytes?: number;
+  dir?: string;
+  // chat
+  sessions?: number;
+  messages?: number;
+  // sources
+  by_status?: Record<string, number>;
+  items?: MemorySource[];
+}
+
+export interface MemoryOverview {
+  backend: string;
+  stores: Record<string, MemoryStoreSection>;
 }
 
 // ── agent v2 config types ─────────────────────────────────────────
