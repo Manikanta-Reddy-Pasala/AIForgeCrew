@@ -3004,6 +3004,7 @@ class _SessionMsgBody(BaseModel):
     mode: str = Field("simple", description="'simple' (single agent) | 'plan' (read-only single agent) | 'team' (full ADK flow)")
     review_edits: bool = Field(True, description="Gap D — ALWAYS ON (no UI toggle): every file-mutating tool call is held for human Approve/Reject (with diff) before it lands in simple/plan mode")
     edit_from_message_id: int | None = Field(None, description="Edit-and-resend: truncate history at this user message (restoring the workspace to that turn's checkpoint) before running this new content")
+    builder: str | None = Field(None, description="task builder charter: job|skill|workflow|rule — runs an interactive single-agent builder that ends by calling the matching finalize tool (bypasses the enhancer/team pipeline)")
 
 
 def _chat_workspace_root() -> str:
@@ -3407,6 +3408,18 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             yield {"type": "message", "text": _cmd_help_text}
             yield {"type": "done"}
             return
+        # Builder mode (job|skill|workflow|rule): a focused, deterministic
+        # interactive builder. Bypass the enhancer/team/plan machinery (the
+        # enhancer would distort the clarifying Q&A) and run the single chat
+        # agent with the task charter, which ends by calling its finalize tool.
+        if body.builder:
+            from aiforge_core.runtime.chat_agent import run_chat_agent
+            from aiforge_core.runtime.prompts_extended import builders as _bld
+            if _bld.charter_for(body.builder):
+                yield from run_chat_agent(history, cwd=cwd, role=role,
+                                          session_id=session_id, mode="act",
+                                          builder=body.builder)
+                return
         # A user command expanded — a small notice so the user sees WHY their
         # "/deploy …" turned into a longer prompt (the agent runs on the
         # expanded template below, unchanged).

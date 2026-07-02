@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, chatMediaRawURL, ChatMedia, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
@@ -115,6 +116,28 @@ const LS_MODEL_KEY = 'aiforge.chat.model';
 const LS_MODE_KEY = 'aiforge.chat.flowmode';
 
 type ChatMode = 'simple' | 'plan' | 'team';
+
+// ── Builder flows ─────────────────────────────────────────────────────────────
+// A "builder" runs a focused single-agent interview that ends by calling a
+// finalize tool. It's selected per-session and sent on EVERY message of that
+// conversation (the backend reads it per-message). Launched from other views via
+// a `?builder=<kind>` query param on /chat.
+type BuilderKind = 'job' | 'skill' | 'workflow' | 'rule';
+const BUILDER_KINDS: BuilderKind[] = ['job', 'skill', 'workflow', 'rule'];
+const BUILDER_LABELS: Record<BuilderKind, string> = {
+  job: 'Job builder',
+  skill: 'Skill builder',
+  workflow: 'Workflow builder',
+  rule: 'Rule builder',
+};
+const BUILDER_HINTS: Record<BuilderKind, string> = {
+  job: 'Interviewing you to build & schedule a recurring job',
+  skill: 'Interviewing you to capture a reusable SKILL.md',
+  workflow: 'Interviewing you to capture a WORKFLOW.md',
+  rule: 'Interviewing you to capture a standing rule',
+};
+// Persist the per-session builder so it survives reload / session switch.
+const LS_BUILDER_KEY = 'aiforge.chat.builderBySession';
 
 // A pending human-approval gate (#1): the run is blocked until the user
 // Approves/Rejects this action.
@@ -410,6 +433,41 @@ export default function Chat() {
       return (v === 'team' || v === 'plan' ? v : 'simple') as ChatMode;
     } catch { return 'simple'; }
   });
+
+  // Per-session builder flow (job/skill/workflow/rule). When set for the active
+  // session, every message that session sends carries `builder` so the backend
+  // runs the interview charter instead of the enhancer/team pipeline.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [builderBySession, setBuilderBySession] = useState<Record<number, BuilderKind>>(() => {
+    try { return JSON.parse(localStorage.getItem(LS_BUILDER_KEY) || '{}'); } catch { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(LS_BUILDER_KEY, JSON.stringify(builderBySession)); } catch { /* ignore */ }
+  }, [builderBySession]);
+  function setBuilderForSession(id: number, kind: BuilderKind) {
+    setBuilderBySession(prev => ({ ...prev, [id]: kind }));
+  }
+
+  // Launch a builder from a `?builder=<kind>` query param: create a fresh session
+  // in that builder mode, then clear the param so a reload doesn't spawn another.
+  const builderLaunchedRef = useRef(false);
+  useEffect(() => {
+    const b = searchParams.get('builder');
+    if (!b) return;
+    if (!BUILDER_KINDS.includes(b as BuilderKind)) {
+      setSearchParams({}, { replace: true });
+      return;
+    }
+    if (builderLaunchedRef.current) return;
+    builderLaunchedRef.current = true;
+    (async () => {
+      const id = await createSession();
+      if (id !== null) setBuilderForSession(id, b as BuilderKind);
+      setSearchParams({}, { replace: true });
+      setTimeout(() => textareaRef.current?.focus(), 50);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Pre-apply "Review edits" mode (Gap D) is FORCED ON for every chat window —
   // no UI toggle. Every file-mutating tool call is held for Approve/Reject
@@ -1053,13 +1111,18 @@ export default function Chat() {
 
     const isFirstMessage = messages.length === 0;
 
+    // Builder flow for this session (if any): sent on EVERY message; the backend
+    // ignores team/plan and forces a single-agent interview when `builder` is set.
+    const builder = sessionId != null ? builderBySession[sessionId] : undefined;
+
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: q, mode: runMode, review_edits: reviewEdits,
+        body: JSON.stringify({ content: q, mode: builder ? 'simple' : runMode, review_edits: reviewEdits,
+                               ...(builder ? { builder } : {}),
                                ...(editFrom != null ? { edit_from_message_id: editFrom } : {}) }),
         signal: ctrl.signal,
       });
@@ -1151,6 +1214,7 @@ export default function Chat() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   const activeSession = sessions.find(s => s.id === activeId) || null;
+  const activeBuilder = activeId !== null ? builderBySession[activeId] : undefined;
 
   // Composer state machine (FE1/FE2): `busy` conflates three states. Steering is
   // only valid while ACTUALLY running — not while a turn is awaiting the user's
@@ -1321,6 +1385,12 @@ export default function Chat() {
                 {activeSession.cwd
                   ? (activeSession.cwd.length > 48 ? '…' + activeSession.cwd.slice(-46) : activeSession.cwd)
                   : 'default workspace'}
+              </span>
+            )}
+            {activeBuilder && (
+              <span className="chip ok" title={BUILDER_HINTS[activeBuilder]}
+                    style={{ alignSelf: 'flex-start', marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <Icon.Sparkles size={11} /> {BUILDER_LABELS[activeBuilder]}
               </span>
             )}
           </div>
