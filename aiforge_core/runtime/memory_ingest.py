@@ -89,6 +89,62 @@ def _iter_files(root: Path, exts: set[str]):
                 yield Path(dirpath) / fn
 
 
+def validate_path(location: str) -> dict:
+    """Pre-flight a repo/dir path BEFORE indexing so the user can see whether
+    the process can actually reach it. Returns the RESOLVED absolute path (what
+    the walk will use), whether it exists / is a dir / is readable, and how many
+    code + doc files are under it — so a wrong/empty/relative path is caught up
+    front instead of silently indexing 0 units. Never raises."""
+    out = {"input": location, "ok": False, "resolved": "", "exists": False,
+           "is_dir": False, "readable": False, "code_files": 0, "doc_files": 0,
+           "sample": [], "message": ""}
+    try:
+        loc = (location or "").strip()
+        if not loc:
+            out["message"] = "empty path"
+            return out
+        p = Path(loc).expanduser()
+        out["resolved"] = str(p.resolve()) if p.exists() else str(p.absolute())
+        out["exists"] = p.exists()
+        if not p.exists():
+            out["message"] = (f"path does not exist (resolved to {out['resolved']}). "
+                              f"Use an ABSOLUTE path to the repo root; a relative "
+                              f"path resolves against the api's working directory.")
+            return out
+        out["is_dir"] = p.is_dir()
+        if not p.is_dir():
+            out["message"] = f"not a directory: {out['resolved']}"
+            return out
+        out["readable"] = os.access(str(p), os.R_OK)
+        # Count (capped) — walk stops early once we have a clear signal.
+        code = doc = 0
+        for f in _iter_files(p, _CODE_EXT):
+            code += 1
+            if len(out["sample"]) < 8:
+                out["sample"].append(str(f.relative_to(p)))
+            if code >= 5000:
+                break
+        for _ in _iter_files(p, _ALL_DOC_EXT):
+            doc += 1
+            if doc >= 5000:
+                break
+        out["code_files"] = code
+        out["doc_files"] = doc
+        if code == 0 and doc == 0:
+            out["message"] = (f"0 indexable files under {out['resolved']} — the "
+                              f"directory is empty from the api's view. On a "
+                              f"HYBRID/host run give the ABSOLUTE host path to the "
+                              f"repo root (the dir with src/ or pom.xml); on Docker "
+                              f"mount it under /workspace.")
+        else:
+            out["ok"] = True
+            out["message"] = (f"OK — {code} code + {doc} doc files under "
+                              f"{out['resolved']}")
+    except Exception as exc:  # noqa: BLE001
+        out["message"] = f"validation error: {exc}"
+    return out
+
+
 def _read_source(f: Path) -> "str | None":
     """Read a file to text. Binary docs (pdf/docx) go through
     ``chat_media.extract_text`` (pypdf / python-docx); text files are read

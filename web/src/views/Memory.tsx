@@ -305,6 +305,21 @@ function SourcesPanel() {
   const [name, setName]         = useState('');
   const [file, setFile]         = useState<File | null>(null);
   const [adding, setAdding]     = useState(false);
+  const [validating, setValidating] = useState(false);
+
+  async function validatePath() {
+    if (!location.trim()) { toast.error('Enter a path first.'); return; }
+    setValidating(true);
+    try {
+      const r = await api.memoryValidatePath(location.trim());
+      if (r.ok) toast.success(`✓ ${r.code_files} code + ${r.doc_files} doc files at ${r.resolved}`);
+      else toast.error(r.message, { duration: 8000 });
+    } catch (e: any) {
+      toast.error(`Validate failed: ${e.message}`);
+    } finally {
+      setValidating(false);
+    }
+  }
   const fileInputRef            = useRef<HTMLInputElement>(null);
   const pollRef                 = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -458,6 +473,13 @@ function SourcesPanel() {
             />
           </label>
 
+          {(kind === 'repo' || kind === 'docs') && (
+            <button onClick={validatePath} disabled={validating} className="ghost sm"
+                    title="Check the path resolves + has files BEFORE indexing"
+                    style={{ alignSelf: 'flex-end', marginBottom: 1 }}>
+              {validating ? 'Checking…' : 'Validate path'}
+            </button>
+          )}
           <button onClick={handleAdd} disabled={adding} style={{ alignSelf: 'flex-end', marginBottom: 1 }}>
             {adding ? 'Adding…' : 'Add'}
           </button>

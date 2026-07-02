@@ -109,6 +109,13 @@ export const api = {
   },
   memoryFileDelete: (name: string) =>
     j<any>(`/memory/files/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  memoryValidatePath: (location: string) =>
+    j<{ ok: boolean; resolved: string; exists: boolean; is_dir: boolean;
+        code_files: number; doc_files: number; sample: string[]; message: string }>(
+      '/memory/validate-path', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ location }),
+      }),
   memorySources: () => j<MemorySource[]>('/memory/sources'),
   memorySourceCreate: (body: { kind: string; location: string; name?: string }) =>
     j<MemorySource>('/memory/sources', {

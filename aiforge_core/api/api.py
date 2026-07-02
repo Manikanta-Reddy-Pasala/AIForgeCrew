@@ -1639,6 +1639,19 @@ class _MemSourceBody(BaseModel):
     name: str | None = Field(None)
 
 
+class _ValidatePathBody(BaseModel):
+    location: str = Field(..., min_length=1, description="path to validate")
+
+
+@app.post("/api/memory/validate-path")
+def memory_validate_path(body: _ValidatePathBody) -> dict:
+    """Pre-flight a repo/dir path BEFORE indexing — returns the resolved abs
+    path + code/doc file counts so a wrong/empty/relative path is caught up
+    front (the #1 cause of an index that silently produces 0 units)."""
+    from aiforge_core.runtime.memory_ingest import validate_path
+    return validate_path(body.location)
+
+
 # ── Markdown-file memory (human-readable notes on disk + searchable) ──
 
 @app.get("/api/memory/files")
