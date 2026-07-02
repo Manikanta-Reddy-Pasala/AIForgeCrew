@@ -65,11 +65,15 @@ def test_seed_budget_frac_env_tunes(monkeypatch):
     small = td._seed_budget_chars()
     monkeypatch.setenv("AIFORGE_SEED_BUDGET_FRAC", "0.5")
     assert td._seed_budget_chars() > small
-    # Floored at 8000 even for a tiny window.
+    # C1: on a TINY window (2K) the seed floor SCALES DOWN — the fixed 8000
+    # floor + a full-window output reservation used to overflow window×4.
+    # It stays positive and never exceeds what the co-budget leaves.
     monkeypatch.setenv("AIFORGE_LOCAL_CTX_WINDOW", "2048")
     _reload_rs()
     monkeypatch.setenv("AIFORGE_SEED_BUDGET_FRAC", "0.1")
-    assert td._seed_budget_chars() >= 8000
+    tiny = td._seed_budget_chars()
+    assert tiny >= 0
+    assert tiny < 8000  # scaled down, no longer the fixed floor
 
 
 def test_tiny_seed_passes_through_unchanged(monkeypatch):

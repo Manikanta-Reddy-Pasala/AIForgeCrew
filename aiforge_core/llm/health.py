@@ -135,8 +135,23 @@ _CTX_CACHE: dict[str, tuple[float, int | None]] = {}
 
 
 def _ctx_timeout() -> float:
-    # Never block a turn: cap the models GET at ~3s (or the health timeout).
-    return min(_timeout(), 3.0)
+    # Never block a turn: cap the models GET at ~1.5s (or the health timeout).
+    # A reachable endpoint answers /v1/models near-instantly; a down/absent one
+    # should fail FAST (C2 — the suite + prod hot-path stop thrashing on 2-3s).
+    return min(_timeout(), 1.5)
+
+
+def _ctx_neg_ttl() -> float:
+    """TTL for a NEGATIVE (None/unreachable) context-probe result. Much longer
+    than the positive TTL so a down/absent endpoint isn't re-probed every turn
+    (C2). Env ``AIFORGE_CTX_PROBE_NEG_TTL_S`` (default 600s)."""
+    raw = os.environ.get("AIFORGE_CTX_PROBE_NEG_TTL_S")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return 600.0
 
 
 def _extract_ctx_len(body: object) -> int | None:
@@ -188,8 +203,14 @@ def probe_context_window(base_url: str) -> int | None:
         return None
     now = time.time()
     hit = _CTX_CACHE.get(key)
-    if hit is not None and (now - hit[0]) < _ttl():
-        return hit[1]
+    if hit is not None:
+        ts, cached = hit
+        # C2: hold a NEGATIVE result far longer than a positive one so an
+        # absent/down endpoint isn't re-probed every 30s (thrashing the suite
+        # + a prod hot-path on the default config).
+        ttl = _ctx_neg_ttl() if cached is None else _ttl()
+        if (now - ts) < ttl:
+            return cached
     val = _probe_ctx_window(key)
     _CTX_CACHE[key] = (now, val)
     return val

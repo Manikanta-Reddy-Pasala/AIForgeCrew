@@ -94,6 +94,41 @@ def test_probe_is_cached(monkeypatch):
     assert calls["n"] == 1               # second call served from cache
 
 
+def test_negative_result_is_cached(monkeypatch):
+    """C2: an unreachable/absent endpoint's None result is cached (long neg
+    TTL) so it is NOT re-probed every turn — the second call makes no GET."""
+    calls = {"n": 0}
+
+    def _boom(*a, **k):
+        calls["n"] += 1
+        raise OSError("refused")
+    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    assert health.probe_context_window("http://down/v1") is None
+    assert health.probe_context_window("http://down/v1") is None
+    assert calls["n"] == 1               # negative result served from cache
+
+
+def test_negative_cache_ttl_env_zero_reprobes(monkeypatch):
+    """With the neg TTL forced to 0, the negative result is re-probed."""
+    monkeypatch.setenv("AIFORGE_CTX_PROBE_NEG_TTL_S", "0")
+    calls = {"n": 0}
+
+    def _boom(*a, **k):
+        calls["n"] += 1
+        raise OSError("refused")
+    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    assert health.probe_context_window("http://down2/v1") is None
+    assert health.probe_context_window("http://down2/v1") is None
+    assert calls["n"] == 2               # TTL 0 → re-probed
+
+
+def test_ctx_timeout_is_short(monkeypatch):
+    """C2: the probe GET fails fast (≤1.5s) so a down endpoint can't thrash."""
+    for v in ("AIFORGE_HEALTH_TIMEOUT_S",):
+        monkeypatch.delenv(v, raising=False)
+    assert health._ctx_timeout() <= 1.5
+
+
 # ── effective_context_window resolution -----------------------------------
 
 def _no_per_model(monkeypatch, base_url="http://d/v1"):

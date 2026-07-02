@@ -193,9 +193,11 @@ def _persist_ticket_media(ticket) -> None:
     # default SQLite backend. Without this, the attachment observation was
     # sent straight to bolt://…:7687 (fails/ImportErrors, swallowed) and the
     # Doer never recalled prior screenshots. Mirror failure_memory's idiom.
-    from aiforge_core.memory import backend_select as _bsel
-    if _bsel.embedded():
-        try:
+    # M5: the backend_select import + embedded() probe live INSIDE the try so
+    # a backend hiccup can't raise into the ticket loop ("never raises").
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if _bsel.embedded():
             from aiforge_core.memory import sqlite_memory as _sqlmem
             _sqlmem.write_unit(
                 text=_media_summary, kind="attachment", source="adk_runner",
@@ -203,8 +205,9 @@ def _persist_ticket_media(ticket) -> None:
                 repo=ticket.project, ticket=ticket.identifier,
                 metadata={"media_refs": media_paths},
             )
-        except Exception as exc:  # noqa: BLE001
-            log.debug("vision persist[sqlite] failed: %s", exc)
+            return
+    except Exception as exc:  # noqa: BLE001
+        log.debug("vision persist[sqlite] failed: %s", exc)
         return
 
     try:
@@ -1394,7 +1397,10 @@ def _process_one_ticket() -> bool:
     # Observation_v2 with ``media_refs`` so future tickets can recall
     # "this ticket had screenshots X / Y" — even before the vision
     # embedder lands. Soft-fails on any backend error.
-    _persist_ticket_media(ticket)
+    try:
+        _persist_ticket_media(ticket)
+    except Exception as exc:  # noqa: BLE001 — vision persist must never break the ticket loop
+        log.debug("vision persist wrapper caught: %s", exc)
 
     # C5: spec → failing-test scaffold. Parses ticket body's
     # "Acceptance" bullets and writes a per-language test file under

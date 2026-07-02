@@ -121,7 +121,9 @@ def test_normalize_single_hit_source_no_divzero(uq):
              "_weight": 0.6, "score": 0.5}]
     out = uq._normalize_scores(hits)
     assert len(out) == 1
-    assert out[0]["score"] == pytest.approx(0.6)  # span=0 → norm 1.0 × weight
+    # M1: span=0 single hit now keeps ABSOLUTE relevance (raw × weight), NOT
+    # norm 1.0 × weight — a weak singleton must stay weak. 0.5 × 0.6 = 0.30.
+    assert out[0]["score"] == pytest.approx(0.30)
 
 
 def test_normalize_empty(uq):

@@ -34,15 +34,27 @@ def _reload_rs():
     importlib.reload(rsmod)
 
 
-@pytest.mark.parametrize("window", [32768, 262144])
+# C1: extend to SMALL windows (≤16K) where the fixed 8000 floors + a
+# full-window output reservation used to overflow window×4 (at 8K the sum was
+# 52236 vs 32768). The invariant must hold at EVERY window.
+@pytest.mark.parametrize(
+    "window", [4096, 8192, 16384, 32768, 131072, 262144])
 def test_seed_plus_sysprompt_plus_output_fit_window(monkeypatch, window):
     monkeypatch.setenv("AIFORGE_LOCAL_CTX_WINDOW", str(window))
     _reload_rs()
     from aiforge_core.config import runtime_settings
-    out_chars = int(runtime_settings.get("max_output_tokens")) * 4
+    max_out = int(runtime_settings.get("max_output_tokens"))
+    # The actual output reservation the budgets use is capped at a window
+    # fraction (C1) — the reply never eats more than that of a small window.
+    out_chars = td._out_reserve_chars(window * 4, max_out * 4)
     total = td._seed_budget_chars() + ca._sys_prompt_budget_chars() + out_chars
-    # No overflow at either extreme — the whole point of A1.
-    assert total <= window * 4
+    assert total <= window * 4, (
+        f"overflow at {window}: seed={td._seed_budget_chars()} "
+        f"sys={ca._sys_prompt_budget_chars()} out={out_chars} "
+        f"sum={total} > {window * 4}")
+    # Every component is non-negative and leaves real room.
+    assert td._seed_budget_chars() >= 0
+    assert ca._sys_prompt_budget_chars() >= 0
 
 
 def test_budgets_scale_with_window(monkeypatch):
