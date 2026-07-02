@@ -37,65 +37,6 @@ function truncate(s: string, n = 50): string {
   return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
-// ─── Indexed memory stats panel ──────────────────────────────────────────────
-
-function IndexedMemoryPanel() {
-  const [stats, setStats] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api.memoryStats()
-      .then(setStats)
-      .catch(() => { /* silently fail — backend may not be running */ })
-      .finally(() => setLoading(false));
-  }, []);
-
-  return (
-    <div className="card">
-      <div className="card-header">
-        <h2>Indexed memory</h2>
-        {stats && (
-          <span className="muted small">
-            backend: <code>{stats.backend}</code> &nbsp;·&nbsp; total: <strong>{stats.total?.toLocaleString()}</strong>
-          </span>
-        )}
-      </div>
-
-      {loading && (
-        <div className="row" style={{ gap: 8, padding: '8px 0' }}>
-          {[1, 2, 3, 4].map(i => (
-            <div key={i} className="skeleton" style={{ height: 56, flex: 1, borderRadius: 8 }} />
-          ))}
-        </div>
-      )}
-
-      {!loading && !stats && (
-        <div className="muted small">Could not load stats — backend may be offline.</div>
-      )}
-
-      {!loading && stats && (
-        <>
-          {(!stats.wings || stats.wings.length === 0) ? (
-            <div className="muted small">No data indexed yet.</div>
-          ) : (
-            <div className="mem-wings-grid">
-              {stats.wings.map((w: any) => (
-                <div key={w.wing} className="mem-wing-pill">
-                  <span className="wing-label" title={w.wing}>{w.wing}</span>
-                  <span className="wing-count">{(w.n ?? 0).toLocaleString()}</span>
-                  {w.embedded != null && (
-                    <span className="muted xs">{w.embedded.toLocaleString()} embedded</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 // ─── Memory overview + per-datasource clear ──────────────────────────────────
 
 // One row per clearable datasource. `summary` turns the store's section into a
@@ -165,16 +106,20 @@ function labelSummary(s: MemoryStoreSection, unit: string): string {
 
 function OverviewPanel() {
   const [ov, setOv] = useState<MemoryOverview | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(true);   // collapsed by default
 
   const load = useCallback(async () => {
+    setLoading(true);
     try { setOv(await api.memoryOverview()); }
     catch { /* backend may be offline */ }
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // Lazy-load the overview only when the panel is first expanded — avoids the
+  // Neo4j overview query (and its cost) on every Memory-page load.
+  useEffect(() => { if (!collapsed && ov === null) load(); }, [collapsed, ov, load]);
 
   async function clearStore(key: string, label: string) {
     if (!window.confirm(
@@ -212,21 +157,27 @@ function OverviewPanel() {
   return (
     <div className="card">
       <div className="card-header">
-        <h2>Memory overview</h2>
-        <div className="row tight" style={{ alignItems: 'center' }}>
-          {ov && <span className="muted small">backend: <code>{ov.backend}</code></span>}
-          <button
-            className="danger"
-            onClick={wipeAll}
-            disabled={busy !== null}
-            title="Delete all memory data (sources + config preserved)"
-          >
-            <Icon.Trash size={14} /> Wipe ALL memory
-          </button>
-        </div>
+        <h2 onClick={() => setCollapsed(c => !c)}
+            style={{ cursor: 'pointer', userSelect: 'none' }}
+            title={collapsed ? 'Expand' : 'Collapse'}>
+          {collapsed ? '▸' : '▾'} Memory overview
+        </h2>
+        {!collapsed && (
+          <div className="row tight" style={{ alignItems: 'center' }}>
+            {ov && <span className="muted small">backend: <code>{ov.backend}</code></span>}
+            <button
+              className="danger"
+              onClick={wipeAll}
+              disabled={busy !== null}
+              title="Delete all memory data (sources + config preserved)"
+            >
+              <Icon.Trash size={14} /> Wipe ALL memory
+            </button>
+          </div>
+        )}
       </div>
 
-      {loading && (
+      {!collapsed && loading && (
         <div className="row" style={{ gap: 8, padding: '8px 0' }}>
           {[1, 2, 3].map(i => (
             <div key={i} className="skeleton" style={{ height: 48, flex: 1, borderRadius: 8 }} />
@@ -234,11 +185,11 @@ function OverviewPanel() {
         </div>
       )}
 
-      {!loading && !ov && (
+      {!collapsed && !loading && !ov && (
         <div className="muted small">Could not load overview — backend may be offline.</div>
       )}
 
-      {!loading && ov && (
+      {!collapsed && !loading && ov && (
         <div className="stack" style={{ gap: 8 }}>
           {OVERVIEW_STORES.map(store => {
             const s = ov.stores[store.key] || {};
@@ -709,9 +660,6 @@ export default function Memory() {
 
       {/* Per-datasource overview + clear */}
       <OverviewPanel />
-
-      {/* Indexed memory stats */}
-      <IndexedMemoryPanel />
 
       {/* Markdown notes (auto-written after chat runs) */}
       <NotesPanel />
