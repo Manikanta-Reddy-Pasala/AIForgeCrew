@@ -144,6 +144,10 @@ services:
       # AIFORGE_API_TOKEN. Set a token when exposing beyond localhost.
       AIFORGE_BIND_HOST: ${AIFORGE_BIND_HOST:-127.0.0.1}
       AIFORGE_API_TOKEN: ${AIFORGE_API_TOKEN:-}
+      # Set =1 when you front the api with your OWN access layer (Cloudflare /
+      # WireGuard-only reverse proxy) — allows a non-loopback bind without a
+      # token. Otherwise a 0.0.0.0 bind without a token refuses to boot.
+      AIFORGE_ALLOW_UNAUTH_NONLOOPBACK: ${AIFORGE_ALLOW_UNAUTH_NONLOOPBACK:-0}
       # Browser/UI CORS allowlist (never "*"). Add your UI origin here if you
       # serve it from another host/port.
       AIFORGE_CORS_ORIGINS: ${AIFORGE_CORS_ORIGINS:-http://127.0.0.1:8799,http://localhost:8799}
