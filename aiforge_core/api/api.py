@@ -96,6 +96,22 @@ def _load_runtime_env() -> None:
         pass
 
 
+@app.on_event("startup")
+def _start_jobs_scheduler() -> None:
+    """Scheduled-jobs tick loop — daemon thread, same pattern as the
+    other background workers. AIFORGE_JOBS_DISABLE=1 skips it."""
+    try:
+        import threading
+
+        from aiforge_core.jobs import scheduler as jobs_scheduler
+        if jobs_scheduler._disabled():
+            return
+        threading.Thread(target=jobs_scheduler.run_loop,
+                         daemon=True, name="jobs-scheduler").start()
+    except Exception:  # noqa: BLE001 — startup must never crash the API
+        pass
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # dev only
@@ -356,6 +372,27 @@ class RoutePreview(BaseModel):
     body: str
     attachments: list[str] = Field(default_factory=list)
     intent: dict | None = None
+
+
+class JobPreviewBody(BaseModel):
+    instructions: str = Field(..., min_length=1)
+
+
+class JobCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    cron: str = Field(..., min_length=9)
+    ticket_title: str = Field(..., min_length=1)
+    ticket_body: str = Field(..., min_length=1)
+    project: str | None = None
+
+
+class JobPatch(BaseModel):
+    name: str | None = None
+    cron: str | None = None
+    ticket_title: str | None = None
+    ticket_body: str | None = None
+    project: str | None = None
+    enabled: bool | None = None
 
 
 class TicketPatch(BaseModel):
@@ -662,6 +699,75 @@ def create_ticket(payload: TicketCreate) -> dict:
         "route": t.route, "route_workflow": t.route_workflow,
         "route_source": t.route_source, "route_confidence": t.route_confidence,
     })
+
+
+# ─────────────────────────── scheduled jobs ─────────────────────────
+
+
+@app.post("/api/jobs/preview")
+def jobs_preview(payload: JobPreviewBody) -> dict:
+    """NL instructions → parsed draft + human schedule + next runs.
+    Saves NOTHING. Parse errors come back as {ok: False, error} so the
+    UI renders them in the preview card instead of a 500."""
+    from aiforge_core.jobs import parse as jobs_parse
+    return jobs_parse.parse_instructions(payload.instructions)
+
+
+@app.post("/api/jobs", status_code=201)
+def jobs_create(payload: JobCreate) -> dict:
+    from croniter import croniter as _cron
+    from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
+    if not _cron.is_valid(payload.cron):
+        raise HTTPException(400, f"invalid cron: {payload.cron!r}")
+    nxt = jobs_parse.next_runs(payload.cron, n=1)[0]
+    return jobs_store.create(
+        name=payload.name, cron=payload.cron,
+        ticket_title=payload.ticket_title, ticket_body=payload.ticket_body,
+        project=payload.project, next_run_at=nxt)
+
+
+@app.get("/api/jobs")
+def jobs_list() -> list[dict]:
+    from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
+    out = jobs_store.list_jobs()
+    for j in out:
+        j["human_schedule"] = jobs_parse.human_schedule(j["cron"])
+    return out
+
+
+@app.patch("/api/jobs/{job_id}")
+def jobs_patch(job_id: int, payload: JobPatch) -> dict:
+    from croniter import croniter as _cron
+    from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
+    if jobs_store.get(job_id) is None:
+        raise HTTPException(404, f"job {job_id} not found")
+    fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "cron" in fields:
+        if not _cron.is_valid(fields["cron"]):
+            raise HTTPException(400, f"invalid cron: {fields['cron']!r}")
+        fields["next_run_at"] = jobs_parse.next_runs(fields["cron"], n=1)[0]
+    return jobs_store.update(job_id, **fields)
+
+
+@app.delete("/api/jobs/{job_id}")
+def jobs_delete(job_id: int) -> dict:
+    from aiforge_core.jobs import store as jobs_store
+    if not jobs_store.delete(job_id):
+        raise HTTPException(404, f"job {job_id} not found")
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{job_id}/run-now")
+def jobs_run_now(job_id: int) -> dict:
+    """Manual fire — same code path as the scheduler tick; works even
+    when the job is paused."""
+    from aiforge_core.jobs import scheduler as jobs_scheduler
+    from aiforge_core.jobs import store as jobs_store
+    job = jobs_store.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"job {job_id} not found")
+    ok = jobs_scheduler.fire(job)
+    return {"ok": ok, "job": jobs_store.get(job_id)}
 
 
 @app.patch("/api/tickets/{identifier}")

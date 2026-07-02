@@ -42,6 +42,11 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
         .isoformat(timespec="seconds")
     try:
         from aiforge_core.tickets import store as tickets_mod
+        # Accepted race: an API run-now can overlap a tick (no per-job
+        # lock) and store flakiness between create+mark_fired can, in
+        # theory, double-fire. Both are rare and tolerable for the
+        # review-gated ticket runs jobs produce; revisit with a
+        # compare-and-swap advance if a non-idempotent job type appears.
         t = tickets_mod.create(
             title=job["ticket_title"], body=job["ticket_body"],
             project=job.get("project"),
