@@ -372,6 +372,18 @@ def _t_memory_lookup(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_search_chat_sessions(args: dict, cwd: str) -> dict:
+    """Search PRIOR chat sessions' message content — recall what you discussed
+    with the user in past conversations. Local + cheap (one SQLite scan)."""
+    try:
+        q = args.get("query") or args.get("q") or ""
+        limit = _coerce_int(args.get("limit"), 6)
+        from aiforge_core.runtime import chat_store
+        return {"ok": True, "hits": chat_store.search_messages(q, limit=limit)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def _t_memory_write(args: dict, cwd: str) -> dict:
     """Persist a durable fact/decision into the knowledge memory so future
     chats + tickets recall it. repo defaults to the working dir's name."""
@@ -1027,6 +1039,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "remember_rule": _t_remember_rule,
     "memory_lookup": _t_memory_lookup,
     "memory_write": _t_memory_write,
+    "search_chat_sessions": _t_search_chat_sessions,
     "skill_search": _t_skill_search,
     "learn_skill": _t_learn_skill,
     "confluence_search": _t_confluence_search,
@@ -1085,6 +1098,7 @@ def _perf_family(name: str) -> str:
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
 _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
+                   "search_chat_sessions",
                    "skill_search", "confluence_search", "confluence_read",
                    "jira_search", "jira_read",
                    "gitlab_search", "gitlab_read",
@@ -1341,6 +1355,7 @@ Tool arguments:
 - remember_rule {{"text": "always use yarn", "scope": "repo"}}
                  (persist a user rule for every session; scope global|repo)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
+- search_chat_sessions {{"query": "...", "limit": 6}}     (find things you discussed with the user in PAST chat sessions)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false}}
                 (save a learning/decision to the knowledge graph for future recall)
 - skill_search {{"query": "..."}}                        (find reusable SKILL.md playbooks)
@@ -1409,6 +1424,12 @@ request — read them first so you start informed by prior sessions. If the \
 request is clear, proceed. If it's ambiguous or you'd have to assume key \
 details (which files/module, framework, desired behaviour, scope), ASK \
 your clarifying questions UP-FRONT (ASK:) before doing work — don't guess.
+- DRAW ON PRIOR CONTEXT: if the answer could depend on earlier discussions or \
+an external system (rather than being answerable from what's in front of you), \
+consult first — the RELEVANT PRIOR CHAT SESSIONS block above, search_chat_sessions \
+for more of your past conversations, memory_lookup for durable facts, and the \
+matching integration search (jira_search / confluence_search / gitlab_search). \
+Only when it would actually help — don't search on every turn.
 - ASK, don't circle: if you're unsure what the user wants, lack a needed \
 detail, or catch yourself repeating a step that isn't working, emit ASK: \
 <question> and wait — never loop on the same failing action or guess at an \
@@ -2017,6 +2038,36 @@ def _memory_recall(cwd: str, query: str, limit: int = 6) -> str:
             "re-deriving):\n" + "\n".join(lines))
 
 
+def _chat_session_recall(query: str, session_id: "int | None",
+                         limit: int = 4) -> str:
+    """Proactive recall from PRIOR CHAT SESSIONS — surface things the user
+    discussed in OTHER conversations that may bear on this request, so simple
+    chat has continuity across sessions (not just within one). Cheap + local
+    (one SQLite scan). Best-effort: never breaks the turn."""
+    q = (query or "").strip()
+    if not q:
+        return ""
+    try:
+        from aiforge_core.runtime import chat_store
+        hits = chat_store.search_messages(q, limit=limit,
+                                          exclude_session=session_id)
+    except Exception:  # noqa: BLE001
+        hits = []
+    lines: list[str] = []
+    for h in hits:
+        content = (h.get("content") or "").strip().replace("\n", " ")
+        if not content:
+            continue
+        title = h.get("session_title") or "chat"
+        role = h.get("role") or "user"
+        lines.append(f"- [{title}] {role}: {content}")
+    if not lines:
+        return ""
+    return ("RELEVANT PRIOR CHAT SESSIONS — things you discussed with the user "
+            "in OTHER conversations that may bear on this request (cite them if "
+            "you use them):\n" + "\n".join(lines))
+
+
 def _repo_context(cwd: str) -> str:
     """The persistent PROJECT SUMMARY for this repo — what it is + what's
     been done — injected every turn so follow-ups have continuity. Read
@@ -2172,6 +2223,14 @@ def run_chat_agent(
         recall = _memory_recall(cwd, last_user, limit=(3 if cave else 6))
         if recall:
             sys_msg += "\n\n" + recall
+        # Prior CHAT SESSIONS — surface what the user discussed in OTHER
+        # conversations (excludes the current session). Cave mode → fewer hits.
+        # Local SQLite scan, so cheap enough to run every turn there IS a query.
+        if last_user:
+            chat_recall = _chat_session_recall(
+                last_user, session_id, limit=(2 if cave else 4))
+            if chat_recall:
+                sys_msg += "\n\n" + chat_recall
     # SESSION IMAGES: descriptions of images the user attached, so the (maybe
     # text-only) model can answer questions about them all session long.
     _img_blocks: list[dict] = []
