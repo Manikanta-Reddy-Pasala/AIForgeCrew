@@ -63,9 +63,28 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_run_at TEXT,
   next_run_at TEXT NOT NULL,
   last_error TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'ticket',
+  script_path TEXT
 );
 """
+
+# Columns added after the original schema shipped. Applied idempotently on
+# every connect so an existing jobs.db (created before the ``script`` job kind)
+# gains them without a manual migration. ``kind`` distinguishes ticket jobs
+# (fire → create a ticket for the agent pipeline) from script jobs (fire → run
+# a user-approved local script — deterministic ops, no LLM per tick).
+_SQLITE_ADDED_COLUMNS = (
+    ("kind", "TEXT NOT NULL DEFAULT 'ticket'"),
+    ("script_path", "TEXT"),
+)
+
+
+def _migrate_sqlite(con) -> None:
+    have = {r["name"] for r in con.execute("PRAGMA table_info(jobs)").fetchall()}
+    for col, decl in _SQLITE_ADDED_COLUMNS:
+        if col not in have:
+            con.execute(f"ALTER TABLE jobs ADD COLUMN {col} {decl}")
 
 
 class _SqliteJobStore:
@@ -87,20 +106,23 @@ class _SqliteJobStore:
         try:
             con.execute("PRAGMA journal_mode=WAL")
             con.executescript(_SQLITE_DDL)
+            _migrate_sqlite(con)
             yield con
             con.commit()
         finally:
             con.close()
 
     def create(self, *, name, cron, ticket_title, ticket_body,
-               project=None, next_run_at) -> dict:
+               project=None, next_run_at, kind="ticket",
+               script_path=None) -> dict:
         next_run_at = _norm_ts(next_run_at)
         with _LOCK, self._conn() as con:
             cur = con.execute(
                 "INSERT INTO jobs (name, cron, ticket_title, ticket_body, "
-                "project, next_run_at, created_at) VALUES (?,?,?,?,?,?,?)",
+                "project, next_run_at, created_at, kind, script_path) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (name, cron, ticket_title, ticket_body, project,
-                 next_run_at, now_iso()))
+                 next_run_at, now_iso(), kind, script_path))
             r = con.execute("SELECT * FROM jobs WHERE id=?",
                             (cur.lastrowid,)).fetchone()
             return _row(r)
@@ -159,9 +181,18 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_run_at text,
   next_run_at text NOT NULL,
   last_error text,
-  created_at text NOT NULL
+  created_at text NOT NULL,
+  kind text NOT NULL DEFAULT 'ticket',
+  script_path text
 );
 """
+
+# Idempotent column adds for a jobs table created before the ``script`` kind.
+_PG_MIGRATE = (
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS kind text NOT NULL "
+    "DEFAULT 'ticket';"
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script_path text;"
+)
 
 
 class _PgJobStore:
@@ -192,6 +223,7 @@ class _PgJobStore:
             try:
                 with c.cursor() as cur:
                     cur.execute(_PG_DDL)
+                    cur.execute(_PG_MIGRATE)
                 c.commit()
             except Exception:
                 c.rollback()
@@ -202,15 +234,16 @@ class _PgJobStore:
         return c.cursor(row_factory=dict_row)
 
     def create(self, *, name, cron, ticket_title, ticket_body,
-               project=None, next_run_at) -> dict:
+               project=None, next_run_at, kind="ticket",
+               script_path=None) -> dict:
         next_run_at = _norm_ts(next_run_at)
         with self._conn() as c, self._cur(c) as cur:
             cur.execute(
                 "INSERT INTO jobs (name, cron, ticket_title, ticket_body, "
-                "project, next_run_at, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                "RETURNING *",
+                "project, next_run_at, created_at, kind, script_path) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
                 (name, cron, ticket_title, ticket_body, project,
-                 next_run_at, now_iso()))
+                 next_run_at, now_iso(), kind, script_path))
             r = cur.fetchone()
             c.commit()
         return _row(r)
@@ -292,10 +325,12 @@ def reset_backend_for_tests():
 # ═══════════════════════════ public function API ═════════════════════════════
 
 def create(*, name: str, cron: str, ticket_title: str, ticket_body: str,
-           project: str | None = None, next_run_at: str) -> dict:
+           project: str | None = None, next_run_at: str,
+           kind: str = "ticket", script_path: str | None = None) -> dict:
     return _backend().create(
         name=name, cron=cron, ticket_title=ticket_title,
-        ticket_body=ticket_body, project=project, next_run_at=next_run_at)
+        ticket_body=ticket_body, project=project, next_run_at=next_run_at,
+        kind=kind, script_path=script_path)
 
 
 def get(job_id: int) -> "dict | None":

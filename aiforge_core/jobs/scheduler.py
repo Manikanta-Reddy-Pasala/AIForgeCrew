@@ -78,6 +78,8 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
     except Exception as exc:  # noqa: BLE001 — advance failed, skip this slot
         log.warning("jobs.fire advance failed job=%s: %s", job["id"], exc)
         return False
+    if (job.get("kind") or "ticket") == "script":
+        return _fire_script(job)
     try:
         from aiforge_core.tickets import store as tickets_mod
         t = tickets_mod.create(
@@ -95,6 +97,32 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
             pass
         log.warning("jobs.fire_failed job=%s: %s", job["id"], exc)
         return False
+
+
+def _fire_script(job: dict) -> bool:
+    """Run a script job's local script (schedule already advanced). Returns
+    True on exit 0. A non-zero exit / timeout / missing script is recorded on
+    ``last_error`` (UI chip) but never raises — deterministic ops failures are
+    visible-but-soft, exactly like ticket-create failures."""
+    from aiforge_core.jobs import scripts
+    path = job.get("script_path") or ""
+    res = scripts.run_script(path)
+    if res.get("ok"):
+        try:
+            store.update(job["id"], last_error=None)
+        except Exception:  # noqa: BLE001
+            pass
+        log.info("jobs.fired script job=%s path=%s", job["id"], path)
+        return True
+    err = (res.get("error") or "script failed")
+    tail = (res.get("stderr") or res.get("stdout") or "").strip()
+    msg = f"{err}: {tail}"[:500] if tail else err[:500]
+    try:
+        store.update(job["id"], last_error=msg)
+    except Exception:  # noqa: BLE001
+        pass
+    log.warning("jobs.fire_script_failed job=%s: %s", job["id"], msg)
+    return False
 
 
 def tick(now: datetime | None = None) -> int:

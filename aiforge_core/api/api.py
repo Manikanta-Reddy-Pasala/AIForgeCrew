@@ -539,6 +539,16 @@ class JobCreate(BaseModel):
     project: str | None = None
 
 
+class JobScriptCreate(BaseModel):
+    """Finalize a conversational job-builder session into a scheduled SCRIPT
+    job: the approved script body + a cron. The script is written to the local
+    jobs folder (~/.aiforge/jobs), NOT the repo — it's user data."""
+    name: str = Field(..., min_length=1)
+    cron: str = Field(..., min_length=1)
+    script: str = Field(..., min_length=1)
+    description: str | None = None
+
+
 class JobPatch(BaseModel):
     name: str | None = None
     cron: str | None = None
@@ -892,6 +902,30 @@ def jobs_create(payload: JobCreate) -> dict:
         name=payload.name, cron=payload.cron,
         ticket_title=payload.ticket_title, ticket_body=payload.ticket_body,
         project=payload.project, next_run_at=nxt)
+
+
+@app.post("/api/jobs/script", status_code=201)
+def jobs_create_script(payload: JobScriptCreate) -> dict:
+    """Finalize a script job: write the approved script to the local jobs
+    folder and register a cron job that RUNS it (deterministic — no LLM per
+    tick). This is the endpoint the conversational job builder calls once the
+    user has dry-run and approved the script."""
+    from aiforge_core.jobs import parse as jobs_parse
+    from aiforge_core.jobs import scripts as jobs_scripts
+    from aiforge_core.jobs import store as jobs_store
+    _require_croniter()
+    if not jobs_parse.schedulable(payload.cron):
+        raise HTTPException(400, f"invalid or unschedulable cron: {payload.cron!r}")
+    try:
+        script_path = jobs_scripts.write_script(payload.name, payload.script)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    nxt = jobs_parse.next_runs(payload.cron, n=1)[0]
+    return jobs_store.create(
+        name=payload.name, cron=payload.cron,
+        ticket_title=payload.name,
+        ticket_body=(payload.description or f"Runs script: {script_path}"),
+        project=None, next_run_at=nxt, kind="script", script_path=script_path)
 
 
 @app.get("/api/jobs")
@@ -2751,6 +2785,9 @@ class _ChatAgentBody(BaseModel):
     messages: list[_ChatMessage] = Field(..., description="conversation so far")
     cwd: str | None = Field(None, description="working directory; default workspace")
     role: str = Field("doer", description="archetype whose provider config drives the LLM")
+    builder: str | None = Field(
+        None, description="task charter: job|skill|workflow|rule (interactive "
+        "builder that ends by calling the matching finalize tool)")
 
 
 def _default_cwd() -> str:
@@ -2775,7 +2812,8 @@ def chat_agent(body: _ChatAgentBody) -> StreamingResponse:
 
     def _gen():
         try:
-            for ev in run_chat_agent(msgs, cwd=cwd, role=body.role):
+            for ev in run_chat_agent(msgs, cwd=cwd, role=body.role,
+                                     builder=body.builder):
                 yield f"data: {json.dumps(ev)}\n\n"
         except Exception as exc:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'text': str(exc)})}\n\n"

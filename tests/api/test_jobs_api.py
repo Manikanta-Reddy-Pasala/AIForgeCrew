@@ -109,6 +109,29 @@ def test_run_now_fires_even_when_paused(app_client, monkeypatch):
     assert created[0]["metadata"]["source"] == "scheduled_job"
 
 
+def test_create_script_job_writes_script_and_runs_on_fire(app_client, tmp_path):
+    client, _ = app_client
+    marker = tmp_path / "job-ran.txt"
+    r = client.post("/api/jobs/script", json={
+        "name": "nightly cleanup", "cron": "0 9 * * *",
+        "script": f"echo hi > {marker}"})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["kind"] == "script"
+    assert body["script_path"] and body["script_path"].endswith(".sh")
+    # run-now shares the fire path → the script actually executes (no ticket).
+    r = client.post(f"/api/jobs/{body['id']}/run-now")
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert marker.exists()
+
+
+def test_create_script_job_rejects_bad_cron(app_client):
+    client, _ = app_client
+    r = client.post("/api/jobs/script",
+                    json={"name": "x", "cron": "nope", "script": "true"})
+    assert r.status_code == 400
+
+
 def test_missing_job_404s(app_client):
     client, _ = app_client
     assert client.patch("/api/jobs/999", json={}).status_code == 404
