@@ -77,18 +77,106 @@ def _stringify(val: Any) -> str:
         return str(val)
 
 
+# ── seed budgeting (Fix C1) ─────────────────────────────────────────────
+# The seed is ONE user message assembled on turn 1, before any history
+# exists — so ``chat_agent._compact_convo`` (which only condenses the
+# middle of a running history) can NEVER shrink it. An unbounded plan +
+# gathered-context + memory brief therefore overflows a small local window
+# on the very first call. We cap the seed to a fraction of the resolved
+# window and spend that budget by PRIORITY: keep the plan + corrective
+# signals full, truncate the bulky gathered context / memory first.
+
+_SEED_LABELS = dict(_SEED_VARS)
+# Keep these fullest (planning + corrective signal), in priority order.
+_SEED_HIGH: tuple[str, ...] = (
+    "plan_md", "replan_note", "feedback_verdict", "verifier_verdict",
+    "toolchain_md", "user_prefs_md", "rules_md",
+)
+# Bulky, truncate-FIRST context — share whatever budget the high tier left.
+_SEED_LOW: tuple[str, ...] = ("context_brief_md", "memory_brief_md")
+_SEED_TRUNC_MARK = "\n…(truncated to fit context)\n"
+
+
+def _seed_budget_chars() -> int:
+    """Total char budget for the Doer seed = a fraction (default 0.55, env
+    ``AIFORGE_SEED_BUDGET_FRAC``) of the resolved context window in chars
+    (``context_window`` tokens × 4), floored at 8000. Reserves the rest of
+    the window for the agent's actual work (tool output, edits, replies)."""
+    try:
+        frac = float(os.environ.get("AIFORGE_SEED_BUDGET_FRAC", "0.55"))
+    except (TypeError, ValueError):
+        frac = 0.55
+    try:
+        from aiforge_core.config import runtime_settings
+        win = int(runtime_settings.get("context_window"))
+    except Exception:  # noqa: BLE001
+        win = 32768
+    return max(int(win * 4 * frac), 8000)
+
+
+def _present_text(state: dict, key: str) -> str:
+    raw = state.get(key)
+    if raw is None:
+        return ""
+    return _stringify(raw).strip()
+
+
+def _emit_section(parts: list[str], remaining: int, key: str, text: str,
+                  cap: int | None = None) -> int:
+    """Append ``key``'s section to ``parts`` within ``remaining`` chars (and an
+    optional per-section ``cap``), truncating the body with a marker if needed.
+    Returns the updated remaining budget. Sections are concatenated (each
+    carries its own leading newline) so the running total is exact."""
+    if not text:
+        return remaining
+    label = _SEED_LABELS.get(key, key.replace("_", " ").upper())
+    prefix = f"\n--- {label} ---\n"
+    overhead = len(prefix)
+    limit = remaining if cap is None else min(remaining, cap)
+    if limit - overhead <= 0:
+        return remaining                       # no room even for the header
+    avail = limit - overhead
+    if len(text) > avail:
+        keep = avail - len(_SEED_TRUNC_MARK)
+        if keep <= 0:
+            return remaining
+        text = text[:keep] + _SEED_TRUNC_MARK
+    parts.append(prefix + text)
+    return remaining - overhead - len(text)
+
+
 def _build_seed(state: dict) -> str:
-    """Fold the present, non-empty state vars into one lean seed message."""
-    parts = [_SEED_HEADER]
-    for key, label in _SEED_VARS:
-        raw = state.get(key)
-        if raw is None:
-            continue
-        text = _stringify(raw).strip()
-        if not text:
-            continue
-        parts.append(f"\n--- {label} ---\n{text}")
-    return "\n".join(parts)
+    """Fold the present, non-empty state vars into one BUDGETED seed message.
+
+    Assembled in priority order against a running char budget
+    (:func:`_seed_budget_chars`): the plan + corrective signals stay full,
+    the bulky gathered-context / memory briefs share whatever budget is
+    left (each truncated with a marker, dropped only if nothing remains).
+    Soft-fail: on ANY error, fall back to the original un-budgeted
+    concatenation so a budgeting slip can never crash the Doer."""
+    try:
+        budget = _seed_budget_chars()
+        parts = [_SEED_HEADER]
+        remaining = budget - len(_SEED_HEADER)
+        for key in _SEED_HIGH:
+            remaining = _emit_section(parts, remaining, key,
+                                      _present_text(state, key))
+        low = [(k, _present_text(state, k)) for k in _SEED_LOW]
+        low = [(k, t) for k, t in low if t]
+        n = len(low)
+        for i, (key, text) in enumerate(low):
+            # Even split of the remaining pool so BOTH bulky briefs survive
+            # (truncated) rather than the first eating it all.
+            share = remaining // (n - i) if (n - i) else remaining
+            remaining = _emit_section(parts, remaining, key, text, cap=share)
+        return "".join(parts)
+    except Exception:  # noqa: BLE001
+        parts = [_SEED_HEADER]
+        for key, label in _SEED_VARS:
+            text = _present_text(state, key)
+            if text:
+                parts.append(f"\n--- {label} ---\n{text}")
+        return "".join(parts)
 
 
 def run_text_doer(

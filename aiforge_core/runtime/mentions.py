@@ -23,6 +23,25 @@ _MAX_DIR = 200
 _MAX_URL = 12000
 
 
+def _mentions_max() -> int:
+    """Max number of @-mentions resolved in one turn (env
+    ``AIFORGE_MENTIONS_MAX``, default 8). Beyond this the rest are noted as
+    omitted — 26 ``@file`` mentions would otherwise inject ~312K chars."""
+    try:
+        return max(1, int(os.environ.get("AIFORGE_MENTIONS_MAX", "8")))
+    except (TypeError, ValueError):
+        return 8
+
+
+def _mentions_total_chars() -> int:
+    """Aggregate char cap for the whole mentions block (env
+    ``AIFORGE_MENTIONS_TOTAL_CHARS``, default 48000; 0 disables)."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_MENTIONS_TOTAL_CHARS", "48000")))
+    except (TypeError, ValueError):
+        return 48000
+
+
 def _root(cwd: str) -> str:
     return os.environ.get("AIFORGE_WORKSPACE_DIR") or cwd
 
@@ -102,33 +121,54 @@ def expand(text: str, cwd: str) -> tuple[str, list[str]]:
     tokens = _MENTION_RE.findall(text or "")
     if not tokens:
         return "", []
-    blocks: list[str] = []
-    resolved: list[str] = []
+    # Dedupe preserving order.
+    uniq: list[str] = []
     seen: set[str] = set()
     for tok in tokens:
-        if tok in seen:
+        if tok not in seen:
+            seen.add(tok)
+            uniq.append(tok)
+    max_n = _mentions_max()
+    total_cap = _mentions_total_chars()
+    blocks: list[str] = []
+    resolved: list[str] = []
+    total = 0
+    omitted = 0
+    for tok in uniq:
+        # Count / aggregate caps: beyond them, note as omitted (don't resolve).
+        if len(resolved) >= max_n or (total_cap and total >= total_cap):
+            omitted += 1
             continue
-        seen.add(tok)
         low = tok.lower()
         if low == "problems":
-            blocks.append(_problems_block(cwd))
+            block = _problems_block(cwd)
         elif tok.startswith(("http://", "https://")):
-            blocks.append(_url_block(tok))
+            block = _url_block(tok)
         else:
             p = _resolve_path(cwd, tok.rstrip("/"))
             if p is None:
-                blocks.append(f"@{tok} → (outside workspace, skipped)")
+                block = f"@{tok} → (outside workspace, skipped)"
             elif os.path.isdir(p):
-                blocks.append(_dir_block(p, tok))
+                block = _dir_block(p, tok)
             elif os.path.isfile(p):
-                blocks.append(_file_block(p, tok))
+                block = _file_block(p, tok)
             else:
-                blocks.append(f"@{tok} → (not found)")
+                block = f"@{tok} → (not found)"
+        if total_cap and total + len(block) > total_cap:
+            room = total_cap - total
+            if room > 200:
+                block = block[:room] + "\n…(truncated to fit context)\n"
+            else:
+                omitted += 1
+                continue
+        blocks.append(block)
         resolved.append(tok)
+        total += len(block)
     if not blocks:
         return "", []
+    tail = f"\n\n…({omitted} more mentions omitted to fit context)" if omitted else ""
     return ("MENTIONED CONTEXT (the user explicitly referenced these — use "
-            "them directly):\n" + "\n\n".join(blocks)), resolved
+            "them directly):\n" + "\n\n".join(blocks) + tail), resolved
 
 
 __all__ = ["expand"]

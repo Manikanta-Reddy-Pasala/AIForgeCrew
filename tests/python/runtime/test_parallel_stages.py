@@ -51,6 +51,24 @@ def test_merge_context_skips_blank() -> None:
     assert "## Repo map" in state["context_brief_md"]
 
 
+def test_merge_context_caps_each_section(monkeypatch) -> None:
+    # Fix C1b: a runaway gatherer output is capped at its SOURCE before merge.
+    monkeypatch.setenv("AIFORGE_CTX_SECTION_CHARS", "2000")
+    state = {"research_brief_md": "R" * 50000, "repo_brief_md": "K" * 50000}
+    _run(ps.merge_context(_FakeCtx(state)))
+    merged = state["context_brief_md"]
+    # Each section bounded (2000 + marker), so the merged brief stays small.
+    assert len(merged) < 2 * 2000 + 500
+    assert "truncated to fit context" in merged
+
+
+def test_merge_context_section_cap_env_off(monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_CTX_SECTION_CHARS", "0")   # disabled
+    state = {"repo_brief_md": "K" * 5000}
+    _run(ps.merge_context(_FakeCtx(state)))
+    assert len(state["context_brief_md"]) > 5000          # uncapped
+
+
 # ── merge_verdicts ───────────────────────────────────────────────────────
 
 def test_merge_verdicts_all_pass() -> None:
