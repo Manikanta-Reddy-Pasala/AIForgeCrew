@@ -23,7 +23,7 @@ def rs(monkeypatch, tmp_path):
 
 def test_local_first_defaults(rs):
     # A generation cap that fits ANY window; operators raise via env.
-    assert rs.get("max_output_tokens") == 4096
+    assert rs.get("max_output_tokens") == 8192
     # The common local case; operators with 128K models set the env var.
     assert rs.get("context_window") == 131072
 
