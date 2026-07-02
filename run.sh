@@ -147,6 +147,15 @@ if [[ $DOCKER -eq 1 ]]; then
       fi
       ;;
   esac
+  # All persistent data is host bind-mounts (not docker named volumes) — create
+  # the dirs first so postgres/neo4j initdb into an existing, writable path.
+  _data="${AIFORGE_DATA_DIR:-./data}"
+  _ws="${AIFORGE_HOST_WORKSPACE:-$_data/workspace}"
+  mkdir -p "$_data/postgres" "${NEO4J_DATA_DIR:-$_data/neo4j}" \
+           "${NEO4J_LOGS_DIR:-$_data/neo4j-logs}" "$_data/aiforge" \
+           "$_data/hf-cache" "$_ws"
+  echo "==> host data dir: $_data   workspace: $_ws"
+
   echo "==> stopping any running AIForge containers"
   "${DC[@]}" down --remove-orphans || true
   if [[ $NO_BUILD -eq 1 ]]; then
@@ -158,6 +167,8 @@ if [[ $DOCKER -eq 1 ]]; then
   fi
   echo ""
   echo "  AIForge (docker) → http://localhost:8799/ui/"
+  echo "  data (host): $_data   workspace: $_ws"
+  echo "  Neo4j → http://localhost:7474   Postgres → localhost:${PG_PORT:-5432}"
   echo "  TLS verify: ${AIFORGE_LLM_SSL_VERIFY}   model: ${AIFORGE_LM_BASE_URL:-<unset>}"
   echo ""
   "${DC[@]}" ps

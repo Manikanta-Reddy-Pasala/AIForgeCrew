@@ -2,17 +2,18 @@
 # one `docker compose up`. Postgres + Neo4j + the two python embedding
 # sidecars + the API + the graph runner.
 #
-# Data safety:
-#   * Postgres data lives in the named volume `aiforge_pgdata`. Seed it
-#     from an existing bare cluster with scripts/compose/backup-prod.sh +
-#     the restore step in scripts/compose/CUTOVER.md (non-destructive —
-#     the original cluster is left intact as a rollback).
-#   * Neo4j reuses the EXISTING data volume by default (external), so the
-#     graph carries over untouched. Override the name with NEO4J_VOLUME,
-#     or set NEO4J_VOLUME_EXTERNAL=false to start fresh.
+# Data safety — ALL persistent data lives on the HOST filesystem under
+# ${AIFORGE_DATA_DIR:-./data} (git-ignored), NOT in docker-internal named
+# volumes. So you can see/back-up/inspect every byte from the host:
+#   ${AIFORGE_DATA_DIR:-./data}/postgres    Postgres cluster
+#   ${NEO4J_DATA_DIR:-./data/neo4j}         Neo4j graph (symbols, memory, graphify ingest)
+#   ${AIFORGE_DATA_DIR:-./data}/aiforge     app state: config, sqlite fallback, ticket files
+#   ${AIFORGE_DATA_DIR:-./data}/hf-cache    rerank model cache
+#   ${AIFORGE_HOST_WORKSPACE:-./data/workspace}  the agent's repo workspace (AIFORGE_REPO_ROOT)
+# Point AIFORGE_HOST_WORKSPACE at your projects dir (e.g. ~/code) to have the
+# agent operate on your EXISTING local repos. run.sh mkdir -p's these first.
 #
-# Zero-infra users don't need any of this — `./run.sh` runs the embedded
-# SQLite build. This compose is for the heavier Postgres + Neo4j stack.
+# Laptop / no-Docker users: `./run.sh --lite` runs the embedded SQLite build.
 
 services:
   postgres:
@@ -24,7 +25,7 @@ services:
       POSTGRES_PASSWORD: ${PG_PASSWORD:-aiforgepass}
       POSTGRES_DB: ${PG_DB:-aiforge}
     volumes:
-      - aiforge_pgdata:/var/lib/postgresql/data
+      - ${AIFORGE_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
     ports:
       - "${PG_PORT:-5432}:5432"
     healthcheck:
@@ -47,8 +48,8 @@ services:
       # Bind-mount the host data dir so an existing Neo4j store is reused
       # in place (zero copy). Point these at your current dirs to migrate
       # without data loss; defaults are fresh local dirs for new installs.
-      - ${NEO4J_DATA_DIR:-./neo4j-data}:/data
-      - ${NEO4J_LOGS_DIR:-./neo4j-logs}:/logs
+      - ${NEO4J_DATA_DIR:-./data/neo4j}:/data
+      - ${NEO4J_LOGS_DIR:-./data/neo4j-logs}:/logs
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -80,7 +81,7 @@ services:
     container_name: aiforge-rerank
     restart: unless-stopped
     volumes:
-      - hf_cache:/root/.cache/huggingface
+      - ${AIFORGE_DATA_DIR:-./data}/hf-cache:/root/.cache/huggingface
     ports:
       - "8765:8765"
 
@@ -122,8 +123,13 @@ services:
       # fast on slower local models. 0 = full context (richer splits, slower).
       AIFORGE_CHAT_LEAN: ${AIFORGE_CHAT_LEAN:-0}
       AIFORGE_CONFIG_DIR: /data/aiforge
+      # The agent's repo workspace — bind-mounted from the host below, so
+      # worktrees/edits land on the host and persist. Point
+      # AIFORGE_HOST_WORKSPACE at your projects dir to work on existing repos.
+      AIFORGE_REPO_ROOT: /workspace
     volumes:
-      - app_state:/data/aiforge
+      - ${AIFORGE_DATA_DIR:-./data}/aiforge:/data/aiforge
+      - ${AIFORGE_HOST_WORKSPACE:-./data/workspace}:/workspace
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,14 +149,13 @@ services:
       sleep ${AIFORGE_RUNNER_POLL_SEC:-10}; done"
     environment: *app_env
     volumes:
-      - app_state:/data/aiforge
+      - ${AIFORGE_DATA_DIR:-./data}/aiforge:/data/aiforge
+      - ${AIFORGE_HOST_WORKSPACE:-./data/workspace}:/workspace
     depends_on:
       - api
       - postgres
       - neo4j
 
-volumes:
-  aiforge_pgdata:
-  models_cache:
-  hf_cache:
-  app_state:
+# No docker-internal named volumes — every persistent path is a host
+# bind-mount under ${AIFORGE_DATA_DIR:-./data} (see the header). run.sh
+# creates the dirs before `up` so the bind mounts resolve cleanly.
