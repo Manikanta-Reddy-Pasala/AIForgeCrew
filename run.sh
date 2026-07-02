@@ -143,14 +143,24 @@ _docker_infra_up() {
     0|false|no|off) : ;;
     *)
       if ! docker info >/dev/null 2>&1; then
-        if command -v sudo >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then
-          DC=(sudo "${DC[@]}")
+        if ! command -v sudo >/dev/null 2>&1; then
+          echo "==> cannot reach the Docker daemon and 'sudo' is not available." >&2
+          echo "    Add your user to the 'docker' group:  sudo usermod -aG docker \"\$USER\"  (then re-login)" >&2
+          exit 1
+        fi
+        DC=(sudo "${DC[@]}")
+        if sudo -n docker info >/dev/null 2>&1; then
           echo "==> docker daemon needs elevation (user not in 'docker' group) — using sudo"
         else
-          echo "==> cannot reach the Docker daemon. Either add your user to the" >&2
-          echo "    'docker' group:  sudo usermod -aG docker \"\$USER\"  (then re-login)" >&2
-          echo "    or enable passwordless sudo for docker, or set AIFORGE_DOCKER_SUDO=1." >&2
-          exit 1
+          # No passwordless sudo — fall back to INTERACTIVE sudo (prompts once).
+          # Prime the sudo timestamp + verify docker is actually reachable via sudo.
+          echo "==> docker daemon needs elevation — using sudo (you may be prompted for your password)"
+          if ! sudo docker info >/dev/null 2>&1; then
+            echo "==> still cannot reach the Docker daemon, even via sudo." >&2
+            echo "    Add your user to the 'docker' group:  sudo usermod -aG docker \"\$USER\"  (then re-login)," >&2
+            echo "    or start Docker, or run with AIFORGE_DOCKER_SUDO=0 and fix access manually." >&2
+            exit 1
+          fi
         fi
       fi
       ;;
