@@ -191,7 +191,11 @@ services:
       # AIFORGE_HOST_WORKSPACE at your projects dir to work on existing repos.
       AIFORGE_REPO_ROOT: /workspace
     volumes:
-      - ${AIFORGE_DATA_DIR:-./data}/aiforge:/data/aiforge
+      # Config/app-state dir. AIFORGE_CONFIG_HOST_DIR lets a HYBRID host point
+      # the container at the SAME dir the host api uses (e.g. ~/.aiforge), so a
+      # docker api and a host api never diverge into two config stores (which
+      # made saved model/agent settings "vanish" when they traded the port).
+      - ${AIFORGE_CONFIG_HOST_DIR:-${AIFORGE_DATA_DIR:-./data}/aiforge}:/data/aiforge
       - ${AIFORGE_HOST_WORKSPACE:-./data/workspace}:/workspace
     depends_on:
       postgres:
@@ -212,7 +216,11 @@ services:
       sleep ${AIFORGE_RUNNER_POLL_SEC:-10}; done"
     environment: *app_env
     volumes:
-      - ${AIFORGE_DATA_DIR:-./data}/aiforge:/data/aiforge
+      # Config/app-state dir. AIFORGE_CONFIG_HOST_DIR lets a HYBRID host point
+      # the container at the SAME dir the host api uses (e.g. ~/.aiforge), so a
+      # docker api and a host api never diverge into two config stores (which
+      # made saved model/agent settings "vanish" when they traded the port).
+      - ${AIFORGE_CONFIG_HOST_DIR:-${AIFORGE_DATA_DIR:-./data}/aiforge}:/data/aiforge
       - ${AIFORGE_HOST_WORKSPACE:-./data/workspace}:/workspace
     depends_on:
       - api
