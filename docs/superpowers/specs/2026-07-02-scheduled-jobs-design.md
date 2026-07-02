@@ -55,8 +55,15 @@ tickets store):
 | `last_error` | text nullable | last fire-time failure, cleared on success |
 | `created_at` | timestamp | |
 
-New module: `aiforge_core/jobs/store.py` (CRUD + due-query), mirroring
-the tickets store's backend-factory shape. Timezone: the server's local
+New module: `aiforge_core/jobs/store.py` (CRUD + due-query).
+
+**Amended at plan time:** single-file SQLite following the
+`runtime/chat_store.py` precedent (module `_DDL`, `_conn()` context
+manager, WAL, path under `$AIFORGE_CONFIG_DIR` → the compose
+`app_state` volume) — NOT the tickets store's 3-file backend-factory.
+Jobs are small operator-local scheduling state, exactly like chat
+sessions; the dual-backend machinery isn't worth it for one table.
+Env override: `AIFORGE_JOBS_DB_PATH`. Timezone: the server's local
 timezone (croniter over `datetime.now()`); no per-job timezone field in
 v1 (single-operator deployments — YAGNI).
 
@@ -97,8 +104,11 @@ output: {"name": "GitLab comments digest",
 
 ### 4. Scheduler loop (`aiforge_core/jobs/scheduler.py`)
 
-- Started from the API service's startup hook as an asyncio task; ticks
-  every 30 s (`AIFORGE_JOBS_TICK_S`, default 30).
+- Started from the API service's startup hook as a **daemon thread**
+  (`threading.Thread(daemon=True)` — amended at plan time: this is the
+  codebase's universal background-work pattern, api.py already runs 4
+  such workers and zero asyncio-from-startup tasks); ticks every 30 s
+  (`AIFORGE_JOBS_TICK_S`, default 30).
 - Each tick: `store.due_jobs(now)` → for each, **fire**:
   1. create a ticket via the existing tickets store —
      `title=ticket_title, body=ticket_body, project=project,
@@ -129,8 +139,11 @@ Layout A (matches `Tickets.tsx` conventions):
 - Table: Name · Schedule (human words) · Next run · Last run ·
   Status (Active / Paused / chip showing `last_error` when set) ·
   row actions: Run now / Pause–Resume / Delete.
-- Fired tickets are ordinary tickets — visible in Kanban/Tickets with a
-  "scheduled" source badge (driven by `metadata.source`).
+- Fired tickets are ordinary tickets — visible in Kanban/Tickets as
+  usual. `metadata.source = "scheduled_job"` is recorded on every fired
+  ticket; a visible "scheduled" badge in the Tickets/Kanban views is
+  **deferred to a follow-up** (needs the ticket-list endpoint to expose
+  metadata to the UI — out of this plan's scope).
 
 ## Error handling
 
