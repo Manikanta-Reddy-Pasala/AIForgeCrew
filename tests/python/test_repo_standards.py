@@ -80,6 +80,12 @@ class TestGetAutoDetect:
         the python defaults — including the stricter compileall command."""
         # Stub the Neo4j read so we don't depend on a running DB.
         monkeypatch.setattr(rs, "_from_neo4j", lambda name: None)
+        # Pin the host toolchain probe so the assertion is deterministic on any
+        # box — get() overlays the resolved python exe (python3 vs python), so
+        # a host with only python3 correctly yields "python3 -m compileall".
+        # We assert the compileall COMMAND shape, not the host's exe name.
+        monkeypatch.setattr(rs, "_first_on_path", lambda *a: "python")
+        monkeypatch.setattr(rs, "_TOOLCHAIN_CACHE", {})
         (tmp_path / "pyproject.toml").write_text(
             "[project]\nname='x'\n", encoding="utf-8"
         )

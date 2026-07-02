@@ -130,6 +130,10 @@ def test_prefilter_skips_classify_for_trivial(app_client, monkeypatch):
     client, api = app_client
     from aiforge_core.llm import client as llm_client
     from aiforge_core.runtime import chat_agent, chat_title, parallel_subtasks as pp
+    # Disable the background chat-learner: it fires a real client.complete on a
+    # daemon thread AFTER the turn, which the full-suite scheduler can land
+    # inside our monkeypatched-complete window → a false count (the flake).
+    monkeypatch.setenv("AIFORGE_CHAT_LEARNER", "0")
     called = {"n": 0}
 
     def _complete(*a, **k):
