@@ -404,12 +404,18 @@ def build_pipeline(*, skip_researcher: bool = False,
     # ({plan_md?}/{context_brief_md?}/{rules_md?}/…), so strip the redundant
     # prologue from the replayed history and keep only the seed + their own
     # recent loop work. Big win for slow 120B models. Flag-guarded.
+    # Split per-agent so a text-doer FunctionNode (which rejects before_model)
+    # doesn't also skip attaching the refiner's focus callback.
     try:
         from .executor_focus import make_executor_focus_callback
         _append_before_model(doer, make_executor_focus_callback("doer"))
-        _append_before_model(refiner, make_executor_focus_callback("refiner"))
     except Exception:
         pass  # focus is best-effort; never block pipeline boot
+    try:
+        from .executor_focus import make_executor_focus_callback
+        _append_before_model(refiner, make_executor_focus_callback("refiner"))
+    except Exception:
+        pass
 
     # Auto-consolidation after-callback on the Learner — mines the finished
     # run's trajectory for durable facts (extract → decide ADD/UPDATE/DELETE/

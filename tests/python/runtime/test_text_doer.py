@@ -249,3 +249,39 @@ def test_text_doer_node_runs_in_real_graph(_stub_models, monkeypatch):
     state = asyncio.run(asyncio.wait_for(_go(), timeout=120))
     assert "TEXT-DOER-RAN" in (state.get("doer_outcome") or "")
     assert state.get("tests_ok") is True
+
+
+def test_feedback_verdict_is_seeded():
+    # A loop re-run must show the text Doer what feedback rejected, else the
+    # 2nd pass repeats the mistake blind.
+    assert "feedback_verdict" in td._SEED_KEYS
+
+
+def test_node_pins_workspace_jail_during_run_and_restores(monkeypatch):
+    # The text-doer node must set AIFORGE_WORKSPACE_DIR = cwd while running
+    # (restores the worktree jail the native scope_guard provided) and put it
+    # back afterward.
+    import asyncio
+    import os
+
+    monkeypatch.setenv("AIFORGE_WORKSPACE_DIR", "/prev/ws")
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", "/the/worktree")
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)  # start unset-ish
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", "/the/worktree")
+
+    seen = {}
+
+    def _fake_run(snapshot, cwd, **kw):
+        seen["ws_during"] = os.environ.get("AIFORGE_WORKSPACE_DIR")
+        seen["cwd"] = cwd
+        return {"doer_outcome": "ok", "tests_ok": None,
+                "typecheck_ok": None, "lint_ok": None}
+
+    monkeypatch.setattr(td, "run_text_doer", _fake_run)
+
+    class _Ctx:
+        state = {}
+    asyncio.run(td._text_doer_node(_Ctx()))
+    assert seen["ws_during"] == seen["cwd"] == "/the/worktree"
+    # restored (was unset going in)
+    assert os.environ.get("AIFORGE_WORKSPACE_DIR") is None

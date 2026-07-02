@@ -52,6 +52,8 @@ _SEED_VARS: tuple[tuple[str, str], ...] = (
     ("user_prefs_md", "USER PREFERENCES"),
     ("rules_md", "REPO RULES (follow them exactly)"),
     ("verifier_verdict", "VERIFIER VERDICT (heed any rejection reasons)"),
+    ("feedback_verdict", "FEEDBACK ON YOUR PRIOR ATTEMPT (a loop re-run — fix "
+                         "what this rejected; don't repeat it)"),
     ("replan_note", "REPLAN NOTE (set only on a re-plan — go smaller)"),
 )
 _SEED_KEYS = tuple(k for k, _ in _SEED_VARS)
@@ -181,7 +183,22 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     snapshot = {k: state.get(k) for k in _SEED_KEYS}
     cwd = _resolve_cwd()
-    out = await asyncio.to_thread(run_text_doer, snapshot, cwd)
+    # Restore the worktree jail: the native path had the C6 scope_guard
+    # before_tool_callback, which a FunctionNode can't carry. The runner sets
+    # AIFORGE_REPO_ROOT (not AIFORGE_WORKSPACE_DIR), so chat_agent's path jail
+    # is otherwise inactive here. Pin AIFORGE_WORKSPACE_DIR = cwd so the text
+    # Doer's file tools can't write outside the per-ticket worktree.
+    _prev_ws = os.environ.get("AIFORGE_WORKSPACE_DIR")
+    if cwd:
+        os.environ["AIFORGE_WORKSPACE_DIR"] = cwd
+    try:
+        out = await asyncio.to_thread(run_text_doer, snapshot, cwd)
+    finally:
+        if cwd:
+            if _prev_ws is None:
+                os.environ.pop("AIFORGE_WORKSPACE_DIR", None)
+            else:
+                os.environ["AIFORGE_WORKSPACE_DIR"] = _prev_ws
     state["doer_outcome"] = out.get("doer_outcome", "")
     # Only set a signal when its tool actually ran (value not None) — matches
     # the native after_tool_callback, which never writes a signal for a tool
