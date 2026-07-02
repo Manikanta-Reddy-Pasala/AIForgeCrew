@@ -45,13 +45,17 @@ EXPECTED_ENFORCED = {"ctx_memory", "ctx_repomap", "ctx_conventions", "researcher
 
 
 def _ground_truth() -> set[str]:
-    """Every real tool name (``FunctionTool.name`` == ``fn.__name__``)."""
+    """Every real tool name (``FunctionTool.name`` == ``fn.__name__``).
+
+    Union of the base (no-role) set AND role-injected tools (the researcher
+    gets web_search/web_read that aren't in the base list — role-scoped web)."""
     out: set[str] = set()
-    for t in doer_tools.adk_function_tools():
-        n = getattr(t, "name", None) or getattr(
-            getattr(t, "func", None), "__name__", "")
-        if n:
-            out.add(n)
+    for role in (None, "researcher"):
+        for t in doer_tools.adk_function_tools(role=role):
+            n = getattr(t, "name", None) or getattr(
+                getattr(t, "func", None), "__name__", "")
+            if n:
+                out.add(n)
     return out
 
 
@@ -156,9 +160,11 @@ def test_doer_keeps_full_working_surface():
     references the legacy read/write/exec tools heavily, so scoping would
     starve it. Guard that the full surface still carries the doer essentials."""
     names = _names(doer_tools.adk_function_tools())
-    for t in ("project", "subtask_update", "web_search", "serve", "editor",
+    # web_search/web_read are intentionally NOT here — web is researcher-scoped.
+    for t in ("project", "subtask_update", "serve", "editor",
               "run_shell", "file_write", "file_patch", "file_read",
               "git_commit", "bash", "ensure_runtime"):
         assert t in names, f"doer full surface is missing {t}"
+    assert "web_search" not in names, "web is researcher-only; doer must not have it"
     # doer.py must remain unwired (full set) — not in the scoped set.
     assert "doer" not in _wired_roles()

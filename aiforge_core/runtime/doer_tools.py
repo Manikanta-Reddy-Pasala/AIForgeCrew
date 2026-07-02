@@ -428,18 +428,11 @@ def _web_fetch_allowed() -> bool:
     )
 
 
-def fetch_url(url: str) -> dict:
-    """GET an http(s) URL and return the body as text.
-
-    Used for fetching public docs / spec pages mid-task. NOT a browser:
-    no cookies, no JS, no redirects to file://. Body capped at 256 KB,
-    timeout 15s, http(s) only.
-
-    Gated behind ``AIFORGE_ALLOW_WEB_FETCH`` (default off) — under the
-    network lockdown, agents cannot fetch arbitrary URLs.
-    """
-    if not _web_fetch_allowed():
-        return {"ok": False, "error": "web fetch disabled (set AIFORGE_ALLOW_WEB_FETCH=1)"}
+def _do_fetch(url: str) -> dict:
+    """The actual http(s) GET (no gate). NOT a browser: no cookies, no JS,
+    no redirects to file://. Body capped at 256 KB, timeout 15s, http(s)
+    only. Used by the gated ``fetch_url`` and the researcher-only
+    ``web_read``."""
     if not url or not url.lower().startswith(("http://", "https://")):
         return {"ok": False, "error": "url must be http(s)"}
     try:
@@ -471,6 +464,25 @@ def fetch_url(url: str) -> dict:
         "bytes": len(raw),
         "truncated": truncated,
     }
+
+
+def fetch_url(url: str) -> dict:
+    """GET an http(s) URL and return the body as text.
+
+    Gated behind ``AIFORGE_ALLOW_WEB_FETCH`` (default off) — under the
+    network lockdown, general agents cannot fetch arbitrary URLs. The
+    RESEARCHER uses the ungated ``web_read`` instead (role-scoped web)."""
+    if not _web_fetch_allowed():
+        return {"ok": False, "error": "web fetch disabled (set AIFORGE_ALLOW_WEB_FETCH=1)"}
+    return _do_fetch(url)
+
+
+def web_read(url: str) -> dict:
+    """Fetch + return the text of a web page. RESEARCHER-only sanctioned
+    reader — the one agent allowed to READ a page it found via web_search.
+    Ungated on purpose (only the researcher's tool set receives it; other
+    agents never get this schema). Same 256 KB / 15s / http(s)-only limits."""
+    return _do_fetch(url)
 
 
 # ─── Git commit ────────────────────────────────────────────────────────
@@ -931,7 +943,7 @@ def adk_function_tools(role: "str | None" = None) -> list:
                         grep_repo, repo_map, impacted_tests, fetch_url,
                         git_commit, memory_lookup, memory_block, graphify_lookup,
                         skill_search, learn_skill,
-                        workflow_search, learn_workflow, web_search, serve, stop_service,
+                        workflow_search, learn_workflow, serve, stop_service,
                         subtask_update,
                         confluence_search, confluence_read, confluence_create,
                         confluence_update, jira_search, jira_read, jira_create,
@@ -942,6 +954,13 @@ def adk_function_tools(role: "str | None" = None) -> list:
                todo_write, todowrite, glob, task]
     tools = [FunctionTool(func=fn)
              for fn in new_canonical + legacy_canonical + aliases]
+    # Role-scoped web: only the RESEARCHER gets internet tools — web_search
+    # (query) + web_read (ungated page read). They are NOT in the base list,
+    # so every other agent (incl. the no-role Doer) simply never receives them;
+    # general fetch stays behind the AIFORGE_ALLOW_WEB_FETCH gate. This makes
+    # the researcher the single sanctioned web-egress agent.
+    if role == "researcher":
+        tools = tools + [FunctionTool(func=web_search), FunctionTool(func=web_read)]
     if role is None:
         return tools
     if os.environ.get("AIFORGE_TOOL_ENFORCE", "1").strip().lower() in (
@@ -980,7 +999,7 @@ __all__ = [
     "confluence_search", "confluence_read", "confluence_create", "confluence_update",
     "jira_search", "jira_read", "jira_create", "jira_update", "jira_comment",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
-    "grep", "search", "http_get", "web_fetch",
+    "grep", "search", "http_get", "web_fetch", "web_read",
     "commit", "git_add_commit",
     "todo_write", "todowrite", "glob", "task",
     "adk_function_tools",

@@ -486,6 +486,8 @@ agents:
         - file_read
         - list_dir
         - repo_map
+        - web_search            # researcher is the ONE sanctioned web agent
+        - web_read              # ungated page read (role-scoped; others can't)
       forbidden:
         - file_write
         - file_patch
