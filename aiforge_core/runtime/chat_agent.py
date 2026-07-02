@@ -2127,6 +2127,7 @@ def run_chat_agent(
     complete_fn: Callable[..., str] | None = None,
     session_id: int | None = None,
     mode: str = "act",              # "act" = full tools; "plan" = read-only
+    scope_globs: list[str] | None = None,  # autonomous Doer scope allowlist
 ) -> Iterator[dict]:
     """Drive the ReAct loop until the agent finishes or a stuck loop is
     detected (NOT a step count). Yields SSE-ready event dicts:
@@ -2143,6 +2144,13 @@ def run_chat_agent(
     from aiforge_core.runtime.tools import tool_policy
     chat_cancel.set_active(session_id)
     plan_mode = (mode or "act").lower() == "plan"
+    # Scope allowlist (autonomous Doer). When the caller passes globs, a
+    # mutating file tool whose target path falls outside them is rejected
+    # BEFORE it runs — the FunctionNode text Doer can't carry the native
+    # scope_guard before_tool_callback, so this is its equivalent jail.
+    # Empty/None = no restriction (back-compat; the chat UI passes nothing).
+    _scope_globs = [g for g in (scope_globs or [])
+                    if isinstance(g, str) and g]
 
     import collections
     safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
@@ -2523,6 +2531,33 @@ def run_chat_agent(
                 _hook_block = _pre
         except Exception:  # noqa: BLE001 — hooks must never break dispatch
             _hook_block = None
+
+        # Scope allowlist enforcement (autonomous Doer path). Reject a
+        # mutating file tool whose resolved target path is outside the
+        # ticket's scope_allowlist_globs — refuse WITHOUT writing, and hand
+        # the model a corrective observation. Reuses scope_guard's matcher
+        # so the text path enforces exactly like the native callback.
+        if _scope_globs:
+            try:
+                from aiforge_core.runtime import scope_guard as _sg
+                _off = [p for p in _sg._path_from_args(name, args or {})
+                        if not _sg._matches_any(p, _scope_globs)]
+            except Exception:  # noqa: BLE001 — never break dispatch
+                _off = []
+            if _off:
+                result = {
+                    "ok": False, "error": "scope_violation",
+                    "blocked_paths": _off,
+                    "scope_allowlist_globs": _scope_globs,
+                    "hint": ("Edit refused: path is outside the ticket's "
+                             "scope_allowlist_globs. Edit only files inside "
+                             "an allowed glob."),
+                }
+                yield {"type": "tool", "name": name, "args": args,
+                       "result": result}
+                convo.append({"role": "user",
+                              "content": f"OBSERVATION: {json.dumps(result)}"})
+                continue
 
         fn = TOOLS.get(name)
         if _hook_block is not None:

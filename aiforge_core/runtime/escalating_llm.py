@@ -259,6 +259,18 @@ def _attempt_retries() -> int:
         return 1
 
 
+def _demote_after() -> int:
+    """Consecutive primary failures required before STICKY-demoting the
+    local primary for the rest of the run. Default 2 so a SINGLE transient
+    blip escalates that one call to cloud but doesn't divert the whole
+    multi-stage run — the next call retries the local primary. Env override
+    ``AIFORGE_PRIMARY_DEMOTE_AFTER`` (mirrors the _attempt_retries idiom)."""
+    try:
+        return max(1, int(os.environ.get("AIFORGE_PRIMARY_DEMOTE_AFTER", "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
 def _is_transient_llm_error(exc: Exception) -> bool:
     s = (type(exc).__name__ + " " + str(exc)).lower()
     return any(m in s for m in _TRANSIENT_MARKERS)
@@ -440,6 +452,13 @@ class EscalatingLlm(BaseLlm):
     chain_models: list[BaseLlm] = []
     chain_labels: list[str] = []
     primary_demoted: bool = False
+    # Consecutive primary-failure counter. Sticky-demotion only fires once
+    # this reaches _demote_after() (default 2) — a lone transient blip
+    # escalates that ONE call to cloud but leaves the primary in play for
+    # the next call. Reset to 0 on any primary success. Plain instance int
+    # (same non-locked idiom as primary_demoted; a fresh EscalatingLlm is
+    # built per ticket so there's no cross-run sharing).
+    primary_fail_streak: int = 0
     # One LM-crash auto-recovery attempt per pipeline run. Resets per
     # ticket (fresh EscalatingLlm is built per ticket in pipeline.py).
     # Without the cap a flapping LM Studio could trigger an SSH-load
@@ -460,6 +479,16 @@ class EscalatingLlm(BaseLlm):
             chain_models=chain,
             chain_labels=labels,
         )
+
+    def _record_primary_failure(self) -> None:
+        """A primary attempt failed. Increment the consecutive-failure
+        streak and STICKY-demote only once it reaches the threshold — so a
+        single blip escalates THIS call to cloud (the caller still
+        ``continue``s down the chain) but the NEXT call retries the local
+        primary. Repeated failures still demote and stay on cloud."""
+        self.primary_fail_streak = int(self.primary_fail_streak or 0) + 1
+        if self.primary_fail_streak >= _demote_after():
+            self.primary_demoted = True
 
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False,
@@ -585,7 +614,7 @@ class EscalatingLlm(BaseLlm):
                                     str(retry_exc)[:200],
                                 )
                                 if label == "primary":
-                                    self.primary_demoted = True
+                                    self._record_primary_failure()
                                 continue
                             if buffered and not all(_is_empty(r) for r in buffered):
                                 log.info(
@@ -596,7 +625,7 @@ class EscalatingLlm(BaseLlm):
                                     yield r
                                 return
                 if label == "primary":
-                    self.primary_demoted = True
+                    self._record_primary_failure()
                 continue
 
             if not buffered or all(_is_empty(r) for r in buffered):
@@ -606,7 +635,7 @@ class EscalatingLlm(BaseLlm):
                     getattr(model, "model", "?"), len(buffered),
                 )
                 if label == "primary":
-                    self.primary_demoted = True
+                    self._record_primary_failure()
                 continue
 
             # primary_retry success — clear the demotion so subsequent
@@ -623,6 +652,10 @@ class EscalatingLlm(BaseLlm):
             # the 2nd recovery 5min earlier.
             if label in ("primary", "primary_retry"):
                 self.lm_recovery_tried = False
+                # A primary success clears the consecutive-failure streak so
+                # a later isolated blip starts counting fresh (a success
+                # between two failures must not compound into a demotion).
+                self.primary_fail_streak = 0
 
             if label != "primary":
                 log.info(
