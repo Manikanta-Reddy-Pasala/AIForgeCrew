@@ -3,30 +3,38 @@
 #
 #   git clone … && cd AIForgeCrew && ./run.sh
 #
-# Brings up the FULL AIForge stack by DEFAULT via docker compose: Postgres +
-# Neo4j (graph memory) + embed + rerank sidecars + api + runner. Every memory
-# component (tree-sitter symbol index, Neo4j graph, AiForgeMemory bundle,
-# embeddings) is on — nothing degrades silently. Needs Docker.
+# THREE deployment modes (default = hybrid):
+#
+#   hybrid  (DEFAULT, bare ./run.sh)
+#           Data + infra in Docker (Postgres + Neo4j + embed + rerank);
+#           the AGENT (api + runner) runs on the HOST — so it gets the host
+#           filesystem, host shell and host toolchain a coding agent needs.
+#           Env is pointed at the dockerized infra over localhost.
+#
+#   --docker  Full stack in containers (api + runner too). Isolated: the
+#             agent only sees the mounted workspace, NOT host tools. This
+#             was the previous default; kept for isolated/shared boxes.
+#
+#   --lite    All on the host, embedded SQLite tickets + SQLite memory,
+#             NO Docker, graph OFF. Use on a laptop / no-Docker box.
+#
 # Point it at a model on the home page (http://localhost:8799/ui/).
 #
-# For a laptop / no-Docker box, `--lite` runs the embedded path instead:
-# a single uvicorn process on SQLite tickets + SQLite memory (graph off).
-#
 # Flags:
-#   --lite       embedded single-process mode (SQLite, no Docker, graph OFF).
-#                The old zero-infra default — use when Docker isn't available.
-#   --dev        (with --lite) uvicorn --reload (hot reload for development)
+#   --hybrid     infra in docker, agent (api+runner) on host  [DEFAULT]
+#   --docker     full stack in containers (isolated agent)
+#   --lite       embedded single-process host mode (SQLite, no Docker)
+#   --dev        uvicorn --reload (host hot reload; implies host, not docker)
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
-#   --skip-web   (with --lite) don't (re)build the web UI
-#   --docker     explicit full-stack (now the default; kept for back-compat)
-#   --no-build   skip the image rebuild (just (re)start the stack)
+#   --skip-web   don't (re)build the web UI
+#   --no-build   skip the docker image rebuild (just (re)start the stack)
 #   --reset-config  wipe ~/.aiforge/agent_config.json (backs it up) so stale
 #                per-role rows can't shadow the model you set next. Run once,
 #                then reconfigure the model on the home page.
 #   --test       probe the configured model endpoint with the current SSL
-#                settings (OK/FAIL + error), then exit. Use to verify a
-#                self-hosted HTTPS endpoint reaches AND its TLS is accepted.
+#                settings (OK/FAIL + error), then exit. Runs in the venv,
+#                needs no Docker; works in every mode.
 #
 # Self-hosted model over HTTPS with an internal/self-signed cert?
 # Drop an `.env` (or `aiforge.env`) next to this script — it is sourced
@@ -35,9 +43,9 @@
 #   AIFORGE_LLM_SSL_VERIFY    false   (relax TLS for INTERNAL hosts only)
 #   AIFORGE_LLM_CA_BUNDLE     /path/to/ca.pem  (preferred: keep verify ON)
 #
-# ⚠️  By default the Chat agent has FULL filesystem + shell access on
-#     this machine (no sandbox). Set AIFORGE_WORKSPACE_DIR=/path to clamp
-#     it, or run inside a container for shared/untrusted deploys.
+# ⚠️  In hybrid/lite the agent has FULL filesystem + shell access on this
+#     machine (no sandbox). Set AIFORGE_WORKSPACE_DIR=/path to clamp it, or
+#     use --docker for shared/untrusted deploys.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -69,20 +77,22 @@ HOST=127.0.0.1
 DEV=0
 SKIP_WEB=0
 TEST=0
-DOCKER=1          # full stack is the DEFAULT; --lite opts out
+MODE=hybrid       # infra in docker, agent on host — the DEFAULT
 NO_BUILD=0
+DOWN_FIRST=0      # full --docker restart tears down stale containers first
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --lite) DOCKER=0 ;;
-    --dev) DEV=1; DOCKER=0 ;;      # hot-reload is a lite/python-path concept
+    --lite) MODE=lite ;;
+    --docker) MODE=docker ;;
+    --hybrid) MODE=hybrid ;;
+    --dev) DEV=1; [[ $MODE == docker ]] && MODE=hybrid ;;  # dev is a host concept
     --skip-web) SKIP_WEB=1 ;;
-    --test) TEST=1; DOCKER=0 ;;    # model probe runs in the venv, no stack
-    --docker) DOCKER=1 ;;
+    --test) TEST=1 ;;             # model probe runs in the venv, no stack
     --no-build) NO_BUILD=1 ;;
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -104,18 +114,16 @@ if [[ "${RESET_CONFIG:-0}" == "1" ]]; then
   fi
 fi
 
-# ── Docker stack (--docker) ───────────────────────────────────────────
-# Full Postgres + Neo4j + sidecars + api + runner via docker compose.
-# Stop anything already running so a stale container can't shadow the new
-# build, then `up -d --build`: Docker's layer cache means the image is
-# rebuilt only when a source layer actually changed (the `COPY . .` layer
-# invalidates on any code change). The SSL/model env vars sourced above
-# flow into compose via its ${AIFORGE_LLM_SSL_VERIFY:-true} interpolation.
-if [[ $DOCKER -eq 1 ]]; then
+# ── Docker infra bring-up (reusable) ──────────────────────────────────
+# Resolves the compose command into the global DC[] array (with sudo
+# auto-fallback), creates the host bind-mount data dirs, and brings up the
+# services passed as args (no args = ALL services). Postgres is a named
+# volume so it needs no host mkdir. Sets the global DC[] for later `ps`.
+# Used by BOTH --docker (all services) and hybrid (infra only).
+_docker_infra_up() {
   if ! command -v docker >/dev/null 2>&1; then
-    echo "==> 'docker' not found. The full stack (Postgres+Neo4j+sidecars) is" >&2
-    echo "    the default and needs Docker. For a no-Docker box run the" >&2
-    echo "    embedded path instead:  ./run.sh --lite" >&2
+    echo "==> 'docker' not found. This mode needs Docker for Postgres+Neo4j+" >&2
+    echo "    sidecars. Install Docker or use the no-Docker path:  ./run.sh --lite" >&2
     exit 1
   fi
   if docker compose version >/dev/null 2>&1; then
@@ -148,7 +156,7 @@ if [[ $DOCKER -eq 1 ]]; then
       ;;
   esac
   # All persistent data is host bind-mounts (not docker named volumes) — create
-  # the dirs first so postgres/neo4j initdb into an existing, writable path.
+  # the dirs first so neo4j/sidecars initdb into an existing, writable path.
   _data="${AIFORGE_DATA_DIR:-./data}"
   _ws="${AIFORGE_HOST_WORKSPACE:-$_data/workspace}"
   mkdir -p "${NEO4J_DATA_DIR:-$_data/neo4j}" \
@@ -156,23 +164,79 @@ if [[ $DOCKER -eq 1 ]]; then
            "$_data/hf-cache" "$_ws"
   echo "==> host data dir: $_data   workspace: $_ws"
 
-  echo "==> stopping any running AIForge containers"
-  "${DC[@]}" down --remove-orphans || true
-  if [[ $NO_BUILD -eq 1 ]]; then
-    echo "==> starting (no rebuild)"
-    "${DC[@]}" up -d
-  else
-    echo "==> building image (changed layers only) + starting"
-    "${DC[@]}" up -d --build
+  if [[ $DOWN_FIRST -eq 1 ]]; then
+    echo "==> stopping any running AIForge containers"
+    "${DC[@]}" down --remove-orphans || true
   fi
-  echo ""
-  echo "  AIForge (docker) → http://localhost:8799/ui/"
-  echo "  data (host): $_data   workspace: $_ws"
-  echo "  Neo4j → http://localhost:7474   Postgres → localhost:${PG_PORT:-5432}"
-  echo "  TLS verify: ${AIFORGE_LLM_SSL_VERIFY}   model: ${AIFORGE_LM_BASE_URL:-<unset>}"
-  echo ""
-  "${DC[@]}" ps
-  exit 0
+  if [[ $NO_BUILD -eq 1 ]]; then
+    echo "==> starting (no rebuild): ${*:-all services}"
+    "${DC[@]}" up -d "$@"
+  else
+    echo "==> building image (changed layers only) + starting: ${*:-all services}"
+    "${DC[@]}" up -d --build "$@"
+  fi
+}
+
+# ── Mode branches ─────────────────────────────────────────────────────
+# --test never touches Docker (it only probes the model endpoint in the
+# venv), so skip the whole docker bring-up when TEST=1 — venv setup + the
+# probe happen further down, uniformly for every mode.
+if [[ $TEST -eq 0 ]]; then
+  case "$MODE" in
+    docker)
+      # Full Postgres + Neo4j + sidecars + api + runner in containers. Isolated:
+      # the agent can only reach the mounted workspace. Tear down stale
+      # containers first so an old build can't shadow the new one, then up ALL.
+      DOWN_FIRST=1
+      _docker_infra_up
+      echo ""
+      echo "  AIForge (docker) → http://localhost:${PORT}/ui/"
+      echo "  mode: docker (full stack in containers — agent isolated from host)"
+      echo "  data (host): ${AIFORGE_DATA_DIR:-./data}"
+      echo "  Neo4j → http://localhost:7474   Postgres → localhost:${PG_PORT:-5432}"
+      echo "  TLS verify: ${AIFORGE_LLM_SSL_VERIFY}   model: ${AIFORGE_LM_BASE_URL:-<unset>}"
+      echo ""
+      "${DC[@]}" ps
+      exit 0
+      ;;
+    hybrid)
+      # INFRA ONLY in docker; api + runner run on the host (fall through to the
+      # host venv/web/launch path below — do NOT exit here).
+      _docker_infra_up postgres neo4j embed rerank
+      # Point the HOST api/runner at the dockerized infra over localhost.
+      # Operator env wins everywhere (`:-`).
+      export AIFORGE_PG_URL="postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:${PG_PORT:-5432}/${PG_DB:-aiforge}"
+      export AIFORGE_DSN="$AIFORGE_PG_URL"
+      export AIFORGE_FORCE_PG=1
+      export AIFORGE_NEO4J_URI="bolt://127.0.0.1:7687"; export NEO4J_URI="$AIFORGE_NEO4J_URI"
+      export AIFORGE_NEO4J_USER="${AIFORGE_NEO4J_USER:-neo4j}"
+      export AIFORGE_NEO4J_PASSWORD="${NEO4J_PASSWORD:-password}"
+      export AIFORGE_MEMORY_BACKEND=neo4j
+      export AIFORGE_EMBED_URL="http://127.0.0.1:8764"
+      export AIFORGE_RERANK_URL="http://127.0.0.1:8765"
+      export AIFORGE_REPO_ROOT="${AIFORGE_HOST_WORKSPACE:-$HOME/aiforge_workspace}"
+      mkdir -p "$AIFORGE_REPO_ROOT"
+      ;;
+    lite)
+      # All host, embedded SQLite, no docker infra. Nothing to bring up — just
+      # fall through to the host launch (SQLite is the code default).
+      :
+      ;;
+  esac
+fi
+
+# ── Network lockdown (hybrid + lite host processes) ───────────────────
+# The compose stack runs locked-down; the HOST process must match it. The
+# code default for external-ingest is ON, so run.sh forces it off here.
+# Operator overrides win via `:-`.
+if [[ $MODE == hybrid || $MODE == lite ]]; then
+  export AIFORGE_EXTERNAL_INGEST="${AIFORGE_EXTERNAL_INGEST:-0}"
+  export AIFORGE_DOCS_INDEX="${AIFORGE_DOCS_INDEX:-0}"
+  export AIFORGE_ALLOW_WEB_FETCH="${AIFORGE_ALLOW_WEB_FETCH:-0}"
+  export AIFORGE_BROWSER_ALLOWLIST="${AIFORGE_BROWSER_ALLOWLIST:-127.0.0.1,localhost}"
+  export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
+  export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
+  export LITELLM_TELEMETRY="${LITELLM_TELEMETRY:-False}"
 fi
 
 # ── Python env ────────────────────────────────────────────────────────
@@ -193,7 +257,8 @@ uv pip install --python .venv/bin/python -e . >/dev/null
 # ── Connectivity test (--test) ────────────────────────────────────────
 # Probe the CONFIGURED model endpoint with the current SSL settings and
 # exit. Verifies BOTH reachability and that TLS is accepted (or relaxed)
-# without booting the server. Never prints api keys.
+# without booting the server. Needs the venv but NO Docker → works in
+# every mode. Never prints api keys.
 if [[ $TEST -eq 1 ]]; then
   exec .venv/bin/python -m aiforge_core.cli.connectivity_test
 fi
@@ -213,14 +278,30 @@ if [[ $SKIP_WEB -eq 0 ]]; then
   fi
 fi
 
-# ── Launch ────────────────────────────────────────────────────────────
+# ── Launch (host: api + runner) ───────────────────────────────────────
 echo ""
-echo "  AIForge → http://${HOST}:${PORT}/ui/"
-echo "  storage: SQLite (set AIFORGE_PG_URL / NEO4J_URI for the pro backends)"
+if [[ $MODE == hybrid ]]; then
+  echo "  AIForge → http://${HOST}:${PORT}/ui/   mode: hybrid (infra docker, agent host)"
+  echo "  workspace: ${AIFORGE_REPO_ROOT}"
+  echo "  Postgres → ${AIFORGE_PG_URL}"
+  echo "  Neo4j → ${AIFORGE_NEO4J_URI}   embed → ${AIFORGE_EMBED_URL}   rerank → ${AIFORGE_RERANK_URL}"
+else
+  echo "  AIForge → http://${HOST}:${PORT}/ui/   mode: lite"
+  echo "  storage: SQLite (use hybrid/--docker for the Postgres+Neo4j backends)"
+fi
 [[ -n "${AIFORGE_WORKSPACE_DIR:-}" ]] \
   && echo "  chat fs scope: ${AIFORGE_WORKSPACE_DIR}" \
   || echo "  chat fs scope: UNRESTRICTED (set AIFORGE_WORKSPACE_DIR to clamp)"
 echo ""
+
+# hybrid needs the team pipeline runner — start it on the HOST in the
+# background and reap it when uvicorn exits. lite has no runner (unchanged).
+if [[ $MODE == hybrid ]]; then
+  ( while true; do .venv/bin/python -m aiforge_core.runtime.adk_runner || true; sleep "${AIFORGE_RUNNER_POLL_SEC:-10}"; done ) &
+  RUNNER_PID=$!
+  trap 'kill $RUNNER_PID 2>/dev/null' EXIT INT TERM
+  echo "  runner: host pid $RUNNER_PID (polls every ${AIFORGE_RUNNER_POLL_SEC:-10}s)"
+fi
 
 RELOAD=()
 [[ $DEV -eq 1 ]] && RELOAD=(--reload)
