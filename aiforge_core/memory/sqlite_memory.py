@@ -148,6 +148,11 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None) -> list[dict]:
             "text": r["text"],
             "title": r["title"],
             "source": r["source"] or "memory",
+            # Per-item group so unified_query._diversify diversifies multi-item
+            # recall by row (file/id) rather than squashing every row to the
+            # single shared source="doer" group. Mirrors afm chunks' distinct
+            # "afm:chunk:{path}" groups.
+            "group": f"sqlite:{r['id']}",
             "kind": r["kind"],
             "ticket": r["ticket"],
             "repo": r["repo"],
