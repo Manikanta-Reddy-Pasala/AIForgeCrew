@@ -3025,7 +3025,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             try:
                 from aiforge_core.runtime import chat_store as _cs
                 from aiforge_core.runtime import chat_title
-                _t = chat_title.suggest_title(prompt, role=role)
+                # Titling is a ~20-token throwaway — route it to the cheap
+                # 'triage' role so it doesn't contend with the main turn on a
+                # serial local endpoint (was the big session role).
+                _t = chat_title.suggest_title(prompt, role="triage")
                 if _t:
                     _cs.rename_session(session_id, _t)
             except Exception:  # noqa: BLE001 — titling must never break a run

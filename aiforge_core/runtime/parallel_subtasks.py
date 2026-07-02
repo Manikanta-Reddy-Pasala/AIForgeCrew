@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import re
 import subprocess
 import threading
 
@@ -734,6 +735,51 @@ def _is_trivial_prompt(prompt: str) -> bool:
     return False
 
 
+# Change 1 — concrete-prompt skip. A SHORT single-line imperative that already
+# names a file + action ("fix the bug in app.py") is already a build spec; the
+# enhancer's "rewrite as a build spec" LLM call just adds serial latency. Skip
+# it (return the raw prompt) — conservative: only when CLEARLY concrete.
+_ACTION_VERBS = (
+    "fix", "add", "update", "change", "remove", "rename", "refactor",
+    "implement", "write", "create", "delete", "edit", "move",
+)
+_VERB_RE = re.compile(r"\b(?:" + "|".join(_ACTION_VERBS) + r")\b", re.I)
+# A token carrying a code file extension ("app.py", "src/parse.ts").
+_FILE_EXT_RE = re.compile(
+    r"[\w./-]+\.(?:py|js|ts|tsx|jsx|java|go|rs|md|json|ya?ml|sql)\b", re.I)
+# A path-separated token with letters on both sides ("src/app") — excludes
+# bare numeric fractions like "1/2".
+_PATH_RE = re.compile(r"[A-Za-z][\w.-]*/[\w./-]*[A-Za-z]")
+
+
+def _enhancer_skip_concrete_enabled() -> bool:
+    """Change 1 gate. Default ENABLED; ``AIFORGE_ENHANCER_SKIP_CONCRETE=0``
+    (or false/no/off) force-enhances every non-trivial prompt again."""
+    return os.environ.get("AIFORGE_ENHANCER_SKIP_CONCRETE", "1") \
+        .strip().lower() not in ("0", "false", "no", "off")
+
+
+def _is_concrete_prompt(prompt: str) -> bool:
+    """True when ``prompt`` is a SHORT, single-line-ish imperative that already
+    names a concrete file (extension or path separator) AND carries an action
+    verb — i.e. it's already actionable and does NOT need the enhancer LLM.
+
+    Conservative by design (err toward enhancing): a vague, multi-part, or long
+    prompt returns False so its context still gets folded. Multi-part (``and`` /
+    ``;``), multi-line, and >200-char prompts are all rejected."""
+    p = (prompt or "").strip()
+    if not p or len(p) > 200:
+        return False
+    if "\n" in p:                       # multi-line → not a simple one-liner
+        return False
+    low = p.lower()
+    if " and " in low or ";" in p:      # multi-part → enhance instead
+        return False
+    if not _VERB_RE.search(low):        # no action verb → not an imperative
+        return False
+    return bool(_FILE_EXT_RE.search(p) or _PATH_RE.search(p))
+
+
 def _memory_block(prompt: str, repo: str | None) -> str:
     """RELEVANT MEMORY block from unified recall (memory + ticket + code RAG).
     Cheap, soft-fail — never raises, capped ~1200 chars."""
@@ -811,6 +857,12 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
     # the LLM call (latency) and don't reshape conversational turns into fake
     # build specs.
     if _is_trivial_prompt(prompt):
+        return prompt
+    # Concrete-prompt short-circuit (Change 1): a short single-line imperative
+    # that already names a file + action is already actionable — skip the
+    # enhancer LLM call (serial-model latency) and hand the raw prompt straight
+    # to the ReAct loop. Gated by AIFORGE_ENHANCER_SKIP_CONCRETE (default on).
+    if _enhancer_skip_concrete_enabled() and _is_concrete_prompt(prompt):
         return prompt
     # Gather context — each block is independently soft-failing.
     blocks = [b for b in (

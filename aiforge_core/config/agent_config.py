@@ -346,6 +346,40 @@ def _row_for(role: str) -> dict[str, Any]:
             "base_url": None, "api_key": None, "insecure_tls": False}
 
 
+# Cheap-tier roles — throwaway ops (triage, enhancer, titling) that should run
+# on the smallest model, not contend with the big local model on a serial
+# endpoint. Titling routes to 'triage' (see api.py), so this set covers it.
+_CHEAP_ROLES = frozenset({"triage", "enhancer"})
+
+
+def cheap_model_for(role: str) -> str | None:
+    """Cheap-tier model fallback for a cheap role.
+
+    Returns ``AIFORGE_CHEAP_MODEL`` when: the role is a cheap role, the env is
+    set, AND there is NO explicit per-role pin (neither ``AIFORGE_<ROLE>_MODEL``
+    env nor a persisted per-role row carrying a ``model``). Otherwise ``None`` —
+    the caller keeps today's resolution. Unset ``AIFORGE_CHEAP_MODEL`` → always
+    ``None`` (fully backward compatible)."""
+    if role not in _CHEAP_ROLES:
+        return None
+    cheap = (os.environ.get("AIFORGE_CHEAP_MODEL") or "").strip()
+    if not cheap:
+        return None
+    # An explicit per-role pin (env or persisted per-role row) wins.
+    if (os.environ.get(f"AIFORGE_{role.upper()}_MODEL") or "").strip():
+        return None
+    try:
+        p = _path()
+        if p.exists():
+            disk = _fc.read_json(p) or {}
+            row = disk.get(role)
+            if isinstance(row, dict) and (row.get("model") or "").strip():
+                return None
+    except Exception:  # noqa: BLE001
+        pass
+    return cheap
+
+
 def set_role(role: str, provider: str, model: str,
              base_url: str | None = None,
              api_key: str | None = None,
@@ -457,6 +491,12 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     prov = PROVIDERS.get(row["provider"]) or PROVIDERS["openai_compatible"]
     prefix = prov["litellm_prefix"]
     model = row["model"]
+    # Cheap-tier fallback (Change 3): an unpinned cheap role (triage/enhancer)
+    # uses AIFORGE_CHEAP_MODEL when set, so throwaway ops don't load the big
+    # model on a serial endpoint. No-op when the env is unset.
+    _cheap = cheap_model_for(role)
+    if _cheap:
+        model = _cheap
     # Always add LiteLLM provider prefix unless caller already supplied one.
     # mlx-lm expects the full filesystem path as ``model`` — those paths have
     # ``/`` separators, so the old "if '/' not in model" check skipped them

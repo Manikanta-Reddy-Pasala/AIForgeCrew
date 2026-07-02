@@ -159,11 +159,14 @@ def test_enhance_skips_conversational_prompt(monkeypatch):
 def test_enhance_runs_for_short_real_imperatives(monkeypatch):
     # M7 false-negatives the old gate swallowed: short build requests and
     # ack-PREFIXED real instructions must be ENHANCED, not skipped.
+    # NOTE: "fix the typo in app.py" is now handled by the Change-1 concrete
+    # skip (file + action verb) and is covered in test_enhancer_concrete_skip;
+    # the cases below are vague/file-less so they still enhance.
     monkeypatch.setattr("aiforge_core.memory.unified_query.query",
                         lambda *a, **k: {"hits": [], "errors": []})
     monkeypatch.setattr("aiforge_core.llm.client.complete",
                         lambda *a, **k: "enhanced")
-    for p in ("add a test", "fix the typo in app.py", "add dark mode",
+    for p in ("add a test", "add dark mode",
               "ok, refactor X", "no, use postgres instead"):
         assert pp._enhance(p) == "enhanced", p
 

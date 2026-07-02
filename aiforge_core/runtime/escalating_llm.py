@@ -241,10 +241,15 @@ _TRANSIENT_MARKERS = (
 
 
 def _attempt_retries() -> int:
+    # Default 1 (one try, then escalate to the next candidate in the chain).
+    # For a LOCAL primary, 3× same-endpoint read-retries on a transient error
+    # just burns serial minutes before reaching the cloud rescue — the
+    # connect-preflight already fails-fast on unreachable hosts, so these are
+    # pure read-retry latency. Env override preserved for ops.
     try:
-        return max(1, int(os.environ.get("AIFORGE_LLM_ATTEMPT_RETRIES", "3")))
+        return max(1, int(os.environ.get("AIFORGE_LLM_ATTEMPT_RETRIES", "1")))
     except ValueError:
-        return 3
+        return 1
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:
