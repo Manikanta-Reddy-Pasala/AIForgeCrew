@@ -24,6 +24,11 @@ services:
       POSTGRES_USER: ${PG_USER:-aiforge}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-aiforgepass}
       POSTGRES_DB: ${PG_DB:-aiforge}
+      # initdb into a SUBDIR that postgres creates + owns, not the bind-mount
+      # ROOT. Bind-mounting the data dir directly fails initdb ("data directory
+      # has wrong ownership / invalid permissions") because postgres can't
+      # chown/chmod the host mount point. The PGDATA-subdir is the standard fix.
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - ${AIFORGE_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
     ports:
