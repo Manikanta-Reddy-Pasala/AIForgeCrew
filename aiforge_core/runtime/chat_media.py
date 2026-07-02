@@ -176,8 +176,16 @@ def _probe_vision(model: str, role: str) -> bool:
              "image_url": {"url": "data:image/png;base64," + _PROBE_PNG}},
         ]
         # A non-vision server raises (4xx invalid content) → caught below.
+        # Short timeout: this is a best-effort capability probe, not real
+        # work — a down/slow endpoint must not stall the turn (tunable via
+        # AIFORGE_VISION_PROBE_TIMEOUT_S).
+        import os as _os
+        try:
+            _pt = int(_os.environ.get("AIFORGE_VISION_PROBE_TIMEOUT_S", "8"))
+        except (TypeError, ValueError):
+            _pt = 8
         client.complete(role, [{"role": "user", "content": content}],
-                        max_tokens=1, timeout_s=20)
+                        max_tokens=1, timeout_s=_pt)
         _VISION_CACHE[model] = True
         return True
     except Exception as exc:  # noqa: BLE001
@@ -337,12 +345,22 @@ def context_block(session_id: int) -> str:
 
 def image_blocks_for_turn(session_id: int, role: str = "chat") -> list[dict]:
     """Multimodal image blocks for ALL session images, to merge into the user
-    turn — ONLY when the model is vision-capable. Empty otherwise."""
+    turn — ONLY when the model is vision-capable. Empty otherwise.
+
+    Images are checked FIRST: a text-only session (the overwhelming majority
+    of turns) returns immediately with NO vision probe. The probe makes a
+    live LLM call, so probing every turn regardless of attachments made a
+    down/slow endpoint block chat setup for the probe timeout × retries —
+    only pay that cost when there is actually an image to attach."""
+    from aiforge_core.runtime import chat_store
+    imgs = [m for m in chat_store.list_media(session_id)
+            if (m.get("mime") or "").startswith("image/")]
+    if not imgs:
+        return []
     if not vision_enabled(role, probe=True):
         return []
-    from aiforge_core.runtime import chat_store
     blocks: list[dict] = []
-    for m in chat_store.list_media(session_id):
+    for m in imgs:
         c = vision.attach_image(f"[image: {m['filename']}]", m["path"])
         if isinstance(c, list):
             blocks.extend(c)

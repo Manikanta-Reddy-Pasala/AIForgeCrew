@@ -247,16 +247,24 @@ def test_chat_deny_policy_blocks(tmp_path, monkeypatch):
 
 def test_chat_ask_policy_emits_approval_and_rejection_skips(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_TOOL_POLICY", "file_write=ask")
+    # Bound the approval wait so a missed side-thread reject can't block the
+    # test for the 900s prod default. If run_chat_agent's setup (repo-map /
+    # skills / memory recall) takes longer than the reject thread's poll
+    # window to reach the gate, wait() returns a timeout-reject in 5s
+    # (decision=="reject", same assertion) instead of hanging 15 minutes.
+    monkeypatch.setenv("AIFORGE_CHAT_APPROVAL_TIMEOUT_S", "5")
     fn = _scripted([
         'ACTION: file_write\nARGS_JSON: {"path": "x.txt", "content": "hi"}',
         "FINAL: ok",
     ])
     # session_id given → loop will block on chat_approve.wait; resolve reject
-    # from a side thread so the gen proceeds.
+    # from a side thread so the gen proceeds. Poll long enough (up to the 5s
+    # approval bound) to win the race against a slow setup; the bound is the
+    # backstop if it doesn't.
     sid = 9920
 
     def _auto_reject():
-        for _ in range(40):
+        for _ in range(200):
             if chat_approve.resolve(sid, "reject"):
                 return
             time.sleep(0.05)
