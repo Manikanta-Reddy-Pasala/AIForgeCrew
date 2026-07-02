@@ -2952,6 +2952,33 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             _af_log.warning("edit-resend failed (session=%s msg=%s): %s",
                             session_id, body.edit_from_message_id, _exc)
 
+    # Custom slash commands (Claude Code / Cursor parity, LOCAL files only).
+    # A leading "/<name> args" whose <name> matches a user-defined command file
+    # (.aiforge/commands/<name>.md or .claude/commands/<name>.md) expands to that
+    # markdown template with $ARGUMENTS/$1.. substituted. Do it HERE — before the
+    # message is persisted, titled, folded into `history`, or read as `prompt` —
+    # so ONE interception covers simple, plan AND team modes (all of them derive
+    # their prompt from body.content / the persisted history downstream). A
+    # non-command message, a "/" typo, or an unknown /name expands to None and is
+    # left verbatim. The built-in /help (and /commands) needs no user file and is
+    # answered inline without invoking the model. Fail-open: any error → raw text.
+    _cmd_expanded: str | None = None
+    _cmd_help_text: str | None = None
+    try:
+        from aiforge_core.runtime import commands as _commands
+        _cmd_cwd = session.get("cwd") or _default_cwd()
+        _cmd_exp = _commands.expand(body.content, _cmd_cwd)
+        if _cmd_exp is not None:
+            _cmd_name = body.content.strip()[1:].split(None, 1)[0]
+            _known = _cmd_name in _commands.load(_cmd_cwd)
+            if not _known and _commands.is_builtin(_cmd_name):
+                _cmd_help_text = _cmd_exp          # /help — answered inline
+            else:
+                body.content = _cmd_exp            # replace with expanded template
+                _cmd_expanded = _cmd_name
+    except Exception as _cexc:  # noqa: BLE001 — expansion must never break a turn
+        _af_log.debug("slash-command expand skipped: %s", _cexc)
+
     _user_msg_id = chat_store.add_message(session_id, "user", body.content)
     # Provisional title now (instant), upgraded to a model-generated one after
     # the turn (see _produce). _fresh marks a still-unnamed session.
@@ -3053,6 +3080,18 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     _path = {"parallel": False, "driver": False}
 
     def _events():
+        # Built-in /help (or /commands): answer inline with the command listing
+        # and finish — no model call, works with zero user command files.
+        if _cmd_help_text is not None:
+            yield {"type": "message", "text": _cmd_help_text}
+            yield {"type": "done"}
+            return
+        # A user command expanded — a small notice so the user sees WHY their
+        # "/deploy …" turned into a longer prompt (the agent runs on the
+        # expanded template below, unchanged).
+        if _cmd_expanded:
+            yield {"type": "thought", "role": "command",
+                   "text": f"Expanded /{_cmd_expanded} command template."}
         # Rule / Memory / Feedback capture (deterministic, always-on) — runs
         # BEFORE any agent, independent of the agent's model, so a directive /
         # fact / correction stated in passing is captured + applied. FAILS OPEN:
