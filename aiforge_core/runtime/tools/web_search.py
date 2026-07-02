@@ -39,6 +39,15 @@ def _disabled() -> bool:
         in ("1", "true", "yes", "on")
 
 
+def _fetch_allowed() -> bool:
+    """Network lockdown: fetching an ARBITRARY URL (web_fetch) is off by
+    default — same gate as doer_tools.fetch_url. web_SEARCH stays enabled
+    (the researcher's sanctioned egress). Set AIFORGE_ALLOW_WEB_FETCH=1 to
+    re-enable page fetching for the chat/other tools."""
+    return str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
 def _timeout() -> float:
     try:
         return float(os.environ.get("AIFORGE_WEB_TIMEOUT_S", "12"))
@@ -185,6 +194,9 @@ def web_fetch(args: dict, cwd: str | None = None) -> dict:
     styles stripped). ``url`` required, optional ``max_chars`` (default 6000)."""
     if _disabled():
         return {"ok": False, "error": "web_search_disabled"}
+    if not _fetch_allowed():
+        return {"ok": False,
+                "error": "web fetch disabled (set AIFORGE_ALLOW_WEB_FETCH=1)"}
     url = (args.get("url") or "").strip()
     if not url:
         return {"ok": False, "error": "missing 'url'"}

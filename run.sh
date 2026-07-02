@@ -256,6 +256,11 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
+# On WSL when the repo lives on /mnt/c (DrvFs), uv's cache (Linux ~/.cache) and
+# the target .venv are on different filesystems, so hardlinking fails noisily
+# and can leave broken venv scripts. Force copy mode for a portable venv.
+export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
+
 if [[ ! -d .venv ]]; then
   echo "==> creating .venv"
   uv venv .venv
@@ -316,4 +321,8 @@ fi
 
 RELOAD=()
 [[ $DEV -eq 1 ]] && RELOAD=(--reload)
-exec .venv/bin/uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" "${RELOAD[@]}"
+# Invoke uvicorn via `python -m`, NOT the .venv/bin/uvicorn console-script:
+# on WSL over /mnt/c (DrvFs) the wrapper script fails with "cannot execute:
+# required file not found" (exec-bit / shebang quirks). The python binary +
+# module form is portable across WSL and macOS.
+exec .venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" "${RELOAD[@]}"
