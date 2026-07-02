@@ -719,6 +719,16 @@ def _t_jira_comment(args: dict, cwd: str) -> dict:
     return jira.jira_comment(args, cwd)
 
 
+def _t_email_send(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import email_tool
+    return email_tool.email_send(args, cwd)
+
+
+def _t_email_read(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import email_tool
+    return email_tool.email_read(args, cwd)
+
+
 def _t_gitlab_search(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import gitlab
     return gitlab.gitlab_search(args, cwd)
@@ -1111,6 +1121,8 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_create": _t_jira_create,
     "jira_update": _t_jira_update,
     "jira_comment": _t_jira_comment,
+    "email_send": _t_email_send,
+    "email_read": _t_email_read,
     "gitlab_search": _t_gitlab_search,
     "gitlab_read": _t_gitlab_read,
     "gitlab_mr_create": _t_gitlab_mr_create,
@@ -1161,6 +1173,7 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "search_chat_sessions",
                    "skill_search", "confluence_search", "confluence_read",
                    "jira_search", "jira_read",
+                   "email_read",
                    "gitlab_search", "gitlab_read",
                    "web_search", "web_fetch", "workflow_search",
                    "lsp", "typecheck")   # code-intel: read-only, OK in plan mode
@@ -1433,6 +1446,8 @@ Tool arguments:
 - jira_create   {{"project": "ENG", "summary": "...", "issuetype": "Task", "description": "..."}}   (new issue — needs your Approve)
 - jira_update   {{"key": "ENG-123", "summary": "...", "description": "...", "labels": ["a","b"]}}     (edit fields — needs your Approve)
 - jira_comment  {{"key": "ENG-123", "body": "comment text"}}                            (add a comment — needs your Approve)
+- email_send    {{"to": "a@b.com", "subject": "...", "body": "..."}}   (send an email via the configured SMTP — optional "cc"/"bcc"/"html"; needs your Approve)
+- email_read    {{"query": "...", "limit": 10}}                        (read recent inbox emails via IMAP — optional "folder"/"unseen_only")
 - gitlab_search {{"query": "..."}}  (find issues; optional "project": "group/proj", "state": "opened")
 - gitlab_read   {{"project": "group/proj", "iid": 42}}                                   (read an issue: fields + comments)
 - gitlab_create {{"project": "group/proj", "title": "...", "description": "...", "labels": ["a","b"]}}   (new issue — needs your Approve)

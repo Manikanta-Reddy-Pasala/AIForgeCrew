@@ -39,6 +39,8 @@ _DEFAULT_ASK = {"confluence_create", "confluence_update",
                 "jira_create", "jira_update", "jira_comment",
                 "gitlab_create", "gitlab_update", "gitlab_comment",
                 "gitlab_mr_create", "gitlab_mr_comment", "github_pr",
+                # Sends an email out to real recipients — approval-gated.
+                "email_send",
                 # Arbitrary-code execution in a live kernel — approval-gated
                 # in chat like Claude Code / Cursor gate code execution.
                 "execute_ipython_cell"}

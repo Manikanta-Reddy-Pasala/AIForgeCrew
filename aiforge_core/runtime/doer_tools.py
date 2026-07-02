@@ -922,6 +922,26 @@ def jira_comment(key: str, body: str) -> dict:
     return _j.jira_comment({"key": key, "body": body}, str(root()))
 
 
+# ─── Email (SMTP send / IMAP read) — same soft-fail + config-gate as JIRA ─
+
+def email_send(to: str = "", subject: str = "", body: str = "",
+               cc: str = "", bcc: str = "", html: str = "") -> dict:
+    """Send an email via the configured SMTP server. ``to``/``cc``/``bcc`` =
+    comma-separated. Soft-fails (unconfigured ⇒ ``ok: False``)."""
+    from aiforge_core.runtime.tools import email_tool as _e
+    return _e.email_send({"to": to, "subject": subject, "body": body,
+                          "cc": cc, "bcc": bcc, "html": html}, str(root()))
+
+
+def email_read(folder: str = "INBOX", limit: int = 10, query: str = "",
+               unseen_only: bool = False) -> dict:
+    """Read recent/matching inbox emails via the configured IMAP server.
+    ``query`` matches subject+from; ``unseen_only`` limits to unread."""
+    from aiforge_core.runtime.tools import email_tool as _e
+    return _e.email_read({"folder": folder, "limit": limit, "query": query,
+                          "unseen_only": unseen_only}, str(root()))
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -972,7 +992,7 @@ def adk_function_tools(role: "str | None" = None) -> list:
                         subtask_update,
                         confluence_search, confluence_read, confluence_create,
                         confluence_update, jira_search, jira_read, jira_create,
-                        jira_update, jira_comment]
+                        jira_update, jira_comment, email_send, email_read]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -1023,6 +1043,7 @@ __all__ = [
     "subtask_update",
     "confluence_search", "confluence_read", "confluence_create", "confluence_update",
     "jira_search", "jira_read", "jira_create", "jira_update", "jira_comment",
+    "email_send", "email_read",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch", "web_read",
     "commit", "git_add_commit",
