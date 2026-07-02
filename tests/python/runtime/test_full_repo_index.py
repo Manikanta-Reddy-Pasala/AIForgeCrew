@@ -133,11 +133,12 @@ def test_graphify_cli_absent(mi, monkeypatch, tmp_path):
     monkeypatch.setattr(tsi, "TREESITTER_AVAILABLE", True)
     monkeypatch.setattr(tsi, "ingest_repo", MagicMock(return_value=_FakeStats()))
     import shutil
+    monkeypatch.delenv("AIFORGE_GRAPHIFY_BIN", raising=False)  # no override
     monkeypatch.setattr(shutil, "which", lambda name: None)   # no graphify CLI
 
     res = mi.ingest_source({"kind": "repo", "name": "r", "location": str(repo)})
 
-    assert res["layers"]["graphify"] == "skip:graphify_cli_absent"
+    assert res["layers"]["graphify"].startswith("skip:graphify_cli_absent")
     assert res["layers"]["symbols"] == "ok"
     assert res["layers"]["code_chunks"] == "ok"
     assert res["error"] is None

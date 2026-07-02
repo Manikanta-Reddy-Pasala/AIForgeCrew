@@ -215,8 +215,14 @@ def run_shell(cmd: str) -> dict:
         if verdict.get("level") == command_risk.DANGEROUS:
             return {"ok": False, "error": "blocked_dangerous_command",
                     "reason": verdict.get("reason", ""), "returncode": -1}
-    except Exception:  # noqa: BLE001 — risk check must never crash the run
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # FAIL CLOSED: if the safety classifier itself errors (bad regex, typo),
+        # refuse the command rather than run it unchecked — a broken gate must
+        # not turn into arbitrary execution. Override with
+        # AIFORGE_RISK_GATE_FAIL_OPEN=1 only if you accept that risk.
+        if os.environ.get("AIFORGE_RISK_GATE_FAIL_OPEN", "0") not in ("1", "true", "yes"):
+            return {"ok": False, "error": "risk_check_failed",
+                    "reason": f"safety classifier error: {exc}", "returncode": -1}
     try:
         proc = subprocess.run(
             cmd, shell=True, cwd=root(),

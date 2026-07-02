@@ -339,7 +339,21 @@ def _t_run_command(args: dict, cwd: str) -> dict:
             return {"ok": False, "error": f"timeout after {timeout}s "
                     "(pass a larger \"timeout\" arg for long builds)"}
         _time.sleep(0.2)
-    out, err = proc.communicate()
+    # Bound communicate(): a daemon grandchild inheriting the stdout pipe
+    # (e.g. `npm run dev &`) keeps it open after the process exits, so an
+    # un-timed communicate() blocks forever even past the deadline.
+    try:
+        _ct = int(os.environ.get("AIFORGE_COMMUNICATE_TIMEOUT_S", "10"))
+    except (TypeError, ValueError):
+        _ct = 10
+    try:
+        out, err = proc.communicate(timeout=_ct)
+    except subprocess.TimeoutExpired:
+        _kill_proc(proc)
+        try:
+            out, err = proc.communicate(timeout=5)
+        except Exception:  # noqa: BLE001
+            out, err = "", ""
     return {"ok": proc.returncode == 0, "code": proc.returncode,
             "stdout": (out or "")[-_MAX_OBS:], "stderr": (err or "")[-_MAX_OBS:]}
 

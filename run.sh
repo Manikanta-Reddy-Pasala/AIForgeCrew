@@ -338,4 +338,7 @@ RELOAD=()
 # on WSL over /mnt/c (DrvFs) the wrapper script fails with "cannot execute:
 # required file not found" (exec-bit / shebang quirks). The python binary +
 # module form is portable across WSL and macOS.
+# Tell the app which host it's bound to, so the security boot-guard can refuse
+# a non-loopback bind that has no AIFORGE_API_TOKEN set (unauth shell API on LAN).
+export AIFORGE_BIND_HOST="$HOST"
 exec .venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" "${RELOAD[@]}"

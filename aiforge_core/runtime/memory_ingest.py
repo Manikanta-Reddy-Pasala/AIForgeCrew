@@ -243,8 +243,13 @@ def _index_graphify(root: Path, repo: str) -> "tuple[int, str]":
     CLI as a subprocess, then loads ``graphify-out/graph.json``."""
     import shutil
     import subprocess
-    if shutil.which("graphify") is None:
-        return 0, "skip:graphify_cli_absent"
+    # Resolve the graphify binary: AIFORGE_GRAPHIFY_BIN (absolute path) wins,
+    # else look it up on PATH. On a Docker api or a venv whose PATH lacks the
+    # host pip-install bin, `graphify` won't be on PATH — point the env at it.
+    _gbin = os.environ.get("AIFORGE_GRAPHIFY_BIN", "").strip()
+    graphify_bin = _gbin if (_gbin and os.path.isfile(_gbin)) else shutil.which("graphify")
+    if not graphify_bin:
+        return 0, "skip:graphify_cli_absent (set AIFORGE_GRAPHIFY_BIN to its path)"
     driver = _neo4j_driver_or_none()
     if driver is None:
         return 0, "skip:no_neo4j"
@@ -254,7 +259,7 @@ def _index_graphify(root: Path, repo: str) -> "tuple[int, str]":
         timeout = 600
     try:
         subprocess.run(
-            ["graphify", "update", "."], cwd=str(root),
+            [graphify_bin, "update", "."], cwd=str(root),
             timeout=timeout, capture_output=True,
         )
         graph_json = Path(root) / "graphify-out" / "graph.json"
@@ -373,7 +378,15 @@ def run_index(source_id: int) -> None:
     if not source:
         return
     _ms.set_status(source_id, "indexing", error=None)
-    res = ingest_source(source)
+    try:
+        res = ingest_source(source)
+    except Exception as exc:  # noqa: BLE001 — never leave the row stuck 'indexing'
+        log.warning("run_index crashed for source %s: %s", source_id, exc)
+        try:
+            _ms.set_status(source_id, "error", units=0, error=str(exc))
+        except Exception:  # noqa: BLE001
+            pass
+        return
     layers = res.get("layers")
     # A layer that errored (e.g. symbols=error:… while chunks=ok) must not
     # be reported as a clean "done" — surface it as "partial" and carry the
