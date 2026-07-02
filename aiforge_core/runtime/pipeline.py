@@ -209,7 +209,27 @@ def build_pipeline(*, skip_researcher: bool = False,
     triage = _triage_mod.build(build_litellm_model)
     enhancer = _enhancer_mod.build(build_litellm_model)
     planner = _planner_mod.build(build_litellm_model)
-    doer = _doer_mod.build(build_litellm_model)
+    # Doer backend selection: on a LOCAL endpoint the native function-calling
+    # Doer does nothing (mlx_lm 0.31 "zero tool_use" bug), so fall back to the
+    # chat agent's proven TEXT protocol wrapped as a FunctionNode. Default
+    # ``auto`` = text only when the Doer endpoint is local; cloud stays native
+    # (no behavior change). Soft-fail to native if the switch/import errors.
+    try:
+        from .text_doer import make_text_doer_node, should_use_text_protocol
+        _use_text_doer = should_use_text_protocol()
+    except Exception:
+        _use_text_doer = False
+    if _use_text_doer:
+        # A text-doer FunctionNode handles tools INTERNALLY (via
+        # run_chat_agent's own tool_policy) and replicates the quality signals
+        # itself, so the ADK before_tool/after_tool/before_model callbacks
+        # attached below simply don't apply to it. Each attach is already
+        # wrapped in try/except (a FunctionNode is a pydantic model that
+        # REJECTS unknown fields with ValueError), so they no-op cleanly on the
+        # node — losing them on the text path is acceptable for v1.
+        doer = make_text_doer_node()
+    else:
+        doer = _doer_mod.build(build_litellm_model)
     # C6 scope guard — block edits outside ``scope_allowlist_globs`` at the
     # tool-call boundary. KISS: one before_tool_callback that rejects with a
     # soft error when the Doer drifts outside scope.
@@ -330,7 +350,13 @@ def build_pipeline(*, skip_researcher: bool = False,
         *context_branches,
     ]
     for _a in _agent_nodes:
-        _a.mode = "chat"
+        # A text-doer FunctionNode is a pydantic model with no ``mode`` field
+        # (it drives its own ReAct loop, so chat/single_turn is meaningless) —
+        # setting it raises ValueError. Guard so the node can't break the build.
+        try:
+            _a.mode = "chat"
+        except Exception:  # noqa: BLE001
+            pass
     # Tool-less single-shot judges run single_turn: they read everything
     # they need from state-templated prompt blocks ({plan_md?} etc.), so
     # replaying the full 22-node history into each of them wastes tokens
