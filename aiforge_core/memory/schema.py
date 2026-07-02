@@ -33,10 +33,15 @@ log = logging.getLogger("aiforge.memory.schema")
 
 # ─────────────── config ───────────────
 
-#: Embedding dimension for ``:Fact.embedding``. The seed model is
-#: ``nomic-embed-text-v1.5`` (768-d). If the embedding model is swapped
-#: later, you must drop & recreate ``factEmbedding`` with the new dim.
-FACT_EMBEDDING_DIM = 768
+#: Embedding dimension for ``:Fact.embedding``. Sourced from
+#: :data:`aiforge_core.memory.embed.DIM` (bge-m3, 1024-d) — the single
+#: dimension every tier embeds at and the one ``store.py`` declares
+#: ``vector(1024)``. Imported (not hardcoded) so a model swap can't leave
+#: this constant stale and build the ``:Fact`` index at the wrong dim.
+try:
+    from aiforge_core.memory.embed import DIM as FACT_EMBEDDING_DIM
+except Exception:  # noqa: BLE001 — schema DDL must not hard-depend on embed
+    FACT_EMBEDDING_DIM = 1024
 FACT_EMBEDDING_SIMILARITY = "cosine"
 
 

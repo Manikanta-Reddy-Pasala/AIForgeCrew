@@ -41,6 +41,7 @@ _DEFAULT_WEIGHTS = {
     "afm_bundle": 1.1,   # AiForgeMemory ContextBundle (chunks + repo_map +
                          # conventions + notes/docs + vector observations)
     "xrepo":      0.7,   # AiForgeMemory CALLS_REPO cross-repo edges
+    "chat":       0.6,   # prior chat-session message content (chat_store)
 }
 
 
@@ -196,6 +197,22 @@ def query(
                 )
         except Exception as exc:
             errors.append(f"xrepo: {exc}")
+
+    # 9) Prior chat-session content (gap F3). Chat messages live in their
+    # own chat_store SQLite silo the team pipeline never read, so what was
+    # worked out in chat was invisible to ticket runs (only distilled facts
+    # bridged). Surface it as a low-weight source so it informs without
+    # dominating. Gated by AIFORGE_UMEM_CHAT (default on); soft-fails to [].
+    if os.environ.get("AIFORGE_UMEM_CHAT", "1") == "1":
+        try:
+            rows = _chat_sessions(text, limit=limit)
+            if rows:
+                used.append("chat")
+                raw_hits.extend(
+                    _tag(rows, source="chat", weight=weights["chat"]),
+                )
+        except Exception as exc:
+            errors.append(f"chat: {exc}")
 
     # Pre-rank fix: min-max normalize each source's scores to [0,1] before
     # the weight applies, so a fixed-score source (ticket 1.0, afm 0.95…)
@@ -695,6 +712,38 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
             "group": "afm:observation",
             "score": float(o.get("score") or 0.55),
             "source_uri": f"afm://{repo}/observation/{o.get('id', '')}",
+        })
+    return out
+
+
+def _chat_sessions(text: str, *, limit: int) -> list[dict]:
+    """Flatten prior chat-session message hits into ranked rows (gap F3).
+
+    ``chat_store.search_messages`` returns ``[{session_id, session_title,
+    role, content, created_at}]`` already ranked by relevance. We map each
+    to a unified hit tagged ``source="chat"`` with a descending raw score so
+    the in-source order survives min-max normalization (equal scores would
+    collapse to a single value and lose the ranking). Per-session ``group``
+    lets ``_diversify`` cap a single chatty session. Soft-fail → []."""
+    from aiforge_core.runtime import chat_store
+    rows = chat_store.search_messages(text, limit=limit) or []
+    out: list[dict] = []
+    n = len(rows)
+    for i, r in enumerate(rows):
+        content = (r.get("content") or "").strip()
+        if not content:
+            continue
+        sid = r.get("session_id")
+        title = r.get("session_title") or "chat"
+        role = r.get("role") or "?"
+        # Descending raw score preserves search rank through normalization.
+        score = 1.0 - (i / max(1, n))
+        out.append({
+            "text": f"[chat {title} · {role}] {content[:600]}",
+            "source": "chat",
+            "score": score,
+            "group": f"chat:{sid}",
+            "source_uri": f"chat://{sid}",
         })
     return out
 

@@ -71,7 +71,8 @@ def _chunks(text: str) -> list[str]:
 
 def _write(text: str, *, kind: str, repo: str, ref: str) -> bool:
     from aiforge_core.runtime.tools.memory_write import memory_write
-    res = memory_write(text=text, kind=kind, tags=["ingest", ref], repo=repo)
+    res = memory_write(text=text, kind=kind, tags=["ingest", ref], repo=repo,
+                       source="ingest")
     # Count only real inserts. A deduped write returns ok=True but id=0
     # (embedded) or deduped=True (Neo4j) and persists nothing — counting it
     # made a re-index of an unchanged repo report its full unit count while

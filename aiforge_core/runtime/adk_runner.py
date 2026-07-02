@@ -182,6 +182,31 @@ def _persist_ticket_media(ticket) -> None:
         return
     if not ticket.project:
         return
+
+    _media_summary = (
+        f"Ticket {ticket.identifier} included "
+        f"{len(media_paths)} image attachment(s): "
+        + ", ".join(p.rsplit("/", 1)[-1] for p in media_paths)
+    )
+
+    # Embedded (zero-infra) path — every sibling writer branches here on the
+    # default SQLite backend. Without this, the attachment observation was
+    # sent straight to bolt://…:7687 (fails/ImportErrors, swallowed) and the
+    # Doer never recalled prior screenshots. Mirror failure_memory's idiom.
+    from aiforge_core.memory import backend_select as _bsel
+    if _bsel.embedded():
+        try:
+            from aiforge_core.memory import sqlite_memory as _sqlmem
+            _sqlmem.write_unit(
+                text=_media_summary, kind="attachment", source="adk_runner",
+                tags=[f"ticket:{ticket.identifier}", "kind:vision"],
+                repo=ticket.project, ticket=ticket.identifier,
+                metadata={"media_refs": media_paths},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("vision persist[sqlite] failed: %s", exc)
+        return
+
     try:
         from aiforge_memory.features.memory.store import upsert_observation
         from neo4j import GraphDatabase
@@ -211,11 +236,7 @@ def _persist_ticket_media(ticket) -> None:
                 event_time = created_at.timestamp()
             except Exception:
                 event_time = None
-        _media_text = (
-            f"Ticket {ticket.identifier} included "
-            f"{len(media_paths)} image attachment(s): "
-            + ", ".join(p.rsplit("/", 1)[-1] for p in media_paths)
-        )
+        _media_text = _media_summary
         # embed so the observation is reachable via vector recall / PPR
         # (was write-only without embed_vec). Soft on sidecar absence.
         _media_vec = None

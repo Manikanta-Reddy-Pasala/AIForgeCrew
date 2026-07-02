@@ -47,6 +47,7 @@ def memory_write(
     media_refs: list[str] | None = None,
     decision: bool = False,
     repo: str | None = None,
+    source: str = "doer",
 ) -> dict[str, Any]:
     """Persist a fact the Doer noticed during this run.
 
@@ -61,6 +62,9 @@ def memory_write(
         decision: when True, write as a ``Decision_v2`` instead of
             ``Observation_v2``. Use for "we decided to do X over Y";
             otherwise leave False.
+        source: writer label recorded on the unit (SQLite ``source`` /
+            Neo4j ``author``). Defaults to ``"doer"``; ingest passes
+            ``"ingest"`` so chunks aren't mislabeled as Doer self-writes.
 
     Returns:
         ``{"ok": True, "id": str, "label": "Observation_v2" |
@@ -86,7 +90,7 @@ def memory_write(
             from aiforge_core.memory import sqlite_memory as _sqlmem
             rid = _sqlmem.write_unit(
                 text=text, kind=("decision" if decision else kind),
-                source="doer", tags=tags,
+                source=source, tags=tags,
                 metadata={"media_refs": media_refs or []}, repo=repo,
             )
             return {"ok": True, "id": rid,
@@ -130,17 +134,27 @@ def memory_write(
             out = upsert_decision(
                 drv, repo=repo, title=title, body=text,
                 rationale="doer-self-write",
-                author="doer",
+                author=source,
                 tags=tags,
             )
             return {"ok": True, "id": out.get("id"),
                     "label": "Decision_v2",
                     "deduped": False}
         else:
+            # F5: embed so ingested chunks are vector-recallable (mirrors
+            # failure_memory / learner_persist). Soft-fail: sidecar down ->
+            # write without a vector rather than crash the agent loop.
+            embed_vec = None
+            try:
+                from aiforge_core.memory.embed import embed as _embed
+                embed_vec = _embed(text)
+            except Exception:  # noqa: BLE001
+                embed_vec = None
             out = upsert_observation(
                 drv, repo=repo, text=text, kind=kind,
-                author="doer", tags=tags,
+                author=source, tags=tags,
                 media_refs=media_refs or [],
+                embed_vec=embed_vec,
             )
             return {"ok": True, "id": out.get("id"),
                     "label": "Observation_v2",

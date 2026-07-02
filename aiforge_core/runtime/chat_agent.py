@@ -363,7 +363,12 @@ def _kill_proc(proc) -> None:
 def _t_memory_lookup(args: dict, cwd: str) -> dict:
     try:
         from aiforge_core.memory import unified_query as _uq
-        res = _uq.query(args["query"], limit=int(args.get("limit", 6)))
+        from aiforge_core.runtime import rule_capture as _rc
+        # F2: scope recall to the SAME repo the chat WRITE path files under
+        # (rule_capture.repo_key(cwd)) so chat's own facts aren't filtered out.
+        _repo = _rc.repo_key(cwd) or "repo"
+        res = _uq.query(args["query"], limit=int(args.get("limit", 6)),
+                        repo=_repo)
         return {"ok": True, "hits": [
             {"text": (h.get("text") or "")[:400], "source": h.get("source")}
             for h in res.get("hits", [])
@@ -2117,7 +2122,11 @@ def _memory_recall(cwd: str, query: str, limit: int = 6) -> str:
     hits: list[dict] = []
     try:
         from aiforge_core.memory import unified_query as _uq
-        res = _uq.query(q, limit=limit)
+        from aiforge_core.runtime import rule_capture as _rc
+        # F2: recall under the SAME repo the chat WRITE path files facts
+        # under, else sqlite_memory.recall filters them out (WHERE repo=?).
+        _repo = _rc.repo_key(cwd) or "repo"
+        res = _uq.query(q, limit=limit, repo=_repo)
         if isinstance(res, dict):
             hits = res.get("hits", []) or []
     except Exception:  # noqa: BLE001
