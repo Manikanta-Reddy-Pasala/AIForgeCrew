@@ -18,5 +18,29 @@
     "homepage": "",
     "needs_api_key": false,
     "category": "custom"
+  },
+  {
+    "id": "filesystem-local",
+    "name": "Filesystem (local)",
+    "description": "Read/write files under a local directory via a LOCAL npx subprocess. Edit the last arg to the directory you want to expose before enabling.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "<cwd>"],
+    "url": "",
+    "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+    "needs_api_key": false,
+    "category": "local"
+  },
+  {
+    "id": "git-local",
+    "name": "Git (local)",
+    "description": "Inspect a local git repository (log, diff, status) via a LOCAL npx subprocess. Edit the repository path arg before enabling.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-git", "--repository", "<repo>"],
+    "url": "",
+    "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+    "needs_api_key": false,
+    "category": "local"
   }
 ]

@@ -10,13 +10,15 @@ Two halves:
      ``model_registry.py``). API keys/headers are kept server-side and never
      returned (only ``api_key_set``).
 
-Only HTTP/SSE transports are installable end-to-end today — stdio/npx servers
-are kept in the catalog but flagged ``installable: false`` until the stdio
-transport lands in ``mcp_client``.
+Both HTTP/SSE and stdio (local ``command``+``args``) transports are installable
+end-to-end. HTTP/SSE talks to a hosted MCP server; stdio spawns a LOCAL child
+process (e.g. ``npx @modelcontextprotocol/server-filesystem``) — no network,
+no phone-home. stdio servers carry ``{command, args, env}`` instead of a url.
 
-``enabled_endpoints()`` returns the ``{name: url}`` map the agent's
-``mcp_client`` merges on top of the env CSV, so an installed+enabled HTTP
-server is immediately callable by the Doer.
+``enabled_endpoints()`` returns the ``{name: url}`` map (HTTP/SSE only) the
+agent's ``mcp_client`` merges on top of the env CSV; ``enabled_stdio_servers()``
+returns the parallel ``{name: {command, args, env}}`` map for local stdio
+servers. Either makes an installed+enabled server callable by the Doer.
 """
 from __future__ import annotations
 
@@ -62,6 +64,10 @@ def _is_http(transport: str, url: str) -> bool:
         and str(url or "").lower().startswith(("http://", "https://"))
 
 
+def _is_stdio(transport: str) -> bool:
+    return (transport or "http").lower() == "stdio"
+
+
 def load_catalog() -> list[dict]:
     """The curated marketplace catalog. Each entry is annotated with
     ``installable`` (HTTP/SSE only today)."""
@@ -76,21 +82,27 @@ def load_catalog() -> list[dict]:
     for r in rows:
         if not isinstance(r, dict):
             continue
-        transport = r.get("transport") or "http"
+        transport = (r.get("transport") or "http").lower()
         # A "custom-http" template has an empty url but is still installable
-        # (the user fills the url in after installing).
-        installable = (transport or "http").lower() in ("http", "sse")
+        # (the user fills the url in after installing). stdio servers are
+        # installable too — they spawn a LOCAL child process.
+        installable = transport in ("http", "sse", "stdio")
         out.append({**r, "installable": installable})
     return out
 
 
 def _public(row: dict) -> dict:
-    """Registry row without the raw key/header secrets."""
+    """Registry row without the raw key/header/env secrets."""
     return {
         "id": row.get("id"),
         "name": row.get("name") or row.get("id"),
         "url": row.get("url") or "",
         "transport": row.get("transport") or "http",
+        # stdio servers carry a local command; args are safe to surface, env
+        # values are kept server-side (may hold secrets) — only the keys leak.
+        "command": row.get("command") or "",
+        "args": list(row.get("args") or []),
+        "env_keys": sorted((row.get("env") or {}).keys()),
         "enabled": bool(row.get("enabled", True)),
         "catalog_id": row.get("catalog_id") or "",
         "description": row.get("description") or "",
@@ -109,20 +121,33 @@ def get_server(server_id: str) -> dict | None:
     return None
 
 
-def add_server(*, name: str, url: str, transport: str = "http",
+def add_server(*, name: str, url: str = "", transport: str = "http",
                api_key: str | None = None, description: str = "",
-               catalog_id: str = "", enabled: bool = True) -> dict:
-    """Register an MCP server. Raises ValueError on a non-HTTP transport
-    (stdio not wired yet) or a missing url for an http server."""
+               catalog_id: str = "", enabled: bool = True,
+               command: str = "", args: list | None = None,
+               env: dict | None = None) -> dict:
+    """Register an MCP server.
+
+    HTTP/SSE servers need a ``url``; stdio servers need a local ``command``
+    (with optional ``args``/``env``) — they spawn a LOCAL child process.
+    Raises ValueError on an unsupported transport, a non-http url for an
+    http server, or a stdio server with no command."""
     name = (name or "").strip()
     if not name:
         raise ValueError("name is required")
     transport = (transport or "http").lower()
-    if transport not in ("http", "sse"):
-        raise ValueError(f"transport not supported yet: {transport} (http/sse only)")
+    command = (command or "").strip()
     url = (url or "").strip()
-    if url and not url.lower().startswith(("http://", "https://")):
-        raise ValueError("url must be http(s)")
+    if transport in ("http", "sse"):
+        if url and not url.lower().startswith(("http://", "https://")):
+            raise ValueError("url must be http(s)")
+        command, args, env = "", None, None
+    elif transport == "stdio":
+        if not command:
+            raise ValueError("stdio server requires a command (e.g. npx)")
+        url = ""
+    else:
+        raise ValueError(f"transport not supported: {transport} (http/sse/stdio)")
     with _LOCK:
         rows = _load()
         base = _slug(name)
@@ -132,6 +157,8 @@ def add_server(*, name: str, url: str, transport: str = "http",
             uid = f"{base}-{n}"
             n += 1
         row = {"id": uid, "name": name, "url": url, "transport": transport,
+               "command": command, "args": list(args or []),
+               "env": dict(env or {}),
                "api_key": api_key or "", "description": (description or "").strip(),
                "catalog_id": (catalog_id or "").strip(), "enabled": bool(enabled)}
         rows.append(row)
@@ -148,13 +175,22 @@ def install_from_catalog(catalog_id: str, *, url: str | None = None,
     if entry is None:
         raise ValueError(f"unknown catalog entry: {catalog_id}")
     if not entry.get("installable"):
-        raise ValueError(f"{catalog_id} is not installable yet (stdio transport)")
+        raise ValueError(f"{catalog_id} is not installable")
+    transport = (entry.get("transport") or "http").lower()
+    if transport == "stdio":
+        # LOCAL stdio server — spawn a child process, no url involved.
+        return add_server(
+            name=name or entry.get("name") or catalog_id,
+            transport="stdio", command=entry.get("command") or "",
+            args=entry.get("args") or [], env=entry.get("env") or {},
+            description=entry.get("description") or "",
+            catalog_id=catalog_id, enabled=True)
     final_url = (url if url is not None else entry.get("url")) or ""
     if not final_url:
         raise ValueError("a url is required for this server")
     return add_server(
         name=name or entry.get("name") or catalog_id,
-        url=final_url, transport=entry.get("transport") or "http",
+        url=final_url, transport=transport,
         api_key=api_key, description=entry.get("description") or "",
         catalog_id=catalog_id, enabled=True)
 
@@ -165,9 +201,13 @@ def update_server(server_id: str, **fields) -> dict | None:
         for r in rows:
             if r.get("id") != server_id:
                 continue
-            for k in ("name", "url", "description"):
+            for k in ("name", "url", "description", "command"):
                 if fields.get(k) is not None:
                     r[k] = str(fields[k]).strip()
+            if fields.get("args") is not None:
+                r["args"] = list(fields["args"])
+            if fields.get("env") is not None:
+                r["env"] = dict(fields["env"])
             if fields.get("enabled") is not None:
                 r["enabled"] = bool(fields["enabled"])
             if fields.get("api_key"):   # only overwrite with a non-empty key
@@ -200,6 +240,24 @@ def enabled_endpoints() -> dict[str, str]:
     return out
 
 
+def enabled_stdio_servers() -> dict[str, dict]:
+    """``{name: {transport, command, args, env}}`` for every enabled LOCAL
+    stdio server — merged into the agent's ``mcp_client`` as a parallel map to
+    the HTTP endpoints. HTTP/empty-command rows are skipped."""
+    out: dict[str, dict] = {}
+    for r in _load():
+        if not r.get("enabled", True):
+            continue
+        if _is_stdio(r.get("transport") or "http") and r.get("command"):
+            out[r.get("name") or r.get("id")] = {
+                "transport": "stdio",
+                "command": r.get("command"),
+                "args": list(r.get("args") or []),
+                "env": dict(r.get("env") or {}),
+            }
+    return out
+
+
 __all__ = ["load_catalog", "list_servers", "get_server", "add_server",
            "install_from_catalog", "update_server", "remove_server",
-           "enabled_endpoints"]
+           "enabled_endpoints", "enabled_stdio_servers"]
