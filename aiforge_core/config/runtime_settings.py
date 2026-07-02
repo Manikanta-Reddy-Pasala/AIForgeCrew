@@ -13,8 +13,9 @@ the box; an operator with a bigger model raises them via the env vars.
 * ``context_window``    — assumed input context window (tokens). Feeds
   the router's escalation/threshold sizing AND the chat condense budget,
   so a too-large value makes the agent overflow a small window before the
-  auto-condense safety net fires. Default 32768 (the common local case).
-  Operators with a 128K model set ``AIFORGE_LOCAL_CTX_WINDOW=131072``.
+  auto-condense safety net fires. Default 131072 (128K) — modern local
+  models (Qwen3.x / GLM / Gemma) all ship 128K, so use it as the baseline.
+  A small-window box overrides down via ``AIFORGE_LOCAL_CTX_WINDOW``.
 
 Resolution order for each knob (first that yields a value wins):
   1. ``runtime_settings.json`` (this store — the UI writes here)
@@ -38,7 +39,7 @@ log = logging.getLogger("aiforge.runtime_settings")
 # knob -> (env var consulted when the store has no value, built-in default)
 _SPEC: dict[str, tuple[str, int]] = {
     "max_output_tokens": ("AIFORGE_LLM_MAX_TOKENS", 4096),
-    "context_window": ("AIFORGE_LOCAL_CTX_WINDOW", 32768),
+    "context_window": ("AIFORGE_LOCAL_CTX_WINDOW", 131072),
     # 0/1 flag: force-treat the chat model as vision-capable (for a self-hosted
     # multimodal model the allowlist doesn't recognise). Auto-detection by model
     # id still applies when this is 0.

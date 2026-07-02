@@ -25,7 +25,7 @@ def test_local_first_defaults(rs):
     # A generation cap that fits ANY window; operators raise via env.
     assert rs.get("max_output_tokens") == 4096
     # The common local case; operators with 128K models set the env var.
-    assert rs.get("context_window") == 32768
+    assert rs.get("context_window") == 131072
 
 
 def test_big_model_operator_overrides_via_env(rs, monkeypatch):
