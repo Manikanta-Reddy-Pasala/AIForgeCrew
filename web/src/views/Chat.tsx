@@ -1214,7 +1214,9 @@ export default function Chat() {
           </button>
           <button onClick={handleNewChatHere} disabled={busy}
                   title="New chat with a specific working directory"
-                  style={{ padding: '0 8px' }}>📁</button>
+                  style={{ padding: '0 8px', display: 'inline-flex', alignItems: 'center' }}>
+            <Icon.Folder size={15} />
+          </button>
           {sessions.length > 0 && (
             <button
               className="danger"
@@ -1315,7 +1317,8 @@ export default function Chat() {
             {activeSession && (
               <span className="xs muted" title={activeSession.cwd || 'default workspace'}
                     style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                📁 {activeSession.cwd
+                <Icon.Folder size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+                {activeSession.cwd
                   ? (activeSession.cwd.length > 48 ? '…' + activeSession.cwd.slice(-46) : activeSession.cwd)
                   : 'default workspace'}
               </span>
@@ -2050,8 +2053,10 @@ function MediaStrip({ media, vision, onDescribe, onDelete }: {
                      style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 4 }} />
               ) : (
                 <div style={{ width: 48, height: 48, display: 'flex', alignItems: 'center',
-                              justifyContent: 'center', borderRadius: 4, fontSize: 22,
-                              background: 'var(--bg-2)' }}>📄</div>
+                              justifyContent: 'center', borderRadius: 4,
+                              background: 'var(--bg-2)', color: 'var(--fg-1)' }}>
+                  <Icon.File size={22} />
+                </div>
               )}
             </a>
             <div style={{ minWidth: 0, flex: 1 }}>

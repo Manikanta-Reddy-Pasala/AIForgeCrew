@@ -254,7 +254,129 @@ def memory_overview() -> dict:
     stores["md_files"] = _safe(_md_section)
     stores["chat"] = _safe(_chat_section)
     stores["sources"] = _safe(_sources_section)
-    return {"backend": backend_select.memory_backend(), "stores": stores}
+    return {"backend": backend_select.memory_backend(), "stores": stores,
+            "neo4j_browser": os.environ.get("AIFORGE_NEO4J_BROWSER_URL") or None}
+
+
+# ─────────────────────── graph sample (visualization) ───────────────────────
+
+def _clip(s: str, n: int = 40) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def _chunk_label(text: str) -> str:
+    """First meaningful line of an ingested chunk, minus the leading '# path'
+    header memory_ingest prepends. Truncated for the node label."""
+    lines = (text or "").splitlines()
+    start = 1 if lines and lines[0].lstrip().startswith("#") else 0
+    for ln in lines[start:]:
+        if ln.strip():
+            return _clip(ln, 40)
+    for ln in lines:  # fall back to the header line if that's all there is
+        if ln.strip():
+            return _clip(ln, 40)
+    return "(empty)"
+
+
+def _sample_symbols(s, limit: int) -> dict:
+    rows = list(s.run(
+        "MATCH (n:Symbol) WITH n LIMIT $limit "
+        "RETURN n.id AS id, coalesce(n.name, n.id) AS label, n.kind AS kind",
+        limit=limit))
+    nodes = [{"id": r["id"], "label": str(r["label"] or r["id"] or ""),
+              "kind": r["kind"] or "symbol"}
+             for r in rows if r["id"] is not None]
+    ids = [n["id"] for n in nodes]
+    edges = []
+    if ids:
+        erows = list(s.run(
+            "MATCH (n:Symbol)-[r:CALLS|DEFINES|EXTENDS|IMPLEMENTS]->(m:Symbol) "
+            "WHERE n.id IN $ids AND m.id IN $ids "
+            "RETURN n.id AS a, m.id AS b, type(r) AS t LIMIT 500",
+            ids=ids))
+        edges = [{"from": r["a"], "to": r["b"], "type": r["t"]} for r in erows]
+    return {"available": True, "nodes": nodes, "edges": edges}
+
+
+def _sample_graphify(s, limit: int) -> dict:
+    rows = list(s.run(
+        "MATCH (n) WHERE n.source = $src OR n:GraphifyNode WITH n LIMIT $limit "
+        "RETURN n.id AS id, coalesce(n.name, n.title, n.id) AS label",
+        src=_GRAPHIFY_SOURCE, limit=limit))
+    nodes = [{"id": r["id"], "label": str(r["label"] or r["id"] or ""),
+              "kind": "graphify"}
+             for r in rows if r["id"] is not None]
+    ids = [n["id"] for n in nodes]
+    edges = []
+    if ids:
+        erows = list(s.run(
+            "MATCH (n)-[r]->(m) WHERE n.id IN $ids AND m.id IN $ids "
+            "RETURN n.id AS a, m.id AS b, type(r) AS t LIMIT 500",
+            ids=ids))
+        edges = [{"from": r["a"], "to": r["b"], "type": r["t"]} for r in erows]
+    return {"available": True, "nodes": nodes, "edges": edges}
+
+
+def _sample_chunks(s, limit: int) -> dict:
+    rows = list(s.run(
+        "MATCH (n:Observation_v2) WHERE n.kind IN ['code','doc'] "
+        "RETURN n.id AS id, n.text AS text, n.kind AS kind LIMIT $limit",
+        limit=limit))
+    nodes = [{"id": r["id"], "label": _chunk_label(r["text"]),
+              "kind": r["kind"] or "chunk"}
+             for r in rows if r["id"] is not None]
+    return {"available": True, "nodes": nodes, "edges": []}
+
+
+def _sample_facts(s, limit: int) -> dict:
+    rows = list(s.run(
+        "MATCH (n) WHERE (n:Observation_v2 AND "
+        "NOT coalesce(n.kind, '') IN ['code','doc']) OR n:Decision_v2 "
+        "RETURN n.id AS id, coalesce(n.text, n.title, n.id) AS text, "
+        "n.kind AS kind LIMIT $limit",
+        limit=limit))
+    nodes = [{"id": r["id"], "label": _clip(str(r["text"] or r["id"] or ""), 40),
+              "kind": r["kind"] or "fact"}
+             for r in rows if r["id"] is not None]
+    return {"available": True, "nodes": nodes, "edges": []}
+
+
+def graph_sample(store: str, limit: int = 60) -> dict:
+    """Small node-link sample of ONE graph store, for an in-app SVG preview.
+
+    Returns ``{"available": bool, "nodes": [{"id","label","kind"}],
+    "edges": [{"from","to","type"}]}``. Soft-fails to available:False on any
+    error (unknown store, graph not configured, driver/query failure) — never
+    raises. Edges are returned ONLY between sampled node ids.
+    """
+    empty = {"available": False, "nodes": [], "edges": []}
+    if store not in _GRAPH_STORES or not _neo4j_configured():
+        return empty
+    try:
+        limit = max(1, min(int(limit), 300))
+    except Exception:  # noqa: BLE001
+        limit = 60
+    try:
+        drv = _graph_driver()
+    except Exception:  # noqa: BLE001
+        return empty
+    try:
+        with drv.session() as s:
+            if store == "symbols":
+                return _sample_symbols(s, limit)
+            if store == "graphify":
+                return _sample_graphify(s, limit)
+            if store == "chunks":
+                return _sample_chunks(s, limit)
+            return _sample_facts(s, limit)  # graph_facts
+    except Exception:  # noqa: BLE001
+        return empty
+    finally:
+        try:
+            drv.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ──────────────────────────── per-store clear ───────────────────────────────
@@ -366,4 +488,5 @@ def clear_all() -> dict:
             "note": _PRESERVE_NOTE}
 
 
-__all__ = ["memory_overview", "clear_store", "clear_all", "CLEARABLE"]
+__all__ = ["memory_overview", "graph_sample", "clear_store", "clear_all",
+           "CLEARABLE"]

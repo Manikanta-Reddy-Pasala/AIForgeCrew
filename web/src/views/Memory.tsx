@@ -1,6 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import { toast } from 'sonner';
-import { api, MemorySource, MemoryOverview, MemoryStoreSection } from '../api';
+import {
+  api, memoryApi, MemorySource, MemoryOverview, MemoryStoreSection,
+  MemoryGraphSample,
+} from '../api';
 import { Icon } from '../icons';
 
 const ROLES = ['supervisor', 'planner', 'doer', 'feedback', 'learner'];
@@ -104,11 +107,107 @@ function labelSummary(s: MemoryStoreSection, unit: string): string {
   return `${n.toLocaleString()} ${unit}` + (parts ? ` — ${parts}` : '');
 }
 
+// The four Neo4j-backed stores that support a visual preview + deep link.
+const GRAPH_STORES = new Set(['graph_facts', 'symbols', 'graphify', 'chunks']);
+
+// Cypher opened (prefilled, not run) in Neo4j Browser via the deep link.
+const STORE_CYPHER: Record<string, string> = {
+  symbols:     'MATCH (n:Symbol)-[r:CALLS|DEFINES]->(m:Symbol) RETURN n,r,m LIMIT 200',
+  graphify:    "MATCH (n)-[r]-(m) WHERE n.source='graphify' RETURN n,r,m LIMIT 200",
+  chunks:      "MATCH (n:Observation_v2) WHERE n.kind IN ['code','doc'] RETURN n LIMIT 100",
+  graph_facts: 'MATCH (n) WHERE n:Observation_v2 OR n:Decision_v2 RETURN n LIMIT 100',
+};
+
+// Inline SVG node-link preview of ONE graph store. Pure SVG + React (no CDN /
+// external libs — CSP forbids them). Deterministic circular layout (no random).
+function GraphPreview({ store }: { store: string }) {
+  const [data, setData] = useState<MemoryGraphSample | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    memoryApi.getGraph(store)
+      .then(d => { if (alive) setData(d); })
+      .catch(() => { if (alive) setData({ available: false, nodes: [], edges: [] }); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [store]);
+
+  const shell: CSSProperties = {
+    marginTop: 8, marginBottom: 8, overflow: 'auto', maxHeight: 280,
+    background: 'var(--bg-1)', border: '1px solid var(--border-0)',
+    borderRadius: 8, padding: 6,
+  };
+
+  if (loading)
+    return <div style={shell}><div className="muted small">loading…</div></div>;
+  if (!data || !data.available || data.nodes.length === 0)
+    return <div style={shell}><div className="muted small">nothing to visualize</div></div>;
+
+  const W = 320, H = 260, CX = W / 2, CY = H / 2;
+  const nodes = data.nodes.slice(0, 60);
+  const n = nodes.length;
+  const radius = Math.min(CX, CY) - 24;
+  const pos = new Map<string, { x: number; y: number }>();
+  nodes.forEach((nd, i) => {
+    const a = (i / n) * Math.PI * 2;
+    pos.set(nd.id, { x: CX + radius * Math.cos(a), y: CY + radius * Math.sin(a) });
+  });
+  const showLabels = n <= 40;
+
+  return (
+    <div style={shell}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block' }}
+           role="img" aria-label={`${store} graph preview`}>
+        {data.edges.map((e, i) => {
+          const a = pos.get(e.from), b = pos.get(e.to);
+          if (!a || !b) return null;
+          return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                       stroke="var(--border-1)" strokeWidth={1} />;
+        })}
+        {nodes.map(nd => {
+          const p = pos.get(nd.id)!;
+          return (
+            <g key={nd.id}>
+              <circle cx={p.x} cy={p.y} r={6} fill="var(--accent)">
+                <title>{nd.label}</title>
+              </circle>
+              {showLabels && (
+                <text x={p.x + 8} y={p.y + 3}
+                      style={{ fill: 'var(--fg-1)', fontSize: 9 }}>
+                  {nd.label.length > 14 ? nd.label.slice(0, 14) + '…' : nd.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <div className="muted xs" style={{ marginTop: 4 }}>
+        {n} node{n !== 1 ? 's' : ''}
+        {data.edges.length ? `, ${data.edges.length} edge${data.edges.length !== 1 ? 's' : ''}` : ''}
+        {data.nodes.length > n ? ` (showing first ${n})` : ''}
+      </div>
+    </div>
+  );
+}
+
 function OverviewPanel() {
   const [ov, setOv] = useState<MemoryOverview | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(true);   // collapsed by default
+  const [openGraphs, setOpenGraphs] = useState<Set<string>>(new Set());
+
+  const toggleGraph = (key: string) => setOpenGraphs(prev => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  // Neo4j Browser base — operator-provided (env) or best-effort :7474 on host.
+  const browserBase = ov?.neo4j_browser
+    || `${location.protocol}//${location.hostname}:7474`;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -194,32 +293,61 @@ function OverviewPanel() {
           {OVERVIEW_STORES.map(store => {
             const s = ov.stores[store.key] || {};
             const unavailable = s.available === false;
+            const isGraph = GRAPH_STORES.has(store.key);
+            const graphOpen = openGraphs.has(store.key);
+            const cypher = STORE_CYPHER[store.key];
+            const browserHref =
+              `${browserBase}/browser/?cmd=edit&arg=${encodeURIComponent(cypher || '')}`;
             return (
-              <div
-                key={store.key}
-                className="row"
-                style={{
-                  justifyContent: 'space-between', alignItems: 'center',
-                  padding: '8px 0', borderBottom: '1px solid var(--border-0)',
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 500 }}>{store.label}</div>
-                  <div className="muted small" style={{ marginTop: 2 }}>
-                    {unavailable
-                      ? <span className="muted">unavailable: {s.reason || 'not configured'}</span>
-                      : store.summary(s)}
-                  </div>
-                  <div className="muted xs" style={{ marginTop: 2 }}>{store.hint}</div>
-                </div>
-                <button
-                  className="ghost danger"
-                  onClick={() => clearStore(store.key, store.label)}
-                  disabled={busy !== null || unavailable}
-                  title={unavailable ? 'store unavailable' : `Empty ${store.label}`}
+              <div key={store.key} style={{ borderBottom: '1px solid var(--border-0)' }}>
+                <div
+                  className="row"
+                  style={{
+                    justifyContent: 'space-between', alignItems: 'center',
+                    padding: '8px 0',
+                  }}
                 >
-                  {busy === store.key ? 'Clearing…' : <><Icon.Trash size={13} /> Empty this</>}
-                </button>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 500 }}>{store.label}</div>
+                    <div className="muted small" style={{ marginTop: 2 }}>
+                      {unavailable
+                        ? <span className="muted">unavailable: {s.reason || 'not configured'}</span>
+                        : store.summary(s)}
+                    </div>
+                    <div className="muted xs" style={{ marginTop: 2 }}>{store.hint}</div>
+                  </div>
+                  <div className="row tight" style={{ alignItems: 'center', flexShrink: 0 }}>
+                    {isGraph && !unavailable && (
+                      <>
+                        <a
+                          className="ghost sm"
+                          href={browserHref}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Open a prefilled query in Neo4j Browser"
+                        >
+                          Open in Neo4j Browser ↗
+                        </a>
+                        <button
+                          className="ghost sm"
+                          onClick={() => toggleGraph(store.key)}
+                          title={graphOpen ? 'Hide preview' : 'Render a small SVG node-link preview'}
+                        >
+                          {graphOpen ? 'Hide graph' : 'Preview graph'}
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="ghost danger"
+                      onClick={() => clearStore(store.key, store.label)}
+                      disabled={busy !== null || unavailable}
+                      title={unavailable ? 'store unavailable' : `Empty ${store.label}`}
+                    >
+                      {busy === store.key ? 'Clearing…' : <><Icon.Trash size={13} /> Empty this</>}
+                    </button>
+                  </div>
+                </div>
+                {isGraph && !unavailable && graphOpen && <GraphPreview store={store.key} />}
               </div>
             );
           })}

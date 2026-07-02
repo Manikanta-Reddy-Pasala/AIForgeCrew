@@ -1836,6 +1836,16 @@ def memory_overview_ep() -> dict:
     return _admin.memory_overview()
 
 
+@app.get("/api/memory/graph")
+def memory_graph_ep(store: str,
+                    limit: int = Query(60, le=300)) -> dict:
+    """Small node-link sample of ONE graph store for an in-app SVG preview.
+    ``store`` ∈ symbols | graphify | chunks | graph_facts. Soft-fails to
+    ``{"available": False, "nodes": [], "edges": []}`` — never raises."""
+    from aiforge_core.memory import admin as _admin
+    return _admin.graph_sample(store, limit)
+
+
 @app.post("/api/memory/clear/{store}")
 def memory_clear_store_ep(store: str,
                           body: "_MemConfirmBody | None" = None) -> dict:
