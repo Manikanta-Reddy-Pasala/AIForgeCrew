@@ -97,6 +97,60 @@
   line-height: var(--lh-body);
 }
 
+/* =========================================================================
+   Dark theme — overrides the surface / ink / border / accent tokens only.
+   Every component references --token-*, so flipping [data-theme="dark"] on
+   <html> re-themes the whole app without touching component styles.
+   ========================================================================= */
+:root[data-theme="dark"] {
+  /* Surfaces (dark) */
+  --bg-0: #0b0e14;           /* page background, deepest */
+  --bg-1: #12161f;           /* app shell */
+  --bg-2: #161b26;           /* card surface */
+  --bg-3: #1c2230;           /* elevated / hover */
+  --bg-4: #262d3d;           /* active / selected */
+  --bg-code: #0d1117;        /* code blocks */
+
+  /* Ink (light on dark) */
+  --fg-0: #e6edf3;           /* primary text */
+  --fg-1: #c9d1d9;           /* body */
+  --fg-2: #8b949e;           /* muted */
+  --fg-3: #6e7681;           /* disabled */
+
+  /* Borders (subtle on dark) */
+  --border-0: #1f2530;
+  --border-1: #2b3240;
+  --border-2: #3a4150;
+
+  /* Accents — same hue family, lifted for contrast on dark */
+  --accent: #4a91f2;
+  --accent-strong: #6aa6ff;
+  --accent-soft: rgba(74,145,242,.14);
+  --accent-ring: rgba(74,145,242,.35);
+
+  --ok: #3fb950;
+  --ok-soft: rgba(63,185,80,.15);
+  --warn: #d29922;
+  --warn-soft: rgba(210,153,34,.16);
+  --err: #f85149;
+  --err-soft: rgba(248,81,73,.15);
+  --info: #4a91f2;
+  --info-soft: rgba(74,145,242,.14);
+
+  /* Priority */
+  --prio-urgent: #f85149;
+  --prio-high:   #d29922;
+  --prio-medium: #4a91f2;
+  --prio-low:    #8b949e;
+
+  /* Shadow — deeper on dark surfaces */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.45);
+  --shadow-lg: 0 10px 30px rgba(0,0,0,.55);
+
+  color-scheme: dark;
+}
+
 /* ---------- reset ---------- */
 *,
 *::before,

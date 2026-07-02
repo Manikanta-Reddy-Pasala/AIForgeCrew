@@ -112,6 +112,40 @@ function useTitle(pathname: string): string {
   return TITLE_MAP[pathname] || 'AIForge';
 }
 
+type Theme = 'light' | 'dark';
+const THEME_KEY = 'aiforge.theme';
+
+/** Reads the current theme (set on <html> before first paint by index.html)
+ *  and exposes a toggle that persists the choice to localStorage. */
+function useTheme(): [Theme, () => void] {
+  const [theme, setTheme] = useState<Theme>(() =>
+    document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light',
+  );
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    try { localStorage.setItem(THEME_KEY, theme); } catch { /* storage disabled */ }
+  }, [theme]);
+
+  const toggle = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
+  return [theme, toggle];
+}
+
+function ThemeToggle() {
+  const [theme, toggle] = useTheme();
+  const dark = theme === 'dark';
+  return (
+    <button
+      className="icon"
+      onClick={toggle}
+      title={dark ? 'Switch to light theme' : 'Switch to dark theme'}
+      aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
+    >
+      {dark ? <Icon.Sun size={16} /> : <Icon.Moon size={16} />}
+    </button>
+  );
+}
+
 function TopBar({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const loc = useLocation();
   const title = useTitle(loc.pathname);
@@ -125,6 +159,7 @@ function TopBar({ onToggleSidebar }: { onToggleSidebar: () => void }) {
         <div className="topbar-title">{title}</div>
       </div>
       <div className="topbar-spacer" />
+      <ThemeToggle />
     </div>
   );
 }
