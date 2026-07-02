@@ -3416,6 +3416,31 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                         except Exception:  # noqa: BLE001
                             pass
                     threading.Thread(target=_chat_learn, daemon=True).start()
+                    # Boundary-gated per-SESSION summary → browsable md file +
+                    # memory graph (Neo4j when configured). Refreshes an
+                    # upsert'd summary every N turns as the session grows (one
+                    # cheap-tier LLM call, capped) so cross-session recall goes
+                    # through unified_query's graph instead of a substring scan.
+                    # Best-effort on a daemon thread — a failure here must never
+                    # affect the turn.
+                    def _chat_summarize():
+                        try:
+                            from aiforge_core.runtime import (
+                                chat_store, chat_summary, rule_capture)
+                            every = 4
+                            try:
+                                every = max(1, int(os.environ.get(
+                                    "AIFORGE_CHAT_SUMMARY_EVERY", "4")))
+                            except (TypeError, ValueError):
+                                every = 4
+                            n = len(chat_store.get_messages(session_id))
+                            if n <= 0 or n % every != 0:
+                                return
+                            _repo = rule_capture.repo_key(cwd) or "repo"
+                            chat_summary.summarize_session(session_id, _repo)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    threading.Thread(target=_chat_summarize, daemon=True).start()
             # Wake every subscriber (this stream + any /attach) and close THIS
             # run object (not by session id — a newer turn for the same session
             # may have already replaced it in the registry). Done LAST so a
