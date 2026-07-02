@@ -6,6 +6,13 @@ import pytest
 from aiforge_core.runtime.tools import web_search as ws
 
 
+@pytest.fixture(autouse=True)
+def _allow_web_fetch(monkeypatch):
+    # This file exercises fetch/search MECHANICS; the AIFORGE_ALLOW_WEB_FETCH
+    # lockdown gate is covered separately in test_web_fetch_gated_chat.py.
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+
+
 class _Resp:
     def __init__(self, body: bytes):
         self._b = body
