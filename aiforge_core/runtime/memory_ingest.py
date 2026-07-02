@@ -129,10 +129,28 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _fetch_url(url: str) -> str:
+    # SSRF guard: this is an UNAUTHENTICATED ``kind=url`` ingest source, so a
+    # caller must not be able to make the server fetch cloud metadata
+    # (169.254.169.254), loopback services or the private LAN. A DNS failure
+    # is left to urlopen to surface naturally.
+    from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+    try:
+        guard_public_url(url)
+    except SSRFBlocked as exc:
+        if exc.kind != "dns":
+            raise
     req = urllib.request.Request(url, headers={"User-Agent": "aiforge-ingest"})
     # Arbitrary user-supplied ingest source — keep stdlib default TLS
     # verification (the AIFORGE_LLM_SSL_VERIFY opt-out is internal-only).
     with urllib.request.urlopen(req, timeout=20) as r:
+        # Re-guard the post-redirect URL before consuming the body.
+        final = getattr(r, "url", None)
+        if final and final != url:
+            try:
+                guard_public_url(final)
+            except SSRFBlocked as exc:
+                if exc.kind != "dns":
+                    raise
         raw = r.read().decode("utf-8", errors="replace")
     # crude HTML strip
     raw = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", raw,

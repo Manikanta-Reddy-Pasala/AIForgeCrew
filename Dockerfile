@@ -40,4 +40,11 @@ RUN uv pip install --system pytest ruff
 RUN mkdir -p /data/aiforge
 EXPOSE 8799
 
-CMD ["uvicorn", "aiforge_core.api.api:app", "--host", "0.0.0.0", "--port", "8799"]
+# SECURITY: this control plane runs shell + edits files over HTTP. Bind
+# LOOPBACK by default so the container never exposes it on the LAN by
+# accident. To reach it from another host, set BOTH:
+#   AIFORGE_BIND_HOST=0.0.0.0  AND  AIFORGE_API_TOKEN=<shared-secret>
+# The app itself REFUSES TO BOOT on a non-loopback bind without a token.
+# Shell-form CMD so ${AIFORGE_BIND_HOST} expands at runtime; the app reads
+# the same var to decide whether auth is mandatory.
+CMD uvicorn aiforge_core.api.api:app --host "${AIFORGE_BIND_HOST:-127.0.0.1}" --port "${AIFORGE_PORT:-8799}"

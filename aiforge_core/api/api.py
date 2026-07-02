@@ -21,6 +21,8 @@ Routes:
 from __future__ import annotations
 
 import asyncio
+import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -30,9 +32,9 @@ from datetime import UTC
 from typing import Any
 
 import psycopg
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
@@ -123,9 +125,132 @@ def _start_jobs_scheduler() -> None:
         pass
 
 
+# ─────────────────────── API auth + bind-host guard ─────────────────────
+# This control plane RUNS SHELL and EDITS FILES over HTTP, so exposing it
+# unauthenticated is a remote-code-execution surface. Design (pragmatic, must
+# not break local dev / the UI / the tests):
+#   * AIFORGE_API_TOKEN set  → every /api/* route (except health) requires a
+#     matching ``Authorization: Bearer <token>`` (or ``X-AIForge-Token``).
+#   * token unset + LOOPBACK bind → open (preserves local dev + the UI on
+#     localhost + TestClient, which has no real host → treated as loopback).
+#   * NON-loopback bind + no token → REFUSE TO BOOT (see _security_boot_guard).
+# The UI static assets, ``/files`` and ``/`` stay open (no token) so the app
+# shell can load; the browser then sends the operator-configured token on API
+# calls. A single shared token — not user accounts. Keep it simple.
+
+
+def _api_token() -> str:
+    return os.environ.get("AIFORGE_API_TOKEN", "").strip()
+
+
+def _bind_host() -> str:
+    """The host uvicorn binds to, surfaced to the app via AIFORGE_BIND_HOST
+    (set by run.sh / docker-compose). Defaults to loopback so a bare
+    ``uvicorn ...`` / TestClient run is treated as local-open."""
+    return (os.environ.get("AIFORGE_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+
+
+def _is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().lower()
+    if h in ("", "localhost", "127.0.0.1", "::1"):
+        return True
+    if h.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def _security_boot_guard() -> None:
+    """Refuse to boot when binding a shell-running control plane to a
+    non-loopback host without a token. Raises ``RuntimeError`` — called from a
+    startup hook AND directly unit-testable."""
+    token = _api_token()
+    host = _bind_host()
+    if not _is_loopback_host(host) and not token:
+        raise RuntimeError(
+            f"AIForge refuses to boot: binding to a non-loopback host ({host}) "
+            "exposes a shell-running control plane. Set AIFORGE_API_TOKEN to a "
+            "shared secret (and configure the UI with it), or bind 127.0.0.1."
+        )
+
+
+@app.on_event("startup")
+def _enforce_bind_security() -> None:
+    _security_boot_guard()
+
+
+@app.on_event("startup")
+def _warn_default_db_creds() -> None:
+    """Soft, never-fatal: if the API is bound to a NON-loopback host but the
+    Postgres / Neo4j passwords are still the compose defaults, log a loud
+    warning. Doesn't hard-fail (could break a user's current run)."""
+    try:
+        if _is_loopback_host(_bind_host()):
+            return
+        weak: list[str] = []
+        dsn = os.environ.get("AIFORGE_DSN", "") + os.environ.get("AIFORGE_PG_URL", "")
+        if ":aiforgepass@" in dsn or os.environ.get("PG_PASSWORD", "") == "aiforgepass":
+            weak.append("Postgres")
+        neo_pw = os.environ.get("AIFORGE_NEO4J_PASSWORD") or os.environ.get(
+            "NEO4J_PASSWORD", "")
+        if neo_pw == "password" or os.environ.get("NEO4J_AUTH", "") == "neo4j/password":
+            weak.append("Neo4j")
+        if weak:
+            _af_log.warning(
+                "SECURITY: bound to non-loopback host %s with DEFAULT %s "
+                "password(s) — change them before LAN exposure.",
+                _bind_host(), " + ".join(weak),
+            )
+    except Exception:  # noqa: BLE001 — a warning must never crash boot
+        pass
+
+
+def _auth_exempt(path: str) -> bool:
+    """Routes reachable without a token even when one is configured: health,
+    the UI shell / static assets and the root redirect. Everything else under
+    ``/api/`` is protected."""
+    if path == "/api/health":
+        return True
+    return not path.startswith("/api/")
+
+
+def _extract_request_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return (request.headers.get("x-aiforge-token", "") or "").strip()
+
+
+@app.middleware("http")
+async def _require_token(request: Request, call_next):
+    token = _api_token()
+    if (
+        token
+        and request.method != "OPTIONS"          # let CORS preflight through
+        and not _auth_exempt(request.url.path)
+    ):
+        supplied = _extract_request_token(request)
+        if not (supplied and hmac.compare_digest(supplied, token)):
+            return JSONResponse(
+                {"detail": "missing or invalid API token"}, status_code=401
+            )
+    return await call_next(request)
+
+
+def _cors_origins() -> list[str]:
+    """Allowlist from AIFORGE_CORS_ORIGINS (comma-separated); defaults to the
+    localhost UI origins. NEVER ``*`` — this control plane mutates state."""
+    raw = os.environ.get("AIFORGE_CORS_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return ["http://127.0.0.1:8799", "http://localhost:8799"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # dev only
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1408,7 +1533,9 @@ def _neo4j_stats() -> dict:
         uri, user, pw = neo4j_params()
         drv = GraphDatabase.driver(uri, auth=(user, pw))
     except Exception as exc:  # noqa: BLE001
-        return {"backend": "neo4j", "total": 0, "wings": [], "error": str(exc)}
+        # Don't echo the raw driver error — it can embed the bolt URI / creds.
+        return {"backend": "neo4j", "total": 0, "wings": [],
+                "error": type(exc).__name__}
     try:
         with drv.session() as s:
             total = s.run("MATCH (n) RETURN count(n) AS n").single()["n"]
@@ -1422,7 +1549,9 @@ def _neo4j_stats() -> dict:
             ]
         return {"backend": "neo4j", "total": int(total), "wings": wings}
     except Exception as exc:  # noqa: BLE001
-        return {"backend": "neo4j", "total": 0, "wings": [], "error": str(exc)}
+        # Don't echo the raw driver error — it can embed the bolt URI / creds.
+        return {"backend": "neo4j", "total": 0, "wings": [],
+                "error": type(exc).__name__}
     finally:
         try:
             drv.close()

@@ -435,6 +435,15 @@ def _do_fetch(url: str) -> dict:
     ``web_read``."""
     if not url or not url.lower().startswith(("http://", "https://")):
         return {"ok": False, "error": "url must be http(s)"}
+    # SSRF guard: a model-supplied URL must not pivot to cloud metadata
+    # (169.254.169.254), loopback services or the private LAN. A pure DNS
+    # failure is left to urlopen to surface as a natural network error.
+    from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+    try:
+        guard_public_url(url)
+    except SSRFBlocked as exc:
+        if exc.kind != "dns":
+            return {"ok": False, "error": f"blocked (ssrf): {exc}"}
     try:
         req = urllib.request.Request(
             url, headers={"User-Agent": "AIForgeCrew-Doer/1.0"},
@@ -443,6 +452,16 @@ def _do_fetch(url: str) -> dict:
         # regardless of AIFORGE_LLM_SSL_VERIFY (that toggle is scoped to
         # AIForge's own self-hosted endpoints, see aiforge_core.net.ssl).
         with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_S) as resp:
+            # Re-guard the final URL after any redirect hops — a public URL
+            # can 30x to a private/metadata target; refuse to return its body.
+            final = getattr(resp, "url", None)
+            if final and final != url:
+                try:
+                    guard_public_url(final)
+                except SSRFBlocked as exc:
+                    if exc.kind != "dns":
+                        return {"ok": False,
+                                "error": f"blocked after redirect (ssrf): {exc}"}
             raw = resp.read(_FETCH_MAX_BYTES + 1)
             status = resp.status
             ctype = resp.headers.get("Content-Type", "")

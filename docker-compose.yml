@@ -23,6 +23,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${PG_USER:-aiforge}
+      # SECURITY: the default password is fine ONLY for a loopback-bound local
+      # stack. CHANGE IT (set PG_PASSWORD) before exposing anything on the LAN
+      # (AIFORGE_BIND_HOST=0.0.0.0). The app logs a loud WARNING at boot if it
+      # detects a non-loopback bind still on this default.
       POSTGRES_PASSWORD: ${PG_PASSWORD:-aiforgepass}
       POSTGRES_DB: ${PG_DB:-aiforge}
     volumes:
@@ -48,6 +52,9 @@ services:
     container_name: aiforge-neo4j
     restart: unless-stopped
     environment:
+      # SECURITY: default creds are for LOCAL loopback use only. CHANGE THESE
+      # (set NEO4J_AUTH and AIFORGE_NEO4J_PASSWORD) before LAN exposure. The
+      # app logs a loud WARNING at boot if a non-loopback bind still uses them.
       NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/password}
       # apoc only — the genai plugin makes external AI-provider calls and is
       # unused here; dropped under the network lockdown.
@@ -124,9 +131,22 @@ services:
     # container-internal setup instead, drop network_mode and switch the
     # env hostnames below back to service names (postgres/neo4j/embed).
     network_mode: host
+    # SECURITY: bind LOOPBACK by default — this API runs shell + edits files,
+    # so it must not land on the LAN unauthenticated. To expose it, set BOTH
+    # AIFORGE_BIND_HOST=0.0.0.0 and AIFORGE_API_TOKEN=<secret> (the app refuses
+    # to boot on a non-loopback bind without a token). Shell-form so the env
+    # var expands; the app reads AIFORGE_BIND_HOST to decide if auth is forced.
     command: >
-      uvicorn aiforge_core.api.api:app --host 0.0.0.0 --port 8799
+      sh -c 'uvicorn aiforge_core.api.api:app --host "${AIFORGE_BIND_HOST:-127.0.0.1}" --port 8799'
     environment: &app_env
+      # Bind host the app also reads to decide whether the API token is
+      # MANDATORY. Loopback (default) = local-open; 0.0.0.0 / a LAN IP forces
+      # AIFORGE_API_TOKEN. Set a token when exposing beyond localhost.
+      AIFORGE_BIND_HOST: ${AIFORGE_BIND_HOST:-127.0.0.1}
+      AIFORGE_API_TOKEN: ${AIFORGE_API_TOKEN:-}
+      # Browser/UI CORS allowlist (never "*"). Add your UI origin here if you
+      # serve it from another host/port.
+      AIFORGE_CORS_ORIGINS: ${AIFORGE_CORS_ORIGINS:-http://127.0.0.1:8799,http://localhost:8799}
       AIFORGE_DSN: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:5432/${PG_DB:-aiforge}
       AIFORGE_PG_URL: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:5432/${PG_DB:-aiforge}
       AIFORGE_FORCE_PG: "1"

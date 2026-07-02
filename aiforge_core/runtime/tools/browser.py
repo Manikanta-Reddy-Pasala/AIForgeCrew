@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import base64
 import os
-import re
 import uuid
 from typing import Any
 
@@ -38,21 +37,42 @@ def _playwright_available() -> bool:
 
 
 def _allowlist_ok(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url).hostname or "").lower()
+
     raw = os.environ.get("AIFORGE_BROWSER_ALLOWLIST", "").strip()
-    if not raw:
-        # Network+telemetry lockdown: an EMPTY allowlist is DENY-all, not
-        # allow-all. The browser can only reach arbitrary sites when the
-        # operator opts in via AIFORGE_ALLOW_WEB_FETCH=1.
-        return str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() in (
-            "1", "true", "yes", "on",
-        )
-    for pattern in raw.split(","):
-        pattern = pattern.strip()
-        if not pattern:
-            continue
-        if re.search(pattern, url):
-            return True
-    return False
+    if raw:
+        # Match each allowlist entry against the HOSTNAME with exact-or-
+        # subdomain semantics — NOT ``re.search`` over the whole URL, which
+        # let ``http://169.254.169.254/#github.com`` match a ``github.com``
+        # entry (SSRF to cloud IMDS via a fragment). A host the operator
+        # EXPLICITLY allowlisted is trusted even if it's a LAN/loopback dev
+        # server — that is the intended use of the browser tool.
+        for pattern in raw.split(","):
+            pattern = pattern.strip().lower()
+            if not pattern:
+                continue
+            if host == pattern or host.endswith("." + pattern):
+                return True
+        return False
+
+    # Empty allowlist under the network lockdown: arbitrary browsing only when
+    # the operator opts in via AIFORGE_ALLOW_WEB_FETCH=1 — and even then the
+    # target is SSRF-guarded so a model-chosen URL can't pivot to cloud
+    # metadata / a private LAN host. (A pure DNS failure falls through to the
+    # browser, which will just fail to connect — it can't be an SSRF target.)
+    if str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return False
+    from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+    try:
+        guard_public_url(url)
+    except SSRFBlocked as exc:
+        if exc.kind != "dns":
+            return False
+    return True
 
 
 def _teardown_globals() -> None:
