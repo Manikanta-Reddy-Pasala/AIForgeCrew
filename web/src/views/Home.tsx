@@ -10,7 +10,7 @@ import {
   ProviderModel,
 } from '../api';
 import { Icon } from '../icons';
-import { JiraCard, ConfluenceCard, GitlabCard } from '../components/Integrations';
+import { JiraCard, ConfluenceCard, GitlabCard, EmailCard } from '../components/Integrations';
 import AgentSettings from './AgentSettings';
 
 // ── config-first Home page ─────────────────────────────────────────
@@ -816,23 +816,26 @@ export default function Home() {
   );
 }
 
-// Integrations tab — pick Jira / Confluence / GitLab, configure one at a time.
+// Integrations tab — pick Jira / Confluence / GitLab / Email, configure one at a time.
 function IntegrationsTab() {
-  const [sub, setSub] = useState<'jira' | 'confluence' | 'gitlab'>('jira');
+  const [sub, setSub] = useState<'jira' | 'confluence' | 'gitlab' | 'email'>('jira');
+  const label = (s: string) =>
+    s === 'gitlab' ? 'GitLab' : s === 'email' ? 'Email' : s;
   return (
     <div className="card">
       <div className="row" style={{ gap: 4, marginBottom: 12 }}>
-        {(['jira', 'confluence', 'gitlab'] as const).map(s => (
+        {(['jira', 'confluence', 'gitlab', 'email'] as const).map(s => (
           <button key={s} onClick={() => setSub(s)}
                   className={sub === s ? '' : 'ghost'}
                   style={{ textTransform: 'capitalize', fontWeight: sub === s ? 600 : 400 }}>
-            {s === 'gitlab' ? 'GitLab' : s}
+            {label(s)}
           </button>
         ))}
       </div>
       {sub === 'jira' && <JiraCard />}
       {sub === 'confluence' && <ConfluenceCard />}
       {sub === 'gitlab' && <GitlabCard />}
+      {sub === 'email' && <EmailCard />}
     </div>
   );
 }
