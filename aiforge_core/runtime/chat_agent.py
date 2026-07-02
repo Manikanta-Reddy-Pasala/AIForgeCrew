@@ -430,7 +430,11 @@ def _t_memory_write(args: dict, cwd: str) -> dict:
     chats + tickets recall it. repo defaults to the working dir's name."""
     try:
         from aiforge_core.runtime.tools.memory_write import memory_write as _mw
-        repo = args.get("repo") or os.path.basename(os.path.normpath(cwd)) or "chat"
+        # Use the SAME git-toplevel repo key the recall path uses
+        # (_chat_repo_key), so a fact written from a SUBDIRECTORY chat is
+        # filed under the repo the later recall queries — otherwise a subdir
+        # write lands under the subdir basename and is never recalled.
+        repo = args.get("repo") or _chat_repo_key(cwd) or "chat"
         return _mw(
             text=args["text"],
             kind=args.get("kind", "note"),

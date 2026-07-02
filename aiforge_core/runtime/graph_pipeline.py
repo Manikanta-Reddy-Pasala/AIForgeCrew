@@ -38,13 +38,22 @@ ROUTE_DONE = "done"
 ROUTE_VERIFY_PASS = "verify_pass"
 ROUTE_VERIFY_REPLAN = "verify_replan"
 
+def _int_env(name: str, default: int) -> int:
+    """Parse an int env var, degrading to the default on garbage instead of
+    crashing this module's import (which would kill the whole pipeline)."""
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 # Doer loop iteration cap (was LoopAgent.max_iterations=3).
-MAX_DOER_ITERS = int(os.environ.get("AIFORGE_MAX_DOER_ITERS", "3") or 3)
+MAX_DOER_ITERS = _int_env("AIFORGE_MAX_DOER_ITERS", 3)
 # Wall-clock budget for the WHOLE Doer loop (item-3 / slow 120B safety
 # valve). 0 = off. When set, the loop exits with a ``partial`` verdict once
 # elapsed exceeds this many seconds — so a model grinding unproductively for
 # minutes ships its partial diff instead of looping until the LLM-call cap.
-DOER_MAX_WALL_S = int(os.environ.get("AIFORGE_LOOP_MAX_WALL_S", "0") or 0)
+DOER_MAX_WALL_S = _int_env("AIFORGE_LOOP_MAX_WALL_S", 0)
 # Replan cap (was GraphPipeline.max_replans=1).
 MAX_REPLANS = 1
 # Verifier-reject → re-plan cap (bounded inner loop).
