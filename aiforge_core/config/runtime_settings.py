@@ -7,7 +7,7 @@ the box; an operator with a bigger model raises them via the env vars.
 
 * ``max_output_tokens`` — generation cap sent to the model. Too small
   truncates a doer's file-write tool-call args mid-string; too large
-  reserves the whole window for output on a small model. Default 4096
+  reserves the whole window for output on a small model. Default 8192
   (fits any window; a local tool-call turn rarely needs more). Raise via
   ``AIFORGE_LLM_MAX_TOKENS``.
 * ``context_window``    — assumed input context window (tokens). Feeds
@@ -125,6 +125,29 @@ def get(name: str) -> int:
     return default
 
 
+def explicit(name: str) -> int | None:
+    """The EXPLICITLY-set value of a knob — a stored (UI) value or the env var
+    — or ``None`` when only the built-in default would apply. Lets callers layer
+    auto-detection BETWEEN an operator's explicit choice and the static default
+    (see ``model_registry.effective_context_window``). Unlike :func:`get`, this
+    never falls back to the default."""
+    if name not in _SPEC:
+        raise KeyError(name)
+    env_var, _default = _SPEC[name]
+    stored = _read_store().get(name)
+    if isinstance(stored, int):
+        lo, hi = _BOUNDS.get(name, (None, None))
+        if lo is None or (lo <= stored <= hi):
+            return stored
+    raw = os.environ.get(env_var)
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return None
+
+
 def all_settings() -> dict[str, int]:
     """Current resolved value of every knob (for the GET endpoint)."""
     return {name: get(name) for name in _SPEC}
@@ -150,4 +173,4 @@ def set_many(values: dict[str, Any]) -> dict[str, int]:
     return all_settings()
 
 
-__all__ = ["get", "all_settings", "set_many"]
+__all__ = ["get", "explicit", "all_settings", "set_many"]

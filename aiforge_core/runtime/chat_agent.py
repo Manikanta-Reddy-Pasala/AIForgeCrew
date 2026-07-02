@@ -1670,13 +1670,34 @@ def _cave_auto_window() -> int:
     return _CAVE_AUTO_WINDOW_DEFAULT
 
 
-def _resolved_window() -> int:
-    """The resolved (global) context window in tokens, for cave sizing."""
+def _resolved_window(role: str | None = None) -> int:
+    """The resolved context window in tokens. Routes through the ONE window
+    source (``model_registry.effective_context_window``) so cave sizing, the
+    seed/sys-prompt budgets and the window-scaled caps all agree (A3): prefer
+    the per-role registry / auto-detected window, else the global setting."""
     try:
-        from aiforge_core.config import runtime_settings
-        return int(runtime_settings.get("context_window"))
+        from aiforge_core.config import model_registry
+        return int(model_registry.effective_context_window(role))
     except Exception:  # noqa: BLE001
-        return 131072
+        try:
+            from aiforge_core.config import runtime_settings
+            return int(runtime_settings.get("context_window"))
+        except Exception:  # noqa: BLE001
+            return 131072
+
+
+def _window_scaled(floor: int, frac: float, role: str | None = None) -> int:
+    """A window-relative section cap: ``max(floor, window_chars × frac)``.
+
+    The floor is today's fixed value (so a 32K window is byte-identical); on a
+    bigger window the cap grows with it so a 256K box is actually used. Uses the
+    SAME resolved-window source as every other budget (A3). Soft-fails to the
+    floor on any error."""
+    try:
+        win = _resolved_window(role)
+        return max(floor, int(win * 4 * frac))
+    except Exception:  # noqa: BLE001
+        return floor
 
 
 def _cave_mode() -> bool:
@@ -1807,19 +1828,25 @@ def _ctx_budget_chars(role: str | None = None,
 _SYS_PROMPT_FLOOR_CHARS = 8000
 
 
-def _sys_prompt_budget_chars() -> int:
-    """Char cap for the assembled system prompt = a fraction (default 0.6, env
-    ``AIFORGE_SYS_PROMPT_FRAC``) of the resolved window in chars, floored at
-    8000."""
+def _sys_prompt_frac() -> float:
+    """Fraction of the window reserved for the (un-condensable) system prompt.
+    Default 0.35 (env ``AIFORGE_SYS_PROMPT_FRAC``) — co-budgeted with the Doer
+    seed (also 0.35) + the output cap so seed+sysprompt+output ≤ window (A1)."""
     try:
-        frac = float(os.environ.get("AIFORGE_SYS_PROMPT_FRAC", "0.6"))
+        return float(os.environ.get("AIFORGE_SYS_PROMPT_FRAC", "0.35"))
     except (TypeError, ValueError):
-        frac = 0.6
+        return 0.35
+
+
+def _sys_prompt_budget_chars(role: str | None = None) -> int:
+    """Char cap for the assembled system prompt = :func:`_sys_prompt_frac` of
+    the resolved window in chars, floored at 8000. Threads ``role`` so it uses
+    the SAME per-role window as the seed + history budgets (A3)."""
     try:
-        win = _resolved_window()
+        win = _resolved_window(role)
     except Exception:  # noqa: BLE001
         win = 32768
-    return max(int(win * 4 * frac), _SYS_PROMPT_FLOOR_CHARS)
+    return max(int(win * 4 * _sys_prompt_frac()), _SYS_PROMPT_FLOOR_CHARS)
 
 
 _SYS_CAP_MARK = "\n…(system prompt truncated to fit context window)\n"
@@ -2058,6 +2085,19 @@ def _ctx_on(block: str) -> bool:
         return True
 
 
+def _repomap_max_chars() -> int:
+    """Char cap for the repo-map block. An explicit ``AIFORGE_REPOMAP_MAX_CHARS``
+    wins verbatim (0 disables); otherwise window-relative (A2): floor 6000,
+    growing at ~2% of the window."""
+    env = os.environ.get("AIFORGE_REPOMAP_MAX_CHARS")
+    if env is not None:
+        try:
+            return max(0, int(env))
+        except (TypeError, ValueError):
+            pass
+    return _window_scaled(6000, 0.02)
+
+
 def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str:
     """A compact directory tree of ``cwd`` for the system prompt, so the
     agent has the repo structure in context every turn (no re-searching).
@@ -2088,12 +2128,10 @@ def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str
     except Exception:  # noqa: BLE001
         pass
     tree = "\n".join(lines) or "(empty)"
-    # Char cap (env AIFORGE_REPOMAP_MAX_CHARS, default 6000; 0 disables) — the
-    # line/depth caps above bound entries but a wide tree can still be huge.
-    try:
-        cap = max(0, int(os.environ.get("AIFORGE_REPOMAP_MAX_CHARS", "6000")))
-    except (TypeError, ValueError):
-        cap = 6000
+    # Char cap — the line/depth caps above bound entries but a wide tree can
+    # still be huge. Window-relative (A2): floor 6000 on a 32K window, grows
+    # with a bigger window so a 256K box shows a fuller map.
+    cap = _repomap_max_chars()
     if cap and len(tree) > cap:
         tree = tree[:cap] + "\n… (truncated to fit context — use find/grep/list_dir)"
     return ("REPO MAP of the working directory (already known — do NOT "
@@ -2295,7 +2333,7 @@ def run_chat_agent(
     # budget-aware helper that truncates/drops it (lowest priority = appended
     # last = dropped first) when it would blow the cap. `_cap_system_prompt`
     # is the final backstop guaranteeing len(sys_msg) <= cap.
-    _sys_cap = _sys_prompt_budget_chars()
+    _sys_cap = _sys_prompt_budget_chars(role)
     _sys_core_len = len(sys_msg)
     _sys_dropped: list[str] = []
 

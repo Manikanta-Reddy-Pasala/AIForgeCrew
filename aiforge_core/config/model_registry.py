@@ -138,22 +138,69 @@ def context_for(model: str, base_url: str = "") -> int:
     return 0
 
 
-def context_window_for_role(role: str) -> int:
-    """The effective input context window for ``role`` — the role's model's
-    per-model value if set, else the global runtime setting."""
-    try:
-        from aiforge_core.llm.router import resolve
-        ep = resolve(role)
-        per = context_for(ep.model or "", getattr(ep, "base_url", "") or "")
-        if per > 0:
-            return per
-    except Exception:  # noqa: BLE001
-        pass
+# Ceiling for a detected window (256K) and the static fallback default (128K).
+_CTX_CEILING = 262144
+_CTX_STATIC_DEFAULT = 131072
+
+
+def _autodetect_ctx_enabled() -> bool:
+    """Gate for the /v1/models context probe. Default ON; disable with
+    ``AIFORGE_AUTODETECT_CTX=0``."""
+    return os.environ.get("AIFORGE_AUTODETECT_CTX", "1") not in ("0", "false", "")
+
+
+def effective_context_window(role: str | None = None) -> int:
+    """The single source of truth for the input context window (tokens).
+
+    Resolution order (first that yields a value wins) — an EXPLICIT operator
+    choice ALWAYS beats auto-detection, which beats the static default:
+
+      1. explicit operator setting:
+         a. the per-model registry window for this role's model, else
+         b. the global ``runtime_settings`` store/env value (``explicit`` —
+            NOT the built-in default, so detection can slot in below it).
+      2. auto-detected window from the live endpoint's ``/v1/models`` (capped
+         256K), gated by ``AIFORGE_AUTODETECT_CTX`` (default on). Soft-fails.
+      3. static default (131072).
+    """
+    base_url = ""
+    # 1a. explicit per-model registry window for this role.
+    if role:
+        try:
+            from aiforge_core.llm.router import resolve
+            ep = resolve(role)
+            base_url = getattr(ep, "base_url", "") or ""
+            per = context_for(ep.model or "", base_url)
+            if per > 0:
+                return per
+        except Exception:  # noqa: BLE001
+            base_url = base_url or ""
+    # 1b. explicit global operator setting (UI store or env) — NOT the default.
     try:
         from aiforge_core.config import runtime_settings
-        return int(runtime_settings.get("context_window"))
+        exp = runtime_settings.explicit("context_window")
+        if exp is not None:
+            return int(exp)
     except Exception:  # noqa: BLE001
-        return 131072
+        pass
+    # 2. auto-detect from the live endpoint (soft-fail → skip).
+    if _autodetect_ctx_enabled() and base_url:
+        try:
+            from aiforge_core.llm import health
+            det = health.probe_context_window(base_url)
+            if det:
+                return min(int(det), _CTX_CEILING)
+        except Exception:  # noqa: BLE001
+            pass
+    # 3. static default.
+    return _CTX_STATIC_DEFAULT
+
+
+def context_window_for_role(role: str) -> int:
+    """The effective input context window for ``role`` — the role's model's
+    per-model value if set, else auto-detected, else the global setting. Thin
+    wrapper over :func:`effective_context_window` (kept for back-compat)."""
+    return effective_context_window(role)
 
 
 def vision_for(model: str, base_url: str = "") -> str | None:

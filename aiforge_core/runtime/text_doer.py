@@ -97,21 +97,42 @@ _SEED_LOW: tuple[str, ...] = ("context_brief_md", "memory_brief_md")
 _SEED_TRUNC_MARK = "\n…(truncated to fit context)\n"
 
 
-def _seed_budget_chars() -> int:
-    """Total char budget for the Doer seed = a fraction (default 0.55, env
-    ``AIFORGE_SEED_BUDGET_FRAC``) of the resolved context window in chars
-    (``context_window`` tokens × 4), floored at 8000. Reserves the rest of
-    the window for the agent's actual work (tool output, edits, replies)."""
+def _seed_budget_chars(role: str = "doer") -> int:
+    """Total char budget for the Doer seed (convo[1]).
+
+    CO-BUDGETED with the system prompt (convo[0]) + the reserved reply so the
+    two un-condensable turn-1 messages plus output never overflow the window
+    (Fix A1). From the window (``context_window`` tokens × 4 chars) we first
+    subtract the reservations that AREN'T available to the seed — the model's
+    reply (``max_output_tokens`` × 4) and the system-prompt reservation
+    (``AIFORGE_SYS_PROMPT_FRAC`` of the window) — then take
+    ``AIFORGE_SEED_BUDGET_FRAC`` (default 0.35) of what's left, floored at 8000.
+
+    With SEED_FRAC + SYS_PROMPT_FRAC + out/window ≤ 1.0 this leaves headroom
+    for the running conversation. Uses the SAME per-role resolved window as the
+    other budgets (A3). Scales with the window at both 32K and 256K."""
     try:
-        frac = float(os.environ.get("AIFORGE_SEED_BUDGET_FRAC", "0.55"))
+        seed_frac = float(os.environ.get("AIFORGE_SEED_BUDGET_FRAC", "0.35"))
     except (TypeError, ValueError):
-        frac = 0.55
+        seed_frac = 0.35
     try:
-        from aiforge_core.config import runtime_settings
-        win = int(runtime_settings.get("context_window"))
+        sys_frac = float(os.environ.get("AIFORGE_SYS_PROMPT_FRAC", "0.35"))
+    except (TypeError, ValueError):
+        sys_frac = 0.35
+    try:
+        from aiforge_core.config import model_registry
+        win = int(model_registry.effective_context_window(role))
     except Exception:  # noqa: BLE001
         win = 32768
-    return max(int(win * 4 * frac), 8000)
+    try:
+        from aiforge_core.config import runtime_settings
+        out_chars = int(runtime_settings.get("max_output_tokens")) * 4
+    except Exception:  # noqa: BLE001
+        out_chars = 8192 * 4
+    win_chars = win * 4
+    sys_reserve = int(win_chars * sys_frac)
+    usable = win_chars - out_chars - sys_reserve
+    return max(int(usable * seed_frac), 8000)
 
 
 def _present_text(state: dict, key: str) -> str:

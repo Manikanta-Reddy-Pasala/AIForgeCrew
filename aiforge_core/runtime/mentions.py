@@ -34,11 +34,19 @@ def _mentions_max() -> int:
 
 
 def _mentions_total_chars() -> int:
-    """Aggregate char cap for the whole mentions block (env
-    ``AIFORGE_MENTIONS_TOTAL_CHARS``, default 48000; 0 disables)."""
+    """Aggregate char cap for the whole mentions block. An explicit
+    ``AIFORGE_MENTIONS_TOTAL_CHARS`` wins verbatim (0 disables); otherwise
+    window-relative (A2): floor 48000 on a 32K window, ~10% of a bigger one."""
+    env = os.environ.get("AIFORGE_MENTIONS_TOTAL_CHARS")
+    if env is not None:
+        try:
+            return max(0, int(env))
+        except (TypeError, ValueError):
+            pass
     try:
-        return max(0, int(os.environ.get("AIFORGE_MENTIONS_TOTAL_CHARS", "48000")))
-    except (TypeError, ValueError):
+        from aiforge_core.runtime.chat_agent import _window_scaled
+        return _window_scaled(48000, 0.10)
+    except Exception:  # noqa: BLE001
         return 48000
 
 
