@@ -20,6 +20,13 @@
 #
 # See `docs/agent-rules.md` for the prose explanation of each constraint and
 # the F1–F7 eval findings that motivated them.
+#
+# ─── IMPORTANT: identity fields are INFORMATIONAL ONLY ───────────────────────
+# The `identity.model` / `identity.base_url` / `identity.ctx_window` values on
+# each agent below do NOT drive routing. Real model / endpoint selection is
+# resolved at runtime from `agent_config` (the UI, or `AIFORGE_<ROLE>_*` env
+# vars) via `pipeline.py` → `resolve_litellm(role)`. Editing an `identity.model`
+# here changes documentation, not behaviour — change the model in the UI / env.
 # =============================================================================
 
 schema_version: 1
@@ -264,30 +271,36 @@ agents:
       max_turns: 40
       max_wall_s: 1500
     tools:
+      # NOTE: enforcement is OFF for the Doer — `agents/doer.py` builds its
+      # tools via `adk_function_tools()` with NO `role=`, so this block does
+      # NOT filter anything at runtime; it documents the Doer's INTENDED scope.
+      # The names below are the tools actually wired to the Doer factory in
+      # `runtime/doer_tools.py` (new_canonical + legacy_canonical). Do NOT turn
+      # enforcement on here without reconciling — it would strip the Doer's
+      # primary file/shell surface and brick it.
       allowed:
-        - editor                    # NEW — OH-parity multi-command editor
-        - bash                      # NEW — tmux persistent session
-        - browse                    # NEW — Playwright headless browser (sub #2)
-        - execute_ipython_cell      # NEW — persistent Jupyter kernel (sub #3)
-        - delegate_to_agent         # NEW — spawn researcher/planner/etc. (sub #8)
-        - mcp                       # NEW — MCP client for oneshell-mcp + ext (sub #11)
-        - memory_write              # NEW (gap-8) — Doer self-edit Observation_v2/Decision_v2 mid-run
-        - format                    # NEW (C3) — first-class formatter (ruff/black/prettier/gofmt/rustfmt)
-        - typecheck                 # NEW (C4) — language-aware type-checker (mypy/tsc/mvn compile/...)
-        - run_tests                 # NEW (C9) — pytest/mvn/npm/cargo/go test with fast/all/discover modes
-        - lsp                       # NEW (C8) — multilspy goto_definition / find_references / hover
-        - think                     # NEW — no-op + :Think trace
-        - finish                    # NEW — Doer-only termination signal
-        - update_working_checkpoint # save mid-run state
+        - editor                    # OH-parity multi-command editor
+        - bash                      # tmux persistent session
+        - file_read                 # real primary surface — read a file
+        - file_write                # real primary surface — create/overwrite
+        - file_patch                # real primary surface — find/replace one
+        - list_dir                  # real primary surface — list a directory
+        - run_shell                 # real primary surface — repo-root shell
+        - think                     # no-op + :Think trace
+        - finish                    # Doer-only termination signal
         - graphify_lookup           # read-only graph traversal (no fs writes)
         - memory_lookup             # read-only AiForgeMemory recall
         - skill_search              # find reusable SKILL.md playbooks before solving
         - learn_skill               # author a reusable skill after solving (self-improve)
         - repo_map                  # tree-sitter PageRank repo map (AST, no vectors)
         - impacted_tests            # diff→covering-tests map (run targeted slice)
-        - grep_repo                 # kept — useful for fast pattern search
-        - fetch_url                 # kept — public-docs fetch
-        - git_commit                # kept — milestone snapshots
+        - grep_repo                 # fast pattern search
+        - fetch_url                 # public-docs fetch
+        - web_search                # open-web search when stuck
+        - serve                     # boot the built app in the background
+        - stop_service              # stop a serve()'d process
+        - subtask_update            # flip a subticket's live status
+        - git_commit                # milestone snapshots
       forbidden:
         - ask_user
         - start_long_term_update
@@ -296,12 +309,7 @@ agents:
         - write_plan
         - web_scan
         - web_execute_js
-        - file_read                 # LEGACY — superseded by editor view
-        - file_write                # LEGACY — superseded by editor create
-        - file_patch                # LEGACY — superseded by editor str_replace
-        - list_dir                  # LEGACY — superseded by editor view (dir)
-        - run_shell                 # LEGACY — superseded by bash
-        - code_run                  # LEGACY — superseded by bash
+        - code_run                  # not a Doer tool — use bash / run_shell
     memory:
       read_scope: scoped            # only :Fact ABOUT files in allowlist globs
       write_scope: none
@@ -349,12 +357,16 @@ agents:
       read_scope: scoped
       write_scope: none
     rule: >
-      Feedback is a pure judge. No tools, single turn, single JSON verdict.
+      Feedback is a pure judge. No tools, single turn. Output is a ONE-TOKEN
+      TEXT verdict, deliberately NOT JSON: the first non-whitespace token
+      (pass | fail | scope_violation) decides, then a second line of rationale.
+      Local models emit reasoning preambles before JSON objects, so the prompt
+      uses this text protocol on purpose — do NOT "fix" it to JSON.
       `scope_violation` outranks `fail` — if any write touched a path outside
       the allowlist, verdict MUST be scope_violation regardless of test color.
     termination_contract:
-      - verdict ∈ {pass, fail, scope_violation} emitted as valid JSON
-      - rationale is a non-empty string citing specific evidence
+      - first token ∈ {pass, fail, scope_violation} emitted as PLAIN TEXT (not JSON)
+      - line 2 rationale is a non-empty string citing specific evidence
 
   # ---------------------------------------------------------------------------
   # 6. LEARNER
@@ -644,7 +656,7 @@ agents:
       allowed:
         - bash
         - file_read
-        - file_grep
+        - grep
       forbidden:
         - file_write
         - file_patch

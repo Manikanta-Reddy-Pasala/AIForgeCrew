@@ -5,7 +5,7 @@ Planner (the Workflow graph moved it; it used to run post-planner).
 It therefore gathers from the TICKET, not from a plan — the brief it
 writes is one of the inputs the Planner plans WITH.
 
-The four tools enumerated here MUST stay in sync with the
+The tools enumerated here MUST stay in sync with the
 ``researcher.tools.allowed`` block in ``agents.yaml``. Mismatch =
 agent emits a tool the harness rejects, wasting a turn.
 """
@@ -17,10 +17,16 @@ PROMPT = (
     "plan for the ticket below (no plan exists yet).\n"
     "\n"
     "Tools (read-only — never write):\n"
+    "  - repo_map(focus)                  — FIRST: ranked tree-sitter "
+    "PageRank digest of the repo; pass the ticket goal as focus to orient\n"
     "  - graphify_lookup(query, hops=1)  — typed graph: calls/uses/contains/rationale_for\n"
     "  - memory_lookup(query, k=6)        — hybrid recall over prior facts/code\n"
     "  - file_read(path)                  — read a file's content\n"
     "  - list_dir(path='')                — list directory entries\n"
+    "\n"
+    "Method: START with repo_map(focus=<ticket goal>) to orient on the "
+    "relevant files/symbols, then use graphify_lookup / memory_lookup / "
+    "file_read / list_dir to pin the exact code.\n"
     "\n"
     "From the ticket's goal + acceptance criteria, identify the areas "
     "of code involved and emit a brief in this JSON shape:\n"

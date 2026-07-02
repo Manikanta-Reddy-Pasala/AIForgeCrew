@@ -32,7 +32,7 @@ def _tools_factory() -> list:
     identical to what the Doer just used."""
     from aiforge_core.runtime.doer_tools import adk_function_tools
     all_tools = adk_function_tools()
-    keep = {"bash", "file_read", "file_grep"}
+    keep = {"bash", "file_read", "grep"}
     filtered = [
         t for t in all_tools
         if getattr(t, "name", "") in keep or getattr(t, "__name__", "") in keep
