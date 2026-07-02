@@ -75,6 +75,11 @@ def make_quality_gate_after_callback():
                 typecheck_ok=state.get("typecheck_ok"),
                 tests_ok=state.get("tests_ok"),
                 lint_ok=state.get("lint_ok"),
+                # Fix 3: a capped/incomplete Doer run (``doer_incomplete``)
+                # hard-fails; the tests-declared-but-never-ran downgrade stays
+                # behind AIFORGE_STRICT_TEST_GATE inside quality_gate.evaluate.
+                doer_incomplete=state.get("doer_incomplete"),
+                tests_declared=state.get("tests_declared"),
             )
             if gate["gate"] != "fail":
                 return None

@@ -486,14 +486,18 @@ def _parse_file_blocks(text: str) -> dict:
 
 
 def _in_scope(rel: str, globs: list[str]) -> bool:
-    """True if relative path ``rel`` matches any allowlist glob (fnmatch)."""
-    import fnmatch
-    rel = (rel or "").lstrip("/")
-    for g in globs:
-        g = str(g or "").lstrip("/")
-        if g and (fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(rel, g + "/*")):
-            return True
-    return False
+    """True if relative path ``rel`` matches any allowlist glob.
+
+    Fix 2: delegate to the ONE shared, robust matcher
+    (``scope_guard._matches_any``) so parallel and single-doer mode enforce
+    IDENTICAL scope semantics (directory globs, ``**``, normalization).
+    Soft-fail to allow so a matcher slip never silently drops a legit write.
+    """
+    try:
+        from aiforge_core.runtime import scope_guard as _sg
+        return _sg._matches_any(rel, globs)
+    except Exception:  # noqa: BLE001 — never crash the parallel runner
+        return True
 
 
 def lightweight_run_one(subtask: dict, worktree: str) -> dict:

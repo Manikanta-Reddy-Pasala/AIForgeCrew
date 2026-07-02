@@ -244,12 +244,28 @@ def run_text_doer(
                     err_text = txt        # fallback outcome if no message
             elif etype == "done":
                 break
-        result["doer_outcome"] = (
-            last_msg or err_text or "text-doer produced no final output")
+        outcome = (last_msg or err_text or "text-doer produced no final output")
+        result["doer_outcome"] = outcome
         result.update(signals)
+        # Fix 3a: chat_agent emits a plain "(stopped: ..." banner when it hits
+        # the runaway safety cap / turn deadline WITHOUT finishing. Harvesting
+        # that as the outcome (as we do) must not read as a clean pass — flag
+        # the run incomplete so the quality gate downgrades a model ``pass``.
+        # Mirrors parallel_subtasks' ``.startswith("(stopped:")`` detection.
+        stopped = _is_stopped_outcome(outcome)
+        result["stopped"] = stopped
+        result["incomplete"] = stopped
     except Exception as exc:  # noqa: BLE001 — never crash the pipeline
         result["doer_outcome"] = f"text-doer error: {exc}"
     return result
+
+
+def _is_stopped_outcome(text: str) -> bool:
+    """True when the outcome is chat_agent's runaway/deadline stop banner —
+    an INCOMPLETE run, not a real FINAL. Matches a leading ``(stopped:`` (as
+    parallel_subtasks does) and, defensively, the banner anywhere in the text."""
+    t = (text or "").strip()
+    return t.startswith("(stopped:") or "(stopped:" in t
 
 
 # quality_gate is the source of truth for the tool→signal mapping; import it
@@ -309,6 +325,12 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
         val = out.get(key)
         if val is not None:
             state[key] = val
+    # Fix 3a: propagate the incomplete-stop flag so the quality gate
+    # (feedback.make_quality_gate_after_callback → quality_gate.evaluate)
+    # downgrades a model ``pass`` to ``fail``. A capped/incomplete text-Doer
+    # run must NOT be eligible to ship as pass.
+    if out.get("stopped") or out.get("incomplete"):
+        state["doer_incomplete"] = True
 
 
 def make_text_doer_node():

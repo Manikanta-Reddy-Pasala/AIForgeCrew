@@ -25,6 +25,7 @@ the gate passes, and the model verdict flows through unchanged.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 __all__ = ["evaluate", "gate_verdict", "make_quality_signal_callback"]
@@ -65,11 +66,21 @@ def make_quality_signal_callback():
     return _cb
 
 
+def _strict_test_gate() -> bool:
+    """``AIFORGE_STRICT_TEST_GATE`` — gate the (riskier) "tests declared but
+    never ran" downgrade. Default OFF to avoid false-negatives on trivial
+    tasks that legitimately run no tests."""
+    return os.environ.get("AIFORGE_STRICT_TEST_GATE", "0").strip().lower() in {
+        "1", "true", "yes", "on"}
+
+
 def evaluate(
     *,
     typecheck_ok: bool | None,
     tests_ok: bool | None,
     lint_ok: bool | None = None,
+    doer_incomplete: bool | None = None,
+    tests_declared: bool | None = None,
 ) -> dict[str, Any]:
     """Combine the quality signals into a gate decision.
 
@@ -78,6 +89,14 @@ def evaluate(
         tests_ok: test-suite result. ``False`` → hard fail.
         lint_ok: lint result. ``False`` → soft warning only (never fails
             the gate).
+        doer_incomplete: the Doer stopped WITHOUT finishing (hit the runaway
+            safety cap / turn deadline — a ``"(stopped: ..."`` banner). This
+            is unambiguous, so ``True`` → hard fail regardless of the flag
+            (Fix 3a): a capped run must never ship an optimistic ``pass``.
+        tests_declared: the plan/acceptance declared a test bar. When set and
+            ``tests_ok is None`` (tests never ran), the gate hard-fails ONLY
+            if ``AIFORGE_STRICT_TEST_GATE`` is on — kept behind the flag
+            because a trivial task may legitimately run no tests.
 
     Returns:
         ``{"gate": "pass"|"fail", "reasons": [...]}``. ``reasons`` carries
@@ -93,6 +112,13 @@ def evaluate(
         failed = True
     if tests_ok is False:
         reasons.append("tests failed")
+        failed = True
+    if doer_incomplete:
+        # Unambiguous: the Doer ran out of steps/deadline mid-task.
+        reasons.append("doer stopped incomplete (hit cap/deadline)")
+        failed = True
+    if tests_declared and tests_ok is None and _strict_test_gate():
+        reasons.append("tests declared but never ran (strict gate)")
         failed = True
     if lint_ok is False:
         # Soft signal — recorded for visibility, does not fail the gate.
