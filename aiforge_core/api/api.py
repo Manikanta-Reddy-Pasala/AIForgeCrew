@@ -706,6 +706,17 @@ def create_ticket(payload: TicketCreate) -> dict:
 
 # ─────────────────────────── scheduled jobs ─────────────────────────
 
+_CRONITER_HINT = ("Scheduled jobs need the 'croniter' package — run "
+                  "`uv pip install croniter` (or `uv sync`) and restart the API.")
+
+
+def _require_croniter() -> None:
+    """503 with an actionable message when croniter isn't installed, instead
+    of an opaque ModuleNotFoundError 500 that breaks the whole Jobs page."""
+    from aiforge_core.jobs import parse as jobs_parse
+    if not jobs_parse.CRONITER_AVAILABLE:
+        raise HTTPException(503, _CRONITER_HINT)
+
 
 @app.post("/api/jobs/preview")
 def jobs_preview(payload: JobPreviewBody) -> dict:
@@ -713,12 +724,15 @@ def jobs_preview(payload: JobPreviewBody) -> dict:
     Saves NOTHING. Parse errors come back as {ok: False, error} so the
     UI renders them in the preview card instead of a 500."""
     from aiforge_core.jobs import parse as jobs_parse
+    if not jobs_parse.CRONITER_AVAILABLE:
+        return {"ok": False, "error": _CRONITER_HINT}
     return jobs_parse.parse_instructions(payload.instructions)
 
 
 @app.post("/api/jobs", status_code=201)
 def jobs_create(payload: JobCreate) -> dict:
     from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
+    _require_croniter()
     # schedulable() rejects both invalid AND save-valid-but-unschedulable
     # crons (e.g. "0 0 31 2 *"), so next_runs below can't 500.
     if not jobs_parse.schedulable(payload.cron):
@@ -744,6 +758,7 @@ def jobs_patch(job_id: int, payload: JobPatch) -> dict:
     from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
     if jobs_store.get(job_id) is None:
         raise HTTPException(404, f"job {job_id} not found")
+    _require_croniter()
     fields = {k: v for k, v in payload.model_dump().items() if v is not None}
     # Reject blanking a required text field (JobPatch has no min_length, so
     # {"ticket_title": ""} would otherwise store an empty value that later
@@ -776,6 +791,7 @@ def jobs_run_now(job_id: int) -> dict:
     job = jobs_store.get(job_id)
     if job is None:
         raise HTTPException(404, f"job {job_id} not found")
+    _require_croniter()
     ok = jobs_scheduler.fire(job)
     return {"ok": ok, "job": jobs_store.get(job_id)}
 

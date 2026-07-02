@@ -12,7 +12,12 @@ import os
 import time
 from datetime import datetime
 
-from croniter import croniter
+try:
+    from croniter import croniter
+    _CRONITER_OK = True
+except ImportError:  # pragma: no cover — dep missing → scheduler no-ops
+    croniter = None  # type: ignore
+    _CRONITER_OK = False
 
 from aiforge_core.jobs import store
 
@@ -108,6 +113,10 @@ def tick(now: datetime | None = None) -> int:
 
 def run_loop() -> None:
     """Blocking loop for the daemon thread. Never raises."""
+    if not _CRONITER_OK:
+        log.warning("jobs.scheduler disabled — 'croniter' not installed "
+                    "(run `uv pip install croniter` / `uv sync`)")
+        return
     log.info("jobs.scheduler loop started (tick=%ss)", _tick_s())
     while True:
         try:

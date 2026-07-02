@@ -149,3 +149,31 @@ def test_create_accepts_cron_alias(app_client):
     # min_length=9 heuristic wrongly 422'd it.
     r = client.post("/api/jobs", json={**_DRAFT, "cron": "@daily"})
     assert r.status_code == 201
+
+
+def test_degrades_gracefully_when_croniter_absent(app_client, monkeypatch):
+    """A deployment missing croniter must not 500-crash the Jobs page:
+    the list still works, preview returns a friendly error, create/run-now
+    return an actionable 503 instead of an opaque ModuleNotFoundError."""
+    client, _ = app_client
+    from aiforge_core.jobs import parse as jobs_parse
+    monkeypatch.setattr(jobs_parse, "CRONITER_AVAILABLE", False)
+
+    # list still renders (store-only, no croniter) → page doesn't break
+    assert client.get("/api/jobs").status_code == 200
+
+    # preview → friendly, not a 500
+    p = client.post("/api/jobs/preview", json={"instructions": "every day 8am"})
+    assert p.status_code == 200
+    assert p.json()["ok"] is False and "croniter" in p.json()["error"].lower()
+
+    # create → actionable 503
+    c = client.post("/api/jobs", json=_DRAFT)
+    assert c.status_code == 503 and "croniter" in c.json()["detail"].lower()
+
+
+def test_parse_module_imports_without_croniter():
+    """parse.py must load even when croniter is absent (guarded import)."""
+    from aiforge_core.jobs import parse as jobs_parse
+    assert hasattr(jobs_parse, "CRONITER_AVAILABLE")
+    assert jobs_parse.human_schedule("0 8 * * *")  # no-croniter path works

@@ -10,7 +10,17 @@ import logging
 import os
 from datetime import datetime
 
-from croniter import croniter
+# croniter is an optional-at-runtime dep of the scheduled-jobs feature. If a
+# deployment predates the dependency (didn't re-sync), don't hard-crash the
+# whole Jobs page — degrade: the store + human_schedule still work (so the page
+# renders + lists jobs), and only the schedule-computing paths (create/preview)
+# report an actionable "install croniter" message.
+try:
+    from croniter import croniter
+    CRONITER_AVAILABLE = True
+except ImportError:  # pragma: no cover — only when the dep is missing
+    croniter = None  # type: ignore
+    CRONITER_AVAILABLE = False
 
 # Reuse the battle-tested brace-balanced JSON extractor (string-aware);
 # duplicating 30 lines of parser is worse than this private import.
@@ -68,7 +78,15 @@ def human_schedule(cron: str) -> str:
     return f"cron: {cron}"
 
 
+class CroniterUnavailable(RuntimeError):
+    """Raised when a schedule computation is attempted without croniter."""
+
+
 def next_runs(cron: str, n: int = 3, base: datetime | None = None) -> list[str]:
+    if not CRONITER_AVAILABLE:
+        raise CroniterUnavailable(
+            "the 'croniter' package is required to schedule jobs — run "
+            "`uv pip install croniter` (or `uv sync`) and restart")
     it = croniter(cron, base or datetime.now())
     return [it.get_next(datetime).isoformat(timespec="seconds")
             for _ in range(n)]
@@ -78,7 +96,10 @@ def schedulable(cron: str) -> bool:
     """True only if ``cron`` both validates AND can actually produce a next
     run. croniter.is_valid() accepts impossible date/month combos (e.g.
     "0 0 31 2 *" — Feb 31) that then raise on get_next(); this catches
-    that so callers never crash on a save-valid-but-unschedulable cron."""
+    that so callers never crash on a save-valid-but-unschedulable cron.
+    Returns False when croniter isn't installed (callers surface the reason)."""
+    if not CRONITER_AVAILABLE:
+        return False
     if not croniter.is_valid(cron):
         return False
     try:
