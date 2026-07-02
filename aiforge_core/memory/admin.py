@@ -81,8 +81,16 @@ def _graph_driver():
 
     from aiforge_core.memory.neo4j_conn import neo4j_params
     uri, user, pw = neo4j_params()
-    return GraphDatabase.driver(uri, auth=(user, pw),
-                                connection_timeout=4)
+    # Suppress "label/property does not exist" notifications: the overview
+    # queries labels (Symbol/Chunk_v2/GraphifyNode) + props (source/sources)
+    # that legitimately don't exist until something is indexed — Neo4j 5+ warns
+    # loudly on every call, flooding the logs. OFF is correct for count/probe
+    # queries where a missing label is an expected 0, not a mistake.
+    try:
+        return GraphDatabase.driver(uri, auth=(user, pw), connection_timeout=4,
+                                    notifications_min_severity="OFF")
+    except TypeError:  # older driver without the kwarg
+        return GraphDatabase.driver(uri, auth=(user, pw), connection_timeout=4)
 
 
 def _graph_snapshot() -> dict:

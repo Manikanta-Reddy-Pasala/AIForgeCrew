@@ -156,10 +156,11 @@ const OVERVIEW_STORES: {
 ];
 
 function labelSummary(s: MemoryStoreSection, unit: string): string {
-  const total = (s.total ?? 0).toLocaleString();
+  const n = s.total ?? 0;
+  if (n === 0) return `0 ${unit} — nothing indexed yet`;
   const parts = Object.entries(s.labels || {})
     .map(([k, v]) => `${k} ${v}`).join(', ');
-  return `${total} ${unit}` + (parts ? ` — ${parts}` : '');
+  return `${n.toLocaleString()} ${unit}` + (parts ? ` — ${parts}` : '');
 }
 
 function OverviewPanel() {
