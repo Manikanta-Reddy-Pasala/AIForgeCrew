@@ -51,6 +51,17 @@ if [[ -z "${NEO4J_PASSWORD:-}" && -f .env ]]; then
   [[ "$_auth" == */* ]] && export NEO4J_PASSWORD="${_auth#*/}"
 fi
 
+# 3b) Neo4j Browser URL for the Memory-page "Open in Neo4j Browser" links.
+#     The UI otherwise falls back to <ui-host>:7474, which is dead when the UI
+#     is reached over the public tunnel (tickets.oneshell.in:7474 isn't routed).
+#     Point it at THIS host's LAN IP so the link always hits the reachable
+#     browser (:7474 is bound 0.0.0.0). Operator env wins. -----------------------
+if [[ -z "${AIFORGE_NEO4J_BROWSER_URL:-}" ]]; then
+  _lan_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(192|10|172)\.' | head -1 || true)"
+  [[ -n "$_lan_ip" ]] && export AIFORGE_NEO4J_BROWSER_URL="http://${_lan_ip}:7474"
+fi
+echo "==> neo4j browser: ${AIFORGE_NEO4J_BROWSER_URL:-<unset — UI falls back to ui-host:7474>}"
+
 # 4) Host workspace = where repos to index live (container used /workspace) -----
 export AIFORGE_HOST_WORKSPACE="${AIFORGE_HOST_WORKSPACE:-$ROOT/data/workspace}"
 mkdir -p "$AIFORGE_HOST_WORKSPACE"
@@ -70,6 +81,7 @@ setsid env \
   AIFORGE_GRAPHIFY_BIN="${AIFORGE_GRAPHIFY_BIN:-}" \
   AIFORGE_HOST_WORKSPACE="$AIFORGE_HOST_WORKSPACE" \
   AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1 \
+  AIFORGE_NEO4J_BROWSER_URL="${AIFORGE_NEO4J_BROWSER_URL:-}" \
   NEO4J_PASSWORD="${NEO4J_PASSWORD:-}" \
   PATH="$PATH" \
   ./run.sh --host "$BIND" --port "$PORT" >"$LOG" 2>&1 < /dev/null &

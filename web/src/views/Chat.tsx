@@ -1685,8 +1685,8 @@ export default function Chat() {
                 />
                 <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                         title="Attach a file — image, PDF, Word, Excel, text — queryable all session"
-                        style={{ whiteSpace: 'nowrap' }}>
-                  {uploadingMedia ? '…' : '📎'}
+                        style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
+                  {uploadingMedia ? '…' : <Icon.Paperclip size={15} />}
                 </button>
                 {busy && (
                   <button onClick={stopRun} className="danger"
@@ -1765,8 +1765,8 @@ export default function Chat() {
               />
               <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                       title="Attach a file — image, PDF, Word, Excel, text — starts a chat, queryable all session"
-                      style={{ whiteSpace: 'nowrap' }}>
-                {uploadingMedia ? '…' : '📎'}
+                      style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
+                {uploadingMedia ? '…' : <Icon.Paperclip size={15} />}
               </button>
               {busy && (
                 <button onClick={stopRun} className="danger"
