@@ -16,8 +16,11 @@ OUTPUT_KEY = "conventions_brief_md"
 
 
 def _tools_factory() -> list:
+    # Pass ROLE so the factory enforces ctx_conventions's agents.yaml allowlist
+    # (grep_repo / grep / editor / file_read / list_dir) — the read-only
+    # convention-inspection surface. Write/exec tools are stripped.
     from aiforge_core.runtime.doer_tools import adk_function_tools
-    return adk_function_tools()
+    return adk_function_tools(role=ROLE)
 
 
 TOOLS_FACTORY = _tools_factory

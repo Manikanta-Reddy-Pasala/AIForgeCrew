@@ -461,20 +461,25 @@ agents:
       max_turns: 10
       max_wall_s: 600
     tools:
+      # Enforced via adk_function_tools(role="researcher"): names below must
+      # match the real doer-tool surface (grep_repo, not grep_repos) and must
+      # be a SUPERSET of what the prompt tells the model to call
+      # (graphify_lookup / memory_lookup / file_read / list_dir) or it starves.
       allowed:
         - graphify_lookup
         - memory_lookup
         - editor                # view-only via editor_commands below
-        - grep_repos
+        - grep_repo
+        - grep                  # alias — model may emit either spelling
+        - file_read
+        - list_dir
+        - repo_map
       forbidden:
         - file_write
         - file_patch
-        - run_compile
-        - code_run
-        - ask_user
         - bash
         - run_shell
-        - file_read
+        - git_commit
     editor_commands:
       - view
     memory:
@@ -681,6 +686,9 @@ agents:
       max_turns: 6
       max_wall_s: 300
     tools:
+      # Enforced via adk_function_tools(role="ctx_memory"): allowlist is
+      # exactly the one tool the prompt calls. Forbidden names are the real
+      # write/exec tools (ask_user removed — not a tool on this surface).
       allowed:
         - memory_lookup
       forbidden:
@@ -688,7 +696,6 @@ agents:
         - file_patch
         - bash
         - run_shell
-        - ask_user
     memory:
       read_scope: full
       write_scope: none
@@ -718,17 +725,23 @@ agents:
       max_turns: 8
       max_wall_s: 300
     tools:
+      # Enforced via adk_function_tools(role="ctx_repomap"): names below match
+      # the real doer-tool surface (grep_repo, not grep_repos) and cover every
+      # tool the prompt calls, plus safe read siblings.
       allowed:
         - repo_map                  # tree-sitter PageRank digest (AST, no vectors) — use FIRST
         - graphify_lookup
-        - grep_repos
-        - editor
+        - grep_repo
+        - grep                      # alias — model may emit either spelling
+        - editor                    # view-only via editor_commands below
+        - file_read
+        - list_dir
       forbidden:
         - file_write
         - file_patch
         - bash
         - run_shell
-        - ask_user
+        - git_commit
     editor_commands:
       - view
     memory:
@@ -737,7 +750,7 @@ agents:
     rule: >
       ctx_repomap locates the files and symbols the plan touches via the
       grep+AST path: repo_map first (ranked tree-sitter digest), then
-      graphify_lookup + grep_repos for specifics. No vector recall.
+      graphify_lookup + grep_repo for specifics. No vector recall.
       Read-only. Writes only repo_brief_md — a compact list of
       {path, symbols, why}.
     termination_contract:
@@ -761,15 +774,20 @@ agents:
       max_turns: 6
       max_wall_s: 300
     tools:
+      # Enforced via adk_function_tools(role="ctx_conventions"): grep_repo (the
+      # real name) + editor view + safe read siblings; write/exec forbidden.
       allowed:
-        - grep_repos
-        - editor
+        - grep_repo
+        - grep                      # alias — model may emit either spelling
+        - editor                    # view-only via editor_commands below
+        - file_read
+        - list_dir
       forbidden:
         - file_write
         - file_patch
         - bash
         - run_shell
-        - ask_user
+        - git_commit
     editor_commands:
       - view
     memory:

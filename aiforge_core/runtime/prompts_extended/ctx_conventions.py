@@ -13,7 +13,7 @@ PROMPT = (
     "by the team, not a stranger.\n"
     "\n"
     "Tools (read-only — never write):\n"
-    "  - grep_repos(pattern)   — find config + example files\n"
+    "  - grep_repo(pattern)    — find config + example files\n"
     "  - editor view <path>    — view a file (no edits)\n"
     "\n"
     "Inspect the touched area + repo root for: build tool (maven / "
