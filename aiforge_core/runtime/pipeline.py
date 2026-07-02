@@ -273,6 +273,32 @@ def build_pipeline(*, skip_researcher: bool = False,
             doer.after_tool_callback = [existing_after_tool, _qs_cb]
     except Exception:
         pass  # signal wiring never blocks pipeline boot
+    # Lifecycle hooks (Claude-Code parity) at the pipeline tool boundary too —
+    # the chat path fires PreToolUse/PostToolUse in its dispatch loop; mirror
+    # it here so an operator's hooks.json applies to autonomous ticket runs.
+    # AIFORGE_HOOKS_DISABLE=1 makes the adapters no-op. Never blocks boot.
+    try:
+        from .hooks import adk_after_tool_callback, adk_before_tool_callback
+        _hook_before = adk_before_tool_callback()
+        if _hook_before is not None:
+            existing = getattr(doer, "before_tool_callback", None)
+            if existing is None:
+                doer.before_tool_callback = _hook_before
+            elif isinstance(existing, list):
+                doer.before_tool_callback = list(existing) + [_hook_before]
+            else:
+                doer.before_tool_callback = [existing, _hook_before]
+        _hook_after = adk_after_tool_callback()
+        if _hook_after is not None:
+            existing_after = getattr(doer, "after_tool_callback", None)
+            if existing_after is None:
+                doer.after_tool_callback = _hook_after
+            elif isinstance(existing_after, list):
+                doer.after_tool_callback = list(existing_after) + [_hook_after]
+            else:
+                doer.after_tool_callback = [existing_after, _hook_after]
+    except Exception:
+        pass  # hooks never block pipeline boot
     refiner = _refiner_mod.build(build_litellm_model)
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)

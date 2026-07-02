@@ -158,3 +158,55 @@ def fire(event: str, payload: dict | None = None,
     except Exception as exc:  # noqa: BLE001 — hooks must NEVER break the turn
         log.warning("hooks.fire soft-fail (%s): %s", event, exc)
         return dict(_NOOP)
+
+
+# ── ADK pipeline adapters ────────────────────────────────────────────────
+# Fire the same PreToolUse/PostToolUse hooks at the pipeline Doer's tool-call
+# boundary (the chat path fires them in chat_agent's dispatch loop). fire()
+# spawns subprocesses, so run it in an executor to avoid stalling ADK's async
+# loop; PreToolUse is awaited (its result can veto the tool), PostToolUse is
+# fire-and-forget.
+
+def adk_before_tool_callback():
+    """ADK ``before_tool_callback`` that fires PreToolUse hooks. Returns a
+    soft block-result dict when a ``block_on_nonzero`` hook vetoes the tool,
+    else ``None`` (allow). No-op when hooks are disabled."""
+    if os.environ.get("AIFORGE_HOOKS_DISABLE") == "1":
+        return None
+
+    async def _cb(*, tool=None, args=None, tool_context=None, **_kw):
+        try:
+            import asyncio
+            name = getattr(tool, "name", "") or ""
+            cwd = os.environ.get("AIFORGE_REPO_ROOT") or None
+            payload = {"tool": name, "args": args or {}}
+            out = await asyncio.get_running_loop().run_in_executor(
+                None, fire, "PreToolUse", payload, cwd)
+            if out.get("blocked"):
+                return {"ok": False, "blocked": "hook",
+                        "error": f"'{name}' was blocked by a PreToolUse hook"}
+        except Exception as exc:  # noqa: BLE001 — hooks never break the run
+            log.debug("adk PreToolUse hook soft-fail: %s", exc)
+        return None
+    return _cb
+
+
+def adk_after_tool_callback():
+    """ADK ``after_tool_callback`` that fires PostToolUse hooks (best-effort,
+    never blocks). No-op when hooks are disabled."""
+    if os.environ.get("AIFORGE_HOOKS_DISABLE") == "1":
+        return None
+
+    async def _cb(*, tool=None, args=None, tool_context=None,
+                  tool_response=None, **_kw):
+        try:
+            import asyncio
+            name = getattr(tool, "name", "") or ""
+            cwd = os.environ.get("AIFORGE_REPO_ROOT") or None
+            payload = {"tool": name, "args": args or {}, "result": tool_response}
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, fire, "PostToolUse", payload, cwd)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("adk PostToolUse hook soft-fail: %s", exc)
+        return None
+    return _cb
