@@ -4,7 +4,7 @@ services:
     container_name: aiforge-neo4j
     restart: unless-stopped
     environment:
-      NEO4J_AUTH: neo4j/password
+      NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/password}   # CHANGE before exposing beyond localhost
       NEO4J_PLUGINS: '["apoc","genai"]'
       # Defaults tuned for 32GB+ NUC. Laptops with small Docker mem budget
       # should override to 2G/1G via docker-compose.laptop.yml.

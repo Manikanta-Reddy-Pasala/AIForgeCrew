@@ -9,10 +9,21 @@ import pytest
 
 @pytest.fixture
 def store(monkeypatch, tmp_path):
+    # Force the embedded SQLite backend hermetically — an earlier full-suite
+    # test may have left AIFORGE_PG_URL/FORCE_PG set, which env.py captures at
+    # IMPORT into AIFORGE_USE_SQLITE, so we must clear them AND reload env
+    # before backend_factory reads it (else get_backend picks an unreachable PG).
+    monkeypatch.delenv("AIFORGE_PG_URL", raising=False)
+    monkeypatch.delenv("AIFORGE_DSN", raising=False)
+    monkeypatch.delenv("AIFORGE_FORCE_PG", raising=False)
+    monkeypatch.delenv("AIFORGE_TICKET_LEASE_S", raising=False)
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("AIFORGE_TICKETS_BACKEND", "sqlite")
     monkeypatch.setenv("AIFORGE_DB_PATH", str(tmp_path / "t.db"))
+    import aiforge_core.config.env as envmod
+    importlib.reload(envmod)
     from aiforge_core.tickets import backend_factory
+    importlib.reload(backend_factory)
     backend_factory.reset_backend_for_tests()
     from aiforge_core.tickets import store as s
     importlib.reload(s)

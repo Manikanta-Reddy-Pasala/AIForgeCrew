@@ -47,8 +47,9 @@ def _ambiguous_candidates(ticket) -> list[str]:
         globs = md.get("scope_allowlist_globs") or []
         if isinstance(globs, str):
             globs = [g.strip() for g in globs.splitlines() if g.strip()]
+        from aiforge_core.runtime.request_context import get_repo_root
         _, ambiguous = repo_rules.collect_or_ask(
-            os.environ.get("AIFORGE_REPO_ROOT", ""), globs, query)
+            get_repo_root() or "", globs, query)
         return [" or ".join(f"'{r.name}'" for r in group)
                for group in ambiguous]
     except Exception:  # noqa: BLE001

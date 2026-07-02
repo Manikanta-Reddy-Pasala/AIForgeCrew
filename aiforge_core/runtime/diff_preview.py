@@ -26,8 +26,12 @@ _SUPPRESSED = "[diff preview suppressed: path outside repo]"
 
 
 def _root() -> str:
-    """The repo root the preview is confined to (realpath-resolved)."""
-    base = os.environ.get("AIFORGE_REPO_ROOT") or os.getcwd()
+    """The repo root the preview is confined to (realpath-resolved).
+
+    Reads the request-scoped repo root (contextvar) so a concurrent chat on a
+    different repo can't clobber the preview jail via the process-global env."""
+    from aiforge_core.runtime.request_context import get_repo_root
+    base = get_repo_root() or os.getcwd()
     return os.path.realpath(os.path.expanduser(base))
 
 
@@ -39,9 +43,9 @@ def _resolve(path: str, cwd: str) -> Path | None:
     symlink pointing out). Never raises.
     """
     try:
+        from aiforge_core.runtime.request_context import get_repo_root
         root = os.path.realpath(
-            os.path.expanduser(os.environ.get("AIFORGE_REPO_ROOT")
-                               or cwd or os.getcwd()))
+            os.path.expanduser(get_repo_root() or cwd or os.getcwd()))
         if os.path.isabs(path):
             target = os.path.realpath(os.path.expanduser(path))
         else:

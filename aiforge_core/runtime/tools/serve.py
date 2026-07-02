@@ -163,6 +163,12 @@ def serve(args: dict, cwd: str | None = None) -> dict:
             stdout=logf, stderr=subprocess.STDOUT,
             start_new_session=True)
     except Exception as exc:  # noqa: BLE001
+        # Popen failed — don't leak the opened log file handle.
+        try:
+            if hasattr(logf, "close"):
+                logf.close()
+        except Exception:  # noqa: BLE001
+            pass
         return {"ok": False, "error": str(exc)}
 
     # Register + bind to the session so the Stop button can also kill it.
