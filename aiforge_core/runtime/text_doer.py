@@ -126,13 +126,36 @@ def _seed_budget_chars(role: str = "doer") -> int:
         win = 32768
     try:
         from aiforge_core.config import runtime_settings
-        out_chars = int(runtime_settings.get("max_output_tokens")) * 4
+        out_tok_chars = int(runtime_settings.get("max_output_tokens")) * 4
     except Exception:  # noqa: BLE001
-        out_chars = 8192 * 4
+        out_tok_chars = 8192 * 4
     win_chars = win * 4
+    # C1: at a small window (≤16K) the raw max_output reservation can equal the
+    # WHOLE window and the 8000 floors then push seed+sys+out past window×4.
+    # Cap the output reservation at a fraction of the window so it never eats
+    # >40% of a small box, and SCALE the floor down when little is left.
+    out_chars = _out_reserve_chars(win_chars, out_tok_chars)
     sys_reserve = int(win_chars * sys_frac)
     usable = win_chars - out_chars - sys_reserve
-    return max(int(usable * seed_frac), 8000)
+    floor = min(8000, max(0, usable) // 3)
+    return max(int(usable * seed_frac), floor)
+
+
+def _out_reserve_frac() -> float:
+    """Fraction of the window the model's reply may reserve (default 0.4,
+    env ``AIFORGE_OUT_RESERVE_FRAC``). Caps the output reservation so on a
+    small window it can't swallow the whole context (C1). Clamped to (0,1]."""
+    try:
+        v = float(os.environ.get("AIFORGE_OUT_RESERVE_FRAC", "0.4"))
+    except (TypeError, ValueError):
+        v = 0.4
+    return min(1.0, max(0.01, v))
+
+
+def _out_reserve_chars(win_chars: int, out_tok_chars: int) -> int:
+    """Output-reservation chars = min(max_output_tokens×4, window×frac) — the
+    reply never eats more than ``_out_reserve_frac`` of the window (C1)."""
+    return min(out_tok_chars, int(win_chars * _out_reserve_frac()))
 
 
 def _present_text(state: dict, key: str) -> str:

@@ -360,13 +360,49 @@ def _kill_proc(proc) -> None:
         pass
 
 
+_GIT_TOPLEVEL_CACHE: dict[str, str | None] = {}
+
+
+def _git_toplevel(cwd: str | None) -> str | None:
+    """Repo root for ``cwd`` (``git rev-parse --show-toplevel``), cached and
+    soft-failing to None outside a work tree. Lets a SUBDIR resolve the same
+    repo key as the root (gap M3)."""
+    if not cwd:
+        return None
+    key = str(cwd)
+    if key in _GIT_TOPLEVEL_CACHE:
+        return _GIT_TOPLEVEL_CACHE[key]
+    top: str | None = None
+    try:
+        out = subprocess.run(
+            ["git", "-C", key, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if out.returncode == 0:
+            top = out.stdout.strip() or None
+    except Exception:  # noqa: BLE001 — recall must never break on git
+        top = None
+    _GIT_TOPLEVEL_CACHE[key] = top
+    return top
+
+
+def _chat_repo_key(cwd: str | None) -> str:
+    """Repo key for chat recall — resolves the GIT-TOPLEVEL basename (so a
+    subdir recalls the same repo as the root), falling back to the raw cwd
+    basename, then ``AIFORGE_AFM_REPO``, then the literal ``"repo"`` (gap M3).
+    Note ``repo_key`` is always truthy for a real path, so its ``or env``
+    fallback was dead — we chain the env explicitly here."""
+    from aiforge_core.runtime import rule_capture as _rc
+    base = _rc.repo_key(_git_toplevel(cwd) or cwd)
+    return base or os.environ.get("AIFORGE_AFM_REPO") or "repo"
+
+
 def _t_memory_lookup(args: dict, cwd: str) -> dict:
     try:
         from aiforge_core.memory import unified_query as _uq
-        from aiforge_core.runtime import rule_capture as _rc
-        # F2: scope recall to the SAME repo the chat WRITE path files under
-        # (rule_capture.repo_key(cwd)) so chat's own facts aren't filtered out.
-        _repo = _rc.repo_key(cwd) or "repo"
+        # F2/M3: scope recall to the SAME repo the chat WRITE path files under
+        # (git-toplevel basename), so chat's own facts aren't filtered out.
+        _repo = _chat_repo_key(cwd)
         res = _uq.query(args["query"], limit=int(args.get("limit", 6)),
                         repo=_repo)
         return {"ok": True, "hits": [
@@ -1845,13 +1881,32 @@ def _sys_prompt_frac() -> float:
 
 def _sys_prompt_budget_chars(role: str | None = None) -> int:
     """Char cap for the assembled system prompt = :func:`_sys_prompt_frac` of
-    the resolved window in chars, floored at 8000. Threads ``role`` so it uses
-    the SAME per-role window as the seed + history budgets (A3)."""
+    the resolved window in chars, floored (scaled down on small windows).
+    Threads ``role`` so it uses the SAME per-role window as the seed + history
+    budgets (A3).
+
+    C1: co-budgeted with the Doer seed + the output reservation so
+    ``seed + sysprompt + out ≤ window×4`` holds even at 4K/8K/16K, where the
+    fixed 8000 floor + a full-window output reservation used to overflow. The
+    output reservation is capped at a window fraction and the floor scales
+    down with whatever is left."""
     try:
         win = _resolved_window(role)
     except Exception:  # noqa: BLE001
         win = 32768
-    return max(int(win * 4 * _sys_prompt_frac()), _SYS_PROMPT_FLOOR_CHARS)
+    win_chars = win * 4
+    sys_frac = _sys_prompt_frac()
+    try:
+        from aiforge_core.runtime import text_doer as _td
+        from aiforge_core.config import runtime_settings
+        out_tok_chars = int(runtime_settings.get("max_output_tokens")) * 4
+        out_chars = _td._out_reserve_chars(win_chars, out_tok_chars)
+    except Exception:  # noqa: BLE001
+        out_chars = min(8192 * 4, int(win_chars * 0.4))
+    sys_reserve = int(win_chars * sys_frac)
+    usable = win_chars - out_chars - sys_reserve
+    floor = min(_SYS_PROMPT_FLOOR_CHARS, max(0, usable) // 3)
+    return max(sys_reserve, floor)
 
 
 _SYS_CAP_MARK = "\n…(system prompt truncated to fit context window)\n"
@@ -2149,7 +2204,8 @@ def _repo_name(cwd: str) -> str:
     return os.path.basename(base) or "repo"
 
 
-def _memory_recall(cwd: str, query: str, limit: int = 6) -> str:
+def _memory_recall(cwd: str, query: str, limit: int = 6,
+                   session_id: "int | None" = None) -> str:
     """Proactive memory recall at SESSION START — pull prior decisions /
     gotchas / learnings relevant to the user's opening request so the agent
     arrives informed (self-learning) instead of re-deriving what past
@@ -2160,11 +2216,13 @@ def _memory_recall(cwd: str, query: str, limit: int = 6) -> str:
     hits: list[dict] = []
     try:
         from aiforge_core.memory import unified_query as _uq
-        from aiforge_core.runtime import rule_capture as _rc
-        # F2: recall under the SAME repo the chat WRITE path files facts
-        # under, else sqlite_memory.recall filters them out (WHERE repo=?).
-        _repo = _rc.repo_key(cwd) or "repo"
-        res = _uq.query(q, limit=limit, repo=_repo)
+        # F2/M3: recall under the SAME repo the chat WRITE path files facts
+        # under (git-toplevel basename), else sqlite_memory.recall filters
+        # them out (WHERE repo=?). M4: exclude the current live session so
+        # this turn's own messages don't return as "prior chat".
+        _repo = _chat_repo_key(cwd)
+        res = _uq.query(q, limit=limit, repo=_repo,
+                        exclude_session=session_id)
         if isinstance(res, dict):
             hits = res.get("hits", []) or []
     except Exception:  # noqa: BLE001
@@ -2394,7 +2452,8 @@ def run_chat_agent(
     # mode pulls fewer hits.
     if _ctx_on("recall"):
         _add_sys_block("recall",
-                       _memory_recall(cwd, last_user, limit=(3 if cave else 6)))
+                       _memory_recall(cwd, last_user, limit=(3 if cave else 6),
+                                      session_id=session_id))
         # Prior CHAT SESSIONS — surface what the user discussed in OTHER
         # conversations (excludes the current session). Cave mode → fewer hits.
         # Local SQLite scan, so cheap enough to run every turn there IS a query.
