@@ -475,6 +475,38 @@ def _t_memory_write(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_create_job_script(args: dict, cwd: str) -> dict:
+    """JOB-BUILDER finalize: write the approved script to the local
+    ~/.aiforge/jobs folder and register a cron job that RUNS it (deterministic
+    — no ticket, no LLM per fire). Args: name, cron, script, optional
+    description. Mirrors POST /api/jobs/script so the chat builder can finalize
+    in-conversation."""
+    try:
+        name = str(args.get("name") or "").strip()
+        cron = str(args.get("cron") or "").strip()
+        script = str(args.get("script") or "")
+        if not name or not cron or not script.strip():
+            return {"ok": False, "error": "need name, cron, and script"}
+        from aiforge_core.jobs import parse as jobs_parse
+        from aiforge_core.jobs import scripts as jobs_scripts
+        from aiforge_core.jobs import store as jobs_store
+        if not jobs_parse.schedulable(cron):
+            return {"ok": False,
+                    "error": f"invalid or unschedulable cron: {cron!r}"}
+        path = jobs_scripts.write_script(name, script)
+        nxt = jobs_parse.next_runs(cron, n=1)[0]
+        job = jobs_store.create(
+            name=name, cron=cron, ticket_title=name,
+            ticket_body=(str(args.get("description") or "").strip()
+                         or f"Runs script: {path}"),
+            next_run_at=nxt, kind="script", script_path=path)
+        return {"ok": True, "job_id": job["id"], "script_path": path,
+                "human_schedule": jobs_parse.human_schedule(cron),
+                "next_run_at": job["next_run_at"]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build",
               "__pycache__", ".next", "target", ".gradle", ".idea"}
 
@@ -1147,6 +1179,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "web_fetch": _t_web_fetch,
     "workflow_search": _t_workflow_search,
     "learn_workflow": _t_learn_workflow,
+    "create_job_script": _t_create_job_script,
     "serve": _t_serve,
     "stop_service": _t_stop_service,
     "list_services": _t_list_services,
@@ -1449,6 +1482,8 @@ Tool arguments:
 - workflow_search {{"query": "..."}}                     (find reusable WORKFLOW.md end-to-end procedures)
 - learn_workflow  {{"name": "...", "description": "when to use it", "body": "the end-to-end steps", "triggers": ["word1"], "scope": "global|repo"}}
                 (author a reusable multi-step workflow when the user asks or after running a repeatable procedure)
+- create_job_script {{"name": "...", "cron": "0 9 * * *", "script": "<bash script text>", "description": "optional"}}
+                (JOB-BUILDER finalize: save the approved script to ~/.aiforge/jobs + schedule it as a recurring cron job — deterministic, no LLM per run)
 - confluence_search {{"query": "..."}}  or  {{"cql": "space = ENG AND text ~ 'foo'"}}   (find pages)
 - confluence_read   {{"id": "12345"}}  or  {{"title": "Page Title", "space": "ENG"}}      (read a page; body is storage XHTML)
 - confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page — needs your Approve)
@@ -2415,6 +2450,7 @@ def run_chat_agent(
     session_id: int | None = None,
     mode: str = "act",              # "act" = full tools; "plan" = read-only
     scope_globs: list[str] | None = None,  # autonomous Doer scope allowlist
+    builder: str | None = None,     # job|skill|workflow|rule — task charter
 ) -> Iterator[dict]:
     """Drive the ReAct loop until the agent finishes or a stuck loop is
     detected (NOT a step count). Yields SSE-ready event dicts:
@@ -2477,6 +2513,14 @@ def run_chat_agent(
         sys_msg = rules + "\n\n" + sys_msg
     if plan_mode:                   # plan banner second — constrains this turn
         sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
+    if builder:                     # task-specific builder charter (highest)
+        try:
+            from aiforge_core.runtime.prompts_extended import builders as _bld
+            _charter = _bld.charter_for(builder)
+        except Exception:  # noqa: BLE001 — a bad charter must never break chat
+            _charter = None
+        if _charter:
+            sys_msg = _charter + "\n\n" + sys_msg
     # C2: budget the (un-condensable) system prompt. The CORE prompt + rules
     # above are ALWAYS kept; each optional block below is appended via a
     # budget-aware helper that truncates/drops it (lowest priority = appended
