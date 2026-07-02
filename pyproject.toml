@@ -30,6 +30,14 @@ dependencies = [
   # Vendored into packages/aiforge_memory/ (was a git dependency); resolved
   # from the local path via [tool.uv.sources] below.
   "aiforge-memory",
+  # Code-graph memory: tree-sitter AST parsing for the symbol index +
+  # repo-map (aiforge_core/indexing/treesitter_ingest.py, memory/rag/indexer).
+  # These were hand-installed on the dev host and vanished on `uv sync`,
+  # silently degrading the symbol/AST layer — declare them so every memory
+  # bit ships. Core+grammar wheels are ABI-matched by uv's resolver.
+  "tree-sitter>=0.21",
+  "tree-sitter-java>=0.21",
+  "tree-sitter-python>=0.21",
   # Doer runtime tools: execute_ipython_cell (jupyter kernel) + browse
   # (playwright). Declared here so `uv sync` stops pruning them — they
   # were previously hand-installed on the host and vanished on every sync.

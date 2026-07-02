@@ -3,21 +3,24 @@
 #
 #   git clone … && cd AIForgeCrew && ./run.sh
 #
-# Brings up a single process that serves the web UI + REST/SSE API on
-# http://127.0.0.1:8799. Defaults to ZERO external infra: embedded
-# SQLite tickets + SQLite memory, no Postgres/Neo4j/sidecars required.
-# Point it at a model on the home page (http://127.0.0.1:8799/ui/).
+# Brings up the FULL AIForge stack by DEFAULT via docker compose: Postgres +
+# Neo4j (graph memory) + embed + rerank sidecars + api + runner. Every memory
+# component (tree-sitter symbol index, Neo4j graph, AiForgeMemory bundle,
+# embeddings) is on — nothing degrades silently. Needs Docker.
+# Point it at a model on the home page (http://localhost:8799/ui/).
+#
+# For a laptop / no-Docker box, `--lite` runs the embedded path instead:
+# a single uvicorn process on SQLite tickets + SQLite memory (graph off).
 #
 # Flags:
-#   --dev        uvicorn --reload (hot reload for development)
+#   --lite       embedded single-process mode (SQLite, no Docker, graph OFF).
+#                The old zero-infra default — use when Docker isn't available.
+#   --dev        (with --lite) uvicorn --reload (hot reload for development)
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
-#   --skip-web   don't (re)build the web UI
-#   --docker     run the full Postgres+Neo4j stack via docker compose
-#                instead of the local uvicorn. Stops any already-running
-#                AIForge containers first, then `up -d --build` so a code
-#                change rebuilds the image before (re)starting. Exits after.
-#   --no-build   with --docker: skip the image rebuild (just (re)start)
+#   --skip-web   (with --lite) don't (re)build the web UI
+#   --docker     explicit full-stack (now the default; kept for back-compat)
+#   --no-build   skip the image rebuild (just (re)start the stack)
 #   --reset-config  wipe ~/.aiforge/agent_config.json (backs it up) so stale
 #                per-role rows can't shadow the model you set next. Run once,
 #                then reconfigure the model on the home page.
@@ -66,13 +69,14 @@ HOST=127.0.0.1
 DEV=0
 SKIP_WEB=0
 TEST=0
-DOCKER=0
+DOCKER=1          # full stack is the DEFAULT; --lite opts out
 NO_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dev) DEV=1 ;;
+    --lite) DOCKER=0 ;;
+    --dev) DEV=1; DOCKER=0 ;;      # hot-reload is a lite/python-path concept
     --skip-web) SKIP_WEB=1 ;;
-    --test) TEST=1 ;;
+    --test) TEST=1; DOCKER=0 ;;    # model probe runs in the venv, no stack
     --docker) DOCKER=1 ;;
     --no-build) NO_BUILD=1 ;;
     --reset-config) RESET_CONFIG=1 ;;
@@ -109,7 +113,10 @@ fi
 # flow into compose via its ${AIFORGE_LLM_SSL_VERIFY:-true} interpolation.
 if [[ $DOCKER -eq 1 ]]; then
   if ! command -v docker >/dev/null 2>&1; then
-    echo "==> 'docker' not found. Install Docker to use --docker." >&2; exit 1
+    echo "==> 'docker' not found. The full stack (Postgres+Neo4j+sidecars) is" >&2
+    echo "    the default and needs Docker. For a no-Docker box run the" >&2
+    echo "    embedded path instead:  ./run.sh --lite" >&2
+    exit 1
   fi
   if docker compose version >/dev/null 2>&1; then
     DC=(docker compose)

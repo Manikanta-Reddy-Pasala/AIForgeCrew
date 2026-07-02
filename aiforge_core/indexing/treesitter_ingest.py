@@ -38,13 +38,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-import tree_sitter_java as tsjava
-from tree_sitter import Language, Parser
-
 from aiforge_core.observability.logging import emit, get_logger
 
-JAVA_LANG = Language(tsjava.language())
-JAVA_PARSER = Parser(JAVA_LANG)
+# tree-sitter + the Java grammar are declared deps (pyproject), but guard the
+# import so a broken/absent wheel degrades the symbol index instead of crashing
+# module import (and everything that transitively imports it) at startup.
+try:
+    import tree_sitter_java as tsjava
+    from tree_sitter import Language, Parser
+    JAVA_LANG = Language(tsjava.language())
+    JAVA_PARSER = Parser(JAVA_LANG)
+    TREESITTER_AVAILABLE = True
+except Exception:  # pragma: no cover — only when the wheel is missing/broken
+    tsjava = None  # type: ignore
+    Language = Parser = None  # type: ignore
+    JAVA_LANG = JAVA_PARSER = None  # type: ignore
+    TREESITTER_AVAILABLE = False
 
 
 # ─────────────── tunables ───────────────
@@ -188,6 +197,10 @@ def _extract_type(src: bytes, decl) -> str:
 
 
 def _parse_java_file(path: Path, src: bytes, repo: str, sha1: str) -> FileParseResult:
+    if not TREESITTER_AVAILABLE:
+        raise RuntimeError(
+            "tree-sitter Java grammar unavailable — install `tree-sitter` + "
+            "`tree-sitter-java` (they are declared deps; run `uv sync`)")
     tree = JAVA_PARSER.parse(src)
     root = tree.root_node
 
