@@ -17,6 +17,7 @@ Disable via ``AIFORGE_HEALTH_DISABLE=1``.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 import urllib.error
@@ -30,6 +31,14 @@ from ._ssl import context_for as _ssl_context_for
 
 _DEFAULT_TTL_S = 30.0
 _DEFAULT_TIMEOUT_S = 2.0
+
+# Ceiling for a detected window (256K) — we never trust a model that reports
+# more, and everything downstream is sized against this bound.
+_CTX_CEILING = 262144
+# Fields a served model exposes its context length under, in priority order:
+# vLLM (``max_model_len``), generic (``context_length``), LM Studio
+# (``loaded_context_length``).
+_CTX_FIELDS = ("max_model_len", "context_length", "loaded_context_length")
 
 
 @dataclass
@@ -117,6 +126,75 @@ def is_up(provider_name: str, *, role: str = "doer") -> bool:
     return state.up
 
 
+# ── context-window auto-detect (Fix B) ──────────────────────────────────
+# A model loaded with a 256K window is treated as the static default until an
+# operator hand-sets it. Probing ``/v1/models`` reads the model's REAL window
+# so the budgets can use it. Cached per endpoint (short TTL) so it never adds
+# per-turn latency and soft-fails (→ None) to today's static behaviour.
+_CTX_CACHE: dict[str, tuple[float, int | None]] = {}
+
+
+def _ctx_timeout() -> float:
+    # Never block a turn: cap the models GET at ~3s (or the health timeout).
+    return min(_timeout(), 3.0)
+
+
+def _extract_ctx_len(body: object) -> int | None:
+    """Pull the model's advertised context length from a ``/v1/models`` body.
+    Handles the OpenAI-style ``{"data": [ {...} ]}`` envelope and a bare model
+    dict. Returns the capped int, or None when no known field is present."""
+    try:
+        entry: object = None
+        if isinstance(body, dict):
+            data = body.get("data")
+            if isinstance(data, list) and data:
+                entry = data[0]
+            else:
+                entry = body
+        if not isinstance(entry, dict):
+            return None
+        for field in _CTX_FIELDS:
+            v = entry.get(field)
+            if isinstance(v, bool):        # guard: bool is an int subclass
+                continue
+            if isinstance(v, (int, float)) and v > 0:
+                return min(int(v), _CTX_CEILING)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _probe_ctx_window(base_url: str) -> int | None:
+    url = f"{base_url.rstrip('/')}/models"
+    req = urllib.request.Request(
+        url, method="GET", headers={"Authorization": "Bearer na"})
+    ctx = _ssl_context_for(base_url)
+    try:
+        with urllib.request.urlopen(req, timeout=_ctx_timeout(), context=ctx) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 — soft-fail: any error → unknown
+        return None
+    return _extract_ctx_len(body)
+
+
+def probe_context_window(base_url: str) -> int | None:
+    """Detected input context window (tokens) for the model served at
+    ``base_url``, read from ``/v1/models`` (``max_model_len`` /
+    ``context_length`` / ``loaded_context_length``), capped at 256K. Returns
+    None on any miss/error. Cached per endpoint for the health TTL so it costs
+    at most one short GET per window and never blocks a hot path."""
+    key = (base_url or "").rstrip("/")
+    if not key:
+        return None
+    now = time.time()
+    hit = _CTX_CACHE.get(key)
+    if hit is not None and (now - hit[0]) < _ttl():
+        return hit[1]
+    val = _probe_ctx_window(key)
+    _CTX_CACHE[key] = (now, val)
+    return val
+
+
 def snapshot() -> dict[str, dict]:
     """Inspect cache — used by /api/runtime/health."""
     return {
@@ -130,5 +208,6 @@ def invalidate(provider_name: str | None = None) -> None:
     """Drop one entry (or all) — useful after fixing a known outage."""
     if provider_name is None:
         _CACHE.clear()
+        _CTX_CACHE.clear()
     else:
         _CACHE.pop(provider_name, None)

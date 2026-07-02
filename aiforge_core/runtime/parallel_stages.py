@@ -106,12 +106,21 @@ def _coerce_verdict(raw: Any) -> dict:
 # ── merge node bodies (FunctionNode) ────────────────────────────────────
 
 def _ctx_section_cap() -> int:
-    """Per-gatherer char cap before merge (env ``AIFORGE_CTX_SECTION_CHARS``,
-    default 8000; 0 disables). Bounds ``context_brief_md`` at its SOURCE so a
-    runaway researcher/repo-map output can't blow the Doer seed downstream."""
+    """Per-gatherer char cap before merge. An explicit ``AIFORGE_CTX_SECTION_CHARS``
+    wins verbatim (0 disables); otherwise window-relative (A2): floor 8000 on a
+    32K window, ~3% of a bigger one (256K ≈ 31K) so the big Doer-seed budget
+    downstream has fuller briefs to include. Bounds ``context_brief_md`` at its
+    SOURCE so a runaway researcher/repo-map output can't blow the seed."""
+    env = os.environ.get("AIFORGE_CTX_SECTION_CHARS")
+    if env is not None:
+        try:
+            return max(0, int(env))
+        except (TypeError, ValueError):
+            pass
     try:
-        return max(0, int(os.environ.get("AIFORGE_CTX_SECTION_CHARS", "8000")))
-    except (TypeError, ValueError):
+        from aiforge_core.runtime.chat_agent import _window_scaled
+        return _window_scaled(8000, 0.03)
+    except Exception:  # noqa: BLE001
         return 8000
 
 
