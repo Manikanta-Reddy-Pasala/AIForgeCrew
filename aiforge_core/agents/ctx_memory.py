@@ -17,8 +17,12 @@ OUTPUT_KEY = "memory_brief_md"
 
 
 def _tools_factory() -> list:
+    # Pass ROLE so the factory enforces ctx_memory's agents.yaml allowlist
+    # (allowed=[memory_lookup]) — this read-only gatherer receives ONLY the
+    # memory-recall tool, not the write/exec surface. Its prompt references
+    # exactly memory_lookup, so nothing it needs is stripped.
     from aiforge_core.runtime.doer_tools import adk_function_tools
-    return adk_function_tools()
+    return adk_function_tools(role=ROLE)
 
 
 TOOLS_FACTORY = _tools_factory

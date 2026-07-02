@@ -871,16 +871,30 @@ def jira_comment(key: str, body: str) -> dict:
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
-def adk_function_tools() -> list:
-    """Return the Doer's tool list as ADK ``FunctionTool`` instances.
+def adk_function_tools(role: "str | None" = None) -> list:
+    """Return the tool list as ADK ``FunctionTool`` instances.
 
     Lazy import keeps unit tests ADK-free.
 
     Order — OpenHands-parity tools first (editor/bash/think/finish from
     :mod:`aiforge_core.runtime.tools`), then legacy canonical names, then
-    aliases. NOTE: every agent built with this factory currently sees the
-    FULL set — the ``agents.yaml`` allowed/forbidden lists are enforced
-    by prompt contract + the GA/harness layers, not filtered here.
+    aliases.
+
+    ``role`` — when ``None`` (the default), the FULL set is returned,
+    byte-for-byte identical to the historical behaviour (all existing
+    callers that pass no role are unchanged). When a role is given, the
+    list is filtered by that role's ``tools.allowed`` / ``tools.forbidden``
+    contract from ``agents.yaml`` (see
+    :func:`aiforge_core.config.agent_config.allowed_tools_for`): a tool
+    passes only if its function name is in ``allowed`` (or ``allowed`` is
+    unrestricted) AND not in ``forbidden``. This is the real per-agent
+    scoping backstop — a ctx-gatherer no longer merely *shouldn't* call
+    git_commit, it literally never receives the schema.
+
+    Master opt-out: ``AIFORGE_TOOL_ENFORCE=0`` disables filtering entirely
+    (returns the full set) so a misconfigured allowlist can be neutralised
+    without a redeploy. Unknown / unconfigured roles allow all (safe,
+    backward-compatible default). Soft-fail: any accessor error → full set.
 
     Legacy tools (file_read/file_write/file_patch/list_dir/run_shell)
     are DEPRECATED — kept one release as escape hatches for hallucinated
@@ -909,7 +923,34 @@ def adk_function_tools() -> list:
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
-    return [FunctionTool(func=fn) for fn in new_canonical + legacy_canonical + aliases]
+    tools = [FunctionTool(func=fn)
+             for fn in new_canonical + legacy_canonical + aliases]
+    if role is None:
+        return tools
+    if os.environ.get("AIFORGE_TOOL_ENFORCE", "1").strip().lower() in (
+            "0", "false", "no", "off"):
+        return tools
+    try:
+        from aiforge_core.config.agent_config import allowed_tools_for
+        allowed, forbidden = allowed_tools_for(role)
+    except Exception:  # noqa: BLE001 — never break the build over enforcement
+        return tools
+    if allowed is None and not forbidden:
+        return tools  # unrestricted role → full set
+
+    def _tool_name(t) -> str:
+        return getattr(t, "name", None) or getattr(
+            getattr(t, "func", None), "__name__", "")
+
+    out = []
+    for t in tools:
+        name = _tool_name(t)
+        if name in forbidden:
+            continue
+        if allowed is not None and name not in allowed:
+            continue
+        out.append(t)
+    return out
 
 
 __all__ = [

@@ -1,0 +1,125 @@
+"""Per-agent tool allow/deny enforcement.
+
+``agents.yaml`` declares a per-role ``tools.allowed`` / ``tools.forbidden``
+contract. Historically ``adk_function_tools()`` ignored it — every agent got
+the FULL tool surface, enforced only by prompt contract. These tests pin the
+tool factory to actually honour the lists when a caller passes its role, while
+staying byte-for-byte backward-compatible when no role is given.
+
+Semantics under test:
+  * ``allowed_tools_for(role)`` parses ``(allowed_or_None, forbidden)`` from
+    the real ``agents.yaml``.
+  * ``adk_function_tools(role=None)`` → full set (unchanged).
+  * ``adk_function_tools(role=<restricted>)`` → allowed − forbidden only.
+  * unknown role → full set (backward-compatible default).
+  * ``AIFORGE_TOOL_ENFORCE=0`` → full set even for a restricted role.
+  * forbidden overrides allowed.
+"""
+from __future__ import annotations
+
+import pytest
+
+from aiforge_core.config import agent_config
+from aiforge_core.runtime import doer_tools
+
+
+def _names(tools) -> set[str]:
+    out: set[str] = set()
+    for t in tools:
+        n = getattr(t, "name", None) or getattr(
+            getattr(t, "func", None), "__name__", "")
+        if n:
+            out.add(n)
+    return out
+
+
+# ── (a) accessor parses allow/forbid from the real agents.yaml ────────────
+
+
+def test_allowed_tools_for_parses_restricted_role():
+    # ctx_memory: allowed=[memory_lookup], forbidden=[file_write, file_patch,
+    # bash, run_shell, ask_user].
+    allowed, forbidden = agent_config.allowed_tools_for("ctx_memory")
+    assert allowed is not None
+    assert "memory_lookup" in allowed
+    assert "file_write" in forbidden
+    assert "bash" in forbidden
+
+
+def test_allowed_tools_for_empty_allowed_is_no_allowlist():
+    # enhancer: allowed=[] (no allowlist) + a forbidden list → allowed is None.
+    allowed, forbidden = agent_config.allowed_tools_for("enhancer")
+    assert allowed is None
+    assert "file_write" in forbidden
+
+
+def test_allowed_tools_for_forbidden_all_is_empty_allowlist():
+    # verifier: forbidden=ALL → zero tools (explicit empty allowlist).
+    allowed, forbidden = agent_config.allowed_tools_for("verifier")
+    assert allowed == frozenset()
+
+
+def test_allowed_tools_for_unknown_role_allows_all():
+    allowed, forbidden = agent_config.allowed_tools_for("nonexistent_role_xyz")
+    assert allowed is None
+    assert forbidden == frozenset()
+
+
+# ── (b) role=None → full set, unchanged ───────────────────────────────────
+
+
+def test_role_none_returns_full_set():
+    full = doer_tools.adk_function_tools()
+    also_full = doer_tools.adk_function_tools(role=None)
+    assert _names(full) == _names(also_full)
+    assert "git_commit" in _names(full)
+    assert "bash" in _names(full)
+
+
+# ── (c) restricted role → allowed − forbidden only ────────────────────────
+
+
+def test_restricted_role_filters_to_allowlist():
+    full_names = _names(doer_tools.adk_function_tools())
+    ctx = _names(doer_tools.adk_function_tools(role="ctx_memory"))
+    # allowlist is exactly [memory_lookup]
+    assert "memory_lookup" in ctx
+    # forbidden / non-allowed tools stripped
+    assert "git_commit" not in ctx
+    assert "bash" not in ctx
+    assert "editor" not in ctx
+    assert ctx < full_names  # strict subset
+
+
+# ── (d) unknown role → full set (backward-compat) ─────────────────────────
+
+
+def test_unknown_role_returns_full_set():
+    full = _names(doer_tools.adk_function_tools())
+    unknown = _names(doer_tools.adk_function_tools(role="nonexistent_role_xyz"))
+    assert unknown == full
+
+
+# ── (e) master opt-out AIFORGE_TOOL_ENFORCE=0 → full set ──────────────────
+
+
+def test_enforcement_opt_out_returns_full_set(monkeypatch):
+    monkeypatch.setenv("AIFORGE_TOOL_ENFORCE", "0")
+    full = _names(doer_tools.adk_function_tools())
+    ctx = _names(doer_tools.adk_function_tools(role="ctx_memory"))
+    assert ctx == full  # enforcement disabled → nothing stripped
+
+
+# ── (f) forbidden overrides allowed ───────────────────────────────────────
+
+
+def test_forbidden_overrides_allowed(monkeypatch):
+    # A tool present in BOTH allowed and forbidden must be removed.
+    monkeypatch.setattr(
+        agent_config, "allowed_tools_for",
+        lambda role: (frozenset({"git_commit", "editor"}),
+                      frozenset({"git_commit"})),
+    )
+    names = _names(doer_tools.adk_function_tools(role="doer"))
+    assert "editor" in names
+    assert "git_commit" not in names
