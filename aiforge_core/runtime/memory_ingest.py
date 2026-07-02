@@ -69,10 +69,11 @@ def _chunks(text: str) -> list[str]:
     return out
 
 
-def _write(text: str, *, kind: str, repo: str, ref: str) -> bool:
+def _write(text: str, *, kind: str, repo: str, ref: str,
+           embed_vec: "list[float] | None" = None) -> bool:
     from aiforge_core.runtime.tools.memory_write import memory_write
     res = memory_write(text=text, kind=kind, tags=["ingest", ref], repo=repo,
-                       source="ingest")
+                       source="ingest", embed_vec=embed_vec)
     # Count only real inserts. A deduped write returns ok=True but id=0
     # (embedded) or deduped=True (Neo4j) and persists nothing — counting it
     # made a re-index of an unchanged repo report its full unit count while
@@ -165,8 +166,14 @@ def _read_source(f: Path) -> "str | None":
         return None
 
 
+_EMBED_BATCH = 32  # docs per /embed_batch call — CPU bge-m3 batches far faster
+                   # than one-at-a-time (a single doc is ~2s; a 32-doc batch is
+                   # nowhere near 32×), so a big repo indexes in minutes not hours.
+
+
 def _ingest_tree(root: Path, *, repo: str, exts: set[str], kind: str) -> int:
-    n = 0
+    # Collect (chunk_text, ref) first so we can EMBED IN BATCHES, then write.
+    pending: list[tuple[str, str]] = []
     for f in _iter_files(root, exts):
         text = _read_source(f)
         if not text:
@@ -174,9 +181,24 @@ def _ingest_tree(root: Path, *, repo: str, exts: set[str], kind: str) -> int:
         rel = str(f.relative_to(root))
         header = f"# {rel}\n"
         for ch in _chunks(text):
-            if n >= _MAX_CHUNKS:
-                return n
-            if _write(header + ch, kind=kind, repo=repo, ref=rel):
+            if len(pending) >= _MAX_CHUNKS:
+                break
+            pending.append((header + ch, rel))
+        if len(pending) >= _MAX_CHUNKS:
+            break
+
+    n = 0
+    for i in range(0, len(pending), _EMBED_BATCH):
+        batch = pending[i:i + _EMBED_BATCH]
+        vecs: "list[list[float] | None]" = [None] * len(batch)
+        try:  # one round-trip for the whole batch; soft-fail → per-write embed
+            from aiforge_core.memory.embed import embed_batch as _eb
+            vecs = _eb([t for t, _ in batch])  # type: ignore[assignment]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("batch embed failed (%s); falling back per-write", exc)
+            vecs = [None] * len(batch)
+        for (txt, rel), vec in zip(batch, vecs):
+            if _write(txt, kind=kind, repo=repo, ref=rel, embed_vec=vec):
                 n += 1
     return n
 

@@ -49,6 +49,7 @@ def memory_write(
     decision: bool = False,
     repo: str | None = None,
     source: str = "doer",
+    embed_vec: "list[float] | None" = None,
 ) -> dict[str, Any]:
     """Persist a fact the Doer noticed during this run.
 
@@ -144,13 +145,16 @@ def memory_write(
         else:
             # F5: embed so ingested chunks are vector-recallable (mirrors
             # failure_memory / learner_persist). Soft-fail: sidecar down ->
-            # write without a vector rather than crash the agent loop.
-            embed_vec = None
-            try:
-                from aiforge_core.memory.embed import embed as _embed
-                embed_vec = _embed(text)
-            except Exception:  # noqa: BLE001
-                embed_vec = None
+            # write without a vector rather than crash the agent loop. A caller
+            # (batch ingest) may pass a PRECOMPUTED vector to skip the per-write
+            # round-trip — a single-doc embed is ~2s on CPU, so batching the
+            # whole file at the ingest layer is ~orders faster for a big repo.
+            if embed_vec is None:
+                try:
+                    from aiforge_core.memory.embed import embed as _embed
+                    embed_vec = _embed(text)
+                except Exception:  # noqa: BLE001
+                    embed_vec = None
             out = upsert_observation(
                 drv, repo=repo, text=text, kind=kind,
                 author=source, tags=tags,
