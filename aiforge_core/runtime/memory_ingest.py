@@ -13,10 +13,13 @@ Kinds:
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import urllib.request
 from pathlib import Path
+
+log = logging.getLogger("aiforge.memory_ingest")
 
 _CHUNK = 1500          # chars per chunk
 _MAX_CHUNKS = 4000     # safety cap per source
@@ -27,12 +30,27 @@ _CODE_EXT = {
     ".php", ".c", ".cpp", ".h", ".hpp", ".cs", ".kt", ".swift", ".scala",
     ".sh", ".sql", ".yaml", ".yml", ".vue", ".css", ".scss",
 }
-_DOC_EXT = {".md", ".markdown", ".txt", ".rst", ".adoc"}
+# Text-readable document files (read straight off disk).
+_DOC_EXT = {".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".csv"}
+# Binary document files that need a text-extraction pass (pypdf / python-docx,
+# via chat_media.extract_text). Soft-skipped if the extractor/dep is absent.
+_BINARY_DOC_EXT = {".pdf", ".docx"}
+# Everything the "docs" layer of a repo/dir walk considers.
+_ALL_DOC_EXT = _DOC_EXT | _BINARY_DOC_EXT
 _NOISE_DIRS = {
     ".git", "node_modules", ".venv", "venv", "dist", "build", "__pycache__",
     ".aiforge-worktrees", "target", ".next", ".cache", "vendor", "graphify-out",
     ".pytest_cache", "site-packages",
 }
+
+
+def _flag(name: str, default: bool) -> bool:
+    """Read a boolean env toggle. Unset -> ``default``; ``0/false/no/off/``
+    (case-insensitive) -> False; anything else -> True."""
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ("0", "false", "no", "off", "")
 
 
 def _chunks(text: str) -> list[str]:
@@ -66,14 +84,31 @@ def _iter_files(root: Path, exts: set[str]):
                 yield Path(dirpath) / fn
 
 
+def _read_source(f: Path) -> "str | None":
+    """Read a file to text. Binary docs (pdf/docx) go through
+    ``chat_media.extract_text`` (pypdf / python-docx); text files are read
+    straight off disk. Returns None on any failure (soft-skip)."""
+    ext = f.suffix.lower()
+    if ext in _BINARY_DOC_EXT:
+        try:
+            from aiforge_core.runtime import chat_media
+            text = chat_media.extract_text(str(f))
+        except Exception:  # noqa: BLE001 — missing dep / corrupt file
+            return None
+        return text or None
+    try:
+        if f.stat().st_size > _MAX_FILE:
+            return None
+        return f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def _ingest_tree(root: Path, *, repo: str, exts: set[str], kind: str) -> int:
     n = 0
     for f in _iter_files(root, exts):
-        try:
-            if f.stat().st_size > _MAX_FILE:
-                continue
-            text = f.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        text = _read_source(f)
+        if not text:
             continue
         rel = str(f.relative_to(root))
         header = f"# {rel}\n"
@@ -100,6 +135,177 @@ def _fetch_url(url: str) -> str:
     return re.sub(r"\s+\n", "\n", _TAG_RE.sub(" ", raw))
 
 
+def _neo4j_driver_or_none():
+    """Open a ``neo4j.Driver`` from env, or return None when the graph
+    backend isn't the active/configured one.
+
+    Mirrors the env pattern in ``runtime.tools.memory_write``. Returns None
+    (never raises) when: the active memory backend isn't ``neo4j``, the
+    ``neo4j`` driver isn't installed, no URI is configured, or the connect
+    fails. Layers B (symbols) and C (graphify) are graph-only, so a None
+    here makes them skip cleanly on the embedded SQLite backend.
+    """
+    try:
+        from aiforge_core.memory import backend_select
+        if backend_select.memory_backend() != "neo4j":
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    uri = os.environ.get("AIFORGE_NEO4J_URI") or os.environ.get("NEO4J_URI")
+    if not uri:
+        return None
+    try:
+        from neo4j import GraphDatabase
+    except ImportError:
+        return None
+    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
+    pw = os.environ.get(
+        "AIFORGE_NEO4J_PASSWORD",
+        os.environ.get("NEO4J_PASSWORD", "password"),
+    )
+    try:
+        return GraphDatabase.driver(uri, auth=(user, pw))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _stat_count(stats, key: str) -> int:
+    """Pull a numeric field out of an IngestStats / dict / mock stats obj."""
+    if stats is None:
+        return 0
+    if hasattr(stats, "as_dict"):
+        try:
+            stats = stats.as_dict()
+        except Exception:  # noqa: BLE001
+            stats = {}
+    if isinstance(stats, dict):
+        try:
+            return int(stats.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+    v = getattr(stats, key, 0)
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _index_symbols(root: Path, repo: str) -> "tuple[int, str]":
+    """Layer B — tree-sitter symbol graph into Neo4j. Java-only today."""
+    from aiforge_core.indexing import treesitter_ingest as tsi
+    if not tsi.TREESITTER_AVAILABLE:
+        return 0, "skip:treesitter_unavailable"
+    driver = _neo4j_driver_or_none()
+    if driver is None:
+        return 0, "skip:no_neo4j"
+    try:
+        stats = tsi.ingest_repo(driver, Path(root), repo_name=repo)
+        seen = _stat_count(stats, "files_seen")
+        n = _stat_count(stats, "symbols_written")
+        if seen == 0:
+            return n, "skip:no_code"
+        return n, "ok"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("symbol index failed: %s", exc)
+        return 0, f"error:{exc}"
+    finally:
+        try:
+            driver.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _index_graphify(root: Path, repo: str) -> "tuple[int, str]":
+    """Layer C — graphify knowledge graph into Neo4j. Runs the ``graphify``
+    CLI as a subprocess, then loads ``graphify-out/graph.json``."""
+    import shutil
+    import subprocess
+    if shutil.which("graphify") is None:
+        return 0, "skip:graphify_cli_absent"
+    driver = _neo4j_driver_or_none()
+    if driver is None:
+        return 0, "skip:no_neo4j"
+    try:
+        timeout = int(os.environ.get("AIFORGE_GRAPHIFY_TIMEOUT_S", "600"))
+    except (TypeError, ValueError):
+        timeout = 600
+    try:
+        subprocess.run(
+            ["graphify", "update", "."], cwd=str(root),
+            timeout=timeout, capture_output=True,
+        )
+        graph_json = Path(root) / "graphify-out" / "graph.json"
+        if not graph_json.exists():
+            return 0, "skip:no_graph_json"
+        from aiforge_core.indexing.graphify_loader import load_graphify_json
+        out = load_graphify_json(driver, graph_json, repo_name=repo)
+        n = int((out or {}).get("nodes_created", 0) or 0)
+        return n, "ok"
+    except subprocess.TimeoutExpired:
+        log.warning("graphify update timed out for %s", root)
+        return 0, "skip:graphify_timeout"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("graphify index failed: %s", exc)
+        return 0, f"error:{exc}"
+    finally:
+        try:
+            driver.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _index_repo_full(root: Path, repo: str) -> dict:
+    """Full multi-layer index of a repo/directory. Every layer soft-fails
+    independently; chunks (A/A2) are the guaranteed baseline. Overall
+    ``error`` is set only if no chunk layer produced anything."""
+    layers: dict[str, str] = {}
+    code_units = doc_units = symbols = graphify_nodes = 0
+
+    # ── Layer A — code text chunks (baseline) ──
+    try:
+        code_units = _ingest_tree(root, repo=repo, exts=_CODE_EXT, kind="code")
+        layers["code_chunks"] = "ok"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("code chunk index failed: %s", exc)
+        layers["code_chunks"] = f"error:{exc}"
+
+    # ── Layer A2 — document chunks (md/pdf/docx/…) ──
+    if not _flag("AIFORGE_INDEX_DOCS", True):
+        layers["doc_chunks"] = "skip:disabled"
+    else:
+        try:
+            doc_units = _ingest_tree(root, repo=repo, exts=_ALL_DOC_EXT,
+                                     kind="doc")
+            layers["doc_chunks"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("doc chunk index failed: %s", exc)
+            layers["doc_chunks"] = f"error:{exc}"
+
+    # ── Layer B — tree-sitter symbol graph (Neo4j only) ──
+    if not _flag("AIFORGE_INDEX_SYMBOLS", True):
+        layers["symbols"] = "skip:disabled"
+    else:
+        symbols, layers["symbols"] = _index_symbols(root, repo)
+
+    # ── Layer C — graphify knowledge graph (Neo4j only) ──
+    if not _flag("AIFORGE_INDEX_GRAPHIFY", True):
+        layers["graphify"] = "skip:disabled"
+    else:
+        graphify_nodes, layers["graphify"] = _index_graphify(root, repo)
+
+    units = code_units + doc_units
+    error = None
+    if units == 0 and not any(layers.get(k) == "ok"
+                              for k in ("code_chunks", "doc_chunks")):
+        error = "all chunk layers failed: " + \
+            f"code={layers.get('code_chunks')} doc={layers.get('doc_chunks')}"
+    log.info("repo index %r: units=%d symbols=%d graphify=%d layers=%s",
+             repo, units, symbols, graphify_nodes, layers)
+    return {"units": units, "code_units": code_units, "doc_units": doc_units,
+            "symbols": symbols, "graphify_nodes": graphify_nodes,
+            "layers": layers, "error": error}
+
+
 def ingest_source(source: dict) -> dict:
     """Ingest one source dict ({kind, name, location}). Returns
     ``{units, error}``. Never raises — errors are returned."""
@@ -111,9 +317,7 @@ def ingest_source(source: dict) -> dict:
             root = Path(loc).expanduser()
             if not root.is_dir():
                 return {"units": 0, "error": f"not a directory: {loc}"}
-            return {"units": _ingest_tree(root, repo=repo,
-                                          exts=_CODE_EXT | _DOC_EXT, kind="code"),
-                    "error": None}
+            return _index_repo_full(root, repo)
         if kind == "docs":
             root = Path(loc).expanduser()
             if not root.is_dir():

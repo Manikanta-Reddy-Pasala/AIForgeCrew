@@ -1570,11 +1570,23 @@ def memory_sources_list() -> list[dict]:
 
 @app.post("/api/memory/sources", status_code=201)
 def memory_sources_create(body: _MemSourceBody) -> dict:
+    """Register a memory source. ``repo``/``docs`` sources auto-start a full
+    multi-layer background index immediately (chunks + tree-sitter symbols +
+    graphify); ``url``/``file`` stay manual (cheap, index via /index)."""
+    import threading
+
     from aiforge_core.runtime import memory_sources as _ms
     try:
-        return _ms.create(body.kind, body.location, body.name)
+        src = _ms.create(body.kind, body.location, body.name)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    if body.kind in ("repo", "docs"):
+        from aiforge_core.runtime.memory_ingest import run_index
+        _ms.set_status(src["id"], "indexing", error=None)
+        threading.Thread(target=run_index, args=(src["id"],),
+                         daemon=True).start()
+        src = {**src, "status": "indexing"}
+    return src
 
 
 @app.post("/api/memory/sources/upload", status_code=201)
