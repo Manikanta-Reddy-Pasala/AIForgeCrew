@@ -1441,17 +1441,9 @@ export default function Chat() {
                   borderRadius: 8, padding: 6, boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
                   display: 'flex', flexDirection: 'column', gap: 2,
                 }}>
-                  {/* Review edits is ALWAYS ON for simple/plan (no toggle) — every
-                      file change is held for Approve/Reject before it lands. Team
-                      mode runs the full pipeline and doesn't hold edits. */}
-                  <div className="chat-menu-item" style={{ ...menuItem, opacity: 0.85, cursor: 'default' }}
-                       title="Every file change is held for Approve/Reject before it lands (simple/plan mode). Always on. Team mode runs the full pipeline and does not hold edits.">
-                    <span aria-hidden>✓</span>
-                    Review edits before they land
-                    <span className="muted" style={{ fontSize: 11 }}>
-                      · {chatMode === 'team' ? 'simple/plan only' : 'always on'}
-                    </span>
-                  </div>
+                  {/* Review-edits (hold every file change for Approve/Reject in
+                      simple/plan) is always on — the informational menu row was
+                      removed since it wasn't a toggle. */}
                   {/* Reload the chat model at a chosen context window. */}
                   {chatMode !== 'team' && selectedModel && (
                     <div className="chat-menu-item" style={{ ...menuItem, justifyContent: 'space-between' }}
