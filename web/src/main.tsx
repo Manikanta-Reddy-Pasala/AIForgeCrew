@@ -15,6 +15,7 @@ import { api } from './api';
 const Home         = lazy(() => import('./views/Home'));
 const Dashboard    = lazy(() => import('./views/Dashboard'));
 const Tickets      = lazy(() => import('./views/Tickets'));
+const Jobs         = lazy(() => import('./views/Jobs'));
 const TicketDetail = lazy(() => import('./views/TicketDetail'));
 const Agents       = lazy(() => import('./views/Agents'));
 const Logs         = lazy(() => import('./views/Logs'));
@@ -61,6 +62,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
       { to: '/dashboard', label: 'Dashboard',  icon: 'Dashboard' },
       { to: '/board',     label: 'Board',      icon: 'Board' },
       { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },
+      { to: '/jobs',      label: 'Jobs',       icon: 'Refresh' },
       { to: '/chat',      label: 'Chat',       icon: 'Chat' },
       { to: '/',          label: 'Settings',   icon: 'Tool',    end: true },
     ],
@@ -91,6 +93,7 @@ const TITLE_MAP: Record<string, string> = {
   '/dashboard':  'Dashboard',
   '/board':      'Board',
   '/tickets':    'Tickets',
+  '/jobs':       'Scheduled Jobs',
   '/chat':       'Chat',
   '/tools':      'MCP Tools',
   '/memory':     'Memory',
@@ -179,6 +182,7 @@ function Shell() {
             <Route path="/board" element={<Kanban />} />
             <Route path="/tickets" element={<Tickets />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
+            <Route path="/jobs" element={<Jobs />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/skills" element={<Library kind="skills" />} />
             <Route path="/workflows" element={<Library kind="workflows" />} />

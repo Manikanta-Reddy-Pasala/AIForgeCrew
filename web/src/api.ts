@@ -240,6 +240,31 @@ export const api = {
         route_confidence: 1.0,
       }),
     }),
+
+  // ── Scheduled jobs (NL → cron → recurring tickets) ───────────────
+  previewJob: (instructions: string) =>
+    j<JobPreview>('/jobs/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instructions }),
+    }),
+  createJob: (draft: JobDraft) =>
+    j<Job>('/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(draft),
+    }),
+  listJobs: () => j<Job[]>('/jobs'),
+  patchJob: (id: number, patch: Partial<JobDraft & { enabled: boolean }>) =>
+    j<Job>(`/jobs/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  deleteJob: (id: number) =>
+    j<{ ok: boolean }>(`/jobs/${id}`, { method: 'DELETE' }),
+  runJobNow: (id: number) =>
+    j<{ ok: boolean; job: Job }>(`/jobs/${id}/run-now`, { method: 'POST' }),
 };
 
 // ── memory source types ───────────────────────────────────────────
@@ -325,6 +350,34 @@ export interface AgentRoleConfigInput {
   base_url?: string | null;
   api_key?: string | null;
   insecure_tls?: boolean;
+}
+
+// ── scheduled job types ───────────────────────────────────────────
+
+export interface JobDraft {
+  name: string;
+  cron: string;
+  ticket_title: string;
+  ticket_body: string;
+  project: string | null;
+}
+
+export interface JobPreview {
+  ok: boolean;
+  error?: string;
+  draft?: JobDraft;
+  human_schedule?: string;
+  next_runs?: string[];
+}
+
+export interface Job extends JobDraft {
+  id: number;
+  enabled: boolean;
+  last_run_at: string | null;
+  next_run_at: string;
+  last_error: string | null;
+  created_at: string;
+  human_schedule: string;
 }
 
 // ── workflow types ────────────────────────────────────────────────
