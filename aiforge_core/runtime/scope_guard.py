@@ -21,9 +21,9 @@ don't carry the field yet).
 """
 from __future__ import annotations
 
-import fnmatch
 import logging
 import os
+import re
 from typing import Any
 
 log = logging.getLogger("aiforge.scope_guard")
@@ -61,14 +61,112 @@ def _path_from_args(tool_name: str, args: dict) -> list[str]:
     return []
 
 
-def _matches_any(path: str, globs: list[str]) -> bool:
-    # Match both with / without leading ``./`` so callers can be lazy.
-    candidates = (path, path.lstrip("./"))
-    for g in globs:
-        for c in candidates:
-            if fnmatch.fnmatch(c, g):
+def _repo_root_prefixes() -> tuple[str, ...]:
+    """Repo-root prefixes to strip when normalizing an absolute path to
+    repo-relative — the same env vars the Doer tools resolve their cwd from
+    (workspace first, then repo root)."""
+    out: list[str] = []
+    for var in ("AIFORGE_WORKSPACE_DIR", "AIFORGE_REPO_ROOT"):
+        v = os.environ.get(var)
+        if v:
+            out.append(v.replace("\\", "/").rstrip("/"))
+    return tuple(out)
+
+
+def _norm_path(path: str) -> str:
+    """Normalize a target path to repo-relative, forward-slashed form.
+
+    Strips a leading ``AIFORGE_WORKSPACE_DIR`` / ``AIFORGE_REPO_ROOT``
+    prefix (so an absolute editor path matches a repo-relative glob), then
+    any leading ``./`` and ``/``.
+    """
+    p = str(path or "").replace("\\", "/").strip()
+    for root in _repo_root_prefixes():
+        if root and p.startswith(root + "/"):
+            p = p[len(root) + 1:]
+            break
+        if root and p == root:
+            p = ""
+            break
+    while p.startswith("./"):
+        p = p[2:]
+    return p.lstrip("/")
+
+
+def _norm_glob(glob: str) -> str:
+    g = str(glob or "").replace("\\", "/").strip()
+    while g.startswith("./"):
+        g = g[2:]
+    return g.lstrip("/")
+
+
+def _glob_to_regex(glob: str) -> str:
+    """Translate a glob to an anchored regex with SEGMENT-aware semantics:
+    ``**/`` optionally spans nested dirs, ``**`` spans anything, ``*`` /
+    ``?`` stay within a single path segment (never cross ``/``)."""
+    i, n, out = 0, len(glob), []
+    while i < n:
+        if glob[i:i + 3] == "**/":
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob[i:i + 2] == "**":
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    return "^" + "".join(out) + "$"
+
+
+def _one_glob_matches(path: str, glob: str) -> bool:
+    """True if repo-relative ``path`` matches ``glob``, treating a bare
+    directory glob (``src`` / ``src/``) as "everything under it". Mirrors the
+    leniency ``parallel_subtasks._in_scope`` had (``g`` + ``g + '/*'``) but
+    with proper ``**`` / directory handling so the two matchers agree."""
+    g = _norm_glob(glob)
+    if not g:
+        return False
+    stripped = g.rstrip("/")
+    # ``g``: exact / file / **-glob match.
+    # ``stripped + '/**'``: directory glob → any file under the dir (direct
+    # AND nested), since ``**`` → ``.*`` spans ``/``.
+    for pat in (g, stripped + "/**"):
+        try:
+            if re.match(_glob_to_regex(pat), path):
                 return True
+        except re.error:
+            continue
     return False
+
+
+def _matches_any(path: str, globs) -> bool:
+    """True if ``path`` matches ANY allowlist glob. Empty/None → allow all.
+
+    Robust against the shapes the planner commonly emits: directory globs,
+    ``**`` globs, and absolute paths under the repo root (normalized to
+    repo-relative first). Soft-fail: any internal error → allow (never
+    block the Doer on a matcher bug)."""
+    try:
+        if not globs:
+            return True
+        norm = _norm_path(path)
+        # Match the normalized form and the raw path (back-compat for callers
+        # that already pass a repo-relative path).
+        candidates = {norm, str(path or "").replace("\\", "/").lstrip("/")}
+        for g in globs:
+            for c in candidates:
+                if _one_glob_matches(c, g):
+                    return True
+        return False
+    except Exception as exc:  # noqa: BLE001 — never block on a matcher error
+        log.debug("scope_guard matcher error (allow): %s", exc)
+        return True
 
 
 def make_scope_guard_callback():
