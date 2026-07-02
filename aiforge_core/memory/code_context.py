@@ -149,13 +149,21 @@ def graph_neighbours(file_paths: list[str], limit: int = 30) -> str:
             suffix_paths.add(p)
     rel_paths = list(suffix_paths)[:20]
     rows: list[dict] = []
+    drv = None
     try:
         drv = GraphDatabase.driver(uri, auth=(user, pw))
         with drv.session() as s:
             rows = s.run(_NEIGHBOURS_CYPHER, paths=rel_paths, limit=limit).data()
-        drv.close()
     except Exception:
         return ""
+    finally:
+        # Always close — the driver must not leak when session().run() raises
+        # (control would otherwise jump past a close() left inside the try).
+        if drv is not None:
+            try:
+                drv.close()
+            except Exception:
+                pass
     if not rows:
         return ""
     lines = [f"[Graphify+tree-sitter — top-{len(rows)} neighbour symbols]"]

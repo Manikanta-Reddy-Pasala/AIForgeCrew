@@ -1689,6 +1689,29 @@ def main() -> int:
     # Hard-fail on a misconfigured data-driven deploy (runs every poll so a
     # broken config never silently writes SQLite). Cheap + silent on success.
     backends.require_data_backends()
+    # Requeue tickets orphaned 'in_progress' by a hard-crashed prior runner
+    # (OOM / SIGKILL / redeploy) BEFORE we try to claim — otherwise they stay
+    # stuck forever (re-claim only selects 'todo'). Cheap + silent on an empty
+    # queue; soft-fails so a reaper hiccup never blocks the poll.
+    try:
+        reaped = tickets_mod.reap_stale_in_progress()
+        if reaped:
+            log.info("reaped %d stale in_progress ticket(s) -> todo: %s",
+                     len(reaped), reaped)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("stale ticket reaper skipped: %s", exc)
+    # Requeue memory sources stuck 'indexing' past their lease (a crashed
+    # index thread never clears its own status). Shared SQLite file with the
+    # API service; safe to run from here at boot.
+    try:
+        from aiforge_core.runtime import memory_sources as _ms
+        _lease = int(os.environ.get("AIFORGE_INDEX_LEASE_S", "1800"))
+        stale_idx = _ms.reap_stale_indexing(_lease)
+        if stale_idx:
+            log.info("reaped %d stale indexing source(s) -> idle: %s",
+                     len(stale_idx), stale_idx)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("stale index reaper skipped: %s", exc)
     if _process_one_ticket():
         # Announce the resolved backends only on polls that actually did work,
         # so an idle queue (a fresh process every ~10s) doesn't spam the log.

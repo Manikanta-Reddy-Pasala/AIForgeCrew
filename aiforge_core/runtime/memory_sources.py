@@ -75,6 +75,9 @@ def _migrate(c: sqlite3.Connection) -> None:
         "PRAGMA table_info(memory_sources)").fetchall()}
     if "detail" not in cols:
         c.execute("ALTER TABLE memory_sources ADD COLUMN detail TEXT")
+    if "indexing_started_at" not in cols:
+        c.execute(
+            "ALTER TABLE memory_sources ADD COLUMN indexing_started_at TEXT")
 
 
 def _iso(v):
@@ -130,6 +133,49 @@ def delete(source_id: int) -> bool:
     with _conn() as c:
         cur = c.execute("DELETE FROM memory_sources WHERE id=?", (source_id,))
     return cur.rowcount > 0
+
+
+def claim_for_index(source_id: int) -> bool:
+    """Atomically flip a source into ``indexing`` and stamp
+    ``indexing_started_at``. Returns True only when THIS caller won the flip
+    (the row existed and was NOT already ``indexing``); returns False when the
+    source is already ``indexing`` (a concurrent index is in-flight) so the
+    caller must NOT re-spawn an ingest thread. The single-writer SQLite lock
+    makes the check-and-set race-free across the API's index endpoints."""
+    with _LOCK, _conn() as c:
+        cur = c.execute(
+            f"UPDATE memory_sources SET status='indexing', "
+            f"indexing_started_at={_NOW}, error=NULL "
+            "WHERE id=? AND status!='indexing'",
+            (source_id,),
+        )
+        return (cur.rowcount or 0) > 0
+
+
+def reap_stale_indexing(max_age_s: int) -> list[int]:
+    """Reset sources stuck ``indexing`` past the lease back to ``idle`` (a
+    crashed ingest thread never clears its own terminal status). Falls back to
+    ``created_at`` for rows predating the ``indexing_started_at`` column.
+    Meant to run at boot. Returns the reset source ids."""
+    cutoff = "strftime('%Y-%m-%dT%H:%M:%fZ','now',?)"
+    arg = f"-{int(max_age_s)} seconds"
+    reset: list[int] = []
+    with _LOCK, _conn() as c:
+        rows = c.execute(
+            "SELECT id FROM memory_sources WHERE status='indexing' "
+            f"AND COALESCE(indexing_started_at, created_at) < {cutoff}",
+            (arg,),
+        ).fetchall()
+        for r in rows:
+            upd = c.execute(
+                "UPDATE memory_sources SET status='idle', "
+                "error='reset: indexing exceeded lease' "
+                "WHERE id=? AND status='indexing'",
+                (r["id"],),
+            )
+            if upd.rowcount and upd.rowcount > 0:
+                reset.append(int(r["id"]))
+    return reset
 
 
 def set_status(source_id: int, status: str, *, units: int | None = None,

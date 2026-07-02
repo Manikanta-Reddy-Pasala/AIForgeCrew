@@ -117,10 +117,24 @@ def ensure_branch_and_worktree(ticket) -> str | None:
             pass
         default_branch = _detect_default_branch(repo_dir)
         base = f"origin/{default_branch}"
-        proc = subprocess.run(
-            ["git", "worktree", "add", "-B", branch, worktree_path, base],
-            cwd=repo_dir, check=False, capture_output=True,
-        )
+        # Bound the add: a stale index.lock or a hung FS would otherwise hang
+        # the runner indefinitely with the ticket already 'in_progress' (the
+        # sibling fetch above is already bounded). Env-tunable; on timeout,
+        # bail to None so the caller blocks the ticket instead of hanging.
+        try:
+            _wt_timeout = int(os.environ.get("AIFORGE_WORKTREE_TIMEOUT_S", "120"))
+        except ValueError:
+            _wt_timeout = 120
+        try:
+            proc = subprocess.run(
+                ["git", "worktree", "add", "-B", branch, worktree_path, base],
+                cwd=repo_dir, check=False, capture_output=True,
+                timeout=_wt_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("worktree.timeout repo=%s branch=%s after=%ss",
+                        repo_name, branch, _wt_timeout)
+            return None
         if proc.returncode != 0 or not os.path.isdir(worktree_path):
             err = (proc.stderr or b"").decode("utf-8", "replace")[:500]
             log.warning(

@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS tickets (
     route_confidence REAL,
     created_at      TEXT NOT NULL DEFAULT ({_NOW}),
     updated_at      TEXT NOT NULL DEFAULT ({_NOW}),
-    completed_at    TEXT
+    completed_at    TEXT,
+    claimed_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS tickets_assignee_status ON tickets(assignee_role, status);
 CREATE INDEX IF NOT EXISTS tickets_parent ON tickets(parent_id);
@@ -140,6 +141,7 @@ class SqliteBackend:
                 for col, ddl in (
                     ("route", "TEXT"), ("route_workflow", "TEXT"),
                     ("route_source", "TEXT"), ("route_confidence", "REAL"),
+                    ("claimed_at", "TEXT"),
                 ):
                     if col not in have:
                         c.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
@@ -212,7 +214,8 @@ class SqliteBackend:
                 if r is None:
                     return None
                 upd = c.execute(
-                    f"UPDATE tickets SET status='in_progress', updated_at={_NOW} "
+                    f"UPDATE tickets SET status='in_progress', "
+                    f"updated_at={_NOW}, claimed_at={_NOW} "
                     "WHERE id = ? AND status = 'todo'",
                     (r["id"],),
                 )
@@ -223,6 +226,36 @@ class SqliteBackend:
                 # lost the race for this row — another claimer took it; the
                 # next SELECT skips it (no longer 'todo'). Try again.
             return None
+
+    def reap_stale_in_progress(self, max_age_s) -> list[int]:
+        """Reset ``in_progress`` rows whose claim is older than the lease back
+        to ``todo`` (a hard-crashed / OOM-killed / redeployed runner never
+        clears its own claim, and re-claim only selects ``todo``). Bumps
+        ``metadata.reclaim_count`` so the dashboard metric becomes real.
+        Falls back to ``updated_at`` for pre-migration rows with a NULL
+        claimed_at. Returns the list of reset ticket ids."""
+        cutoff_expr = "strftime('%Y-%m-%dT%H:%M:%fZ','now',?)"
+        arg = f"-{int(max_age_s)} seconds"
+        reset: list[int] = []
+        with _LOCK, self._conn() as c:
+            rows = c.execute(
+                "SELECT id, metadata FROM tickets "
+                "WHERE status = 'in_progress' "
+                f"AND COALESCE(claimed_at, updated_at) < {cutoff_expr}",
+                (arg,),
+            ).fetchall()
+            for r in rows:
+                md = json.loads(r["metadata"] or "{}")
+                md["reclaim_count"] = int(md.get("reclaim_count") or 0) + 1
+                upd = c.execute(
+                    f"UPDATE tickets SET status='todo', metadata=?, "
+                    f"updated_at={_NOW}, claimed_at=NULL "
+                    "WHERE id=? AND status='in_progress'",
+                    (json.dumps(md), r["id"]),
+                )
+                if upd.rowcount and upd.rowcount > 0:
+                    reset.append(int(r["id"]))
+        return reset
 
     def set_status(self, ticket_id, status, completed, metadata_patch) -> "dict | None":
         with self._conn() as c:

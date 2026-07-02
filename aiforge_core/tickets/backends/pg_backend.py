@@ -39,6 +39,7 @@ ALTER TABLE tickets ADD COLUMN IF NOT EXISTS route             text NOT NULL DEF
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS route_workflow    text;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS route_source      text NOT NULL DEFAULT 'auto';
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS route_confidence  real;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS claimed_at        timestamptz;
 
 CREATE INDEX IF NOT EXISTS tickets_assignee_status ON tickets(assignee_role, status);
 CREATE INDEX IF NOT EXISTS tickets_parent ON tickets(parent_id);
@@ -180,12 +181,35 @@ class PgBackend:
                 c.rollback()
                 return None
             cur.execute(
-                "UPDATE tickets SET status='in_progress' WHERE id=%s RETURNING *",
+                "UPDATE tickets SET status='in_progress', claimed_at=now() "
+                "WHERE id=%s RETURNING *",
                 (row["id"],),
             )
             row = cur.fetchone()
             c.commit()
         return row
+
+    def reap_stale_in_progress(self, max_age_s) -> list[int]:
+        """Reset ``in_progress`` rows whose claim is older than the lease back
+        to ``todo`` (a hard-crashed / OOM-killed / redeployed runner never
+        clears its own claim, and re-claim only selects ``todo``). Bumps
+        ``metadata.reclaim_count`` so the dashboard metric becomes real.
+        Falls back to ``updated_at`` for pre-migration rows with a NULL
+        claimed_at. Returns the list of reset ticket ids."""
+        with self._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "UPDATE tickets SET status='todo', claimed_at=NULL, "
+                "  metadata = jsonb_set(metadata, '{reclaim_count}', "
+                "    to_jsonb(COALESCE((metadata->>'reclaim_count')::int, 0) + 1)) "
+                "WHERE status='in_progress' "
+                "  AND COALESCE(claimed_at, updated_at) "
+                "      < now() - make_interval(secs => %s) "
+                "RETURNING id",
+                (int(max_age_s),),
+            )
+            ids = [int(r[0]) for r in cur.fetchall()]
+            c.commit()
+        return ids
 
     def set_status(self, ticket_id, status, completed, metadata_patch) -> "dict | None":
         completed_at = "now()" if completed else "completed_at"

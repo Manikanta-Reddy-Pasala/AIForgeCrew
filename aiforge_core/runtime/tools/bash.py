@@ -33,6 +33,14 @@ from ._trace import emit
 _STDOUT_CAP_BYTES = 8000
 _DEFAULT_TIMEOUT_S = 90
 _POLL_INTERVAL_S = 0.1
+# Bound the post-exit communicate() drain: a daemon grandchild (`npm run dev &`,
+# a spawned server) can inherit the stdout pipe and keep communicate() blocked
+# FOREVER even after the main process exits. On timeout we kill the group and
+# drain, returning what was captured. Env-tunable.
+try:
+    _COMMUNICATE_TIMEOUT_S = int(os.environ.get("AIFORGE_COMMUNICATE_TIMEOUT_S", "10"))
+except ValueError:
+    _COMMUNICATE_TIMEOUT_S = 10
 # Per-boot random nonce in the prompt sentinel so a command whose OUTPUT happens
 # to contain "__AIFORGE_PROMPT_N__" can't be mis-parsed as a shell prompt
 # (wrong returncode / truncated stdout). The nonce is unpredictable, so program
@@ -203,7 +211,20 @@ def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
                     _kill_and_reap()
                     return _err_result(command, "timeout", truncated=True)
                 _t.sleep(0.2)
-            out_b, err_b = proc_p.communicate()
+            # The main process exited — but a daemon grandchild can still hold
+            # the stdout pipe, blocking communicate() forever. Bound it; on
+            # hang, kill the group and drain, keeping what we captured.
+            try:
+                out_b, err_b = proc_p.communicate(timeout=_COMMUNICATE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc_p.pid), 9)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    out_b, err_b = proc_p.communicate(timeout=5)
+                except Exception:  # noqa: BLE001
+                    out_b, err_b = b"", b""
             out_s = (out_b or b"").decode("utf-8", "replace")
             err_s = (err_b or b"").decode("utf-8", "replace")
             return {"ok": proc_p.returncode == 0, "command": command,

@@ -247,6 +247,34 @@ def claim_next_any() -> Ticket | None:
     return Ticket.from_row(row)
 
 
+def reap_stale_in_progress(max_age_s: int | None = None) -> list[int]:
+    """Requeue tickets orphaned ``in_progress`` by a hard-crashed runner.
+
+    A hard kill (OOM / SIGKILL / MLX SIGABRT / redeploy), or an exception
+    before the pipeline try-block, leaves the ticket ``in_progress`` forever —
+    re-claim only selects ``todo``, so it is never picked up again. This resets
+    ``in_progress`` rows whose claim is older than the lease (env
+    ``AIFORGE_TICKET_LEASE_S``, default 3600s) back to ``todo``, bumps
+    ``reclaim_count``, and records a status-change event per reaped ticket.
+    Meant to run at runner startup, before claiming. Returns the reset ids.
+    """
+    if max_age_s is None:
+        try:
+            max_age_s = int(os.environ.get("AIFORGE_TICKET_LEASE_S", "3600"))
+        except ValueError:
+            max_age_s = 3600
+    ids = get_backend().reap_stale_in_progress(max_age_s)
+    for tid in ids:
+        try:
+            get_backend().insert_event(
+                tid, "graph_runner", "status_change", "todo",
+                {"reaped": True, "reason": "stale in_progress lease expired"},
+            )
+        except Exception:  # noqa: BLE001 — event write is best-effort
+            pass
+    return ids
+
+
 def update_status(ticket_id: int, status: str, *, role: str | None = None,
                   metadata_patch: dict | None = None) -> Ticket | None:
     if status not in VALID_STATUS:

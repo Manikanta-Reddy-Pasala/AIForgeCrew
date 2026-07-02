@@ -54,6 +54,13 @@ class StoreBackend(Protocol):
         """
         ...
 
+    def reap_stale_in_progress(self, max_age_s: int) -> list[int]:
+        """Reset ``in_progress`` rows whose claim (``claimed_at``, falling
+        back to ``updated_at``) is older than ``max_age_s`` back to ``todo``
+        and bump ``metadata.reclaim_count``. Requeues tickets orphaned by a
+        hard-crashed runner. Returns the reset ticket ids."""
+        ...
+
     def set_status(self, ticket_id: int, status: str, completed: bool,
                    metadata_patch: dict) -> "dict | None":
         """Update status, set completed_at=now() when ``completed``,
