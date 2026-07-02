@@ -1547,6 +1547,16 @@ files, THEN grep/read to confirm details. It is faster and broader than blind \
 filesystem search. Only skip it if the memory returns nothing relevant, then \
 fall back to grep/find. (If the answer needs a specific repo, its code lives \
 under its real path — see RELEVANT SKILLS — not this chat's scratch cwd.)
+- USE THE CONTEXT ALREADY GATHERED FOR YOU: the RELEVANT MEMORY, REPO-MAP, \
+RELEVANT SKILLS/WORKFLOWS and PRIOR CHAT blocks above were auto-selected for \
+THIS request — READ them before reaching for tools. Do not grep/list_dir to \
+rediscover something the repo-map or memory block already tells you. Start \
+from what's given, then use tools only to fill the specific gaps.
+- LSP FOR PRECISION (not guessing): to find where a symbol is DEFINED, who \
+CALLS it, or its type/signature, use `lsp` (goto_definition | find_references \
+| hover) — it returns the exact location, unlike a text grep that matches \
+comments and strings. Prefer lsp over grep for any "where is X defined / \
+what calls X / what's the type of X" question; grep is for free-text/patterns.
 - SCOPE before reading: when asked to check/review/understand code, first \
 narrow to the FEW files that actually matter — use memory_lookup, then \
 `grep`/`find` (and list_dir) to locate the relevant symbols/files, then read \
