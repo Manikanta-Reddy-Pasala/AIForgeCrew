@@ -296,8 +296,12 @@ function OverviewPanel() {
             const isGraph = GRAPH_STORES.has(store.key);
             const graphOpen = openGraphs.has(store.key);
             const cypher = STORE_CYPHER[store.key];
+            // Prefill the connect form (host + user) so the login is one-time;
+            // Neo4j Browser caches the connection after the first password.
+            const connect = ov?.neo4j_bolt
+              ? `&connectURL=${encodeURIComponent(ov.neo4j_bolt)}` : '';
             const browserHref =
-              `${browserBase}/browser/?cmd=edit&arg=${encodeURIComponent(cypher || '')}`;
+              `${browserBase}/browser/?cmd=edit&arg=${encodeURIComponent(cypher || '')}${connect}`;
             return (
               <div key={store.key} style={{ borderBottom: '1px solid var(--border-0)' }}>
                 <div
@@ -324,7 +328,7 @@ function OverviewPanel() {
                           href={browserHref}
                           target="_blank"
                           rel="noreferrer"
-                          title="Open a prefilled query in Neo4j Browser"
+                          title={`Open a prefilled query in Neo4j Browser. First time it asks to connect — login: ${ov?.neo4j_user || 'neo4j'} / password (cached after).`}
                         >
                           Open in Neo4j Browser ↗
                         </a>

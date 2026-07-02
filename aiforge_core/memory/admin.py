@@ -254,8 +254,39 @@ def memory_overview() -> dict:
     stores["md_files"] = _safe(_md_section)
     stores["chat"] = _safe(_chat_section)
     stores["sources"] = _safe(_sources_section)
+    browser = os.environ.get("AIFORGE_NEO4J_BROWSER_URL") or None
     return {"backend": backend_select.memory_backend(), "stores": stores,
-            "neo4j_browser": os.environ.get("AIFORGE_NEO4J_BROWSER_URL") or None}
+            "neo4j_browser": browser,
+            # Bolt connect URL (host + user only, NEVER the password) so the
+            # Memory-page link can PREFILL Neo4j Browser's connect form — the
+            # user types the password once, then the browser caches it.
+            "neo4j_bolt": _neo4j_bolt_hint(browser),
+            "neo4j_user": os.environ.get("AIFORGE_NEO4J_USER", "neo4j")}
+
+
+def _neo4j_bolt_hint(browser_url: str | None) -> str | None:
+    """`neo4j://<user>@<host>:7687` derived from the browser URL's host (they
+    share a host; only the port differs 7474→7687). No password — that would
+    leak over the API on a tunnel-exposed service. Returns None if no host."""
+    host = None
+    if browser_url:
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(browser_url).hostname
+        except Exception:  # noqa: BLE001
+            host = None
+    if not host:
+        # Fall back to the bolt URI's host if that's how it's configured.
+        uri = os.environ.get("AIFORGE_NEO4J_URI") or os.environ.get("NEO4J_URI") or ""
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(uri).hostname
+        except Exception:  # noqa: BLE001
+            host = None
+    if not host or host in ("127.0.0.1", "localhost"):
+        return None
+    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
+    return f"neo4j://{user}@{host}:7687"
 
 
 # ─────────────────────── graph sample (visualization) ───────────────────────

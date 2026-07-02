@@ -337,6 +337,8 @@ export interface MemoryOverview {
   backend: string;
   stores: Record<string, MemoryStoreSection>;
   neo4j_browser?: string | null;
+  neo4j_bolt?: string | null;
+  neo4j_user?: string | null;
 }
 
 // ── memory graph sample (in-app SVG preview) types ────────────────
