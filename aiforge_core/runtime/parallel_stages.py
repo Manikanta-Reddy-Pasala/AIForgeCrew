@@ -20,6 +20,7 @@ flushes those mutations as state deltas.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from aiforge_core.agents import (
@@ -104,15 +105,30 @@ def _coerce_verdict(raw: Any) -> dict:
 
 # ── merge node bodies (FunctionNode) ────────────────────────────────────
 
+def _ctx_section_cap() -> int:
+    """Per-gatherer char cap before merge (env ``AIFORGE_CTX_SECTION_CHARS``,
+    default 8000; 0 disables). Bounds ``context_brief_md`` at its SOURCE so a
+    runaway researcher/repo-map output can't blow the Doer seed downstream."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_CTX_SECTION_CHARS", "8000")))
+    except (TypeError, ValueError):
+        return 8000
+
+
 async def merge_context(ctx):  # type: ignore[no-untyped-def]
-    """Concat the per-gatherer briefs into ``context_brief_md``."""
+    """Concat the per-gatherer briefs into ``context_brief_md`` (each section
+    capped at :func:`_ctx_section_cap` so the merged brief stays bounded)."""
     try:
         state = ctx.state
+        cap = _ctx_section_cap()
         sections: list[str] = []
         for key, heading in _CONTEXT_BRIEFS:
             val = state.get(key)
             if isinstance(val, str) and val.strip():
-                sections.append(f"## {heading}\n\n{val.strip()}")
+                body = val.strip()
+                if cap and len(body) > cap:
+                    body = body[:cap] + "\n…(truncated to fit context)\n"
+                sections.append(f"## {heading}\n\n{body}")
         if sections:
             state["context_brief_md"] = "\n\n".join(sections)
     except Exception:

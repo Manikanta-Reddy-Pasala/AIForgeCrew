@@ -1746,22 +1746,26 @@ _SYSTEM_PROMPT_CHARS = 14000
 _CTX_BUDGET_FLOOR_CHARS = 4000
 
 
-def _ctx_budget_chars(role: str | None = None) -> int:
+def _ctx_budget_chars(role: str | None = None,
+                      sys_chars: int | None = None) -> int:
     """Char budget for the running conversation before auto-condensing. 0
     disables. Explicit override: AIFORGE_CHAT_CONTEXT_BUDGET_CHARS. Otherwise
     SIZED TO THE CONFIGURED MODEL WINDOW (context_window tokens → ~4 chars/token)
     MINUS the reservations that aren't available for history — the output cap
-    (``max_output_tokens``) and the system prompt (~14K chars) — so on a 32K
-    local window the budget leaves real room for INPUT instead of assuming the
-    whole window is history. A cave/non-cave headroom fraction is then applied
-    to the remaining usable space, and a floor keeps the budget positive on a
-    tiny window."""
+    (``max_output_tokens``) and the system prompt — so on a 32K local window the
+    budget leaves real room for INPUT instead of assuming the whole window is
+    history. ``sys_chars`` reserves the ACTUAL assembled system-prompt size when
+    the caller knows it (M1); when omitted it falls back to the ~14K
+    ``_SYSTEM_PROMPT_CHARS`` estimate. A cave/non-cave headroom fraction is then
+    applied to the remaining usable space, and a floor keeps the budget positive
+    on a tiny window."""
     env = os.environ.get("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS")
     if env:
         try:
             return int(env)
         except ValueError:
             pass
+    reserve_sys = _SYSTEM_PROMPT_CHARS if sys_chars is None else max(0, int(sys_chars))
     win = 0
     # Per-model context window (registry) for this role wins over the global.
     if role:
@@ -1786,10 +1790,58 @@ def _ctx_budget_chars(role: str | None = None) -> int:
             out_chars = int(runtime_settings.get("max_output_tokens")) * 4
         except Exception:  # noqa: BLE001
             out_chars = 4096 * 4
-        usable = win * 4 - out_chars - _SYSTEM_PROMPT_CHARS
+        usable = win * 4 - out_chars - reserve_sys
         budget = int(max(usable, _CTX_BUDGET_FLOOR_CHARS) * headroom)
         return max(budget, _CTX_BUDGET_FLOOR_CHARS)
     return 24000 if _cave_mode() else 48000
+
+
+# ── system-prompt budgeting (Fix C2) ────────────────────────────────────
+# convo[0] (the system message) is NEVER shrunk by _compact_convo (it only
+# condenses convo[1:-keep_recent]). Every dynamic block (repo summary/map,
+# skills, workflows, mentions, memory + chat recall, images) is appended to
+# it, so on a small window the un-condensable system prompt alone can
+# overflow. We cap the assembled system prompt to a fraction of the window,
+# dropping/truncating the LOWEST-priority injected blocks first and always
+# keeping the core prompt + rules.
+_SYS_PROMPT_FLOOR_CHARS = 8000
+
+
+def _sys_prompt_budget_chars() -> int:
+    """Char cap for the assembled system prompt = a fraction (default 0.6, env
+    ``AIFORGE_SYS_PROMPT_FRAC``) of the resolved window in chars, floored at
+    8000."""
+    try:
+        frac = float(os.environ.get("AIFORGE_SYS_PROMPT_FRAC", "0.6"))
+    except (TypeError, ValueError):
+        frac = 0.6
+    try:
+        win = _resolved_window()
+    except Exception:  # noqa: BLE001
+        win = 32768
+    return max(int(win * 4 * frac), _SYS_PROMPT_FLOOR_CHARS)
+
+
+_SYS_CAP_MARK = "\n…(system prompt truncated to fit context window)\n"
+
+
+def _cap_system_prompt(sys_msg: str, budget: int, *, protect: int = 0) -> str:
+    """Guarantee ``len(sys_msg) <= budget`` — the backstop under the block-aware
+    assembly. Preserves the first ``protect`` chars (the core prompt + rules)
+    and truncates the lower-priority injected TAIL first; if even the core
+    exceeds the budget it hard-truncates. No-op when already under cap or
+    ``budget <= 0``. Soft: never raises."""
+    try:
+        if budget <= 0 or len(sys_msg) <= budget:
+            return sys_msg
+        # Keep the first `budget - marker` chars (the core prompt + rules sit at
+        # the FRONT, so the front-preserving cut drops the injected tail first).
+        keep = budget - len(_SYS_CAP_MARK)
+        if keep <= 0:
+            return sys_msg[:max(0, budget)]
+        return sys_msg[:keep] + _SYS_CAP_MARK
+    except Exception:  # noqa: BLE001
+        return sys_msg
 
 
 def _compact_mode() -> str:
@@ -1825,11 +1877,25 @@ def _text_of(m: dict) -> str:
     return c if isinstance(c, str) else ""
 
 
+def _condense_timeout_s() -> float:
+    """Wall-clock cap for the condense summariser call (env
+    ``AIFORGE_CONDENSE_TIMEOUT_S``, default 30s; <=0 disables). On the Doer
+    path ``session_id is None`` so ``_complete_cancellable`` runs the LLM call
+    INLINE with no timeout — a wedged endpoint would hang the whole turn on a
+    condense. This bounds it so the turn falls back to the non-LLM breadcrumb."""
+    try:
+        return float(os.environ.get("AIFORGE_CONDENSE_TIMEOUT_S", "30"))
+    except (TypeError, ValueError):
+        return 30.0
+
+
 def _llm_summarize_middle(middle: list[dict], complete_fn, session_id=None) -> str:
     """Code-aware LLM summary of the dropped middle. Swappable model via
     AIFORGE_COMPACT_ROLE. Routed through _complete_cancellable so a Stop can
-    interrupt it (and it honours the generation cap). Returns '' on any failure
-    / cancel so the caller falls back to the heuristic."""
+    interrupt it (and it honours the generation cap). Bounded by a wall-clock
+    timeout (:func:`_condense_timeout_s`) so a hung endpoint can't wedge the
+    turn. Returns '' on any failure / cancel / timeout so the caller falls
+    back to the heuristic breadcrumb."""
     if complete_fn is None or not middle:
         return ""
     transcript = []
@@ -1844,13 +1910,33 @@ def _llm_summarize_middle(middle: list[dict], complete_fn, session_id=None) -> s
     sum_role = os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "doer"
     msgs = [{"role": "system", "content": _COMPACT_SYS},
             {"role": "user", "content": "Summarise this slice:\n\n" + body}]
-    try:
-        out = _complete_cancellable(complete_fn, sum_role, msgs, session_id)
-        if out is _CANCELLED or not isinstance(out, str):
+    timeout = _condense_timeout_s()
+
+    def _call() -> str:
+        try:
+            out = _complete_cancellable(complete_fn, sum_role, msgs, session_id)
+            if out is _CANCELLED or not isinstance(out, str):
+                return ""
+            return out.strip()
+        except Exception:  # noqa: BLE001
             return ""
-        return out.strip()
-    except Exception:  # noqa: BLE001
+
+    if timeout <= 0:
+        return _call()
+    import threading as _th
+    box: dict = {}
+
+    def _worker() -> None:
+        box["out"] = _call()
+
+    t = _th.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        # Summariser is wedged — abandon it (daemon) and fall back to the
+        # cheap non-LLM condense so the turn proceeds.
         return ""
+    return box.get("out", "")
 
 
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
@@ -1862,7 +1948,13 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     messages + the tools used so far). Structural only — no extra LLM call, so
     it's cheap and runs every turn. The agent can re-read files / ask the user
     if it needs detail from before the condense point."""
-    budget = _ctx_budget_chars(role)
+    # M1: reserve the ACTUAL system-prompt size (convo[0]) rather than the fixed
+    # 14K estimate, and DON'T re-count it in the over-budget sum below (it's
+    # reserved, not history) — the old code both subtracted a constant AND
+    # summed the real system chars = a double-count.
+    sys_chars = (len(_text_of(convo[0]))
+                 if convo and convo[0].get("role") == "system" else 0)
+    budget = _ctx_budget_chars(role, sys_chars=sys_chars)
     if budget <= 0:
         return convo
     # Scale the verbatim tail to the budget: on a SMALL window, keeping 18 turns
@@ -1871,7 +1963,7 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     keep_recent = max(4, min(keep_recent, budget // 2000))
     if len(convo) <= keep_recent + 2:
         return convo
-    if sum(len(_text_of(m)) for m in convo) <= budget:
+    if sum(len(_text_of(m)) for m in convo[1:]) <= budget:
         return convo
     tail = convo[-keep_recent:]
     middle = convo[1:-keep_recent]
@@ -1996,6 +2088,14 @@ def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str
     except Exception:  # noqa: BLE001
         pass
     tree = "\n".join(lines) or "(empty)"
+    # Char cap (env AIFORGE_REPOMAP_MAX_CHARS, default 6000; 0 disables) — the
+    # line/depth caps above bound entries but a wide tree can still be huge.
+    try:
+        cap = max(0, int(os.environ.get("AIFORGE_REPOMAP_MAX_CHARS", "6000")))
+    except (TypeError, ValueError):
+        cap = 6000
+    if cap and len(tree) > cap:
+        tree = tree[:cap] + "\n… (truncated to fit context — use find/grep/list_dir)"
     return ("REPO MAP of the working directory (already known — do NOT "
             f"re-list directories you can see here):\nWORKING DIRECTORY: {base}\n"
             f"{tree}")
@@ -2190,13 +2290,36 @@ def run_chat_agent(
         sys_msg = rules + "\n\n" + sys_msg
     if plan_mode:                   # plan banner second — constrains this turn
         sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
+    # C2: budget the (un-condensable) system prompt. The CORE prompt + rules
+    # above are ALWAYS kept; each optional block below is appended via a
+    # budget-aware helper that truncates/drops it (lowest priority = appended
+    # last = dropped first) when it would blow the cap. `_cap_system_prompt`
+    # is the final backstop guaranteeing len(sys_msg) <= cap.
+    _sys_cap = _sys_prompt_budget_chars()
+    _sys_core_len = len(sys_msg)
+    _sys_dropped: list[str] = []
+
+    def _add_sys_block(label: str, block: str) -> None:
+        nonlocal sys_msg
+        if not block:
+            return
+        addition = "\n\n" + block
+        if len(sys_msg) + len(addition) <= _sys_cap:
+            sys_msg += addition
+            return
+        room = _sys_cap - len(sys_msg)
+        if room > 400:              # enough left for a meaningful truncated slice
+            sys_msg += addition[:room] + "\n…(truncated to fit context)\n"
+        _sys_dropped.append(label)
+
     # Dynamic context blocks — each independently toggleable via _ctx_on().
     # Cave mode: a much smaller repo map (the agent still has find/grep/list).
     if _ctx_on("summary"):
-        sys_msg += "\n\n" + _repo_context(cwd)
+        _add_sys_block("repo-summary", _repo_context(cwd))
     if _ctx_on("repomap"):
-        sys_msg += "\n\n" + _build_repo_map(cwd, max_entries=(60 if cave else 160),
-                                            max_depth=(2 if cave else 3))
+        _add_sys_block("repo-map",
+                       _build_repo_map(cwd, max_entries=(60 if cave else 160),
+                                       max_depth=(2 if cave else 3)))
     # Skills / workflows / @-mentions — OPTIONAL context blocks. Cave mode skips
     # them (the agent can still skill_search / workflow_search on demand); each is
     # also independently toggleable.
@@ -2204,53 +2327,49 @@ def run_chat_agent(
         if _ctx_on("skills"):
             try:
                 from aiforge_core.runtime import skills as _skills
-                sk_block = _skills.auto_context(last_user, cwd)
-                if sk_block:
-                    sys_msg += "\n\n" + sk_block
+                _add_sys_block("skills", _skills.auto_context(last_user, cwd))
             except Exception:  # noqa: BLE001
                 pass
         if _ctx_on("workflows"):
             try:
                 from aiforge_core.runtime import workflows as _workflows
-                wf_block = _workflows.auto_context(last_user, cwd)
-                if wf_block:
-                    sys_msg += "\n\n" + wf_block
+                _add_sys_block("workflows", _workflows.auto_context(last_user, cwd))
             except Exception:  # noqa: BLE001
                 pass
         if _ctx_on("mentions"):
             try:
                 from aiforge_core.runtime import mentions as _mentions
                 ment_block, _toks = _mentions.expand(last_user, cwd)
-                if ment_block:
-                    sys_msg += "\n\n" + ment_block
+                _add_sys_block("mentions", ment_block)
             except Exception:  # noqa: BLE001
                 pass
     # Self-learning recall — EVERY turn, keyed to the CURRENT user message. Cave
     # mode pulls fewer hits.
     if _ctx_on("recall"):
-        recall = _memory_recall(cwd, last_user, limit=(3 if cave else 6))
-        if recall:
-            sys_msg += "\n\n" + recall
+        _add_sys_block("recall",
+                       _memory_recall(cwd, last_user, limit=(3 if cave else 6)))
         # Prior CHAT SESSIONS — surface what the user discussed in OTHER
         # conversations (excludes the current session). Cave mode → fewer hits.
         # Local SQLite scan, so cheap enough to run every turn there IS a query.
         if last_user:
-            chat_recall = _chat_session_recall(
-                last_user, session_id, limit=(2 if cave else 4))
-            if chat_recall:
-                sys_msg += "\n\n" + chat_recall
+            _add_sys_block("chat-recall", _chat_session_recall(
+                last_user, session_id, limit=(2 if cave else 4)))
     # SESSION IMAGES: descriptions of images the user attached, so the (maybe
     # text-only) model can answer questions about them all session long.
     _img_blocks: list[dict] = []
     if session_id is not None:
         try:
             from aiforge_core.runtime import chat_media
-            _img_ctx = chat_media.context_block(session_id)
-            if _img_ctx:
-                sys_msg += "\n\n" + _img_ctx
+            _add_sys_block("images", chat_media.context_block(session_id))
             _img_blocks = chat_media.image_blocks_for_turn(session_id, role)
         except Exception:  # noqa: BLE001 — images must never break a turn
             _img_blocks = []
+    if _sys_dropped:                # one-line note so the trim is visible
+        _add_sys_block("_note", "[context note: dropped/trimmed lower-priority "
+                       "blocks to fit the window: " + ", ".join(_sys_dropped) + "]")
+    # Final backstop: guarantee the system prompt is under the cap (keeps the
+    # core + rules at the front; truncates the injected tail).
+    sys_msg = _cap_system_prompt(sys_msg, _sys_cap, protect=_sys_core_len)
     sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
     convo: list[dict] = [{"role": "system", "content": sys_msg}]
     for m in messages:
