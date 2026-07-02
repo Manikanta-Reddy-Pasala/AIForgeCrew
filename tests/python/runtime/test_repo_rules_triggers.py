@@ -73,6 +73,16 @@ def test_bare_rule_no_globs_no_triggers_always_applies():
     assert ambiguous == []
 
 
+def test_trigger_only_rule_fails_open_on_empty_query():
+    # No query to score against — a trigger-only rule must still apply
+    # (fail open, matching chat behavior), not silently vanish.
+    matched, ambiguous = rr.match_rules_with_triggers(
+        [_rule("deploy-staging", triggers=["deploy"])],
+        scope_globs=[], query="")
+    assert [r.name for r in matched] == ["deploy-staging"]
+    assert ambiguous == []
+
+
 def test_collect_or_ask_renders_and_reports_ambiguous(monkeypatch, tmp_path):
     (tmp_path / ".aiforge" / "rules").mkdir(parents=True)
     (tmp_path / ".aiforge" / "rules" / "a.md").write_text(

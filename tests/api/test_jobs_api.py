@@ -114,3 +114,38 @@ def test_missing_job_404s(app_client):
     assert client.patch("/api/jobs/999", json={}).status_code == 404
     assert client.delete("/api/jobs/999").status_code == 404
     assert client.post("/api/jobs/999/run-now").status_code == 404
+
+
+def test_create_impossible_date_cron_is_400_not_500(app_client):
+    client, _ = app_client
+    # "0 0 31 2 *" passes croniter.is_valid but is unschedulable — must be a
+    # graceful 400, never a 500 from next_runs crashing.
+    r = client.post("/api/jobs", json={**_DRAFT, "cron": "0 0 31 2 *"})
+    assert r.status_code == 400
+    assert client.get("/api/jobs").json() == []          # nothing persisted
+
+
+def test_preview_impossible_date_cron_is_ok_false_not_500(app_client, monkeypatch):
+    client, _ = app_client
+    monkeypatch.setattr("aiforge_core.llm.client.complete", lambda *a, **k: json.dumps(
+        {**_DRAFT, "cron": "0 0 31 2 *"}))
+    r = client.post("/api/jobs/preview", json={"instructions": "feb 31 nonsense"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+
+
+def test_patch_cannot_blank_required_field(app_client):
+    client, _ = app_client
+    jid = client.post("/api/jobs", json=_DRAFT).json()["id"]
+    assert client.patch(f"/api/jobs/{jid}",
+                        json={"ticket_title": "  "}).status_code == 400
+    assert client.patch(f"/api/jobs/{jid}",
+                        json={"name": ""}).status_code == 400
+
+
+def test_create_accepts_cron_alias(app_client):
+    client, _ = app_client
+    # "@daily" is croniter-valid but shorter than a 5-field cron — the old
+    # min_length=9 heuristic wrongly 422'd it.
+    r = client.post("/api/jobs", json={**_DRAFT, "cron": "@daily"})
+    assert r.status_code == 201

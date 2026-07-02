@@ -246,7 +246,13 @@ def match_rules_with_triggers(
         elif r.triggers:
             trigger_pool.append(r)
     ambiguous: list[list[Rule]] = []
-    if query and trigger_pool:
+    if trigger_pool and not query:
+        # No query to score against — fail OPEN (include all trigger rules),
+        # matching chat_agent._rules_context's no-query behavior. Failing
+        # closed here would silently drop a trigger-only repo rule that the
+        # old glob-only match_rules() would always have applied.
+        matched.extend(trigger_pool)
+    elif query and trigger_pool:
         from aiforge_core.runtime import skills as _sk
         pool_skills = [
             _sk.Skill(name=r.name, description="", triggers=r.triggers,

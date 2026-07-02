@@ -78,6 +78,25 @@ def test_parse_placeholder_echo_fails_closed(monkeypatch):
     assert "placeholder" in out["error"]
 
 
+def test_schedulable_rejects_impossible_date_cron():
+    # is_valid accepts "0 0 31 2 *" (Feb 31) but get_next raises — schedulable
+    # must return False so callers don't 500.
+    from croniter import croniter
+    assert croniter.is_valid("0 0 31 2 *") is True
+    assert parse.schedulable("0 0 31 2 *") is False
+    assert parse.schedulable("0 8 * * *") is True
+    assert parse.schedulable("not a cron") is False
+
+
+def test_parse_impossible_date_cron_fails_closed(monkeypatch):
+    monkeypatch.setattr("aiforge_core.llm.client.complete", _fake(json.dumps({
+        "name": "x", "cron": "0 0 31 2 *",
+        "ticket_title": "t", "ticket_body": "b", "project": None})))
+    out = parse.parse_instructions("last day of february nonsense")
+    assert out["ok"] is False
+    assert "cron" in out["error"].lower()
+
+
 def test_human_schedule_sunday_aliases():
     assert parse.human_schedule("0 8 * * 0") == "Every Sunday at 08:00"
     assert parse.human_schedule("0 8 * * 7") == "Every Sunday at 08:00"

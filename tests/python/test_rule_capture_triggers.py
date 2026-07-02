@@ -30,6 +30,37 @@ def test_parse_classification_sanitizes_junk_triggers():
     assert c["triggers"] == ["deploy", "ab"]
 
 
+def test_parse_classification_strips_yaml_breaking_chars():
+    # Triggers with YAML-flow-breaking chars (colon-space, #, *) must be
+    # sanitized so the frontmatter round-trip can't corrupt into a dict /
+    # YAMLError and silently flip the rule to always-on.
+    raw = ('{"category":"rule","scope":"global","canonical":"x",'
+          '"confidence":0.9,"task_present":false,'
+          '"triggers":["deploy: prod", "#lead", "* wild"]}')
+    c = rc._parse_classification(raw)
+    assert c["triggers"] == ["deploy prod", "lead", "wild"]
+    for t in c["triggers"]:
+        assert all(ch.isalnum() or ch in " _-" for ch in t)
+
+
+def test_captured_trigger_frontmatter_round_trips(tmp_path):
+    # End-to-end: a trigger that WOULD have broken YAML, once sanitized,
+    # writes frontmatter that repo_rules._parse_rule_file reads back as a
+    # real (non-empty) trigger list — i.e. the rule stays gated, not always-on.
+    from aiforge_core.runtime import repo_rules
+    raw = ('{"category":"rule","scope":"global","canonical":"tag it",'
+          '"confidence":0.9,"task_present":false,'
+          '"triggers":["deploy: prod"]}')
+    c = rc._parse_classification(raw)
+    path = rc._write_repo_rule(str(tmp_path), "r", "tag it",
+                               triggers=c["triggers"])
+    from pathlib import Path
+    rule = repo_rules._parse_rule_file(Path(path))
+    assert rule is not None
+    assert rule.triggers == ("deploy prod",)   # parsed, not lost
+    assert rule.always is False                 # still gated, not always-on
+
+
 def test_write_repo_rule_embeds_triggers(tmp_path):
     path = rc._write_repo_rule(str(tmp_path), "deploy-staging",
                                "tag staging builds with branch",

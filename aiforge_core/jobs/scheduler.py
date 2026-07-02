@@ -32,32 +32,62 @@ def _disabled() -> bool:
 
 
 def fire(job: dict, *, now: datetime | None = None) -> bool:
-    """Create the job's ticket and advance its schedule. Fire failure is
-    soft-but-visible: last_error recorded on the row (UI chip), schedule
-    STILL advances so a broken fire can't hot-loop every tick. Returns
-    True on a successful fire."""
+    """Advance the job's schedule, THEN create its ticket. Returns True on
+    a successful ticket create.
+
+    Ordering is deliberate — advance-then-fire gives AT-MOST-ONCE: if the
+    ticket create fails, the slot is already consumed so the next tick
+    cannot re-fire it (a transient failure skips one run rather than
+    duplicating tickets/PRs; catch-up-once handles the next slot). The
+    inverse (create-then-advance) risks a duplicate ticket every tick when
+    the advance write fails after the create succeeds.
+
+    Residual race: an API run-now can still overlap a tick (the per-job
+    lock is in-process and the read→advance→create span isn't atomic), so
+    a rare double-fire is possible under concurrent run-now+tick. Tolerable
+    for the review-gated ticket runs jobs produce.
+
+    Fire failure is soft-but-visible: last_error is recorded on the row
+    (UI chip). Never raises."""
     now = now or datetime.now()
     now_s = now.isoformat(timespec="seconds")
-    nxt = croniter(job["cron"], now).get_next(datetime) \
-        .isoformat(timespec="seconds")
+    # Compute the next slot defensively — an impossible-date cron
+    # (e.g. "0 0 31 2 *") passes croniter.is_valid at save time but raises
+    # here; disable such a job rather than crash the tick every 30s.
+    try:
+        nxt = croniter(job["cron"], now).get_next(datetime) \
+            .isoformat(timespec="seconds")
+    except Exception as exc:  # noqa: BLE001 — unschedulable cron
+        log.warning("jobs.fire unschedulable cron job=%s cron=%r: %s",
+                    job["id"], job.get("cron"), exc)
+        try:
+            store.update(job["id"], enabled=False,
+                         last_error=f"unschedulable cron: {exc}"[:500])
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+    # Advance FIRST (at-most-once). If this write fails, we have NOT created
+    # a ticket yet, so skipping is safe — no duplicate.
+    try:
+        store.mark_fired(job["id"], last_run_at=now_s, next_run_at=nxt)
+    except Exception as exc:  # noqa: BLE001 — advance failed, skip this slot
+        log.warning("jobs.fire advance failed job=%s: %s", job["id"], exc)
+        return False
     try:
         from aiforge_core.tickets import store as tickets_mod
-        # Accepted race: an API run-now can overlap a tick (no per-job
-        # lock) and store flakiness between create+mark_fired can, in
-        # theory, double-fire. Both are rare and tolerable for the
-        # review-gated ticket runs jobs produce; revisit with a
-        # compare-and-swap advance if a non-idempotent job type appears.
         t = tickets_mod.create(
             title=job["ticket_title"], body=job["ticket_body"],
             project=job.get("project"),
             metadata={"source": "scheduled_job", "job_id": job["id"]})
-        store.mark_fired(job["id"], last_run_at=now_s, next_run_at=nxt)
         log.info("jobs.fired job=%s ticket=%s", job["id"],
                  getattr(t, "identifier", getattr(t, "id", "?")))
         return True
-    except Exception as exc:  # noqa: BLE001 — record + advance, never raise
-        store.mark_fired(job["id"], last_run_at=now_s, next_run_at=nxt,
-                         last_error=str(exc)[:500])
+    except Exception as exc:  # noqa: BLE001 — schedule already advanced
+        # Slot is already consumed; record the error, do NOT re-fire.
+        try:
+            store.update(job["id"], last_error=str(exc)[:500])
+        except Exception:  # noqa: BLE001
+            pass
         log.warning("jobs.fire_failed job=%s: %s", job["id"], exc)
         return False
 

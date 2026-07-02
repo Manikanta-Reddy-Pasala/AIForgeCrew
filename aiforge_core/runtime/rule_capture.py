@@ -234,8 +234,14 @@ def _parse_classification(raw: str) -> dict | None:
     triggers_raw = obj.get("triggers") or []
     if not isinstance(triggers_raw, list):
         triggers_raw = []
-    triggers = [re.sub(r"[\[\],]", "", str(t)).strip().lower() for t in triggers_raw
-               if isinstance(t, str) and t.strip()][:3]
+    # Restrict to a charset safe for BOTH storage formats: the inline
+    # "[triggers: a, b]" bullet (chat_agent._BULLET_TRIGGERS_RE) and the
+    # "triggers: [a, b]" YAML frontmatter (_write_repo_rule / repo_rules).
+    # Chars like ] , : # * { } " would corrupt one or the other — a
+    # corrupted frontmatter parse drops triggers and silently flips a gated
+    # rule to always-on, so strip everything outside [a-z0-9 _-].
+    triggers = [re.sub(r"[^a-z0-9 _-]", "", str(t).lower()).strip()
+                for t in triggers_raw if isinstance(t, str) and t.strip()][:3]
     triggers = [t for t in triggers if t]  # drop anything that sanitized to empty
     triggers = [t for t in triggers if re.search(r"[a-z0-9]", t)]  # drop pure-punctuation junk
     return {"category": cat, "scope": scope, "canonical": canonical,

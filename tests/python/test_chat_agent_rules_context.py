@@ -73,6 +73,33 @@ def test_ambiguous_tagged_bullets_inject_ask_note(monkeypatch):
     assert "ASK" in out
 
 
+def test_scorer_crash_keeps_always_on_rules(monkeypatch):
+    # A defect in the shared scorer must NOT drop the legacy always-on
+    # rules (the noise-fix becoming a rules-vanish bug). On scorer error,
+    # always-on rules stay AND tagged bullets fail open.
+    monkeypatch.setattr(ca, "_repo_name", lambda cwd: "demo")
+    monkeypatch.setenv("AIFORGE_AMBIGUITY_MARGIN", "0.15")
+
+    def fake_find_by_source(src):
+        return "PATH" if src == "rules:global" else None
+
+    def fake_parse(p):
+        return _fake_doc(
+            "- always commit directly\n"
+            "- [triggers: deploy] tag staging builds")
+
+    monkeypatch.setattr("aiforge_core.memory.md_store._find_by_source",
+                        fake_find_by_source)
+    monkeypatch.setattr("aiforge_core.memory.md_store._parse", fake_parse)
+    monkeypatch.setattr(
+        "aiforge_core.runtime.skills.select_or_ask",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("scorer boom")))
+
+    out = ca._rules_context("/repo", "deploy now")
+    assert "always commit directly" in out    # legacy always-on survived
+    assert "tag staging builds" in out         # tagged failed open
+
+
 def test_no_rules_returns_empty(monkeypatch):
     monkeypatch.setattr(ca, "_repo_name", lambda cwd: "demo")
     monkeypatch.setattr("aiforge_core.memory.md_store._find_by_source",

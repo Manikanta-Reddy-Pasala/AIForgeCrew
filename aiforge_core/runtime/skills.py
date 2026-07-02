@@ -212,7 +212,10 @@ def _always_on(pool: list[Skill]) -> list[Skill]:
     """Always-on skills from ``pool``, priority-ordered and capped by
     AIFORGE_SKILLS_ALWAYS_CAP (default 8) — shared by select() and
     select_or_ask() so a large registry can't blow the context budget."""
-    cap = int(os.environ.get("AIFORGE_SKILLS_ALWAYS_CAP", "8"))
+    try:
+        cap = int(os.environ.get("AIFORGE_SKILLS_ALWAYS_CAP", "8"))
+    except (TypeError, ValueError):
+        cap = 8   # a bad env value must not raise into the shared scorer
     return sorted((s for s in pool if s.always), key=lambda s: -s.priority)[:cap]
 
 

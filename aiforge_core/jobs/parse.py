@@ -74,6 +74,20 @@ def next_runs(cron: str, n: int = 3, base: datetime | None = None) -> list[str]:
             for _ in range(n)]
 
 
+def schedulable(cron: str) -> bool:
+    """True only if ``cron`` both validates AND can actually produce a next
+    run. croniter.is_valid() accepts impossible date/month combos (e.g.
+    "0 0 31 2 *" — Feb 31) that then raise on get_next(); this catches
+    that so callers never crash on a save-valid-but-unschedulable cron."""
+    if not croniter.is_valid(cron):
+        return False
+    try:
+        croniter(cron, datetime.now()).get_next(datetime)
+        return True
+    except Exception:  # noqa: BLE001 — CroniterBadDateError et al.
+        return False
+
+
 def parse_instructions(instructions: str) -> dict:
     """→ {"ok": True, "draft": {...}, "human_schedule": str,
     "next_runs": [iso, iso, iso]} or {"ok": False, "error": str}."""
@@ -103,9 +117,9 @@ def parse_instructions(instructions: str) -> dict:
         return {"ok": False, "error": "parser returned a template "
                                       "placeholder — try rephrasing"}
     cron = str(obj["cron"]).strip()
-    if not croniter.is_valid(cron):
+    if not schedulable(cron):
         return {"ok": False,
-                "error": f"invalid cron expression from parse: {cron!r}"}
+                "error": f"invalid or unschedulable cron from parse: {cron!r}"}
     project = obj.get("project")
     draft = {
         "name": str(obj["name"]).strip()[:120],

@@ -66,6 +66,37 @@ def test_fire_failure_records_error_and_still_advances(monkeypatch):
     assert got["next_run_at"] == "2026-07-03T08:00:00"   # advanced — no hot loop
 
 
+def test_fire_impossible_date_cron_disables_job(created):
+    # "0 0 31 2 *" passes croniter.is_valid at save time but get_next
+    # raises (Feb 31 never occurs) — fire must disable the job, not crash,
+    # and must NOT create a ticket.
+    j = _mk(cron="0 0 31 2 *")
+    assert scheduler.fire(j, now=NOW) is False
+    assert len(created) == 0
+    got = store.get(j["id"])
+    assert got["enabled"] is False
+    assert "unschedulable" in got["last_error"]
+
+
+def test_fire_advance_failure_creates_no_ticket(monkeypatch, created):
+    # If the schedule-advance write fails, NO ticket is created (at-most-
+    # once): a transient jobs.db failure skips the run rather than
+    # duplicating tickets on the next tick.
+    j = _mk()
+    calls = {"n": 0}
+    real_mark = store.mark_fired
+
+    def flaky_mark(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("jobs.db locked")
+
+    monkeypatch.setattr(store, "mark_fired", flaky_mark)
+    assert scheduler.fire(j, now=NOW) is False
+    assert len(created) == 0          # advance failed BEFORE create — no duplicate
+    monkeypatch.setattr(store, "mark_fired", real_mark)
+    assert store.get(j["id"])["next_run_at"] == "2026-07-02T08:00:00"  # unchanged
+
+
 def test_tick_fires_due_skips_future_and_disabled(created):
     _mk(name="due")
     _mk(name="future", next_run_at="2099-01-01T00:00:00")

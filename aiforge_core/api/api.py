@@ -380,7 +380,10 @@ class JobPreviewBody(BaseModel):
 
 class JobCreate(BaseModel):
     name: str = Field(..., min_length=1)
-    cron: str = Field(..., min_length=9)
+    # min_length=1, not 9 — croniter validates the real shape (and accepts
+    # aliases like "@daily" that are shorter than a 5-field expression);
+    # a length heuristic would false-reject those.
+    cron: str = Field(..., min_length=1)
     ticket_title: str = Field(..., min_length=1)
     ticket_body: str = Field(..., min_length=1)
     project: str | None = None
@@ -715,10 +718,11 @@ def jobs_preview(payload: JobPreviewBody) -> dict:
 
 @app.post("/api/jobs", status_code=201)
 def jobs_create(payload: JobCreate) -> dict:
-    from croniter import croniter as _cron
     from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
-    if not _cron.is_valid(payload.cron):
-        raise HTTPException(400, f"invalid cron: {payload.cron!r}")
+    # schedulable() rejects both invalid AND save-valid-but-unschedulable
+    # crons (e.g. "0 0 31 2 *"), so next_runs below can't 500.
+    if not jobs_parse.schedulable(payload.cron):
+        raise HTTPException(400, f"invalid or unschedulable cron: {payload.cron!r}")
     nxt = jobs_parse.next_runs(payload.cron, n=1)[0]
     return jobs_store.create(
         name=payload.name, cron=payload.cron,
@@ -737,14 +741,20 @@ def jobs_list() -> list[dict]:
 
 @app.patch("/api/jobs/{job_id}")
 def jobs_patch(job_id: int, payload: JobPatch) -> dict:
-    from croniter import croniter as _cron
     from aiforge_core.jobs import parse as jobs_parse, store as jobs_store
     if jobs_store.get(job_id) is None:
         raise HTTPException(404, f"job {job_id} not found")
     fields = {k: v for k, v in payload.model_dump().items() if v is not None}
+    # Reject blanking a required text field (JobPatch has no min_length, so
+    # {"ticket_title": ""} would otherwise store an empty value that later
+    # fires an empty-title ticket).
+    for k in ("name", "ticket_title", "ticket_body"):
+        if k in fields and not str(fields[k]).strip():
+            raise HTTPException(400, f"{k} cannot be empty")
     if "cron" in fields:
-        if not _cron.is_valid(fields["cron"]):
-            raise HTTPException(400, f"invalid cron: {fields['cron']!r}")
+        if not jobs_parse.schedulable(fields["cron"]):
+            raise HTTPException(400,
+                                f"invalid or unschedulable cron: {fields['cron']!r}")
         fields["next_run_at"] = jobs_parse.next_runs(fields["cron"], n=1)[0]
     return jobs_store.update(job_id, **fields)
 

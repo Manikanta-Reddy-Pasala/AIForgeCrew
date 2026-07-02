@@ -550,18 +550,25 @@ def _rules_context(cwd: str, query: str = "") -> str:
         blocks: list[str] = list(always_lines)
         ambiguous_note = ""
         if tagged:
-            if query:
-                chosen, ambiguous = _sk.select_or_ask(
-                    query, pool=tagged, k=len(tagged))
-                blocks.extend("- " + s.body for s in chosen)
-                if ambiguous:
-                    names = " or ".join(f"'{s.body}'" for s in ambiguous[0])
-                    ambiguous_note = (
-                        "\nAMBIGUOUS RULE MATCH: " + names + " both matched "
-                        "— ASK the user which applies before proceeding, "
-                        "don't guess.")
-            else:
-                # No query to score against (defensive) — fail open.
+            # Scorer runs in its OWN guard: a select_or_ask defect must never
+            # drop the legacy always-on `blocks` (the noise-fix turning into
+            # a rules-vanish bug). On any scorer error, fail open — include
+            # every tagged bullet, same as the no-query path.
+            try:
+                if query:
+                    chosen, ambiguous = _sk.select_or_ask(
+                        query, pool=tagged, k=len(tagged))
+                    blocks.extend("- " + s.body for s in chosen)
+                    if ambiguous:
+                        names = " or ".join(f"'{s.body}'" for s in ambiguous[0])
+                        ambiguous_note = (
+                            "\nAMBIGUOUS RULE MATCH: " + names + " both matched"
+                            " — ASK the user which applies before proceeding, "
+                            "don't guess.")
+                else:
+                    # No query to score against (defensive) — fail open.
+                    blocks.extend("- " + s.body for s in tagged)
+            except Exception:  # noqa: BLE001 — fail open, keep always-on rules
                 blocks.extend("- " + s.body for s in tagged)
         if not blocks:
             return ""
