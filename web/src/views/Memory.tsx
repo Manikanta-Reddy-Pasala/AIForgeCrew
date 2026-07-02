@@ -5,6 +5,7 @@ import {
   MemoryGraphSample,
 } from '../api';
 import { Icon } from '../icons';
+import GraphExplorer from '../components/GraphExplorer';
 
 const ROLES = ['supervisor', 'planner', 'doer', 'feedback', 'learner'];
 
@@ -198,6 +199,8 @@ function OverviewPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(true);   // collapsed by default
   const [openGraphs, setOpenGraphs] = useState<Set<string>>(new Set());
+  // Which store (if any) is open in the full-screen interactive explorer.
+  const [explorerStore, setExplorerStore] = useState<string | null>(null);
 
   const toggleGraph = (key: string) => setOpenGraphs(prev => {
     const next = new Set(prev);
@@ -340,6 +343,13 @@ function OverviewPanel() {
                         >
                           {graphOpen ? 'Hide graph' : 'Preview graph'}
                         </button>
+                        <button
+                          className="ghost sm"
+                          onClick={() => setExplorerStore(store.key)}
+                          title="Open the full-screen interactive graph explorer (pan / zoom / click to expand)"
+                        >
+                          Explore ↗
+                        </button>
                       </>
                     )}
                     <button
@@ -375,6 +385,17 @@ function OverviewPanel() {
             </div>
           )}
         </div>
+      )}
+
+      {explorerStore && (
+        <GraphExplorer
+          store={explorerStore}
+          label={
+            (OVERVIEW_STORES.find(s => s.key === explorerStore)?.label
+              || explorerStore) + ' — explorer'
+          }
+          onClose={() => setExplorerStore(null)}
+        />
       )}
     </div>
   );

@@ -21,6 +21,7 @@ export default function Library({ kind }: { kind: Kind }) {
     queryFn: () => api.libraryList(kind),
   });
 
+  const [tab, setTab] = useState<'default' | 'custom'>('default');
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -29,6 +30,9 @@ export default function Library({ kind }: { kind: Kind }) {
   const [genPrompt, setGenPrompt] = useState('');
   const [generating, setGenerating] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+
+  // Default = bundled/built-in/repo items; Custom = user-created (origin from API).
+  const shown = (items as any[]).filter(it => (it.origin ?? 'default') === tab);
 
   function reset() {
     setName(''); setDescription(''); setTriggers(''); setBody(''); setGenPrompt('');
@@ -56,6 +60,7 @@ export default function Library({ kind }: { kind: Kind }) {
       });
       toast.success(`Saved ${meta.one} "${name}"`);
       reset(); setCreating(false);
+      setTab('custom');   // new items are custom — show them where they land
       qc.invalidateQueries({ queryKey: ['library', kind] });
     } catch (e: any) { toast.error(e.message); }
   }
@@ -121,13 +126,29 @@ export default function Library({ kind }: { kind: Kind }) {
         </div>
       )}
 
+      {/* ── Default | Custom tabs ─────────────────────────────────── */}
+      <div className="row" style={{ gap: 4, marginBottom: 16, borderBottom: '1px solid var(--border-1)' }}>
+        {(['default', 'custom'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+                  className={tab === t ? '' : 'ghost'}
+                  style={{ borderRadius: '6px 6px 0 0', textTransform: 'capitalize',
+                           fontWeight: tab === t ? 600 : 400 }}>
+            {t}
+          </button>
+        ))}
+      </div>
+
       {isLoading ? (
         <div className="skeleton" style={{ height: 120 }} />
-      ) : items.length === 0 ? (
-        <div className="empty">No {meta.one}s yet. Create one above.</div>
+      ) : shown.length === 0 ? (
+        <div className="empty">
+          {tab === 'default'
+            ? `No default ${meta.one}s.`
+            : `No custom ${meta.one}s yet — create one above.`}
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {items.map((it: any) => {
+          {shown.map((it: any) => {
             const open = expanded === it.name;
             return (
               <div key={it.name + it.source} className="card" style={{ padding: '12px 16px' }}>

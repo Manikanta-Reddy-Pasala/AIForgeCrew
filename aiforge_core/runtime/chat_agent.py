@@ -208,8 +208,20 @@ def _resolve(cwd: str, path: str) -> Path:
 
 def _t_file_read(args: dict, cwd: str) -> dict:
     p = _resolve(cwd, args["path"])
+    # A directory passed to file_read used to just error ("not a file"), which
+    # reads as nonsense when the model is exploring. Return its LISTING instead
+    # (same shape as list_dir) so the mistake is still useful navigation.
+    if p.is_dir():
+        try:
+            entries = [(c.name + "/") if c.is_dir() else c.name
+                       for c in sorted(p.iterdir())]
+        except OSError as exc:
+            return {"ok": False, "error": f"cannot list dir {args['path']}: {exc}"}
+        return {"ok": True, "is_dir": True, "path": str(p), "entries": entries,
+                "note": "this is a DIRECTORY — listing its entries; "
+                        "call file_read on a specific file to read contents"}
     if not p.is_file():
-        return {"ok": False, "error": f"not a file: {args['path']}"}
+        return {"ok": False, "error": f"no such file or directory: {args['path']}"}
     return {"ok": True, "content": p.read_text(encoding="utf-8", errors="replace")}
 
 

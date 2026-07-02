@@ -1013,11 +1013,45 @@ def list_workflows() -> list[dict]:
 # /api/workflows registry above). Display all + create from text or via the
 # configured LLM. These are the auto_context sources the agents pull from.
 
-def _skill_dict(s) -> dict:
+def _bundled_names(kind: str) -> set:
+    """Filenames of the BUNDLED default playbooks for a kind. These ship in
+    ``runtime/builtin_playbooks/{kind}`` and ``ensure_dirs()`` COPIES them into
+    the user-writable global dir (keeping the filename), so a path check can't
+    tell a seeded default from a user file — but the FILENAME still identifies
+    it. Cached per process."""
+    cache = _bundled_names.__dict__.setdefault("_cache", {})
+    if kind not in cache:
+        try:
+            from pathlib import Path
+
+            from aiforge_core.runtime import workflows as _wf
+            d = Path(_wf.__file__).resolve().parent / "builtin_playbooks" / kind
+            cache[kind] = {f.name for f in d.glob("*.md")} if d.is_dir() else set()
+        except Exception:  # noqa: BLE001
+            cache[kind] = set()
+    return cache[kind]
+
+
+def _library_origin(source: str, kind: str) -> str:
+    """``"default"`` when the item is one of the bundled playbooks (matched by
+    its source FILENAME), else ``"custom"`` — everything the user or a repo
+    added. Never raises (classification must not break the listing)."""
+    try:
+        from pathlib import Path
+        if source and Path(source).name in _bundled_names(kind):
+            return "default"
+    except Exception:  # noqa: BLE001
+        return "custom"
+    return "custom"
+
+
+def _skill_dict(s, kind: str | None = None) -> dict:
+    source = getattr(s, "source", "")
     return {"name": s.name, "description": s.description,
             "triggers": list(getattr(s, "triggers", []) or []),
-            "body": s.body, "source": getattr(s, "source", ""),
-            "always": bool(getattr(s, "always", False))}
+            "body": s.body, "source": source,
+            "always": bool(getattr(s, "always", False)),
+            "origin": _library_origin(source, kind) if kind else "default"}
 
 
 @app.get("/api/library/{kind}")
@@ -1025,14 +1059,15 @@ def library_list(kind: str) -> list[dict]:
     """List all skills / workflows / rules."""
     if kind == "skills":
         from aiforge_core.runtime import skills
-        return [_skill_dict(s) for s in skills.load()]
+        return [_skill_dict(s, "skills") for s in skills.load()]
     if kind == "workflows":
         from aiforge_core.runtime import workflows
-        return [_skill_dict(w) for w in workflows.load()]
+        return [_skill_dict(w, "workflows") for w in workflows.load()]
     if kind == "rules":
         from aiforge_core.runtime import repo_rules
         return [{"name": r.name, "body": r.body, "source": r.source,
-                 "globs": list(r.globs), "always": r.always}
+                 "globs": list(r.globs), "always": r.always,
+                 "origin": _library_origin(r.source, "rules")}
                 for r in repo_rules.load_global_rules()]
     raise HTTPException(404, f"unknown kind {kind!r}")
 
@@ -1844,6 +1879,17 @@ def memory_graph_ep(store: str,
     ``{"available": False, "nodes": [], "edges": []}`` — never raises."""
     from aiforge_core.memory import admin as _admin
     return _admin.graph_sample(store, limit)
+
+
+@app.get("/api/memory/graph/expand")
+def memory_graph_expand_ep(store: str, node_id: str,
+                           limit: int = Query(40, le=200)) -> dict:
+    """Neighborhood of ONE node — the node + its directly-connected neighbors +
+    connecting edges. ``store`` ∈ symbols | graphify | chunks | graph_facts.
+    Soft-fails to ``{"available": False, "nodes": [], "edges": []}`` — never
+    raises. Powers the in-app interactive graph explorer's click-to-expand."""
+    from aiforge_core.memory import admin as _admin
+    return _admin.graph_expand(store, node_id, limit)
 
 
 @app.post("/api/memory/clear/{store}")

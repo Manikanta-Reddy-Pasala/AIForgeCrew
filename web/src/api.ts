@@ -147,6 +147,12 @@ export const api = {
   memoryGetGraph: (store: string, limit = 60) =>
     j<MemoryGraphSample>(
       `/memory/graph?store=${encodeURIComponent(store)}&limit=${limit}`),
+  // Neighborhood of ONE node (node + directly-connected neighbors + edges) —
+  // powers the interactive explorer's click-to-expand.
+  memoryExpandGraph: (store: string, nodeId: string, limit = 40) =>
+    j<MemoryGraphSample>(
+      `/memory/graph/expand?store=${encodeURIComponent(store)}` +
+      `&node_id=${encodeURIComponent(nodeId)}&limit=${limit}`),
   memoryClearStore: (store: string) =>
     j<any>(`/memory/clear/${encodeURIComponent(store)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

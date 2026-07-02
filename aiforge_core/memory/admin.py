@@ -389,6 +389,120 @@ def _sample_facts(s, limit: int) -> dict:
     return {"available": True, "nodes": nodes, "edges": []}
 
 
+def _expand_symbols(s, node_id: str, limit: int) -> dict:
+    # UNDIRECTED match so both callers and callees of the node show up; the
+    # edge still preserves its true direction via startNode/endNode fqn.
+    rows = list(s.run(
+        "MATCH (n:Symbol {fqn:$id})-[r:CALLS|DEFINES|EXTENDS|IMPLEMENTS]-(m:Symbol) "
+        "RETURN n.fqn AS nid, coalesce(n.simple, n.fqn) AS nlabel, n.kind AS nkind, "
+        "m.fqn AS mid, coalesce(m.simple, m.fqn) AS mlabel, m.kind AS mkind, "
+        "startNode(r).fqn AS a, endNode(r).fqn AS b, type(r) AS t LIMIT $limit",
+        id=node_id, limit=limit))
+    nodes: dict = {}
+    edges = []
+    for r in rows:
+        for nid, nlabel, nkind in ((r["nid"], r["nlabel"], r["nkind"]),
+                                   (r["mid"], r["mlabel"], r["mkind"])):
+            if nid is not None and nid not in nodes:
+                nodes[nid] = {"id": nid,
+                              "label": str(nlabel or nid.split(".")[-1] or ""),
+                              "kind": nkind or "symbol"}
+        if r["a"] is not None and r["b"] is not None:
+            edges.append({"from": r["a"], "to": r["b"], "type": r["t"]})
+    # Ensure the anchor node is present even when it has no matching edges.
+    if node_id not in nodes:
+        anchor = s.run(
+            "MATCH (n:Symbol {fqn:$id}) "
+            "RETURN n.fqn AS id, coalesce(n.simple, n.fqn) AS label, n.kind AS kind",
+            id=node_id).single()
+        if anchor and anchor["id"] is not None:
+            nodes[anchor["id"]] = {
+                "id": anchor["id"],
+                "label": str(anchor["label"] or anchor["id"].split(".")[-1] or ""),
+                "kind": anchor["kind"] or "symbol"}
+    return {"available": True, "nodes": list(nodes.values()), "edges": edges}
+
+
+def _expand_graphify(s, node_id: str, limit: int) -> dict:
+    rows = list(s.run(
+        "MATCH (n {id:$id})-[r]-(m) WHERE (n.source = $src OR n:GraphifyNode) "
+        "RETURN n.id AS nid, coalesce(n.name, n.title, n.id) AS nlabel, "
+        "m.id AS mid, coalesce(m.name, m.title, m.id) AS mlabel, "
+        "startNode(r).id AS a, endNode(r).id AS b, type(r) AS t LIMIT $limit",
+        id=node_id, src=_GRAPHIFY_SOURCE, limit=limit))
+    nodes: dict = {}
+    edges = []
+    for r in rows:
+        for nid, nlabel in ((r["nid"], r["nlabel"]), (r["mid"], r["mlabel"])):
+            if nid is not None and nid not in nodes:
+                nodes[nid] = {"id": nid, "label": str(nlabel or nid or ""),
+                              "kind": "graphify"}
+        if r["a"] is not None and r["b"] is not None:
+            edges.append({"from": r["a"], "to": r["b"], "type": r["t"]})
+    if node_id not in nodes:
+        anchor = s.run(
+            "MATCH (n {id:$id}) WHERE (n.source = $src OR n:GraphifyNode) "
+            "RETURN n.id AS id, coalesce(n.name, n.title, n.id) AS label",
+            id=node_id, src=_GRAPHIFY_SOURCE).single()
+        if anchor and anchor["id"] is not None:
+            nodes[anchor["id"]] = {"id": anchor["id"],
+                                   "label": str(anchor["label"] or anchor["id"] or ""),
+                                   "kind": "graphify"}
+    return {"available": True, "nodes": list(nodes.values()), "edges": edges}
+
+
+def _expand_observation(s, node_id: str) -> dict:
+    # chunks / graph_facts live as Observation_v2 with no meaningful edges —
+    # return just the single node so a click is effectively a no-op.
+    anchor = s.run(
+        "MATCH (n:Observation_v2 {id:$id}) "
+        "RETURN n.id AS id, coalesce(n.text, n.title, n.id) AS text, n.kind AS kind",
+        id=node_id).single()
+    if not anchor or anchor["id"] is None:
+        return {"available": True, "nodes": [], "edges": []}
+    kind = anchor["kind"] or ""
+    label = (_chunk_label(anchor["text"]) if kind in _CHUNK_KINDS
+             else _clip(str(anchor["text"] or anchor["id"] or ""), 40))
+    return {"available": True,
+            "nodes": [{"id": anchor["id"], "label": label,
+                       "kind": kind or "chunk"}],
+            "edges": []}
+
+
+def graph_expand(store: str, node_id: str, limit: int = 40) -> dict:
+    """Neighborhood of ONE node in a graph store — the node itself + its
+    directly-connected neighbors + the connecting edges. Same shape as
+    ``graph_sample`` (``{"available","nodes","edges"}``). Soft-fails to
+    available:False on any error (unknown store, missing node, graph not
+    configured, driver/query failure) — never raises.
+    """
+    empty = {"available": False, "nodes": [], "edges": []}
+    if store not in _GRAPH_STORES or not _neo4j_configured() or not node_id:
+        return empty
+    try:
+        limit = max(1, min(int(limit), 200))
+    except Exception:  # noqa: BLE001
+        limit = 40
+    try:
+        drv = _graph_driver()
+    except Exception:  # noqa: BLE001
+        return empty
+    try:
+        with drv.session() as s:
+            if store == "symbols":
+                return _expand_symbols(s, node_id, limit)
+            if store == "graphify":
+                return _expand_graphify(s, node_id, limit)
+            return _expand_observation(s, node_id)  # chunks / graph_facts
+    except Exception:  # noqa: BLE001
+        return empty
+    finally:
+        try:
+            drv.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def graph_sample(store: str, limit: int = 60) -> dict:
     """Small node-link sample of ONE graph store, for an in-app SVG preview.
 
@@ -535,5 +649,5 @@ def clear_all() -> dict:
             "note": _PRESERVE_NOTE}
 
 
-__all__ = ["memory_overview", "graph_sample", "clear_store", "clear_all",
-           "CLEARABLE"]
+__all__ = ["memory_overview", "graph_sample", "graph_expand", "clear_store",
+           "clear_all", "CLEARABLE"]
