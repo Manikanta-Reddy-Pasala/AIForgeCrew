@@ -255,38 +255,50 @@ def memory_overview() -> dict:
     stores["chat"] = _safe(_chat_section)
     stores["sources"] = _safe(_sources_section)
     browser = os.environ.get("AIFORGE_NEO4J_BROWSER_URL") or None
+    host = _neo4j_browser_host(browser)
+    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
+    bolt = f"neo4j://{user}@{host}:7687" if host else None
+    # Zero-friction opt-in: embed the password so Neo4j Browser AUTO-CONNECTS
+    # (no prompt). Default OFF — this exposes the neo4j password in the API
+    # response, which is only acceptable on a trusted LAN with the weak default
+    # password. The NUC launcher sets AIFORGE_NEO4J_BROWSER_EMBED_CREDS=1.
+    connect = None
+    if host and os.environ.get("AIFORGE_NEO4J_BROWSER_EMBED_CREDS", "").strip().lower() \
+            in ("1", "true", "yes", "on"):
+        pw = (os.environ.get("AIFORGE_NEO4J_PASSWORD")
+              or os.environ.get("NEO4J_PASSWORD") or "password")
+        connect = f"neo4j://{user}:{pw}@{host}:7687"
     return {"backend": backend_select.memory_backend(), "stores": stores,
             "neo4j_browser": browser,
-            # Bolt connect URL (host + user only, NEVER the password) so the
-            # Memory-page link can PREFILL Neo4j Browser's connect form — the
-            # user types the password once, then the browser caches it.
-            "neo4j_bolt": _neo4j_bolt_hint(browser),
-            "neo4j_user": os.environ.get("AIFORGE_NEO4J_USER", "neo4j")}
+            # Bolt connect URL, host + user only (NEVER the password) — prefills
+            # Neo4j Browser's connect form; user types the password once.
+            "neo4j_bolt": bolt,
+            # Full connect URL WITH creds (auto-connect) — only when the
+            # operator opted in via AIFORGE_NEO4J_BROWSER_EMBED_CREDS.
+            "neo4j_connect": connect,
+            "neo4j_user": user}
 
 
-def _neo4j_bolt_hint(browser_url: str | None) -> str | None:
-    """`neo4j://<user>@<host>:7687` derived from the browser URL's host (they
-    share a host; only the port differs 7474→7687). No password — that would
-    leak over the API on a tunnel-exposed service. Returns None if no host."""
+def _neo4j_browser_host(browser_url: str | None) -> str | None:
+    """Host for the bolt connect URL — the browser + bolt share a host (only the
+    port differs 7474→7687). Derived from the browser URL, else the bolt URI.
+    Returns None for loopback (a link there only works ON the server)."""
+    from urllib.parse import urlparse
     host = None
-    if browser_url:
+    for candidate in (browser_url,
+                      os.environ.get("AIFORGE_NEO4J_URI"),
+                      os.environ.get("NEO4J_URI")):
+        if not candidate:
+            continue
         try:
-            from urllib.parse import urlparse
-            host = urlparse(browser_url).hostname
+            host = urlparse(candidate).hostname
         except Exception:  # noqa: BLE001
             host = None
-    if not host:
-        # Fall back to the bolt URI's host if that's how it's configured.
-        uri = os.environ.get("AIFORGE_NEO4J_URI") or os.environ.get("NEO4J_URI") or ""
-        try:
-            from urllib.parse import urlparse
-            host = urlparse(uri).hostname
-        except Exception:  # noqa: BLE001
-            host = None
+        if host:
+            break
     if not host or host in ("127.0.0.1", "localhost"):
         return None
-    user = os.environ.get("AIFORGE_NEO4J_USER", "neo4j")
-    return f"neo4j://{user}@{host}:7687"
+    return host
 
 
 # ─────────────────────── graph sample (visualization) ───────────────────────

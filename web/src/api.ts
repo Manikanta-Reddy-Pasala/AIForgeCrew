@@ -338,6 +338,7 @@ export interface MemoryOverview {
   stores: Record<string, MemoryStoreSection>;
   neo4j_browser?: string | null;
   neo4j_bolt?: string | null;
+  neo4j_connect?: string | null;
   neo4j_user?: string | null;
 }
 

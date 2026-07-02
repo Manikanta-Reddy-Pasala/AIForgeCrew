@@ -61,6 +61,11 @@ if [[ -z "${AIFORGE_NEO4J_BROWSER_URL:-}" ]]; then
   [[ -n "$_lan_ip" ]] && export AIFORGE_NEO4J_BROWSER_URL="http://${_lan_ip}:7474"
 fi
 echo "==> neo4j browser: ${AIFORGE_NEO4J_BROWSER_URL:-<unset — UI falls back to ui-host:7474>}"
+# Auto-connect the Memory-page link (no password prompt). Embeds the neo4j
+# password in the API-returned connect URL — acceptable on this trusted LAN
+# with the default password. Override AIFORGE_NEO4J_BROWSER_EMBED_CREDS=0 to
+# require a manual login instead.
+export AIFORGE_NEO4J_BROWSER_EMBED_CREDS="${AIFORGE_NEO4J_BROWSER_EMBED_CREDS:-1}"
 
 # 4) Host workspace = where repos to index live (container used /workspace) -----
 export AIFORGE_HOST_WORKSPACE="${AIFORGE_HOST_WORKSPACE:-$ROOT/data/workspace}"
@@ -82,6 +87,7 @@ setsid env \
   AIFORGE_HOST_WORKSPACE="$AIFORGE_HOST_WORKSPACE" \
   AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1 \
   AIFORGE_NEO4J_BROWSER_URL="${AIFORGE_NEO4J_BROWSER_URL:-}" \
+  AIFORGE_NEO4J_BROWSER_EMBED_CREDS="${AIFORGE_NEO4J_BROWSER_EMBED_CREDS:-}" \
   NEO4J_PASSWORD="${NEO4J_PASSWORD:-}" \
   PATH="$PATH" \
   ./run.sh --host "$BIND" --port "$PORT" >"$LOG" 2>&1 < /dev/null &

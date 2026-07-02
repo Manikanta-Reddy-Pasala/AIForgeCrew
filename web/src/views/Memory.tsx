@@ -296,10 +296,11 @@ function OverviewPanel() {
             const isGraph = GRAPH_STORES.has(store.key);
             const graphOpen = openGraphs.has(store.key);
             const cypher = STORE_CYPHER[store.key];
-            // Prefill the connect form (host + user) so the login is one-time;
-            // Neo4j Browser caches the connection after the first password.
-            const connect = ov?.neo4j_bolt
-              ? `&connectURL=${encodeURIComponent(ov.neo4j_bolt)}` : '';
+            // Prefer the creds-embedded URL (auto-connect, no prompt) when the
+            // operator opted in; else prefill host+user (one-time password).
+            const connectUrl = ov?.neo4j_connect || ov?.neo4j_bolt;
+            const connect = connectUrl
+              ? `&connectURL=${encodeURIComponent(connectUrl)}` : '';
             const browserHref =
               `${browserBase}/browser/?cmd=edit&arg=${encodeURIComponent(cypher || '')}${connect}`;
             return (
