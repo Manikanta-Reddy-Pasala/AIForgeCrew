@@ -172,7 +172,9 @@ function SourcesPanel() {
       setAdding(true);
       try {
         await api.memorySourceCreate({ kind, location: location.trim(), name: name.trim() || undefined });
-        toast.success('Source added.');
+        toast.success(kind === 'repo' || kind === 'docs'
+          ? 'Source added — indexing started (chunks + symbols + graph).'
+          : 'Source added.');
         setLocation('');
         setName('');
         await refresh();

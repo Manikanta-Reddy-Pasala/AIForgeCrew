@@ -209,7 +209,8 @@ def test_memory_sources_crud_and_index(client, monkeypatch, tmp_path):
 
     s = c.post("/api/memory/sources",
                json={"kind": "docs", "location": str(docs), "name": "d"}).json()
-    assert s["kind"] == "docs" and s["status"] == "idle"
+    # docs/repo sources auto-start indexing on create
+    assert s["kind"] == "docs" and s["status"] == "indexing"
     sid = s["id"]
     assert any(x["id"] == sid for x in c.get("/api/memory/sources").json())
 
