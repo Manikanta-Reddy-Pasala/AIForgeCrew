@@ -26,12 +26,13 @@ LOG="/tmp/aiforge-hybrid.log"
 
 echo "==> AIForge NUC hybrid launcher (repo: $ROOT)"
 
-# 1) uv (run.sh needs it to build the host venv) --------------------------------
+# 1) uv (run.sh needs it to build the host venv). Put ~/.local/bin on PATH
+#    FIRST so an already-installed uv/graphify is found instead of reinstalled.
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 if ! command -v uv >/dev/null 2>&1; then
   echo "==> installing uv (missing)"
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 command -v uv >/dev/null 2>&1 || { echo "!! uv still not on PATH" >&2; exit 1; }
 
 # 2) graphify — the host CLI the container never had (fixes Graphify=0) ---------
@@ -41,10 +42,12 @@ if [[ -z "${AIFORGE_GRAPHIFY_BIN:-}" ]]; then
 fi
 echo "==> graphify: ${AIFORGE_GRAPHIFY_BIN:-<not found — Graphify layer will skip>}"
 
-# 3) Neo4j password: run.sh hybrid reads NEO4J_PASSWORD; derive it from a
-#    compose-style NEO4J_AUTH=neo4j/<pw> if only that is set in .env. ----------
+# 3) Neo4j password: run.sh sources .env + defaults to `password` when unset,
+#    which matches the compose neo4j default. If .env DOES carry a compose-style
+#    NEO4J_AUTH=neo4j/<pw>, derive NEO4J_PASSWORD from it. Guarded so a missing
+#    line can't trip `set -e` (grep exits non-zero on no match). ---------------
 if [[ -z "${NEO4J_PASSWORD:-}" && -f .env ]]; then
-  _auth="$(grep -E '^NEO4J_AUTH=' .env | head -1 | cut -d= -f2-)"
+  _auth="$(grep -E '^NEO4J_AUTH=' .env 2>/dev/null | head -1 | cut -d= -f2- || true)"
   [[ "$_auth" == */* ]] && export NEO4J_PASSWORD="${_auth#*/}"
 fi
 
