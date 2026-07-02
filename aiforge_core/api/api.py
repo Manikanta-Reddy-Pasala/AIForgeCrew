@@ -4090,6 +4090,82 @@ def integrations_gitlab_test() -> dict:
     return gitlab_test()
 
 
+class _EmailCfg(BaseModel):
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_user: str | None = None
+    smtp_password: str | None = None   # write-only; omitted on read
+    smtp_from: str | None = None
+    smtp_starttls: bool | None = None
+    imap_host: str | None = None
+    imap_port: int | None = None
+    imap_user: str | None = None
+    imap_password: str | None = None   # write-only; omitted on read
+    imap_ssl: bool | None = None
+
+
+@app.get("/api/integrations/email")
+def integrations_email_get() -> dict:
+    """Current Email (SMTP/IMAP) settings (passwords masked). Reflects env
+    override — an env-set host/password wins over the stored value."""
+    from aiforge_core.config import integrations
+    stored = integrations.get("email")
+    env_smtp_pw = bool(os.environ.get("AIFORGE_SMTP_PASSWORD"))
+    env_imap_pw = bool(os.environ.get("AIFORGE_IMAP_PASSWORD"))
+    env_managed = bool(
+        os.environ.get("AIFORGE_SMTP_HOST") or os.environ.get("AIFORGE_IMAP_HOST")
+        or env_smtp_pw or env_imap_pw)
+    return {
+        "smtp_host": os.environ.get("AIFORGE_SMTP_HOST") or stored.get("smtp_host", ""),
+        "smtp_port": int(os.environ.get("AIFORGE_SMTP_PORT") or stored.get("smtp_port") or 587),
+        "smtp_user": os.environ.get("AIFORGE_SMTP_USER") or stored.get("smtp_user", ""),
+        "smtp_from": os.environ.get("AIFORGE_SMTP_FROM") or stored.get("smtp_from", ""),
+        "smtp_starttls": _env_truthy("AIFORGE_SMTP_STARTTLS")
+                         if os.environ.get("AIFORGE_SMTP_STARTTLS") else bool(stored.get("smtp_starttls", True)),
+        "imap_host": os.environ.get("AIFORGE_IMAP_HOST") or stored.get("imap_host", ""),
+        "imap_port": int(os.environ.get("AIFORGE_IMAP_PORT") or stored.get("imap_port") or 993),
+        "imap_user": os.environ.get("AIFORGE_IMAP_USER") or stored.get("imap_user", ""),
+        "imap_ssl": _env_truthy("AIFORGE_IMAP_SSL")
+                    if os.environ.get("AIFORGE_IMAP_SSL") else bool(stored.get("imap_ssl", True)),
+        "has_smtp_password": env_smtp_pw or bool(stored.get("smtp_password")),
+        "has_imap_password": env_imap_pw or bool(stored.get("imap_password")),
+        "env_managed": env_managed,
+    }
+
+
+@app.put("/api/integrations/email")
+def integrations_email_set(body: _EmailCfg) -> dict:
+    """Persist Email (SMTP/IMAP) settings. An empty/omitted password keeps the
+    existing one (so re-saving the form doesn't wipe the secret)."""
+    from aiforge_core.config import integrations
+    patch: dict = {}
+    for f in ("smtp_host", "smtp_user", "smtp_from", "imap_host", "imap_user"):
+        v = getattr(body, f)
+        if v is not None:
+            patch[f] = v.strip()
+    for f in ("smtp_port", "imap_port"):
+        v = getattr(body, f)
+        if v is not None:
+            patch[f] = int(v)
+    for f in ("smtp_starttls", "imap_ssl"):
+        v = getattr(body, f)
+        if v is not None:
+            patch[f] = bool(v)
+    if body.smtp_password:               # only overwrite when a new secret is given
+        patch["smtp_password"] = body.smtp_password
+    if body.imap_password:
+        patch["imap_password"] = body.imap_password
+    integrations.set_("email", patch)
+    return integrations_email_get()
+
+
+@app.post("/api/integrations/email/test")
+def integrations_email_test() -> dict:
+    """Live connectivity + auth check against the configured SMTP/IMAP."""
+    from aiforge_core.runtime.tools.email_tool import email_test
+    return email_test()
+
+
 @app.post("/api/chat/sessions/{session_id}/ticket", status_code=201)
 def chat_session_ticket(session_id: int, body: _SessionTicketBody) -> dict:
     """Pipeline mode: turn a chat message into a real ticket that runs the

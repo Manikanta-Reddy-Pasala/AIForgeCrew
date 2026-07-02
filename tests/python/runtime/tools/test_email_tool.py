@@ -238,3 +238,83 @@ def test_send_defaults_to_ask_policy(monkeypatch):
     monkeypatch.delenv("AIFORGE_CHAT_TOOL_POLICY", raising=False)
     assert tool_policy.decide("email_send", {})["policy"] == tool_policy.ASK
     assert tool_policy.decide("email_read", {})["policy"] == tool_policy.ALLOW
+
+
+# ── UI-persisted config store (mirror the jira/gitlab store tests) ────
+
+_ENV_KEYS = (
+    "AIFORGE_SMTP_HOST", "AIFORGE_SMTP_PORT", "AIFORGE_SMTP_USER",
+    "AIFORGE_SMTP_PASSWORD", "AIFORGE_SMTP_FROM", "AIFORGE_SMTP_STARTTLS",
+    "AIFORGE_IMAP_HOST", "AIFORGE_IMAP_PORT", "AIFORGE_IMAP_USER",
+    "AIFORGE_IMAP_PASSWORD", "AIFORGE_IMAP_SSL", "AIFORGE_EMAIL_DISABLE",
+)
+
+
+def _clear_env(monkeypatch):
+    for k in _ENV_KEYS:
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_reads_stored_smtp_config_when_env_absent(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    from aiforge_core.config import integrations
+    integrations.set_("email", {
+        "smtp_host": "smtp.stored", "smtp_port": 2525, "smtp_user": "u@stored",
+        "smtp_password": "stored-pw", "smtp_from": "from@stored",
+        "smtp_starttls": False,
+    })
+    _FakeSMTP.instances.clear()
+    monkeypatch.setattr("smtplib.SMTP_SSL", _FakeSMTP)   # starttls False ⇒ SMTP_SSL
+    out = et.email_send({"to": "a@b.com", "subject": "s", "body": "b"})
+    assert out["ok"] is True
+    srv = _FakeSMTP.instances[-1]
+    assert srv.host == "smtp.stored" and srv.port == 2525
+    assert srv.login_creds == ("u@stored", "stored-pw")
+    assert srv.sent["From"] == "from@stored"
+
+
+def test_reads_stored_imap_config_when_env_absent(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    from aiforge_core.config import integrations
+    integrations.set_("email", {"imap_host": "imap.stored", "imap_port": 1993,
+                                 "imap_user": "u@stored", "imap_password": "pw"})
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    out = et.email_read({"limit": 1})
+    assert out["ok"] is True
+    assert _FakeIMAP.last.host == "imap.stored" and _FakeIMAP.last.port == 1993
+
+
+def test_env_wins_over_stored(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    from aiforge_core.config import integrations
+    integrations.set_("email", {"smtp_host": "smtp.stored", "smtp_user": "stored",
+                                "smtp_password": "stored-pw"})
+    monkeypatch.setenv("AIFORGE_SMTP_HOST", "smtp.env")
+    monkeypatch.setenv("AIFORGE_SMTP_USER", "env-user")
+    monkeypatch.setenv("AIFORGE_SMTP_PASSWORD", "env-pw")
+    _FakeSMTP.instances.clear()
+    monkeypatch.setattr("smtplib.SMTP", _FakeSMTP)       # starttls default True
+    et.email_send({"to": "a@b.com", "subject": "s", "body": "b"})
+    srv = _FakeSMTP.instances[-1]
+    assert srv.host == "smtp.env"
+    assert srv.login_creds == ("env-user", "env-pw")
+
+
+def test_email_test_unconfigured(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    out = et.email_test()
+    assert out["ok"] is False and out["error"] == "email_not_configured"
+
+
+def test_email_test_smtp_only_ok(tmp_path, smtp_cfg, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))   # no stored imap host
+    monkeypatch.delenv("AIFORGE_IMAP_HOST", raising=False)
+    monkeypatch.setattr("smtplib.SMTP", _FakeSMTP)
+    out = et.email_test()
+    assert out["ok"] is True
+    assert out["smtp"]["ok"] is True and out["smtp"]["host"] == "smtp.internal"
+    assert out["imap"] is None

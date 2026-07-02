@@ -604,6 +604,13 @@ export type GitlabCfg = {
   has_token: boolean; env_managed: boolean;
 };
 
+export type EmailCfg = {
+  smtp_host: string; smtp_port: number; smtp_user: string; smtp_from: string;
+  smtp_starttls: boolean;
+  imap_host: string; imap_port: number; imap_user: string; imap_ssl: boolean;
+  has_smtp_password: boolean; has_imap_password: boolean; env_managed: boolean;
+};
+
 export type McpCatalogEntry = {
   id: string; name: string; description: string; transport: string;
   url: string; homepage?: string; needs_api_key?: boolean; category?: string;
@@ -669,6 +676,25 @@ export const integrationsApi = {
   testGitlab: () =>
     j<{ ok: boolean; base_url?: string; auth?: string; user?: string; error?: string; detail?: string; hint?: string }>(
       '/integrations/gitlab/test', { method: 'POST' }),
+
+  getEmail: () => j<EmailCfg>('/integrations/email'),
+  setEmail: (cfg: {
+    smtp_host?: string; smtp_port?: number; smtp_user?: string; smtp_password?: string;
+    smtp_from?: string; smtp_starttls?: boolean;
+    imap_host?: string; imap_port?: number; imap_user?: string; imap_password?: string;
+    imap_ssl?: boolean;
+  }) =>
+    j<EmailCfg>('/integrations/email', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    }),
+  testEmail: () =>
+    j<{
+      ok: boolean; error?: string; hint?: string;
+      smtp?: { ok: boolean; host?: string; port?: number; user?: string; error?: string } | null;
+      imap?: { ok: boolean; host?: string; port?: number; user?: string; error?: string } | null;
+    }>('/integrations/email/test', { method: 'POST' }),
 };
 
 export function chatSessionMessageURL(id: number): string {
