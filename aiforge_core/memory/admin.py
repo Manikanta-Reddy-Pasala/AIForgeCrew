@@ -42,6 +42,11 @@ _GRAPH_LABELS: dict[str, list[str]] = {
     "symbols": ["Symbol", "Class", "Method", "Endpoint", "File"],
     "chunks": ["Chunk_v2", "Chunk"],
 }
+
+# Observation_v2 kinds that are ingested repo CONTENT (shown as chunks, not
+# facts). memory_ingest writes source files as kind=code / docs as kind=doc.
+_CHUNK_KINDS = {"code", "doc"}
+
 _SYMBOL_RELS = ["CALLS", "EXTENDS", "IMPLEMENTS", "IMPORTS", "DEFINES"]
 _GRAPHIFY_LABEL = "GraphifyNode"
 _GRAPHIFY_SOURCE = "graphify"
@@ -112,7 +117,17 @@ def _graph_snapshot() -> dict:
             }
             gf = s.run(f"{_GRAPHIFY_MATCH} RETURN count(DISTINCT n) AS n",
                        src=_GRAPHIFY_SOURCE).single()["n"]
-        return {"labels": labels, "rels": rels, "graphify": int(gf or 0)}
+            # Ingested repo CONTENT is written as Observation_v2 with
+            # kind=code|doc (not a Chunk_v2 label), so a label-only count files
+            # it under "facts" and leaves the "Code/doc chunks" tile at 0. Split
+            # Observation_v2 by kind so content shows as chunks, facts as facts.
+            obs_kinds = {
+                (r["kind"] or "?"): int(r["n"])
+                for r in s.run("MATCH (n:Observation_v2) "
+                               "RETURN n.kind AS kind, count(*) AS n")
+            }
+        return {"labels": labels, "rels": rels, "graphify": int(gf or 0),
+                "obs_kinds": obs_kinds}
     finally:
         try:
             drv.close()
@@ -135,12 +150,31 @@ def _graph_sections() -> dict:
         return {k: {"available": False, "reason": reason} for k in _GRAPH_STORES}
 
     labels = snap["labels"]
+    obs_kinds = snap.get("obs_kinds", {})
+    # Content chunks live as Observation_v2 kind∈{code,doc}; everything else
+    # under Observation_v2 is a real fact/decision/learning.
+    content_obs = sum(n for k, n in obs_kinds.items() if k in _CHUNK_KINDS)
     out: dict = {}
     for store in ("graph_facts", "symbols", "chunks"):
         counts = {lbl: labels.get(lbl, 0) for lbl in _GRAPH_LABELS[store]
                   if labels.get(lbl, 0)}
         section = {"available": True, "labels": counts,
                    "total": sum(counts.values())}
+        if store == "graph_facts":
+            # Don't count ingested code/doc content as "facts".
+            if "Observation_v2" in counts and content_obs:
+                counts["Observation_v2"] = max(
+                    0, counts["Observation_v2"] - content_obs)
+                if not counts["Observation_v2"]:
+                    counts.pop("Observation_v2")
+            section["total"] = max(0, section["total"] - content_obs)
+        if store == "chunks":
+            # Fold ingested code/doc Observation_v2 in as the content chunks.
+            if content_obs:
+                for k in _CHUNK_KINDS:
+                    if obs_kinds.get(k):
+                        counts[f"code/doc:{k}"] = obs_kinds[k]
+                section["total"] = section["total"] + content_obs
         if store == "symbols":
             section["relationships"] = {
                 t: snap["rels"].get(t, 0) for t in _SYMBOL_RELS
