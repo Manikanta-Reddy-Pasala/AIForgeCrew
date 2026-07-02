@@ -12,11 +12,12 @@ pipeline uses. Wall-clock cap enforced via asyncio.
 Soft-error contract; unknown roles return ``{ok: False,
 error: "unknown_role"}``.
 
-Depth cap (sub #16): each delegate runs with ``AIFORGE_DELEGATION_DEPTH``
-incremented; calls beyond ``AIFORGE_DELEGATION_MAX_DEPTH`` (default 3)
-return ``{ok: False, error: "delegation_depth_exceeded"}`` instead of
-spawning. Prevents runaway recursive delegation if a model decides to
-always delegate.
+Depth cap (sub #16): each delegate runs with a request-scoped depth
+counter (``request_context``, a contextvar — NOT env, so concurrent
+delegation chains stay independent) incremented; calls beyond
+``AIFORGE_DELEGATION_MAX_DEPTH`` (default 3) return ``{ok: False,
+error: "delegation_depth_exceeded"}`` instead of spawning. Prevents runaway
+recursive delegation if a model decides to always delegate.
 """
 from __future__ import annotations
 
@@ -28,7 +29,6 @@ from typing import Any
 from ._trace import emit
 
 _DELEGABLE_ROLES = {"researcher", "planner", "refiner", "triage", "verifier"}
-_DEPTH_ENV = "AIFORGE_DELEGATION_DEPTH"
 _MAX_DEPTH_ENV = "AIFORGE_DELEGATION_MAX_DEPTH"
 _DEFAULT_MAX_DEPTH = 3
 
@@ -140,10 +140,12 @@ def delegate_to_agent(
     if not prompt or not prompt.strip():
         return {"ok": False, "error": "empty_prompt"}
 
-    try:
-        current_depth = int(os.environ.get(_DEPTH_ENV, "0"))
-    except ValueError:
-        current_depth = 0
+    # Depth is request-scoped (contextvar), NOT process-global env: under
+    # concurrency two delegating chains must not see each other's depth (which
+    # caused false ``delegation_depth_exceeded`` or runaway spawns). The cap
+    # (max_depth) is config, so it stays in env.
+    from aiforge_core.runtime import request_context
+    current_depth = request_context.get_delegation_depth()
     try:
         max_depth = int(os.environ.get(_MAX_DEPTH_ENV, _DEFAULT_MAX_DEPTH))
     except ValueError:
@@ -157,19 +159,15 @@ def delegate_to_agent(
                 "max_depth": max_depth}
 
     started = time.monotonic()
-    prev_depth_env = os.environ.get(_DEPTH_ENV)
-    os.environ[_DEPTH_ENV] = str(current_depth + 1)
+    depth_token = request_context.enter_delegation()
     try:
         result = asyncio.run(_run_delegate_async(role, prompt, timeout))
     except Exception as exc:  # noqa: BLE001 — soft error
         return {"ok": False, "error": "delegate_failed",
                 "role": role, "detail": str(exc)[:300]}
     finally:
-        # Restore depth env so the Doer's next call sees the same value.
-        if prev_depth_env is None:
-            os.environ.pop(_DEPTH_ENV, None)
-        else:
-            os.environ[_DEPTH_ENV] = prev_depth_env
+        # Restore depth so a sibling delegate call sees the pre-increment value.
+        request_context.reset_delegation(depth_token)
     wall_s = time.monotonic() - started
     emit("Delegate", {"role": role, "wall_s": round(wall_s, 2),
                       "depth": current_depth,

@@ -147,8 +147,9 @@ def should_skip_researcher(
     if _has_reference_pattern(body or ""):
         return False, "has_reference_word"
 
+    from aiforge_core.runtime import request_context
     repo_root = repo_root or os.path.expanduser(
-        os.environ.get("AIFORGE_REPO_ROOT", "~/aiforge_workspace"),
+        request_context.get_repo_root() or "~/aiforge_workspace",
     )
     for keyword in _project_keywords(title or ""):
         if _git_log_has_keyword(repo_root, keyword):

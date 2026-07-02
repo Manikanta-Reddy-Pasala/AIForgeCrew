@@ -107,8 +107,9 @@ _PORT_RE = re.compile(
 
 
 def _root(cwd: str | None) -> str:
-    return (os.environ.get("AIFORGE_WORKSPACE_DIR") or cwd
-            or os.environ.get("AIFORGE_REPO_ROOT") or os.getcwd())
+    from aiforge_core.runtime import request_context
+    return (request_context.get_workspace_dir() or cwd
+            or request_context.get_repo_root() or os.getcwd())
 
 
 def serve(args: dict, cwd: str | None = None) -> dict:

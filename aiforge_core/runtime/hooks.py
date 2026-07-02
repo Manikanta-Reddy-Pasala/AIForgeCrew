@@ -178,7 +178,10 @@ def adk_before_tool_callback():
         try:
             import asyncio
             name = getattr(tool, "name", "") or ""
-            cwd = os.environ.get("AIFORGE_REPO_ROOT") or None
+            # Read in the async task (context-visible) BEFORE hopping to the
+            # executor — run_in_executor does not copy contextvars.
+            from aiforge_core.runtime import request_context
+            cwd = request_context.get_repo_root() or None
             payload = {"tool": name, "args": args or {}}
             out = await asyncio.get_running_loop().run_in_executor(
                 None, fire, "PreToolUse", payload, cwd)
@@ -202,7 +205,8 @@ def adk_after_tool_callback():
         try:
             import asyncio
             name = getattr(tool, "name", "") or ""
-            cwd = os.environ.get("AIFORGE_REPO_ROOT") or None
+            from aiforge_core.runtime import request_context
+            cwd = request_context.get_repo_root() or None
             payload = {"tool": name, "args": args or {}, "result": tool_response}
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, fire, "PostToolUse", payload, cwd)

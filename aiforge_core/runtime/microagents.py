@@ -98,8 +98,9 @@ _REPO_SUBDIRS = (".aiforge/microagents", ".openhands/microagents")
 
 
 def _repo_root(cwd: str | None) -> str | None:
-    root = os.environ.get("AIFORGE_WORKSPACE_DIR") or cwd \
-        or os.environ.get("AIFORGE_REPO_ROOT")
+    from aiforge_core.runtime import request_context
+    root = request_context.get_workspace_dir() or cwd \
+        or request_context.get_repo_root()
     return root or None
 
 

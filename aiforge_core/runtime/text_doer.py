@@ -328,8 +328,9 @@ def _resolve_cwd() -> str:
     """The per-ticket worktree the Doer's tools run against — same resolution
     the native Doer tools use (``AIFORGE_WORKSPACE_DIR`` then
     ``AIFORGE_REPO_ROOT``), falling back to the process cwd."""
-    return (os.environ.get("AIFORGE_WORKSPACE_DIR")
-            or os.environ.get("AIFORGE_REPO_ROOT")
+    from aiforge_core.runtime import request_context
+    return (request_context.get_workspace_dir()
+            or request_context.get_repo_root()
             or os.getcwd())
 
 
@@ -350,12 +351,22 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
     # AIFORGE_REPO_ROOT (not AIFORGE_WORKSPACE_DIR), so chat_agent's path jail
     # is otherwise inactive here. Pin AIFORGE_WORKSPACE_DIR = cwd so the text
     # Doer's file tools can't write outside the per-ticket worktree.
+    # Request-scoped workspace jail. The contextvar isolates concurrent ticket
+    # runs on different worktrees (env is process-global → clobbers). It's set
+    # BEFORE asyncio.to_thread, which copies the current context into the worker
+    # thread, so run_text_doer's file tools observe the right jail. The env set
+    # is kept for the subprocess path + any non-context-propagating reader.
+    from aiforge_core.runtime import request_context
     _prev_ws = os.environ.get("AIFORGE_WORKSPACE_DIR")
+    ws_token = None
     if cwd:
         os.environ["AIFORGE_WORKSPACE_DIR"] = cwd
+        ws_token = request_context.set_workspace_dir(cwd)
     try:
         out = await asyncio.to_thread(run_text_doer, snapshot, cwd)
     finally:
+        if ws_token is not None:
+            request_context.reset_workspace_dir(ws_token)
         if cwd:
             if _prev_ws is None:
                 os.environ.pop("AIFORGE_WORKSPACE_DIR", None)

@@ -132,8 +132,9 @@ def _scan_dir(root: Path) -> list[Skill]:
 
 
 def _repo_root(cwd: str | None) -> str | None:
-    return (os.environ.get("AIFORGE_WORKSPACE_DIR") or cwd
-            or os.environ.get("AIFORGE_REPO_ROOT") or None)
+    from aiforge_core.runtime import request_context
+    return (request_context.get_workspace_dir() or cwd
+            or request_context.get_repo_root() or None)
 
 
 def _repo_name(cwd: str | None) -> str:

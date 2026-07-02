@@ -63,8 +63,9 @@ def _global_dir() -> Path:
 
 
 def _repo_root(cwd: str | None) -> str | None:
-    return (os.environ.get("AIFORGE_WORKSPACE_DIR") or cwd
-            or os.environ.get("AIFORGE_REPO_ROOT") or None)
+    from aiforge_core.runtime import request_context
+    return (request_context.get_workspace_dir() or cwd
+            or request_context.get_repo_root() or None)
 
 
 def _parse_command_md(text: str) -> tuple[str, str]:

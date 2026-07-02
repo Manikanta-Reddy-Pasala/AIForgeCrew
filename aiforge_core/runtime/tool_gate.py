@@ -120,7 +120,8 @@ def make_approval_gate_callback():
                 try:
                     from aiforge_core.runtime import rule_capture as _rc
                     _cmd = (args or {}).get("cmd") or (args or {}).get("command") or ""
-                    _repo = _rc.repo_key(os.environ.get("AIFORGE_REPO_ROOT", ""))
+                    from aiforge_core.runtime import request_context as _reqctx
+                    _repo = _rc.repo_key(_reqctx.get_repo_root() or "")
                     if _rc.is_commit_command(_cmd) and _rc.flag_active(
                             "commit_auto_approve", repo=_repo, session_id=sid):
                         _scope = _rc.flag_active_scope(
