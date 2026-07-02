@@ -5,7 +5,8 @@
 # Data safety — ALL persistent data lives on the HOST filesystem under
 # ${AIFORGE_DATA_DIR:-./data} (git-ignored), NOT in docker-internal named
 # volumes. So you can see/back-up/inspect every byte from the host:
-#   ${AIFORGE_DATA_DIR:-./data}/postgres    Postgres cluster
+#   (postgres uses a docker named volume — a host bind breaks its initdb on
+#    macOS/virtiofs; it still persists across restarts)
 #   ${NEO4J_DATA_DIR:-./data/neo4j}         Neo4j graph (symbols, memory, graphify ingest)
 #   ${AIFORGE_DATA_DIR:-./data}/aiforge     app state: config, sqlite fallback, ticket files
 #   ${AIFORGE_DATA_DIR:-./data}/hf-cache    rerank model cache
@@ -24,13 +25,16 @@ services:
       POSTGRES_USER: ${PG_USER:-aiforge}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-aiforgepass}
       POSTGRES_DB: ${PG_DB:-aiforge}
-      # initdb into a SUBDIR that postgres creates + owns, not the bind-mount
-      # ROOT. Bind-mounting the data dir directly fails initdb ("data directory
-      # has wrong ownership / invalid permissions") because postgres can't
-      # chown/chmod the host mount point. The PGDATA-subdir is the standard fix.
-      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
-      - ${AIFORGE_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
+      # Postgres uses a docker NAMED volume (not a host bind mount). A live PG
+      # cluster on a host bind fails initdb on macOS Docker-Desktop / OrbStack:
+      # the gRPC-FUSE/virtiofs mount rejects chmod ("could not change
+      # permissions ... Operation not permitted") even for root, so initdb
+      # can't set the required 0700 on PGDATA. The named volume lives in the
+      # docker VM where perms work, and still persists across restarts. The
+      # data you actually browse (neo4j graph, app-state, workspace/repos)
+      # stays on host binds below.
+      - aiforge_pgdata:/var/lib/postgresql/data
     ports:
       - "${PG_PORT:-5432}:5432"
     healthcheck:
@@ -161,6 +165,9 @@ services:
       - postgres
       - neo4j
 
-# No docker-internal named volumes — every persistent path is a host
-# bind-mount under ${AIFORGE_DATA_DIR:-./data} (see the header). run.sh
-# creates the dirs before `up` so the bind mounts resolve cleanly.
+# Only postgres uses a docker-managed named volume (a host bind mount breaks
+# its initdb on macOS/virtiofs — see the postgres service). Everything else
+# (neo4j, app-state, hf-cache, workspace) is a host bind under
+# ${AIFORGE_DATA_DIR:-./data}; run.sh creates those dirs before `up`.
+volumes:
+  aiforge_pgdata:

@@ -10,16 +10,18 @@ def _c():
     return yaml.safe_load(_COMPOSE.read_text())
 
 
-def test_no_named_volumes():
+def test_only_postgres_uses_named_volume():
+    # Postgres is the ONE exception (host bind breaks initdb on macOS/virtiofs);
+    # everything else is a host bind. No other named volumes allowed.
     d = _c()
-    assert "volumes" not in d or not d["volumes"], "named volumes must be gone"
+    named = set((d.get("volumes") or {}).keys())
+    assert named == {"aiforge_pgdata"}, f"unexpected named volumes: {named}"
 
 
-def test_all_data_services_bind_mount_host():
+def test_data_services_bind_mount_host():
     svc = _c()["services"]
-    # every data path is a host bind (contains a host path, not a bare name)
-    pg = " ".join(svc["postgres"]["volumes"])
-    assert "AIFORGE_DATA_DIR" in pg and "/var/lib/postgresql/data" in pg
+    # postgres persists via the named volume; neo4j is a host bind
+    assert "aiforge_pgdata:/var/lib/postgresql/data" in " ".join(svc["postgres"]["volumes"])
     neo = " ".join(svc["neo4j"]["volumes"])
     assert ":/data" in neo and ("NEO4J_DATA_DIR" in neo or "/data/neo4j" in neo)
 

@@ -151,7 +151,7 @@ if [[ $DOCKER -eq 1 ]]; then
   # the dirs first so postgres/neo4j initdb into an existing, writable path.
   _data="${AIFORGE_DATA_DIR:-./data}"
   _ws="${AIFORGE_HOST_WORKSPACE:-$_data/workspace}"
-  mkdir -p "$_data/postgres" "${NEO4J_DATA_DIR:-$_data/neo4j}" \
+  mkdir -p "${NEO4J_DATA_DIR:-$_data/neo4j}" \
            "${NEO4J_LOGS_DIR:-$_data/neo4j-logs}" "$_data/aiforge" \
            "$_data/hf-cache" "$_ws"
   echo "==> host data dir: $_data   workspace: $_ws"
