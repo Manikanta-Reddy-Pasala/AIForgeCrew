@@ -31,6 +31,12 @@ from __future__ import annotations
 import contextlib
 import io as _stdio
 import os
+import threading
+
+# Aider's RepoMap.TAGS_CACHE_DIR is a PROCESS-GLOBAL class attribute. Two
+# concurrent renders with a cache_dir override would trample each other's saved
+# value (A restores B's dir, etc). Serialize the override span under this lock.
+_MAP_LOCK = threading.Lock()
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -125,7 +131,10 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
     # the override is set. Keep the mutation scoped via try/finally so
     # parallel callers don't trample.
     saved_tags_cache_dir = getattr(RepoMap, "TAGS_CACHE_DIR", None)
+    _locked = False
     if cache_dir is not None:
+        _MAP_LOCK.acquire()          # released in the finally below
+        _locked = True
         try:
             RepoMap.TAGS_CACHE_DIR = str(cache_dir / ".aider.tags.cache.v4")
         except Exception:
@@ -199,6 +208,8 @@ def render_repo_map(cfg: AiderMapConfig) -> str:
                 RepoMap.TAGS_CACHE_DIR = saved_tags_cache_dir
             except Exception:
                 pass
+        if _locked:
+            _MAP_LOCK.release()
 
     emit(
         log,

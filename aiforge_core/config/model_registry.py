@@ -164,12 +164,14 @@ def effective_context_window(role: str | None = None) -> int:
       3. static default (131072).
     """
     base_url = ""
+    _api_key = ""            # the endpoint's key, so the ctx probe can auth
     # 1a. explicit per-model registry window for this role.
     if role:
         try:
             from aiforge_core.llm.router import resolve
             ep = resolve(role)
             base_url = getattr(ep, "base_url", "") or ""
+            _api_key = getattr(ep, "api_key", "") or ""
             per = context_for(ep.model or "", base_url)
             if per > 0:
                 return per
@@ -187,7 +189,7 @@ def effective_context_window(role: str | None = None) -> int:
     if _autodetect_ctx_enabled() and base_url:
         try:
             from aiforge_core.llm import health
-            det = health.probe_context_window(base_url)
+            det = health.probe_context_window(base_url, api_key=_api_key)
             if det:
                 return min(int(det), _CTX_CEILING)
         except Exception:  # noqa: BLE001

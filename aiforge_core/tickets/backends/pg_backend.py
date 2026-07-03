@@ -223,6 +223,31 @@ class PgBackend:
             c.commit()
         return row
 
+    def patch_fields(self, ticket_id, *, fields, metadata_patch=None) -> "dict | None":
+        """Update whitelisted column ``fields`` (+ jsonb-merge
+        ``metadata_patch``). Backend-agnostic replacement for the api layer's
+        old raw UPDATE."""
+        sets: list = []
+        params: list = []
+        for col, val in (fields or {}).items():
+            sets.append(f"{col}=%s")
+            params.append(val)
+        if metadata_patch:
+            sets.append("metadata = metadata || %s::jsonb")
+            params.append(json.dumps(metadata_patch))
+        with self._conn() as c, c.cursor(row_factory=dict_row) as cur:
+            if sets:
+                params.append(ticket_id)
+                cur.execute(
+                    f"UPDATE tickets SET {', '.join(sets)} WHERE id=%s "
+                    "RETURNING *", params)
+                row = cur.fetchone()
+                c.commit()
+            else:
+                cur.execute("SELECT * FROM tickets WHERE id=%s", (ticket_id,))
+                row = cur.fetchone()
+        return row
+
     def delete_ticket(self, ticket_id) -> bool:
         with self._conn() as c, c.cursor() as cur:
             cur.execute("DELETE FROM ticket_events WHERE ticket_id=%s", (ticket_id,))

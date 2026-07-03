@@ -275,6 +275,36 @@ class SqliteBackend:
                           (ticket_id,)).fetchone()
         return _row_to_dict(r) if r else None
 
+    def patch_fields(self, ticket_id, *, fields, metadata_patch=None) -> "dict | None":
+        """Update whitelisted column ``fields`` (+ shallow-merge
+        ``metadata_patch``). Backend-agnostic replacement for the api layer's
+        old raw-Postgres UPDATE (which broke in SQLite/--lite mode)."""
+        with self._conn() as c:
+            cur = c.execute("SELECT metadata FROM tickets WHERE id = ?",
+                            (ticket_id,)).fetchone()
+            if cur is None:
+                return None
+            sets: list = []
+            params: list = []
+            for col, val in (fields or {}).items():
+                sets.append(f"{col} = ?")
+                # labels is a JSON TEXT column in SQLite (pg uses a native
+                # array) — serialize it, mirroring insert_ticket.
+                params.append(json.dumps(val or []) if col == "labels" else val)
+            if metadata_patch:
+                merged = json.loads(cur["metadata"] or "{}")
+                merged.update(metadata_patch)
+                sets.append("metadata = ?")
+                params.append(json.dumps(merged))
+            if sets:
+                sets.append(f"updated_at = {_NOW}")
+                params.append(ticket_id)
+                c.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id = ?",
+                          params)
+            r = c.execute("SELECT * FROM tickets WHERE id = ?",
+                          (ticket_id,)).fetchone()
+        return _row_to_dict(r) if r else None
+
     def delete_ticket(self, ticket_id) -> bool:
         with self._conn() as c:
             c.execute("DELETE FROM ticket_events WHERE ticket_id = ?", (ticket_id,))

@@ -179,10 +179,11 @@ def _extract_ctx_len(body: object) -> int | None:
     return None
 
 
-def _probe_ctx_window(base_url: str) -> int | None:
+def _probe_ctx_window(base_url: str, api_key: str = "") -> int | None:
     url = f"{base_url.rstrip('/')}/models"
     req = urllib.request.Request(
-        url, method="GET", headers={"Authorization": "Bearer na"})
+        url, method="GET",
+        headers={"Authorization": f"Bearer {api_key or 'na'}"})
     ctx = _ssl_context_for(base_url)
     try:
         with urllib.request.urlopen(req, timeout=_ctx_timeout(), context=ctx) as resp:
@@ -192,7 +193,7 @@ def _probe_ctx_window(base_url: str) -> int | None:
     return _extract_ctx_len(body)
 
 
-def probe_context_window(base_url: str) -> int | None:
+def probe_context_window(base_url: str, api_key: str = "") -> int | None:
     """Detected input context window (tokens) for the model served at
     ``base_url``, read from ``/v1/models`` (``max_model_len`` /
     ``context_length`` / ``loaded_context_length``), capped at 256K. Returns
@@ -211,7 +212,7 @@ def probe_context_window(base_url: str) -> int | None:
         ttl = _ctx_neg_ttl() if cached is None else _ttl()
         if (now - ts) < ttl:
             return cached
-    val = _probe_ctx_window(key)
+    val = _probe_ctx_window(key, api_key)
     _CTX_CACHE[key] = (now, val)
     return val
 

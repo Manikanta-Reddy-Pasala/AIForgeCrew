@@ -353,6 +353,21 @@ def set_branch(ticket_id: int, branch: str) -> None:
     get_backend().set_branch(ticket_id, branch)
 
 
+# Columns the API's PATCH is allowed to set. Whitelisted because the names go
+# straight into the SQL SET clause (never let caller-supplied keys through).
+_PATCHABLE_COLUMNS = frozenset({"assignee_role", "labels", "body", "title"})
+
+
+def patch_fields(ticket_id: int, *, fields: dict | None = None,
+                 metadata_patch: dict | None = None) -> Ticket | None:
+    """Backend-agnostic multi-field ticket update (whitelisted columns +
+    shallow metadata merge). Works in both Postgres and SQLite/--lite."""
+    safe = {k: v for k, v in (fields or {}).items() if k in _PATCHABLE_COLUMNS}
+    row = get_backend().patch_fields(
+        ticket_id, fields=safe, metadata_patch=metadata_patch)
+    return Ticket.from_row(row) if row else None
+
+
 def append_body(ticket_id: int, extra: str) -> Ticket | None:
     """Append text to a ticket body (used to fold in chat clarifications)."""
     row = get_backend().append_body(ticket_id, extra)

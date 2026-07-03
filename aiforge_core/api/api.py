@@ -1013,24 +1013,16 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
         merge_md["attached_files"] = current
     if (payload.assignee_role or payload.labels is not None
             or payload.body is not None or merge_md):
-        sets: list[str] = []
-        params: list[Any] = []
+        # Backend-agnostic update (the old raw Postgres SQL — COALESCE/jsonb —
+        # broke in SQLite/--lite mode).
+        fields: dict = {}
         if payload.assignee_role:
-            sets.append("assignee_role=%s")
-            params.append(_cfg.canonical_role(payload.assignee_role))
+            fields["assignee_role"] = _cfg.canonical_role(payload.assignee_role)
         if payload.labels is not None:
-            sets.append("labels=%s"); params.append(payload.labels)
+            fields["labels"] = payload.labels
         if payload.body is not None:
-            sets.append("body=%s"); params.append(payload.body)
-        if merge_md:
-            import json as _json
-            sets.append("metadata = COALESCE(metadata,'{}'::jsonb) || %s::jsonb")
-            params.append(_json.dumps(merge_md))
-        params.append(t.id)
-        with _db() as c, c.cursor() as cur:
-            cur.execute(f"UPDATE tickets SET {', '.join(sets)} WHERE id=%s",
-                        params)
-            c.commit()
+            fields["body"] = payload.body
+        tickets_mod.patch_fields(t.id, fields=fields, metadata_patch=merge_md)
     return get_ticket(identifier)
 
 

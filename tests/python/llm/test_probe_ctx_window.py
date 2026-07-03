@@ -144,7 +144,7 @@ def _no_per_model(monkeypatch, base_url="http://d/v1"):
 
 def test_explicit_env_wins_over_detected(monkeypatch):
     _no_per_model(monkeypatch)
-    monkeypatch.setattr(health, "probe_context_window", lambda url: 262144)
+    monkeypatch.setattr(health, "probe_context_window", lambda url, api_key="": 262144)
     monkeypatch.setenv("AIFORGE_LOCAL_CTX_WINDOW", "100000")
     importlib.reload(importlib.import_module("aiforge_core.config.runtime_settings"))
     from aiforge_core.config import model_registry
@@ -153,7 +153,7 @@ def test_explicit_env_wins_over_detected(monkeypatch):
 
 def test_detected_wins_over_static_default(monkeypatch):
     _no_per_model(monkeypatch)
-    monkeypatch.setattr(health, "probe_context_window", lambda url: 262144)
+    monkeypatch.setattr(health, "probe_context_window", lambda url, api_key="": 262144)
     from aiforge_core.config import model_registry
     # No explicit setting → detected (256K) beats the 131072 static default.
     assert model_registry.effective_context_window("doer") == 262144
@@ -161,7 +161,7 @@ def test_detected_wins_over_static_default(monkeypatch):
 
 def test_autodetect_disabled_falls_to_static(monkeypatch):
     _no_per_model(monkeypatch)
-    monkeypatch.setattr(health, "probe_context_window", lambda url: 262144)
+    monkeypatch.setattr(health, "probe_context_window", lambda url, api_key="": 262144)
     monkeypatch.setenv("AIFORGE_AUTODETECT_CTX", "0")
     from aiforge_core.config import model_registry
     assert model_registry.effective_context_window("doer") == 131072

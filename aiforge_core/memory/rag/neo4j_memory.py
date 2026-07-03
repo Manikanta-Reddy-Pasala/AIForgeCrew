@@ -59,6 +59,12 @@ def _get_driver():
     return _driver
 
 
+# Public alias: repo_learn._existing_sha1 + pattern_miner._mark_promoted import
+# `driver` and call `driver().session()`. Without this the import raised
+# ImportError (caught → those paths silently no-op'd).
+driver = _get_driver
+
+
 def ensure_schema() -> None:
     """Idempotent. Run once at import or before first write."""
     stmts = [
