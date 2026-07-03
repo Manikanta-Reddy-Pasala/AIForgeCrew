@@ -32,7 +32,13 @@ _FILENAME = "WORKFLOW.md"
 
 def _global_dir() -> Path:
     raw = os.environ.get("AIFORGE_WORKFLOWS_DIR")
-    return Path(raw).expanduser() if raw else Path.home() / ".aiforge" / "workflows"
+    if raw:
+        return Path(raw).expanduser()
+    # Same config dir as the rest of the app (AIFORGE_CONFIG_DIR) — a raw
+    # Path.home() diverges from the operator's configured/mounted dir on
+    # docker/hybrid, so workflows built via chat landed outside it.
+    cfg = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    return Path(cfg) / "workflows"
 
 
 def _scan_dir(root: Path) -> list[Skill]:
