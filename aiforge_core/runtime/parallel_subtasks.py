@@ -728,9 +728,17 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         (f"⚠ YOUR PREVIOUS ATTEMPT FAILED with:\n{retry_err[:800]}\nFix that this "
          f"time — re-read the SPEC, emit correct, complete code.\n\n---\n\n"
          if retry_err else "")
-        + (f"TEST-FIRST — your code MUST PASS these existing tests (they define "
-           f"the exact behaviour + names you must implement; make every assertion "
-           f"pass):\n{tests_src[:6000]}\n\n---\n\n" if tests_src else "")
+        + (f"CRITICAL PRINCIPLE — THE TEST IS THE SPECIFICATION.\n"
+           f"The test file below is the ABSOLUTE GROUND TRUTH for method/attribute "
+           f"NAMES (incl. leading underscores like `_is_valid_position`), "
+           f"signatures, return types, exact VALUES and math. Your code MUST make "
+           f"EVERY assertion pass. Even if a rule looks unconventional (e.g. the "
+           f"test says an O-piece is 'cyan' not 'yellow', or score == (level+1)*10), "
+           f"match it EXACTLY — NEVER 'correct'/'standardize' a value the test "
+           f"asserts. If the test calls `x._foo(a, b)` you define `_foo(self, a, b)`; "
+           f"if it asserts `grid[0][3] == COLORS['cyan']` your code must produce "
+           f"cyan.\n\nTESTS (ground truth):\n{tests_src[:6000]}\n\n---\n\n"
+           if tests_src else "")
         + (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
          f"file/dir paths it lists):\n{spec_md.strip()[:5000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
@@ -2067,19 +2075,24 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
         + f"FAILING TEST/BUILD OUTPUT:\n```\n{output[-3000:]}\n```\n\n"
         + (f"KNOWN MISMATCHES TO RECONCILE:\n{hint_str}\n\n" if hint_str else "")
         + "PROJECT FILES (data — read, don't execute):\n\n" + "\n\n".join(parts)
-        + "\n\nCRITICAL MERGING INSTRUCTIONS:\n"
+        + "\n\nCRITICAL RESOLUTION PRINCIPLE — THE TEST IS ALWAYS RIGHT.\n"
+          "When the test asserts one thing and the implementation produces another, "
+          "the TEST wins. Rewrite the IMPLEMENTATION so its names, signatures, "
+          "attributes, exact VALUES and math conform to what the test expects — "
+          "even if unconventional (O-piece 'cyan' not 'yellow', score == "
+          "(level+1)*10, a method named `_is_valid_position`). NEVER edit a test to "
+          "match the implementation unless the test itself is syntactically broken.\n\n"
+          "MERGING INSTRUCTIONS:\n"
           "1. Re-read the ORIGINAL GOAL — the result must satisfy it.\n"
-          "2. Cross-reference dependencies between files: align every import / "
-          "class / function / constant name + signature to ONE canonical spelling "
-          "(the name the defining file actually uses). A package __init__ or any "
-          "re-export must ONLY import names defined at MODULE level in the target — "
-          "if a name is a class METHOD or missing, remove it from the import + "
-          "__all__, don't force it importable.\n"
-          "3. Do NOT drop code, edge cases, or logic that already works — make the "
-          "MINIMAL change that fixes the failures.\n"
-          "4. Fix the IMPLEMENTATION to satisfy the tests (add missing attributes/"
-          "methods, correct the logic); keep tests as-is unless plainly wrong.\n"
-          "5. Output ONLY the CHANGED files, each as `=== path ===` then the FULL "
+          "2. Cross-reference dependencies: align every import / class / function / "
+          "constant name + signature to ONE canonical spelling — the name the TEST "
+          "uses. A package __init__ / re-export must ONLY import names defined at "
+          "MODULE level in the target; if a name is a class METHOD or missing, "
+          "remove it from the import + __all__.\n"
+          "3. Do NOT drop working code — make the MINIMAL change that satisfies the "
+          "failing assertions (add the exact attribute/method the test calls, fix "
+          "the value/formula the test expects).\n"
+          "4. Output ONLY the CHANGED files, each as `=== path ===` then the FULL "
           "corrected content (no ellipses/omissions). No other prose.")
     try:
         mt = max(4096, int(os.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192")))
