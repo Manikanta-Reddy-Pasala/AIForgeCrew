@@ -123,3 +123,29 @@ def test_forbidden_overrides_allowed(monkeypatch):
     names = _names(doer_tools.adk_function_tools(role="doer"))
     assert "editor" in names
     assert "git_commit" not in names
+
+
+def test_allowlist_matching_nothing_fails_open(monkeypatch):
+    # A non-empty allowlist whose names match NO registered tool is a config
+    # typo. It must FAIL OPEN to the full set — never leave the agent tool-less
+    # (a zero-tool agent makes the model hallucinate calls that hard-fail with
+    # "Tool 'X' not found. Available tools:" — empty).
+    monkeypatch.setenv("AIFORGE_TOOL_ENFORCE", "1")
+    monkeypatch.setattr(
+        agent_config, "allowed_tools_for",
+        lambda role: (frozenset({"search_knowledge_bases"}), frozenset()))
+    full = _names(doer_tools.adk_function_tools(role=None))
+    got = _names(doer_tools.adk_function_tools(role="chat"))
+    assert len(got) > 0, "fail-open must not yield a tool-less agent"
+    assert got == full
+
+
+def test_deliberately_toolless_role_stays_empty(monkeypatch):
+    # forbidden=ALL → allowed==frozenset() (empty). That's an INTENTIONAL
+    # tool-less role and must be respected (not failed open).
+    monkeypatch.setenv("AIFORGE_TOOL_ENFORCE", "1")
+    monkeypatch.setattr(
+        agent_config, "allowed_tools_for",
+        lambda role: (frozenset(), frozenset()))
+    got = _names(doer_tools.adk_function_tools(role="verify_scope"))
+    assert got == set()

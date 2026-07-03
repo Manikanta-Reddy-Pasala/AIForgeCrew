@@ -1171,7 +1171,15 @@ export default function Chat() {
       } else {
         const finalElapsed = Math.floor((Date.now() - sendStartRef.current) / 1000);
         setElapsedSec(finalElapsed);
-        setLiveTurn(prev => prev ? { ...prev, text: `Agent error: ${e.message}`, streaming: false, elapsedSec: finalElapsed } : null);
+        // Render a PERSISTENT error turn — even when the failure happened before
+        // any stream event created a live turn (e.g. a non-ok POST). Previously
+        // `prev ? … : null` left nothing on screen, so the error only flashed in
+        // a toast and vanished ("UI shows error and disappears"), forcing the
+        // user to dig server logs to see what actually failed.
+        const errText = `Agent error: ${e.message}`;
+        setLiveTurn(prev => prev
+          ? { ...prev, text: errText, streaming: false, elapsedSec: finalElapsed }
+          : { role: 'assistant', text: errText, steps: [], streaming: false, elapsedSec: finalElapsed });
         toast.error(`Agent failed: ${e.message}`);
       }
     } finally {

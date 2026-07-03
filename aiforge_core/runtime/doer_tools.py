@@ -1031,6 +1031,19 @@ def adk_function_tools(role: "str | None" = None) -> list:
         if allowed is not None and name not in allowed:
             continue
         out.append(t)
+    # A NON-EMPTY allowlist that matched zero registered tools is almost always a
+    # config typo (names that don't correspond to any real tool). Shipping an
+    # agent with zero tools makes the model hallucinate tool calls that then
+    # hard-fail downstream ("Tool 'X' not found. Available tools:" — empty). Fail
+    # OPEN to the base set and log loudly. A DELIBERATELY tool-less role uses
+    # forbidden=ALL → allowed == frozenset() (falsy here), which we still respect.
+    if not out and allowed:
+        import logging
+        logging.getLogger("aiforge.tools").warning(
+            "adk_function_tools(role=%s): allowlist %s matched no registered "
+            "tool — failing open to the full set so the agent isn't tool-less.",
+            role, sorted(allowed))
+        return tools
     return out
 
 
