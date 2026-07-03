@@ -2444,8 +2444,17 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
             written = []
         ok, output = _project_test_output(cwd)
         new_fails = _fail_count(output)
-        if new_fails >= prev_fails:
-            # REGRESSION guard — this round didn't reduce failures → roll back.
+        if new_fails > prev_fails:
+            # STRICT regression only → roll back (restore snapshot + drop any files
+            # the bad round created). A LATERAL move (== fails) is KEPT — it lets
+            # the model refactor toward the seam without penalty.
+            _snap_keys = set(snapshot)
+            for _rel, _c in _gather_sources(cwd):
+                if _rel not in _snap_keys:
+                    try:
+                        os.remove(os.path.join(cwd, _rel))
+                    except Exception:  # noqa: BLE001
+                        pass
             for rel, content in snapshot.items():
                 try:
                     with open(os.path.join(cwd, rel), "w", encoding="utf-8") as fh:
@@ -2456,16 +2465,22 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
             new_fails = _fail_count(output)
             stalls += 1
             yield {"type": "thought", "role": "reconciler",
-                   "text": f"pass {rounds} didn't help — rolled back (kept {prev_fails} "
-                           "failing). Trying a different angle…"}
-            if stalls >= 3:
-                break                          # 3 no-progress rounds → give up
+                   "text": f"pass {rounds} REGRESSED ({prev_fails}→? ) — rolled back to "
+                           f"{prev_fails} failing. Trying a different angle…"}
+            if stalls >= 4:
+                break                          # 4 no-progress rounds → give up
         else:
-            stalls = 0
-            prev_fails = new_fails
+            # improvement OR lateral (no regression) → KEEP.
+            if new_fails < prev_fails:
+                prev_fails = new_fails
+                stalls = 0
+            else:
+                stalls += 1                     # lateral move — bounded
             yield {"type": "tool", "role": "reconciler", "name": "patched files",
                    "args": {"pass": rounds, "failing": new_fails},
                    "result": {"files": written}}
+            if stalls >= 4:
+                break
 
     result["rep"] = build_and_test_report(cwd)
     if rounds and ok:
