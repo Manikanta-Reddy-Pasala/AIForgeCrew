@@ -1803,9 +1803,9 @@ def _merge_aggs(a: dict, b: dict) -> dict:
 
 def _reconcile_rounds() -> int:
     try:
-        return max(0, min(12, int(os.environ.get("AIFORGE_RECONCILE_ROUNDS", "8"))))
+        return max(0, min(16, int(os.environ.get("AIFORGE_RECONCILE_ROUNDS", "12"))))
     except ValueError:
-        return 8
+        return 12
 
 
 def _project_test_output(cwd: str) -> tuple[bool, str]:
@@ -2041,8 +2041,62 @@ def _relevant_files(cwd: str, output: str) -> list:
     return out
 
 
+_PATCH_RE = re.compile(
+    r"<<<<<<< SEARCH\s*\n(.*?)\n=======\s*\n(.*?)\n>>>>>>> REPLACE", re.DOTALL)
+_FILE_HDR_RE = re.compile(r"^###\s*FILE:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _apply_patches(cwd: str, out: str) -> tuple[list, list]:
+    """Deterministic Search-and-Replace applier (zero-LLM). Parses `### FILE:`
+    headers + `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` blocks, verifies each
+    SEARCH matches the file character-for-character, swaps it, syntax-checks, and
+    writes. Surgical: fixing one test can't rewrite an unrelated section. Returns
+    (written_files, failures[(file, why)])."""
+    written: list = []
+    failures: list = []
+    heads = [(m.start(), m.group(1).strip()) for m in _FILE_HDR_RE.finditer(out)]
+    if not heads:
+        return written, [("", "no ### FILE headers")]
+    for i, (pos, rel) in enumerate(heads):
+        end = heads[i + 1][0] if i + 1 < len(heads) else len(out)
+        seg = out[pos:end]
+        rel = rel.lstrip("/").replace("..", "")
+        fp = os.path.join(cwd, rel)
+        if not os.path.isfile(fp):
+            failures.append((rel, "file not found"))
+            continue
+        try:
+            with open(fp, encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+        except Exception:  # noqa: BLE001
+            continue
+        orig = content
+        for search, replace in _PATCH_RE.findall(seg):
+            if search in content:
+                content = content.replace(search, replace, 1)
+            else:
+                failures.append((rel, "SEARCH block not found (indent/char mismatch)"))
+        if content == orig:
+            continue
+        try:
+            from aiforge_core.runtime.syntax_guard import validate_syntax
+            ok, _ = validate_syntax(rel, content)
+            if not ok:
+                failures.append((rel, "syntax broke after patch"))
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            with open(fp, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            written.append(rel)
+        except Exception:  # noqa: BLE001
+            pass
+    return written, failures
+
+
 def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
-    """Minimal-context resolver (Git-state model, NOT a whole-tree blackboard):
+    """Minimal-context PATCH resolver (Git-state model, NOT a whole-tree blackboard):
     feed ONLY the files referenced in the failing output + their direct imports,
     with the errors, and have the LLM OUTPUT the corrected files (=== path ===
     blocks). Syntax-check + write each. Returns paths written. Language/usecase-
@@ -2092,37 +2146,49 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
           "3. Do NOT drop working code — make the MINIMAL change that satisfies the "
           "failing assertions (add the exact attribute/method the test calls, fix "
           "the value/formula the test expects).\n"
-          "4. Output ONLY the CHANGED files, each as `=== path ===` then the FULL "
-          "corrected content (no ellipses/omissions). No other prose.")
+          "4. You are PROHIBITED from rewriting whole files (a full rewrite silently "
+          "shifts working code and breaks other tests). Emit TARGETED "
+          "Search-and-Replace PATCHES. For each file you change, output a header "
+          "line `### FILE: relative/path` then one or more blocks EXACTLY:\n"
+          "<<<<<<< SEARCH\n<the exact existing lines to change — character-for-"
+          "character incl. indentation>\n=======\n<the corrected lines>\n"
+          ">>>>>>> REPLACE\n"
+          "The SEARCH text MUST appear verbatim in the current file. Keep each "
+          "SEARCH block small (the few lines around the defect). Output ONLY the "
+          "`### FILE:` headers + SEARCH/REPLACE blocks — no whole files, no ``` "
+          "fences, no prose.")
     try:
         mt = max(4096, int(os.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192")))
     except ValueError:
         mt = 8192
     out = _complete("doer", [
-        {"role": "system", "content": "You are a senior engineer fixing a failing "
-         "build. Output ONLY corrected files in === path === format, nothing else."},
-        {"role": "user", "content": prompt}], max_tokens=mt)
-    blocks = _parse_file_blocks(out or "")
-    written: list[str] = []
-    for rel, content in blocks.items():
-        rel = rel.lstrip("/").replace("..", "")
-        if not rel or not content.strip():
-            continue
-        try:
-            from aiforge_core.runtime.syntax_guard import validate_syntax
-            _ok, _ = validate_syntax(rel, content)
-            if not _ok:
+        {"role": "system", "content": "You are a Targeted Code Patch Engine. Output "
+         "ONLY ### FILE headers + <<<<<<< SEARCH/======= />>>>>>> REPLACE blocks, "
+         "nothing else. Never rewrite a whole file."},
+        {"role": "user", "content": prompt}], max_tokens=mt) or ""
+    written, failures = _apply_patches(cwd, out)
+    if not written and failures:
+        # Fallback: the model may have ignored the patch format and emitted whole
+        # `=== path ===` files — accept those (syntax-checked) so a round isn't lost.
+        for rel, content in _parse_file_blocks(out).items():
+            rel = rel.lstrip("/").replace("..", "")
+            if not rel or not content.strip():
                 continue
-        except Exception:  # noqa: BLE001
-            pass
-        dest = os.path.join(cwd, rel)
-        try:
-            os.makedirs(os.path.dirname(dest) or cwd, exist_ok=True)
-            with open(dest, "w", encoding="utf-8") as fh:
-                fh.write(content)
-            written.append(rel)
-        except Exception:  # noqa: BLE001
-            pass
+            try:
+                from aiforge_core.runtime.syntax_guard import validate_syntax
+                _ok, _ = validate_syntax(rel, content)
+                if not _ok:
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+            dest = os.path.join(cwd, rel)
+            try:
+                os.makedirs(os.path.dirname(dest) or cwd, exist_ok=True)
+                with open(dest, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                written.append(rel)
+            except Exception:  # noqa: BLE001
+                pass
     return written
 
 
