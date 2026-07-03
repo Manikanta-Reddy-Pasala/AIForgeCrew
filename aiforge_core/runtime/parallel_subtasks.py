@@ -482,7 +482,42 @@ def default_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
                 ok = not (ev.get("text") or "").startswith("(stopped:")
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+    # Code-level path enforcement — the prompt pin isn't 100% on a local model,
+    # so if the agent wrote the file at a re-cased/renamed path (miniLang/… ,
+    # mini_lang/… , pysyntax/…) instead of the exact target, MOVE it to the
+    # canonical path here. Guarantees every subtask's file lands where SPEC.md
+    # + the other subtasks expect, so the merge never splits into variant dirs.
+    if path:
+        _enforce_target_path(worktree, path)
     return {"ok": ok}
+
+
+def _enforce_target_path(worktree: str, path: str) -> None:
+    """If ``path`` doesn't exist in ``worktree`` but a file with the same
+    basename was created elsewhere (a re-cased/renamed dir), move it to the
+    exact ``path`` and prune the now-empty variant dir. Best-effort."""
+    import shutil
+    target = os.path.join(worktree, path)
+    if os.path.exists(target):
+        return
+    base = os.path.basename(path)
+    for root, dirs, files in os.walk(worktree):
+        dirs[:] = [d for d in dirs if d not in (".git", ".aiforge-worktrees")]
+        if base in files:
+            src = os.path.join(root, base)
+            if os.path.abspath(src) == os.path.abspath(target):
+                return
+            try:
+                os.makedirs(os.path.dirname(target) or worktree, exist_ok=True)
+                shutil.move(src, target)
+                log.info("path-enforce: moved %s -> %s", src, target)
+                # prune an emptied variant dir (e.g. miniLang/ after its one file)
+                vdir = os.path.dirname(src)
+                if vdir and vdir != worktree and not os.listdir(vdir):
+                    os.rmdir(vdir)
+            except Exception as exc:  # noqa: BLE001 — enforcement is best-effort
+                log.debug("path-enforce move failed %s->%s: %s", src, target, exc)
+            return
 
 
 _FILE_BLOCK_RE = None  # lazy-compiled in _parse_file_blocks
