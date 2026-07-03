@@ -3669,12 +3669,16 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         if agent_mode != "plan" and os.environ.get(
                 "AIFORGE_CHAT_INTEGRATION_TEST", "1") not in ("0", "false"):
             try:
-                from aiforge_core.runtime.integration_report import (
-                    build_and_test_report,
+                from aiforge_core.runtime.parallel_subtasks import (
+                    _reconcile_integration,
                 )
                 yield {"type": "thought", "role": "verifier",
                        "text": "Building + running integration tests…"}
-                _rep = build_and_test_report(cwd)
+                # Same self-heal as the pipeline: build+test, and if it fails,
+                # rewrite the offending files until green (bounded), then report.
+                _ires: dict = {}
+                yield from _reconcile_integration(cwd, _ires)
+                _rep = _ires.get("rep") or {}
                 if _rep.get("md"):
                     yield {"type": "message", "text": _rep["md"]}
             except Exception as _iexc:  # noqa: BLE001 — never break the turn
