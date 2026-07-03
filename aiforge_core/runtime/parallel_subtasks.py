@@ -1768,6 +1768,101 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
     return written
 
 
+def _prune_dead_python_imports(cwd: str) -> list[str]:
+    """DETERMINISTIC pre-fix (general Python): remove `from <local_mod> import X`
+    names — and matching `__all__` entries — where X isn't defined at MODULE
+    level in <local_mod>. This kills the single most common cross-file break: a
+    package __init__ re-exporting a name that's actually a class method / typo /
+    missing, which fails ALL imports. No LLM, no task-specific logic."""
+    import ast
+    changed: list[str] = []
+    # module dotted-name → set of module-level symbols it defines
+    modsyms: dict[str, set] = {}
+
+    def _rel_to_mod(rel: str) -> str:
+        rel = rel[:-3] if rel.endswith(".py") else rel
+        rel = rel[:-9] if rel.endswith("/__init__") else rel
+        return rel.replace(os.sep, ".").strip(".")
+
+    pyfiles: dict[str, str] = {}
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in (
+            ".git", ".aiforge-worktrees", ".aiforge-venv", ".venv",
+            "__pycache__", "node_modules")]
+        for f in files:
+            if f.endswith(".py"):
+                p = os.path.join(root, f)
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as fh:
+                        pyfiles[os.path.relpath(p, cwd)] = fh.read()
+                except Exception:  # noqa: BLE001
+                    pass
+    for rel, src in pyfiles.items():
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        syms: set = set()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                syms.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        syms.add(t.id)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for a in node.names:
+                    syms.add(a.asname or a.name.split(".")[0])
+        modsyms[_rel_to_mod(rel)] = syms
+
+    for rel, src in pyfiles.items():
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        dead: set = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                key = node.module
+                # resolve against known local modules (exact or basename match)
+                target = (key if key in modsyms
+                          else next((m for m in modsyms if m.endswith("." + key)
+                                     or m == key), None))
+                if target is None:
+                    continue
+                have = modsyms.get(target, set())
+                for a in node.names:
+                    if a.name != "*" and a.name not in have:
+                        dead.add(a.name)
+        if not dead:
+            continue
+        # drop dead names from `from X import ...` lines + __all__ list entries
+        new_lines = []
+        for line in src.splitlines():
+            ls = line.strip()
+            if ls.startswith("from ") and " import " in ls:
+                head, names = line.split(" import ", 1)
+                kept = [n.strip() for n in names.split(",")
+                        if n.strip() and n.strip().split(" as ")[0].strip() not in dead]
+                if not kept:
+                    continue  # whole import was dead → drop the line
+                new_lines.append(head + " import " + ", ".join(kept))
+                continue
+            if any(f"'{d}'" == ls.rstrip(",") or f'"{d}"' == ls.rstrip(",") for d in dead):
+                continue  # a dead __all__ entry on its own line
+            new_lines.append(line)
+        new_src = "\n".join(new_lines)
+        if new_src != src:
+            try:
+                compile(new_src, rel, "exec")   # only write if still valid
+                with open(os.path.join(cwd, rel), "w", encoding="utf-8") as fh:
+                    fh.write(new_src + ("\n" if not new_src.endswith("\n") else ""))
+                changed.append(rel)
+            except SyntaxError:
+                pass
+    return changed
+
+
 def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     """Build + test the merged tree; while it fails on cross-file drift, run a
     bounded Doer pass over the WHOLE workspace — fed the RAW test output + a
@@ -1778,6 +1873,15 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     if should_cancel is not None and should_cancel():
         result["rep"] = build_and_test_report(cwd)
         return
+    # DETERMINISTIC pre-fix: prune dead package re-exports (the #1 cross-file
+    # break the LLM won't fix) before spending an LLM round on it.
+    try:
+        _pruned = _prune_dead_python_imports(cwd)
+        if _pruned:
+            yield {"type": "tool", "role": "reconciler", "name": "pruned dead re-exports",
+                   "args": {}, "result": {"files": _pruned}}
+    except Exception:  # noqa: BLE001
+        pass
     ok, output = _project_test_output(cwd)
     if ok or os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
         result["rep"] = build_and_test_report(cwd)
@@ -1789,6 +1893,10 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         if should_cancel is not None and should_cancel():
             break
         rounds += 1
+        try:
+            _prune_dead_python_imports(cwd)   # deterministic, before the LLM round
+        except Exception:  # noqa: BLE001
+            pass
         hints = _directed_hints(output)
         yield {"type": "thought", "role": "reconciler",
                "text": f"Integration failed — reconciliation pass {rounds}/{max_rounds}: "
