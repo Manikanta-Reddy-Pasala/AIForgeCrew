@@ -1861,7 +1861,15 @@ def _parse(out: str) -> dict:
         return {"kind": "ask", "text": ask.group(1).strip()}
     if fin:
         return {"kind": "final", "text": fin.group(1).strip()}
-    # No protocol markers — treat the whole output as the final answer.
+    # No FINAL/ASK/ACTION marker. If the model was mid-reasoning — it emitted a
+    # THOUGHT (intent to act) but no ACTION — it almost certainly got truncated
+    # or forgot to emit the ACTION line. Treating that as the final answer stops
+    # the run early ("Now I need to create the script… Let me first check…" then
+    # nothing). Signal CONTINUE so the loop nudges it to act instead of ending.
+    tho = _THOUGHT_RE.search(out)
+    if tho:
+        return {"kind": "continue", "thought": tho.group(1).strip() or out.strip()}
+    # Genuinely just prose with no protocol at all → treat as the final answer.
     return {"kind": "final", "text": out.strip()}
 
 
@@ -2766,6 +2774,7 @@ def run_chat_agent(
     action_counts: dict[str, int] = {}
     recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)
     condensed_notified = False
+    continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
 
     n = 0
     while n < safety:
@@ -2858,6 +2867,33 @@ def run_chat_agent(
                    "text": step["text"]}
             yield {"type": "done"}
             return
+
+        if step["kind"] == "continue":
+            # The model narrated a next step (THOUGHT) but emitted no ACTION —
+            # usually a truncated turn or a dropped protocol line. Surface the
+            # thought and nudge it to actually act, instead of ending the run.
+            if step.get("thought"):
+                yield {"type": "thought", "text": step["thought"]}
+            continue_nudges += 1
+            if continue_nudges > 2:
+                # It keeps describing without acting — stop cleanly rather than
+                # loop to the safety cap; hand back what it was thinking.
+                _fire_stop("no_action", cwd)
+                yield {"type": "message",
+                       "text": (step.get("thought") or "").strip()
+                       or "I described a next step but couldn't complete the "
+                          "action. Could you rephrase or narrow the request?"}
+                yield {"type": "done"}
+                return
+            convo.append({"role": "user",
+                          "content": "You described your next step but did NOT "
+                          "emit an ACTION. Continue now — output the next ACTION "
+                          "(tool call) to make progress, or `FINAL: <answer>` if "
+                          "you are genuinely done. Do not just narrate."})
+            n += 1
+            continue
+
+        continue_nudges = 0   # a real action resets the narration guard
 
         # action
         name = step["tool"]
