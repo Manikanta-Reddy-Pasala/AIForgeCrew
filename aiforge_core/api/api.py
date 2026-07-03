@@ -3644,6 +3644,24 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             return
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
                                   session_id=session_id, mode=agent_mode)
+        # Simple/act mode: after the agent finishes, COMPILE + run the project's
+        # tests (any language, via project_runner) and report results — or
+        # step-by-step manual instructions when the toolchain isn't on this host.
+        # Skipped in plan mode (nothing was written). Best-effort; env-gated off
+        # with AIFORGE_CHAT_INTEGRATION_TEST=0.
+        if agent_mode != "plan" and os.environ.get(
+                "AIFORGE_CHAT_INTEGRATION_TEST", "1") not in ("0", "false"):
+            try:
+                from aiforge_core.runtime.integration_report import (
+                    build_and_test_report,
+                )
+                yield {"type": "thought", "role": "verifier",
+                       "text": "Building + running integration tests…"}
+                _rep = build_and_test_report(cwd)
+                if _rep.get("md"):
+                    yield {"type": "message", "text": _rep["md"]}
+            except Exception as _iexc:  # noqa: BLE001 — never break the turn
+                _af_log.debug("integration report skipped: %s", _iexc)
 
     # The PRODUCER runs on a background daemon thread and publishes every event
     # into the per-session run registry (chat_runs). It NO LONGER yields to the

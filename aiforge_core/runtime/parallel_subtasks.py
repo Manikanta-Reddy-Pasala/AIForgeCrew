@@ -1272,11 +1272,24 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     except Exception as _exc:  # noqa: BLE001
         log.debug("spec verification skipped: %s", _exc)
 
+    # Compile + end-to-end test the merged result (any language) and fold the
+    # results — or step-by-step manual instructions if the toolchain is absent —
+    # into the final message.
+    _integ_md = ""
+    try:
+        from aiforge_core.runtime.integration_report import build_and_test_report
+        _rep = build_and_test_report(cwd)
+        if _rep.get("md"):
+            _integ_md = "\n\n---\n\n" + _rep["md"]
+    except Exception as _iexc:  # noqa: BLE001
+        log.debug("integration report skipped: %s", _iexc)
+
     yield {"type": "message", "text":
            f"**Parallel run complete** — {agg.get('review', 'done')}.\n\n"
            f"All work merged into the chat workspace. "
            f"{agg.get('done', 0)}/{agg.get('total', 0)} subtasks done. "
-           f"See SPEC.md for the requirements each subtask built against."}
+           f"See SPEC.md for the requirements each subtask built against."
+           + _integ_md}
 
 
 def _render_spec_md(prompt: str, subs: list[dict]) -> str:
