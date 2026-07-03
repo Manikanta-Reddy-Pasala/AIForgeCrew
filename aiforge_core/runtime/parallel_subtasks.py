@@ -626,6 +626,11 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         + (f"TARGET FILE (emit EXACTLY this path, verbatim — do not re-case or "
            f"rename the directory): {path}\n\n" if path else "")
         + f"SUBTASK: {goal}\n\n"
+        "CONTRACT: expose the PUBLIC API listed for your file in the spec's "
+        "'API contract' section EXACTLY (same names, signatures, constants), and "
+        "when you import/call another file, use the EXACT names it exposes there. "
+        "Do not invent variant names — the other files are written to this same "
+        "contract.\n\n"
         "Output ONLY the file(s), each as:\n=== relative/path.ext ===\n"
         "<full file content>\n\nNo prose, no explanation.")
     # Generous output budget — a hardcoded 2048 TRUNCATED big files (e.g. a
@@ -1064,11 +1069,19 @@ enhance = _enhance
 
 
 _ARCHITECT_SYS = (
-    "You are the architect. Given a build spec, design the FILE STRUCTURE: list "
-    "the files to create, each with its single responsibility. Files must be "
-    "DISJOINT (no shared concern). Honor any provided skills, workflows, and "
-    "repo rules — design within their constraints. Output ONLY JSON: {\"files\": "
-    "[{\"path\": \"db.py\", \"purpose\": \"SQLite store + models\"}, ...]}. No prose."
+    "You are the architect. Given a build spec, design the FILE STRUCTURE **and "
+    "the exact public API of each file**, because each file is implemented by a "
+    "SEPARATE worker in isolation — they can only agree if you fix the shared "
+    "contract now. Files must be DISJOINT (single responsibility). Honor any "
+    "provided skills, workflows, and repo rules.\n\n"
+    "For every file give its exact PUBLIC API: the class names, function "
+    "signatures, and module-level constants that OTHER files import or call — "
+    "spelled EXACTLY as everyone must use them (one canonical name per thing). "
+    "Use real signatures (names, params, return types where knowable).\n\n"
+    "Output ONLY JSON, no prose:\n"
+    "{\"files\": [{\"path\": \"board.py\", \"purpose\": \"grid + moves\", "
+    "\"api\": [\"class Board\", \"def drop_piece(col: int) -> bool\", "
+    "\"COLORS: dict\"]}, ...]}"
 )
 
 
@@ -1143,8 +1156,10 @@ def _plan_files(files: list[dict]) -> list[dict]:
             suffix = hashlib.sha1(path.encode("utf-8")).hexdigest()[:6]
             slug = f"{slug}-{suffix}"
         seen_slugs.add(slug)
-        out.append({"slug": slug, "path": path,
-                    "goal": f"{path}: {f.get('purpose') or 'implement'}"})
+        _api = [str(a) for a in (f.get("api") or []) if a]
+        out.append({"slug": slug, "path": path, "api": _api,
+                    "goal": f"{path}: {f.get('purpose') or 'implement'}"
+                            + (" | MUST expose EXACTLY: " + "; ".join(_api) if _api else "")})
     return out
 
 
@@ -1409,9 +1424,9 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
 
 def _reconcile_rounds() -> int:
     try:
-        return max(0, min(6, int(os.environ.get("AIFORGE_RECONCILE_ROUNDS", "3"))))
+        return max(0, min(8, int(os.environ.get("AIFORGE_RECONCILE_ROUNDS", "5"))))
     except ValueError:
-        return 3
+        return 5
 
 
 def _project_test_output(cwd: str) -> tuple[bool, str]:
@@ -1592,6 +1607,20 @@ def _render_spec_md(prompt: str, subs: list[dict]) -> str:
     if paths:
         lines += ["## File tree (use these EXACT paths — verbatim)", ""]
         lines += [f"- `{p}`" for p in paths]
+        lines += [""]
+    # API CONTRACT — the shared source of truth. Every file MUST expose these
+    # names/signatures verbatim, and MUST import other files' names EXACTLY as
+    # listed here. This is what stops isolated workers drifting (Binary vs
+    # BinaryExpr, COLORS vs COLOR_MAP) — reconcile at DESIGN time, not after.
+    api_lines = []
+    for s in subs:
+        api = [str(a) for a in (s.get("api") or []) if a]
+        if api and s.get("path"):
+            api_lines.append(f"### `{s['path']}` exposes")
+            api_lines += [f"- `{a}`" for a in api]
+    if api_lines:
+        lines += ["## API contract — expose/import these names EXACTLY (verbatim)", ""]
+        lines += api_lines
         lines += [""]
     lines += [f"## Subtasks ({len(subs)})", ""]
     for i, s in enumerate(subs):
