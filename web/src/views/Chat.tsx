@@ -1286,6 +1286,17 @@ export default function Chat() {
   // the Steer affordance is disabled for it instead of firing a doomed POST.
   const canSteer = busy && !awaitingReply && !pendingApproval && activeRunMode !== 'team';
 
+  // Subtasks for the pinned bottom dock: the live run's list (updates status
+  // live), else the most recent finished turn that carried a decomposition.
+  const dockSubtasks: SubtaskItem[] | undefined = (() => {
+    if (liveTurn?.subtasks && liveTurn.subtasks.length) return liveTurn.subtasks;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const st = (messages[i].steps || []).find((s: any) => s?.type === 'subtasks');
+      if (st?.items?.length) return st.items as SubtaskItem[];
+    }
+    return undefined;
+  })();
+
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1645,7 +1656,7 @@ export default function Chat() {
                           text={msg.content}
                           steps={(msg.steps || []).map(toAgentStep).filter((s): s is AgentStep => s !== null)}
                           streaming={false}
-                          subtasks={(msg.steps || []).find((s: any) => s?.type === 'subtasks')?.items}
+                          /* subtasks render in the pinned bottom dock, not inline */
                           captured={(msg.steps || []).filter((s: any) => s?.type === 'captured').map((s: any) => ({
                             id: s.id, category: s.category, scope: s.scope, text: s.text || '',
                             repo: s.repo, gate_intent: s.gate_intent,
@@ -1698,7 +1709,7 @@ export default function Chat() {
                       steps={liveTurn.steps}
                       streaming={liveTurn.streaming}
                       elapsedSec={liveTurn.streaming ? elapsedSec : liveTurn.elapsedSec}
-                      subtasks={liveTurn.subtasks}
+                      /* subtasks render in the pinned bottom dock, not inline */
                       captured={liveTurn.captured}
                     />
                     {liveTurn.awaiting && (
@@ -1754,6 +1765,21 @@ export default function Chat() {
                 </div>
               )}
             </div>
+
+            {/* Pinned subtask dock — the Planner decomposition stays stuck to
+                the bottom (above the composer, OUTSIDE the scroll region) and
+                updates status live via subtask_update events as the run works.
+                Sourced from the live run, falling back to the most recent turn
+                that carried subtasks so it persists after the run finishes. */}
+            {dockSubtasks && dockSubtasks.length > 0 && (
+              <div className="chat-subtask-dock" style={{
+                borderTop: '1px solid var(--border,#2a2f3a)',
+                background: 'var(--bg-0,#0d1017)',
+                padding: '6px 10px', maxHeight: 180, overflowY: 'auto',
+              }}>
+                <SubtaskList items={dockSubtasks} />
+              </div>
+            )}
 
             <MediaStrip media={media} vision={mediaVision}
                         onDescribe={async (id, d) => {
