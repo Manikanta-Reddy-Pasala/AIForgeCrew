@@ -1706,9 +1706,9 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
     Syntax-check + write each. Returns the paths written. No task-specific logic."""
     from aiforge_core.llm.client import complete as _complete
     try:
-        budget = int(os.environ.get("AIFORGE_RECONCILE_CTX_CHARS", "28000"))
+        budget = int(os.environ.get("AIFORGE_RECONCILE_CTX_CHARS", "60000"))
     except ValueError:
-        budget = 28000
+        budget = 60000
     parts: list[str] = []
     total = 0
     for rel, content in _gather_sources(cwd):
@@ -1722,13 +1722,16 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
         "The project's tests FAIL. FIX THE CODE so every test passes.\n\n"
         f"TEST/BUILD ERRORS:\n{output[-3000:]}\n\n"
         + (f"WHAT TO FIX:\n{hint_str}\n\n" if hint_str else "")
-        + "Below is every source file. Output ONLY the files you CHANGED, each as:\n"
+        + "Below is EVERY source file. Output ONLY the files you CHANGED, each as:\n"
           "=== path/to/file ===\n<full corrected file content>\n\n"
-          "Rules: fix the IMPLEMENTATION to satisfy the tests (add the missing "
-          "attributes/methods, align names across files, correct the logic). Keep "
-          "the tests as-is unless a test is plainly wrong. One canonical name for "
-          "each thing everywhere. Output NOTHING but the changed === path === "
-          "blocks — full file contents, no ellipses.\n\n"
+          "Rules: make the MINIMAL changes needed to fix the errors — keep all "
+          "already-working code IDENTICAL (don't rewrite/rename things that work, "
+          "or you'll break other files). Fix the IMPLEMENTATION to satisfy the "
+          "tests: add missing attributes/methods, align every import/name across "
+          "files to ONE canonical spelling (e.g. if __init__ imports a name a "
+          "module doesn't export, either add it or remove the bad import). Keep "
+          "the tests as-is unless a test is plainly wrong. Output NOTHING but the "
+          "changed === path === blocks — FULL file contents, no ellipses/omissions.\n\n"
         + f"SOURCE FILES:\n" + "\n\n".join(parts))
     try:
         mt = max(4096, int(os.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192")))
