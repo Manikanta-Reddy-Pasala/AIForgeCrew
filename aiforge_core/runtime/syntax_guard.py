@@ -1,71 +1,135 @@
-"""Cheap syntax sniff used by ``file_write`` to reject obvious LLM
-hallucinations before they hit disk.
+"""Cheap, LANGUAGE-AGNOSTIC syntax sniff used before a generated file hits disk.
 
-Goals: catch the model's most common failure modes — half-truncated
-output (unbalanced braces), Python parse errors, Java/Kotlin code that
-looks like the model lapsed back into Python kwargs syntax mid-method.
+Goal: catch the model's most common failure mode — half-truncated output — for
+whatever language the file is in, so a broken draft never lands and only blows
+up much later at the post-merge build/test. Order of preference per file:
 
-Keep it intentionally cheap. We can't afford a full per-language parser
-inside the agent loop — that's what the post-write ``run_shell`` mvn /
-pytest call is for. This guard only blocks the *clearly* corrupt drafts
-so the Doer's next turn sees a useful error string instead of a green
-file_write that quietly broke the build later.
+1. Python → in-process ``compile()`` (authoritative, no I/O).
+2. A language with a cheap NON-EXECUTING syntax checker on PATH — shell
+   (``bash -n``), C (``gcc -fsyntax-only``), C++ (``g++ -fsyntax-only``), Java
+   (``javac``), Go (``gofmt -e``), JS (``node --check``), Ruby (``ruby -c``),
+   PHP (``php -l``). None of these RUN the code; they only parse it.
+3. Anything else (or a checker not installed) → the brace-balance truncation
+   heuristic (+ a Java/Kotlin Python-kwarg sniff).
+
+Isolation-aware: a subtask builds ONE file, so cross-file references (a missing
+sibling header / symbol / package) can't resolve yet — those errors are treated
+as PASS; only true SYNTAX errors fail. The real cross-file build runs post-merge.
 """
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 
 _PAIRS: tuple[tuple[str, str], ...] = (("{", "}"), ("(", ")"), ("[", "]"))
 _KWARG_PATTERN = re.compile(r"\b\w+\s*=\s*\w+[\s,]")
 _ANNOTATION_PATTERN = re.compile(r"@\w+\s*\(")
 
+# stderr fragments that mean "a reference to another file couldn't resolve"
+# (an isolation artifact when validating a single subtask's file), NOT a syntax
+# error — treat these as PASS.
+_ISOLATION_MARKERS = (
+    "no such file", "file not found", "cannot find symbol",
+    "does not exist", "undeclared", "unknown type name", "was not declared",
+    "has not been declared", "package ", "fatal error:", "undefined reference",
+    "cannot find module", "no such module", "expected class or module",
+)
+
+# ext → (binary, argv builder). Each command is a SYNTAX-ONLY / parse check that
+# never executes the file. ``-x`` forces the language for header files.
+_CHECKERS: dict[str, tuple[str, object]] = {
+    ".sh":   ("bash",  lambda b, f: [b, "-n", f]),
+    ".bash": ("bash",  lambda b, f: [b, "-n", f]),
+    ".c":    ("gcc",   lambda b, f: [b, "-fsyntax-only", f]),
+    ".h":    ("gcc",   lambda b, f: [b, "-fsyntax-only", "-x", "c", f]),
+    ".cpp":  ("g++",   lambda b, f: [b, "-fsyntax-only", f]),
+    ".cc":   ("g++",   lambda b, f: [b, "-fsyntax-only", f]),
+    ".cxx":  ("g++",   lambda b, f: [b, "-fsyntax-only", f]),
+    ".hpp":  ("g++",   lambda b, f: [b, "-fsyntax-only", "-x", "c++", f]),
+    ".java": ("javac", lambda b, f: [b, "-d", os.path.dirname(f), f]),
+    ".go":   ("gofmt", lambda b, f: [b, "-e", f]),
+    ".js":   ("node",  lambda b, f: [b, "--check", f]),
+    ".mjs":  ("node",  lambda b, f: [b, "--check", f]),
+    ".rb":   ("ruby",  lambda b, f: [b, "-c", f]),
+    ".php":  ("php",   lambda b, f: [b, "-l", f]),
+}
+
+
+def _last_err_line(err: str) -> str:
+    lines = [ln for ln in err.strip().splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else "syntax error"
+
+
+def _external_syntax(path: str, content: str) -> tuple[bool, str] | None:
+    """Run the language's non-executing syntax checker. Returns ``(ok, err)``,
+    or ``None`` when no checker applies / the tool isn't installed (→ caller
+    falls back to the brace-balance heuristic)."""
+    ext = os.path.splitext(path)[1].lower()
+    spec = _CHECKERS.get(ext)
+    if not spec:
+        return None
+    binary, argfn = spec
+    if not shutil.which(binary):
+        return None
+    base = os.path.basename(path) or ("f" + ext)
+    d = tempfile.mkdtemp(prefix="synchk-")
+    try:
+        fp = os.path.join(d, base)      # keep basename: javac needs ClassName.java
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        try:
+            proc = subprocess.run(argfn(binary, fp), capture_output=True,
+                                  text=True, timeout=25)
+        except Exception:  # noqa: BLE001 — tool crash/timeout → skip, don't block
+            return None
+        if proc.returncode == 0:
+            return True, ""
+        err = (proc.stderr or proc.stdout or "")
+        low = err.lower()
+        if any(m in low for m in _ISOLATION_MARKERS):
+            return True, ""             # cross-file ref, not a syntax error
+        return False, f"{ext.lstrip('.')} syntax: {_last_err_line(err)}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
 
 def validate_syntax(path: str, content: str) -> tuple[bool, str]:
-    """Return ``(ok, error_msg)``. Empty error string on the happy path.
-
-    Triggers:
-
-    * empty / whitespace-only content → reject
-    * any of ``{}``, ``()``, ``[]`` not balanced → reject
-    * .py — ``compile()`` raised → reject with line number
-    * .java / .kt — ``foo = bar`` inside parens AND no annotation
-      context (``@Bean(name = "x")`` is fine) → reject
-
-    Other extensions only get the brace-balance check.
-    """
+    """Return ``(ok, error_msg)`` — empty error on the happy path. Language-aware
+    (see module docstring). Best-effort: a missing toolchain degrades to the
+    brace-balance truncation heuristic, never a false reject."""
     if not content or not content.strip():
         return False, "empty file content"
 
-    # Python: ``compile()`` is the AUTHORITATIVE syntax check — trust it and do
-    # NOT run the raw-text brace-balance heuristic. That heuristic counts
-    # delimiters inside string literals and comments, so a perfectly valid file
-    # with intentional unbalanced delimiters in a string — extremely common in
-    # lexer/parser TESTS (``assert scan("(") == [LPAREN]``) — was falsely
-    # rejected as ``unbalanced (``, which blocked the Doer from ever writing its
-    # test files. If it compiles, it ships.
-    if path.endswith(".py"):
+    # 1. Python — in-process compile() is authoritative and needs no toolchain.
+    #    (Don't brace-count Python: delimiters inside string literals/comments —
+    #    common in lexer/parser tests like ``assert scan("(")`` — aren't real.)
+    if path.endswith(".py") or path.endswith(".pyi"):
         try:
             compile(content, path, "exec")
         except SyntaxError as exc:
             return False, f"python syntax: {exc.msg} at line {exc.lineno}"
         return True, ""
 
-    # Non-Python: no cheap in-process parser, so fall back to the brace-balance
-    # truncation heuristic (catches half-emitted output) + the Java/Kotlin sniff.
+    # 2. A real per-language syntax checker (shell/C/C++/Java/Go/JS/Ruby/PHP).
+    ext_res = _external_syntax(path, content)
+    if ext_res is not None:
+        return ext_res
+
+    # 3. Fallback — brace-balance truncation heuristic (+ Java/Kotlin kwarg sniff)
+    #    for languages with no installed checker.
     for opener, closer in _PAIRS:
         n_open = content.count(opener)
         n_close = content.count(closer)
         if n_open != n_close:
-            return False, (
-                f"unbalanced {opener}{closer} ({n_open} vs {n_close})"
-            )
+            return False, f"unbalanced {opener}{closer} ({n_open} vs {n_close})"
 
     if path.endswith((".java", ".kt")):
         if _KWARG_PATTERN.search(content) and "(" in content:
             if not _ANNOTATION_PATTERN.search(content):
-                return False, (
-                    "java/kotlin: looks like Python-style kwargs in call"
-                )
+                return False, "java/kotlin: looks like Python-style kwargs in call"
 
     return True, ""
 

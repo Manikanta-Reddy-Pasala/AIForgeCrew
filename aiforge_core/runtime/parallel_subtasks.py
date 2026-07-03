@@ -592,11 +592,13 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
          f"file/dir paths it lists):\n{spec_md.strip()[:5000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
-        + f"Implement this subtask as COMPLETE, runnable Python file(s).\n\n"
+        + f"Implement this subtask as COMPLETE, runnable file(s) in the language "
+          f"the target path implies (.py→Python, .java→Java, .go→Go, .ts→"
+          f"TypeScript, .c/.cpp→C/C++, .rs→Rust, .sh→shell, …).\n\n"
         + (f"TARGET FILE (emit EXACTLY this path, verbatim — do not re-case or "
            f"rename the directory): {path}\n\n" if path else "")
         + f"SUBTASK: {goal}\n\n"
-        "Output ONLY the file(s), each as:\n=== relative/path.py ===\n"
+        "Output ONLY the file(s), each as:\n=== relative/path.ext ===\n"
         "<full file content>\n\nNo prose, no explanation.")
     # Generous output budget — a hardcoded 2048 TRUNCATED big files (e.g. a
     # thorough test file) mid-string, landing a SyntaxError that only surfaced at
@@ -637,18 +639,20 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         if scope and not _in_scope(rel, scope):
             rejected.append(rel)
             continue
-        # Syntax gate: lightweight writes files DIRECTLY (no file_write / no
-        # syntax_guard), and a test file's isolated worktree has no project
-        # marker so build-validation is skipped — a truncated/broken .py would
-        # sail through per-subtask and only blow up pytest collection at the
-        # post-merge integration test. compile() it here and FAIL the subtask
-        # (→ bounded retry) so broken code never lands.
-        if rel.endswith(".py"):
-            try:
-                compile(content, rel, "exec")
-            except SyntaxError as exc:
-                return {"ok": False,
-                        "error": f"syntax error in {rel}: {exc.msg} at line {exc.lineno}"}
+        # Syntax gate (LANGUAGE-AGNOSTIC): lightweight writes files DIRECTLY (no
+        # file_write / no syntax_guard), and an isolated subtask worktree has no
+        # build marker so build-validation is skipped — a truncated/broken file
+        # (any language) would sail through per-subtask and only blow up at the
+        # post-merge build/test. Run the shared syntax_guard (Python compile,
+        # shell/C/C++/Java/Go/JS/Ruby checkers, else brace-balance) and FAIL the
+        # subtask (→ bounded retry) so broken code never lands.
+        try:
+            from aiforge_core.runtime.syntax_guard import validate_syntax
+            _ok, _err = validate_syntax(rel, content)
+            if not _ok:
+                return {"ok": False, "error": f"{rel}: {_err}"}
+        except Exception:  # noqa: BLE001 — guard must never crash the runner
+            pass
         dest = os.path.join(worktree, rel)
         try:
             os.makedirs(os.path.dirname(dest) or worktree, exist_ok=True)
