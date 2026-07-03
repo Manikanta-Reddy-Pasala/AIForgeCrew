@@ -36,6 +36,22 @@ def validate_syntax(path: str, content: str) -> tuple[bool, str]:
     if not content or not content.strip():
         return False, "empty file content"
 
+    # Python: ``compile()`` is the AUTHORITATIVE syntax check — trust it and do
+    # NOT run the raw-text brace-balance heuristic. That heuristic counts
+    # delimiters inside string literals and comments, so a perfectly valid file
+    # with intentional unbalanced delimiters in a string — extremely common in
+    # lexer/parser TESTS (``assert scan("(") == [LPAREN]``) — was falsely
+    # rejected as ``unbalanced (``, which blocked the Doer from ever writing its
+    # test files. If it compiles, it ships.
+    if path.endswith(".py"):
+        try:
+            compile(content, path, "exec")
+        except SyntaxError as exc:
+            return False, f"python syntax: {exc.msg} at line {exc.lineno}"
+        return True, ""
+
+    # Non-Python: no cheap in-process parser, so fall back to the brace-balance
+    # truncation heuristic (catches half-emitted output) + the Java/Kotlin sniff.
     for opener, closer in _PAIRS:
         n_open = content.count(opener)
         n_close = content.count(closer)
@@ -43,12 +59,6 @@ def validate_syntax(path: str, content: str) -> tuple[bool, str]:
             return False, (
                 f"unbalanced {opener}{closer} ({n_open} vs {n_close})"
             )
-
-    if path.endswith(".py"):
-        try:
-            compile(content, path, "exec")
-        except SyntaxError as exc:
-            return False, f"python syntax: {exc.msg} at line {exc.lineno}"
 
     if path.endswith((".java", ".kt")):
         if _KWARG_PATTERN.search(content) and "(" in content:
