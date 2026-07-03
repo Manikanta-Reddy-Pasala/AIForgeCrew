@@ -190,3 +190,14 @@ def test_code_quality_tools_wired_into_pipeline(monkeypatch):
     names = _names(doer_tools.adk_function_tools(role=None))
     for t in ("typecheck", "run_tests", "lsp", "format"):
         assert t in names, f"code-quality tool {t} missing from pipeline surface"
+
+
+def test_power_tools_wired_into_pipeline(monkeypatch):
+    # OH-parity power tools that used to be chat-only are now on the pipeline
+    # surface too. web_search is intentionally excluded (researcher-only egress).
+    monkeypatch.setenv("AIFORGE_TOOL_ENFORCE", "0")
+    names = _names(doer_tools.adk_function_tools(role=None))
+    for t in ("mcp", "browse", "execute_ipython_cell", "delegate_to_agent",
+              "github_pr", "multi_edit"):
+        assert t in names, f"power tool {t} missing from pipeline surface"
+    assert "web_search" not in names, "web egress stays researcher-only"

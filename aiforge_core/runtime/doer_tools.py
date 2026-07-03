@@ -1048,6 +1048,106 @@ def format(path: str = ".") -> dict:
     return _fmt(str(path or "."))
 
 
+# ─── OH-parity power tools (MCP / browser / jupyter / delegate / PR / batch) ─
+# These lived only on the chat surface; wiring them here gives the team-mode
+# Doer the same reach: MCP tool servers, a headless browser, a persistent
+# Jupyter kernel, sub-agent delegation, GitHub PRs, and atomic multi-file edits.
+
+def mcp(command: str, endpoint: str = "", tool: str = "",
+        arguments: "dict | None" = None) -> dict:
+    """MCP bridge. ``command`` ∈ list_endpoints | list_tools | call_tool. For
+    call_tool pass ``endpoint`` + ``tool`` + ``arguments``."""
+    try:
+        from aiforge_core.runtime.tools.mcp_client import mcp as _mcp
+        return _mcp(command, endpoint=endpoint or None, tool=tool or None,
+                    arguments=arguments)
+    except Exception as exc:  # noqa: BLE001 — soft-fail
+        return {"ok": False, "error": str(exc)}
+
+
+def browse(command: str, url: str = "", selector: str = "", text: str = "",
+           path: str = "") -> dict:
+    """Headless browser. ``command`` ∈ goto|screenshot|click|fill|extract_text|
+    close. Pass ``url`` for goto, ``selector`` (+``text``) for click/fill."""
+    try:
+        from aiforge_core.runtime.tools.browser import browse as _browse
+        return _browse(command, url=url or None, selector=selector or None,
+                       text=text or None, path=path or None)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def execute_ipython_cell(code: str, timeout: int = 0) -> dict:
+    """Run Python in a persistent IPython kernel (state persists across calls).
+    Approval-gated — arbitrary code execution."""
+    try:
+        from aiforge_core.runtime.tools.ipython_kernel import (
+            execute_ipython_cell as _ex)
+        return _ex(code, **({"timeout": timeout} if timeout else {}))
+    except Exception as exc:  # noqa: BLE001 — jupyter_client may be absent
+        return {"ok": False, "error": str(exc)}
+
+
+def delegate_to_agent(role: str, prompt: str, timeout: int = 600) -> dict:
+    """Hand a focused sub-task to another agent role (its own ADK runner) and
+    block for the result."""
+    try:
+        from aiforge_core.runtime.tools.delegation import delegate_to_agent as _d
+        return _d(role, prompt, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def github_pr(title: str, body: str = "", base: str = "main", head: str = "",
+              draft: bool = False) -> dict:
+    """Open a GitHub pull request from the current branch via the ``gh`` CLI
+    (must be installed + authenticated). Approval-gated."""
+    import shutil
+    import subprocess
+    if not title:
+        return {"ok": False, "error": "missing 'title'"}
+    if not shutil.which("gh"):
+        return {"ok": False, "error": "gh_not_installed",
+                "hint": "install the GitHub CLI (gh) + `gh auth login`"}
+    cmd = ["gh", "pr", "create", "--title", title, "--body", body or "",
+           "--base", base or "main"]
+    if head:
+        cmd += ["--head", head]
+    if draft:
+        cmd += ["--draft"]
+    try:
+        r = subprocess.run(cmd, cwd=str(root()), capture_output=True,
+                           text=True, timeout=60)
+        if r.returncode != 0:
+            return {"ok": False,
+                    "error": (r.stderr or r.stdout or "").strip()[:400]}
+        return {"ok": True, "url": (r.stdout or "").strip()}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def multi_edit(edits: list) -> dict:
+    """Apply a BATCH of edits in ONE call. Each edit = ``{path, old_text,
+    new_text}`` (first-match replace, file_patch semantics). Returns a per-edit
+    result list; ``ok`` is True only when every edit applied."""
+    if not isinstance(edits, list) or not edits:
+        return {"ok": False, "error": "edits must be a non-empty list of "
+                "{path, old_text, new_text}"}
+    results = []
+    ok_all = True
+    for i, e in enumerate(edits):
+        if not isinstance(e, dict):
+            results.append({"i": i, "ok": False, "error": "not an object"})
+            ok_all = False
+            continue
+        r = file_patch(str(e.get("path") or ""),
+                       str(e.get("old_text") or e.get("old_str") or ""),
+                       str(e.get("new_text") or e.get("new_str") or ""))
+        results.append({"i": i, "path": e.get("path"), **r})
+        ok_all = ok_all and bool(r.get("ok"))
+    return {"ok": ok_all, "results": results}
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -1118,7 +1218,9 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         jira_update, jira_comment, email_send, email_read,
                         gitlab_search, gitlab_read, gitlab_create, gitlab_update,
                         gitlab_comment, gitlab_mr_create, gitlab_mr_comment,
-                        typecheck, run_tests, lsp, format]
+                        typecheck, run_tests, lsp, format,
+                        mcp, browse, execute_ipython_cell, delegate_to_agent,
+                        github_pr, multi_edit]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -1186,6 +1288,8 @@ __all__ = [
     "gitlab_search", "gitlab_read", "gitlab_create", "gitlab_update",
     "gitlab_comment", "gitlab_mr_create", "gitlab_mr_comment",
     "typecheck", "run_tests", "lsp", "format",
+    "mcp", "browse", "execute_ipython_cell", "delegate_to_agent",
+    "github_pr", "multi_edit",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch", "web_read",
     "commit", "git_add_commit",
