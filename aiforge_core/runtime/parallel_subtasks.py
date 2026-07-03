@@ -1728,10 +1728,13 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
           "already-working code IDENTICAL (don't rewrite/rename things that work, "
           "or you'll break other files). Fix the IMPLEMENTATION to satisfy the "
           "tests: add missing attributes/methods, align every import/name across "
-          "files to ONE canonical spelling (e.g. if __init__ imports a name a "
-          "module doesn't export, either add it or remove the bad import). Keep "
-          "the tests as-is unless a test is plainly wrong. Output NOTHING but the "
-          "changed === path === blocks — FULL file contents, no ellipses/omissions.\n\n"
+          "files to ONE canonical spelling. A package __init__ (or any re-export/"
+          "index file) must ONLY import names actually defined at MODULE level in "
+          "the target file — if a listed name is a CLASS METHOD or doesn't exist "
+          "there, REMOVE it from the import AND from __all__ (do NOT force it "
+          "importable). Keep the tests as-is unless a test is plainly wrong. Output "
+          "NOTHING but the changed === path === blocks — FULL file contents, no "
+          "ellipses/omissions.\n\n"
         + f"SOURCE FILES:\n" + "\n\n".join(parts))
     try:
         mt = max(4096, int(os.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192")))
