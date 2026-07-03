@@ -430,10 +430,16 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
             "integration": integration, "review": review, "results": results}
 
 
-def default_run_one(subtask: dict, worktree: str) -> dict:
+def default_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
     """Real per-subtask agent: run the Doer chat loop on this subtask's goal in
-    its worktree (it has the full tool set — edit/build/test/serve). Returns
-    ``{ok}`` based on whether it produced a final answer without erroring."""
+    its worktree (it has the full tool set — edit/build/test/serve) in a FRESH
+    context — only this subtask's goal (+ the shared spec) is loaded, so a big
+    multi-subtask build never exhausts one context. Returns ``{ok}`` based on
+    whether it produced a final answer without erroring.
+
+    ``spec_md`` (optional) is the shared requirements/plan document; it's given
+    to every subtask so each fresh context knows the overall goal + how its slice
+    fits, without carrying the other subtasks' conversation history."""
     try:
         from aiforge_core.llm.client import complete as _complete
         from aiforge_core.runtime.chat_agent import run_chat_agent
@@ -442,10 +448,13 @@ def default_run_one(subtask: dict, worktree: str) -> dict:
     goal = subtask.get("goal") or subtask.get("slug") or "implement the subtask"
     accept = subtask.get("acceptance") or []
     scope = subtask.get("scope_allowlist_globs") or []
-    msg = (f"Implement this subtask, then build + test it.\n\nGOAL: {goal}\n"
-           + ("ACCEPTANCE:\n" + "\n".join(f"- {a}" for a in accept) + "\n" if accept else "")
-           + ("SCOPE (only touch these): " + ", ".join(scope) + "\n" if scope else "")
-           + "Keep the change minimal and focused on this subtask only.")
+    msg = (
+        (f"PROJECT SPEC (shared context — build YOUR slice to fit it):\n{spec_md.strip()[:6000]}\n\n---\n\n"
+         if spec_md and spec_md.strip() else "")
+        + f"Implement this subtask, then build + test it.\n\nGOAL: {goal}\n"
+        + ("ACCEPTANCE:\n" + "\n".join(f"- {a}" for a in accept) + "\n" if accept else "")
+        + ("SCOPE (only touch these): " + ", ".join(scope) + "\n" if scope else "")
+        + "Keep the change focused on THIS subtask only; other subtasks handle the rest.")
 
     def complete_fn(role, convo):
         return _complete(role, convo)
@@ -1073,9 +1082,25 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         {"slug": s.get("slug") or f"sub-{i+1}",
          "goal": s.get("goal") or "", "status": "pending"}
         for i, s in enumerate(subs)]}
+
+    # Requirements/plan document: persist the enhanced spec + the subtask
+    # breakdown to SPEC.md in the workspace BEFORE any subtask runs. It's the
+    # single source of truth — fed into every per-subtask fresh context (so each
+    # isolated context knows the overall goal) and re-read by the final
+    # verification pass to confirm nothing was dropped.
+    spec_md = _render_spec_md(prompt, subs)
+    try:
+        with open(os.path.join(cwd, "SPEC.md"), "w", encoding="utf-8") as _fh:
+            _fh.write(spec_md)
+        yield {"type": "thought", "role": "planner",
+               "text": f"Wrote SPEC.md ({len(subs)} subtasks) — the shared "
+                       "requirements doc each subtask builds against."}
+    except Exception as _exc:  # noqa: BLE001 — spec write is best-effort
+        log.debug("SPEC.md write skipped: %s", _exc)
+
     yield {"type": "thought", "role": "system",
-           "text": f"Running {len(subs)} subtasks in parallel worktrees "
-                   f"(max {_max_workers()} at once)…"}
+           "text": f"Running {len(subs)} subtasks — each in its OWN fresh "
+                   f"context + worktree (max {_max_workers()} at once)…"}
 
     base = _ensure_git_workspace(cwd)
     # B3 — surface a dirty-cwd warning before merging into it.
@@ -1091,10 +1116,22 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
             q.put({"type": "tool", "role": slug, "name": "wrote files",
                    "args": {"subtask": slug}, "result": {"files": files}})
 
+    # Spec-bound per-subtask runner: every fresh subtask context is handed the
+    # shared SPEC.md so it builds a coherent slice, without inheriting the other
+    # subtasks' conversation (that's what keeps each context small).
+    _base_run_one = _default_subtask_runner()
+
+    def _spec_run_one(subtask, worktree):
+        try:
+            return _base_run_one(subtask, worktree, spec_md=spec_md)
+        except TypeError:
+            # A custom runner that doesn't accept spec_md — call it plainly.
+            return _base_run_one(subtask, worktree)
+
     def _runner():
         try:
             result["agg"] = run_parallel(cwd, base, None, subs,
-                                         _default_subtask_runner(),
+                                         _spec_run_one,
                                          validate_one=default_validate_one,
                                          integration_test=default_integration_test,
                                          on_status=on_status)
@@ -1115,10 +1152,70 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     if result.get("err"):
         yield {"type": "message", "text": f"Parallel run error: {result['err']}"}
         return
+
+    # Final verification pass — a FRESH context reads SPEC.md + the produced tree
+    # and confirms every requirement was addressed (the "close the loop against
+    # the original requirement file" step). Best-effort; never blocks the result.
+    yield {"type": "thought", "role": "verifier",
+           "text": "Verifying the merged result against SPEC.md…"}
+    try:
+        _verdict = _verify_against_spec(cwd, spec_md)
+        if _verdict:
+            yield {"type": "thought", "role": "verifier", "text": _verdict[:1500]}
+    except Exception as _exc:  # noqa: BLE001
+        log.debug("spec verification skipped: %s", _exc)
+
     yield {"type": "message", "text":
            f"**Parallel run complete** — {agg.get('review', 'done')}.\n\n"
            f"All work merged into the chat workspace. "
-           f"{agg.get('done', 0)}/{agg.get('total', 0)} subtasks done."}
+           f"{agg.get('done', 0)}/{agg.get('total', 0)} subtasks done. "
+           f"See SPEC.md for the requirements each subtask built against."}
+
+
+def _render_spec_md(prompt: str, subs: list[dict]) -> str:
+    """The shared requirements/plan document written to SPEC.md before the run
+    and re-read by the final verification pass."""
+    lines = ["# Project Spec", "", "## Goal", "", prompt.strip(), "",
+             f"## Subtasks ({len(subs)})", ""]
+    for i, s in enumerate(subs):
+        slug = s.get("slug") or f"sub-{i+1}"
+        goal = (s.get("goal") or "").strip()
+        lines.append(f"{i+1}. **{slug}** — {goal}")
+        for a in (s.get("acceptance") or []):
+            lines.append(f"   - [ ] {a}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _verify_against_spec(cwd: str, spec_md: str) -> str:
+    """Fresh-context check: given SPEC.md + a listing of the produced files,
+    ask the model whether every requirement is addressed. Returns a short
+    verdict string (or '' on any failure)."""
+    from aiforge_core.llm.client import complete as _complete
+    tree = []
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in (
+            ".git", ".aiforge-worktrees", ".venv", "__pycache__", "node_modules")]
+        for f in files:
+            rel = os.path.relpath(os.path.join(root, f), cwd)
+            tree.append(rel)
+        if len(tree) > 400:
+            break
+    listing = "\n".join(sorted(tree)[:400]) or "(no files)"
+    convo = [
+        {"role": "system", "content":
+         "You are a delivery auditor. Given a project SPEC and the file tree "
+         "that was produced, state briefly whether every spec item appears "
+         "addressed. List any MISSING or clearly-incomplete items as a short "
+         "bullet list. Be concise (<200 words). If everything is covered, say so."},
+        {"role": "user", "content":
+         f"SPEC.md:\n{spec_md[:6000]}\n\nPRODUCED FILES:\n{listing}"},
+    ]
+    try:
+        out = _complete("verifier", convo)
+        return (out or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 __all__ = ["run_parallel", "run_subtasks_parallel", "default_run_one",
