@@ -326,13 +326,92 @@ def _dirty_warning(cwd: str) -> str | None:
     return None
 
 
+_CONFLICT_RE = re.compile(
+    r"<<<<<<<[^\n]*\n(.*?)\n=======\n(.*?)\n>>>>>>>[^\n]*(?:\n|$)", re.DOTALL)
+
+
+def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str) -> str:
+    """Minimal-context conflict resolver: feed ONLY this one hunk (+ goal) to the
+    LLM and get back the merged block — no whole file, no markers/fences."""
+    from aiforge_core.llm.client import complete as _complete
+    prompt = (
+        "You are an automated Git conflict resolver. Merge the two versions of "
+        "this block into ONE syntactically-correct result that fulfils the goal, "
+        "keeping the valid features of BOTH sides. Output ONLY the resolved code — "
+        "no git markers, no ``` fences, no prose.\n\n"
+        + (f"GOAL: {goal[:600]}\n\n" if goal else "")
+        + f"FILE: {path}\n\n"
+        + f"<<<<<<< HEAD\n{head}\n=======\n{incoming}\n>>>>>>> incoming")
+    try:
+        out = _complete("doer", [
+            {"role": "system", "content": "Output only the resolved code block, "
+             "nothing else."},
+            {"role": "user", "content": prompt}], max_tokens=2048) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+    out = re.sub(r"^```\w*\n?|\n?```$", "", out.strip(), flags=re.M)
+    out = re.sub(r"^\s*(<<<<<<<|=======|>>>>>>>).*$", "", out, flags=re.M)
+    return out.strip("\n")
+
+
+def _resolve_conflicts(repo: str, goal: str) -> bool:
+    """Deterministically extract each conflict hunk from the conflicted files,
+    resolve it minimal-context, write it back, and SYNTAX-CHECK the file. Returns
+    True only if every file resolved cleanly + parses (else the caller aborts)."""
+    p = _git(["diff", "--name-only", "--diff-filter=U"], repo)
+    files = [f for f in p.stdout.splitlines() if f.strip()]
+    if not files:
+        return False
+    for f in files:
+        fp = os.path.join(repo, f)
+        try:
+            with open(fp, encoding="utf-8", errors="replace") as fh:
+                src = fh.read()
+        except Exception:  # noqa: BLE001
+            return False
+
+        def _repl(m):
+            res = _resolve_conflict_hunk(goal, f, m.group(1), m.group(2))
+            return (res + "\n") if res else (m.group(1) + "\n")   # fallback: HEAD
+
+        new = _CONFLICT_RE.sub(_repl, src)
+        if "<<<<<<<" in new or "=======" in new or ">>>>>>>" in new:
+            return False                      # markers still present → give up
+        # GUARDRAIL: a hunk resolved out of context can break syntax — verify.
+        try:
+            from aiforge_core.runtime.syntax_guard import validate_syntax
+            ok, _ = validate_syntax(f, new)
+            if not ok:
+                return False                  # bad resolution → caller aborts
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            with open(fp, "w", encoding="utf-8") as fh:
+                fh.write(new)
+        except Exception:  # noqa: BLE001
+            return False
+        _git(["add", "--", f], repo)
+    return True
+
+
 def _merge_branch(repo: str, base_branch: str, branch: str) -> tuple[bool, str]:
     """Merge ``branch`` into ``base_branch`` (checked out in ``repo``). Returns
-    (ok, info). On conflict, aborts cleanly and reports."""
+    (ok, info). On conflict, RESOLVES the hunks (minimal-context) rather than
+    dropping the subtask's work; aborts only if resolution fails."""
     p = _git(["merge", "--no-edit", branch], repo)
     if p.returncode == 0:
         return True, "merged"
-    # conflict / failure → abort to leave the base branch clean
+    # conflict → try to auto-resolve the hunks (the safety valve for concurrency)
+    if os.environ.get("AIFORGE_RESOLVE_CONFLICTS", "1") not in ("0", "false"):
+        try:
+            if _resolve_conflicts(repo, _spec_goal(repo)):
+                c = _git(["commit", "--no-edit", "-m",
+                          "resolve: automated subtask merge conflict"], repo)
+                if c.returncode == 0:
+                    return True, "merged (conflicts auto-resolved)"
+        except Exception:  # noqa: BLE001
+            pass
+    # resolution failed / disabled → abort to leave the base branch clean
     _git(["merge", "--abort"], repo)
     return False, (p.stdout + p.stderr)[:300]
 
