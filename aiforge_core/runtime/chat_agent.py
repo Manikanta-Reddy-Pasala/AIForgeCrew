@@ -1367,11 +1367,19 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "email_read",
                    "gitlab_search", "gitlab_read",
                    "web_search", "web_fetch", "workflow_search",
-                   "lsp", "typecheck")   # code-intel: read-only, OK in plan mode
+                   "lsp", "typecheck",   # code-intel: read-only, OK in plan mode
+                   # git inspect + line-range read + jira/confluence reads +
+                   # list_services — all read-only (also in tool_policy's
+                   # _READONLY_ALWAYS_ALLOW); keep the two classifications in sync
+                   # so Plan mode doesn't block a tool the policy calls read-only.
+                   "git_status", "git_diff", "git_log", "git_blame",
+                   "read_lines", "jira_transitions", "confluence_children",
+                   "list_services")
 
 # File-mutating tools that the pre-apply "Review edits" gate (Gap D) holds for
 # human Approve/Reject even when policy would auto-allow them.
-_MUTATING = ("file_write", "file_create", "file_patch", "editor", "multi_edit", "format")
+_MUTATING = ("file_write", "file_create", "file_patch", "editor", "multi_edit",
+             "format", "rename_symbol")
 
 # The ``editor`` tool multiplexes read + write sub-commands on one tool NAME;
 # only the WRITE sub-commands mutate (view/read/list are read-only and must

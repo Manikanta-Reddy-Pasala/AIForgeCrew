@@ -783,10 +783,18 @@ async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
     except Exception:  # noqa: BLE001
         pass
     try:
-        async for event in runner.run_async(
-            user_id="aiforge-runner",
-            session_id=session.id, new_message=content,
-        ):
+        # Cap LLM calls like the main pipeline — a single agent with bash + a
+        # retry-heavy deploy/verify recipe (live_verifier) could otherwise spin
+        # many calls bounded only by the wall-clock timeout.
+        _sa_kwargs: dict = {"user_id": "aiforge-runner",
+                            "session_id": session.id, "new_message": content}
+        try:
+            from google.adk.agents.run_config import RunConfig
+            _sa_kwargs["run_config"] = RunConfig(
+                max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "600")))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("single-agent RunConfig unavailable: %s", exc)
+        async for event in runner.run_async(**_sa_kwargs):
             if event.is_final_response():
                 pass
         session = await session_svc.get_session(

@@ -23,7 +23,12 @@ log = logging.getLogger("aiforge.pr_comments_loop")
 
 _STATE_PATH = Path(os.environ.get(
     "AIFORGE_PR_COMMENTS_STATE",
-    str(Path.home() / ".aiforge" / "pr_comments_seen.json"),
+    # Under the shared config dir (not raw home) so the "seen comment ids" state
+    # persists on the mounted volume — else it's lost on container restart and
+    # already-handled PR comments re-emit duplicate tickets.
+    os.path.join(
+        os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+        "pr_comments_seen.json"),
 ))
 
 

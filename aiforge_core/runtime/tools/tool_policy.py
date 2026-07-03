@@ -29,8 +29,11 @@ DENY = "deny"
 
 _VALID = {ALLOW, ASK, DENY}
 
-# Tools whose args carry a shell command to risk-assess.
-_CMD_TOOLS = {"run_command", "bash", "shell", "run_shell"}
+# Tools whose args carry a shell command to risk-assess. ``serve`` launches an
+# arbitrary command as a background process, so it must be risk-assessed too —
+# else `serve {"cmd": "curl … | sh"}` runs unassessed while the same command via
+# run_command/bash escalates to ASK.
+_CMD_TOOLS = {"run_command", "bash", "shell", "run_shell", "serve"}
 _CMD_ARG_KEYS = ("cmd", "command", "input")
 
 # Tools that mutate something external/durable → default to ASK (human
@@ -59,7 +62,10 @@ _DEFAULT_ASK = {"confluence_create", "confluence_update",
                 "email_send",
                 # Arbitrary-code execution in a live kernel — approval-gated
                 # in chat like Claude Code / Cursor gate code execution.
-                "execute_ipython_cell"}
+                "execute_ipython_cell",
+                # Installs a RECURRING host shell job (writes a script + cron) —
+                # a durable, self-executing action; confirm before it lands.
+                "create_job_script"}
 
 
 def _parse_map(raw: str) -> dict[str, str]:

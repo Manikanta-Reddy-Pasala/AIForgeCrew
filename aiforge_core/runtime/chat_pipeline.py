@@ -417,9 +417,14 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             # The Doer's output is the conversational answer (the actual work).
             # Learner/validator/refiner emit JSON verdicts, not user-facing
             # prose, and run AFTER the Doer — so never let them be the answer.
-            msg = (by_role.get("doer") or st.get("doer_summary")
-                   or by_role.get("researcher") or st.get("validator_summary")
-                   or final or "Done.")
+            # `doer_outcome` is the state key the Doer actually writes (both the
+            # native agents/doer.py and the local text_doer FunctionNode). The
+            # old `doer_summary`/`validator_summary` keys were never written, so
+            # on a LOCAL endpoint — where the Doer is a text_doer FunctionNode
+            # that emits no ADK "doer"-authored events — the answer fell through
+            # to the Researcher's text or a bare "Done.", hiding the Doer's work.
+            msg = (by_role.get("doer") or st.get("doer_outcome")
+                   or by_role.get("researcher") or final or "Done.")
             final_text = msg
             _run_ok = True
             q.put({"type": "message", "text": msg})

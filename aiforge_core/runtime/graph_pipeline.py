@@ -379,7 +379,11 @@ async def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     verdict = _parse_verdict(state.get("verifier_verdict"))
     vreplans = int(state.get("verify_replan_count", 0) or 0)
-    if verdict == "reject" and vreplans < MAX_VERIFY_REPLANS:
+    # Any NEGATIVE verdict replans — not just the literal "reject". A small local
+    # model that phrases rejection as "fail"/"request_changes" (or wraps it in
+    # prose) must not slip a known-bad plan through to the Doer. Mirrors
+    # _validator_failed. An unparseable verdict → None → proceed (documented).
+    if verdict in _VERDICT_NEGATIVE and vreplans < MAX_VERIFY_REPLANS:
         state["verify_replan_count"] = vreplans + 1
         vv = state.get("verifier_verdict") or {}
         why = vv.get("rationale", "verifier rejected the plan") \

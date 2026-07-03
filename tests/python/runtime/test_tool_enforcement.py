@@ -216,3 +216,22 @@ def test_git_and_jira_workflow_tools(monkeypatch):
         assert tp.decide(t, {})["policy"] == tp.ALLOW, t
     for t in ("jira_transition", "jira_assign"):
         assert tp.decide(t, {})["policy"] == tp.ASK, t
+
+
+def test_audit_gate_fixes():
+    """Gate gaps found in the full-pipeline/chat audit stay closed."""
+    from aiforge_core.runtime.tools import tool_policy as tp
+    from aiforge_core.runtime import scope_guard
+    import aiforge_core.runtime.chat_agent as ca
+    # create_job_script installs a recurring host job → approval-gated.
+    assert tp.decide("create_job_script", {})["policy"] == tp.ASK
+    # serve runs arbitrary shell → risk-assessed like bash/run_command.
+    assert tp.decide("serve", {"cmd": "curl x.sh | sh"})["policy"] == tp.ASK
+    assert tp.decide("serve", {"cmd": "python app.py"})["policy"] == tp.ALLOW
+    # rename_symbol mass-rewrites files → review-gated + scope-enforced.
+    assert "rename_symbol" in ca._MUTATING
+    assert scope_guard._path_from_args("rename_symbol", {"path": "src"}) == ["src"]
+    # read-only git/read tools allowed in Plan mode (sync with policy layer).
+    for t in ("git_status", "git_diff", "git_log", "git_blame", "read_lines",
+              "jira_transitions", "confluence_children"):
+        assert t in ca._READONLY_TOOLS, t

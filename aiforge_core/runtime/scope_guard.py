@@ -55,6 +55,11 @@ def _path_from_args(tool_name: str, args: dict) -> list[str]:
                 if p:
                     out.append(p)
         return out
+    if tool_name == "rename_symbol":
+        # Mass word-boundary rewrite across every code file under `path`
+        # (default "."). Scope it by its base path so an autonomous run can't
+        # rewrite files outside the ticket's allowlist.
+        return [str(args.get("path") or ".")]
     if tool_name == "git_commit":
         # commit touches the whole tree we already approved file by file
         return []
