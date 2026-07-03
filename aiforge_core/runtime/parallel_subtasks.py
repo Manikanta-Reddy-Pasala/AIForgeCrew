@@ -120,7 +120,7 @@ def _commit_all(wt: str, slug: str) -> bool:
 
 def _retries() -> int:
     try:
-        return max(0, min(5, int(os.environ.get("AIFORGE_SUBTASK_RETRIES", "2"))))
+        return max(0, min(6, int(os.environ.get("AIFORGE_SUBTASK_RETRIES", "3"))))
     except ValueError:
         return 2
 
@@ -390,7 +390,7 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
     for r in _pass(subs):
         by_slug[r.get("slug")] = r
     try:
-        rounds = max(0, min(3, int(os.environ.get("AIFORGE_PARALLEL_RERUN_ROUNDS", "1"))))
+        rounds = max(0, min(5, int(os.environ.get("AIFORGE_PARALLEL_RERUN_ROUNDS", "3"))))
     except ValueError:
         rounds = 1
     for _ in range(rounds):
@@ -1420,15 +1420,19 @@ def _project_test_output(cwd: str) -> tuple[bool, str]:
     ``ok`` True when there's no project / no tests (nothing to reconcile)."""
     try:
         from aiforge_core.runtime.integration_report import run_bare_python_tests
+        # PREFER the managed-venv pytest for any Python tree with tests: it
+        # pip-installs the third-party deps (pygame, numpy, …) that a plain
+        # project(action=test) misses — otherwise pytest fails to import and the
+        # captured output is EMPTY, so the reconciler gets no errors to act on.
+        bare = run_bare_python_tests(cwd)
+        if bare is not None:
+            return bare
         from aiforge_core.runtime.tools.project_runner import (
             _has_tests, detect, project,
         )
         stacks = (detect(cwd) or {}).get("stacks") or []
         if not stacks:
-            # Bare Python (no marker) but WITH tests → run pytest so the
-            # reconciler still engages on cross-file drift.
-            bare = run_bare_python_tests(cwd)
-            return bare if bare is not None else (True, "")
+            return True, ""
         if not _has_tests(cwd, stacks):
             b = project(action="build", cwd=cwd) or {}
             return bool(b.get("ok")), str(b.get("error") or b.get("output") or "")
@@ -1506,15 +1510,17 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
                           else "diagnosing the failing tests…")}
         msg = (
             "The merged project's tests FAIL — modules were built in ISOLATION so "
-            "they don't quite link. FIX THE CODE so every test passes. This is a "
-            "DO task, not an analysis: use the editor tool to change files, then "
-            "run the tests to confirm. Do NOT stop until the tests pass or you have "
-            "applied every fix below.\n\n"
-            + ("CONCRETE FIXES (apply each — read the file first to get exact "
+            "they don't quite link. FIX THE CODE so every test passes.\n\n"
+            "IMPORTANT: do NOT run the tests yourself — your shell has no test env "
+            "set up, so run_tests/pytest will return EMPTY and waste your turns. "
+            "Just READ the relevant files and EDIT them with the editor tool to fix "
+            "the errors below. I re-run the full test suite for you after you "
+            "finish, and hand you back anything still failing.\n\n"
+            + ("CONCRETE FIXES (apply each — open the file first to get exact "
                "names):\n" + "\n".join(f"{i + 1}. {h}" for i, h in enumerate(hints))
                + "\n\n" if hints else "")
             + "Prefer the names/API in SPEC.md. Keep ONE canonical spelling of each "
-              "class/function across all files.\n\n"
+              "class/function across all files. Make the edits, then finish.\n\n"
             f"RAW test output:\n```\n{output[-3500:]}\n```")
         try:
             for ev in run_chat_agent([{"role": "user", "content": msg}], cwd=cwd,
