@@ -44,13 +44,15 @@ _READONLY_ALWAYS_ALLOW = {
     "grep_repo", "grep", "list_dir", "ls", "glob", "repo_map", "search",
     "find", "file_read", "read", "memory_lookup", "skill_search",
     "workflow_search", "graphify_lookup",
-    # git inspect + jira read are read-only too — never worth a prompt.
-    "git_status", "git_diff", "git_log", "jira_transitions",
+    # git inspect + jira/confluence reads are read-only too — never prompt.
+    "git_status", "git_diff", "git_log", "git_blame", "jira_transitions",
+    "confluence_children", "read_lines",
 }
 
 _DEFAULT_ASK = {"confluence_create", "confluence_update",
                 "jira_create", "jira_update", "jira_comment",
-                "jira_transition", "jira_assign",
+                "jira_transition", "jira_assign", "jira_link_issues",
+                "confluence_attach",
                 "gitlab_create", "gitlab_update", "gitlab_comment",
                 "gitlab_mr_create", "gitlab_mr_comment", "github_pr",
                 # Sends an email out to real recipients — approval-gated.

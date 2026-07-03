@@ -1111,6 +1111,93 @@ def _t_jira_assign(args: dict, cwd: str) -> dict:
     return jira.jira_assign(args, cwd)
 
 
+def _t_jira_link_issues(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_link_issues(args, cwd)
+
+
+def _t_confluence_children(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_children(args, cwd)
+
+
+def _t_confluence_attach(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_attach(args, cwd)
+
+
+def _t_git_blame(args: dict, cwd: str) -> dict:
+    argv = ["--no-pager", "blame", "--date=short"]
+    _s, _e = _coerce_int(args.get("start")), _coerce_int(args.get("end"))
+    if _s and _e:
+        argv += ["-L", f"{_s},{_e}"]
+    argv += ["--", str(args.get("path") or "")]
+    return _git_cli(argv, cwd)
+
+
+def _t_read_lines(args: dict, cwd: str) -> dict:
+    import os as _os
+    path = str(args.get("path") or "")
+    fp = path if _os.path.isabs(path) else _os.path.join(cwd or ".", path)
+    try:
+        with open(fp, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        return {"ok": False, "error": f"not found: {path}"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    n = len(lines)
+    s = max(1, _coerce_int(args.get("start"), 1) or 1)
+    e = n if not args.get("end") else min(_coerce_int(args.get("end"), n), n)
+    if s > n:
+        return {"ok": True, "path": path, "total_lines": n, "text": ""}
+    return {"ok": True, "path": path, "start": s, "end": e, "total_lines": n,
+            "text": "".join(lines[s - 1:e][:5000])[:60000]}
+
+
+def _t_rename_symbol(args: dict, cwd: str) -> dict:
+    import os as _os
+    import re as _re
+    name = str(args.get("name") or "")
+    new = str(args.get("new_name") or "")
+    if not name or not new:
+        return {"ok": False, "error": "need 'name' and 'new_name'"}
+    dry = args.get("dry_run", True)
+    base = str(args.get("path") or ".")
+    root_p = base if _os.path.isabs(base) else _os.path.join(cwd or ".", base)
+    pat = _re.compile(r"\b" + _re.escape(name) + r"\b")
+    _EXT = (".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs", ".c",
+            ".cpp", ".h", ".cs", ".rb", ".php", ".kt", ".scala", ".swift")
+    hits, changed = [], 0
+    for dp, dn, fns in _os.walk(root_p):
+        dn[:] = [d for d in dn if d not in (".git", "node_modules", ".venv",
+                 "venv", "dist", "build", "__pycache__")]
+        for fn in fns:
+            if not fn.endswith(_EXT):
+                continue
+            fpath = _os.path.join(dp, fn)
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as fh:
+                    txt = fh.read()
+            except Exception:  # noqa: BLE001
+                continue
+            c = len(pat.findall(txt))
+            if not c:
+                continue
+            hits.append({"file": _os.path.relpath(fpath, cwd or "."),
+                         "occurrences": c})
+            if not dry:
+                try:
+                    with open(fpath, "w", encoding="utf-8") as fh:
+                        fh.write(pat.sub(new, txt))
+                    changed += c
+                except Exception:  # noqa: BLE001
+                    pass
+    return {"ok": True, "name": name, "new_name": new, "dry_run": bool(dry),
+            "files": hits, "total_occurrences": sum(h["occurrences"] for h in hits),
+            "applied": (0 if dry else changed)}
+
+
 def _chat_run_id(cwd: str) -> str:
     """Stable per-workspace id so the browser tab / IPython kernel PERSIST
     across chat turns.
@@ -1215,9 +1302,15 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_transitions": _t_jira_transitions,
     "jira_transition": _t_jira_transition,
     "jira_assign": _t_jira_assign,
+    "jira_link_issues": _t_jira_link_issues,
+    "confluence_children": _t_confluence_children,
+    "confluence_attach": _t_confluence_attach,
     "git_status": _t_git_status,
     "git_diff": _t_git_diff,
     "git_log": _t_git_log,
+    "git_blame": _t_git_blame,
+    "read_lines": _t_read_lines,
+    "rename_symbol": _t_rename_symbol,
     "email_send": _t_email_send,
     "email_read": _t_email_read,
     "gitlab_search": _t_gitlab_search,

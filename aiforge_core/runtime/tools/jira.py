@@ -357,6 +357,27 @@ def jira_assign(args: dict, cwd: str | None = None) -> dict:
             "url": _issue_url(key)}
 
 
+def jira_link_issues(args: dict, cwd: str | None = None) -> dict:
+    """Link two issues. Required: ``inward`` + ``outward`` (issue keys) and
+    ``type`` (link-type name, e.g. 'Blocks', 'Relates', 'Duplicate'). Semantics:
+    inward <type> outward (e.g. inward BLOCKS outward)."""
+    inward = str(args.get("inward") or args.get("from") or "").strip()
+    outward = str(args.get("outward") or args.get("to") or "").strip()
+    ltype = str(args.get("type") or args.get("link_type") or "Relates").strip()
+    if not inward or not outward:
+        return {"ok": False, "error": "need 'inward' + 'outward' issue keys"}
+    body: dict = {"type": {"name": ltype},
+                  "inwardIssue": {"key": inward},
+                  "outwardIssue": {"key": outward}}
+    if args.get("comment"):
+        body["comment"] = {"body": str(args["comment"])}
+    r = _request("POST", "/rest/api/2/issueLink", body=body)
+    if not r["ok"]:
+        return r
+    return {"ok": True, "linked": {"inward": inward, "outward": outward,
+                                   "type": ltype}}
+
+
 def jira_test() -> dict:
     """Connectivity + auth check for the Settings UI. Hits a cheap endpoint
     and, on auth failure, explains the most likely cause."""
@@ -386,5 +407,5 @@ def jira_test() -> dict:
 
 
 __all__ = ["jira_search", "jira_read", "jira_create", "jira_update",
-           "jira_comment", "jira_transitions", "jira_transition",
+           "jira_comment", "jira_link_issues", "jira_transitions", "jira_transition",
            "jira_assign", "jira_test"]

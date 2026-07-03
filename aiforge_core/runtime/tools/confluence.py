@@ -255,6 +255,71 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
             "written": {"title": title, "body": str(args["body"])[:2000]}}
 
 
+def confluence_children(args: dict, cwd: str | None = None) -> dict:
+    """List the child pages of a Confluence page. Required: ``id``."""
+    pid = str(args.get("id") or "").strip()
+    if not pid:
+        return {"ok": False, "error": "missing 'id'"}
+    r = _request("GET",
+                 f"/rest/api/content/{urllib.parse.quote(pid)}/child/page",
+                 params={"limit": int(args.get("limit", 50))})
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    kids = [{"id": c.get("id"), "title": c.get("title")}
+            for c in (d.get("results") or [])]
+    return {"ok": True, "id": pid, "count": len(kids), "children": kids}
+
+
+def confluence_attach(args: dict, cwd: str | None = None) -> dict:
+    """Attach a LOCAL file to a Confluence page. Required: ``id`` (page id),
+    ``path`` (local file path). Uses a multipart upload (the JSON _request
+    helper can't, so this builds the request directly)."""
+    import mimetypes
+    import os as _os
+    import urllib.request as _ur
+    if not _configured():
+        return {"ok": False, "error": "confluence_not_configured"}
+    pid = str(args.get("id") or "").strip()
+    path = str(args.get("path") or "").strip()
+    if not pid or not path:
+        return {"ok": False, "error": "need 'id' + local 'path'"}
+    if not _os.path.isfile(path):
+        return {"ok": False, "error": f"file not found: {path}"}
+    try:
+        with open(path, "rb") as fh:
+            payload = fh.read()
+    except OSError as exc:
+        return {"ok": False, "error": f"read_failed: {exc}"}
+    fname = _os.path.basename(path)
+    ctype = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+    boundary = "----AIForgeBoundary7MA4YWxkTrZu0gW"
+    body = b"".join([
+        f"--{boundary}\r\n".encode(),
+        f'Content-Disposition: form-data; name="file"; filename="{fname}"\r\n'
+        .encode(),
+        f"Content-Type: {ctype}\r\n\r\n".encode(),
+        payload, b"\r\n",
+        f"--{boundary}--\r\n".encode(),
+    ])
+    headers = _headers()
+    headers.pop("Content-Type", None)
+    headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    headers["X-Atlassian-Token"] = "no-check"   # required for attachments
+    url = _base() + f"/rest/api/content/{urllib.parse.quote(pid)}/child/attachment"
+    req = _ur.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with _ur.urlopen(req, timeout=_TIMEOUT_S, context=_ssl_ctx()) as resp:
+            import json as _json
+            raw = resp.read(_BODY_CAP)
+            data = _json.loads(raw) if raw else {}
+    except Exception as exc:  # noqa: BLE001 — soft-fail like the JSON helper
+        return {"ok": False, "error": f"attach_failed: {str(exc)[:300]}"}
+    results = data.get("results") if isinstance(data, dict) else None
+    aid = (results[0].get("id") if results else None)
+    return {"ok": True, "id": pid, "attachment_id": aid, "filename": fname}
+
+
 def confluence_test() -> dict:
     """Connectivity + auth check for the Settings UI. Hits a cheap endpoint
     and, on auth failure, explains the most likely cause."""
@@ -282,4 +347,5 @@ def confluence_test() -> dict:
 
 
 __all__ = ["confluence_search", "confluence_read", "confluence_create",
-           "confluence_update", "confluence_test"]
+           "confluence_update", "confluence_children", "confluence_attach",
+           "confluence_test"]

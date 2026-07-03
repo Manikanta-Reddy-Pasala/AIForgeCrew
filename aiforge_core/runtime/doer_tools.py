@@ -1212,6 +1212,112 @@ def jira_assign(key: str, assignee: str) -> dict:
     return _j.jira_assign({"key": key, "assignee": assignee}, str(root()))
 
 
+def jira_link_issues(inward: str, outward: str, type: str = "Relates",
+                     comment: str = "") -> dict:
+    """Link two Jira issues. ``type`` = link-type name (Blocks/Relates/…);
+    semantics: inward <type> outward."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_link_issues({"inward": inward, "outward": outward,
+                                "type": type, "comment": comment}, str(root()))
+
+
+def confluence_children(id: str, limit: int = 50) -> dict:
+    """List the child pages of a Confluence page by ``id``."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_children({"id": id, "limit": limit}, str(root()))
+
+
+def confluence_attach(id: str, path: str) -> dict:
+    """Attach a local file (``path``) to a Confluence page (``id``)."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_attach({"id": id, "path": path}, str(root()))
+
+
+# ─── More code tools: git blame, line-range read, scoped rename ─────────
+
+def git_blame(path: str, start: int = 0, end: int = 0) -> dict:
+    """Line-by-line last-commit attribution for a file. Optional ``start``/
+    ``end`` limit to a line range. Read-only."""
+    argv = ["--no-pager", "blame", "--date=short"]
+    if start and end:
+        argv += ["-L", f"{int(start)},{int(end)}"]
+    argv += ["--", path]
+    return _git(argv)
+
+
+def read_lines(path: str, start: int = 1, end: int = 0) -> dict:
+    """Read a LINE RANGE from a file (1-indexed, inclusive) — for big files you
+    don't want whole. ``end=0`` reads to EOF (capped). Read-only."""
+    try:
+        p = resolve_inside_root(path)
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        return {"ok": False, "error": f"not found: {path}"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    n = len(lines)
+    s = max(1, int(start or 1))
+    e = n if not end else min(int(end), n)
+    if s > n:
+        return {"ok": True, "path": path, "total_lines": n, "text": "",
+                "note": f"start {s} past EOF ({n} lines)"}
+    chunk = lines[s - 1:e][:5000]                # hard cap the slice
+    body = "".join(chunk)[:60000]
+    return {"ok": True, "path": path, "start": s, "end": e,
+            "total_lines": n, "text": body}
+
+
+def rename_symbol(name: str, new_name: str, path: str = ".",
+                  dry_run: bool = True) -> dict:
+    """Whole-word rename of an identifier across code files under ``path``.
+    TEXT-based (word-boundary) — precise for unique identifiers, but review the
+    diff for false hits in strings/comments. ``dry_run`` (default) only reports
+    what WOULD change; pass dry_run=false to apply. Not an LSP semantic rename."""
+    import re
+    if not name or not new_name:
+        return {"ok": False, "error": "need 'name' and 'new_name'"}
+    root_p = str(resolve_inside_root(path))
+    pat = re.compile(r"\b" + re.escape(name) + r"\b")
+    _EXT = (".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".rs",
+            ".c", ".cpp", ".h", ".cs", ".rb", ".php", ".kt", ".scala", ".swift")
+    import os as _os
+    hits: list[dict] = []
+    changed = 0
+    for dirpath, dirnames, filenames in _os.walk(root_p):
+        dirnames[:] = [d for d in dirnames
+                       if d not in (".git", "node_modules", ".venv", "venv",
+                                    "dist", "build", "__pycache__")]
+        for fn in filenames:
+            if not fn.endswith(_EXT):
+                continue
+            fp = _os.path.join(dirpath, fn)
+            try:
+                with open(fp, encoding="utf-8", errors="replace") as fh:
+                    txt = fh.read()
+            except Exception:  # noqa: BLE001
+                continue
+            c = len(pat.findall(txt))
+            if not c:
+                continue
+            rel = _os.path.relpath(fp, str(root()))
+            hits.append({"file": rel, "occurrences": c})
+            if not dry_run:
+                try:
+                    with open(fp, "w", encoding="utf-8") as fh:
+                        fh.write(pat.sub(new_name, txt))
+                    changed += c
+                    record_touch(fp)
+                except Exception:  # noqa: BLE001
+                    pass
+    total = sum(h["occurrences"] for h in hits)
+    return {"ok": True, "name": name, "new_name": new_name,
+            "dry_run": dry_run, "files": hits, "total_occurrences": total,
+            "applied": (0 if dry_run else changed),
+            "note": ("preview only — pass dry_run=false to apply"
+                     if dry_run else "applied; review the diff")}
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -1285,8 +1391,10 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         typecheck, run_tests, lsp, format,
                         mcp, browse, execute_ipython_cell, delegate_to_agent,
                         github_pr, multi_edit,
-                        git_status, git_diff, git_log,
-                        jira_transitions, jira_transition, jira_assign]
+                        git_status, git_diff, git_log, git_blame,
+                        jira_transitions, jira_transition, jira_assign,
+                        jira_link_issues, confluence_children, confluence_attach,
+                        read_lines, rename_symbol]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -1356,8 +1464,9 @@ __all__ = [
     "typecheck", "run_tests", "lsp", "format",
     "mcp", "browse", "execute_ipython_cell", "delegate_to_agent",
     "github_pr", "multi_edit",
-    "git_status", "git_diff", "git_log",
-    "jira_transitions", "jira_transition", "jira_assign",
+    "git_status", "git_diff", "git_log", "git_blame",
+    "jira_transitions", "jira_transition", "jira_assign", "jira_link_issues",
+    "confluence_children", "confluence_attach", "read_lines", "rename_symbol",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch", "web_read",
     "commit", "git_add_commit",
