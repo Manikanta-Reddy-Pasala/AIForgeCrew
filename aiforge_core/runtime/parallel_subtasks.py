@@ -1868,6 +1868,82 @@ def _prune_dead_python_imports(cwd: str) -> list[str]:
     return changed
 
 
+def _symbol_drift_report(cwd: str) -> list[dict]:
+    """MAP-REDUCE blackboard: for every Python module collect the symbols it
+    EXPOSES (module-level defs/classes/constants) and the symbols it CONSUMES
+    (imports from sibling modules). Report each consumed name that its target
+    module doesn't expose, with the closest real name as the canonical suggestion.
+
+    This is the structured aggregation step — the merger reasons over this COMPACT
+    blackboard (module → exposes/consumes + mismatches), not the whole codebase,
+    so cross-file drift (Binary vs BinaryExpr, drop_piece method-vs-function) is
+    caught at MERGE time, before any test runs. General; no per-error hardcoding."""
+    import ast
+    import difflib
+    pyfiles: dict[str, str] = {}
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in (
+            ".git", ".aiforge-worktrees", ".aiforge-venv", ".venv",
+            "__pycache__", "node_modules", ".pytest_cache")]
+        for f in files:
+            if f.endswith(".py"):
+                p = os.path.join(root, f)
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as fh:
+                        pyfiles[os.path.relpath(p, cwd)] = fh.read()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _mod(rel: str) -> str:
+        rel = rel[:-3] if rel.endswith(".py") else rel
+        rel = rel[:-9] if rel.endswith("/__init__") else rel
+        return rel.replace(os.sep, ".").strip(".")
+
+    exposes: dict[str, set] = {}
+    consumes: list[tuple[str, str, str]] = []   # (consumer_mod, target_mod, name)
+    for rel, src in pyfiles.items():
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        syms: set = set()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                syms.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        syms.add(t.id)
+        exposes[_mod(rel)] = syms
+
+    mods = set(exposes)
+    for rel, src in pyfiles.items():
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                tgt = (node.module if node.module in mods
+                       else next((m for m in mods if m.endswith("." + node.module)
+                                  or m.split(".")[-1] == node.module.split(".")[-1]), None))
+                if not tgt:
+                    continue
+                for a in node.names:
+                    if a.name != "*":
+                        consumes.append((_mod(rel), tgt, a.name))
+
+    drift: list[dict] = []
+    for cons, tgt, name in consumes:
+        have = exposes.get(tgt, set())
+        if name not in have:
+            close = difflib.get_close_matches(name, list(have), n=1, cutoff=0.6)
+            drift.append({"consumer": cons, "target": tgt, "name": name,
+                          "target_exposes": sorted(have)[:15],
+                          "suggest": close[0] if close else None})
+    return drift
+
+
 def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     """Build + test the merged tree; while it fails on cross-file drift, run a
     bounded Doer pass over the WHOLE workspace — fed the RAW test output + a
@@ -1887,6 +1963,44 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
                    "args": {}, "result": {"files": _pruned}}
     except Exception:  # noqa: BLE001
         pass
+
+    # MERGER pass (map-reduce): reconcile cross-module symbol drift against the
+    # structured blackboard BEFORE running any test. The merger reasons over the
+    # COMPACT exposes/consumes report (not the whole codebase), aligning every
+    # consumed name to the canonical exposed one — catching Binary-vs-BinaryExpr
+    # style drift proactively at merge time. Env-gated (AIFORGE_MERGER=1 default).
+    if os.environ.get("AIFORGE_MERGER", "1") not in ("0", "false"):
+        try:
+            drift = _symbol_drift_report(cwd)
+        except Exception:  # noqa: BLE001
+            drift = []
+        if drift:
+            yield {"type": "thought", "role": "merger",
+                   "text": f"Reconciling {len(drift)} cross-module symbol mismatch(es) "
+                           "against the blackboard before testing…"}
+            _lines = []
+            for d in drift[:30]:
+                s = (f" → rename the import to `{d['suggest']}`"
+                     if d.get("suggest")
+                     else f" — `{d['target']}` exposes {d.get('target_exposes')}; add "
+                          "the name there or fix the import")
+                _lines.append(f"- `{d['consumer']}` imports `{d['name']}` from "
+                              f"`{d['target']}`, which does NOT define it{s}.")
+            try:
+                _mfixed = _rewrite_fix(
+                    cwd, "CROSS-MODULE SYMBOL MISMATCHES (align every import/name to "
+                         "ONE canonical spelling — the name the target module "
+                         "actually defines):\n" + "\n".join(_lines), [])
+                if _mfixed:
+                    yield {"type": "tool", "role": "merger", "name": "aligned symbols",
+                           "args": {}, "result": {"files": _mfixed}}
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                _prune_dead_python_imports(cwd)
+            except Exception:  # noqa: BLE001
+                pass
+
     ok, output = _project_test_output(cwd)
     if ok or os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
         result["rep"] = build_and_test_report(cwd)
