@@ -23,6 +23,19 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
     if final_text.strip() or steps:
         chat_store.add_message(session_id, "assistant", final_text, steps)
 
+    # Reviewable on-disk trace: every action + response per message, per
+    # session, to ~/.aiforge/chat_traces/. Covers BOTH simple and team modes
+    # (both funnel through here). Runs for EVERY turn — before the trivial-turn
+    # auto-memory skip below — so the audit trail is complete. Best-effort.
+    if final_text.strip() or steps:
+        try:
+            from aiforge_core.runtime import chat_trace
+            chat_trace.append_turn(session_id=session_id, prompt=prompt,
+                                   steps=steps, final_text=final_text,
+                                   team=team, cwd=cwd)
+        except Exception:  # noqa: BLE001 — tracing must never break a turn
+            pass
+
     # Auto-memory: markdown note of what this turn did so the Memory tab +
     # ~/.aiforge/memory stay current. Best-effort. Skip trivial / cancelled /
     # question-only (awaiting) turns — they're not outcomes.
