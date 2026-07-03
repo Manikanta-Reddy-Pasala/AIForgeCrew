@@ -253,9 +253,12 @@ def default_validate_one(subtask: dict, worktree: str) -> dict:
     _path = str(subtask.get("path") or "").strip().lstrip("/")
     _base = os.path.basename(_path).lower()
     _CONFIG_DOC = {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt",
-                   "makefile", "dockerfile", "package.json", "tsconfig.json"}
+                   "makefile", "dockerfile", "package.json", "tsconfig.json",
+                   "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle",
+                   "go.mod", "cargo.toml", "composer.json", "gemfile"}
     if _base in _CONFIG_DOC or _path.lower().endswith(
-            (".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json", ".rst")):
+            (".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json",
+             ".rst", ".xml", ".gradle", ".properties", ".mod", ".lock")):
         target = os.path.join(worktree, _path) if _path else ""
         ok = bool(target and os.path.isfile(target)
                   and os.path.getsize(target) > 0)
