@@ -210,11 +210,31 @@ def reap_stale_indexing(max_age_s: int) -> list[int]:
     return reset
 
 
+def touch_indexing(source_id: int) -> None:
+    """Heartbeat: bump ``indexing_started_at`` to now while a source is STILL
+    actively indexing, so ``reap_stale_indexing`` only reaps a genuinely
+    stalled index — not a slow-but-progressing one (big repos on slow
+    filesystems, e.g. WSL /mnt/c, legitimately exceed the lease). No-op unless
+    the row is currently 'indexing', so it can never revive a finished/crashed
+    one."""
+    with _conn() as c:
+        c.execute(
+            f"UPDATE memory_sources SET indexing_started_at={_NOW} "
+            "WHERE id=? AND status='indexing'",
+            (source_id,),
+        )
+
+
 def set_status(source_id: int, status: str, *, units: int | None = None,
                error: str | None = None, indexed: bool = False,
                layers: dict | None = None) -> None:
     sets = ["status = ?"]
     params: list = [status]
+    if status == "indexing":
+        # (Re)entering 'indexing' restarts the lease clock, so the stale-index
+        # reaper measures from THIS start — not a stale prior timestamp that
+        # would get it reaped almost immediately.
+        sets.append(f"indexing_started_at = {_NOW}")
     if units is not None:
         sets.append("units = ?")
         params.append(units)

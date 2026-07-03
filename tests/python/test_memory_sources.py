@@ -78,3 +78,39 @@ def test_run_index_updates_status(monkeypatch, tmp_path):
     got = ms.get(s["id"])
     assert got["status"] == "done"
     assert got["units"] >= 1
+
+
+def test_fresh_index_not_reaped_then_stale_is(ms):
+    sid = ms.create("repo", "/p", "r")["id"]
+    # Entering 'indexing' stamps a fresh lease clock → a sane lease won't reap.
+    ms.set_status(sid, "indexing")
+    assert ms.reap_stale_indexing(1800) == []
+    assert ms.get(sid)["status"] == "indexing"
+    # Backdate the clock past the lease → reaped to idle with the UI message.
+    with ms._conn() as c:
+        c.execute(
+            "UPDATE memory_sources SET indexing_started_at="
+            "strftime('%Y-%m-%dT%H:%M:%fZ','now','-3600 seconds') WHERE id=?",
+            (sid,))
+    assert ms.reap_stale_indexing(1800) == [sid]
+    got = ms.get(sid)
+    assert got["status"] == "idle"
+    assert "exceeded lease" in (got["error"] or "")
+
+
+def test_heartbeat_protects_slow_index(ms):
+    sid = ms.create("repo", "/p", "r")["id"]
+    ms.set_status(sid, "indexing")
+    with ms._conn() as c:
+        c.execute(
+            "UPDATE memory_sources SET indexing_started_at="
+            "strftime('%Y-%m-%dT%H:%M:%fZ','now','-3600 seconds') WHERE id=?",
+            (sid,))
+    # Heartbeat refreshes the clock → the slow-but-alive index survives the reap.
+    ms.touch_indexing(sid)
+    assert ms.reap_stale_indexing(1800) == []
+    assert ms.get(sid)["status"] == "indexing"
+    # touch_indexing is a no-op once the source is no longer 'indexing'.
+    ms.set_status(sid, "done", indexed=True)
+    ms.touch_indexing(sid)
+    assert ms.get(sid)["status"] == "done"

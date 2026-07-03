@@ -479,6 +479,23 @@ def run_index(source_id: int) -> None:
     if not source:
         return
     _ms.set_status(source_id, "indexing", error=None)
+    # Heartbeat the lease while the (potentially long, blocking) ingest runs so
+    # the stale-index reaper (AIFORGE_INDEX_LEASE_S) only reaps a genuinely
+    # STALLED index — not a slow-but-progressing one. Big repos on slow
+    # filesystems (e.g. WSL /mnt/c) legitimately exceed the default lease and
+    # would otherwise be reset to idle mid-run ("indexing exceeded lease") in a
+    # loop that never finishes. A crashed ingest stops the beat → still reaped.
+    import threading
+    _stop = threading.Event()
+    _hb_s = max(15, int(os.environ.get("AIFORGE_INDEX_HEARTBEAT_S", "60")))
+    def _heartbeat() -> None:
+        while not _stop.wait(_hb_s):
+            try:
+                _ms.touch_indexing(source_id)
+            except Exception:  # noqa: BLE001 — heartbeat must never crash ingest
+                pass
+    threading.Thread(target=_heartbeat, name=f"index-hb-{source_id}",
+                     daemon=True).start()
     try:
         res = ingest_source(source)
     except Exception as exc:  # noqa: BLE001 — never leave the row stuck 'indexing'
@@ -488,6 +505,8 @@ def run_index(source_id: int) -> None:
         except Exception:  # noqa: BLE001
             pass
         return
+    finally:
+        _stop.set()
     layers = res.get("layers")
     # A layer that errored (e.g. symbols=error:… while chunks=ok) must not
     # be reported as a clean "done" — surface it as "partial" and carry the

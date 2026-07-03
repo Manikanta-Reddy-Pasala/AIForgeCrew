@@ -286,7 +286,17 @@ fi
 echo "==> installing python deps (editable)"
 # Global uv targeting the venv's python — `uv venv` does not install uv
 # *into* the venv, so `.venv/bin/uv` would not exist on a fresh machine.
-uv pip install --python .venv/bin/python -e . >/dev/null
+#
+# On WSL /mnt/c (DrvFs) a copy can leave a package half-written — e.g. a
+# `numpy-*.dist-info/` dir with NO METADATA file — and uv then aborts the
+# whole resolve with "Failed to read metadata from installed package …:
+# No such file or directory". A corrupt existing venv can't be patched in
+# place, so on ANY install failure we nuke and rebuild it from scratch.
+if ! uv pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
+  echo "==> deps install failed — rebuilding .venv from scratch (corrupt/partial venv; common on WSL /mnt/c)"
+  rm -rf .venv && uv venv .venv
+  uv pip install --python .venv/bin/python -e . >/dev/null
+fi
 
 # ── venv self-heal ────────────────────────────────────────────────────
 # A partial/interrupted install can leave the venv importable-but-broken —
