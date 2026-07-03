@@ -287,6 +287,76 @@ def jira_comment(args: dict, cwd: str | None = None) -> dict:
             "written": {"comment": str(args["body"])[:2000]}}
 
 
+def jira_transitions(args: dict, cwd: str | None = None) -> dict:
+    """List the workflow transitions currently available for an issue
+    (id + name + target status). Required: ``key``."""
+    key = (args.get("key") or args.get("id") or "").strip()
+    if not key:
+        return {"ok": False, "error": "missing 'key'"}
+    r = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}/transitions")
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    trs = [{"id": t.get("id"), "name": t.get("name"),
+            "to": (t.get("to") or {}).get("name")}
+           for t in (d.get("transitions") or [])]
+    return {"ok": True, "key": key, "transitions": trs}
+
+
+def jira_transition(args: dict, cwd: str | None = None) -> dict:
+    """Move an issue through its workflow (e.g. To Do → In Progress → Done).
+    Required: ``key`` + ``transition`` (a transition id, its name, or the target
+    status name — matched case-insensitively). Optional ``comment``."""
+    key = (args.get("key") or args.get("id") or "").strip()
+    if not key:
+        return {"ok": False, "error": "missing 'key'"}
+    want = str(args.get("transition") or args.get("to")
+               or args.get("status") or args.get("name") or "").strip()
+    if not want:
+        return {"ok": False, "error": "missing 'transition' (name, id or status)"}
+    lst = jira_transitions({"key": key})
+    if not lst["ok"]:
+        return lst
+    tid = None
+    for t in lst["transitions"]:
+        if (str(t.get("id")) == want
+                or (t.get("name") or "").lower() == want.lower()
+                or (t.get("to") or "").lower() == want.lower()):
+            tid = t.get("id")
+            break
+    if tid is None:
+        return {"ok": False, "error": f"no transition matching '{want}'",
+                "available": [t.get("name") for t in lst["transitions"]]}
+    body: dict = {"transition": {"id": tid}}
+    if args.get("comment"):
+        body["update"] = {"comment": [{"add": {"body": args["comment"]}}]}
+    r = _request("POST",
+                 f"/rest/api/2/issue/{urllib.parse.quote(key)}/transitions",
+                 body=body)
+    if not r["ok"]:
+        return r
+    return {"ok": True, "key": key, "transitioned_to": want,
+            "url": _issue_url(key)}
+
+
+def jira_assign(args: dict, cwd: str | None = None) -> dict:
+    """Assign an issue to a user. Required: ``key``, ``assignee`` (username;
+    ``"-1"`` / ``"unassigned"`` clears the assignee)."""
+    key = (args.get("key") or args.get("id") or "").strip()
+    who = str(args.get("assignee") or args.get("user") or "").strip()
+    if not key:
+        return {"ok": False, "error": "missing 'key'"}
+    if not who:
+        return {"ok": False, "error": "missing 'assignee'"}
+    name = None if who.lower() in ("-1", "unassigned", "none", "") else who
+    r = _request("PUT", f"/rest/api/2/issue/{urllib.parse.quote(key)}/assignee",
+                 body={"name": name})
+    if not r["ok"]:
+        return r
+    return {"ok": True, "key": key, "assignee": name or "(unassigned)",
+            "url": _issue_url(key)}
+
+
 def jira_test() -> dict:
     """Connectivity + auth check for the Settings UI. Hits a cheap endpoint
     and, on auth failure, explains the most likely cause."""
@@ -316,4 +386,5 @@ def jira_test() -> dict:
 
 
 __all__ = ["jira_search", "jira_read", "jira_create", "jira_update",
-           "jira_comment", "jira_test"]
+           "jira_comment", "jira_transitions", "jira_transition",
+           "jira_assign", "jira_test"]

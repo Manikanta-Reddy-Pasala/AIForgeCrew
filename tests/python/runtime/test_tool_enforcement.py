@@ -201,3 +201,18 @@ def test_power_tools_wired_into_pipeline(monkeypatch):
               "github_pr", "multi_edit"):
         assert t in names, f"power tool {t} missing from pipeline surface"
     assert "web_search" not in names, "web egress stays researcher-only"
+
+
+def test_git_and_jira_workflow_tools(monkeypatch):
+    # New git-inspect + jira-workflow tools are wired into the pipeline; git
+    # reads never gate, jira mutations (transition/assign) do.
+    monkeypatch.setenv("AIFORGE_TOOL_ENFORCE", "0")
+    names = _names(doer_tools.adk_function_tools(role=None))
+    for t in ("git_status", "git_diff", "git_log",
+              "jira_transitions", "jira_transition", "jira_assign"):
+        assert t in names, f"{t} missing from pipeline surface"
+    from aiforge_core.runtime.tools import tool_policy as tp
+    for t in ("git_status", "git_diff", "git_log", "jira_transitions"):
+        assert tp.decide(t, {})["policy"] == tp.ALLOW, t
+    for t in ("jira_transition", "jira_assign"):
+        assert tp.decide(t, {})["policy"] == tp.ASK, t

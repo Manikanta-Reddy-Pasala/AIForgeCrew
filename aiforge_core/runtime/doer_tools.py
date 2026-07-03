@@ -1148,6 +1148,70 @@ def multi_edit(edits: list) -> dict:
     return {"ok": ok_all, "results": results}
 
 
+# ─── Git inspect (read-only) — structured repo state without shelling out ──
+
+def _git(argv: list, timeout: int = 30) -> dict:
+    import subprocess
+    try:
+        r = subprocess.run(["git", *argv], cwd=str(root()),
+                           capture_output=True, text=True, timeout=timeout)
+        return {"ok": r.returncode == 0, "code": r.returncode,
+                "stdout": (r.stdout or "")[-8000:],
+                "stderr": (r.stderr or "")[-2000:]}
+    except FileNotFoundError:
+        return {"ok": False, "error": "git_not_installed"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def git_status() -> dict:
+    """Working-tree status (branch + staged/unstaged/untracked, porcelain).
+    Read-only — the fast way to see what changed before committing."""
+    return _git(["status", "--porcelain=v1", "-b"])
+
+
+def git_diff(path: str = "", staged: bool = False) -> dict:
+    """Show the diff. ``staged`` = the staged/cached diff; ``path`` narrows to a
+    file or dir. Read-only."""
+    argv = ["--no-pager", "diff"] + (["--staged"] if staged else [])
+    if path:
+        argv += ["--", path]
+    return _git(argv)
+
+
+def git_log(limit: int = 20, path: str = "") -> dict:
+    """Recent commits (oneline + refs). ``limit`` capped at 200; ``path``
+    narrows to a file's history. Read-only."""
+    n = max(1, min(int(limit or 20), 200))
+    argv = ["--no-pager", "log", f"-{n}", "--oneline", "--decorate"]
+    if path:
+        argv += ["--", path]
+    return _git(argv)
+
+
+# ─── Jira workflow (transition / assign) ────────────────────────────────
+
+def jira_transitions(key: str) -> dict:
+    """List the workflow transitions available for a Jira issue (id + name +
+    target status)."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_transitions({"key": key}, str(root()))
+
+
+def jira_transition(key: str, transition: str, comment: str = "") -> dict:
+    """Move a Jira issue through its workflow (e.g. In Progress → Done).
+    ``transition`` = a transition id, its name, or the target status name."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_transition({"key": key, "transition": transition,
+                               "comment": comment}, str(root()))
+
+
+def jira_assign(key: str, assignee: str) -> dict:
+    """Assign a Jira issue to a user (``"-1"`` / ``"unassigned"`` clears it)."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_assign({"key": key, "assignee": assignee}, str(root()))
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -1220,7 +1284,9 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         gitlab_comment, gitlab_mr_create, gitlab_mr_comment,
                         typecheck, run_tests, lsp, format,
                         mcp, browse, execute_ipython_cell, delegate_to_agent,
-                        github_pr, multi_edit]
+                        github_pr, multi_edit,
+                        git_status, git_diff, git_log,
+                        jira_transitions, jira_transition, jira_assign]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -1290,6 +1356,8 @@ __all__ = [
     "typecheck", "run_tests", "lsp", "format",
     "mcp", "browse", "execute_ipython_cell", "delegate_to_agent",
     "github_pr", "multi_edit",
+    "git_status", "git_diff", "git_log",
+    "jira_transitions", "jira_transition", "jira_assign",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch", "web_read",
     "commit", "git_add_commit",

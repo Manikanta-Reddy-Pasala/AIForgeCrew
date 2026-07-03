@@ -1064,6 +1064,53 @@ def _t_run_tests(args: dict, cwd: str) -> dict:
     return run_tests(mode=str(args.get("mode") or "fast"), pattern=str(args.get("pattern") or ""))
 
 
+def _git_cli(argv: list, cwd: str, timeout: int = 30) -> dict:
+    import subprocess
+    try:
+        r = subprocess.run(["git", *argv], cwd=cwd or ".", capture_output=True,
+                           text=True, timeout=timeout)
+        return {"ok": r.returncode == 0, "code": r.returncode,
+                "stdout": (r.stdout or "")[-8000:], "stderr": (r.stderr or "")[-2000:]}
+    except FileNotFoundError:
+        return {"ok": False, "error": "git_not_installed"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def _t_git_status(args: dict, cwd: str) -> dict:
+    return _git_cli(["status", "--porcelain=v1", "-b"], cwd)
+
+
+def _t_git_diff(args: dict, cwd: str) -> dict:
+    argv = ["--no-pager", "diff"] + (["--staged"] if args.get("staged") else [])
+    if args.get("path"):
+        argv += ["--", str(args["path"])]
+    return _git_cli(argv, cwd)
+
+
+def _t_git_log(args: dict, cwd: str) -> dict:
+    n = max(1, min(_coerce_int(args.get("limit"), 20) or 20, 200))
+    argv = ["--no-pager", "log", f"-{n}", "--oneline", "--decorate"]
+    if args.get("path"):
+        argv += ["--", str(args["path"])]
+    return _git_cli(argv, cwd)
+
+
+def _t_jira_transitions(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_transitions(args, cwd)
+
+
+def _t_jira_transition(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_transition(args, cwd)
+
+
+def _t_jira_assign(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_assign(args, cwd)
+
+
 def _chat_run_id(cwd: str) -> str:
     """Stable per-workspace id so the browser tab / IPython kernel PERSIST
     across chat turns.
@@ -1165,6 +1212,12 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_create": _t_jira_create,
     "jira_update": _t_jira_update,
     "jira_comment": _t_jira_comment,
+    "jira_transitions": _t_jira_transitions,
+    "jira_transition": _t_jira_transition,
+    "jira_assign": _t_jira_assign,
+    "git_status": _t_git_status,
+    "git_diff": _t_git_diff,
+    "git_log": _t_git_log,
     "email_send": _t_email_send,
     "email_read": _t_email_read,
     "gitlab_search": _t_gitlab_search,
