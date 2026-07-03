@@ -1013,6 +1013,41 @@ def gitlab_mr_comment(project: str, iid: str, body: str) -> dict:
                                 str(root()))
 
 
+# ─── Code-quality + intelligence (parity with the chat surface) ─────────
+# The team-mode Doer could edit + run shell, but couldn't type-check, run the
+# test suite, query the language server, or auto-format — so it couldn't VERIFY
+# its own work the way the chat agent can. Wire the same underlying tools in so
+# a pipeline Doer can compile/test/format before it finishes.
+
+def typecheck() -> dict:
+    """Type-check the repo (mypy / tsc / …). Run after edits to catch type
+    errors BEFORE finishing. No args."""
+    from aiforge_core.runtime.tools.typecheck import typecheck as _tc
+    return _tc()
+
+
+def run_tests(mode: str = "fast", pattern: str = "") -> dict:
+    """Run the repo's test suite. ``mode`` = fast|full; ``pattern`` filters by
+    test name/path. Use it to prove a change works before finishing."""
+    from aiforge_core.runtime.tools.test_runner import run_tests as _rt
+    return _rt(mode=mode, pattern=pattern)
+
+
+def lsp(command: str = "", path: str = "", line: int = 0,
+        character: int = 0) -> dict:
+    """Language-server query: ``command`` ∈ definition|references|hover|
+    diagnostics|symbols at ``path``:``line``:``character``."""
+    from aiforge_core.runtime.tools.lsp import lsp as _lsp
+    return _lsp(command=command, path=path, line=line, character=character)
+
+
+def format(path: str = ".") -> dict:
+    """Auto-format code under ``path`` with the repo's formatter (black / prettier
+    / gofmt / …). Idempotent; run before finishing so diffs stay clean."""
+    from aiforge_core.runtime.tools.format import format as _fmt
+    return _fmt(str(path or "."))
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -1082,7 +1117,8 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         confluence_update, jira_search, jira_read, jira_create,
                         jira_update, jira_comment, email_send, email_read,
                         gitlab_search, gitlab_read, gitlab_create, gitlab_update,
-                        gitlab_comment, gitlab_mr_create, gitlab_mr_comment]
+                        gitlab_comment, gitlab_mr_create, gitlab_mr_comment,
+                        typecheck, run_tests, lsp, format]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -1149,6 +1185,7 @@ __all__ = [
     "email_send", "email_read",
     "gitlab_search", "gitlab_read", "gitlab_create", "gitlab_update",
     "gitlab_comment", "gitlab_mr_create", "gitlab_mr_comment",
+    "typecheck", "run_tests", "lsp", "format",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch", "web_read",
     "commit", "git_add_commit",

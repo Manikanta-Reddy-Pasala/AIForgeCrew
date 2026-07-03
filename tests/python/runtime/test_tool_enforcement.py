@@ -181,3 +181,12 @@ def test_explicit_env_policy_still_overrides_readonly(monkeypatch):
     monkeypatch.setenv("AIFORGE_TOOL_POLICY", "grep_repo=ask")
     from aiforge_core.runtime.tools import tool_policy as tp
     assert tp.decide("grep_repo", {})["policy"] == tp.ASK
+
+
+def test_code_quality_tools_wired_into_pipeline(monkeypatch):
+    # The team-mode Doer must be able to VERIFY its own work — type-check, run
+    # tests, query the LSP, auto-format — not just edit + shell.
+    monkeypatch.setenv("AIFORGE_TOOL_ENFORCE", "0")
+    names = _names(doer_tools.adk_function_tools(role=None))
+    for t in ("typecheck", "run_tests", "lsp", "format"):
+        assert t in names, f"code-quality tool {t} missing from pipeline surface"
