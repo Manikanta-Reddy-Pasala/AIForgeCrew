@@ -23,8 +23,16 @@ from typing import Any
 
 def trace_dir() -> Path:
     raw = os.environ.get("AIFORGE_CHAT_TRACE_DIR")
-    base = (Path(raw).expanduser() if raw
-            else Path.home() / ".aiforge" / "chat_traces")
+    if raw:
+        base = Path(raw).expanduser()
+    else:
+        # Live UNDER the same config dir as everything else (chat_store,
+        # integrations, memory…). Using a raw Path.home() sent traces to a
+        # DIFFERENT folder than the operator's configured AIFORGE_CONFIG_DIR
+        # (docker/hybrid), so the dir they checked looked empty.
+        cfg = os.path.expanduser(
+            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+        base = Path(cfg) / "chat_traces"
     base.mkdir(parents=True, exist_ok=True)
     return base
 

@@ -24,7 +24,12 @@ def _trajectory_dir() -> Path:
     if raw:
         base = Path(raw).expanduser()
     else:
-        base = Path.home() / ".aiforge" / "trajectories"
+        # Same config dir as the rest of the app (AIFORGE_CONFIG_DIR) — a raw
+        # Path.home() diverges from the operator's configured dir on
+        # docker/hybrid, hiding the dumps.
+        cfg = os.path.expanduser(
+            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+        base = Path(cfg) / "trajectories"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
