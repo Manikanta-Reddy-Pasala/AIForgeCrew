@@ -35,6 +35,17 @@ _CMD_ARG_KEYS = ("cmd", "command", "input")
 
 # Tools that mutate something external/durable → default to ASK (human
 # approval) unless the operator explicitly overrides via AIFORGE_TOOL_POLICY.
+# Read-only filesystem + search tools — inspecting the tree is never worth an
+# approval prompt. Pinned to ALLOW so nothing (forced-review, risk escalation,
+# a future default) can gate them; an explicit per-tool AIFORGE_TOOL_POLICY
+# entry still wins. Command tools (bash/shell) are NOT here — they stay risk-
+# assessed, so `grep`-ing a secret path still gates.
+_READONLY_ALWAYS_ALLOW = {
+    "grep_repo", "grep", "list_dir", "ls", "glob", "repo_map", "search",
+    "find", "file_read", "read", "memory_lookup", "skill_search",
+    "workflow_search", "graphify_lookup",
+}
+
 _DEFAULT_ASK = {"confluence_create", "confluence_update",
                 "jira_create", "jira_update", "jira_comment",
                 "gitlab_create", "gitlab_update", "gitlab_comment",
@@ -86,6 +97,11 @@ def decide(tool: str, args: dict | None = None) -> dict:
     (e.g. the risk verdict) so the UI can show *why* approval is needed.
     """
     cfg = _configured()
+    # Read-only fs/search tools never gate (unless the operator explicitly set a
+    # policy for that exact tool) — so folder listing / grep / read / recall
+    # actions run without an approval prompt.
+    if tool in _READONLY_ALWAYS_ALLOW and tool not in cfg:
+        return {"policy": ALLOW, "reason": ""}
     # Mutating-external tools default to ASK; an explicit env policy still wins.
     default = ASK if tool in _DEFAULT_ASK else ALLOW
     configured = cfg.get(tool, default)

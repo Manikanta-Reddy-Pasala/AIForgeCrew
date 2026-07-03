@@ -1017,6 +1017,23 @@ def gitlab_mr_comment(project: str, iid: str, body: str) -> dict:
 
 
 def adk_function_tools(role: "str | None" = None) -> list:
+    """Resolve the role's tool list, LOG the granted set (so operators can see
+    exactly what each agent can do before it picks up work), and return it."""
+    tools = _adk_function_tools_impl(role)
+    try:
+        import logging
+        names = sorted(
+            (getattr(t, "name", None)
+             or getattr(getattr(t, "func", None), "__name__", "")) for t in tools)
+        logging.getLogger("aiforge.tools").info(
+            "tools[role=%s] granted %d: %s",
+            role or "*", len(names), ", ".join(n for n in names if n))
+    except Exception:  # noqa: BLE001 — logging must never break tool wiring
+        pass
+    return tools
+
+
+def _adk_function_tools_impl(role: "str | None" = None) -> list:
     """Return the tool list as ADK ``FunctionTool`` instances.
 
     Lazy import keeps unit tests ADK-free.

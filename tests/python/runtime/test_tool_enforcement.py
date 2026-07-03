@@ -162,3 +162,22 @@ def test_all_integrations_wired_into_pipeline_surface(monkeypatch):
               "gitlab_search", "gitlab_read", "gitlab_create", "gitlab_update",
               "gitlab_comment", "gitlab_mr_create", "gitlab_mr_comment"):
         assert t in names, f"integration tool {t} missing from pipeline surface"
+
+
+def test_readonly_fs_search_tools_never_ask():
+    # Folder listing / grep / read / recall must run WITHOUT an approval prompt.
+    from aiforge_core.runtime.tools import tool_policy as tp
+    for t in ("grep_repo", "grep", "list_dir", "ls", "find", "file_read",
+              "read", "repo_map", "search", "memory_lookup"):
+        assert tp.decide(t, {})["policy"] == tp.ALLOW, t
+    # Mutating / external-write tools still gate.
+    assert tp.decide("jira_create", {})["policy"] == tp.ASK
+    assert tp.decide("email_send", {})["policy"] == tp.ASK
+
+
+def test_explicit_env_policy_still_overrides_readonly(monkeypatch):
+    # An operator can still force an ask on a read tool via env — the pin is a
+    # default, not a hard override.
+    monkeypatch.setenv("AIFORGE_TOOL_POLICY", "grep_repo=ask")
+    from aiforge_core.runtime.tools import tool_policy as tp
+    assert tp.decide("grep_repo", {})["policy"] == tp.ASK
