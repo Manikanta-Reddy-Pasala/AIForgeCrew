@@ -3456,7 +3456,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # enhancer would distort the clarifying Q&A) and run the single chat
         # agent with the task charter, which ends by calling its finalize tool.
         if body.builder:
-            from aiforge_core.runtime.chat_agent import run_chat_agent
+            # NOTE: do NOT re-import run_chat_agent here — a local import inside
+            # this generator makes the name LOCAL to the whole generator, so the
+            # non-builder paths below (which don't run this branch) hit it
+            # unbound → "UnboundLocalError: run_chat_agent". Use the closure from
+            # the outer function's import.
             from aiforge_core.runtime.prompts_extended import builders as _bld
             if _bld.charter_for(body.builder):
                 yield from run_chat_agent(history, cwd=cwd, role=role,
