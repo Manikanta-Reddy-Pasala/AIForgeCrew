@@ -178,6 +178,14 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
     for i in range(attempts):
         if i > 0:
             _reset_worktree(wt, base_branch)
+            # REGENERATE informed by the failure — feed the prior error into the
+            # subtask so the next attempt's prompt says what went wrong, instead
+            # of blindly re-running the same prompt to the same dead end.
+            _prev_err = (last.get("error")
+                         or (last.get("validation") or {}).get("error")
+                         or "the previous build/tests failed")
+            subtask = {**subtask, "_retry_error": str(_prev_err)[:800],
+                       "_retry_n": i}
             _emit(ticket_id, slug, "subtask_retry",
                   f"{slug} retry {i}/{attempts - 1}", {"slug": slug, "attempt": i})
         last = _attempt(subtask, wt, slug, run_one, validate_one)
@@ -604,8 +612,12 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         return {"ok": False, "error": str(exc)}
     goal = subtask.get("goal") or subtask.get("slug") or "implement the subtask"
     path = str(subtask.get("path") or "").strip().lstrip("/")
+    retry_err = str(subtask.get("_retry_error") or "").strip()
     prompt = (
-        (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
+        (f"⚠ YOUR PREVIOUS ATTEMPT FAILED with:\n{retry_err[:800]}\nFix that this "
+         f"time — re-read the SPEC, emit correct, complete code.\n\n---\n\n"
+         if retry_err else "")
+        + (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
          f"file/dir paths it lists):\n{spec_md.strip()[:5000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
         + f"Implement this subtask as COMPLETE, runnable file(s) in the language "
@@ -1200,6 +1212,39 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         except Exception:  # noqa: BLE001
             return False
 
+    def _drain_steering():
+        """Fold any mid-run steering messages into SPEC.md so the remaining
+        (sequential-on-local) subtasks + the reconciler pick them up. Yields
+        notice events."""
+        if session_id is None:
+            return
+        try:
+            from aiforge_core.runtime import chat_interject
+            if not chat_interject.pending(session_id):
+                return
+            for _txt in chat_interject.drain(session_id):
+                _txt = (_txt or "").strip()
+                if not _txt:
+                    continue
+                try:
+                    with open(os.path.join(cwd, "SPEC.md"), "a", encoding="utf-8") as _fh:
+                        _fh.write(f"\n\n## ⚙ User steering (mid-run)\n- {_txt}\n")
+                except Exception:  # noqa: BLE001
+                    pass
+                yield {"type": "thought", "role": "system",
+                       "text": f"📌 Steering applied to SPEC.md — guides the remaining "
+                               f"subtasks + the final reconcile: “{_txt[:140]}”"}
+        except Exception:  # noqa: BLE001
+            return
+
+    # Accept mid-run steering for this parallel run (folded into SPEC.md).
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_interject
+            chat_interject.set_steerable(session_id, True)
+        except Exception:  # noqa: BLE001
+            pass
+
     # Bind this run's subprocesses (integration build/pytest) to the session so
     # Stop kills them, and register a cancel checker for the dispatch/reconcile.
     if session_id is not None:
@@ -1271,8 +1316,18 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     _base_run_one = _default_subtask_runner()
 
     def _spec_run_one(subtask, worktree):
+        # Re-read SPEC.md from disk so any mid-run steering appended to it is
+        # seen by subtasks that start AFTER the steer (sequential on local).
+        _spec = spec_md
         try:
-            return _base_run_one(subtask, worktree, spec_md=spec_md)
+            _p = os.path.join(cwd, "SPEC.md")
+            if os.path.isfile(_p):
+                with open(_p, encoding="utf-8", errors="replace") as _fh:
+                    _spec = _fh.read()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return _base_run_one(subtask, worktree, spec_md=_spec)
         except TypeError:
             # A custom runner that doesn't accept spec_md — call it plainly.
             return _base_run_one(subtask, worktree)
@@ -1297,6 +1352,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         if item is None:
             break
         yield item
+        yield from _drain_steering()      # fold mid-run steering into SPEC.md
         if _cancelled():
             # Stop pressed: drain no further. The runner sees should_cancel and
             # winds down (stops launching new subtasks); we just quit streaming.
@@ -1358,65 +1414,124 @@ def _reconcile_rounds() -> int:
         return 3
 
 
+def _project_test_output(cwd: str) -> tuple[bool, str]:
+    """Run the project's tests and return ``(ok, raw_output)`` — the RAW build/
+    test output (not the formatted report), so the reconciler sees exact errors.
+    ``ok`` True when there's no project / no tests (nothing to reconcile)."""
+    try:
+        from aiforge_core.runtime.tools.project_runner import (
+            _has_tests, detect, project,
+        )
+        stacks = (detect(cwd) or {}).get("stacks") or []
+        if not stacks:
+            return True, ""
+        if not _has_tests(cwd, stacks):
+            b = project(action="build", cwd=cwd) or {}
+            return bool(b.get("ok")), str(b.get("error") or b.get("output") or "")
+        t = project(action="test", cwd=cwd) or {}
+        return bool(t.get("ok")), str(t.get("error") or t.get("output") or "")
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def _directed_hints(output: str) -> list[str]:
+    """Turn common cross-file link errors into CONCRETE, actionable fixes — the
+    difference between the reconciler editing files vs narrating a plan."""
+    hints: list[str] = []
+    for name, mod in re.findall(r"cannot import name ['\"](\w+)['\"] from ['\"]([\w.]+)['\"]", output):
+        f = mod.replace(".", "/") + ".py"
+        hints.append(f"`{mod}` is missing `{name}`: open `{f}`, see what it "
+                     f"ACTUALLY defines, then EITHER add/rename to `{name}` there "
+                     f"OR change the import to the real name. One canonical name "
+                     f"everywhere.")
+    for mod in re.findall(r"No module named ['\"]([\w.]+)['\"]", output):
+        hints.append(f"module `{mod}` is imported but missing — create "
+                     f"`{mod.replace('.', '/')}.py` or fix the import path.")
+    for mod, attr in re.findall(r"module ['\"]?([\w.]+)['\"]? has no attribute ['\"](\w+)['\"]", output):
+        hints.append(f"`{mod}` has no `{attr}` — define it there or fix the caller.")
+    for name in re.findall(r"NameError: name ['\"](\w+)['\"] is not defined", output):
+        hints.append(f"`{name}` is used but never defined/imported — add it.")
+    for typ, msg in re.findall(r"(TypeError|AttributeError): ([^\n]{0,120})", output):
+        hints.append(f"{typ}: {msg.strip()} — align the call site with the definition.")
+    # de-dup, keep order
+    seen: set = set()
+    uniq = []
+    for h in hints:
+        if h not in seen:
+            seen.add(h)
+            uniq.append(h)
+    return uniq[:20]
+
+
 def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     """Build + test the merged tree; while it fails on cross-file drift, run a
-    bounded Doer pass over the WHOLE workspace with the failing output to fix the
-    mismatches, re-testing each round. Yields SSE events; stores the final report
-    in ``result['rep']``. Reconciliation is skippable via
-    AIFORGE_RECONCILE_INTEGRATION=0 (then it's a plain one-shot report). Halts
-    immediately when ``should_cancel()`` (the user hit Stop)."""
+    bounded Doer pass over the WHOLE workspace — fed the RAW test output + a
+    CONCRETE directed fix-list — to fix the mismatches, re-testing each round.
+    Yields SSE events; stores the final report in ``result['rep']``. Skippable
+    via AIFORGE_RECONCILE_INTEGRATION=0. Halts on ``should_cancel()``."""
     from aiforge_core.runtime.integration_report import build_and_test_report
     if should_cancel is not None and should_cancel():
+        result["rep"] = build_and_test_report(cwd)
         return
-    rep = build_and_test_report(cwd)
-    result["rep"] = rep
-    if os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
+    ok, output = _project_test_output(cwd)
+    if ok or os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
+        result["rep"] = build_and_test_report(cwd)
         return
+
+    try:
+        from aiforge_core.llm.client import complete as _complete
+        from aiforge_core.runtime.chat_agent import run_chat_agent
+    except Exception as exc:  # noqa: BLE001
+        yield {"type": "thought", "role": "reconciler", "text": f"reconcile import failed: {exc}"}
+        result["rep"] = build_and_test_report(cwd)
+        return
+
+    def _complete_fn(role, convo):
+        return _complete(role, convo)
+
     max_rounds = _reconcile_rounds()
     rounds = 0
-    while rep.get("ok") is False and rounds < max_rounds:
+    while not ok and rounds < max_rounds:
         if should_cancel is not None and should_cancel():
-            return
-        rounds += 1
-        yield {"type": "thought", "role": "reconciler",
-               "text": f"Integration failed — reconciliation pass {rounds}/{max_rounds} "
-                       "(fixing cross-file mismatches so the tests link + pass)…"}
-        try:
-            from aiforge_core.llm.client import complete as _complete
-            from aiforge_core.runtime.chat_agent import run_chat_agent
-        except Exception as exc:  # noqa: BLE001
-            yield {"type": "thought", "role": "reconciler", "text": f"reconcile import failed: {exc}"}
             break
+        rounds += 1
+        hints = _directed_hints(output)
+        yield {"type": "thought", "role": "reconciler",
+               "text": f"Integration failed — reconciliation pass {rounds}/{max_rounds}: "
+                       + (f"{len(hints)} concrete fix(es) to apply…" if hints
+                          else "diagnosing the failing tests…")}
         msg = (
-            "The merged project FAILS its own build/tests. Make ALL tests pass.\n\n"
-            "These failures are usually CROSS-FILE mismatches from modules built "
-            "in isolation: a test imports a name a module didn't export, or two "
-            "files disagree on a class / function / parameter name. Reconcile them "
-            "— prefer the name in SPEC.md; edit whichever side is wrong (rename the "
-            "definition OR fix the import/usage). Don't rewrite working modules.\n\n"
-            "Read SPEC.md for the intended API. Then read the failing files, fix the "
-            "mismatches, and RUN THE TESTS to confirm green.\n\n"
-            f"Failing build/test output:\n{(rep.get('md') or '')[:4000]}")
-
-        def _complete_fn(role, convo):
-            return _complete(role, convo)
+            "The merged project's tests FAIL — modules were built in ISOLATION so "
+            "they don't quite link. FIX THE CODE so every test passes. This is a "
+            "DO task, not an analysis: use the editor tool to change files, then "
+            "run the tests to confirm. Do NOT stop until the tests pass or you have "
+            "applied every fix below.\n\n"
+            + ("CONCRETE FIXES (apply each — read the file first to get exact "
+               "names):\n" + "\n".join(f"{i + 1}. {h}" for i, h in enumerate(hints))
+               + "\n\n" if hints else "")
+            + "Prefer the names/API in SPEC.md. Keep ONE canonical spelling of each "
+              "class/function across all files.\n\n"
+            f"RAW test output:\n```\n{output[-3500:]}\n```")
         try:
             for ev in run_chat_agent([{"role": "user", "content": msg}], cwd=cwd,
                                      role="doer", complete_fn=_complete_fn):
                 if ev.get("type") in ("tool", "error"):
-                    # tag so the UI groups these under the reconciler
-                    ev = {**ev, "role": ev.get("role") or "reconciler"}
-                    yield ev
+                    yield {**ev, "role": ev.get("role") or "reconciler"}
                 elif ev.get("type") == "thought":
                     yield {**ev, "role": "reconciler"}
         except Exception as exc:  # noqa: BLE001
             yield {"type": "thought", "role": "reconciler", "text": f"reconcile pass error: {exc}"}
             break
-        rep = build_and_test_report(cwd)
-        result["rep"] = rep
-    if rounds and rep.get("ok"):
+        ok, output = _project_test_output(cwd)
+
+    result["rep"] = build_and_test_report(cwd)
+    if rounds and ok:
         yield {"type": "thought", "role": "reconciler",
                "text": f"Reconciliation green after {rounds} pass(es) ✅"}
+    elif rounds:
+        yield {"type": "thought", "role": "reconciler",
+               "text": f"Reconciliation ran {rounds} pass(es) — some tests still "
+                       "red; see the report + manual steps below."}
 
 
 def _render_spec_md(prompt: str, subs: list[dict]) -> str:

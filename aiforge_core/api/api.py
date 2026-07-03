@@ -3416,11 +3416,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
 
     from aiforge_core.runtime import chat_cancel
     chat_cancel.start(session_id)
-    # Only the simple/plan ReAct loop drains mid-run steers; team / parallel /
-    # best-of-N runs never do. Mark steerability up front so /steer can tell the
-    # user it's unsupported instead of silently queueing a never-read message.
+    # Steering is accepted in every mode: simple/plan drain mid-run steers in the
+    # ReAct loop; parallel folds them into SPEC.md (stream_parallel_team) to guide
+    # the remaining subtasks + reconcile. (Sequential team clears them at end.)
     from aiforge_core.runtime import chat_interject as _chat_interject
-    _chat_interject.set_steerable(session_id, not team)
+    _chat_interject.set_steerable(session_id, True)
     # Gap D — arm/disarm the pre-apply review gate for this run. Cleared on
     # chat_approve.finish() in every termination path (simple/parallel here,
     # team in chat_pipeline), so it never leaks into the next turn.

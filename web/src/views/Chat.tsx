@@ -1307,7 +1307,9 @@ export default function Chat() {
   // Steering is only valid while genuinely running (not awaiting, not gated) AND
   // the running turn is steerable — a TEAM run isn't (the server rejects it), so
   // the Steer affordance is disabled for it instead of firing a doomed POST.
-  const canSteer = busy && !awaitingReply && !pendingApproval && activeRunMode !== 'team';
+  // Team/parallel runs ARE steerable now — a steer is folded into SPEC.md and
+  // guides the remaining subtasks + the final reconcile.
+  const canSteer = busy && !awaitingReply && !pendingApproval;
 
   // SPEC.md preview modal (opened from the subtask dock header).
   const [specModal, setSpecModal] = useState<{ loading: boolean; content: string } | null>(null);
@@ -1873,7 +1875,7 @@ export default function Chat() {
                         ? "The agent is waiting for your reply — type your answer, Enter to send…"
                         : busy
                           ? (activeRunMode === 'team'
-                              ? "Team run in progress — steering isn't available; press Stop to interrupt…"
+                              ? "Steer the run — your note is folded into SPEC.md for the remaining tasks (Enter to send)…"
                               : "Steer the running agent — type guidance, Enter to inject (no Stop needed)…")
                           : "Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"}
                   value={input}
