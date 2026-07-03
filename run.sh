@@ -35,6 +35,9 @@
 #   --test       probe the configured model endpoint with the current SSL
 #                settings (OK/FAIL + error), then exit. Runs in the venv,
 #                needs no Docker; works in every mode.
+#   --with-graphify  install the `graphify` CLI on the HOST (pip pkg
+#                `graphifyy`) so the concept-graph refresh + graphify_lookup
+#                tool have a binary to call. Opt-in; not needed to boot.
 #
 # Self-hosted model over HTTPS with an internal/self-signed cert?
 # Drop an `.env` (or `aiforge.env`) next to this script — it is sourced
@@ -79,6 +82,7 @@ SKIP_WEB=0
 TEST=0
 MODE=hybrid       # infra in docker, agent on host — the DEFAULT
 NO_BUILD=0
+WITH_GRAPHIFY=0  # --with-graphify installs the graphify CLI on the host
 DOWN_FIRST=0      # full --docker restart tears down stale containers first
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,6 +93,7 @@ while [[ $# -gt 0 ]]; do
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
     --no-build) NO_BUILD=1 ;;
+    --with-graphify) WITH_GRAPHIFY=1 ;;
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
@@ -282,6 +287,30 @@ echo "==> installing python deps (editable)"
 # Global uv targeting the venv's python — `uv venv` does not install uv
 # *into* the venv, so `.venv/bin/uv` would not exist on a fresh machine.
 uv pip install --python .venv/bin/python -e . >/dev/null
+
+# ── graphify CLI (optional, --with-graphify) ──────────────────────────
+# Installs the host `graphify` binary (PyPI package: graphifyy) used by the
+# concept-graph refresh (docs/graphify-agents.md, aiforge-graphify-all.timer)
+# and the graphify_lookup tool. Opt-in — the stack boots fine without it.
+# Prefer `uv tool` (isolated env, binary on PATH — matches the skill's own
+# interpreter detection); fall back to a pip install into the project venv.
+if [[ $WITH_GRAPHIFY -eq 1 ]]; then
+  if command -v graphify >/dev/null 2>&1; then
+    echo "==> graphify present ($(command -v graphify)) — upgrading"
+    uv tool upgrade graphifyy 2>/dev/null || uv tool install graphifyy 2>/dev/null || true
+  else
+    echo "==> installing graphify (graphifyy) as a uv tool"
+    uv tool install graphifyy 2>/dev/null \
+      || { echo "==> uv tool install failed — installing into .venv instead"; \
+           uv pip install --python .venv/bin/python graphifyy >/dev/null; }
+  fi
+  if command -v graphify >/dev/null 2>&1; then
+    echo "==> graphify ready: $(command -v graphify)"
+  else
+    echo "==> graphify installed into .venv (not on PATH) — call it as .venv/bin/graphify," \
+         "or add the uv tool bin dir (\`uv tool dir --bin\`, usually ~/.local/bin) to PATH" >&2
+  fi
+fi
 
 # ── Connectivity test (--test) ────────────────────────────────────────
 # Probe the CONFIGURED model endpoint with the current SSL settings and
