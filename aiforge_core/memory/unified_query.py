@@ -37,6 +37,7 @@ _DEFAULT_WEIGHTS = {
     "ticket":     1.2,
     "related":    0.8,
     "symbol":     0.9,
+    "graphify":   0.85,  # graphify concept-graph neighbours (graph.json)
     "doc":        0.6,
     "external":   0.5,
     "afm_bundle": 1.1,   # AiForgeMemory ContextBundle (chunks + repo_map +
@@ -148,6 +149,33 @@ def query(
                 )
         except Exception as exc:
             errors.append(f"symbol: {exc}")
+
+    # 4b) graphify concept graph — nodes + neighbours related to the query
+    # (label / source path / substring), read from graphify-out/graph.json
+    # (repo_root resolved from AIFORGE_REPO_ROOT). Soft-fails when the repo has
+    # no graph. Pulls the code-concept structure into recall automatically
+    # instead of relying on the agent to call the graphify_lookup tool.
+    try:
+        from aiforge_core.runtime.graphify_lookup_tool import graphify_lookup
+        gr = graphify_lookup(text, hops=1, max_neighbors=12)
+        if gr.get("ok"):
+            grows: list[dict] = []
+            for m in (gr.get("matches") or [])[:6]:
+                sf = m.get("source_file") or ""
+                grows.append({"text": f"{m.get('label', '')}{' — ' + sf if sf else ''}",
+                              "score": 0.8, "id": m.get("id")})
+            for n in (gr.get("neighbors") or [])[:12]:
+                nd = n.get("node")
+                label = nd.get("label") if isinstance(nd, dict) else str(nd or "")
+                grows.append({"text": f"{label} ({n.get('relation', 'related')})",
+                              "score": float(n.get("weight") or 0.5)})
+            grows = [g for g in grows if g["text"].strip()]
+            if grows:
+                used.append("graphify")
+                raw_hits.extend(
+                    _tag(grows, source="graphify", weight=weights["graphify"]))
+    except Exception as exc:  # noqa: BLE001 — soft-fail like every other source
+        errors.append(f"graphify: {exc}")
 
     # 5) find_doc — schema uses `k` not `top_k`.
     try:
