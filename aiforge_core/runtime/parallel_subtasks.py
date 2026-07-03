@@ -1590,6 +1590,21 @@ def _directed_hints(output: str) -> list[str]:
         add(f"Rust: `{sym}` not found in scope — define it or fix the `use`/name.")
     for imp in re.findall(r"unresolved import `([\w:]+)`", output):
         add(f"Rust: unresolved import `{imp}` — fix the module path or add the item.")
+    # ── missing attribute / method (Python) — incl. hasattr() assertions ─
+    for cls, attr in re.findall(r"'(\w+)' object has no attribute '(\w+)'", output):
+        add(f"class `{cls}` is missing `{attr}` — ADD that attribute/method to "
+            f"`{cls}` (a caller/test needs it; check the test for the expected "
+            f"type/behaviour).")
+    for attr in re.findall(r"hasattr\([^,]+,\s*['\"](\w+)['\"]\)", output):
+        add(f"a test asserts an object HAS `{attr}` but it doesn't — open the "
+            f"test to see which class is built, then add attribute/method `{attr}` "
+            f"to that class (initialise it in __init__ / implement the method).")
+    for name, attr in re.findall(r"module '([\w.]+)' has no attribute '(\w+)'", output):
+        add(f"`{name}` is missing top-level `{attr}` — define it there.")
+    # ── assertion VALUE mismatches — a logic bug to fix in the impl ──────
+    for got, exp in re.findall(r"assert (\S{1,40}) == (\S{1,40})", output):
+        add(f"assertion `{got} == {exp}` failed — the impl returns the wrong "
+            f"value; fix the logic so it produces what the test expects.")
     # ── generic call/type mismatches (any language) ─────────────────────
     for typ, msg in re.findall(r"(TypeError|AttributeError|incompatible types)[:\s]+([^\n]{0,110})", output):
         add(f"{typ}: {msg.strip()} — align the call site with the definition.")
