@@ -153,8 +153,27 @@ def _synthesise(key: str, members: list[dict[str, Any]]) -> dict:
 
 
 def _persist_pattern(fact: dict) -> str | None:
-    # runtime.memory removed — persist is a no-op stub returning None.
-    return None
+    """Write an auto-promoted pattern as a ``:Memory`` node (metadata a native
+    map, so ``_mark_promoted``'s map-merge works). Soft-fails (returns None) when
+    Neo4j is absent — degrades to the old no-op, never crashes."""
+    try:
+        import uuid as _uuid
+
+        from aiforge_core.memory.rag.neo4j_memory import driver
+        new_id = "pattern:" + _uuid.uuid4().hex[:16]
+        cy = (
+            "MERGE (m:Memory {id: $id}) "
+            "SET m.tier=$tier, m.wing=$wing, m.kind='pattern', m.text=$text, "
+            "    m.metadata=$metadata, m.created_at=timestamp()"
+        )
+        with driver().session() as s:
+            s.run(cy, id=new_id, tier=fact.get("tier", "t3"),
+                  wing=fact.get("wing", "patterns/auto-promoted"),
+                  text=(fact.get("text") or "")[:8000],
+                  metadata=fact.get("metadata") or {})
+        return new_id
+    except Exception:  # noqa: BLE001 — no Neo4j / bad query → no-op like before
+        return None
 
 
 def _mark_promoted(members: list[dict], new_id: str) -> None:
@@ -170,5 +189,10 @@ def _mark_promoted(members: list[dict], new_id: str) -> None:
     ids = [m["id"] for m in members if m.get("id")]
     if not ids:
         return
-    with driver().session() as sess:
-        sess.run(cy, ids=ids, new_id=new_id)
+    try:
+        with driver().session() as sess:
+            sess.run(cy, ids=ids, new_id=new_id)
+    except Exception:  # noqa: BLE001 — a member with string metadata (old
+        # retain_fact rows) would fail the map-merge; skip rather than crash the
+        # whole promote run (it just gets re-considered next pass).
+        pass

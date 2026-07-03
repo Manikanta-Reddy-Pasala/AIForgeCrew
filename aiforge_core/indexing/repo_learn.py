@@ -210,10 +210,33 @@ def _existing_sha1(file_id: str) -> str | None:
         return None
 
 
-def _persist_fact(*, repo: str, file_path: str, parsed: dict,
+def _persist_fact(*, repo: str, file_id: str, file_path: str, parsed: dict,
                   content_sha1: str) -> str | None:
-    """Write the summary to T2 memory. Stub — runtime.memory removed."""
-    return None
+    """Upsert the file summary as a ``:Memory`` node keyed by the STABLE
+    ``file_id`` (so a re-run replaces, and ``_existing_sha1`` can dedup by the
+    stored ``sha1``). Metadata is a native map — matching what ``_existing_sha1``
+    reads and ``_mark_promoted`` merges. Soft-fails (returns None) when Neo4j is
+    absent/unreachable — i.e. degrades to the old no-op, never crashes."""
+    try:
+        from aiforge_core.memory.rag.neo4j_memory import driver
+        summary = parsed.get("summary") or parsed.get("purpose") or ""
+        if not isinstance(summary, str):
+            summary = json.dumps(parsed, default=str)
+        metadata = {"sha1": content_sha1, "file": file_path,
+                    "kind": "repo-fact", **{k: v for k, v in parsed.items()
+                                            if isinstance(v, (str, int, float, bool))}}
+        cy = (
+            "MERGE (m:Memory {id: $id}) "
+            "SET m.tier='T2', m.wing=$wing, m.kind='repo-fact', "
+            "    m.text=$text, m.source=$source, m.metadata=$metadata, "
+            "    m.updated_at=timestamp()"
+        )
+        with driver().session() as s:
+            s.run(cy, id=file_id, wing=f"repo/{repo}",
+                  text=summary[:8000], source=file_path, metadata=metadata)
+        return file_id
+    except Exception:  # noqa: BLE001 — no Neo4j / bad query → no-op like before
+        return None
 
 
 def learn_repo(repo: str, *,
@@ -262,7 +285,7 @@ def learn_repo(repo: str, *,
         if parsed is None:
             counts["errors"] += 1
             continue
-        if _persist_fact(repo=repo, file_path=abs_path,
+        if _persist_fact(repo=repo, file_id=file_id, file_path=abs_path,
                          parsed=parsed, content_sha1=sha):
             counts["summarised"] += 1
         else:
