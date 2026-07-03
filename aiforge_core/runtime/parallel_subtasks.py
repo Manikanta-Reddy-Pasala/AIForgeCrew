@@ -1443,24 +1443,60 @@ def _project_test_output(cwd: str) -> tuple[bool, str]:
 
 
 def _directed_hints(output: str) -> list[str]:
-    """Turn common cross-file link errors into CONCRETE, actionable fixes — the
-    difference between the reconciler editing files vs narrating a plan."""
+    """Turn common cross-file link errors — in ANY language — into CONCRETE,
+    actionable fixes. The difference between the reconciler editing files vs
+    narrating a plan. Covers Python / Java / Kotlin / Go / C / C++ / Node / Rust /
+    TS — whichever produced the failing build/test output."""
     hints: list[str] = []
+
+    def add(h: str) -> None:
+        hints.append(h)
+
+    # ── Python ──────────────────────────────────────────────────────────
     for name, mod in re.findall(r"cannot import name ['\"](\w+)['\"] from ['\"]([\w.]+)['\"]", output):
-        f = mod.replace(".", "/") + ".py"
-        hints.append(f"`{mod}` is missing `{name}`: open `{f}`, see what it "
-                     f"ACTUALLY defines, then EITHER add/rename to `{name}` there "
-                     f"OR change the import to the real name. One canonical name "
-                     f"everywhere.")
+        add(f"`{mod}` is missing `{name}`: open it, see what it ACTUALLY defines, "
+            f"then add/rename to `{name}` there OR fix the import to the real name.")
     for mod in re.findall(r"No module named ['\"]([\w.]+)['\"]", output):
-        hints.append(f"module `{mod}` is imported but missing — create "
-                     f"`{mod.replace('.', '/')}.py` or fix the import path.")
+        add(f"module `{mod}` is imported but missing — create it or fix the path.")
     for mod, attr in re.findall(r"module ['\"]?([\w.]+)['\"]? has no attribute ['\"](\w+)['\"]", output):
-        hints.append(f"`{mod}` has no `{attr}` — define it there or fix the caller.")
+        add(f"`{mod}` has no `{attr}` — define it there or fix the caller.")
     for name in re.findall(r"NameError: name ['\"](\w+)['\"] is not defined", output):
-        hints.append(f"`{name}` is used but never defined/imported — add it.")
-    for typ, msg in re.findall(r"(TypeError|AttributeError): ([^\n]{0,120})", output):
-        hints.append(f"{typ}: {msg.strip()} — align the call site with the definition.")
+        add(f"`{name}` is used but never defined/imported — add it.")
+    # ── Java / Kotlin ───────────────────────────────────────────────────
+    for sym in re.findall(r"cannot find symbol[^\n]*?symbol:\s*\w+\s+(\w+)", output):
+        add(f"Java: symbol `{sym}` not found — it's referenced but not "
+            f"defined/imported with that exact name; reconcile the two sides.")
+    for pkg in re.findall(r"package ([\w.]+) does not exist", output):
+        add(f"Java: package `{pkg}` doesn't exist — fix the package/import to the "
+            f"one the class is actually declared in.")
+    # ── Go ──────────────────────────────────────────────────────────────
+    for sym in re.findall(r"undefined:\s*([\w.]+)", output):
+        add(f"Go: `{sym}` is undefined — define it or fix the reference to the "
+            f"real identifier (one canonical name across files).")
+    # ── C / C++ ─────────────────────────────────────────────────────────
+    for sym in re.findall(r"undefined reference to [`']?([\w:]+)", output):
+        add(f"C/C++: undefined reference to `{sym}` — the declaration and "
+            f"definition disagree, or the defining file isn't linked/named right.")
+    for sym in re.findall(r"['\"]?(\w+)['\"]? was not declared", output):
+        add(f"C/C++: `{sym}` not declared — include the right header / fix the name.")
+    for sym in re.findall(r"no member named ['\"](\w+)['\"]", output):
+        add(f"C/C++: no member `{sym}` — align the struct/class with its usage.")
+    # ── Node / JS / TS ──────────────────────────────────────────────────
+    for mod in re.findall(r"Cannot find module ['\"]([^'\"]+)['\"]", output):
+        add(f"JS/TS: cannot find module `{mod}` — fix the import path or create it.")
+    for name in re.findall(r"(\w+) is not defined", output):
+        add(f"JS: `{name}` is not defined — import/define it (one canonical name).")
+    for name in re.findall(r"(\w+) is not a function", output):
+        add(f"JS: `{name}` is not a function — the export/shape disagrees with the call.")
+    # ── Rust ────────────────────────────────────────────────────────────
+    for sym in re.findall(r"cannot find (?:value|function|type) `(\w+)` in", output):
+        add(f"Rust: `{sym}` not found in scope — define it or fix the `use`/name.")
+    for imp in re.findall(r"unresolved import `([\w:]+)`", output):
+        add(f"Rust: unresolved import `{imp}` — fix the module path or add the item.")
+    # ── generic call/type mismatches (any language) ─────────────────────
+    for typ, msg in re.findall(r"(TypeError|AttributeError|incompatible types)[:\s]+([^\n]{0,110})", output):
+        add(f"{typ}: {msg.strip()} — align the call site with the definition.")
+
     # de-dup, keep order
     seen: set = set()
     uniq = []
