@@ -59,7 +59,12 @@ class Command:
 
 def _global_dir() -> Path:
     raw = os.environ.get("AIFORGE_COMMANDS_DIR")
-    return Path(raw).expanduser() if raw else Path.home() / ".aiforge" / "commands"
+    if raw:
+        return Path(raw).expanduser()
+    # Same config dir as the rest of the app (AIFORGE_CONFIG_DIR); a raw
+    # Path.home() diverges from the operator's configured/mounted dir.
+    cfg = os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))
+    return Path(cfg) / "commands"
 
 
 def _repo_root(cwd: str | None) -> str | None:

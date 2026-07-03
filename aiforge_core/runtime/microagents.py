@@ -21,7 +21,8 @@ from typing import Any
 import yaml
 
 
-_DEFAULT_DIR = Path.home() / ".aiforge" / "microagents"
+_DEFAULT_DIR = Path(os.path.expanduser(
+    os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"))) / "microagents"
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n(.*)$", re.DOTALL)
 
 
