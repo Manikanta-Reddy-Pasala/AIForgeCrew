@@ -1858,6 +1858,18 @@ def _parse(out: str) -> dict:
     # Prefer ACTION when present (models sometimes mention "final" in prose).
     if act:
         name = act.group(1).strip()
+        # Some models emit the completion as a fake TOOL call —
+        # `ACTION: final ARGS_JSON: {"text": "…"}` — instead of the `FINAL:`
+        # marker. Dispatching that hits "unknown tool: final" and the model
+        # loops. Coerce a completion pseudo-tool into a real final answer.
+        if name.lower() in ("final", "finish", "done", "complete", "final_answer"):
+            m2 = re.search(r"ARGS_JSON\s*:?", out, re.IGNORECASE)
+            fargs = _balanced_json(out, m2.end() if m2 else act.end())
+            txt = ""
+            if isinstance(fargs, dict):
+                txt = str(fargs.get("text") or fargs.get("answer")
+                          or fargs.get("response") or fargs.get("content") or "")
+            return {"kind": "final", "text": txt.strip() or out.strip()}
         # Args = first balanced {...} after the ARGS_JSON marker if present,
         # else after the ACTION line. Handles ```json fenced args.
         m = re.search(r"ARGS_JSON\s*:?", out, re.IGNORECASE)
