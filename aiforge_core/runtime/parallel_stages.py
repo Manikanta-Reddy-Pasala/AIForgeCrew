@@ -198,6 +198,20 @@ def build_context_branches(model_factory, *, skip_researcher: bool = False,
     the target repo carries glob-scoped rules files (.aiforge/rules /
     .cursor/rules / AGENTS.md), which provide the conventions for free.
     """
+    # Robustness valve: the parallel context branches are ADK LlmAgents driving
+    # NATIVE function-calling. On a local mlx/LM-Studio endpoint that layer
+    # intermittently drops a tool_call/result pairing ("Missing tool results for
+    # tool_call_id") — a DETERMINISTIC error that node-retry can't fix, so ONE
+    # flaky branch trips ``error_shut_down`` and aborts the WHOLE graph (the join
+    # never fires; planning/doing never runs). These branches are pure ENRICHMENT
+    # — the runner's pre-flight ``memory_brief_md`` + aider repo_map already seed
+    # the planner/doer context — so on a long/large run their crash risk outweighs
+    # their value. AIFORGE_SKIP_CTX_BRANCHES=1 drops them entirely; the graph then
+    # wires research_entry → planner directly (build_pipeline handles empty
+    # branches). Big-task/local default: set it in the deploy env.
+    if str(os.environ.get("AIFORGE_SKIP_CTX_BRANCHES", "")).strip().lower() \
+            in ("1", "true", "yes", "on"):
+        return []
     branches: list = []
     if not skip_researcher:
         branches.append(_researcher_mod.build(model_factory))

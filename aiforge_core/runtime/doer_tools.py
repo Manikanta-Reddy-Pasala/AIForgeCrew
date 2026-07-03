@@ -654,6 +654,17 @@ def bash(cmd: str) -> dict:
     return run_shell(cmd)
 
 
+def run(cmd: str) -> dict:
+    """Alias for :func:`run_shell`.
+
+    Local models routinely emit a bare ``run`` tool call ("Now run pytest…")
+    which wasn't registered — the unknown-tool result then went un-appended,
+    leaving an orphaned tool_call that 400'd the next request ("Missing tool
+    results for tool_call_id") and aborted the node. Registering the alias
+    keeps the ReAct history valid."""
+    return run_shell(cmd)
+
+
 def grep(pattern: str, path: str = ".") -> dict:
     """Alias for :func:`grep_repo`."""
     return grep_repo(pattern, path)
@@ -1395,7 +1406,7 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         jira_transitions, jira_transition, jira_assign,
                         jira_link_issues, confluence_children, confluence_attach,
                         read_lines, rename_symbol]
-    aliases = [read, write, patch, edit, str_replace, ls, shell,
+    aliases = [read, write, patch, edit, str_replace, ls, shell, bash, run,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
