@@ -108,16 +108,8 @@ function labelSummary(s: MemoryStoreSection, unit: string): string {
   return `${n.toLocaleString()} ${unit}` + (parts ? ` — ${parts}` : '');
 }
 
-// The four Neo4j-backed stores that support a visual preview + deep link.
+// The four Neo4j-backed stores that support an in-app preview + explorer.
 const GRAPH_STORES = new Set(['graph_facts', 'symbols', 'graphify', 'chunks']);
-
-// Cypher opened (prefilled, not run) in Neo4j Browser via the deep link.
-const STORE_CYPHER: Record<string, string> = {
-  symbols:     'MATCH (n:Symbol)-[r:CALLS|DEFINES]->(m:Symbol) RETURN n,r,m LIMIT 200',
-  graphify:    "MATCH (n)-[r]-(m) WHERE n.source='graphify' RETURN n,r,m LIMIT 200",
-  chunks:      "MATCH (n:Observation_v2) WHERE n.kind IN ['code','doc'] RETURN n LIMIT 100",
-  graph_facts: 'MATCH (n) WHERE n:Observation_v2 OR n:Decision_v2 RETURN n LIMIT 100',
-};
 
 // Inline SVG node-link preview of ONE graph store. Pure SVG + React (no CDN /
 // external libs — CSP forbids them). Deterministic circular layout (no random).
@@ -208,10 +200,6 @@ function OverviewPanel() {
     return next;
   });
 
-  // Neo4j Browser base — operator-provided (env) or best-effort :7474 on host.
-  const browserBase = ov?.neo4j_browser
-    || `${location.protocol}//${location.hostname}:7474`;
-
   const load = useCallback(async () => {
     setLoading(true);
     try { setOv(await api.memoryOverview()); }
@@ -298,14 +286,6 @@ function OverviewPanel() {
             const unavailable = s.available === false;
             const isGraph = GRAPH_STORES.has(store.key);
             const graphOpen = openGraphs.has(store.key);
-            const cypher = STORE_CYPHER[store.key];
-            // Prefer the creds-embedded URL (auto-connect, no prompt) when the
-            // operator opted in; else prefill host+user (one-time password).
-            const connectUrl = ov?.neo4j_connect || ov?.neo4j_bolt;
-            const connect = connectUrl
-              ? `&connectURL=${encodeURIComponent(connectUrl)}` : '';
-            const browserHref =
-              `${browserBase}/browser/?cmd=edit&arg=${encodeURIComponent(cypher || '')}${connect}`;
             return (
               <div key={store.key} style={{ borderBottom: '1px solid var(--border-0)' }}>
                 <div
@@ -327,15 +307,6 @@ function OverviewPanel() {
                   <div className="row tight" style={{ alignItems: 'center', flexShrink: 0 }}>
                     {isGraph && !unavailable && (
                       <>
-                        <a
-                          className="ghost sm"
-                          href={browserHref}
-                          target="_blank"
-                          rel="noreferrer"
-                          title={`Open a prefilled query in Neo4j Browser. First time it asks to connect — login: ${ov?.neo4j_user || 'neo4j'} / password (cached after).`}
-                        >
-                          Open in Neo4j Browser ↗
-                        </a>
                         <button
                           className="ghost sm"
                           onClick={() => toggleGraph(store.key)}
