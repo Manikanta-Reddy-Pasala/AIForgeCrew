@@ -30,7 +30,22 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 from typing import Any
+
+# Short-TTL result cache — the pull runs on every chat/pipeline turn (+ some
+# turns query more than once). Identical (text, repo, role, limit, session)
+# recalls within the TTL skip the ~10 backend round-trips. Tunable /
+# disable-able via AIFORGE_UMEM_CACHE_TTL (seconds; 0 = off).
+_QCACHE: dict = {}
+_QCACHE_MAX = 256
+
+
+def _qcache_ttl() -> float:
+    try:
+        return float(os.environ.get("AIFORGE_UMEM_CACHE_TTL", "45"))
+    except ValueError:
+        return 45.0
 
 _DEFAULT_WEIGHTS = {
     "memory":     1.0,
@@ -76,6 +91,14 @@ def query(
     exclude_session = exclude_session if exclude_session is not None else session_id
     if not text.strip():
         return {"hits": [], "used_sources": [], "errors": []}
+
+    _ck = (text.strip().lower(), repo or "", role or "", int(limit),
+           exclude_session)
+    _ttl = _qcache_ttl()
+    if _ttl > 0:
+        _hit = _QCACHE.get(_ck)
+        if _hit is not None and (time.time() - _hit[0]) < _ttl:
+            return _hit[1]
 
     weights = _resolve_weights()
     used: list[str] = []
@@ -307,12 +330,17 @@ def query(
     except Exception as exc:
         errors.append(f"reranker: {exc}")
 
-    return {
+    result = {
         "query": text,
         "hits": raw_hits[:limit],
         "used_sources": used,
         "errors": errors,
     }
+    if _ttl > 0:
+        if len(_QCACHE) >= _QCACHE_MAX:
+            _QCACHE.clear()   # simple bound — cheap, TTL keeps it fresh anyway
+        _QCACHE[_ck] = (time.time(), result)
+    return result
 
 
 def _diversify(hits: list[dict], *, per_group: int | None = None) -> list[dict]:
