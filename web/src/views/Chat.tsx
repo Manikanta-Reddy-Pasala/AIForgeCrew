@@ -59,7 +59,7 @@ type LiveTurn = {
   awaiting?: boolean;   // agent asked a question — waiting for your reply
   subtasks?: SubtaskItem[];   // Planner decomposition (team mode)
   captured?: CapturedItem[];  // Rule/Memory/Feedback captured this turn
-  usage?: { pct: number; chars: number; budget: number };  // context-window fill
+  usage?: { pct: number; chars: number; budget: number; tokens?: number; windowTokens?: number };  // context-window fill
 };
 
 const SUBTASK_COLORS: Record<string, string> = {
@@ -958,7 +958,7 @@ export default function Chat() {
       // M3: context-window usage — keep the latest on the live turn for the
       // footer meter.
       if (evt.type === 'usage') {
-        setLiveTurn(prev => prev ? { ...prev, usage: { pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars } } : prev);
+        setLiveTurn(prev => prev ? { ...prev, usage: { pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars, tokens: evt.context_tokens, windowTokens: evt.window_tokens } } : prev);
         return;
       }
 
@@ -1712,12 +1712,12 @@ export default function Chat() {
                     {/* M3: context-window fill meter while streaming */}
                     {liveTurn.streaming && liveTurn.usage && (
                       <div className="xs muted" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}
-                           title={`~${Math.round(liveTurn.usage.chars / 1000)}k / ${Math.round(liveTurn.usage.budget / 1000)}k chars before auto-condense`}>
+                           title={`~${Math.round((liveTurn.usage.tokens ?? liveTurn.usage.chars / 4) / 1000)}k / ${Math.round((liveTurn.usage.windowTokens ?? liveTurn.usage.budget / 4) / 1000)}k tokens before auto-condense`}>
                         <span style={{ width: 60, height: 4, background: 'var(--bg-2,#222)', borderRadius: 2, overflow: 'hidden' }}>
                           <span style={{ display: 'block', height: '100%', width: `${liveTurn.usage.pct ?? 0}%`,
                                          background: (liveTurn.usage.pct ?? 0) > 85 ? 'var(--err,#e5534b)' : 'var(--accent,#2563eb)' }} />
                         </span>
-                        context {liveTurn.usage.pct ?? 0}%
+                        context {Math.round((liveTurn.usage.tokens ?? liveTurn.usage.chars / 4) / 1000)}k / {Math.round((liveTurn.usage.windowTokens ?? liveTurn.usage.budget / 4) / 1000)}k ({liveTurn.usage.pct ?? 0}%)
                       </div>
                     )}
                   </div>

@@ -140,7 +140,7 @@ def context_for(model: str, base_url: str = "") -> int:
 
 # Ceiling for a detected window (256K) and the static fallback default (128K).
 _CTX_CEILING = 262144
-_CTX_STATIC_DEFAULT = 131072
+_CTX_STATIC_DEFAULT = 262144   # 256K default window (was 128K)
 
 
 def _autodetect_ctx_enabled() -> bool:

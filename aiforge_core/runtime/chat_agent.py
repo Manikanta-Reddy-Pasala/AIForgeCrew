@@ -2841,8 +2841,14 @@ def run_chat_agent(
         _ctx_chars = sum(len(m.get("content") or "") for m in convo)
         _ctx_budget = _ctx_budget_chars(role)
         if _ctx_budget > 0:
+            # ~4 chars/token → surface ABSOLUTE token counts (in k) alongside the
+            # pct so the UI can show "120k / 256k" not just a bare percentage.
+            _ctx_tokens = _ctx_chars // 4
+            _win_tokens = _ctx_budget // 4
             yield {"type": "usage", "context_chars": _ctx_chars,
                    "budget_chars": _ctx_budget,
+                   "context_tokens": _ctx_tokens,
+                   "window_tokens": _win_tokens,
                    "pct": min(100, round(_ctx_chars * 100 / _ctx_budget))}
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
