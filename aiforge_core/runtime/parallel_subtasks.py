@@ -231,6 +231,23 @@ def default_validate_one(subtask: dict, worktree: str) -> dict:
     subtask instead."""
     if os.environ.get("AIFORGE_PARALLEL_STRICT_VALIDATE", "0") in ("1", "true"):
         return _build_or_test(worktree)
+    # A build-config / doc subtask (pyproject.toml, setup.py/cfg, README, …) is
+    # the ONLY worktree that carries a project marker, so a "build" here tries to
+    # build the whole package from just that one file — with none of the package
+    # SOURCE (it lives in the other subtasks' worktrees) — and always fails. The
+    # real build/test runs post-merge (integration_test), so per-subtask we only
+    # confirm the config/doc file was actually written.
+    _path = str(subtask.get("path") or "").strip().lstrip("/")
+    _base = os.path.basename(_path).lower()
+    _CONFIG_DOC = {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt",
+                   "makefile", "dockerfile", "package.json", "tsconfig.json"}
+    if _base in _CONFIG_DOC or _path.lower().endswith(
+            (".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json", ".rst")):
+        target = os.path.join(worktree, _path) if _path else ""
+        ok = bool(target and os.path.isfile(target)
+                  and os.path.getsize(target) > 0)
+        return {"ok": ok, "via": "config-doc-written",
+                "detail": None if ok else f"file not written: {_path}"}
     try:
         from aiforge_core.runtime.tools.project_runner import detect, project
         stacks = (detect(worktree) or {}).get("stacks") or []
