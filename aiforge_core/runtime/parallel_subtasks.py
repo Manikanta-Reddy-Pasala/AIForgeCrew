@@ -1614,8 +1614,19 @@ def _directed_hints(output: str) -> list[str]:
         add(f"Java: symbol `{sym}` not found — it's referenced but not "
             f"defined/imported with that exact name; reconcile the two sides.")
     for pkg in re.findall(r"package ([\w.]+) does not exist", output):
-        add(f"Java: package `{pkg}` doesn't exist — fix the package/import to the "
-            f"one the class is actually declared in.")
+        if pkg.startswith("javax."):
+            add(f"Java: `{pkg}` not found — this project is on Spring Boot 3 / "
+                f"Jakarta, so change EVERY `javax.` import to `jakarta.` "
+                f"(e.g. javax.persistence→jakarta.persistence, "
+                f"javax.validation→jakarta.validation) across all files. Keep the "
+                f"pom's Spring Boot version and the imports consistent.")
+        elif pkg.startswith("jakarta."):
+            add(f"Java: `{pkg}` not found — add the matching starter dependency to "
+                f"the build file (e.g. spring-boot-starter-data-jpa / "
+                f"-validation), or the code/pom versions disagree — align them.")
+        else:
+            add(f"Java: package `{pkg}` doesn't exist — fix the import to the real "
+                f"package, or add its dependency to the build file.")
     # ── Go ──────────────────────────────────────────────────────────────
     for sym in re.findall(r"undefined:\s*([\w.]+)", output):
         add(f"Go: `{sym}` is undefined — define it or fix the reference to the "
