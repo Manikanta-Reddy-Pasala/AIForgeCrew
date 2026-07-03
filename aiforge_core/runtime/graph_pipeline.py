@@ -53,6 +53,73 @@ def _int_env(name: str, default: int) -> int:
 # tests/typecheck are still red. Runaway is bounded by the LOC-plateau watchdog
 # (loop_budget) + DOER_MAX_WALL_S. Env-tunable: AIFORGE_MAX_DOER_ITERS.
 MAX_DOER_ITERS = _int_env("AIFORGE_MAX_DOER_ITERS", 4)
+# Complexity-SCALED Doer iteration ceiling. A flat cap of 4 budget-outs on a
+# LARGE greenfield build (e.g. a full multi-module package + tests + README)
+# before the Doer can write every file — the loop force-exits ``partial`` and
+# the Validator fails. The pipeline is meant for larger tasks, so the ceiling
+# scales with the triage complexity: a ``high``/``complex``/``large`` ticket
+# gets many more attempts, a ``moderate`` one gets a middle budget, everything
+# else keeps the base. This ONLY helps a task that is still PRODUCTIVELY adding
+# lines — the LOC-plateau watchdog (loop_budget) + optional DOER_MAX_WALL_S
+# still kill a STALLED loop, so a bigger ceiling never unbounds a stuck model.
+# Env-tunable: AIFORGE_MAX_DOER_ITERS_MODERATE / _COMPLEX / _PER_SUBTASK / _CAP.
+MAX_DOER_ITERS_MODERATE = _int_env("AIFORGE_MAX_DOER_ITERS_MODERATE", 20)
+MAX_DOER_ITERS_COMPLEX = _int_env("AIFORGE_MAX_DOER_ITERS_COMPLEX", 40)
+# DYNAMIC component: give the Doer this many attempts PER planned subtask, so a
+# big decomposition (10 files/phases → 60 iters) gets room to finish every one
+# while a 2-step plan stays lean. The ceiling is the MAX of the complexity tier
+# and the plan-scaled budget — the loop still exits early on a pass verdict and
+# the LOC-plateau / wall-clock watchdogs still kill a STALLED loop, so a high
+# ceiling only ever helps a task that's genuinely still producing work.
+ITERS_PER_SUBTASK = _int_env("AIFORGE_MAX_DOER_ITERS_PER_SUBTASK", 6)
+# Hard safety ceiling so a pathological 100-subtask plan can't run unbounded.
+# Runtime is really governed by the plateau/wall watchdogs; this is a backstop.
+MAX_DOER_ITERS_CAP = _int_env("AIFORGE_MAX_DOER_ITERS_CAP", 200)
+_COMPLEX_TOKENS = frozenset({"high", "complex", "hard", "large", "difficult"})
+_MODERATE_TOKENS = frozenset({"moderate", "medium"})
+
+
+_NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s+\S", re.MULTILINE)
+
+
+def _plan_subtask_count(state: Any) -> int:
+    """How many subtasks/phases the Planner decomposed the ticket into — the
+    driver for the DYNAMIC iteration budget. Tries the structured extractor
+    (JSON subtickets / phases) first, then falls back to counting numbered
+    markdown lines directly (the extractor needs a JSON brace and returns 0 on a
+    pure-markdown numbered plan). Soft-fails to 0 (→ tier floor)."""
+    plan = state.get("plan_md")
+    try:
+        from .subtasks_callback import _extract_subtickets
+        subs = _extract_subtickets(plan)
+        if isinstance(subs, list) and subs:
+            return len(subs)
+    except Exception:  # noqa: BLE001 — never let budget sizing break the loop
+        pass
+    if isinstance(plan, str) and plan:
+        try:
+            return len(_NUMBERED_LINE_RE.findall(plan))
+        except Exception:  # noqa: BLE001
+            return 0
+    return 0
+
+
+def _effective_max_iters(state: Any) -> int:
+    """The Doer-loop iteration ceiling for THIS ticket — the MAX of the
+    complexity tier and a plan-size-scaled budget (dynamic), clamped to
+    :data:`MAX_DOER_ITERS_CAP`. Never below the base cap. See
+    :data:`MAX_DOER_ITERS`."""
+    try:
+        c = _read_complexity(state)
+    except Exception:  # noqa: BLE001 — a bad verdict must not unbound the loop
+        c = "moderate"
+    tier = MAX_DOER_ITERS
+    if c in _COMPLEX_TOKENS:
+        tier = MAX_DOER_ITERS_COMPLEX
+    elif c in _MODERATE_TOKENS:
+        tier = MAX_DOER_ITERS_MODERATE
+    dynamic = _plan_subtask_count(state) * ITERS_PER_SUBTASK
+    return min(MAX_DOER_ITERS_CAP, max(MAX_DOER_ITERS, tier, dynamic))
 # Wall-clock budget for the WHOLE Doer loop (item-3 / slow 120B safety
 # valve). 0 = off. When set, the loop exits with a ``partial`` verdict once
 # elapsed exceeds this many seconds — so a model grinding unproductively for
@@ -312,7 +379,8 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
             state["doer_loop_started_at"] = now
         elif (now - float(start)) > DOER_MAX_WALL_S:
             wall_kill = True
-    if _feedback_passed(state) or kill or wall_kill or iters >= MAX_DOER_ITERS:
+    max_iters = _effective_max_iters(state)
+    if _feedback_passed(state) or kill or wall_kill or iters >= max_iters:
         if (kill or wall_kill) and not _feedback_passed(state):
             # Progress stalled / budget spent but work exists. Mark the
             # verdict ``partial`` so the runner ships the partial diff as a
@@ -323,7 +391,8 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
                       else str(state.get("loop_budget_reason", "loc plateau")))
             state["feedback_verdict"] = f"partial loop_budget_kill: {reason}"
         ctx.route = ROUTE_EXIT
-        _trace(":LoopExit", {"iters": iters, "kill": kill, "wall_kill": wall_kill})
+        _trace(":LoopExit", {"iters": iters, "max_iters": max_iters,
+                             "kill": kill, "wall_kill": wall_kill})
     else:
         # Another Doer iteration is about to run. Clear the per-iteration
         # quality signals so this next pass's Feedback gate reasons ONLY
