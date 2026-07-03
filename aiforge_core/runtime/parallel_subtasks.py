@@ -330,18 +330,40 @@ _CONFLICT_RE = re.compile(
     r"<<<<<<<[^\n]*\n(.*?)\n=======\n(.*?)\n>>>>>>>[^\n]*(?:\n|$)", re.DOTALL)
 
 
-def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str) -> str:
-    """Minimal-context conflict resolver: feed ONLY this one hunk (+ goal) to the
-    LLM and get back the merged block — no whole file, no markers/fences."""
+def _hunk_breadcrumbs(content: str, span: tuple, n: int) -> tuple:
+    """N lines of ambient code above/below a conflict hunk — grounds the model's
+    indentation + parameter bindings (self.width vs a param, the parent class's
+    base indent) so an out-of-context resolution doesn't break syntax."""
+    start_char, end_char = span
+    line_start = content[:start_char].count("\n")
+    line_end = content[:end_char].count("\n")
+    lines = content.splitlines(keepends=True)
+    above = "".join(lines[max(0, line_start - n):line_start])
+    below = "".join(lines[line_end + 1:min(len(lines), line_end + 1 + n)])
+    return above, below
+
+
+def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str,
+                           above: str = "", below: str = "", attempt: int = 1) -> str:
+    """Minimal-context conflict resolver: feed ONLY this hunk (+ goal + a few
+    breadcrumb lines) and get back the merged block — no whole file, no markers/
+    fences. On a retry (attempt>1) it's told the last try broke syntax + given
+    wider ambient scope."""
     from aiforge_core.llm.client import complete as _complete
+    retry = ("\nCRITICAL: your previous resolution broke syntax/compilation. More "
+             "surrounding code is shown below — match its brackets, indentation and "
+             "variable/parameter names EXACTLY.\n" if attempt > 1 else "")
     prompt = (
-        "You are an automated Git conflict resolver. Merge the two versions of "
-        "this block into ONE syntactically-correct result that fulfils the goal, "
-        "keeping the valid features of BOTH sides. Output ONLY the resolved code — "
-        "no git markers, no ``` fences, no prose.\n\n"
+        "You are a stateless Git conflict-resolution compilation step. Merge the "
+        "two versions of the CONFLICTING HUNK into ONE syntactically-correct result "
+        "that fulfils the goal and keeps the valid features of BOTH sides, lining up "
+        "seamlessly with the ambient code. Output ONLY the raw replacement block — "
+        "no git markers, no ``` fences, no prose." + retry + "\n\n"
         + (f"GOAL: {goal[:600]}\n\n" if goal else "")
         + f"FILE: {path}\n\n"
-        + f"<<<<<<< HEAD\n{head}\n=======\n{incoming}\n>>>>>>> incoming")
+        + (f"[AMBIENT CODE ABOVE]\n{above}\n\n" if above else "")
+        + f"[CONFLICTING HUNK]\n<<<<<<< HEAD\n{head}\n=======\n{incoming}\n>>>>>>> incoming\n\n"
+        + (f"[AMBIENT CODE BELOW]\n{below}\n" if below else ""))
     try:
         out = _complete("doer", [
             {"role": "system", "content": "Output only the resolved code block, "
@@ -354,41 +376,56 @@ def _resolve_conflict_hunk(goal: str, path: str, head: str, incoming: str) -> st
     return out.strip("\n")
 
 
+def _resolve_file_conflicts(repo: str, relpath: str, goal: str,
+                            max_attempts: int = 3) -> bool:
+    """Widen-context-retry state machine for ONE conflicted file: resolve every
+    hunk with breadcrumbs; if the file fails syntax, roll back to the conflicted
+    state and retry with a wider breadcrumb budget (5 → 15 → 25). Deterministic
+    rollback; only a small token tax per widen."""
+    fp = os.path.join(repo, relpath)
+    try:
+        with open(fp, encoding="utf-8", errors="replace") as fh:
+            backup = fh.read()
+    except Exception:  # noqa: BLE001
+        return False
+    budget = 5
+    for attempt in range(1, max_attempts + 1):
+        new = backup
+        for m in _CONFLICT_RE.finditer(backup):
+            above, below = _hunk_breadcrumbs(backup, m.span(), budget)
+            res = _resolve_conflict_hunk(goal, relpath, m.group(1), m.group(2),
+                                         above, below, attempt)
+            if not res:
+                res = m.group(1)                    # fallback: keep HEAD
+            new = new.replace(m.group(0), res + "\n", 1)
+        if "<<<<<<<" in new or "=======" in new or ">>>>>>>" in new:
+            budget += 10
+            continue                                # markers left → widen + retry
+        try:
+            from aiforge_core.runtime.syntax_guard import validate_syntax
+            ok, _ = validate_syntax(relpath, new)
+        except Exception:  # noqa: BLE001
+            ok = True
+        if ok:
+            try:
+                with open(fp, "w", encoding="utf-8") as fh:
+                    fh.write(new)
+                return True
+            except Exception:  # noqa: BLE001
+                return False
+        budget += 10                                # syntax fail → widen + retry
+    return False
+
+
 def _resolve_conflicts(repo: str, goal: str) -> bool:
-    """Deterministically extract each conflict hunk from the conflicted files,
-    resolve it minimal-context, write it back, and SYNTAX-CHECK the file. Returns
-    True only if every file resolved cleanly + parses (else the caller aborts)."""
+    """Resolve every conflicted file via the breadcrumb + widen-retry machine,
+    git-add each. Returns True only if ALL files resolve cleanly (else abort)."""
     p = _git(["diff", "--name-only", "--diff-filter=U"], repo)
     files = [f for f in p.stdout.splitlines() if f.strip()]
     if not files:
         return False
     for f in files:
-        fp = os.path.join(repo, f)
-        try:
-            with open(fp, encoding="utf-8", errors="replace") as fh:
-                src = fh.read()
-        except Exception:  # noqa: BLE001
-            return False
-
-        def _repl(m):
-            res = _resolve_conflict_hunk(goal, f, m.group(1), m.group(2))
-            return (res + "\n") if res else (m.group(1) + "\n")   # fallback: HEAD
-
-        new = _CONFLICT_RE.sub(_repl, src)
-        if "<<<<<<<" in new or "=======" in new or ">>>>>>>" in new:
-            return False                      # markers still present → give up
-        # GUARDRAIL: a hunk resolved out of context can break syntax — verify.
-        try:
-            from aiforge_core.runtime.syntax_guard import validate_syntax
-            ok, _ = validate_syntax(f, new)
-            if not ok:
-                return False                  # bad resolution → caller aborts
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            with open(fp, "w", encoding="utf-8") as fh:
-                fh.write(new)
-        except Exception:  # noqa: BLE001
+        if not _resolve_file_conflicts(repo, f, goal):
             return False
         _git(["add", "--", f], repo)
     return True
@@ -1758,9 +1795,9 @@ def _merge_aggs(a: dict, b: dict) -> dict:
 
 def _reconcile_rounds() -> int:
     try:
-        return max(0, min(8, int(os.environ.get("AIFORGE_RECONCILE_ROUNDS", "5"))))
+        return max(0, min(12, int(os.environ.get("AIFORGE_RECONCILE_ROUNDS", "8"))))
     except ValueError:
-        return 5
+        return 8
 
 
 def _project_test_output(cwd: str) -> tuple[bool, str]:
