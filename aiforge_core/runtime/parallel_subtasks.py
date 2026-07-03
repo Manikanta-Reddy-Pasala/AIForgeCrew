@@ -555,21 +555,32 @@ def _in_scope(rel: str, globs: list[str]) -> bool:
         return True
 
 
-def lightweight_run_one(subtask: dict, worktree: str) -> dict:
+def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
     """Fast per-subtask runner: ONE LLM call to implement the subtask as
     complete file(s), written into the worktree. Far cheaper than the full
-    ReAct Doer loop — so N subtasks actually finish on a shared local model."""
+    ReAct Doer loop — so N subtasks actually finish on a shared local model.
+
+    ``spec_md`` is the shared requirements doc (fed so each fresh single-shot
+    knows the overall goal). When the subtask carries a canonical ``path`` (one
+    file per subtask, from the architect), the emitted content is force-written
+    to THAT exact path — the model's own `=== path ===` label is ignored — so
+    isolated subtasks can't split the package into mini_lang/ + miniLang/ etc."""
     try:
         from aiforge_core.llm.client import complete as _complete
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     goal = subtask.get("goal") or subtask.get("slug") or "implement the subtask"
+    path = str(subtask.get("path") or "").strip().lstrip("/")
     prompt = (
-        f"Implement this subtask as COMPLETE, runnable Python file(s).\n\n"
-        f"SUBTASK: {goal}\n\n"
+        (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
+         f"file/dir paths it lists):\n{spec_md.strip()[:5000]}\n\n---\n\n"
+         if spec_md and spec_md.strip() else "")
+        + f"Implement this subtask as COMPLETE, runnable Python file(s).\n\n"
+        + (f"TARGET FILE (emit EXACTLY this path, verbatim — do not re-case or "
+           f"rename the directory): {path}\n\n" if path else "")
+        + f"SUBTASK: {goal}\n\n"
         "Output ONLY the file(s), each as:\n=== relative/path.py ===\n"
-        "<full file content>\n\nNo prose, no explanation. If multiple files are "
-        "needed, emit multiple === path === blocks.")
+        "<full file content>\n\nNo prose, no explanation.")
     try:
         out = _complete("doer", [
             {"role": "system", "content": "You are a senior engineer. Output "
@@ -580,6 +591,16 @@ def lightweight_run_one(subtask: dict, worktree: str) -> dict:
     files = _parse_file_blocks(out or "")
     if not files:
         return {"ok": False, "error": "no file blocks produced"}
+    # Canonical-path remap: this subtask owns exactly ONE file (``path``), so
+    # ignore whatever dir the model labelled and force the content to the exact
+    # target — pick the block whose basename matches, else the first/only block.
+    if path:
+        base = os.path.basename(path)
+        chosen = next((c for p, c in files.items()
+                       if os.path.basename(p.strip().lstrip("/")) == base), None)
+        if chosen is None:
+            chosen = next(iter(files.values()))
+        files = {path: chosen}
     # SAFETY: if the subtask carries a scope allowlist, REJECT writes whose
     # relative path doesn't match any glob — out-of-scope files never land.
     # No allowlist → preserve current behavior (don't break the common case).
