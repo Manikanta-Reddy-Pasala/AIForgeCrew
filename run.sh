@@ -288,6 +288,23 @@ echo "==> installing python deps (editable)"
 # *into* the venv, so `.venv/bin/uv` would not exist on a fresh machine.
 uv pip install --python .venv/bin/python -e . >/dev/null
 
+# ── venv self-heal ────────────────────────────────────────────────────
+# A partial/interrupted install can leave the venv importable-but-broken —
+# classic symptom: pydantic is present but its compiled companion
+# `pydantic_core` wheel is not, so the API dies at boot with
+# "ModuleNotFoundError: No module named 'pydantic_core'". uv then considers
+# the env "satisfied", so a plain re-run won't fix it. Probe a core import;
+# if it fails, force-reinstall, and rebuild the venv from scratch as a last
+# resort — so `./run.sh` alone always recovers.
+if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
+  echo "==> venv incomplete (pydantic_core missing) — repairing deps"
+  uv pip install --python .venv/bin/python --reinstall -e . >/dev/null 2>&1 || true
+  if ! .venv/bin/python -c "import pydantic_core" >/dev/null 2>&1; then
+    echo "==> rebuilding .venv from scratch"
+    rm -rf .venv && uv venv .venv && uv pip install --python .venv/bin/python -e . >/dev/null
+  fi
+fi
+
 # ── graphify CLI (optional, --with-graphify) ──────────────────────────
 # Installs the host `graphify` binary (PyPI package: graphifyy) used by the
 # concept-graph refresh (docs/graphify-agents.md, aiforge-graphify-all.timer)
