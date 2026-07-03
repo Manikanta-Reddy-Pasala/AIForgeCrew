@@ -96,6 +96,83 @@ def _absent(err: str) -> bool:
     return any(m in low for m in _TOOLCHAIN_ABSENT)
 
 
+# stdlib top-level module names we must NOT try to pip-install.
+_STDLIB = frozenset((
+    "os", "sys", "re", "json", "math", "random", "time", "typing", "abc",
+    "collections", "dataclasses", "enum", "functools", "itertools", "pathlib",
+    "subprocess", "threading", "queue", "logging", "unittest", "argparse",
+    "copy", "io", "struct", "types", "contextlib", "datetime", "string",
+    "textwrap", "operator", "heapq", "bisect", "hashlib", "uuid", "shutil",
+    "tempfile", "glob", "traceback", "warnings", "inspect", "importlib",
+    "asyncio", "socket", "select", "signal", "pytest", "__future__", "test",
+    "tests",
+))
+
+
+def _third_party_imports(cwd: str) -> list[str]:
+    """Top-level third-party modules imported anywhere in the tree — so a bare
+    (marker-less) project's test venv can pip-install them (pygame, numpy, …)."""
+    import re as _re
+    pat = _re.compile(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)", _re.MULTILINE)
+    mods: set[str] = set()
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in (
+            ".git", ".venv", ".aiforge-venv", "node_modules", "__pycache__",
+            ".aiforge-worktrees")]
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            try:
+                with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                    src = fh.read()
+            except Exception:  # noqa: BLE001
+                continue
+            for m in pat.findall(src):
+                if m and m not in _STDLIB:
+                    mods.add(m)
+    # a local package (a dir/… .py in the tree) isn't third-party.
+    local = {d for d in os.listdir(cwd)} if os.path.isdir(cwd) else set()
+    local |= {os.path.splitext(f)[0] for f in os.listdir(cwd)} if os.path.isdir(cwd) else set()
+    return sorted(m for m in mods if m not in local)
+
+
+def _python_test_files(cwd: str) -> list[str]:
+    import glob
+    hits = glob.glob(os.path.join(cwd, "**", "test_*.py"), recursive=True)
+    hits += glob.glob(os.path.join(cwd, "**", "*_test.py"), recursive=True)
+    return [h for h in hits if ".aiforge" not in h and "/.venv" not in h]
+
+
+def run_bare_python_tests(cwd: str, timeout: int = 300):
+    """Run pytest on a bare (marker-less) Python tree via a managed venv that
+    pip-installs pytest + the tree's third-party imports. Returns ``(ok, output)``
+    or ``None`` when there are no tests (nothing to check). The venv lives at
+    ``.aiforge-venv`` (git-ignored) and is reused across reconcile rounds."""
+    import subprocess
+    import sys
+    if not _python_test_files(cwd):
+        return None
+    venv = os.path.join(cwd, ".aiforge-venv")
+    py = os.path.join(venv, "bin", "python")
+    try:
+        if not os.path.exists(py):
+            subprocess.run([sys.executable, "-m", "venv", venv],
+                           capture_output=True, timeout=120)
+            deps = ["pytest"] + _third_party_imports(cwd)
+            subprocess.run([py, "-m", "pip", "-q", "install", *deps],
+                           capture_output=True, timeout=timeout)
+            req = os.path.join(cwd, "requirements.txt")
+            if os.path.exists(req):
+                subprocess.run([py, "-m", "pip", "-q", "install", "-r", req],
+                               capture_output=True, timeout=timeout)
+        env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
+        p = subprocess.run([py, "-m", "pytest", "-q"], cwd=cwd, env=env,
+                           capture_output=True, text=True, timeout=timeout)
+        return p.returncode == 0, (p.stdout + p.stderr)[-4000:]
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def build_and_test_report(cwd: str) -> dict:
     """Compile + test ``cwd`` and return ``{"ok", "md"}``. ``ok`` is None when
     the checks couldn't run here (toolchain absent / no project) — ``md`` then
@@ -110,6 +187,17 @@ def build_and_test_report(cwd: str) -> dict:
 
     stacks = (detect(cwd) or {}).get("stacks") or []
     if not stacks:
+        # Bare Python (no pyproject/setup.py) but WITH tests → run pytest via a
+        # managed venv so we still report real pass/fail (not just "no markers").
+        bare = run_bare_python_tests(cwd)
+        if bare is not None:
+            ok, output = bare
+            out = ["## Integration check — **python (pytest, no build marker)**",
+                   "", f"- **tests (end-to-end):** {'✅ passed' if ok else '❌ failed'}"]
+            if not ok and output:
+                out.append("```\n" + output[-1400:] + "\n```")
+            out += ["", manual]
+            return {"ok": ok, "md": "\n".join(out)}
         return {"ok": None, "md": "## Integration check\n\nNo build markers "
                 "found here.\n\n" + manual}
 

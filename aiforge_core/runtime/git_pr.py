@@ -39,6 +39,7 @@ _EXCLUDE_PATHSPECS: tuple[str, ...] = (
     ":(exclude).aiforge",
     ":(exclude).aiforge-worktrees",
     ":(exclude).aiforge-workspace",
+    ":(exclude).aiforge-venv",
     ":(exclude).idea",
     ":(exclude).vscode",
     ":(exclude).DS_Store",
@@ -128,6 +129,7 @@ _ARTIFACT_IGNORE_LINES: tuple[str, ...] = (
     ".aiforge/",
     ".aiforge-worktrees/",
     ".aiforge-workspace",
+    ".aiforge-venv/",
     "graphify-out/",
     "perf.ndjson",
 )

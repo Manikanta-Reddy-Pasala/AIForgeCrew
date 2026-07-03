@@ -1419,12 +1419,16 @@ def _project_test_output(cwd: str) -> tuple[bool, str]:
     test output (not the formatted report), so the reconciler sees exact errors.
     ``ok`` True when there's no project / no tests (nothing to reconcile)."""
     try:
+        from aiforge_core.runtime.integration_report import run_bare_python_tests
         from aiforge_core.runtime.tools.project_runner import (
             _has_tests, detect, project,
         )
         stacks = (detect(cwd) or {}).get("stacks") or []
         if not stacks:
-            return True, ""
+            # Bare Python (no marker) but WITH tests → run pytest so the
+            # reconciler still engages on cross-file drift.
+            bare = run_bare_python_tests(cwd)
+            return bare if bare is not None else (True, "")
         if not _has_tests(cwd, stacks):
             b = project(action="build", cwd=cwd) or {}
             return bool(b.get("ok")), str(b.get("error") or b.get("output") or "")
