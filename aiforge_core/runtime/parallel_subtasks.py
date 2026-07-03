@@ -1082,10 +1082,17 @@ _ARCHITECT_SYS = (
     "signatures, and module-level constants that OTHER files import or call — "
     "spelled EXACTLY as everyone must use them (one canonical name per thing). "
     "Use real signatures (names, params, return types where knowable).\n\n"
+    "ALWAYS include, in the SAME file list: (a) a TEST file for EVERY code "
+    "module (unit tests that exercise its public API), (b) at least one "
+    "INTEGRATION test that drives the whole thing end-to-end, and (c) the "
+    "project's build/manifest file (pyproject.toml / package.json / go.mod / "
+    "pom.xml / Cargo.toml as fits the language). The tests are what lets the "
+    "build be verified — never omit them.\n\n"
     "Output ONLY JSON, no prose:\n"
     "{\"files\": [{\"path\": \"board.py\", \"purpose\": \"grid + moves\", "
     "\"api\": [\"class Board\", \"def drop_piece(col: int) -> bool\", "
-    "\"COLORS: dict\"]}, ...]}"
+    "\"COLORS: dict\"]}, {\"path\": \"tests/test_board.py\", \"purpose\": "
+    "\"unit-test Board\", \"api\": []}, ...]}"
 )
 
 
@@ -1291,6 +1298,9 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         yield {"type": "message", "text":
                "Couldn't split this into parallel subtasks — running normally."}
         return
+    # Backstop: guarantee test coverage so the build can be verified + self-healed
+    # even when the planner omitted tests.
+    subs = _ensure_test_coverage(subs)
     yield {"type": "subtasks", "items": [
         {"slug": s.get("slug") or f"sub-{i+1}",
          "goal": s.get("goal") or "", "status": "pending"}
@@ -1449,6 +1459,52 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
            f"{agg.get('done', 0)}/{agg.get('total', 0)} subtasks done. "
            f"See SPEC.md for the requirements each subtask built against."
            + _integ_md}
+
+
+_CODE_EXTS = (".py", ".go", ".js", ".ts", ".rs", ".java", ".c", ".cpp", ".rb")
+
+
+def _test_path_for(path: str) -> str:
+    """Conventional test path for a code file (per language). '' when the
+    language's test layout is too involved to synthesise (rely on the
+    architect, which is instructed to include tests)."""
+    ext = os.path.splitext(path)[1].lower()
+    stem = os.path.splitext(os.path.basename(path))[0]
+    if not stem or stem.startswith("__"):
+        return ""
+    if ext == ".py":
+        return f"tests/test_{stem}.py"
+    if ext == ".go":
+        return path[:-3] + "_test.go"
+    if ext in (".js", ".ts"):
+        return path[:-len(ext)] + f".test{ext}"
+    if ext == ".rb":
+        return f"spec/{stem}_spec.rb"
+    if ext == ".rs":
+        return f"tests/{stem}_test.rs"
+    return ""
+
+
+def _ensure_test_coverage(subs: list[dict]) -> list[dict]:
+    """Backstop: if the plan has NO test files, add a unit-test subtask per code
+    module (so the build can be verified + self-healed). No-op when tests exist
+    or the languages have no easy test convention."""
+    if any(_is_test_subtask(s) for s in subs):
+        return subs
+    code = [s for s in subs if str(s.get("path") or "").endswith(_CODE_EXTS)
+            and not _is_test_subtask(s)]
+    added: list[dict] = []
+    seen = {str(s.get("path") or "") for s in subs}
+    for s in code:
+        tp = _test_path_for(str(s.get("path") or ""))
+        if tp and tp not in seen:
+            seen.add(tp)
+            added.append({
+                "slug": _slugify("test-" + os.path.basename(tp)), "path": tp,
+                "api": [],
+                "goal": f"{tp}: unit tests for {s['path']} — exercise its public "
+                        f"API (from the API contract), assert real behaviour."})
+    return subs + added
 
 
 def _is_test_subtask(s: dict) -> bool:
