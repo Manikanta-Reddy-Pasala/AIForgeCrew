@@ -942,6 +942,77 @@ def email_read(folder: str = "INBOX", limit: int = 10, query: str = "",
                           "unseen_only": unseen_only}, str(root()))
 
 
+# ─── GitLab (issues + MRs) — same soft-fail + config-gate as JIRA ────────
+# gitlab.py implemented these but they were never wrapped as FunctionTools, so
+# agents could use Jira/Confluence/Email but NOT GitLab even when it was
+# configured in the UI. Wire the full read+write surface here.
+
+def gitlab_search(query: str = "", limit: int = 20, state: str = "all",
+                  labels: str = "") -> dict:
+    """Search GitLab issues for the configured project(s). ``state`` ∈
+    opened|closed|all. ``labels`` = comma-separated. Read-only, soft-fails."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_search({"query": query, "limit": limit, "state": state,
+                             "labels": labels}, str(root()))
+
+
+def gitlab_read(project: str, iid: str) -> dict:
+    """Read one GitLab issue (with comments) by ``project`` + issue ``iid``."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_read({"project": project, "iid": iid}, str(root()))
+
+
+def gitlab_create(project: str, title: str, description: str = "",
+                  labels: str = "") -> dict:
+    """Create a GitLab issue. ``labels`` = comma-separated."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_create({"project": project, "title": title,
+                             "description": description, "labels": labels},
+                            str(root()))
+
+
+def gitlab_update(project: str, iid: str, title: str = "", description: str = "",
+                  labels: str = "", state_event: str = "") -> dict:
+    """Update a GitLab issue. ``state_event`` ∈ close|reopen. ``labels`` =
+    comma-separated."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    args: dict = {"project": project, "iid": iid}
+    if title:
+        args["title"] = title
+    if description:
+        args["description"] = description
+    if labels:
+        args["labels"] = labels
+    if state_event:
+        args["state_event"] = state_event
+    return _g.gitlab_update(args, str(root()))
+
+
+def gitlab_comment(project: str, iid: str, body: str) -> dict:
+    """Add a comment to a GitLab issue by ``project`` + ``iid``."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_comment({"project": project, "iid": iid, "body": body},
+                             str(root()))
+
+
+def gitlab_mr_create(project: str, source_branch: str, title: str,
+                     target_branch: str = "main", description: str = "",
+                     labels: str = "") -> dict:
+    """Open a GitLab merge request. ``labels`` = comma-separated."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_mr_create({"project": project, "source_branch": source_branch,
+                                "target_branch": target_branch, "title": title,
+                                "description": description, "labels": labels},
+                               str(root()))
+
+
+def gitlab_mr_comment(project: str, iid: str, body: str) -> dict:
+    """Add a comment to a GitLab merge request by ``project`` + MR ``iid``."""
+    from aiforge_core.runtime.tools import gitlab as _g
+    return _g.gitlab_mr_comment({"project": project, "iid": iid, "body": body},
+                                str(root()))
+
+
 # ─── ADK wiring ────────────────────────────────────────────────────────
 
 
@@ -992,7 +1063,9 @@ def adk_function_tools(role: "str | None" = None) -> list:
                         subtask_update,
                         confluence_search, confluence_read, confluence_create,
                         confluence_update, jira_search, jira_read, jira_create,
-                        jira_update, jira_comment, email_send, email_read]
+                        jira_update, jira_comment, email_send, email_read,
+                        gitlab_search, gitlab_read, gitlab_create, gitlab_update,
+                        gitlab_comment, gitlab_mr_create, gitlab_mr_comment]
     aliases = [read, write, patch, edit, str_replace, ls, shell,
                grep, search, http_get, web_fetch,
                commit, git_add_commit,
@@ -1057,6 +1130,8 @@ __all__ = [
     "confluence_search", "confluence_read", "confluence_create", "confluence_update",
     "jira_search", "jira_read", "jira_create", "jira_update", "jira_comment",
     "email_send", "email_read",
+    "gitlab_search", "gitlab_read", "gitlab_create", "gitlab_update",
+    "gitlab_comment", "gitlab_mr_create", "gitlab_mr_comment",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch", "web_read",
     "commit", "git_add_commit",

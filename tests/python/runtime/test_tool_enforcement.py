@@ -149,3 +149,16 @@ def test_deliberately_toolless_role_stays_empty(monkeypatch):
         lambda role: (frozenset(), frozenset()))
     got = _names(doer_tools.adk_function_tools(role="verify_scope"))
     assert got == set()
+
+
+def test_all_integrations_wired_into_pipeline_surface(monkeypatch):
+    # Every configured integration (Jira / Confluence / Email / GitLab) must be
+    # a real tool the pipeline agents can call. GitLab was defined in gitlab.py
+    # but never wrapped into adk_function_tools, so team-mode agents couldn't use
+    # GitLab at all even when it was configured in the UI.
+    monkeypatch.setenv("AIFORGE_TOOL_ENFORCE", "0")
+    names = _names(doer_tools.adk_function_tools(role=None))
+    for t in ("jira_search", "jira_read", "confluence_search", "email_send",
+              "gitlab_search", "gitlab_read", "gitlab_create", "gitlab_update",
+              "gitlab_comment", "gitlab_mr_create", "gitlab_mr_comment"):
+        assert t in names, f"integration tool {t} missing from pipeline surface"
