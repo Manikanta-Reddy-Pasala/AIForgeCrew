@@ -3093,6 +3093,15 @@ def chat_session_get(session_id: int) -> dict:
     return {"session": s, "messages": chat_store.get_messages(session_id)}
 
 
+@app.get("/api/chat/sessions/{session_id}/trace")
+def chat_session_trace(session_id: int) -> dict:
+    """Reviewable per-turn action+response trace (from ~/.aiforge/chat_traces).
+    Each turn = {ts, mode, prompt, actions[], response, n_tools}."""
+    from aiforge_core.runtime import chat_trace
+    turns = chat_trace.read_turns(session_id)
+    return {"session_id": session_id, "count": len(turns), "turns": turns}
+
+
 @app.patch("/api/chat/sessions/{session_id}")
 def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
     from aiforge_core.runtime import chat_store

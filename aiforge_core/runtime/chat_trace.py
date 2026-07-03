@@ -94,4 +94,25 @@ def append_turn(*, session_id: int, prompt: str, steps: list[dict],
         return None
 
 
-__all__ = ["append_turn", "trace_dir"]
+def read_turns(session_id: int) -> list[dict]:
+    """Parsed turns for a session (from the ``.jsonl``), oldest first. Empty
+    when no trace exists. Never raises."""
+    try:
+        p = trace_dir() / f"session_{session_id}.jsonl"
+        if not p.is_file():
+            return []
+        out: list[dict] = []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:  # noqa: BLE001 — skip a corrupt line, keep the rest
+                continue
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
+__all__ = ["append_turn", "read_turns", "trace_dir"]

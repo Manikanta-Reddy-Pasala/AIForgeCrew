@@ -415,6 +415,23 @@ export default function Chat() {
   // rejects it — so the composer disables the Steer affordance for them.
   const [activeRunMode, setActiveRunMode] = useState<ChatMode>('simple');
 
+  // Per-session action+response trace modal (reviews ~/.aiforge/chat_traces).
+  const [traceTurns, setTraceTurns] = useState<import('../api').ChatTraceTurn[] | null>(null);
+  const [traceLoading, setTraceLoading] = useState(false);
+  async function openTrace(id: number) {
+    setTraceTurns(null);
+    setTraceLoading(true);
+    try {
+      const r = await chatApi.sessionTrace(id);
+      setTraceTurns(r.turns);
+    } catch (e: any) {
+      toast.error(`Couldn't load trace: ${e.message}`);
+      setTraceTurns([]);
+    } finally {
+      setTraceLoading(false);
+    }
+  }
+
   // Force-full-pipeline toggle (team mode): disable the triage 'trivial'
   // fast-path so every agent runs. Persisted server-side.
   const [fullPipeline, setFullPipeline] = useState(false);
@@ -1436,6 +1453,16 @@ export default function Chat() {
               </button>
             </div>
 
+            {/* Per-session action+response trace — review what the agent did. */}
+            <button
+              onClick={() => { if (activeId != null) openTrace(activeId); }}
+              disabled={!activeSession}
+              title="Review every action + response this session took (also on disk: ~/.aiforge/chat_traces)"
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              ⧉ Trace
+            </button>
+
             {/* Model selector — less relevant in team mode, so hide it */}
             {chatMode !== 'team' && (
               <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
@@ -1907,6 +1934,70 @@ export default function Chat() {
                         <button className="ghost sm" onClick={() => restoreCheckpoint(c.sha)} title="Revert tracked files to this snapshot; keep files created after it">↶ Restore</button>
                         <button className="ghost sm danger" onClick={() => restoreCheckpoint(c.sha, true)} title="Full restore: make the tree exactly match this snapshot — deletes files created after it">⤓ Full</button>
                       </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Per-session action+response trace ──────────────────────────── */}
+        {(traceLoading || traceTurns !== null) && (
+          <div
+            onClick={() => { setTraceTurns(null); setTraceLoading(false); }}
+            style={{
+              position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
+            }}
+          >
+            <div onClick={e => e.stopPropagation()} style={{
+              width: 'min(760px, 94vw)', maxHeight: '82vh', overflow: 'auto',
+              background: 'var(--bg-0)', border: '1px solid var(--border-1)',
+              borderRadius: 10, padding: 16,
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <strong>Session trace — actions &amp; responses</strong>
+                <button className="ghost sm" onClick={() => setTraceTurns(null)}><Icon.X size={12} /></button>
+              </div>
+              <div className="muted xs" style={{ marginBottom: 10 }}>
+                Every turn's actions + response. Also on disk: <code>~/.aiforge/chat_traces/session_{activeId}.md</code>
+              </div>
+              {traceLoading ? (
+                <div className="muted xs">Loading…</div>
+              ) : !traceTurns || traceTurns.length === 0 ? (
+                <div className="muted xs">No trace yet for this session — send a message first.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {traceTurns.map((t, i) => (
+                    <div key={i} style={{ border: '1px solid var(--border-0)', borderRadius: 8, padding: 10 }}>
+                      <div className="row" style={{ gap: 6, alignItems: 'center', marginBottom: 6 }}>
+                        <span className={`chip sm ${t.mode === 'team' ? 'warn' : ''}`}>{t.mode}</span>
+                        <span className="muted xs" style={{ fontFamily: 'var(--font-mono)' }}>{t.ts}</span>
+                        <span className="muted xs">· {t.n_tools} tool{t.n_tools === 1 ? '' : 's'}</span>
+                      </div>
+                      <div style={{ fontSize: 13, marginBottom: 6 }}><b>You:</b> {t.prompt}</div>
+                      {t.actions && t.actions.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 6,
+                                      paddingLeft: 8, borderLeft: '2px solid var(--border-1)' }}>
+                          {t.actions.map((a, j) => {
+                            const ok = a.result && typeof a.result === 'object' ? (a.result as any).ok : undefined;
+                            const mark = a.type === 'tool'
+                              ? (ok === true ? '✅' : ok === false ? '❌' : '🔧')
+                              : a.type === 'thought' ? '💭'
+                              : a.type === 'error' ? '⚠️' : '·';
+                            return (
+                              <div key={j} className="xs" style={{ fontFamily: a.type === 'tool' ? 'var(--font-mono)' : undefined }}>
+                                {mark}{' '}
+                                {a.type === 'tool'
+                                  ? <><b>{a.name}</b>({JSON.stringify(a.args ?? {}).slice(0, 160)}) → {JSON.stringify(a.result ?? '').slice(0, 200)}</>
+                                  : (a.text || '').slice(0, 300)}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 13 }}><b>Reply:</b> {(t.response || '').slice(0, 1200) || <span className="muted">(none)</span>}</div>
                     </div>
                   ))}
                 </div>

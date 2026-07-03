@@ -531,6 +531,24 @@ export interface ChatMsg {
   created_at: string;
 }
 
+export interface ChatTraceAction {
+  type: 'tool' | 'thought' | 'error' | 'plan_ready';
+  name?: string;
+  args?: any;
+  result?: any;
+  text?: string;
+}
+
+export interface ChatTraceTurn {
+  ts: string;
+  mode: 'simple' | 'team';
+  cwd?: string;
+  prompt: string;
+  n_tools: number;
+  actions: ChatTraceAction[];
+  response: string;
+}
+
 // ── Chat session API methods ──────────────────────────────────────
 
 export const chatApi = {
@@ -587,6 +605,11 @@ export const chatApi = {
 
   sessionGet: (id: number) =>
     j<{ session: ChatSession; messages: ChatMsg[] }>(`/chat/sessions/${id}`),
+
+  // Per-turn action+response trace (from ~/.aiforge/chat_traces) for review.
+  sessionTrace: (id: number) =>
+    j<{ session_id: number; count: number; turns: ChatTraceTurn[] }>(
+      `/chat/sessions/${id}/trace`),
 
   sessionRename: (id: number, title: string) =>
     j<ChatSession>(`/chat/sessions/${id}`, {
