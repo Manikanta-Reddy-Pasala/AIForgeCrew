@@ -629,15 +629,8 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         "when you import/call another file, use the EXACT names it exposes there. "
         "Do not invent variant names — the other files are written to this same "
         "contract.\n\n"
-        "Output the file(s), each as:\n=== relative/path.ext ===\n"
-        "<full file content>\n\n"
-        "THEN, on a new line, output your interface contract EXACTLY as:\n"
-        "===CONTRACT=== {\"exposes\": [\"PublicName1\", \"PublicName2\"], "
-        "\"consumes\": {\"other_module\": [\"NameYouImport\"]}}\n"
-        "where `exposes` = the PUBLIC names YOUR file defines (classes, functions, "
-        "constants other files will import), and `consumes` = for each OTHER "
-        "project module you import from, the exact names you import. This lets the "
-        "merge check names line up. No other prose.")
+        "Output ONLY the file(s), each as:\n=== relative/path.ext ===\n"
+        "<full file content>\n\nNo prose, no explanation.")
     # Generous output budget — a hardcoded 2048 TRUNCATED big files (e.g. a
     # thorough test file) mid-string, landing a SyntaxError that only surfaced at
     # the post-merge integration test. Use the configured cap (default 8192).
@@ -652,13 +645,6 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
             {"role": "user", "content": prompt}], max_tokens=_mt)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
-    # Persist the worker's DECLARED interface contract (exposes/consumes) to a
-    # blackboard sidecar in the worktree (merged to cwd) — the language-agnostic,
-    # worker-declared version of the symbol blackboard the merger reconciles over.
-    try:
-        _write_contract_sidecar(worktree, subtask, out or "")
-    except Exception:  # noqa: BLE001 — never fail a subtask on the sidecar
-        pass
     files = _parse_file_blocks(out or "")
     if not files:
         return {"ok": False, "error": "no file blocks produced"}
@@ -1858,21 +1844,96 @@ def _spec_goal(cwd: str) -> str:
     return ""
 
 
+def _files_in_output(cwd: str, output: str) -> set:
+    """Source files REFERENCED in the failing test/build output — minimal,
+    targeted context for the resolver (not the whole tree)."""
+    import re as _re
+    hits: set = set()
+    for m in _re.findall(r"([\w./\\-]+\.(?:py|java|go|js|mjs|ts|tsx|rs|c|cc|cpp|cxx|h|hpp|rb|php))", output):
+        p = m.replace("\\", "/")
+        if os.path.isabs(p) and p.startswith(cwd):
+            p = os.path.relpath(p, cwd)
+        p = p.lstrip("./")
+        if os.path.isfile(os.path.join(cwd, p)):
+            hits.add(p)
+    return hits
+
+
+def _py_local_imports(cwd: str, rel: str) -> set:
+    """Local module files a Python file imports (1 hop) — so the resolver sees
+    both sides of a cross-file mismatch, still minimal."""
+    import ast as _ast
+    out: set = set()
+    try:
+        with open(os.path.join(cwd, rel), encoding="utf-8", errors="replace") as fh:
+            tree = _ast.parse(fh.read())
+    except Exception:  # noqa: BLE001
+        return out
+    mods: set = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.ImportFrom) and node.module:
+            mods.add(node.module.split(".")[-1])
+        elif isinstance(node, _ast.Import):
+            for a in node.names:
+                mods.add(a.name.split(".")[-1])
+    for base in mods:
+        fn = base + ".py"
+        for root, _d, files in os.walk(cwd):
+            if fn in files:
+                r = os.path.relpath(os.path.join(root, fn), cwd)
+                if ".aiforge" not in r:
+                    out.add(r)
+    return out
+
+
+def _relevant_files(cwd: str, output: str) -> list:
+    """Files the resolver needs: the ones named in the errors + their direct
+    local imports. Falls back to the whole tree only if nothing was parsed."""
+    seed = _files_in_output(cwd, output)
+    if not seed:
+        return _gather_sources(cwd)
+    # BFS the local-import graph up to 2 hops from the failing files (test →
+    # module → its deps), capped, so the resolver sees the whole failing chain
+    # but never the whole tree.
+    picked = set(seed)
+    frontier = set(seed)
+    for _ in range(2):
+        nxt: set = set()
+        for rel in frontier:
+            if rel.endswith(".py"):
+                nxt |= _py_local_imports(cwd, rel)
+        nxt -= picked
+        if not nxt or len(picked) >= 15:
+            break
+        picked |= nxt
+        frontier = nxt
+    out = []
+    for rel in sorted(picked):
+        try:
+            with open(os.path.join(cwd, rel), encoding="utf-8", errors="replace") as fh:
+                out.append((rel, fh.read()))
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
 def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
-    """DETERMINISTIC, language/usecase-agnostic reconcile step: give a fresh LLM
-    call the WHOLE failing project + the errors, and have it OUTPUT the corrected
-    files (=== path === blocks) — the same reliable mechanism that built the code.
-    Syntax-check + write each. Returns the paths written. No task-specific logic."""
+    """Minimal-context resolver (Git-state model, NOT a whole-tree blackboard):
+    feed ONLY the files referenced in the failing output + their direct imports,
+    with the errors, and have the LLM OUTPUT the corrected files (=== path ===
+    blocks). Syntax-check + write each. Returns paths written. Language/usecase-
+    agnostic; no task-specific logic. Keeps context small so a local model
+    doesn't blow its window / hallucinate."""
     from aiforge_core.llm.client import complete as _complete
     try:
-        budget = int(os.environ.get("AIFORGE_RECONCILE_CTX_CHARS", "60000"))
+        budget = int(os.environ.get("AIFORGE_RECONCILE_CTX_CHARS", "40000"))
     except ValueError:
-        budget = 60000
+        budget = 40000
     # Fence each file (### FILE: path + ```) so the model reads it as DATA, with
     # clear boundaries — no blurred walls of concatenated text.
     parts: list[str] = []
     total = 0
-    for rel, content in _gather_sources(cwd):
+    for rel, content in _relevant_files(cwd, output):
         block = f"### FILE: {rel}\n```\n{content}\n```"
         if total + len(block) > budget:
             continue
@@ -2142,43 +2203,6 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
                    "args": {}, "result": {"files": _pruned}}
     except Exception:  # noqa: BLE001
         pass
-
-    # MERGER pass (map-reduce): reconcile cross-module symbol drift against the
-    # structured blackboard BEFORE running any test. The merger reasons over the
-    # COMPACT exposes/consumes report (not the whole codebase), aligning every
-    # consumed name to the canonical exposed one — catching Binary-vs-BinaryExpr
-    # style drift proactively at merge time. Env-gated (AIFORGE_MERGER=1 default).
-    if os.environ.get("AIFORGE_MERGER", "1") not in ("0", "false"):
-        try:
-            drift = _symbol_drift_report(cwd)
-        except Exception:  # noqa: BLE001
-            drift = []
-        if drift:
-            yield {"type": "thought", "role": "merger",
-                   "text": f"Reconciling {len(drift)} cross-module symbol mismatch(es) "
-                           "against the blackboard before testing…"}
-            _lines = []
-            for d in drift[:30]:
-                s = (f" → rename the import to `{d['suggest']}`"
-                     if d.get("suggest")
-                     else f" — `{d['target']}` exposes {d.get('target_exposes')}; add "
-                          "the name there or fix the import")
-                _lines.append(f"- `{d['consumer']}` imports `{d['name']}` from "
-                              f"`{d['target']}`, which does NOT define it{s}.")
-            try:
-                _mfixed = _rewrite_fix(
-                    cwd, "CROSS-MODULE SYMBOL MISMATCHES (align every import/name to "
-                         "ONE canonical spelling — the name the target module "
-                         "actually defines):\n" + "\n".join(_lines), [])
-                if _mfixed:
-                    yield {"type": "tool", "role": "merger", "name": "aligned symbols",
-                           "args": {}, "result": {"files": _mfixed}}
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                _prune_dead_python_imports(cwd)
-            except Exception:  # noqa: BLE001
-                pass
 
     ok, output = _project_test_output(cwd)
     if ok or os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
