@@ -446,12 +446,23 @@ def default_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"import: {exc}"}
     goal = subtask.get("goal") or subtask.get("slug") or "implement the subtask"
+    path = str(subtask.get("path") or "").strip().lstrip("/")
     accept = subtask.get("acceptance") or []
     scope = subtask.get("scope_allowlist_globs") or []
+    # Hard path pin: every subtask runs in its OWN fresh context, so without an
+    # exact-path command each one re-guesses the package dir casing
+    # (minilang/ vs mini_lang/ vs miniLang/) and the merge ends up with 3 split
+    # dirs. Name the exact target path verbatim and forbid inventing variants.
+    path_pin = (
+        f"TARGET FILE (create EXACTLY this path, byte-for-byte — do NOT rename, "
+        f"re-case, or re-spell the directory or file; other subtasks use the "
+        f"SAME paths from SPEC.md): {path}\n"
+        if path else "")
     msg = (
-        (f"PROJECT SPEC (shared context — build YOUR slice to fit it):\n{spec_md.strip()[:6000]}\n\n---\n\n"
+        (f"PROJECT SPEC (shared context — build YOUR slice to fit it; use the "
+         f"EXACT file/dir paths it lists, verbatim):\n{spec_md.strip()[:6000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
-        + f"Implement this subtask, then build + test it.\n\nGOAL: {goal}\n"
+        + f"Implement this subtask, then build + test it.\n\n{path_pin}GOAL: {goal}\n"
         + ("ACCEPTANCE:\n" + "\n".join(f"- {a}" for a in accept) + "\n" if accept else "")
         + ("SCOPE (only touch these): " + ", ".join(scope) + "\n" if scope else "")
         + "Keep the change focused on THIS subtask only; other subtasks handle the rest.")
@@ -1008,7 +1019,7 @@ def _plan_files(files: list[dict]) -> list[dict]:
             suffix = hashlib.sha1(path.encode("utf-8")).hexdigest()[:6]
             slug = f"{slug}-{suffix}"
         seen_slugs.add(slug)
-        out.append({"slug": slug,
+        out.append({"slug": slug, "path": path,
                     "goal": f"{path}: {f.get('purpose') or 'implement'}"})
     return out
 
@@ -1175,8 +1186,17 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
 def _render_spec_md(prompt: str, subs: list[dict]) -> str:
     """The shared requirements/plan document written to SPEC.md before the run
     and re-read by the final verification pass."""
-    lines = ["# Project Spec", "", "## Goal", "", prompt.strip(), "",
-             f"## Subtasks ({len(subs)})", ""]
+    lines = ["# Project Spec", "", "## Goal", "", prompt.strip(), ""]
+    # Canonical file tree — the EXACT paths every subtask must use verbatim (no
+    # re-casing/renaming the package dir), so isolated contexts don't split into
+    # mini_lang/ + miniLang/ + minilang/.
+    paths = [str(s.get("path") or "").strip().lstrip("/")
+             for s in subs if s.get("path")]
+    if paths:
+        lines += ["## File tree (use these EXACT paths — verbatim)", ""]
+        lines += [f"- `{p}`" for p in paths]
+        lines += [""]
+    lines += [f"## Subtasks ({len(subs)})", ""]
     for i, s in enumerate(subs):
         slug = s.get("slug") or f"sub-{i+1}"
         goal = (s.get("goal") or "").strip()
