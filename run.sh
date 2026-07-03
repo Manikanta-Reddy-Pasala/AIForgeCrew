@@ -357,8 +357,20 @@ if [[ $SKIP_WEB -eq 0 ]]; then
     else
       echo "==> web UI up to date (use --skip-web to skip this check)"
     fi
+  elif [[ ! -d web/dist ]]; then
+    echo "!! npm not found AND no web/dist — the UI will not load. Install Node" >&2
+    echo "!! (https://nodejs.org), then re-run; or build web/ on another machine." >&2
+  elif [[ -n "$(find web/src web/index.html web/package.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]; then
+    # Loud: a git pull updated the source but npm is missing, so the OLD bundle
+    # is still being served — the #1 cause of "I pulled but the UI is unchanged".
+    echo "!! ============================================================" >&2
+    echo "!! npm not found — web/dist is STALE. You are serving an OUTDATED UI." >&2
+    echo "!! The source changed but the bundle was NOT rebuilt. Install Node" >&2
+    echo "!! (https://nodejs.org) and re-run, or 'cd web && npm run build'" >&2
+    echo "!! on a machine that has npm, then copy web/dist over. Hard-refresh after." >&2
+    echo "!! ============================================================" >&2
   else
-    echo "==> npm not found — skipping UI build (API will still serve; install Node to get the UI)" >&2
+    echo "==> npm not found — skipping UI build (dist present + current)" >&2
   fi
 fi
 
