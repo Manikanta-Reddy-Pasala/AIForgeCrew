@@ -85,7 +85,7 @@ function SubtaskList({ items, onViewSpec }: { items: SubtaskItem[]; onViewSpec?:
       <div onClick={() => setOpen(v => !v)}
         style={{ fontSize: 12, fontWeight: 600, marginBottom: open ? 6 : 0, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {open ? '▾' : '▸'} Plan <span style={{ color: '#8892a0' }}>{done}/{items.length}</span>
+          {open ? '▾' : '▸'} Tasks <span style={{ color: '#8892a0' }}>{done}/{items.length}</span>
           {!open && current && (
             <span style={{ color: SUBTASK_COLORS[current.status] || SUBTASK_COLORS.running, fontWeight: 500, marginLeft: 8 }}>
               ▸ {current.slug}
