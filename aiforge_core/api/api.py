@@ -3095,6 +3095,23 @@ def chat_session_trace(session_id: int) -> dict:
     return {"session_id": session_id, "count": len(turns), "turns": turns}
 
 
+@app.get("/api/chat/sessions/{session_id}/spec")
+def chat_session_spec(session_id: int) -> dict:
+    """The planner's SPEC.md (requirements + subtask breakdown) for this
+    session's workspace — rendered as a markdown preview in the subtask dock."""
+    from aiforge_core.runtime import chat_store
+    sess = chat_store.get_session(session_id) or {}
+    cwd = sess.get("cwd") or _default_cwd()
+    path = os.path.join(cwd, "SPEC.md")
+    try:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                return {"exists": True, "path": path, "content": fh.read()[:200000]}
+    except Exception as exc:  # noqa: BLE001
+        return {"exists": False, "error": str(exc)}
+    return {"exists": False, "content": ""}
+
+
 @app.patch("/api/chat/sessions/{session_id}")
 def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
     from aiforge_core.runtime import chat_store

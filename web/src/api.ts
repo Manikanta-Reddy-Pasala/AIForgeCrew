@@ -777,6 +777,9 @@ export function chatMediaUpload(sessionId: number, file: File): Promise<ChatMedi
 export function chatMediaList(sessionId: number): Promise<{ media: ChatMedia[]; vision: boolean }> {
   return j(`/chat/sessions/${sessionId}/media`);
 }
+export function chatSessionSpec(sessionId: number): Promise<{ exists: boolean; path?: string; content?: string }> {
+  return j(`/chat/sessions/${sessionId}/spec`);
+}
 export function chatMediaDescribe(mediaId: number, description: string): Promise<ChatMedia> {
   return j(`/chat/media/${mediaId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },

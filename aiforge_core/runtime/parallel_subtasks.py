@@ -1272,13 +1272,17 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     except Exception as _exc:  # noqa: BLE001
         log.debug("spec verification skipped: %s", _exc)
 
-    # Compile + end-to-end test the merged result (any language) and fold the
-    # results — or step-by-step manual instructions if the toolchain is absent —
-    # into the final message.
+    # Compile + end-to-end test the merged result (any language). Subtasks are
+    # built in ISOLATION, so the tree can fail to link on cross-file drift (a
+    # test imports a name a module spelled differently). A bounded RECONCILIATION
+    # pass over the whole merged tree fixes those mismatches until green. The
+    # final report — or step-by-step manual steps if the toolchain is absent —
+    # is folded into the completion message.
     _integ_md = ""
+    _res: dict = {}
     try:
-        from aiforge_core.runtime.integration_report import build_and_test_report
-        _rep = build_and_test_report(cwd)
+        yield from _reconcile_integration(cwd, _res)
+        _rep = _res.get("rep") or {}
         if _rep.get("md"):
             _integ_md = "\n\n---\n\n" + _rep["md"]
     except Exception as _iexc:  # noqa: BLE001
@@ -1290,6 +1294,69 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
            f"{agg.get('done', 0)}/{agg.get('total', 0)} subtasks done. "
            f"See SPEC.md for the requirements each subtask built against."
            + _integ_md}
+
+
+def _reconcile_rounds() -> int:
+    try:
+        return max(0, min(6, int(os.environ.get("AIFORGE_RECONCILE_ROUNDS", "3"))))
+    except ValueError:
+        return 3
+
+
+def _reconcile_integration(cwd: str, result: dict):
+    """Build + test the merged tree; while it fails on cross-file drift, run a
+    bounded Doer pass over the WHOLE workspace with the failing output to fix the
+    mismatches, re-testing each round. Yields SSE events; stores the final report
+    in ``result['rep']``. Reconciliation is skippable via
+    AIFORGE_RECONCILE_INTEGRATION=0 (then it's a plain one-shot report)."""
+    from aiforge_core.runtime.integration_report import build_and_test_report
+    rep = build_and_test_report(cwd)
+    result["rep"] = rep
+    if os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
+        return
+    max_rounds = _reconcile_rounds()
+    rounds = 0
+    while rep.get("ok") is False and rounds < max_rounds:
+        rounds += 1
+        yield {"type": "thought", "role": "reconciler",
+               "text": f"Integration failed — reconciliation pass {rounds}/{max_rounds} "
+                       "(fixing cross-file mismatches so the tests link + pass)…"}
+        try:
+            from aiforge_core.llm.client import complete as _complete
+            from aiforge_core.runtime.chat_agent import run_chat_agent
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "thought", "role": "reconciler", "text": f"reconcile import failed: {exc}"}
+            break
+        msg = (
+            "The merged project FAILS its own build/tests. Make ALL tests pass.\n\n"
+            "These failures are usually CROSS-FILE mismatches from modules built "
+            "in isolation: a test imports a name a module didn't export, or two "
+            "files disagree on a class / function / parameter name. Reconcile them "
+            "— prefer the name in SPEC.md; edit whichever side is wrong (rename the "
+            "definition OR fix the import/usage). Don't rewrite working modules.\n\n"
+            "Read SPEC.md for the intended API. Then read the failing files, fix the "
+            "mismatches, and RUN THE TESTS to confirm green.\n\n"
+            f"Failing build/test output:\n{(rep.get('md') or '')[:4000]}")
+
+        def _complete_fn(role, convo):
+            return _complete(role, convo)
+        try:
+            for ev in run_chat_agent([{"role": "user", "content": msg}], cwd=cwd,
+                                     role="doer", complete_fn=_complete_fn):
+                if ev.get("type") in ("tool", "error"):
+                    # tag so the UI groups these under the reconciler
+                    ev = {**ev, "role": ev.get("role") or "reconciler"}
+                    yield ev
+                elif ev.get("type") == "thought":
+                    yield {**ev, "role": "reconciler"}
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "thought", "role": "reconciler", "text": f"reconcile pass error: {exc}"}
+            break
+        rep = build_and_test_report(cwd)
+        result["rep"] = rep
+    if rounds and rep.get("ok"):
+        yield {"type": "thought", "role": "reconciler",
+               "text": f"Reconciliation green after {rounds} pass(es) ✅"}
 
 
 def _render_spec_md(prompt: str, subs: list[dict]) -> str:

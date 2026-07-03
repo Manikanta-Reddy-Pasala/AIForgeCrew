@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, chatMediaRawURL, ChatMedia, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, chatMediaRawURL, ChatMedia, chatSessionSpec, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite } from '../mdlite';
 
@@ -68,7 +68,7 @@ const SUBTASK_COLORS: Record<string, string> = {
   won: '#d4a72c',
 };
 
-function SubtaskList({ items }: { items: SubtaskItem[] }) {
+function SubtaskList({ items, onViewSpec }: { items: SubtaskItem[]; onViewSpec?: () => void }) {
   // Default COLLAPSED — the header line is the crisp, live at-a-glance view;
   // click to expand the full list.
   const [open, setOpen] = useState(false);
@@ -97,6 +97,13 @@ function SubtaskList({ items }: { items: SubtaskItem[] }) {
             <span key={k} style={{ color: SUBTASK_COLORS[k] }}>● {counts[k]}</span>
           ))}
           <span style={{ color: '#8892a0' }}>{pct}%</span>
+          {onViewSpec && (
+            <button className="ghost xs" title="Preview SPEC.md (the plan's requirements)"
+                    onClick={(e) => { e.stopPropagation(); onViewSpec(); }}
+                    style={{ cursor: 'pointer', padding: '1px 6px', fontSize: 10, whiteSpace: 'nowrap' }}>
+              📄 SPEC.md
+            </button>
+          )}
         </span>
       </div>
       {/* progress bar */}
@@ -1302,6 +1309,19 @@ export default function Chat() {
   // the Steer affordance is disabled for it instead of firing a doomed POST.
   const canSteer = busy && !awaitingReply && !pendingApproval && activeRunMode !== 'team';
 
+  // SPEC.md preview modal (opened from the subtask dock header).
+  const [specModal, setSpecModal] = useState<{ loading: boolean; content: string } | null>(null);
+  async function openSpec() {
+    if (activeId === null) return;
+    setSpecModal({ loading: true, content: '' });
+    try {
+      const r = await chatSessionSpec(activeId);
+      setSpecModal({ loading: false, content: r.exists ? (r.content || '') : '_No SPEC.md in this workspace yet — it’s written when a team/parallel plan runs._' });
+    } catch (e: any) {
+      setSpecModal({ loading: false, content: `Failed to load SPEC.md: ${e.message}` });
+    }
+  }
+
   // Subtasks for the pinned bottom dock: the live run's list (updates status
   // live), else the most recent finished turn that carried a decomposition.
   const dockSubtasks: SubtaskItem[] | undefined = (() => {
@@ -1793,7 +1813,26 @@ export default function Chat() {
                 background: 'var(--bg-0,#0d1017)',
                 padding: '6px 10px', maxHeight: 180, overflowY: 'auto',
               }}>
-                <SubtaskList items={dockSubtasks} />
+                <SubtaskList items={dockSubtasks} onViewSpec={openSpec} />
+              </div>
+            )}
+
+            {/* SPEC.md preview modal */}
+            {specModal && (
+              <div onClick={() => setSpecModal(null)}
+                   style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+                <div onClick={(e) => e.stopPropagation()}
+                     style={{ background: 'var(--bg-0,#0d1017)', border: '1px solid var(--border,#2a2f3a)',
+                              borderRadius: 8, width: 'min(820px, 92vw)', maxHeight: '85vh', overflowY: 'auto',
+                              padding: '18px 22px', boxShadow: '0 12px 40px rgba(0,0,0,0.5)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <strong>📄 SPEC.md</strong>
+                    <button className="ghost" style={{ cursor: 'pointer' }} onClick={() => setSpecModal(null)}>✕</button>
+                  </div>
+                  {specModal.loading ? <div className="muted">Loading…</div>
+                    : <MdLite text={specModal.content} />}
+                </div>
               </div>
             )}
 
