@@ -1124,7 +1124,7 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
         from aiforge_core.llm import client
         out = client.complete("architect", [
             {"role": "system", "content": _ARCHITECT_SYS},
-            {"role": "user", "content": user_msg}], max_tokens=1000,
+            {"role": "user", "content": user_msg}], max_tokens=4000,
             timeout_s=_orchestrator_timeout_s())
         m = _re.search(r"\{.*\}", out or "", _re.DOTALL)
         obj = _json.loads(m.group(0)) if m else {}
