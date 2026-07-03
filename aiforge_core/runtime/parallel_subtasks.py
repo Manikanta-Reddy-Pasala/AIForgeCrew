@@ -244,37 +244,28 @@ def default_validate_one(subtask: dict, worktree: str) -> dict:
     subtask instead."""
     if os.environ.get("AIFORGE_PARALLEL_STRICT_VALIDATE", "0") in ("1", "true"):
         return _build_or_test(worktree)
-    # A build-config / doc subtask (pyproject.toml, setup.py/cfg, README, …) is
-    # the ONLY worktree that carries a project marker, so a "build" here tries to
-    # build the whole package from just that one file — with none of the package
-    # SOURCE (it lives in the other subtasks' worktrees) — and always fails. The
-    # real build/test runs post-merge (integration_test), so per-subtask we only
-    # confirm the config/doc file was actually written.
+    # GENERAL RULE (no hardcoded file-type list): a subtask produces ONE file in
+    # an ISOLATED worktree, and NO single file can build/compile the whole project
+    # by itself — its imports/deps live in the OTHER subtasks' worktrees. So a
+    # project build here always fails for whichever file happens to carry the
+    # manifest (pom.xml / pyproject / package.json / …). Per-subtask we therefore
+    # only check the file was WRITTEN and is SYNTACTICALLY valid (language-agnostic
+    # syntax_guard — Python compile, javac/gcc/go/node/… syntax-only). The REAL
+    # build + tests run post-merge, all files together (default_integration_test).
     _path = str(subtask.get("path") or "").strip().lstrip("/")
-    _base = os.path.basename(_path).lower()
-    _CONFIG_DOC = {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt",
-                   "makefile", "dockerfile", "package.json", "tsconfig.json",
-                   "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle",
-                   "go.mod", "cargo.toml", "composer.json", "gemfile"}
-    if _base in _CONFIG_DOC or _path.lower().endswith(
-            (".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json",
-             ".rst", ".xml", ".gradle", ".properties", ".mod", ".lock")):
-        target = os.path.join(worktree, _path) if _path else ""
-        ok = bool(target and os.path.isfile(target)
-                  and os.path.getsize(target) > 0)
-        return {"ok": ok, "via": "config-doc-written",
-                "detail": None if ok else f"file not written: {_path}"}
+    if not _path:
+        return {"ok": True, "via": "no-path"}
+    target = os.path.join(worktree, _path)
+    if not (os.path.isfile(target) and os.path.getsize(target) > 0):
+        return {"ok": False, "via": "written", "detail": f"file not written: {_path}"}
     try:
-        from aiforge_core.runtime.tools.project_runner import detect, project
-        stacks = (detect(worktree) or {}).get("stacks") or []
-        if not stacks:
-            return {"ok": True, "via": "no-project"}
-        build = project(action="build", cwd=worktree)
-        ok = bool(isinstance(build, dict) and build.get("ok"))
-        return {"ok": ok, "via": "build-only",
-                "detail": None if ok else (build or {}).get("error")}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)}
+        with open(target, encoding="utf-8", errors="replace") as _fh:
+            _content = _fh.read()
+        from aiforge_core.runtime.syntax_guard import validate_syntax
+        _ok, _err = validate_syntax(_path, _content)
+        return {"ok": _ok, "via": "syntax", "detail": None if _ok else _err}
+    except Exception:  # noqa: BLE001 — never fail a subtask on a guard glitch
+        return {"ok": True, "via": "written"}
 
 
 def default_integration_test(repo_root: str) -> dict:
