@@ -1807,7 +1807,10 @@ export default function Chat() {
                 <textarea
                   ref={textareaRef}
                   onPaste={onPasteMedia}
-                  rows={4}
+                  /* Short while a run is active (you're mostly steering/watching,
+                     not composing) — full height when idle. Drag the corner to
+                     expand either way (resize: vertical). */
+                  rows={busy ? 1 : 3}
                   placeholder={
                     pendingApproval
                       ? "Resolve the approval above first (Approve / Reject)…"
@@ -1821,7 +1824,7 @@ export default function Chat() {
                   value={input}
                   onChange={e => setInput(e.target.value)}
                   onKeyDown={onKey}
-                  style={{ flex: 1 }}
+                  style={{ flex: 1, resize: 'vertical', minHeight: busy ? 34 : 64 }}
                 />
                 <button onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                         title="Attach a file — image, PDF, Word, Excel, text — queryable all session"
