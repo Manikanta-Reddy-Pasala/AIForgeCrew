@@ -2192,6 +2192,18 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
     return written
 
 
+def _fail_count(output: str) -> int:
+    """Number of failing tests from the build/test output (for the regression
+    guard). 999 = couldn't-run/collection-error (treat as worst); 0 = all green."""
+    import re as _re
+    m = _re.search(r"(\d+)\s+failed", output or "")
+    if m:
+        return int(m.group(1))
+    if _re.search(r"error|Error|Traceback|Interrupted", output or ""):
+        return 999
+    return 0
+
+
 def _prune_dead_python_imports(cwd: str) -> list[str]:
     """DETERMINISTIC pre-fix (general Python): remove `from <local_mod> import X`
     names — and matching `__all__` entries — where X isn't defined at MODULE
@@ -2406,6 +2418,8 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
 
     max_rounds = _reconcile_rounds()
     rounds = 0
+    prev_fails = _fail_count(output)
+    stalls = 0
     while not ok and rounds < max_rounds:
         if should_cancel is not None and should_cancel():
             break
@@ -2416,28 +2430,42 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
             pass
         hints = _directed_hints(output)
         yield {"type": "thought", "role": "reconciler",
-               "text": f"Integration failed — reconciliation pass {rounds}/{max_rounds}: "
-                       + (f"{len(hints)} concrete fix(es); rewriting the offending "
-                          "files…" if hints else "rewriting the offending files…")}
-        # DETERMINISTIC fix: a ReAct agent narrates "I'll add current_piece" but
-        # never calls the editor (qwen treats "fix" as analysis). Instead give a
-        # fresh LLM call the WHOLE failing project + errors and have it OUTPUT the
-        # corrected files (=== path === blocks) — the same mechanism that reliably
-        # built the code — then WRITE them. Guarantees edits land.
+               "text": f"Integration failed ({prev_fails} failing) — pass "
+                       f"{rounds}/{max_rounds}: patching the offending files…"}
+        # Snapshot BEFORE the round so a round that makes things WORSE (a local
+        # model's bad patch) can be rolled back — reconcile is then MONOTONIC:
+        # it never regresses, only accepts rounds that reduce the failure count.
+        snapshot = dict(_gather_sources(cwd))
         try:
             written = _rewrite_fix(cwd, output, hints)
         except Exception as exc:  # noqa: BLE001 — a transient LLM error must NOT
-            # abandon the whole reconcile; log + retry the pass next round.
             yield {"type": "thought", "role": "reconciler",
                    "text": f"reconcile pass hit a transient error, retrying: {str(exc)[:80]}"}
             written = []
-        if written:
-            yield {"type": "tool", "role": "reconciler", "name": "rewrote files",
-                   "args": {"pass": rounds}, "result": {"files": written}}
-        else:
-            yield {"type": "thought", "role": "reconciler",
-                   "text": "no file changes produced this pass"}
         ok, output = _project_test_output(cwd)
+        new_fails = _fail_count(output)
+        if new_fails >= prev_fails:
+            # REGRESSION guard — this round didn't reduce failures → roll back.
+            for rel, content in snapshot.items():
+                try:
+                    with open(os.path.join(cwd, rel), "w", encoding="utf-8") as fh:
+                        fh.write(content)
+                except Exception:  # noqa: BLE001
+                    pass
+            ok, output = _project_test_output(cwd)
+            new_fails = _fail_count(output)
+            stalls += 1
+            yield {"type": "thought", "role": "reconciler",
+                   "text": f"pass {rounds} didn't help — rolled back (kept {prev_fails} "
+                           "failing). Trying a different angle…"}
+            if stalls >= 3:
+                break                          # 3 no-progress rounds → give up
+        else:
+            stalls = 0
+            prev_fails = new_fails
+            yield {"type": "tool", "role": "reconciler", "name": "patched files",
+                   "args": {"pass": rounds, "failing": new_fails},
+                   "result": {"files": written}}
 
     result["rep"] = build_and_test_report(cwd)
     if rounds and ok:
