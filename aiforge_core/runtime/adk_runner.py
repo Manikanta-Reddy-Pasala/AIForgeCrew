@@ -775,13 +775,17 @@ async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
     )
-    # Key the bash tool's persistent session to THIS run so destroy_session
-    # below actually matches it (otherwise bash mints a per-call id and leaks).
-    try:
-        from aiforge_core.runtime.tools.bash import set_run_id as _bash_set_run_id
-        _bash_set_run_id(session.id)
-    except Exception:  # noqa: BLE001
-        pass
+    # Key the stateful tools (bash session, browser context, IPython kernel) to
+    # THIS run so the destroy_* calls below actually match them — otherwise each
+    # mints a per-call id and leaks (browser/ipython did exactly this).
+    for _mod, _fn in (("bash", "set_run_id"), ("browser", "set_run_id"),
+                      ("ipython_kernel", "set_run_id")):
+        try:
+            import importlib
+            getattr(importlib.import_module(
+                f"aiforge_core.runtime.tools.{_mod}"), _fn)(session.id)
+        except Exception:  # noqa: BLE001
+            pass
     try:
         # Cap LLM calls like the main pipeline — a single agent with bash + a
         # retry-heavy deploy/verify recipe (live_verifier) could otherwise spin
@@ -965,6 +969,15 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         app_name="aiforge", user_id="aiforge-runner",
         state=initial_state or None,
     )
+    # Key the stateful tools to THIS run so their destroy_* (bash/browser/
+    # ipython) below match — else each mints a per-call id and leaks.
+    for _mod in ("bash", "browser", "ipython_kernel"):
+        try:
+            import importlib
+            importlib.import_module(
+                f"aiforge_core.runtime.tools.{_mod}").set_run_id(session.id)
+        except Exception:  # noqa: BLE001
+            pass
     content = gtypes.Content(
         role="user", parts=[gtypes.Part.from_text(text=prompt)],
     )

@@ -145,13 +145,12 @@ def ensure_branch_and_worktree(ticket) -> str | None:
 
     if ticket.branch != branch:
         try:
-            with tickets._conn() as c, c.cursor() as cur:
-                cur.execute(
-                    "UPDATE tickets SET branch=%s WHERE id=%s",
-                    (branch, ticket.id),
-                )
-                c.commit()
-        except Exception as exc:
+            # Use the public store API — `tickets` is the store MODULE, which has
+            # no `_conn` (that lives on the backend classes); the old raw-SQL call
+            # raised AttributeError that the bare except swallowed, so the branch
+            # was NEVER persisted and child tickets kept re-creating branches.
+            tickets.set_branch(ticket.id, branch)
+        except Exception as exc:  # noqa: BLE001
             log.warning("branch persist failed ticket=%s: %s",
                         ticket.identifier, exc)
     return worktree_path

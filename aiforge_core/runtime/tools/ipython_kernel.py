@@ -10,10 +10,27 @@ agent loop survives on boxes without the install.
 """
 from __future__ import annotations
 
+import contextvars
 import uuid
 from typing import Any
 
 from ._trace import emit
+
+# The run a tool call belongs to. ADK FunctionTools don't forward ``_run_id``
+# (the Doer wrapper omits it), so — like bash — fall back to a contextvar the
+# runner sets, then a STABLE "default". A fresh uuid per call spawned a new
+# kernel each cell (no state persistence) and leaked it (destroy keys on the
+# run's session id, which never matched the throwaway uuid).
+_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ipython_run_id", default=None)
+
+
+def set_run_id(run_id: str | None) -> None:
+    _RUN_ID.set(run_id)
+
+
+def _effective_run_id(explicit: str | None) -> str:
+    return explicit or _RUN_ID.get() or "default"
 
 _STDOUT_CAP_BYTES = 8000
 _DEFAULT_TIMEOUT_S = 60
@@ -134,8 +151,7 @@ def execute_ipython_cell(
     if not _jupyter_available():
         return {"ok": False, "error": "kernel_missing",
                 "hint": "pip install jupyter_client ipykernel"}
-    if _run_id is None:
-        _run_id = "default-" + uuid.uuid4().hex[:8]
+    _run_id = _effective_run_id(_run_id)
 
     try:
         _km, client = _start_kernel(_run_id)
@@ -166,7 +182,9 @@ def execute_ipython_cell(
             "ok": False, "error": "timeout",
             "stdout": stdout, "stderr": stderr, "truncated": True,
         }
-    has_error = bool(stderr) and not stdout
+    # Any stderr means the cell errored. The old `and not stdout` wrongly
+    # reported a cell that PRINTED then raised (stdout + stderr both set) as OK.
+    has_error = bool(stderr)
     emit("Cell", {"action": "executed", "ok": not has_error,
                   "bytes": len(stdout) + len(stderr)})
     return {

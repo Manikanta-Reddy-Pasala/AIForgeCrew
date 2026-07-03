@@ -107,18 +107,27 @@ def acquire(provider: str, *,
     while True:
         with lock:
             sleeps: list[float] = []
+            deducted: list[tuple] = []   # (bucket, amount) that actually drained
             if rpm > 0:
                 b = _bucket(_RPM_BUCKETS, provider, rpm)
-                sleeps.append(b.take(1.0))
+                s = b.take(1.0)
+                sleeps.append(s)
+                if s == 0.0:
+                    deducted.append((b, 1.0))
             if tpm > 0 and tokens_estimate > 0:
                 b = _bucket(_TPM_BUCKETS, provider, tpm)
-                sleeps.append(b.take(float(tokens_estimate)))
+                s = b.take(float(tokens_estimate))
+                sleeps.append(s)
+                if s == 0.0:
+                    deducted.append((b, float(tokens_estimate)))
             if all(s == 0.0 for s in sleeps):
                 return waited
-            # Refund what we drained — we'll retry after sleeping.
-            # take() already deducted only if tokens were available;
-            # when it returned a positive sleep we left tokens
-            # untouched (deficit-based math). So no refund needed.
+            # One bucket had room and DEDUCTED, but another blocked us → we'll
+            # sleep + retry. REFUND the drained bucket(s), else each retry
+            # re-charges them and the RPM budget bleeds down while we wait on TPM
+            # (the old "no refund needed" comment was wrong — it ignored retries).
+            for b, amt in deducted:
+                b.tokens = min(b.capacity, b.tokens + amt)
             sleep_s = max(sleeps)
         if waited + sleep_s > max_wait_s:
             raise TimeoutError(

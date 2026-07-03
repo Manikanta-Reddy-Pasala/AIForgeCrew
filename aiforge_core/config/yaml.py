@@ -54,7 +54,8 @@ except ImportError:
 
 
 _DEFAULT_PATH = os.environ.get(
-    "AIFORGE_CONFIG", os.path.expanduser("~/.aiforge/aiforge.yaml")
+    "AIFORGE_CONFIG", os.path.join(os.path.expanduser(
+        os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "aiforge.yaml")
 )
 
 # Mapping: yaml_path -> env_var (env wins if already set)

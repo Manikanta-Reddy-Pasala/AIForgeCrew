@@ -224,7 +224,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 def _db_path(repo_name: str) -> Path:
     base = Path(os.environ.get(
         "AIFORGE_MERKLE_DIR",
-        os.path.expanduser("~/.aiforge/merkle"),
+        os.path.join(os.path.expanduser(
+            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "merkle"),
     ))
     base.mkdir(parents=True, exist_ok=True)
     return base / f"{repo_name}.db"

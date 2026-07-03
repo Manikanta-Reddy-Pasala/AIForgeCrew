@@ -1324,7 +1324,8 @@ def intervene(identifier: str, payload: dict) -> dict:
 
 
 _RUNTIME_ENV_PATH = os.path.expanduser(
-    os.environ.get("AIFORGE_RUNTIME_ENV", "~/.aiforge/runtime.env")
+    os.environ.get("AIFORGE_RUNTIME_ENV", os.path.join(
+        os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"), "runtime.env"))
 )
 _RUNTIME_ENV_LOCK = threading.Lock()
 
@@ -1820,7 +1821,7 @@ def _spawn_index(source_id: int) -> None:
         import threading
 
         from aiforge_core.runtime.memory_ingest import run_index
-        log.warning("index subprocess spawn failed (%s); using a thread", exc)
+        _af_log.warning("index subprocess spawn failed (%s); using a thread", exc)
         threading.Thread(target=run_index, args=(source_id,),
                          daemon=True).start()
 

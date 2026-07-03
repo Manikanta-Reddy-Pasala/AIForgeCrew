@@ -39,7 +39,8 @@ _COMPACT_LOCK = threading.Lock()
 
 
 def memory_dir() -> Path:
-    raw = os.environ.get("AIFORGE_MEMORY_MD_DIR") or "~/.aiforge/memory"
+    raw = os.environ.get("AIFORGE_MEMORY_MD_DIR") or os.path.join(
+        os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge"), "memory")
     p = Path(os.path.expanduser(raw))
     p.mkdir(parents=True, exist_ok=True)
     return p

@@ -41,7 +41,8 @@ def _record_touch(path: str) -> None:
 
 def _undo_dir_for(abs_path: Path) -> Path:
     sha = hashlib.sha1(str(abs_path).encode("utf-8")).hexdigest()
-    base = Path.home() / ".aiforge" / "editor_undo" / sha
+    base = Path(os.path.expanduser(os.environ.get(
+        "AIFORGE_CONFIG_DIR", "~/.aiforge"))) / "editor_undo" / sha
     base.mkdir(parents=True, exist_ok=True)
     return base
 

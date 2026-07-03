@@ -546,7 +546,8 @@ def _open_pr(repo_root: str, identifier: str, title: str,
                 ["gh", "pr", "view", "--json", "url", "-q", ".url"],
                 repo_root,
             )
-            url2 = (out2 or "").strip().splitlines()[-1] if out2 else ""
+            _lines2 = (out2 or "").strip().splitlines()
+            url2 = _lines2[-1] if _lines2 else ""   # blank/whitespace → no IndexError
             if rc2 == 0 and url2.startswith("http"):
                 log.info("git_pr.exists — resolved open PR %s", url2)
                 return url2, ""

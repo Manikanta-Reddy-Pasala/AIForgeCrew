@@ -225,9 +225,11 @@ class _PgJobStore:
                     cur.execute(_PG_DDL)
                     cur.execute(_PG_MIGRATE)
                 c.commit()
+                # Only mark ready on SUCCESS — else a failed DDL was masked as
+                # "schema ready", and every later query hit a missing table.
+                self._schema_ready = True
             except Exception:
                 c.rollback()
-            self._schema_ready = True
 
     def _cur(self, c):
         from psycopg.rows import dict_row

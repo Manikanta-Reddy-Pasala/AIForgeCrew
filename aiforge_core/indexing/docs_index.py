@@ -33,7 +33,8 @@ from pathlib import Path
 
 def _root() -> Path:
     p = Path(os.environ.get(
-        "AIFORGE_DOCS_DIR", os.path.expanduser("~/.aiforge/docs"),
+        "AIFORGE_DOCS_DIR", os.path.join(os.path.expanduser(
+            os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "docs"),
     ))
     p.mkdir(parents=True, exist_ok=True)
     return p

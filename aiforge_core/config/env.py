@@ -38,7 +38,8 @@ EMBED_SIDECAR_URL   = os.environ.get("AIFORGE_EMBED_URL", "http://127.0.0.1:8764
 RERANK_SIDECAR_URL  = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:8765")
 
 # ─────────────────────────── Paths ──────────────────────────────────────
-LOG_DIR  = os.environ.get("AIFORGE_LOG_DIR",  os.path.expanduser("~/.aiforge/logs"))
+LOG_DIR  = os.environ.get("AIFORGE_LOG_DIR", os.path.join(os.path.expanduser(
+    os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "logs"))
 LOCK_DIR = os.environ.get("AIFORGE_LOCK_DIR", "/tmp")
 WORKTREE_ROOT = os.environ.get(
     "AIFORGE_WORKTREE_ROOT",

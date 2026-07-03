@@ -11,6 +11,7 @@ agent loop survives on dev boxes without the install.
 from __future__ import annotations
 
 import base64
+import contextvars
 import os
 import uuid
 from typing import Any
@@ -18,6 +19,21 @@ from typing import Any
 from aiforge_core.runtime.sandbox import resolve_inside_root
 
 from ._trace import emit
+
+# Run the browser context belongs to. The Doer FunctionTool wrapper omits
+# ``_run_id``, so fall back to a contextvar the runner sets, then a STABLE
+# "default" — a fresh uuid per call created a new BrowserContext each command
+# (breaking goto→extract flows) and leaked it (destroy keys on session id).
+_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "browser_run_id", default=None)
+
+
+def set_run_id(run_id: str | None) -> None:
+    _RUN_ID.set(run_id)
+
+
+def _effective_run_id(explicit: str | None) -> str:
+    return explicit or _RUN_ID.get() or "default"
 
 _SCREENSHOT_CAP_BYTES = 256 * 1024
 _TEXT_CAP_BYTES = 32 * 1024
@@ -230,8 +246,7 @@ def browse(
         return {"ok": False, "error": "playwright_missing",
                 "hint": "pip install playwright && playwright install chromium"}
 
-    if _run_id is None:
-        _run_id = "default-" + uuid.uuid4().hex[:8]
+    _run_id = _effective_run_id(_run_id)
 
     if command == "close":
         destroy_context(_run_id)

@@ -40,7 +40,12 @@ def set_(name: str, cfg: dict) -> dict:
     cur = data.get(name) if isinstance(data.get(name), dict) else {}
     cur.update({k: v for k, v in cfg.items() if v is not None})
     data[name] = cur
-    _path().write_text(json.dumps(data, indent=2))
+    # Atomic write (temp + rename) — a crash mid-write must not leave a
+    # truncated/corrupt integrations.json that loses every saved credential.
+    p = _path()
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, p)
     return cur
 
 

@@ -175,7 +175,13 @@ def grade_and_react(
         time.sleep(5)
     if not snap.get("ok"):
         return snap
-    out = {"ok": True, **snap, "rolled_back": False}
+    # Carry pr_url + repo forward — on_ci_red / build_fix_request read them off
+    # this dict, but read_pr_checks (`snap`) never sets them, so the CI-autofix
+    # request was built with empty pr/repo.
+    out = {"ok": True, **snap, "rolled_back": False, "pr_url": pr_url}
+    _parsed = _parse_pr_url(pr_url)
+    if _parsed:
+        out["repo"] = f"{_parsed[0]}/{_parsed[1]}"
     if snap.get("status") == "red" and auto_rollback:
         rb = open_revert_pr(pr_url)
         out["rolled_back"] = bool(rb.get("ok"))
