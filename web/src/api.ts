@@ -546,6 +546,10 @@ export const chatApi = {
   applyModel: api.applyModel,
   syncModels: api.syncModels,
   providersTest: api.providersTest,
+  // AgentSettings reads the per-role config through chatApi too; without this
+  // delegation the call is undefined, throws, and the swallowed catch leaves
+  // every agent dropdown stuck on "— pick a model —" despite saved config.
+  agentsV2Config: api.agentsV2Config,
 
   chatModels: () => j<ChatModelsResponse>('/chat/models'),
 
