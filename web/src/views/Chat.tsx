@@ -410,6 +410,10 @@ export default function Chat() {
   useEffect(() => { busyRef.current = busy; }, [busy]);
   // Guards the Steer POST against double-fire (FE6).
   const [steering, setSteering] = useState(false);
+  // Mode the CURRENTLY-running turn was launched with (not the live selector,
+  // which the user can flip mid-run). Team runs can't be steered — the server
+  // rejects it — so the composer disables the Steer affordance for them.
+  const [activeRunMode, setActiveRunMode] = useState<ChatMode>('simple');
 
   // Force-full-pipeline toggle (team mode): disable the triage 'trivial'
   // fast-path so every agent runs. Persisted server-side.
@@ -1066,6 +1070,7 @@ export default function Chat() {
     setPlanReady(null);
     if (overrideContent === undefined) setInput('');
     const runMode: ChatMode = overrideMode ?? chatMode;
+    setActiveRunMode(runMode);   // remember it so canSteer can disable for team
     // Edit-and-resend: consume the pending "editing from" marker for this send.
     const editFrom = editingFrom;
     setEditingFrom(null);
@@ -1259,8 +1264,10 @@ export default function Chat() {
   // The current turn is waiting for the user to answer — Enter/primary button
   // must SEND a reply (a normal turn), not steer.
   const awaitingReply = !!liveTurn?.awaiting || persistedAwaiting;
-  // Steering is only valid while genuinely running (not awaiting, not gated).
-  const canSteer = busy && !awaitingReply && !pendingApproval;
+  // Steering is only valid while genuinely running (not awaiting, not gated) AND
+  // the running turn is steerable — a TEAM run isn't (the server rejects it), so
+  // the Steer affordance is disabled for it instead of firing a doomed POST.
+  const canSteer = busy && !awaitingReply && !pendingApproval && activeRunMode !== 'team';
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -1268,7 +1275,7 @@ export default function Chat() {
       if (awaitingReply) { send(); return; }   // FE1: reply, not steer
       if (busy) {
         if (pendingApproval) return;            // FE2: resolve the gate first
-        steer();
+        if (canSteer) steer();                  // team runs aren't steerable
       } else {
         send();
       }
@@ -1754,7 +1761,9 @@ export default function Chat() {
                       : awaitingReply
                         ? "The agent is waiting for your reply — type your answer, Enter to send…"
                         : busy
-                          ? "Steer the running agent — type guidance, Enter to inject (no Stop needed)…"
+                          ? (activeRunMode === 'team'
+                              ? "Team run in progress — steering isn't available; press Stop to interrupt…"
+                              : "Steer the running agent — type guidance, Enter to inject (no Stop needed)…")
                           : "Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)"}
                   value={input}
                   onChange={e => setInput(e.target.value)}
@@ -1780,10 +1789,13 @@ export default function Chat() {
                     ↳ Steer
                   </button>
                 ) : busy && !awaitingReply ? (
-                  // Running but gated on an approval: steering is disabled until
-                  // the user resolves the gate above (FE2).
+                  // Running but not steerable: either a team run (server rejects
+                  // mid-run steering) or gated on an approval (FE2). Disabled
+                  // either way, with a title that says which.
                   <button disabled
-                          title="Resolve the approval above before steering"
+                          title={activeRunMode === 'team'
+                            ? "Steering isn't available in team mode"
+                            : 'Resolve the approval above before steering'}
                           style={{ whiteSpace: 'nowrap' }}>
                     ↳ Steer
                   </button>
