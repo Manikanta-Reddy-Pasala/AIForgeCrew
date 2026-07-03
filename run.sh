@@ -292,23 +292,22 @@ uv pip install --python .venv/bin/python -e . >/dev/null
 # Installs the host `graphify` binary (PyPI package: graphifyy) used by the
 # concept-graph refresh (docs/graphify-agents.md, aiforge-graphify-all.timer)
 # and the graphify_lookup tool. Opt-in — the stack boots fine without it.
-# Prefer `uv tool` (isolated env, binary on PATH — matches the skill's own
-# interpreter detection); fall back to a pip install into the project venv.
+#
+# ISOLATED install ONLY (uv tool). graphify carries a large, independently
+# pinned dep set (incl. its OWN pydantic) — co-installing it into the app
+# .venv clobbers the app's pinned pydantic/pydantic-core and breaks boot with
+# "ModuleNotFoundError: pydantic_core". So we NEVER touch .venv here; on
+# failure we warn and continue rather than fall back into the venv.
 if [[ $WITH_GRAPHIFY -eq 1 ]]; then
   if command -v graphify >/dev/null 2>&1; then
     echo "==> graphify present ($(command -v graphify)) — upgrading"
-    uv tool upgrade graphifyy 2>/dev/null || uv tool install graphifyy 2>/dev/null || true
+    uv tool upgrade graphifyy 2>/dev/null || uv tool install --force graphifyy 2>/dev/null || true
+  elif uv tool install graphifyy; then
+    echo "==> graphify ready: $(command -v graphify 2>/dev/null || echo "$(uv tool dir --bin 2>/dev/null)/graphify")"
   else
-    echo "==> installing graphify (graphifyy) as a uv tool"
-    uv tool install graphifyy 2>/dev/null \
-      || { echo "==> uv tool install failed — installing into .venv instead"; \
-           uv pip install --python .venv/bin/python graphifyy >/dev/null; }
-  fi
-  if command -v graphify >/dev/null 2>&1; then
-    echo "==> graphify ready: $(command -v graphify)"
-  else
-    echo "==> graphify installed into .venv (not on PATH) — call it as .venv/bin/graphify," \
-         "or add the uv tool bin dir (\`uv tool dir --bin\`, usually ~/.local/bin) to PATH" >&2
+    echo "==> WARN: 'uv tool install graphifyy' failed — skipping graphify (stack still boots)." \
+         "Install it yourself with:  uv tool install graphifyy   (or: pipx install graphifyy)." \
+         "Deliberately NOT installing into .venv — that would break the app's pydantic." >&2
   fi
 fi
 
