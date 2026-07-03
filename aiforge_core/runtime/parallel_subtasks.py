@@ -1619,6 +1619,93 @@ def _directed_hints(output: str) -> list[str]:
     return uniq[:20]
 
 
+_SRC_EXTS = (".py", ".java", ".kt", ".go", ".c", ".cc", ".cpp", ".cxx", ".h",
+             ".hpp", ".js", ".mjs", ".ts", ".tsx", ".rs", ".rb", ".php", ".sh",
+             ".toml", ".cfg", ".json")
+
+
+def _gather_sources(cwd: str) -> list[tuple[str, str]]:
+    """Every source file in the tree (ANY language), for the reconciler's
+    rewrite context. Excludes deps/artifacts/venvs. Returns [(relpath, content)]."""
+    out: list[tuple[str, str]] = []
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in (
+            ".git", ".aiforge-worktrees", ".aiforge-venv", ".venv", "venv",
+            "__pycache__", "node_modules", "target", "build", "dist", ".pytest_cache")]
+        for f in files:
+            if f.endswith(_SRC_EXTS):
+                p = os.path.join(root, f)
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as fh:
+                        out.append((os.path.relpath(p, cwd), fh.read()))
+                except Exception:  # noqa: BLE001
+                    pass
+    return out
+
+
+def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
+    """DETERMINISTIC, language/usecase-agnostic reconcile step: give a fresh LLM
+    call the WHOLE failing project + the errors, and have it OUTPUT the corrected
+    files (=== path === blocks) — the same reliable mechanism that built the code.
+    Syntax-check + write each. Returns the paths written. No task-specific logic."""
+    from aiforge_core.llm.client import complete as _complete
+    try:
+        budget = int(os.environ.get("AIFORGE_RECONCILE_CTX_CHARS", "28000"))
+    except ValueError:
+        budget = 28000
+    parts: list[str] = []
+    total = 0
+    for rel, content in _gather_sources(cwd):
+        block = f"=== {rel} ===\n{content}"
+        if total + len(block) > budget:
+            continue
+        parts.append(block)
+        total += len(block)
+    hint_str = "\n".join(f"- {h}" for h in hints)
+    prompt = (
+        "The project's tests FAIL. FIX THE CODE so every test passes.\n\n"
+        f"TEST/BUILD ERRORS:\n{output[-3000:]}\n\n"
+        + (f"WHAT TO FIX:\n{hint_str}\n\n" if hint_str else "")
+        + "Below is every source file. Output ONLY the files you CHANGED, each as:\n"
+          "=== path/to/file ===\n<full corrected file content>\n\n"
+          "Rules: fix the IMPLEMENTATION to satisfy the tests (add the missing "
+          "attributes/methods, align names across files, correct the logic). Keep "
+          "the tests as-is unless a test is plainly wrong. One canonical name for "
+          "each thing everywhere. Output NOTHING but the changed === path === "
+          "blocks — full file contents, no ellipses.\n\n"
+        + f"SOURCE FILES:\n" + "\n\n".join(parts))
+    try:
+        mt = max(4096, int(os.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192")))
+    except ValueError:
+        mt = 8192
+    out = _complete("doer", [
+        {"role": "system", "content": "You are a senior engineer fixing a failing "
+         "build. Output ONLY corrected files in === path === format, nothing else."},
+        {"role": "user", "content": prompt}], max_tokens=mt)
+    blocks = _parse_file_blocks(out or "")
+    written: list[str] = []
+    for rel, content in blocks.items():
+        rel = rel.lstrip("/").replace("..", "")
+        if not rel or not content.strip():
+            continue
+        try:
+            from aiforge_core.runtime.syntax_guard import validate_syntax
+            _ok, _ = validate_syntax(rel, content)
+            if not _ok:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        dest = os.path.join(cwd, rel)
+        try:
+            os.makedirs(os.path.dirname(dest) or cwd, exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            written.append(rel)
+        except Exception:  # noqa: BLE001
+            pass
+    return written
+
+
 def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     """Build + test the merged tree; while it fails on cross-file drift, run a
     bounded Doer pass over the WHOLE workspace — fed the RAW test output + a
@@ -1634,17 +1721,6 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         result["rep"] = build_and_test_report(cwd)
         return
 
-    try:
-        from aiforge_core.llm.client import complete as _complete
-        from aiforge_core.runtime.chat_agent import run_chat_agent
-    except Exception as exc:  # noqa: BLE001
-        yield {"type": "thought", "role": "reconciler", "text": f"reconcile import failed: {exc}"}
-        result["rep"] = build_and_test_report(cwd)
-        return
-
-    def _complete_fn(role, convo):
-        return _complete(role, convo)
-
     max_rounds = _reconcile_rounds()
     rounds = 0
     while not ok and rounds < max_rounds:
@@ -1654,32 +1730,24 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         hints = _directed_hints(output)
         yield {"type": "thought", "role": "reconciler",
                "text": f"Integration failed — reconciliation pass {rounds}/{max_rounds}: "
-                       + (f"{len(hints)} concrete fix(es) to apply…" if hints
-                          else "diagnosing the failing tests…")}
-        msg = (
-            "The merged project's tests FAIL — modules were built in ISOLATION so "
-            "they don't quite link. FIX THE CODE so every test passes.\n\n"
-            "IMPORTANT: do NOT run the tests yourself — your shell has no test env "
-            "set up, so run_tests/pytest will return EMPTY and waste your turns. "
-            "Just READ the relevant files and EDIT them with the editor tool to fix "
-            "the errors below. I re-run the full test suite for you after you "
-            "finish, and hand you back anything still failing.\n\n"
-            + ("CONCRETE FIXES (apply each — open the file first to get exact "
-               "names):\n" + "\n".join(f"{i + 1}. {h}" for i, h in enumerate(hints))
-               + "\n\n" if hints else "")
-            + "Prefer the names/API in SPEC.md. Keep ONE canonical spelling of each "
-              "class/function across all files. Make the edits, then finish.\n\n"
-            f"RAW test output:\n```\n{output[-3500:]}\n```")
+                       + (f"{len(hints)} concrete fix(es); rewriting the offending "
+                          "files…" if hints else "rewriting the offending files…")}
+        # DETERMINISTIC fix: a ReAct agent narrates "I'll add current_piece" but
+        # never calls the editor (qwen treats "fix" as analysis). Instead give a
+        # fresh LLM call the WHOLE failing project + errors and have it OUTPUT the
+        # corrected files (=== path === blocks) — the same mechanism that reliably
+        # built the code — then WRITE them. Guarantees edits land.
         try:
-            for ev in run_chat_agent([{"role": "user", "content": msg}], cwd=cwd,
-                                     role="doer", complete_fn=_complete_fn):
-                if ev.get("type") in ("tool", "error"):
-                    yield {**ev, "role": ev.get("role") or "reconciler"}
-                elif ev.get("type") == "thought":
-                    yield {**ev, "role": "reconciler"}
+            written = _rewrite_fix(cwd, output, hints)
         except Exception as exc:  # noqa: BLE001
             yield {"type": "thought", "role": "reconciler", "text": f"reconcile pass error: {exc}"}
             break
+        if written:
+            yield {"type": "tool", "role": "reconciler", "name": "rewrote files",
+                   "args": {"pass": rounds}, "result": {"files": written}}
+        else:
+            yield {"type": "thought", "role": "reconciler",
+                   "text": "no file changes produced this pass"}
         ok, output = _project_test_output(cwd)
 
     result["rep"] = build_and_test_report(cwd)
