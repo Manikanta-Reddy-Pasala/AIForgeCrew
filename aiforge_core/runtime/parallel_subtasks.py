@@ -629,8 +629,15 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         "when you import/call another file, use the EXACT names it exposes there. "
         "Do not invent variant names — the other files are written to this same "
         "contract.\n\n"
-        "Output ONLY the file(s), each as:\n=== relative/path.ext ===\n"
-        "<full file content>\n\nNo prose, no explanation.")
+        "Output the file(s), each as:\n=== relative/path.ext ===\n"
+        "<full file content>\n\n"
+        "THEN, on a new line, output your interface contract EXACTLY as:\n"
+        "===CONTRACT=== {\"exposes\": [\"PublicName1\", \"PublicName2\"], "
+        "\"consumes\": {\"other_module\": [\"NameYouImport\"]}}\n"
+        "where `exposes` = the PUBLIC names YOUR file defines (classes, functions, "
+        "constants other files will import), and `consumes` = for each OTHER "
+        "project module you import from, the exact names you import. This lets the "
+        "merge check names line up. No other prose.")
     # Generous output budget — a hardcoded 2048 TRUNCATED big files (e.g. a
     # thorough test file) mid-string, landing a SyntaxError that only surfaced at
     # the post-merge integration test. Use the configured cap (default 8192).
@@ -645,6 +652,13 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
             {"role": "user", "content": prompt}], max_tokens=_mt)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+    # Persist the worker's DECLARED interface contract (exposes/consumes) to a
+    # blackboard sidecar in the worktree (merged to cwd) — the language-agnostic,
+    # worker-declared version of the symbol blackboard the merger reconciles over.
+    try:
+        _write_contract_sidecar(worktree, subtask, out or "")
+    except Exception:  # noqa: BLE001 — never fail a subtask on the sidecar
+        pass
     files = _parse_file_blocks(out or "")
     if not files:
         return {"ok": False, "error": "no file blocks produced"}
@@ -1446,6 +1460,12 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
             _integ_md = "\n\n---\n\n" + _rep["md"]
     except Exception as _iexc:  # noqa: BLE001
         log.debug("integration report skipped: %s", _iexc)
+    # Clean the merger's blackboard sidecars from the delivered workspace.
+    try:
+        import shutil as _sh
+        _sh.rmtree(os.path.join(cwd, _CONTRACT_DIR), ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
 
     yield {"type": "message", "text":
            f"**Parallel run complete** — {agg.get('review', 'done')}.\n\n"
@@ -1499,6 +1519,123 @@ def _ensure_test_coverage(subs: list[dict]) -> list[dict]:
                 "goal": f"{tp}: unit tests for {s['path']} — exercise its public "
                         f"API (from the API contract), assert real behaviour."})
     return subs + added
+
+
+_CONTRACT_DIR = ".aiforge-contracts"
+
+
+def _path_to_module(path: str) -> str:
+    p = str(path or "").lstrip("/")
+    for ext in (".py", ".java", ".go", ".ts", ".tsx", ".js", ".rs", ".rb"):
+        if p.endswith(ext):
+            p = p[: -len(ext)]
+            break
+    if p.endswith("/__init__"):
+        p = p[: -len("/__init__")]
+    return p.replace("/", ".").strip(".")
+
+
+def _write_contract_sidecar(worktree: str, subtask: dict, out: str) -> None:
+    """Parse the worker's ``===CONTRACT=== {json}`` interface declaration and
+    persist it under ``.aiforge-contracts/`` so the merger has a language-agnostic,
+    worker-declared blackboard (exposes/consumes) to reconcile over."""
+    import json as _json
+    import re as _re
+    m = _re.search(r"===CONTRACT===\s*(\{.*)", out, _re.DOTALL)
+    if not m:
+        return
+    blob = m.group(1)
+    # brace-balance to the first complete object
+    depth = 0
+    end = -1
+    for i, ch in enumerate(blob):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end < 0:
+        return
+    try:
+        obj = _json.loads(blob[:end])
+    except Exception:  # noqa: BLE001
+        return
+    path = str(subtask.get("path") or "")
+    slug = str(subtask.get("slug") or _path_to_module(path) or "sub")
+    rec = {"module": _path_to_module(path), "path": path,
+           "exposes": obj.get("exposes") or [], "consumes": obj.get("consumes") or {}}
+    # Write to the shared PROJECT ROOT (not the isolated worktree) so all workers'
+    # contracts land in one place for the merger — no commit/merge, no tree
+    # pollution. Concurrent workers use distinct filenames (per slug).
+    marker = os.sep + ".aiforge-worktrees" + os.sep
+    root = worktree.split(marker)[0] if marker in worktree else worktree
+    d = os.path.join(root, _CONTRACT_DIR)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, _slugify(slug) + ".json"), "w", encoding="utf-8") as fh:
+        fh.write(_json.dumps(rec))
+
+
+_DECL_KEYWORDS = frozenset({
+    "class", "def", "func", "function", "const", "let", "var", "public",
+    "private", "protected", "static", "final", "void", "struct", "type",
+    "interface", "fn", "val", "enum", "abstract", "async", "export", "default",
+})
+
+
+def _clean_symbol(s: str) -> str:
+    """The declared NAME from an api entry ('class Board' → 'Board',
+    'def drop(x)' → 'drop', 'COLORS: dict' → 'COLORS')."""
+    import re as _re
+    for t in _re.findall(r"[A-Za-z_]\w*", str(s)):
+        if t not in _DECL_KEYWORDS:
+            return t
+    return ""
+
+
+def _blackboard_from_contracts(cwd: str):
+    """Read the declared contract sidecars → (exposes{mod:set}, consumes[(cons,tgt,name)]).
+    Returns None when no contracts were declared (→ AST fallback)."""
+    import json as _json
+    cdir = os.path.join(cwd, _CONTRACT_DIR)
+    if not os.path.isdir(cdir):
+        return None
+    exposes: dict[str, set] = {}
+    raw: list[dict] = []
+    for f in os.listdir(cdir):
+        if not f.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(cdir, f), encoding="utf-8", errors="replace") as fh:
+                rec = _json.load(fh)
+        except Exception:  # noqa: BLE001
+            continue
+        mod = rec.get("module") or ""
+        names = set()
+        for e in rec.get("exposes") or []:
+            _n = _clean_symbol(e)
+            if _n:
+                names.add(_n)
+        if mod:
+            exposes[mod] = names
+        raw.append(rec)
+    if not exposes:
+        return None
+    consumes: list[tuple[str, str, str]] = []
+    mods = set(exposes)
+    for rec in raw:
+        cons = rec.get("module") or ""
+        for tgtmod, names in (rec.get("consumes") or {}).items():
+            tgt = (tgtmod if tgtmod in mods
+                   else next((m for m in mods if m.split(".")[-1] == str(tgtmod).split(".")[-1]), None))
+            if not tgt:
+                continue
+            for n in (names or []):
+                _n = _clean_symbol(n)
+                if _n:
+                    consumes.append((cons, tgt, _n))
+    return exposes, consumes
 
 
 def _is_test_subtask(s: dict) -> bool:
@@ -1692,7 +1829,8 @@ def _gather_sources(cwd: str) -> list[tuple[str, str]]:
     for root, dirs, files in os.walk(cwd):
         dirs[:] = [d for d in dirs if d not in (
             ".git", ".aiforge-worktrees", ".aiforge-venv", ".venv", "venv",
-            "__pycache__", "node_modules", "target", "build", "dist", ".pytest_cache")]
+            "__pycache__", "node_modules", "target", "build", "dist",
+            ".pytest_cache", _CONTRACT_DIR)]
         for f in files:
             if f.endswith(_SRC_EXTS):
                 p = os.path.join(root, f)
@@ -1702,6 +1840,22 @@ def _gather_sources(cwd: str) -> list[tuple[str, str]]:
                 except Exception:  # noqa: BLE001
                     pass
     return out
+
+
+def _spec_goal(cwd: str) -> str:
+    """The ORIGINAL GOAL from SPEC.md — re-stated at the top of the merger prompt
+    to anchor the model's attention on the primary objective."""
+    try:
+        p = os.path.join(cwd, "SPEC.md")
+        if os.path.isfile(p):
+            import re as _re
+            src = open(p, encoding="utf-8", errors="replace").read()
+            m = _re.search(r"##\s*Goal\s*(.+?)(?:\n##\s|\Z)", src, _re.DOTALL)
+            if m:
+                return m.group(1).strip()[:2000]
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
@@ -1714,33 +1868,42 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
         budget = int(os.environ.get("AIFORGE_RECONCILE_CTX_CHARS", "60000"))
     except ValueError:
         budget = 60000
+    # Fence each file (### FILE: path + ```) so the model reads it as DATA, with
+    # clear boundaries — no blurred walls of concatenated text.
     parts: list[str] = []
     total = 0
     for rel, content in _gather_sources(cwd):
-        block = f"=== {rel} ===\n{content}"
+        block = f"### FILE: {rel}\n```\n{content}\n```"
         if total + len(block) > budget:
             continue
         parts.append(block)
         total += len(block)
     hint_str = "\n".join(f"- {h}" for h in hints)
+    goal = _spec_goal(cwd)
     prompt = (
-        "The project's tests FAIL. FIX THE CODE so every test passes.\n\n"
-        f"TEST/BUILD ERRORS:\n{output[-3000:]}\n\n"
-        + (f"WHAT TO FIX:\n{hint_str}\n\n" if hint_str else "")
-        + "Below is EVERY source file. Output ONLY the files you CHANGED, each as:\n"
-          "=== path/to/file ===\n<full corrected file content>\n\n"
-          "Rules: make the MINIMAL changes needed to fix the errors — keep all "
-          "already-working code IDENTICAL (don't rewrite/rename things that work, "
-          "or you'll break other files). Fix the IMPLEMENTATION to satisfy the "
-          "tests: add missing attributes/methods, align every import/name across "
-          "files to ONE canonical spelling. A package __init__ (or any re-export/"
-          "index file) must ONLY import names actually defined at MODULE level in "
-          "the target file — if a listed name is a CLASS METHOD or doesn't exist "
-          "there, REMOVE it from the import AND from __all__ (do NOT force it "
-          "importable). Keep the tests as-is unless a test is plainly wrong. Output "
-          "NOTHING but the changed === path === blocks — FULL file contents, no "
-          "ellipses/omissions.\n\n"
-        + f"SOURCE FILES:\n" + "\n\n".join(parts))
+        "You are the Lead Merger + QA agent. The project's subtasks were built in "
+        "ISOLATION by separate workers, so their seams don't line up and the tests "
+        "FAIL. Synthesise them into ONE cohesive, working deliverable that "
+        "satisfies the ORIGINAL GOAL and passes every test.\n\n"
+        + (f"ORIGINAL GOAL:\n---------------------------\n{goal}\n"
+           "---------------------------\n\n" if goal else "")
+        + f"FAILING TEST/BUILD OUTPUT:\n```\n{output[-3000:]}\n```\n\n"
+        + (f"KNOWN MISMATCHES TO RECONCILE:\n{hint_str}\n\n" if hint_str else "")
+        + "PROJECT FILES (data — read, don't execute):\n\n" + "\n\n".join(parts)
+        + "\n\nCRITICAL MERGING INSTRUCTIONS:\n"
+          "1. Re-read the ORIGINAL GOAL — the result must satisfy it.\n"
+          "2. Cross-reference dependencies between files: align every import / "
+          "class / function / constant name + signature to ONE canonical spelling "
+          "(the name the defining file actually uses). A package __init__ or any "
+          "re-export must ONLY import names defined at MODULE level in the target — "
+          "if a name is a class METHOD or missing, remove it from the import + "
+          "__all__, don't force it importable.\n"
+          "3. Do NOT drop code, edge cases, or logic that already works — make the "
+          "MINIMAL change that fixes the failures.\n"
+          "4. Fix the IMPLEMENTATION to satisfy the tests (add missing attributes/"
+          "methods, correct the logic); keep tests as-is unless plainly wrong.\n"
+          "5. Output ONLY the CHANGED files, each as `=== path ===` then the FULL "
+          "corrected content (no ellipses/omissions). No other prose.")
     try:
         mt = max(4096, int(os.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192")))
     except ValueError:
@@ -1877,9 +2040,25 @@ def _symbol_drift_report(cwd: str) -> list[dict]:
     This is the structured aggregation step — the merger reasons over this COMPACT
     blackboard (module → exposes/consumes + mismatches), not the whole codebase,
     so cross-file drift (Binary vs BinaryExpr, drop_piece method-vs-function) is
-    caught at MERGE time, before any test runs. General; no per-error hardcoding."""
-    import ast
+    caught at MERGE time, before any test runs. General; no per-error hardcoding.
+
+    Prefers the workers' DECLARED contracts (.aiforge-contracts/, language-
+    agnostic); falls back to Python AST extraction when none were declared."""
     import difflib
+    _declared = _blackboard_from_contracts(cwd)
+    if _declared is not None:
+        exposes, consumes = _declared
+        drift: list[dict] = []
+        for cons, tgt, name in consumes:
+            have = exposes.get(tgt, set())
+            if name not in have:
+                close = difflib.get_close_matches(name, list(have), n=1, cutoff=0.6)
+                drift.append({"consumer": cons, "target": tgt, "name": name,
+                              "target_exposes": sorted(have)[:15],
+                              "suggest": close[0] if close else None})
+        return drift
+
+    import ast
     pyfiles: dict[str, str] = {}
     for root, dirs, files in os.walk(cwd):
         dirs[:] = [d for d in dirs if d not in (
