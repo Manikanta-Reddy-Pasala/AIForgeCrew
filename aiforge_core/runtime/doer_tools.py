@@ -698,7 +698,20 @@ def subtask_update(slug: str, status: str) -> dict:
         t = store.get(ident)
         if t is None:
             return {"ok": False, "error": f"ticket not found: {ident}"}
-        return subtasks.update_subtask(t.id, slug, status, role="doer")
+        res = subtasks.update_subtask(t.id, slug, status, role="doer")
+        # Push a LIVE event onto the chat stream so the pinned subtask dock
+        # flips this row's status in real time (the store write alone only
+        # shows up on reload). Best-effort — no session / no emitter = no-op.
+        try:
+            _sid = os.environ.get("AIFORGE_CURRENT_SESSION", "")
+            if _sid:
+                from aiforge_core.runtime import chat_approve
+                chat_approve.emit(int(_sid),
+                                  {"type": "subtask_update", "slug": slug,
+                                   "status": status})
+        except Exception:  # noqa: BLE001 — never break the tool on emit failure
+            pass
+        return res
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 

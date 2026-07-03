@@ -252,6 +252,10 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         if session_id is not None:
             from aiforge_core.runtime import chat_approve
             chat_approve.set_emitter(session_id, q.put)
+            # Expose the session so the Doer's subtask_update tool can push a
+            # LIVE subtask_update event onto this stream (real-time status in
+            # the pinned dock), not just persist it to the ticket store.
+            os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
         # Serialize the AIFORGE_REPO_ROOT mutation across concurrent team runs.
         # Acquire CANCELLABLY + with feedback so a 2nd concurrent team run
         # doesn't stall its client silently behind a long-running first run.

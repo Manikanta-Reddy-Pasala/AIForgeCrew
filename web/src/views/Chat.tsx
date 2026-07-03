@@ -69,19 +69,34 @@ const SUBTASK_COLORS: Record<string, string> = {
 };
 
 function SubtaskList({ items }: { items: SubtaskItem[] }) {
-  const [open, setOpen] = useState(true);
+  // Default COLLAPSED — the header line is the crisp, live at-a-glance view;
+  // click to expand the full list.
+  const [open, setOpen] = useState(false);
   const counts = items.reduce((m, s) => { m[s.status] = (m[s.status] || 0) + 1; return m; }, {} as Record<string, number>);
   const done = (counts['done'] || 0) + (counts['won'] || 0) + (counts['skipped'] || 0);
   const order = ['done', 'won', 'running', 'failed', 'planned', 'pending', 'skipped'];
+  // Live "current" subtask shown in the collapsed header so status reads in
+  // real time without expanding.
+  const current = items.find(s => s.status === 'running')
+    || items.find(s => !['done', 'won', 'skipped', 'failed'].includes(s.status));
+  const pct = items.length ? Math.round((done / items.length) * 100) : 0;
   return (
-    <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '8px 10px', margin: '6px 0', background: 'var(--bg-1,#0d1117)' }}>
+    <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '6px 10px', margin: '4px 0', background: 'var(--bg-1,#0d1117)' }}>
       <div onClick={() => setOpen(v => !v)}
-        style={{ fontSize: 12, fontWeight: 600, marginBottom: open ? 6 : 0, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>{open ? '▾' : '▸'} Plan → {items.length} subtasks <span style={{ color: '#8892a0' }}>({done}/{items.length} done)</span></span>
-        <span style={{ display: 'flex', gap: 8, fontSize: 10, fontWeight: 500 }}>
+        style={{ fontSize: 12, fontWeight: 600, marginBottom: open ? 6 : 0, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {open ? '▾' : '▸'} Plan <span style={{ color: '#8892a0' }}>{done}/{items.length}</span>
+          {!open && current && (
+            <span style={{ color: SUBTASK_COLORS[current.status] || SUBTASK_COLORS.running, fontWeight: 500, marginLeft: 8 }}>
+              ▸ {current.slug}
+            </span>
+          )}
+        </span>
+        <span style={{ display: 'flex', gap: 6, fontSize: 10, fontWeight: 500, flexShrink: 0, alignItems: 'center' }}>
           {order.filter(k => counts[k]).map(k => (
             <span key={k} style={{ color: SUBTASK_COLORS[k] }}>● {counts[k]}</span>
           ))}
+          <span style={{ color: '#8892a0' }}>{pct}%</span>
         </span>
       </div>
       {/* progress bar */}
@@ -93,8 +108,9 @@ function SubtaskList({ items }: { items: SubtaskItem[] }) {
           <span style={{ flexShrink: 0, width: 58, textAlign: 'center', fontSize: 10, fontWeight: 600,
             color: SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending,
             border: `1px solid ${SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending}`, borderRadius: 4, padding: '1px 3px' }}>{s.status}</span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            <span style={{ color: '#8892a0', fontFamily: 'monospace', marginRight: 6 }}>{s.slug}</span>{s.goal}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+            <span style={{ color: '#8892a0', fontFamily: 'monospace', marginRight: 6 }}>{s.slug}</span>
+            <span style={{ color: '#8892a0' }}>{s.goal.length > 60 ? s.goal.slice(0, 60) + '…' : s.goal}</span>
           </span>
         </div>
       ))}
