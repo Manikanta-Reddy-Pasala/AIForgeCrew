@@ -613,10 +613,14 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
     goal = subtask.get("goal") or subtask.get("slug") or "implement the subtask"
     path = str(subtask.get("path") or "").strip().lstrip("/")
     retry_err = str(subtask.get("_retry_error") or "").strip()
+    tests_src = str(subtask.get("_tests") or "").strip()
     prompt = (
         (f"⚠ YOUR PREVIOUS ATTEMPT FAILED with:\n{retry_err[:800]}\nFix that this "
          f"time — re-read the SPEC, emit correct, complete code.\n\n---\n\n"
          if retry_err else "")
+        + (f"TEST-FIRST — your code MUST PASS these existing tests (they define "
+           f"the exact behaviour + names you must implement; make every assertion "
+           f"pass):\n{tests_src[:6000]}\n\n---\n\n" if tests_src else "")
         + (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
          f"file/dir paths it lists):\n{spec_md.strip()[:5000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
@@ -1349,12 +1353,37 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
 
     def _runner():
         try:
-            result["agg"] = run_parallel(cwd, base, None, subs,
-                                         _spec_run_one,
-                                         validate_one=default_validate_one,
-                                         integration_test=default_integration_test,
-                                         on_status=on_status,
-                                         should_cancel=_cancelled)
+            test_subs = [s for s in subs if _is_test_subtask(s)]
+            impl_subs = [s for s in subs if not _is_test_subtask(s)]
+            _tf = os.environ.get("AIFORGE_TEST_FIRST", "1") not in ("0", "false")
+            if _tf and test_subs and impl_subs:
+                # TEST-FIRST: build the tests first (they pin behaviour from the
+                # API contract), merge them into base, then build each impl in a
+                # worktree that HAS the tests + is fed its own test content — so
+                # the impl is functionally correct, not just linking.
+                q.put({"type": "thought", "role": "system",
+                       "text": f"Test-first: writing {len(test_subs)} test file(s), "
+                               f"then {len(impl_subs)} module(s) built to pass them…"})
+                aggA = run_parallel(cwd, base, None, test_subs, _spec_run_one,
+                                    validate_one=None, integration_test=None,
+                                    on_status=on_status, should_cancel=_cancelled)
+                if not _cancelled():
+                    for s in impl_subs:
+                        s["_tests"] = _matching_tests_for(cwd, s.get("path") or "")
+                    aggB = run_parallel(cwd, base, None, impl_subs, _spec_run_one,
+                                        validate_one=default_validate_one,
+                                        integration_test=default_integration_test,
+                                        on_status=on_status, should_cancel=_cancelled)
+                    result["agg"] = _merge_aggs(aggA, aggB)
+                else:
+                    result["agg"] = aggA
+            else:
+                result["agg"] = run_parallel(cwd, base, None, subs,
+                                             _spec_run_one,
+                                             validate_one=default_validate_one,
+                                             integration_test=default_integration_test,
+                                             on_status=on_status,
+                                             should_cancel=_cancelled)
         except Exception as exc:  # noqa: BLE001
             result["err"] = str(exc)
         finally:
@@ -1420,6 +1449,59 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
            f"{agg.get('done', 0)}/{agg.get('total', 0)} subtasks done. "
            f"See SPEC.md for the requirements each subtask built against."
            + _integ_md}
+
+
+def _is_test_subtask(s: dict) -> bool:
+    """True when this subtask produces a TEST file (built first, in test-first)."""
+    p = (str(s.get("path") or "") + " " + str(s.get("slug") or "")).lower()
+    base = os.path.basename(str(s.get("path") or "")).lower()
+    return ("test" in base or "/test" in p or "/spec" in p
+            or base.startswith("test") or base.endswith(("_test.py", "_test.go",
+            ".test.js", ".test.ts", ".spec.ts", ".spec.js"))
+            or "test-" in p or "-test" in p)
+
+
+def _matching_tests_for(cwd: str, impl_path: str) -> str:
+    """Read the test file(s) whose module name matches ``impl_path`` (board.py →
+    test_board.py / board_test.* / test/…/board.*), so the impl is built to PASS
+    them. Returns concatenated test source (capped)."""
+    if not impl_path:
+        return ""
+    stem = os.path.splitext(os.path.basename(impl_path))[0].lower()
+    if not stem:
+        return ""
+    out: list[str] = []
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in (
+            ".git", ".aiforge-worktrees", ".aiforge-venv", ".venv", "__pycache__")]
+        for f in files:
+            fl = f.lower()
+            is_test = ("test" in fl or ".spec." in fl)
+            if is_test and stem in fl:
+                try:
+                    with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                        rel = os.path.relpath(os.path.join(root, f), cwd)
+                        out.append(f"=== {rel} ===\n{fh.read()[:4000]}")
+                except Exception:  # noqa: BLE001
+                    pass
+    return "\n\n".join(out)[:8000]
+
+
+def _merge_aggs(a: dict, b: dict) -> dict:
+    """Combine two run_parallel aggregates (test phase + impl phase)."""
+    a = a or {}
+    b = b or {}
+    total = (a.get("total", 0) or 0) + (b.get("total", 0) or 0)
+    done = (a.get("done", 0) or 0) + (b.get("done", 0) or 0)
+    return {
+        "ok": bool(a.get("ok", True)) and bool(b.get("ok", True)),
+        "total": total, "done": done,
+        "failed": (a.get("failed", 0) or 0) + (b.get("failed", 0) or 0),
+        "validated": (a.get("validated", 0) or 0) + (b.get("validated", 0) or 0),
+        "merged": (a.get("merged", 0) or 0) + (b.get("merged", 0) or 0),
+        "conflicts": (a.get("conflicts") or []) + (b.get("conflicts") or []),
+        "review": b.get("review") or a.get("review") or "done",
+    }
 
 
 def _reconcile_rounds() -> int:
