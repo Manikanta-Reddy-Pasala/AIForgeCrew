@@ -66,6 +66,16 @@ def _configure_root() -> None:
     sh.setFormatter(fmt)
     root.addHandler(sh)
     root.propagate = False
+
+    # The neo4j 6.x driver logs a WARNING for EVERY query that references a
+    # label / relationship / property not present in the graph — e.g. the
+    # AiForgeMemory cross-repo recall `MATCH (a:Repo)-[:CALLS_REPO]->(b:Repo)`
+    # against a graph that has no such edges (`Repo`/`CALLS_REPO`/`evidence`
+    # "does not exist" warnings). They're HARMLESS — the query soft-fails to an
+    # empty result — but flood the console on every chat/pipeline recall. Mute
+    # the notification logger; genuine neo4j errors still raise + surface.
+    logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
+
     _CONFIGURED = True
 
 
