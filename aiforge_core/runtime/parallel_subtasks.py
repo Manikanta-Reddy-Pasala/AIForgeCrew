@@ -1798,9 +1798,11 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         # built the code — then WRITE them. Guarantees edits land.
         try:
             written = _rewrite_fix(cwd, output, hints)
-        except Exception as exc:  # noqa: BLE001
-            yield {"type": "thought", "role": "reconciler", "text": f"reconcile pass error: {exc}"}
-            break
+        except Exception as exc:  # noqa: BLE001 — a transient LLM error must NOT
+            # abandon the whole reconcile; log + retry the pass next round.
+            yield {"type": "thought", "role": "reconciler",
+                   "text": f"reconcile pass hit a transient error, retrying: {str(exc)[:80]}"}
+            written = []
         if written:
             yield {"type": "tool", "role": "reconciler", "name": "rewrote files",
                    "args": {"pass": rounds}, "result": {"files": written}}
