@@ -132,6 +132,7 @@ def _global_default_row() -> dict[str, Any] | None:
     Priority: persisted ``_default`` row > ``AIFORGE_DEFAULT_*`` env > none.
     """
     p = _path()
+    disk: dict[str, Any] = {}
     if p.exists():
         try:
             disk = _fc.read_json(p) or {}
@@ -139,7 +140,7 @@ def _global_default_row() -> dict[str, Any] | None:
             if isinstance(d, dict) and d.get("provider"):
                 return d
         except Exception:  # noqa: BLE001
-            pass
+            disk = {}
     prov = os.environ.get("AIFORGE_DEFAULT_PROVIDER")
     if prov:
         return {
@@ -151,6 +152,19 @@ def _global_default_row() -> dict[str, Any] | None:
                 "AIFORGE_DEFAULT_INSECURE_TLS", "").strip().lower()
                 in ("1", "true", "yes", "on"),
         }
+    # LAST RESORT: no explicit _default and no env → borrow a CONFIGURED role's
+    # endpoint so an unconfigured internal role (e.g. `validator`, which isn't a
+    # UI-configurable archetype) inherits a REAL local model instead of the
+    # `local-model-unconfigured` placeholder — which points litellm at OpenAI's
+    # default and 401s ("Incorrect API key: not-needed"), killing the team flow.
+    for pref in ("doer", "chat", "verifier", "planner", "architect"):
+        r = disk.get(pref)
+        if isinstance(r, dict) and r.get("provider") and r.get("model"):
+            return r
+    for k, r in disk.items():
+        if (not k.startswith("_") and isinstance(r, dict)
+                and r.get("provider") and r.get("model")):
+            return r
     return None
 
 
