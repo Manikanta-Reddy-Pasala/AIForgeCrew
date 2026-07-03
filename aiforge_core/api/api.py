@@ -3564,7 +3564,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             if len(_subs) >= 2:
                 _path["parallel"] = True
                 yield from _pp.stream_parallel_team(_spec, cwd=cwd, subtasks=_subs,
-                                                    enhanced=True)
+                                                    enhanced=True, session_id=session_id)
                 # stream_parallel_team emits no terminal `done`; synthesize one
                 # so a UI waiting on `done` doesn't hang (exactly one — the
                 # exception path in _gen only fires on error).

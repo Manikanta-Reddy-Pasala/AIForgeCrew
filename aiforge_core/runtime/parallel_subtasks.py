@@ -156,8 +156,13 @@ def _attempt(subtask: dict, wt: str, slug: str, run_one, validate_one) -> dict:
 
 def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
                  subtask: dict, run_one, validate_one, on_status=None,
-                 run_token: str | None = None) -> dict:
+                 run_token: str | None = None, should_cancel=None) -> dict:
     slug = subtask.get("slug") or "sub"
+    # Graceful Stop: a subtask still queued when the user hits Stop never starts
+    # its (expensive) agent run — it reports cancelled and the dock shows it.
+    if should_cancel is not None and should_cancel():
+        _update(ticket_id, slug, "cancelled", on_status)
+        return {"slug": slug, "ok": False, "cancelled": True, "branch": None}
     _update(ticket_id, slug, "running", on_status)
     try:
         wt, branch = _make_worktree(repo, base_branch, slug, run_token)
@@ -332,7 +337,8 @@ def _merge_branch(repo: str, base_branch: str, branch: str) -> tuple[bool, str]:
 
 def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                  subtasks: list[dict], run_one, *, validate_one=None,
-                 integration_test=None, on_status=None, merge: bool = True) -> dict:
+                 integration_test=None, on_status=None, merge: bool = True,
+                 should_cancel=None) -> dict:
     """Run ``subtasks`` concurrently (each in its own worktree), VALIDATE each
     (build/tests green), then merge the validated branches into ``base_branch``
     sequentially. Returns an aggregate incl. a review summary.
@@ -352,11 +358,19 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
         out: list[dict] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
             futs = [ex.submit(_run_subtask, repo_root, base_branch, ticket_id, s,
-                              run_one, validate_one, on_status, run_token)
+                              run_one, validate_one, on_status, run_token,
+                              should_cancel)
                     for s in batch]
             for f in concurrent.futures.as_completed(futs):
+                # On Stop, cancel every still-queued (not-yet-started) future so
+                # no further subtask agent kicks off.
+                if should_cancel is not None and should_cancel():
+                    for pf in futs:
+                        pf.cancel()
                 try:
                     out.append(f.result())
+                except concurrent.futures.CancelledError:
+                    continue
                 except Exception as exc:  # noqa: BLE001
                     out.append({"slug": "?", "ok": False, "error": str(exc)})
         return out
@@ -372,6 +386,8 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
     except ValueError:
         rounds = 1
     for _ in range(rounds):
+        if should_cancel is not None and should_cancel():
+            break
         failed = [s for s in subs if not (by_slug.get(s["slug"]) or {}).get("ok")]
         if not failed:
             break
@@ -1165,11 +1181,37 @@ def _ensure_git_workspace(cwd: str) -> str:
 
 
 def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = None,
-                         enhanced: bool = False):
+                         enhanced: bool = False, session_id: int | None = None):
     """Chat 'parallel team' mode: run the (pre-decomposed) subtasks CONCURRENTLY
     in isolated worktrees under ``cwd``, streaming live status. If ``subtasks``
-    isn't supplied, decompose here. Yields SSE-ready dicts."""
+    isn't supplied, decompose here. Yields SSE-ready dicts.
+
+    ``session_id`` wires the Stop button through: the per-subtask dispatch stops
+    launching new subtasks, the reconciliation loop halts, and the run's own
+    build/test subprocesses are killed."""
     import queue as _queue
+
+    def _cancelled() -> bool:
+        if session_id is None:
+            return False
+        try:
+            from aiforge_core.runtime import chat_cancel
+            return chat_cancel.is_cancelled(session_id)
+        except Exception:  # noqa: BLE001
+            return False
+
+    # Bind this run's subprocesses (integration build/pytest) to the session so
+    # Stop kills them, and register a cancel checker for the dispatch/reconcile.
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_cancel
+            chat_cancel.set_active(session_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+    if _cancelled():
+        yield {"type": "message", "text": "Stopped before the run started."}
+        return
 
     if enhanced:
         # Show the layer-1 spec (analyze → enhance) the planner split.
@@ -1241,7 +1283,8 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                                          _spec_run_one,
                                          validate_one=default_validate_one,
                                          integration_test=default_integration_test,
-                                         on_status=on_status)
+                                         on_status=on_status,
+                                         should_cancel=_cancelled)
         except Exception as exc:  # noqa: BLE001
             result["err"] = str(exc)
         finally:
@@ -1254,6 +1297,18 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         if item is None:
             break
         yield item
+        if _cancelled():
+            # Stop pressed: drain no further. The runner sees should_cancel and
+            # winds down (stops launching new subtasks); we just quit streaming.
+            break
+
+    if _cancelled():
+        agg = result.get("agg") or {}
+        yield {"type": "message", "text":
+               f"**Stopped** — {agg.get('done', 0)}/{len(subs)} subtasks finished "
+               "before you hit Stop. Their work is committed in the workspace; "
+               "verification + integration were skipped."}
+        return
 
     agg = result.get("agg") or {}
     if result.get("err"):
@@ -1281,7 +1336,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     _integ_md = ""
     _res: dict = {}
     try:
-        yield from _reconcile_integration(cwd, _res)
+        yield from _reconcile_integration(cwd, _res, should_cancel=_cancelled)
         _rep = _res.get("rep") or {}
         if _rep.get("md"):
             _integ_md = "\n\n---\n\n" + _rep["md"]
@@ -1303,13 +1358,16 @@ def _reconcile_rounds() -> int:
         return 3
 
 
-def _reconcile_integration(cwd: str, result: dict):
+def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     """Build + test the merged tree; while it fails on cross-file drift, run a
     bounded Doer pass over the WHOLE workspace with the failing output to fix the
     mismatches, re-testing each round. Yields SSE events; stores the final report
     in ``result['rep']``. Reconciliation is skippable via
-    AIFORGE_RECONCILE_INTEGRATION=0 (then it's a plain one-shot report)."""
+    AIFORGE_RECONCILE_INTEGRATION=0 (then it's a plain one-shot report). Halts
+    immediately when ``should_cancel()`` (the user hit Stop)."""
     from aiforge_core.runtime.integration_report import build_and_test_report
+    if should_cancel is not None and should_cancel():
+        return
     rep = build_and_test_report(cwd)
     result["rep"] = rep
     if os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
@@ -1317,6 +1375,8 @@ def _reconcile_integration(cwd: str, result: dict):
     max_rounds = _reconcile_rounds()
     rounds = 0
     while rep.get("ok") is False and rounds < max_rounds:
+        if should_cancel is not None and should_cancel():
+            return
         rounds += 1
         yield {"type": "thought", "role": "reconciler",
                "text": f"Integration failed — reconciliation pass {rounds}/{max_rounds} "

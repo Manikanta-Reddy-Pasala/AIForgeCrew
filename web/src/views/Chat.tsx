@@ -65,7 +65,7 @@ type LiveTurn = {
 const SUBTASK_COLORS: Record<string, string> = {
   done: '#3fb950', skipped: '#5a6472', running: '#6aa6ff',
   failed: '#e5534b', pending: '#8892a0', planned: '#a371f7',
-  won: '#d4a72c',
+  won: '#d4a72c', cancelled: '#5a6472',
 };
 
 function SubtaskList({ items, onViewSpec }: { items: SubtaskItem[]; onViewSpec?: () => void }) {
@@ -74,11 +74,11 @@ function SubtaskList({ items, onViewSpec }: { items: SubtaskItem[]; onViewSpec?:
   const [open, setOpen] = useState(false);
   const counts = items.reduce((m, s) => { m[s.status] = (m[s.status] || 0) + 1; return m; }, {} as Record<string, number>);
   const done = (counts['done'] || 0) + (counts['won'] || 0) + (counts['skipped'] || 0);
-  const order = ['done', 'won', 'running', 'failed', 'planned', 'pending', 'skipped'];
+  const order = ['done', 'won', 'running', 'failed', 'cancelled', 'planned', 'pending', 'skipped'];
   // Live "current" subtask shown in the collapsed header so status reads in
   // real time without expanding.
   const current = items.find(s => s.status === 'running')
-    || items.find(s => !['done', 'won', 'skipped', 'failed'].includes(s.status));
+    || items.find(s => !['done', 'won', 'skipped', 'failed', 'cancelled'].includes(s.status));
   const pct = items.length ? Math.round((done / items.length) * 100) : 0;
   return (
     <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '6px 10px', margin: '4px 0', background: 'var(--bg-1,#0d1117)' }}>
