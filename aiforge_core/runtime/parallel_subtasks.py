@@ -598,11 +598,18 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         + f"SUBTASK: {goal}\n\n"
         "Output ONLY the file(s), each as:\n=== relative/path.py ===\n"
         "<full file content>\n\nNo prose, no explanation.")
+    # Generous output budget — a hardcoded 2048 TRUNCATED big files (e.g. a
+    # thorough test file) mid-string, landing a SyntaxError that only surfaced at
+    # the post-merge integration test. Use the configured cap (default 8192).
+    try:
+        _mt = max(2048, int(os.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192")))
+    except ValueError:
+        _mt = 8192
     try:
         out = _complete("doer", [
             {"role": "system", "content": "You are a senior engineer. Output "
              "complete, working code files only, in the === path === format."},
-            {"role": "user", "content": prompt}], max_tokens=2048)
+            {"role": "user", "content": prompt}], max_tokens=_mt)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     files = _parse_file_blocks(out or "")
@@ -630,6 +637,18 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
         if scope and not _in_scope(rel, scope):
             rejected.append(rel)
             continue
+        # Syntax gate: lightweight writes files DIRECTLY (no file_write / no
+        # syntax_guard), and a test file's isolated worktree has no project
+        # marker so build-validation is skipped — a truncated/broken .py would
+        # sail through per-subtask and only blow up pytest collection at the
+        # post-merge integration test. compile() it here and FAIL the subtask
+        # (→ bounded retry) so broken code never lands.
+        if rel.endswith(".py"):
+            try:
+                compile(content, rel, "exec")
+            except SyntaxError as exc:
+                return {"ok": False,
+                        "error": f"syntax error in {rel}: {exc.msg} at line {exc.lineno}"}
         dest = os.path.join(worktree, rel)
         try:
             os.makedirs(os.path.dirname(dest) or worktree, exist_ok=True)
