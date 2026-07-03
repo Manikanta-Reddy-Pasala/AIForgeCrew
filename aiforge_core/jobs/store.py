@@ -80,6 +80,11 @@ _SQLITE_ADDED_COLUMNS = (
 )
 
 
+# DB paths whose schema DDL+migrate has already run this process (keyed by path
+# so per-test temp DBs each still get created).
+_SQLITE_SCHEMA_DONE: set[str] = set()
+
+
 def _migrate_sqlite(con) -> None:
     have = {r["name"] for r in con.execute("PRAGMA table_info(jobs)").fetchall()}
     for col, decl in _SQLITE_ADDED_COLUMNS:
@@ -105,8 +110,13 @@ class _SqliteJobStore:
         con.row_factory = sqlite3.Row
         try:
             con.execute("PRAGMA journal_mode=WAL")
-            con.executescript(_SQLITE_DDL)
-            _migrate_sqlite(con)
+            # Run schema DDL + migrate ONCE per DB path, not on every connect
+            # (executescript + ALTER-TABLE-ADD-COLUMN on each call was wasteful
+            # and spammed caught "duplicate column" errors).
+            if path not in _SQLITE_SCHEMA_DONE:
+                con.executescript(_SQLITE_DDL)
+                _migrate_sqlite(con)
+                _SQLITE_SCHEMA_DONE.add(path)
             yield con
             con.commit()
         finally:

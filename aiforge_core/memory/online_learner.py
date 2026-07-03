@@ -194,6 +194,8 @@ def record_step_trace(t: StepTrace) -> None:
                     t.prompt_version, t.status,
                 ),
             )
+    except Exception:  # noqa: BLE001 — a best-effort trace write must never break a run
+        pass
     finally:
         conn.close()
 

@@ -3144,8 +3144,11 @@ async def chat_media_upload(session_id: int, file: UploadFile = File(...)) -> di
         raise HTTPException(400, saved.get("error", "invalid file"))
     role = (chat_store.get_session(session_id) or {}).get("role") or "chat"
     try:
-        desc = chat_media.describe_upload(saved["path"], saved["filename"],
-                                          saved["mime"], role)
+        # describe_upload runs a (slow) vision/text extraction — off the event
+        # loop so one image upload doesn't block every other request.
+        desc = await asyncio.to_thread(
+            chat_media.describe_upload, saved["path"], saved["filename"],
+            saved["mime"], role)
     except Exception:  # noqa: BLE001 — describe/extract is best-effort
         desc = ""
     row = chat_store.add_media(session_id, saved["filename"], saved["path"],
