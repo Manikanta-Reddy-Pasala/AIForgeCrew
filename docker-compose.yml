@@ -154,6 +154,9 @@ services:
       AIFORGE_DSN: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:5432/${PG_DB:-aiforge}
       AIFORGE_PG_URL: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:5432/${PG_DB:-aiforge}
       AIFORGE_FORCE_PG: "1"
+      # Parallel job processing: N runner loops each claim a distinct ticket.
+      AIFORGE_RUNNER_CONCURRENCY: ${AIFORGE_RUNNER_CONCURRENCY:-1}
+      AIFORGE_RUNNER_POLL_SEC: ${AIFORGE_RUNNER_POLL_SEC:-10}
       AIFORGE_NEO4J_URI: bolt://127.0.0.1:7687
       NEO4J_URI: bolt://127.0.0.1:7687
       AIFORGE_NEO4J_USER: neo4j
