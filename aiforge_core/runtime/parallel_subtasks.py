@@ -1819,7 +1819,9 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     # (couldn't run tests here). A False is NOT necessarily a code defect: a local
     # model also writes buggy tests, which the reviewer/audit flags + fixes; say so
     # rather than a bare "failed".
-    _ok = _rep.get("ok")
+    # Authoritative outcome from the reconcile's own test runner (matches pytest);
+    # the report's ok can disagree — it uses a separate runner that may miss deps.
+    _ok = _res.get("ok") if "ok" in _res else _rep.get("ok")
     if _ok is True:
         _verdict = "✅ **Built — all tests pass.**"
     elif _ok is False:
@@ -2989,6 +2991,7 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     ok, output = _project_test_output(cwd)
     if ok or os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
         result["rep"] = build_and_test_report(cwd)
+        result["ok"] = ok            # authoritative (matches the test runner)
         return
 
     max_rounds = _reconcile_rounds()
@@ -3080,6 +3083,7 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
                 break
 
     result["rep"] = build_and_test_report(cwd)
+    result["ok"] = ok                # authoritative final state (the test runner)
     if rounds and ok:
         yield {"type": "thought", "role": "reconciler",
                "text": f"Reconciliation green after {rounds} pass(es) ✅"}
