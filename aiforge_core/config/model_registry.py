@@ -314,11 +314,24 @@ _THINKING_ROLES = ("planner", "architect", "enhancer", "reviewer", "learner",
 _CODER_ROLES = ("doer", "developer", "coder", "implementer", "builder", "tester")
 
 
+# Embedding / rerank models can't generate — never assign them to a chat role.
+_NON_GENERATIVE_MARKERS = (
+    "embed", "embedding", "rerank", "reranker", "bge-", "-bge", "nomic-embed",
+    "gte-", "e5-", "instructor", "sentence-transformer",
+)
+
+
+def _is_generative(model_id: str) -> bool:
+    m = (model_id or "").lower()
+    return not any(k in m for k in _NON_GENERATIVE_MARKERS)
+
+
 def suggest_assignments(roles: list) -> dict:
     """Map each role to the best available model BY CAPABILITY: thinking roles →
     a reasoning model, coder roles → a fast non-reasoning coder, vision-needing →
-    a vision model. Larger context wins within a tier. {role: model_id}."""
-    models = list_models()
+    a vision model. Larger context wins within a tier. {role: model_id}.
+    Embedding/rerank models are excluded — they can't generate."""
+    models = [m for m in list_models() if _is_generative(m.get("model") or m.get("id"))]
     if not models:
         return {}
 
