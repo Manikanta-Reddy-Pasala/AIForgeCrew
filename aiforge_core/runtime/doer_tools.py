@@ -134,6 +134,37 @@ def file_write(path: str, content: str) -> dict:
     """
     try:
         p = resolve_inside_root(path)
+        # ANTI-TRUNCATION GUARD: refuse to overwrite an EXISTING non-trivial file
+        # with a drastically smaller one. A local model that "rewrites" a file it
+        # read often drops most of it (e.g. PartiesWorkflow 558→13 lines) — on a
+        # real repo that silently destroys code. Force a targeted file_patch/edit
+        # instead. Tunable: AIFORGE_TRUNCATE_MIN_LINES / AIFORGE_TRUNCATE_KEEP_FRAC;
+        # AIFORGE_ALLOW_TRUNCATION=1 bypasses (e.g. an intentional full rewrite).
+        if os.environ.get("AIFORGE_ALLOW_TRUNCATION", "0") not in ("1", "true") \
+                and p.exists() and p.is_file():
+            try:
+                _old = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                _old = ""
+            _old_lines = _old.count("\n") + 1 if _old else 0
+            _new_lines = content.count("\n") + 1 if content else 0
+            try:
+                _min = int(os.environ.get("AIFORGE_TRUNCATE_MIN_LINES", "25"))
+                _frac = float(os.environ.get("AIFORGE_TRUNCATE_KEEP_FRAC", "0.5"))
+            except ValueError:
+                _min, _frac = 25, 0.5
+            if _old_lines >= _min and _new_lines < _old_lines * _frac:
+                return {
+                    "ok": False,
+                    "error": (f"refused: would shrink existing {path} from "
+                              f"{_old_lines} to {_new_lines} lines "
+                              f"(>{int((1 - _frac) * 100)}% loss — likely a "
+                              "truncated rewrite)."),
+                    "hint": ("make the change with file_patch/edit (targeted "
+                             "replace) instead of rewriting the whole file; if a "
+                             "full rewrite is truly intended, keep ALL existing "
+                             "code you are not changing."),
+                }
         if os.environ.get("AIFORGE_DOER_SKIP_SYNTAX", "0") not in ("1", "true"):
             ok, err = validate_syntax(path, content)
             if not ok:
