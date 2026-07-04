@@ -1496,6 +1496,24 @@ def _ensure_git_workspace(cwd: str) -> str:
     return (cur.stdout or "").strip() or "main"
 
 
+def _llm_review_call(sysmsg: str, usr: str, max_tokens: int) -> str | None:
+    """One review LLM call, robust to qwen's intermittent empty response (it
+    returns "" on some prompts at low temp). Retries once at a higher temp.
+    Returns the text, or None if both attempts fail/empty."""
+    from aiforge_core.llm.client import complete as _complete
+    for temp in (0.2, 0.5):
+        try:
+            out = _complete("doer",
+                            [{"role": "system", "content": sysmsg},
+                             {"role": "user", "content": usr}],
+                            max_tokens=max_tokens, temperature=temp)
+        except Exception:  # noqa: BLE001
+            out = None
+        if out and out.strip():
+            return out
+    return None
+
+
 def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
     """Review the SPEC before any code is built. An LLM checks it against the
     request for CONTRADICTIONS, ambiguity, missing cases, and scope creep, and
@@ -1503,19 +1521,12 @@ def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
     returns the original unchanged. Off with AIFORGE_REVIEW_SPEC=0."""
     if os.environ.get("AIFORGE_REVIEW_SPEC", "1") in ("0", "false") or not spec_md.strip():
         return spec_md, ""
-    try:
-        from aiforge_core.llm.client import complete as _complete
-        out = _complete("doer", [
-            {"role": "system", "content":
-             "You review a build SPEC before coding starts. Check it against the "
-             "REQUEST for: internal contradictions, ambiguity, missing requirements/"
-             "edge cases, and scope creep (things not asked for). If the spec is "
-             "sound, reply with EXACTLY `OK`. Otherwise reply with the CORRECTED "
-             "full spec in markdown — same structure, fixed. No prose, no fences."},
-            {"role": "user", "content":
-             f"REQUEST:\n{prompt[:2000]}\n\nSPEC:\n{spec_md[:6000]}"},
-        ], max_tokens=4096, temperature=0.2) or ""
-    except Exception:  # noqa: BLE001
+    sysmsg = ("Review this build spec vs the request. Reply OK if sound, else the "
+              "corrected full spec (markdown, no fences). Look for contradictions, "
+              "ambiguity, missing cases, scope creep.")
+    usr = f"REQUEST:\n{prompt[:2000]}\n\nSPEC:\n{spec_md[:6000]}"
+    out = _llm_review_call(sysmsg, usr, 4096)
+    if out is None:
         return spec_md, ""
     out = out.strip()
     if not out or out.upper().startswith("OK") or len(out) < 40:
@@ -1547,21 +1558,14 @@ def _review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
         total += len(block)
     if not blocks:
         return [], ""
-    try:
-        from aiforge_core.llm.client import complete as _complete
-        out = _complete("doer", [
-            {"role": "system", "content":
-             "You review TEST files against the SPEC before the implementation is "
-             "written. Find tests that are PROVABLY WRONG: assertions that "
-             "contradict each other or the spec, impossible/typo'd expected values, "
-             "or coverage of features the spec never asked for (scope creep). Do "
-             "NOT weaken correct tests. If all tests are sound reply EXACTLY `OK`. "
-             "Otherwise output ONLY the corrected files, each as `=== path ===` then "
-             "the full file, marking each fix with a `# test-review:` comment."},
-            {"role": "user", "content":
-             f"SPEC:\n{spec_md[:4000]}\n\nTESTS:\n\n" + "\n\n".join(blocks)},
-        ], max_tokens=8192, temperature=0.2) or ""
-    except Exception:  # noqa: BLE001
+    sysmsg = ("Review these test files vs the spec. Reply OK if all sound. Else "
+              "output only the corrected files, each as `=== path ===` then the "
+              "full file, marking fixes with `# test-review:`. Fix only PROVABLY "
+              "wrong tests (contradictory/impossible assertions, scope creep beyond "
+              "the spec). Never weaken a correct test.")
+    usr = f"SPEC:\n{spec_md[:4000]}\n\nTESTS:\n\n" + "\n\n".join(blocks)
+    out = _llm_review_call(sysmsg, usr, 8192)
+    if out is None:
         return [], ""
     out = out.strip()
     if not out or out.upper().startswith("OK"):
