@@ -2450,12 +2450,44 @@ def _repomap_max_chars() -> int:
 
 
 def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str:
-    """A compact directory tree of ``cwd`` for the system prompt, so the
-    agent has the repo structure in context every turn (no re-searching).
-    Skips junk dirs, caps entries + depth. Best-effort."""
+    """Repo map for the system prompt so the agent navigates by SYMBOLS, not blind
+    `find`. Prefers the tree-sitter + PageRank Aider RepoMap (ranked functions/
+    classes per file) — critical on big repos where a bare file tree is useless;
+    falls back to a compact directory tree. Best-effort, char-capped."""
     base = str(_workspace_root() or cwd)
     if not os.path.isdir(base):
         return f"WORKING DIRECTORY: {base} (not a directory)"
+    # 1. Tree-sitter Aider RepoMap — ranked symbols (the good map for analysis).
+    #    TIME-BOUNDED: the first parse of a big repo can be slow, so run it in a
+    #    thread with a short budget (AIFORGE_REPOMAP_BUDGET_S, default 6s). If it
+    #    doesn't finish in time, fall through to the instant dir tree — the cached
+    #    Aider map then serves later turns. Never blocks the turn.
+    if os.environ.get("AIFORGE_CHAT_AIDER_MAP", "1") not in ("0", "false"):
+        try:
+            budget = float(os.environ.get("AIFORGE_REPOMAP_BUDGET_S", "6"))
+        except ValueError:
+            budget = 6.0
+        _out: dict = {}
+
+        def _work():
+            try:
+                from aiforge_core.memory.code_context import aider_digest
+                _out["d"] = aider_digest(base, [])
+            except Exception:  # noqa: BLE001
+                _out["d"] = ""
+        import threading as _th
+        _t = _th.Thread(target=_work, daemon=True)
+        _t.start()
+        _t.join(budget)
+        digest = _out.get("d") or ""
+        if digest.strip():
+            cap = _repomap_max_chars()
+            if cap and len(digest) > cap:
+                digest = digest[:cap] + "\n… (truncated — grep/find/list_dir for more)"
+            return ("REPO MAP (ranked symbols via tree-sitter — the key functions/"
+                    "classes per file; navigate by these, don't blind-`find`):\n"
+                    f"WORKING DIRECTORY: {base}\n{digest}")
+        # else: timed out or empty → the fast dir tree below (cached map next turn)
     lines: list[str] = []
     base_depth = base.rstrip(os.sep).count(os.sep)
     try:
