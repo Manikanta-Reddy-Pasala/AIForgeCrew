@@ -2537,9 +2537,10 @@ def _ensure_impl_modules(subs: list) -> list:
                 impl_dirs.append(d)
     added: list = []
     for s, p, stem, ext in tests:
-        m = (_re.match(r"(?i)test_(.+)$", stem) or _re.match(r"(?i)(.+)_test$", stem)
-             or _re.match(r"(.+)Test$", stem) or _re.match(r"(?i)(.+)\.test$", stem)
-             or _re.match(r"(?i)(.+)\.spec$", stem))
+        m = (_re.match(r"(?i)test_(.+)$", stem) or _re.match(r"(?i)(.+)_tests?$", stem)
+             or _re.match(r"(.+)Tests?$", stem)          # XTest / XTests (plural)
+             or _re.match(r"(.+)IT(?:Case)?$", stem)     # Java integration tests
+             or _re.match(r"(?i)(.+)\.test$", stem) or _re.match(r"(?i)(.+)\.spec$", stem))
         if not m:
             continue
         name = m.group(1)
