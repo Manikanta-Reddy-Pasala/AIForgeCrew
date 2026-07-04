@@ -3650,6 +3650,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             p = (p or "").lower()
             if len(p) < 12:
                 return False
+            # DOCUMENT / non-code artifact tasks ("write a JIRA ticket for adding
+            # rate limiting", "confluence page", "email", "spec doc") must NOT be
+            # treated as a code build even though they mention build-y nouns.
+            if _re.search(r"\b(jira|confluence|ticket|story|epic|description|"
+                          r"document|doc|documentation|wiki|email|e-mail|report|"
+                          r"summary|summari[sz]e|proposal|rfc|readme|changelog|"
+                          r"release notes?|blog|article|memo|letter|announcement|"
+                          r"agenda|minutes|slide|presentation|spec sheet)\b", p):
+                return False
             verb = _re.search(r"\b(build|create|implement|generate|make|write|"
                               r"develop|code|scaffold)\b", p)
             noun = _re.search(r"\b(game|app|application|api|service|server|cli|"
