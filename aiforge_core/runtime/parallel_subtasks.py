@@ -1505,7 +1505,7 @@ def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
         return spec_md, ""
     try:
         from aiforge_core.llm.client import complete as _complete
-        out = _complete("planner", [
+        out = _complete("doer", [
             {"role": "system", "content":
              "You review a build SPEC before coding starts. Check it against the "
              "REQUEST for: internal contradictions, ambiguity, missing requirements/"
@@ -1549,7 +1549,7 @@ def _review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
         return [], ""
     try:
         from aiforge_core.llm.client import complete as _complete
-        out = _complete("planner", [
+        out = _complete("doer", [
             {"role": "system", "content":
              "You review TEST files against the SPEC before the implementation is "
              "written. Find tests that are PROVABLY WRONG: assertions that "
@@ -1588,13 +1588,17 @@ def _review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
                      if changed else "tests reviewed — sound")
 
 
+_REVIEW_SKIP_DIRS = {"node_modules", "venv", ".venv", "__pycache__", "target",
+                     "build", "dist", ".git", ".aiforge-venv", "site-packages"}
+
+
 def _test_files_in(cwd: str) -> list[str]:
     """Relative paths of test files in the tree (pytest / JUnit / *_test.*)."""
     import re as _re
     out: list[str] = []
     pat = _re.compile(r"(^|/)(test_[^/]+|[^/]+_test|.+[Tt]est)\.(py|java|js|ts|go)$")
     for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+        dirs[:] = [d for d in dirs if d not in _REVIEW_SKIP_DIRS and not d.startswith(".")]
         for f in files:
             rel = os.path.relpath(os.path.join(root, f), cwd)
             if pat.search(rel.replace(os.sep, "/")):
