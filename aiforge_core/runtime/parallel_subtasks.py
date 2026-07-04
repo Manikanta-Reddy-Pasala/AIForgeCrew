@@ -1454,6 +1454,19 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     except Exception as _exc:  # noqa: BLE001 — spec write is best-effort
         log.debug("SPEC.md write skipped: %s", _exc)
 
+    # SCAFFOLD — deterministically create every file at its canonical path (stub +
+    # API-contract header) BEFORE parallelizing, then commit to base so worktrees
+    # branch from a fixed tree. Prevents chaotic/unmergeable directory layouts and
+    # gives the local models a clear track to fill in. Gated (default on).
+    if os.environ.get("AIFORGE_SCAFFOLD", "1") not in ("0", "false"):
+        try:
+            _stubs = _scaffold_stubs(cwd, subs)
+            if _stubs:
+                yield {"type": "tool", "role": "planner", "name": "scaffolded project",
+                       "args": {}, "result": {"files": _stubs}}
+        except Exception as _exc:  # noqa: BLE001
+            log.debug("scaffold skipped: %s", _exc)
+
     yield {"type": "thought", "role": "system",
            "text": f"Running {len(subs)} subtasks — each in its OWN fresh "
                    f"context + worktree (max {_max_workers()} at once)…"}
@@ -2204,6 +2217,80 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
                 written.append(rel)
             except Exception:  # noqa: BLE001
                 pass
+    return written
+
+
+_COMMENT_PREFIX = {
+    ".py": "#", ".sh": "#", ".rb": "#", ".yaml": "#", ".yml": "#", ".toml": "#",
+    ".java": "//", ".go": "//", ".js": "//", ".mjs": "//", ".ts": "//",
+    ".tsx": "//", ".c": "//", ".cc": "//", ".cpp": "//", ".rs": "//", ".php": "//",
+}
+
+
+def _stub_content(path: str, api: list, is_test: bool) -> str:
+    """A SCAFFOLD stub: the file at its canonical path carrying the target public
+    API as a header, so parallel workers implement INTO a fixed structure (no
+    chaotic dir trees, no path drift) and to the exact contract. Language-agnostic
+    — a comment header for every language; Python code files also get real
+    signature stubs so sibling imports resolve during parallel work."""
+    ext = os.path.splitext(path)[1].lower()
+    # build/markup files: leave empty, the owning worker writes the whole thing.
+    if ext in (".xml", ".html", ".json", ".cfg", ".properties", ".txt", ".md", ""):
+        return ""
+    cmt = _COMMENT_PREFIX.get(ext, "#")
+    if is_test:
+        return f"{cmt} Tests — implement per SPEC.md.\n"
+    if ext == ".py":
+        return _python_stub(api)
+    hdr = [f"{cmt} STUB — implement this file per SPEC.md, keeping the public API:"]
+    for a in api:
+        hdr.append(f"{cmt}   {a}")
+    if not api:
+        hdr.append(f"{cmt}   (see SPEC.md)")
+    return "\n".join(hdr) + "\n"
+
+
+def _python_stub(api: list) -> str:
+    """Real Python signature stubs from the API contract — keeps sibling imports
+    resolvable while workers fill in bodies. Conservative: only clear top-level
+    class/def/const forms; anything ambiguous becomes a module-level name = None."""
+    lines = ['"""Stub — implement the bodies; keep this exact public API."""']
+    for a in [x.strip() for x in api if x and x.strip()]:
+        base = a.rstrip(":")
+        if base.startswith(("class ", "async def ", "def ")):
+            body = "    ..." if base.startswith("class ") else "    raise NotImplementedError"
+            lines.append(f"\n\n{base}:\n{body}")
+        elif ":" in a and "=" not in a and "(" not in a:   # CONST: type
+            nm = _clean_symbol(a)
+            if nm:
+                lines.append(f"\n\n{nm} = None")
+        else:
+            nm = _clean_symbol(a)
+            if nm:
+                lines.append(f"\n\n{nm} = None")
+    return "\n".join(lines) + "\n"
+
+
+def _scaffold_stubs(cwd: str, subs: list) -> list:
+    """Deterministically create every declared file at its canonical path (with a
+    stub header) BEFORE any parallel worker runs. Gives the local models a fixed
+    track: the tree + paths exist, so isolated workers can't invent divergent
+    directory layouts and merges stay clean. Returns the paths scaffolded."""
+    written: list = []
+    for s in subs:
+        path = str(s.get("path") or "").lstrip("/").replace("..", "")
+        if not path:
+            continue
+        dest = os.path.join(cwd, path)
+        if os.path.exists(dest):
+            continue
+        try:
+            os.makedirs(os.path.dirname(dest) or cwd, exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write(_stub_content(path, s.get("api") or [], _is_test_subtask(s)))
+            written.append(path)
+        except Exception:  # noqa: BLE001
+            pass
     return written
 
 
