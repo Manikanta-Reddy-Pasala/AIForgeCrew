@@ -1546,8 +1546,10 @@ def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
     out = out.strip()
     if not out or len(out) < 40:
         return spec_md, "spec reviewed — sound"
-    # meaningfully different (not just whitespace/echo) → treat as a refinement
-    if _norm_ws(out) == _norm_ws(spec_md) or _sim_ratio(out, spec_md) > 0.92:
+    # Only a SUBSTANTIVE rewrite counts as a refinement — qwen paraphrases/
+    # reformats a sound spec (which we must NOT swap in, it loses precision), so
+    # keep the original unless the review changed it materially (<0.72 similar).
+    if _sim_ratio(out, spec_md) > 0.72:
         return spec_md, "spec reviewed — sound"
     return out, "spec reviewed + refined (contradictions/ambiguity/scope)"
 
