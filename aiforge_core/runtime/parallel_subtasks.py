@@ -1800,6 +1800,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
 
     _integ_md = ""
     _res: dict = {}
+    _rep: dict = {}
     try:
         yield from _reconcile_integration(cwd, _res, should_cancel=_cancelled)
         _rep = _res.get("rep") or {}
@@ -1814,12 +1815,27 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     except Exception:  # noqa: BLE001
         pass
 
+    # Honest verdict — ``ok`` is True (green) / False (some tests fail) / None
+    # (couldn't run tests here). A False is NOT necessarily a code defect: a local
+    # model also writes buggy tests, which the reviewer/audit flags + fixes; say so
+    # rather than a bare "failed".
+    _ok = _rep.get("ok")
+    if _ok is True:
+        _verdict = "✅ **Built — all tests pass.**"
+    elif _ok is False:
+        _verdict = ("⚠️ **Built — some tests still fail.** This may not be a code "
+                    "defect: a local model sometimes writes incorrect tests, which "
+                    "the reviewer flags + fixes where it can. Check the remaining "
+                    "failing assertions against the intent before treating them as "
+                    "bugs — the implementation may be right.")
+    else:
+        _verdict = ("ℹ️ **Built.** Couldn't run the tests on this host (no matching "
+                    "toolchain) — the code is written; run the suite where the "
+                    "toolchain is available.")
     yield {"type": "message", "text":
-           f"**Parallel run complete** — {agg.get('review', 'done')}.\n\n"
-           f"All work merged into the chat workspace. "
-           f"{agg.get('done', 0)}/{agg.get('total', 0)} subtasks done. "
-           f"See SPEC.md for the requirements each subtask built against."
-           + _integ_md}
+           f"**Pipeline complete** — {agg.get('done', 0)}/{agg.get('total', 0)} "
+           f"subtasks built + merged. {_verdict}\n\nSPEC.md holds the requirements "
+           f"each subtask built against." + _integ_md}
 
 
 _CODE_EXTS = (".py", ".go", ".js", ".ts", ".rs", ".java", ".c", ".cpp", ".rb")
