@@ -2359,6 +2359,7 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
     # it can't crack. Delivered via `extras={"model": …}` which overrides the
     # role's default in the request body — general, no per-problem code.
     _extras = {"model": model} if model else None
+    _temp = None
     if model:
         # An escalation (reasoning) model may be loaded at a smaller context — cap
         # completion so prompt+completion fit; its fixes are targeted anyway.
@@ -2366,11 +2367,22 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
             mt = min(mt, int(os.environ.get("AIFORGE_ESCALATION_MAX_TOKENS", "2560")))
         except ValueError:
             mt = 2560
+        # Apply the ESCALATION model's own sampling params (the role's ep.model —
+        # qwen — is overridden via extras, so the client's quirk lookup would use
+        # the wrong model). Reasoning models want their pinned temperature.
+        try:
+            from aiforge_core.config import model_overrides as _mo
+            _ov = _mo.lookup(model)
+            if _ov and _ov.get("temperature") is not None:
+                _temp = _ov["temperature"]
+        except Exception:  # noqa: BLE001
+            pass
     out = _complete("doer", [
         {"role": "system", "content": "You are a Targeted Code Patch Engine. Output "
          "ONLY ### FILE headers + <<<<<<< SEARCH/======= />>>>>>> REPLACE blocks, "
          "nothing else. Never rewrite a whole file."},
-        {"role": "user", "content": prompt}], max_tokens=mt, extras=_extras) or ""
+        {"role": "user", "content": prompt}],
+        max_tokens=mt, temperature=_temp, extras=_extras) or ""
     written, failures = _apply_patches(cwd, out)
     if not written and failures:
         # Fallback: the model may have ignored the patch format and emitted whole

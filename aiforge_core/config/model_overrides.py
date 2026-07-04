@@ -63,10 +63,18 @@ _QWYTHOS_OVERRIDE: dict[str, Any] = {
     "temperature": 0.0,
 }
 
+# ornith-1.0-35b is a reasoning model too, but empirically ROBUST to heat: a
+# direct sweep (2026-07-04) gave the SAME correct fix at T=0.0 and T=0.7. Pin
+# T=0 for deterministic, reproducible fixes when used as the escalation model.
+_ORNITH_OVERRIDE: dict[str, Any] = {
+    "temperature": 0.0,
+}
+
 _BUILTIN: dict[str, dict[str, Any]] = {
     "nex-n2-mini": _QWEN35_MOE_OVERRIDE,
     "qwen3.5-122b": _QWEN35_MOE_OVERRIDE,
     "qwythos": _QWYTHOS_OVERRIDE,
+    "ornith": _ORNITH_OVERRIDE,
     # qwen3-coder-next: thoroughness nudge for judge-style asks is
     # handled at the prompt layer (role prompts), not here — the model
     # has no reasoning channel to suppress and benefits from defaults.
