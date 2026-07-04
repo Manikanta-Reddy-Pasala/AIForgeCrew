@@ -3552,10 +3552,38 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # Parallel team mode (AIFORGE_PARALLEL_SUBTASKS=1) → decompose then run
         # subtasks CONCURRENTLY in isolated worktrees with live status.
         from aiforge_core.runtime import parallel_subtasks as _pp
+        # AUTO-ESCALATE: simple/plan modes on a multi-file BUILD request route
+        # through the parallel pipeline — a single ReAct agent stalls on large
+        # builds (one huge-context call, no decomposition). Gated + heuristic so
+        # chit-chat / small edits still use the fast single-agent path.
+        def _looks_like_multifile_build(p: str) -> bool:
+            import re as _re
+            p = (p or "").lower()
+            if len(p) < 12:
+                return False
+            verb = _re.search(r"\b(build|create|implement|generate|make|write|"
+                              r"develop|code|scaffold)\b", p)
+            noun = _re.search(r"\b(game|app|application|api|service|server|cli|"
+                              r"tool|website|web ?app|webapp|system|library|"
+                              r"package|project|backend|frontend|module|engine|"
+                              r"bot|dashboard|parser|compiler|interpreter|crud|"
+                              r"microservice|rest)\b", p)
+            cues = any(c in p for c in ("with test", "unit test", "multiple file",
+                                        " files", "test case", "endpoints"))
+            return bool(verb and (noun or cues))
+        _build_escalate = bool(
+            not team and _parallel_team
+            and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
+            and _looks_like_multifile_build(prompt))
+        if _build_escalate:
+            yield {"type": "thought", "role": "router",
+                   "text": "Multi-file build detected — routing through the build "
+                           "pipeline (decompose → scaffold → implement → test) "
+                           "instead of a single agent."}
         # Review-edits is a simple/plan-only feature (forced on there). Team /
         # parallel / best-of-N runners run the full pipeline and don't hold
         # edits — left as-is by design, no notice (avoids per-run noise).
-        if team and _parallel_team:
+        if _parallel_team and (team or _build_escalate):
             # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
             _spec = _pp._enhance(prompt, history=history, cwd=cwd)  # 1. clean spec
             _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
