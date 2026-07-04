@@ -1579,6 +1579,16 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     # Backstop: guarantee test coverage so the build can be verified + self-healed
     # even when the planner omitted tests.
     subs = _ensure_test_coverage(subs)
+    # Decomposition consistency: every per-module test needs a matching impl file
+    # (test_board→board, BookServiceTest→BookService). When the architect collapses
+    # impl into one file but writes per-module tests, add the missing impl modules.
+    _before = len(subs)
+    subs = _ensure_impl_modules(subs)
+    if len(subs) > _before:
+        _added = [s.get("path") for s in subs[_before:]]
+        yield {"type": "thought", "role": "planner",
+               "text": f"Decomposition fix — {len(subs) - _before} test(s) target "
+                       f"modules with no impl file; added: {', '.join(_added)}"}
     yield {"type": "subtasks", "items": [
         {"slug": s.get("slug") or f"sub-{i+1}",
          "goal": s.get("goal") or "", "status": "pending"}
@@ -2475,6 +2485,72 @@ def _python_stub(api: list) -> str:
             if nm:
                 lines.append(f"\n\n{nm} = None")
     return "\n".join(lines) + "\n"
+
+
+_NON_MODULE_TEST_STEMS = frozenset({
+    "integration", "e2e", "end_to_end", "endtoend", "main", "app", "cli",
+    "smoke", "full", "all", "system", "suite", "acceptance", "functional",
+    "application",
+})
+
+
+def _impl_path_for_test(test_path: str, name: str, ext: str,
+                        impl_dirs: list) -> str:
+    """Where the impl module for a test should live. Java: mirror src/test→
+    src/main. Else: alongside existing impls, or the test's parent (minus a
+    tests/ dir)."""
+    d = os.path.dirname(test_path)
+    if ext.lower() == ".java":
+        return (test_path.replace("/test/", "/main/").rsplit("/", 1)[0]
+                + f"/{name}{ext}") if "/test/" in test_path \
+            else (impl_dirs[0] + f"/{name}{ext}" if impl_dirs else f"{name}{ext}")
+    if impl_dirs:
+        return f"{impl_dirs[0]}/{name}{ext}".lstrip("/")
+    # strip a trailing tests/ segment
+    parts = [p for p in d.split("/") if p and p.lower() not in ("tests", "test")]
+    base = "/".join(parts)
+    return (f"{base}/{name}{ext}" if base else f"{name}{ext}")
+
+
+def _ensure_impl_modules(subs: list) -> list:
+    """DECOMPOSITION CONSISTENCY (inverse of the off-plan pruner): every test that
+    targets a module (test_board→board, BookServiceTest→BookService, board.test→
+    board) MUST have a matching impl file in the plan. When the architect collapses
+    all impl into one file but writes per-module tests, those tests can't import
+    their modules → collection errors no reconcile fixes. Adds the missing impl
+    subtasks. Language-agnostic; skips non-module test names (integration/e2e/…)."""
+    import re as _re
+    impl_stems: set = set()
+    impl_dirs: list = []
+    tests: list = []
+    for s in subs:
+        p = str(s.get("path") or "")
+        if not p:
+            continue
+        stem, ext = os.path.splitext(os.path.basename(p))
+        if _is_test_subtask(s):
+            tests.append((s, p, stem, ext))
+        else:
+            impl_stems.add(stem.lower())
+            d = os.path.dirname(p)
+            if d and d not in impl_dirs and ext.lower() != ".xml":
+                impl_dirs.append(d)
+    added: list = []
+    for s, p, stem, ext in tests:
+        m = (_re.match(r"(?i)test_(.+)$", stem) or _re.match(r"(?i)(.+)_test$", stem)
+             or _re.match(r"(.+)Test$", stem) or _re.match(r"(?i)(.+)\.test$", stem)
+             or _re.match(r"(?i)(.+)\.spec$", stem))
+        if not m:
+            continue
+        name = m.group(1)
+        if name.lower() in _NON_MODULE_TEST_STEMS or name.lower() in impl_stems:
+            continue
+        impl_path = _impl_path_for_test(p, name, ext, impl_dirs).lstrip("/")
+        added.append({"slug": name.lower(), "path": impl_path,
+                      "goal": f"Implement {name} to satisfy its tests ({os.path.basename(p)}).",
+                      "api": []})
+        impl_stems.add(name.lower())
+    return subs + added
 
 
 def _spec_declared_paths(subs: list) -> set:
