@@ -1497,15 +1497,16 @@ def _ensure_git_workspace(cwd: str) -> str:
 
 
 def _llm_review_call(sysmsg: str, usr: str, max_tokens: int) -> str | None:
-    """One review LLM call, robust to qwen's intermittent empty response (it
-    returns "" on some prompts at low temp). Retries once at a higher temp.
+    """One review LLM call. qwen-coder on this mlx stack returns an EMPTY response
+    when the instruction is in a SYSTEM message (a plain USER turn works), so we
+    fold the instruction into a single user turn. Retries once at a higher temp.
     Returns the text, or None if both attempts fail/empty."""
     from aiforge_core.llm.client import complete as _complete
+    combined = f"{sysmsg}\n\n---\n\n{usr}"
     for temp in (0.2, 0.5):
         try:
             out = _complete("doer",
-                            [{"role": "system", "content": sysmsg},
-                             {"role": "user", "content": usr}],
+                            [{"role": "user", "content": combined}],
                             max_tokens=max_tokens, temperature=temp)
         except Exception:  # noqa: BLE001
             out = None
