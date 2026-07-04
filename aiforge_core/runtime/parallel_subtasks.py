@@ -1844,10 +1844,14 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         _verdict = ("ℹ️ **Built.** Couldn't run the tests on this host (no matching "
                     "toolchain) — the code is written; run the suite where the "
                     "toolchain is available.")
+    # Only attach the detailed integration report when it AGREES with the
+    # authoritative verdict — otherwise it contradicts (e.g. "✅ all tests pass"
+    # followed by "❌ tests failed" from a different runner that missed a dep).
+    _show_report = _integ_md and not (_ok is True and _rep.get("ok") is not True)
     yield {"type": "message", "text":
            f"**Pipeline complete** — {agg.get('done', 0)}/{agg.get('total', 0)} "
            f"subtasks built + merged. {_verdict}\n\nSPEC.md holds the requirements "
-           f"each subtask built against." + _integ_md}
+           f"each subtask built against." + (_integ_md if _show_report else "")}
 
 
 _CODE_EXTS = (".py", ".go", ".js", ".ts", ".rs", ".java", ".c", ".cpp", ".rb")
