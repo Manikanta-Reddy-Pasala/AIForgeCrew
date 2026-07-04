@@ -3452,7 +3452,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # the turn (see _produce). _fresh marks a still-unnamed session.
     _fresh_title = (session.get("title") or "New chat") == "New chat"
     if _fresh_title:
-        chat_store.rename_session(session_id, body.content.strip()[:60])
+        # Clean deterministic provisional (strips 'Build a…', trailing clauses,
+        # Title-Cases) — reads well instantly; upgraded by the model title below
+        # when that succeeds. Beats the raw truncated first message.
+        try:
+            from aiforge_core.runtime import chat_title as _ct
+            _prov = _ct.provisional_title(body.content) or body.content.strip()[:60]
+        except Exception:  # noqa: BLE001
+            _prov = body.content.strip()[:60]
+        chat_store.rename_session(session_id, _prov)
 
     # Fold each assistant turn's tool digest into history + keep did-work-but-
     # blank turns + merge same-role runs, so the agent remembers what it DID
