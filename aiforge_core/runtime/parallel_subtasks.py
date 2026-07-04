@@ -1506,15 +1506,57 @@ def _sim_ratio(a: str, b: str) -> float:
     return _dl.SequenceMatcher(None, _norm_ws(a), _norm_ws(b)).ratio()
 
 
+_REVIEW_MODEL_CACHE: dict = {}
+# prefer a reasoning model as the reviewer (better at tracing logic than a coder).
+_REASONING_MARKERS = ("ornith", "qwythos", "-r1", "r1-", "qwq", "deepseek-r1",
+                      "reason", "-o1", "o1-", "think")
+
+
 def _review_model() -> str | None:
-    """The model that REVIEWS specs/tests — deliberately a DIFFERENT model from
-    the doer that wrote them (a model can't reliably catch its own subtle test
-    bugs, e.g. an LRU eviction-order mistake). Uses AIFORGE_REVIEW_MODEL, else the
-    escalation/reasoning model, else None (→ the doer, still useful for blatant
-    contradictions)."""
+    """The model that REVIEWS specs/tests — deliberately DIFFERENT from the doer
+    that wrote them (a model can't reliably catch its own subtle test bugs, e.g.
+    an LRU eviction-order mistake). Default is cross-model for EVERY build:
+    AIFORGE_REVIEW_MODEL → AIFORGE_ESCALATION_MODEL → auto-pick a loaded model
+    that differs from the doer (preferring a reasoning model) → None (single
+    model on the box → fall back to the doer, still useful for blatant issues).
+    AIFORGE_REVIEW_CROSS_MODEL=0 forces same-model (the doer)."""
     m = (os.environ.get("AIFORGE_REVIEW_MODEL", "").strip()
          or os.environ.get("AIFORGE_ESCALATION_MODEL", "").strip())
-    return m or None
+    if m:
+        return m
+    if os.environ.get("AIFORGE_REVIEW_CROSS_MODEL", "1") in ("0", "false"):
+        return None
+    return _auto_review_model()
+
+
+def _auto_review_model() -> str | None:
+    """Query the doer endpoint's loaded models and pick one that DIFFERS from the
+    doer's own model (prefer a reasoning model). Cached. None if only one model is
+    loaded (can't cross-review) or the probe fails."""
+    if "m" in _REVIEW_MODEL_CACHE:
+        return _REVIEW_MODEL_CACHE["m"]
+    picked = None
+    try:
+        from aiforge_core.llm.router import resolve
+        import json as _json
+        import urllib.request as _u
+        ep = resolve("doer")
+        doer_model = (getattr(ep, "model", "") or "").lower()
+        base = (getattr(ep, "base_url", "") or "").rstrip("/")
+        req = _u.Request(f"{base}/models", method="GET",
+                         headers={"Authorization": f"Bearer {getattr(ep, 'api_key', '') or 'na'}"})
+        with _u.urlopen(req, timeout=3) as r:
+            data = _json.loads(r.read().decode("utf-8", "replace")).get("data", [])
+        ids = [d.get("id", "") for d in data if isinstance(d, dict) and d.get("id")]
+        others = [i for i in ids if i.lower() != doer_model
+                  and not any(x in i.lower() for x in ("embed", "rerank"))]
+        picked = next((i for i in others
+                       if any(k in i.lower() for k in _REASONING_MARKERS)), None)
+        picked = picked or (others[0] if others else None)
+    except Exception:  # noqa: BLE001
+        picked = None
+    _REVIEW_MODEL_CACHE["m"] = picked
+    return picked
 
 
 def _llm_review_once(prompt: str, max_tokens: int) -> str | None:
