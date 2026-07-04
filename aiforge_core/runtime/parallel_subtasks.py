@@ -2359,6 +2359,13 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
     # it can't crack. Delivered via `extras={"model": …}` which overrides the
     # role's default in the request body — general, no per-problem code.
     _extras = {"model": model} if model else None
+    if model:
+        # An escalation (reasoning) model may be loaded at a smaller context — cap
+        # completion so prompt+completion fit; its fixes are targeted anyway.
+        try:
+            mt = min(mt, int(os.environ.get("AIFORGE_ESCALATION_MAX_TOKENS", "2560")))
+        except ValueError:
+            mt = 2560
     out = _complete("doer", [
         {"role": "system", "content": "You are a Targeted Code Patch Engine. Output "
          "ONLY ### FILE headers + <<<<<<< SEARCH/======= />>>>>>> REPLACE blocks, "
