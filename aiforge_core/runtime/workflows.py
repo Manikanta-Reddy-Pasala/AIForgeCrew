@@ -21,6 +21,7 @@ folder by hand (picked up on next load).
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from aiforge_core.runtime import skills as _sk
@@ -194,31 +195,46 @@ def write_workflow(name: str, description: str, body: str,
 
 
 def ensure_dirs() -> dict:
-    """Create the global skills + workflows folders and SEED the bundled
-    default playbooks (software-dev + architect) into them ONCE, so a fresh
-    install ships with useful skills/workflows. Idempotent: a per-dir
-    ``.builtins_seeded`` marker means we never re-create a default the user
-    deleted, and we never overwrite a file they edited."""
-    builtin = Path(__file__).resolve().parent / "builtin_playbooks"
+    """Create the global skills/workflows/rules folders. We NO LONGER copy the
+    bundled defaults into them — ``load()`` reads the builtin playbooks directly
+    (as low-priority defaults), so the global dir is for USER-created playbooks
+    only. Also MIGRATES away the old seeding: earlier versions copied every
+    builtin into the global dir, which now double-shadows the (refined) builtin
+    set. We remove those seeded copies (identified by ``source: builtin`` in the
+    frontmatter) so the current default set is authoritative; user-authored files
+    (any other source) are untouched. Runs once per migration version."""
     out: dict = {}
     from . import repo_rules as _rr
-    for label, dest, sub in (("skills", _sk._global_dir(), "skills"),
-                             ("workflows", _global_dir(), "workflows"),
-                             ("rules", _rr._global_rules_dir(), "rules")):
+    for label, dest in (("skills", _sk._global_dir()),
+                        ("workflows", _global_dir()),
+                        ("rules", _rr._global_rules_dir())):
         try:
             dest.mkdir(parents=True, exist_ok=True)
-            marker = dest / ".builtins_seeded"
-            src = builtin / sub
-            seeded = 0
-            if src.is_dir() and not marker.exists():
-                for f in sorted(src.glob("*.md")):
-                    target = dest / f.name
-                    if not target.exists():
-                        target.write_text(f.read_text(encoding="utf-8"),
-                                          encoding="utf-8")
-                        seeded += 1
-                marker.write_text("seeded\n", encoding="utf-8")
-            out[label] = {"dir": str(dest), "seeded": seeded}
+            migrated = dest / ".builtins_migrated_v2"
+            removed = 0
+            if not migrated.exists():
+                for f in list(dest.glob("*.md")) + list(dest.glob("*.mdc")):
+                    try:
+                        head = f.read_text(encoding="utf-8")[:400]
+                    except Exception:  # noqa: BLE001
+                        continue
+                    # a seeded default carries `source: builtin` in its
+                    # frontmatter; a user's own playbook does not.
+                    if re.search(r"^\s*source:\s*builtin\s*$", head, re.M):
+                        try:
+                            f.unlink()
+                            removed += 1
+                        except Exception:  # noqa: BLE001
+                            pass
+                # drop the old seed marker so state is clean
+                old = dest / ".builtins_seeded"
+                if old.exists():
+                    try:
+                        old.unlink()
+                    except Exception:  # noqa: BLE001
+                        pass
+                migrated.write_text("migrated\n", encoding="utf-8")
+            out[label] = {"dir": str(dest), "removed_seeded": removed}
         except Exception as exc:  # noqa: BLE001
             out[label] = f"error: {exc}"
     return out
