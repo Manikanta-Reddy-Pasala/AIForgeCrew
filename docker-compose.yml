@@ -208,12 +208,16 @@ services:
     container_name: aiforge-runner
     restart: unless-stopped
     network_mode: host
-    # adk_runner is single-shot (polls once for a claimable ticket, then
-    # exits). Loop it with a poll interval so restart:unless-stopped
-    # doesn't hot-loop on an empty queue.
+    # adk_runner is single-shot (claims ONE ticket, runs it, exits). To process
+    # jobs in PARALLEL, run AIFORGE_RUNNER_CONCURRENCY independent claim-run loops
+    # (default 1) — each loop atomically claims a DIFFERENT 'todo' ticket, so N
+    # tickets run concurrently in their own per-ticket worktrees. Poll interval
+    # keeps restart:unless-stopped from hot-looping on an empty queue.
     command: >
-      sh -c "while true; do python -m aiforge_core.runtime.adk_runner || true;
-      sleep ${AIFORGE_RUNNER_POLL_SEC:-10}; done"
+      sh -c 'N=$${AIFORGE_RUNNER_CONCURRENCY:-1};
+      for i in $$(seq 1 $$N); do
+      (while true; do python -m aiforge_core.runtime.adk_runner || true;
+      sleep $${AIFORGE_RUNNER_POLL_SEC:-10}; done) & done; wait'
     environment: *app_env
     volumes:
       # Config/app-state dir. AIFORGE_CONFIG_HOST_DIR lets a HYBRID host point
