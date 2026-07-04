@@ -149,38 +149,19 @@ export default function AgentSettings() {
     }
   }
 
-  function RolePicker({ role }: { role: string }) {
+  // Read-only: the system auto-decides each agent's model by capability whenever
+  // the model set changes. This just SHOWS the decision + capabilities.
+  function RoleRow({ role }: { role: string }) {
     const sel = selectedId(role);
     const m = models.find(x => x.id === sel);
+    const name = m?.label || config[role]?.model || '—';
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' }}>
-        <span style={{ width: 110, fontSize: 13 }}>{ROLE_LABEL[role] || role}</span>
-        <select value={sel} disabled={!models.length}
-                onChange={e => apply(e.target.value, [role])}
-                style={{ flex: 1, maxWidth: 280, fontSize: 13 }}>
-          <option value="">{models.length ? '— pick a model —' : '(add a model first)'}</option>
-          {models.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}
-        </select>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 0' }}>
+        <span style={{ width: 130, fontSize: 13 }}>{ROLE_LABEL[role] || role}</span>
+        <span style={{ flex: 1, maxWidth: 280, fontSize: 13, color: m ? '#c9d1d9' : '#8b949e' }}
+              title={m?.model || ''}>{name}</span>
         {m && <ThinkingBadge v={m.thinking} resolved={m.has_thinking} />}
         {m && <VisionBadge v={m.vision} />}
-        {!m && config[role]?.model && (
-          <span className="xs muted" title={config[role].base_url || ''}>{config[role].model}</span>
-        )}
-      </div>
-    );
-  }
-
-  function GroupApply({ roles, label }: { roles: string[]; label: string }) {
-    const [pick, setPick] = useState('');
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <span className="small muted" style={{ width: 110 }}>{label}</span>
-        <select value={pick} disabled={!models.length}
-                onChange={e => { setPick(e.target.value); apply(e.target.value, roles); setPick(''); }}
-                style={{ flex: 1, maxWidth: 280, fontSize: 13 }}>
-          <option value="">apply one model to all…</option>
-          {models.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}
-        </select>
       </div>
     );
   }
@@ -190,28 +171,19 @@ export default function AgentSettings() {
       <ModelsCard models={models} reload={loadModels} />
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h2 style={{ fontSize: 14 }}>Agents</h2>
-          <button type="button" className="btn" disabled={!models.length || autoBusy}
-                  onClick={autoAssignAll}
-                  title="Auto-choose the best model for every agent by capability: reasoning models → planning/review roles, fast coders → the doer, vision models where needed.">
-            {autoBusy ? 'Assigning…' : '✨ Auto-assign by capability'}
-          </button>
-        </div>
+        <h2 style={{ fontSize: 14 }}>Agents <span className="small muted">· auto-decided</span></h2>
         <div className="subtitle" style={{ marginTop: 4, marginBottom: 12 }}>
-          Pick a model for each agent — bulk per group, or individually. Each
-          model shows its capabilities (🧠 thinking / ⚡ fast · 👁 vision).
-          Auto-assign picks internally by capability.
+          The system chooses each agent's model automatically by capability —
+          🧠 reasoning models handle planning/review, ⚡ fast coders do the code,
+          👁 vision models where needed. Add or remove a model and everything
+          re-assigns. Token limits + context window are automatic too.
         </div>
 
         <h3 style={{ fontSize: 13, margin: '8px 0' }}>Orchestrator</h3>
-        <GroupApply roles={ORCH} label="all 3 →" />
-        {ORCH.map(r => <RolePicker key={r} role={r} />)}
+        {ORCH.map(r => <RoleRow key={r} role={r} />)}
 
         <h3 style={{ fontSize: 13, margin: '16px 0 8px' }}>Other agents</h3>
-        <GroupApply roles={otherRoles} label="all →" />
-        {/* Every other agent listed individually with its own model selector. */}
-        {otherRoles.map(r => <RolePicker key={r} role={r} />)}
+        {otherRoles.map(r => <RoleRow key={r} role={r} />)}
       </div>
     </>
   );

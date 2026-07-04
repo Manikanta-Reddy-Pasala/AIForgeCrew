@@ -204,7 +204,7 @@ def effective_context_window(role: str | None = None) -> int:
             NOT the built-in default, so detection can slot in below it).
       2. auto-detected window from the live endpoint's ``/v1/models`` (capped
          256K), gated by ``AIFORGE_AUTODETECT_CTX`` (default on). Soft-fails.
-      3. static default (131072).
+      3. static default (262144 = 256K).
     """
     base_url = ""
     _api_key = ""            # the endpoint's key, so the ctx probe can auth

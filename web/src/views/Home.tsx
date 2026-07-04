@@ -444,10 +444,9 @@ export default function Home() {
       {tab === 'integrations' && <IntegrationsTab />}
 
       {tab === 'agent' && (<>
-        {/* Simplified: add models once, each agent picks one by name. */}
+        {/* Simplified: add models once — the system auto-decides everything
+            (agent→model by capability, token limits, context window). */}
         <AgentSettings />
-        {/* ── Global LLM token knobs (output cap + input window) ── */}
-        <LlmSettingsCard />
       </>)}
 
       {/* Legacy provider/archetype editor — superseded by AgentSettings. */}
@@ -576,9 +575,7 @@ export default function Home() {
       {/* ── Orchestrator model (enhancer + architect + planner) ── */}
       <OrchestratorModelCard />
 
-      {/* ── Global LLM token knobs (output cap + input window) ── */}
-      <LlmSettingsCard />
-
+      {/* Token limits + context engineering are now AUTOMATIC (system-decided). */}
 
       {/* ── Per-archetype config table ─────────────────────────── */}
       <div className="settings-table">

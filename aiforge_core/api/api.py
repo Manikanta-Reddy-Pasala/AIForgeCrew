@@ -2466,13 +2466,26 @@ def models_list() -> dict:
     return {"models": model_registry.list_models()}
 
 
+def _reassign_by_capability() -> None:
+    """Re-run capability-based agent auto-assignment. Called whenever the model
+    set changes so the system always chooses each agent's model internally — no
+    manual picking. Best-effort; never breaks the mutation that triggered it."""
+    if os.environ.get("AIFORGE_AUTO_ASSIGN_AGENTS", "1") in ("0", "false"):
+        return
+    try:
+        from aiforge_core.config import model_registry, agent_config
+        model_registry.auto_assign(agent_config.archetypes())
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @app.post("/api/agents/models", status_code=201)
 def models_add(body: _ModelBody) -> dict:
     from aiforge_core.config import model_registry
     if not (body.model or "").strip():
         raise HTTPException(400, "model id is required")
     try:
-        return model_registry.add_model(
+        row = model_registry.add_model(
             label=body.label or body.model, model=body.model,
             base_url=body.base_url or "", api_key=body.api_key,
             insecure_tls=(True if body.insecure_tls is None else bool(body.insecure_tls)),
@@ -2480,6 +2493,8 @@ def models_add(body: _ModelBody) -> dict:
             context_window=body.context_window or 0)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    _reassign_by_capability()          # auto-decide agents on model add
+    return row
 
 
 @app.put("/api/agents/models/{model_id}")
@@ -2505,6 +2520,7 @@ def models_delete(model_id: str) -> None:
     from aiforge_core.config import model_registry
     if not model_registry.remove_model(model_id):
         raise HTTPException(404, f"model {model_id} not found")
+    _reassign_by_capability()          # re-decide agents after a model is removed
 
 
 @app.post("/api/agents/models/sync")
@@ -2512,7 +2528,9 @@ def models_sync() -> dict:
     """Populate the registry from the agents' current per-role config (so it's
     not empty when models are already wired)."""
     from aiforge_core.config import model_registry
-    return model_registry.sync_from_config()
+    res = model_registry.sync_from_config()
+    _reassign_by_capability()          # auto-decide agents after sync
+    return res
 
 
 @app.post("/api/agents/models/{model_id}/apply")
