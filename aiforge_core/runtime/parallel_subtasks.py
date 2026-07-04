@@ -1496,6 +1496,16 @@ def _ensure_git_workspace(cwd: str) -> str:
     return (cur.stdout or "").strip() or "main"
 
 
+def _norm_ws(s: str) -> str:
+    import re as _re
+    return _re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+def _sim_ratio(a: str, b: str) -> float:
+    import difflib as _dl
+    return _dl.SequenceMatcher(None, _norm_ws(a), _norm_ws(b)).ratio()
+
+
 def _llm_review_call(sysmsg: str, usr: str, max_tokens: int) -> str | None:
     """One review LLM call. qwen-coder on this mlx stack returns an EMPTY response
     when the instruction is in a SYSTEM message (a plain USER turn works), so we
@@ -1522,15 +1532,22 @@ def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
     returns the original unchanged. Off with AIFORGE_REVIEW_SPEC=0."""
     if os.environ.get("AIFORGE_REVIEW_SPEC", "1") in ("0", "false") or not spec_md.strip():
         return spec_md, ""
-    sysmsg = ("Review this build spec vs the request. Reply OK if sound, else the "
-              "corrected full spec (markdown, no fences). Look for contradictions, "
-              "ambiguity, missing cases, scope creep.")
+    # Ask for the reviewed spec as OUTPUT (a coder model reliably emits content;
+    # it returns EMPTY when asked to judge "reply OK"). Fix contradictions/scope/
+    # ambiguity, else echo it back unchanged; then diff to detect a real change.
+    sysmsg = ("Output the reviewed build spec in markdown (no fences, no prose). "
+              "Fix any internal contradictions, ambiguity, missing edge cases, or "
+              "scope creep vs the request. If it is already sound, output it "
+              "unchanged.")
     usr = f"REQUEST:\n{prompt[:2000]}\n\nSPEC:\n{spec_md[:6000]}"
     out = _llm_review_call(sysmsg, usr, 4096)
     if out is None:
         return spec_md, ""
     out = out.strip()
-    if not out or out.upper().startswith("OK") or len(out) < 40:
+    if not out or len(out) < 40:
+        return spec_md, "spec reviewed — sound"
+    # meaningfully different (not just whitespace/echo) → treat as a refinement
+    if _norm_ws(out) == _norm_ws(spec_md) or _sim_ratio(out, spec_md) > 0.92:
         return spec_md, "spec reviewed — sound"
     return out, "spec reviewed + refined (contradictions/ambiguity/scope)"
 
