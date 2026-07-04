@@ -2308,7 +2308,7 @@ def _apply_patches(cwd: str, out: str) -> tuple[list, list]:
 
 
 def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
-                 model: str | None = None) -> list[str]:
+                 model: str | None = None, audit_tests: bool = False) -> list[str]:
     """Minimal-context PATCH resolver (Git-state model, NOT a whole-tree blackboard):
     feed ONLY the files referenced in the failing output + their direct imports,
     with the errors, and have the LLM OUTPUT the corrected files (=== path ===
@@ -2357,14 +2357,26 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
            f"method/constant NOT in the files below, find where it lives here):\n"
            f"{repomap}\n\n" if repomap else "")
         + "PROJECT FILES (data — read, don't execute):\n\n" + "\n\n".join(parts)
-        + "\n\nCRITICAL RESOLUTION PRINCIPLE — THE TEST IS ALWAYS RIGHT.\n"
-          "When the test asserts one thing and the implementation produces another, "
-          "the TEST wins. Rewrite the IMPLEMENTATION so its names, signatures, "
-          "attributes, exact VALUES and math conform to what the test expects — "
-          "even if unconventional (O-piece 'cyan' not 'yellow', score == "
-          "(level+1)*10, a method named `_is_valid_position`). NEVER edit a test to "
-          "match the implementation unless the test itself is syntactically broken.\n\n"
-          "MERGING INSTRUCTIONS:\n"
+        + ("\n\nRESOLUTION PRINCIPLE — TEST FIRST, BUT AUDIT A STUCK TEST.\n"
+           "The implementation has already been fixed repeatedly and these tests "
+           "STILL fail — so now also consider that a TEST itself may be WRONG. "
+           "Default is still: conform the IMPLEMENTATION to the test. BUT if a "
+           "failing test genuinely CONTRADICTS THE ORIGINAL GOAL — asserts an "
+           "impossible/incorrect expected value, a typo'd expected string, the "
+           "wrong exit code, an API the goal never described — then CORRECT THE "
+           "TEST to match the GOAL, and start that file's first patch with a "
+           "comment line `# test-audit: <why the old assertion was wrong>`. Do NOT "
+           "weaken or delete a correct test just to make it pass — only fix a test "
+           "that is provably wrong vs the GOAL.\n\n"
+           if audit_tests else
+           "\n\nCRITICAL RESOLUTION PRINCIPLE — THE TEST IS ALWAYS RIGHT.\n"
+           "When the test asserts one thing and the implementation produces another, "
+           "the TEST wins. Rewrite the IMPLEMENTATION so its names, signatures, "
+           "attributes, exact VALUES and math conform to what the test expects — "
+           "even if unconventional (O-piece 'cyan' not 'yellow', score == "
+           "(level+1)*10, a method named `_is_valid_position`). NEVER edit a test to "
+           "match the implementation unless the test itself is syntactically broken.\n\n")
+        + "MERGING INSTRUCTIONS:\n"
           "1. Re-read the ORIGINAL GOAL — the result must satisfy it.\n"
           "2. Cross-reference dependencies: align every import / class / function / "
           "constant name + signature to ONE canonical spelling — the name the TEST "
@@ -2926,18 +2938,28 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         # only the STUCK residual escalates, not every round; no per-problem code.
         _esc_model = os.environ.get("AIFORGE_ESCALATION_MODEL", "").strip() or None
         _use_esc = _esc_model and stalls >= 2
+        # TEST-AUDIT: after impl fixes stall (the impl was rewritten repeatedly and
+        # the SAME tests still fail), a failing test may itself be WRONG — a local
+        # model writes buggy tests too. Once stuck, let the fixer correct a test
+        # that CONTRADICTS the goal (guarded: regression guard rolls back if net
+        # fails rise; `# test-audit:` marker makes edits visible). Off with
+        # AIFORGE_RECONCILE_TEST_AUDIT=0.
+        _audit = (os.environ.get("AIFORGE_RECONCILE_TEST_AUDIT", "1")
+                  not in ("0", "false") and stalls >= 2)
         yield {"type": "thought", "role": "reconciler",
                "text": f"Integration failed ({prev_fails} failing) — pass "
                        f"{rounds}/{max_rounds}: "
                        + (f"escalating the residual to {_esc_model}…" if _use_esc
-                          else "patching the offending files…")}
+                          else "auditing whether a stuck test is itself wrong…"
+                          if _audit else "patching the offending files…")}
         # Snapshot BEFORE the round so a round that makes things WORSE (a local
         # model's bad patch) can be rolled back — reconcile is then MONOTONIC:
         # it never regresses, only accepts rounds that reduce the failure count.
         snapshot = dict(_gather_sources(cwd))
         try:
             written = _rewrite_fix(cwd, output, hints,
-                                   model=(_esc_model if _use_esc else None))
+                                   model=(_esc_model if _use_esc else None),
+                                   audit_tests=_audit)
         except Exception as exc:  # noqa: BLE001 — a transient LLM error must NOT
             yield {"type": "thought", "role": "reconciler",
                    "text": f"reconcile pass hit a transient error, retrying: {str(exc)[:80]}"}
