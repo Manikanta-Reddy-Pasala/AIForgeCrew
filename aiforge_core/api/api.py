@@ -2451,6 +2451,7 @@ class _ModelBody(BaseModel):
     api_key: str | None = None
     insecure_tls: bool | None = None
     vision: str | None = Field(None, description="'auto' | 'yes' | 'no'")
+    thinking: str | None = Field(None, description="reasoning model: 'auto' | 'yes' | 'no'")
     context_window: int | None = Field(None, ge=0, le=10_000_000,
                                        description="per-model input window (tokens); 0 = use global")
 
@@ -2475,7 +2476,7 @@ def models_add(body: _ModelBody) -> dict:
             label=body.label or body.model, model=body.model,
             base_url=body.base_url or "", api_key=body.api_key,
             insecure_tls=(True if body.insecure_tls is None else bool(body.insecure_tls)),
-            vision=body.vision or "auto",
+            vision=body.vision or "auto", thinking=body.thinking or "auto",
             context_window=body.context_window or 0)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -2487,7 +2488,7 @@ def models_update(model_id: str, body: _ModelBody) -> dict:
     row = model_registry.update_model(
         model_id, label=body.label, model=body.model, base_url=body.base_url,
         api_key=body.api_key, insecure_tls=body.insecure_tls, vision=body.vision,
-        context_window=body.context_window)
+        thinking=body.thinking, context_window=body.context_window)
     if row is None:
         raise HTTPException(404, f"model {model_id} not found")
     # A vision change invalidates the probe cache for that model.
@@ -2521,6 +2522,33 @@ def models_apply(model_id: str, body: _ApplyModelBody) -> dict:
         return model_registry.apply_to_roles(model_id, body.roles)
     except ValueError as exc:
         raise HTTPException(404, str(exc))
+
+
+class _AutoAssignBody(BaseModel):
+    roles: list[str] | None = Field(None, description="roles to assign; default = all archetypes")
+    dry_run: bool = Field(False, description="compute the plan without applying it")
+
+
+@app.get("/api/agents/auto-assign")
+def agents_auto_assign_preview() -> dict:
+    """Preview capability-based assignments (thinking→reasoning model, coder→fast
+    coder, vision→vision model) for every archetype — no changes applied."""
+    from aiforge_core.config import model_registry, agent_config
+    return {"assignments": model_registry.suggest_assignments(agent_config.archetypes())}
+
+
+@app.post("/api/agents/auto-assign")
+def agents_auto_assign(body: _AutoAssignBody) -> dict:
+    """Auto-choose the best model for every agent BY CAPABILITY and apply it.
+    Thinking/reasoning roles → a reasoning model, code roles → a fast coder,
+    vision-needing → a vision model (larger context wins within a tier)."""
+    from aiforge_core.config import model_registry, agent_config
+    roles = body.roles or agent_config.archetypes()
+    if body.dry_run:
+        return {"assignments": model_registry.suggest_assignments(roles), "applied": False}
+    out = model_registry.auto_assign(roles)
+    out["applied"] = True
+    return out
 
 
 # ─────────────────────── MCP marketplace / installer ───────────────────────

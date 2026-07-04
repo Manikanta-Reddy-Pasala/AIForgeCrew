@@ -48,6 +48,32 @@ function VisionBadge({ v, onCycle }: {
   );
 }
 
+const THINK_ORDER: RegistryModel['thinking'][] = ['auto', 'yes', 'no'];
+function nextThinking(v: RegistryModel['thinking']): RegistryModel['thinking'] {
+  return THINK_ORDER[(THINK_ORDER.indexOf(v || 'auto') + 1) % THINK_ORDER.length];
+}
+
+// Reasoning ("thinking") indicator — mirrors VisionBadge. Thinking models are
+// auto-picked for planning/review roles; fast (non-thinking) coders for the doer.
+function ThinkingBadge({ v, resolved, onCycle }: {
+  v: RegistryModel['thinking']; resolved?: boolean; onCycle?: () => void;
+}) {
+  const map = { yes: ['🧠 thinking', '#d29922'], no: ['⚡ fast', '#8b949e'],
+                auto: [`✨ ${resolved ? '🧠' : '⚡'} auto`, '#6aa6ff'] } as const;
+  const [txt, col] = map[v || 'auto'];
+  const base = { fontSize: 11, color: col, border: `1px solid ${col}`,
+                 borderRadius: 6, padding: '2px 8px', whiteSpace: 'nowrap' as const,
+                 flex: '0 0 auto' as const, lineHeight: 1.4 };
+  if (!onCycle) return <span style={{ ...base, marginLeft: 6 }}>{txt}</span>;
+  return (
+    <button type="button" onClick={onCycle}
+            title="Reasoning model — click to cycle: auto → yes → no. Thinking models are auto-assigned to planning/review roles."
+            style={{ ...base, cursor: 'pointer', background: 'transparent' }}>
+      {txt}
+    </button>
+  );
+}
+
 export default function AgentSettings() {
   const [models, setModels] = useState<RegistryModel[]>([]);
   const [config, setConfig] = useState<Record<string, AgentRoleConfig>>({});
@@ -57,9 +83,27 @@ export default function AgentSettings() {
   // then inherits the global default), which used to break the model+url
   // equality match and snap the select back to "— pick a model —".
   const [picked, setPicked] = useState<Record<string, string>>({});
+  const [autoBusy, setAutoBusy] = useState(false);
 
   async function loadModels() {
     try { setModels((await chatApi.models()).models); } catch { /* */ }
+  }
+
+  // Capability-based auto-assignment: the backend chooses each agent's model by
+  // capability (reasoning→planning/review, fast coder→doer, vision where needed).
+  async function autoAssignAll() {
+    setAutoBusy(true);
+    try {
+      const r = await chatApi.autoAssign();
+      const n = Object.keys(r.assignments || {}).length;
+      setPicked(r.assignments || {});
+      toast.success(`Auto-assigned ${n} agents by capability`);
+      await loadConfig();
+    } catch (e: any) {
+      toast.error(e?.message || 'Auto-assign failed');
+    } finally {
+      setAutoBusy(false);
+    }
   }
   async function loadConfig() {
     try { setConfig(await chatApi.agentsV2Config() as any); } catch { /* */ }
@@ -117,6 +161,7 @@ export default function AgentSettings() {
           <option value="">{models.length ? '— pick a model —' : '(add a model first)'}</option>
           {models.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}
         </select>
+        {m && <ThinkingBadge v={m.thinking} resolved={m.has_thinking} />}
         {m && <VisionBadge v={m.vision} />}
         {!m && config[role]?.model && (
           <span className="xs muted" title={config[role].base_url || ''}>{config[role].model}</span>
@@ -145,10 +190,18 @@ export default function AgentSettings() {
       <ModelsCard models={models} reload={loadModels} />
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 14 }}>Agents</h2>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h2 style={{ fontSize: 14 }}>Agents</h2>
+          <button type="button" className="btn" disabled={!models.length || autoBusy}
+                  onClick={autoAssignAll}
+                  title="Auto-choose the best model for every agent by capability: reasoning models → planning/review roles, fast coders → the doer, vision models where needed.">
+            {autoBusy ? 'Assigning…' : '✨ Auto-assign by capability'}
+          </button>
+        </div>
         <div className="subtitle" style={{ marginTop: 4, marginBottom: 12 }}>
-          Pick a model for each agent — bulk per group, or individually. Vision
-          support is shown next to the model.
+          Pick a model for each agent — bulk per group, or individually. Each
+          model shows its capabilities (🧠 thinking / ⚡ fast · 👁 vision).
+          Auto-assign picks internally by capability.
         </div>
 
         <h3 style={{ fontSize: 13, margin: '8px 0' }}>Orchestrator</h3>
@@ -221,6 +274,9 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
   }
   async function setVisionFor(id: string, v: RegistryModel['vision']) {
     try { await chatApi.updateModel(id, { vision: v }); reload(); } catch (e: any) { toast.error(e.message); }
+  }
+  async function setThinkingFor(id: string, v: RegistryModel['thinking']) {
+    try { await chatApi.updateModel(id, { thinking: v }); reload(); } catch (e: any) { toast.error(e.message); }
   }
   async function loadOnServer(m: RegistryModel) {
     setLoadingId(m.id);
@@ -319,6 +375,8 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
                   {m.model} · {m.base_url || 'default url'}{m.api_key_set ? ' · 🔑' : ''}{m.context_window ? ` · ctx ${Math.round(m.context_window / 1000)}k` : ''}
                 </div>
               </div>
+              <ThinkingBadge v={m.thinking} resolved={m.has_thinking}
+                             onCycle={() => setThinkingFor(m.id, nextThinking(m.thinking))} />
               <VisionBadge v={m.vision} onCycle={() => setVisionFor(m.id, nextVision(m.vision))} />
               <button className="ghost sm" disabled={loadingId === m.id}
                       title="Load this model on the LM Studio host (no-op for cloud / non-LMS backends)"

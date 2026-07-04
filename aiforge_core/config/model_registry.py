@@ -19,6 +19,27 @@ from typing import Any
 
 _LOCK = threading.Lock()
 _VISION = ("auto", "yes", "no")
+_THINKING = ("auto", "yes", "no")
+
+# Name heuristics for auto-detecting a reasoning/"thinking" model (emits a
+# <think> channel). Used when thinking=='auto'. Substring match, lowercased.
+_THINKING_MARKERS = (
+    "qwythos", "ornith", "thinking", "reasoner", "reasoning", "-r1", "r1-",
+    "deepseek-r1", "qwq", "o1", "o3", "o4-mini", "marco-o1", "sky-t1", "-think",
+)
+_VISION_MARKERS = (
+    "vl", "vision", "-v-", "llava", "bakllava", "moondream", "pixtral", "-vl-",
+    "internvl", "minicpm-v", "qwen2-vl", "qwen2.5-vl", "gemma-3", "gemma3",
+    "llama-3.2-11b", "llama-3.2-90b", "-omni",
+)
+
+
+def detect_capability(model_id: str, kind: str) -> bool:
+    """Heuristic capability detection from the model id when the flag is 'auto'.
+    kind = 'thinking' | 'vision'. Substring match on markers."""
+    m = (model_id or "").lower()
+    markers = _THINKING_MARKERS if kind == "thinking" else _VISION_MARKERS
+    return any(k in m for k in markers)
 
 
 def _path() -> str:
@@ -49,12 +70,28 @@ def _slug(label: str, model: str) -> str:
     return base or "model"
 
 
+def _resolve(flag: str, model_id: str, kind: str) -> bool:
+    """Flag ('auto'|'yes'|'no') → effective bool. 'auto' → name heuristic."""
+    f = (flag or "auto").lower()
+    if f == "yes":
+        return True
+    if f == "no":
+        return False
+    return detect_capability(model_id, kind)
+
+
 def _public(row: dict) -> dict:
-    """Registry row without the raw key."""
+    """Registry row without the raw key, with resolved capabilities."""
+    mid = row.get("model") or ""
+    vision = row.get("vision") or "auto"
+    thinking = row.get("thinking") or "auto"
     return {"id": row.get("id"), "label": row.get("label") or row.get("model"),
             "model": row.get("model"), "base_url": row.get("base_url") or "",
             "insecure_tls": bool(row.get("insecure_tls", True)),
-            "vision": row.get("vision") or "auto",
+            "vision": vision, "thinking": thinking,
+            # resolved booleans so the UI shows a badge + auto-select can match
+            "has_vision": _resolve(vision, mid, "vision"),
+            "has_thinking": _resolve(thinking, mid, "thinking"),
             "context_window": int(row.get("context_window") or 0),
             "api_key_set": bool(row.get("api_key"))}
 
@@ -72,12 +109,15 @@ def get_model(model_id: str) -> dict | None:
 
 def add_model(*, label: str, model: str, base_url: str = "",
               api_key: str | None = None, insecure_tls: bool = True,
-              vision: str = "auto", context_window: int = 0) -> dict:
+              vision: str = "auto", thinking: str = "auto",
+              context_window: int = 0) -> dict:
     model = (model or "").strip()
     if not model:
         raise ValueError("model id is required")
     if vision not in _VISION:
         vision = "auto"
+    if thinking not in _THINKING:
+        thinking = "auto"
     with _LOCK:
         rows = _load()
         mid = _slug(label, model)
@@ -89,6 +129,7 @@ def add_model(*, label: str, model: str, base_url: str = "",
         row = {"id": uid, "label": (label or model).strip(), "model": model,
                "base_url": (base_url or "").strip(), "api_key": api_key or "",
                "insecure_tls": bool(insecure_tls), "vision": vision,
+               "thinking": thinking,
                "context_window": max(0, int(context_window or 0))}
         rows.append(row)
         _save(rows)
@@ -108,6 +149,8 @@ def update_model(model_id: str, **fields: Any) -> dict | None:
                 r["insecure_tls"] = bool(fields["insecure_tls"])
             if fields.get("vision") in _VISION:
                 r["vision"] = fields["vision"]
+            if fields.get("thinking") in _THINKING:
+                r["thinking"] = fields["thinking"]
             if fields.get("context_window") is not None:
                 r["context_window"] = max(0, int(fields["context_window"] or 0))
             # Only overwrite the key when a non-empty one is supplied.
@@ -264,5 +307,53 @@ def apply_to_roles(model_id: str, roles: list[str]) -> dict:
     return {"applied": applied, "errors": errors}
 
 
+# Roles that benefit from a reasoning/"thinking" model (planning, judging).
+_THINKING_ROLES = ("planner", "architect", "enhancer", "reviewer", "learner",
+                   "validator", "critic", "reasoner", "judge", "orchestrator")
+# Code-generation-heavy roles — a fast non-reasoning coder is better + cheaper.
+_CODER_ROLES = ("doer", "developer", "coder", "implementer", "builder", "tester")
+
+
+def suggest_assignments(roles: list) -> dict:
+    """Map each role to the best available model BY CAPABILITY: thinking roles →
+    a reasoning model, coder roles → a fast non-reasoning coder, vision-needing →
+    a vision model. Larger context wins within a tier. {role: model_id}."""
+    models = list_models()
+    if not models:
+        return {}
+
+    def _by_ctx(ms):
+        return sorted(ms, key=lambda m: -(m.get("context_window") or 0))
+
+    think = _by_ctx([m for m in models if m.get("has_thinking")])
+    coder = _by_ctx([m for m in models if not m.get("has_thinking")])
+    vision = _by_ctx([m for m in models if m.get("has_vision")])
+    default = _by_ctx(models)[0]["id"]
+    out: dict = {}
+    for role in roles:
+        rl = (role or "").lower()
+        if "vision" in rl and vision:
+            out[role] = vision[0]["id"]
+        elif any(t in rl for t in _THINKING_ROLES) and think:
+            out[role] = think[0]["id"]
+        elif any(c in rl for c in _CODER_ROLES) and coder:
+            out[role] = coder[0]["id"]
+        else:
+            out[role] = default
+    return out
+
+
+def auto_assign(roles: list) -> dict:
+    """Compute + APPLY capability-based assignments for ``roles``. Groups roles by
+    chosen model and writes each into agent_config. Returns the plan + results."""
+    plan = suggest_assignments(roles)
+    by_model: dict = {}
+    for role, mid in plan.items():
+        by_model.setdefault(mid, []).append(role)
+    results = {mid: apply_to_roles(mid, rs) for mid, rs in by_model.items()}
+    return {"assignments": plan, "results": results}
+
+
 __all__ = ["list_models", "get_model", "add_model", "update_model",
-           "remove_model", "vision_for", "apply_to_roles"]
+           "remove_model", "vision_for", "apply_to_roles",
+           "detect_capability", "suggest_assignments", "auto_assign"]

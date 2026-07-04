@@ -44,6 +44,13 @@ export const api = {
       body: JSON.stringify({ roles }),
     }),
   syncModels: () => j<{ added: string[]; count: number }>('/agents/models/sync', { method: 'POST' }),
+  // Capability-based auto-assignment: thinking→reasoning model, coder→fast coder,
+  // vision→vision model. Applies to every archetype internally.
+  autoAssign: () =>
+    j<{ assignments: Record<string, string>; applied: boolean }>('/agents/auto-assign', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
 
   llmSettings: () =>
     j<LlmSettings>('/runtime/llm-settings'),
@@ -407,6 +414,9 @@ export interface RegistryModel {
   base_url: string;
   insecure_tls: boolean;
   vision: 'auto' | 'yes' | 'no';
+  thinking: 'auto' | 'yes' | 'no';
+  has_vision: boolean;
+  has_thinking: boolean;
   context_window: number;
   api_key_set: boolean;
 }
@@ -417,6 +427,7 @@ export interface ModelInput {
   api_key?: string;
   insecure_tls?: boolean;
   vision?: 'auto' | 'yes' | 'no';
+  thinking?: 'auto' | 'yes' | 'no';
   context_window?: number;
 }
 
@@ -562,6 +573,7 @@ export const chatApi = {
   updateModel: api.updateModel,
   deleteModel: api.deleteModel,
   applyModel: api.applyModel,
+  autoAssign: api.autoAssign,
   syncModels: api.syncModels,
   providersTest: api.providersTest,
   // AgentSettings reads the per-role config through chatApi too; without this
