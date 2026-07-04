@@ -158,22 +158,27 @@ def _extract_ctx_len(body: object) -> int | None:
     """Pull the model's advertised context length from a ``/v1/models`` body.
     Handles the OpenAI-style ``{"data": [ {...} ]}`` envelope and a bare model
     dict. Returns the capped int, or None when no known field is present."""
-    try:
-        entry: object = None
-        if isinstance(body, dict):
-            data = body.get("data")
-            if isinstance(data, list) and data:
-                entry = data[0]
-            else:
-                entry = body
+    def _ctx_of(entry: object) -> int:
         if not isinstance(entry, dict):
-            return None
+            return 0
         for field in _CTX_FIELDS:
             v = entry.get(field)
             if isinstance(v, bool):        # guard: bool is an int subclass
                 continue
             if isinstance(v, (int, float)) and v > 0:
-                return min(int(v), _CTX_CEILING)
+                return int(v)
+        return 0
+    try:
+        if isinstance(body, dict):
+            data = body.get("data")
+            if isinstance(data, list) and data:
+                # Take the MAX context across ALL loaded models — a big primary
+                # (qwen 256K) + a smaller escalation model (ornith 64K) are both
+                # loaded; report the big one, not whichever is data[0].
+                best = max((_ctx_of(e) for e in data), default=0)
+                return min(best, _CTX_CEILING) if best > 0 else None
+            best = _ctx_of(body)
+            return min(best, _CTX_CEILING) if best > 0 else None
     except Exception:  # noqa: BLE001
         return None
     return None
