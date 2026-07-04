@@ -1506,6 +1506,17 @@ def _sim_ratio(a: str, b: str) -> float:
     return _dl.SequenceMatcher(None, _norm_ws(a), _norm_ws(b)).ratio()
 
 
+def _llm_review_once(prompt: str, max_tokens: int) -> str | None:
+    """Single review call as ONE user turn (qwen empties on a system message).
+    No retry — an empty response is a meaningful 'nothing to fix' signal here."""
+    from aiforge_core.llm.client import complete as _complete
+    try:
+        return _complete("doer", [{"role": "user", "content": prompt}],
+                         max_tokens=max_tokens, temperature=0.2)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _llm_review_call(sysmsg: str, usr: str, max_tokens: int) -> str | None:
     """One review LLM call. qwen-coder on this mlx stack returns an EMPTY response
     when the instruction is in a SYSTEM message (a plain USER turn works), so we
@@ -1532,24 +1543,18 @@ def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
     returns the original unchanged. Off with AIFORGE_REVIEW_SPEC=0."""
     if os.environ.get("AIFORGE_REVIEW_SPEC", "1") in ("0", "false") or not spec_md.strip():
         return spec_md, ""
-    # Ask for the reviewed spec as OUTPUT (a coder model reliably emits content;
-    # it returns EMPTY when asked to judge "reply OK"). Fix contradictions/scope/
-    # ambiguity, else echo it back unchanged; then diff to detect a real change.
-    sysmsg = ("Output the reviewed build spec in markdown (no fences, no prose). "
-              "Fix any internal contradictions, ambiguity, missing edge cases, or "
-              "scope creep vs the request. If it is already sound, output it "
-              "unchanged.")
-    usr = f"REQUEST:\n{prompt[:2000]}\n\nSPEC:\n{spec_md[:6000]}"
-    out = _llm_review_call(sysmsg, usr, 4096)
-    if out is None:
-        return spec_md, ""
-    out = out.strip()
-    if not out or len(out) < 40:
-        return spec_md, "spec reviewed — sound"
-    # Only a SUBSTANTIVE rewrite counts as a refinement — qwen paraphrases/
-    # reformats a sound spec (which we must NOT swap in, it loses precision), so
-    # keep the original unless the review changed it materially (<0.72 similar).
-    if _sim_ratio(out, spec_md) > 0.72:
+    # qwen-coder's behaviour IS the signal: told "reply CLEAN if sound, else the
+    # corrected spec", it stays SILENT (empty) on a sound spec and returns the fix
+    # on a bad one. So: empty/CLEAN → sound (keep original); a real spec back →
+    # refined (use it). No aggressive retry — empty is meaningful here.
+    instr = ("Review this build spec against the request for contradictions, "
+             "ambiguity, missing edge cases, and scope creep. If it is sound, reply "
+             "with the single word CLEAN. If not, output ONLY the corrected full "
+             "spec in markdown (no fences, no prose).")
+    out = _llm_review_once(f"{instr}\n\n---\n\nREQUEST:\n{prompt[:2000]}\n\n"
+                           f"SPEC:\n{spec_md[:6000]}", 4096)
+    out = (out or "").strip()
+    if not out or out.upper().startswith("CLEAN") or len(out) < 60:
         return spec_md, "spec reviewed — sound"
     return out, "spec reviewed + refined (contradictions/ambiguity/scope)"
 
@@ -1578,17 +1583,17 @@ def _review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
         total += len(block)
     if not blocks:
         return [], ""
-    sysmsg = ("Review these test files vs the spec. Reply OK if all sound. Else "
-              "output only the corrected files, each as `=== path ===` then the "
-              "full file, marking fixes with `# test-review:`. Fix only PROVABLY "
-              "wrong tests (contradictory/impossible assertions, scope creep beyond "
-              "the spec). Never weaken a correct test.")
-    usr = f"SPEC:\n{spec_md[:4000]}\n\nTESTS:\n\n" + "\n\n".join(blocks)
-    out = _llm_review_call(sysmsg, usr, 8192)
-    if out is None:
-        return [], ""
-    out = out.strip()
-    if not out or out.upper().startswith("OK"):
+    instr = ("Review these test files against the spec. If all are sound, reply "
+             "with the single word CLEAN. If not, output ONLY the corrected files, "
+             "each as `=== path ===` then the full file, marking each fix with a "
+             "`# test-review:` comment. Fix ONLY provably-wrong tests (contradictory/"
+             "impossible assertions, scope creep beyond the spec). Never weaken a "
+             "correct test.")
+    out = _llm_review_once(
+        f"{instr}\n\n---\n\nSPEC:\n{spec_md[:4000]}\n\nTESTS:\n\n"
+        + "\n\n".join(blocks), 8192)
+    out = (out or "").strip()
+    if not out or out.upper().startswith("CLEAN") or "=== " not in out:
         return [], "tests reviewed — sound"
     changed = []
     for rel, content in _parse_file_blocks(out).items():
