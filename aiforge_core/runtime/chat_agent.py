@@ -2449,6 +2449,81 @@ def _repomap_max_chars() -> int:
     return _window_scaled(6000, 0.02)
 
 
+_SYM_PATTERNS = {
+    ".py": r"^\s*(?:async\s+)?(?:class|def)\s+(\w+)",
+    ".java": r"^\s*(?:@\w+\s*)*(?:public|private|protected|static|final|abstract|\s)*"
+             r"(?:class|interface|enum|record)\s+(\w+)"
+             r"|^\s*(?:public|private|protected)\s+(?:static\s+)?[\w<>\[\],\s.]+?\s+(\w+)\s*\(",
+    ".go": r"^\s*func\s+(?:\([^)]*\)\s*)?(\w+)|^\s*type\s+(\w+)\s",
+    ".ts": r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|const|enum)\s+(\w+)",
+    ".tsx": r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|const)\s+(\w+)",
+    ".js": r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|const)\s+(\w+)",
+    ".rb": r"^\s*(?:class|module|def)\s+([\w.]+)",
+    ".rs": r"^\s*(?:pub\s+)?(?:fn|struct|enum|trait|impl)\s+(\w+)",
+    ".c": r"^\s*[\w\*\s]+?\s+(\w+)\s*\([^;]*\)\s*\{",
+    ".cpp": r"^\s*(?:class|struct)\s+(\w+)|^\s*[\w:<>\*&\s]+?\s+(\w+)\s*\([^;]*\)\s*\{",
+    ".cs": r"^\s*(?:public|private|protected|internal|static|\s)*(?:class|interface|struct|enum)\s+(\w+)",
+    ".kt": r"^\s*(?:fun|class|interface|object)\s+(\w+)",
+    ".php": r"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|function)\s+(\w+)",
+}
+
+
+def _build_symbol_map(cwd: str, max_files: int = 200, max_syms: int = 12) -> str:
+    """A lightweight, dependency-free repo map: each source file → its top-level
+    symbols (classes/functions/methods) via regex. Fast (no tree-sitter/aider),
+    language-agnostic, so the agent navigates by SYMBOLS not blind `find`."""
+    import re as _re
+    base = str(_workspace_root() or cwd)
+    compiled = {ext: _re.compile(pat, _re.MULTILINE)
+                for ext, pat in _SYM_PATTERNS.items()}
+    rows: list[tuple[str, list[str]]] = []
+    seen = 0
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+        for f in sorted(files):
+            ext = os.path.splitext(f)[1].lower()
+            if ext not in compiled:
+                continue
+            if seen >= max_files:
+                return _fmt_symbol_rows(base, rows, truncated=True)
+            fp = os.path.join(root, f)
+            try:
+                with open(fp, encoding="utf-8", errors="replace") as fh:
+                    src = fh.read(200_000)
+            except Exception:  # noqa: BLE001
+                continue
+            syms: list[str] = []
+            for m in compiled[ext].finditer(src):
+                nm = next((g for g in m.groups() if g), None)
+                if nm and nm not in syms and nm not in ("if", "for", "while",
+                                                        "switch", "catch", "return"):
+                    syms.append(nm)
+                if len(syms) >= max_syms:
+                    break
+            if syms:
+                rows.append((os.path.relpath(fp, base), syms))
+                seen += 1
+    return _fmt_symbol_rows(base, rows, truncated=False)
+
+
+def _fmt_symbol_rows(base: str, rows: list, truncated: bool) -> str:
+    if not rows:
+        return ""
+    cap = _repomap_max_chars()
+    out: list[str] = []
+    total = 0
+    for rel, syms in rows:
+        line = f"{rel}: {', '.join(syms)}"
+        if cap and total + len(line) > cap:
+            truncated = True
+            break
+        out.append(line)
+        total += len(line) + 1
+    body = "\n".join(out)
+    tail = "\n… (more — grep/find for the rest)" if truncated else ""
+    return body + tail
+
+
 def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str:
     """Repo map for the system prompt so the agent navigates by SYMBOLS, not blind
     `find`. Prefers the tree-sitter + PageRank Aider RepoMap (ranked functions/
@@ -2487,7 +2562,18 @@ def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str
             return ("REPO MAP (ranked symbols via tree-sitter — the key functions/"
                     "classes per file; navigate by these, don't blind-`find`):\n"
                     f"WORKING DIRECTORY: {base}\n{digest}")
-        # else: timed out or empty → the fast dir tree below (cached map next turn)
+        # else: aider absent / timed out / empty → lightweight regex symbol map.
+
+    # 2. Lightweight regex symbol map (no deps, fast) — file → its symbols.
+    if os.environ.get("AIFORGE_CHAT_SYMBOL_MAP", "1") not in ("0", "false"):
+        try:
+            symmap = _build_symbol_map(base)
+            if symmap and symmap.strip():
+                return ("REPO MAP (each file → its top-level classes/functions; "
+                        "navigate by these symbols, don't blind-`find`):\n"
+                        f"WORKING DIRECTORY: {base}\n{symmap}")
+        except Exception:  # noqa: BLE001
+            pass
     lines: list[str] = []
     base_depth = base.rstrip(os.sep).count(os.sep)
     try:
