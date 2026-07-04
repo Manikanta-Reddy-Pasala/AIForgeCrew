@@ -1496,6 +1496,112 @@ def _ensure_git_workspace(cwd: str) -> str:
     return (cur.stdout or "").strip() or "main"
 
 
+def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
+    """Review the SPEC before any code is built. An LLM checks it against the
+    request for CONTRADICTIONS, ambiguity, missing cases, and scope creep, and
+    returns a corrected spec. Returns (reviewed_spec, note). Soft: on any failure
+    returns the original unchanged. Off with AIFORGE_REVIEW_SPEC=0."""
+    if os.environ.get("AIFORGE_REVIEW_SPEC", "1") in ("0", "false") or not spec_md.strip():
+        return spec_md, ""
+    try:
+        from aiforge_core.llm.client import complete as _complete
+        out = _complete("planner", [
+            {"role": "system", "content":
+             "You review a build SPEC before coding starts. Check it against the "
+             "REQUEST for: internal contradictions, ambiguity, missing requirements/"
+             "edge cases, and scope creep (things not asked for). If the spec is "
+             "sound, reply with EXACTLY `OK`. Otherwise reply with the CORRECTED "
+             "full spec in markdown — same structure, fixed. No prose, no fences."},
+            {"role": "user", "content":
+             f"REQUEST:\n{prompt[:2000]}\n\nSPEC:\n{spec_md[:6000]}"},
+        ], max_tokens=4096, temperature=0.0) or ""
+    except Exception:  # noqa: BLE001
+        return spec_md, ""
+    out = out.strip()
+    if not out or out.upper().startswith("OK") or len(out) < 40:
+        return spec_md, "spec reviewed — sound"
+    return out, "spec reviewed + refined (contradictions/ambiguity/scope)"
+
+
+def _review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
+    """Review the TEST files after they're written, BEFORE the impl reconcile —
+    catch bad tests EARLY (contradictory assertions, scope creep beyond the spec,
+    impossible/typo'd expected values) instead of burning reconcile rounds on
+    impossible-to-satisfy tests. Rewrites only tests that are provably wrong vs
+    the SPEC. Returns (changed_files, note). Off with AIFORGE_REVIEW_TESTS=0."""
+    if os.environ.get("AIFORGE_REVIEW_TESTS", "1") in ("0", "false"):
+        return [], ""
+    test_files = _test_files_in(cwd)
+    if not test_files:
+        return [], ""
+    blocks, total = [], 0
+    for rel in test_files:
+        try:
+            body = open(os.path.join(cwd, rel), encoding="utf-8", errors="replace").read()
+        except Exception:  # noqa: BLE001
+            continue
+        block = f"### FILE: {rel}\n```\n{body}\n```"
+        if total + len(block) > 24000:
+            break
+        blocks.append(block)
+        total += len(block)
+    if not blocks:
+        return [], ""
+    try:
+        from aiforge_core.llm.client import complete as _complete
+        out = _complete("planner", [
+            {"role": "system", "content":
+             "You review TEST files against the SPEC before the implementation is "
+             "written. Find tests that are PROVABLY WRONG: assertions that "
+             "contradict each other or the spec, impossible/typo'd expected values, "
+             "or coverage of features the spec never asked for (scope creep). Do "
+             "NOT weaken correct tests. If all tests are sound reply EXACTLY `OK`. "
+             "Otherwise output ONLY the corrected files, each as `=== path ===` then "
+             "the full file, marking each fix with a `# test-review:` comment."},
+            {"role": "user", "content":
+             f"SPEC:\n{spec_md[:4000]}\n\nTESTS:\n\n" + "\n\n".join(blocks)},
+        ], max_tokens=8192, temperature=0.0) or ""
+    except Exception:  # noqa: BLE001
+        return [], ""
+    out = out.strip()
+    if not out or out.upper().startswith("OK"):
+        return [], "tests reviewed — sound"
+    changed = []
+    for rel, content in _parse_file_blocks(out).items():
+        rel = rel.lstrip("/").replace("..", "")
+        if not rel or not content.strip():
+            continue
+        try:
+            from aiforge_core.runtime.syntax_guard import validate_syntax
+            ok, _ = validate_syntax(rel, content)
+            if not ok:
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            with open(os.path.join(cwd, rel), "w", encoding="utf-8") as fh:
+                fh.write(content)
+            changed.append(rel)
+        except Exception:  # noqa: BLE001
+            pass
+    return changed, (f"tests reviewed + fixed {len(changed)} file(s)"
+                     if changed else "tests reviewed — sound")
+
+
+def _test_files_in(cwd: str) -> list[str]:
+    """Relative paths of test files in the tree (pytest / JUnit / *_test.*)."""
+    import re as _re
+    out: list[str] = []
+    pat = _re.compile(r"(^|/)(test_[^/]+|[^/]+_test|.+[Tt]est)\.(py|java|js|ts|go)$")
+    for root, dirs, files in os.walk(cwd):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+        for f in files:
+            rel = os.path.relpath(os.path.join(root, f), cwd)
+            if pat.search(rel.replace(os.sep, "/")):
+                out.append(rel)
+    return out
+
+
 def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = None,
                          enhanced: bool = False, session_id: int | None = None):
     """Chat 'parallel team' mode: run the (pre-decomposed) subtasks CONCURRENTLY
@@ -1600,6 +1706,14 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     # isolated context knows the overall goal) and re-read by the final
     # verification pass to confirm nothing was dropped.
     spec_md = _render_spec_md(prompt, subs)
+    # SPEC REVIEW — check the spec before any code is built (contradictions,
+    # ambiguity, missing cases, scope creep). Refines it if needed.
+    try:
+        spec_md, _sr_note = _review_spec(prompt, spec_md)
+        if _sr_note:
+            yield {"type": "thought", "role": "reviewer", "text": f"🔍 {_sr_note}"}
+    except Exception as _exc:  # noqa: BLE001
+        log.debug("spec review skipped: %s", _exc)
     try:
         with open(os.path.join(cwd, "SPEC.md"), "w", encoding="utf-8") as _fh:
             _fh.write(spec_md)
@@ -1697,6 +1811,22 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                                     validate_one=None, integration_test=None,
                                     on_status=on_status, should_cancel=_cancelled)
                 if not _cancelled():
+                    # TEST REVIEW — the tests are now written; review them against
+                    # the SPEC and fix provably-wrong ones (contradictions, scope
+                    # creep, impossible values) BEFORE any impl is built to them, so
+                    # the impl targets clean tests instead of the reconcile burning
+                    # rounds on impossible-to-satisfy assertions. Commit fixes to
+                    # base so the impl worktrees branch from the cleaned tests.
+                    try:
+                        _tr_changed, _tr_note = _review_tests(cwd, spec_md)
+                        if _tr_note:
+                            q.put({"type": "thought", "role": "reviewer",
+                                   "text": f"🔍 {_tr_note}"})
+                        if _tr_changed:
+                            _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
+                            _git(["commit", "-m", "test-review fixes"], cwd)
+                    except Exception:  # noqa: BLE001
+                        pass
                     for s in impl_subs:
                         s["_tests"] = _matching_tests_for(cwd, s.get("path") or "")
                     aggB = run_parallel(cwd, base, None, impl_subs, _spec_run_one,
