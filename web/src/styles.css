@@ -1019,6 +1019,32 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   height: calc(100vh - var(--topbar-h) - var(--s-6) * 2);
   min-height: 560px;
   gap: var(--s-3);
+  position: relative;
+  transition: grid-template-columns 0.15s ease;
+}
+/* Collapsed sessions panel — column shrinks to 0, floating button re-expands. */
+.chat-shell-v2.sidebar-collapsed {
+  grid-template-columns: 0 1fr;
+  gap: 0;
+}
+.chat-shell-v2.sidebar-collapsed > .chat-sessions-sidebar {
+  opacity: 0;
+  pointer-events: none;
+}
+.chat-sidebar-expand {
+  position: absolute;
+  top: var(--s-2);
+  left: var(--s-2);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--r-md);
+  background: var(--bg-2);
+  border: 1px solid var(--border-0);
 }
 
 /* Sessions sidebar */
