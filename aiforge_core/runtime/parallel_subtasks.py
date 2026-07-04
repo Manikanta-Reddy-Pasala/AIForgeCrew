@@ -2045,6 +2045,32 @@ def _reconcile_rounds() -> int:
         return 12
 
 
+def _collect_run_output(res: dict) -> str:
+    """Gather the run output from ANY key project_runner might use — a compiled
+    build puts the compile error under stdout/stderr, not just output/error."""
+    return "\n".join(str(res.get(k) or "") for k in
+                     ("error", "output", "stdout", "stderr", "logs", "details",
+                      "message")).strip()
+
+
+def _raw_build_test_output(cwd: str, stacks: list) -> str:
+    """Fallback: run the toolchain test/build command directly, capturing COMBINED
+    stdout+stderr, so a maven/gradle compile error is never lost to the reconciler."""
+    if os.path.exists(os.path.join(cwd, "pom.xml")):
+        cmd = ["mvn", "-q", "test"]
+    elif (os.path.exists(os.path.join(cwd, "build.gradle"))
+          or os.path.exists(os.path.join(cwd, "build.gradle.kts"))):
+        cmd = ["gradle", "test", "-q", "--console=plain"]
+    else:
+        return ""
+    try:
+        p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                           timeout=300)
+        return f"{p.stdout or ''}\n{p.stderr or ''}".strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _project_test_output(cwd: str) -> tuple[bool, str]:
     """Run the project's tests and return ``(ok, raw_output)`` — the RAW build/
     test output (not the formatted report), so the reconciler sees exact errors.
@@ -2064,11 +2090,16 @@ def _project_test_output(cwd: str) -> tuple[bool, str]:
         stacks = (detect(cwd) or {}).get("stacks") or []
         if not stacks:
             return True, ""
-        if not _has_tests(cwd, stacks):
-            b = project(action="build", cwd=cwd) or {}
-            return bool(b.get("ok")), str(b.get("error") or b.get("output") or "")
-        t = project(action="test", cwd=cwd) or {}
-        return bool(t.get("ok")), str(t.get("error") or t.get("output") or "")
+        action = "test" if _has_tests(cwd, stacks) else "build"
+        res = project(action=action, cwd=cwd) or {}
+        out = _collect_run_output(res)
+        # A compiled-language build (maven/gradle) can fail with the error under
+        # stdout/stderr, not `output`/`error` — if we lost it, re-run the raw
+        # command capturing combined output so the reconciler sees the compile
+        # error (else it thinks 0 are failing and gives up).
+        if not res.get("ok") and not out.strip():
+            out = _raw_build_test_output(cwd, stacks) or out
+        return bool(res.get("ok")), out
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
 
