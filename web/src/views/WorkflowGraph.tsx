@@ -263,6 +263,46 @@ export default function WorkflowGraph() {
         <span className="muted"> Hover any node for what it does.</span>
       </div>
 
+      {/* Execution modes — how a chat request is actually run, and how it
+          right-sizes itself from Simple to the full Pipeline. */}
+      <div className="wf-modes">
+        <div className="wf-mode">
+          <div className="wf-mode-h">⚡ Simple</div>
+          <div className="wf-mode-b">
+            One agent, full filesystem + shell tools, edits in place. Best for a
+            bug fix, an edit, or a question. Analyze/explain queries stay
+            read-only (no build). <b>Auto-escalates to Pipeline</b> when it detects
+            a multi-file build.
+          </div>
+        </div>
+        <div className="wf-mode">
+          <div className="wf-mode-h">📋 Plan</div>
+          <div className="wf-mode-b">
+            Read-only. Produces a step-by-step plan and changes <b>nothing</b> until
+            you press <b>Approve &amp; Execute</b>. A build request also
+            auto-escalates to the Pipeline.
+          </div>
+        </div>
+        <div className="wf-mode">
+          <div className="wf-mode-h">🔀 Pipeline <span className="muted">(team)</span></div>
+          <div className="wf-mode-b">
+            Decompose → scaffold → <b>parallel Doers</b> (fresh context each) →
+            <b> reconcile loop</b> (test → repo-map-informed fix → escalate the
+            stuck residual → audit a wrong test) → integration test. Best for
+            building or large multi-file tasks.
+          </div>
+        </div>
+        <div className="wf-mode wf-mode-auto">
+          <div className="wf-mode-h">↗ Auto-transition</div>
+          <div className="wf-mode-b">
+            You don't have to pick. Simple/Plan detect a multi-file build (a build
+            verb + a project noun, or “with tests”/“endpoints”) and route it
+            through the Pipeline automatically — the mode <b>right-sizes itself</b>
+            to the task.
+          </div>
+        </div>
+      </div>
+
       <div style={{ width: '100%', maxWidth: '100%', overflow: 'auto', maxHeight: '78vh',
                     border: '1px solid var(--border-1)', borderRadius: 10,
                     boxSizing: 'border-box', WebkitOverflowScrolling: 'touch' }}>

@@ -1682,3 +1682,31 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
 /* Chat header overflow menu — hover affordance */
 [role="menu"] > button:hover,
 [role="menu"] > label:hover { background: var(--bg-2); }
+
+/* Workflow page — execution modes explainer cards */
+.wf-modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--s-3);
+  margin-bottom: 14px;
+}
+.wf-mode {
+  background: var(--bg-2);
+  border: 1px solid var(--border-0);
+  border-radius: var(--r-lg);
+  padding: var(--s-3);
+}
+.wf-mode-auto {
+  border-color: #3b82f6;
+  background: linear-gradient(180deg, rgba(59,130,246,0.08), transparent);
+}
+.wf-mode-h {
+  font-weight: 600;
+  margin-bottom: 5px;
+  font-size: var(--fs-sm);
+}
+.wf-mode-b {
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  line-height: 1.5;
+}
