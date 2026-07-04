@@ -1609,11 +1609,21 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     except Exception as _exc:  # noqa: BLE001 — spec write is best-effort
         log.debug("SPEC.md write skipped: %s", _exc)
 
+    # Record the pre-existing code so greenfield-only steps (scaffold, off-plan
+    # prune) never touch an EXISTING repo — on a real repo they'd delete the whole
+    # codebase (everything not in this task's small plan).
+    _preexisting = _snapshot_baseline(cwd)
+    _greenfield = _is_greenfield(cwd)
+    if not _greenfield:
+        yield {"type": "thought", "role": "system",
+               "text": f"Existing repo ({_preexisting} source files) — editing in "
+                       "place; skipping scaffold + off-plan prune (greenfield-only)."}
+
     # SCAFFOLD — deterministically create every file at its canonical path (stub +
     # API-contract header) BEFORE parallelizing, then commit to base so worktrees
-    # branch from a fixed tree. Prevents chaotic/unmergeable directory layouts and
-    # gives the local models a clear track to fill in. Gated (default on).
-    if os.environ.get("AIFORGE_SCAFFOLD", "1") not in ("0", "false"):
+    # branch from a fixed tree. GREENFIELD ONLY (stubbing over an existing repo is
+    # wrong). Gated (default on).
+    if _greenfield and os.environ.get("AIFORGE_SCAFFOLD", "1") not in ("0", "false"):
         try:
             _stubs = _scaffold_stubs(cwd, subs)
             if _stubs:
@@ -2554,6 +2564,46 @@ def _ensure_impl_modules(subs: list) -> list:
     return subs + added
 
 
+_BASELINE_FILE = ".aiforge-baseline"
+
+
+def _snapshot_baseline(cwd: str) -> int:
+    """Record the source files that EXISTED before this run (an existing repo vs a
+    greenfield build) so the off-plan pruner NEVER deletes pre-existing code and
+    the scaffold doesn't stub over it. Returns the pre-existing source count."""
+    pre = [rel for rel, _c in _gather_sources(cwd)]
+    try:
+        with open(os.path.join(cwd, _BASELINE_FILE), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(pre))
+    except Exception:  # noqa: BLE001
+        pass
+    return len(pre)
+
+
+def _baseline_set(cwd: str) -> set:
+    try:
+        with open(os.path.join(cwd, _BASELINE_FILE), encoding="utf-8") as fh:
+            return {ln.strip() for ln in fh if ln.strip()}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _is_greenfield(cwd: str) -> bool:
+    """True when the workspace has (almost) no pre-existing source — a NEW project.
+    Greenfield-only steps (scaffold, off-plan prune, decompose-into-full-tree) are
+    DESTRUCTIVE on an existing repo, so gate them on this."""
+    try:
+        n = len(_baseline_set(cwd)) if os.path.exists(os.path.join(cwd, _BASELINE_FILE)) \
+            else len([1 for _ in _gather_sources(cwd)])
+    except Exception:  # noqa: BLE001
+        n = 0
+    try:
+        thresh = int(os.environ.get("AIFORGE_GREENFIELD_MAX_FILES", "8"))
+    except ValueError:
+        thresh = 8
+    return n <= thresh
+
+
 def _spec_declared_paths(subs: list) -> set:
     return {str(s.get("path") or "").lstrip("/").replace("..", "")
             for s in subs if s.get("path")}
@@ -2569,11 +2619,16 @@ def _prune_offplan_files(cwd: str, subs: list) -> list:
     declared = _spec_declared_paths(subs)
     if not declared:
         return []
+    # NEVER touch an existing repo: on a non-greenfield workspace the pruner would
+    # delete the whole codebase (everything not in this task's tiny plan). Bail.
+    if not _is_greenfield(cwd):
+        return []
+    baseline = _baseline_set(cwd)                 # pre-existing files — never delete
     declared_bases = {os.path.basename(d) for d in declared}
     removed: list = []
     for rel, _content in _gather_sources(cwd):
         r = rel.lstrip("/")
-        if r in declared:
+        if r in declared or r in baseline:
             continue
         base = os.path.basename(r)
         if base in ("__init__.py", "conftest.py"):

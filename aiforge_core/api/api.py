@@ -3667,8 +3667,16 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             _psub_on = _pp.enabled()
         except Exception:  # noqa: BLE001
             _psub_on = _parallel_team
+        # Only escalate a GREENFIELD build. On an existing repo a bug-fix/edit
+        # must stay a targeted single-agent edit — the decompose→scaffold pipeline
+        # is for new projects, not editing hundreds of existing files.
+        _greenfield = True
+        try:
+            _greenfield = _pp._is_greenfield(cwd)
+        except Exception:  # noqa: BLE001
+            _greenfield = True
         _build_escalate = bool(
-            not team and _psub_on
+            not team and _psub_on and _greenfield
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
             and _looks_like_multifile_build(prompt))
         if _build_escalate:

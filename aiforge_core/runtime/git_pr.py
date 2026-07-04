@@ -41,6 +41,7 @@ _EXCLUDE_PATHSPECS: tuple[str, ...] = (
     ":(exclude).aiforge-workspace",
     ":(exclude).aiforge-venv",
     ":(exclude).aiforge-contracts",
+    ":(exclude).aiforge-baseline",
     ":(exclude).idea",
     ":(exclude).vscode",
     ":(exclude).DS_Store",
