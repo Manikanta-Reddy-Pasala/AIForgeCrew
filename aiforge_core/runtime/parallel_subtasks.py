@@ -23,6 +23,7 @@ import re
 import subprocess
 import threading
 
+from aiforge_core.runtime import review_gates
 from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS, ensure_artifact_gitignore
 
 log = logging.getLogger("aiforge.parallel_subtasks")
@@ -1496,217 +1497,6 @@ def _ensure_git_workspace(cwd: str) -> str:
     return (cur.stdout or "").strip() or "main"
 
 
-def _norm_ws(s: str) -> str:
-    import re as _re
-    return _re.sub(r"\s+", " ", (s or "")).strip().lower()
-
-
-def _sim_ratio(a: str, b: str) -> float:
-    import difflib as _dl
-    return _dl.SequenceMatcher(None, _norm_ws(a), _norm_ws(b)).ratio()
-
-
-_REVIEW_MODEL_CACHE: dict = {}
-
-
-def _prefer_reasoning(model_id: str) -> bool:
-    """True if the registry classifies this model as a thinking/reasoning model.
-    No hardcoded names here — capability detection lives in model_registry."""
-    try:
-        from aiforge_core.config import model_registry as _mr
-        return bool(_mr.detect_capability(model_id, "thinking"))
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _review_model() -> str | None:
-    """The model that REVIEWS specs/tests — deliberately DIFFERENT from the doer
-    that wrote them (a model can't reliably catch its own subtle test bugs, e.g.
-    an LRU eviction-order mistake). Default is cross-model for EVERY build:
-    AIFORGE_REVIEW_MODEL → AIFORGE_ESCALATION_MODEL → auto-pick a loaded model
-    that differs from the doer (preferring a reasoning model) → None (single
-    model on the box → fall back to the doer, still useful for blatant issues).
-    AIFORGE_REVIEW_CROSS_MODEL=0 forces same-model (the doer)."""
-    m = (os.environ.get("AIFORGE_REVIEW_MODEL", "").strip()
-         or os.environ.get("AIFORGE_ESCALATION_MODEL", "").strip())
-    if m:
-        return m
-    if os.environ.get("AIFORGE_REVIEW_CROSS_MODEL", "1") in ("0", "false"):
-        return None
-    return _auto_review_model()
-
-
-def _auto_review_model() -> str | None:
-    """Query the doer endpoint's loaded models and pick one that DIFFERS from the
-    doer's own model (prefer a reasoning model). Cached. None if only one model is
-    loaded (can't cross-review) or the probe fails."""
-    if "m" in _REVIEW_MODEL_CACHE:
-        return _REVIEW_MODEL_CACHE["m"]
-    picked = None
-    try:
-        from aiforge_core.llm.router import resolve
-        import json as _json
-        import urllib.request as _u
-        ep = resolve("doer")
-        doer_model = (getattr(ep, "model", "") or "").lower()
-        base = (getattr(ep, "base_url", "") or "").rstrip("/")
-        req = _u.Request(f"{base}/models", method="GET",
-                         headers={"Authorization": f"Bearer {getattr(ep, 'api_key', '') or 'na'}"})
-        with _u.urlopen(req, timeout=3) as r:
-            data = _json.loads(r.read().decode("utf-8", "replace")).get("data", [])
-        ids = [d.get("id", "") for d in data if isinstance(d, dict) and d.get("id")]
-        others = [i for i in ids if i.lower() != doer_model
-                  and not any(x in i.lower() for x in ("embed", "rerank"))]
-        # prefer a reasoning model (via the registry's capability detection —
-        # no hardcoded model names here); else any other loaded model.
-        picked = next((i for i in others if _prefer_reasoning(i)), None)
-        picked = picked or (others[0] if others else None)
-    except Exception:  # noqa: BLE001
-        picked = None
-    _REVIEW_MODEL_CACHE["m"] = picked
-    return picked
-
-
-def _llm_review_once(prompt: str, max_tokens: int) -> str | None:
-    """Single review call as ONE user turn (qwen empties on a system message).
-    Routes to a DIFFERENT reviewer model when one is configured (cross-model
-    review catches bugs the authoring model misses). No retry — an empty response
-    is a meaningful 'nothing to fix' signal here."""
-    _rm = _review_model()
-    _extras = {"model": _rm} if _rm else None
-    # a reasoning reviewer THINKS before emitting — give it headroom.
-    if _rm:
-        max_tokens = max(max_tokens, 4096)
-    from aiforge_core.llm.client import complete as _complete
-    try:
-        return _complete("doer", [{"role": "user", "content": prompt}],
-                         max_tokens=max_tokens, temperature=0.3, extras=_extras)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _llm_review_call(sysmsg: str, usr: str, max_tokens: int) -> str | None:
-    """One review LLM call. qwen-coder on this mlx stack returns an EMPTY response
-    when the instruction is in a SYSTEM message (a plain USER turn works), so we
-    fold the instruction into a single user turn. Retries once at a higher temp.
-    Returns the text, or None if both attempts fail/empty."""
-    from aiforge_core.llm.client import complete as _complete
-    combined = f"{sysmsg}\n\n---\n\n{usr}"
-    for temp in (0.2, 0.5):
-        try:
-            out = _complete("doer",
-                            [{"role": "user", "content": combined}],
-                            max_tokens=max_tokens, temperature=temp)
-        except Exception:  # noqa: BLE001
-            out = None
-        if out and out.strip():
-            return out
-    return None
-
-
-def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
-    """Review the SPEC before any code is built. An LLM checks it against the
-    request for CONTRADICTIONS, ambiguity, missing cases, and scope creep, and
-    returns a corrected spec. Returns (reviewed_spec, note). Soft: on any failure
-    returns the original unchanged. Off with AIFORGE_REVIEW_SPEC=0."""
-    if os.environ.get("AIFORGE_REVIEW_SPEC", "1") in ("0", "false") or not spec_md.strip():
-        return spec_md, ""
-    # qwen-coder's behaviour IS the signal: told "reply CLEAN if sound, else the
-    # corrected spec", it stays SILENT (empty) on a sound spec and returns the fix
-    # on a bad one. So: empty/CLEAN → sound (keep original); a real spec back →
-    # refined (use it). No aggressive retry — empty is meaningful here.
-    instr = ("Review this build spec against the request for contradictions, "
-             "ambiguity, missing edge cases, and scope creep. If it is sound, reply "
-             "with the single word CLEAN. If not, output ONLY the corrected full "
-             "spec in markdown (no fences, no prose).")
-    out = _llm_review_once(f"{instr}\n\n---\n\nREQUEST:\n{prompt[:2000]}\n\n"
-                           f"SPEC:\n{spec_md[:6000]}", 4096)
-    out = (out or "").strip()
-    if not out or out.upper().startswith("CLEAN") or len(out) < 60:
-        return spec_md, "spec reviewed — sound"
-    return out, "spec reviewed + refined (contradictions/ambiguity/scope)"
-
-
-def _review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
-    """Review the TEST files after they're written, BEFORE the impl reconcile —
-    catch bad tests EARLY (contradictory assertions, scope creep beyond the spec,
-    impossible/typo'd expected values) instead of burning reconcile rounds on
-    impossible-to-satisfy tests. Rewrites only tests that are provably wrong vs
-    the SPEC. Returns (changed_files, note). Off with AIFORGE_REVIEW_TESTS=0."""
-    if os.environ.get("AIFORGE_REVIEW_TESTS", "1") in ("0", "false"):
-        return [], ""
-    test_files = _test_files_in(cwd)
-    if not test_files:
-        return [], ""
-    blocks, total = [], 0
-    for rel in test_files:
-        try:
-            body = open(os.path.join(cwd, rel), encoding="utf-8", errors="replace").read()
-        except Exception:  # noqa: BLE001
-            continue
-        block = f"### FILE: {rel}\n```\n{body}\n```"
-        if total + len(block) > 24000:
-            break
-        blocks.append(block)
-        total += len(block)
-    if not blocks:
-        return [], ""
-    instr = ("You are auditing test files for CORRECTNESS. For EACH test, mentally "
-             "EXECUTE it step by step against the spec — track the state after every "
-             "call (for a cache/structure: the exact contents + recency/ordering "
-             "after each get/put) — and check whether each assertion matches the "
-             "state the spec dictates. A get that refreshes recency, an off-by-one "
-             "eviction, a wrong expected value: these are bugs. Do NOT skim.\n"
-             "If every assertion is correct, reply with the single word CLEAN. "
-             "Otherwise output ONLY the corrected files, each as `=== path ===` then "
-             "the full file, marking each fix with a `# test-review:` comment. Fix "
-             "ONLY provably-wrong assertions; never weaken a correct test.")
-    out = _llm_review_once(
-        f"{instr}\n\n---\n\nSPEC:\n{spec_md[:4000]}\n\nTESTS:\n\n"
-        + "\n\n".join(blocks), 8192)
-    out = (out or "").strip()
-    if not out or out.upper().startswith("CLEAN") or "=== " not in out:
-        return [], "tests reviewed — sound"
-    changed = []
-    for rel, content in _parse_file_blocks(out).items():
-        rel = rel.lstrip("/").replace("..", "")
-        if not rel or not content.strip():
-            continue
-        try:
-            from aiforge_core.runtime.syntax_guard import validate_syntax
-            ok, _ = validate_syntax(rel, content)
-            if not ok:
-                continue
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            with open(os.path.join(cwd, rel), "w", encoding="utf-8") as fh:
-                fh.write(content)
-            changed.append(rel)
-        except Exception:  # noqa: BLE001
-            pass
-    return changed, (f"tests reviewed + fixed {len(changed)} file(s)"
-                     if changed else "tests reviewed — sound")
-
-
-_REVIEW_SKIP_DIRS = {"node_modules", "venv", ".venv", "__pycache__", "target",
-                     "build", "dist", ".git", ".aiforge-venv", "site-packages"}
-
-
-def _test_files_in(cwd: str) -> list[str]:
-    """Relative paths of test files in the tree (pytest / JUnit / *_test.*)."""
-    import re as _re
-    out: list[str] = []
-    pat = _re.compile(r"(^|/)(test_[^/]+|[^/]+_test|.+[Tt]est)\.(py|java|js|ts|go)$")
-    for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if d not in _REVIEW_SKIP_DIRS and not d.startswith(".")]
-        for f in files:
-            rel = os.path.relpath(os.path.join(root, f), cwd)
-            if pat.search(rel.replace(os.sep, "/")):
-                out.append(rel)
-    return out
-
-
 def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = None,
                          enhanced: bool = False, session_id: int | None = None):
     """Chat 'parallel team' mode: run the (pre-decomposed) subtasks CONCURRENTLY
@@ -1814,7 +1604,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     # SPEC REVIEW — check the spec before any code is built (contradictions,
     # ambiguity, missing cases, scope creep). Refines it if needed.
     try:
-        spec_md, _sr_note = _review_spec(prompt, spec_md)
+        spec_md, _sr_note = review_gates.review_spec(prompt, spec_md)
         if _sr_note:
             yield {"type": "thought", "role": "reviewer", "text": f"🔍 {_sr_note}"}
     except Exception as _exc:  # noqa: BLE001
@@ -1923,7 +1713,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                     # rounds on impossible-to-satisfy assertions. Commit fixes to
                     # base so the impl worktrees branch from the cleaned tests.
                     try:
-                        _tr_changed, _tr_note = _review_tests(cwd, spec_md)
+                        _tr_changed, _tr_note = review_gates.review_tests(cwd, spec_md)
                         if _tr_note:
                             q.put({"type": "thought", "role": "reviewer",
                                    "text": f"🔍 {_tr_note}"})
