@@ -2464,7 +2464,7 @@ def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str
     #    Aider map then serves later turns. Never blocks the turn.
     if os.environ.get("AIFORGE_CHAT_AIDER_MAP", "1") not in ("0", "false"):
         try:
-            budget = float(os.environ.get("AIFORGE_REPOMAP_BUDGET_S", "6"))
+            budget = float(os.environ.get("AIFORGE_REPOMAP_BUDGET_S", "30"))
         except ValueError:
             budget = 6.0
         _out: dict = {}
