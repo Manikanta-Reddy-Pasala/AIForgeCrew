@@ -3625,6 +3625,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             not team and _psub_on
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
             and _looks_like_multifile_build(prompt))
+        _af_log.info("escalate-check team=%s psub=%s auto=%s build=%s -> %s | prompt=%r",
+                     team, _psub_on,
+                     os.environ.get("AIFORGE_AUTO_ESCALATE", "1"),
+                     _looks_like_multifile_build(prompt), _build_escalate,
+                     (prompt or "")[:60])
         if _build_escalate:
             yield {"type": "thought", "role": "router",
                    "text": "Multi-file build detected — routing through the build "
