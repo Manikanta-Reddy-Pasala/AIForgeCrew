@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NamedTuple
 
@@ -148,10 +148,20 @@ def _repo_name(cwd: str | None) -> str:
     return os.path.basename(os.path.abspath(root).rstrip(os.sep)) or "skills"
 
 
+def _builtin_dir() -> Path:
+    """Shipped default skills (lowest priority — custom always wins)."""
+    return Path(__file__).resolve().parent / "builtin_playbooks" / "skills"
+
+
 def load(cwd: str | None = None) -> list[Skill]:
-    """Global + repo-local skills + legacy microagents, de-duped by name
-    (repo-local / later wins). Best-effort."""
+    """Skills, de-duped by name. Priority order (later wins on name conflict):
+    BUILT-IN defaults → global user skills → repo-local. So a CUSTOM skill always
+    overrides a shipped default of the same name, and ranks above it."""
     by_name: dict[str, Skill] = {}
+    # 1. built-in defaults — lowest priority (custom overrides by name + outranks).
+    for sk in _scan_dir(_builtin_dir()):
+        by_name[sk.name] = replace(sk, source="builtin", priority=sk.priority - 100)
+    # 2. global user (custom).
     for sk in _scan_dir(_global_dir()):
         by_name[sk.name] = sk
     root = _repo_root(cwd)

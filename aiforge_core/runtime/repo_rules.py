@@ -132,18 +132,36 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
         return {"ok": False, "error": str(exc)}
 
 
+def _builtin_rules_dir() -> Path:
+    """Shipped default rules (lowest priority — a custom rule of the same name
+    always wins)."""
+    return Path(__file__).resolve().parent / "builtin_playbooks" / "rules"
+
+
 def load_rules(repo_root: str | Path) -> list[Rule]:
-    """Scan the repo's rule sources + the operator's global rules
-    (~/.aiforge/rules, UI-managed). Soft — missing dirs return []."""
+    """Rules de-duped by name, precedence (later wins): BUILT-IN defaults →
+    operator global (~/.aiforge/rules) → repo-local. A CUSTOM rule always
+    overrides a shipped default of the same name. Soft — missing dirs → []."""
+    from dataclasses import replace as _replace
     root = Path(repo_root)
-    rules: list[Rule] = list(load_global_rules())   # operator global rules first
+    by_name: dict[str, Rule] = {}
+    # 1. built-in defaults (lowest).
+    bdir = _builtin_rules_dir()
+    if bdir.is_dir():
+        for path in sorted(bdir.glob("*.md")) + sorted(bdir.glob("*.mdc")):
+            r = _parse_rule_file(path)
+            if r is not None:
+                by_name[r.name] = _replace(r, source="builtin")
+    # 2. operator global (custom).
+    for r in load_global_rules():
+        by_name[r.name] = r
+    # 3. repo-local (most specific).
     for pattern in (".aiforge/rules/*.md", ".cursor/rules/*.mdc",
                     ".cursor/rules/*.md"):
         for path in sorted(root.glob(pattern)):
             r = _parse_rule_file(path)
             if r is not None:
-                rules.append(r)
-    # Always-on single files (no frontmatter expected).
+                by_name[r.name] = r
     for name in (".cursorrules", "AGENTS.md"):
         path = root / name
         if path.is_file():
@@ -152,9 +170,9 @@ def load_rules(repo_root: str | Path) -> list[Rule]:
             except OSError:
                 continue
             if body:
-                rules.append(Rule(name=name, globs=(), always=True,
-                                  body=body, source=str(path)))
-    return rules
+                by_name[name] = Rule(name=name, globs=(), always=True,
+                                     body=body, source=str(path))
+    return list(by_name.values())
 
 
 def _split_glob(g: str) -> tuple[str, str]:

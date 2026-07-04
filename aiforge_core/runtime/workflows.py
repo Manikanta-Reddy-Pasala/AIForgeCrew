@@ -70,9 +70,18 @@ def _scan_dir(root: Path) -> list[Skill]:
     return out
 
 
+def _builtin_dir() -> Path:
+    """Shipped default workflows (lowest priority — custom always wins)."""
+    return Path(__file__).resolve().parent / "builtin_playbooks" / "workflows"
+
+
 def load(cwd: str | None = None) -> list[Skill]:
-    """Global + repo-local workflows, de-duped by name (repo-local wins)."""
+    """Workflows, de-duped by name. Priority: BUILT-IN defaults → global user →
+    repo-local (later wins). A CUSTOM workflow overrides + outranks a default."""
+    from dataclasses import replace as _replace
     by_name: dict[str, Skill] = {}
+    for wf in _scan_dir(_builtin_dir()):
+        by_name[wf.name] = _replace(wf, source="builtin", priority=wf.priority - 100)
     for wf in _scan_dir(_global_dir()):
         by_name[wf.name] = wf
     root = _sk._repo_root(cwd)
