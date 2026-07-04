@@ -3811,13 +3811,39 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             return bool(ask and not change)
 
         _readonly = _looks_like_analysis(prompt)
+
+        def _wrote_source() -> bool:
+            """True only if this turn CREATED/MODIFIED a source file — the signal
+            there's something to build+test. A JIRA/Confluence/Q&A/chat/analysis
+            turn touches no source, so the integration-check (+ its hardcoded
+            python fallback steps) must NOT run for it."""
+            exts = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".c",
+                    ".cc", ".cpp", ".h", ".hpp", ".rs", ".rb", ".php", ".cs",
+                    ".kt", ".swift", ".scala", ".sh")
+            try:
+                import subprocess as _sp
+                out = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
+                              capture_output=True, text=True, timeout=10).stdout
+                if any(ln[3:].strip().endswith(exts)
+                       for ln in out.splitlines() if ln.strip()):
+                    return True
+                if out.strip():           # git repo, but no source changes → skip
+                    return False
+            except Exception:  # noqa: BLE001 — not a git repo / git missing
+                pass
+            try:
+                from aiforge_core.runtime.doer_tools import touched_paths
+                return any(str(p).endswith(exts) for p in touched_paths())
+            except Exception:  # noqa: BLE001
+                return False
+
         # Simple/act mode: after the agent finishes, COMPILE + run the project's
-        # tests (any language, via project_runner) and report results — or
-        # step-by-step manual instructions when the toolchain isn't on this host.
-        # Skipped in plan mode (nothing was written) + read-only analysis queries.
-        # Best-effort; env-gated off with AIFORGE_CHAT_INTEGRATION_TEST=0.
-        if agent_mode != "plan" and not _readonly and os.environ.get(
-                "AIFORGE_CHAT_INTEGRATION_TEST", "1") not in ("0", "false"):
+        # tests and report — ONLY when this turn actually wrote source code. Skips
+        # plan mode, read-only analysis, and every non-code task (JIRA/Confluence/
+        # Q&A/chat). Best-effort; env-gated off with AIFORGE_CHAT_INTEGRATION_TEST=0.
+        if agent_mode != "plan" and not _readonly and _wrote_source() \
+                and os.environ.get(
+                    "AIFORGE_CHAT_INTEGRATION_TEST", "1") not in ("0", "false"):
             try:
                 from aiforge_core.runtime.parallel_subtasks import (
                     _reconcile_integration,
