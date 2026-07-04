@@ -2287,7 +2287,8 @@ def _apply_patches(cwd: str, out: str) -> tuple[list, list]:
     return written, failures
 
 
-def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
+def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
+                 model: str | None = None) -> list[str]:
     """Minimal-context PATCH resolver (Git-state model, NOT a whole-tree blackboard):
     feed ONLY the files referenced in the failing output + their direct imports,
     with the errors, and have the LLM OUTPUT the corrected files (=== path ===
@@ -2353,11 +2354,16 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
         mt = max(4096, int(os.environ.get("AIFORGE_LLM_MAX_TOKENS", "8192")))
     except ValueError:
         mt = 8192
+    # Model override (escalation): when the primary reconciler stalls, the caller
+    # passes a different model (e.g. a reasoning model) for the residual failures
+    # it can't crack. Delivered via `extras={"model": …}` which overrides the
+    # role's default in the request body — general, no per-problem code.
+    _extras = {"model": model} if model else None
     out = _complete("doer", [
         {"role": "system", "content": "You are a Targeted Code Patch Engine. Output "
          "ONLY ### FILE headers + <<<<<<< SEARCH/======= />>>>>>> REPLACE blocks, "
          "nothing else. Never rewrite a whole file."},
-        {"role": "user", "content": prompt}], max_tokens=mt) or ""
+        {"role": "user", "content": prompt}], max_tokens=mt, extras=_extras) or ""
     written, failures = _apply_patches(cwd, out)
     if not written and failures:
         # Fallback: the model may have ignored the patch format and emitted whole
@@ -2735,15 +2741,24 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         except Exception:  # noqa: BLE001
             pass
         hints = _directed_hints(output)
+        # ESCALATION: after the primary model stalls (no improvement for a couple
+        # rounds), hand the residual failures it can't crack to a stronger/reasoning
+        # model (AIFORGE_ESCALATION_MODEL, e.g. a 9B reasoning model). General —
+        # only the STUCK residual escalates, not every round; no per-problem code.
+        _esc_model = os.environ.get("AIFORGE_ESCALATION_MODEL", "").strip() or None
+        _use_esc = _esc_model and stalls >= 2
         yield {"type": "thought", "role": "reconciler",
                "text": f"Integration failed ({prev_fails} failing) — pass "
-                       f"{rounds}/{max_rounds}: patching the offending files…"}
+                       f"{rounds}/{max_rounds}: "
+                       + (f"escalating the residual to {_esc_model}…" if _use_esc
+                          else "patching the offending files…")}
         # Snapshot BEFORE the round so a round that makes things WORSE (a local
         # model's bad patch) can be rolled back — reconcile is then MONOTONIC:
         # it never regresses, only accepts rounds that reduce the failure count.
         snapshot = dict(_gather_sources(cwd))
         try:
-            written = _rewrite_fix(cwd, output, hints)
+            written = _rewrite_fix(cwd, output, hints,
+                                   model=(_esc_model if _use_esc else None))
         except Exception as exc:  # noqa: BLE001 — a transient LLM error must NOT
             yield {"type": "thought", "role": "reconciler",
                    "text": f"reconcile pass hit a transient error, retrying: {str(exc)[:80]}"}
