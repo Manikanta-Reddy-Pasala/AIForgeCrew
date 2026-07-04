@@ -342,7 +342,55 @@ def _summarize_notes(blocks: list[str], role: str) -> str | None:
     return combined          # already summarized; accept as-is if still huge
 
 
+def _topic_labels(files: list[dict], role: str) -> dict:
+    """Ask an LLM to cluster notes into a few COHERENT topics (better than one
+    blob per kind). Returns {file_name: topic-slug}. Empty on any failure — the
+    caller then falls back to kind grouping. Cheap: one call over titles only."""
+    if len(files) < 2:
+        return {}
+    listing = "\n".join(f"{i}: {(d.get('title') or d.get('file') or '')[:80]}"
+                        for i, d in enumerate(files))
+    try:
+        from aiforge_core.llm.client import complete
+        out = complete(role, [
+            {"role": "system", "content":
+             "Cluster these memory-note titles into 3-10 COHERENT topics (by "
+             "subject/feature area). Reply ONLY a JSON object mapping each index "
+             "(as a string) to a short kebab-case topic slug, e.g. "
+             '{"0":"data-sync","1":"chat-ui"}. Every index must appear once.'},
+            {"role": "user", "content": listing[:6000]},
+        ], max_tokens=800, temperature=0.0)
+    except Exception:  # noqa: BLE001
+        return {}
+    if not out:
+        return {}
+    import json as _json
+    import re as _re
+    m = _re.search(r"\{.*\}", out, _re.S)
+    if not m:
+        return {}
+    try:
+        raw = _json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return {}
+    labels: dict = {}
+    for k, v in raw.items():
+        try:
+            idx = int(k)
+        except (ValueError, TypeError):
+            continue
+        if 0 <= idx < len(files) and isinstance(v, str) and v.strip():
+            slug = _re.sub(r"[^a-z0-9]+", "-", v.strip().lower()).strip("-")[:40]
+            if slug:
+                labels[files[idx]["file"]] = slug
+    return labels
+
+
 def _group_key(d: dict, group_by: str) -> str:
+    if group_by == "topic":
+        # topic labels are precomputed onto d["_topic"] in _gather_planned; fall
+        # back to kind for any file the labeller missed.
+        return d.get("_topic") or (d.get("kind") or "note")
     if group_by == "tag":
         return (d["tags"][0] if d.get("tags") else "untagged")
     if group_by == "source":
@@ -383,11 +431,20 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 files.append(d)
             except Exception:  # noqa: BLE001
                 continue
+        live = [d for d in files if not d["file"].startswith("compacted-")]
+        # TOPIC mode: one LLM pass labels every note with a coherent topic slug so
+        # compaction yields several browsable topical files instead of ONE blob
+        # per kind. Falls back to kind grouping for any note the labeller missed
+        # (or all, if the model is unreachable).
+        if group_by == "topic":
+            try:
+                _labels = _topic_labels(live, model_role)
+            except Exception:  # noqa: BLE001
+                _labels = {}
+            for d in live:
+                d["_topic"] = _labels.get(d["file"])
         groups: dict[str, list[dict]] = {}
-        for d in files:
-            # never fold an already-compacted file back into a group (idempotent)
-            if d["file"].startswith("compacted-"):
-                continue
+        for d in live:
             groups.setdefault(_group_key(d, group_by), []).append(d)
         return {k: v for k, v in groups.items() if len(v) >= min_group}
 

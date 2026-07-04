@@ -1810,14 +1810,16 @@ def memory_files_ingest() -> dict:
 
 
 @app.post("/api/memory/files/compact")
-def memory_files_compact(group_by: str = Query("kind"),
+def memory_files_compact(group_by: str = Query("topic"),
                          min_group: int = Query(2, ge=2),
                          dry_run: bool = Query(False),
                          summarize: bool = Query(True),
                          model_role: str = Query("learner")) -> dict:
     """Consolidate per-session md memories into fewer standardized files.
 
-    Group by ``kind`` (default), ``tag``, or ``source``. With ``summarize``
+    Group by ``topic`` (default — an LLM clusters notes into coherent topical
+    files, so you get several browsable memories, not one blob per kind), or
+    ``kind`` / ``tag`` / ``source``. With ``summarize``
     (default) an available LLM (``model_role``'s primary→cloud chain) rewrites
     each group into a compact, deduped document so the file stays small; falls
     back to a plain merge when no model is reachable. ``dry_run=true`` returns
