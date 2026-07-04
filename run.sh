@@ -298,6 +298,20 @@ if ! uv pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
   uv pip install --python .venv/bin/python -e . >/dev/null
 fi
 
+# ── Aider RepoMap (optional but preferred) ────────────────────────────────
+# The chat/doer repo context uses Aider's tree-sitter + PageRank RepoMap for a
+# RANKED symbol map. Install best-effort — if it fails/absent the agent falls
+# back to the built-in regex symbol map (aiforge_core/runtime/chat_agent.py).
+# Skip with AIFORGE_SKIP_AIDER=1.
+if [[ "${AIFORGE_SKIP_AIDER:-0}" != "1" ]]; then
+  if ! .venv/bin/python -c "import aider.repomap" >/dev/null 2>&1; then
+    echo "==> installing Aider RepoMap (ranked symbol map)…"
+    uv pip install --python .venv/bin/python aider-chat >/dev/null 2>&1 \
+      && echo "==> aider RepoMap ready" \
+      || echo "==> aider install skipped (falling back to regex symbol map)"
+  fi
+fi
+
 # ── venv self-heal ────────────────────────────────────────────────────
 # A partial/interrupted install can leave the venv importable-but-broken —
 # classic symptom: pydantic is present but its compiled companion
