@@ -569,8 +569,9 @@ def _run_sequential(cwd: str, base_branch: str, subs: list, run_one, *,
                 _git(["add", "-A"], cwd)
                 _git(["commit", "--no-edit", "-m", f"feat: {slug}"], cwd)
                 _e({"type": "tool", "role": slug, "name": "committed",
-                    "args": {"failing": fails, "was": prev_fails},
-                    "result": {"files": (res or {}).get("files") or []}})
+                    "args": {"status": ("tests can't run yet" if fails >= 999
+                                        else f"{fails} failing")},
+                    "result": {"ok": True, "files": (res or {}).get("files") or []}})
                 prev_fails = fails
                 committed = True
                 done += 1
@@ -2781,9 +2782,12 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
                 stalls = 0
             else:
                 stalls += 1                     # lateral move — bounded
+            _lbl = ("tests can't run (collection/build error)"
+                    if new_fails >= 999 else f"{new_fails} failing")
             yield {"type": "tool", "role": "reconciler", "name": "patched files",
-                   "args": {"pass": rounds, "failing": new_fails},
-                   "result": {"files": written}}
+                   "args": {"pass": rounds, "status": _lbl},
+                   "result": {"ok": new_fails < 999, "files": written,
+                              "output": (output or "")[-1500:] if new_fails >= 999 else None}}
             if stalls >= 4:
                 break
 
