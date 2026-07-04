@@ -1601,12 +1601,16 @@ def _review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
         total += len(block)
     if not blocks:
         return [], ""
-    instr = ("Review these test files against the spec. If all are sound, reply "
-             "with the single word CLEAN. If not, output ONLY the corrected files, "
-             "each as `=== path ===` then the full file, marking each fix with a "
-             "`# test-review:` comment. Fix ONLY provably-wrong tests (contradictory/"
-             "impossible assertions, scope creep beyond the spec). Never weaken a "
-             "correct test.")
+    instr = ("You are auditing test files for CORRECTNESS. For EACH test, mentally "
+             "EXECUTE it step by step against the spec — track the state after every "
+             "call (for a cache/structure: the exact contents + recency/ordering "
+             "after each get/put) — and check whether each assertion matches the "
+             "state the spec dictates. A get that refreshes recency, an off-by-one "
+             "eviction, a wrong expected value: these are bugs. Do NOT skim.\n"
+             "If every assertion is correct, reply with the single word CLEAN. "
+             "Otherwise output ONLY the corrected files, each as `=== path ===` then "
+             "the full file, marking each fix with a `# test-review:` comment. Fix "
+             "ONLY provably-wrong assertions; never weaken a correct test.")
     out = _llm_review_once(
         f"{instr}\n\n---\n\nSPEC:\n{spec_md[:4000]}\n\nTESTS:\n\n"
         + "\n\n".join(blocks), 8192)
