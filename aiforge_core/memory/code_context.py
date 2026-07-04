@@ -21,6 +21,38 @@ from typing import Any
 
 
 # ─────────────── Aider RepoMap (process-local, hot path) ────────────────
+def _repo_index_dir(root) -> "Path":
+    """Central, persistent per-repo index folder — ~/.aiforge/repo-index/<key>.
+    Key = the repo's git common dir (shared by ALL worktrees of the repo) so a
+    repo is indexed ONCE and reused across sessions/worktrees; falls back to the
+    real path when not a git repo. AIFORGE_REPO_INDEX_DIR overrides the base."""
+    import hashlib
+    import subprocess
+    from pathlib import Path as _P
+    r = _P(root)
+    ident = str(r.resolve())
+    try:
+        cg = subprocess.run(["git", "-C", str(r), "rev-parse", "--git-common-dir"],
+                            capture_output=True, text=True, timeout=5).stdout.strip()
+        if cg:
+            p = _P(cg)
+            if not p.is_absolute():
+                p = (r / cg)
+            ident = str(p.resolve().parent)      # the repo's real root
+    except Exception:  # noqa: BLE001
+        pass
+    key = hashlib.sha1(ident.encode()).hexdigest()[:16]
+    base = os.environ.get("AIFORGE_REPO_INDEX_DIR") or os.path.join(
+        os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
+        "repo-index")
+    d = _P(base) / key
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return d
+
+
 def aider_digest(worktree: str, chat_files: list[str],
                  token_budget: int = 1024,
                  user_text: str = "") -> str:
@@ -51,6 +83,10 @@ def aider_digest(worktree: str, chat_files: list[str],
         other_files=other,
         map_tokens=token_budget,
         user_text=user_text,
+        # PERSISTENT central tags cache keyed by the REAL repo (git-common-dir),
+        # so worktrees of the same repo SHARE it and a repo is scanned ONCE — not
+        # re-scanned on every fresh worktree/session. ~/.aiforge/repo-index/<key>.
+        cache_dir=_repo_index_dir(root),
     )
     try:
         digest = render_repo_map(cfg) or ""
