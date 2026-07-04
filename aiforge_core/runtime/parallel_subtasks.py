@@ -1514,7 +1514,7 @@ def _review_spec(prompt: str, spec_md: str) -> tuple[str, str]:
              "full spec in markdown — same structure, fixed. No prose, no fences."},
             {"role": "user", "content":
              f"REQUEST:\n{prompt[:2000]}\n\nSPEC:\n{spec_md[:6000]}"},
-        ], max_tokens=4096, temperature=0.0) or ""
+        ], max_tokens=4096, temperature=0.2) or ""
     except Exception:  # noqa: BLE001
         return spec_md, ""
     out = out.strip()
@@ -1560,7 +1560,7 @@ def _review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
              "the full file, marking each fix with a `# test-review:` comment."},
             {"role": "user", "content":
              f"SPEC:\n{spec_md[:4000]}\n\nTESTS:\n\n" + "\n\n".join(blocks)},
-        ], max_tokens=8192, temperature=0.0) or ""
+        ], max_tokens=8192, temperature=0.2) or ""
     except Exception:  # noqa: BLE001
         return [], ""
     out = out.strip()
