@@ -1780,9 +1780,29 @@ export default function Chat() {
                   border: '1px solid var(--warn, #f59e0b)',
                   borderRadius: 8, background: 'var(--bg-1)',
                 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
-                    ⚠ Approval needed — <code>{pendingApproval.name}</code>
-                  </div>
+                  {(() => {
+                    const a = (pendingApproval.args || {}) as any;
+                    const path = a.path || a.file || a.filename || a.file_path || '';
+                    const ext = String(path).split('.').pop()?.toLowerCase() || '';
+                    const LANG: Record<string, string> = {
+                      py: 'Python', java: 'Java', go: 'Go', ts: 'TypeScript',
+                      tsx: 'TSX', js: 'JavaScript', rs: 'Rust', c: 'C', cpp: 'C++',
+                      rb: 'Ruby', php: 'PHP', sh: 'Shell', xml: 'XML', json: 'JSON',
+                      yaml: 'YAML', yml: 'YAML', md: 'Markdown', sql: 'SQL',
+                    };
+                    const lang = LANG[ext];
+                    return (
+                      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4,
+                                    display: 'flex', alignItems: 'center', gap: 8,
+                                    flexWrap: 'wrap' }}>
+                        <span>⚠ Approval needed — <code>{pendingApproval.name}</code></span>
+                        {path && <code style={{ fontSize: 12, opacity: 0.85 }}>{path}</code>}
+                        {lang && <span style={{ fontSize: 11, padding: '1px 7px',
+                                   border: '1px solid var(--fg-3)', borderRadius: 6,
+                                   color: 'var(--fg-2)' }}>{lang}</span>}
+                      </div>
+                    );
+                  })()}
                   {pendingApproval.reason && (
                     <div className="muted xs" style={{ marginBottom: 6 }}>{pendingApproval.reason}</div>
                   )}
