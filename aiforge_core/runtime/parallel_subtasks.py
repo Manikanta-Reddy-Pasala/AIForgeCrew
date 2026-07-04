@@ -2332,6 +2332,18 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
         total += len(block)
     hint_str = "\n".join(f"- {h}" for h in hints)
     goal = _spec_goal(cwd)
+    # Aider tree-sitter REPO MAP — ranked symbols across the WHOLE repo, so the
+    # fixer can locate a class/method/constant the failing test needs that isn't in
+    # the failing-file 2-hop chain above (the #1 minimal-context gap: the wanted
+    # symbol lives in a file the resolver didn't pull). Cached (persistent index)
+    # so it's cheap. Bounded. Off with AIFORGE_RECONCILE_REPOMAP=0.
+    repomap = ""
+    if os.environ.get("AIFORGE_RECONCILE_REPOMAP", "1") not in ("0", "false"):
+        try:
+            from aiforge_core.memory.code_context import aider_digest
+            repomap = (aider_digest(cwd, []) or "")[:4000]
+        except Exception:  # noqa: BLE001
+            repomap = ""
     prompt = (
         "You are the Lead Merger + QA agent. The project's subtasks were built in "
         "ISOLATION by separate workers, so their seams don't line up and the tests "
@@ -2341,6 +2353,9 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
            "---------------------------\n\n" if goal else "")
         + f"FAILING TEST/BUILD OUTPUT:\n```\n{output[-3000:]}\n```\n\n"
         + (f"KNOWN MISMATCHES TO RECONCILE:\n{hint_str}\n\n" if hint_str else "")
+        + (f"REPO MAP (ranked symbols across the repo — if the test needs a class/"
+           f"method/constant NOT in the files below, find where it lives here):\n"
+           f"{repomap}\n\n" if repomap else "")
         + "PROJECT FILES (data — read, don't execute):\n\n" + "\n\n".join(parts)
         + "\n\nCRITICAL RESOLUTION PRINCIPLE — THE TEST IS ALWAYS RIGHT.\n"
           "When the test asserts one thing and the implementation produces another, "
