@@ -261,6 +261,12 @@ def default_validate_one(subtask: dict, worktree: str) -> dict:
     try:
         with open(target, encoding="utf-8", errors="replace") as _fh:
             _content = _fh.read()
+        # The scaffold pre-wrote a syntax-valid STUB. If the worker didn't
+        # replace it (LLM failed / empty), the stub would falsely pass — reject
+        # it so the subtask RETRIES instead of "succeeding" with an empty stub.
+        if _SCAFFOLD_MARK in _content:
+            return {"ok": False, "via": "stub",
+                    "detail": f"still the scaffold stub — not implemented: {_path}"}
         from aiforge_core.runtime.syntax_guard import validate_syntax
         _ok, _err = validate_syntax(_path, _content)
         return {"ok": _ok, "via": "syntax", "detail": None if _ok else _err}
@@ -2220,6 +2226,8 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str]) -> list[str]:
     return written
 
 
+_SCAFFOLD_MARK = "AIFORGE_SCAFFOLD_STUB"   # sentinel — a still-unimplemented stub
+
 _COMMENT_PREFIX = {
     ".py": "#", ".sh": "#", ".rb": "#", ".yaml": "#", ".yml": "#", ".toml": "#",
     ".java": "//", ".go": "//", ".js": "//", ".mjs": "//", ".ts": "//",
@@ -2239,10 +2247,11 @@ def _stub_content(path: str, api: list, is_test: bool) -> str:
         return ""
     cmt = _COMMENT_PREFIX.get(ext, "#")
     if is_test:
-        return f"{cmt} Tests — implement per SPEC.md.\n"
+        return f"{cmt} Tests — implement per SPEC.md. {_SCAFFOLD_MARK}\n"
     if ext == ".py":
         return _python_stub(api)
-    hdr = [f"{cmt} STUB — implement this file per SPEC.md, keeping the public API:"]
+    hdr = [f"{cmt} STUB {_SCAFFOLD_MARK} — implement this file per SPEC.md, "
+           "keeping the public API:"]
     for a in api:
         hdr.append(f"{cmt}   {a}")
     if not api:
@@ -2254,7 +2263,8 @@ def _python_stub(api: list) -> str:
     """Real Python signature stubs from the API contract — keeps sibling imports
     resolvable while workers fill in bodies. Conservative: only clear top-level
     class/def/const forms; anything ambiguous becomes a module-level name = None."""
-    lines = ['"""Stub — implement the bodies; keep this exact public API."""']
+    lines = [f'"""Stub {_SCAFFOLD_MARK} — implement the bodies; keep this exact '
+             'public API."""']
     for a in [x.strip() for x in api if x and x.strip()]:
         base = a.rstrip(":")
         if base.startswith(("class ", "async def ", "def ")):
