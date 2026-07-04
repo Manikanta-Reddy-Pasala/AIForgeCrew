@@ -534,7 +534,9 @@ def _run_sequential(cwd: str, base_branch: str, subs: list, run_one, *,
         if on_status:
             on_status(slug, "done", (res or {}).get("files"))
 
-    # 2. Baseline fail count with tests present, impls not yet built.
+    # 2. Baseline fail count with tests present, impls not yet built. Prune any
+    #    off-plan files first so the tree matches the plan.
+    _prune_offplan_files(cwd, subs)
     _ok, out = _project_test_output(cwd)
     prev_fails = _fail_count(out)
     _e({"type": "thought", "role": "coordinator",
@@ -560,6 +562,7 @@ def _run_sequential(cwd: str, base_branch: str, subs: list, run_one, *,
                 res = run_one(s, cwd)
             except Exception as exc:  # noqa: BLE001
                 res = {"ok": False, "error": str(exc)}
+            _prune_offplan_files(cwd, subs)       # drop any phantom file this step made
             _ok, out = _project_test_output(cwd)
             fails = _fail_count(out)
             if fails <= prev_fails:
@@ -1738,6 +1741,17 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     # pass over the whole merged tree fixes those mismatches until green. The
     # final report — or step-by-step manual steps if the toolchain is absent —
     # is folded into the completion message.
+    # Strip off-plan phantom files (a worker/reconciler-invented package that
+    # duplicates declared modules → collection errors) BEFORE integration.
+    try:
+        _off = _prune_offplan_files(cwd, subs)
+        if _off:
+            yield {"type": "thought", "role": "system",
+                   "text": f"Removed {len(_off)} off-plan file(s) not in the plan "
+                           f"(kept the tree matching SPEC): {', '.join(_off[:6])}"}
+    except Exception as _pexc:  # noqa: BLE001
+        log.debug("off-plan prune skipped: %s", _pexc)
+
     _integ_md = ""
     _res: dict = {}
     try:
@@ -2422,6 +2436,42 @@ def _python_stub(api: list) -> str:
             if nm:
                 lines.append(f"\n\n{nm} = None")
     return "\n".join(lines) + "\n"
+
+
+def _spec_declared_paths(subs: list) -> set:
+    return {str(s.get("path") or "").lstrip("/").replace("..", "")
+            for s in subs if s.get("path")}
+
+
+def _prune_offplan_files(cwd: str, subs: list) -> list:
+    """Delete source files NOT in the SPEC's declared list — a worker or the
+    reconciler sometimes invents a phantom package (e.g. tetris/game.py alongside
+    the planned tetris_game.py), producing DUPLICATE modules → import/collection
+    errors no runner can fix. Keeps declared files + package glue (__init__/
+    conftest) + non-source (build/config). Deterministic; the tree matches the
+    plan. Returns removed paths."""
+    declared = _spec_declared_paths(subs)
+    if not declared:
+        return []
+    declared_bases = {os.path.basename(d) for d in declared}
+    removed: list = []
+    for rel, _content in _gather_sources(cwd):
+        r = rel.lstrip("/")
+        if r in declared:
+            continue
+        base = os.path.basename(r)
+        if base in ("__init__.py", "conftest.py"):
+            continue                              # package glue — harmless
+        if not r.endswith(_SRC_EXTS):
+            continue                              # keep build/config/markup
+        # a source file that is neither declared by path NOR a unique new basename
+        # the plan lacks → it's off-plan pollution (often a dup of a declared file).
+        try:
+            os.remove(os.path.join(cwd, r))
+            removed.append(r)
+        except Exception:  # noqa: BLE001
+            pass
+    return removed
 
 
 def _scaffold_stubs(cwd: str, subs: list) -> list:
