@@ -1506,13 +1506,31 @@ def _sim_ratio(a: str, b: str) -> float:
     return _dl.SequenceMatcher(None, _norm_ws(a), _norm_ws(b)).ratio()
 
 
+def _review_model() -> str | None:
+    """The model that REVIEWS specs/tests — deliberately a DIFFERENT model from
+    the doer that wrote them (a model can't reliably catch its own subtle test
+    bugs, e.g. an LRU eviction-order mistake). Uses AIFORGE_REVIEW_MODEL, else the
+    escalation/reasoning model, else None (→ the doer, still useful for blatant
+    contradictions)."""
+    m = (os.environ.get("AIFORGE_REVIEW_MODEL", "").strip()
+         or os.environ.get("AIFORGE_ESCALATION_MODEL", "").strip())
+    return m or None
+
+
 def _llm_review_once(prompt: str, max_tokens: int) -> str | None:
     """Single review call as ONE user turn (qwen empties on a system message).
-    No retry — an empty response is a meaningful 'nothing to fix' signal here."""
+    Routes to a DIFFERENT reviewer model when one is configured (cross-model
+    review catches bugs the authoring model misses). No retry — an empty response
+    is a meaningful 'nothing to fix' signal here."""
+    _rm = _review_model()
+    _extras = {"model": _rm} if _rm else None
+    # a reasoning reviewer THINKS before emitting — give it headroom.
+    if _rm:
+        max_tokens = max(max_tokens, 4096)
     from aiforge_core.llm.client import complete as _complete
     try:
         return _complete("doer", [{"role": "user", "content": prompt}],
-                         max_tokens=max_tokens, temperature=0.2)
+                         max_tokens=max_tokens, temperature=0.3, extras=_extras)
     except Exception:  # noqa: BLE001
         return None
 
