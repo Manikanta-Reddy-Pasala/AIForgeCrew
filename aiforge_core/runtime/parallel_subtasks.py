@@ -459,6 +459,137 @@ def _merge_branch(repo: str, base_branch: str, branch: str) -> tuple[bool, str]:
     return False, (p.stdout + p.stderr)[:300]
 
 
+def _existing_source_digest(cwd: str, own_path: str, budget: int = 16000) -> str:
+    """The REAL source files currently on disk (excluding this subtask's own file
+    + tests), so a sequential worker builds against actual committed code instead
+    of guessing an interface. Fenced, budget-capped."""
+    own = os.path.basename(str(own_path or ""))
+    parts: list[str] = []
+    total = 0
+    for rel, content in _gather_sources(cwd):
+        b = os.path.basename(rel)
+        if b == own or b.startswith("test_") or b.endswith("_test.py") \
+           or "/tests/" in ("/" + rel) or b == "conftest.py":
+            continue
+        if not content.strip() or _SCAFFOLD_MARK in content:
+            continue                                # skip empty / still-stub files
+        block = f"### {rel}\n```\n{content}\n```"
+        if total + len(block) > budget:
+            continue
+        parts.append(block)
+        total += len(block)
+    return "\n\n".join(parts)
+
+
+def _sequential_order(subs: list) -> list:
+    """Impl build order for sequential mode: fewest local imports first (leaf
+    modules before the files that depend on them) so each worker sees its deps
+    already built. Stable within a tier."""
+    def _rank(s):
+        p = s.get("path") or ""
+        n = 0
+        if p.endswith(".py"):
+            try:
+                import ast as _ast
+                # can't read cwd here; rank by declared api size as a proxy for
+                # 'foundational' (fewer public symbols → likely a leaf/util)
+                n = len(s.get("api") or [])
+            except Exception:  # noqa: BLE001
+                n = 0
+        return n
+    return sorted(subs, key=_rank)
+
+
+def _run_sequential(cwd: str, base_branch: str, subs: list, run_one, *,
+                    on_status=None, should_cancel=None, emit=None) -> dict:
+    """SINGLE-BRANCH SEQUENTIAL build (Coordinator + dependent sub-agents). Each
+    subtask runs directly in ``cwd`` — seeing the REAL prior committed files, so
+    no isolated worker guesses an interface for code that doesn't exist yet. After
+    each: run the tests; if the failure count didn't RISE, git-commit (lock in
+    progress); if it regressed, git reset --hard (undo). Git is the undo/redo
+    stack; monotonic progress, no merges/conflicts."""
+    def _e(ev):
+        if emit:
+            emit(ev)
+
+    tests = [s for s in subs if _is_test_subtask(s)]
+    impls = _sequential_order([s for s in subs if not _is_test_subtask(s)])
+    done = 0
+    failed = 0
+
+    # 1. Write + commit the test files first (they are the executable spec). Not
+    #    gated — tests alone fail to import until impls exist; that's the baseline.
+    for s in tests:
+        if should_cancel and should_cancel():
+            break
+        slug = s.get("slug")
+        if on_status:
+            on_status(slug, "running")
+        try:
+            res = run_one(s, cwd)
+        except Exception as exc:  # noqa: BLE001
+            res = {"ok": False, "error": str(exc)}
+        _git(["add", "-A"], cwd)
+        _git(["commit", "--no-edit", "-m", f"test: {slug}"], cwd)
+        if on_status:
+            on_status(slug, "done", (res or {}).get("files"))
+
+    # 2. Baseline fail count with tests present, impls not yet built.
+    _ok, out = _project_test_output(cwd)
+    prev_fails = _fail_count(out)
+    _e({"type": "thought", "role": "coordinator",
+        "text": f"Sequential build — baseline {prev_fails} failing. Building "
+                f"{len(impls)} module(s) one at a time, committing each that holds "
+                "or improves the score…"})
+
+    # 3. Each impl in dep order, seeing the REAL prior files; commit or revert.
+    for s in impls:
+        if should_cancel and should_cancel():
+            break
+        slug = s.get("slug")
+        if on_status:
+            on_status(slug, "running")
+        s["_existing_files"] = _existing_source_digest(cwd, s.get("path"))
+        s["_tests"] = _matching_tests_for(cwd, s.get("path") or "")
+        retries = _retries()
+        committed = False
+        for attempt in range(retries):
+            if should_cancel and should_cancel():
+                break
+            try:
+                res = run_one(s, cwd)
+            except Exception as exc:  # noqa: BLE001
+                res = {"ok": False, "error": str(exc)}
+            _ok, out = _project_test_output(cwd)
+            fails = _fail_count(out)
+            if fails <= prev_fails:
+                _git(["add", "-A"], cwd)
+                _git(["commit", "--no-edit", "-m", f"feat: {slug}"], cwd)
+                _e({"type": "tool", "role": slug, "name": "committed",
+                    "args": {"failing": fails, "was": prev_fails},
+                    "result": {"files": (res or {}).get("files") or []}})
+                prev_fails = fails
+                committed = True
+                done += 1
+                if on_status:
+                    on_status(slug, "done", (res or {}).get("files"))
+                break
+            # regression → undo this attempt, retry with the error
+            _git(["reset", "--hard", "HEAD"], cwd)
+            _git(["clean", "-fd", "-e", ".aiforge-venv", "-e", ".aiforge-contracts"], cwd)
+            s["_retry_error"] = (out or "")[-1500:]
+            _e({"type": "thought", "role": slug,
+                "text": f"{slug} raised failures {prev_fails}→{fails} — reverted, "
+                        f"retry {attempt + 1}/{retries}…"})
+        if not committed:
+            failed += 1
+            if on_status:
+                on_status(slug, "failed")
+
+    return {"ok": failed == 0, "total": len(subs), "done": done + len(tests),
+            "failed": failed}
+
+
 def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                  subtasks: list[dict], run_one, *, validate_one=None,
                  integration_test=None, on_status=None, merge: bool = True,
@@ -745,6 +876,10 @@ def lightweight_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict
            f"if it asserts `grid[0][3] == COLORS['cyan']` your code must produce "
            f"cyan.\n\nTESTS (ground truth):\n{tests_src[:6000]}\n\n---\n\n"
            if tests_src else "")
+        + (f"EXISTING PROJECT FILES already on disk (REAL, committed — import from "
+           f"these using their EXACT class/function/constant names + signatures; do "
+           f"NOT guess or invent variant names):\n{subtask.get('_existing_files')}\n\n"
+           f"---\n\n" if subtask.get("_existing_files") else "")
         + (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
          f"file/dir paths it lists):\n{spec_md.strip()[:5000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
@@ -1515,6 +1650,14 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
 
     def _runner():
         try:
+            # SEQUENTIAL mode: single branch, each subtask sees the REAL prior
+            # committed files (no isolated interface-guessing), commit-or-revert
+            # per step. Right for tightly-coupled projects.
+            if os.environ.get("AIFORGE_SEQUENTIAL", "0") not in ("0", "false"):
+                result["agg"] = _run_sequential(
+                    cwd, base, subs, _spec_run_one, on_status=on_status,
+                    should_cancel=_cancelled, emit=q.put)
+                return
             test_subs = [s for s in subs if _is_test_subtask(s)]
             impl_subs = [s for s in subs if not _is_test_subtask(s)]
             _tf = os.environ.get("AIFORGE_TEST_FIRST", "1") not in ("0", "false")
