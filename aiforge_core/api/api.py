@@ -3793,12 +3793,30 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             return
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
                                   session_id=session_id, mode=agent_mode)
+        # Read-only / analysis query ("analyze/explain/how does X work") → the user
+        # wants an EXPLANATION, not a build. Don't run the integration-check +
+        # self-heal (which would build/test an existing repo and report a failure
+        # instead of the analysis).
+        def _looks_like_analysis(p: str) -> bool:
+            import re as _re
+            p = (p or "").lower()
+            ask = _re.search(r"\b(analy[sz]e|explain|describe|summar[iy][sz]e|"
+                             r"review|understand|audit|document|investigate|trace|"
+                             r"walk\s*(me)?\s*through|how\s+(does|do|is|are)|"
+                             r"what\s+(does|is|are)|why\s+(does|is|are)|where\s+"
+                             r"(is|are)|tell me about|show me how)\b", p)
+            change = _re.search(r"\b(fix|create|build|implement|add|write|refactor|"
+                                r"rename|delete|remove|update|generat|make|"
+                                r"modify|patch|scaffold)\b", p)
+            return bool(ask and not change)
+
+        _readonly = _looks_like_analysis(prompt)
         # Simple/act mode: after the agent finishes, COMPILE + run the project's
         # tests (any language, via project_runner) and report results — or
         # step-by-step manual instructions when the toolchain isn't on this host.
-        # Skipped in plan mode (nothing was written). Best-effort; env-gated off
-        # with AIFORGE_CHAT_INTEGRATION_TEST=0.
-        if agent_mode != "plan" and os.environ.get(
+        # Skipped in plan mode (nothing was written) + read-only analysis queries.
+        # Best-effort; env-gated off with AIFORGE_CHAT_INTEGRATION_TEST=0.
+        if agent_mode != "plan" and not _readonly and os.environ.get(
                 "AIFORGE_CHAT_INTEGRATION_TEST", "1") not in ("0", "false"):
             try:
                 from aiforge_core.runtime.parallel_subtasks import (
