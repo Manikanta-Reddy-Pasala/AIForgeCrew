@@ -2497,94 +2497,6 @@ def _scaffold_stubs(cwd: str, subs: list) -> list:
     return written
 
 
-def _resolve_local_module(cwd: str, dotted: str) -> str:
-    """Map a dotted import (a.b.c) to a local source file path, or ''."""
-    tail = dotted.split(".")[-1]
-    for cand in (dotted.replace(".", "/") + ".py",
-                 dotted.replace(".", "/") + "/__init__.py", tail + ".py"):
-        base = os.path.basename(cand)
-        for root, _d, files in os.walk(cwd):
-            if ".aiforge" in root:
-                continue
-            if base in files:
-                return os.path.join(root, base)
-    return ""
-
-
-def _fix_missing_names(cwd: str, output: str) -> list:
-    """DETERMINISTIC: a `NameError: name 'X' is not defined` / `cannot import name
-    'X'` where a test imports X from module M that lacks it → alias X to M's
-    best-matching module-level symbol (name-similar, else the sole dict/list of the
-    right shape). Closes the trivial 'the model named it ACTION_MAP, the test wants
-    KEYMAP' class the LLM won't fix. Guarded by the reconcile regression check, so a
-    wrong alias is rolled back. Python-only; returns [(file, name, aliased_to)]."""
-    import ast as _ast
-    import difflib as _dl
-    import re as _re
-    names = set(_re.findall(r"NameError: name '(\w+)' is not defined", output))
-    names |= set(_re.findall(r"cannot import name '(\w+)'", output))
-    if not names:
-        return []
-    tests = _python_test_files(cwd) if "_python_test_files" in globals() else []
-    if not tests:
-        import glob as _g
-        tests = [p for p in _g.glob(os.path.join(cwd, "**", "*.py"), recursive=True)
-                 if os.path.basename(p).startswith("test_") and ".aiforge" not in p]
-    fixed: list = []
-    for name in names:
-        src_mod = None
-        for tf in tests:
-            try:
-                tsrc = open(tf, encoding="utf-8", errors="replace").read()
-            except Exception:  # noqa: BLE001
-                continue
-            for im in _re.finditer(r"from\s+([\w.]+)\s+import\s+([^\n#]+)", tsrc):
-                if _re.search(rf"\b{name}\b", im.group(2)):
-                    src_mod = im.group(1)
-                    break
-            if src_mod:
-                break
-        if not src_mod:
-            continue
-        modfile = _resolve_local_module(cwd, src_mod)
-        if not modfile:
-            continue
-        try:
-            msrc = open(modfile, encoding="utf-8", errors="replace").read()
-            tree = _ast.parse(msrc)
-        except Exception:  # noqa: BLE001
-            continue
-        assigns = {}
-        for node in tree.body:
-            if isinstance(node, _ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, _ast.Name):
-                        assigns[t.id] = node.value
-        if name in assigns:
-            continue                              # already defined
-        cand = None
-        # 1. name-similar module-level symbol
-        um = _dl.get_close_matches(name.upper(), [c.upper() for c in assigns],
-                                   n=1, cutoff=0.4)
-        if um:
-            cand = next((c for c in assigns if c.upper() == um[0]), None)
-        # 2. else the SOLE dict/list (a config/map the test likely wants)
-        if not cand:
-            structs = [k for k, v in assigns.items()
-                       if isinstance(v, (_ast.Dict, _ast.List))]
-            if len(structs) == 1:
-                cand = structs[0]
-        if not cand:
-            continue
-        try:
-            with open(modfile, "a", encoding="utf-8") as fh:
-                fh.write(f"\n{name} = {cand}  # auto-alias\n")
-            fixed.append((os.path.relpath(modfile, cwd), name, cand))
-        except Exception:  # noqa: BLE001
-            pass
-    return fixed
-
-
 def _fail_count(output: str) -> int:
     """Number of failing tests from the build/test output (for the regression
     guard). 999 = couldn't-run/collection-error (treat as worst); 0 = all green."""
@@ -2819,14 +2731,6 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         rounds += 1
         try:
             _prune_dead_python_imports(cwd)   # deterministic, before the LLM round
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            _amf = _fix_missing_names(cwd, output)   # deterministic alias for NameError
-            if _amf:
-                yield {"type": "tool", "role": "reconciler", "name": "aliased names",
-                       "args": {}, "result": {"files": [f"{n}={c} in {p}"
-                                                         for p, n, c in _amf]}}
         except Exception:  # noqa: BLE001
             pass
         hints = _directed_hints(output)
