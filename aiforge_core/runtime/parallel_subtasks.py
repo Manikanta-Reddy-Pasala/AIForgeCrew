@@ -1507,9 +1507,16 @@ def _sim_ratio(a: str, b: str) -> float:
 
 
 _REVIEW_MODEL_CACHE: dict = {}
-# prefer a reasoning model as the reviewer (better at tracing logic than a coder).
-_REASONING_MARKERS = ("ornith", "qwythos", "-r1", "r1-", "qwq", "deepseek-r1",
-                      "reason", "-o1", "o1-", "think")
+
+
+def _prefer_reasoning(model_id: str) -> bool:
+    """True if the registry classifies this model as a thinking/reasoning model.
+    No hardcoded names here — capability detection lives in model_registry."""
+    try:
+        from aiforge_core.config import model_registry as _mr
+        return bool(_mr.detect_capability(model_id, "thinking"))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _review_model() -> str | None:
@@ -1550,8 +1557,9 @@ def _auto_review_model() -> str | None:
         ids = [d.get("id", "") for d in data if isinstance(d, dict) and d.get("id")]
         others = [i for i in ids if i.lower() != doer_model
                   and not any(x in i.lower() for x in ("embed", "rerank"))]
-        picked = next((i for i in others
-                       if any(k in i.lower() for k in _REASONING_MARKERS)), None)
+        # prefer a reasoning model (via the registry's capability detection —
+        # no hardcoded model names here); else any other loaded model.
+        picked = next((i for i in others if _prefer_reasoning(i)), None)
         picked = picked or (others[0] if others else None)
     except Exception:  # noqa: BLE001
         picked = None
