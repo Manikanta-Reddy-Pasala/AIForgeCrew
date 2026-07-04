@@ -110,6 +110,49 @@ def _load_runtime_env() -> None:
 
 
 @app.on_event("startup")
+def _ensure_model_context_on_boot() -> None:
+    """Post-deploy, LM Studio JIT-loads the local model at its small default
+    context (e.g. 8192), which HTTP-400s the big prompts a multi-file build needs
+    — the recurring `llm.exhausted`. On boot, in a background thread, query the
+    loaded model(s) and reload any below the target context. Model-agnostic;
+    best-effort; AIFORGE_NO_CTX_RELOAD=1 skips, AIFORGE_LM_CONTEXT sets target."""
+    if os.environ.get("AIFORGE_NO_CTX_RELOAD"):
+        return
+    import threading
+
+    def _work():
+        try:
+            import time as _t
+            import urllib.request as _u
+            import json as _j
+            _t.sleep(8)                       # let the server + LM Studio settle
+            try:
+                want = int(os.environ.get("AIFORGE_LM_CONTEXT", "262144"))
+            except ValueError:
+                want = 262144
+            base = os.environ.get("AIFORGE_LM_BASE_URL",
+                                  "http://127.0.0.1:1234/v1").rstrip("/")
+            api0 = base.rsplit("/v1", 1)[0] + "/api/v0/models"
+            data = _j.loads(_u.urlopen(api0, timeout=8).read())
+            loaded = [(m.get("id"), m.get("loaded_context_length") or 0)
+                      for m in data.get("data", []) if m.get("state") == "loaded"]
+            below = [mid for mid, ctx in loaded if mid and ctx < want]
+            if not below:
+                return
+            from aiforge_core.runtime import local_starter
+            for mid in below:
+                try:
+                    local_starter.load_model_now(mid, want, ttl=43200)
+                    _af_log.info("boot ctx-reload: %s -> %d", mid, want)
+                except Exception as _e:  # noqa: BLE001
+                    _af_log.debug("boot ctx-reload failed for %s: %s", mid, _e)
+        except Exception as _exc:  # noqa: BLE001 — never break boot
+            _af_log.debug("boot ctx-reload skipped: %s", _exc)
+
+    threading.Thread(target=_work, name="ctx-reload", daemon=True).start()
+
+
+@app.on_event("startup")
 def _start_jobs_scheduler() -> None:
     """Scheduled-jobs tick loop — daemon thread, same pattern as the
     other background workers. AIFORGE_JOBS_DISABLE=1 skips it."""
@@ -3571,8 +3614,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             cues = any(c in p for c in ("with test", "unit test", "multiple file",
                                         " files", "test case", "endpoints"))
             return bool(verb and (noun or cues))
+        # NB: _parallel_team is `team and enabled()` — False for simple/plan. Use
+        # the raw capability (_pp.enabled()) so escalation can fire off-team.
+        _psub_on = False
+        try:
+            _psub_on = _pp.enabled()
+        except Exception:  # noqa: BLE001
+            _psub_on = _parallel_team
         _build_escalate = bool(
-            not team and _parallel_team
+            not team and _psub_on
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
             and _looks_like_multifile_build(prompt))
         if _build_escalate:
@@ -3583,7 +3633,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # Review-edits is a simple/plan-only feature (forced on there). Team /
         # parallel / best-of-N runners run the full pipeline and don't hold
         # edits — left as-is by design, no notice (avoids per-run noise).
-        if _parallel_team and (team or _build_escalate):
+        if _psub_on and (team or _build_escalate):
             # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
             _spec = _pp._enhance(prompt, history=history, cwd=cwd)  # 1. clean spec
             _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
