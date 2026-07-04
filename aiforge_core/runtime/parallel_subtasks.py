@@ -1590,6 +1590,16 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         yield {"type": "thought", "role": "planner",
                "text": f"Decomposition fix — {len(subs) - _before} test(s) target "
                        f"modules with no impl file; added: {', '.join(_added)}"}
+    # FILE-OWNERSHIP ENFORCEMENT (don't trust the plan — check with code). Two
+    # subtasks owning the SAME file = two agents editing it in parallel = the #1
+    # cause of worktree merge conflicts. Fold duplicates into one owner so each
+    # file has exactly one author.
+    subs, _dupes = _enforce_disjoint_files(subs)
+    if _dupes:
+        yield {"type": "thought", "role": "planner",
+               "text": f"File-ownership check — folded {_dupes} overlapping "
+                       "subtask(s) so no two agents edit the same file (conflict "
+                       "prevention)."}
     yield {"type": "subtasks", "items": [
         {"slug": s.get("slug") or f"sub-{i+1}",
          "goal": s.get("goal") or "", "status": "pending"}
@@ -2621,6 +2631,31 @@ def _impl_path_for_test(test_path: str, name: str, ext: str,
     parts = [p for p in d.split("/") if p and p.lower() not in ("tests", "test")]
     base = "/".join(parts)
     return (f"{base}/{name}{ext}" if base else f"{name}{ext}")
+
+
+def _enforce_disjoint_files(subs: list) -> tuple[list, int]:
+    """Mechanically enforce disjoint file ownership across parallel subtasks —
+    the plan is NOT trusted, it's checked. Each subtask's primary ``path`` is its
+    owned file; if two subtasks claim the same path, the second is FOLDED into the
+    first (its goal appended) so exactly one agent authors each file. Returns
+    ``(subs, folded_count)``. KISS: path-level, no globs."""
+    owner_by_path: dict = {}
+    out: list = []
+    folded = 0
+    for s in subs:
+        path = (s.get("path") or "").strip().lstrip("./")
+        if path and path in owner_by_path:
+            owner = owner_by_path[path]
+            extra = (s.get("goal") or "").strip()
+            if extra and extra not in (owner.get("goal") or ""):
+                owner["goal"] = ((owner.get("goal") or "").rstrip()
+                                 + "\n- also: " + extra)
+            folded += 1
+            continue
+        if path:
+            owner_by_path[path] = s
+        out.append(s)
+    return out, folded
 
 
 def _ensure_impl_modules(subs: list) -> list:
