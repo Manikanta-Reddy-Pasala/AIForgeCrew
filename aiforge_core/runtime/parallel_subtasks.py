@@ -2360,6 +2360,21 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
     # role's default in the request body — general, no per-problem code.
     _extras = {"model": model} if model else None
     _temp = None
+    _sys = ("You are a Targeted Code Patch Engine. Output ONLY ### FILE headers + "
+            "<<<<<<< SEARCH/======= />>>>>>> REPLACE blocks, nothing else. Never "
+            "rewrite a whole file.")
+    if model:
+        # Reasoning/escalation models can't reliably reproduce a char-perfect
+        # SEARCH block (their patches get rejected). Have them output the whole
+        # corrected file instead — they GENERATE better than they patch; the
+        # regression guard keeps the rewrite only if it reduces failures.
+        prompt += ("\n\nOVERRIDE — IGNORE the SEARCH/REPLACE format above. Output "
+                   "each CHANGED file IN FULL, each as:\n=== relative/path ===\n"
+                   "<the complete corrected file>\nNo SEARCH/REPLACE blocks, no ``` "
+                   "fences, no prose. Fix the ROOT CAUSE of the failing tests.")
+        _sys = ("You are a senior engineer fixing failing tests. Output ONLY the "
+                "changed files, each as `=== path ===` then the full corrected "
+                "file. No prose, no fences.")
     if model:
         # An escalation (reasoning) model may be loaded at a smaller context — cap
         # completion so prompt+completion fit; its fixes are targeted anyway.
@@ -2378,9 +2393,7 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
         except Exception:  # noqa: BLE001
             pass
     out = _complete("doer", [
-        {"role": "system", "content": "You are a Targeted Code Patch Engine. Output "
-         "ONLY ### FILE headers + <<<<<<< SEARCH/======= />>>>>>> REPLACE blocks, "
-         "nothing else. Never rewrite a whole file."},
+        {"role": "system", "content": _sys},
         {"role": "user", "content": prompt}],
         max_tokens=mt, temperature=_temp, extras=_extras) or ""
     written, failures = _apply_patches(cwd, out)
