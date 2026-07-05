@@ -3703,10 +3703,24 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                    "text": "Multi-file build detected — routing through the build "
                            "pipeline (decompose → scaffold → implement → test) "
                            "instead of a single agent."}
+        # FOLLOW-UP / existing-repo routing: the decompose→build pipeline is for a
+        # NEW project. A request on a repo that ALREADY has code — a follow-up
+        # ("add a delete method", "fix the eviction bug") or an existing repo —
+        # that isn't itself a fresh multi-file build is a TARGETED EDIT: route it
+        # to the single agent (which sees the conversation history + the existing
+        # files) instead of re-decomposing from scratch and clobbering prior work.
+        _new_build = _looks_like_multifile_build(prompt)
+        _route_pipeline = (_psub_on and (team or _build_escalate)
+                           and (_greenfield or _new_build))
+        if team and not _route_pipeline:
+            yield {"type": "thought", "role": "router",
+                   "text": "Existing code + a targeted change — editing in place "
+                           "with the single agent (history + current files in "
+                           "context), not a from-scratch rebuild."}
         # Review-edits is a simple/plan-only feature (forced on there). Team /
         # parallel / best-of-N runners run the full pipeline and don't hold
         # edits — left as-is by design, no notice (avoids per-run noise).
-        if _psub_on and (team or _build_escalate):
+        if _route_pipeline:
             # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
             _spec = _pp._enhance(prompt, history=history, cwd=cwd)  # 1. clean spec
             _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
