@@ -3963,7 +3963,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 if ev.get("type") == "message":
                     final_text = ev.get("text", "")
                     awaiting = bool(ev.get("awaiting_input"))
-                elif ev.get("type") in ("thought", "tool", "error"):
+                elif ev.get("type") in ("thought", "tool", "error", "changes"):
                     steps.append(ev)
                 elif ev.get("type") == "subtasks":
                     _subtasks = list(ev.get("items") or [])
