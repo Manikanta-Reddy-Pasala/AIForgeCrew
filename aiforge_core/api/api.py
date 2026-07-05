@@ -3901,7 +3901,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 _ires: dict = {}
                 yield from _reconcile_integration(cwd, _ires)
                 _rep = _ires.get("rep") or {}
-                if _rep.get("md"):
+                # Only show the integration report when a build/test ACTUALLY ran
+                # (ok True/False). ok=None = "no build markers / no toolchain" — a
+                # simple file edit with no tests — so DON'T dump the "build & test
+                # it yourself (python)" boilerplate as the answer; the Changes diff
+                # below is the useful output.
+                if _rep.get("md") and _rep.get("ok") is not None:
                     yield {"type": "message", "text": _rep["md"]}
             except Exception as _iexc:  # noqa: BLE001 — never break the turn
                 _af_log.debug("integration report skipped: %s", _iexc)
