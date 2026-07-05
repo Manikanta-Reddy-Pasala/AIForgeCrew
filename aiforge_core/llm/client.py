@@ -301,10 +301,13 @@ def _http_err_body(exc: Exception) -> str:
     is a file-like; reading it is one-shot, so guard against re-reads."""
     if not isinstance(exc, urllib.error.HTTPError):
         return ""
-    try:
-        raw = exc.read()
-    except Exception:
-        return ""
+    # Prefer a body already read by the classifier (exc.read() is one-shot).
+    raw = getattr(exc, "_aiforge_body", None)
+    if raw is None:
+        try:
+            raw = exc.read()
+        except Exception:
+            return ""
     try:
         return raw.decode("utf-8", "replace")[:600]
     except Exception:
@@ -356,9 +359,12 @@ def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
         if exc.code in _TRANSIENT_HTTP:
             return True, f"http_{exc.code}"
         # A 4xx whose body names a model drop is still transient (the server
-        # is reloading), not a permanent bad-request.
+        # is reloading), not a permanent bad-request. NOTE: exc.read() is
+        # one-shot — stash the bytes on the exc so _http_err_body can log the
+        # server's actual rejection reason (else the 400 cause is invisible).
         try:
             _body = exc.read()
+            exc._aiforge_body = _body  # type: ignore[attr-defined]
             if _body and any(m in _body.decode("utf-8", "replace").lower()
                              for m in _MODEL_DROP_MARKERS):
                 return True, "model_reloading_4xx"
