@@ -126,14 +126,22 @@ def is_excluded_path(rel: str) -> bool:
     return False
 
 
-# Agent-artifact lines an initialised workspace's .gitignore should carry.
+# Agent-artifact + common build/cache lines an initialised workspace's
+# .gitignore should carry, so generated files are never tracked / never pollute
+# the Changes view (cleaning off across languages).
 _ARTIFACT_IGNORE_LINES: tuple[str, ...] = (
-    ".aiforge/",
-    ".aiforge-worktrees/",
-    ".aiforge-workspace",
-    ".aiforge-venv/",
-    "graphify-out/",
-    "perf.ndjson",
+    # aiforge internals
+    ".aiforge/", ".aiforge-worktrees/", ".aiforge-workspace", ".aiforge-venv/",
+    "graphify-out/", "perf.ndjson",
+    # python
+    "__pycache__/", "*.py[cod]", ".pytest_cache/", ".ruff_cache/",
+    ".mypy_cache/", ".coverage", "*.egg-info/", ".venv/", "venv/",
+    # node / web
+    "node_modules/", "dist/", ".next/", "*.min.js.map",
+    # jvm / native / go / rust
+    "target/", "build/", "*.class", "*.o", "*.obj", "*.so", "*.dylib", "*.exe",
+    # os junk
+    ".DS_Store",
 )
 
 
