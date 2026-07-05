@@ -18,10 +18,13 @@ const menuItem: React.CSSProperties = {
 
 // ── types ──────────────────────────────────────────────────────────────────────
 
+type ChangeFile = { path: string; status: string; additions: number; deletions: number; diff: string };
+
 type AgentStep =
   | { kind: 'thought'; text: string; role?: string }
   | { kind: 'tool'; name: string; args: object; result: object; role?: string }
-  | { kind: 'error'; text: string; role?: string };
+  | { kind: 'error'; text: string; role?: string }
+  | { kind: 'changes'; files: ChangeFile[]; summary: { files: number; additions: number; deletions: number } };
 
 type SubtaskItem = { slug: string; goal: string; status: string };
 
@@ -212,6 +215,10 @@ function toAgentStep(raw: any): AgentStep | null {
   }
   if (raw.type === 'error' || raw.kind === 'error') {
     return { kind: 'error', text: raw.text || '' };
+  }
+  if (raw.type === 'changes' || raw.kind === 'changes') {
+    const files = raw.files || [];
+    return { kind: 'changes', files, summary: raw.summary || { files: files.length, additions: 0, deletions: 0 } };
   }
   return null;
 }
@@ -1041,6 +1048,9 @@ export default function Chat() {
         }
         if (evt.type === 'tool') {
           return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
+        }
+        if (evt.type === 'changes') {
+          return { ...prev, steps: [...prev.steps, { kind: 'changes' as const, files: evt.files || [], summary: evt.summary || { files: (evt.files || []).length, additions: 0, deletions: 0 } }] };
         }
         if (evt.type === 'message') {
           if (evt.awaiting_input) setTimeout(() => textareaRef.current?.focus(), 30);
@@ -2565,7 +2575,68 @@ function ThoughtRow({ step }: { step: Extract<AgentStep, { kind: 'thought' }> })
   );
 }
 
+function DiffBody({ diff }: { diff: string }) {
+  return (
+    <pre style={{
+      margin: 0, padding: '8px 10px', overflowX: 'auto',
+      fontSize: 'var(--fs-xs)', lineHeight: 1.55, fontFamily: 'var(--font-mono)',
+      background: 'var(--bg-code)', borderTop: '1px solid var(--border-0)',
+    }}>
+      {diff.split('\n').map((ln, i) => {
+        let color: string | undefined;
+        let bg: string | undefined;
+        if (/^\+\+\+|^---|^diff |^index |^@@/.test(ln)) { color = 'var(--fg-3)'; }
+        else if (ln.startsWith('+')) { color = 'var(--ok)'; bg = 'rgba(63,185,80,.10)'; }
+        else if (ln.startsWith('-')) { color = 'var(--err)'; bg = 'rgba(248,81,73,.10)'; }
+        return <div key={i} style={{ color, background: bg, whiteSpace: 'pre' }}>{ln || ' '}</div>;
+      })}
+    </pre>
+  );
+}
+
+function ChangeFileRow({ file }: { file: ChangeFile }) {
+  const [open, setOpen] = useState(false);
+  const statusColor = file.status === 'added' ? 'var(--ok)'
+    : file.status === 'deleted' ? 'var(--err)' : 'var(--accent)';
+  return (
+    <div style={{ borderTop: '1px solid var(--border-0)' }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+        padding: '6px 10px', background: 'transparent', border: 0, cursor: 'pointer',
+        fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', textAlign: 'left',
+      }}>
+        <span style={{ color: 'var(--fg-3)', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .1s' }}>▸</span>
+        <span style={{ color: statusColor, textTransform: 'uppercase', fontSize: 10, width: 62, flexShrink: 0 }}>{file.status}</span>
+        <span style={{ color: 'var(--fg-1)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.path}</span>
+        {file.additions > 0 && <span style={{ color: 'var(--ok)' }}>+{file.additions}</span>}
+        {file.deletions > 0 && <span style={{ color: 'var(--err)' }}>−{file.deletions}</span>}
+      </button>
+      {open && <DiffBody diff={file.diff} />}
+    </div>
+  );
+}
+
+function ChangesView({ files, summary }: { files: ChangeFile[]; summary: { files: number; additions: number; deletions: number } }) {
+  return (
+    <div style={{ border: '1px solid var(--border-1)', borderRadius: 'var(--r-md)', overflow: 'hidden', background: 'var(--bg-1)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'var(--bg-2)', fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
+        <Icon.GitBranch size={14} />
+        <span>Changes</span>
+        <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>
+          {summary.files} file{summary.files === 1 ? '' : 's'}
+        </span>
+        {summary.additions > 0 && <span style={{ color: 'var(--ok)' }}>+{summary.additions}</span>}
+        {summary.deletions > 0 && <span style={{ color: 'var(--err)' }}>−{summary.deletions}</span>}
+      </div>
+      {files.map((f, i) => <ChangeFileRow key={i} file={f} />)}
+    </div>
+  );
+}
+
 function AgentStepRow({ step }: { step: AgentStep }) {
+  if (step.kind === 'changes') {
+    return <ChangesView files={step.files} summary={step.summary} />;
+  }
   if (step.kind === 'thought') {
     return <ThoughtRow step={step} />;
   }

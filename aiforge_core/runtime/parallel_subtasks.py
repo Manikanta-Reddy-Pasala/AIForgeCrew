@@ -1675,6 +1675,9 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                    f"+ git worktree · execution: {_mode} · reviewer: {_reviewer}."}
 
     base = _ensure_git_workspace(cwd)
+    # Baseline commit — captured BEFORE any subtask runs so the final "Changes"
+    # diff shows exactly what the parallel agents built/changed vs the start.
+    _start_sha = (_git(["rev-parse", "HEAD"], cwd).stdout or "").strip()
     # B3 — surface a dirty-cwd warning before merging into it.
     _warn = _dirty_warning(cwd)
     if _warn:
@@ -1867,10 +1870,75 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     # authoritative verdict — otherwise it contradicts (e.g. "✅ all tests pass"
     # followed by "❌ tests failed" from a different runner that missed a dep).
     _show_report = _integ_md and not (_ok is True and _rep.get("ok") is not True)
+    # SHOW CHANGES — the parallel agents committed to base in isolated worktrees
+    # (no per-edit approval gate), so surface the full diff of what they built vs
+    # the pre-run baseline, rendered like a PR. Two events: a stat summary + the
+    # unified diff (capped) the UI's diff renderer shows.
+    try:
+        yield from _emit_changes(cwd, _start_sha)
+    except Exception as _cexc:  # noqa: BLE001
+        log.debug("changes diff skipped: %s", _cexc)
     yield {"type": "message", "text":
            f"**Pipeline complete** — {agg.get('done', 0)}/{agg.get('total', 0)} "
            f"subtasks built + merged. {_verdict}\n\nSPEC.md holds the requirements "
            f"each subtask built against." + (_integ_md if _show_report else "")}
+
+
+def _emit_changes(cwd: str, start_sha: str):
+    """Yield a STRUCTURED ``changes`` event — one entry per changed file with its
+    status, +/- line counts, and unified diff — so the UI can render a clean
+    PR-style view (file list + expandable colored diffs), not a raw blob. Team
+    mode skips the per-edit approval gate, so this is how the user sees what the
+    parallel agents produced."""
+    if not start_sha:
+        return
+    try:
+        cap = int(os.environ.get("AIFORGE_CHANGES_FILE_DIFF_MAX", "8000"))
+    except ValueError:
+        cap = 8000
+    numstat = _git(["diff", "--numstat", f"{start_sha}..HEAD"], cwd).stdout or ""
+    counts: dict = {}
+    for ln in numstat.splitlines():
+        parts = ln.split("\t")
+        if len(parts) == 3:
+            counts[parts[2]] = (parts[0], parts[1])   # path -> (adds, dels)
+    name_status = _git(["diff", "--name-status", f"{start_sha}..HEAD"], cwd).stdout or ""
+    files: list = []
+    _status_word = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}
+    for ln in name_status.splitlines():
+        parts = ln.split("\t")
+        if len(parts) < 2:
+            continue
+        status, path = parts[0][:1], parts[-1]
+        if any(h in path for h in _CHANGES_HIDE):
+            continue
+        adds, dels = counts.get(path, ("0", "0"))
+        fdiff = _git(["diff", f"{start_sha}..HEAD", "--", path], cwd).stdout or ""
+        truncated = len(fdiff) > cap
+        files.append({
+            "path": path,
+            "status": _status_word.get(status, "changed"),
+            "additions": _to_int(adds), "deletions": _to_int(dels),
+            "diff": fdiff[:cap] + ("\n… (truncated)" if truncated else ""),
+        })
+    if not files:
+        return
+    total_add = sum(f["additions"] for f in files)
+    total_del = sum(f["deletions"] for f in files)
+    yield {"type": "changes", "files": files,
+           "summary": {"files": len(files), "additions": total_add,
+                       "deletions": total_del}}
+
+
+def _to_int(s: str) -> int:
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return 0
+
+
+_CHANGES_HIDE = ("SPEC.md", ".aiforge-venv", ".aiforge-contracts",
+                 ".aiforge-baseline", ".aiforge-worktrees")
 
 
 _CODE_EXTS = (".py", ".go", ".js", ".ts", ".rs", ".java", ".c", ".cpp", ".rb")
