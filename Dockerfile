@@ -18,6 +18,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# /workspace and per-ticket worktrees are host bind mounts (docker-compose.yml)
+# owned by the HOST user, not this container's (root). Git's ownership-safety
+# check then refuses every git command run against them ("detected dubious
+# ownership") — caught by broad except-blocks upstream, so it fails SILENT:
+# the chat "Changes" diff never renders and the post-edit integration-test
+# step never fires, with no error surfaced anywhere. Trust every repo this
+# container touches; it's the same trust boundary as the shell/file tools
+# the API already exposes over HTTP.
+RUN git config --system --add safe.directory '*'
+
 # uv for fast, reproducible installs.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
