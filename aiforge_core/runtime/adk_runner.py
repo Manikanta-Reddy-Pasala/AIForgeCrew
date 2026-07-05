@@ -422,6 +422,22 @@ def _extract_live_verifier(state: dict) -> dict | None:
     return None
 
 
+def _enhancer_block_reason(state: dict | None) -> str | None:
+    """``None`` unless the Enhancer refused to enhance (see the
+    ``ENHANCE_BLOCKED: <reason>`` sentinel contract in
+    ``aiforge_core/runtime/prompts/enhancer.py``) — tickets are unattended,
+    so this stands in for the clarifying question a chat agent could ask a
+    human. Returns the trimmed reason text when blocked."""
+    body = (state or {}).get("enhanced_body") or ""
+    if not isinstance(body, str):
+        return None
+    text = body.strip()
+    if not text.startswith("ENHANCE_BLOCKED"):
+        return None
+    return (text.split(":", 1)[-1].strip()[:300]
+            or "ticket body too vague for the enhancer to act on")
+
+
 def _extract_verdict(state: dict) -> str:
     """Pull the Feedback verdict out of pipeline state.
 
@@ -1498,12 +1514,24 @@ def _process_one_ticket() -> bool:
             memory_md=memory_md,
         ))
         outcome = _extract_verdict(state)
+        # Tickets are unattended — catch the Enhancer's "too vague to act
+        # on" sentinel (its stand-in for a clarifying question) BEFORE it
+        # silently flows into the Planner/Doer as if it were a real brief,
+        # burning a full pipeline run on garbage and risking a PR from
+        # whatever the Doer made of it. This sentinel was documented in the
+        # prompt but never actually checked anywhere — dead contract.
+        _block_reason = _enhancer_block_reason(state)
+        _enhancer_blocked = _block_reason is not None
+        if _enhancer_blocked:
+            outcome = "fail"
+            log.warning("ticket=%s enhancer blocked: %s",
+                       ticket.identifier, _block_reason)
         # Capture the Feedback rationale BEFORE any mutation so an
         # operator scanning ticket_events sees both the verdict and
         # the convergence reason. Best-effort: any persistence error
         # is logged + swallowed inside the helper so the runner still
         # makes forward progress on the ticket itself.
-        reason = _extract_reason(state, outcome)
+        reason = _block_reason if _enhancer_blocked else _extract_reason(state, outcome)
         _record_verdict_event(ticket.id, outcome, reason)
 
         # live_verifier no longer runs inside the pipeline — it runs
@@ -1532,8 +1560,10 @@ def _process_one_ticket() -> bool:
         # PR gate: anything that ISN'T an explicit scope_violation is
         # eligible. `commit_push_open_pr` itself short-circuits on a
         # clean tree, so verdict=fail with no edits stays a no-op.
+        # Enhancer-blocked tickets are excluded outright — never open a PR
+        # built from a Doer acting on a too-vague/garbage brief.
         pr_meta: dict[str, Any] = {}
-        if outcome != "scope_violation":
+        if outcome != "scope_violation" and not _enhancer_blocked:
             pr_meta = commit_push_open_pr(ticket)
 
         # Empty-production-diff: git_pr rejected because the Doer only

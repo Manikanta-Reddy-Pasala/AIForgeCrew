@@ -67,6 +67,30 @@ def test_run_script_missing_file():
     assert "not found" in res["error"]
 
 
+def test_delete_script_removes_file():
+    p = scripts.write_script("gone", "echo bye")
+    assert os.path.isfile(p)
+    assert scripts.delete_script(p) is True
+    assert not os.path.exists(p)
+
+
+def test_delete_script_missing_file_is_false():
+    p = os.path.join(scripts.jobs_dir(), "nope.sh")
+    assert scripts.delete_script(p) is False
+
+
+def test_delete_script_refuses_path_outside_jobs_dir(tmp_path):
+    evil = tmp_path / "evil.sh"
+    evil.write_text("echo pwned\n")
+    assert scripts.delete_script(str(evil)) is False
+    assert evil.exists()  # refused, not deleted
+
+
+def test_delete_script_empty_path_is_false():
+    assert scripts.delete_script("") is False
+    assert scripts.delete_script(None) is False
+
+
 # ── store round-trip + migration ─────────────────────────────────────────
 
 def test_store_round_trips_kind_and_script_path():

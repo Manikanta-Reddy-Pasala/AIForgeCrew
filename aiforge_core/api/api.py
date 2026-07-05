@@ -1004,6 +1004,12 @@ def jobs_patch(job_id: int, payload: JobPatch) -> dict:
 @app.delete("/api/jobs/{job_id}")
 def jobs_delete(job_id: int) -> dict:
     from aiforge_core.jobs import store as jobs_store
+    # Deleting the row IS deleting the schedule — the scheduler only ever
+    # fires rows `due_jobs()` returns, so a removed row can never fire again
+    # (there's no separate OS crontab/systemd entry to also clean up). The
+    # script FILE is left on disk on purpose: it's user-authored/approved
+    # content the operator may want to reuse for a new job later, not
+    # scheduler-owned state.
     if not jobs_store.delete(job_id):
         raise HTTPException(404, f"job {job_id} not found")
     return {"ok": True}
@@ -3481,18 +3487,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # path. First team turn + genuinely complex follow-ups keep the pipeline.
     # Safe by default: any classifier failure leaves team=True. Disable with
     # AIFORGE_TEAM_AUTO_ROUTE=0.
+    # NOTE: the actual classify call is deferred to the top of `_produce()`
+    # (see below) — it's an LLM round-trip, and running it HERE, in the
+    # synchronous request handler, delays the StreamingResponse from opening
+    # at all: an unreachable/slow endpoint's retry+backoff chain (many
+    # seconds) left the client with zero bytes and no ping, looking hung,
+    # for a decision that only affects `_parallel_team` / `_events()` (both
+    # only read once the background thread is already running).
     _auto_downgraded = False
-    if team:
-        try:
-            from aiforge_core.runtime import turn_router as _tr
-            if _tr.should_downgrade_team(prompt, history, cwd):
-                team = False
-                _auto_downgraded = True
-                _af_log.info("chat: team turn auto-downgraded to simple "
-                             "(small follow-up) session=%s", session_id)
-        except Exception as _rexc:  # noqa: BLE001 — routing must never block a turn
-            _af_log.debug("turn_router skipped: %s", _rexc)
-    _parallel_team = team and _psub.enabled()
+    _parallel_team = False   # finalized in _produce(), once `team` is settled
 
     # Upgrade a freshly-named session to a concise MODEL-generated title,
     # CONCURRENTLY with the turn (a fast ~20-token call) so it neither blocks
@@ -3522,13 +3525,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     _chat_interject.set_steerable(session_id, True)
     # Gap D — arm/disarm the pre-apply review gate for this run. Cleared on
     # chat_approve.finish() in every termination path (simple/parallel here,
-    # team in chat_pipeline), so it never leaks into the next turn.
+    # team in chat_pipeline), so it never leaks into the next turn. The
+    # actual set_review_edits() call is deferred to the top of `_produce()`
+    # (needs the post-classify `team` value — see the auto-route note above).
     from aiforge_core.runtime import chat_approve as _chat_approve
-    # Review-edits is FORCED ON for simple/plan chat (no UI toggle): the ReAct
-    # gate always holds file-mutating tool calls for human Approve/Reject before
-    # they land. Team/parallel mode (the full pipeline) is left as-is — it
-    # doesn't hold edits, by design.
-    _chat_approve.set_review_edits(session_id, not team)
 
     def _auto_checkpoint():
         # Snapshot the working dir at turn start so the user can roll back
@@ -3764,18 +3764,40 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             yield from stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
                                             history=history)
             return
-        # SIMPLE and PLAN modes — the Enhancer is MANDATORY here.
+        # SIMPLE and PLAN modes — the Enhancer is MANDATORY on the FIRST turn
+        # of a session (fresh context, referents to resolve, no memory pulled
+        # yet). On a FOLLOW-UP, re-running the enhancer (an LLM round-trip
+        # that also fires the memory recall inside `_enhance`) on every single
+        # message is wasted latency for the common case ("fix that", "add a
+        # test") — so reuse the same cheap classify already used to
+        # auto-downgrade team turns (turn_router.classify) and skip the
+        # enhancer when this follow-up is small. Any classify failure (or the
+        # first turn, or a build-escalate spec already in flight) keeps the
+        # enhancer mandatory — safe default, never silently under-enhance.
+        _skip_enhance = _auto_downgraded and not _route_pipeline
+        if not _skip_enhance and not _route_pipeline:
+            try:
+                from aiforge_core.runtime import turn_router as _tr2
+                if _tr2.is_followup(history) \
+                        and _tr2.classify(prompt, history, cwd) == "simple":
+                    _skip_enhance = True
+            except Exception as _sexc:  # noqa: BLE001 — never block a turn
+                _af_log.debug("enhancer skip-check failed: %s", _sexc)
         if _auto_downgraded:
             yield {"type": "thought", "role": "router",
                    "text": "Small follow-up — handling directly (skipped the "
                            "full pipeline for speed)."}
-        yield {"type": "thought", "role": "enhancer",
-               "text": "Enhancing request + gathering context…"}
-        # Fold `history` INTO the spec (restores referent resolution: a
-        # context-dependent follow-up like "no, use postgres instead" or "fix
-        # that bug" must be resolved against the prior turns, else the enhancer
-        # fabricates a context-free spec that REPLACES the user's words).
-        _enriched = _pp._enhance(prompt, history=history, cwd=cwd)
+        if _skip_enhance:
+            _enriched = prompt
+        else:
+            yield {"type": "thought", "role": "enhancer",
+                   "text": "Enhancing request + gathering context…"}
+            # Fold `history` INTO the spec (restores referent resolution: a
+            # context-dependent follow-up like "no, use postgres instead" or
+            # "fix that bug" must be resolved against the prior turns, else
+            # the enhancer fabricates a context-free spec that REPLACES the
+            # user's words).
+            _enriched = _pp._enhance(prompt, history=history, cwd=cwd)
         # Replace the LAST user turn's content with the enriched spec, keeping
         # every prior turn intact. Trimming the recent turns (an earlier "avoid
         # the double-fold" attempt) broke claude_local's user/assistant
@@ -3959,7 +3981,29 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     run = chat_runs.start(session_id)
 
     def _produce():
+        nonlocal team, _auto_downgraded, _parallel_team
         _PRODUCE_SEM.acquire()   # bounded — block until a producer slot frees
+        # Auto-route classify + its dependents, run HERE (already off the
+        # response-open path — see the note where `team`/`_parallel_team`
+        # were declared above) rather than in the synchronous request
+        # handler, so a slow/unreachable classify LLM never delays the
+        # StreamingResponse itself.
+        if team:
+            try:
+                from aiforge_core.runtime import turn_router as _tr
+                if _tr.should_downgrade_team(prompt, history, cwd):
+                    team = False
+                    _auto_downgraded = True
+                    _af_log.info("chat: team turn auto-downgraded to simple "
+                                 "(small follow-up) session=%s", session_id)
+            except Exception as _rexc:  # noqa: BLE001 — routing must never block a turn
+                _af_log.debug("turn_router skipped: %s", _rexc)
+        _parallel_team = team and _psub.enabled()
+        # Review-edits is FORCED ON for simple/plan chat (no UI toggle): the
+        # ReAct gate always holds file-mutating tool calls for human
+        # Approve/Reject before they land. Team/parallel mode (the full
+        # pipeline) is left as-is — it doesn't hold edits, by design.
+        _chat_approve.set_review_edits(session_id, not team)
         steps: list[dict] = []
         final_text = ""
         awaiting = False   # turn ended with a question / pause, not an outcome

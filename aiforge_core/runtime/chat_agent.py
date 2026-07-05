@@ -636,6 +636,38 @@ def _parse_bullet(line: str) -> tuple[tuple[str, ...], str]:
     return trig, m.group(2).strip()
 
 
+# `md_store._find_by_source` globs + parses EVERY file in the memory dir
+# until it finds a frontmatter `source` match — called 2-3x per chat turn
+# (`_rules_context` x2 + `_repo_context`), so it re-scans the whole memory
+# dir on every single message with no caching at all. Cache POSITIVE hits
+# only (never negative — a source with no file yet must keep being
+# re-checked, since capture can create it moments later in the same turn);
+# once a source's file exists its identity never changes (bullets are
+# appended into the same file), so caching the path is always safe once
+# found. `.exists()` on a hit is a cheap stat, far cheaper than the O(files)
+# scan it replaces. Keyed by (memory_dir, source) — NOT source alone — so a
+# changed AIFORGE_MEMORY_MD_DIR (tests reconfigure it per-case; a real
+# deployment could reconfigure it too) can never serve a stale path from a
+# now-irrelevant memory directory.
+_source_path_cache: dict[tuple[str, str], Path] = {}
+
+
+def _cached_find_by_source(source: str) -> Path | None:
+    from aiforge_core.memory import md_store
+    key = (str(md_store.memory_dir()), source)
+    p = _source_path_cache.get(key)
+    if p is not None:
+        try:
+            if p.exists():
+                return p
+        except Exception:  # noqa: BLE001 — a bad cache entry is a miss, not a crash
+            pass
+    p = md_store._find_by_source(source)
+    if p is not None:
+        _source_path_cache[key] = p
+    return p
+
+
 def _rules_context(cwd: str, query: str = "") -> str:
     """The user's persistent rule book (global + this-repo), injected into
     EVERY session so the rules are always honoured. Untagged bullets are
@@ -649,7 +681,7 @@ def _rules_context(cwd: str, query: str = "") -> str:
         always_lines: list[str] = []
         tagged: list[_sk.Skill] = []
         for src in ("rules:global", f"rules:{_repo_name(cwd)}"):
-            p = md_store._find_by_source(src)
+            p = _cached_find_by_source(src)
             if p is None:
                 continue
             body = md_store._parse(p).get("body", "")
@@ -2701,7 +2733,7 @@ def _repo_context(cwd: str) -> str:
     repo = _repo_name(cwd)
     try:
         from aiforge_core.memory import md_store
-        p = md_store._find_by_source(f"repo:{repo}")
+        p = _cached_find_by_source(f"repo:{repo}")
         if p is not None:
             body = md_store._parse(p).get("body", "")
             if body.strip():
@@ -3304,6 +3336,14 @@ def run_chat_agent(
         elif fn is None:
             result = {"ok": False, "error": f"unknown tool: {name}"}
         else:
+            # Live "it's running" signal — a slow tool (bash/test/build) used
+            # to show NOTHING until `fn` returned, so the UI looked stalled
+            # for however long the command actually took. `call_id` (the
+            # ReAct step counter `n`, unique per iteration) lets the UI match
+            # this to the completed `tool` event below and flip it in place
+            # instead of appending a second, duplicate row.
+            yield {"type": "tool_start", "name": name, "args": args,
+                   "call_id": n}
             _perf_t0 = time.perf_counter()
             # Strong tools resolve through sandbox.root(); scope the override to
             # the workspace root (NOT the raw cwd, so it can't escape an
@@ -3343,7 +3383,8 @@ def run_chat_agent(
                         {"tool": name, "args": args, "result": result}, cwd)
         except Exception:  # noqa: BLE001 — hooks must never break the turn
             pass
-        yield {"type": "tool", "name": name, "args": args, "result": result}
+        yield {"type": "tool", "name": name, "args": args, "result": result,
+               "call_id": n}
         obs = json.dumps(result)[:_MAX_OBS]
         convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
 

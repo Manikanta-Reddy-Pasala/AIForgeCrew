@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -123,6 +124,33 @@ def test_create_script_job_writes_script_and_runs_on_fire(app_client, tmp_path):
     r = client.post(f"/api/jobs/{body['id']}/run-now")
     assert r.status_code == 200 and r.json()["ok"] is True
     assert marker.exists()
+
+
+def test_delete_script_job_keeps_script_file_for_reuse(app_client):
+    client, _ = app_client
+    r = client.post("/api/jobs/script", json={
+        "name": "temp job", "cron": "0 9 * * *", "script": "true"})
+    path = r.json()["script_path"]
+    assert os.path.isfile(path)
+    jid = r.json()["id"]
+    assert client.delete(f"/api/jobs/{jid}").status_code == 200
+    # Deleting the job removes the schedule (the row), not the user's
+    # script content — left on disk so it can be reused for a new job.
+    assert os.path.isfile(path)
+
+
+def test_deleted_job_row_is_gone_so_it_can_never_fire_again(app_client):
+    client, _ = app_client
+    jid = client.post("/api/jobs/script", json={
+        "name": "temp job", "cron": "0 9 * * *", "script": "true"}).json()["id"]
+    assert client.delete(f"/api/jobs/{jid}").status_code == 200
+    assert client.get("/api/jobs").json() == []
+
+
+def test_delete_ticket_job_has_no_script_to_clean_up(app_client):
+    client, _ = app_client
+    jid = client.post("/api/jobs", json=_DRAFT).json()["id"]
+    assert client.delete(f"/api/jobs/{jid}").status_code == 200  # no crash
 
 
 def test_create_script_job_rejects_bad_cron(app_client):

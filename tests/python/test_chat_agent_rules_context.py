@@ -2,7 +2,20 @@
 (legacy) bullets stay always-on for backward compatibility."""
 from __future__ import annotations
 
+import pytest
+
 from aiforge_core.runtime import chat_agent as ca
+
+
+@pytest.fixture(autouse=True)
+def _clear_source_path_cache():
+    # Every test here fakes `_find_by_source` under the same "demo" repo
+    # name, so a hit cached by one test would leak into the next (the
+    # cache is a process-global dict, keyed only by source string) —
+    # clear it fresh each test, same as any other module-global test state.
+    ca._source_path_cache.clear()
+    yield
+    ca._source_path_cache.clear()
 
 
 def _fake_doc(body: str):

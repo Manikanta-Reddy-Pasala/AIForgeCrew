@@ -46,3 +46,27 @@ def test_interactive_ticket_no_notice(monkeypatch):
         lambda *a, **k: events.append((a, k)))
     ar._emit_ambiguous_rule_notice(_ticket(interactive=True), [[r1, r2]])
     assert events == []   # clarify.py already handled it — no double notice
+
+
+# ── enhancer-blocked sentinel — tickets are unattended, so this stands in
+# for the clarifying question a chat agent could ask a human ─────────────
+
+def test_enhancer_block_reason_none_when_normal_body():
+    assert ar._enhancer_block_reason(
+        {"enhanced_body": "# Add a delete method\n\n## Goal\n..."}) is None
+
+
+def test_enhancer_block_reason_none_when_missing_key():
+    assert ar._enhancer_block_reason({}) is None
+    assert ar._enhancer_block_reason(None) is None
+
+
+def test_enhancer_block_reason_extracts_reason():
+    r = ar._enhancer_block_reason(
+        {"enhanced_body": "ENHANCE_BLOCKED: no goal extractable from body"})
+    assert r == "no goal extractable from body"
+
+
+def test_enhancer_block_reason_falls_back_when_reason_empty():
+    r = ar._enhancer_block_reason({"enhanced_body": "ENHANCE_BLOCKED:"})
+    assert r == "ticket body too vague for the enhancer to act on"

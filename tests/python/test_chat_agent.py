@@ -41,6 +41,25 @@ def test_file_write_then_final(tmp_path):
     assert [e for e in evs if e["type"] == "message"][0]["text"] == "wrote the file"
 
 
+def test_tool_start_precedes_tool_with_matching_call_id(tmp_path):
+    """A slow tool used to show NOTHING until it finished — `tool_start`
+    fires first (same name/args) so the UI can show 'running…' immediately,
+    and its call_id matches the completed `tool` event so the UI can flip
+    the same row in place instead of showing two rows."""
+    fn = _scripted([
+        'ACTION: file_write\nARGS_JSON: {"path": "a.txt", "content": "hi"}',
+        "FINAL: wrote the file",
+    ])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "make a.txt"}], cwd=str(tmp_path), complete_fn=fn))
+    start = [e for e in evs if e["type"] == "tool_start"][0]
+    tool = [e for e in evs if e["type"] == "tool"][0]
+    assert start["name"] == tool["name"] == "file_write"
+    assert start["args"] == tool["args"]
+    assert start["call_id"] == tool["call_id"]
+    assert evs.index(start) < evs.index(tool)
+
+
 def test_file_read_roundtrip(tmp_path):
     (tmp_path / "b.txt").write_text("payload-xyz")
     fn = _scripted([

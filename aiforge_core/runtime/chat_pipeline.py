@@ -357,6 +357,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             final = ""
             by_role: dict[str, str] = {}
             emitted_subtasks = False
+            _enhancer_blocked_reason = None
             agen = runner.run_async(**kw)
             async for event in agen:
                 if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -375,6 +376,20 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                            "stopped": True})
                     break
                 for ev in map_event(event):
+                    # The Enhancer's "too vague to act on" sentinel (see
+                    # aiforge_core/runtime/prompts/enhancer.py — its stand-in
+                    # for a clarifying question, since it must never ask one)
+                    # must never reach the user as a raw thought bubble, and
+                    # must stop the run here — same gap as the ticket path
+                    # (adk_runner._enhancer_block_reason): without this, the
+                    # sentinel silently became the Planner/Doer's brief and
+                    # the run burned minutes building from garbage.
+                    if (ev.get("type") == "thought" and ev.get("role") == "enhancer"
+                            and (ev.get("text") or "").strip().startswith("ENHANCE_BLOCKED")):
+                        _enhancer_blocked_reason = (
+                            (ev.get("text") or "").strip().split(":", 1)[-1].strip()[:300]
+                            or "the request is too vague to build a concrete plan from")
+                        continue
                     q.put(ev)
                     if ev.get("type") in ("thought", "tool", "error"):
                         steps.append(ev)
@@ -409,6 +424,18 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                                 # Persist with the turn's steps so the subtask
                                 # panel survives a navigate-away / reload.
                                 steps.append(_sub_ev)
+                if _enhancer_blocked_reason:
+                    # Stop here — don't let the Planner/Doer run on a brief
+                    # the Enhancer already flagged as too vague to act on.
+                    try:
+                        await agen.aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        await runner.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
                 t = _event_text(event)
                 if t:
                     final = t
@@ -427,8 +454,13 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             # on a LOCAL endpoint — where the Doer is a text_doer FunctionNode
             # that emits no ADK "doer"-authored events — the answer fell through
             # to the Researcher's text or a bare "Done.", hiding the Doer's work.
-            msg = (by_role.get("doer") or st.get("doer_outcome")
-                   or by_role.get("researcher") or final or "Done.")
+            if _enhancer_blocked_reason:
+                msg = (f"I need more detail before I can build this — "
+                       f"{_enhancer_blocked_reason}. Could you say what to "
+                       f"build/change and where?")
+            else:
+                msg = (by_role.get("doer") or st.get("doer_outcome")
+                       or by_role.get("researcher") or final or "Done.")
             final_text = msg
             _run_ok = True
             q.put({"type": "message", "text": msg})

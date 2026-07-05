@@ -106,5 +106,21 @@ def run_script(path: str, *, timeout_s: int | None = None) -> dict:
             else f"script exited {proc.returncode}"}
 
 
+def delete_script(path: str) -> bool:
+    """Remove a stored job script from disk. Refuses (returns False, no
+    raise) any path outside jobs_dir or one that's already gone — same
+    safety invariant as run_script, so a bad script_path can never be used
+    to delete arbitrary files."""
+    if not path or not is_within_jobs_dir(path):
+        return False
+    try:
+        os.remove(os.path.expanduser(path))
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+
 __all__ = ["jobs_dir", "slugify", "is_within_jobs_dir", "write_script",
-           "run_script"]
+           "run_script", "delete_script"]

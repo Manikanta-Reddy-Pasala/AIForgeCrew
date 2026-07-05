@@ -22,7 +22,7 @@ type ChangeFile = { path: string; status: string; additions: number; deletions: 
 
 type AgentStep =
   | { kind: 'thought'; text: string; role?: string }
-  | { kind: 'tool'; name: string; args: object; result: object; role?: string }
+  | { kind: 'tool'; name: string; args: object; result: object; role?: string; pending?: boolean; call_id?: number }
   | { kind: 'error'; text: string; role?: string }
   | { kind: 'changes'; files: ChangeFile[]; summary: { files: number; additions: number; deletions: number } };
 
@@ -1056,7 +1056,23 @@ export default function Chat() {
         if (evt.type === 'thought') {
           return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
         }
+        if (evt.type === 'tool_start') {
+          // Live "it's running" row — flipped to the real result by the
+          // matching 'tool' event below (matched on call_id) instead of
+          // showing nothing for however long a slow bash/test/build takes.
+          return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: {}, role: evt.role, pending: true, call_id: evt.call_id }] };
+        }
         if (evt.type === 'tool') {
+          const idx = evt.call_id !== undefined
+            ? prev.steps.findIndex(s => s.kind === 'tool' && s.pending && s.call_id === evt.call_id)
+            : -1;
+          if (idx !== -1) {
+            const steps = [...prev.steps];
+            steps[idx] = { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role, call_id: evt.call_id };
+            return { ...prev, steps };
+          }
+          // No matching pending row (hook-blocked / rejected / cancelled path
+          // never emits tool_start) — append, same as before this change.
           return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
         }
         if (evt.type === 'changes') {
@@ -2663,7 +2679,9 @@ function AgentStepRow({ step }: { step: AgentStep }) {
   if (step.kind === 'tool') {
     const res = step.result as any;
     const ok = res?.ok !== false && !res?.error;
-    const snippet = ok
+    const snippet = step.pending
+      ? 'running…'
+      : ok
       ? (res?.output ? String(res.output).slice(0, 120) : 'ok')
       : (res?.error ? String(res.error).slice(0, 120) : 'error');
     return (
@@ -2676,9 +2694,9 @@ function AgentStepRow({ step }: { step: AgentStep }) {
         fontSize: 'var(--fs-xs)',
         lineHeight: 1.5,
         fontFamily: 'var(--font-mono)',
-        color: ok ? 'var(--fg-1)' : 'var(--err)',
+        color: step.pending ? 'var(--fg-1)' : (ok ? 'var(--fg-1)' : 'var(--err)'),
       }}>
-        <span style={{ flexShrink: 0, marginTop: 1 }}>🔧</span>
+        <span style={{ flexShrink: 0, marginTop: 1 }}>{step.pending ? '⏳' : '🔧'}</span>
         <AgentBadge role={step.role} />
         <span>
           <strong>{step.name}</strong>
@@ -2688,7 +2706,7 @@ function AgentStepRow({ step }: { step: AgentStep }) {
           ).join('')}
           {')'}
           {' → '}
-          <span style={{ color: ok ? 'var(--ok)' : 'var(--err)' }}>
+          <span style={{ color: step.pending ? 'var(--fg-2, var(--fg-1))' : (ok ? 'var(--ok)' : 'var(--err)') }}>
             {snippet}
           </span>
         </span>
