@@ -129,6 +129,71 @@ def review_spec(request: str, spec_md: str) -> tuple[str, str]:
     return out, "spec reviewed + refined (contradictions/ambiguity/scope)"
 
 
+_CODE_SUFFIXES = (".py", ".java", ".js", ".ts", ".tsx", ".go", ".kt", ".rs",
+                  ".rb", ".php", ".c", ".cpp", ".cs")
+
+
+def review_plan(request: str, subs: list) -> tuple[list, str]:
+    """Review the file-PLAN (manifest) before any code is built — catch filename
+    TYPOS (kvdakade→kvfacade), near-duplicate modules, missing files, and scope
+    creep, which a patch-based reconcile can't fix later. Returns
+    ``(subs, note)``. The reviewer (a different model) reads the manifest and
+    returns a corrected ``path | goal`` list, or CLEAN. Soft: any parse/sanity
+    failure keeps the original. Off with ``AIFORGE_REVIEW_PLAN=0``."""
+    if _disabled("AIFORGE_REVIEW_PLAN") or len(subs) < 2:
+        return subs, ""
+    manifest = "\n".join(f"{i + 1}. {(s.get('path') or '?')} — "
+                         f"{(s.get('goal') or '')[:80]}" for i, s in enumerate(subs))
+    instr = ("Review this build FILE-PLAN against the request. Look for: filename "
+             "TYPOS (e.g. 'kvdakade' should be 'kvfacade'), near-DUPLICATE modules "
+             "that should be a single file, MISSING modules the request needs, and "
+             "files NOT needed (scope creep). If the plan is coherent and complete, "
+             "reply with the single word CLEAN. Otherwise output the corrected plan, "
+             "ONE line per file, exactly `path | one-line goal` — minimal and "
+             "coherent, no prose, no fences.")
+    out = (review_once(f"{instr}\n\n---\n\nREQUEST:\n{request[:2000]}\n\n"
+                       f"PLAN:\n{manifest}", 2048) or "").strip()
+    if not out or out.upper().startswith("CLEAN") or "|" not in out:
+        return subs, "plan reviewed — sound"
+    corrected = _parse_plan(out, subs)
+    # Sanity: never accept a mangled/truncated plan that dropped most files.
+    if len(corrected) < max(2, (len(subs) + 1) // 2):
+        return subs, "plan reviewed — sound"
+    if [s.get("path") for s in corrected] == [s.get("path") for s in subs]:
+        return subs, "plan reviewed — sound"
+    return corrected, f"plan reviewed + fixed ({len(subs)}→{len(corrected)} files)"
+
+
+def _parse_plan(out: str, subs: list) -> list:
+    """Turn the reviewer's ``path | goal`` lines into subtask dicts, preserving
+    each original subtask's fields (slug etc.) by closest-path match."""
+    import difflib
+    by_path = {(s.get("path") or "").strip(): s for s in subs}
+    paths = list(by_path)
+    seen, new = set(), []
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        path, _, goal = line.partition("|")
+        path = path.strip().lstrip("0123456789.) ").strip("`").strip()
+        goal = goal.strip()
+        if not path or not path.endswith(_CODE_SUFFIXES) or path in seen:
+            continue
+        seen.add(path)
+        base = by_path.get(path)
+        if base is None:                       # typo-renamed: match the closest old path
+            m = difflib.get_close_matches(path, paths, n=1, cutoff=0.6)
+            base = by_path.get(m[0]) if m else None
+        s = dict(base) if base else {}
+        s["path"] = path
+        if goal:
+            s["goal"] = goal
+        if not s.get("slug"):
+            s["slug"] = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:40] or "step"
+        new.append(s)
+    return new
+
+
 def review_tests(cwd: str, spec_md: str) -> tuple[list[str], str]:
     """Review the written test files before the impl reconcile and fix
     provably-wrong tests. Returns ``(changed_files, note)``. Off with

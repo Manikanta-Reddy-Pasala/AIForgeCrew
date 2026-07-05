@@ -1600,6 +1600,15 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                "text": f"File-ownership check — folded {_dupes} overlapping "
                        "subtask(s) so no two agents edit the same file (conflict "
                        "prevention)."}
+    # PLAN REVIEW — a different model checks the file manifest for typos
+    # (kvdakade→kvfacade), near-duplicate/missing modules, scope creep BEFORE any
+    # code is built (a patch-reconcile can't fix a structural naming error later).
+    try:
+        subs, _pr_note = review_gates.review_plan(prompt, subs)
+        if _pr_note:
+            yield {"type": "thought", "role": "reviewer", "text": f"🔍 {_pr_note}"}
+    except Exception as _prexc:  # noqa: BLE001
+        log.debug("plan review skipped: %s", _prexc)
     yield {"type": "subtasks", "items": [
         {"slug": s.get("slug") or f"sub-{i+1}",
          "goal": s.get("goal") or "", "status": "pending"}
