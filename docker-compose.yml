@@ -117,6 +117,25 @@ services:
     ports:
       - "8765:8765"
 
+  # headroom — local LLM-traffic compression proxy (github.com/headroomlabs-ai/headroom).
+  # ISOLATION TEST ONLY: nothing in the app points at it yet. AIFORGE_LM_BASE_URL
+  # stays at the real LM Studio endpoint until this is curl-verified to compress
+  # traffic without breaking tool-call structure. network_mode: host so it can
+  # reach 127.0.0.1:1234 (the same LM Studio tunnel the api/runner services use)
+  # and be curl'd directly at :8787 for that verification.
+  headroom:
+    build:
+      context: ./services/headroom_proxy
+      network: host
+    container_name: aiforge-headroom
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      # Kompress-v2-base (HF) downloads here on first use — same cache dir the
+      # rerank sidecar uses, so it's the one place operators already know to
+      # pre-stage/persist ML model weights across rebuilds.
+      - ${AIFORGE_DATA_DIR:-./data}/hf-cache:/root/.cache/huggingface
+
   api:
     build:
       context: .

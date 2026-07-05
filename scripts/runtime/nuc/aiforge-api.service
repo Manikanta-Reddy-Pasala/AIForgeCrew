@@ -1,13 +1,20 @@
 [Unit]
-Description=AIForge FastAPI (uvicorn :8799)
-After=network-online.target postgresql.service
+Description=AIForge (hybrid: infra in Docker, api+runner on host) via run.sh
+After=network-online.target docker.service
+Wants=network-online.target
 
 [Service]
 WorkingDirectory=%h/AIForgeCrew
-Environment=AIFORGE_DSN=postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge
-Environment=AIFORGE_LM_BASE_URL=http://127.0.0.1:1234/v1
-Environment=AIFORGE_NEO4J_URI=bolt://127.0.0.1:7687
-ExecStart=%h/AIForgeCrew/.venv/bin/python -m uvicorn aiforge_core.api.api:app --host 0.0.0.0 --port 8799
+# run.sh is the single source of truth for hybrid-mode env wiring (Postgres/
+# Neo4j/embed/rerank URLs, network lockdown, AIFORGE_REPO_ROOT, etc.) and for
+# bringing up the docker infra services + the host-side runner loop — do NOT
+# duplicate that here as hardcoded Environment= lines, they will drift out of
+# sync with run.sh's actual hybrid branch. It also sources %h/AIForgeCrew/.env
+# itself (AIFORGE_BIND_HOST, AIFORGE_ALLOW_UNAUTH_NONLOOPBACK, etc.) — only
+# --host needs to be passed here since run.sh's own HOST default (127.0.0.1)
+# is a hardcoded shell var, NOT overridable by the .env's AIFORGE_BIND_HOST.
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/AIForgeCrew/run.sh --host 0.0.0.0
 Restart=always
 RestartSec=5
 
