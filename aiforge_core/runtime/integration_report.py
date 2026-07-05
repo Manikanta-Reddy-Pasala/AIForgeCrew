@@ -158,7 +158,13 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
         if not os.path.exists(py):
             subprocess.run([sys.executable, "-m", "venv", venv],
                            capture_output=True, timeout=120)
-            deps = ["pytest"] + _third_party_imports(cwd)
+            # Include the pytest plugins models commonly reference in pyproject
+            # addopts / imports (cov, asyncio, mock) so a config like `--cov` or
+            # an `@pytest.mark.asyncio` doesn't make pytest exit "unrecognized
+            # arguments" / "unknown marker" with ZERO test signal — which would
+            # blind the reconcile. Generic; costs one install per venv.
+            deps = (["pytest", "pytest-cov", "pytest-asyncio", "pytest-mock"]
+                    + _third_party_imports(cwd))
             subprocess.run([py, "-m", "pip", "-q", "install", *deps],
                            capture_output=True, timeout=timeout)
             req = os.path.join(cwd, "requirements.txt")
@@ -168,7 +174,21 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
         env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
         p = subprocess.run([py, "-m", "pytest", "-q"], cwd=cwd, env=env,
                            capture_output=True, text=True, timeout=timeout)
-        return p.returncode == 0, (p.stdout + p.stderr)[-4000:]
+        out = p.stdout + p.stderr
+        # If pytest couldn't even START because of a broken CONFIG (a plugin/
+        # addopts the tree can't satisfy → usage error, no tests collected), retry
+        # once IGNORING addopts so we still get a real pass/fail the reconcile can
+        # act on. General: never let a config knob mask the actual test result.
+        _config_broke = (p.returncode == 4
+                         or "unrecognized arguments" in out
+                         or "usage: pytest" in out.lower())
+        if _config_broke:
+            p = subprocess.run(
+                [py, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                 "-o", "addopts="], cwd=cwd, env=env,
+                capture_output=True, text=True, timeout=timeout)
+            out = p.stdout + p.stderr
+        return p.returncode == 0, out[-4000:]
     except Exception:  # noqa: BLE001
         return None
 
