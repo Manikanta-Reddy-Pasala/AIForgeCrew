@@ -2923,6 +2923,16 @@ def run_chat_agent(
     condensed_notified = False
     continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
 
+    # Mid-run steering (simple mode): let the user type WHILE the agent works —
+    # each message is folded into the conversation as a live instruction the next
+    # step must honour (parity with the pipeline's steering).
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_interject as _ci
+            _ci.set_steerable(session_id, True)
+        except Exception:  # noqa: BLE001
+            pass
+
     n = 0
     while n < safety:
         n += 1
@@ -2930,6 +2940,21 @@ def run_chat_agent(
             yield {"type": "error", "text": "stopped by user"}
             yield {"type": "done"}
             return
+        # Fold any mid-run typed message into the convo as a MUST-honour turn.
+        if session_id is not None:
+            try:
+                from aiforge_core.runtime import chat_interject as _ci
+                if _ci.pending(session_id):
+                    for _steer in _ci.drain(session_id):
+                        _steer = (_steer or "").strip()
+                        if not _steer:
+                            continue
+                        convo.append({"role": "user",
+                                      "content": f"[mid-run instruction — follow this now]: {_steer}"})
+                        yield {"type": "thought", "role": "system",
+                               "text": f"📌 Got your message — folding it in now: “{_steer[:120]}”"}
+            except Exception:  # noqa: BLE001
+                pass
         if _turn_deadline is not None and time.monotonic() > _turn_deadline:
             _fire_stop("deadline", cwd)
             yield {"type": "message",
@@ -2980,9 +3005,37 @@ def run_chat_agent(
         try:
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
-            yield {"type": "error", "text": f"llm error: {exc}"}
-            yield {"type": "done"}
-            return
+            # RESILIENCE: a local model can transiently drop a request (mid-load,
+            # busy, a one-off empty/4xx). Retry ONCE before surfacing — and never
+            # show the raw `llm.exhausted role=chat …` stack; give a plain, actionable
+            # message. AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 1).
+            _retries = 1
+            try:
+                _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "1")))
+            except ValueError:
+                _retries = 1
+            out = None
+            _last = exc
+            for _rn in range(_retries):
+                if session_id is not None and chat_cancel.is_cancelled(session_id):
+                    break
+                yield {"type": "thought", "role": "system",
+                       "text": "⟳ model didn't respond — retrying…"}
+                time.sleep(1.5)
+                try:
+                    out = _complete_cancellable(complete_fn, role, convo, session_id)
+                    _last = None
+                    break
+                except Exception as exc2:  # noqa: BLE001
+                    _last = exc2
+            if _last is not None:
+                log.warning("chat llm gave up after %d retr(ies): %s", _retries, _last)
+                yield {"type": "message", "text":
+                       "⚠️ The model didn't respond (it may be loading, busy, or the "
+                       "request was rejected). Nothing was changed — please try again "
+                       "in a moment. If it keeps happening, check the model endpoint."}
+                yield {"type": "done"}
+                return
         # H1: Stop pressed DURING generation — the cancellable wrapper returned
         # the sentinel (the abandoned LLM call finishes in the background,
         # ignored). Distinct from a legitimately-empty completion below.

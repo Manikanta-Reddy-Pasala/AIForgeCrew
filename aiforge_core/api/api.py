@@ -3887,9 +3887,30 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # tests and report — ONLY when this turn actually wrote source code. Skips
         # plan mode, read-only analysis, and every non-code task (JIRA/Confluence/
         # Q&A/chat). Best-effort; env-gated off with AIFORGE_CHAT_INTEGRATION_TEST=0.
+        # PROPORTIONALITY: only run the (heavy) build+test+self-heal when there's
+        # something to verify — a detectable build/test stack. A doc/config/tiny
+        # edit in a repo with no tests + no build system gets the Changes diff, not
+        # a pointless build cycle. AIFORGE_CHAT_INTEGRATION_TEST=0 disables entirely.
+        def _worth_verifying() -> bool:
+            try:
+                from aiforge_core.runtime.tools.project_runner import (
+                    _has_tests, detect,
+                )
+                stacks = (detect(cwd) or {}).get("stacks") or []
+                if stacks and _has_tests(cwd, stacks):
+                    return True
+                # bare python (no marker) but with test files → still worth it
+                import glob
+                return bool(glob.glob(os.path.join(cwd, "**", "test_*.py"),
+                                      recursive=True)
+                            or glob.glob(os.path.join(cwd, "**", "*_test.py"),
+                                         recursive=True))
+            except Exception:  # noqa: BLE001
+                return True   # unsure → keep the old behaviour (verify)
         if agent_mode != "plan" and not _readonly and _wrote_source() \
                 and os.environ.get(
-                    "AIFORGE_CHAT_INTEGRATION_TEST", "1") not in ("0", "false"):
+                    "AIFORGE_CHAT_INTEGRATION_TEST", "1") not in ("0", "false") \
+                and _worth_verifying():
             try:
                 from aiforge_core.runtime.parallel_subtasks import (
                     _reconcile_integration,

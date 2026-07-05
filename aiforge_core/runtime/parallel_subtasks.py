@@ -1310,6 +1310,15 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
     # build specs.
     if _is_trivial_prompt(prompt):
         return prompt
+    # Integration/ACTION request (create a JIRA ticket, Confluence page, send an
+    # email, open a PR) — hand it through UNCHANGED. The enhancer's job is to shape
+    # BUILD specs; reshaping an action request only risks flipping the deliverable
+    # (a JIRA ticket → a doc) and adds latency. The ReAct agent has the tools.
+    if re.search(r"\b(jira|confluence|ticket|issue|pull request|\bpr\b|"
+                 r"merge request|\bmr\b|email|e-mail|slack|page)\b", prompt, re.I) \
+            and re.search(r"\b(create|make|open|file|send|raise|draft|add|update|"
+                          r"comment)\b", prompt, re.I):
+        return prompt
     # Concrete-prompt short-circuit (Change 1): a short single-line imperative
     # that already names a file + action is already actionable — skip the
     # enhancer LLM call (serial-model latency) and hand the raw prompt straight

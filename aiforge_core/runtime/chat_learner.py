@@ -110,6 +110,23 @@ def learn_from_chat(*, prompt: str, final_text: str, steps: list | None,
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("chat_learner llm failed: %s", exc)
+        # DETERMINISTIC FALLBACK: when the distil LLM is down (flaky endpoint), an
+        # EXPLICIT instruction to remember must still persist — else a stated
+        # preference is silently lost. Save the raw user line as one fact.
+        import re as _re
+        if _re.search(r"\b(remember|always|never|i prefer|i want|from now on|"
+                      r"my (preference|setting|convention)|make sure to)\b",
+                      prompt, _re.I):
+            try:
+                out = learner_persist.persist_facts(
+                    facts=[{"text": prompt.strip()[:500], "tags": ["preference"]}],
+                    repo=repo, session_id=str(session_id or ""),
+                    event_time=event_time)
+                log.info("chat_learner fallback saved raw instruction (LLM down)")
+                return {"ok": True, "fallback": True,
+                        "written_observations": out.get("written_observations", 0)}
+            except Exception:  # noqa: BLE001
+                pass
         return {"ok": False, "error": str(exc)}
 
     facts = learner_persist._coerce_facts(_extract_json(raw))
