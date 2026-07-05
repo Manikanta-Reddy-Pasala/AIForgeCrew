@@ -1660,6 +1660,15 @@ Tool arguments:
 After any Confluence/Jira/GitLab create/update/comment SUCCEEDS, show the user a \
 short AFTER preview of what was written (the `written` field in the result) plus \
 the page/issue link — so they can confirm the change without opening it.
+INTEGRATION ACTIONS ARE TOOL CALLS, NOT FILES. When the user asks to create/update \
+a JIRA ticket, a Confluence page, send an email, or open a PR, you MUST call the \
+matching tool (jira_create / confluence_create / email_send / github_pr) — do NOT \
+write a local .md/.txt file as a substitute and do NOT claim you "created a ticket" \
+when you only wrote a file. If the tool returns `not_configured` (e.g. \
+jira_not_configured), STOP and tell the user plainly that the integration isn't \
+configured and what to set (the tool's `hint`), then offer a local draft as an \
+explicit alternative — never silently switch the deliverable or invent that the \
+user "clarified" or "changed their mind".
 - web_search    {{"query": "rust tokio select! cancellation", "limit": 5}}   (search the open web — no key — when you're stuck / need current docs)
 - web_fetch     {{"url": "https://...", "max_chars": 6000}}                  (read a result page's text)
 - serve         {{"cmd": "npm run dev", "port": 5173}}   (START a server/app in the BACKGROUND; returns its pid + the URL to open — use this to run the app, NOT run_command which would block)
