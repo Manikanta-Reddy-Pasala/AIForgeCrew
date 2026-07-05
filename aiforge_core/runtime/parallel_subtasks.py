@@ -1536,29 +1536,38 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                     continue
                 route = _route_steering(_txt, subs)
                 target, note = route["target"], route["note"]
+                # A user comment is a MANDATORY requirement, not a hint — mark it so
+                # the subtask build + the final reconcile MUST satisfy it.
+                _mand = f"\n[MANDATORY user instruction — MUST satisfy]: {_txt}"
                 if target not in ("global", "new"):          # a specific subtask
                     _hit = next((s for s in subs if s.get("slug") == target), None)
                     if _hit is not None:
-                        _hit["goal"] = (_hit.get("goal") or "") + f"\n[user steering]: {_txt}"
-                        _head = f"## ⚙ User steering → {_hit.get('path') or target}"
-                        _fb = (f"💬 Read your comment as targeting **{_hit.get('path') or target}**"
+                        _hit["goal"] = (_hit.get("goal") or "") + _mand
+                        _hit["_user_mandate"] = (_hit.get("_user_mandate") or []) + [_txt]
+                        _head = f"## ⚙ User instruction (MANDATORY) → {_hit.get('path') or target}"
+                        _fb = (f"✅ Got it — treating as a **must** for **{_hit.get('path') or target}**"
                                + (f" — {note}" if note else "")
-                               + ". Applied to that subtask + SPEC; it re-builds with this.")
+                               + ". Pinned to that subtask + SPEC; it rebuilds until satisfied.")
                     else:
                         target = "global"
                 if target == "global":
-                    _head = "## ⚙ User steering (mid-run — applies to whole build)"
-                    _fb = ("💬 Read your comment as a **global** change"
+                    _head = "## ⚙ User instruction (MANDATORY — whole build)"
+                    _fb = ("✅ Got it — treating as a **must** across the whole build"
                            + (f" — {note}" if note else "")
-                           + ". Folded into SPEC; guides all remaining subtasks + reconcile.")
+                           + ". Pinned to SPEC; every remaining subtask + the reconcile must satisfy it.")
                 elif target == "new":
-                    _head = "## ⚙ User steering (NEW requirement mid-run)"
-                    _fb = ("💬 Read your comment as a **new requirement** not in the plan"
+                    _head = "## ⚙ User instruction (MANDATORY — NEW requirement)"
+                    _fb = ("✅ Got it — new **must-have** requirement"
                            + (f" — {note}" if note else "")
-                           + ". Added to SPEC; the reconcile pass will pick it up.")
+                           + ". Pinned to SPEC; the reconcile pass builds + verifies it.")
                 try:
                     with open(os.path.join(cwd, "SPEC.md"), "a", encoding="utf-8") as _fh:
-                        _fh.write(f"\n\n{_head}\n- {_txt}\n")
+                        _fh.write(f"\n\n{_head}\n- **MUST:** {_txt}\n")
+                except Exception:  # noqa: BLE001
+                    pass
+                # Record globally so the reconcile prompt can re-assert it.
+                try:
+                    _USER_MANDATES.setdefault(cwd, []).append(_txt)
                 except Exception:  # noqa: BLE001
                     pass
                 yield {"type": "thought", "role": "planner", "text": _fb}
@@ -1965,6 +1974,11 @@ def _to_int(s: str) -> int:
         return int(s)
     except (ValueError, TypeError):
         return 0
+
+
+# Mid-run user instructions per cwd — MANDATORY constraints re-asserted into the
+# reconcile prompt so a user's "must" survives every rebuild/fix pass.
+_USER_MANDATES: dict[str, list[str]] = {}
 
 
 # Generated / build / cache artifacts — never "real" source, skip in the Changes
@@ -2642,6 +2656,10 @@ def _rewrite_fix(cwd: str, output: str, hints: list[str], *,
         "satisfies the ORIGINAL GOAL and passes every test.\n\n"
         + (f"ORIGINAL GOAL:\n---------------------------\n{goal}\n"
            "---------------------------\n\n" if goal else "")
+        + (("USER INSTRUCTIONS — MANDATORY, these OVERRIDE everything and MUST be "
+            "satisfied in the result:\n"
+            + "\n".join(f"- {m}" for m in _USER_MANDATES.get(cwd, [])) + "\n\n")
+           if _USER_MANDATES.get(cwd) else "")
         + f"FAILING TEST/BUILD OUTPUT:\n```\n{output[-3000:]}\n```\n\n"
         + (f"KNOWN MISMATCHES TO RECONCILE:\n{hint_str}\n\n" if hint_str else "")
         + (f"REPO MAP (ranked symbols across the repo — if the test needs a class/"
