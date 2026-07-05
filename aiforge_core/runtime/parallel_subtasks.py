@@ -1660,9 +1660,19 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         except Exception as _exc:  # noqa: BLE001
             log.debug("scaffold skipped: %s", _exc)
 
+    # OBSERVABILITY — surface the effective execution config so a regression is
+    # VISIBLE (e.g. a stray AIFORGE_SEQUENTIAL=1 forcing 1-at-a-time, or the
+    # reviewer model missing). Silent config drift is what made "why only 1?" hard.
+    _seq = os.environ.get("AIFORGE_SEQUENTIAL", "0") not in ("0", "false")
+    _mw = _max_workers()
+    _mode = "SEQUENTIAL (1 at a time)" if _seq else f"parallel, up to {_mw} at once"
+    try:
+        _reviewer = review_gates.pick_reviewer_model() or "same model (no 2nd model loaded)"
+    except Exception:  # noqa: BLE001
+        _reviewer = "?"
     yield {"type": "thought", "role": "system",
-           "text": f"Running {len(subs)} subtasks — each in its OWN fresh "
-                   f"context + worktree (max {_max_workers()} at once)…"}
+           "text": f"Running {len(subs)} subtasks — each in its OWN fresh context "
+                   f"+ git worktree · execution: {_mode} · reviewer: {_reviewer}."}
 
     base = _ensure_git_workspace(cwd)
     # B3 — surface a dirty-cwd warning before merging into it.
