@@ -3029,7 +3029,6 @@ def run_chat_agent(
                 except Exception as exc2:  # noqa: BLE001
                     _last = exc2
             if _last is not None:
-                log.warning("chat llm gave up after %d retr(ies): %s", _retries, _last)
                 yield {"type": "message", "text":
                        "⚠️ The model didn't respond (it may be loading, busy, or the "
                        "request was rejected). Nothing was changed — please try again "

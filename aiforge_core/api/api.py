@@ -3834,7 +3834,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             import subprocess as _sp0
             _r0 = _sp0.run(["git", "-C", cwd, "rev-parse", "HEAD"],
                            capture_output=True, text=True, timeout=5)
-            _simple_sha = (_r0.stdout or "").strip() if _r0.returncode == 0 else ""
+            if _r0.returncode == 0:
+                _simple_sha = (_r0.stdout or "").strip()
+            else:
+                # Repo with NO commits yet (fresh init) — diff against the empty
+                # tree so newly-created files still show in the Changes view.
+                _et = _sp0.run(["git", "-C", cwd, "hash-object", "-t", "tree",
+                                "/dev/null"], capture_output=True, text=True,
+                               timeout=5)
+                _simple_sha = (_et.stdout or "").strip() if _et.returncode == 0 else ""
         except Exception:  # noqa: BLE001
             _simple_sha = ""
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
