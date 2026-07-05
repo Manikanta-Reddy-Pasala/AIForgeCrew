@@ -1967,11 +1967,26 @@ def _to_int(s: str) -> int:
         return 0
 
 
-_CHANGES_HIDE = ("SPEC.md", ".aiforge-venv", ".aiforge-contracts",
-                 ".aiforge-baseline", ".aiforge-worktrees",
-                 "__pycache__", ".pyc", ".pyo", "node_modules/",
-                 ".pytest_cache", ".ruff_cache", "/target/", "/build/",
-                 ".class", ".o")
+# Generated / build / cache artifacts — never "real" source, skip in the Changes
+# list across languages. Substring-matched against each changed path.
+_CHANGES_HIDE = (
+    # aiforge internals
+    "SPEC.md", ".aiforge-venv", ".aiforge-contracts", ".aiforge-baseline",
+    ".aiforge-worktrees",
+    # python
+    "__pycache__", ".pyc", ".pyo", ".egg-info", ".pytest_cache", ".ruff_cache",
+    ".mypy_cache", ".tox/", ".coverage",
+    # js / ts
+    "node_modules/", "/dist/", "/.next/", "/.nuxt/", ".min.js", ".map",
+    # jvm
+    ".class", "/target/", "/.gradle/", "/out/",
+    # go / rust / c / native
+    "/vendor/", ".rlib", "/Cargo.lock", ".o", ".obj", ".a", ".so", ".dll",
+    ".dylib", ".exe",
+    # generic build/cache/vcs junk
+    "/build/", "/bin/", "/.cache/", ".DS_Store", ".log", ".lock", ".tmp",
+    ".git/",
+)
 
 
 _CODE_EXTS = (".py", ".go", ".js", ".ts", ".rs", ".java", ".c", ".cpp", ".rb")

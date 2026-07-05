@@ -48,8 +48,21 @@ _MANUAL: dict[str, list[str]] = {
 }
 
 
+# Map the project_runner stack name → our _MANUAL language key, so the manual
+# steps ALWAYS match the stack that was actually tested (no re-detection race).
+_STACK_TO_LANG = {
+    "python": "python", "node": "node", "javascript": "node",
+    "typescript": "node", "java": "java-maven", "maven": "java-maven",
+    "gradle": "java-gradle", "go": "go", "golang": "go", "rust": "rust",
+    "cpp": "c/c++", "c": "c/c++", "php": "php", "ruby": "ruby", "shell": "shell",
+}
+
+
 def _detect_lang(cwd: str) -> str | None:
-    """Best-effort project language from marker files + file extensions."""
+    """Best-effort language. MARKER files win (a pyproject/go.mod/Cargo.toml is
+    authoritative); only when there's no marker do we fall back to extensions, and
+    then in a fixed priority so a stray .js can't shadow a Python project (the bug
+    that showed 'npm install' for a pytest project)."""
     def has(*names: str) -> bool:
         return any(os.path.exists(os.path.join(cwd, n)) for n in names)
     exts: set[str] = set()
@@ -59,31 +72,40 @@ def _detect_lang(cwd: str) -> str | None:
             ".aiforge-worktrees", "__pycache__")]
         for f in files:
             exts.add(os.path.splitext(f)[1].lower())
+    # 1) authoritative marker files, most-specific first
     if has("pom.xml"):
         return "java-maven"
     if has("build.gradle", "build.gradle.kts", "settings.gradle"):
         return "java-gradle"
-    if has("go.mod") or ".go" in exts:
+    if has("go.mod"):
         return "go"
-    if has("Cargo.toml") or ".rs" in exts:
+    if has("Cargo.toml"):
         return "rust"
-    if has("package.json") or ".ts" in exts or ".js" in exts:
-        return "node"
-    if has("CMakeLists.txt", "Makefile") or exts & {".c", ".cpp", ".cc", ".cxx"}:
-        return "c/c++"
-    if has("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt") or ".py" in exts:
+    if has("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"):
         return "python"
-    if has("composer.json") or ".php" in exts:
+    if has("package.json"):
+        return "node"
+    if has("composer.json"):
         return "php"
-    if has("Gemfile") or ".rb" in exts:
+    if has("Gemfile"):
         return "ruby"
-    if ".sh" in exts or ".bash" in exts:
-        return "shell"
+    if has("CMakeLists.txt", "Makefile"):
+        return "c/c++"
+    # 2) no marker — extension fallback, fixed priority (python before node)
+    for lang, es in (("python", {".py"}), ("go", {".go"}), ("rust", {".rs"}),
+                     ("java-maven", {".java"}), ("c/c++", {".c", ".cpp", ".cc", ".cxx"}),
+                     ("php", {".php"}), ("ruby", {".rb"}),
+                     ("node", {".ts", ".tsx", ".js", ".mjs"}),
+                     ("shell", {".sh", ".bash"})):
+        if exts & es:
+            return lang
     return None
 
 
-def _manual_steps_md(cwd: str) -> str:
-    lang = _detect_lang(cwd)
+def _manual_steps_md(cwd: str, lang: str | None = None) -> str:
+    """Manual build/test steps. ``lang`` (from the stack actually tested) wins over
+    re-detection so the steps never contradict the run."""
+    lang = lang or _detect_lang(cwd)
     steps = _MANUAL.get(lang or "")
     if not steps:
         return "_No recognised project — add a build/test setup to enable auto-checks._"
@@ -291,15 +313,20 @@ def build_and_test_report(cwd: str) -> dict:
         bare = run_bare_python_tests(cwd)
         if bare is not None:
             ok, output = bare
+            # We ran pytest → the manual steps are PYTHON, not a re-detection race.
+            py_manual = _manual_steps_md(cwd, "python")
             out = ["## Integration check — **python (pytest, no build marker)**",
                    "", f"- **tests (end-to-end):** {'✅ passed' if ok else '❌ failed'}"]
             if not ok and output:
                 out.append("```\n" + output[-1400:] + "\n```")
-            out += ["", manual]
+            out += ["", py_manual]
             return {"ok": ok, "md": "\n".join(out)}
         return {"ok": None, "md": "## Integration check\n\nNo build markers "
                 "found here.\n\n" + manual}
 
+    # Manual steps must match the stack we actually detected/tested, not a
+    # separate _detect_lang pass (which raced .js over .py → wrong 'npm install').
+    manual = _manual_steps_md(cwd, _STACK_TO_LANG.get(str(stacks[0]).lower()))
     out = [f"## Integration check — detected: **{', '.join(stacks)}**", ""]
 
     # 1. compile / build
