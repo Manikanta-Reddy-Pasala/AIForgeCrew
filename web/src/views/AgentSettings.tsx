@@ -74,6 +74,52 @@ function ThinkingBadge({ v, resolved, onCycle }: {
   );
 }
 
+// Fallback context window (tokens) when a model has no explicit value — must
+// match model_registry._CTX_STATIC_DEFAULT (128K) so the UI shows the number
+// the backend actually assumes.
+const DEFAULT_CTX = 131072;
+
+// Inline per-model context-window editor. Shows the effective window in "k"
+// (the model's own value, or the 128K default rendered muted). Click to edit;
+// commits on blur / Enter. Blank or 0 → clears the per-model override (falls
+// back to the 128K default).
+function CtxEdit({ value, onCommit }: { value: number; onCommit: (tokens: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const isDefault = !value || value <= 0;
+  const shownK = Math.round((value || DEFAULT_CTX) / 1000);
+  const [draft, setDraft] = useState(String(shownK));
+  const commit = () => {
+    setEditing(false);
+    const k = Number(draft);
+    if (!Number.isFinite(k) || k <= 0) { onCommit(0); return; }   // clear → default
+    onCommit(Math.round(k * 1000));
+  };
+  const base = { fontSize: 11, borderRadius: 6, padding: '2px 8px',
+                 whiteSpace: 'nowrap' as const, flex: '0 0 auto' as const, lineHeight: 1.4 };
+  if (editing) {
+    return (
+      <input autoFocus type="number" min={0} step={8}
+             value={draft} onChange={e => setDraft(e.target.value)}
+             onBlur={commit}
+             onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+             title="Context window in thousands of tokens (K). Blank/0 = 128K default."
+             style={{ ...base, width: 64, border: '1px solid #6aa6ff' }} />
+    );
+  }
+  const col = isDefault ? '#8b949e' : '#6aa6ff';
+  return (
+    <button type="button"
+            onClick={() => { setDraft(String(shownK)); setEditing(true); }}
+            title={isDefault
+              ? 'Context window: 128K default (click to set a per-model value)'
+              : 'Per-model context window — click to edit (blank/0 = 128K default)'}
+            style={{ ...base, color: col, border: `1px solid ${col}`,
+                     cursor: 'pointer', background: 'transparent' }}>
+      ctx {shownK}k{isDefault ? ' ·default' : ''}
+    </button>
+  );
+}
+
 export default function AgentSettings() {
   const [models, setModels] = useState<RegistryModel[]>([]);
   const [config, setConfig] = useState<Record<string, AgentRoleConfig>>({});
@@ -250,6 +296,13 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
   async function setThinkingFor(id: string, v: RegistryModel['thinking']) {
     try { await chatApi.updateModel(id, { thinking: v }); reload(); } catch (e: any) { toast.error(e.message); }
   }
+  // Per-model context window (tokens). 0/blank = fall back to the 128K default.
+  async function setContextFor(id: string, tokens: number) {
+    try {
+      await chatApi.updateModel(id, { context_window: Math.max(0, tokens | 0) });
+      reload();
+    } catch (e: any) { toast.error(e.message); }
+  }
   async function loadOnServer(m: RegistryModel) {
     setLoadingId(m.id);
     try {
@@ -291,7 +344,7 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
           </select></label>
         <label className="small">Context window <span className="muted">(tokens, optional)</span>
           <input style={input} type="number" min={0} step={1024} value={ctx}
-                 placeholder="blank = use global"
+                 placeholder="blank = 128K default"
                  onChange={e => setCtx(e.target.value === '' ? '' : Number(e.target.value))} /></label>
       </div>
       <div className="xs muted" style={{ marginTop: 6 }}>TLS verification is skipped for these endpoints (self-hosted / self-signed).</div>
@@ -344,9 +397,10 @@ function ModelsCard({ models, reload }: { models: RegistryModel[]; reload: () =>
                 <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
                               overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.label}</div>
                 <div className="xs muted" style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {m.model} · {m.base_url || 'default url'}{m.api_key_set ? ' · 🔑' : ''}{m.context_window ? ` · ctx ${Math.round(m.context_window / 1000)}k` : ''}
+                  {m.model} · {m.base_url || 'default url'}{m.api_key_set ? ' · 🔑' : ''}
                 </div>
               </div>
+              <CtxEdit value={m.context_window} onCommit={t => setContextFor(m.id, t)} />
               <ThinkingBadge v={m.thinking} resolved={m.has_thinking}
                              onCycle={() => setThinkingFor(m.id, nextThinking(m.thinking))} />
               <VisionBadge v={m.vision} onCycle={() => setVisionFor(m.id, nextVision(m.vision))} />

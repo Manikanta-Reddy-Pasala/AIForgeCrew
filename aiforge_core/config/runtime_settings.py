@@ -39,7 +39,7 @@ log = logging.getLogger("aiforge.runtime_settings")
 # knob -> (env var consulted when the store has no value, built-in default)
 _SPEC: dict[str, tuple[str, int]] = {
     "max_output_tokens": ("AIFORGE_LLM_MAX_TOKENS", 8192),
-    "context_window": ("AIFORGE_LOCAL_CTX_WINDOW", 262144),
+    "context_window": ("AIFORGE_LOCAL_CTX_WINDOW", 131072),
     # 0/1 flag: force-treat the chat model as vision-capable (for a self-hosted
     # multimodal model the allowlist doesn't recognise). Auto-detection by model
     # id still applies when this is 0.

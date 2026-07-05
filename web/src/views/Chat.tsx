@@ -552,11 +552,11 @@ export default function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Pre-apply "Review edits" mode (Gap D) is FORCED ON for every chat window —
-  // no UI toggle. Every file-mutating tool call is held for Approve/Reject
-  // (with a diff) before it lands in simple/plan mode. (Team/parallel runs
-  // can't hold edits; the server surfaces a one-time notice there.)
-  const reviewEdits = true;
+  // Pre-apply "Review edits" gate: OFF by default — file writes/patches
+  // auto-apply with no per-edit Approve/Reject prompt. Operators who want the
+  // gate back can force it server-side with AIFORGE_CHAT_REVIEW_EDITS=1.
+  // (Team/parallel runs never hold edits regardless.)
+  const reviewEdits = false;
   // Cave mode (lean context) is now AUTO-enabled for small model windows
   // (≤48K) server-side, so the per-chat toggle was removed — it's the
   // default for local models. Advanced operators can still force it on/off

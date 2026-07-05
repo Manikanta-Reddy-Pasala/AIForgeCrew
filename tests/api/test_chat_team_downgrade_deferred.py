@@ -70,9 +70,68 @@ def test_team_turn_downgraded_runs_simple_path_and_sets_review_edits(
                         lambda *a, **k: True)
 
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
+    # review_edits defaults OFF now (auto-approve); send it explicitly so this
+    # test proves the deferred-classify path still threads the flag through to
+    # the (downgraded, non-team) run correctly.
     r = client.post(f"/api/chat/sessions/{sid}/message",
-                    json={"content": "rename the var", "mode": "team"})
+                    json={"content": "rename the var", "mode": "team",
+                          "review_edits": True})
     assert r.status_code == 200
 
     assert pipeline_calls == []          # never ran the team pipeline
-    assert review_edits_seen == [True]   # not-team => review edits gate ON
+    assert review_edits_seen == [True]   # opt-in + not-team => review gate ON
+
+
+def test_review_edits_defaults_off_auto_approve(app_client, monkeypatch):
+    """No review_edits in the body → gate OFF (file writes auto-apply). The
+    operator asked for no per-edit permission prompts."""
+    client, _ = app_client
+    from aiforge_core.runtime import chat_agent, chat_approve
+    from aiforge_core.runtime import parallel_subtasks as pp
+
+    seen = []
+
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+        return prompt
+
+    def fake_run_chat_agent(history, session_id=None, **kw):
+        seen.append(chat_approve.review_edits(session_id))
+        yield {"type": "message", "text": "ok"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(pp, "_enhance", fake_enhance)
+    monkeypatch.setattr(chat_agent, "run_chat_agent", fake_run_chat_agent)
+
+    sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
+    r = client.post(f"/api/chat/sessions/{sid}/message",
+                    json={"content": "write a file", "mode": "act"})
+    assert r.status_code == 200
+    assert seen == [False]   # default = auto-approve, no gate
+
+
+def test_review_edits_env_forces_gate_on(app_client, monkeypatch):
+    """AIFORGE_CHAT_REVIEW_EDITS=1 re-enables the gate globally even when the
+    request doesn't opt in."""
+    client, _ = app_client
+    monkeypatch.setenv("AIFORGE_CHAT_REVIEW_EDITS", "1")
+    from aiforge_core.runtime import chat_agent, chat_approve
+    from aiforge_core.runtime import parallel_subtasks as pp
+
+    seen = []
+
+    def fake_enhance(prompt, *, history=None, cwd=None, repo=None):
+        return prompt
+
+    def fake_run_chat_agent(history, session_id=None, **kw):
+        seen.append(chat_approve.review_edits(session_id))
+        yield {"type": "message", "text": "ok"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(pp, "_enhance", fake_enhance)
+    monkeypatch.setattr(chat_agent, "run_chat_agent", fake_run_chat_agent)
+
+    sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
+    r = client.post(f"/api/chat/sessions/{sid}/message",
+                    json={"content": "write a file", "mode": "act"})
+    assert r.status_code == 200
+    assert seen == [True]    # env forced the gate on

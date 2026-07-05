@@ -182,8 +182,15 @@ def context_for(model: str, base_url: str = "") -> int:
 
 
 # Ceiling for a detected window (256K) and the static fallback default (128K).
+# The default is the ASSUMED window for escalation/auto-condense sizing when a
+# model has no explicit per-model value AND no global override AND detection is
+# off/failed — deliberately CONSERVATIVE (128K): assuming LESS than the model's
+# physically-loaded window only makes the app condense/cap earlier, which can
+# never cause the "sent more than the served window" 400 that assuming MORE
+# would. A model that genuinely wants a bigger window sets it per-model in the
+# registry (highest-priority resolution path).
 _CTX_CEILING = 262144
-_CTX_STATIC_DEFAULT = 262144   # 256K default window (was 128K)
+_CTX_STATIC_DEFAULT = 131072   # 128K default window
 
 
 def _autodetect_ctx_enabled() -> bool:

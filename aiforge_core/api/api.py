@@ -3130,7 +3130,7 @@ class _SessionMsgBody(BaseModel):
     content: str = Field(..., min_length=1)
     role: str | None = Field(None, description="override the session's model (archetype)")
     mode: str = Field("simple", description="'simple' (single agent) | 'plan' (read-only single agent) | 'team' (full ADK flow)")
-    review_edits: bool = Field(True, description="Gap D — ALWAYS ON (no UI toggle): every file-mutating tool call is held for human Approve/Reject (with diff) before it lands in simple/plan mode")
+    review_edits: bool = Field(False, description="Hold every file-mutating tool call for human Approve/Reject (with diff) before it lands, in simple/plan mode. Default OFF — file writes/patches auto-apply. Opt in per-request here, or globally with AIFORGE_CHAT_REVIEW_EDITS=1.")
     edit_from_message_id: int | None = Field(None, description="Edit-and-resend: truncate history at this user message (restoring the workspace to that turn's checkpoint) before running this new content")
     builder: str | None = Field(None, description="task builder charter: job|skill|workflow|rule — runs an interactive single-agent builder that ends by calling the matching finalize tool (bypasses the enhancer/team pipeline)")
 
@@ -3999,11 +3999,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             except Exception as _rexc:  # noqa: BLE001 — routing must never block a turn
                 _af_log.debug("turn_router skipped: %s", _rexc)
         _parallel_team = team and _psub.enabled()
-        # Review-edits is FORCED ON for simple/plan chat (no UI toggle): the
-        # ReAct gate always holds file-mutating tool calls for human
-        # Approve/Reject before they land. Team/parallel mode (the full
-        # pipeline) is left as-is — it doesn't hold edits, by design.
-        _chat_approve.set_review_edits(session_id, not team)
+        # Review-edits gate: OFF by default — file writes/patches auto-apply,
+        # no per-edit Approve/Reject prompt (the operator asked for no file-
+        # permission prompts). Re-enable per-request via body.review_edits, or
+        # globally with AIFORGE_CHAT_REVIEW_EDITS=1. Team/parallel mode never
+        # holds edits regardless (the full pipeline runs unattended).
+        _review_env = os.environ.get(
+            "AIFORGE_CHAT_REVIEW_EDITS", "0") in ("1", "true", "yes", "on")
+        _chat_approve.set_review_edits(
+            session_id, (bool(body.review_edits) or _review_env) and not team)
         steps: list[dict] = []
         final_text = ""
         awaiting = False   # turn ended with a question / pause, not an outcome

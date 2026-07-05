@@ -998,7 +998,7 @@ function LlmSettingsCard() {
           />
         </label>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span className="small muted" title="Assumed input context window (tokens). Match it to what the served model allows.">
+          <span className="small muted" title="Global fallback input context window (tokens). Per-model values (set on each model in Settings → Models) win over this. Blank/unset → 128K default.">
             Context window (input)
           </span>
           <input
