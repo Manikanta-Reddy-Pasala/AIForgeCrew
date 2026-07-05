@@ -28,6 +28,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # the API already exposes over HTTP.
 RUN git config --system --add safe.directory '*'
 
+# Every subtask-branch commit + merge in parallel_subtasks.py's isolated-
+# worktree pipeline (and the parallel-run baseline commit) goes through this
+# repo's `_git()` helper, which never checks the exit code — so with no git
+# identity configured anywhere, EVERY `git commit` in the container has been
+# failing with "Author identity unknown" and getting silently swallowed by
+# the same broad except-blocks. The subtask's file writes still land (that
+# part isn't git-mediated), so the pipeline reports success — but the
+# worktree/merge/diff model that success message describes never actually
+# ran: HEAD never advances, so the post-run Changes diff (which compares
+# start_sha..HEAD) sees no commits and renders nothing. A bot identity is a
+# reasonable default for a container-internal git config that's invisible to
+# any real author; override per-committer at the call site if that's ever
+# needed.
+RUN git config --system user.email "aiforge@localhost" \
+    && git config --system user.name "AIForge Bot"
+
 # uv for fast, reproducible installs.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
