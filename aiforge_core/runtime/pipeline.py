@@ -417,6 +417,23 @@ def build_pipeline(*, skip_researcher: bool = False,
     except Exception:
         pass
 
+    # Mid-run steering (Gap A, team mode) — registered AFTER focus-trim so an
+    # applied steer (the newest content) can never itself be cut by the trim.
+    # Doer + Refiner are the iterative nodes a team run actually spends most
+    # of its wall-clock in, so they're where "keep typing while it thinks"
+    # matters; see chat_steer_callback.py for why before_model (not a session
+    # state write) is the mechanism.
+    try:
+        from .chat_steer_callback import make_steer_before_model_callback
+        _append_before_model(doer, make_steer_before_model_callback("doer"))
+    except Exception:
+        pass  # steering is best-effort; never block pipeline boot
+    try:
+        from .chat_steer_callback import make_steer_before_model_callback
+        _append_before_model(refiner, make_steer_before_model_callback("refiner"))
+    except Exception:
+        pass
+
     # Auto-consolidation after-callback on the Learner — mines the finished
     # run's trajectory for durable facts (extract → decide ADD/UPDATE/DELETE/
     # NOOP vs existing → reflect), complementing the explicit facts_json

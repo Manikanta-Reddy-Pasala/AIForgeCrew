@@ -249,6 +249,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         chat_cancel.set_active(session_id)
         # Attach an interactive approver so the Doer's tool gate can pause
         # this team run for human Approve/Reject (the gate no-ops without it).
+        from aiforge_core.runtime import chat_interject
         if session_id is not None:
             from aiforge_core.runtime import chat_approve
             chat_approve.set_emitter(session_id, q.put)
@@ -360,6 +361,17 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             _enhancer_blocked_reason = None
             agen = runner.run_async(**kw)
             async for event in agen:
+                # Mid-run steering ack (Gap A, team mode): the Doer/Refiner's
+                # before_model callback (chat_steer_callback) already folded
+                # any queued steer into its next model call — this just
+                # surfaces the same "📌 Got your message" acknowledgment the
+                # simple-mode ReAct loop shows inline, polled once per event
+                # since the callback has no direct handle to this queue.
+                if session_id is not None:
+                    for _applied in chat_interject.pop_applied(session_id):
+                        q.put({"type": "thought", "role": "system",
+                               "text": f"📌 Got your message — folding it in "
+                                       f"now: “{_applied[:120]}”"})
                 if session_id is not None and chat_cancel.is_cancelled(session_id):
                     # ADK-native stop: aclose() the run generator (cancels
                     # the in-flight agent + all its sub-agents) and close the

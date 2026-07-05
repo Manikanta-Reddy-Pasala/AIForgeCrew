@@ -4252,9 +4252,12 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
     into the agent's working context at its next safe step, so the agent
     adjusts course mid-run. No-op (queued:false) for blank content.
 
-    Team / parallel runs don't drain the steer queue, so steering there would
-    queue a message no loop ever reads. Detect that and report it unsupported
-    rather than falsely claiming the steer was queued."""
+    Drained by: simple/plan's ReAct loop, the parallel-team subtask loop
+    (folds into SPEC.md), and the sequential team ADK driver's Doer/Refiner
+    before_model callback (chat_steer_callback). Only best-of-N never
+    drains, so steering there would queue a message no loop ever reads —
+    detect that and report it unsupported rather than falsely claiming the
+    steer was queued."""
     from aiforge_core.runtime import chat_interject
     # Atomic test-and-set: push() itself checks steerability under its lock, so
     # there's no window between the check and the enqueue for a run-end clear()
@@ -4262,11 +4265,11 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
     queued = chat_interject.push(session_id, body.content, require_steerable=True)
     if queued:
         return {"queued": True, "session_id": session_id}
-    # Refused — distinguish blank content from a non-steerable (team-mode) run.
+    # Refused — distinguish blank content from a non-steerable (best-of-N) run.
     if not (body.content or "").strip():
         return {"queued": False, "session_id": session_id, "reason": "empty content"}
     return {"queued": False, "unsupported": True, "session_id": session_id,
-            "reason": "steering not available in team mode"}
+            "reason": "steering not available for this run"}
 
 
 class _ApproveBody(BaseModel):

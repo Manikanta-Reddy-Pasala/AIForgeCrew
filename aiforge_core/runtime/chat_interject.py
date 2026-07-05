@@ -24,10 +24,20 @@ import threading
 
 _LOCK = threading.Lock()
 _QUEUES: dict[int, list[str]] = {}
-# Sessions whose in-flight run actually DRAINS the steer queue (the simple/plan
-# ReAct loop in chat_agent). Team / parallel / best-of-N runs never drain, so a
-# steer there would queue forever — the /steer endpoint reports it unsupported
-# instead of falsely claiming "queued". Marked by the message handler per run.
+# Steers a consumer has ALREADY folded into the model's working context but
+# hasn't yet acknowledged back to the SSE stream (team mode's before_model
+# callback runs deep inside the ADK graph with no direct queue handle — it
+# records what it applied here; chat_pipeline's event loop, which DOES hold
+# the queue, polls this each iteration and emits the same "📌 Got your
+# message" acknowledgment the simple-mode ReAct loop shows inline).
+_APPLIED: dict[int, list[str]] = {}
+# Sessions whose in-flight run actually DRAINS the steer queue: the
+# simple/plan ReAct loop (chat_agent), the parallel-team subtask loop
+# (parallel_subtasks, folds into SPEC.md), and the sequential team ADK
+# driver's Doer/Refiner before_model callback (chat_steer_callback). Only
+# best-of-N never drains, so a steer there would queue forever — the
+# /steer endpoint reports it unsupported instead of falsely claiming
+# "queued". Marked by the message handler per run.
 _STEERABLE: set[int] = set()
 
 
@@ -103,3 +113,22 @@ def clear(session_id: int) -> None:
     with _LOCK:
         _QUEUES.pop(session_id, None)
         _STEERABLE.discard(session_id)
+        _APPLIED.pop(session_id, None)
+
+
+def mark_applied(session_id: int, texts: list[str]) -> None:
+    """Record steer(s) a consumer already folded into the model's working
+    context, for a later ``pop_applied`` to acknowledge back to the UI."""
+    if session_id is None or not texts:
+        return
+    with _LOCK:
+        _APPLIED.setdefault(session_id, []).extend(texts)
+
+
+def pop_applied(session_id: int) -> list[str]:
+    """Return + clear steers applied since the last call (FIFO)."""
+    if session_id is None:
+        return []
+    with _LOCK:
+        texts = _APPLIED.pop(session_id, None)
+    return list(texts) if texts else []

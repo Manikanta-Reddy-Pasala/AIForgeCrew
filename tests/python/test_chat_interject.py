@@ -103,6 +103,40 @@ def test_push_require_steerable_noop_when_not_steerable():
     assert ci.drain(7) == ["y"]
 
 
+def test_mark_applied_pop_applied_fifo():
+    # Team mode's before_model callback drains + folds a steer with no
+    # direct queue handle to acknowledge it back to the UI — it records
+    # what it applied here; chat_pipeline's event loop pops + acknowledges.
+    ci.mark_applied(7, ["first"])
+    ci.mark_applied(7, ["second", "third"])
+    assert ci.pop_applied(7) == ["first", "second", "third"]
+    # Pop clears: a second pop is empty.
+    assert ci.pop_applied(7) == []
+
+
+def test_mark_applied_empty_is_noop():
+    ci.mark_applied(7, [])
+    assert ci.pop_applied(7) == []
+
+
+def test_mark_applied_none_session_safe():
+    ci.mark_applied(None, ["x"])   # must not raise
+    assert ci.pop_applied(None) == []
+
+
+def test_clear_drops_applied_too():
+    ci.mark_applied(7, ["x"])
+    ci.clear(7)
+    assert ci.pop_applied(7) == []
+
+
+def test_applied_isolated_per_session():
+    ci.mark_applied(1, ["for-one"])
+    ci.mark_applied(2, ["for-two"])
+    assert ci.pop_applied(1) == ["for-one"]
+    assert ci.pop_applied(2) == ["for-two"]
+
+
 def test_steer_merges_into_trailing_user_turn(tmp_path):
     """M1 — a steer drained when the last turn is already a user message (the
     OBSERVATION after a tool step) merges into it instead of creating a second

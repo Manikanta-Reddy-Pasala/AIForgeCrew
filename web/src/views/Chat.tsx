@@ -473,8 +473,8 @@ export default function Chat() {
   // Guards the Steer POST against double-fire (FE6).
   const [steering, setSteering] = useState(false);
   // Mode the CURRENTLY-running turn was launched with (not the live selector,
-  // which the user can flip mid-run). Team runs can't be steered — the server
-  // rejects it — so the composer disables the Steer affordance for them.
+  // which the user can flip mid-run). All modes are steerable now — used
+  // only to word the composer placeholder differently for team.
   const [activeRunMode, setActiveRunMode] = useState<ChatMode>('simple');
 
   // Per-session action+response trace modal (reviews ~/.aiforge/chat_traces).
@@ -1362,11 +1362,10 @@ export default function Chat() {
   // The current turn is waiting for the user to answer — Enter/primary button
   // must SEND a reply (a normal turn), not steer.
   const awaitingReply = !!liveTurn?.awaiting || persistedAwaiting;
-  // Steering is only valid while genuinely running (not awaiting, not gated) AND
-  // the running turn is steerable — a TEAM run isn't (the server rejects it), so
-  // the Steer affordance is disabled for it instead of firing a doomed POST.
-  // Team/parallel runs ARE steerable now — a steer is folded into SPEC.md and
-  // guides the remaining subtasks + the final reconcile.
+  // Steering is valid while genuinely running (not awaiting a reply, not
+  // gated on an approval) — every mode drains the queue now: simple/plan's
+  // ReAct loop, the parallel-team subtask loop (folds into SPEC.md), and
+  // the sequential team ADK driver's Doer/Refiner before_model callback.
   const canSteer = busy && !awaitingReply && !pendingApproval;
 
   // SPEC.md preview modal (opened from the subtask dock header).
@@ -1992,13 +1991,11 @@ export default function Chat() {
                     ↳ Steer
                   </button>
                 ) : busy && !awaitingReply ? (
-                  // Running but not steerable: either a team run (server rejects
-                  // mid-run steering) or gated on an approval (FE2). Disabled
-                  // either way, with a title that says which.
+                  // canSteer is false here only because pendingApproval is set
+                  // (the review-edits gate — simple/plan only, team doesn't use
+                  // it, so this is never actually a team-mode restriction).
                   <button disabled
-                          title={activeRunMode === 'team'
-                            ? "Steering isn't available in team mode"
-                            : 'Resolve the approval above before steering'}
+                          title="Resolve the approval above before steering"
                           style={{ whiteSpace: 'nowrap' }}>
                     ↳ Steer
                   </button>
