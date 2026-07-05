@@ -3686,16 +3686,19 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             _psub_on = _pp.enabled()
         except Exception:  # noqa: BLE001
             _psub_on = _parallel_team
-        # Only escalate a GREENFIELD build. On an existing repo a bug-fix/edit
-        # must stay a targeted single-agent edit — the decompose→scaffold pipeline
-        # is for new projects, not editing hundreds of existing files.
         _greenfield = True
         try:
             _greenfield = _pp._is_greenfield(cwd)
         except Exception:  # noqa: BLE001
             _greenfield = True
+        # Escalate a MULTI-FILE BUILD to the pipeline — greenfield OR a genuinely
+        # new subsystem on an existing repo (e.g. "build an auth module with
+        # tests"). Safe on an existing repo: `_looks_like_multifile_build` matches
+        # only build verbs (build/create/implement), NOT a "fix"/edit, and the
+        # pipeline's greenfield-guard skips scaffold/off-plan-prune + never deletes
+        # baseline files. A targeted edit still stays single-agent (no match).
         _build_escalate = bool(
-            not team and _psub_on and _greenfield
+            not team and _psub_on
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
             and _looks_like_multifile_build(prompt))
         if _build_escalate:

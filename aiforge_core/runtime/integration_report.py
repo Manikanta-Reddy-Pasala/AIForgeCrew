@@ -163,8 +163,8 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
             # an `@pytest.mark.asyncio` doesn't make pytest exit "unrecognized
             # arguments" / "unknown marker" with ZERO test signal — which would
             # blind the reconcile. Generic; costs one install per venv.
-            deps = (["pytest", "pytest-cov", "pytest-asyncio", "pytest-mock"]
-                    + _third_party_imports(cwd))
+            deps = (["pytest", "pytest-cov", "pytest-asyncio", "pytest-mock",
+                     "ruff"] + _third_party_imports(cwd))
             subprocess.run([py, "-m", "pip", "-q", "install", *deps],
                            capture_output=True, timeout=timeout)
             req = os.path.join(cwd, "requirements.txt")
@@ -188,9 +188,88 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
                  "-o", "addopts="], cwd=cwd, env=env,
                 capture_output=True, text=True, timeout=timeout)
             out = p.stdout + p.stderr
-        return p.returncode == 0, out[-4000:]
+        ok = p.returncode == 0
+        # LINT gate (Python leg): when tests otherwise PASS, run the real-bug ruff
+        # codes via the managed venv's ruff (installed above). The generic
+        # multi-language dispatch below handles other stacks.
+        if ok and os.environ.get("AIFORGE_LINT_GATE", "1") not in ("0", "false"):
+            lok, lout = _static_lint_python(cwd, py, env)
+            if not lok:
+                ok = False
+                out += lout
+        return ok, out[-4000:]
     except Exception:  # noqa: BLE001
         return None
+
+
+# Native static checker per language — the "easy way": reuse each toolchain's own
+# linter/typechecker (no heavy universal dep). Real-bug level only, never style.
+def _static_lint_python(cwd, py, env):
+    try:
+        import subprocess
+        lp = subprocess.run(
+            [py, "-m", "ruff", "check", "--select", "F821,F822,F811",
+             "--no-cache", "-q", "."], cwd=cwd, env=env,
+            capture_output=True, text=True, timeout=90)
+        if lp.returncode != 0 and (lp.stdout or lp.stderr).strip():
+            return False, "\n\n=== python lint (undefined/redef) — fix ===\n" + lp.stdout + lp.stderr
+    except Exception:  # noqa: BLE001
+        pass
+    return True, ""
+
+
+def run_static_checks(cwd: str) -> tuple[bool, str]:
+    """Language-native static checks for the stacks present — catches real bugs a
+    test run can miss (undefined name, type error, bad ref). Best-effort: any tool
+    that isn't installed is skipped. Returns ``(ok, output)``. Off with
+    ``AIFORGE_LINT_GATE=0``. Compiled langs (Java/Go/Rust/Kotlin/C) are already
+    typechecked by their build step, so here we cover the interpreted/loose ones."""
+    import glob
+    import shutil
+    import subprocess
+    if os.environ.get("AIFORGE_LINT_GATE", "1") in ("0", "false"):
+        return True, ""
+    problems: list[str] = []
+
+    def _has(exe: str) -> bool:
+        return shutil.which(exe) is not None
+
+    def _run(cmd: list[str], label: str, timeout: int = 90) -> None:
+        try:
+            p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                               timeout=timeout)
+            if p.returncode != 0 and (p.stdout or p.stderr).strip():
+                problems.append(f"=== {label} ===\n{(p.stdout + p.stderr)[-1500:]}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _files(*exts):
+        out = []
+        for root, dirs, fs in os.walk(cwd):
+            dirs[:] = [d for d in dirs if d not in _LINT_SKIP and not d.startswith(".")]
+            out += [os.path.join(root, f) for f in fs if f.endswith(exts)]
+        return out
+
+    # TypeScript — the compiler IS the typecheck.
+    if _files(".ts", ".tsx") and os.path.exists(os.path.join(cwd, "tsconfig.json")) and _has("npx"):
+        _run(["npx", "--yes", "tsc", "--noEmit"], "typescript typecheck", 180)
+    # plain JavaScript — syntax check each file (no compiler).
+    elif _files(".js", ".mjs") and _has("node"):
+        for f in _files(".js", ".mjs")[:60]:
+            _run(["node", "--check", f], f"js syntax {os.path.relpath(f, cwd)}", 20)
+    # Go — vet catches real bugs beyond compile.
+    if _files(".go") and _has("go"):
+        _run(["go", "vet", "./..."], "go vet", 120)
+    # Rust — clippy if present (compile already typechecks; clippy adds real lints).
+    if _files(".rs") and _has("cargo"):
+        _run(["cargo", "clippy", "--quiet"], "rust clippy", 180)
+    if problems:
+        return False, "\n\n=== static checks — fix these ===\n" + "\n\n".join(problems)
+    return True, ""
+
+
+_LINT_SKIP = {"node_modules", "venv", ".venv", "__pycache__", "target", "build",
+              "dist", ".git", ".aiforge-venv", "vendor"}
 
 
 def build_and_test_report(cwd: str) -> dict:

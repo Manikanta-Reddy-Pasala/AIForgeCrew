@@ -2140,9 +2140,37 @@ def _project_test_output(cwd: str) -> tuple[bool, str]:
         # error (else it thinks 0 are failing and gives up).
         if not res.get("ok") and not out.strip():
             out = _raw_build_test_output(cwd, stacks) or out
-        return bool(res.get("ok")), out
+        _ok = bool(res.get("ok"))
+        # LINT/TYPECHECK gate (multi-language, native tools) — when the build+test
+        # otherwise passes, run each stack's own static checker (tsc/go vet/clippy/
+        # ruff) for real bugs the tests may miss. Compiled langs are already
+        # typechecked by their build, so this mostly covers the loose/interpreted
+        # ones. Any missing tool is skipped.
+        if _ok:
+            try:
+                from aiforge_core.runtime.integration_report import run_static_checks
+                _lok, _lout = run_static_checks(cwd)
+                if not _lok:
+                    _ok = False
+                    out = (out + _lout)
+            except Exception:  # noqa: BLE001
+                pass
+        return _ok, out
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
+
+
+def _is_hard_residual(output: str) -> bool:
+    """True when the failing output is a CROSS-FILE structural mismatch (a bad
+    import, a wrong signature, a missing attribute/name) — the class the reasoning
+    model resolves better than repeated coder patches. Drives early escalation."""
+    return bool(re.search(
+        r"cannot import name|no module named|has no attribute|is not defined|"
+        r"unexpected keyword argument|missing \d+ required (?:positional |keyword )?"
+        r"argument|takes \d+ positional argument|"
+        r"ImportError|ModuleNotFoundError|AttributeError|NameError|"
+        r"cannot find symbol|package .* does not exist",  # java
+        output or "", re.I))
 
 
 def _directed_hints(output: str) -> list[str]:
@@ -3060,7 +3088,12 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         # model (AIFORGE_ESCALATION_MODEL, e.g. a 9B reasoning model). General —
         # only the STUCK residual escalates, not every round; no per-problem code.
         _esc_model = os.environ.get("AIFORGE_ESCALATION_MODEL", "").strip() or None
-        _use_esc = _esc_model and stalls >= 2
+        # TRIAGE: a structurally-hard residual (cross-file import/signature/
+        # attribute mismatch) that the coder+repo-map didn't crack in ONE round
+        # escalates to the reasoning model early — don't burn a 2nd stall round on
+        # it. A plain logic/value fail keeps the coder for 2 rounds first.
+        _hard = _is_hard_residual(output)
+        _use_esc = _esc_model and stalls >= (1 if _hard else 2)
         # TEST-AUDIT: after impl fixes stall (the impl was rewritten repeatedly and
         # the SAME tests still fail), a failing test may itself be WRONG — a local
         # model writes buggy tests too. Once stuck, let the fixer correct a test
