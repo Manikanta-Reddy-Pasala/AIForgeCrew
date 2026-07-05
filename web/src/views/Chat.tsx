@@ -263,13 +263,15 @@ function addDismissedPlan(sessionId: number, msgId: number): void {
 // monospace block with +/- line coloring and preserved whitespace instead.
 function DiffView({ text }: { text: string }) {
   const CAP = 400;
+  const [expanded, setExpanded] = useState(false);
   const allLines = text.split('\n');
-  const lines = allLines.slice(0, CAP);
-  const overflow = allLines.length - lines.length;
+  const lines = expanded ? allLines : allLines.slice(0, CAP);
   return (
+    <>
     <pre style={{
       margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
       fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.45,
+      ...(expanded ? { maxHeight: '65vh', overflowY: 'auto' as const } : {}),
     }}>
       {lines.map((ln, i) => {
         let color: string | undefined;
@@ -285,12 +287,20 @@ function DiffView({ text }: { text: string }) {
         }
         return <div key={i} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
       })}
-      {overflow > 0 && (
-        <div style={{ color: 'var(--fg-3)', padding: '0 4px', fontStyle: 'italic' }}>
-          …(truncated, {overflow} more line{overflow === 1 ? '' : 's'})
-        </div>
-      )}
     </pre>
+    {allLines.length > CAP && (
+      <button
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          marginTop: 4, background: 'transparent', border: '1px solid var(--border-1)',
+          borderRadius: 4, padding: '3px 10px', fontSize: 'var(--fs-xs)',
+          color: 'var(--accent)', cursor: 'pointer', fontWeight: 600,
+        }}
+      >
+        {expanded ? '\u25b4 Collapse preview' : `\u25be View full preview (${allLines.length} lines)`}
+      </button>
+    )}
+    </>
   );
 }
 
