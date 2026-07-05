@@ -1968,7 +1968,10 @@ def _to_int(s: str) -> int:
 
 
 _CHANGES_HIDE = ("SPEC.md", ".aiforge-venv", ".aiforge-contracts",
-                 ".aiforge-baseline", ".aiforge-worktrees")
+                 ".aiforge-baseline", ".aiforge-worktrees",
+                 "__pycache__", ".pyc", ".pyo", "node_modules/",
+                 ".pytest_cache", ".ruff_cache", "/target/", "/build/",
+                 ".class", ".o")
 
 
 _CODE_EXTS = (".py", ".go", ".js", ".ts", ".rs", ".java", ".c", ".cpp", ".rb")
