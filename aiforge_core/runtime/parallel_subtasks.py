@@ -17,6 +17,7 @@ worktree's branch; it returns ``{ok: bool, ...}``.
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
 import os
 import re
@@ -1518,9 +1519,11 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
             return False
 
     def _drain_steering():
-        """Fold any mid-run steering messages into SPEC.md so the remaining
-        (sequential-on-local) subtasks + the reconciler pick them up. Yields
-        notice events."""
+        """Fold any mid-run steering comment into the run — but first ANALYSE it:
+        which subtask/topic it targets (or a global change, or an entirely NEW
+        requirement) — tell the user how it was read, then route it (annotate that
+        subtask's goal + the right SPEC.md section) so the remaining subtasks +
+        reconcile pick it up. Yields feedback events."""
         if session_id is None:
             return
         try:
@@ -1531,14 +1534,34 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                 _txt = (_txt or "").strip()
                 if not _txt:
                     continue
+                route = _route_steering(_txt, subs)
+                target, note = route["target"], route["note"]
+                if target not in ("global", "new"):          # a specific subtask
+                    _hit = next((s for s in subs if s.get("slug") == target), None)
+                    if _hit is not None:
+                        _hit["goal"] = (_hit.get("goal") or "") + f"\n[user steering]: {_txt}"
+                        _head = f"## ⚙ User steering → {_hit.get('path') or target}"
+                        _fb = (f"💬 Read your comment as targeting **{_hit.get('path') or target}**"
+                               + (f" — {note}" if note else "")
+                               + ". Applied to that subtask + SPEC; it re-builds with this.")
+                    else:
+                        target = "global"
+                if target == "global":
+                    _head = "## ⚙ User steering (mid-run — applies to whole build)"
+                    _fb = ("💬 Read your comment as a **global** change"
+                           + (f" — {note}" if note else "")
+                           + ". Folded into SPEC; guides all remaining subtasks + reconcile.")
+                elif target == "new":
+                    _head = "## ⚙ User steering (NEW requirement mid-run)"
+                    _fb = ("💬 Read your comment as a **new requirement** not in the plan"
+                           + (f" — {note}" if note else "")
+                           + ". Added to SPEC; the reconcile pass will pick it up.")
                 try:
                     with open(os.path.join(cwd, "SPEC.md"), "a", encoding="utf-8") as _fh:
-                        _fh.write(f"\n\n## ⚙ User steering (mid-run)\n- {_txt}\n")
+                        _fh.write(f"\n\n{_head}\n- {_txt}\n")
                 except Exception:  # noqa: BLE001
                     pass
-                yield {"type": "thought", "role": "system",
-                       "text": f"📌 Steering applied to SPEC.md — guides the remaining "
-                               f"subtasks + the final reconcile: “{_txt[:140]}”"}
+                yield {"type": "thought", "role": "planner", "text": _fb}
         except Exception:  # noqa: BLE001
             return
 
@@ -2243,6 +2266,46 @@ def _project_test_output(cwd: str) -> tuple[bool, str]:
         return _ok, out
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
+
+
+def _route_steering(txt: str, subs: list) -> dict:
+    """Classify a mid-run user comment against the running subtasks. Returns
+    ``{"target": <slug|"global"|"new">, "note": <=15-word plan}``. LLM-classified
+    with a keyword-overlap fallback, so a comment about one file lands on that
+    subtask, a whole-build change goes global, and a brand-new ask is flagged new."""
+    slugs = {s.get("slug") for s in subs if s.get("slug")}
+    idx = "\n".join(f"- {s.get('slug')}: {s.get('path','')} — "
+                    f"{(s.get('goal') or '')[:70]}" for s in subs)
+    try:
+        from aiforge_core.llm.client import complete as _complete
+        prompt = (
+            f"A build is running with these subtasks:\n{idx}\n\n"
+            f"The user just commented mid-run:\n\"{txt[:500]}\"\n\n"
+            f"Classify the comment. Reply ONE line of JSON only:\n"
+            f'{{"target":"<a slug above, or global, or new>","note":"<what to do, <=15 words>"}}\n'
+            f"Rules: target=<slug> if it's about that ONE subtask/file; "
+            f"global if it changes the whole spec/all subtasks; "
+            f"new if it's a requirement not covered by any subtask.")
+        out = (_complete("chat", [{"role": "user", "content": prompt}]) or "").strip()
+        m = re.search(r"\{.*\}", out, re.S)
+        if m:
+            d = json.loads(m.group(0))
+            target = str(d.get("target") or "").strip()
+            note = str(d.get("note") or "").strip()[:120]
+            if target in slugs or target in ("global", "new"):
+                return {"target": target, "note": note}
+    except Exception:  # noqa: BLE001
+        pass
+    # Fallback: match the comment to a subtask by path/goal token overlap.
+    low = txt.lower()
+    best, score = None, 0
+    for s in subs:
+        toks = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}",
+                          f"{s.get('path','')} {s.get('goal','')}".lower())
+        hits = sum(1 for t in set(toks) if t in low)
+        if hits > score:
+            best, score = s.get("slug"), hits
+    return {"target": best if score >= 1 else "global", "note": ""}
 
 
 def _is_hard_residual(output: str) -> bool:
