@@ -2439,11 +2439,15 @@ function AssistantBubble({
   // clean — the plan/subtasks + final answer are what matter); auto-expanded
   // while streaming so the live flow is visible.
   const [showSteps, setShowSteps] = useState(streaming);
+  // The Changes diff is the DELIVERABLE — pull it OUT of the collapsible steps so
+  // it's always visible (thoughts/tools stay collapsed once the turn is done).
+  const changeSteps = steps.filter(s => s.kind === 'changes');
+  const otherSteps = steps.filter(s => s.kind !== 'changes');
   return (
     <div>
       {captured && captured.map(c => <CapturedPill key={c.id} item={c} />)}
       {subtasks && subtasks.length > 0 && <SubtaskList items={subtasks} />}
-      {steps.length > 0 && (
+      {otherSteps.length > 0 && (
         <div style={{ marginBottom: text ? 8 : 0 }}>
           <button
             onClick={() => setShowSteps(v => !v)}
@@ -2453,11 +2457,11 @@ function AssistantBubble({
               color: 'var(--fg-3)', cursor: 'pointer', marginBottom: showSteps ? 6 : 0,
             }}
           >
-            {showSteps ? '▾' : '▸'} {steps.length} agent step{steps.length === 1 ? '' : 's'}
+            {showSteps ? '▾' : '▸'} {otherSteps.length} agent step{otherSteps.length === 1 ? '' : 's'}
           </button>
           {showSteps && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {steps.map((s, i) => (
+              {otherSteps.map((s, i) => (
                 <AgentStepRow key={i} step={s} />
               ))}
             </div>
@@ -2467,6 +2471,12 @@ function AssistantBubble({
       {text && (
         <div className="bubble-body">
           <MdLite text={text} />
+        </div>
+      )}
+      {/* Changes diff — always visible (the deliverable), below the answer. */}
+      {changeSteps.length > 0 && (
+        <div style={{ marginTop: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {changeSteps.map((s, i) => <AgentStepRow key={`chg-${i}`} step={s} />)}
         </div>
       )}
       {streaming && !text && steps.length === 0 && (
