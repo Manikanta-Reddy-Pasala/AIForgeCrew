@@ -1884,25 +1884,32 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
            f"each subtask built against." + (_integ_md if _show_report else "")}
 
 
-def _emit_changes(cwd: str, start_sha: str):
+def _emit_changes(cwd: str, start_sha: str, include_worktree: bool = False):
     """Yield a STRUCTURED ``changes`` event — one entry per changed file with its
-    status, +/- line counts, and unified diff — so the UI can render a clean
-    PR-style view (file list + expandable colored diffs), not a raw blob. Team
-    mode skips the per-edit approval gate, so this is how the user sees what the
-    parallel agents produced."""
+    status, +/- line counts, and unified diff — so the UI renders a clean PR-style
+    view (file list + expandable colored diffs), not a raw blob. Used after BOTH
+    the parallel pipeline (committed to base → diff ``start..HEAD``) and a
+    single-agent simple run (uncommitted working tree → ``include_worktree``:
+    intent-add untracked, diff ``start``)."""
     if not start_sha:
         return
     try:
         cap = int(os.environ.get("AIFORGE_CHANGES_FILE_DIFF_MAX", "8000"))
     except ValueError:
         cap = 8000
-    numstat = _git(["diff", "--numstat", f"{start_sha}..HEAD"], cwd).stdout or ""
+    if include_worktree:
+        # make untracked files appear in the diff without staging their content
+        _git(["add", "-N", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
+        ref = [start_sha]
+    else:
+        ref = [f"{start_sha}..HEAD"]
+    numstat = _git(["diff", "--numstat", *ref], cwd).stdout or ""
     counts: dict = {}
     for ln in numstat.splitlines():
         parts = ln.split("\t")
         if len(parts) == 3:
             counts[parts[2]] = (parts[0], parts[1])   # path -> (adds, dels)
-    name_status = _git(["diff", "--name-status", f"{start_sha}..HEAD"], cwd).stdout or ""
+    name_status = _git(["diff", "--name-status", *ref], cwd).stdout or ""
     files: list = []
     _status_word = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}
     for ln in name_status.splitlines():
@@ -1913,7 +1920,7 @@ def _emit_changes(cwd: str, start_sha: str):
         if any(h in path for h in _CHANGES_HIDE):
             continue
         adds, dels = counts.get(path, ("0", "0"))
-        fdiff = _git(["diff", f"{start_sha}..HEAD", "--", path], cwd).stdout or ""
+        fdiff = _git(["diff", *ref, "--", path], cwd).stdout or ""
         truncated = len(fdiff) > cap
         files.append({
             "path": path,

@@ -3827,6 +3827,16 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             if _pending_done is not None:
                 yield _pending_done
             return
+        # Baseline commit so we can show a Changes diff after the single-agent run
+        # (simple mode edits the working tree; the pipeline shows its own Changes).
+        _simple_sha = ""
+        try:
+            import subprocess as _sp0
+            _r0 = _sp0.run(["git", "-C", cwd, "rev-parse", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+            _simple_sha = (_r0.stdout or "").strip() if _r0.returncode == 0 else ""
+        except Exception:  # noqa: BLE001
+            _simple_sha = ""
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
                                   session_id=session_id, mode=agent_mode)
         # Read-only / analysis query ("analyze/explain/how does X work") → the user
@@ -3895,6 +3905,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     yield {"type": "message", "text": _rep["md"]}
             except Exception as _iexc:  # noqa: BLE001 — never break the turn
                 _af_log.debug("integration report skipped: %s", _iexc)
+        # SHOW CHANGES (simple mode too) — a clean PR-style diff of what the single
+        # agent edited, same view as the pipeline. Working-tree diff (uncommitted).
+        if _simple_sha and not _readonly and _wrote_source():
+            try:
+                from aiforge_core.runtime.parallel_subtasks import _emit_changes
+                yield from _emit_changes(cwd, _simple_sha, include_worktree=True)
+            except Exception as _cx:  # noqa: BLE001
+                _af_log.debug("simple changes diff skipped: %s", _cx)
 
     # The PRODUCER runs on a background daemon thread and publishes every event
     # into the per-session run registry (chat_runs). It NO LONGER yields to the
