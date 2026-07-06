@@ -130,6 +130,32 @@ services:
     container_name: aiforge-headroom
     restart: unless-stopped
     network_mode: host
+    environment:
+      # FORWARD target — the real local model endpoint this proxy compresses
+      # for and forwards to. ONE knob (AIFORGE_HEADROOM_UPSTREAM) drives both
+      # this AND the app-side redirect (llm/headroom.proxy_base), so they can
+      # never drift: the app repoints exactly this endpoint at the proxy. host
+      # networking means 127.0.0.1 is the host's LM Studio.
+      OPENAI_TARGET_API_URL: ${AIFORGE_HEADROOM_UPSTREAM:-http://127.0.0.1:1234}
+      # Kompress-v2 (the ML text crusher) ON. Without these the router only
+      # runs SmartCrusher, which crushes JSON-array-of-dicts tool outputs but
+      # leaves plain text (file reads, grep, test logs) at ~0%. Measured on the
+      # NUC: forcing kompress compresses those plain-text outputs ~29% (ratio
+      # ~0.71) and — with COMPRESS_USER_MESSAGES — the ReAct doer's role:user
+      # OBSERVATION turns too (otherwise protected → 0%). Warm cost ~0.7s/call
+      # for a ~1k-token payload; net-positive on a slow local model whose
+      # prefill dominates. Overridable per-deploy.
+      HEADROOM_FORCE_KOMPRESS_ALL: ${HEADROOM_FORCE_KOMPRESS_ALL:-1}
+      HEADROOM_COMPRESS_USER_MESSAGES: ${HEADROOM_COMPRESS_USER_MESSAGES:-1}
+      # Lossy-risk guardrails (fine-tuned). Kompress is lossy, so NEVER crush
+      # the material the doer must reproduce verbatim: protect CODE in the last
+      # N messages (default headroom=4; widened so the doer's own recent edits
+      # + the file it's actively working are always intact), and protect the
+      # reasoning/analysis context. Deep, old tool outputs (reads, greps, test
+      # logs from many turns back — safe to lose) still compress. This is what
+      # keeps compression from corrupting a build.
+      HEADROOM_PROTECT_RECENT: ${HEADROOM_PROTECT_RECENT:-8}
+      HEADROOM_PROTECT_ANALYSIS_CONTEXT: ${HEADROOM_PROTECT_ANALYSIS_CONTEXT:-1}
     volumes:
       # Kompress-v2-base (HF) downloads here on first use — same cache dir the
       # rerank sidecar uses, so it's the one place operators already know to

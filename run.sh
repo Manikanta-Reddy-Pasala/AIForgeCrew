@@ -218,19 +218,17 @@ if [[ $TEST -eq 0 ]]; then
       # INFRA ONLY in docker; api + runner run on the host (fall through to the
       # host venv/web/launch path below — do NOT exit here).
       # Optional headroom compression (services/headroom_proxy): the flag
-      # brings up the compress sidecar. The app's LLM client (llm/client.py,
-      # _maybe_compress) then calls its /v1/compress endpoint to shrink big
-      # tool outputs BEFORE sending each request on to the model's OWN
-      # endpoint — so compression applies to EVERY model at EVERY URL the
-      # operator configures in the UI, with no per-model wiring and no single
-      # forced upstream. Bringing the container up here (in lockstep with the
-      # flag the client reads) means the client never tries to compress
-      # against a sidecar that isn't running (it soft-fails, but this avoids
-      # the wasted attempt).
+      # brings up the sidecar as a transparent FORWARDING proxy. The app then
+      # repoints its local model endpoint at it (llm/headroom.proxy_base), so
+      # the proxy compresses each request and forwards it to the real model —
+      # ONE mechanism covering EVERY agent (ADK + client.py alike), because
+      # both resolve base_url through that single redirect. Bringing the
+      # container up in lockstep with the flag means the redirected endpoint
+      # always has a live proxy behind it.
       _INFRA_SVCS="postgres neo4j embed rerank"
       if [[ "${AIFORGE_HEADROOM:-0}" == "1" || "${AIFORGE_HEADROOM:-}" == "true" ]]; then
         _INFRA_SVCS="$_INFRA_SVCS headroom"
-        echo "==> headroom ENABLED — tool outputs compressed via the local sidecar for every model"
+        echo "==> headroom ENABLED — every agent routed through the compress+forward proxy"
       fi
       _docker_infra_up $_INFRA_SVCS
       # `up -d` returns before the DBs accept connections. Wait (bounded) so
