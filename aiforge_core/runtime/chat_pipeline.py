@@ -327,12 +327,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             # even in a fresh, non-repo chat workspace.
             _seq_start_sha = ""
             try:
-                from .parallel_subtasks import _ensure_git_workspace as _ensure_ws
-                _ensure_ws(cwd)
-                import subprocess as _sp0
-                _r0 = _sp0.run(["git", "-C", cwd, "rev-parse", "HEAD"],
-                               capture_output=True, text=True, timeout=5)
-                _seq_start_sha = (_r0.stdout or "").strip() if _r0.returncode == 0 else ""
+                from .parallel_subtasks import _commit_turn_baseline
+                _seq_start_sha = _commit_turn_baseline(cwd)
             except Exception:  # noqa: BLE001
                 _seq_start_sha = ""
 

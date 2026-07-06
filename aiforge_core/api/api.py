@@ -3856,16 +3856,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # Changes view silently vanished. _ensure_git_workspace git-inits + makes a
         # committed baseline (no-op when cwd is already a repo, e.g. a pinned user
         # project), so HEAD is ALWAYS a valid baseline to diff the run against.
+        # CRITICAL: commit the CURRENT working-tree state into the baseline so
+        # this turn's Changes diff + the "did it write source?" gate reflect ONLY
+        # what THIS turn does. A reused chat/ticket workspace (e.g. session-1)
+        # carries a previous task's uncommitted files; without this snapshot,
+        # `git status` reports THEM, so a no-code Jira/Q&A turn wrongly triggers
+        # the build/integration pipeline on stale files and the Changes view
+        # shows the previous ticket's edits.
         _simple_sha = ""
         try:
-            from aiforge_core.runtime.parallel_subtasks import (
-                _ensure_git_workspace as _ensure_ws,
-            )
-            _ensure_ws(cwd)
-            import subprocess as _sp0
-            _r0 = _sp0.run(["git", "-C", cwd, "rev-parse", "HEAD"],
-                           capture_output=True, text=True, timeout=5)
-            _simple_sha = (_r0.stdout or "").strip() if _r0.returncode == 0 else ""
+            from aiforge_core.runtime.parallel_subtasks import _commit_turn_baseline
+            _simple_sha = _commit_turn_baseline(cwd)
         except Exception:  # noqa: BLE001
             _simple_sha = ""
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
@@ -3899,15 +3900,20 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     ".kt", ".swift", ".scala", ".sh")
             try:
                 import subprocess as _sp
-                out = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
-                              capture_output=True, text=True, timeout=10).stdout
-                if any(ln[3:].strip().endswith(exts)
-                       for ln in out.splitlines() if ln.strip()):
-                    return True
-                if out.strip():           # git repo, but no source changes → skip
-                    return False
-            except Exception:  # noqa: BLE001 — not a git repo / git missing
+                _r = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
+                             capture_output=True, text=True, timeout=10)
+                if _r.returncode == 0:
+                    # git ran cleanly → the working tree IS the answer. Because a
+                    # pre-turn baseline commit was taken, this reflects ONLY this
+                    # turn's writes: source touched → True, otherwise (empty tree
+                    # OR non-source changes) → False. Do NOT fall through to the
+                    # process-global touched_paths(), which can hold a PRIOR turn's
+                    # path and would re-trigger the build on a no-code turn.
+                    return any(ln[3:].strip().endswith(exts)
+                               for ln in (_r.stdout or "").splitlines() if ln.strip())
+            except Exception:  # noqa: BLE001 — git missing / timeout
                 pass
+            # Fallback ONLY when git is unusable (not a repo): best-effort.
             try:
                 from aiforge_core.runtime.doer_tools import touched_paths
                 return any(str(p).endswith(exts) for p in touched_paths())

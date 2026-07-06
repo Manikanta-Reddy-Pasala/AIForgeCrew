@@ -1516,6 +1516,23 @@ def _ensure_git_workspace(cwd: str) -> str:
     return (cur.stdout or "").strip() or "main"
 
 
+def _commit_turn_baseline(cwd: str) -> str:
+    """Ensure ``cwd`` is a git repo AND commit its CURRENT working-tree state,
+    returning the resulting HEAD sha. This pins a clean per-turn baseline so a
+    reused workspace's leftover files (a previous ticket's edits) are folded into
+    the baseline instead of being mistaken for THIS turn's work — which otherwise
+    makes a no-code turn trip the build/integration pipeline and the Changes view
+    show the prior ticket's diff. Returns '' only if git is entirely unusable."""
+    try:
+        _ensure_git_workspace(cwd)
+        # gitignore keeps artifacts out; --allow-empty just pins HEAD.
+        _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
+        _git(["commit", "--allow-empty", "-q", "-m", "pre-turn baseline"], cwd)
+        return (_git(["rev-parse", "HEAD"], cwd).stdout or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = None,
                          enhanced: bool = False, session_id: int | None = None):
     """Chat 'parallel team' mode: run the (pre-decomposed) subtasks CONCURRENTLY
@@ -1725,9 +1742,12 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                    f"+ git worktree · execution: {_mode} · reviewer: {_reviewer}."}
 
     base = _ensure_git_workspace(cwd)
-    # Baseline commit — captured BEFORE any subtask runs so the final "Changes"
-    # diff shows exactly what the parallel agents built/changed vs the start.
-    _start_sha = (_git(["rev-parse", "HEAD"], cwd).stdout or "").strip()
+    # Baseline commit — snapshot the CURRENT tree (incl. any leftover files from a
+    # prior run in a reused workspace) BEFORE any subtask runs, so the final
+    # "Changes" diff shows exactly what THESE agents built/changed vs the start,
+    # never a previous ticket's edits.
+    _start_sha = _commit_turn_baseline(cwd) or (
+        _git(["rev-parse", "HEAD"], cwd).stdout or "").strip()
     # B3 — surface a dirty-cwd warning before merging into it.
     _warn = _dirty_warning(cwd)
     if _warn:
