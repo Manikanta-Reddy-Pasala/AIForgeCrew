@@ -217,7 +217,20 @@ if [[ $TEST -eq 0 ]]; then
     hybrid)
       # INFRA ONLY in docker; api + runner run on the host (fall through to the
       # host venv/web/launch path below — do NOT exit here).
-      _docker_infra_up postgres neo4j embed rerank
+      # Optional headroom compression proxy (services/headroom_proxy): a single
+      # opt-in flag brings up the container AND routes every local (openai-
+      # compatible) inference call through it. Keeping the two together here
+      # means the app can never end up pointed at a proxy that isn't running.
+      _INFRA_SVCS="postgres neo4j embed rerank"
+      if [[ "${AIFORGE_HEADROOM:-0}" == "1" || "${AIFORGE_HEADROOM:-}" == "true" ]]; then
+        _INFRA_SVCS="$_INFRA_SVCS headroom"
+        # Route local inference through the proxy (:8787 → the real model at
+        # :1234). Operator override wins; leave AIFORGE_LM_BASE_URL alone so the
+        # health probe + model-load path still hit the model endpoint directly.
+        export AIFORGE_OPENAI_COMPAT_BASE_URL="${AIFORGE_OPENAI_COMPAT_BASE_URL:-http://127.0.0.1:8787/v1}"
+        echo "==> headroom ENABLED — local inference routed through http://127.0.0.1:8787/v1"
+      fi
+      _docker_infra_up $_INFRA_SVCS
       # `up -d` returns before the DBs accept connections. Wait (bounded) so
       # the host api/runner don't error on a cold start. Best-effort — proceed
       # after the cap regardless (the app also retries).
