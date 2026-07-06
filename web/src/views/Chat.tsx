@@ -710,6 +710,18 @@ export default function Chat() {
     try {
       const list = await chatApi.sessions();
       setSessions(list);
+      // Defensive prune: drop builder mappings whose session no longer exists,
+      // so an orphaned entry can't later collide with a recycled id and open a
+      // normal chat in builder mode.
+      const _alive = new Set(list.map((s: ChatSession) => s.id));
+      setBuilderBySession(prev => {
+        const kept: Record<number, BuilderKind> = {};
+        let changed = false;
+        for (const [k, v] of Object.entries(prev)) {
+          if (_alive.has(Number(k))) kept[Number(k)] = v; else changed = true;
+        }
+        return changed ? kept : prev;
+      });
     } catch (e: any) {
       if (!silent) toast.error(`Failed to load sessions: ${e.message}`);
     } finally {
@@ -913,6 +925,12 @@ export default function Chat() {
     try {
       await chatApi.sessionDelete(id);
       setSessions(prev => prev.filter(s => s.id !== id));
+      // Drop any builder mapping for this id — else a future reset recycles the
+      // id and a fresh NORMAL chat would inherit this builder mode (job/rule/…).
+      setBuilderBySession(prev => {
+        if (!(id in prev)) return prev;
+        const n = { ...prev }; delete n[id]; return n;
+      });
       if (activeId === id) {
         setActiveId(null);
         activeIdRef.current = null;
@@ -1441,6 +1459,11 @@ export default function Chat() {
                   toast.success(`Deleted ${r.deleted} chats`);
                   setMessages([]); setLiveTurn(null); setActiveId(null);
                   localStorage.removeItem(LS_SESSION_KEY);
+                  // Reset RECYCLES session ids, so every stale builder mapping
+                  // would now collide with a brand-new normal chat (id 1, 2, …)
+                  // and wrongly open it as a job/rule/workflow builder. Wipe them.
+                  setBuilderBySession({});
+                  localStorage.removeItem(LS_BUILDER_KEY);
                   await loadSessions();
                 } catch (e: any) { toast.error(e.message); }
               }}
