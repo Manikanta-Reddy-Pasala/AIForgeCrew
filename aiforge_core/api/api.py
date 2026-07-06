@@ -3142,6 +3142,32 @@ def _chat_workspace_root() -> str:
             os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")), "chat-workspaces"))
 
 
+def _delete_chat_workspace(cwd: str | None) -> bool:
+    """``rm -rf`` a session's ISOLATED workspace when it is the managed,
+    auto-created one under :func:`_chat_workspace_root`. Returns True if a dir
+    was removed. Refuses anything else — a user-pinned project cwd, the root
+    itself, or a path outside the managed tree — so clearing a chat can NEVER
+    nuke a real repo. Leftover workspaces were the source of the "previous
+    ticket's files leak into a new chat" bug; deleting them on clear removes it
+    at the root (the per-turn baseline commit is the belt; this is the braces)."""
+    if not cwd or not str(cwd).strip():
+        return False
+    import shutil
+    try:
+        root = os.path.realpath(_chat_workspace_root())
+        target = os.path.realpath(str(cwd))
+    except Exception:  # noqa: BLE001
+        return False
+    # Must be STRICTLY inside the managed root, and a session-* dir — never the
+    # root itself, never a pinned repo, never a traversal escape.
+    if target == root or not target.startswith(root + os.sep):
+        return False
+    if not os.path.basename(target).startswith("session-"):
+        return False
+    shutil.rmtree(target, ignore_errors=True)
+    return True
+
+
 @app.post("/api/chat/sessions", status_code=201)
 def chat_session_create(body: _NewSessionBody) -> dict:
     from aiforge_core.runtime import chat_store
@@ -3169,9 +3195,33 @@ def chat_session_list() -> list[dict]:
 
 @app.post("/api/chat/sessions/reset")
 def chat_sessions_reset() -> dict:
-    """Delete ALL chat sessions + messages and reset the id sequence."""
+    """Delete ALL chat sessions + messages and reset the id sequence, AND rm -rf
+    every managed session workspace so no stale files survive the clear."""
     from aiforge_core.runtime import chat_store
-    return {"ok": True, "deleted": chat_store.delete_all_sessions()}
+    # Snapshot each session's cwd before the rows go, so we delete exactly the
+    # managed workspaces they owned (a pinned user repo is refused by the helper).
+    cwds = [(s or {}).get("cwd") for s in (chat_store.list_sessions() or [])]
+    deleted = chat_store.delete_all_sessions()
+    removed = 0
+    for _cwd in cwds:
+        if _delete_chat_workspace(_cwd):
+            removed += 1
+    # Belt-and-braces: also sweep any orphaned session-* dirs left under the
+    # managed root (e.g. from a session whose row was already gone).
+    try:
+        import shutil
+        _root = _chat_workspace_root()
+        for _name in os.listdir(_root):
+            if _name.startswith("session-"):
+                _p = os.path.join(_root, _name)
+                if os.path.isdir(_p):
+                    shutil.rmtree(_p, ignore_errors=True)
+                    removed += 1
+    except FileNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "deleted": deleted, "workspaces_removed": removed}
 
 
 @app.get("/api/chat/sessions/{session_id}")
@@ -3229,8 +3279,12 @@ def chat_session_delete(session_id: int) -> None:
     chat_approve.cancel(session_id)
     chat_interject.clear(session_id)
     chat_runs.finish(session_id)
+    # Grab the isolated-workspace path BEFORE deleting the row so we can rm -rf
+    # it — a lingering workspace's files otherwise leak into a future chat.
+    _sess = chat_store.get_session(session_id)
     if not chat_store.delete_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
+    _delete_chat_workspace((_sess or {}).get("cwd"))
 
 
 # ── Chat image attachments (upload + describe + query across the session) ─────
