@@ -1408,6 +1408,12 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "read_lines", "jira_transitions", "confluence_children",
                    "list_services")
 
+# Builder-finalize tools — a successful call ENDS the interview (one per builder
+# kind: job/skill/workflow/rule). Emitting `builder_done` lets the UI drop the
+# session's sticky builder mode so follow-ups are normal chat.
+_FINALIZE_TOOLS = frozenset({
+    "create_job_script", "learn_skill", "learn_workflow", "remember_rule"})
+
 # File-mutating tools that the pre-apply "Review edits" gate (Gap D) holds for
 # human Approve/Reject even when policy would auto-allow them.
 _MUTATING = ("file_write", "file_create", "file_patch", "editor", "multi_edit",
@@ -3401,6 +3407,13 @@ def run_chat_agent(
             pass
         yield {"type": "tool", "name": name, "args": args, "result": result,
                "call_id": n}
+        # Builder finalize: a successful create_job_script / learn_skill /
+        # learn_workflow / remember_rule ends the interview. Signal the UI so it
+        # can drop this session's builder mode — otherwise every later message
+        # re-fires the charter and the user is stuck building forever (and can be
+        # walked into duplicate artifacts).
+        if name in _FINALIZE_TOOLS and isinstance(result, dict) and result.get("ok"):
+            yield {"type": "builder_done", "kind": name}
         obs = json.dumps(result)[:_MAX_OBS]
         convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
 

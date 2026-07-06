@@ -142,6 +142,32 @@ def ensure_branch_and_worktree(ticket) -> str | None:
                 repo_name, branch, err,
             )
             return None
+    else:
+        # REUSE: this worktree already exists from a prior run (a child ticket
+        # sharing parent_ident, or a re-run of this ticket). Without a reset it
+        # keeps the prior task's uncommitted files AND any commits ahead of base,
+        # so this ticket would re-ship someone else's work as its own PR. Reset
+        # it to a clean base branch before the Doer touches it. Best-effort +
+        # bounded; on failure we proceed (git_pr's diff still guards, but the
+        # reset is what makes the reuse correct). Set AIFORGE_WORKTREE_REUSE_RESET=0
+        # to opt out (e.g. deliberately resuming a partially-built ticket).
+        if os.environ.get("AIFORGE_WORKTREE_REUSE_RESET", "1") not in ("0", "false"):
+            try:
+                subprocess.run(["git", "fetch", "origin"], cwd=repo_dir,
+                               check=False, capture_output=True, timeout=60)
+            except subprocess.TimeoutExpired:
+                pass
+            _base = f"origin/{_detect_default_branch(repo_dir)}"
+            for _cmd in (["git", "checkout", "-B", branch, _base],
+                         ["git", "reset", "--hard", _base],
+                         ["git", "clean", "-fd"]):
+                try:
+                    subprocess.run(_cmd, cwd=worktree_path, check=False,
+                                   capture_output=True, timeout=60)
+                except subprocess.TimeoutExpired:
+                    log.warning("worktree.reuse-reset timeout repo=%s cmd=%s",
+                                repo_name, _cmd[1])
+                    break
 
     if ticket.branch != branch:
         try:

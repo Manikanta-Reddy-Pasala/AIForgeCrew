@@ -54,4 +54,4 @@ def test_bad_env_falls_back_to_defaults(_capture_litellm, monkeypatch):
     e._build_one({"model_id": "openai/x", "api_base": "http://127.0.0.1:9"})
     t = _capture_litellm["timeout"]
     assert t.connect == 8.0
-    assert t.read == 600.0
+    assert t.read == 900.0

@@ -84,16 +84,17 @@ def test_fire_advance_failure_creates_no_ticket(monkeypatch, created):
     # duplicating tickets on the next tick.
     j = _mk()
     calls = {"n": 0}
-    real_mark = store.mark_fired
 
-    def flaky_mark(*a, **k):
+    # fire() now advances via the atomic store.claim (CAS) instead of mark_fired.
+    def flaky_claim(*a, **k):
         calls["n"] += 1
         raise RuntimeError("jobs.db locked")
 
-    monkeypatch.setattr(store, "mark_fired", flaky_mark)
+    monkeypatch.setattr(store, "claim", flaky_claim)
     assert scheduler.fire(j, now=NOW) is False
     assert len(created) == 0          # advance failed BEFORE create — no duplicate
-    monkeypatch.setattr(store, "mark_fired", real_mark)
+    assert calls["n"] == 1            # claim was attempted
+    # monkeypatch auto-restores store.claim at teardown.
     assert store.get(j["id"])["next_run_at"] == "2026-07-02T08:00:00"  # unchanged
 
 

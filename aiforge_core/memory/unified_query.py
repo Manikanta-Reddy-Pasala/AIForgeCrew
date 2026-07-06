@@ -249,7 +249,14 @@ def query(
     # ingested repos before any repo is pinned) never saw ingested code/doc
     # observations. Query the vector + fulltext indexes directly across all
     # repos. Neo4j-only (embedded SQLite recall is source 1); soft-fail.
-    if os.environ.get("AIFORGE_UMEM_GLOBAL_VECTOR", "1") == "1":
+    # Contamination guard: this source is repo-AGNOSTIC (queries Observation_v2
+    # across ALL repos). For a SCOPED task (repo given) that bleeds an unrelated
+    # task's context into the plan — the "game leaked into tempconv" bug. Only
+    # run it for a repo-less GLOBAL search (Memory UI). Opt back in for a scoped
+    # task with AIFORGE_UMEM_CROSS_TASK=1.
+    _cross_task = os.environ.get("AIFORGE_UMEM_CROSS_TASK", "0") == "1"
+    if (repo is None or _cross_task) \
+            and os.environ.get("AIFORGE_UMEM_GLOBAL_VECTOR", "1") == "1":
         try:
             from aiforge_core.memory import backend_select as _bsel
             if not _bsel.embedded():
@@ -283,7 +290,13 @@ def query(
     # worked out in chat was invisible to ticket runs (only distilled facts
     # bridged). Surface it as a low-weight source so it informs without
     # dominating. Gated by AIFORGE_UMEM_CHAT (default on); soft-fails to [].
-    if os.environ.get("AIFORGE_UMEM_CHAT", "1") == "1":
+    # Contamination guard (same as 7b): _chat_sessions searches ALL prior chat
+    # messages by text only — no repo filter — so generic build phrasing ("build
+    # a Python library with pytest tests") matches an UNRELATED past task and
+    # drags its content in. That was the concrete cross-task leak. For a scoped
+    # task skip it unless AIFORGE_UMEM_CROSS_TASK=1; keep it for global search.
+    if (repo is None or _cross_task) \
+            and os.environ.get("AIFORGE_UMEM_CHAT", "1") == "1":
         try:
             rows = _chat_sessions(text, limit=limit,
                                   exclude_session=exclude_session)

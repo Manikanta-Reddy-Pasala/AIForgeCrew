@@ -47,10 +47,10 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
     inverse (create-then-advance) risks a duplicate ticket every tick when
     the advance write fails after the create succeeds.
 
-    Residual race: an API run-now can still overlap a tick (the per-job
-    lock is in-process and the read→advance→create span isn't atomic), so
-    a rare double-fire is possible under concurrent run-now+tick. Tolerable
-    for the review-gated ticket runs jobs produce.
+    Concurrency: the advance is an atomic compare-and-swap claim
+    (``store.claim`` — conditional UPDATE on the current slot), so a run-now
+    overlapping a tick, or a second replica, loses the race and does NOT fire.
+    No double ticket/PR.
 
     Fire failure is soft-but-visible: last_error is recorded on the row
     (UI chip). Never raises."""
@@ -71,12 +71,20 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
         except Exception:  # noqa: BLE001
             pass
         return False
-    # Advance FIRST (at-most-once). If this write fails, we have NOT created
-    # a ticket yet, so skipping is safe — no duplicate.
+    # CLAIM the slot atomically FIRST (at-most-once). The conditional advance
+    # only succeeds if the row is still at THIS slot — so a run-now overlapping
+    # the tick (or a second replica) loses the race and returns without firing,
+    # instead of both creating a ticket. If the write fails we have NOT created a
+    # ticket yet, so skipping is safe — no duplicate.
     try:
-        store.mark_fired(job["id"], last_run_at=now_s, next_run_at=nxt)
+        claimed = store.claim(job["id"], expected_next_run_at=job["next_run_at"],
+                              last_run_at=now_s, next_run_at=nxt)
     except Exception as exc:  # noqa: BLE001 — advance failed, skip this slot
         log.warning("jobs.fire advance failed job=%s: %s", job["id"], exc)
+        return False
+    if not claimed:
+        log.info("jobs.fire slot already claimed job=%s — skipping (no double-fire)",
+                 job["id"])
         return False
     if (job.get("kind") or "ticket") == "script":
         return _fire_script(job)

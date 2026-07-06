@@ -527,6 +527,12 @@ export default function Chat() {
   useEffect(() => {
     try { localStorage.setItem(LS_BUILDER_KEY, JSON.stringify(builderBySession)); } catch { /* ignore */ }
   }, [builderBySession]);
+  function clearBuilderForSession(id: number) {
+    setBuilderBySession(prev => {
+      if (!(id in prev)) return prev;
+      const n = { ...prev }; delete n[id]; return n;
+    });
+  }
   function setBuilderForSession(id: number, kind: BuilderKind) {
     setBuilderBySession(prev => ({ ...prev, [id]: kind }));
   }
@@ -1048,6 +1054,13 @@ export default function Chat() {
         return;
       }
 
+      // Builder finalized (job/skill/workflow/rule created): drop this session's
+      // builder mode so the NEXT message is a normal chat, not another interview.
+      if (evt.type === 'builder_done') {
+        if (activeIdRef.current !== null) clearBuilderForSession(activeIdRef.current);
+        return;
+      }
+
       // Rule/Memory/Feedback captured (deterministic capture pass): render an
       // inline pill (change-scope / undo). Append to the live turn.
       if (evt.type === 'captured') {
@@ -1561,9 +1574,10 @@ export default function Chat() {
               </span>
             )}
             {activeBuilder && (
-              <span className="chip ok" title={BUILDER_HINTS[activeBuilder]}
-                    style={{ alignSelf: 'flex-start', marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                <Icon.Sparkles size={11} /> {BUILDER_LABELS[activeBuilder]}
+              <span className="chip ok" title="Click to exit builder mode and chat normally"
+                    onClick={() => activeId !== null && clearBuilderForSession(activeId)}
+                    style={{ alignSelf: 'flex-start', marginTop: 2, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <Icon.Sparkles size={11} /> {BUILDER_LABELS[activeBuilder]} · exit ✕
               </span>
             )}
           </div>

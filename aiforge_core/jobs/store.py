@@ -176,6 +176,22 @@ class _SqliteJobStore:
                 "UPDATE jobs SET last_run_at=?, next_run_at=?, last_error=? "
                 "WHERE id=?", (last_run_at, next_run_at, last_error, job_id))
 
+    def claim(self, job_id, *, expected_next_run_at, last_run_at, next_run_at,
+              last_error=None) -> bool:
+        """Atomic compare-and-swap advance: only succeeds if the row is STILL at
+        ``expected_next_run_at`` (the slot we intend to fire). Two racers
+        (run-now + the tick) both read the same due job, but only the FIRST
+        claim's WHERE matches — the second sees the already-advanced slot and
+        gets rowcount 0, so it must not fire. Prevents the double-fire the old
+        non-atomic mark_fired allowed."""
+        with _LOCK, self._conn() as con:
+            cur = con.execute(
+                "UPDATE jobs SET last_run_at=?, next_run_at=?, last_error=? "
+                "WHERE id=? AND next_run_at=?",
+                (_norm_ts(last_run_at), _norm_ts(next_run_at), last_error,
+                 job_id, _norm_ts(expected_next_run_at)))
+            return (cur.rowcount or 0) > 0
+
 
 # ══════════════════════════════ Postgres backend ═════════════════════════════
 
@@ -308,6 +324,21 @@ class _PgJobStore:
                 "WHERE id=%s", (last_run_at, next_run_at, last_error, job_id))
             c.commit()
 
+    def claim(self, job_id, *, expected_next_run_at, last_run_at, next_run_at,
+              last_error=None) -> bool:
+        """Atomic CAS advance (see the SQLite backend). The conditional UPDATE is
+        the DB-level claim: across processes/replicas exactly one racer's WHERE
+        matches, so only it fires."""
+        with self._conn() as c, c.cursor() as cur:
+            cur.execute(
+                "UPDATE jobs SET last_run_at=%s, next_run_at=%s, last_error=%s "
+                "WHERE id=%s AND next_run_at=%s",
+                (_norm_ts(last_run_at), _norm_ts(next_run_at), last_error,
+                 job_id, _norm_ts(expected_next_run_at)))
+            claimed = (cur.rowcount or 0) > 0
+            c.commit()
+            return claimed
+
 
 # ═══════════════════════════ backend selection ═══════════════════════════════
 
@@ -380,3 +411,13 @@ def mark_fired(job_id: int, *, last_run_at: str, next_run_at: str,
     return _backend().mark_fired(
         job_id, last_run_at=last_run_at, next_run_at=next_run_at,
         last_error=last_error)
+
+
+def claim(job_id: int, *, expected_next_run_at: str, last_run_at: str,
+          next_run_at: str, last_error: str | None = None) -> bool:
+    """Atomically claim + advance a job's due slot. Returns True iff THIS caller
+    won the slot (the row was still at ``expected_next_run_at``). Only the winner
+    should fire — prevents run-now + tick (or multi-replica) double-fires."""
+    return _backend().claim(
+        job_id, expected_next_run_at=expected_next_run_at,
+        last_run_at=last_run_at, next_run_at=next_run_at, last_error=last_error)

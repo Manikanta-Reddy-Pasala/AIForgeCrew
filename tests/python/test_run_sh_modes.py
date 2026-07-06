@@ -49,10 +49,12 @@ def test_docker_infra_up_function(text: str) -> None:
 
 
 def test_hybrid_brings_up_infra_only(text: str) -> None:
-    # the hybrid branch starts exactly the infra services, NOT api/runner
-    assert "_docker_infra_up postgres neo4j embed rerank" in text
+    # the hybrid branch starts exactly the infra services, NOT api/runner. The
+    # base list is now a variable (_INFRA_SVCS), optionally + headroom, then
+    # handed to _docker_infra_up.
+    assert '_INFRA_SVCS="postgres neo4j embed rerank"' in text
+    assert "_docker_infra_up $_INFRA_SVCS" in text
     # ensure api/runner are never handed to compose `up` as explicit services
-    assert "_docker_infra_up postgres neo4j embed rerank api" not in text
     assert "up -d --build api runner" not in text
     assert "up -d api runner" not in text
 

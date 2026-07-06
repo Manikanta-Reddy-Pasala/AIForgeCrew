@@ -302,6 +302,24 @@ _REASON_DEFAULT_PASS = "no rationale provided"
 _REASON_DEFAULT_FAIL = "no rationale provided"
 
 
+def _ticket_looks_readonly(ticket) -> bool:
+    """True when the ticket's intent is READ/analyze/comment, not a code change —
+    so the pipeline should not scaffold tests or open a PR. Mirrors the chat
+    ``_looks_like_analysis`` heuristic (ask-verb present, no change-verb) over the
+    title+body. Conservative: any change verb → treated as a code ticket."""
+    import re as _re
+    text = f"{getattr(ticket, 'title', '') or ''} {getattr(ticket, 'body', '') or ''}".lower()
+    if not text.strip():
+        return False
+    ask = _re.search(r"\b(analy[sz]e|explain|describe|summar[iy][sz]e|review|"
+                     r"investigate|comment|assign|triage|document|audit|research|"
+                     r"find (out|the)|look (into|at)|check|get me|report on)\b", text)
+    change = _re.search(r"\b(fix|create|build|implement|add|write|refactor|rename|"
+                        r"delete|remove|update|generat|make|modify|patch|scaffold|"
+                        r"migrat|upgrade|bump|integrat)\b", text)
+    return bool(ask and not change)
+
+
 def _extract_reason(state: dict, verdict: str) -> str:
     """Pull the post-verdict rationale line out of the Feedback output.
 
@@ -1451,7 +1469,11 @@ def _process_one_ticket() -> bool:
     # C5: spec → failing-test scaffold. Parses ticket body's
     # "Acceptance" bullets and writes a per-language test file under
     # ``tests/aiforge_spec/``. Doer's run_tests then has a TDD target.
-    if os.environ.get("AIFORGE_SPEC_TO_TESTS", "1") in {"1", "true"}:
+    # SKIP for a read-only / analysis / comment-only ticket — otherwise the
+    # scaffold writes a test file, dirties the tree, and a ticket that meant only
+    # to read/comment gets a spurious PR (or a test_only_diff → blocked).
+    if os.environ.get("AIFORGE_SPEC_TO_TESTS", "1") in {"1", "true"} \
+            and not _ticket_looks_readonly(ticket):
         try:
             from aiforge_core.runtime.spec_to_tests import write_scaffold
             md = ticket.metadata or {}

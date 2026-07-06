@@ -1516,18 +1516,36 @@ def _ensure_git_workspace(cwd: str) -> str:
     return (cur.stdout or "").strip() or "main"
 
 
+def _is_managed_workspace(cwd: str) -> bool:
+    """True only when ``cwd`` is an AIForge-OWNED throwaway workspace — a chat
+    session dir (…/chat-workspaces/session-N) or a ticket worktree
+    (…/.aiforge-worktrees/…). A user-pinned real project is NOT managed and must
+    never have its working tree auto-committed."""
+    try:
+        p = os.path.realpath(cwd) + os.sep
+    except Exception:  # noqa: BLE001
+        return False
+    return (
+        (os.sep + "chat-workspaces" + os.sep + "session-") in p
+        or (os.sep + ".aiforge-worktrees" + os.sep) in p
+    )
+
+
 def _commit_turn_baseline(cwd: str) -> str:
-    """Ensure ``cwd`` is a git repo AND commit its CURRENT working-tree state,
-    returning the resulting HEAD sha. This pins a clean per-turn baseline so a
-    reused workspace's leftover files (a previous ticket's edits) are folded into
-    the baseline instead of being mistaken for THIS turn's work — which otherwise
-    makes a no-code turn trip the build/integration pipeline and the Changes view
-    show the prior ticket's diff. Returns '' only if git is entirely unusable."""
+    """Ensure ``cwd`` is a git repo and return a HEAD sha to diff this turn
+    against. For an AIForge-MANAGED workspace we also commit the current tree so
+    a reused workspace's leftover files (a previous task's edits) fold into the
+    baseline instead of being mistaken for THIS turn's work. For a USER-PINNED
+    repo we do NOT touch the index/history — staging + committing the user's
+    uncommitted WIP onto their branch every turn is destructive; we just read
+    HEAD and let the working-tree diff show their changes as before. Returns ''
+    only if git is entirely unusable."""
     try:
         _ensure_git_workspace(cwd)
-        # gitignore keeps artifacts out; --allow-empty just pins HEAD.
-        _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
-        _git(["commit", "--allow-empty", "-q", "-m", "pre-turn baseline"], cwd)
+        if _is_managed_workspace(cwd):
+            # gitignore keeps artifacts out; --allow-empty just pins HEAD.
+            _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
+            _git(["commit", "--allow-empty", "-q", "-m", "pre-turn baseline"], cwd)
         return (_git(["rev-parse", "HEAD"], cwd).stdout or "").strip()
     except Exception:  # noqa: BLE001
         return ""

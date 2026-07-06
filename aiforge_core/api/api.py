@@ -3733,6 +3733,19 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             cues = any(c in p for c in ("with test", "unit test", "multiple file",
                                         " files", "test case", "endpoints"))
             return bool(verb and (noun or cues))
+
+        def _is_advice_question(p: str) -> bool:
+            """A QUESTION about how/whether to build — advice, not a build order.
+            '_looks_like_analysis' misses these because they carry a build verb
+            ('how do I BUILD a CLI?'); a fresh build must never fire on them."""
+            import re as _re
+            p = (p or "").strip().lower()
+            if p.endswith("?"):
+                return True
+            return bool(_re.match(
+                r"^(how|what|why|where|when|which|who|should|can|could|would|"
+                r"is|are|do|does|did|explain|tell me|show me|help me understand|"
+                r"any (idea|thought)|best way)\b", p))
         # NB: _parallel_team is `team and enabled()` — False for simple/plan. Use
         # the raw capability (_pp.enabled()) so escalation can fire off-team.
         _psub_on = False
@@ -3753,6 +3766,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # baseline files. A targeted edit still stays single-agent (no match).
         _build_escalate = bool(
             not team and _psub_on
+            # PLAN mode is read-only — it must NEVER escalate into a pipeline that
+            # writes files (that silently violated the plan contract).
+            and agent_mode != "plan"
+            # A question ("how do I build X with tests?") is advice, not a build
+            # order — answer it, don't spin up the whole build pipeline.
+            and not _is_advice_question(prompt)
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
             and _looks_like_multifile_build(prompt))
         if _build_escalate:
