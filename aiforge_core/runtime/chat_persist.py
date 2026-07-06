@@ -18,6 +18,15 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
     from aiforge_core.runtime import chat_store
 
     final_text = final_text or ""
+    # A turn that ended AWAITING the user's reply (a clarify / stuck-loop pause)
+    # must carry that flag into the persisted message, or the reload reconcile
+    # (send() does loadSession + setLiveTurn(null)) loses it: the "answer below"
+    # banner and the composer's Reply mode both key off the stored message
+    # (msgAwaiting), so without a marker the user is told to reply but the
+    # affordance is gone. add_message has no awaiting column, so encode it as a
+    # step the frontend's msgAwaiting() already recognises.
+    if awaiting:
+        steps = list(steps) + [{"type": "awaiting", "awaiting_input": True}]
     # Skip an empty, content-less turn (e.g. an immediate Stop before any
     # output) — don't leave a blank assistant bubble.
     if final_text.strip() or steps:
