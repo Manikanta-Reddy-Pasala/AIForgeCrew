@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from datetime import datetime
 
 import pytest
@@ -11,6 +12,17 @@ import pytest
 from aiforge_core.jobs import scheduler, scripts, store
 
 NOW = datetime(2026, 7, 2, 12, 0, 0)
+
+
+def _wait_until(cond, timeout=5.0):
+    """Script fires run ASYNC (a daemon thread) so the tick loop / run-now never
+    block. Poll for the effect (marker / last_error) instead of racing it."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return cond()
 
 
 @pytest.fixture(autouse=True)
@@ -148,20 +160,23 @@ def test_fire_runs_script_and_advances(tmp_path):
     marker = tmp_path / "fired.txt"
     p = scripts.write_script("fire", f"echo ok > {marker}")
     j = _mk_script(script_path=p)
-    assert scheduler.fire(j, now=NOW) is True
-    assert marker.exists()
+    assert scheduler.fire(j, now=NOW) is True     # dispatched
+    assert _wait_until(lambda: marker.exists())   # async worker ran the script
     got = store.get(j["id"])
     assert got["last_run_at"] == "2026-07-02T12:00:00"
     assert got["next_run_at"] == "2026-07-03T08:00:00"   # advanced from NOW
-    assert got["last_error"] is None
+    assert _wait_until(lambda: store.get(j["id"])["last_error"] is None)
 
 
 def test_fire_failing_script_records_error_and_still_advances():
     p = scripts.write_script("failer", "echo boom >&2; exit 5")
     j = _mk_script(script_path=p)
-    assert scheduler.fire(j, now=NOW) is False
+    # fire() now DISPATCHES the script async and returns True; the failure is
+    # recorded on last_error by the worker thread (never blocks the tick loop).
+    assert scheduler.fire(j, now=NOW) is True
+    assert _wait_until(lambda: (store.get(j["id"]).get("last_error") or "") != "")
     got = store.get(j["id"])
-    assert got["last_error"] and "exited 5" in got["last_error"]
+    assert "exited 5" in got["last_error"]
     assert got["next_run_at"] == "2026-07-03T08:00:00"   # advanced — no hot loop
 
 

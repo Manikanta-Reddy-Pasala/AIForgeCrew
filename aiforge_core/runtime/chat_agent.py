@@ -1414,6 +1414,16 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
 _FINALIZE_TOOLS = frozenset({
     "create_job_script", "learn_skill", "learn_workflow", "remember_rule"})
 
+# Builder finalize tool per kind + how many interview turns before we nudge the
+# model to call it (a local model can otherwise chat forever without finalizing).
+_BUILDER_FINALIZE_TOOL = {
+    "job": "create_job_script", "skill": "learn_skill",
+    "workflow": "learn_workflow", "rule": "remember_rule"}
+try:
+    _BUILDER_NUDGE_AFTER = max(2, int(os.environ.get("AIFORGE_BUILDER_NUDGE_AFTER", "6")))
+except (TypeError, ValueError):
+    _BUILDER_NUDGE_AFTER = 6
+
 # File-mutating tools that the pre-apply "Review edits" gate (Gap D) holds for
 # human Approve/Reject even when policy would auto-allow them.
 _MUTATING = ("file_write", "file_create", "file_patch", "editor", "multi_edit",
@@ -2984,27 +2994,28 @@ def run_chat_agent(
             pass
 
     n = 0
+    _builder_nudged = False
     while n < safety:
         n += 1
         if session_id is not None and chat_cancel.is_cancelled(session_id):
             yield {"type": "error", "text": "stopped by user"}
             yield {"type": "done"}
             return
-        # Fold any mid-run typed message into the convo as a MUST-honour turn.
-        if session_id is not None:
-            try:
-                from aiforge_core.runtime import chat_interject as _ci
-                if _ci.pending(session_id):
-                    for _steer in _ci.drain(session_id):
-                        _steer = (_steer or "").strip()
-                        if not _steer:
-                            continue
-                        convo.append({"role": "user",
-                                      "content": f"[mid-run instruction — follow this now]: {_steer}"})
-                        yield {"type": "thought", "role": "system",
-                               "text": f"📌 Got your message — folding it in now: “{_steer[:120]}”"}
-            except Exception:  # noqa: BLE001
-                pass
+        # Builder nudge (#7): a local model can interview forever and never emit
+        # the finalize tool, leaving the session with no artifact. Once it has had
+        # enough back-and-forth, inject a one-time reminder to finalize NOW.
+        if builder and not _builder_nudged and n >= _BUILDER_NUDGE_AFTER:
+            _builder_nudged = True
+            _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+            convo.append({"role": "user", "content":
+                f"[system reminder] You have gathered enough detail. Call "
+                f"`{_fin}` NOW with the collected values to finish — do not keep "
+                f"asking questions. If one required value is genuinely missing, "
+                f"ask ONLY for that, then finalize."})
+        # (#16) Mid-run steering is drained in ONE place — the guarded block just
+        # below (before the model call). A second, earlier drain here used to win
+        # the race and append an UNGUARDED user turn, creating two consecutive
+        # user turns (breaks claude_local) — removed.
         if _turn_deadline is not None and time.monotonic() > _turn_deadline:
             _fire_stop("deadline", cwd)
             yield {"type": "message",

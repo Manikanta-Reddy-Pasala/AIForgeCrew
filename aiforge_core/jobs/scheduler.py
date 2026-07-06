@@ -108,29 +108,40 @@ def fire(job: dict, *, now: datetime | None = None) -> bool:
 
 
 def _fire_script(job: dict) -> bool:
-    """Run a script job's local script (schedule already advanced). Returns
-    True on exit 0. A non-zero exit / timeout / missing script is recorded on
-    ``last_error`` (UI chip) but never raises — deterministic ops failures are
-    visible-but-soft, exactly like ticket-create failures."""
+    """Launch a script job's local script ASYNC (schedule already advanced), so a
+    slow/hung script (up to the 900s timeout) can NEVER block the single-threaded
+    tick loop — which would stall every other due job — nor the run-now HTTP
+    request. The worker records exit code on ``last_error`` (UI chip) when it
+    finishes. Returns True = dispatched (deterministic ops failures stay
+    visible-but-soft; the launch itself doesn't raise)."""
+    import threading as _t
+
     from aiforge_core.jobs import scripts
     path = job.get("script_path") or ""
-    res = scripts.run_script(path)
-    if res.get("ok"):
+
+    def _run() -> None:
         try:
-            store.update(job["id"], last_error=None)
+            res = scripts.run_script(path)
+        except Exception as exc:  # noqa: BLE001 — worker must never crash the thread
+            res = {"ok": False, "error": str(exc)}
+        if res.get("ok"):
+            try:
+                store.update(job["id"], last_error=None)
+            except Exception:  # noqa: BLE001
+                pass
+            log.info("jobs.fired script job=%s path=%s", job["id"], path)
+            return
+        err = (res.get("error") or "script failed")
+        tail = (res.get("stderr") or res.get("stdout") or "").strip()
+        msg = f"{err}: {tail}"[:500] if tail else err[:500]
+        try:
+            store.update(job["id"], last_error=msg)
         except Exception:  # noqa: BLE001
             pass
-        log.info("jobs.fired script job=%s path=%s", job["id"], path)
-        return True
-    err = (res.get("error") or "script failed")
-    tail = (res.get("stderr") or res.get("stdout") or "").strip()
-    msg = f"{err}: {tail}"[:500] if tail else err[:500]
-    try:
-        store.update(job["id"], last_error=msg)
-    except Exception:  # noqa: BLE001
-        pass
-    log.warning("jobs.fire_script_failed job=%s: %s", job["id"], msg)
-    return False
+        log.warning("jobs.fire_script_failed job=%s: %s", job["id"], msg)
+
+    _t.Thread(target=_run, name=f"jobs-script-{job['id']}", daemon=True).start()
+    return True
 
 
 def tick(now: datetime | None = None) -> int:

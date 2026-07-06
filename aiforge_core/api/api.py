@@ -964,10 +964,21 @@ def jobs_create_script(payload: JobScriptCreate) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     nxt = jobs_parse.next_runs(payload.cron, n=1)[0]
+    body = payload.description or f"Runs script: {script_path}"
+    # UPSERT by name: re-finalizing a job of the SAME name UPDATES it (new
+    # schedule + script) instead of scheduling a SECOND duplicate that fires
+    # alongside the original. (The old script file is left on disk — scripts are
+    # kept for reuse by design — but only ONE job/schedule points at the new one.)
+    existing = next((j for j in jobs_store.list_jobs()
+                     if j.get("name") == payload.name
+                     and (j.get("kind") or "ticket") == "script"), None)
+    if existing:
+        return jobs_store.update(
+            existing["id"], cron=payload.cron, ticket_body=body,
+            next_run_at=nxt, script_path=script_path, last_error=None) or existing
     return jobs_store.create(
         name=payload.name, cron=payload.cron,
-        ticket_title=payload.name,
-        ticket_body=(payload.description or f"Runs script: {script_path}"),
+        ticket_title=payload.name, ticket_body=body,
         project=None, next_run_at=nxt, kind="script", script_path=script_path)
 
 
@@ -4038,12 +4049,19 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 # it yourself (python)" boilerplate as the answer; the Changes diff
                 # below is the useful output.
                 if _rep.get("md") and _rep.get("ok") is not None:
-                    yield {"type": "message", "text": _rep["md"]}
+                    # supplementary=True: render the build report but DON'T let it
+                    # replace the agent's own answer as the persisted final_text.
+                    yield {"type": "message", "text": _rep["md"],
+                           "role": "verifier", "supplementary": True}
             except Exception as _iexc:  # noqa: BLE001 — never break the turn
                 _af_log.debug("integration report skipped: %s", _iexc)
         # SHOW CHANGES (simple mode too) — a clean PR-style diff of what the single
         # agent edited, same view as the pipeline. Working-tree diff (uncommitted).
-        if _simple_sha and not _readonly and _wrote_source():
+        # Gated on `not _readonly` ONLY (NOT _wrote_source, which lists code
+        # extensions) so a doc/config-only edit (README, yaml, json, Dockerfile)
+        # still shows its diff. _emit_changes self-guards on an empty diff, so a
+        # pure Q&A turn that wrote nothing simply emits no changes event.
+        if _simple_sha and not _readonly:
             try:
                 from aiforge_core.runtime.parallel_subtasks import _emit_changes
                 yield from _emit_changes(cwd, _simple_sha, include_worktree=True)
@@ -4122,9 +4140,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                              tool_ok=(ev.get("result") or {}).get("ok") if isinstance(ev.get("result"), dict) else None)
                     except Exception:  # noqa: BLE001
                         pass
-                if ev.get("type") == "message":
+                if ev.get("type") == "message" and not ev.get("supplementary"):
+                    # A supplementary message (e.g. the build/integration report)
+                    # renders but must NOT replace the agent's own answer as the
+                    # persisted final_text — persist it as a step instead.
                     final_text = ev.get("text", "")
                     awaiting = bool(ev.get("awaiting_input"))
+                elif ev.get("type") == "message" and ev.get("supplementary"):
+                    steps.append(ev)
                 elif ev.get("type") in ("thought", "tool", "error", "changes"):
                     steps.append(ev)
                 elif ev.get("type") == "subtasks":
@@ -4201,8 +4224,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 if not cancelled and not team and not _path["parallel"]:
                     def _chat_learn():
                         try:
-                            from aiforge_core.runtime import chat_learner, rule_capture
-                            _repo = rule_capture.repo_key(cwd) or "repo"
+                            from aiforge_core.runtime import chat_learner
+                            from aiforge_core.runtime.chat_agent import _chat_repo_key
+                            # Same key resolution as RECALL (_chat_repo_key,
+                            # git-toplevel basename) — the old bare repo_key(cwd)
+                            # filed subdir-pinned sessions under the subdir while
+                            # recall read the repo root, so facts were never found.
+                            _repo = _chat_repo_key(cwd)
                             chat_learner.learn_from_chat(
                                 prompt=prompt, final_text=final_text,
                                 steps=steps, repo=_repo, session_id=session_id)
@@ -4218,8 +4246,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     # affect the turn.
                     def _chat_summarize():
                         try:
-                            from aiforge_core.runtime import (
-                                chat_store, chat_summary, rule_capture)
+                            from aiforge_core.runtime import chat_store, chat_summary
+                            from aiforge_core.runtime.chat_agent import _chat_repo_key
                             every = 4
                             try:
                                 every = max(1, int(os.environ.get(
@@ -4229,7 +4257,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             n = len(chat_store.get_messages(session_id))
                             if n <= 0 or n % every != 0:
                                 return
-                            _repo = rule_capture.repo_key(cwd) or "repo"
+                            _repo = _chat_repo_key(cwd)   # git-toplevel, matches recall
                             chat_summary.summarize_session(session_id, _repo)
                         except Exception:  # noqa: BLE001
                             pass

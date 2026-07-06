@@ -28,7 +28,7 @@ from aiforge_core.config import env as _env
 _LOCK = threading.Lock()
 
 _UPDATABLE = {"name", "cron", "ticket_title", "ticket_body", "project",
-              "enabled", "next_run_at", "last_error"}
+              "enabled", "next_run_at", "last_error", "script_path"}
 
 
 def now_iso() -> str:

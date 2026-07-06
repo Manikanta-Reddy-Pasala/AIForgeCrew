@@ -1110,6 +1110,11 @@ export default function Chat() {
           return { ...prev, steps: [...prev.steps, { kind: 'changes' as const, files: evt.files || [], summary: evt.summary || { files: (evt.files || []).length, additions: 0, deletions: 0 } }] };
         }
         if (evt.type === 'message') {
+          // A supplementary message (build/integration report) is shown as an
+          // extra step — it must NOT replace the agent's actual answer text.
+          if (evt.supplementary) {
+            return { ...prev, steps: [...prev.steps, { kind: 'message' as const, text: evt.text, role: evt.role }] };
+          }
           if (evt.awaiting_input) setTimeout(() => textareaRef.current?.focus(), 30);
           return { ...prev, text: evt.text, streaming: false, awaiting: !!evt.awaiting_input };
         }
