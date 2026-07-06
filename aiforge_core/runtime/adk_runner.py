@@ -710,9 +710,18 @@ def _build_context_plugins() -> list:
     else:
         custom = _tail_trim
         log.info("context_filter: enabled max_contents=%d", max_contents)
-    return [ContextFilterPlugin(
+    plugins: list = [ContextFilterPlugin(
         num_invocations_to_keep=keep, custom_filter=custom,
     )]
+    # Phantom-tool guard: keep the pipeline alive when a text agent emits a
+    # hallucinated function_call (ADK would otherwise raise "Tool X not found"
+    # and abort the whole run). See tool_error_plugin.
+    try:
+        from .tool_error_plugin import PhantomToolGuardPlugin
+        plugins.append(PhantomToolGuardPlugin())
+    except Exception:  # noqa: BLE001 — resilience is best-effort
+        pass
+    return plugins
 
 
 def _run_live_verifier(ticket, pr_url: str) -> dict | None:

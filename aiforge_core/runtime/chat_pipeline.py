@@ -337,8 +337,20 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                                       # Planner (and subtask decomposition) runs.
             )
             svc = InMemorySessionService()
+            # Phantom-tool guard: a text-only agent (feedback/validator/learner)
+            # can emit a hallucinated function_call; without this ADK raises
+            # "Tool X not found" and the whole SequentialAgent pipeline aborts
+            # mid-flight. The plugin turns it into a graceful observation so the
+            # run survives to its answer.
+            _plugins = []
+            try:
+                from .tool_error_plugin import PhantomToolGuardPlugin
+                _plugins.append(PhantomToolGuardPlugin())
+            except Exception:  # noqa: BLE001 — resilience is best-effort
+                pass
             runner = Runner(agent=pipeline, app_name="aiforge-chat",
-                            session_service=svc, auto_create_session=True)
+                            session_service=svc, auto_create_session=True,
+                            plugins=_plugins)
             session = await svc.create_session(
                 app_name="aiforge-chat", user_id="chat",
                 state={"chat_cwd": cwd},
