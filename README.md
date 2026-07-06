@@ -207,6 +207,9 @@ AIFORGE_WORKSPACE_DIR          clamp file/exec to one dir (security)
 AIFORGE_TOOL_POLICY            e.g. "run_command=ask,file_write=deny"
 AIFORGE_RISK_ASK_CAUTION       gate caution cmds (sudo/chmod 777/force-push); default ON, =0 to opt out
 AIFORGE_CAVE_MODE              1 = lean context (smaller repo-map, skip optional blocks, condense sooner)
+AIFORGE_CTX_HISTORY_FRACTION   share of the (post-reserve) window kept as live chat
+#                                history before condensing (=0.75; raise toward 0.9 to
+#                                use more of a big model window, lower for more headroom)
 AIFORGE_CHAT_AUTO_CHECKPOINT   1 = snapshot before each turn (default)
 AIFORGE_CHAT_AUTO_MEMORY       1 = persist a memory note per turn (default)
 AIFORGE_SKILLS_DIR             skill registry root (default ~/.aiforge/skills)

@@ -2174,8 +2174,19 @@ def _ctx_budget_chars(role: str | None = None,
             win = int(runtime_settings.get("context_window"))
         except Exception:  # noqa: BLE001
             win = 0
-    # Cave mode condenses sooner — keep far less of the running history.
-    headroom = 0.30 if _cave_mode() else 0.55
+    # Fraction of the (post-reserve) window kept as live history before we
+    # condense. This is a SAFETY margin ON TOP of the explicit output + system
+    # reservations below (the 4-chars/token estimate is imprecise and a turn's
+    # tool output can still grow mid-flight), so it is < 1.0 on purpose — but
+    # the old 0.55 was too conservative and made a big window (e.g. a 256k model)
+    # feel like ~120k. 0.75 uses far more of a large window while still leaving a
+    # ~25% cushion. Cave mode still condenses sooner. Tunable per deploy.
+    _default_frac = 0.35 if _cave_mode() else 0.75
+    try:
+        headroom = float(os.environ.get("AIFORGE_CTX_HISTORY_FRACTION", _default_frac))
+        headroom = min(0.95, max(0.15, headroom))  # clamp to a sane band
+    except (TypeError, ValueError):
+        headroom = _default_frac
     if win > 0:
         # Reserve what the request needs beyond history: the model's own reply
         # (output cap) and the system prompt. ~4 chars/token.
