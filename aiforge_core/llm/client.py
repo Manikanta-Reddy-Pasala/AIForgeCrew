@@ -560,11 +560,14 @@ def _complete_impl(role: str, messages: list[dict], *,
          else RuntimeError("llm.exhausted").
     """
     # Default request timeout. Self-hosted reasoning models (e.g. 122B with
-    # long chain-of-thought) routinely need minutes — a short timeout shows
-    # up as intermittent "timeout" transport errors. Generous default,
-    # tunable via AIFORGE_LLM_TIMEOUT_S.
+    # long chain-of-thought) routinely need minutes — and with the headroom
+    # proxy in front, a compress+forward hop adds to that — so a short timeout
+    # shows up as intermittent "timeout" transport errors ("model didn't
+    # respond"). Generous default (15 min), tunable via AIFORGE_LLM_TIMEOUT_S.
+    # Kept <= the proxy's own upstream read timeout (HEADROOM_REQUEST_TIMEOUT)
+    # so the proxy never gives up on the model before this client does.
     if timeout_s is None:
-        timeout_s = _int_env("AIFORGE_LLM_TIMEOUT_S", 600)
+        timeout_s = _int_env("AIFORGE_LLM_TIMEOUT_S", 900)
 
     primary: Endpoint = resolve(role)
 

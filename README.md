@@ -223,6 +223,12 @@ HEADROOM_FORCE_KOMPRESS_ALL    1 = ML text-crush plain tool outputs (default);
 #                                0 = lossless SmartCrusher (JSON) only
 HEADROOM_PROTECT_RECENT        keep CODE in the last N msgs uncompressed (=8);
 #                                guards the doer's own recent edits from lossy crush
+HEADROOM_REQUEST_TIMEOUT       proxy→model read timeout (=1200s); MUST exceed
+#                                AIFORGE_LLM_TIMEOUT_S so the proxy never gives up first
+
+# Reliability / timeouts (a slow local reasoning model + the compress hop)
+AIFORGE_LLM_TIMEOUT_S          app→model read timeout (=900s / 15 min)
+AIFORGE_CHAT_LLM_RETRIES       transient-failure retries in chat before surfacing (=3)
 
 # Web search (optional keyed providers; falls back to keyless DuckDuckGo)
 AIFORGE_TAVILY_API_KEY         Tavily search key (preferred when set)

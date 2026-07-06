@@ -3038,22 +3038,26 @@ def run_chat_agent(
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
             # RESILIENCE: a local model can transiently drop a request (mid-load,
-            # busy, a one-off empty/4xx). Retry ONCE before surfacing — and never
-            # show the raw `llm.exhausted role=chat …` stack; give a plain, actionable
-            # message. AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 1).
-            _retries = 1
+            # busy, a one-off empty/4xx) — and with the headroom proxy in front,
+            # a slow reasoning call adds compress+forward latency on top. Retry a
+            # few times before surfacing, and never show the raw `llm.exhausted
+            # role=chat …` stack; give a plain, actionable message.
+            # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 3).
+            _retries = 3
             try:
-                _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "1")))
+                _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "3")))
             except ValueError:
-                _retries = 1
+                _retries = 3
             out = None
             _last = exc
             for _rn in range(_retries):
                 if session_id is not None and chat_cancel.is_cancelled(session_id):
                     break
                 yield {"type": "thought", "role": "system",
-                       "text": "⟳ model didn't respond — retrying…"}
-                time.sleep(1.5)
+                       "text": f"⟳ model didn't respond — retrying ({_rn + 1}/{_retries})…"}
+                # Escalating backoff: give a mid-load / busy local model (or a
+                # slow compress+forward hop) progressively more room to recover.
+                time.sleep(3.0 * (_rn + 1))
                 try:
                     out = _complete_cancellable(complete_fn, role, convo, session_id)
                     _last = None

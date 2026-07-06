@@ -156,6 +156,17 @@ services:
       # keeps compression from corrupting a build.
       HEADROOM_PROTECT_RECENT: ${HEADROOM_PROTECT_RECENT:-8}
       HEADROOM_PROTECT_ANALYSIS_CONTEXT: ${HEADROOM_PROTECT_ANALYSIS_CONTEXT:-1}
+      # Timeouts. The proxy now sits in front of the model, so its upstream read
+      # timeout must be the MOST generous layer — longer than the app's own LLM
+      # timeout (AIFORGE_LLM_TIMEOUT_S=900) — or a slow reasoning call trips the
+      # proxy's default 300s first and surfaces as "model didn't respond,
+      # retrying". 1200s (20 min) covers a big local chain-of-thought; the app
+      # client (900s) is the layer that actually fails+retries a wedged call.
+      # Compression itself gets a wider budget so kompress completes instead of
+      # falling through (safe either way, but avoids wasted latency).
+      HEADROOM_REQUEST_TIMEOUT: ${HEADROOM_REQUEST_TIMEOUT:-1200}
+      HEADROOM_CONNECT_TIMEOUT_SECONDS: ${HEADROOM_CONNECT_TIMEOUT_SECONDS:-15}
+      HEADROOM_COMPRESSION_TIMEOUT_SECONDS: ${HEADROOM_COMPRESSION_TIMEOUT_SECONDS:-60}
     volumes:
       # Kompress-v2-base (HF) downloads here on first use — same cache dir the
       # rerank sidecar uses, so it's the one place operators already know to

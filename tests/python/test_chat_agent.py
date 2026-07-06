@@ -133,12 +133,21 @@ def test_progressing_actions_not_killed(tmp_path):
     assert [e for e in evs if e["type"] == "message"][0]["text"] == "done"
 
 
-def test_llm_error_is_soft(tmp_path):
+def test_llm_error_is_soft(tmp_path, monkeypatch):
+    # Keep the retry backoff from actually sleeping (default is now 3 retries
+    # with escalating 3s/6s/9s waits) so the test stays fast.
+    monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "1")
+    monkeypatch.setattr(ca.time, "sleep", lambda *_a, **_k: None)
+
     def _fn(role, messages, **kw):
         raise RuntimeError("boom")
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content": "x"}], cwd=str(tmp_path), complete_fn=_fn))
-    assert any(e["type"] == "error" for e in evs)
+    # A transient LLM failure is handled SOFTLY: a plain ⚠️ message (never a raw
+    # "error" / llm.exhausted stack), then a clean done — nothing was changed.
+    assert any(e["type"] == "message" and "didn't respond" in e.get("text", "")
+               for e in evs)
+    assert not any(e["type"] == "error" for e in evs)
     assert evs[-1] == {"type": "done"}
 
 

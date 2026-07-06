@@ -399,9 +399,9 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     # chat (client._post).
     import os as _os
     try:
-        _read_to = float(_os.environ.get("AIFORGE_LLM_TIMEOUT_S", "600"))
+        _read_to = float(_os.environ.get("AIFORGE_LLM_TIMEOUT_S", "900"))
     except ValueError:
-        _read_to = 600.0
+        _read_to = 900.0
     # Split connect from read. A scalar timeout applies to BOTH — so an
     # unreachable/asleep host (dropped SYN, no RST) blocks the full read
     # timeout (600s) just to fail the TCP connect, and with 3 attempt-retries
