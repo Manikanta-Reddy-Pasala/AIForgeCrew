@@ -1906,6 +1906,33 @@ def _balanced_json(text: str, start_at: int = 0) -> dict:
     return {}
 
 
+_REASONING_PREFIX_RE = re.compile(
+    r"^\s*(?:THOUGHT|THINK|THINKING|REASONING|ANALYSIS|PLAN)\s*:\s*",
+    re.IGNORECASE)
+
+
+def _strip_reasoning_prefix(text: str) -> str:
+    """Strip a leaked chain-of-thought marker (``THOUGHT:``/``REASONING:`` …)
+    from the START of a final answer. A local model sometimes emits its
+    reasoning line as the answer (or a `FINAL:` whose text begins with
+    `THOUGHT:`), so the user saw ``THOUGHT: The user asked me to…`` instead of
+    the plan/answer. Only strips a LEADING marker; reasoning that legitimately
+    appears mid-answer is untouched."""
+    if not text:
+        return text
+    t = text.lstrip()
+    m = _REASONING_PREFIX_RE.match(t)
+    if not m:
+        return text
+    rest = t[m.end():]
+    # Drop only the first reasoning line; keep everything after it. If the whole
+    # thing was one reasoning line with nothing useful after, keep it (better a
+    # thought than an empty answer).
+    nl = rest.find("\n")
+    tail = rest[nl + 1:].lstrip() if nl != -1 else ""
+    return tail or rest.strip() or text
+
+
 def _parse(out: str) -> dict:
     """Parse a model turn into {kind, ...}. Tolerant of code fences,
     pretty-printed JSON, and stray markdown around the protocol."""
@@ -3127,7 +3154,7 @@ def run_chat_agent(
         step = _parse(out)
         if step["kind"] == "final":
             _fire_stop("final", cwd)
-            yield {"type": "message", "text": step["text"]}
+            yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
             yield {"type": "done"}
             return
         if step["kind"] == "ask":

@@ -3809,7 +3809,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # edits — left as-is by design, no notice (avoids per-run noise).
         if _route_pipeline:
             # Orchestrator (layer 1) = 3 agents: enhancer → architect → planner.
-            _spec = _pp._enhance(prompt, history=history, cwd=cwd)  # 1. clean spec
+            # SCOPE the enhancer's memory recall to THIS session's repo — without
+            # a repo, unified_query runs its repo-agnostic sources (prior chat
+            # sessions + global vector) and an UNRELATED task bleeds into the
+            # build spec (a "mathx" build decomposed into game/storage). The
+            # contamination guard in unified_query only fires with a repo set.
+            from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk
+            _pl_repo = _crk(cwd)
+            _spec = _pp._enhance(prompt, history=history, cwd=cwd, repo=_pl_repo)  # 1. clean spec
             _files = _pp._architect(_spec, cwd=cwd)  # 2. design file structure
             _subs = _pp._plan_files(_files) if len(_files) >= 2 \
                 else _pp._decompose(_spec)          # 3. split (per file, or plan)
@@ -3862,8 +3869,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         if not _skip_enhance and not _route_pipeline:
             try:
                 from aiforge_core.runtime import turn_router as _tr2
+                # Skip the enhancer (an LLM round-trip + a memory recall) on ANY
+                # FOLLOW-UP that isn't itself a fresh multi-file build — the
+                # history is folded into the spec regardless, so re-enhancing
+                # "add rate limiting to the plan" / "fix that" is wasted latency
+                # and a needless re-recall (was gated on classify=='simple',
+                # which a plan-mode follow-up never matches, so it never skipped).
+                # A genuinely NEW build follow-up still enhances.
                 if _tr2.is_followup(history) \
-                        and _tr2.classify(prompt, history, cwd) == "simple":
+                        and not _looks_like_multifile_build(prompt):
                     _skip_enhance = True
             except Exception as _sexc:  # noqa: BLE001 — never block a turn
                 _af_log.debug("enhancer skip-check failed: %s", _sexc)
@@ -3881,7 +3895,9 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # "fix that bug" must be resolved against the prior turns, else
             # the enhancer fabricates a context-free spec that REPLACES the
             # user's words).
-            _enriched = _pp._enhance(prompt, history=history, cwd=cwd)
+            from aiforge_core.runtime.chat_agent import _chat_repo_key as _crk2
+            _enriched = _pp._enhance(prompt, history=history, cwd=cwd,
+                                     repo=_crk2(cwd))   # scope recall (anti-contamination)
         # Replace the LAST user turn's content with the enriched spec, keeping
         # every prior turn intact. Trimming the recent turns (an earlier "avoid
         # the double-fold" attempt) broke claude_local's user/assistant
