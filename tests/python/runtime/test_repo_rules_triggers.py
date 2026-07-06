@@ -13,8 +13,11 @@ def _isolate_global_rules_dir(tmp_path, monkeypatch):
     """Isolate the operator global-rules dir to an empty tmp dir so a real
     ~/.aiforge/rules/*.md (builtin rules seeded by prior AIForgeCrew usage
     on the dev machine) doesn't leak into collect_or_ask/match_rules_with_
-    triggers assertions — same guard as test_repo_rules.py."""
+    triggers assertions — same guard as test_repo_rules.py. Also isolate the
+    package-shipped builtin_playbooks/rules/*.md defaults for the same reason."""
     monkeypatch.setenv("AIFORGE_RULES_DIR", str(tmp_path / "_empty_rules"))
+    monkeypatch.setattr(
+        rr, "_builtin_rules_dir", lambda: tmp_path / "_empty_builtin")
 
 
 def _rule(name, triggers=(), globs=(), always=False, body="do the thing"):

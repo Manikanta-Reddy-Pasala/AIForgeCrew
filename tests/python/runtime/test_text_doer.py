@@ -104,14 +104,22 @@ def test_run_text_doer_folds_present_vars_skips_empty(tmp_path):
     assert "context_brief_md" not in seed   # empty var omitted (no label)
 
 
-def test_run_text_doer_soft_fails_on_complete_error(tmp_path):
+def test_run_text_doer_soft_fails_on_complete_error(tmp_path, monkeypatch):
+    # No LLM retries → no escalating backoff sleeps, so the failure path is fast
+    # and deterministic.
+    monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "0")
+
     def _boom(role, messages, **kw):
         raise RuntimeError("model exploded")
-    # Must NOT raise; returns an error outcome with None signals.
+    # Must NOT raise; returns a user-facing failure outcome with None signals.
+    # chat_agent deliberately converts a completion failure into a plain,
+    # actionable message (no raw stack), so the outcome reads as a warning that
+    # nothing was changed — not the raw exception text.
     out = td.run_text_doer({"plan_md": "p"}, str(tmp_path), complete_fn=_boom)
-    assert out["doer_outcome"]              # non-empty error text
-    assert "error" in out["doer_outcome"].lower() \
-        or "explod" in out["doer_outcome"].lower()
+    assert out["doer_outcome"]              # non-empty failure text
+    _o = out["doer_outcome"].lower()
+    assert ("didn't respond" in _o or "nothing was changed" in _o
+            or "error" in _o or "explod" in _o)
     assert out["tests_ok"] is None
     assert out["typecheck_ok"] is None
     assert out["lint_ok"] is None

@@ -88,7 +88,10 @@ def test_loop_gate_exits_on_pass() -> None:
 
 
 def test_loop_gate_loops_then_exits_at_cap() -> None:
-    state = {"feedback_verdict": '{"verdict": "fail"}'}
+    # 'low' is a base-tier complexity (not moderate/complex) so the effective
+    # iteration cap is the flat MAX_DOER_ITERS floor — an unset complexity now
+    # defaults to 'moderate' (→ 20 iters) under the dynamic tiered budget.
+    state = {"feedback_verdict": '{"verdict": "fail"}', "complexity": "low"}
     ctx = _FakeCtx(state)
     # Loop while under the cap; exit exactly at MAX_DOER_ITERS (default 4).
     for i in range(1, gp.MAX_DOER_ITERS):

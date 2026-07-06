@@ -139,7 +139,12 @@ def test_no_clobber_distinct_files(tmp_path):
         assert open(repo + f"/{s}.txt").read().strip() == s   # content intact, not clobbered
 
 
-def test_same_file_conflict_aborts_clean(tmp_path):
+def test_same_file_conflict_aborts_clean(tmp_path, monkeypatch):
+    # This test asserts the ABORT-on-conflict contract. The default path now
+    # auto-resolves conflict hunks (AIFORGE_RESOLVE_CONFLICTS, default on) via
+    # an LLM safety valve, so pin it off to deterministically exercise the
+    # clean-abort branch (no LLM dependency, no half-merged clobber).
+    monkeypatch.setenv("AIFORGE_RESOLVE_CONFLICTS", "0")
     repo, g = _repo(tmp_path)
     open(repo + "/shared.txt", "w").write("base\n"); g("add", "-A"); g("commit", "-q", "-m", "s")
 

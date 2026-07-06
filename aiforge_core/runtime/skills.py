@@ -195,7 +195,7 @@ def search(query: str, cwd: str | None = None, k: int = 5,
     pool = skills if skills is not None else load(cwd)
     q = (query or "").lower()
     qtok = _tokens(query)
-    scored: list[tuple[float, Skill]] = []
+    scored: list[tuple[float, float, Skill]] = []
     for sk in pool:
         score = 0.0
         for t in sk.triggers:
@@ -207,11 +207,18 @@ def search(query: str, cwd: str | None = None, k: int = 5,
         if sk.always:
             score += 0.5
         if score > 0:
-            scored.append((score + sk.priority * 0.1, sk))
-    scored.sort(key=lambda x: -x[0])
+            # ``score`` is the RELEVANCE and is what we report — it is > 0 here,
+            # honouring the documented "top-k (score > 0)" contract. ``priority``
+            # is only a tiebreaker for equal relevance; it must NOT be folded
+            # into the reported score. Built-ins carry a large negative priority
+            # sentinel (-100, set in ``load()`` so a same-named custom skill
+            # wins de-dup); baking priority*0.1 into the score let that sentinel
+            # swamp relevance and return NEGATIVE-scored builtin noise hits.
+            scored.append((score, float(sk.priority), sk))
+    scored.sort(key=lambda x: (-x[0], -x[1]))
     return [{"name": s.name, "description": s.description,
              "score": round(sc, 2), "source": s.source}
-            for sc, s in scored[:k]]
+            for sc, _prio, s in scored[:k]]
 
 
 def render(skills: list[Skill]) -> str:

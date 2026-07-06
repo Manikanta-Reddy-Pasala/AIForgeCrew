@@ -39,7 +39,15 @@ def test_validate_python_syntax_error() -> None:
     assert "(" in err or "syntax" in err.lower()
 
 
-def test_validate_unbalanced_braces() -> None:
+def test_validate_unbalanced_braces(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The brace-balance check is the step-3 FALLBACK, reached only when no
+    # external syntax checker (e.g. javac) is installed for the language. On a
+    # host WITH javac, .java goes through the authoritative checker instead, so
+    # force the fallback to exercise the heuristic deterministically.
+    monkeypatch.setattr(
+        "aiforge_core.runtime.syntax_guard._external_syntax",
+        lambda path, content: None,
+    )
     ok, err = dt.validate_syntax("x.java", "class X { void f() { }")
     assert not ok
     assert "{}" in err
@@ -56,7 +64,16 @@ def test_validate_empty_rejected() -> None:
     assert "empty" in err
 
 
-def test_validate_java_python_kwargs_rejected() -> None:
+def test_validate_java_python_kwargs_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Python-kwargs sniff lives in the step-3 FALLBACK (see docstring), used
+    # only when no external checker is installed. javac, when present, catches
+    # this itself — force the fallback so the heuristic is tested regardless.
+    monkeypatch.setattr(
+        "aiforge_core.runtime.syntax_guard._external_syntax",
+        lambda path, content: None,
+    )
     src = "class X {\n  void f() {\n    helper(name = bar, value = baz);\n  }\n}\n"
     ok, err = dt.validate_syntax("X.java", src)
     assert not ok

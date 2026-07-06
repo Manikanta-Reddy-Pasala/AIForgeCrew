@@ -15,9 +15,12 @@ def _unified_query_isolation(tmp_path, monkeypatch):
     sys.modules-patch isolation (the landmine test_unified_query_afm
     documents). Clean after every test in this file.
 
-    Also isolate the operator global-rules dir to an empty tmp dir so a real
-    ~/.aiforge/rules/*.md doesn't leak into load_rules/collect assertions."""
+    Also isolate BOTH global rule sources to empty tmp dirs so neither a real
+    ~/.aiforge/rules/*.md nor the package-shipped builtin_playbooks/rules/*.md
+    (always-apply defaults) leak into load_rules/collect assertions."""
     monkeypatch.setenv("AIFORGE_RULES_DIR", str(tmp_path / "_empty_rules"))
+    monkeypatch.setattr(
+        repo_rules, "_builtin_rules_dir", lambda: tmp_path / "_empty_builtin")
     yield
     import sys
 

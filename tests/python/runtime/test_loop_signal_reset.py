@@ -53,10 +53,13 @@ def test_exit_branch_preserves_quality_signals_on_pass() -> None:
 
 def test_exit_branch_preserves_quality_signals_at_cap() -> None:
     # iters >= MAX_DOER_ITERS → EXIT even with a failing verdict → preserve.
+    # 'low' pins the base-tier cap (unset complexity defaults to 'moderate' →
+    # 20 iters under the dynamic tiered budget).
     state = {
         "feedback_verdict": '{"verdict": "fail"}',
         "doer_iters": gp.MAX_DOER_ITERS - 1,
         "tests_ok": False,
+        "complexity": "low",
     }
     ctx = _FakeCtx(state)
     _run(gp._loop_gate(ctx))
