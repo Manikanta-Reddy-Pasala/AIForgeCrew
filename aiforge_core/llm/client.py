@@ -542,6 +542,52 @@ def complete(role: str, messages: list[dict], *,
     )
 
 
+def _headroom_url() -> "str | None":
+    """The headroom ``/v1/compress`` endpoint, when compression is enabled.
+    ``None`` when off (the common case → zero overhead, no import, no call)."""
+    if os.environ.get("AIFORGE_HEADROOM", "0") not in ("1", "true", "yes", "on"):
+        return None
+    base = os.environ.get("AIFORGE_HEADROOM_URL", "http://127.0.0.1:8787")
+    return base.rstrip("/") + "/v1/compress"
+
+
+def _maybe_compress(messages: list[dict], model: str) -> list[dict]:
+    """Shrink the message list through the local headroom sidecar's
+    compress-ONLY endpoint (no LLM call): it compresses big tool outputs,
+    protects user/system messages, and preserves tool-call structure. This
+    is the "library mode" wiring — compression happens HERE, in the client,
+    so it applies to EVERY model at EVERY endpoint (whatever URL the operator
+    configured in the UI), not just one proxied upstream.
+
+    Returns the ORIGINAL messages on ANY error/timeout — compression must
+    never break or stall a real LLM call. Full no-op when AIFORGE_HEADROOM
+    is off."""
+    url = _headroom_url()
+    if not url or not messages:
+        return messages
+    try:
+        payload = json.dumps(
+            {"messages": messages, "model": model or "default"}).encode()
+        req = urllib.request.Request(
+            url, data=payload, method="POST",
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(
+                req, timeout=_int_env("AIFORGE_HEADROOM_TIMEOUT_S", 10)) as resp:
+            body = json.loads(resp.read())
+        out = body.get("messages")
+        if isinstance(out, list) and out:
+            saved = body.get("tokens_saved") or 0
+            if saved:
+                _log.info(
+                    "headroom.compressed",
+                    extra={"aiforge": {"tokens_saved": saved,
+                                       "ratio": body.get("compression_ratio")}})
+            return out
+    except Exception as exc:  # noqa: BLE001 — compression must never break the call
+        _log.debug("headroom compress skipped: %s", exc)
+    return messages
+
+
 def _complete_impl(role: str, messages: list[dict], *,
                    temperature: float | None = None,
                    max_tokens: int | None = None,
@@ -567,6 +613,12 @@ def _complete_impl(role: str, messages: list[dict], *,
         timeout_s = _int_env("AIFORGE_LLM_TIMEOUT_S", 600)
 
     primary: Endpoint = resolve(role)
+
+    # Optional headroom compression (AIFORGE_HEADROOM=1) — shrink big tool
+    # outputs BEFORE the estimate + every attempt, so the token estimate
+    # reflects the compressed size and any fallback/escalation target sees
+    # the same compressed messages. Soft no-op when disabled or on error.
+    messages = _maybe_compress(messages, getattr(primary, "model", ""))
 
     # Pre-flight escalation — if we can estimate token weight before
     # spending an LLM round-trip, do it. The estimator uses the same
