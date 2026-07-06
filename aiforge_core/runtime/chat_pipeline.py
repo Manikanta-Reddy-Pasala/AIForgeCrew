@@ -321,6 +321,21 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
 
             from .pipeline import build_pipeline
 
+            # Baseline commit so we can show a Changes diff after a SEQUENTIAL
+            # team run too (the parallel path already emits one; this path never
+            # did). git-init + committed baseline makes HEAD a valid diff base
+            # even in a fresh, non-repo chat workspace.
+            _seq_start_sha = ""
+            try:
+                from .parallel_subtasks import _ensure_git_workspace as _ensure_ws
+                _ensure_ws(cwd)
+                import subprocess as _sp0
+                _r0 = _sp0.run(["git", "-C", cwd, "rev-parse", "HEAD"],
+                               capture_output=True, text=True, timeout=5)
+                _seq_start_sha = (_r0.stdout or "").strip() if _r0.returncode == 0 else ""
+            except Exception:  # noqa: BLE001
+                _seq_start_sha = ""
+
             # Full context by default — the Researcher + context gatherers feed
             # the Planner so it decomposes into well-scoped subtasks (this IS
             # useful, especially for splitting). Opt into a LEAN run with
@@ -488,6 +503,16 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             final_text = msg
             _run_ok = True
             q.put({"type": "message", "text": msg})
+            # Structured Changes diff (same PR-style view as the parallel path).
+            # The sequential Doer edits the working tree, so include it.
+            if _seq_start_sha and not _enhancer_blocked_reason:
+                try:
+                    from .parallel_subtasks import _emit_changes
+                    for _ev in _emit_changes(cwd, _seq_start_sha,
+                                             include_worktree=True):
+                        q.put(_ev)
+                except Exception:  # noqa: BLE001 — never break the turn
+                    pass
         except Exception as exc:  # noqa: BLE001
             q.put({"type": "error", "text": f"pipeline: {exc}"})
         finally:

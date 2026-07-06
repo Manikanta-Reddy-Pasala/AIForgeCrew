@@ -2179,9 +2179,10 @@ def _ctx_budget_chars(role: str | None = None,
     # reservations below (the 4-chars/token estimate is imprecise and a turn's
     # tool output can still grow mid-flight), so it is < 1.0 on purpose — but
     # the old 0.55 was too conservative and made a big window (e.g. a 256k model)
-    # feel like ~120k. 0.75 uses far more of a large window while still leaving a
-    # ~25% cushion. Cave mode still condenses sooner. Tunable per deploy.
-    _default_frac = 0.35 if _cave_mode() else 0.75
+    # feel like ~120k. 0.85 uses most of a large window (256k → condense ~210k)
+    # while still leaving a ~15% cushion for the 4-chars/token estimate error +
+    # mid-turn tool growth. Cave mode still condenses sooner. Tunable per deploy.
+    _default_frac = 0.40 if _cave_mode() else 0.85
     try:
         headroom = float(os.environ.get("AIFORGE_CTX_HISTORY_FRACTION", _default_frac))
         headroom = min(0.95, max(0.15, headroom))  # clamp to a sane band

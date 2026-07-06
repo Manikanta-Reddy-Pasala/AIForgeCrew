@@ -3851,20 +3851,21 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             return
         # Baseline commit so we can show a Changes diff after the single-agent run
         # (simple mode edits the working tree; the pipeline shows its own Changes).
+        # A fresh chat workspace is NOT a git repo — the old rev-parse/empty-tree
+        # dance then left _simple_sha unusable (git diff needs a real repo), so the
+        # Changes view silently vanished. _ensure_git_workspace git-inits + makes a
+        # committed baseline (no-op when cwd is already a repo, e.g. a pinned user
+        # project), so HEAD is ALWAYS a valid baseline to diff the run against.
         _simple_sha = ""
         try:
+            from aiforge_core.runtime.parallel_subtasks import (
+                _ensure_git_workspace as _ensure_ws,
+            )
+            _ensure_ws(cwd)
             import subprocess as _sp0
             _r0 = _sp0.run(["git", "-C", cwd, "rev-parse", "HEAD"],
                            capture_output=True, text=True, timeout=5)
-            if _r0.returncode == 0:
-                _simple_sha = (_r0.stdout or "").strip()
-            else:
-                # Repo with NO commits yet (fresh init) — diff against the empty
-                # tree so newly-created files still show in the Changes view.
-                _et = _sp0.run(["git", "-C", cwd, "hash-object", "-t", "tree",
-                                "/dev/null"], capture_output=True, text=True,
-                               timeout=5)
-                _simple_sha = (_et.stdout or "").strip() if _et.returncode == 0 else ""
+            _simple_sha = (_r0.stdout or "").strip() if _r0.returncode == 0 else ""
         except Exception:  # noqa: BLE001
             _simple_sha = ""
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
