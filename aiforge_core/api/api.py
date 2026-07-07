@@ -219,7 +219,15 @@ def _start_daily_reindex() -> None:
     except ValueError:
         hour = 3
     from aiforge_core.runtime import periodic as _pd
-    _pd.register("daily-reindex", _spawn_reindex_all, at_hour=hour)
+    # Run the INCREMENTAL reindex frequently (default every 3h), not once a day,
+    # so all indexed layers (chunks + tree-sitter symbols + graphify) refresh
+    # within hours of a commit. Cheap: reindex_all merkle-skips unchanged repos,
+    # so an idle tick is a near-instant no-op; only a CHANGED repo pays.
+    try:
+        every_h = max(1, int(os.environ.get("AIFORGE_REINDEX_EVERY_H", "3")))
+    except ValueError:
+        every_h = 3
+    _pd.register("reindex", _spawn_reindex_all, every_s=every_h * 3600)
 
     # Daily CHAT-MD COMPACTION — per-turn writes append forever to
     # ~/.aiforge/memory/*.md; md_store.compact() consolidates them (map-reduce
