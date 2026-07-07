@@ -168,11 +168,24 @@ def _start_jobs_scheduler() -> None:
         pass
 
 
+_reindex_all_lock = __import__("threading").Lock()
+_reindex_all_at = [0.0]     # monotonic ts of the last spawn (debounce)
+
+
 def _spawn_reindex_all() -> None:
     """Re-index every repo/docs source in a SEPARATE PROCESS (CPU-heavy →
-    keeps it off the API's GIL, like _spawn_index)."""
+    keeps it off the API's GIL, like _spawn_index). Debounced so the daily fire
+    and a manual trigger landing together don't launch two full sweeps at once
+    (per-source leases already prevent double-indexing a single source; this
+    just avoids the wasted second pass)."""
     import subprocess
     import sys
+    import time as _t
+    with _reindex_all_lock:
+        if _t.monotonic() - _reindex_all_at[0] < 120:
+            _af_log.info("reindex-all skipped — one ran <120s ago (debounce)")
+            return
+        _reindex_all_at[0] = _t.monotonic()
     subprocess.Popen(
         [sys.executable, "-m", "aiforge_core.runtime.memory_ingest", "--all"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -4383,7 +4396,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             # filed subdir-pinned sessions under the subdir while
                             # recall read the repo root, so facts were never found.
                             _repo = _chat_repo_key(cwd)
-                            chat_learner.learn_from_chat(
+                            _lr = chat_learner.learn_from_chat(
                                 prompt=prompt, final_text=final_text,
                                 steps=steps, repo=_repo, session_id=session_id)
                             # Auto-capture a durable USER PREFERENCE from the
@@ -4391,10 +4404,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             # an existing subject when it restates one) — so the
                             # user never re-enters a default/convention.
                             from aiforge_core.runtime import preference_capture
-                            preference_capture.capture(
+                            _pc = preference_capture.capture(
                                 prompt, repo=_repo, session_id=session_id)
-                        except Exception:  # noqa: BLE001
-                            pass
+                            # Don't SILENTLY drop a failed persist — a user's
+                            # "remember X" that fails to store is a real data loss
+                            # (this runs on a daemon thread with no HTTP surface,
+                            # so a WARNING is the only signal there is).
+                            if isinstance(_lr, dict) and _lr.get("ok") is False \
+                                    and _lr.get("skipped") is None:
+                                _af_log.warning("chat_learner did NOT persist "
+                                                "(repo=%s): %s", _repo, _lr.get("error"))
+                            if isinstance(_pc, dict) and _pc.get("ok") is False \
+                                    and _pc.get("skipped") is None:
+                                _af_log.warning("preference_capture did NOT persist "
+                                                "(repo=%s): %s", _repo, _pc.get("error"))
+                        except Exception as _lexc:  # noqa: BLE001
+                            _af_log.warning("chat learn/capture thread failed: %s",
+                                            _lexc)
                     threading.Thread(target=_chat_learn, daemon=True).start()
                     # Boundary-gated per-SESSION summary → browsable md file +
                     # memory graph (Neo4j when configured). Refreshes an

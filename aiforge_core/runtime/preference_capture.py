@@ -26,12 +26,8 @@ import re
 
 log = logging.getLogger("aiforge.preference_capture")
 
-# Cheap gate — phrasing that signals a durable instruction/preference. Keeps the
-# LLM off the hot path for ordinary questions.
-_GATE = re.compile(
-    r"\b(remember|always|never|from now on|by default|default\b|i prefer|"
-    r"i want|i like|use\s+\w+\s+(as|for)\b|set\s+\w|my (preference|setting|"
-    r"convention|default)|make sure to|going forward|whenever)\b", re.I)
+# Cue gate now lives in the ONE shared table (capture_cues) — no per-path drift.
+from aiforge_core.runtime.capture_cues import has_cue as _has_cue
 
 _SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -80,7 +76,7 @@ def capture(prompt: str, *, repo: str | None = None,
     if _disabled():
         return {"ok": False, "skipped": "disabled"}
     p = (prompt or "").strip()
-    if len(p) < 4 or not _GATE.search(p):
+    if len(p) < 4 or not _has_cue(p):
         return {"ok": False, "skipped": "no-gate"}
     # Embedded backend only; the pro path dedupes separately.
     try:

@@ -113,10 +113,8 @@ def learn_from_chat(*, prompt: str, final_text: str, steps: list | None,
         # DETERMINISTIC FALLBACK: when the distil LLM is down (flaky endpoint), an
         # EXPLICIT instruction to remember must still persist — else a stated
         # preference is silently lost. Save the raw user line as one fact.
-        import re as _re
-        if _re.search(r"\b(remember|always|never|i prefer|i want|from now on|"
-                      r"my (preference|setting|convention)|make sure to)\b",
-                      prompt, _re.I):
+        from aiforge_core.runtime.capture_cues import has_cue as _has_cue
+        if _has_cue(prompt):
             try:
                 out = learner_persist.persist_facts(
                     facts=[{"text": prompt.strip()[:500], "tags": ["preference"]}],

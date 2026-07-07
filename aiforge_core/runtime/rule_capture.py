@@ -753,14 +753,9 @@ _GREETINGS = {
     "yep", "nope", "sure", "got it", "good", "perfect", "done",
     "thanks so much", "thank you so much", "thanks a lot",
 }
-# A preference/directive CUE — the only thing that warrants spending an LLM
-# classify call. An ordinary task ("fix the bug") has an imperative but NO
-# preference cue, so it is skipped (just run the agent).
-_PREF_CUE_RE = re.compile(
-    r"\b(always|never|from now on|remember|prefer|preference|rule|"
-    r"don'?t|do not|auto[-\s]?approve|auto[-\s]?commit|without asking|"
-    r"stop asking|no need to ask|commit directly|for (all|every|each|this|the))\b",
-    re.IGNORECASE)
+# The preference/directive cue gate now lives in ONE place shared by every
+# capture path (rule_capture, preference_capture, chat_learner).
+from aiforge_core.runtime.capture_cues import has_cue as _has_cue
 
 
 def should_classify(message: str) -> bool:
@@ -774,7 +769,7 @@ def should_classify(message: str) -> bool:
     low = m.lower().strip(" .!?")
     if low in _GREETINGS:
         return False
-    if _PREF_CUE_RE.search(m):
+    if _has_cue(m):
         return True
     # Deterministic gate-intent (e.g. "commit directly, the machine has access")
     # is also a worthwhile cue even without a keyword above.
