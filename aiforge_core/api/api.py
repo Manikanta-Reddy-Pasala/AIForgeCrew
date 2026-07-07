@@ -219,7 +219,15 @@ def _start_daily_reindex() -> None:
     except ValueError:
         hour = 3
     from aiforge_core.runtime import periodic as _pd
-    _pd.register("daily-reindex", _spawn_reindex_all, at_hour=hour)
+    # Run the INCREMENTAL reindex frequently (default every 3h), not once a day,
+    # so all indexed layers (chunks + tree-sitter symbols + graphify) refresh
+    # within hours of a commit. Cheap: reindex_all merkle-skips unchanged repos,
+    # so an idle tick is a near-instant no-op; only a CHANGED repo pays.
+    try:
+        every_h = max(1, int(os.environ.get("AIFORGE_REINDEX_EVERY_H", "3")))
+    except ValueError:
+        every_h = 3
+    _pd.register("reindex", _spawn_reindex_all, every_s=every_h * 3600)
 
     # Daily CHAT-MD COMPACTION — per-turn writes append forever to
     # ~/.aiforge/memory/*.md; md_store.compact() consolidates them (map-reduce
@@ -254,6 +262,23 @@ def _start_daily_reindex() -> None:
 
     _pd.register("graph-maintain", _graph_maintain,
                  at_hour=max(0, min(23, hour + 2)))
+
+    # Daily SEMANTIC DEDUP of the embedded memory store — write_unit only dedups
+    # exact (repo,text); paraphrases pile up. Collapses near-duplicates on the
+    # stored vectors (no sidecar). Neo4j has its own write-time semantic dedupe.
+    def _dedupe_memory() -> None:
+        try:
+            from aiforge_core.memory import backend_select
+            if backend_select.memory_backend() != "sqlite":
+                return
+            from aiforge_core.memory import sqlite_memory
+            r = sqlite_memory.dedupe()
+            _af_log.info("memory dedup: %s", r)
+        except Exception as exc:  # noqa: BLE001
+            _af_log.warning("memory dedup failed: %s", exc)
+
+    _pd.register("memory-dedup", _dedupe_memory,
+                 at_hour=max(0, min(23, hour + 3)))
     _pd.start()
 
 

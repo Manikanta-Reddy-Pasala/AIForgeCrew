@@ -229,6 +229,50 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
     return out
 
 
+def dedupe(*, repo: str | None = None, threshold: float = 0.95,
+           max_scan: int = 5000) -> dict:
+    """Periodic SEMANTIC dedup sweep. write_unit only dedups EXACT (repo,text);
+    paraphrases ("README had 3 X" vs "README contained 3 X refs") accumulate.
+    This collapses near-duplicates (cosine ≥ ``threshold`` on the STORED
+    embeddings — no sidecar call) within the same ``kind``, keeping the NEWEST
+    (highest id) and deleting the rest. Preferences (``kind='preference'``) are
+    left alone (they're subject-upserted + distinct on purpose). Returns
+    ``{scanned, removed}``. Best-effort — a bad row never stops the sweep."""
+    with _LOCK, _conn() as c:
+        where = "WHERE kind != 'preference'"
+        params: tuple = ()
+        if repo is not None:
+            where += " AND (repo IS ? OR repo = ?)"
+            params = (repo, repo)
+        rows = c.execute(
+            f"SELECT id, kind, embedding FROM memory_units {where} "
+            "ORDER BY id DESC LIMIT ?", (*params, max_scan)).fetchall()
+        # rows are newest-first; keep the first of each near-duplicate cluster.
+        kept: list[tuple[int, str, list]] = []
+        remove: list[int] = []
+        for r in rows:
+            try:
+                vec = json.loads(r["embedding"] or "[]")
+            except (TypeError, ValueError):
+                vec = []
+            if not vec or not any(vec):
+                continue                     # no vector → can't compare, keep
+            dup = False
+            for _kid, kkind, kvec in kept:
+                if kkind != r["kind"]:
+                    continue
+                if local_embed.cosine(vec, kvec) >= threshold:
+                    dup = True
+                    break
+            if dup:
+                remove.append(r["id"])
+            else:
+                kept.append((r["id"], r["kind"], vec))
+        for rid in remove:
+            c.execute("DELETE FROM memory_units WHERE id = ?", (rid,))
+        return {"scanned": len(rows), "removed": len(remove)}
+
+
 def clear() -> int:
     """Delete every memory unit and reset the id sequence. Returns the count
     of rows removed. Idempotent — a second call returns 0. Used by the memory
