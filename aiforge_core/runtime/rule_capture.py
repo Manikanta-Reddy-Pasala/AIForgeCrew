@@ -90,14 +90,18 @@ def _none() -> dict:
 # ─────────────────────────── repo key + atomic IO ───────────────────
 
 def repo_key(cwd_or_root: str | None) -> str | None:
-    """The single, canonical key a repo is filed under for gate flags — used
-    by BOTH ``set_gate_flag`` and every ``flag_active`` check so a flag set
-    under one spelling is found under the other. Accepts a repo NAME
-    (``"myrepo"``) or a path (``"/a/b/myrepo"``) → its basename."""
+    """The canonical key a repo is filed under for gate flags. Delegates to the
+    ONE resolver (repo_ident.repo_name → git-toplevel basename) so a flag keyed
+    from a subdir matches one keyed from the repo root, and agrees with the key
+    memory/rules use. Accepts a repo NAME or a path. None on empty."""
     if not cwd_or_root:
         return None
-    base = os.path.basename(os.path.normpath(str(cwd_or_root))).strip()
-    return base or None
+    try:
+        from aiforge_core.runtime import repo_ident
+        return repo_ident.repo_name(str(cwd_or_root), sentinel="") or None
+    except Exception:  # noqa: BLE001 — fall back to the plain basename
+        base = os.path.basename(os.path.normpath(str(cwd_or_root))).strip()
+        return base or None
 
 
 @contextlib.contextmanager
