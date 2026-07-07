@@ -228,23 +228,36 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
     fact = text.replace("\n", " ").strip()
     new_bullet = "- " + (f"[{topic}] " if topic else "") + fact
     with _WRITE_LOCK:
-        # Collect existing bullets ONLY (drop stray/duplicate headings), append
-        # the new one deduped, and rebuild with a SINGLE heading.
-        bullets: list[str] = []
+        # PRESERVE the existing body (a periodic re-summarize writes PROSE, not
+        # bullets — extracting only bullets would clobber it). Append the new
+        # fact under a "## Recent" tail; dedup if the fact is already present
+        # anywhere (prose or bullet), so we never re-add summarized content.
         if path.exists():
             raw = path.read_text(encoding="utf-8", errors="replace")
             m = _FM_RE.match(raw)
-            prev_body = (m.group(2) if m else raw)
-            bullets = [ln.rstrip() for ln in prev_body.splitlines()
-                       if ln.startswith("- ")]
-        # dedup by the fact text (ignore the [topic] prefix)
-        if any(fact in b for b in bullets):
+            body = (m.group(2).rstrip() if m else raw.rstrip())
+        else:
+            body = heading
+        if fact and fact in body:
             return
-        bullets.append(new_bullet)
-        while bullets and len(heading + "\n" + "\n".join(bullets)) > _BRIEF_CAP:
-            bullets.pop(0)                 # drop oldest; periodic re-summarize rebuilds
-        body = heading + "\n" + "\n".join(bullets) + "\n"
-        path.write_text(head + body, encoding="utf-8")
+        if "## Recent" not in body:
+            body = body + "\n\n## Recent"
+        body = body + "\n" + new_bullet
+        # bound: keep the heading + summarized top, trim the OLDEST "## Recent"
+        # bullets (the periodic re-summarize folds them into the prose anyway).
+        if len(body) > _BRIEF_CAP:
+            lines = body.splitlines()
+            recent_at = next((i for i, ln in enumerate(lines)
+                              if ln.strip() == "## Recent"), None)
+            if recent_at is not None:
+                top = lines[:recent_at + 1]
+                bl = lines[recent_at + 1:]
+                while bl and len("\n".join(top + bl)) > _BRIEF_CAP:
+                    bl.pop(0)
+                body = "\n".join(top + bl)
+            else:
+                body = body[-_BRIEF_CAP:]
+        path.write_text(head + body + "\n", encoding="utf-8")
 
 
 def _find_by_source(source: str) -> Path | None:
