@@ -3289,6 +3289,15 @@ def run_chat_agent(
     _bundle = _cb.build_bundle(cwd, last_user, cave=cave, ctx_on=_ctx_on,
                                session_id=session_id,
                                want_rules=False, want_prefs=False)
+    # Proactive-recall mode. "lite" (default): send a SMALL anchor (repo summary
+    # + the compacted project brief) and let the model PULL specifics via the
+    # memory tools on demand — instead of pre-dumping the full recall every turn.
+    # "full": the old behaviour (dump memory_md + prior-session recall upfront).
+    _proactive = os.environ.get(
+        "AIFORGE_CHAT_PROACTIVE_RECALL", "lite").strip().lower()
+    # Project memory (compacted per-repo brief) — small + high-value; the
+    # "you already know this repo" anchor. Always injected.
+    _add_sys_block("project-memory", _bundle.project_brief_md)
     if _ctx_on("summary"):
         _add_sys_block("repo-summary", _bundle.repo_summary_md)
     if _ctx_on("repomap"):
@@ -3310,7 +3319,7 @@ def run_chat_agent(
                 pass
     # Self-learning recall — EVERY turn, keyed to the CURRENT user message
     # (from the shared bundle). Cave mode pulls fewer hits.
-    if _ctx_on("recall"):
+    if _ctx_on("recall") and _proactive == "full":
         _add_sys_block("recall", _bundle.memory_md)
         # Prior CHAT SESSIONS — surface what the user discussed in OTHER
         # conversations (excludes the current session). Cave mode → fewer hits.
@@ -3318,6 +3327,16 @@ def run_chat_agent(
         if last_user:
             _add_sys_block("chat-recall", _chat_session_recall(
                 last_user, session_id, limit=(2 if cave else 4)))
+    elif _ctx_on("recall"):
+        # LITE (default): don't pre-dump. Tell the model it HAS memory + the
+        # tools to reach it, so it pulls only what THIS turn needs.
+        _add_sys_block("memory-tools",
+            "MEMORY: a project brief for this repo is above. For anything "
+            "specific you don't already see — past decisions/learnings, code, "
+            "symbols, or what was discussed in earlier chats — CALL the tools: "
+            "memory_lookup(query) for learnings/decisions, graphify_lookup for "
+            "concept-graph, grep/repo_map/read for code, search_chat_sessions "
+            "for prior chats. Look it up; don't guess or assume it's absent.")
     # SESSION IMAGES: descriptions of images the user attached, so the (maybe
     # text-only) model can answer questions about them all session long.
     _img_blocks: list[dict] = []
