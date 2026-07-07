@@ -226,7 +226,7 @@ if [[ $TEST -eq 0 ]]; then
       # container up in lockstep with the flag means the redirected endpoint
       # always has a live proxy behind it.
       _INFRA_SVCS="postgres neo4j embed rerank"
-      if [[ "${AIFORGE_HEADROOM:-0}" == "1" || "${AIFORGE_HEADROOM:-}" == "true" ]]; then
+      if [[ "${AIFORGE_HEADROOM:-1}" == "1" || "${AIFORGE_HEADROOM:-}" == "true" ]]; then
         _INFRA_SVCS="$_INFRA_SVCS headroom"
         echo "==> headroom ENABLED — every agent routed through the compress+forward proxy"
       fi
