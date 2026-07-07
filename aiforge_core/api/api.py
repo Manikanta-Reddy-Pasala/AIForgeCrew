@@ -4460,11 +4460,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             from aiforge_core.runtime import preference_capture
                             _pc = preference_capture.capture(
                                 prompt, repo=_repo, session_id=session_id)
-                            _lr = None
-                            if not (isinstance(_pc, dict) and _pc.get("captured")):
-                                _lr = chat_learner.learn_from_chat(
-                                    prompt=prompt, final_text=final_text,
-                                    steps=steps, repo=_repo, session_id=session_id)
+                            # Run the learner on EVERY turn (even when a
+                            # preference was captured) — it distils the OTHER
+                            # signal: technical learnings, project-structure
+                            # findings (folder layout, patterns, build/test cmd),
+                            # and any durable user intent the pref-subject capture
+                            # didn't own. It dedups against memory context, so it
+                            # won't re-emit the pref. Comprehensive capture is the
+                            # point — every message + every discovery is considered.
+                            _lr = chat_learner.learn_from_chat(
+                                prompt=prompt, final_text=final_text,
+                                steps=steps, repo=_repo, session_id=session_id)
                             # Don't SILENTLY drop a failed persist — a "remember X"
                             # that fails to store is real data loss (daemon thread,
                             # no HTTP surface, so a WARNING is the only signal).

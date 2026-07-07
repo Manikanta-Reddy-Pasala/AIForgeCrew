@@ -103,6 +103,14 @@ _DEFAULTS_BY_LANG: dict[str, dict[str, str]] = {
         "format_cmd":        "gofmt -w .",
         "security_scan_cmd": "govulncheck ./...",
     },
+    "rust": {
+        "build_cmd":         "cargo build",
+        "compile_cmd":       "cargo check",
+        "test_cmd":          "cargo test",
+        "lint_cmd":          "cargo clippy -- -D warnings",
+        "format_cmd":        "cargo fmt",
+        "security_scan_cmd": "cargo audit",
+    },
     "react": {
         "build_cmd":         "yarn install && yarn build",
         "compile_cmd":       "yarn tsc --noEmit",
@@ -230,6 +238,8 @@ def detect_lang(worktree_path: str) -> str:
         return "node"
     if os.path.isfile(os.path.join(base, "go.mod")):
         return "go"
+    if os.path.isfile(os.path.join(base, "Cargo.toml")):
+        return "rust"
     if (
         os.path.isfile(os.path.join(base, "pyproject.toml"))
         or os.path.isfile(os.path.join(base, "requirements.txt"))
