@@ -376,12 +376,20 @@ def _index_repo_full(root: Path, repo: str) -> dict:
     code_units = doc_units = symbols = graphify_nodes = 0
 
     # ── Layer A — code text chunks (baseline) ──
-    try:
-        code_units = _ingest_tree(root, repo=repo, exts=_CODE_EXT, kind="code")
-        layers["code_chunks"] = "ok"
-    except Exception as exc:  # noqa: BLE001
-        log.warning("code chunk index failed: %s", exc)
-        layers["code_chunks"] = f"error:{exc}"
+    # DECONFLICT: on Neo4j the AFM package (System-2) also indexes code chunks,
+    # incrementally via git-diff + git hooks. To avoid double-indexing, an
+    # operator running AFM can set AIFORGE_INDEX_CODE_CHUNKS=0 so THIS full-walk
+    # path skips code chunks (+ set AIFORGE_INDEX_SYMBOLS=0) and only owns
+    # graphify + docs. Default on (System-1 remains the sole indexer otherwise).
+    if not _flag("AIFORGE_INDEX_CODE_CHUNKS", True):
+        layers["code_chunks"] = "skip:disabled"
+    else:
+        try:
+            code_units = _ingest_tree(root, repo=repo, exts=_CODE_EXT, kind="code")
+            layers["code_chunks"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("code chunk index failed: %s", exc)
+            layers["code_chunks"] = f"error:{exc}"
 
     # ── Layer A2 — document chunks (md/pdf/docx/…) ──
     if not _flag("AIFORGE_INDEX_DOCS", True):
