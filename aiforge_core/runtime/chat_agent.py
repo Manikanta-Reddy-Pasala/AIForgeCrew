@@ -41,6 +41,19 @@ _ASK_RE = re.compile(r"ASK:\s*(.*)", re.IGNORECASE | re.DOTALL)
 _THOUGHT_RE = re.compile(r"THOUGHT:\s*(.*?)(?:\n[A-Z_]+:|$)", re.IGNORECASE | re.DOTALL)
 
 _MAX_OBS = 6000  # truncate tool output fed back to the model
+# Content-READ tools return a document the model must see IN FULL to work with
+# (a long Confluence page, a Jira issue, a file). The generic 6k cap truncated
+# them mid-page — the model then reported "API truncation" and gave up. Give
+# these a much larger observation budget. Tunable via env.
+try:
+    _MAX_OBS_READ = max(_MAX_OBS, int(os.environ.get("AIFORGE_CHAT_MAX_OBS_READ",
+                                                     "80000")))
+except (TypeError, ValueError):
+    _MAX_OBS_READ = 80000
+_READ_OBS_TOOLS = frozenset({
+    "confluence_read", "jira_read", "file_read", "read_lines", "gitlab_read",
+    "web_fetch", "email_read",
+})
 
 
 # ─── Chat-side commit hygiene: REFUSE blanket git stages ─────────
@@ -1515,6 +1528,18 @@ _PLAN_BANNER = (
 )
 
 
+# The approval gate is where the operator accepts/rejects a write — they see the
+# WHOLE thing (full page, full diff, full Jira body); it's just text the UI
+# scrolls, so display content is UNCAPPED. The only bound is on diff COMPUTE:
+# difflib is ~O(n·m), so past this size we show full new content instead of
+# paying to compute a diff no one can read. Tunable.
+try:
+    _DIFF_COMPUTE_MAX = max(10_000, int(os.environ.get(
+        "AIFORGE_APPROVAL_DIFF_COMPUTE_MAX", "60000")))
+except (TypeError, ValueError):
+    _DIFF_COMPUTE_MAX = 60_000
+
+
 def _fence(body: str, lang: str = "") -> str:
     """Wrap text in a fenced code block so the markdown renderer shows it as a
     monospace block (diffs, commands, JSON) instead of reflowed prose."""
@@ -1545,17 +1570,21 @@ def _xhtml_to_md(xhtml: str) -> str:
 
 def _change_diff(old: str, new: str, label: str) -> str:
     """Unified diff of ``old`` → ``new`` as a fenced ```diff block (renders as
-    a colored monospace block). ``_(no change)_`` when identical."""
+    a colored monospace block). ``_(no change)_`` when identical.
+
+    The DIFF is uncapped (the operator reviews the whole change), but difflib is
+    ~O(n·m): a huge↔huge rewrite could freeze the gate. When both sides exceed
+    ``_DIFF_COMPUTE_MAX``, skip the diff and show the FULL new content instead —
+    nothing is hidden, we just don't pay the quadratic cost to compute a diff no
+    one can read anyway."""
     import difflib
-    # Bound the inputs: difflib is ~O(n·m), so a 200KB↔200KB rewrite could
-    # freeze the approval gate for tens of seconds. Cap to ~20k chars each —
-    # the preview is a human glance, not a full audit (the full body is still
-    # what gets written/sent).
-    old, new = (old or "")[:20_000], (new or "")[:20_000]
+    old, new = old or "", new or ""
+    if len(old) > _DIFF_COMPUTE_MAX and len(new) > _DIFF_COMPUTE_MAX:
+        return f"_(too large to diff — showing full new {label})_\n\n" + _fence(new)
     d = "\n".join(difflib.unified_diff(
         old.splitlines(), new.splitlines(),
         fromfile=f"current {label}", tofile=f"new {label}", lineterm=""))
-    return _fence(d[:4000], "diff") if d.strip() else "_(no change)_"
+    return _fence(d, "diff") if d.strip() else "_(no change)_"
 
 
 def _fetch_current(fn, args: dict, cwd: str, timeout: float = 4.0) -> dict:
@@ -1599,13 +1628,13 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                 old.splitlines(keepends=True), new.splitlines(keepends=True),
                 fromfile=f"a/{path}", tofile=f"b/{path}"))
             if diff:
-                return f"**Write `{path}`**\n\n" + _fence(diff[:4000], "diff")
+                return f"**Write `{path}`**\n\n" + _fence(diff, "diff")
             return f"**New file `{path}`** ({len(new)} bytes)\n\n" + _fence(
-                str(new)[:2000])
+                str(new))
         if tool == "file_patch":
             return (f"**Patch `{args.get('path', '?')}`**\n\n" + _fence(
-                f"- {str(args.get('old_text', ''))[:1000]}\n"
-                f"+ {str(args.get('new_text', ''))[:1000]}", "diff"))
+                f"- {str(args.get('old_text', ''))}\n"
+                f"+ {str(args.get('new_text', ''))}", "diff"))
         if tool in ("run_command", "bash", "shell"):
             return "**Run command**\n\n" + _fence(str(args.get("cmd", "")), "bash")
 
@@ -1615,7 +1644,7 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                     f"**Space:** `{args.get('space', '?')}` · "
                     f"**Title:** {args.get('title', '?')}\n\n"
                     f"**Body:**\n\n"
-                    + _xhtml_to_md(str(args.get('body', '')))[:3000])
+                    + _xhtml_to_md(str(args.get('body', ''))))
         if tool == "confluence_update":
             pid = args.get("id", "?")
             new_md = _xhtml_to_md(str(args.get("body", "")))
@@ -1627,7 +1656,7 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                 out += f"**New title:** {args['title']}\n\n"
             if args.get("body") is not None:
                 out += ("**Body changes:**\n\n" + _change_diff(cur_md, new_md, "body")
-                        if cur_md else "**New body:**\n\n" + new_md[:3000])
+                        if cur_md else "**New body:**\n\n" + new_md)
             return out
         if tool == "jira_create":
             md = (f"### Create Jira issue\n\n"
@@ -1636,7 +1665,7 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                   + (f" · **Priority:** {args['priority']}" if args.get('priority') else "")
                   + f"\n\n**Summary:** {args.get('summary', '?')}\n")
             if args.get("description"):
-                md += f"\n{str(args['description'])[:3000]}\n"
+                md += f"\n{str(args['description'])}\n"
             if args.get("labels"):
                 md += f"\n**Labels:** {args['labels']}\n"
             return md
@@ -1658,13 +1687,13 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
             return md
         if tool == "jira_comment":
             return (f"### Comment on Jira `{args.get('key', '?')}`\n\n"
-                    f"{str(args.get('body', ''))[:3000]}")
+                    f"{str(args.get('body', ''))}")
         if tool == "gitlab_create":
             md = (f"### Create GitLab issue\n\n"
                   f"**Project:** `{args.get('project', '?')}`\n\n"
                   f"**Title:** {args.get('title', '?')}\n")
             if args.get("description"):
-                md += f"\n{str(args['description'])[:3000]}\n"
+                md += f"\n{str(args['description'])}\n"
             if args.get("labels"):
                 md += f"\n**Labels:** {args['labels']}\n"
             return md
@@ -1687,10 +1716,10 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
         if tool == "gitlab_comment":
             return (f"### Comment on GitLab "
                     f"`{args.get('project', '?')}#{args.get('iid', '?')}`\n\n"
-                    f"{str(args.get('body', ''))[:3000]}")
+                    f"{str(args.get('body', ''))}")
     except Exception:  # noqa: BLE001
         pass
-    return _fence(json.dumps(args, default=str, indent=2)[:2000], "json")
+    return _fence(json.dumps(args, default=str, indent=2), "json")
 
 _SYSTEM = """You are AIForge, an autonomous coding assistant with FULL access to \
 the user's filesystem and shell in the working directory {cwd}.
@@ -3577,7 +3606,8 @@ def run_chat_agent(
         if name in _FINALIZE_TOOLS and isinstance(result, dict) and result.get("ok"):
             _builder_finalized = True
             yield {"type": "builder_done", "kind": name}
-        obs = json.dumps(result)[:_MAX_OBS]
+        _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
+        obs = json.dumps(result)[:_obs_cap]
         convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
 
     _fire_stop("cap", cwd)

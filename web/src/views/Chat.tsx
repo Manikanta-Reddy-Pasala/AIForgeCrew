@@ -261,48 +261,7 @@ function addDismissedPlan(sessionId: number, msgId: number): void {
 // Approval/edit previews are raw unified diffs. Rendering them through MdLite
 // mangles `-`/`+`/`@@` lines (treated as bullets/emphasis), so render them in a
 // monospace block with +/- line coloring and preserved whitespace instead.
-function DiffView({ text }: { text: string }) {
-  const CAP = 400;
-  const [expanded, setExpanded] = useState(false);
-  const allLines = text.split('\n');
-  const lines = expanded ? allLines : allLines.slice(0, CAP);
-  return (
-    <>
-    <pre style={{
-      margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-      fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.45,
-      ...(expanded ? { maxHeight: '65vh', overflowY: 'auto' as const } : {}),
-    }}>
-      {lines.map((ln, i) => {
-        let color: string | undefined;
-        let background: string | undefined;
-        if (/^\+\+\+/.test(ln) || /^---/.test(ln) || /^(diff |index )/.test(ln)) {
-          color = 'var(--fg-3)';
-        } else if (/^\+/.test(ln)) {
-          color = 'var(--ok, #3fb950)'; background = 'rgba(63,185,80,0.10)';
-        } else if (/^-/.test(ln)) {
-          color = 'var(--err, #e5534b)'; background = 'rgba(229,83,75,0.10)';
-        } else if (/^@@/.test(ln)) {
-          color = '#6aa6ff';
-        }
-        return <div key={i} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
-      })}
-    </pre>
-    {allLines.length > CAP && (
-      <button
-        onClick={() => setExpanded(e => !e)}
-        style={{
-          marginTop: 4, background: 'transparent', border: '1px solid var(--border-1)',
-          borderRadius: 4, padding: '3px 10px', fontSize: 'var(--fs-xs)',
-          color: 'var(--accent)', cursor: 'pointer', fontWeight: 600,
-        }}
-      >
-        {expanded ? '\u25b4 Collapse preview' : `\u25be View full preview (${allLines.length} lines)`}
-      </button>
-    )}
-    </>
-  );
-}
+// DiffView removed — approval previews render via MdLite (markdown + colored ```diff fences).
 
 // Context-window (re)load control: type a context size in K and reload the
 // given model on the LM Studio host at that window. No preset sizes baked in
@@ -1919,12 +1878,14 @@ export default function Chat() {
                   )}
                   {pendingApproval.preview && (
                     <div style={{
-                      maxHeight: 260, overflow: 'auto', fontSize: 12,
+                      maxHeight: '60vh', overflow: 'auto', fontSize: 12,
                       background: 'var(--bg-2)', padding: 8, borderRadius: 6,
                       margin: '0 0 8px',
                     }}>
-                      {/* FE4: raw unified diff — render monospace, NOT via MdLite. */}
-                      <DiffView text={pendingApproval.preview} />
+                      {/* Preview is markdown (Confluence/Jira pages format as
+                          md; code changes come as ```diff fences MdLite colors).
+                          Full content — the container scrolls. */}
+                      <MdLite text={pendingApproval.preview} />
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: 8 }}>

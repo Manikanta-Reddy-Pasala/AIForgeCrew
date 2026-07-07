@@ -83,6 +83,33 @@ export function MdLite({ text }: { text: string }) {
       const end = lines.findIndex((l, j) => j > i && /^\s*```/.test(l));
       const stop = end === -1 ? lines.length : end;
       const body = lines.slice(i + 1, stop).join('\n');
+      if (lang === 'diff') {
+        // Color a unified-diff fence (+/-/@@) line-by-line instead of a flat
+        // <code> block, so an approval preview's code changes read like a diff.
+        out.push(
+          <pre key={`p-${k++}`} data-lang="diff" style={{
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.45,
+          }}>
+            {body.split('\n').map((ln, j) => {
+              let color: string | undefined;
+              let background: string | undefined;
+              if (/^\+\+\+/.test(ln) || /^---/.test(ln) || /^(diff |index )/.test(ln)) {
+                color = 'var(--fg-3)';
+              } else if (/^\+/.test(ln)) {
+                color = 'var(--ok, #3fb950)'; background = 'rgba(63,185,80,0.10)';
+              } else if (/^-/.test(ln)) {
+                color = 'var(--err, #e5534b)'; background = 'rgba(229,83,75,0.10)';
+              } else if (/^@@/.test(ln)) {
+                color = '#6aa6ff';
+              }
+              return <div key={j} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
+            })}
+          </pre>,
+        );
+        i = stop + 1;
+        continue;
+      }
       out.push(
         <pre key={`p-${k++}`} data-lang={lang || undefined}>
           <code>{body}</code>
