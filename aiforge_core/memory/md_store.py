@@ -71,9 +71,13 @@ def _parse(path: Path) -> dict:
         "file": path.name,
         "title": meta.get("title") or meta.get("name") or path.stem,
         "kind": meta.get("kind") or "note",
-        "tags": [t for t in (meta.get("tags") or "").split(",") if t.strip()],
+        "tags": [t.strip() for t in (meta.get("tags") or "").split(",") if t.strip()],
         "source": meta.get("source") or "manual",
         "created": meta.get("created") or "",
+        # repo + topic drive the two compaction axes (project brief / topic note).
+        # topic falls back to a `topic:<slug>` tag when not an explicit field.
+        "repo": meta.get("repo") or "",
+        "topic": meta.get("topic") or "",
         "preview": body[:240],
         "body": body,
         "path": str(path),
@@ -121,8 +125,14 @@ def _ingest_unit(*, title: str, body: str, kind: str, tags: list[str],
 
 def write(title: str, text: str, *, kind: str = "note",
           tags: list[str] | None = None, source: str = "manual",
-          repo: str = "notes") -> dict:
-    """Create an md memory file + ingest it into the searchable backend."""
+          repo: str = "notes", topic: str | None = None,
+          ingest: bool = True) -> dict:
+    """Create an md memory file + ingest it into the searchable backend.
+
+    ``repo`` and ``topic`` are written into the frontmatter (NOT just the DB
+    mirror) so the compactor can group by them — the project-brief (per-repo)
+    and topic-note (per-topic) axes read the md files, so anything that isn't
+    stamped here simply won't roll up into either brief."""
     tags = list(tags or [])
     created = _now_iso()
     digest = hashlib.sha1((title + text).encode()).hexdigest()[:6]
@@ -134,15 +144,59 @@ def write(title: str, text: str, *, kind: str = "note",
         f"kind: {kind}\n"
         f"tags: {', '.join(tags)}\n"
         f"source: {source}\n"
+        f"repo: {repo or ''}\n"
+        f"topic: {topic or ''}\n"
         f"created: {created}\n"
         "---\n\n"
     )
     path.write_text(fm + (text or "").strip() + "\n", encoding="utf-8")
-    _ingest_unit(title=title, body=text, kind=kind, tags=tags,
-                 source=f"md:{stem}", repo=repo)
+    # ingest=False: md file only (compaction source) — used when the caller
+    # already wrote this fact to the backend (e.g. the learner), so we don't
+    # double-write the searchable store.
+    if ingest:
+        _ingest_unit(title=title, body=text, kind=kind, tags=tags,
+                     source=f"md:{stem}", repo=repo)
     d = _parse(path)
     d.pop("body", None)
     return d
+
+
+# ── Unified capture: the ONE entry every learning/comment flows through ───────
+# Each category writes an md file (repo + topic stamped) so it lands in BOTH
+# compaction axes. Without this write there is no md → nothing to compact →
+# it never reaches project/topic memory. Categories map to `kind`:
+#   user_comment      — something the user said to keep (verbatim intent)
+#   learning          — a general lesson (cross-repo)
+#   project_learning  — a lesson scoped to THIS repo (drives the project brief)
+#   topic_learning    — a lesson about a theme/workflow (drives the topic note)
+#   topic_suggestion  — a topic the USER asked us to track/organise around
+_CAPTURE_KINDS = {
+    "user_comment", "learning", "project_learning",
+    "topic_learning", "topic_suggestion",
+}
+
+
+def capture(kind: str, text: str, *, repo: str | None = None,
+            topic: str | None = None, title: str | None = None,
+            source: str = "capture", tags: list[str] | None = None,
+            ingest: bool = True) -> dict:
+    """Persist one captured item as an md memory (repo + topic stamped + tagged),
+    so it flows into both compaction axes. ``kind`` should be one of
+    ``_CAPTURE_KINDS`` (falls back to a plain note otherwise). Returns the parsed
+    md, or ``{"skipped": ...}`` for empty text."""
+    text = (text or "").strip()
+    if not text:
+        return {"skipped": "empty"}
+    k = kind if kind in _CAPTURE_KINDS else "note"
+    tset = list(tags or [])
+    if repo:
+        tset.append(f"repo:{_slug(repo)}")
+    if topic:
+        tset.append(f"topic:{_slug(topic)}")
+    tset.append(k)
+    ttl = title or (text.splitlines()[0][:70] if text else k)
+    return write(ttl, text, kind=k, tags=list(dict.fromkeys(tset)),
+                 source=source, repo=repo or "shared", topic=topic, ingest=ingest)
 
 
 def _find_by_source(source: str) -> Path | None:
@@ -387,9 +441,23 @@ def _topic_labels(files: list[dict], role: str) -> dict:
 
 
 def _group_key(d: dict, group_by: str) -> str:
+    if group_by == "repo":
+        # Project-brief axis: one consolidated file per repo. An explicit
+        # frontmatter `repo`, else a `repo:<x>` tag, else "shared" (cross-repo).
+        if d.get("repo"):
+            return d["repo"]
+        for t in d.get("tags") or []:
+            if t.startswith("repo:"):
+                return t.split(":", 1)[1] or "shared"
+        return "shared"
     if group_by == "topic":
-        # topic labels are precomputed onto d["_topic"] in _gather_planned; fall
-        # back to kind for any file the labeller missed.
+        # Topic axis: explicit frontmatter `topic` or a `topic:<slug>` tag wins
+        # (no LLM needed); else the precomputed label; else kind.
+        if d.get("topic"):
+            return d["topic"]
+        for t in d.get("tags") or []:
+            if t.startswith("topic:"):
+                return t.split(":", 1)[1] or (d.get("kind") or "note")
         return d.get("_topic") or (d.get("kind") or "note")
     if group_by == "tag":
         return (d["tags"][0] if d.get("tags") else "untagged")

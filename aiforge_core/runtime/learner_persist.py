@@ -144,6 +144,28 @@ def persist_facts(
     if not facts or not repo:
         return out
 
+    # Mirror every fact to an md memory (repo + topic stamped) REGARDLESS of
+    # backend — the DB/Neo4j write alone never reaches the md compactor, so a
+    # learning that isn't written to md never rolls up into the project brief or
+    # topic notes. DECISION:-prefixed facts are repo-scoped project learnings;
+    # the rest are general learnings. Best-effort, never raises.
+    try:
+        from aiforge_core.memory import md_store as _md
+        for _f in facts:
+            _txt = (_f.get("text") if isinstance(_f, dict) else str(_f)) or ""
+            _txt = _txt.strip()
+            if not _txt:
+                continue
+            _kind = ("project_learning" if _txt.upper().startswith("DECISION:")
+                     else "learning")
+            _topic = None
+            if isinstance(_f, dict):
+                _topic = _f.get("topic") or ((_f.get("tags") or [None]) or [None])[0]
+            _md.capture(_kind, _txt, repo=repo, topic=_topic,
+                        source=f"learner:{session_id or ''}", ingest=False)
+    except Exception:  # noqa: BLE001 — md mirror is best-effort
+        pass
+
     # Embedded (zero-infra) path — write learnings to the SQLite memory
     # store instead of Neo4j/AFM. Same result-dict shape, never raises.
     from aiforge_core.memory import backend_select as _bsel

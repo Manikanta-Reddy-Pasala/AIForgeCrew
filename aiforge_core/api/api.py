@@ -234,13 +234,17 @@ def _start_daily_reindex() -> None:
     # summary, archives originals) so the memory folder stays bounded + legible.
     # Was manual-only (POST /api/memory/files/compact); now scheduled.
     def _compact_chat_md() -> None:
+        # Two axes, both kept (overlap intended): per-REPO → the project brief
+        # you load when opening a repo; per-TOPIC → cross-repo theme notes.
         try:
             from aiforge_core.memory import md_store
-            r = md_store.compact(group_by="topic", summarize=True,
-                                 model_role="learner")
-            _af_log.info("chat-md compaction: %s", r)
+            r_repo = md_store.compact(group_by="repo", summarize=True,
+                                      model_role="learner")
+            r_topic = md_store.compact(group_by="topic", summarize=True,
+                                       model_role="learner")
+            _af_log.info("md compaction: repo=%s topic=%s", r_repo, r_topic)
         except Exception as exc:  # noqa: BLE001
-            _af_log.warning("chat-md compaction failed: %s", exc)
+            _af_log.warning("md compaction failed: %s", exc)
 
     _pd.register("chat-compact", _compact_chat_md,
                  at_hour=max(0, min(23, hour + 1)))   # after the reindex
@@ -4469,6 +4473,25 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                                     and _pc.get("skipped") is None:
                                 _af_log.warning("preference_capture did NOT persist "
                                                 "(repo=%s): %s", _repo, _pc.get("error"))
+                            # USER COMMENT / TOPIC SUGGESTION the user explicitly
+                            # states → md capture (repo + topic stamped) so it
+                            # reaches the compaction axes. Preference turns are
+                            # already captured above, so skip those.
+                            try:
+                                from aiforge_core.memory import md_store as _md2
+                                from aiforge_core.runtime import capture_cues as _cc
+                                _low = (prompt or "").lower()
+                                _pref_done = isinstance(_pc, dict) and _pc.get("captured")
+                                if any(s in _low for s in (
+                                        "track ", "organize by", "organise by",
+                                        "as a topic", "remember this topic", "topic:")):
+                                    _md2.capture("topic_suggestion", (prompt or "").strip(),
+                                                 repo=_repo, source=f"chat:{session_id or ''}")
+                                elif not _pref_done and _cc.has_cue(prompt or ""):
+                                    _md2.capture("user_comment", (prompt or "").strip(),
+                                                 repo=_repo, source=f"chat:{session_id or ''}")
+                            except Exception:  # noqa: BLE001
+                                pass
                         except Exception as _lexc:  # noqa: BLE001
                             _af_log.warning("chat learn/capture thread failed: %s",
                                             _lexc)

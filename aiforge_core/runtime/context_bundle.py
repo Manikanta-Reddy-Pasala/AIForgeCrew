@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 class ContextBundle:
     preferences_md: str = ""
     rules_md: str = ""
+    project_brief_md: str = ""       # the loaded per-repo "project memory"
     skills_md: str = ""
     workflows_md: str = ""
     repo_summary_md: str = ""
@@ -31,10 +32,28 @@ class ContextBundle:
     used_workflows: list = field(default_factory=list)
 
     def blocks(self) -> list[str]:
-        """Non-empty blocks in inject order (preferences + rules highest)."""
-        return [b for b in (self.preferences_md, self.rules_md, self.skills_md,
+        """Non-empty blocks in inject order (preferences + rules + project brief
+        highest — the project brief IS the consolidated repo memory)."""
+        return [b for b in (self.preferences_md, self.rules_md,
+                            self.project_brief_md, self.skills_md,
                             self.workflows_md, self.repo_summary_md,
                             self.repo_map_md, self.memory_md) if b]
+
+
+def _project_brief(cwd: str) -> str:
+    """The compacted per-repo project brief (``compacted-<repo>.md``) — the
+    'project memory' loaded when you open a repo. Empty until the repo axis has
+    been compacted at least once. Capped so it never dominates the window."""
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import repo_ident
+    repo = repo_ident.repo_name(cwd, sentinel="")
+    if not repo:
+        return ""
+    d = md_store.read_file(f"compacted-{md_store._slug(repo)}")
+    body = (d or {}).get("body") or ""
+    if not body.strip():
+        return ""
+    return "PROJECT MEMORY (" + repo + "):\n" + body.strip()[:6000]
 
 
 def _safe(fn, default=""):
@@ -65,6 +84,9 @@ def build_bundle(cwd: str, query: str, *, cave: bool = False,
         b.preferences_md = _safe(lambda: _ca._preferences_context(cwd))
     if want_rules:
         b.rules_md = _safe(lambda: _ca._rules_context(cwd, query))
+    # Consolidated per-repo project memory (compacted brief) — load it whenever
+    # we have a repo, so opening a project brings its accumulated memory.
+    b.project_brief_md = _safe(lambda: _project_brief(cwd))
     # Relevance-matched playbooks (skip in cave mode — agent can still search).
     if not cave:
         if ctx_on("skills"):
