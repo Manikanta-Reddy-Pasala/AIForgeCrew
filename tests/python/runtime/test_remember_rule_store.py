@@ -100,3 +100,26 @@ def test_repo_rule_overrides_global_in_pipeline(cfg, tmp_path):
         "---\nname: style\nalwaysApply: true\n---\nREPO body\n")
     bodies = {r.name: r.body for r in repo_rules.load_rules(str(tmp_path))}
     assert "REPO body" in bodies["style"] and "GLOBAL body" not in bodies["style"]
+
+
+def test_repo_skill_and_workflow_override_global(cfg, tmp_path):
+    import os
+    from aiforge_core.runtime import skills, workflows
+    skills.write_skill("deploy", "d", "GLOBAL deploy steps", ["deploy"],
+                       scope="global")
+    workflows.write_workflow("ship", "d", "GLOBAL ship steps", ["ship"],
+                             scope="global")
+    os.makedirs(tmp_path / ".aiforge" / "skills" / "deploy")
+    (tmp_path / ".aiforge" / "skills" / "deploy" / "SKILL.md").write_text(
+        "---\nname: deploy\ndescription: d\ntriggers: [deploy]\n---\nREPO deploy steps\n")
+    os.makedirs(tmp_path / ".aiforge" / "workflows" / "ship")
+    (tmp_path / ".aiforge" / "workflows" / "ship" / "WORKFLOW.md").write_text(
+        "---\nname: ship\ndescription: d\ntriggers: [ship]\n---\nREPO ship steps\n")
+    # load precedence (what every mode's auto_context uses)
+    sk = {s.name: s.body for s in skills.load(str(tmp_path))}
+    wf = {w.name: w.body for w in workflows.load(str(tmp_path))}
+    assert "REPO deploy steps" in sk["deploy"] and "GLOBAL" not in sk["deploy"]
+    assert "REPO ship steps" in wf["ship"] and "GLOBAL" not in wf["ship"]
+    # the injected block reflects the override
+    assert "REPO deploy steps" in skills.auto_context("please deploy", str(tmp_path))
+    assert "REPO ship steps" in workflows.auto_context("please ship", str(tmp_path))
