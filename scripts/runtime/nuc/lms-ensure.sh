@@ -25,8 +25,15 @@
 #   AIFORGE_LMS_TTL     legacy ttl seconds   (default 43200)
 set -euo pipefail
 
-HOST="${AIFORGE_LMS_HOST:-manikanta@192.168.70.185}"
-BIN="${AIFORGE_LMS_BIN:-/Users/manikanta/.lmstudio/bin/lms}"
+# Opt-in: this manages a REMOTE LM Studio host. No default host — a generic
+# clone that never sets AIFORGE_LMS_HOST skips this entirely (this box's IP is
+# operator config, not a shared-repo constant).
+HOST="${AIFORGE_LMS_HOST:-}"
+if [ -z "$HOST" ]; then
+    echo "lms-ensure: AIFORGE_LMS_HOST unset — skipping (no remote LM Studio to manage)"
+    exit 0
+fi
+BIN="${AIFORGE_LMS_BIN:-lms}"
 LEGACY_MODEL="${AIFORGE_LMS_MODEL:-qwen/qwen3-coder-next}"
 LEGACY_CTX="${AIFORGE_LMS_CTX:-262144}"
 LEGACY_TTL="${AIFORGE_LMS_TTL:-43200}"
