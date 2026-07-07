@@ -195,8 +195,56 @@ def capture(kind: str, text: str, *, repo: str | None = None,
         tset.append(f"topic:{_slug(topic)}")
     tset.append(k)
     ttl = title or (text.splitlines()[0][:70] if text else k)
-    return write(ttl, text, kind=k, tags=list(dict.fromkeys(tset)),
-                 source=source, repo=repo or "shared", topic=topic, ingest=ingest)
+    res = write(ttl, text, kind=k, tags=list(dict.fromkeys(tset)),
+                source=source, repo=repo or "shared", topic=topic, ingest=ingest)
+    # WRITE-TIME brief maintenance: fold the fact into the repo's compacted brief
+    # RIGHT NOW (cheap, no LLM), so recall (which reads compacted-<repo>.md) sees
+    # just-written data instead of waiting for the periodic compaction. Periodic
+    # compaction later only RE-SUMMARIZES to bound size.
+    if repo:
+        try:
+            _brief_upsert(repo, text, topic=topic)
+        except Exception:  # noqa: BLE001 — brief upkeep never breaks a write
+            pass
+    return res
+
+
+_BRIEF_CAP = 24_000   # chars; periodic re-summarize keeps it below this
+
+
+def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
+    """Append ``text`` as a bullet into ``compacted-<repo>.md`` immediately (no
+    LLM), deduped by content. Creates the brief if absent. Bounded: when it
+    exceeds ``_BRIEF_CAP`` the OLDEST bullets are dropped (the periodic
+    re-summarize pass reconstitutes a tight version)."""
+    text = (text or "").strip()
+    if not text:
+        return
+    slug = _slug(repo)
+    path = memory_dir() / f"compacted-{slug}.md"
+    heading = f"# {repo} memory (compacted)"
+    head = (f"---\ntitle: {repo} memory (compacted)\n"
+            f"kind: compacted\nrepo: {repo}\nsource: brief:{slug}\n---\n\n")
+    fact = text.replace("\n", " ").strip()
+    new_bullet = "- " + (f"[{topic}] " if topic else "") + fact
+    with _WRITE_LOCK:
+        # Collect existing bullets ONLY (drop stray/duplicate headings), append
+        # the new one deduped, and rebuild with a SINGLE heading.
+        bullets: list[str] = []
+        if path.exists():
+            raw = path.read_text(encoding="utf-8", errors="replace")
+            m = _FM_RE.match(raw)
+            prev_body = (m.group(2) if m else raw)
+            bullets = [ln.rstrip() for ln in prev_body.splitlines()
+                       if ln.startswith("- ")]
+        # dedup by the fact text (ignore the [topic] prefix)
+        if any(fact in b for b in bullets):
+            return
+        bullets.append(new_bullet)
+        while bullets and len(heading + "\n" + "\n".join(bullets)) > _BRIEF_CAP:
+            bullets.pop(0)                 # drop oldest; periodic re-summarize rebuilds
+        body = heading + "\n" + "\n".join(bullets) + "\n"
+        path.write_text(head + body, encoding="utf-8")
 
 
 def _find_by_source(source: str) -> Path | None:

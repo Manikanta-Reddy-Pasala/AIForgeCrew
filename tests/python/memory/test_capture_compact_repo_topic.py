@@ -72,3 +72,16 @@ def test_both_axes_nondestructive_sequence(cfg):
     rt = m.compact(group_by="topic", min_group=2, summarize=False, archive_sources=False)
     assert rr["groups"].get("r1") == 1 or rr["files_out"] >= 0   # repo briefs made
     assert rt["groups"].get("proxies") == 2                       # topic STILL sees both
+
+
+def test_writetime_brief_is_fresh_immediately(cfg):
+    # Write-time maintenance: a captured learning appears in the repo brief
+    # IMMEDIATELY (no periodic compaction), so recall never misses latest data.
+    from aiforge_core.memory import md_store as m
+    m.capture("project_learning", "svc: db via gateway only", repo="svc", topic="arch")
+    b = m.read_file("compacted-svc")
+    assert b and "db via gateway only" in b["body"]
+    m.capture("project_learning", "svc: db via gateway only", repo="svc", topic="arch")  # dup
+    b2 = m.read_file("compacted-svc")
+    assert b2["body"].count("# svc memory") == 1              # single heading
+    assert b2["body"].count("db via gateway only") == 1       # deduped
