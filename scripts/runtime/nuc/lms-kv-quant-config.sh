@@ -18,11 +18,11 @@
 #
 #   AIFORGE_LMS_HOST   ssh target (default manikanta@192.168.70.185)
 #   KV_MODELS          "publisher/ModelDir:ctx:bits" list, comma-sep
-#                      default: lmstudio-community/Qwen3-Coder-Next-MLX-4bit:131072:8
+#                      default: lmstudio-community/Qwen3-Coder-Next-MLX-4bit:262144:8
 set -euo pipefail
 
 HOST="${AIFORGE_LMS_HOST:-manikanta@192.168.70.185}"
-KV_MODELS="${KV_MODELS:-lmstudio-community/Qwen3-Coder-Next-MLX-4bit:131072:8}"
+KV_MODELS="${KV_MODELS:-lmstudio-community/Qwen3-Coder-Next-MLX-4bit:262144:8}"
 
 IFS=',' read -ra SPECS <<< "$KV_MODELS"
 for spec in "${SPECS[@]}"; do

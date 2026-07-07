@@ -21,14 +21,14 @@
 #   AIFORGE_LMS_BIN     lms path on the host (default ~/.lmstudio/bin/lms)
 #   AIFORGE_LMS_MODELS  spec list, see above
 #   AIFORGE_LMS_MODEL   legacy single model  (default qwen/qwen3-coder-next)
-#   AIFORGE_LMS_CTX     legacy ctx           (default 131072)
+#   AIFORGE_LMS_CTX     legacy ctx           (default 262144 = 256K, matches load-models.sh)
 #   AIFORGE_LMS_TTL     legacy ttl seconds   (default 43200)
 set -euo pipefail
 
 HOST="${AIFORGE_LMS_HOST:-manikanta@192.168.70.185}"
 BIN="${AIFORGE_LMS_BIN:-/Users/manikanta/.lmstudio/bin/lms}"
 LEGACY_MODEL="${AIFORGE_LMS_MODEL:-qwen/qwen3-coder-next}"
-LEGACY_CTX="${AIFORGE_LMS_CTX:-131072}"
+LEGACY_CTX="${AIFORGE_LMS_CTX:-262144}"
 LEGACY_TTL="${AIFORGE_LMS_TTL:-43200}"
 SPECS="${AIFORGE_LMS_MODELS:-${LEGACY_MODEL}:${LEGACY_CTX}:${LEGACY_TTL}}"
 
