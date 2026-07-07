@@ -45,3 +45,33 @@ def test_remember_rule_writes_memory_scoped(cfg):
                 for r in c.execute("SELECT text, repo FROM memory_units").fetchall()}
     assert rows.get("RULE: Global rule X") is None        # global = repo-agnostic
     assert rows.get("RULE: Repo rule Y") is not None       # repo-scoped
+
+
+def test_builder_elaborates_body_via_llm(cfg, monkeypatch):
+    from unittest.mock import patch
+    from aiforge_core.runtime import chat_agent as ca
+    from aiforge_core.runtime import skills
+
+    def fake(role, messages, **kw):
+        return "# Title\n\n1. Elaborated step one.\n2. Step two.\n3. Verify."
+    with patch("aiforge_core.llm.client.complete", fake):
+        r = ca._t_learn_skill({"name": "el-skill", "body": "do the thing",
+                               "scope": "global"}, ".")
+    assert r["ok"]
+    body = [s for s in skills.load() if s.name == "el-skill"][0].body
+    assert "Elaborated step one" in body and "do the thing" not in body
+
+
+def test_builder_elaborate_fallback_keeps_raw(cfg, monkeypatch):
+    from unittest.mock import patch
+    from aiforge_core.runtime import chat_agent as ca
+    from aiforge_core.runtime import skills
+
+    def boom(role, messages, **kw):
+        raise RuntimeError("llm down")
+    with patch("aiforge_core.llm.client.complete", boom):
+        r = ca._t_learn_skill({"name": "raw-skill", "body": "raw text",
+                               "scope": "global"}, ".")
+    assert r["ok"]
+    body = [s for s in skills.load() if s.name == "raw-skill"][0].body
+    assert "raw text" in body            # never lost when elaboration fails

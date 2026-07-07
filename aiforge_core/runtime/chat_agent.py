@@ -645,6 +645,64 @@ def _t_grep(args: dict, cwd: str) -> dict:
     return {"ok": True, "matches": out, "note": note, "truncated": False}
 
 
+# Elaboration prompts — turn a user's rough input into a well-structured
+# playbook BODY (no frontmatter; write_skill/write_workflow add that). Local
+# models often emit a thin one-liner as the body; running it through the model
+# once server-side guarantees a formatted, elaborated artifact.
+_ELABORATE_PROMPT = {
+    "skill": ("Rewrite the following into a clear, reusable SKILL body: a short "
+              "intro line then concise numbered/bulleted steps the agent "
+              "follows. Keep the user's intent; add the obvious missing detail. "
+              "Output ONLY the markdown body — NO YAML frontmatter, no name."),
+    "workflow": ("Rewrite the following into a WORKFLOW body: numbered "
+                 "end-to-end steps, each concrete and in dependency order, with "
+                 "a final done-check. Keep the user's intent; fill obvious gaps. "
+                 "Output ONLY the markdown body — NO frontmatter."),
+    "rule": ("Rewrite the following into a coding RULE: a '# Title' line then "
+             "tight imperative bullet points the agent must follow. Keep the "
+             "intent; make each bullet testable. Output ONLY the markdown."),
+}
+
+
+def _elaborate_body(kind: str, body: str, *, name: str = "",
+                    description: str = "") -> str:
+    """Format+elaborate a rough ``body`` via the model. Best-effort: returns the
+    ORIGINAL body on any failure/empty, and skips when disabled or the body is
+    already substantial (>= 400 chars with structure) so we don't over-rewrite a
+    good doc. Off with AIFORGE_BUILDER_ELABORATE=0."""
+    body = (body or "").strip()
+    if os.environ.get("AIFORGE_BUILDER_ELABORATE", "1") in ("0", "false", "no"):
+        return body
+    prompt = _ELABORATE_PROMPT.get(kind)
+    if not prompt or not body:
+        return body
+    # Already a structured, non-trivial doc → leave it (avoid churn).
+    if len(body) >= 400 and ("\n" in body) and any(
+            m in body for m in ("- ", "1.", "# ", "* ")):
+        return body
+    ctx = (f"Name: {name}\n" if name else "") + \
+          (f"Purpose: {description}\n" if description else "")
+    try:
+        from aiforge_core.llm import client as _llm
+        out = _llm.complete("architect", [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": (ctx + "\nInput:\n" + body).strip()},
+        ], max_tokens=900, temperature=0.2,
+            timeout_s=int(os.environ.get("AIFORGE_BUILDER_ELABORATE_TIMEOUT_S", "45")))
+        out = (out or "").strip()
+        # Strip a stray ```markdown fence if the model wrapped it.
+        if out.startswith("```"):
+            parts = out.split("```")
+            if len(parts) >= 2:
+                out = parts[1]
+                if out.lower().lstrip().startswith("markdown"):
+                    out = out.lstrip()[8:]
+                out = out.strip()
+        return out or body
+    except Exception:  # noqa: BLE001 — elaboration is best-effort, never block save
+        return body
+
+
 def _t_remember_rule(args: dict, cwd: str) -> dict:
     """Persist a user rule that must apply to EVERY future session. Writes to
     the SAME global rules store the Library UI lists/creates/deletes
@@ -665,6 +723,7 @@ def _t_remember_rule(args: dict, cwd: str) -> dict:
         globs = args.get("globs")
         if isinstance(globs, str):
             globs = [g.strip() for g in globs.split(",") if g.strip()]
+        text = _elaborate_body("rule", text, name=name)   # LLM format+elaborate
         res = repo_rules.write_rule(name, text, globs=globs, always=True)
         if not res.get("ok"):
             return res
@@ -1113,12 +1172,13 @@ def _t_learn_skill(args: dict, cwd: str) -> dict:
         triggers = args.get("triggers") or []
         if isinstance(triggers, str):
             triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+        _name = args.get("name", "")
+        _desc = args.get("description", "")
+        _body = _elaborate_body("skill", args.get("body") or args.get("content")
+                                or "", name=_name, description=_desc)
         return _skills.write_skill(
-            name=args.get("name", ""),
-            description=args.get("description", ""),
-            body=args.get("body") or args.get("content") or "",
-            triggers=list(triggers),
-            cwd=cwd,
+            name=_name, description=_desc, body=_body,
+            triggers=list(triggers), cwd=cwd,
             scope=(args.get("scope") or "global").lower(),
         )
     except Exception as exc:  # noqa: BLE001
@@ -1143,12 +1203,13 @@ def _t_learn_workflow(args: dict, cwd: str) -> dict:
         triggers = args.get("triggers") or []
         if isinstance(triggers, str):
             triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+        _name = args.get("name", "")
+        _desc = args.get("description", "")
+        _body = _elaborate_body("workflow", args.get("body") or args.get("content")
+                                or "", name=_name, description=_desc)
         return _wf.write_workflow(
-            name=args.get("name", ""),
-            description=args.get("description", ""),
-            body=args.get("body") or args.get("content") or "",
-            triggers=list(triggers),
-            cwd=cwd,
+            name=_name, description=_desc, body=_body,
+            triggers=list(triggers), cwd=cwd,
             scope=(args.get("scope") or "global").lower(),
         )
     except Exception as exc:  # noqa: BLE001
