@@ -11,6 +11,7 @@ and calls :func:`http_request` with a fully-built URL and headers.
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import urllib.error
 import urllib.request
@@ -25,6 +26,43 @@ ATLASSIAN_DENIED_HEADERS = (
 
 def truthy(v) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def integration_conf(name: str, env_prefix: str, *,
+                     str_fields: "tuple[tuple[str, str], ...]" = (),
+                     bool_fields: "tuple[tuple[str, str], ...]" = ()) -> dict:
+    """Resolve a jira/confluence/gitlab config: env var WINS, else the
+    UI/chat-persisted store. Shared so the three tools don't triplicate the
+    env-or-store + token-strip + insecure-TLS-by-default logic.
+
+    Always returns ``base_url`` (trailing slash stripped), ``token`` (whitespace
+    stripped — a stray newline in an auth header yields a 401), and
+    ``insecure_tls`` (DEFAULT True; ``{PREFIX}_INSECURE_TLS=0`` re-enables verify
+    — integrations hit self-signed internal endpoints and the UI toggle was
+    removed). ``str_fields`` = extra ``(key, ENV)`` string fields (e.g.
+    ``("default_project", "JIRA_DEFAULT_PROJECT")``); ``bool_fields`` = extra
+    ``(key, ENV)`` booleans (env truthy OR stored truthy, e.g. gitlab ``oauth``).
+    """
+    try:
+        from aiforge_core.config import integrations
+        stored = integrations.get(name)
+    except Exception:  # noqa: BLE001
+        stored = {}
+
+    def _s(key: str, env: str) -> str:
+        return (os.environ.get(env) or stored.get(key) or "").strip()
+
+    _ins = os.environ.get(f"{env_prefix}_INSECURE_TLS")
+    conf = {
+        "base_url": _s("base_url", f"{env_prefix}_BASE_URL").rstrip("/"),
+        "token": _s("token", f"{env_prefix}_TOKEN"),
+        "insecure_tls": _ins is None or truthy(_ins),
+    }
+    for key, env in str_fields:
+        conf[key] = _s(key, env)
+    for key, env in bool_fields:
+        conf[key] = truthy(os.environ.get(env, "")) or bool(stored.get(key))
+    return conf
 
 
 def ssl_context(insecure_tls: bool):

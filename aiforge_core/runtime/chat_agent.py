@@ -3257,30 +3257,25 @@ def run_chat_agent(
             sys_msg += addition[:room] + "\n…(truncated to fit context)\n"
         _sys_dropped.append(label)
 
-    # Dynamic context blocks — each independently toggleable via _ctx_on().
-    # Cave mode: a much smaller repo map (the agent still has find/grep/list).
+    # Dynamic context blocks — via the SHARED bundle builder (same source
+    # selection/scoping/gating as chat-team + the pipeline). rules+prefs are
+    # already injected above as high-priority blocks, so skip them here.
+    from aiforge_core.runtime import context_bundle as _cb
+    _bundle = _cb.build_bundle(cwd, last_user, cave=cave, ctx_on=_ctx_on,
+                               session_id=session_id,
+                               want_rules=False, want_prefs=False)
     if _ctx_on("summary"):
-        _add_sys_block("repo-summary", _repo_context(cwd))
+        _add_sys_block("repo-summary", _bundle.repo_summary_md)
     if _ctx_on("repomap"):
-        _add_sys_block("repo-map",
-                       _build_repo_map(cwd, max_entries=(60 if cave else 160),
-                                       max_depth=(2 if cave else 3)))
+        _add_sys_block("repo-map", _bundle.repo_map_md)
     # Skills / workflows / @-mentions — OPTIONAL context blocks. Cave mode skips
     # them (the agent can still skill_search / workflow_search on demand); each is
     # also independently toggleable.
     if not cave:
         if _ctx_on("skills"):
-            try:
-                from aiforge_core.runtime import skills as _skills
-                _add_sys_block("skills", _skills.auto_context(last_user, cwd))
-            except Exception:  # noqa: BLE001
-                pass
+            _add_sys_block("skills", _bundle.skills_md)
         if _ctx_on("workflows"):
-            try:
-                from aiforge_core.runtime import workflows as _workflows
-                _add_sys_block("workflows", _workflows.auto_context(last_user, cwd))
-            except Exception:  # noqa: BLE001
-                pass
+            _add_sys_block("workflows", _bundle.workflows_md)
         if _ctx_on("mentions"):
             try:
                 from aiforge_core.runtime import mentions as _mentions
@@ -3288,12 +3283,10 @@ def run_chat_agent(
                 _add_sys_block("mentions", ment_block)
             except Exception:  # noqa: BLE001
                 pass
-    # Self-learning recall — EVERY turn, keyed to the CURRENT user message. Cave
-    # mode pulls fewer hits.
+    # Self-learning recall — EVERY turn, keyed to the CURRENT user message
+    # (from the shared bundle). Cave mode pulls fewer hits.
     if _ctx_on("recall"):
-        _add_sys_block("recall",
-                       _memory_recall(cwd, last_user, limit=(3 if cave else 6),
-                                      session_id=session_id))
+        _add_sys_block("recall", _bundle.memory_md)
         # Prior CHAT SESSIONS — surface what the user discussed in OTHER
         # conversations (excludes the current session). Cave mode → fewer hits.
         # Local SQLite scan, so cheap enough to run every turn there IS a query.

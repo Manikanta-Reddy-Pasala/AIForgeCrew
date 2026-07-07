@@ -28,30 +28,12 @@ _truthy = _http.truthy
 
 
 def _conf() -> dict:
-    """Resolve config: env var WINS, else the UI-persisted store."""
-    try:
-        from aiforge_core.config import integrations
-        stored = integrations.get("confluence")
-    except Exception:  # noqa: BLE001
-        stored = {}
-    return {
-        "base_url": (os.environ.get("CONFLUENCE_BASE_URL")
-                     or stored.get("base_url") or "").strip().rstrip("/"),
-        # strip whitespace/newlines a pasted token often carries — a stray
-        # "\n" in the Authorization header value yields a 401.
-        "token": (os.environ.get("CONFLUENCE_TOKEN")
-                  or stored.get("token") or "").strip(),
-        "user": (os.environ.get("CONFLUENCE_USER") or stored.get("user") or "").strip(),
-        # Insecure by DEFAULT (self-signed internal endpoints); set
-        # CONFLUENCE_INSECURE_TLS=0 to re-enable verification. UI toggle removed.
-        "insecure_tls": (os.environ.get("CONFLUENCE_INSECURE_TLS") is None
-                         or _truthy(os.environ.get("CONFLUENCE_INSECURE_TLS", ""))),
-        # Default space key, applied when a call omits ``space`` (auto-fill on
-        # create; scope search/read). env wins, else the UI/chat-persisted store.
-        # Lets the user say "use ENG as the default space" once.
-        "default_space": (os.environ.get("CONFLUENCE_DEFAULT_SPACE")
-                          or stored.get("default_space") or "").strip(),
-    }
+    """Resolve config via the shared integration helper: base_url/token/
+    insecure_tls (insecure by default) + user + default_space."""
+    return _http.integration_conf(
+        "confluence", "CONFLUENCE",
+        str_fields=(("user", "CONFLUENCE_USER"),
+                    ("default_space", "CONFLUENCE_DEFAULT_SPACE")))
 
 
 def default_space() -> str:

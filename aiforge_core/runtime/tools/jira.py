@@ -28,31 +28,12 @@ _truthy = _http.truthy
 
 
 def _conf() -> dict:
-    """Resolve config: env var WINS, else the UI-persisted store."""
-    try:
-        from aiforge_core.config import integrations
-        stored = integrations.get("jira")
-    except Exception:  # noqa: BLE001
-        stored = {}
-    return {
-        "base_url": (os.environ.get("JIRA_BASE_URL")
-                     or stored.get("base_url") or "").strip().rstrip("/"),
-        # strip whitespace/newlines a pasted token often carries — a stray
-        # "\n" in the Authorization header value yields a 401.
-        "token": (os.environ.get("JIRA_TOKEN")
-                  or stored.get("token") or "").strip(),
-        "user": (os.environ.get("JIRA_USER") or stored.get("user") or "").strip(),
-        # Integrations skip TLS verify by DEFAULT — they typically hit
-        # self-signed internal endpoints. Set JIRA_INSECURE_TLS=0 to re-enable
-        # verification. (The UI toggle was removed; this is the policy.)
-        "insecure_tls": (os.environ.get("JIRA_INSECURE_TLS") is None
-                         or _truthy(os.environ.get("JIRA_INSECURE_TLS", ""))),
-        # Default project key, applied when a call omits ``project`` (auto-fill on
-        # create; scope full-text search). env wins, else the UI/chat-persisted
-        # store. Lets the user say "use ENG as the default project" once.
-        "default_project": (os.environ.get("JIRA_DEFAULT_PROJECT")
-                            or stored.get("default_project") or "").strip(),
-    }
+    """Resolve config via the shared integration helper: base_url/token/
+    insecure_tls (insecure by default) + user + default_project."""
+    return _http.integration_conf(
+        "jira", "JIRA",
+        str_fields=(("user", "JIRA_USER"),
+                    ("default_project", "JIRA_DEFAULT_PROJECT")))
 
 
 def default_project() -> str:
