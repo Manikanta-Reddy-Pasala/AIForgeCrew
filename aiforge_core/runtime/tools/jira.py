@@ -42,8 +42,11 @@ def _conf() -> dict:
         "token": (os.environ.get("JIRA_TOKEN")
                   or stored.get("token") or "").strip(),
         "user": (os.environ.get("JIRA_USER") or stored.get("user") or "").strip(),
-        "insecure_tls": (_truthy(os.environ.get("JIRA_INSECURE_TLS", ""))
-                         or bool(stored.get("insecure_tls"))),
+        # Integrations skip TLS verify by DEFAULT — they typically hit
+        # self-signed internal endpoints. Set JIRA_INSECURE_TLS=0 to re-enable
+        # verification. (The UI toggle was removed; this is the policy.)
+        "insecure_tls": (os.environ.get("JIRA_INSECURE_TLS") is None
+                         or _truthy(os.environ.get("JIRA_INSECURE_TLS", ""))),
         # Default project key, applied when a call omits ``project`` (auto-fill on
         # create; scope full-text search). env wins, else the UI/chat-persisted
         # store. Lets the user say "use ENG as the default project" once.

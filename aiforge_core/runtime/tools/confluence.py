@@ -42,8 +42,10 @@ def _conf() -> dict:
         "token": (os.environ.get("CONFLUENCE_TOKEN")
                   or stored.get("token") or "").strip(),
         "user": (os.environ.get("CONFLUENCE_USER") or stored.get("user") or "").strip(),
-        "insecure_tls": (_truthy(os.environ.get("CONFLUENCE_INSECURE_TLS", ""))
-                         or bool(stored.get("insecure_tls"))),
+        # Insecure by DEFAULT (self-signed internal endpoints); set
+        # CONFLUENCE_INSECURE_TLS=0 to re-enable verification. UI toggle removed.
+        "insecure_tls": (os.environ.get("CONFLUENCE_INSECURE_TLS") is None
+                         or _truthy(os.environ.get("CONFLUENCE_INSECURE_TLS", ""))),
         # Default space key, applied when a call omits ``space`` (auto-fill on
         # create; scope search/read). env wins, else the UI/chat-persisted store.
         # Lets the user say "use ENG as the default space" once.

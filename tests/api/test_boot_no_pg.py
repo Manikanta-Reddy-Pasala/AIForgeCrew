@@ -169,7 +169,12 @@ def test_chat_sessions_crud_and_message(client, monkeypatch):
     assert '"type": "tool"' in r.text
 
     got = c.get(f"/api/chat/sessions/{sid}").json()
-    assert got["session"]["title"] == "fix the parser bug"
+    # The first message sets a clean DERIVED title (provisional_title strips the
+    # leading verb/filler + Title-Cases) — "fix the parser bug" → "Parser Bug".
+    # Not the raw prompt; the model-title upgrade is best-effort on top.
+    from aiforge_core.runtime.chat_title import provisional_title
+    assert got["session"]["title"] == provisional_title("fix the parser bug")
+    assert got["session"]["title"] != "New chat"
     assert [m["role"] for m in got["messages"]] == ["user", "assistant"]
     assert got["messages"][1]["steps"]   # tool step persisted
 

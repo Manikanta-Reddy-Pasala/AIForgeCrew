@@ -50,8 +50,10 @@ def _conf() -> dict:
                     or stored.get("project") or "").strip(),
         "oauth": (_truthy(os.environ.get("GITLAB_OAUTH", ""))
                   or bool(stored.get("oauth"))),
-        "insecure_tls": (_truthy(os.environ.get("GITLAB_INSECURE_TLS", ""))
-                         or bool(stored.get("insecure_tls"))),
+        # Insecure by DEFAULT (self-signed internal endpoints); set
+        # GITLAB_INSECURE_TLS=0 to re-enable verification. UI toggle removed.
+        "insecure_tls": (os.environ.get("GITLAB_INSECURE_TLS") is None
+                         or _truthy(os.environ.get("GITLAB_INSECURE_TLS", ""))),
     }
 
 

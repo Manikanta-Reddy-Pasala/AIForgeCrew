@@ -92,10 +92,9 @@ export function ConfluenceCard() {
                    value={user} onChange={e => setUser(e.target.value)} />
           </label>
         )}
-        <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={insecure} onChange={e => setInsecure(e.target.checked)} />
-          Skip TLS verify (self-signed internal cert)
-        </label>
+        {/* TLS-verify toggle removed — integrations skip verification by
+            default (self-signed internal endpoints); set *_INSECURE_TLS=0 to
+            re-enable per service. */}
         <div className="row" style={{ gap: 8 }}>
           <button onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
           <button className="ghost" onClick={test} disabled={busy}>Test connection</button>
@@ -193,10 +192,9 @@ export function JiraCard() {
                    value={user} onChange={e => setUser(e.target.value)} />
           </label>
         )}
-        <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={insecure} onChange={e => setInsecure(e.target.checked)} />
-          Skip TLS verify (self-signed internal cert)
-        </label>
+        {/* TLS-verify toggle removed — integrations skip verification by
+            default (self-signed internal endpoints); set *_INSECURE_TLS=0 to
+            re-enable per service. */}
         <div className="row" style={{ gap: 8 }}>
           <button onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
           <button className="ghost" onClick={test} disabled={busy}>Test connection</button>
@@ -288,10 +286,9 @@ export function GitlabCard() {
           <input type="checkbox" checked={oauth} onChange={e => setOauth(e.target.checked)} />
           Token is OAuth (send as Bearer instead of PRIVATE-TOKEN)
         </label>
-        <label className="row small" style={{ gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={insecure} onChange={e => setInsecure(e.target.checked)} />
-          Skip TLS verify (self-signed internal cert)
-        </label>
+        {/* TLS-verify toggle removed — integrations skip verification by
+            default (self-signed internal endpoints); set *_INSECURE_TLS=0 to
+            re-enable per service. */}
         <div className="row" style={{ gap: 8 }}>
           <button onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
           <button className="ghost" onClick={test} disabled={busy}>Test connection</button>

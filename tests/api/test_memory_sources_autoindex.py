@@ -40,21 +40,18 @@ def test_repo_add_auto_indexes(app_client, monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     calls: list = []
-    monkeypatch.setattr(mi, "run_index", lambda sid: calls.append(sid))
+    # Indexing runs in a SEPARATE PROCESS (_spawn_index → subprocess.Popen) to
+    # avoid GIL-starving uvicorn, so an in-process monkeypatch of run_index is
+    # never seen by the child. Patch the _spawn_index seam the endpoint calls —
+    # that's what proves the repo add auto-kicks the index.
+    monkeypatch.setattr(api, "_spawn_index", lambda sid: calls.append(sid))
 
     r = client.post("/api/memory/sources",
                     json={"kind": "repo", "location": str(repo), "name": "r"})
     assert r.status_code == 201
     body = r.json()
     assert body["status"] == "indexing"
-
-    # background thread should have fired run_index with the new id
-    import time
-    for _ in range(50):
-        if calls:
-            break
-        time.sleep(0.01)
-    assert calls == [body["id"]]
+    assert calls == [body["id"]]          # auto-index fired for the new source
 
 
 def test_url_add_stays_manual(app_client, monkeypatch):

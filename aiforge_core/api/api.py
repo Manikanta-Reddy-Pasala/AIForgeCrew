@@ -3943,16 +3943,22 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         if not _skip_enhance and not _route_pipeline:
             try:
                 from aiforge_core.runtime import turn_router as _tr2
-                # Skip the enhancer (an LLM round-trip + a memory recall) on ANY
-                # FOLLOW-UP that isn't itself a fresh multi-file build — the
-                # history is folded into the spec regardless, so re-enhancing
-                # "add rate limiting to the plan" / "fix that" is wasted latency
-                # and a needless re-recall (was gated on classify=='simple',
-                # which a plan-mode follow-up never matches, so it never skipped).
-                # A genuinely NEW build follow-up still enhances.
+                # Skip the enhancer ONLY for a SIMPLE follow-up ("fix that",
+                # "add a test") — there the history-fold below carries the
+                # context and a second LLM round-trip + memory recall is wasted
+                # latency. A COMPLEX follow-up ("no, use postgres instead") or a
+                # classify FAILURE keeps the enhancer MANDATORY — it resolves the
+                # referent against the prior turns instead of running on the raw
+                # prompt (skipping it there under-serves the request). A genuine
+                # multi-file build follow-up also enhances.
                 if _tr2.is_followup(history) \
                         and not _looks_like_multifile_build(prompt):
-                    _skip_enhance = True
+                    try:
+                        _cls = _tr2.classify(prompt, history=history)
+                    except Exception:  # noqa: BLE001 — classify blew up → enhance
+                        _cls = "complex"
+                    if _cls == "simple":
+                        _skip_enhance = True
             except Exception as _sexc:  # noqa: BLE001 — never block a turn
                 _af_log.debug("enhancer skip-check failed: %s", _sexc)
         if _auto_downgraded:

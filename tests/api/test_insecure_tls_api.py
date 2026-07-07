@@ -44,8 +44,14 @@ def test_v2_set_and_get_roundtrips_insecure_tls(client):
 
     cfg = client.get("/api/agents/v2/config").json()
     assert cfg["doer"]["insecure_tls"] is True
-    # default stays False for an untouched role
-    assert cfg["planner"]["insecure_tls"] is False
+    # An UNCONFIGURED role borrows a configured role's whole endpoint
+    # (base_url + insecure_tls) so it reaches a real model instead of the
+    # placeholder — so planner inherits doer's endpoint here, TLS posture and
+    # all (same server ⇒ same TLS). It must point at the borrowed base_url and
+    # carry the borrowed insecure_tls, NOT default to a bare False that would
+    # then fail against a self-signed internal endpoint.
+    assert cfg["planner"]["base_url"] == "https://chatai.internal"
+    assert cfg["planner"]["insecure_tls"] is True
 
 
 def test_providers_test_forwards_insecure(client, monkeypatch):
