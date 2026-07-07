@@ -417,6 +417,15 @@ fi
   || echo "  chat fs scope: UNRESTRICTED (set AIFORGE_WORKSPACE_DIR to clamp)"
 echo ""
 
+# Ensure local LM Studio models are resident at full context + JIT disabled +
+# right parallelism BEFORE agents connect — so a fresh start never 400s
+# ("tokens to keep > context length") for the 10 min until the systemd timer
+# first fires. Backgrounded + soft: never blocks or fails the launch, and skips
+# cleanly when the LMS host is unset/unreachable (non-LM-Studio setups).
+if [[ $MODE == hybrid && -f scripts/runtime/nuc/lms-ensure.sh ]]; then
+  ( bash scripts/runtime/nuc/lms-ensure.sh 2>&1 | sed 's/^/  lms-ensure: /' || true ) &
+fi
+
 # hybrid needs the team pipeline runner — start it on the HOST in the
 # background and reap it when uvicorn exits. lite has no runner (unchanged).
 if [[ $MODE == hybrid ]]; then

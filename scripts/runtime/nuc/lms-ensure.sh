@@ -30,7 +30,28 @@ BIN="${AIFORGE_LMS_BIN:-/Users/manikanta/.lmstudio/bin/lms}"
 LEGACY_MODEL="${AIFORGE_LMS_MODEL:-qwen/qwen3-coder-next}"
 LEGACY_CTX="${AIFORGE_LMS_CTX:-262144}"
 LEGACY_TTL="${AIFORGE_LMS_TTL:-43200}"
+# Concurrent predictions per model. At a big context a 30B+ model's KV cache is
+# multi-GB per slot; parallel>1 at 256K can exceed VRAM and make LM Studio drop
+# to a tiny context. Default 1 (serial, stable). Raise only with headroom.
+PARALLEL="${AIFORGE_LMS_PARALLEL:-1}"
 SPECS="${AIFORGE_LMS_MODELS:-${LEGACY_MODEL}:${LEGACY_CTX}:${LEGACY_TTL}}"
+
+# Disable LM Studio Just-In-Time model loading — the "8192 trap". With JIT ON,
+# a request for a model auto-loads a SECOND instance under the base id at the
+# tiny default context (4096/8192), which then SERVES every request while our
+# explicit full-context load sits under a ':2' id, ignored — so every agent
+# 400s "tokens to keep from initial prompt > context length". Turning JIT off
+# means only our explicit --context-length load exists. Idempotent (no-op +
+# no server restart once already false).
+ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" '
+  CFG="$HOME/.lmstudio/.internal/http-server-config.json"
+  if [ -f "$CFG" ] && grep -q "\"justInTimeModelLoading\": true" "$CFG"; then
+    sed -i.bak "s/\"justInTimeModelLoading\": true/\"justInTimeModelLoading\": false/" "$CFG"
+    '"$BIN"' server stop  >/dev/null 2>&1 || true
+    '"$BIN"' server start >/dev/null 2>&1 || true
+    echo "lms-ensure: disabled JIT model loading + restarted server"
+  fi
+' 2>/dev/null || echo "lms-ensure: JIT-disable step skipped (host unreachable)" >&2
 
 state=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "$BIN ps --json" \
         2>/dev/null || echo "[]")
@@ -73,8 +94,8 @@ print(best)
     echo "lms-ensure: $MODEL ctx=$loaded_ctx < required $CTX — reloading"
     ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" \
         "$BIN unload '$MODEL' >/dev/null 2>&1 || true; \
-         $BIN load '$MODEL' --context-length $CTX --ttl $TTL --quiet" \
-        && echo "lms-ensure: reloaded $MODEL ctx=$CTX ttl=${TTL}s" \
+         $BIN load '$MODEL' --context-length $CTX --parallel $PARALLEL --ttl $TTL --quiet" \
+        && echo "lms-ensure: reloaded $MODEL ctx=$CTX parallel=$PARALLEL ttl=${TTL}s" \
         || { echo "lms-ensure: reload FAILED for $MODEL" >&2; rc=1; }
 done
 exit $rc
