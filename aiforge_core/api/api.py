@@ -202,28 +202,13 @@ def _start_daily_reindex() -> None:
         return
     if os.environ.get("AIFORGE_JOBS_DISABLE", "") in ("1", "true", "yes"):
         return
-    import time as _t
-    from datetime import datetime, timedelta
-
-    def _loop() -> None:
-        try:
-            hour = max(0, min(23, int(os.environ.get("AIFORGE_REINDEX_HOUR", "3"))))
-        except ValueError:
-            hour = 3
-        while True:
-            now = datetime.now()
-            nxt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            if nxt <= now:
-                nxt += timedelta(days=1)
-            _t.sleep(max(60.0, (nxt - now).total_seconds()))
-            try:
-                _spawn_reindex_all()
-                _af_log.info("daily reindex fired at %s", datetime.now().isoformat())
-            except Exception as exc:  # noqa: BLE001 — never kill the loop
-                _af_log.warning("daily reindex spawn failed: %s", exc)
-
-    from aiforge_core.runtime import background as _bg
-    _bg.spawn(_loop, name="daily-reindex")
+    try:
+        hour = max(0, min(23, int(os.environ.get("AIFORGE_REINDEX_HOUR", "3"))))
+    except ValueError:
+        hour = 3
+    from aiforge_core.runtime import periodic as _pd
+    _pd.register("daily-reindex", _spawn_reindex_all, at_hour=hour)
+    _pd.start()
 
 
 # ─────────────────────── API auth + bind-host guard ─────────────────────
