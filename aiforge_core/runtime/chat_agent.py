@@ -360,9 +360,28 @@ def _t_run_command(args: dict, cwd: str) -> dict:
             _kill_proc(proc)
             return {"ok": False, "stopped": True, "error": "stopped by user"}
         if _time.monotonic() > deadline:
-            _kill_proc(proc)
-            return {"ok": False, "error": f"timeout after {timeout}s "
-                    "(pass a larger \"timeout\" arg for long builds)"}
+            # Capture whatever the command buffered BEFORE we kill it, so the
+            # agent sees partial output (e.g. which tests ran/passed before the
+            # hang) and can adapt — instead of a blind "timeout" with no signal.
+            import signal as _sig
+            try:
+                os.killpg(os.getpgid(proc.pid), _sig.SIGTERM)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                out, err = proc.communicate(timeout=5)
+            except Exception:  # noqa: BLE001
+                _kill_proc(proc)
+                out, err = "", ""
+            return {"ok": False, "timed_out": True, "code": None,
+                    "stdout": (out or "")[-_MAX_OBS:],
+                    "stderr": (err or "")[-_MAX_OBS:],
+                    "error": f"timed out after {timeout}s — PARTIAL output "
+                    "above. This is not a failure of your change: the command "
+                    "just ran longer than the limit. Next: run a NARROWER "
+                    "command (one test file or a single test case), or re-issue "
+                    "this exact command with a larger \"timeout\" (e.g. 600). Do "
+                    "NOT undo your edits over a timeout."}
         _time.sleep(0.2)
     # Bound communicate(): a daemon grandchild inheriting the stdout pipe
     # (e.g. `npm run dev &`) keeps it open after the process exits, so an
@@ -1945,6 +1964,11 @@ Tool arguments:
 - find         {{"name": "controller", "kind": "dir"}}  (fuzzy-locate files/dirs by partial name)
 - grep         {{"pattern": "TODO", "path": "src"}}      (recursive; tolerates a wrong path)
 - run_command  {{"cmd": "ls -la", "timeout": 600}}
+                (timeout is SECONDS, default 600. Don't pass a tiny value. For a
+                TEST SUITE run ONE file or case first — e.g. `pytest tests/test_x.py::TestY`
+                — not the whole suite; a full suite often exceeds any limit. A
+                timeout returns PARTIAL output, not a failure — narrow or raise
+                the timeout, never revert your edits over it.)
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - project        {{"action": "build"}}    (detect+install+build/test/run:
                   maven, gradle, node/react/next/vite, python, go, rust)
