@@ -114,6 +114,46 @@ def write_unit(
         return int(cur.lastrowid)
 
 
+def delete_by_tag(tag: str, *, repo: str | None = None) -> int:
+    """Delete every unit carrying ``tag`` (exact tag match in the JSON tags
+    array). When ``repo`` is given, scope to that repo plus repo-agnostic rows;
+    else all repos. Returns the count removed. Backs preference upsert."""
+    tag = (tag or "").strip()
+    if not tag:
+        return 0
+    needle = json.dumps(tag)   # match the tag as a JSON string element
+    with _LOCK, _conn() as c:
+        if repo is None:
+            rows = c.execute("SELECT id, tags FROM memory_units").fetchall()
+        else:
+            rows = c.execute(
+                "SELECT id, tags FROM memory_units WHERE repo IS ? OR repo = ?",
+                (repo, repo)).fetchall()
+        ids = []
+        for r in rows:
+            try:
+                if tag in (json.loads(r["tags"] or "[]") or []):
+                    ids.append(r["id"])
+            except (TypeError, ValueError):
+                continue
+        for i in ids:
+            c.execute("DELETE FROM memory_units WHERE id = ?", (i,))
+        return len(ids)
+
+
+def upsert_by_tag(*, text: str, tag: str, kind: str = "learning",
+                  source: str | None = None, tags: list[str] | None = None,
+                  metadata: dict | None = None, repo: str | None = None) -> int:
+    """Replace-in-place: remove any prior unit carrying ``tag`` (same-topic
+    memory) then write the new one — so a RESTATED preference UPDATES the
+    existing memory instead of piling up a contradictory duplicate. ``tag`` is
+    always added to the stored tags. Returns the new row id."""
+    all_tags = list(dict.fromkeys([tag, *(tags or [])]))
+    delete_by_tag(tag, repo=repo)
+    return write_unit(text=text, kind=kind, source=source, tags=all_tags,
+                      metadata=metadata, repo=repo)
+
+
 def recall(text: str, *, limit: int = 8, repo: str | None = None,
            boost_tags: list[str] | None = None) -> list[dict]:
     """Brute-force cosine recall. Returns hits sorted by score desc.

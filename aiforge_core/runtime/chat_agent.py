@@ -713,6 +713,38 @@ def _cached_find_by_source(source: str) -> Path | None:
     return p
 
 
+def _preferences_context(cwd: str) -> str:
+    """The user's captured PREFERENCES (global defaults/conventions), injected
+    every turn so a once-stated preference is always honoured and never
+    re-asked. Stored as ``pref:``-tagged units by preference_capture; embedded
+    backend only. Best-effort — never breaks the turn."""
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if not _bsel.embedded():
+            return ""
+        import json as _json
+        from aiforge_core.memory import sqlite_memory as _m
+        lines: list[str] = []
+        with _m._conn() as c:  # noqa: SLF001 — internal read, best-effort
+            for r in c.execute(
+                "SELECT text, tags FROM memory_units WHERE kind='preference' "
+                "ORDER BY id DESC LIMIT 40").fetchall():
+                try:
+                    tags = _json.loads(r["tags"] or "[]") or []
+                except (TypeError, ValueError):
+                    tags = []
+                if any(isinstance(t, str) and t.startswith("pref:") for t in tags):
+                    txt = (r["text"] or "").strip().replace("\n", " ")
+                    if txt:
+                        lines.append(f"- {txt[:240]}")
+        if not lines:
+            return ""
+        return ("USER PREFERENCES (standing defaults/conventions the user set — "
+                "apply them without asking again):\n" + "\n".join(lines[:40]))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _rules_context(cwd: str, query: str = "") -> str:
     """The user's persistent rule book (global + this-repo), injected into
     EVERY session so the rules are always honoured. Untagged bullets are
@@ -3069,7 +3101,10 @@ def run_chat_agent(
     # answers, not the structure it discovered last turn).
     cave = _cave_mode()
     rules = _rules_context(cwd, last_user)
+    prefs = _preferences_context(cwd)
     sys_msg = _SYSTEM.format(cwd=cwd)
+    if prefs:                       # standing user preferences — always applied
+        sys_msg = prefs + "\n\n" + sys_msg
     if rules:                       # user rule book first — highest priority
         sys_msg = rules + "\n\n" + sys_msg
     if plan_mode:                   # plan banner second — constrains this turn

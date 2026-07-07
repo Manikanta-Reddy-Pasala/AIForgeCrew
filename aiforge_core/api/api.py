@@ -4324,6 +4324,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             chat_learner.learn_from_chat(
                                 prompt=prompt, final_text=final_text,
                                 steps=steps, repo=_repo, session_id=session_id)
+                            # Auto-capture a durable USER PREFERENCE from the
+                            # message and UPSERT it into GLOBAL memory (mapped to
+                            # an existing subject when it restates one) — so the
+                            # user never re-enters a default/convention.
+                            from aiforge_core.runtime import preference_capture
+                            preference_capture.capture(
+                                prompt, repo=_repo, session_id=session_id)
                         except Exception:  # noqa: BLE001
                             pass
                     threading.Thread(target=_chat_learn, daemon=True).start()
