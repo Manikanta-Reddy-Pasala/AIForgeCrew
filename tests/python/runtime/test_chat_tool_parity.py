@@ -120,26 +120,10 @@ def test_ipython_is_approval_gated_and_cwd_jailed():
 
 
 # ── Cross-surface drift guard ────────────────────────────────────────────────
-# The recurring bug class: an integration or verification tool added to ONE
-# surface (chat _TOOLS or the pipeline doer_tools) but not the other, so a
-# capability silently works in chat and not in the pipeline (or vice versa).
-# These MUST live in both. Aliased primitives (grep/grep_repo, editor/multi_edit)
-# are intentionally excluded — they differ by name, not capability.
-_CROSS_SURFACE = (
-    "jira_search", "jira_create", "jira_update", "jira_comment",
-    "confluence_search", "confluence_create", "confluence_update",
-    "gitlab_search", "gitlab_create", "email_send",
-    "typecheck", "run_tests", "format", "lsp", "multi_edit",
-    "file_read", "file_write", "file_patch",
-    "learn_skill", "learn_workflow",
-)
-
-
+# The list of tools that must live on BOTH surfaces is the ONE declaration in
+# tool_manifest.CROSS_SURFACE — the same one the startup check validates.
 def test_cross_surface_tools_in_both_registries():
-    from aiforge_core.runtime import doer_tools
-    chat = set(ca.TOOLS)
-    doer = set(doer_tools.__all__)
-    missing_chat = [t for t in _CROSS_SURFACE if t not in chat]
-    missing_doer = [t for t in _CROSS_SURFACE if t not in doer]
-    assert not missing_chat, f"cross-surface tools missing from chat: {missing_chat}"
-    assert not missing_doer, f"cross-surface tools missing from doer: {missing_doer}"
+    from aiforge_core.runtime import tool_manifest
+    m = tool_manifest.missing()
+    assert not m["chat"], f"cross-surface tools missing from chat: {m['chat']}"
+    assert not m["doer"], f"cross-surface tools missing from doer: {m['doer']}"

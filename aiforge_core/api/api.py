@@ -153,6 +153,18 @@ def _ensure_model_context_on_boot() -> None:
 
 
 @app.on_event("startup")
+@app.on_event("startup")
+def _check_tool_parity() -> None:
+    """Warn (loudly, on the box) if a cross-surface tool drifted between the
+    chat + Doer registries — the recurring 'works in chat, not in pipeline' bug.
+    Startup check, not just CI. Never blocks startup."""
+    try:
+        from aiforge_core.runtime import tool_manifest
+        tool_manifest.validate_or_warn()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _start_jobs_scheduler() -> None:
     """Scheduled-jobs tick loop — daemon thread, same pattern as the
     other background workers. AIFORGE_JOBS_DISABLE=1 skips it."""
