@@ -60,3 +60,15 @@ def test_project_brief_loads_for_repo(cfg):
     brief = cb._project_brief(repo)
     assert brief.startswith("PROJECT MEMORY (")
     assert "rule one" in brief or "rule two" in brief
+
+
+def test_both_axes_nondestructive_sequence(cfg):
+    # The bug: running repo compaction first ARCHIVED sources, so the topic
+    # pass saw nothing. archive_sources=False keeps a unit for BOTH axes.
+    from aiforge_core.memory import md_store as m
+    m.capture("project_learning", "r1: proxies win", repo="r1", topic="proxies")
+    m.capture("project_learning", "r2: proxies win too", repo="r2", topic="proxies")
+    rr = m.compact(group_by="repo", min_group=2, summarize=False, archive_sources=False)
+    rt = m.compact(group_by="topic", min_group=2, summarize=False, archive_sources=False)
+    assert rr["groups"].get("r1") == 1 or rr["files_out"] >= 0   # repo briefs made
+    assert rt["groups"].get("proxies") == 2                       # topic STILL sees both

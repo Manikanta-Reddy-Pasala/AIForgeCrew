@@ -238,11 +238,14 @@ def _start_daily_reindex() -> None:
         # you load when opening a repo; per-TOPIC → cross-repo theme notes.
         try:
             from aiforge_core.memory import md_store
+            # Briefs are non-destructive projections (archive_sources=False) so a
+            # unit feeds BOTH its repo brief and its topic note (running one axis
+            # must not archive the sources the other axis needs).
             r_repo = md_store.compact(group_by="repo", summarize=True,
-                                      model_role="learner")
+                                      model_role="learner", archive_sources=False)
             r_topic = md_store.compact(group_by="topic", summarize=True,
-                                       model_role="learner")
-            _af_log.info("md compaction: repo=%s topic=%s", r_repo, r_topic)
+                                       model_role="learner", archive_sources=False)
+            _af_log.info("md brief projection: repo=%s topic=%s", r_repo, r_topic)
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("md compaction failed: %s", exc)
 

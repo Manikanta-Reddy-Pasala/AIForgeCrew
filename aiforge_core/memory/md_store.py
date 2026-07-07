@@ -469,7 +469,7 @@ def _group_key(d: dict, group_by: str) -> str:
 
 def compact(*, group_by: str = "kind", min_group: int = 2,
             dry_run: bool = False, summarize: bool = True,
-            model_role: str = "learner") -> dict:
+            model_role: str = "learner", archive_sources: bool = True) -> dict:
     """Consolidate the sprawl of per-session ``.md`` memories into ONE
     standardized file per group, so the Memory folder stays legible.
 
@@ -500,6 +500,11 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
             except Exception:  # noqa: BLE001
                 continue
         live = [d for d in files if not d["file"].startswith("compacted-")]
+        # The repo/topic briefs are LEARNING projections — exclude raw session
+        # transcripts (kind="session"), which are large and belong to the
+        # session-summary compaction, not a project/topic brief.
+        if group_by in ("repo", "topic"):
+            live = [d for d in live if (d.get("kind") or "") != "session"]
         # TOPIC mode: one LLM pass labels every note with a coherent topic slug so
         # compaction yields several browsable topical files instead of ONE blob
         # per kind. Falls back to kind grouping for any note the labeller missed
@@ -622,6 +627,10 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 out_files.append(p["path"].name)
                 if p["summarized"]:
                     summarized_files.append(p["path"].name)
+                if not archive_sources:
+                    continue    # projection mode: keep raw units for the OTHER
+                                # axis (a unit belongs to BOTH its repo brief and
+                                # its topic note) — briefs are derived views.
                 for d in p["items"]:
                     try:
                         shutil.move(str(d["_path"]), str(archive / d["file"]))
