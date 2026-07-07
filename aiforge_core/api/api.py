@@ -254,6 +254,23 @@ def _start_daily_reindex() -> None:
 
     _pd.register("graph-maintain", _graph_maintain,
                  at_hour=max(0, min(23, hour + 2)))
+
+    # Daily SEMANTIC DEDUP of the embedded memory store — write_unit only dedups
+    # exact (repo,text); paraphrases pile up. Collapses near-duplicates on the
+    # stored vectors (no sidecar). Neo4j has its own write-time semantic dedupe.
+    def _dedupe_memory() -> None:
+        try:
+            from aiforge_core.memory import backend_select
+            if backend_select.memory_backend() != "sqlite":
+                return
+            from aiforge_core.memory import sqlite_memory
+            r = sqlite_memory.dedupe()
+            _af_log.info("memory dedup: %s", r)
+        except Exception as exc:  # noqa: BLE001
+            _af_log.warning("memory dedup failed: %s", exc)
+
+    _pd.register("memory-dedup", _dedupe_memory,
+                 at_hour=max(0, min(23, hour + 3)))
     _pd.start()
 
 
