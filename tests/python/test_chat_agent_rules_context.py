@@ -8,12 +8,19 @@ from aiforge_core.runtime import chat_agent as ca
 
 
 @pytest.fixture(autouse=True)
-def _clear_source_path_cache():
+def _clear_source_path_cache(monkeypatch):
     # Every test here fakes `_find_by_source` under the same "demo" repo
     # name, so a hit cached by one test would leak into the next (the
     # cache is a process-global dict, keyed only by source string) —
     # clear it fresh each test, same as any other module-global test state.
     ca._source_path_cache.clear()
+    # _rules_context also reads the repo_rules store (the Library store); these
+    # tests exercise ONLY the md_store bullet logic, so isolate repo_rules to
+    # empty (else the dev's real ~/.aiforge/rules leak into every assertion).
+    monkeypatch.setattr("aiforge_core.runtime.repo_rules.load_global_rules",
+                        lambda: [])
+    monkeypatch.setattr("aiforge_core.runtime.repo_rules.load_rules",
+                        lambda root: [])
     yield
     ca._source_path_cache.clear()
 

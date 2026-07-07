@@ -646,22 +646,46 @@ def _t_grep(args: dict, cwd: str) -> dict:
 
 
 def _t_remember_rule(args: dict, cwd: str) -> dict:
-    """Persist a user rule that must apply to EVERY future session.
-    scope: 'global' (all repos) or 'repo' (this repo only)."""
+    """Persist a user rule that must apply to EVERY future session. Writes to
+    the SAME global rules store the Library UI lists/creates/deletes
+    (``repo_rules`` → ~/.aiforge/rules/) so a rule built in chat shows up in the
+    Library — and is injected every turn by ``_rules_context``."""
     try:
-        from aiforge_core.memory import md_store
-        text = (args.get("text") or args.get("rule") or "").strip()
+        from aiforge_core.runtime import repo_rules
+        text = (args.get("text") or args.get("rule") or args.get("body")
+                or "").strip()
         if not text:
             return {"ok": False, "error": "missing 'text'"}
+        # Derive a stable name from an explicit arg or the first line of text
+        # (repo_rules keys the file by a slug of the name).
+        name = (args.get("name") or "").strip()
+        if not name:
+            first = text.lstrip("-# ").splitlines()[0] if text else "rule"
+            name = re.sub(r"\s+", " ", first).strip()[:60] or "rule"
+        globs = args.get("globs")
+        if isinstance(globs, str):
+            globs = [g.strip() for g in globs.split(",") if g.strip()]
+        res = repo_rules.write_rule(name, text, globs=globs, always=True)
+        if not res.get("ok"):
+            return res
+        # Also record in knowledge memory so unified_query / recall surface the
+        # rule alongside facts. scope=repo → tag to THIS repo; scope=global →
+        # repo-agnostic (repo=None; recall unions NULL-repo rows so it applies
+        # everywhere). Write directly to the embedded store — memory_write
+        # refuses a null repo, which would silently drop global rules.
         scope = (args.get("scope") or "global").lower()
-        repo = _repo_name(cwd)
-        if scope == "repo":
-            source, title = f"rules:{repo}", f"{repo} — rules"
-        else:
-            source, title = "rules:global", "AIForge rules (all sessions)"
-        md_store.append_bullet(source=source, title=title, bullet=text,
-                               kind="rule", tags=["rule", scope])
-        return {"ok": True, "scope": scope, "remembered": text}
+        try:
+            from aiforge_core.memory import backend_select as _bsel
+            if _bsel.embedded():
+                from aiforge_core.memory import sqlite_memory as _sqlmem
+                _sqlmem.write_unit(
+                    text=f"RULE: {text}", kind="note", source="rule",
+                    tags=["rule", scope],
+                    repo=(_chat_repo_key(cwd) if scope == "repo" else None))
+        except Exception:  # noqa: BLE001 — memory write must not block the rule
+            pass
+        return {"ok": True, "name": name, "scope": scope, "remembered": text,
+                "path": res.get("path")}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
@@ -772,6 +796,34 @@ def _rules_context(cwd: str, query: str = "") -> str:
                     tagged.append(_sk.Skill(
                         name=text[:60], description="", triggers=trig,
                         body=text, source=src, always=False, priority=0))
+        # ALSO read the repo_rules store (~/.aiforge/rules/ + repo-local) — the
+        # SAME store the Library UI / create-form / remember_rule write to. An
+        # always-on rule joins the always block; a glob-scoped rule becomes a
+        # trigger-gated bullet so relevance scoring applies.
+        try:
+            from aiforge_core.runtime import repo_rules as _rr
+            _rules = list(_rr.load_global_rules())
+            if cwd:
+                try:
+                    _rules += list(_rr.load_rules(cwd))
+                except Exception:  # noqa: BLE001
+                    pass
+            _seen_rt: set[str] = set()
+            for r in _rules:
+                rt = (r.body or "").strip()
+                if not rt or rt in _seen_rt:
+                    continue
+                _seen_rt.add(rt)
+                if getattr(r, "always", True) or not getattr(r, "globs", None):
+                    always_lines.append("- " + rt.replace("\n", " ")[:400])
+                else:
+                    tagged.append(_sk.Skill(
+                        name=(r.name or rt[:60]), description="",
+                        triggers=tuple(str(g).lower() for g in r.globs),
+                        body=rt.replace("\n", " ")[:400], source="repo_rules",
+                        always=False, priority=0))
+        except Exception:  # noqa: BLE001 — repo_rules read is best-effort
+            pass
         blocks: list[str] = list(always_lines)
         ambiguous_note = ""
         if tagged:
