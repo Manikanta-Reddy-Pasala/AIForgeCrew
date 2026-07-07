@@ -178,7 +178,6 @@ def _spawn_reindex_all() -> None:
     and a manual trigger landing together don't launch two full sweeps at once
     (per-source leases already prevent double-indexing a single source; this
     just avoids the wasted second pass)."""
-    import subprocess
     import sys
     import time as _t
     with _reindex_all_lock:
@@ -186,10 +185,10 @@ def _spawn_reindex_all() -> None:
             _af_log.info("reindex-all skipped — one ran <120s ago (debounce)")
             return
         _reindex_all_at[0] = _t.monotonic()
-    subprocess.Popen(
-        [sys.executable, "-m", "aiforge_core.runtime.memory_ingest", "--all"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True)
+    from aiforge_core.runtime import background as _bg
+    _bg.spawn(name="reindex-all", kind="process",
+              argv=[sys.executable, "-m",
+                    "aiforge_core.runtime.memory_ingest", "--all"])
 
 
 @app.on_event("startup")
@@ -203,7 +202,6 @@ def _start_daily_reindex() -> None:
         return
     if os.environ.get("AIFORGE_JOBS_DISABLE", "") in ("1", "true", "yes"):
         return
-    import threading
     import time as _t
     from datetime import datetime, timedelta
 
@@ -224,7 +222,8 @@ def _start_daily_reindex() -> None:
             except Exception as exc:  # noqa: BLE001 — never kill the loop
                 _af_log.warning("daily reindex spawn failed: %s", exc)
 
-    threading.Thread(target=_loop, daemon=True, name="daily-reindex").start()
+    from aiforge_core.runtime import background as _bg
+    _bg.spawn(_loop, name="daily-reindex")
 
 
 # ─────────────────────── API auth + bind-host guard ─────────────────────
@@ -1995,22 +1994,15 @@ def _spawn_index(source_id: int) -> None:
     hang for the whole (minutes-long, CPU-embedding) index. A subprocess has
     its own GIL, so the api stays responsive. Detached + non-blocking; the
     child updates the source row's status itself."""
-    import subprocess
     import sys
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "aiforge_core.runtime.memory_ingest",
-             str(source_id)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception as exc:  # noqa: BLE001 — fall back to a thread
-        import threading
 
+    from aiforge_core.runtime import background as _bg
+    h = _bg.spawn(name=f"index-{source_id}", kind="process",
+                  argv=[sys.executable, "-m",
+                        "aiforge_core.runtime.memory_ingest", str(source_id)])
+    if h is None:   # process launch failed → fall back to a thread
         from aiforge_core.runtime.memory_ingest import run_index
-        _af_log.warning("index subprocess spawn failed (%s); using a thread", exc)
-        threading.Thread(target=run_index, args=(source_id,),
-                         daemon=True).start()
+        _bg.spawn(lambda: run_index(source_id), name=f"index-{source_id}-thread")
 
 
 @app.get("/api/memory/sources")
@@ -4421,7 +4413,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                         except Exception as _lexc:  # noqa: BLE001
                             _af_log.warning("chat learn/capture thread failed: %s",
                                             _lexc)
-                    threading.Thread(target=_chat_learn, daemon=True).start()
+                    from aiforge_core.runtime import background as _bg
+                    _bg.spawn(_chat_learn, name="chat-learn")
                     # Boundary-gated per-SESSION summary → browsable md file +
                     # memory graph (Neo4j when configured). Refreshes an
                     # upsert'd summary every N turns as the session grows (one
@@ -4446,7 +4439,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             chat_summary.summarize_session(session_id, _repo)
                         except Exception:  # noqa: BLE001
                             pass
-                    threading.Thread(target=_chat_summarize, daemon=True).start()
+                    _bg.spawn(_chat_summarize, name="chat-summarize")
             # Wake every subscriber (this stream + any /attach) and close THIS
             # run object (not by session id — a newer turn for the same session
             # may have already replaced it in the registry). Done LAST so a
