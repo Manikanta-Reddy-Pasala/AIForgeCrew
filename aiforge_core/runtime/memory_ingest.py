@@ -528,13 +528,31 @@ def run_index(source_id: int) -> None:
                        error=None, layers=layers, indexed=True)
 
 
-def reindex_all() -> dict:
-    """Re-index EVERY registered repo/docs source (chunks + symbols + graphify)
-    so semantic recall + the graph stay current with the code. Sequential
-    (each index is CPU-heavy) and soft-fail per source — one bad repo never
-    stops the rest. Returns ``{total, indexed, errors:[{id,error}]}``."""
+def _unchanged_since_last_index(location: str) -> bool:
+    """True when NOTHING under ``location`` changed since we last indexed it
+    (merkle content-hash tree). Lets the daily sweep SKIP a full rebuild of an
+    untouched repo — a full index is minutes of LLM-summary + CPU-embed, so
+    re-running it daily on an unchanged repo is pure waste. Soft-fails to False
+    (index anyway) so a merkle glitch never SKIPS a real change."""
+    try:
+        from aiforge_core.indexing import merkle
+        prev = merkle.current_root(location)
+        if prev is None:
+            return False                     # never indexed → must index
+        changed = merkle.diff(location, prev)
+        return not changed
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def reindex_all(*, force: bool = False) -> dict:
+    """Re-index every registered repo/docs source whose content CHANGED since the
+    last index (merkle diff) — an unchanged repo is skipped, so the daily sweep
+    doesn't pay the minutes-long full rebuild for nothing. ``force=True`` rebuilds
+    all. Sequential + soft-fail per source. Returns
+    ``{total, indexed, skipped, errors}``."""
     from aiforge_core.runtime import memory_sources as _ms
-    out = {"total": 0, "indexed": 0, "errors": []}
+    out = {"total": 0, "indexed": 0, "skipped": 0, "errors": []}
     try:
         sources = _ms.list_sources()
     except Exception as exc:  # noqa: BLE001
@@ -544,15 +562,24 @@ def reindex_all() -> dict:
             continue
         out["total"] += 1
         sid = s.get("id")
+        loc = s.get("location") or ""
+        if not force and loc and _unchanged_since_last_index(loc):
+            out["skipped"] += 1
+            continue
         try:
             _ms.set_status(sid, "indexing", error=None)
             run_index(sid)                     # in-process (caller is off the API loop)
+            try:                               # refresh the merkle baseline
+                from aiforge_core.indexing import merkle
+                merkle.build(loc)
+            except Exception:  # noqa: BLE001
+                pass
             out["indexed"] += 1
         except Exception as exc:  # noqa: BLE001 — never let one repo stop the sweep
             log.warning("reindex_all: source %s failed: %s", sid, exc)
             out["errors"].append({"id": sid, "error": str(exc)})
-    log.info("reindex_all: %d/%d re-indexed, %d errors",
-             out["indexed"], out["total"], len(out["errors"]))
+    log.info("reindex_all: %d indexed, %d skipped (unchanged), %d errors / %d total",
+             out["indexed"], out["skipped"], len(out["errors"]), out["total"])
     return out
 
 

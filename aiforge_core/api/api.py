@@ -208,6 +208,40 @@ def _start_daily_reindex() -> None:
         hour = 3
     from aiforge_core.runtime import periodic as _pd
     _pd.register("daily-reindex", _spawn_reindex_all, at_hour=hour)
+
+    # Daily CHAT-MD COMPACTION — per-turn writes append forever to
+    # ~/.aiforge/memory/*.md; md_store.compact() consolidates them (map-reduce
+    # summary, archives originals) so the memory folder stays bounded + legible.
+    # Was manual-only (POST /api/memory/files/compact); now scheduled.
+    def _compact_chat_md() -> None:
+        try:
+            from aiforge_core.memory import md_store
+            r = md_store.compact(group_by="topic", summarize=True,
+                                 model_role="learner")
+            _af_log.info("chat-md compaction: %s", r)
+        except Exception as exc:  # noqa: BLE001
+            _af_log.warning("chat-md compaction failed: %s", exc)
+
+    _pd.register("chat-compact", _compact_chat_md,
+                 at_hour=max(0, min(23, hour + 1)))   # after the reindex
+
+    # Daily GRAPH MAINTENANCE (Neo4j only) — AFM decay + per-repo digest/dedupe;
+    # no-op on the embedded backend. Best-effort.
+    def _graph_maintain() -> None:
+        try:
+            from aiforge_core.memory import backend_select
+            if backend_select.memory_backend() != "neo4j":
+                return
+            import argparse
+
+            from aiforge_memory.api.commands import maintain as _mt
+            _mt.run(argparse.Namespace())
+            _af_log.info("graph maintenance ran")
+        except Exception as exc:  # noqa: BLE001
+            _af_log.debug("graph maintenance skipped/failed: %s", exc)
+
+    _pd.register("graph-maintain", _graph_maintain,
+                 at_hour=max(0, min(23, hour + 2)))
     _pd.start()
 
 
