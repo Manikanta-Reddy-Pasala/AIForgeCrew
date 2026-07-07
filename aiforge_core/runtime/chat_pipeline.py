@@ -213,7 +213,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             _cave_mode, _ctx_on, _memory_recall, _repo_context, _rules_context,
         )
         cave = _cave_mode()
-        rules_ctx = _rules_context(cwd)
+        rules_ctx = _rules_context(cwd, raw_prompt)   # query-gated (parity w/ chat)
         # Mirror the single-agent path: honour the ctx_no_summary toggle (was
         # ignored here, so the toggle silently did nothing in team mode). Keep
         # the block in cave mode too (the leaner-not-dropped behaviour).
@@ -239,9 +239,38 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             img_ctx = chat_media.context_block(session_id)
         except Exception:  # noqa: BLE001
             img_ctx = ""
-    parts = [p for p in (rules_ctx, repo_ctx, recall_ctx, img_ctx, convo) if p]
+    # Skills / workflows / preferences — chat-team previously injected NONE of
+    # these (the ticket path does), so a repo playbook or a stated preference
+    # that worked in single-chat + tickets silently did nothing in team-chat.
+    skills_ctx = workflows_ctx = prefs_ctx = ""
+    try:
+        from aiforge_core.runtime import skills as _sk, workflows as _wf
+        if _ctx_on("skills"):
+            skills_ctx = _sk.auto_context(raw_prompt, cwd) or ""
+        if _ctx_on("workflows"):
+            workflows_ctx = _wf.auto_context(raw_prompt, cwd) or ""
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from aiforge_core.runtime.chat_agent import _preferences_context
+        prefs_ctx = _preferences_context(cwd) or ""
+    except Exception:  # noqa: BLE001
+        pass
+    parts = [p for p in (prefs_ctx, rules_ctx, skills_ctx, workflows_ctx,
+                         repo_ctx, recall_ctx, img_ctx, convo) if p]
     prompt = ("\n\n".join(parts) + f"\n\nCURRENT REQUEST:\n{prompt}"
               if parts else prompt)
+    # ALSO expose these as pipeline STATE keys — many graph nodes run
+    # include_contents='none' and read the {rules_md?}/{memory_brief_md?}/
+    # {user_prefs_md?} placeholders, NOT the seed prose above. Without this the
+    # team pipeline ran context-blind (the "works in chat, team ignored it" bug).
+    _team_state = {"chat_cwd": cwd}
+    if rules_ctx:
+        _team_state["rules_md"] = rules_ctx
+    if recall_ctx:
+        _team_state["memory_brief_md"] = recall_ctx
+    if prefs_ctx:
+        _team_state["user_prefs_md"] = prefs_ctx
 
     async def _drive() -> None:
         # Bind this driver thread (+ the bash tool the Doer runs) to the
@@ -364,7 +393,7 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                             plugins=_plugins)
             session = await svc.create_session(
                 app_name="aiforge-chat", user_id="chat",
-                state={"chat_cwd": cwd},
+                state=_team_state,
             )
             content = gtypes.Content(
                 role="user", parts=[gtypes.Part.from_text(text=prompt)])

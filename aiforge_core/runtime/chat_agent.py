@@ -840,7 +840,10 @@ def _rules_context(cwd: str, query: str = "") -> str:
         from aiforge_core.runtime import skills as _sk
         always_lines: list[str] = []
         tagged: list[_sk.Skill] = []
-        for src in ("rules:global", f"rules:{_repo_name(cwd)}"):
+        # Align the repo rule key with the canonical recall key (_chat_repo_key,
+        # git-toplevel) so a rule captured for this repo is read back under the
+        # SAME key it was written — _repo_name (workspace/subdir basename) drifted.
+        for src in ("rules:global", f"rules:{_chat_repo_key(cwd)}"):
             p = _cached_find_by_source(src)
             if p is None:
                 continue

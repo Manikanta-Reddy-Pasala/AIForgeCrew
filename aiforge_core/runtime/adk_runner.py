@@ -1000,12 +1000,29 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         except Exception:  # noqa: BLE001 — never block a run on probing
             pass
         # Durable user preferences (gap #9) — global, cross-repo. Seeded so
-        # the agent honours "I always want X" without being re-told.
+        # the agent honours "I always want X" without being re-told. Merge BOTH
+        # stores: the Neo4j preferences block (pro backend) AND the embedded
+        # sqlite `pref:` units that chat_capture writes — else a preference set
+        # in chat on the embedded backend never reached the doer (it writes
+        # sqlite, this read only Neo4j).
         try:
-            from aiforge_core.runtime import user_prefs as _up
-            _pb = _up.preferences_block()
-            if _pb:
-                initial_state["user_prefs_md"] = _pb
+            _pref_parts = []
+            try:
+                from aiforge_core.runtime import user_prefs as _up
+                _pb = _up.preferences_block()
+                if _pb:
+                    _pref_parts.append(_pb)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from aiforge_core.runtime.chat_agent import _preferences_context
+                _sb = _preferences_context(os.environ.get("AIFORGE_REPO_ROOT") or ".")
+                if _sb:
+                    _pref_parts.append(_sb)
+            except Exception:  # noqa: BLE001
+                pass
+            if _pref_parts:
+                initial_state["user_prefs_md"] = "\n\n".join(_pref_parts)
         except Exception:  # noqa: BLE001
             pass
     session = await session_svc.create_session(

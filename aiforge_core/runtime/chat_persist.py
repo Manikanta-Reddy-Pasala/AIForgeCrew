@@ -56,7 +56,11 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
         import datetime as _dt
 
         from aiforge_core.memory import md_store
-        from aiforge_core.runtime.chat_agent import _repo_name
+        # Use the SAME repo key the RECALL path uses (_chat_repo_key = git-
+        # toplevel basename). The old _repo_name (workspace-dir/subdir basename)
+        # filed project memory under a DIFFERENT key than recall reads, so it was
+        # written but never found. Align both to the canonical key.
+        from aiforge_core.runtime.chat_agent import _chat_repo_key
         tool_names = [s.get("name") for s in steps
                       if s.get("type") == "tool" and s.get("name")]
         section = (f"**Request:** {prompt[:300]}\n\n"
@@ -72,7 +76,7 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
             source=f"chat-session:{session_id}", title=note_title,
             section_title=when, section_body=section, kind="session",
             tags=["chat", "team" if team else "simple"])
-        repo = _repo_name(cwd)
+        repo = _chat_repo_key(cwd)
         md_store.upsert_section(
             source=f"repo:{repo}", title=f"{repo} — project memory",
             section_title=f"{when} · {prompt.strip()[:50]}",
