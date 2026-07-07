@@ -19,7 +19,29 @@ def cfg(monkeypatch):
 
 def test_reindex_all_empty(cfg):
     from aiforge_core.runtime import memory_ingest as mi
-    assert mi.reindex_all() == {"total": 0, "indexed": 0, "errors": []}
+    assert mi.reindex_all() == {"total": 0, "indexed": 0, "skipped": 0,
+                                "errors": []}
+
+
+def test_reindex_all_skips_unchanged(cfg, monkeypatch):
+    import tempfile
+    from aiforge_core.runtime import memory_ingest as mi
+    from aiforge_core.runtime import memory_sources as ms
+    repo = tempfile.mkdtemp()
+    open(repo + "/a.py", "w").write("x = 1\n")
+    ms.create("repo", repo, "r")
+    seen = []
+    monkeypatch.setattr(mi, "run_index", lambda sid: seen.append(sid))
+    # first pass: never-indexed → indexes + records merkle baseline
+    r1 = mi.reindex_all()
+    assert r1["indexed"] == 1 and r1["skipped"] == 0
+    # second pass, nothing changed → skipped (no re-index)
+    r2 = mi.reindex_all()
+    assert r2["indexed"] == 0 and r2["skipped"] == 1
+    assert len(seen) == 1
+    # force rebuilds regardless
+    r3 = mi.reindex_all(force=True)
+    assert r3["indexed"] == 1
 
 
 def test_reindex_all_indexes_repo_sources_only(cfg, monkeypatch):

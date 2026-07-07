@@ -153,6 +153,18 @@ def _ensure_model_context_on_boot() -> None:
 
 
 @app.on_event("startup")
+@app.on_event("startup")
+def _check_tool_parity() -> None:
+    """Warn (loudly, on the box) if a cross-surface tool drifted between the
+    chat + Doer registries — the recurring 'works in chat, not in pipeline' bug.
+    Startup check, not just CI. Never blocks startup."""
+    try:
+        from aiforge_core.runtime import tool_manifest
+        tool_manifest.validate_or_warn()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _start_jobs_scheduler() -> None:
     """Scheduled-jobs tick loop — daemon thread, same pattern as the
     other background workers. AIFORGE_JOBS_DISABLE=1 skips it."""
@@ -202,28 +214,47 @@ def _start_daily_reindex() -> None:
         return
     if os.environ.get("AIFORGE_JOBS_DISABLE", "") in ("1", "true", "yes"):
         return
-    import time as _t
-    from datetime import datetime, timedelta
+    try:
+        hour = max(0, min(23, int(os.environ.get("AIFORGE_REINDEX_HOUR", "3"))))
+    except ValueError:
+        hour = 3
+    from aiforge_core.runtime import periodic as _pd
+    _pd.register("daily-reindex", _spawn_reindex_all, at_hour=hour)
 
-    def _loop() -> None:
+    # Daily CHAT-MD COMPACTION — per-turn writes append forever to
+    # ~/.aiforge/memory/*.md; md_store.compact() consolidates them (map-reduce
+    # summary, archives originals) so the memory folder stays bounded + legible.
+    # Was manual-only (POST /api/memory/files/compact); now scheduled.
+    def _compact_chat_md() -> None:
         try:
-            hour = max(0, min(23, int(os.environ.get("AIFORGE_REINDEX_HOUR", "3"))))
-        except ValueError:
-            hour = 3
-        while True:
-            now = datetime.now()
-            nxt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            if nxt <= now:
-                nxt += timedelta(days=1)
-            _t.sleep(max(60.0, (nxt - now).total_seconds()))
-            try:
-                _spawn_reindex_all()
-                _af_log.info("daily reindex fired at %s", datetime.now().isoformat())
-            except Exception as exc:  # noqa: BLE001 — never kill the loop
-                _af_log.warning("daily reindex spawn failed: %s", exc)
+            from aiforge_core.memory import md_store
+            r = md_store.compact(group_by="topic", summarize=True,
+                                 model_role="learner")
+            _af_log.info("chat-md compaction: %s", r)
+        except Exception as exc:  # noqa: BLE001
+            _af_log.warning("chat-md compaction failed: %s", exc)
 
-    from aiforge_core.runtime import background as _bg
-    _bg.spawn(_loop, name="daily-reindex")
+    _pd.register("chat-compact", _compact_chat_md,
+                 at_hour=max(0, min(23, hour + 1)))   # after the reindex
+
+    # Daily GRAPH MAINTENANCE (Neo4j only) — AFM decay + per-repo digest/dedupe;
+    # no-op on the embedded backend. Best-effort.
+    def _graph_maintain() -> None:
+        try:
+            from aiforge_core.memory import backend_select
+            if backend_select.memory_backend() != "neo4j":
+                return
+            import argparse
+
+            from aiforge_memory.api.commands import maintain as _mt
+            _mt.run(argparse.Namespace())
+            _af_log.info("graph maintenance ran")
+        except Exception as exc:  # noqa: BLE001
+            _af_log.debug("graph maintenance skipped/failed: %s", exc)
+
+    _pd.register("graph-maintain", _graph_maintain,
+                 at_hour=max(0, min(23, hour + 2)))
+    _pd.start()
 
 
 # ─────────────────────── API auth + bind-host guard ─────────────────────
