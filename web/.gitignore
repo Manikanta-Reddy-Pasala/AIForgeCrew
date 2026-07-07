@@ -1,3 +1,4 @@
 node_modules
-dist
 .vite
+# web/dist IS committed (see root .gitignore) so a pull ships the built UI to
+# boxes without npm — don't ignore it here.

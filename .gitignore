@@ -54,9 +54,13 @@ coverage/
 .coverage
 htmlcov/
 
-# Vite build output
-web/dist/
+# Vite build output — web/node_modules ignored, but web/dist is COMMITTED so a
+# `git pull` ships the current built UI to deploy boxes that have no npm to
+# rebuild it (the #1 "I pulled but the UI didn't change" cause). Re-include it
+# past the broad `dist/` rule above.
 web/node_modules/
+!web/dist/
+!web/dist/**
 
 # Graphify intermediates
 graphify-out/cache/

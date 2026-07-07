@@ -3423,12 +3423,13 @@ def run_chat_agent(
             # a slow reasoning call adds compress+forward latency on top. Retry a
             # few times before surfacing, and never show the raw `llm.exhausted
             # role=chat …` stack; give a plain, actionable message.
-            # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 3).
-            _retries = 3
+            # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 5) — a
+            # local model that's loading/busy often needs a few passes.
+            _retries = 5
             try:
-                _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "3")))
+                _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "5")))
             except ValueError:
-                _retries = 3
+                _retries = 5
             out = None
             _last = exc
             for _rn in range(_retries):
