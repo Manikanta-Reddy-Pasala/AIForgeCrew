@@ -256,13 +256,19 @@ def query(
     # task's context into the plan — the "game leaked into tempconv" bug. Only
     # run it for a repo-less GLOBAL search (Memory UI). Opt back in for a scoped
     # task with AIFORGE_UMEM_CROSS_TASK=1.
+    # When a repo is scoped we now run a REPO-SCOPED vector recall (filtered to
+    # that repo — no cross-task bleed), so a scoped chat/pipeline turn actually
+    # gets its own repo's learnings/observations (the whole point). Repo-less
+    # calls stay global. Cross-repo bleed for a scoped task still needs the
+    # explicit AIFORGE_UMEM_CROSS_TASK=1 opt-in.
     _cross_task = os.environ.get("AIFORGE_UMEM_CROSS_TASK", "0") == "1"
-    if (repo is None or _cross_task) \
-            and os.environ.get("AIFORGE_UMEM_GLOBAL_VECTOR", "1") == "1":
+    if os.environ.get("AIFORGE_UMEM_GLOBAL_VECTOR", "1") == "1":
         try:
             from aiforge_core.memory import backend_select as _bsel
             if not _bsel.embedded():
-                rows = _global_vector_recall(text, limit=limit)
+                # scoped → filter to repo; repo-less OR cross-task opt-in → global
+                _vrepo = None if (repo is None or _cross_task) else repo
+                rows = _global_vector_recall(text, limit=limit, repo=_vrepo)
                 if rows:
                     used.append("vector")
                     raw_hits.extend(
@@ -713,8 +719,11 @@ def _unpack_mcp_rows(raw: Any) -> list[dict]:
     return [{"text": str(data)[:1500], "score": 0.5}]
 
 
-def _global_vector_recall(text: str, *, limit: int) -> list[dict]:
-    """Repo-agnostic recall over ``Observation_v2`` on the Neo4j backend.
+def _global_vector_recall(text: str, *, limit: int,
+                          repo: str | None = None) -> list[dict]:
+    """Vector+fulltext recall over ``Observation_v2`` on Neo4j. When ``repo`` is
+    given, results are FILTERED to that repo (over-fetch, then keep only matching
+    — repo-scoped recall with NO cross-repo bleed); when None, repo-agnostic.
 
     The AFM ContextBundle (source 7) only surfaces vector-recalled observations
     when a ``repo`` is scoped. A GLOBAL memory search (the /api/memory/search UI,
@@ -726,6 +735,13 @@ def _global_vector_recall(text: str, *, limit: int) -> list[dict]:
     drv = _neo4j_driver_or_none()
     if drv is None:
         return []
+    from aiforge_core.runtime.repo_ident import normalize_repo as _nr
+    want = _nr(repo) if repo else None
+    # Over-fetch when scoping so the repo's hits survive the top-k cut even if
+    # other repos dominate the raw nearest-neighbours.
+    _k = min(limit * 6, 60) if want else min(limit, 20)
+    def _ok(rrepo) -> bool:
+        return want is None or _nr(rrepo or "") == want
     rows: list[dict] = []
     seen: set[str] = set()
     try:
@@ -742,8 +758,12 @@ def _global_vector_recall(text: str, *, limit: int) -> list[dict]:
                     "YIELD node, score "
                     "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
                     "node.repo AS repo, score AS score",
-                    k=min(limit, 20), v=qv,
+                    k=_k, v=qv,
                 ).data():
+                    if len(rows) >= limit:
+                        break
+                    if not _ok(r.get("repo")):
+                        continue
                     if r.get("id") and r["id"] not in seen and r.get("text"):
                         seen.add(r["id"])
                         rows.append({"text": r["text"], "score": float(r.get("score") or 0.5),
@@ -756,8 +776,12 @@ def _global_vector_recall(text: str, *, limit: int) -> list[dict]:
                     "YIELD node, score "
                     "RETURN node.id AS id, node.text AS text, node.kind AS kind, "
                     "node.repo AS repo, score AS score LIMIT $k",
-                    q=text, k=min(limit, 20),
+                    q=text, k=_k,
                 ).data():
+                    if len(rows) >= limit * 2:
+                        break
+                    if not _ok(r.get("repo")):
+                        continue
                     if r.get("id") and r["id"] not in seen and r.get("text"):
                         seen.add(r["id"])
                         rows.append({"text": r["text"], "score": float(r.get("score") or 0.5),
