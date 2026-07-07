@@ -22,11 +22,14 @@ class _Ticket:
 @pytest.fixture
 def ws(monkeypatch, tmp_path):
     from aiforge_core.runtime import workspace as w
-    # A fake WORKTREE_ROOT containing a "repo" with a .git dir.
+    # A fake base folder containing a "repo" with a .git dir. The base is read
+    # via repo_map.default_root(), which honours AIFORGE_WORKTREE_ROOT when no
+    # stored default_root is set — point both at an isolated tmp dir.
     root = tmp_path / "codeRepo"
     repo = root / "MyRepo"
     (repo / ".git").mkdir(parents=True)
-    monkeypatch.setattr(w, "WORKTREE_ROOT", str(root))
+    monkeypatch.setenv("AIFORGE_WORKTREE_ROOT", str(root))
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     return w, str(repo)
 
 

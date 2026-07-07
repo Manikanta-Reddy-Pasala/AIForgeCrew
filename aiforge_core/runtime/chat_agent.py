@@ -815,6 +815,56 @@ def _t_confluence_update(args: dict, cwd: str) -> dict:
     return confluence.confluence_update(args, cwd)
 
 
+def _t_set_repo_folder(args: dict, cwd: str) -> dict:
+    """Persist the local FOLDER for a repo so tickets/pipeline runs for that
+    repo resolve to it — ``repo`` = the project name, ``path`` = its absolute
+    local folder. Use when the user says 'use /x/y for repo foo' or 'repo foo
+    lives at /x/y'. Stored in repos.json; read by the workspace resolver."""
+    from aiforge_core.config import repo_map
+    repo = str(args.get("repo") or "").strip()
+    path = str(args.get("path") or "").strip()
+    if not repo or not path:
+        return {"ok": False, "error": "need repo and path"}
+    import os as _os
+    if not _os.path.isdir(_os.path.expanduser(path)):
+        return {"ok": False, "error": f"not a directory: {path}"}
+    return repo_map.set_path(repo, path)
+
+
+def _t_set_repo_root(args: dict, cwd: str) -> dict:
+    """Persist the GLOBAL base folder that holds all repos — ``path`` = the
+    directory whose subfolders are repos (a ticket for project ``foo`` resolves
+    to ``<path>/foo``). Use when the user says 'all repos live under /x' or
+    'the global repo folder is /x'."""
+    from aiforge_core.config import repo_map
+    path = str(args.get("path") or "").strip()
+    if not path:
+        return {"ok": False, "error": "need path"}
+    import os as _os
+    if not _os.path.isdir(_os.path.expanduser(path)):
+        return {"ok": False, "error": f"not a directory: {path}"}
+    return repo_map.set_default_root(path)
+
+
+def _t_list_repos(args: dict, cwd: str) -> dict:
+    """List the configured repo folders: the global base + explicit per-repo
+    paths + the git repos found under the base."""
+    from aiforge_core.config import repo_map
+    import os as _os
+    cfg = repo_map.list_all()
+    root = cfg["default_root"]
+    found = []
+    try:
+        for d in sorted(_os.listdir(root)):
+            p = _os.path.join(root, d)
+            if _os.path.isdir(_os.path.join(p, ".git")):
+                found.append(d)
+    except OSError:
+        pass
+    return {"ok": True, "default_root": root, "paths": cfg["paths"],
+            "repos_under_root": found}
+
+
 def _t_set_integration_default(args: dict, cwd: str) -> dict:
     """Persist a user-stated DEFAULT so later tool calls auto-fill it —
     ``tool`` = jira | confluence, ``value`` = the project key (jira) or space
@@ -1405,6 +1455,9 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "confluence_children": _t_confluence_children,
     "confluence_attach": _t_confluence_attach,
     "set_integration_default": _t_set_integration_default,
+    "set_repo_folder": _t_set_repo_folder,
+    "set_repo_root": _t_set_repo_root,
+    "list_repos": _t_list_repos,
     "git_status": _t_git_status,
     "git_diff": _t_git_diff,
     "git_log": _t_git_log,
@@ -1780,6 +1833,9 @@ Tool arguments:
 - jira_update   {{"key": "ENG-123", "summary": "...", "description": "...", "labels": ["a","b"]}}     (edit fields — needs your Approve)
 - jira_comment  {{"key": "ENG-123", "body": "comment text"}}                            (add a comment — needs your Approve)
 - set_integration_default {{"tool": "jira", "value": "ENG"}}  or  {{"tool": "confluence", "value": "DEV"}}   (persist a DEFAULT project/space — call this when the user says "use X as the default project/space"; later jira_*/confluence_* calls auto-fill it when omitted)
+- set_repo_folder {{"repo": "foo", "path": "/abs/path/to/foo"}}   (persist the local folder for a repo — call when the user says "use /x/y for repo foo"; tickets for that repo then resolve to it)
+- set_repo_root {{"path": "/abs/base"}}   (persist the GLOBAL base folder holding all repos — call when the user says "all repos live under /x"; project `foo` then resolves to `/x/foo`)
+- list_repos {{}}   (show the configured base folder + per-repo paths + git repos found under the base)
 - email_send    {{"to": "a@b.com", "subject": "...", "body": "..."}}   (send an email via the configured SMTP — optional "cc"/"bcc"/"html"; needs your Approve)
 - email_read    {{"query": "...", "limit": 10}}                        (read recent inbox emails via IMAP — optional "folder"/"unseen_only")
 - gitlab_search {{"query": "..."}}  (find issues; optional "project": "group/proj", "state": "opened")

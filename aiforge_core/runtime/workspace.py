@@ -24,7 +24,7 @@ import os
 import re
 import subprocess
 
-from aiforge_core.config.env import WORKTREE_ROOT
+from aiforge_core.config import repo_map
 from aiforge_core.tickets import store as tickets
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,75 @@ _FORBIDDEN_REPOS = {"AIForgeCrew"}
 def _slugify(s: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9]+", "-", s.lower()).strip("-")
     return s[:40] or "ticket"
+
+
+def _is_git_dir(path: str) -> bool:
+    return bool(path) and os.path.isdir(os.path.join(path, ".git"))
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def resolve_repo_dir(project: str, text: str = "") -> str | None:
+    """Resolve a repo NAME (+ optional free text to scan) to an absolute repo
+    directory. Resolution order, first hit wins:
+
+      1. Explicit per-repo path map (``repos.json`` — set from chat/API).
+      2. ``<default_root>/<project>`` exact.
+      3. Case-insensitive / slug match of ``project`` against dirs in the base.
+      4. A registered memory source (repo) whose name matches ``project``.
+      5. Substring/slug scan of ``text`` against dir names (last resort).
+
+    Returns None when nothing safe matches. ``AIForgeCrew`` is never returned.
+    """
+    project = (project or "").strip()
+    root = repo_map.default_root()
+
+    def _ok(path: str | None) -> str | None:
+        if path and os.path.basename(path.rstrip("/")) in _FORBIDDEN_REPOS:
+            return None
+        return path if _is_git_dir(path or "") else None
+
+    # 1. explicit path map
+    if project:
+        if (hit := _ok(repo_map.get_path(project))):
+            return hit
+    # 2. exact dir under the base
+    if project and (hit := _ok(os.path.join(root, project))):
+        return hit
+    # list base dirs once for fuzzy matching
+    try:
+        dirs = [d for d in os.listdir(root)
+                if os.path.isdir(os.path.join(root, d))
+                and not d.startswith(".") and d not in _FORBIDDEN_REPOS]
+    except OSError:
+        dirs = []
+    # 3. case-insensitive / slug match
+    if project:
+        pn = _norm(project)
+        for d in dirs:
+            if _norm(d) == pn:
+                if (hit := _ok(os.path.join(root, d))):
+                    return hit
+    # 4. a registered memory source (repo) named like the project
+    if project:
+        try:
+            from aiforge_core.runtime import memory_sources as _ms
+            for s in _ms.list_sources():
+                if s.get("kind") == "repo" and _norm(s.get("name", "")) == _norm(project):
+                    if (hit := _ok(s.get("location"))):
+                        return hit
+        except Exception:  # noqa: BLE001
+            pass
+    # 5. substring / slug scan of the free text (title+body) — last resort
+    if text:
+        tnorm = _norm(text)
+        for d in sorted(dirs, key=len, reverse=True):
+            if d in text or (len(_norm(d)) >= 4 and _norm(d) in tnorm):
+                if (hit := _ok(os.path.join(root, d))):
+                    return hit
+    return None
 
 
 def _detect_default_branch(repo_dir: str) -> str:
@@ -58,26 +127,10 @@ def _detect_default_branch(repo_dir: str) -> str:
     return "master"
 
 
-def _infer_repo_from_ticket(ticket) -> str | None:
-    project = (ticket.project or "").strip()
-    if project and project not in _FORBIDDEN_REPOS and \
-            os.path.isdir(os.path.join(WORKTREE_ROOT, project)):
-        return project
-    try:
-        all_dirs = [
-            d for d in os.listdir(WORKTREE_ROOT)
-            if os.path.isdir(os.path.join(WORKTREE_ROOT, d))
-            and not d.startswith(".")
-            and d not in _FORBIDDEN_REPOS
-        ]
-    except OSError:
-        all_dirs = []
-    all_dirs.sort(key=len, reverse=True)
-    text = f"{ticket.title or ''}\n{ticket.body or ''}"
-    for d in all_dirs:
-        if d in text:
-            return d
-    return None
+def _resolve_repo_dir_for_ticket(ticket) -> str | None:
+    return resolve_repo_dir(
+        getattr(ticket, "project", "") or "",
+        f"{getattr(ticket, 'title', '') or ''}\n{getattr(ticket, 'body', '') or ''}")
 
 
 def ensure_branch_and_worktree(ticket) -> str | None:
@@ -98,12 +151,13 @@ def ensure_branch_and_worktree(ticket) -> str | None:
         slug = _slugify(parent.title if parent else ticket.title)
         branch = f"aiforge/{parent_ident}-{slug}"
 
-    repo_name = _infer_repo_from_ticket(ticket) or _infer_repo_from_ticket(root)
-    if not repo_name or repo_name == "AIForgeCrew":
+    repo_dir = _resolve_repo_dir_for_ticket(ticket) or _resolve_repo_dir_for_ticket(root)
+    if not repo_dir:
         return None
-    repo_dir = os.path.join(WORKTREE_ROOT, repo_name)
-    if not os.path.isdir(os.path.join(repo_dir, ".git")):
+    repo_name = os.path.basename(repo_dir.rstrip("/"))
+    if repo_name in _FORBIDDEN_REPOS:
         return None
+    # resolve_repo_dir already verified it's a git dir
 
     worktree_path = os.path.join(repo_dir, ".aiforge-worktrees", parent_ident)
     if not os.path.isdir(worktree_path):
@@ -182,4 +236,4 @@ def ensure_branch_and_worktree(ticket) -> str | None:
     return worktree_path
 
 
-__all__ = ["ensure_branch_and_worktree"]
+__all__ = ["ensure_branch_and_worktree", "resolve_repo_dir"]
