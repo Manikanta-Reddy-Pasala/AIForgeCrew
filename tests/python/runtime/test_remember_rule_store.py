@@ -75,3 +75,28 @@ def test_builder_elaborate_fallback_keeps_raw(cfg, monkeypatch):
     assert r["ok"]
     body = [s for s in skills.load() if s.name == "raw-skill"][0].body
     assert "raw text" in body            # never lost when elaboration fails
+
+
+def test_repo_rule_overrides_global_in_chat(cfg, tmp_path):
+    import os
+    from aiforge_core.runtime import repo_rules, chat_agent as ca
+    repo_rules.write_rule("style", "GLOBAL: use 4 spaces", always=True)
+    rdir = tmp_path / ".aiforge" / "rules"
+    rdir.mkdir(parents=True)
+    (rdir / "style.md").write_text(
+        "---\nname: style\nalwaysApply: true\n---\nREPO: use tabs\n")
+    ctx = ca._rules_context(str(tmp_path))
+    assert "REPO: use tabs" in ctx            # repo rule wins
+    assert "GLOBAL: use 4 spaces" not in ctx  # same-name global suppressed
+
+
+def test_repo_rule_overrides_global_in_pipeline(cfg, tmp_path):
+    # The team/pipeline path uses load_rules — same name-precedence.
+    from aiforge_core.runtime import repo_rules
+    repo_rules.write_rule("style", "GLOBAL body", always=True)
+    rdir = tmp_path / ".aiforge" / "rules"
+    rdir.mkdir(parents=True)
+    (rdir / "style.md").write_text(
+        "---\nname: style\nalwaysApply: true\n---\nREPO body\n")
+    bodies = {r.name: r.body for r in repo_rules.load_rules(str(tmp_path))}
+    assert "REPO body" in bodies["style"] and "GLOBAL body" not in bodies["style"]

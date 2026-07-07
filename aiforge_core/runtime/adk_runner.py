@@ -1237,14 +1237,19 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # always-on repo skills, keyed on ticket title + body. Folds in legacy
     # microagents. Best-effort: parse failures swallowed.
     hay = f"{ticket.title or ''} {ticket.body or ''}"
+    # Pass the ticket's repo root so REPO-SCOPED skills/workflows (in
+    # <repo>/.aiforge/…) load too, not just the global ones. cwd=None loaded
+    # global-only, so a repo-specific playbook was silently ignored by the
+    # pipeline. Falls back to None (global-only) when the worktree isn't set.
+    _repo_cwd = os.environ.get("AIFORGE_REPO_ROOT") or None
     _used_skills: list[dict] = []
     _used_workflows: list[dict] = []
     try:
         from aiforge_core.runtime import skills as _skills
-        sk_block = _skills.auto_context(hay, None)
+        sk_block = _skills.auto_context(hay, _repo_cwd)
         if sk_block:
             out = sk_block + "\n\n" + out
-            _used_skills = _skills.selected_names(hay, None)
+            _used_skills = _skills.selected_names(hay, _repo_cwd)
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.debug("skills.inject failed: %s", exc)
 
@@ -1252,10 +1257,10 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # see relevant reusable end-to-end procedures (parity with the chat agent).
     try:
         from aiforge_core.runtime import workflows as _workflows
-        wf_block = _workflows.auto_context(hay, None)
+        wf_block = _workflows.auto_context(hay, _repo_cwd)
         if wf_block:
             out = wf_block + "\n\n" + out
-            _used_workflows = _workflows.selected_names(hay, None)
+            _used_workflows = _workflows.selected_names(hay, _repo_cwd)
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.debug("workflows.inject failed: %s", exc)
 

@@ -855,24 +855,26 @@ def _rules_context(cwd: str, query: str = "") -> str:
                     tagged.append(_sk.Skill(
                         name=text[:60], description="", triggers=trig,
                         body=text, source=src, always=False, priority=0))
-        # ALSO read the repo_rules store (~/.aiforge/rules/ + repo-local) — the
-        # SAME store the Library UI / create-form / remember_rule write to. An
+        # ALSO read the repo_rules store — the SAME store the Library UI /
+        # create-form / remember_rule write to. Use load_rules(cwd), which
+        # merges builtin → global (~/.aiforge/rules) → repo-local and dedups BY
+        # NAME with the most-specific winning: a REPO rule OVERRIDES a global
+        # rule of the same name (parity with the team/pipeline path). An
         # always-on rule joins the always block; a glob-scoped rule becomes a
         # trigger-gated bullet so relevance scoring applies.
         try:
             from aiforge_core.runtime import repo_rules as _rr
-            _rules = list(_rr.load_global_rules())
-            if cwd:
-                try:
-                    _rules += list(_rr.load_rules(cwd))
-                except Exception:  # noqa: BLE001
-                    pass
-            _seen_rt: set[str] = set()
+            # load_rules needs a repo root; fall back to global-only when we're
+            # not in a repo (still honours global rules).
+            try:
+                _rules = list(_rr.load_rules(cwd)) if cwd else list(
+                    _rr.load_global_rules())
+            except Exception:  # noqa: BLE001
+                _rules = list(_rr.load_global_rules())
             for r in _rules:
                 rt = (r.body or "").strip()
-                if not rt or rt in _seen_rt:
+                if not rt:
                     continue
-                _seen_rt.add(rt)
                 if getattr(r, "always", True) or not getattr(r, "globs", None):
                     always_lines.append("- " + rt.replace("\n", " ")[:400])
                 else:
