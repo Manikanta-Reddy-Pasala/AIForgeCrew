@@ -23,10 +23,45 @@ against ``Edge.route``.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
 from typing import Any
+
+log = logging.getLogger("aiforge.graph_pipeline")
+
+
+def _globs_match_any_repo_file(globs: "list[str]", repo_root: "str | None" = None,
+                              max_files: int = 4000) -> bool:
+    """True if at least one file under the ticket's repo (worktree) matches any
+    of ``globs``. Used to detect a bad plan whose scope allowlist matches
+    nothing in THIS repo. Soft-fails to True (don't clear on a probe error —
+    only clear when we're SURE nothing matches)."""
+    root = repo_root or os.environ.get("AIFORGE_REPO_ROOT") or ""
+    if not root or not globs:
+        return True
+    try:
+        from aiforge_core.runtime import scope_guard
+        from pathlib import Path
+        base = Path(root)
+        n = 0
+        _skip = {".git", "node_modules", ".venv", "target", "dist", "build",
+                 ".aiforge-worktrees", "__pycache__"}
+        for p in base.rglob("*"):
+            if not p.is_file():
+                continue
+            if any(part in _skip for part in p.parts):
+                continue
+            n += 1
+            if n > max_files:
+                return True                # too big to fully scan → don't clear
+            rel = str(p.relative_to(base))
+            if scope_guard._matches_any(rel, globs):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — a probe failure must not clear the scope
+        return True
 
 # Route label constants — keep in sync with the edge wiring in pipeline.py.
 ROUTE_TRIVIAL = "trivial"
@@ -541,6 +576,16 @@ async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
     # dedupe, keep order
     seen: set = set()
     merged = [g for g in globs if not (g in seen or seen.add(g))]
+    # FAIL-OPEN on a bad plan: if the (non-empty) globs match ZERO files in the
+    # actual repo, they're wrong for THIS repo's layout (a common failure when
+    # the architect assumes a src/... layout, or a different repo's paths). An
+    # allowlist that matches nothing blocks EVERY Doer edit → no changes →
+    # loc-plateau kill + a spurious scope_violation. Treat it as no-scope
+    # (allow the whole worktree — which is already the per-ticket sandbox).
+    if merged and not _globs_match_any_repo_file(merged):
+        log.warning("scope globs match NO file in the repo — clearing "
+                    "(fail-open to repo scope): %s", merged)
+        merged = []
     if merged:
         state["scope_allowlist_globs"] = merged
         # Re-match glob-scoped repo rules against the plan-widened scope
