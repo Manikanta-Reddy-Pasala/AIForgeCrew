@@ -44,7 +44,19 @@ def repo_name(cwd: "str | None", *, sentinel: str = "repo") -> str:
     ``AIFORGE_AFM_REPO`` → ``sentinel``."""
     base_path = git_toplevel(cwd) or cwd
     base = os.path.basename(os.path.normpath(str(base_path))).strip() if base_path else ""
-    return base or os.environ.get("AIFORGE_AFM_REPO") or sentinel
+    return normalize_repo(base) or os.environ.get("AIFORGE_AFM_REPO") or sentinel
 
 
-__all__ = ["git_toplevel", "repo_name"]
+def normalize_repo(name: "str | None") -> str:
+    """Strip a trailing display suffix like `" (Python)"` / `" (Java Spring)"`
+    from a repo key. Memory SOURCES carry a language-annotated display name
+    ('requests (Python)'), but the chat/recall path keys by the bare git
+    basename ('requests') — so writes filed under the annotated name were never
+    found by recall. Normalising both sides to the bare name fixes the mismatch.
+    Idempotent; a bare name passes through unchanged."""
+    import re
+    n = (name or "").strip()
+    return re.sub(r"\s*\([^)]*\)\s*$", "", n).strip() or n
+
+
+__all__ = ["git_toplevel", "repo_name", "normalize_repo"]

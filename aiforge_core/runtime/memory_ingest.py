@@ -447,7 +447,11 @@ def ingest_source(source: dict) -> dict:
     """Ingest one source dict ({kind, name, location}). Returns
     ``{units, error}``. Never raises — errors are returned."""
     kind = source["kind"]
-    repo = source.get("name") or "memory"
+    # Key by the BARE repo name (strip the ' (Python)' display suffix) so
+    # indexed chunks/symbols file under the SAME key the chat/recall path uses
+    # (git basename) — else recall by "requests" never finds "requests (Python)".
+    from aiforge_core.runtime.repo_ident import normalize_repo as _nr
+    repo = _nr(source.get("name") or "") or "memory"
     loc = source["location"]
     try:
         if kind == "repo":
