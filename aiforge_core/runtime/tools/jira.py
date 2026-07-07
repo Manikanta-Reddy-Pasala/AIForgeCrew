@@ -44,7 +44,16 @@ def _conf() -> dict:
         "user": (os.environ.get("JIRA_USER") or stored.get("user") or "").strip(),
         "insecure_tls": (_truthy(os.environ.get("JIRA_INSECURE_TLS", ""))
                          or bool(stored.get("insecure_tls"))),
+        # Default project key, applied when a call omits ``project`` (auto-fill on
+        # create; scope full-text search). env wins, else the UI/chat-persisted
+        # store. Lets the user say "use ENG as the default project" once.
+        "default_project": (os.environ.get("JIRA_DEFAULT_PROJECT")
+                            or stored.get("default_project") or "").strip(),
     }
+
+
+def default_project() -> str:
+    return _conf().get("default_project") or ""
 
 
 def _auth_scheme() -> str:
@@ -158,6 +167,19 @@ def jira_search(args: dict, cwd: str | None = None) -> dict:
         jql = f'text ~ "{q}" ORDER BY updated DESC'
     if not jql:
         return {"ok": False, "error": "missing 'query' or 'jql'"}
+    # Scope to the default project when the caller didn't name one — otherwise a
+    # bare "text ~ ..." searches every project the token can see (a common cause
+    # of a job's filter returning the wrong/empty set). Explicit project=/JQL is
+    # left untouched. Honour an explicit args["project"] over the default.
+    proj = (args.get("project") or default_project() or "").strip()
+    if proj and "project" not in jql.lower():
+        low = jql.lower()
+        if " order by" in low:
+            i = low.index(" order by")
+            where, order = jql[:i], jql[i:]
+            jql = f'project = "{proj}" AND ({where}){order}'
+        else:
+            jql = f'project = "{proj}" AND ({jql})'
     r = _request("GET", "/rest/api/2/search",
                  params={"jql": jql, "maxResults": int(args.get("limit", 10)),
                          "fields": "summary,status,issuetype,assignee"})
@@ -206,6 +228,8 @@ def jira_create(args: dict, cwd: str | None = None) -> dict:
     """Create an issue. Required: ``project`` (key), ``summary``. Optional:
     ``issuetype`` (name, default 'Task'), ``description``, ``priority`` (name),
     ``labels`` (list), ``assignee`` (name), ``parent`` (key, for sub-tasks)."""
+    if not args.get("project") and default_project():
+        args = {**args, "project": default_project()}
     for k in ("project", "summary"):
         if not args.get(k):
             return {"ok": False, "error": f"missing '{k}'"}

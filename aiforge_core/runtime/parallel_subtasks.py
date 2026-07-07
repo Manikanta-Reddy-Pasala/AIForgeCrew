@@ -767,7 +767,8 @@ def default_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
     ok = False
     try:
         for ev in run_chat_agent([{"role": "user", "content": msg}], cwd=worktree,
-                                 role="doer", complete_fn=complete_fn):
+                                 role="doer", complete_fn=complete_fn,
+                                 strict_finish=True):
             if ev.get("type") == "error":
                 return {"ok": False, "error": ev.get("text")}
             if ev.get("type") == "message" and not ev.get("awaiting_input"):

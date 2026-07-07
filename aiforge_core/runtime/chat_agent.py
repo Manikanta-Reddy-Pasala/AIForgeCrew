@@ -494,6 +494,35 @@ def _t_create_job_script(args: dict, cwd: str) -> dict:
             return {"ok": False,
                     "error": f"invalid or unschedulable cron: {cron!r}"}
         path = jobs_scripts.write_script(name, script)
+        # TEST BEFORE SCHEDULE: run the script once. A wrong JQL/filter would
+        # otherwise be scheduled as-is and fire forever doing nothing. On
+        # failure, DON'T schedule and DON'T leave an orphan script. `skip_test`
+        # (default off) is the escape for destructive/time-sensitive scripts.
+        trial_output = None
+        if not bool(args.get("skip_test")):
+            trial = jobs_scripts.run_script(path)
+            if not trial.get("ok"):
+                jobs_scripts.delete_script(path)
+                return {"ok": False, "tested": True,
+                        "error": ("trial run FAILED (exit "
+                                  f"{trial.get('returncode')}) — job NOT "
+                                  "scheduled. Fix the script and retry.\n"
+                                  f"STDOUT:\n{trial.get('stdout', '')}\n"
+                                  f"STDERR:\n{trial.get('stderr', '')}")}
+            trial_output = trial.get("stdout")
+        # DEDUPE: replace any existing job(s) with the same name (+ their
+        # script files) instead of piling up duplicates that all fire.
+        replaced = []
+        try:
+            for j in jobs_store.list_jobs():
+                if str(j.get("name") or "").strip().lower() == name.lower():
+                    sp = j.get("script_path")
+                    if sp and sp != path and jobs_scripts.is_within_jobs_dir(sp):
+                        jobs_scripts.delete_script(sp)
+                    jobs_store.delete(j["id"])
+                    replaced.append(j["id"])
+        except Exception:  # noqa: BLE001 — dedupe is best-effort, never block create
+            pass
         nxt = jobs_parse.next_runs(cron, n=1)[0]
         job = jobs_store.create(
             name=name, cron=cron, ticket_title=name,
@@ -502,7 +531,10 @@ def _t_create_job_script(args: dict, cwd: str) -> dict:
             next_run_at=nxt, kind="script", script_path=path)
         return {"ok": True, "job_id": job["id"], "script_path": path,
                 "human_schedule": jobs_parse.human_schedule(cron),
-                "next_run_at": job["next_run_at"]}
+                "next_run_at": job["next_run_at"],
+                "tested": not bool(args.get("skip_test")),
+                "trial_output": trial_output,
+                "replaced_jobs": replaced}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
@@ -768,6 +800,28 @@ def _t_confluence_create(args: dict, cwd: str) -> dict:
 def _t_confluence_update(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import confluence
     return confluence.confluence_update(args, cwd)
+
+
+def _t_set_integration_default(args: dict, cwd: str) -> dict:
+    """Persist a user-stated DEFAULT so later tool calls auto-fill it —
+    ``tool`` = jira | confluence, ``value`` = the project key (jira) or space
+    key (confluence). Deterministic: stored in the integrations config, read by
+    jira_*/confluence_* on every call. Use when the user says e.g. 'use ENG as
+    the default project' / 'default Confluence space is DEV'."""
+    tool = str(args.get("tool") or "").strip().lower()
+    value = str(args.get("value") or "").strip()
+    if tool not in ("jira", "confluence"):
+        return {"ok": False, "error": "tool must be 'jira' or 'confluence'"}
+    if not value:
+        return {"ok": False, "error": "missing 'value' (project/space key)"}
+    field = "default_project" if tool == "jira" else "default_space"
+    try:
+        from aiforge_core.config import integrations
+        integrations.set_(tool, {field: value})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "tool": tool, field: value,
+            "note": f"{tool} calls will now default {field}={value} when omitted"}
 
 
 def _t_jira_search(args: dict, cwd: str) -> dict:
@@ -1337,6 +1391,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_link_issues": _t_jira_link_issues,
     "confluence_children": _t_confluence_children,
     "confluence_attach": _t_confluence_attach,
+    "set_integration_default": _t_set_integration_default,
     "git_status": _t_git_status,
     "git_diff": _t_git_diff,
     "git_log": _t_git_log,
@@ -1676,8 +1731,8 @@ Tool arguments:
                  (persist a user rule for every session; scope global|repo)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - search_chat_sessions {{"query": "...", "limit": 6}}     (find things you discussed with the user in PAST chat sessions)
-- memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false}}
-                (save a learning/decision to the knowledge graph for future recall)
+- memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false, "tags": ["tool:jira"]}}
+                (save a learning/decision for future recall; tag TOOL learnings "tool:jira|confluence|git|email|gitlab" so they resurface for that tool)
 - skill_search {{"query": "..."}}                        (find reusable SKILL.md playbooks)
 - learn_skill  {{"name": "...", "description": "when to use it", "body": "the step-by-step playbook", "triggers": ["word1","word2"], "scope": "global|repo"}}
                 (author a reusable skill after solving something non-trivial — also recorded in memory)
@@ -1695,6 +1750,7 @@ Tool arguments:
 - jira_create   {{"project": "ENG", "summary": "...", "issuetype": "Task", "description": "..."}}   (new issue — needs your Approve)
 - jira_update   {{"key": "ENG-123", "summary": "...", "description": "...", "labels": ["a","b"]}}     (edit fields — needs your Approve)
 - jira_comment  {{"key": "ENG-123", "body": "comment text"}}                            (add a comment — needs your Approve)
+- set_integration_default {{"tool": "jira", "value": "ENG"}}  or  {{"tool": "confluence", "value": "DEV"}}   (persist a DEFAULT project/space — call this when the user says "use X as the default project/space"; later jira_*/confluence_* calls auto-fill it when omitted)
 - email_send    {{"to": "a@b.com", "subject": "...", "body": "..."}}   (send an email via the configured SMTP — optional "cc"/"bcc"/"html"; needs your Approve)
 - email_read    {{"query": "...", "limit": 10}}                        (read recent inbox emails via IMAP — optional "folder"/"unseen_only")
 - gitlab_search {{"query": "..."}}  (find issues; optional "project": "group/proj", "state": "opened")
@@ -1791,7 +1847,12 @@ session summary / what you actually did and verified, not on trivia. Use \
 kind="decision" (decision=true) for "we picked X over Y" choices, else \
 kind="note"/"gotcha". Keep each fact one crisp sentence tied to a path/symbol; \
 1-3 per session max, and do NOT re-save a fact already present in the recalled \
-memory above (dedupe). Skip it entirely for trivial one-off answers.
+memory above (dedupe). Skip it entirely for trivial one-off answers. \
+When the learning is about a TOOL — a working JQL/CQL, the right filter, a \
+default project/space, an API quirk, a repo's build command — ADD a \
+"tool:<name>" tag (tool:jira, tool:confluence, tool:git, tool:email, \
+tool:gitlab) so it resurfaces next time you use that tool, instead of \
+re-figuring it out (a recurring complaint when the same request repeats).
 - MEMORY FIRST (for understanding/explaining code): before grepping the \
 filesystem, call `memory_lookup(query)` — it semantically recalls the INDEXED \
 codebase (tree-sitter symbols, code/doc chunks, the graphify concept graph) \
@@ -1974,7 +2035,11 @@ def _parse(out: str) -> dict:
     if tho:
         return {"kind": "continue", "thought": tho.group(1).strip() or out.strip()}
     # Genuinely just prose with no protocol at all → treat as the final answer.
-    return {"kind": "final", "text": out.strip()}
+    # Tag it IMPLICIT (no explicit ``FINAL:`` marker): in interactive chat that's
+    # the real answer, but in a work-producing run (doer / builder) it's usually
+    # premature narration ("let me test what's happening…") and the loop should
+    # nudge-and-continue rather than quit — see the ``final`` branch in the loop.
+    return {"kind": "final", "text": out.strip(), "implicit": True}
 
 
 # Loop detection: no fixed step budget — long coding sessions run until
@@ -2709,6 +2774,25 @@ def _repo_name(cwd: str) -> str:
     return os.path.basename(base) or "repo"
 
 
+# Keyword → tool-scope tag: which tool a request is likely to use. A recalled
+# learning tagged ``tool:<name>`` (see the learner guidance) gets a score bump
+# in recall so the working JQL/filter/config the agent figured out LAST time
+# resurfaces for the same TYPE of request — instead of re-deriving it.
+_TOOL_TAG_HINTS = {
+    "tool:jira": ("jira", "jql", "issue", "ticket", "sprint", "epic"),
+    "tool:confluence": ("confluence", "wiki", "space", "page"),
+    "tool:git": ("git", "branch", "commit", "rebase", "pull request", " pr ", "merge"),
+    "tool:email": ("email", "smtp", "inbox", "mailbox"),
+    "tool:gitlab": ("gitlab", "merge request", " mr "),
+}
+
+
+def _tool_tags(query: str) -> list[str]:
+    q = f" {(query or '').lower()} "
+    return [tag for tag, kws in _TOOL_TAG_HINTS.items()
+            if any(k in q for k in kws)]
+
+
 def _memory_recall(cwd: str, query: str, limit: int = 6,
                    session_id: "int | None" = None) -> str:
     """Proactive memory recall at SESSION START — pull prior decisions /
@@ -2727,7 +2811,8 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
         # this turn's own messages don't return as "prior chat".
         _repo = _chat_repo_key(cwd)
         res = _uq.query(q, limit=limit, repo=_repo,
-                        exclude_session=session_id)
+                        exclude_session=session_id,
+                        boost_tags=_tool_tags(q))
         if isinstance(res, dict):
             hits = res.get("hits", []) or []
     except Exception:  # noqa: BLE001
@@ -2839,6 +2924,9 @@ def run_chat_agent(
     mode: str = "act",              # "act" = full tools; "plan" = read-only
     scope_globs: list[str] | None = None,  # autonomous Doer scope allowlist
     builder: str | None = None,     # job|skill|workflow|rule — task charter
+    strict_finish: bool = False,    # work-producing run (doer): an IMPLICIT
+    #                                 bare-prose final is premature narration →
+    #                                 nudge to act, don't quit with no work done
 ) -> Iterator[dict]:
     """Drive the ReAct loop until the agent finishes or a stuck loop is
     detected (NOT a step count). Yields SSE-ready event dicts:
@@ -3022,6 +3110,8 @@ def run_chat_agent(
 
     n = 0
     _builder_nudged = False
+    _builder_finalized = False
+    _builder_final_tries = 0
     while n < safety:
         n += 1
         if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -3153,6 +3243,40 @@ def run_chat_agent(
         convo.append({"role": "assistant", "content": out})
         step = _parse(out)
         if step["kind"] == "final":
+            # In a builder session, a "final" BEFORE the finalize tool succeeded
+            # means the model narrated/stalled ("let me test what's happening…")
+            # instead of building the artifact — don't end the interview with
+            # nothing created. Nudge it to call the finalize tool and continue the
+            # loop (bounded so a model that truly can't finalize still exits).
+            if builder and not _builder_finalized and _builder_final_tries < 2:
+                _builder_final_tries += 1
+                _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+                if step.get("text"):
+                    yield {"type": "thought", "text": step["text"]}
+                convo.append({"role": "user", "content":
+                    f"[system reminder] You stopped without creating the {builder}. "
+                    f"Call `{_fin}` NOW with the collected values to finish — do "
+                    f"not just narrate or 'test'. If ONE required value is genuinely "
+                    f"missing, ask only for that, then finalize."})
+                continue
+            # Doer guard: an IMPLICIT final (bare prose, no explicit `FINAL:`
+            # marker) from a work-producing run (strict_finish — the text-doer /
+            # subtask path) is almost always premature narration ("let me test…"),
+            # not a real answer. Nudge to act/finish instead of ending with no work.
+            # Bounded by continue_nudges so a model that truly can't finish still
+            # exits. Interactive chat / generic callers (strict_finish=False) keep
+            # bare prose as the legitimate answer — unchanged.
+            if step.get("implicit") and strict_finish and not builder:
+                continue_nudges += 1
+                if continue_nudges <= 2:
+                    if step.get("text"):
+                        yield {"type": "thought", "text": step["text"]}
+                    convo.append({"role": "user", "content":
+                        "You narrated but did NOT emit an ACTION or an explicit "
+                        "`FINAL:` line. Continue: take the next ACTION (tool call) "
+                        "to make progress, or output `FINAL: <answer>` ONLY when "
+                        "the work is actually done. Do not just narrate or 'test'."})
+                    continue
             _fire_stop("final", cwd)
             yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
             yield {"type": "done"}
@@ -3451,6 +3575,7 @@ def run_chat_agent(
         # re-fires the charter and the user is stuck building forever (and can be
         # walked into duplicate artifacts).
         if name in _FINALIZE_TOOLS and isinstance(result, dict) and result.get("ok"):
+            _builder_finalized = True
             yield {"type": "builder_done", "kind": name}
         obs = json.dumps(result)[:_MAX_OBS]
         convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})

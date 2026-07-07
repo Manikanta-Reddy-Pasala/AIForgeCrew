@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -123,6 +124,13 @@ def test_create_script_job_writes_script_and_runs_on_fire(app_client, tmp_path):
     # run-now shares the fire path → the script actually executes (no ticket).
     r = client.post(f"/api/jobs/{body['id']}/run-now")
     assert r.status_code == 200 and r.json()["ok"] is True
+    # _fire_script runs the script in a daemon thread (so a slow script never
+    # blocks the tick/HTTP), so "ok" means DISPATCHED, not finished — poll for
+    # the marker instead of asserting synchronously (else a loaded box races).
+    for _ in range(100):
+        if marker.exists():
+            break
+        time.sleep(0.05)
     assert marker.exists()
 
 

@@ -4564,6 +4564,7 @@ class _ConfluenceCfg(BaseModel):
     token: str | None = None       # write-only; omitted on read
     user: str | None = None
     insecure_tls: bool | None = None
+    default_space: str | None = None   # auto-applied when a call omits `space`
 
 
 @app.get("/api/integrations/confluence")
@@ -4577,6 +4578,8 @@ def integrations_confluence_get() -> dict:
         "user": os.environ.get("CONFLUENCE_USER") or stored.get("user", ""),
         "insecure_tls": bool(stored.get("insecure_tls")),
         "has_token": env_token or bool(stored.get("token")),
+        "default_space": os.environ.get("CONFLUENCE_DEFAULT_SPACE")
+        or stored.get("default_space", ""),
         "env_managed": bool(os.environ.get("CONFLUENCE_BASE_URL") or env_token),
     }
 
@@ -4593,6 +4596,8 @@ def integrations_confluence_set(body: _ConfluenceCfg) -> dict:
         patch["user"] = body.user.strip()
     if body.insecure_tls is not None:
         patch["insecure_tls"] = bool(body.insecure_tls)
+    if body.default_space is not None:
+        patch["default_space"] = body.default_space.strip()
     if body.token:                       # only overwrite when a new token is given
         patch["token"] = body.token.strip()
     integrations.set_("confluence", patch)
@@ -4611,6 +4616,7 @@ class _JiraCfg(BaseModel):
     token: str | None = None       # write-only; omitted on read
     user: str | None = None
     insecure_tls: bool | None = None
+    default_project: str | None = None  # auto-applied when a call omits `project`
 
 
 @app.get("/api/integrations/jira")
@@ -4624,6 +4630,8 @@ def integrations_jira_get() -> dict:
         "user": os.environ.get("JIRA_USER") or stored.get("user", ""),
         "insecure_tls": bool(stored.get("insecure_tls")),
         "has_token": env_token or bool(stored.get("token")),
+        "default_project": os.environ.get("JIRA_DEFAULT_PROJECT")
+        or stored.get("default_project", ""),
         "env_managed": bool(os.environ.get("JIRA_BASE_URL") or env_token),
     }
 
@@ -4640,6 +4648,8 @@ def integrations_jira_set(body: _JiraCfg) -> dict:
         patch["user"] = body.user.strip()
     if body.insecure_tls is not None:
         patch["insecure_tls"] = bool(body.insecure_tls)
+    if body.default_project is not None:
+        patch["default_project"] = body.default_project.strip()
     if body.token:                       # only overwrite when a new token is given
         patch["token"] = body.token.strip()
     integrations.set_("jira", patch)
