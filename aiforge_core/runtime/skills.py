@@ -144,8 +144,10 @@ def _repo_root(cwd: str | None) -> str | None:
 
 
 def _repo_name(cwd: str | None) -> str:
-    root = _repo_root(cwd) or cwd or "."
-    return os.path.basename(os.path.abspath(root).rstrip(os.sep)) or "skills"
+    # Canonical resolver (git-toplevel) so a skill's repo tag matches the key
+    # chat/recall use — was repo_root basename, a third divergent base.
+    from aiforge_core.runtime import repo_ident as _ri
+    return _ri.repo_name(cwd, sentinel="skills")
 
 
 def _builtin_dir() -> Path:

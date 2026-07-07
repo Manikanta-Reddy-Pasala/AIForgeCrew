@@ -432,9 +432,8 @@ def _chat_repo_key(cwd: str | None) -> str:
     basename, then ``AIFORGE_AFM_REPO``, then the literal ``"repo"`` (gap M3).
     Note ``repo_key`` is always truthy for a real path, so its ``or env``
     fallback was dead — we chain the env explicitly here."""
-    from aiforge_core.runtime import rule_capture as _rc
-    base = _rc.repo_key(_git_toplevel(cwd) or cwd)
-    return base or os.environ.get("AIFORGE_AFM_REPO") or "repo"
+    from aiforge_core.runtime import repo_ident as _ri
+    return _ri.repo_name(cwd, sentinel="repo")
 
 
 def _t_memory_lookup(args: dict, cwd: str) -> dict:
@@ -3005,8 +3004,10 @@ def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str
 
 
 def _repo_name(cwd: str) -> str:
-    base = str(_workspace_root() or cwd).rstrip(os.sep)
-    return os.path.basename(base) or "repo"
+    # Canonical resolver (git-toplevel) — was workspace-dir basename, which
+    # drifted from the recall key. Delegates now.
+    from aiforge_core.runtime import repo_ident as _ri
+    return _ri.repo_name(cwd, sentinel="repo")
 
 
 # Keyword → tool-scope tag: which tool a request is likely to use. A recalled
