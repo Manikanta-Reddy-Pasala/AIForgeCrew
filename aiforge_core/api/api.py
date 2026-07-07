@@ -168,6 +168,52 @@ def _start_jobs_scheduler() -> None:
         pass
 
 
+def _spawn_reindex_all() -> None:
+    """Re-index every repo/docs source in a SEPARATE PROCESS (CPU-heavy →
+    keeps it off the API's GIL, like _spawn_index)."""
+    import subprocess
+    import sys
+    subprocess.Popen(
+        [sys.executable, "-m", "aiforge_core.runtime.memory_ingest", "--all"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+
+
+@app.on_event("startup")
+def _start_daily_reindex() -> None:
+    """Once a day, re-index EVERY registered repo/docs source so semantic
+    recall + the graphify graph stay current with the code (the RepoMap is
+    already on-the-fly fresh; this refreshes the chunk/graph layers). Runs at
+    AIFORGE_REINDEX_HOUR (local, default 03:00). Off with
+    AIFORGE_REINDEX_DAILY=0 or AIFORGE_JOBS_DISABLE=1."""
+    if os.environ.get("AIFORGE_REINDEX_DAILY", "1") in ("0", "false", "no"):
+        return
+    if os.environ.get("AIFORGE_JOBS_DISABLE", "") in ("1", "true", "yes"):
+        return
+    import threading
+    import time as _t
+    from datetime import datetime, timedelta
+
+    def _loop() -> None:
+        try:
+            hour = max(0, min(23, int(os.environ.get("AIFORGE_REINDEX_HOUR", "3"))))
+        except ValueError:
+            hour = 3
+        while True:
+            now = datetime.now()
+            nxt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+            if nxt <= now:
+                nxt += timedelta(days=1)
+            _t.sleep(max(60.0, (nxt - now).total_seconds()))
+            try:
+                _spawn_reindex_all()
+                _af_log.info("daily reindex fired at %s", datetime.now().isoformat())
+            except Exception as exc:  # noqa: BLE001 — never kill the loop
+                _af_log.warning("daily reindex spawn failed: %s", exc)
+
+    threading.Thread(target=_loop, daemon=True, name="daily-reindex").start()
+
+
 # ─────────────────────── API auth + bind-host guard ─────────────────────
 # This control plane RUNS SHELL and EDITS FILES over HTTP, so exposing it
 # unauthenticated is a remote-code-execution surface. Design (pragmatic, must
@@ -2011,6 +2057,16 @@ def memory_sources_index(source_id: int) -> dict:
     _ms.set_status(source_id, "indexing", error=None)
     _spawn_index(source_id)
     return {**src, "status": "indexing"}
+
+
+@app.post("/api/memory/reindex-all")
+def memory_reindex_all() -> dict:
+    """Re-index EVERY registered repo/docs source now (same sweep the daily
+    job runs). Fires in a background process; returns immediately."""
+    from aiforge_core.runtime import memory_sources as _ms
+    n = sum(1 for s in _ms.list_sources() if s.get("kind") in ("repo", "docs"))
+    _spawn_reindex_all()
+    return {"ok": True, "reindexing": n}
 
 
 # ─────────────────── Memory admin (overview + clear) ───────────────────────

@@ -528,11 +528,44 @@ def run_index(source_id: int) -> None:
                        error=None, layers=layers, indexed=True)
 
 
+def reindex_all() -> dict:
+    """Re-index EVERY registered repo/docs source (chunks + symbols + graphify)
+    so semantic recall + the graph stay current with the code. Sequential
+    (each index is CPU-heavy) and soft-fail per source — one bad repo never
+    stops the rest. Returns ``{total, indexed, errors:[{id,error}]}``."""
+    from aiforge_core.runtime import memory_sources as _ms
+    out = {"total": 0, "indexed": 0, "errors": []}
+    try:
+        sources = _ms.list_sources()
+    except Exception as exc:  # noqa: BLE001
+        return {**out, "errors": [{"id": None, "error": str(exc)}]}
+    for s in sources:
+        if s.get("kind") not in ("repo", "docs"):
+            continue
+        out["total"] += 1
+        sid = s.get("id")
+        try:
+            _ms.set_status(sid, "indexing", error=None)
+            run_index(sid)                     # in-process (caller is off the API loop)
+            out["indexed"] += 1
+        except Exception as exc:  # noqa: BLE001 — never let one repo stop the sweep
+            log.warning("reindex_all: source %s failed: %s", sid, exc)
+            out["errors"].append({"id": sid, "error": str(exc)})
+    log.info("reindex_all: %d/%d re-indexed, %d errors",
+             out["indexed"], out["total"], len(out["errors"]))
+    return out
+
+
 if __name__ == "__main__":  # subprocess entrypoint: `python -m … <source_id>`
     # Indexing is CPU-bound (tree-sitter parsing, chunking) and holds the GIL
     # for long stretches; running it in an api THREAD starves uvicorn's asyncio
     # loop and wedges every request (health, the UI, the public tunnel). The
     # api dispatches this module as a SEPARATE PROCESS so its GIL is its own.
     import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--all":
+        # Daily sweep: re-index every registered repo/docs source. Own process
+        # so the CPU-heavy work never touches the API's GIL.
+        r = reindex_all()
+        raise SystemExit(0 if not r.get("errors") else 1)
     raise SystemExit(0 if (len(sys.argv) > 1 and run_index(int(sys.argv[1])) is None)
                      else 1)
