@@ -13,10 +13,19 @@ Soft by design: any error → proceed (never wedge a run on the gate).
 from __future__ import annotations
 
 import logging
+import os
 
 from aiforge_core.tickets import store as tickets_mod
 
 log = logging.getLogger("aiforge.clarify")
+
+try:
+    # A body with at least this many words is already substantive — the local
+    # triage model over-asks (it rarely emits a bare "CLEAR"), so a detailed
+    # ticket would get spuriously parked in `blocked`. Skip the gate for those.
+    _MIN_THIN_WORDS = max(1, int(os.environ.get("AIFORGE_CLARIFY_MIN_WORDS", "30")))
+except (TypeError, ValueError):
+    _MIN_THIN_WORDS = 30
 
 _SYS = (
     "You are a triage clarifier for a coding pipeline. Decide if the "
@@ -34,6 +43,15 @@ def _interactive(ticket) -> bool:
 
 def _clarified(ticket) -> bool:
     return bool((ticket.metadata or {}).get("clarified"))
+
+
+def _thin(ticket) -> bool:
+    """A title-only / one-liner ticket is worth a clarifying question; a
+    ticket that already carries a substantive body (>= _MIN_THIN_WORDS words)
+    is not — the local triage model over-asks, spuriously parking good
+    tickets in ``blocked``. Only thin tickets go through the LLM gate."""
+    body = (getattr(ticket, "body", "") or "").strip()
+    return len(body.split()) < _MIN_THIN_WORDS
 
 
 def _ambiguous_candidates(ticket) -> list[str]:
@@ -84,6 +102,11 @@ def maybe_clarify(ticket) -> bool:
     stop processing this ticket); False to proceed with the pipeline."""
     if not _interactive(ticket) or _clarified(ticket):
         return False
+    if not _thin(ticket):
+        # Body is already substantive — don't run the over-eager gate; proceed.
+        tickets_mod.update_status(ticket.id, "in_progress", role="clarify",
+                                  metadata_patch={"clarified": True})
+        return False
     try:
         ambiguous = _ambiguous_candidates(ticket)
         questions = _ask_llm(ticket, ambiguous)
@@ -103,5 +126,18 @@ def maybe_clarify(ticket) -> bool:
         ticket.id, "blocked", role="clarify",
         metadata_patch={"awaiting_input": True, "clarify_questions": questions},
     )
+    # Surface the REASON in chat — otherwise the ticket just shows `blocked`
+    # with no explanation. The user's next chat message answers the questions.
+    sid = (ticket.metadata or {}).get("chat_session_id")
+    if sid:
+        try:
+            from aiforge_core.runtime import chat_store
+            chat_store.add_message(
+                sid, "assistant", body,
+                [{"type": "clarify", "ticket": ticket.identifier,
+                  "questions": questions}])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("clarify.chat_writeback ticket=%s err=%s",
+                        ticket.identifier, exc)
     log.info("clarify.asked ticket=%s n=%d", ticket.identifier, len(questions))
     return True

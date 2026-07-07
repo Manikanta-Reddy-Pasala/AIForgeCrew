@@ -74,6 +74,7 @@ def query(
     repo: str | None = None,
     exclude_session: int | None = None,
     session_id: int | None = None,
+    boost_tags: list[str] | None = None,
 ) -> dict:
     """Unified retrieval. Returns ``{hits, used_sources, errors}``.
 
@@ -93,7 +94,7 @@ def query(
         return {"hits": [], "used_sources": [], "errors": []}
 
     _ck = (text.strip().lower(), repo or "", role or "", int(limit),
-           exclude_session)
+           exclude_session, tuple(sorted(boost_tags or ())))
     _ttl = _qcache_ttl()
     if _ttl > 0:
         _hit = _QCACHE.get(_ck)
@@ -115,7 +116,8 @@ def query(
         if _bsel.embedded():
             from aiforge_core.memory import sqlite_memory as _sqlmem
             sqlite_repo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
-            rows = _sqlmem.recall(text, limit=limit, repo=sqlite_repo)
+            rows = _sqlmem.recall(text, limit=limit, repo=sqlite_repo,
+                                  boost_tags=boost_tags)
             if rows:
                 used.append("memory")
                 raw_hits.extend(

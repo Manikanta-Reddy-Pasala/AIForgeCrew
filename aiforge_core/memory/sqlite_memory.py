@@ -114,16 +114,23 @@ def write_unit(
         return int(cur.lastrowid)
 
 
-def recall(text: str, *, limit: int = 8, repo: str | None = None) -> list[dict]:
+def recall(text: str, *, limit: int = 8, repo: str | None = None,
+           boost_tags: list[str] | None = None) -> list[dict]:
     """Brute-force cosine recall. Returns hits sorted by score desc.
 
     Each hit: ``{text, title, source, kind, ticket, repo, score}`` with
     ``score`` the clamped cosine in [0, 1]. ``repo`` filters to that
     repo plus repo-agnostic rows when provided.
+
+    ``boost_tags``: rows whose stored ``tags`` intersect this set get a fixed
+    score bump — so a tool-scoped learning (e.g. ``tool:jira``) reliably
+    surfaces when that tool is in play, even on a differently-worded but
+    same-type request that pure semantics would rank below noise.
     """
     text = (text or "").strip()
     if not text or limit <= 0:
         return []
+    boost = {t.lower() for t in (boost_tags or []) if t}
     qvec = local_embed.embed(text)
     if not any(qvec):
         return []
@@ -144,6 +151,13 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None) -> list[dict]:
         score = local_embed.cosine(qvec, vec)
         if score <= 0.0:
             continue
+        if boost:
+            try:
+                row_tags = {str(t).lower() for t in json.loads(r["tags"] or "[]")}
+            except (TypeError, ValueError):
+                row_tags = set()
+            if row_tags & boost:
+                score = min(1.0, score + 0.3)   # tool-scoped learning wins ties
         scored.append({
             "text": r["text"],
             "title": r["title"],

@@ -44,7 +44,16 @@ def _conf() -> dict:
         "user": (os.environ.get("CONFLUENCE_USER") or stored.get("user") or "").strip(),
         "insecure_tls": (_truthy(os.environ.get("CONFLUENCE_INSECURE_TLS", ""))
                          or bool(stored.get("insecure_tls"))),
+        # Default space key, applied when a call omits ``space`` (auto-fill on
+        # create; scope search/read). env wins, else the UI/chat-persisted store.
+        # Lets the user say "use ENG as the default space" once.
+        "default_space": (os.environ.get("CONFLUENCE_DEFAULT_SPACE")
+                          or stored.get("default_space") or "").strip(),
     }
+
+
+def default_space() -> str:
+    return _conf().get("default_space") or ""
 
 
 def _auth_scheme() -> str:
@@ -106,6 +115,12 @@ def confluence_search(args: dict, cwd: str | None = None) -> dict:
         cql = f'text ~ "{q}"'
     if not cql:
         return {"ok": False, "error": "missing 'query' or 'cql'"}
+    # Scope to the default space when the caller didn't name one — otherwise a
+    # bare "text ~ ..." searches every space (a common cause of a wrong/empty
+    # result set). Explicit space=/CQL space is left untouched.
+    space = (args.get("space") or default_space() or "").strip()
+    if space and "space" not in cql.lower():
+        cql = f'space = "{space}" AND ({cql})'
     r = _request("GET", "/rest/api/content/search",
                  params={"cql": cql, "limit": int(args.get("limit", 10)),
                          "expand": "space,version"})
@@ -124,8 +139,9 @@ def confluence_read(args: dict, cwd: str | None = None) -> dict:
     pid = args.get("id")
     if not pid and args.get("title"):
         params = {"title": args["title"], "expand": "version", "limit": 1}
-        if args.get("space"):
-            params["spaceKey"] = args["space"]
+        _space = args.get("space") or default_space()
+        if _space:
+            params["spaceKey"] = _space
         rr = _request("GET", "/rest/api/content", params=params)
         if not rr["ok"]:
             return rr
@@ -205,6 +221,8 @@ def _fetch_attachments(pid: str, role: str = "doer") -> list[dict]:
 def confluence_create(args: dict, cwd: str | None = None) -> dict:
     """Create a page. Required: ``title``, ``space`` (key), ``body`` (storage
     XHTML). Optional: ``parent_id``, ``representation`` (storage|wiki)."""
+    if not args.get("space") and default_space():
+        args = {**args, "space": default_space()}
     for k in ("title", "space", "body"):
         if not args.get(k):
             return {"ok": False, "error": f"missing '{k}'"}

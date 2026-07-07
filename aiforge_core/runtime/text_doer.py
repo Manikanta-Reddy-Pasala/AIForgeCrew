@@ -280,7 +280,7 @@ def run_text_doer(
             [{"role": "user", "content": seed}],
             cwd=cwd, role=role, max_steps=max_steps,
             complete_fn=complete_fn, session_id=None, mode="act",
-            scope_globs=scope_globs or None,
+            scope_globs=scope_globs or None, strict_finish=True,
         ):
             etype = ev.get("type")
             if etype == "tool":
