@@ -29,32 +29,14 @@ from . import _http_integration as _http
 _TIMEOUT_S = 20
 _BODY_CAP = 200_000
 
-_truthy = _http.truthy
-
 
 def _conf() -> dict:
-    """Resolve config: env var WINS, else the UI-persisted store."""
-    try:
-        from aiforge_core.config import integrations
-        stored = integrations.get("gitlab")
-    except Exception:  # noqa: BLE001
-        stored = {}
-    return {
-        "base_url": (os.environ.get("GITLAB_BASE_URL")
-                     or stored.get("base_url") or "").strip().rstrip("/"),
-        # strip whitespace/newlines a pasted token often carries — a stray
-        # "\n" in the PRIVATE-TOKEN header value yields a 401.
-        "token": (os.environ.get("GITLAB_TOKEN")
-                  or stored.get("token") or "").strip(),
-        "project": (os.environ.get("GITLAB_PROJECT")
-                    or stored.get("project") or "").strip(),
-        "oauth": (_truthy(os.environ.get("GITLAB_OAUTH", ""))
-                  or bool(stored.get("oauth"))),
-        # Insecure by DEFAULT (self-signed internal endpoints); set
-        # GITLAB_INSECURE_TLS=0 to re-enable verification. UI toggle removed.
-        "insecure_tls": (os.environ.get("GITLAB_INSECURE_TLS") is None
-                         or _truthy(os.environ.get("GITLAB_INSECURE_TLS", ""))),
-    }
+    """Resolve config via the shared integration helper: base_url/token/
+    insecure_tls (insecure by default) + project + oauth."""
+    return _http.integration_conf(
+        "gitlab", "GITLAB",
+        str_fields=(("project", "GITLAB_PROJECT"),),
+        bool_fields=(("oauth", "GITLAB_OAUTH"),))
 
 
 def _auth_scheme() -> str:
