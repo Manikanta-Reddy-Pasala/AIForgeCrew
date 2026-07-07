@@ -40,6 +40,7 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
 from aiforge_core.config import env as _cfg
+from aiforge_core.runtime.background import spawn as _spawn
 from aiforge_core.config.env import (
     AIFORGE_DSN,
     LM_STUDIO_BASE_URL,
@@ -149,7 +150,7 @@ def _ensure_model_context_on_boot() -> None:
         except Exception as _exc:  # noqa: BLE001 — never break boot
             _af_log.debug("boot ctx-reload skipped: %s", _exc)
 
-    threading.Thread(target=_work, name="ctx-reload", daemon=True).start()
+    _spawn(_work, name="ctx-reload")
 
 
 @app.on_event("startup")
@@ -174,8 +175,7 @@ def _start_jobs_scheduler() -> None:
         from aiforge_core.jobs import scheduler as jobs_scheduler
         if jobs_scheduler._disabled():
             return
-        threading.Thread(target=jobs_scheduler.run_loop,
-                         daemon=True, name="jobs-scheduler").start()
+        _spawn(jobs_scheduler.run_loop, name="jobs-scheduler")
     except Exception:  # noqa: BLE001 — startup must never crash the API
         pass
 
@@ -1471,7 +1471,7 @@ def run_subtasks_parallel(identifier: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("run-parallel failed for %s: %s", identifier, exc)
 
-    threading.Thread(target=_bg, name=f"parallel-{identifier}", daemon=True).start()
+    _spawn(_bg, name=f"parallel-{identifier}")
     return {"started": True, "identifier": identifier}
 
 
@@ -3770,7 +3770,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     _cs.rename_session(session_id, _t)
             except Exception:  # noqa: BLE001 — titling must never break a run
                 pass
-        threading.Thread(target=_gen_title, daemon=True).start()
+        _spawn(_gen_title, name="gen-title")
 
     from aiforge_core.runtime import chat_cancel
     chat_cancel.start(session_id)
@@ -4509,7 +4509,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             except (ValueError, RuntimeError):   # never over-release
                 pass
 
-    threading.Thread(target=_produce, daemon=True).start()
+    _spawn(_produce, name="chat-produce")
 
     def _stream():
         # Tail the live run as SSE. A client disconnect only closes this

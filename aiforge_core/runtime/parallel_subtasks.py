@@ -1399,25 +1399,20 @@ _ARCHITECT_SYS = (
 
 
 def _architect_context(spec: str, cwd: str | None) -> str:
-    """Gather SKILLS / WORKFLOWS / REPO RULES blocks for the architect. Each
-    source is independently soft-failing and capped ~1000 chars."""
-    def _safe(fn) -> str:
-        try:
-            return (fn() or "").strip()
-        except Exception:  # noqa: BLE001
-            return ""
-
-    from aiforge_core.runtime import repo_rules, skills, workflows
+    """SKILLS / WORKFLOWS / REPO RULES for the architect — via the SHARED
+    context bundle so the rule source (repo_rules + md_store, query-gated)
+    matches every other path. Was `repo_rules.collect` = a divergent rule
+    source. Each block capped ~1000 chars."""
+    from aiforge_core.runtime import context_bundle as _cb
+    b = _cb.build_bundle(cwd or ".", spec, want_repo_map=False,
+                         want_summary=False, want_prefs=False)
     parts: list[str] = []
-    sk = _safe(lambda: skills.auto_context(spec, cwd))
-    if sk:
-        parts.append("SKILLS:\n" + sk[:1000])
-    wf = _safe(lambda: workflows.auto_context(spec, cwd))
-    if wf:
-        parts.append("WORKFLOWS:\n" + wf[:1000])
-    rl = _safe(lambda: repo_rules.collect(cwd) if cwd else "")
-    if rl:
-        parts.append("REPO RULES:\n" + rl[:1000])
+    if b.skills_md:
+        parts.append("SKILLS:\n" + b.skills_md.strip()[:1000])
+    if b.workflows_md:
+        parts.append("WORKFLOWS:\n" + b.workflows_md.strip()[:1000])
+    if b.rules_md:
+        parts.append("REPO RULES:\n" + b.rules_md.strip()[:1000])
     return "\n\n".join(parts)
 
 
