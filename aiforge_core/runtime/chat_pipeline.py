@@ -206,31 +206,20 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     raw_prompt = prompt   # the user's actual request (before context augmentation)
     # Build a context-rich prompt: project summary + prior conversation +
     # the current request, so the team pipeline isn't clueless on follow-ups.
+    # ONE shared context bundle — same source-selection/scoping/gating as single
+    # chat (context_bundle.build_bundle), so team-chat can never silently miss a
+    # source the single path injects.
     cave = False
-    _ctx_on = lambda _b: True  # noqa: E731 — replaced on successful import
+    _ctx_on = lambda _b: True  # noqa: E731
     try:
-        from aiforge_core.runtime.chat_agent import (
-            _cave_mode, _ctx_on, _memory_recall, _repo_context, _rules_context,
-        )
+        from aiforge_core.runtime.chat_agent import _cave_mode, _ctx_on
         cave = _cave_mode()
-        rules_ctx = _rules_context(cwd, raw_prompt)   # query-gated (parity w/ chat)
-        # Mirror the single-agent path: honour the ctx_no_summary toggle (was
-        # ignored here, so the toggle silently did nothing in team mode). Keep
-        # the block in cave mode too (the leaner-not-dropped behaviour).
-        repo_ctx = _repo_context(cwd) if _ctx_on("summary") else ""
     except Exception:  # noqa: BLE001
-        rules_ctx = repo_ctx = ""
-        _memory_recall = None  # type: ignore
+        pass
+    from aiforge_core.runtime import context_bundle as _cb
+    bundle = _cb.build_bundle(cwd, raw_prompt, cave=cave, ctx_on=_ctx_on,
+                              session_id=session_id, want_repo_map=False)
     convo = _history_preamble(history)
-    # Self-learning recall EVERY turn, keyed to the CURRENT request. Honours the
-    # ctx_no_recall toggle; cave mode pulls fewer hits (matching chat_agent),
-    # rather than dropping it entirely.
-    recall_ctx = ""
-    if _memory_recall is not None and _ctx_on("recall"):
-        try:
-            recall_ctx = _memory_recall(cwd, raw_prompt, limit=(3 if cave else 6))
-        except Exception:  # noqa: BLE001
-            recall_ctx = ""
     # SESSION IMAGES — descriptions of attached images, queryable all session.
     img_ctx = ""
     if session_id is not None:
@@ -239,38 +228,19 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             img_ctx = chat_media.context_block(session_id)
         except Exception:  # noqa: BLE001
             img_ctx = ""
-    # Skills / workflows / preferences — chat-team previously injected NONE of
-    # these (the ticket path does), so a repo playbook or a stated preference
-    # that worked in single-chat + tickets silently did nothing in team-chat.
-    skills_ctx = workflows_ctx = prefs_ctx = ""
-    try:
-        from aiforge_core.runtime import skills as _sk, workflows as _wf
-        if _ctx_on("skills"):
-            skills_ctx = _sk.auto_context(raw_prompt, cwd) or ""
-        if _ctx_on("workflows"):
-            workflows_ctx = _wf.auto_context(raw_prompt, cwd) or ""
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.runtime.chat_agent import _preferences_context
-        prefs_ctx = _preferences_context(cwd) or ""
-    except Exception:  # noqa: BLE001
-        pass
-    parts = [p for p in (prefs_ctx, rules_ctx, skills_ctx, workflows_ctx,
-                         repo_ctx, recall_ctx, img_ctx, convo) if p]
+    parts = [p for p in (*bundle.blocks(), img_ctx, convo) if p]
     prompt = ("\n\n".join(parts) + f"\n\nCURRENT REQUEST:\n{prompt}"
               if parts else prompt)
     # ALSO expose these as pipeline STATE keys — many graph nodes run
     # include_contents='none' and read the {rules_md?}/{memory_brief_md?}/
-    # {user_prefs_md?} placeholders, NOT the seed prose above. Without this the
-    # team pipeline ran context-blind (the "works in chat, team ignored it" bug).
+    # {user_prefs_md?} placeholders, NOT the seed prose above.
     _team_state = {"chat_cwd": cwd}
-    if rules_ctx:
-        _team_state["rules_md"] = rules_ctx
-    if recall_ctx:
-        _team_state["memory_brief_md"] = recall_ctx
-    if prefs_ctx:
-        _team_state["user_prefs_md"] = prefs_ctx
+    if bundle.rules_md:
+        _team_state["rules_md"] = bundle.rules_md
+    if bundle.memory_md:
+        _team_state["memory_brief_md"] = bundle.memory_md
+    if bundle.preferences_md:
+        _team_state["user_prefs_md"] = bundle.preferences_md
 
     async def _drive() -> None:
         # Bind this driver thread (+ the bash tool the Doer runs) to the
