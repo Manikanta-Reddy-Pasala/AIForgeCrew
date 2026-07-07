@@ -85,6 +85,9 @@ export const api = {
   libraryGenerate: (kind: string, prompt: string) => j<{ ok: boolean; draft: string }>(`/library/${kind}/generate`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }),
   }),
+  libraryDelete: (kind: string, name: string) =>
+    j<any>(`/library/${kind}/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  libraryClear: (kind: string) => j<{ ok: boolean; removed: number }>(`/library/${kind}`, { method: 'DELETE' }),
   comment:  (id: string, body: string) => j<any>(`/tickets/${id}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

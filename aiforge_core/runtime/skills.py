@@ -410,5 +410,69 @@ def write_skill(name: str, description: str, body: str,
     return {"ok": True, "name": name, "path": str(path), "memory": mem}
 
 
+def _within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _deletable_roots(cwd: str | None) -> list[Path]:
+    """Dirs a skill file may be unlinked from: global, the shipped builtin dir,
+    and repo-local playbook dirs. Bounds delete so it can never remove an
+    arbitrary file outside the playbook tree."""
+    roots = [_global_dir(), _builtin_dir()]
+    root = _repo_root(cwd)
+    if root:
+        roots += [Path(root) / sub for sub in _REPO_SUBDIRS]
+    return roots
+
+
+def delete_skill(name: str, cwd: str | None = None) -> dict:
+    """Delete the skill(s) named ``name`` by unlinking the backing file (custom
+    OR shipped default). Bounded to the playbook dirs. Returns
+    ``{ok, removed:[paths]}`` or ``{ok: False, error}``."""
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    roots = _deletable_roots(cwd)
+    removed: list[str] = []
+    for sk in load(cwd):
+        if sk.name != name:
+            continue
+        src = getattr(sk, "source", "")
+        if not src or src == "builtin":
+            continue  # no on-disk path to unlink (already gone / synthetic)
+        p = Path(src)
+        if not any(_within(p, r) for r in roots):
+            continue
+        try:
+            p.unlink()
+            # drop the now-empty <name>/ dir left by the SKILL.md form
+            if p.name == "SKILL.md" and p.parent.is_dir() and not any(p.parent.iterdir()):
+                p.parent.rmdir()
+            removed.append(str(p))
+        except FileNotFoundError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+    if not removed:
+        return {"ok": False, "error": f"no deletable skill named {name!r}"}
+    return {"ok": True, "name": name, "removed": removed}
+
+
+def clear_skills(cwd: str | None = None) -> dict:
+    """Delete every deletable skill (custom + defaults). Returns count removed."""
+    names = {s.name for s in load(cwd)}
+    removed = 0
+    for n in names:
+        r = delete_skill(n, cwd)
+        if r.get("ok"):
+            removed += len(r.get("removed", []))
+    return {"ok": True, "removed": removed}
+
+
 __all__ = ["Skill", "Selection", "load", "search", "render", "select",
-           "select_or_ask", "selected_names", "auto_context", "write_skill"]
+           "select_or_ask", "selected_names", "auto_context", "write_skill",
+           "delete_skill", "clear_skills"]

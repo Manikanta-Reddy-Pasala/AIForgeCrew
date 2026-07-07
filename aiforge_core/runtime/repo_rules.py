@@ -132,6 +132,45 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
         return {"ok": False, "error": str(exc)}
 
 
+def delete_rule(name: str) -> dict:
+    """Delete the global rule(s) named ``name`` by unlinking the backing file,
+    bounded to the rules dirs. Returns ``{ok, removed:[paths]}``."""
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    roots = [_global_rules_dir().resolve(), _builtin_rules_dir().resolve()]
+    removed: list[str] = []
+    for r in load_global_rules():
+        if r.name != name:
+            continue
+        src = getattr(r, "source", "")
+        if not src:
+            continue
+        p = Path(src)
+        try:
+            if p.resolve().parent not in roots:
+                continue
+            p.unlink()
+            removed.append(str(p))
+        except FileNotFoundError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+    if not removed:
+        return {"ok": False, "error": f"no deletable rule named {name!r}"}
+    return {"ok": True, "name": name, "removed": removed}
+
+
+def clear_rules() -> dict:
+    names = {r.name for r in load_global_rules()}
+    removed = 0
+    for n in names:
+        res = delete_rule(n)
+        if res.get("ok"):
+            removed += len(res.get("removed", []))
+    return {"ok": True, "removed": removed}
+
+
 def _builtin_rules_dir() -> Path:
     """Shipped default rules (lowest priority — a custom rule of the same name
     always wins)."""

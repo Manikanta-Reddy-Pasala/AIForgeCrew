@@ -52,6 +52,24 @@ export default function Library({ kind }: { kind: Kind }) {
     } finally { setGenerating(false); }
   }
 
+  async function del(itemName: string) {
+    if (!window.confirm(`Delete ${meta.one} "${itemName}"? This removes its file.`)) return;
+    try {
+      await api.libraryDelete(kind, itemName);
+      toast.success(`Deleted ${meta.one} "${itemName}"`);
+      qc.invalidateQueries({ queryKey: ['library', kind] });
+    } catch (e: any) { toast.error(e.message); }
+  }
+
+  async function clearAll() {
+    if (!window.confirm(`Clear ALL ${meta.title.toLowerCase()} (custom + default)? This cannot be undone.`)) return;
+    try {
+      const r = await api.libraryClear(kind);
+      toast.success(`Cleared ${r.removed} ${meta.one}${r.removed === 1 ? '' : 's'}`);
+      qc.invalidateQueries({ queryKey: ['library', kind] });
+    } catch (e: any) { toast.error(e.message); }
+  }
+
   async function save() {
     if (!name.trim() || !body.trim()) { toast.error('Name and body are required'); return; }
     try {
@@ -82,6 +100,11 @@ export default function Library({ kind }: { kind: Kind }) {
           <button onClick={() => setCreating(c => !c)}>
             {creating ? <><Icon.X size={14} /> Cancel</> : <><Icon.Plus size={14} /> New {meta.one}</>}
           </button>
+          {items.length > 0 && (
+            <button className="ghost danger" title={`Delete every ${meta.one}`} onClick={clearAll}>
+              <Icon.Trash size={14} /> Clear all
+            </button>
+          )}
         </div>
       </div>
 
@@ -175,7 +198,14 @@ export default function Library({ kind }: { kind: Kind }) {
                       </div>
                     )}
                   </div>
-                  <span className="muted small">{open ? '▲' : '▼'}</span>
+                  <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                    <button className="ghost danger" title={`Delete ${meta.one}`}
+                      onClick={e => { e.stopPropagation(); del(it.name); }}
+                      style={{ padding: '2px 8px' }}>
+                      <Icon.Trash size={13} />
+                    </button>
+                    <span className="muted small">{open ? '▲' : '▼'}</span>
+                  </div>
                 </div>
                 {open && (
                   <div className="bubble-body" style={{ marginTop: 10 }}>

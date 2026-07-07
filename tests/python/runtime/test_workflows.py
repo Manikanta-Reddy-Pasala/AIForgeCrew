@@ -58,22 +58,17 @@ def test_auto_context_surfaces_relevant(wf):
     assert wf.auto_context("unrelated quantum chromodynamics") == ""
 
 
-def test_ensure_dirs_surfaces_default_playbooks(wf, monkeypatch, tmp_path):
+def test_library_ships_empty(wf, monkeypatch, tmp_path):
     from aiforge_core.runtime import skills as sk
-    # ensure_dirs no longer COPIES builtins into the global dir — load() reads
-    # the shipped defaults directly (low-priority), so the defaults are visible
-    # without any seeding and the global dir stays empty of default copies.
+    # The library now ships EMPTY by design (all default playbooks removed) — a
+    # fresh install has no skills/workflows until the user adds their own. Only
+    # the .gitkeep placeholder lives in builtin_playbooks.
     res = wf.ensure_dirs()
     assert (tmp_path / "skills").is_dir() and (tmp_path / "workflows").is_dir()
     assert "skills" in res and "workflows" in res
-    sk_names = {s.name for s in sk.load()}
-    wf_names = {w.name for w in wf.load()}
-    assert len(sk_names) >= 3 and len(wf_names) >= 3
-    assert {"systematic-debugging", "test-driven-development",
-            "safe-refactoring"} <= sk_names
-    assert {"ship-a-feature", "fix-a-bug", "onboard-to-a-new-repo"} <= wf_names
+    assert [s for s in sk.load()] == []      # no default skills
+    assert [w for w in wf.load()] == []       # no default workflows
     # No default copies were dropped into the (user-only) global dir.
-    assert not (wf._global_dir() / "ship-a-feature.md").exists()
     assert list(wf._global_dir().glob("*.md")) == []
     # idempotent: second call is a no-op migration (nothing left to remove)
     assert wf.ensure_dirs()["workflows"]["removed_seeded"] == 0

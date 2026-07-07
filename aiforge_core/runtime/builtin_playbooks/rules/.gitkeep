@@ -1,0 +1,2 @@
+# Ships EMPTY by design. Default playbooks were removed — the library starts
+# blank; add your own via the UI (/library) or the write_skill/workflow/rule tools.

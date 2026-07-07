@@ -240,5 +240,57 @@ def ensure_dirs() -> dict:
     return out
 
 
+def _deletable_roots(cwd: str | None) -> list[Path]:
+    roots = [_global_dir(), _builtin_dir()]
+    root = _sk._repo_root(cwd)
+    if root:
+        roots += [Path(root) / sub for sub in _REPO_SUBDIRS]
+    return roots
+
+
+def delete_workflow(name: str, cwd: str | None = None) -> dict:
+    """Delete the workflow(s) named ``name`` by unlinking the backing file
+    (custom OR shipped default), bounded to the playbook dirs."""
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    roots = [r.resolve() for r in _deletable_roots(cwd)]
+    removed: list[str] = []
+    for wf in load(cwd):
+        if wf.name != name:
+            continue
+        src = getattr(wf, "source", "")
+        if not src or src == "builtin":
+            continue
+        p = Path(src)
+        if not any(_sk._within(p, r) for r in roots):
+            continue
+        try:
+            p.unlink()
+            # remove an empty slug dir (dir form), but never a root itself
+            if (p.parent.resolve() not in roots and p.parent.is_dir()
+                    and not any(p.parent.iterdir())):
+                p.parent.rmdir()
+            removed.append(str(p))
+        except FileNotFoundError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+    if not removed:
+        return {"ok": False, "error": f"no deletable workflow named {name!r}"}
+    return {"ok": True, "name": name, "removed": removed}
+
+
+def clear_workflows(cwd: str | None = None) -> dict:
+    names = {w.name for w in load(cwd)}
+    removed = 0
+    for n in names:
+        r = delete_workflow(n, cwd)
+        if r.get("ok"):
+            removed += len(r.get("removed", []))
+    return {"ok": True, "removed": removed}
+
+
 __all__ = ["load", "search", "select", "select_or_ask", "selected_names",
-           "write_workflow", "ensure_dirs", "auto_context"]
+           "write_workflow", "ensure_dirs", "auto_context",
+           "delete_workflow", "clear_workflows"]

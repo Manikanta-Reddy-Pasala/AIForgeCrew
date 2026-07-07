@@ -1186,6 +1186,40 @@ def library_create(kind: str, payload: dict = Body(...)) -> dict:
     return res
 
 
+@app.delete("/api/library/{kind}/{name}")
+def library_delete(kind: str, name: str) -> dict:
+    """Delete a single skill / workflow / rule by name (custom or default)."""
+    if kind == "skills":
+        from aiforge_core.runtime import skills
+        res = skills.delete_skill(name)
+    elif kind == "workflows":
+        from aiforge_core.runtime import workflows
+        res = workflows.delete_workflow(name)
+    elif kind == "rules":
+        from aiforge_core.runtime import repo_rules
+        res = repo_rules.delete_rule(name)
+    else:
+        raise HTTPException(404, f"unknown kind {kind!r}")
+    if not res.get("ok"):
+        raise HTTPException(404, res.get("error", "delete failed"))
+    return res
+
+
+@app.delete("/api/library/{kind}")
+def library_clear(kind: str) -> dict:
+    """Clear ALL skills / workflows / rules of a kind (custom + defaults)."""
+    if kind == "skills":
+        from aiforge_core.runtime import skills
+        return skills.clear_skills()
+    if kind == "workflows":
+        from aiforge_core.runtime import workflows
+        return workflows.clear_workflows()
+    if kind == "rules":
+        from aiforge_core.runtime import repo_rules
+        return repo_rules.clear_rules()
+    raise HTTPException(404, f"unknown kind {kind!r}")
+
+
 _LIBRARY_GEN_PROMPT = {
     "skills": ("Write a SKILL.md. Output ONLY a markdown doc with YAML "
                "frontmatter (name, description, triggers: [..]) then a concise "
