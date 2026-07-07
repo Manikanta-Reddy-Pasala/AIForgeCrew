@@ -402,11 +402,26 @@ def _do_store(c: dict, *, rid: str, repo: str | None, session_id,
             item["md_source"] = src
             item["md_bullet"] = "- " + bullet_text
             item["location"] = f"md:{src}"
-            if scope == "project" and repo_root:
+            if cat == "rule" and scope == "project" and repo_root:
                 rp = _write_repo_rule(repo_root, canonical[:60] or "rule",
                                       canonical, triggers=triggers)
                 if rp:
                     item["rule_path"] = rp
+            elif cat == "rule" and scope == "global":
+                # Also land GLOBAL rules in the canonical repo_rules store
+                # (~/.aiforge/rules) — the SAME store the Library UI + the
+                # ticket/doer pipeline read — so a directive captured in passing
+                # shows up alongside remember_rule / Library-form rules instead
+                # of living only in md_store (invisible to the Library).
+                try:
+                    from aiforge_core.runtime import repo_rules as _rr
+                    _res = _rr.write_rule(canonical[:60] or "rule", canonical,
+                                          globs=(triggers or None),
+                                          always=not triggers)
+                    if _res.get("ok"):
+                        item["rule_path"] = _res.get("path")
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    log.debug("rule_capture global repo-rule write failed: %s", exc)
         else:  # memory
             from aiforge_core.runtime.tools.memory_write import memory_write
             mrepo = repo or "notes"
