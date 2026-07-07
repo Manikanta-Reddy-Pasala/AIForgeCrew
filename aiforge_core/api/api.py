@@ -4388,20 +4388,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             # filed subdir-pinned sessions under the subdir while
                             # recall read the repo root, so facts were never found.
                             _repo = _chat_repo_key(cwd)
-                            _lr = chat_learner.learn_from_chat(
-                                prompt=prompt, final_text=final_text,
-                                steps=steps, repo=_repo, session_id=session_id)
-                            # Auto-capture a durable USER PREFERENCE from the
-                            # message and UPSERT it into GLOBAL memory (mapped to
-                            # an existing subject when it restates one) — so the
-                            # user never re-enters a default/convention.
+                            # PREFERENCE FIRST — a message with a preference cue
+                            # ("use X as default", "from now on…") is UPSERTED by
+                            # subject and owns the turn: skip the fact-distiller
+                            # for it, so we don't pay a SECOND LLM call and write
+                            # the same sentence twice (a pref: unit AND a learning
+                            # unit). Ordinary turns still distil facts.
                             from aiforge_core.runtime import preference_capture
                             _pc = preference_capture.capture(
                                 prompt, repo=_repo, session_id=session_id)
-                            # Don't SILENTLY drop a failed persist — a user's
-                            # "remember X" that fails to store is a real data loss
-                            # (this runs on a daemon thread with no HTTP surface,
-                            # so a WARNING is the only signal there is).
+                            _lr = None
+                            if not (isinstance(_pc, dict) and _pc.get("captured")):
+                                _lr = chat_learner.learn_from_chat(
+                                    prompt=prompt, final_text=final_text,
+                                    steps=steps, repo=_repo, session_id=session_id)
+                            # Don't SILENTLY drop a failed persist — a "remember X"
+                            # that fails to store is real data loss (daemon thread,
+                            # no HTTP surface, so a WARNING is the only signal).
                             if isinstance(_lr, dict) and _lr.get("ok") is False \
                                     and _lr.get("skipped") is None:
                                 _af_log.warning("chat_learner did NOT persist "
