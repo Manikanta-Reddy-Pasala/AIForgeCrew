@@ -741,7 +741,14 @@ def _global_vector_recall(text: str, *, limit: int,
     # other repos dominate the raw nearest-neighbours.
     _k = min(limit * 6, 60) if want else min(limit, 20)
     def _ok(rrepo) -> bool:
-        return want is None or _nr(rrepo or "") == want
+        # Scoped recall unions the scoped key (a ticket/page/repo) AND GLOBAL
+        # (repo-less) memory — so a ticket chat surfaces BOTH that ticket's own
+        # facts and cross-ticket/global knowledge. Only OTHER repos' facts are
+        # excluded. (Mirrors the direct recall's "repo = ? OR repo IS NULL".)
+        if want is None:
+            return True
+        rn = _nr(rrepo or "")
+        return rn == want or rn == ""
     rows: list[dict] = []
     seen: set[str] = set()
     try:
