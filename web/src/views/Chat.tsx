@@ -498,16 +498,22 @@ export default function Chat() {
 
   // Launch a builder from a `?builder=<kind>` query param: create a fresh session
   // in that builder mode, then clear the param so a reload doesn't spawn another.
-  const builderLaunchedRef = useRef(false);
+  // Guard is PER-PARAM, not a one-time latch: a permanent latch meant the SECOND
+  // "New skill/rule/workflow" click (same page load) navigated to
+  // ?builder=<kind> but the effect returned early → no new chat opened. We
+  // instead remember which param value we're processing and reset when the
+  // param clears, so StrictMode's double-fire is deduped yet every genuine
+  // click opens a fresh builder chat.
+  const builderParamRef = useRef<string | null>(null);
   useEffect(() => {
     const b = searchParams.get('builder');
-    if (!b) return;
+    if (!b) { builderParamRef.current = null; return; }  // cleared → allow next
     if (!BUILDER_KINDS.includes(b as BuilderKind)) {
       setSearchParams({}, { replace: true });
       return;
     }
-    if (builderLaunchedRef.current) return;
-    builderLaunchedRef.current = true;
+    if (builderParamRef.current === b) return;   // already handling this launch
+    builderParamRef.current = b;
     (async () => {
       const id = await createSession();
       if (id !== null) setBuilderForSession(id, b as BuilderKind);
