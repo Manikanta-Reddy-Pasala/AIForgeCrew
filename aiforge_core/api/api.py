@@ -4238,11 +4238,30 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # the build/integration pipeline on stale files and the Changes view
         # shows the previous ticket's edits.
         _simple_sha = ""
+        # SAFE CHECK (on top of the dossier .gitignore): a jira/confluence context
+        # folder holds a generated dossier + notes, not code — do NOT git-init a
+        # worktree there just to diff, or a plain READ shows up as "N files
+        # changed". Skip only when it isn't ALREADY a real repo (respect an
+        # existing one). Real repos / repo-context / session scratch still track.
+        _skip_worktree = False
         try:
-            from aiforge_core.runtime.parallel_subtasks import _commit_turn_baseline
-            _simple_sha = _commit_turn_baseline(cwd)
+            from aiforge_core.runtime import work_context as _wc0
+            from aiforge_core.runtime import checkpoints as _ckpt0
+            _ctx0 = _wc0.context_for_path(cwd)
+            if (_ctx0 and _ctx0[0] in ("jira", "confluence")
+                    and not _ckpt0._is_repo(cwd)):
+                _skip_worktree = True
+                _af_log.info("chat: skipping git worktree for %s dossier "
+                             "folder %s (read-only context)", _ctx0[0], cwd)
         except Exception:  # noqa: BLE001
-            _simple_sha = ""
+            pass
+        if not _skip_worktree:
+            try:
+                from aiforge_core.runtime.parallel_subtasks import (
+                    _commit_turn_baseline)
+                _simple_sha = _commit_turn_baseline(cwd)
+            except Exception:  # noqa: BLE001
+                _simple_sha = ""
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
                                   session_id=session_id, mode=agent_mode)
         # Read-only / analysis query ("analyze/explain/how does X work") → the user
