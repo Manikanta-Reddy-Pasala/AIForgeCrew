@@ -217,19 +217,7 @@ if [[ $TEST -eq 0 ]]; then
     hybrid)
       # INFRA ONLY in docker; api + runner run on the host (fall through to the
       # host venv/web/launch path below — do NOT exit here).
-      # Optional headroom compression (services/headroom_proxy): the flag
-      # brings up the sidecar as a transparent FORWARDING proxy. The app then
-      # repoints its local model endpoint at it (llm/headroom.proxy_base), so
-      # the proxy compresses each request and forwards it to the real model —
-      # ONE mechanism covering EVERY agent (ADK + client.py alike), because
-      # both resolve base_url through that single redirect. Bringing the
-      # container up in lockstep with the flag means the redirected endpoint
-      # always has a live proxy behind it.
       _INFRA_SVCS="postgres neo4j embed rerank"
-      if [[ "${AIFORGE_HEADROOM:-1}" == "1" || "${AIFORGE_HEADROOM:-}" == "true" ]]; then
-        _INFRA_SVCS="$_INFRA_SVCS headroom"
-        echo "==> headroom ENABLED — every agent routed through the compress+forward proxy"
-      fi
       _docker_infra_up $_INFRA_SVCS
       # `up -d` returns before the DBs accept connections. Wait (bounded) so
       # the host api/runner don't error on a cold start. Best-effort — proceed

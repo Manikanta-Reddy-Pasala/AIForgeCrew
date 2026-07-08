@@ -214,21 +214,6 @@ AIFORGE_CHAT_AUTO_CHECKPOINT   1 = snapshot before each turn (default)
 AIFORGE_CHAT_AUTO_MEMORY       1 = persist a memory note per turn (default)
 AIFORGE_SKILLS_DIR             skill registry root (default ~/.aiforge/skills)
 
-# Headroom compression (optional; transparent forwarding proxy for EVERY agent)
-AIFORGE_HEADROOM               1 = route the local model endpoint through the
-#                                compress+forward sidecar. Both resolvers
-#                                (client.py + ADK) redirect base_url to it, so
-#                                every role is compressed with no per-agent code.
-AIFORGE_HEADROOM_UPSTREAM      real model endpoint the proxy forwards to AND the
-#                                one the app redirects (default 127.0.0.1:1234)
-AIFORGE_HEADROOM_URL           where the proxy listens (default 127.0.0.1:8787)
-HEADROOM_FORCE_KOMPRESS_ALL    1 = ML text-crush plain tool outputs (default);
-#                                0 = lossless SmartCrusher (JSON) only
-HEADROOM_PROTECT_RECENT        keep CODE in the last N msgs uncompressed (=8);
-#                                guards the doer's own recent edits from lossy crush
-HEADROOM_REQUEST_TIMEOUT       proxy→model read timeout (=1200s); MUST exceed
-#                                AIFORGE_LLM_TIMEOUT_S so the proxy never gives up first
-
 # Reliability / timeouts (a slow local reasoning model + the compress hop)
 AIFORGE_LLM_TIMEOUT_S          app→model read timeout (=900s / 15 min)
 AIFORGE_CHAT_LLM_RETRIES       transient-failure retries in chat before surfacing (=3)

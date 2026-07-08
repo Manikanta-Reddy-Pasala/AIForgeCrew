@@ -537,11 +537,6 @@ def resolve_litellm(role: str) -> dict[str, Any]:
         or row.get("api_key")
         or prov["api_key_default"]
     )
-    # Headroom proxy pattern: route the fronted local endpoint through the
-    # compress+forward sidecar so every ADK agent (doer/refiner/planner/…) is
-    # compressed transparently. No-op when off / for any other endpoint.
-    from aiforge_core.llm import headroom as _hr
-    base_url = _hr.proxy_base(base_url)
     return {
         "model_id": model, "api_base": base_url, "api_key": api_key,
         # Per-role TLS opt-out for a self-signed / internal HTTPS endpoint.

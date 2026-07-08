@@ -608,22 +608,13 @@ def _complete_impl(role: str, messages: list[dict], *,
          else RuntimeError("llm.exhausted").
     """
     # Default request timeout. Self-hosted reasoning models (e.g. 122B with
-    # long chain-of-thought) routinely need minutes — and with the headroom
-    # proxy in front, a compress+forward hop adds to that — so a short timeout
-    # shows up as intermittent "timeout" transport errors ("model didn't
-    # respond"). Generous default (15 min), tunable via AIFORGE_LLM_TIMEOUT_S.
-    # Kept <= the proxy's own upstream read timeout (HEADROOM_REQUEST_TIMEOUT)
-    # so the proxy never gives up on the model before this client does.
+    # long chain-of-thought) routinely need minutes, so a short timeout shows up
+    # as intermittent "timeout" transport errors ("model didn't respond").
+    # Generous default (15 min), tunable via AIFORGE_LLM_TIMEOUT_S.
     if timeout_s is None:
         timeout_s = _int_env("AIFORGE_LLM_TIMEOUT_S", 900)
 
     primary: Endpoint = resolve(role)
-
-    # Headroom compression is no longer called here: it now runs as a
-    # transparent forwarding proxy in front of the model endpoint (see
-    # aiforge_core.llm.headroom.proxy_base, applied inside resolve()). So
-    # ``primary.base_url`` already points at the compress+forward sidecar when
-    # AIFORGE_HEADROOM=1 — one mechanism for every agent, nothing to do here.
 
     # Pre-flight escalation — if we can estimate token weight before
     # spending an LLM round-trip, do it. The estimator uses the same
@@ -652,37 +643,6 @@ def _complete_impl(role: str, messages: list[dict], *,
                     timeout_s=timeout_s, role=role, source="primary")
     if out is not None:
         return out[0]
-
-    # Attempt 1b — headroom bypass. When the primary is routed through the
-    # compress+forward proxy and it returned garbage/empty, the compressor
-    # itself is the suspect: on diverse prompts it can make the model emit an
-    # empty-content tool_calls response (observed: proxy → finish=tool_calls,
-    # content=""; the SAME prompt straight to the model → real text). Retry the
-    # IDENTICAL request against the raw upstream model, bypassing compression,
-    # before falling over to another provider. Keeps headroom on for its
-    # context savings while self-healing when it corrupts a response.
-    from aiforge_core.llm import headroom as _hr
-    if _hr.is_proxied(primary.base_url):
-        direct = _hr.direct_base(primary.base_url)
-        if direct and direct != primary.base_url:
-            bypass = Endpoint(
-                base_url=direct, api_key=primary.api_key,
-                model=primary.model, provider=primary.provider,
-                role=primary.role, extras=primary.extras,
-            )
-            out = _try_post(bypass, messages,
-                            temperature=temperature, max_tokens=max_tokens,
-                            top_p=top_p, extras=extras,
-                            timeout_s=timeout_s, role=role,
-                            source="headroom_bypass")
-            if out is not None:
-                _log.warning(
-                    "llm.headroom_bypass_rescued",
-                    extra={"aiforge": {"role": role,
-                                       "proxy": primary.base_url,
-                                       "direct": direct}},
-                )
-                return out[0]
 
     # Attempt 2 — fallback() (different provider, same role)
     fb = fallback(role)

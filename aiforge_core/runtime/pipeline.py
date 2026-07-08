@@ -434,11 +434,6 @@ def build_pipeline(*, skip_researcher: bool = False,
     except Exception:
         pass
 
-    # (Headroom compression is no longer wired per-agent here — it runs as a
-    # transparent forwarding proxy in front of the model endpoint; every ADK
-    # agent's api_base is repointed at it in agent_config.resolve_litellm. See
-    # aiforge_core.llm.headroom.)
-
     # Auto-consolidation after-callback on the Learner — mines the finished
     # run's trajectory for durable facts (extract → decide ADD/UPDATE/DELETE/
     # NOOP vs existing → reflect), complementing the explicit facts_json

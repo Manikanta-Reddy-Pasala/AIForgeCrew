@@ -88,18 +88,6 @@ def resolve(role: str) -> Endpoint:
             model=cfg["model"], provider=ep.provider,
             role=ep.role, extras=ep.extras,
         )
-    # Headroom proxy pattern: transparently route the fronted local endpoint
-    # through the compress+forward sidecar (no-op when off / for any other
-    # endpoint). One line here covers every client.py-path role.
-    if ep is not None:
-        from aiforge_core.llm import headroom as _hr
-        new_base = _hr.proxy_base(ep.base_url)
-        if new_base != ep.base_url:
-            ep = Endpoint(
-                base_url=new_base, api_key=ep.api_key,
-                model=ep.model, provider=ep.provider,
-                role=ep.role, extras=ep.extras,
-            )
     return ep
 
 
