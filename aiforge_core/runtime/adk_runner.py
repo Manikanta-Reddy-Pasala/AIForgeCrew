@@ -436,6 +436,14 @@ def _extract_live_verifier(state: dict) -> dict | None:
     parsed — caller treats that as "no veto" rather than blocking on
     a parser hiccup.
     """
+    # A run that ABORTED (wall-clock deadline / mid-run error) never produced a
+    # verdict — treat that as a VETO, not a silent pass. Without this, a stalled
+    # behavioral verification returns partial state with no "ok" key → None →
+    # "no veto" → the ticket ships unverified.
+    if state.get("_pipeline_abort"):
+        return {"ok": False,
+                "rationale": f"verification aborted ({state['_pipeline_abort']}) "
+                             "— treated as a veto, not a pass"}
     raw = state.get("live_verifier_verdict")
     if isinstance(raw, dict):
         return raw if "ok" in raw else None

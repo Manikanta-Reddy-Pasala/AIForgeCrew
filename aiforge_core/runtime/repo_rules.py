@@ -27,6 +27,7 @@ Rendered as one capped markdown block → ``state['rules_md']`` →
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 import os
 import re
@@ -134,11 +135,15 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
         d.mkdir(parents=True, exist_ok=True)
         gl = [g.strip() for g in (globs or []) if str(g).strip()]
         trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
-        front = ["---", f"name: {name}"]
+        # JSON-encode string values → valid YAML scalars, so a ':' / ']' / ','
+        # in a name/description/trigger can't corrupt the frontmatter (which
+        # would drop ALL metadata and make the rule always-apply + undeletable).
+        front = ["---", "name: " + json.dumps(name)]
         if description.strip():
-            front.append(f"description: {description.strip()}")
+            front.append("description: " + json.dumps(description.strip()))
         if trig:
-            front.append("triggers: [" + ", ".join(trig) + "]")
+            front.append("triggers: [" + ", ".join(json.dumps(t) for t in trig)
+                         + "]")
         front.append(f"scope: {(scope or 'global').lower()}")
         front.append(f"alwaysApply: {str(bool(always)).lower()}")
         if gl:

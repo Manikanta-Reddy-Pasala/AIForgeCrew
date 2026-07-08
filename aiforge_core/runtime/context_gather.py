@@ -162,8 +162,12 @@ def gather(kind: str, key: str, *, force: bool = False,
     # ── Cache + freshness: reuse the stored dossier unless the entity changed.
     meta = _load_json(meta_path)
     live_updated = _primary_updated(kind, key)
+    # Serve the cached dossier unless we can PROVE it's stale: reuse it when the
+    # entity is unchanged OR when the freshness probe was inconclusive
+    # (live_updated is None — offline / not configured), rather than throwing a
+    # good cache away and erroring on the re-fetch.
     if (not force) and meta and os.path.exists(dossier_md) \
-            and live_updated and meta.get("updated") == live_updated:
+            and (live_updated is None or meta.get("updated") == live_updated):
         try:
             with open(dossier_md, encoding="utf-8") as fh:
                 body = fh.read()
@@ -250,7 +254,7 @@ def gather(kind: str, key: str, *, force: bool = False,
     try:
         from aiforge_core.memory import md_store
         md_store.capture(
-            "project",
+            "project_learning",
             f"DOSSIER {kind}:{key} — {primary.get('summary') or primary.get('title') or ''}"
             f" (+{len(secondaries)} linked item(s); files in {base}).",
             repo=key, topic=f"{kind}-dossier")

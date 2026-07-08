@@ -219,7 +219,12 @@ def _save_attachment(save_dir: str, name: str, raw: bytes) -> str:
     safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", name or "attachment").strip("_.") \
         or "attachment"
     try:
-        path = _os.path.join(save_dir, safe)
+        base = _os.path.join(save_dir, safe)
+        root, ext = _os.path.splitext(base)
+        path, n = base, 1
+        while _os.path.exists(path):   # distinct names must not collide/overwrite
+            path = f"{root}-{n}{ext}"
+            n += 1
         with open(path, "wb") as fh:
             fh.write(raw)
         return path

@@ -1101,8 +1101,12 @@ def _t_context_gather(args: dict, cwd: str) -> dict:
     kind = (args.get("kind") or "").lower()
     key = str(args.get("key") or args.get("id") or "").strip()
     if not kind and key:
-        # infer: a JIRA-KEY looks like PROJ-42; a numeric id → confluence.
-        kind = "jira" if re.match(r"^[A-Z][A-Z0-9]+-\d+$", key) else "confluence"
+        # infer: a JIRA-KEY looks like PROJ-42 (case-insensitive); else a
+        # numeric id → confluence. Normalize a jira key to uppercase.
+        if re.match(r"^[A-Za-z][A-Za-z0-9]+-\d+$", key):
+            kind, key = "jira", key.upper()
+        else:
+            kind = "confluence"
     if kind not in ("jira", "confluence") or not key:
         return {"ok": False, "error": "need kind (jira|confluence) + key/id"}
     return _cg.gather(kind, key, force=bool(args.get("force")),

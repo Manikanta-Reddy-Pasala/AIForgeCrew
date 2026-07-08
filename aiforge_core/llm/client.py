@@ -457,14 +457,19 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
 # nothing, because the model spent its whole budget thinking. Strip the block
 # so the caller never sees raw reasoning as the answer, and so a think-only
 # reply collapses to "" and trips the garbage/retry path.
-_THINK_BLOCK_RE = re.compile(
-    r"<(think|thought|reasoning|thinking)\b[^>]*>.*?</\1>",
+# Reasoning models put their chain of thought at the START, then the answer.
+# We only strip a LEADING think block (after optional whitespace) — NOT blocks
+# mid-content, so a legitimate answer that CONTAINS a <think>/<reasoning> literal
+# (code emitting this codebase's own tag regex, an XML/prompt template) is left
+# intact instead of being silently corrupted.
+_THINK_LEAD_RE = re.compile(
+    r"^\s*<(think|thought|reasoning|thinking)\b[^>]*>.*?</\1>\s*",
     re.IGNORECASE | re.DOTALL,
 )
-# Unclosed opener: the stream ran out mid-thought. Everything from the opener
-# to end-of-string is reasoning with no answer following → drop it all.
+# A LEADING unclosed opener: the stream ran out mid-thought — everything from the
+# opener to end-of-string is reasoning with no answer following → drop it.
 _THINK_OPEN_RE = re.compile(
-    r"<(think|thought|reasoning|thinking)\b[^>]*>.*\Z",
+    r"^\s*<(think|thought|reasoning|thinking)\b[^>]*>.*\Z",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -472,7 +477,12 @@ _THINK_OPEN_RE = re.compile(
 def _strip_think(text: str) -> str:
     if "<" not in text:
         return text
-    text = _THINK_BLOCK_RE.sub("", text)
+    # Strip one-or-more leading closed think blocks (reasoning-then-answer).
+    prev = None
+    while prev != text:
+        prev = text
+        text = _THINK_LEAD_RE.sub("", text, count=1)
+    # …then a leading unclosed opener (pure reasoning, no answer).
     text = _THINK_OPEN_RE.sub("", text)
     return text.strip()
 

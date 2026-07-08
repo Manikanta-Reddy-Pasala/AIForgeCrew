@@ -25,6 +25,15 @@ _KINDS = ("jira", "confluence", "repo")
 
 # JIRA issue key: PROJ-123 / ABC1-45. Uppercase project + dash + digits.
 _JIRA_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,20}-\d+)\b")
+# Unambiguous: a Jira browse URL.
+_JIRA_URL_RE = re.compile(r"/browse/([A-Z][A-Z0-9]{1,20}-\d+)\b")
+# A bare KEY-123 token is only treated as a ticket when a Jira context word is
+# also present — otherwise common ALL-CAPS-NUMBER tokens (UTF-8, GPT-4, SHA-256,
+# ISO-8601, RFC-2119, CVE-2021, COVID-19 …) would false-positive and silently
+# re-home a plain chat into a bogus work/jira/<token> folder.
+_JIRA_SIGNAL_RE = re.compile(
+    r"\b(jira|ticket|issue|story|epic|sprint|backlog|board|sub-?task|bug)\b",
+    re.IGNORECASE)
 # Confluence page id inside a URL (…/pages/12345/… or pageId=12345).
 _CONF_URL_RE = re.compile(r"(?:/pages/|pageId=)(\d{4,})")
 
@@ -70,8 +79,14 @@ def detect_context(text: str) -> tuple[str, str] | None:
     Jira wins over Confluence when both appear (the ticket is the container)."""
     if not text:
         return None
-    m = _JIRA_RE.search(text)
+    # An explicit Jira browse URL is unambiguous.
+    m = _JIRA_URL_RE.search(text)
     if m:
+        return ("jira", m.group(1))
+    # A bare KEY-123 counts as a ticket ONLY alongside a Jira context word, so
+    # ordinary tokens (UTF-8, GPT-4, …) never re-home a plain chat.
+    m = _JIRA_RE.search(text)
+    if m and _JIRA_SIGNAL_RE.search(text):
         return ("jira", m.group(1))
     m = _CONF_URL_RE.search(text)
     if m:

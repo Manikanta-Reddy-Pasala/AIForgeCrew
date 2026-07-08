@@ -118,7 +118,10 @@ def _ingest_unit(*, title: str, body: str, kind: str, tags: list[str],
                                tags=tags, metadata={"md": True}, repo=repo)
         else:
             from aiforge_core.runtime.tools.memory_write import memory_write
-            memory_write(text=text, kind=kind, tags=tags, repo=repo)
+            # Forward the md:* source so memory_write's brief-feed skips it —
+            # capture already maintains the (topic-aware) brief for this write.
+            memory_write(text=text, kind=kind, tags=tags, repo=repo,
+                         source=source)
     except Exception:  # noqa: BLE001
         pass  # md file is the source of truth; DB mirror is best-effort
 

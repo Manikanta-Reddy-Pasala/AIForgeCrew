@@ -151,7 +151,12 @@ def _save_attachment(save_dir: str, name: str, raw: bytes) -> str:
     safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", name or "attachment").strip("_.") \
         or "attachment"
     try:
-        path = _os.path.join(save_dir, safe)
+        base = _os.path.join(save_dir, safe)
+        root, ext = _os.path.splitext(base)
+        path, n = base, 1
+        while _os.path.exists(path):   # distinct names must not collide/overwrite
+            path = f"{root}-{n}{ext}"
+            n += 1
         with open(path, "wb") as fh:
             fh.write(raw)
         return path
@@ -335,8 +340,14 @@ def jira_worklog(args: dict, cwd: str | None = None) -> dict:
                   params={"fields": _TIME_FIELDS})
     if tr["ok"] and isinstance(tr["data"], dict):
         rollup = _time_fields((tr["data"].get("fields") or {}))
+    total_available = data.get("total")
+    truncated = isinstance(total_available, int) and total_available > len(logs)
     return {"ok": True, "key": key, "worklogs": logs,
             "worklog_count": len(logs),
+            "worklog_total": total_available,
+            # NB: total_logged sums only the fetched page; when `truncated`, use
+            # `tracking.time_spent` (the issue's authoritative rollup) instead.
+            "truncated": truncated,
             "total_logged": _fmt_secs(total_secs),
             "total_logged_seconds": total_secs,
             "tracking": rollup, "url": _issue_url(key)}

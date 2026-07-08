@@ -394,12 +394,13 @@ def write_skill(name: str, description: str, body: str,
     if description:
         fm["description"] = description.strip()
     trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
+    import json as _json
     front = "---\n"
-    front += f"name: {fm['name']}\n"
+    front += "name: " + _json.dumps(fm["name"]) + "\n"
     if description:
-        front += f"description: {description.strip()}\n"
+        front += "description: " + _json.dumps(description.strip()) + "\n"
     if trig:
-        front += "triggers: [" + ", ".join(trig) + "]\n"
+        front += "triggers: [" + ", ".join(_json.dumps(t) for t in trig) + "]\n"
     front += f"scope: {(scope or 'global').lower()}\n"
     front += "---\n"
     try:

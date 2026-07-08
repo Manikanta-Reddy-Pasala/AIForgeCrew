@@ -177,11 +177,12 @@ def write_workflow(name: str, description: str, body: str,
         base = _global_dir()
     wf_dir = base / _sk._slug(name)
     trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
-    front = "---\n" + f"name: {name}\n"
+    import json as _json
+    front = "---\n" + "name: " + _json.dumps(name) + "\n"
     if description:
-        front += f"description: {description.strip()}\n"
+        front += "description: " + _json.dumps(description.strip()) + "\n"
     if trig:
-        front += "triggers: [" + ", ".join(trig) + "]\n"
+        front += "triggers: [" + ", ".join(_json.dumps(t) for t in trig) + "]\n"
     front += f"scope: {(scope or 'global').lower()}\n"
     front += "---\n"
     try:

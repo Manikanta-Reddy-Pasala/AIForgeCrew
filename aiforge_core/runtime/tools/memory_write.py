@@ -99,7 +99,10 @@ def memory_write(
     # or a new scope is handled automatically with no extra wiring. Bulk ingest
     # (source="ingest") is exempt so chunk floods don't bloat the brief.
     def _feed_brief() -> None:
-        if source == "ingest":
+        # Skip bulk ingest (chunk floods) AND the md-mirror path (source "md:*"),
+        # since md_store.capture already maintains that write's topic-aware brief
+        # — briefing again here would drop the topic and double the bullet.
+        if source == "ingest" or source.startswith("md:"):
             return
         try:
             from aiforge_core.memory.md_store import _brief_upsert

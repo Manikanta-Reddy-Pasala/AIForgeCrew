@@ -25,8 +25,18 @@ def test_strip_think_only_collapses_to_empty():
     assert c._strip_think("<think>ran out of budget thinking</think>") == ""
 
 
-def test_strip_think_unclosed_opener_drops_to_end():
-    assert c._strip_think("partial <think>never closed to EOF") == "partial"
+def test_strip_think_leading_unclosed_opener_dropped():
+    # A LEADING unclosed opener (pure reasoning, no answer) collapses to "".
+    assert c._strip_think("<think>never closed to EOF") == ""
+
+
+def test_strip_think_midcontent_tag_preserved():
+    # A think-tag literal AFTER real content (code / XML / a template) is NOT
+    # reasoning — it must be left intact, not silently deleted.
+    assert (c._strip_think('partial <think>trailing')
+            == 'partial <think>trailing')
+    assert (c._strip_think('re.compile(r"<think>.*?</think>")')
+            == 're.compile(r"<think>.*?</think>")')
 
 
 def test_strip_think_plain_untouched():
