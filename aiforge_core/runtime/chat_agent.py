@@ -2229,8 +2229,10 @@ step body, and trigger words. Before tackling unfamiliar work, skill_search \
 AND workflow_search first — a saved playbook may already solve it. The \
 APPLICABLE SKILLS / APPLICABLE WORKFLOWS shown above are auto-selected for this \
 request by relevance — when a task matches one, follow its steps AND reproduce \
-any output format, structure, or naming convention it specifies EXACTLY (do not \
-paraphrase or add commentary it forbids).
+any output format, structure, or naming convention it specifies EXACTLY, \
+including every opening and closing delimiter. When it prescribes the exact \
+output, produce it DIRECTLY — do not paraphrase, do not add commentary it \
+forbids, and do not ask a clarifying question first.
 - CAPTURE LEARNINGS (be your own learner + memory updater): when a session \
 established something durable and reusable — a fix recipe, a gotcha+workaround, \
 an architectural decision, a fact about how this repo works — persist it with \

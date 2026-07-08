@@ -242,8 +242,11 @@ def render(skills: list[Skill]) -> str:
     # suggestions. A user who wrote "present tickets EXACTLY like this" means it.
     return ("APPLICABLE SKILLS — when a task below matches the request, follow "
             "that skill's steps and reproduce ANY output format it specifies "
-            "EXACTLY (verbatim structure, headers, and wording it dictates); do "
-            "not paraphrase or add commentary it forbids:\n"
+            "EXACTLY (verbatim structure, headers, delimiters, and wording it "
+            "dictates — include every opening AND closing marker). Do not "
+            "paraphrase, do not add or omit anything it forbids, and when a "
+            "skill prescribes the exact output, produce it DIRECTLY — do not "
+            "ask a clarifying question or add preamble first:\n"
             + "\n\n".join(parts))
 
 

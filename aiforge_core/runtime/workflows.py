@@ -150,8 +150,10 @@ def auto_context(query: str, cwd: str | None = None, k: int = 3) -> str:
         parts.append(f"{head}\n{w.body[:_WF_MAX_BODY]}")
     return ("APPLICABLE WORKFLOWS — when a procedure below matches the request, "
             "follow its steps IN ORDER and honour any output format or naming "
-            "convention it specifies EXACTLY; call workflow_search for the full "
-            "text if a body looks truncated:\n"
+            "convention it specifies EXACTLY (every label and delimiter). When "
+            "a workflow prescribes the exact output, produce it DIRECTLY — do "
+            "not ask a clarifying question or add preamble first. Call "
+            "workflow_search for the full text if a body looks truncated:\n"
             + "\n\n".join(parts))
 
 
