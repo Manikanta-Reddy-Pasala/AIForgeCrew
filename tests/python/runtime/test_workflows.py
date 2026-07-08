@@ -58,19 +58,21 @@ def test_auto_context_surfaces_relevant(wf):
     assert wf.auto_context("unrelated quantum chromodynamics") == ""
 
 
-def test_library_ships_empty(wf, monkeypatch, tmp_path):
+def test_library_ships_builtin_flow(wf, monkeypatch, tmp_path):
     from aiforge_core.runtime import skills as sk
-    # The library now ships EMPTY by design (all default playbooks removed) — a
-    # fresh install has no skills/workflows until the user adds their own. Only
-    # the .gitkeep placeholder lives in builtin_playbooks.
+    # The library ships a small set of PORTABLE built-in playbooks (the
+    # jira/confluence read/write flow + the ticket→MR workflow) — no user data,
+    # no product/repo names. User skills/workflows override a builtin by name.
     res = wf.ensure_dirs()
     assert (tmp_path / "skills").is_dir() and (tmp_path / "workflows").is_dir()
     assert "skills" in res and "workflows" in res
-    assert [s for s in sk.load()] == []      # no default skills
-    assert [w for w in wf.load()] == []       # no default workflows
-    # No default copies were dropped into the (user-only) global dir.
+    skn = {s.name for s in sk.load()}
+    wfn = {w.name for w in wf.load()}
+    assert {"jira-read", "confluence-read", "jira-write"} <= skn
+    assert "jira-ticket-to-mr" in wfn
+    # Builtins live in the package, NOT copied into the user-only global dir.
     assert list(wf._global_dir().glob("*.md")) == []
-    # idempotent: second call is a no-op migration (nothing left to remove)
+    # idempotent: second call is a no-op migration (nothing seeded to remove)
     assert wf.ensure_dirs()["workflows"]["removed_seeded"] == 0
 
 
