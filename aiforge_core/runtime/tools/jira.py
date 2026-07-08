@@ -129,16 +129,70 @@ def _fetch_attachments(attachments: list, role: str = "doer") -> list[dict]:
     return out
 
 
-def _issue_summary(d: dict) -> dict:
+def _fmt_secs(secs) -> str | None:
+    """Jira-style 'Xh Ym' from a seconds count (None-safe)."""
+    try:
+        s = int(secs)
+    except (TypeError, ValueError):
+        return None
+    if s <= 0:
+        return "0m"
+    # Jira convention: 1w=5d, 1d=8h.
+    parts, units = [], (("w", 5 * 8 * 3600), ("d", 8 * 3600),
+                        ("h", 3600), ("m", 60))
+    for label, size in units:
+        if s >= size:
+            parts.append(f"{s // size}{label}")
+            s %= size
+    return " ".join(parts) or "0m"
+
+
+def _time_fields(f: dict) -> dict:
+    """Time-tracking view of an issue: original estimate, remaining, and time
+    spent — both human ('2h 30m') and raw seconds. Reads the ``timetracking``
+    object first (has the pretty strings), then the flat second-fields as a
+    fallback. ``aggregate*`` include sub-tasks."""
+    tt = f.get("timetracking") if isinstance(f.get("timetracking"), dict) else {}
+    orig_s = tt.get("originalEstimateSeconds")
+    if orig_s is None:
+        orig_s = f.get("timeoriginalestimate")
+    rem_s = tt.get("remainingEstimateSeconds")
+    if rem_s is None:
+        rem_s = f.get("timeestimate")
+    spent_s = tt.get("timeSpentSeconds")
+    if spent_s is None:
+        spent_s = f.get("timespent")
+    agg_spent = f.get("aggregatetimespent")
+    return {
+        "original_estimate": tt.get("originalEstimate") or _fmt_secs(orig_s),
+        "remaining_estimate": tt.get("remainingEstimate") or _fmt_secs(rem_s),
+        "time_spent": tt.get("timeSpent") or _fmt_secs(spent_s),
+        "original_estimate_seconds": orig_s,
+        "remaining_estimate_seconds": rem_s,
+        "time_spent_seconds": spent_s,
+        "aggregate_time_spent": _fmt_secs(agg_spent),
+        "aggregate_time_spent_seconds": agg_spent,
+    }
+
+
+# Fields requested for the time-tracking view — reused by search + read.
+_TIME_FIELDS = ("timetracking,timespent,timeoriginalestimate,timeestimate,"
+                "aggregatetimespent")
+
+
+def _issue_summary(d: dict, *, with_time: bool = False) -> dict:
     """Compact one-line view of an issue search hit."""
     f = d.get("fields") if isinstance(d.get("fields"), dict) else {}
-    return {
+    out = {
         "key": d.get("key"),
         "summary": f.get("summary"),
         "type": ((f.get("issuetype") or {}) or {}).get("name"),
         "status": ((f.get("status") or {}) or {}).get("name"),
         "assignee": ((f.get("assignee") or {}) or {}).get("displayName"),
     }
+    if with_time:
+        out["time"] = _time_fields(f)
+    return out
 
 
 # ─────────────────────────── tools ──────────────────────────────────
@@ -164,13 +218,19 @@ def jira_search(args: dict, cwd: str | None = None) -> dict:
             jql = f'project = "{proj}" AND ({where}){order}'
         else:
             jql = f'project = "{proj}" AND ({jql})'
+    # Opt-in time tracking on search hits (original/remaining estimate + spent).
+    want_time = _truthy(str(args.get("time", args.get("with_time", "false"))))
+    flds = "summary,status,issuetype,assignee"
+    if want_time:
+        flds += "," + _TIME_FIELDS
     r = _request("GET", "/rest/api/2/search",
                  params={"jql": jql, "maxResults": int(args.get("limit", 10)),
-                         "fields": "summary,status,issuetype,assignee"})
+                         "fields": flds})
     if not r["ok"]:
         return r
     data = r["data"] if isinstance(r["data"], dict) else {}
-    out = [_issue_summary(x) for x in (data.get("issues") or [])]
+    out = [_issue_summary(x, with_time=want_time)
+           for x in (data.get("issues") or [])]
     return {"ok": True, "results": out, "total": data.get("total")}
 
 
@@ -182,7 +242,7 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
     r = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}",
                  params={"fields": "summary,description,status,issuetype,"
                                    "assignee,reporter,priority,labels,comment,"
-                                   "attachment"})
+                                   "attachment," + _TIME_FIELDS})
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
@@ -197,6 +257,7 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
            "reporter": ((f.get("reporter") or {}) or {}).get("displayName"),
            "priority": ((f.get("priority") or {}) or {}).get("name"),
            "labels": f.get("labels") or [],
+           "time": _time_fields(f),
            "description": (f.get("description") or "")[:_BODY_CAP],
            "comments": comments, "url": _issue_url(d.get("key", ""))}
     # Pull attachments (images + documents) + analyse them so the agent uses
@@ -206,6 +267,69 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
         if atts:
             out["attachments"] = atts
     return out
+
+
+def jira_worklog(args: dict, cwd: str | None = None) -> dict:
+    """Read the time LOGGED against an issue by ``key`` — every worklog entry
+    (who, how much, when, comment) plus the estimate/spent rollup. Answers
+    "how much time has been recorded on ENG-123 and by whom"."""
+    key = (args.get("key") or args.get("id") or "").strip()
+    if not key:
+        return {"ok": False, "error": "missing 'key'"}
+    r = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}/worklog",
+                 params={"maxResults": int(args.get("limit", 50))})
+    if not r["ok"]:
+        return r
+    data = r["data"] if isinstance(r["data"], dict) else {}
+    logs = []
+    total_secs = 0
+    for w in (data.get("worklogs") or []):
+        secs = w.get("timeSpentSeconds") or 0
+        try:
+            total_secs += int(secs)
+        except (TypeError, ValueError):
+            pass
+        logs.append({
+            "author": ((w.get("author") or {}) or {}).get("displayName"),
+            "time_spent": w.get("timeSpent") or _fmt_secs(secs),
+            "time_spent_seconds": secs,
+            "started": w.get("started"),
+            "comment": (w.get("comment") or "")[:500],
+        })
+    # Estimate/spent rollup for context (one extra lightweight call).
+    rollup = None
+    tr = _request("GET", f"/rest/api/2/issue/{urllib.parse.quote(key)}",
+                  params={"fields": _TIME_FIELDS})
+    if tr["ok"] and isinstance(tr["data"], dict):
+        rollup = _time_fields((tr["data"].get("fields") or {}))
+    return {"ok": True, "key": key, "worklogs": logs,
+            "worklog_count": len(logs),
+            "total_logged": _fmt_secs(total_secs),
+            "total_logged_seconds": total_secs,
+            "tracking": rollup, "url": _issue_url(key)}
+
+
+def jira_log_work(args: dict, cwd: str | None = None) -> dict:
+    """Record time against an issue. Required: ``key`` and ``time_spent``
+    (Jira duration, e.g. '2h 30m' or '1d'). Optional: ``comment``, ``started``
+    (ISO8601; defaults to server now)."""
+    key = (args.get("key") or args.get("id") or "").strip()
+    time_spent = (args.get("time_spent") or args.get("timeSpent")
+                  or args.get("time") or "").strip()
+    if not key or not time_spent:
+        return {"ok": False, "error": "key and time_spent are required "
+                                      "(e.g. time_spent='2h 30m')"}
+    body: dict = {"timeSpent": time_spent}
+    if args.get("comment"):
+        body["comment"] = str(args["comment"])
+    if args.get("started"):
+        body["started"] = str(args["started"])
+    r = _request("POST", f"/rest/api/2/issue/{urllib.parse.quote(key)}/worklog",
+                 body=body)
+    if not r["ok"]:
+        return r
+    return {"ok": True, "key": key, "logged": time_spent,
+            "url": _issue_url(key)}
 
 
 def jira_create(args: dict, cwd: str | None = None) -> dict:

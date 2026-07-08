@@ -51,8 +51,8 @@ try:
 except (TypeError, ValueError):
     _MAX_OBS_READ = 80000
 _READ_OBS_TOOLS = frozenset({
-    "confluence_read", "jira_read", "file_read", "read_lines", "gitlab_read",
-    "web_fetch", "email_read",
+    "confluence_read", "jira_read", "jira_worklog", "file_read", "read_lines",
+    "gitlab_read", "web_fetch", "email_read",
 })
 
 
@@ -1073,6 +1073,16 @@ def _t_jira_read(args: dict, cwd: str) -> dict:
     return jira.jira_read(args, cwd)
 
 
+def _t_jira_worklog(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_worklog(args, cwd)
+
+
+def _t_jira_log_work(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_log_work(args, cwd)
+
+
 def _t_jira_create(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import jira
     return jira.jira_create(args, cwd)
@@ -1623,6 +1633,8 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "confluence_update": _t_confluence_update,
     "jira_search": _t_jira_search,
     "jira_read": _t_jira_read,
+    "jira_worklog": _t_jira_worklog,
+    "jira_log_work": _t_jira_log_work,
     "jira_create": _t_jira_create,
     "jira_update": _t_jira_update,
     "jira_comment": _t_jira_comment,
@@ -2011,7 +2023,10 @@ Tool arguments:
 - confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page — needs your Approve)
 - confluence_update {{"id": "12345", "body": "<p>new storage XHTML</p>", "title": "optional"}}              (edit a page — needs your Approve)
 - jira_search   {{"query": "..."}}  or  {{"jql": "project = ENG AND status = Open"}}   (find issues)
-- jira_read     {{"key": "ENG-123"}}                                                    (read an issue: fields + comments)
+- jira_read     {{"key": "ENG-123"}}                                                    (read an issue: fields, comments + time tracking — original/remaining estimate, time spent)
+- jira_search   {{"jql": "assignee = currentUser()", "time": true}}                     (add time:true to include estimate/spent per issue)
+- jira_worklog  {{"key": "ENG-123"}}                                                    (all time LOGGED on an issue: who, how much, when + estimate/spent rollup — "how much time recorded on X")
+- jira_log_work {{"key": "ENG-123", "time_spent": "2h 30m", "comment": "..."}}          (record time against an issue — needs your Approve)
 - jira_create   {{"project": "ENG", "summary": "...", "issuetype": "Task", "description": "..."}}   (new issue — needs your Approve)
 - jira_update   {{"key": "ENG-123", "summary": "...", "description": "...", "labels": ["a","b"]}}     (edit fields — needs your Approve)
 - jira_comment  {{"key": "ENG-123", "body": "comment text"}}                            (add a comment — needs your Approve)

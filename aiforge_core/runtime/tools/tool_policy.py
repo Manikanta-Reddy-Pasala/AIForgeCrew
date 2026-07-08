@@ -49,11 +49,11 @@ _READONLY_ALWAYS_ALLOW = {
     "workflow_search", "graphify_lookup",
     # git inspect + jira/confluence reads are read-only too — never prompt.
     "git_status", "git_diff", "git_log", "git_blame", "jira_transitions",
-    "confluence_children", "read_lines",
+    "jira_worklog", "confluence_children", "read_lines",
 }
 
 _DEFAULT_ASK = {"confluence_create", "confluence_update",
-                "jira_create", "jira_update", "jira_comment",
+                "jira_create", "jira_update", "jira_comment", "jira_log_work",
                 "jira_transition", "jira_assign", "jira_link_issues",
                 "confluence_attach",
                 "gitlab_create", "gitlab_update", "gitlab_comment",

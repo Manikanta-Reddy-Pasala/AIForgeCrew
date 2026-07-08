@@ -943,9 +943,25 @@ def jira_search(query: str = "", jql: str = "", limit: int = 10) -> dict:
 
 
 def jira_read(key: str) -> dict:
-    """Read a JIRA issue by ``key`` (e.g. ENG-123). Returns fields + comments."""
+    """Read a JIRA issue by ``key`` (e.g. ENG-123). Returns fields, comments,
+    and time tracking (original/remaining estimate + time spent)."""
     from aiforge_core.runtime.tools import jira as _j
     return _j.jira_read({"key": key}, str(root()))
+
+
+def jira_worklog(key: str, limit: int = 50) -> dict:
+    """Time LOGGED on a JIRA issue: every worklog (who/how much/when) + the
+    estimate/spent rollup. Use for "how much time is recorded on ENG-123"."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_worklog({"key": key, "limit": limit}, str(root()))
+
+
+def jira_log_work(key: str, time_spent: str, comment: str = "") -> dict:
+    """Record time against a JIRA issue. ``time_spent`` is a Jira duration
+    (e.g. '2h 30m', '1d')."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_log_work({"key": key, "time_spent": time_spent,
+                             "comment": comment}, str(root()))
 
 
 def jira_create(project: str, summary: str, description: str = "",
