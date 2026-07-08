@@ -414,6 +414,29 @@ def jira_remote_links(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "key": key, "links": out, "count": len(out)}
 
 
+def jira_resolve_project(args: dict, cwd: str | None = None) -> dict:
+    """Resolve a LOOSELY-typed project name/key to the real Jira project key —
+    case, spaces, missing hyphens, small typos tolerated. Returns
+    ``{ok, key, name, match}`` or candidates when ambiguous/none."""
+    name = (args.get("name") or args.get("project") or args.get("query")
+            or "").strip()
+    if not name:
+        return {"ok": False, "error": "missing 'name'"}
+    r = jira_projects({"limit": 500}, cwd)
+    if not r.get("ok"):
+        return r
+    cands: dict = {}
+    for p in r.get("projects") or []:
+        k = p.get("key")
+        if not k:
+            continue
+        cands[k] = k
+        if p.get("name"):
+            cands[p["name"]] = k
+    from aiforge_core.config.repo_map import fuzzy_pick
+    return fuzzy_pick(name, cands, value_key="key")
+
+
 def jira_myself(args: dict, cwd: str | None = None) -> dict:
     """The authenticated user (name, account id, email) — resolve "me"/"my"."""
     r = _request("GET", "/rest/api/2/myself")

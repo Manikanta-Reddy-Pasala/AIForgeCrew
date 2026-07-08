@@ -50,7 +50,8 @@ _READONLY_ALWAYS_ALLOW = {
     # git inspect + jira/confluence reads are read-only too — never prompt.
     "git_status", "git_diff", "git_log", "git_blame", "jira_transitions",
     "jira_worklog", "jira_myself", "jira_projects", "jira_boards",
-    "jira_remote_links", "context_gather",
+    "jira_remote_links", "context_gather", "resolve_repo",
+    "jira_resolve_project", "confluence_resolve_space",
     "jira_sprints", "jira_sprint_issues", "jira_dashboards",
     "jira_dashboard_read", "confluence_children", "confluence_spaces",
     "confluence_page_by_title", "confluence_labels", "confluence_comments",

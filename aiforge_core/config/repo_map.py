@@ -93,6 +93,100 @@ def delete_path(name: str) -> dict:
     return {"ok": False, "error": f"no mapping for {name!r}"}
 
 
+def _norm(s: str) -> str:
+    """Loose key: lowercase, drop every non-alphanumeric — so 'Pos Client-Backend',
+    'posclientbackend', and 'pos_client backend' all collapse to the same token."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _candidates() -> dict:
+    """name → abs path for every known repo: explicit mappings + the folders
+    directly under default_root."""
+    cands: dict[str, str] = {}
+    for k, v in (_load().get("paths") or {}).items():
+        cands[k] = os.path.expanduser(v)
+    root = default_root()
+    try:
+        if os.path.isdir(root):
+            for e in os.scandir(root):
+                if e.is_dir() and not e.name.startswith("."):
+                    cands.setdefault(e.name, e.path)
+    except OSError:
+        pass
+    return cands
+
+
+def fuzzy_pick(name: str, cands: dict, *, cutoff: float = 0.7,
+               value_key: str = "value") -> dict:
+    """Generic loose-name matcher shared by repo folders, Jira projects, and
+    Confluence spaces. ``cands`` = {display_name: value}. Tolerates case, spaces,
+    missing hyphens/underscores, and small typos. Order: normalized-exact →
+    fuzzy (difflib) → substring. Returns ``{ok, <value_key>, name, match}`` on a
+    confident pick, else ``{ok:False, error, candidates}`` (ambiguous/none) so
+    the caller can ask. Aliases (several names → same value) collapse to one hit."""
+    import difflib
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required", "candidates": []}
+    if not cands:
+        return {"ok": False, "error": "no candidates", "candidates": []}
+
+    def _one(disp, val):
+        return {"ok": True, value_key: val, "name": disp}
+
+    def _distinct(pairs):
+        # collapse hits that point at the SAME value (name==key alias)
+        vals = {v for _, v in pairs}
+        return len(vals) == 1
+    want = _norm(name)
+    hit = [(n, v) for n, v in cands.items() if _norm(n) == want]
+    if hit and _distinct(hit):
+        return {**_one(hit[0][0], hit[0][1]), "match": "normalized"}
+    if len(hit) > 1:
+        return {"ok": False, "error": "ambiguous",
+                "candidates": [n for n, _ in hit]}
+    normmap = {}
+    for n, v in cands.items():
+        normmap.setdefault(_norm(n), (n, v))
+    close = difflib.get_close_matches(want, list(normmap), n=3, cutoff=cutoff)
+    if close:
+        top = difflib.SequenceMatcher(None, want, close[0]).ratio()
+        second = (difflib.SequenceMatcher(None, want, close[1]).ratio()
+                  if len(close) > 1 else 0.0)
+        picks = [normmap[c] for c in close]
+        if len(close) == 1 or top - second >= 0.08 or _distinct(picks):
+            n, v = normmap[close[0]]
+            return {**_one(n, v), "match": "fuzzy",
+                    "candidates": [p[0] for p in picks]}
+        return {"ok": False, "error": "ambiguous",
+                "candidates": [p[0] for p in picks]}
+    subs = [(n, v) for n, v in cands.items()
+            if want and (want in _norm(n) or _norm(n) in want)]
+    if subs and _distinct(subs):
+        return {**_one(subs[0][0], subs[0][1]), "match": "substring"}
+    if len(subs) > 1:
+        return {"ok": False, "error": "ambiguous",
+                "candidates": [n for n, _ in subs]}
+    return {"ok": False, "error": "no match", "candidates": sorted(cands)[:10]}
+
+
+def resolve(name: str, *, cutoff: float = 0.7) -> dict:
+    """Find a repo's folder from a LOOSELY-typed name (case, spaces, missing
+    hyphens, small typos). Explicit mapping wins; else fuzzy over the explicit
+    mappings + the folders under default_root. Returns
+    ``{ok, path, name, match, candidates}``."""
+    name = (name or "").strip()
+    exact = get_path(name)
+    if exact and os.path.isdir(exact):
+        return {"ok": True, "path": exact, "name": name, "match": "explicit"}
+    cands = _candidates()
+    if not cands:
+        return {"ok": False, "error": "no repos found "
+                "(set the base folder with set_repo_root)", "candidates": []}
+    return fuzzy_pick(name, cands, cutoff=cutoff, value_key="path")
+
+
 def list_all() -> dict:
     d = _load()
     return {"default_root": default_root(), "paths": d.get("paths") or {}}

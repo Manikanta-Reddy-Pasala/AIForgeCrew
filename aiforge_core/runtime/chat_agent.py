@@ -54,7 +54,8 @@ _READ_OBS_TOOLS = frozenset({
     "confluence_read", "confluence_spaces", "confluence_page_by_title",
     "confluence_labels", "confluence_comments", "confluence_descendants",
     "jira_read", "jira_worklog", "jira_projects", "jira_remote_links",
-    "context_gather",
+    "context_gather", "resolve_repo", "jira_resolve_project",
+    "confluence_resolve_space",
     "jira_boards", "jira_sprints", "jira_sprint_issues", "jira_dashboards",
     "jira_dashboard_read", "jira_myself", "file_read", "read_lines",
     "gitlab_read", "web_fetch", "email_read",
@@ -1092,6 +1093,23 @@ def _t_jira_remote_links(args: dict, cwd: str) -> dict:
     return jira.jira_remote_links(args, cwd)
 
 
+def _t_resolve_repo(args: dict, cwd: str) -> dict:
+    """Resolve a loosely-typed repo/service/folder name to its local path
+    (tolerates case, spaces, missing hyphens, typos)."""
+    from aiforge_core.config import repo_map
+    return repo_map.resolve(args.get("name") or args.get("repo") or "")
+
+
+def _t_jira_resolve_project(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_resolve_project(args, cwd)
+
+
+def _t_confluence_resolve_space(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_resolve_space(args, cwd)
+
+
 def _t_context_gather(args: dict, cwd: str) -> dict:
     """Assemble a cross-entity dossier (a Jira ticket + its linked Confluence
     pages + images, or vice versa) in PARALLEL, cache it in the context folder,
@@ -1747,6 +1765,9 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_log_work": _t_jira_log_work,
     "jira_remote_links": _t_jira_remote_links,
     "context_gather": _t_context_gather,
+    "resolve_repo": _t_resolve_repo,
+    "jira_resolve_project": _t_jira_resolve_project,
+    "confluence_resolve_space": _t_confluence_resolve_space,
     "jira_myself": _t_jira_myself,
     "jira_projects": _t_jira_projects,
     "jira_boards": _t_jira_boards,
@@ -2161,6 +2182,9 @@ Tool arguments:
 - jira_worklog  {{"key": "ENG-123"}}                                                    (all time LOGGED on an issue: who, how much, when + estimate/spent rollup — "how much time recorded on X")
 - context_gather {{"kind": "jira", "key": "ENG-123"}}  or  {{"kind": "confluence", "key": "12345"}}   (BEST for "explain/understand ticket or page": pulls the entity + its linked Confluence pages / Jira tickets + images IN PARALLEL, caches in the ticket/page folder, refreshes only if changed — call this first, then read the returned dossier)
 - jira_remote_links {{"key": "ENG-123"}}                                                (Confluence pages + web links attached to an issue)
+- resolve_repo {{"name": "pos client backend"}}                                         (loosely-typed repo/service/folder → local path; tolerates case/spaces/missing-hyphens/typos — ALWAYS use before assuming a repo folder)
+- jira_resolve_project {{"name": "one shell"}}                                          (loose project name → real Jira project key)
+- confluence_resolve_space {{"name": "dev docs"}}                                       (loose space name → real Confluence space key)
 - jira_log_work {{"key": "ENG-123", "time_spent": "2h 30m", "comment": "..."}}          (record time against an issue — needs your Approve)
 - jira_myself   {{}}                                                                    (the current/authenticated user — resolve "me"/"my")
 - jira_projects {{}}                                                                    (list projects the token can see)

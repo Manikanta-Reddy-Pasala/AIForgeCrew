@@ -962,6 +962,25 @@ def jira_remote_links(key: str) -> dict:
     return _j.jira_remote_links({"key": key}, str(root()))
 
 
+def resolve_repo(name: str) -> dict:
+    """Resolve a loosely-typed repo/service/folder name to its local path
+    (tolerates case, spaces, missing hyphens, typos)."""
+    from aiforge_core.config import repo_map
+    return repo_map.resolve(name)
+
+
+def jira_resolve_project(name: str) -> dict:
+    """Loose Jira project name → real project key."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_resolve_project({"name": name}, str(root()))
+
+
+def confluence_resolve_space(name: str) -> dict:
+    """Loose Confluence space name → real space key."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_resolve_space({"name": name}, str(root()))
+
+
 def context_gather(kind: str, key: str, force: bool = False) -> dict:
     """Assemble a cross-entity dossier (a Jira ticket + its linked Confluence
     pages + images, or a page + its tickets) IN PARALLEL, cached + refreshed."""

@@ -312,6 +312,29 @@ def confluence_children(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "id": pid, "count": len(kids), "children": kids}
 
 
+def confluence_resolve_space(args: dict, cwd: str | None = None) -> dict:
+    """Resolve a LOOSELY-typed space name/key to the real Confluence space key —
+    case, spaces, missing hyphens, small typos tolerated. Returns
+    ``{ok, key, name, match}`` or candidates when ambiguous/none."""
+    name = (args.get("name") or args.get("space") or args.get("query")
+            or "").strip()
+    if not name:
+        return {"ok": False, "error": "missing 'name'"}
+    r = confluence_spaces({"limit": 500}, cwd)
+    if not r.get("ok"):
+        return r
+    cands: dict = {}
+    for s in r.get("spaces") or []:
+        k = s.get("key")
+        if not k:
+            continue
+        cands[k] = k
+        if s.get("name"):
+            cands[s["name"]] = k
+    from aiforge_core.config.repo_map import fuzzy_pick
+    return fuzzy_pick(name, cands, value_key="key")
+
+
 def confluence_spaces(args: dict, cwd: str | None = None) -> dict:
     """List the spaces the token can see (key, name, type)."""
     r = _request("GET", "/rest/api/space",
