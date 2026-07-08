@@ -1272,7 +1272,9 @@ def library_list(kind: str) -> list[dict]:
         return [_skill_dict(w, "workflows") for w in workflows.load()]
     if kind == "rules":
         from aiforge_core.runtime import repo_rules
-        return [{"name": r.name, "body": r.body, "source": r.source,
+        return [{"name": r.name, "description": r.description,
+                 "triggers": list(r.triggers), "scope": r.scope,
+                 "body": r.body, "source": r.source,
                  "globs": list(r.globs), "always": r.always,
                  "origin": _library_origin(r.source, "rules")}
                 for r in repo_rules.load_global_rules()]

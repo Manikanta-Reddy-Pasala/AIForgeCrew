@@ -741,8 +741,18 @@ def _t_remember_rule(args: dict, cwd: str) -> dict:
         globs = args.get("globs")
         if isinstance(globs, str):
             globs = [g.strip() for g in globs.split(",") if g.strip()]
-        text = _elaborate_body("rule", text, name=name)   # LLM format+elaborate
-        res = repo_rules.write_rule(name, text, globs=globs, always=True)
+        # Unified artifact frontmatter (same shape as skills/workflows):
+        # name / description / triggers / scope.
+        description = (args.get("description") or "").strip()
+        triggers = args.get("triggers")
+        if isinstance(triggers, str):
+            triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+        scope = (args.get("scope") or "global").lower()
+        text = _elaborate_body("rule", text, name=name,
+                               description=description)   # LLM format+elaborate
+        res = repo_rules.write_rule(
+            name, text, globs=globs, always=True,
+            description=description, triggers=triggers, scope=scope)
         if not res.get("ok"):
             return res
         # Also record in knowledge memory so unified_query / recall surface the
@@ -1982,8 +1992,8 @@ Tool arguments:
 - format         {{"path": "src/foo.py"}}                    (auto-format a file — ruff/prettier/gofmt)
 - lsp            {{"command": "goto_definition", "path": "src/x.py", "line": 0, "character": 0}}
                  (symbol navigation: goto_definition | find_references | hover; 0-indexed)
-- remember_rule {{"text": "always use yarn", "scope": "repo"}}
-                 (persist a user rule for every session; scope global|repo)
+- remember_rule {{"text": "always use yarn", "description": "when to apply it", "triggers": ["yarn","install"], "scope": "repo"}}
+                 (persist a user rule for every session; same frontmatter as skills/workflows — name/description/triggers/scope; scope global|repo)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - search_chat_sessions {{"query": "...", "limit": 6}}     (find things you discussed with the user in PAST chat sessions)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false, "tags": ["tool:jira"]}}

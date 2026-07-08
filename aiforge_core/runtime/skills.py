@@ -397,6 +397,7 @@ def write_skill(name: str, description: str, body: str,
         front += f"description: {description.strip()}\n"
     if trig:
         front += "triggers: [" + ", ".join(trig) + "]\n"
+    front += f"scope: {(scope or 'global').lower()}\n"
     front += "---\n"
     try:
         skill_dir.mkdir(parents=True, exist_ok=True)

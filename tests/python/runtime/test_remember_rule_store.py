@@ -22,10 +22,19 @@ def test_remember_rule_lands_in_library_store(cfg):
     from aiforge_core.runtime import chat_agent as ca
     from aiforge_core.runtime import repo_rules
     r = ca._t_remember_rule({"text": "Always run tests before commit",
+                             "description": "run the test suite before every commit",
+                             "triggers": ["commit", "test"],
                              "scope": "global"}, ".")
     assert r["ok"]
-    names = [x.name for x in repo_rules.load_global_rules()]      # Library reads this
-    assert "always-run-tests-before-commit" in names
+    rules = repo_rules.load_global_rules()                        # Library reads this
+    # Unified frontmatter: name is the authoritative `name:` field, plus the
+    # new description / triggers / scope round-trip.
+    names = [x.name for x in rules]
+    assert "Always run tests before commit" in names
+    rule = next(x for x in rules if x.name == "Always run tests before commit")
+    assert rule.description == "run the test suite before every commit"
+    assert "commit" in rule.triggers and "test" in rule.triggers
+    assert rule.scope == "global"
 
 
 def test_remember_rule_reaches_agent_context(cfg):

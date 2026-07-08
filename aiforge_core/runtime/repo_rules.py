@@ -50,7 +50,9 @@ class Rule:
     always: bool
     body: str
     source: str
-    triggers: tuple[str, ...] = ()   # NEW — optional topic gate (OR'd with globs)
+    triggers: tuple[str, ...] = ()   # optional topic gate (OR'd with globs)
+    description: str = ""            # unified frontmatter (name/description/triggers/scope)
+    scope: str = "global"
 
 
 def _parse_rule_file(path: Path) -> Rule | None:
@@ -81,10 +83,15 @@ def _parse_rule_file(path: Path) -> Rule | None:
         raw_triggers = [t.strip() for t in raw_triggers.split(",")]
     triggers = tuple(str(t).lower() for t in raw_triggers
                      if isinstance(t, str) and t.strip())
+    # Unified frontmatter: prefer an explicit `name`; fall back to the legacy
+    # convention where `description` doubled as the display label, then the
+    # filename. `description` is now its own field (kept separate from name).
+    name = str(meta.get("name") or meta.get("description") or path.stem)
+    description = str(meta.get("description") or "")
+    scope = str(meta.get("scope") or "global").lower()
     return Rule(
-        name=str(meta.get("description") or path.stem),
-        globs=globs, always=always, body=body, source=str(path),
-        triggers=triggers,
+        name=name, globs=globs, always=always, body=body, source=str(path),
+        triggers=triggers, description=description, scope=scope,
     )
 
 
@@ -109,9 +116,14 @@ def load_global_rules() -> list[Rule]:
 
 
 def write_rule(name: str, body: str, *, globs: list[str] | None = None,
-               always: bool = True) -> dict:
-    """Author/overwrite a global rule at ~/.aiforge/rules/<slug>.md with Cursor-
-    style frontmatter. Returns ``{ok, name, path}`` or ``{ok: False, error}``."""
+               always: bool = True, description: str = "",
+               triggers: list[str] | None = None, scope: str = "global") -> dict:
+    """Author/overwrite a global rule at ~/.aiforge/rules/<slug>.md.
+
+    Emits the UNIFIED artifact frontmatter shared by rules, skills, and
+    workflows — ``name`` / ``description`` / ``triggers`` / ``scope`` — plus the
+    Cursor-compat ``alwaysApply`` / ``globs`` the deterministic scope-matcher
+    still reads. Returns ``{ok, name, path}`` or ``{ok: False, error}``."""
     name = (name or "").strip()
     body = (body or "").strip()
     if not name or not body:
@@ -121,7 +133,14 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
     try:
         d.mkdir(parents=True, exist_ok=True)
         gl = [g.strip() for g in (globs or []) if str(g).strip()]
-        front = ["---", f"name: {name}", f"alwaysApply: {str(bool(always)).lower()}"]
+        trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
+        front = ["---", f"name: {name}"]
+        if description.strip():
+            front.append(f"description: {description.strip()}")
+        if trig:
+            front.append("triggers: [" + ", ".join(trig) + "]")
+        front.append(f"scope: {(scope or 'global').lower()}")
+        front.append(f"alwaysApply: {str(bool(always)).lower()}")
         if gl:
             front.append("globs: " + ", ".join(gl))
         front.append("---")
