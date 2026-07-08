@@ -2275,7 +2275,15 @@ def _parse(out: str) -> dict:
             if isinstance(fargs, dict):
                 txt = str(fargs.get("text") or fargs.get("answer")
                           or fargs.get("response") or fargs.get("content") or "")
-            return {"kind": "final", "text": txt.strip() or out.strip()}
+            # No JSON args — the answer is the plain text the model wrote AFTER
+            # the `ACTION: FINAL` marker (its reasoning sits ABOVE the marker).
+            # Fall back to that slice, NOT the whole turn, or the thought +
+            # marker leak into the answer and break a skill's "nothing else"
+            # format. Only use the whole turn as a last resort (marker at EOF).
+            if not txt.strip():
+                after = out[act.end():].strip()
+                txt = after or out.strip()
+            return {"kind": "final", "text": txt.strip()}
         # Args = first balanced {...} after the ARGS_JSON marker if present,
         # else after the ACTION line. Handles ```json fenced args.
         m = re.search(r"ARGS_JSON\s*:?", out, re.IGNORECASE)
