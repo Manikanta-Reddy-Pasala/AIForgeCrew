@@ -41,19 +41,28 @@ class ContextBundle:
 
 
 def _project_brief(cwd: str) -> str:
-    """The compacted per-repo project brief (``compacted-<repo>.md``) — the
-    'project memory' loaded when you open a repo. Empty until the repo axis has
-    been compacted at least once. Capped so it never dominates the window."""
+    """The compacted project brief for this context — the per-scope
+    ``compacted-<repo>.md`` (a repo, or a Jira ticket / Confluence page whose
+    folder is the cwd) UNIONED with the GLOBAL ``compacted-shared.md`` (general
+    knowledge). Both are products of the repo-axis compaction; loading both here
+    mirrors the recall union so a ticket chat sees its own compacted memory AND
+    global. Empty until the axis has compacted at least once; capped per part so
+    neither dominates the window."""
     from aiforge_core.memory import md_store
     from aiforge_core.runtime import repo_ident
     repo = repo_ident.repo_name(cwd, sentinel="")
-    if not repo:
-        return ""
-    d = md_store.read_file(f"compacted-{md_store._slug(repo)}")
-    body = (d or {}).get("body") or ""
-    if not body.strip():
-        return ""
-    return "PROJECT MEMORY (" + repo + "):\n" + body.strip()[:6000]
+    parts: list[str] = []
+    if repo and md_store._slug(repo) != "shared":
+        d = md_store.read_file(f"compacted-{md_store._slug(repo)}")
+        body = ((d or {}).get("body") or "").strip()
+        if body:
+            parts.append("PROJECT MEMORY (" + repo + "):\n" + body[:6000])
+    # Global compacted brief — unioned into EVERY context (skip when we ARE it).
+    g = md_store.read_file("compacted-shared")
+    gbody = ((g or {}).get("body") or "").strip()
+    if gbody:
+        parts.append("GLOBAL MEMORY:\n" + gbody[:3000])
+    return "\n\n".join(parts)
 
 
 def _safe(fn, default=""):

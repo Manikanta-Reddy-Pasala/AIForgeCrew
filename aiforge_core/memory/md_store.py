@@ -201,11 +201,13 @@ def capture(kind: str, text: str, *, repo: str | None = None,
     # RIGHT NOW (cheap, no LLM), so recall (which reads compacted-<repo>.md) sees
     # just-written data instead of waiting for the periodic compaction. Periodic
     # compaction later only RE-SUMMARIZES to bound size.
-    if repo:
-        try:
-            _brief_upsert(repo, text, topic=topic)
-        except Exception:  # noqa: BLE001 — brief upkeep never breaks a write
-            pass
+    # Global writes (no repo) maintain the SHARED brief (compacted-shared.md),
+    # which _project_brief unions into every context — so global memory is
+    # compacted + surfaced the same as a repo's/ticket's.
+    try:
+        _brief_upsert(repo or "shared", text, topic=topic)
+    except Exception:  # noqa: BLE001 — brief upkeep never breaks a write
+        pass
     return res
 
 

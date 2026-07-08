@@ -243,14 +243,17 @@ def gather(kind: str, key: str, *, force: bool = False,
         "links": len(secondaries),
     }))
 
-    # ── Memory: a per-context note that this dossier exists (recalled next time
-    # under this ticket/page key). The caller may also write global lessons.
+    # ── Memory via md_store.capture: writes a per-context md note (repo=key)
+    # AND mirrors to the DB — so it flows through the SAME repo-axis compaction /
+    # write-time brief as every other memory (compacted-<key>.md), instead of a
+    # DB-only row. Recalled next time under this ticket/page key.
     try:
-        from aiforge_core.runtime.tools.memory_write import memory_write
-        memory_write(
-            text=f"DOSSIER {kind}:{key} — {primary.get('summary') or primary.get('title') or ''}"
-                 f" (+{len(secondaries)} linked). Files in {base}.",
-            kind="note", repo=key, tags=[f"{kind}", "dossier"])
+        from aiforge_core.memory import md_store
+        md_store.capture(
+            "project",
+            f"DOSSIER {kind}:{key} — {primary.get('summary') or primary.get('title') or ''}"
+            f" (+{len(secondaries)} linked item(s); files in {base}).",
+            repo=key, topic=f"{kind}-dossier")
     except Exception:  # noqa: BLE001
         pass
 
