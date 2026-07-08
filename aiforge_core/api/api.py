@@ -1277,7 +1277,7 @@ def library_list(kind: str) -> list[dict]:
                  "body": r.body, "source": r.source,
                  "globs": list(r.globs), "always": r.always,
                  "origin": _library_origin(r.source, "rules")}
-                for r in repo_rules.load_global_rules()]
+                for r in repo_rules.load_global_and_builtin()]
     raise HTTPException(404, f"unknown kind {kind!r}")
 
 

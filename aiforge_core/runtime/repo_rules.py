@@ -206,6 +206,23 @@ def _builtin_rules_dir() -> Path:
     return Path(__file__).resolve().parent / "builtin_playbooks" / "rules"
 
 
+def load_global_and_builtin() -> list[Rule]:
+    """Built-in defaults + operator-global rules (no repo-local) — for the
+    Library UI, which lists rules independent of any one repo. Global overrides
+    a builtin of the same name."""
+    from dataclasses import replace as _replace
+    by_name: dict[str, Rule] = {}
+    bdir = _builtin_rules_dir()
+    if bdir.is_dir():
+        for path in sorted(bdir.glob("*.md")) + sorted(bdir.glob("*.mdc")):
+            r = _parse_rule_file(path)
+            if r is not None:
+                by_name[r.name] = _replace(r, source="builtin")
+    for r in load_global_rules():
+        by_name[r.name] = r
+    return list(by_name.values())
+
+
 def load_rules(repo_root: str | Path) -> list[Rule]:
     """Rules de-duped by name, precedence (later wins): BUILT-IN defaults →
     operator global (~/.aiforge/rules) → repo-local. A CUSTOM rule always
