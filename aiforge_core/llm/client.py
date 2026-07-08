@@ -653,6 +653,37 @@ def _complete_impl(role: str, messages: list[dict], *,
     if out is not None:
         return out[0]
 
+    # Attempt 1b — headroom bypass. When the primary is routed through the
+    # compress+forward proxy and it returned garbage/empty, the compressor
+    # itself is the suspect: on diverse prompts it can make the model emit an
+    # empty-content tool_calls response (observed: proxy → finish=tool_calls,
+    # content=""; the SAME prompt straight to the model → real text). Retry the
+    # IDENTICAL request against the raw upstream model, bypassing compression,
+    # before falling over to another provider. Keeps headroom on for its
+    # context savings while self-healing when it corrupts a response.
+    from aiforge_core.llm import headroom as _hr
+    if _hr.is_proxied(primary.base_url):
+        direct = _hr.direct_base(primary.base_url)
+        if direct and direct != primary.base_url:
+            bypass = Endpoint(
+                base_url=direct, api_key=primary.api_key,
+                model=primary.model, provider=primary.provider,
+                role=primary.role, extras=primary.extras,
+            )
+            out = _try_post(bypass, messages,
+                            temperature=temperature, max_tokens=max_tokens,
+                            top_p=top_p, extras=extras,
+                            timeout_s=timeout_s, role=role,
+                            source="headroom_bypass")
+            if out is not None:
+                _log.warning(
+                    "llm.headroom_bypass_rescued",
+                    extra={"aiforge": {"role": role,
+                                       "proxy": primary.base_url,
+                                       "direct": direct}},
+                )
+                return out[0]
+
     # Attempt 2 — fallback() (different provider, same role)
     fb = fallback(role)
     if fb is not None and fb.provider != primary.provider:

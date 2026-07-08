@@ -27,7 +27,8 @@ from __future__ import annotations
 import os
 from urllib.parse import urlparse
 
-__all__ = ["enabled", "proxy_base", "upstream", "proxy_url"]
+__all__ = ["enabled", "proxy_base", "upstream", "proxy_url",
+           "is_proxied", "direct_base"]
 
 
 def enabled() -> bool:
@@ -73,4 +74,28 @@ def proxy_base(base_url: str | None) -> str | None:
         return base_url.replace(f"{u.scheme}://{u.netloc}",
                                 f"{pu.scheme}://{pu.netloc}", 1)
     except Exception:  # noqa: BLE001 — routing must never break resolution
+        return base_url
+
+
+def is_proxied(base_url: str | None) -> bool:
+    """True when ``base_url`` currently points at the headroom proxy."""
+    if not base_url:
+        return False
+    return _hostport(base_url) == _hostport(proxy_url())
+
+
+def direct_base(base_url: str | None) -> str | None:
+    """Inverse of :func:`proxy_base`: if ``base_url`` points at the proxy, swap
+    host:port back to the real upstream model (preserving path), else return it
+    unchanged. Used to BYPASS the compressor when it returns a corrupted /
+    empty response — the raw model is the ground truth. Works regardless of the
+    ``enabled()`` flag (the caller already holds a proxied endpoint)."""
+    if not base_url or not is_proxied(base_url):
+        return base_url
+    try:
+        uu = urlparse(upstream())
+        u = urlparse(base_url)
+        return base_url.replace(f"{u.scheme}://{u.netloc}",
+                                f"{uu.scheme}://{uu.netloc}", 1)
+    except Exception:  # noqa: BLE001
         return base_url
