@@ -3459,10 +3459,9 @@ def run_chat_agent(
             out = _complete_cancellable(complete_fn, role, convo, session_id)
         except Exception as exc:  # noqa: BLE001
             # RESILIENCE: a local model can transiently drop a request (mid-load,
-            # busy, a one-off empty/4xx) — and with the headroom proxy in front,
-            # a slow reasoning call adds compress+forward latency on top. Retry a
-            # few times before surfacing, and never show the raw `llm.exhausted
-            # role=chat …` stack; give a plain, actionable message.
+            # busy, a one-off empty/4xx). Retry a few times before surfacing, and
+            # never show the raw `llm.exhausted role=chat …` stack; give a plain,
+            # actionable message.
             # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 5) — a
             # local model that's loading/busy often needs a few passes.
             _retries = 5
