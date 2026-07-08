@@ -39,7 +39,14 @@ except Exception:  # noqa: BLE001
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _REPO_SUBDIRS = (".aiforge/skills", ".claude/skills", ".openhands/skills")
-_MAX_BODY = 1800
+# Per-skill body budget in the injected block. A skill that carries steps PLUS
+# a strict output format easily exceeds a small cap — and truncating mid-body
+# silently drops the format section the user needs honoured. Generous default,
+# env-tunable for a very large registry.
+try:
+    _MAX_BODY = max(400, int(os.environ.get("AIFORGE_SKILL_MAX_BODY", "4000")))
+except ValueError:
+    _MAX_BODY = 4000
 _WORD_RE = re.compile(r"[a-z0-9_]+")
 
 
@@ -230,7 +237,13 @@ def render(skills: list[Skill]) -> str:
     for sk in skills:
         head = f"### {sk.name}" + (f" — {sk.description}" if sk.description else "")
         parts.append(f"{head}\n{sk.body[:_MAX_BODY]}")
-    return ("RELEVANT SKILLS (reusable playbooks — apply when they fit):\n"
+    # Directive framing: when a skill's task matches, its steps AND any output
+    # format it specifies are REQUIREMENTS, followed exactly — not optional
+    # suggestions. A user who wrote "present tickets EXACTLY like this" means it.
+    return ("APPLICABLE SKILLS — when a task below matches the request, follow "
+            "that skill's steps and reproduce ANY output format it specifies "
+            "EXACTLY (verbatim structure, headers, and wording it dictates); do "
+            "not paraphrase or add commentary it forbids:\n"
             + "\n\n".join(parts))
 
 

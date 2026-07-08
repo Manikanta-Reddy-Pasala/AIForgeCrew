@@ -2095,8 +2095,10 @@ how-to); for a full end-to-end procedure you just ran, call learn_workflow \
 to save a WORKFLOW.md. Name it, give a one-line WHEN-to-use description, the \
 step body, and trigger words. Before tackling unfamiliar work, skill_search \
 AND workflow_search first — a saved playbook may already solve it. The \
-RELEVANT SKILLS / RELEVANT WORKFLOWS shown above are auto-selected for this \
-request by relevance — apply them when they fit.
+APPLICABLE SKILLS / APPLICABLE WORKFLOWS shown above are auto-selected for this \
+request by relevance — when a task matches one, follow its steps AND reproduce \
+any output format, structure, or naming convention it specifies EXACTLY (do not \
+paraphrase or add commentary it forbids).
 - CAPTURE LEARNINGS (be your own learner + memory updater): when a session \
 established something durable and reusable — a fix recipe, a gotcha+workaround, \
 an architectural decision, a fact about how this repo works — persist it with \
@@ -2120,9 +2122,9 @@ memory_lookup FIRST (2-4 focused queries), use its hits to jump to the right \
 files, THEN grep/read to confirm details. It is faster and broader than blind \
 filesystem search. Only skip it if the memory returns nothing relevant, then \
 fall back to grep/find. (If the answer needs a specific repo, its code lives \
-under its real path — see RELEVANT SKILLS — not this chat's scratch cwd.)
+under its real path — see APPLICABLE SKILLS — not this chat's scratch cwd.)
 - USE THE CONTEXT ALREADY GATHERED FOR YOU: the RELEVANT MEMORY, REPO-MAP, \
-RELEVANT SKILLS/WORKFLOWS and PRIOR CHAT blocks above were auto-selected for \
+APPLICABLE SKILLS/WORKFLOWS and PRIOR CHAT blocks above were auto-selected for \
 THIS request — READ them before reaching for tools. Do not grep/list_dir to \
 rediscover something the repo-map or memory block already tells you. Start \
 from what's given, then use tools only to fill the specific gaps.
@@ -2226,7 +2228,8 @@ def _balanced_json(text: str, start_at: int = 0) -> dict:
 
 
 _REASONING_PREFIX_RE = re.compile(
-    r"^\s*(?:THOUGHT|THINK|THINKING|REASONING|ANALYSIS|PLAN)\s*:\s*",
+    r"^[ \t]*(?:THOUGHT|THINK|THINKING|REASONING|ANALYSIS|PLAN|ACTION|FINAL)"
+    r"[ \t]*:[ \t]*(?:FINAL\b[ \t]*)?",
     re.IGNORECASE)
 
 

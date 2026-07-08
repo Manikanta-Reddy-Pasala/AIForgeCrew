@@ -30,6 +30,14 @@ from aiforge_core.runtime.skills import Selection, Skill  # reuse the same types
 _REPO_SUBDIRS = (".aiforge/workflows", ".claude/workflows", ".openhands/workflows")
 _FILENAME = "WORKFLOW.md"
 
+# Per-workflow body budget in the injected block. A workflow with an ordered
+# procedure plus a strict output/naming convention needs room — truncating
+# silently drops the very steps the user needs honoured. Env-tunable.
+try:
+    _WF_MAX_BODY = max(400, int(os.environ.get("AIFORGE_WORKFLOW_MAX_BODY", "3000")))
+except ValueError:
+    _WF_MAX_BODY = 3000
+
 
 def _global_dir() -> Path:
     raw = os.environ.get("AIFORGE_WORKFLOWS_DIR")
@@ -139,9 +147,11 @@ def auto_context(query: str, cwd: str | None = None, k: int = 3) -> str:
     parts = []
     for w in chosen:
         head = f"### {w.name}" + (f" — {w.description}" if w.description else "")
-        parts.append(f"{head}\n{w.body[:1200]}")
-    return ("RELEVANT WORKFLOWS (reusable end-to-end procedures — follow when "
-            "they fit; call workflow_search for the full text):\n"
+        parts.append(f"{head}\n{w.body[:_WF_MAX_BODY]}")
+    return ("APPLICABLE WORKFLOWS — when a procedure below matches the request, "
+            "follow its steps IN ORDER and honour any output format or naming "
+            "convention it specifies EXACTLY; call workflow_search for the full "
+            "text if a body looks truncated:\n"
             + "\n\n".join(parts))
 
 

@@ -54,7 +54,7 @@ def test_auto_context_surfaces_relevant(wf):
     wf.write_workflow("Release cut", "ship a release",
                       "## Steps\n1. tag\n2. push", triggers=["release", "deploy"])
     block = wf.auto_context("how do we cut a release")
-    assert "RELEVANT WORKFLOWS" in block and "Release cut" in block
+    assert "APPLICABLE WORKFLOWS" in block and "Release cut" in block
     assert wf.auto_context("unrelated quantum chromodynamics") == ""
 
 
