@@ -21,6 +21,7 @@ Invoke::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -300,6 +301,25 @@ _VERDICT_TOKENS: tuple[str, ...] = (
 _REASON_MAX_CHARS = 300
 _REASON_DEFAULT_PASS = "no rationale provided"
 _REASON_DEFAULT_FAIL = "no rationale provided"
+
+
+def _pipeline_deadline_s() -> float:
+    """Overall wall-clock ceiling for one pipeline / single-agent run.
+
+    The per-call LLM timeout (900s) and max_llm_calls (600) each bound ONE
+    dimension, but neither stops a run that stalls WITHOUT tripping them — an
+    async await that never resolves, a graph that spins below the call cap, a
+    stage waiting on output that never comes. Without an outer deadline such a
+    run waits forever and the ticket never lands. asyncio.timeout cancels the
+    in-flight run_async so the caller recovers partial state and marks the
+    ticket blocked instead of hanging. Default 90 min (a healthy full+replan
+    run is well under that); 0/negative disables. Tune AIFORGE_PIPELINE_DEADLINE_S.
+    """
+    try:
+        v = float(os.environ.get("AIFORGE_PIPELINE_DEADLINE_S", "5400"))
+    except ValueError:
+        v = 5400.0
+    return v
 
 
 def _ticket_looks_readonly(ticket) -> bool:
@@ -841,14 +861,37 @@ async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
                 max_llm_calls=int(os.environ.get("AIFORGE_MAX_LLM_CALLS", "600")))
         except Exception as exc:  # noqa: BLE001
             log.debug("single-agent RunConfig unavailable: %s", exc)
-        async for event in runner.run_async(**_sa_kwargs):
-            if event.is_final_response():
-                pass
-        session = await session_svc.get_session(
-            app_name="aiforge", user_id="aiforge-runner",
-            session_id=session.id,
-        )
-        return dict(session.state or {})
+        _deadline = _pipeline_deadline_s()
+        _cm = (asyncio.timeout(_deadline) if _deadline and _deadline > 0
+               else contextlib.nullcontext())
+        try:
+            async with _cm:
+                async for event in runner.run_async(**_sa_kwargs):
+                    if event.is_final_response():
+                        pass
+            session = await session_svc.get_session(
+                app_name="aiforge", user_id="aiforge-runner",
+                session_id=session.id,
+            )
+            return dict(session.state or {})
+        except Exception as exc:  # noqa: BLE001
+            # Overall-deadline timeout or max_llm_calls trip — recover partial
+            # state instead of hanging / crashing (mirrors the pipeline path).
+            is_deadline = isinstance(exc, TimeoutError)
+            log.warning("single-agent run aborted (%s)%s — partial state",
+                        type(exc).__name__,
+                        " [deadline]" if is_deadline else "")
+            try:
+                session = await session_svc.get_session(
+                    app_name="aiforge", user_id="aiforge-runner",
+                    session_id=session.id,
+                )
+                state = dict(session.state or {})
+            except Exception:  # noqa: BLE001
+                state = {}
+            state["_pipeline_abort"] = "deadline" if is_deadline else \
+                type(exc).__name__
+            return state
     finally:
         try:
             from aiforge_core.runtime.tools.bash import destroy_session
@@ -1093,24 +1136,31 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         )
         if run_config is not None:
             _run_kwargs["run_config"] = run_config
-        async for event in runner.run_async(**_run_kwargs):
-            if event.is_final_response():
-                pass  # session.state mutated; drained for completeness
+        _deadline = _pipeline_deadline_s()
+        _cm = (asyncio.timeout(_deadline) if _deadline and _deadline > 0
+               else contextlib.nullcontext())
+        async with _cm:
+            async for event in runner.run_async(**_run_kwargs):
+                if event.is_final_response():
+                    pass  # session.state mutated; drained for completeness
         session = await session_svc.get_session(
             app_name="aiforge", user_id="aiforge-runner",
             session_id=session.id,
         )
         return dict(session.state or {})
     except Exception as exc:  # noqa: BLE001
-        # max_llm_calls trip (or any mid-run ADK error) — recover the
-        # partial session state and tag it so the caller treats this as
-        # a soft FAIL rather than a hard crash. A stuck local Doer that
-        # hit the cap lands the ticket as blocked with its partial state.
+        # max_llm_calls trip, overall-deadline timeout, or any mid-run ADK
+        # error — recover the partial session state and tag it so the caller
+        # treats this as a soft FAIL rather than a hard crash. A stuck local
+        # Doer that hit the cap (or the wall-clock deadline) lands the ticket
+        # as blocked with its partial state instead of hanging forever.
         name = type(exc).__name__
         is_limit = "LlmCallsLimit" in name or "max_llm_calls" in str(exc)
+        is_deadline = isinstance(exc, TimeoutError)
         log.warning(
             "pipeline run aborted (%s)%s — returning partial state",
-            name, " [llm-cap]" if is_limit else "",
+            name,
+            " [llm-cap]" if is_limit else (" [deadline]" if is_deadline else ""),
         )
         try:
             session = await session_svc.get_session(
@@ -1121,7 +1171,7 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         except Exception:  # noqa: BLE001
             state = {}
         state["feedback_verdict"] = "fail"
-        state["_pipeline_abort"] = name
+        state["_pipeline_abort"] = "deadline" if is_deadline else name
         return state
     finally:
         # Best-effort tmux session cleanup for the Doer's persistent bash
