@@ -3170,19 +3170,49 @@ def _served_model_ids_for_role(role: str) -> set:
 
 @app.get("/api/chat/models")
 def chat_models() -> dict:
-    """Models for the dedicated 'chat' slot. Lists only the provider's
-    currently-served (active) models, flags whether the saved selection
-    is still active so the UI can warn / re-pick."""
+    """Models the user can pick for the 'chat' slot.
+
+    Lists every model the user CONFIGURED (the model registry — the portable,
+    machine-agnostic "models I added" surface managed in Settings) UNIONed with
+    whatever the provider is currently serving, and flags each ``active`` =
+    currently loaded. This is deliberately NOT loaded-only: a local model host
+    (LM Studio) exposes only *loaded* models over HTTP, so listing served-only
+    hides every model the user added but hasn't loaded. Selection does not load
+    anything — that stays out of the UI; it only sets which model chat uses.
+    Embedding models are excluded (not chat-capable). Provider-generic; no
+    host-specific discovery.
+    """
     row = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     provider = row.get("provider") or "local"
     served = _served_model_ids_for_role("chat")
     current = row.get("model")
+
+    def _chat_capable(mid: str) -> bool:
+        return bool(mid) and "embed" not in mid.lower()
+
+    out: dict[str, dict] = {}
+    try:
+        from aiforge_core.config import model_registry
+        for r in model_registry.list_models():
+            mid = (r.get("model") or "").strip()
+            if not _chat_capable(mid) or mid in out:
+                continue
+            out[mid] = {"id": mid,
+                        "label": (r.get("label") or mid.split("/")[-1]),
+                        "active": mid in served}
+    except Exception:  # noqa: BLE001 — registry optional; fall back to served
+        pass
+    # Any currently-served model not in the registry still belongs in the list.
+    for mid in served:
+        if _chat_capable(mid) and mid not in out:
+            out[mid] = {"id": mid, "label": mid.split("/")[-1], "active": True}
+
+    models = sorted(out.values(), key=lambda m: (not m["active"], m["id"]))
     return {
         "provider": provider,
         "current": current,
         "current_active": (current in served) if served else True,
-        "models": [{"id": mid, "label": mid.split("/")[-1], "active": True}
-                   for mid in sorted(served)],
+        "models": models,
     }
 
 
