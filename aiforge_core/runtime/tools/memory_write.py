@@ -93,6 +93,20 @@ def memory_write(
     tags = list(tags or [])
     tags.append("doer-self-write")
 
+    # UNIFIED compaction feed: every durable memory write — whatever the backend,
+    # whatever the scope (a repo, a Jira ticket, a Confluence page, or global) —
+    # folds itself into the compacted brief HERE, in one place, so a new caller
+    # or a new scope is handled automatically with no extra wiring. Bulk ingest
+    # (source="ingest") is exempt so chunk floods don't bloat the brief.
+    def _feed_brief() -> None:
+        if source == "ingest":
+            return
+        try:
+            from aiforge_core.memory.md_store import _brief_upsert
+            _brief_upsert(repo or "shared", text)
+        except Exception:  # noqa: BLE001 — brief upkeep never breaks a write
+            pass
+
     # Embedded (zero-infra) path — persist the Doer's self-write to the
     # SQLite memory store instead of Neo4j/AFM.
     from aiforge_core.memory import backend_select as _bsel
@@ -104,6 +118,7 @@ def memory_write(
                 source=source, tags=tags,
                 metadata={"media_refs": media_refs or []}, repo=repo,
             )
+            _feed_brief()
             return {"ok": True, "id": rid,
                     "label": "Decision_v2" if decision else "Observation_v2",
                     "deduped": rid == 0}
@@ -148,6 +163,7 @@ def memory_write(
                 author=source,
                 tags=tags,
             )
+            _feed_brief()
             return {"ok": True, "id": out.get("id"),
                     "label": "Decision_v2",
                     "deduped": False}
@@ -170,6 +186,7 @@ def memory_write(
                 media_refs=media_refs or [],
                 embed_vec=embed_vec,
             )
+            _feed_brief()
             return {"ok": True, "id": out.get("id"),
                     "label": "Observation_v2",
                     "deduped": bool(out.get("deduped"))}
