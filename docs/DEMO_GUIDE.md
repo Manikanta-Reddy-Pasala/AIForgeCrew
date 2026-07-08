@@ -157,5 +157,5 @@ Expect: files scaffolded + committed, tests pass, and a Confluence page created 
 | 2 | Jira | ⚙️ code path present; needs Jira creds to run live |
 | 3 | Confluence | ⚙️ code path present (approval preview built); needs creds |
 | 4 | Job + email alert | ⚙️ job builder works; needs Jira/Confluence + SMTP |
-| 5 | Skills/Rules/Workflow (git MR) | ✅ rule create → **Library → Rules** verified. Tip: ask §5b in a **fresh chat with a non-code working dir** so it answers the naming question instead of treating it as a coding task. |
+| 5 | Skills/Rules/Workflow (git MR) | ✅ rule create → **Library → Rules** verified; rule APPLIED verified (`feature/PROJ-42-login-page-bug` + `[PROJ-42]`). Tip: ask §5b in a **fresh chat with a non-code working dir** so it answers the naming question instead of treating it as a coding task. |
 | 6 | Repo + Confluence page | ⚙️ scaffold+git works; Confluence step needs creds |
