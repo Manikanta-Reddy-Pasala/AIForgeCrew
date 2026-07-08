@@ -956,6 +956,19 @@ def jira_worklog(key: str, limit: int = 50) -> dict:
     return _j.jira_worklog({"key": key, "limit": limit}, str(root()))
 
 
+def jira_remote_links(key: str) -> dict:
+    """Confluence pages + web links attached to a JIRA issue."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_remote_links({"key": key}, str(root()))
+
+
+def context_gather(kind: str, key: str, force: bool = False) -> dict:
+    """Assemble a cross-entity dossier (a Jira ticket + its linked Confluence
+    pages + images, or a page + its tickets) IN PARALLEL, cached + refreshed."""
+    from aiforge_core.runtime import context_gather as _cg
+    return _cg.gather(kind, key, force=force, role="doer")
+
+
 def jira_log_work(key: str, time_spent: str, comment: str = "") -> dict:
     """Record time against a JIRA issue. ``time_spent`` is a Jira duration
     (e.g. '2h 30m', '1d')."""

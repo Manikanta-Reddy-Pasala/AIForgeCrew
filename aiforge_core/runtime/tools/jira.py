@@ -367,6 +367,34 @@ def jira_log_work(args: dict, cwd: str | None = None) -> dict:
 
 # ─────────────── projects · boards · sprints · dashboards · me ───────────────
 
+def jira_remote_links(args: dict, cwd: str | None = None) -> dict:
+    """Remote/web links on an issue (Confluence pages, external URLs). Required:
+    ``key``. Returns each link's title + url, and any Confluence page id parsed
+    from a wiki URL — the cross-reference a dossier follows into Confluence."""
+    key = (args.get("key") or args.get("id") or "").strip()
+    if not key:
+        return {"ok": False, "error": "missing 'key'"}
+    r = _request("GET",
+                 f"/rest/api/2/issue/{urllib.parse.quote(key)}/remotelink")
+    if not r["ok"]:
+        return r
+    import re as _re
+    rows = r["data"] if isinstance(r["data"], list) else []
+    out = []
+    for it in rows:
+        if not isinstance(it, dict):
+            continue
+        obj = it.get("object") or {}
+        url = obj.get("url") or ""
+        title = obj.get("title") or url
+        pid = None
+        m = _re.search(r"(?:/pages/|pageId=)(\d{4,})", url)
+        if m:
+            pid = m.group(1)
+        out.append({"title": title, "url": url, "confluence_page_id": pid})
+    return {"ok": True, "key": key, "links": out, "count": len(out)}
+
+
 def jira_myself(args: dict, cwd: str | None = None) -> dict:
     """The authenticated user (name, account id, email) — resolve "me"/"my"."""
     r = _request("GET", "/rest/api/2/myself")

@@ -53,7 +53,8 @@ except (TypeError, ValueError):
 _READ_OBS_TOOLS = frozenset({
     "confluence_read", "confluence_spaces", "confluence_page_by_title",
     "confluence_labels", "confluence_comments", "confluence_descendants",
-    "jira_read", "jira_worklog", "jira_projects",
+    "jira_read", "jira_worklog", "jira_projects", "jira_remote_links",
+    "context_gather",
     "jira_boards", "jira_sprints", "jira_sprint_issues", "jira_dashboards",
     "jira_dashboard_read", "jira_myself", "file_read", "read_lines",
     "gitlab_read", "web_fetch", "email_read",
@@ -1086,6 +1087,28 @@ def _t_jira_worklog(args: dict, cwd: str) -> dict:
     return jira.jira_worklog(args, cwd)
 
 
+def _t_jira_remote_links(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_remote_links(args, cwd)
+
+
+def _t_context_gather(args: dict, cwd: str) -> dict:
+    """Assemble a cross-entity dossier (a Jira ticket + its linked Confluence
+    pages + images, or vice versa) in PARALLEL, cache it in the context folder,
+    and refresh only when the entity changed. Use when asked to explain/
+    understand a ticket or page."""
+    from aiforge_core.runtime import context_gather as _cg
+    kind = (args.get("kind") or "").lower()
+    key = str(args.get("key") or args.get("id") or "").strip()
+    if not kind and key:
+        # infer: a JIRA-KEY looks like PROJ-42; a numeric id → confluence.
+        kind = "jira" if re.match(r"^[A-Z][A-Z0-9]+-\d+$", key) else "confluence"
+    if kind not in ("jira", "confluence") or not key:
+        return {"ok": False, "error": "need kind (jira|confluence) + key/id"}
+    return _cg.gather(kind, key, force=bool(args.get("force")),
+                      role="chat")
+
+
 def _t_jira_log_work(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import jira
     return jira.jira_log_work(args, cwd)
@@ -1718,6 +1741,8 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_read": _t_jira_read,
     "jira_worklog": _t_jira_worklog,
     "jira_log_work": _t_jira_log_work,
+    "jira_remote_links": _t_jira_remote_links,
+    "context_gather": _t_context_gather,
     "jira_myself": _t_jira_myself,
     "jira_projects": _t_jira_projects,
     "jira_boards": _t_jira_boards,
@@ -2130,6 +2155,8 @@ Tool arguments:
 - jira_read     {{"key": "ENG-123"}}                                                    (read an issue: fields, comments + time tracking — original/remaining estimate, time spent)
 - jira_search   {{"jql": "assignee = currentUser()", "time": true}}                     (add time:true to include estimate/spent per issue)
 - jira_worklog  {{"key": "ENG-123"}}                                                    (all time LOGGED on an issue: who, how much, when + estimate/spent rollup — "how much time recorded on X")
+- context_gather {{"kind": "jira", "key": "ENG-123"}}  or  {{"kind": "confluence", "key": "12345"}}   (BEST for "explain/understand ticket or page": pulls the entity + its linked Confluence pages / Jira tickets + images IN PARALLEL, caches in the ticket/page folder, refreshes only if changed — call this first, then read the returned dossier)
+- jira_remote_links {{"key": "ENG-123"}}                                                (Confluence pages + web links attached to an issue)
 - jira_log_work {{"key": "ENG-123", "time_spent": "2h 30m", "comment": "..."}}          (record time against an issue — needs your Approve)
 - jira_myself   {{}}                                                                    (the current/authenticated user — resolve "me"/"my")
 - jira_projects {{}}                                                                    (list projects the token can see)
