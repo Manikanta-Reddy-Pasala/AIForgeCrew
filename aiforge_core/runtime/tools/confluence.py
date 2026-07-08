@@ -174,6 +174,14 @@ def _fetch_attachments(pid: str, role: str = "doer") -> list[dict]:
         return []
     results = (r["data"].get("results") if isinstance(r["data"], dict) else None) or []
     from aiforge_core.runtime import chat_media
+    # Persist this page's attachments into its own folder (work/confluence/<id>/)
+    # so they're there again next session — page-specific, not global.
+    save_dir = None
+    try:
+        from aiforge_core.runtime import work_context as _wc
+        save_dir = _wc.attachments_dir("confluence", str(pid))
+    except Exception:  # noqa: BLE001
+        save_dir = None
     out: list[dict] = []
     for a in results:
         if len(out) >= cap:
@@ -195,11 +203,28 @@ def _fetch_attachments(pid: str, role: str = "doer") -> list[dict]:
                 out.append({"filename": name, "description": "",
                             "error": got.get("error")})
                 continue
-            out.append(chat_media.analyze_attachment(name, got["bytes"],
-                                                     role, mime=mime))
+            info = chat_media.analyze_attachment(name, got["bytes"],
+                                                 role, mime=mime)
+            if save_dir:
+                info["path"] = _save_attachment(save_dir, name, got["bytes"])
+            out.append(info)
         except Exception as exc:  # noqa: BLE001
             out.append({"filename": name, "description": "", "error": str(exc)})
     return out
+
+
+def _save_attachment(save_dir: str, name: str, raw: bytes) -> str:
+    import os as _os
+    import re as _re
+    safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", name or "attachment").strip("_.") \
+        or "attachment"
+    try:
+        path = _os.path.join(save_dir, safe)
+        with open(path, "wb") as fh:
+            fh.write(raw)
+        return path
+    except OSError:
+        return ""
 
 
 def confluence_create(args: dict, cwd: str | None = None) -> dict:

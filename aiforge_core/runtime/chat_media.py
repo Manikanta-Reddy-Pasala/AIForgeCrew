@@ -238,11 +238,34 @@ def vision_enabled(role: str = "chat", *, probe: bool = False) -> bool:
     return _VISION_CACHE.get(model, False)
 
 
+def _vision_role(role: str) -> str | None:
+    """A role whose model can actually SEE images: the given role if it's
+    vision-capable, else a dedicated vision model — the ``AIFORGE_VISION_ROLE``
+    archetype (default 'vision') — when that is configured and vision-capable.
+    This lets a text-only chat model (e.g. qwen3-coder) still get image captions
+    from a separate VLM (cloud or local) the operator wires up. None when no
+    vision model is reachable → the caller returns "" (no caption)."""
+    if vision_enabled(role, probe=True):
+        return role
+    cand = os.environ.get("AIFORGE_VISION_ROLE", "vision")
+    if cand == role:
+        return None
+    try:
+        from aiforge_core.llm.router import resolve
+        if resolve(cand) is not None and vision_enabled(cand, probe=True):
+            return cand
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def describe_image(path: str, role: str = "chat") -> str:
-    """Auto-caption an image with the vision model. Best-effort — returns ""
-    when vision is unavailable or the call fails (caller falls back to a
-    user-typed caption)."""
-    if not vision_enabled(role, probe=True):
+    """Auto-caption an image with a vision model. Uses the role's model when it's
+    vision-capable, else a dedicated vision model (see ``_vision_role``).
+    Best-effort — returns "" when NO vision model is reachable or the call fails
+    (caller falls back to a user-typed caption)."""
+    vrole = _vision_role(role)
+    if not vrole:
         return ""
     content = vision.attach_image(
         "Describe this image concisely (1-2 sentences) so it can be referenced "
@@ -252,7 +275,7 @@ def describe_image(path: str, role: str = "chat") -> str:
         return ""
     try:
         from aiforge_core.llm.client import complete
-        out = complete(role, [{"role": "user", "content": content}],
+        out = complete(vrole, [{"role": "user", "content": content}],
                        max_tokens=200)
         return (out or "").strip()
     except Exception:  # noqa: BLE001

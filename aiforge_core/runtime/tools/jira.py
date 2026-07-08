@@ -94,14 +94,25 @@ def _max_images() -> int:
         return 4
 
 
-def _fetch_attachments(attachments: list, role: str = "doer") -> list[dict]:
+def _fetch_attachments(attachments: list, role: str = "doer",
+                       save_ctx: tuple | None = None) -> list[dict]:
     """Download issue attachments — images AND documents (pdf/xlsx/docx/text) —
     and analyse them (vision caption for images, extracted text for docs) so the
-    agent can use them as part of the task. Best-effort, capped, never raises."""
+    agent can use them as part of the task. When ``save_ctx`` = (kind, key) is
+    given, each file is also SAVED into that context's folder
+    (~/.aiforge/work/<kind>/<key>/attachments/) so the ticket's images persist
+    across sessions. Best-effort, capped, never raises."""
     cap = _max_images()
     if cap <= 0 or not attachments:
         return []
     from aiforge_core.runtime import chat_media
+    save_dir = None
+    if save_ctx:
+        try:
+            from aiforge_core.runtime import work_context as _wc
+            save_dir = _wc.attachments_dir(save_ctx[0], save_ctx[1])
+        except Exception:  # noqa: BLE001
+            save_dir = None
     out: list[dict] = []
     for a in attachments:
         if len(out) >= cap:
@@ -122,11 +133,30 @@ def _fetch_attachments(attachments: list, role: str = "doer") -> list[dict]:
                 out.append({"filename": name, "description": "",
                             "error": got.get("error")})
                 continue
-            out.append(chat_media.analyze_attachment(name, got["bytes"],
-                                                     role, mime=mime))
+            info = chat_media.analyze_attachment(name, got["bytes"],
+                                                 role, mime=mime)
+            if save_dir:
+                info["path"] = _save_attachment(save_dir, name, got["bytes"])
+            out.append(info)
         except Exception as exc:  # noqa: BLE001
             out.append({"filename": name, "description": "", "error": str(exc)})
     return out
+
+
+def _save_attachment(save_dir: str, name: str, raw: bytes) -> str:
+    """Persist raw attachment bytes under ``save_dir`` (the ticket's folder).
+    Returns the absolute path, or "" on failure — never raises."""
+    import os as _os
+    import re as _re
+    safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", name or "attachment").strip("_.") \
+        or "attachment"
+    try:
+        path = _os.path.join(save_dir, safe)
+        with open(path, "wb") as fh:
+            fh.write(raw)
+        return path
+    except OSError:
+        return ""
 
 
 def _fmt_secs(secs) -> str | None:
@@ -263,7 +293,10 @@ def jira_read(args: dict, cwd: str | None = None) -> dict:
     # Pull attachments (images + documents) + analyse them so the agent uses
     # them as part of the task (opt out with attachments=false). Best-effort.
     if _truthy(str(args.get("attachments", args.get("images", "true")))):
-        atts = _fetch_attachments(f.get("attachment") or [])
+        # Save the ticket's attachments INTO its own folder (work/jira/<KEY>/)
+        # so they persist across sessions — ticket-specific, not global.
+        atts = _fetch_attachments(f.get("attachment") or [],
+                                  save_ctx=("jira", d.get("key") or key))
         if atts:
             out["attachments"] = atts
     return out

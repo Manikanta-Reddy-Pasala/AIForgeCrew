@@ -3775,6 +3775,27 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     agent_mode = "plan" if body.mode == "plan" else "act"
     prompt = body.content.strip()
 
+    # Context-keyed workspace: if this chat is about a durable context (a Jira
+    # ticket key like PROJ-42, or a Confluence page) and the session is still on
+    # an EPHEMERAL folder (the default/session-<id> scratch), switch its cwd to
+    # the SHARED ~/.aiforge/work/<kind>/<key>/ folder — so that ticket's images,
+    # pages and scratch persist across every session that touches it. A session
+    # already pinned to a context or to a real repo the user chose is left as-is.
+    try:
+        from aiforge_core.runtime import work_context as _wc
+        _ephemeral = (_wc.context_for_path(cwd) is None) and (
+            cwd == _default_cwd()
+            or os.path.basename(os.path.normpath(cwd)).startswith("session-"))
+        if _ephemeral:
+            _ctx = _wc.detect_context(prompt)
+            if _ctx:
+                cwd = _wc.context_dir(*_ctx)
+                chat_store.set_session_cwd(session_id, cwd)
+                _af_log.info("chat session %s bound to %s workspace %s",
+                             session_id, _ctx[0], cwd)
+    except Exception as _exc:  # noqa: BLE001 — never block a turn on this
+        _af_log.debug("work-context bind skipped: %s", _exc)
+
     # Per-turn auto-route: once a team session has produced output, a small
     # follow-up ("rename that", "add a test") shouldn't re-run the whole heavy
     # pipeline (worktree + planner + verifier + slow Doer loop = minutes). A
