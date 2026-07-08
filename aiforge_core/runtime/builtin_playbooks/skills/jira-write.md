@@ -11,6 +11,11 @@ scope: global
    - **Create** — `jira_create` with `project`, `summary` (one line), `issuetype`
      (default Task), `description` (the detail), optional `labels`.
    - **Update fields** — `jira_update` with `key` + the fields to change.
+   - **Change status** (e.g. To Do → In Progress → Done) — status is NOT an
+     editable field; it moves through a workflow transition. Use `jira_update`
+     with `status: "In Progress"` (auto-routed) OR `jira_transition` directly.
+     If the target status isn't reachable, `jira_transitions` lists the moves
+     available right now — pick from those.
    - **Comment** — `jira_comment` with `key`, `body`.
    - **Log time** — `jira_log_work` with `key`, `time_spent` (e.g. `"2h 30m"`).
 3. Every write is approval-gated: state exactly what you will write (project,

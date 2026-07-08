@@ -623,10 +623,28 @@ def jira_create(args: dict, cwd: str | None = None) -> dict:
 def jira_update(args: dict, cwd: str | None = None) -> dict:
     """Update issue fields. Required: ``key``. Provide any of ``summary``,
     ``description``, ``priority`` (name), ``labels`` (list), ``assignee``
-    (name), or a raw ``fields`` dict (merged last, wins)."""
+    (name), ``status`` (auto-routed to a workflow transition), or a raw
+    ``fields`` dict (merged last, wins)."""
     key = (args.get("key") or args.get("id") or "").strip()
     if not key:
         return {"ok": False, "error": "missing 'key'"}
+    raw_fields = dict(args["fields"]) if isinstance(args.get("fields"), dict) else {}
+    # Jira status is NOT an editable field — it changes only via a workflow
+    # transition. Accept a `status`/`state` arg (or a `status` inside `fields`)
+    # and route it to jira_transition, so "move CLR-1 to In Progress" works
+    # whether the agent calls jira_update or jira_transition.
+    status_want = (args.get("status") or args.get("state") or "").strip()
+    if not status_want and raw_fields.get("status") is not None:
+        _st = raw_fields.pop("status")
+        status_want = (_st.get("name") if isinstance(_st, dict)
+                       else str(_st)).strip()
+    transitioned = None
+    if status_want:
+        tr = jira_transition({"key": key, "transition": status_want,
+                              "comment": args.get("comment")}, cwd)
+        if not tr.get("ok"):
+            return tr
+        transitioned = status_want
     fields: dict = {}
     if args.get("summary"):
         fields["summary"] = args["summary"]
@@ -641,17 +659,24 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
         if isinstance(labels, str):
             labels = [s.strip() for s in labels.split(",") if s.strip()]
         fields["labels"] = labels
-    if isinstance(args.get("fields"), dict):
-        fields.update(args["fields"])
+    if raw_fields:                       # status already popped out above
+        fields.update(raw_fields)
     if not fields:
+        # A status-only change is legit (it went through the transition above).
+        if transitioned:
+            return {"ok": True, "key": key, "status": transitioned,
+                    "transitioned": True, "url": _issue_url(key)}
         return {"ok": False, "error": "no fields to update"}
     r = _request("PUT", f"/rest/api/2/issue/{urllib.parse.quote(key)}",
                  body={"fields": fields})
     if not r["ok"]:
         return r
+    written = {k: args[k] for k in ("summary", "description", "priority",
+               "labels", "assignee") if args.get(k) is not None}
+    if transitioned:
+        written["status"] = transitioned
     return {"ok": True, "key": key, "url": _issue_url(key),
-            "written": {k: args[k] for k in ("summary", "description",
-                        "priority", "labels", "assignee") if args.get(k) is not None}}
+            "transitioned": bool(transitioned), "written": written}
 
 
 def jira_comment(args: dict, cwd: str | None = None) -> dict:

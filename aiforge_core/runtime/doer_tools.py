@@ -1059,8 +1059,10 @@ def jira_create(project: str, summary: str, description: str = "",
 
 
 def jira_update(key: str, summary: str = "", description: str = "",
-                labels: str = "") -> dict:
-    """Update JIRA issue fields by ``key``. ``labels`` = comma-separated."""
+                labels: str = "", status: str = "") -> dict:
+    """Update JIRA issue fields by ``key``. ``labels`` = comma-separated.
+    ``status`` moves the issue through its workflow (auto-routed to a
+    transition — Jira status is not a plain editable field)."""
     from aiforge_core.runtime.tools import jira as _j
     args: dict = {"key": key}
     if summary:
@@ -1069,6 +1071,8 @@ def jira_update(key: str, summary: str = "", description: str = "",
         args["description"] = description
     if labels:
         args["labels"] = labels
+    if status:
+        args["status"] = status
     return _j.jira_update(args, str(root()))
 
 
