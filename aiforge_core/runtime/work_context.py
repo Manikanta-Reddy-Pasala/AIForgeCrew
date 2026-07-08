@@ -50,6 +50,40 @@ def _slug(key: str) -> str:
     return s or "unknown"
 
 
+# Generated dossier/attachment artifacts — git-ignored inside the context folder
+# so a Jira/Confluence READ never surfaces them as "N files changed" in chat.
+_DOSSIER_IGNORES = (
+    "# AIForge dossier artifacts (generated on read — not code changes)",
+    ".dossier.json", "dossier.md", "ticket.md", "page.md",
+    "confluence-*.md", "jira-*.md", "attachments/",
+)
+
+
+def _ensure_gitignore(path: str) -> None:
+    """Idempotently ensure the dossier patterns are git-ignored in this folder,
+    so the chat 'changes' view (which intent-adds untracked, non-ignored files)
+    never reports a plain read as edits. Never clobbers existing content."""
+    gi = os.path.join(path, ".gitignore")
+    existing = ""
+    if os.path.exists(gi):
+        try:
+            with open(gi, encoding="utf-8") as f:
+                existing = f.read()
+        except OSError:
+            return
+    have = {ln.strip() for ln in existing.splitlines() if ln.strip()}
+    missing = [ln for ln in _DOSSIER_IGNORES if ln not in have]
+    if not missing:
+        return
+    chunk = ("" if (not existing or existing.endswith("\n")) else "\n") \
+        + "\n".join(missing) + "\n"
+    try:
+        with open(gi, "a", encoding="utf-8") as f:
+            f.write(chunk)
+    except OSError:
+        pass
+
+
 def context_dir(kind: str, key: str, *, create: bool = True) -> str:
     """Absolute path to the shared workspace for ``(kind, key)``. Created on
     demand. ``kind`` must be jira|confluence|repo; anything else falls back to a
@@ -60,6 +94,7 @@ def context_dir(kind: str, key: str, *, create: bool = True) -> str:
         try:
             os.makedirs(path, exist_ok=True)
             os.makedirs(os.path.join(path, "attachments"), exist_ok=True)
+            _ensure_gitignore(path)
         except OSError:
             pass
     return path
