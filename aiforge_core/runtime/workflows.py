@@ -183,7 +183,7 @@ def write_workflow(name: str, description: str, body: str,
         front += "description: " + _json.dumps(description.strip()) + "\n"
     if trig:
         front += "triggers: [" + ", ".join(_json.dumps(t) for t in trig) + "]\n"
-    front += f"scope: {(scope or 'global').lower()}\n"
+    front += "scope: " + _json.dumps((scope or "global").lower()) + "\n"
     front += "---\n"
     try:
         wf_dir.mkdir(parents=True, exist_ok=True)

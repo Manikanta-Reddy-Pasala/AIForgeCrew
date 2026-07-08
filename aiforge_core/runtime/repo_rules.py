@@ -144,13 +144,18 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
         if trig:
             front.append("triggers: [" + ", ".join(json.dumps(t) for t in trig)
                          + "]")
-        front.append(f"scope: {(scope or 'global').lower()}")
+        # scope + globs JSON-encoded too — a glob like '*.py' / '**/*.py' starts
+        # with a YAML indicator char (*, [, {) and would otherwise break the
+        # whole frontmatter (dropping all metadata → always-apply + undeletable).
+        front.append("scope: " + json.dumps((scope or "global").lower()))
         front.append(f"alwaysApply: {str(bool(always)).lower()}")
         if gl:
-            front.append("globs: " + ", ".join(gl))
+            front.append("globs: [" + ", ".join(json.dumps(g) for g in gl) + "]")
         front.append("---")
         path = d / f"{slug}.md"
-        path.write_text("\n".join(front) + "\n\n" + body + "\n", encoding="utf-8")
+        tmp = path.with_suffix(".md.tmp")
+        tmp.write_text("\n".join(front) + "\n\n" + body + "\n", encoding="utf-8")
+        os.replace(tmp, path)   # atomic — a concurrent reader never sees a half-write
         return {"ok": True, "name": name, "path": str(path)}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}

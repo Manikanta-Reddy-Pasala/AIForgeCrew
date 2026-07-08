@@ -466,6 +466,19 @@ _THINK_LEAD_RE = re.compile(
     r"^\s*<(think|thought|reasoning|thinking)\b[^>]*>.*?</\1>\s*",
     re.IGNORECASE | re.DOTALL,
 )
+# Closing-tag-ONLY leading reasoning: many chat templates (qwen3, deepseek-r1)
+# inject the OPENING <think> into the prompt, so the model's content starts with
+# raw reasoning and the FIRST tag it emits is the closer — "reasoning…</think>the
+# answer". Strip from the start up to that first closer, but ONLY when NO opener
+# appears before it (else _THINK_LEAD_RE already handled the paired block, and a
+# code/XML literal like re.compile(r"<think>.*?</think>") keeps its opener so it
+# is preserved) and NOT when the answer opens with a code fence.
+_THINK_CLOSE_ONLY_RE = re.compile(
+    r"^\s*(?!```)"
+    r"(?:(?!<(?:think|thought|reasoning|thinking)\b).)*?"
+    r"</(?:think|thought|reasoning|thinking)>\s*",
+    re.IGNORECASE | re.DOTALL,
+)
 # A LEADING unclosed opener: the stream ran out mid-thought — everything from the
 # opener to end-of-string is reasoning with no answer following → drop it.
 _THINK_OPEN_RE = re.compile(
@@ -482,6 +495,9 @@ def _strip_think(text: str) -> str:
     while prev != text:
         prev = text
         text = _THINK_LEAD_RE.sub("", text, count=1)
+    # Then a leading closing-tag-only reasoning block (opener consumed by the
+    # chat template).
+    text = _THINK_CLOSE_ONLY_RE.sub("", text, count=1)
     # …then a leading unclosed opener (pure reasoning, no answer).
     text = _THINK_OPEN_RE.sub("", text)
     return text.strip()

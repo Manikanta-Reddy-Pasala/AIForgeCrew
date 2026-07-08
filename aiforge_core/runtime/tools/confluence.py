@@ -104,7 +104,10 @@ def confluence_search(args: dict, cwd: str | None = None) -> dict:
     # result set). Explicit space=/CQL space is left untouched.
     space = (args.get("space") or default_space() or "").strip()
     if space and "space" not in cql.lower():
-        cql = f'space = "{space}" AND ({cql})'
+        # Escape quotes so a space value can't break out of the CQL literal
+        # (same treatment as the query text above).
+        _sp = space.replace('"', '\\"')
+        cql = f'space = "{_sp}" AND ({cql})'
     r = _request("GET", "/rest/api/content/search",
                  params={"cql": cql, "limit": int(args.get("limit", 10)),
                          "expand": "space,version"})
@@ -222,8 +225,14 @@ def _save_attachment(save_dir: str, name: str, raw: bytes) -> str:
         base = _os.path.join(save_dir, safe)
         root, ext = _os.path.splitext(base)
         path, n = base, 1
-        while _os.path.exists(path):   # distinct names must not collide/overwrite
-            path = f"{root}-{n}{ext}"
+        while _os.path.exists(path):
+            try:
+                with open(path, "rb") as ex:
+                    if ex.read() == raw:   # already saved this exact file → reuse
+                        return path
+            except OSError:
+                pass
+            path = f"{root}-{n}{ext}"   # distinct content, same name → uniquify
             n += 1
         with open(path, "wb") as fh:
             fh.write(raw)

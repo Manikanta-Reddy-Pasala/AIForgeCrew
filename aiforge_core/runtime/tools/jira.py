@@ -154,8 +154,16 @@ def _save_attachment(save_dir: str, name: str, raw: bytes) -> str:
         base = _os.path.join(save_dir, safe)
         root, ext = _os.path.splitext(base)
         path, n = base, 1
-        while _os.path.exists(path):   # distinct names must not collide/overwrite
-            path = f"{root}-{n}{ext}"
+        while _os.path.exists(path):
+            # Re-read of the same ticket: if this exact file is already saved,
+            # REUSE it (don't grow the folder with -1/-2 copies each visit).
+            try:
+                with open(path, "rb") as ex:
+                    if ex.read() == raw:
+                        return path
+            except OSError:
+                pass
+            path = f"{root}-{n}{ext}"   # distinct content, same name → uniquify
             n += 1
         with open(path, "wb") as fh:
             fh.write(raw)
@@ -244,7 +252,7 @@ def jira_search(args: dict, cwd: str | None = None) -> dict:
     # bare "text ~ ..." searches every project the token can see (a common cause
     # of a job's filter returning the wrong/empty set). Explicit project=/JQL is
     # left untouched. Honour an explicit args["project"] over the default.
-    proj = (args.get("project") or default_project() or "").strip()
+    proj = (args.get("project") or default_project() or "").strip().replace('"', '\\"')
     if proj and "project" not in jql.lower():
         low = jql.lower()
         if " order by" in low:

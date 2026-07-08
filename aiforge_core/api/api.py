@@ -3715,7 +3715,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         try:
             _cwd_er = session.get("cwd") or _default_cwd()
             _sha = chat_store.message_checkpoint(session_id, body.edit_from_message_id)
-            if _sha:
+            # Only roll the workspace back for a session's OWN isolated scratch.
+            # A SHARED context dir (work/<kind>/<key>) or a real repo is touched
+            # by other sessions/the operator; `git restore --worktree` there would
+            # clobber their uncommitted work, and a checkpoint SHA taken in the
+            # session's old repo doesn't even exist in a rebound one. Truncate
+            # history either way; skip the destructive worktree restore.
+            from aiforge_core.runtime import work_context as _wc0
+            _own_scratch = (_wc0.context_for_path(_cwd_er) is None
+                            and os.path.basename(os.path.normpath(_cwd_er))
+                            .startswith("session-"))
+            if _sha and _own_scratch:
                 from aiforge_core.runtime import checkpoints as _ckpt
                 _ckpt.restore(_cwd_er, _sha)
             chat_store.delete_messages_from(session_id, body.edit_from_message_id)
@@ -3783,9 +3793,16 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # already pinned to a context or to a real repo the user chose is left as-is.
     try:
         from aiforge_core.runtime import work_context as _wc
-        _ephemeral = (_wc.context_for_path(cwd) is None) and (
-            cwd == _default_cwd()
-            or os.path.basename(os.path.normpath(cwd)).startswith("session-"))
+        # Ephemeral == the session's OWN scratch dir (a session-<id> folder INSIDE
+        # the managed chat-workspace root) — NOT the configured default repo and
+        # NOT a real repo the user pinned. Only such scratch is safe to re-home;
+        # hijacking a real repo would strand the work in an empty folder.
+        _ws_root = os.path.realpath(_chat_workspace_root())
+        _cwd_real = os.path.realpath(cwd)
+        _ephemeral = (
+            _wc.context_for_path(cwd) is None
+            and _cwd_real.startswith(_ws_root + os.sep)
+            and os.path.basename(_cwd_real).startswith("session-"))
         if _ephemeral:
             _ctx = _wc.detect_context(prompt)
             if _ctx:

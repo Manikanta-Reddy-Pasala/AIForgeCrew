@@ -61,16 +61,18 @@ def _jira(args):
 def _primary_updated(kind: str, key: str) -> str | None:
     """The live 'last updated' stamp of the primary entity — one light call so
     the cache can decide whether to re-fetch. None when unavailable."""
+    import urllib.parse as _up
+    qkey = _up.quote(str(key), safe="")
     try:
         if kind == "jira":
             from aiforge_core.runtime.tools import jira
-            r = jira._request("GET", f"/rest/api/2/issue/{key}",
+            r = jira._request("GET", f"/rest/api/2/issue/{qkey}",
                               params={"fields": "updated"})
             if r.get("ok"):
                 return (((r["data"] or {}).get("fields") or {}).get("updated"))
         elif kind == "confluence":
             from aiforge_core.runtime.tools import confluence
-            r = confluence._request("GET", f"/rest/api/content/{key}",
+            r = confluence._request("GET", f"/rest/api/content/{qkey}",
                                     params={"expand": "version"})
             if r.get("ok"):
                 return (((r["data"] or {}).get("version") or {}).get("when"))
@@ -200,6 +202,7 @@ def gather(kind: str, key: str, *, force: bool = False,
 
     # ── Phase 2: fan out the cross-linked entities IN PARALLEL, then merge.
     secondaries: list[tuple[str, dict]] = []
+    partial = False   # a linked fetch failed → don't stamp the cache as complete
     if kind == "jira":
         conf_ids = _detect_confluence_ids(primary, links)
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
@@ -210,12 +213,15 @@ def gather(kind: str, key: str, *, force: bool = False,
                 try:
                     ent = fut.result()
                 except Exception:  # noqa: BLE001
+                    partial = True
                     continue
                 if ent.get("ok"):
                     secondaries.append(("confluence", ent))
                     fn = f"confluence-{_slug(cid)}.md"
                     _write(os.path.join(base, fn), _md_for("confluence", ent))
                     artifacts.append(fn)
+                else:
+                    partial = True
     else:
         jkeys = _detect_jira_keys(primary, key)
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
@@ -225,12 +231,15 @@ def gather(kind: str, key: str, *, force: bool = False,
                 try:
                     ent = fut.result()
                 except Exception:  # noqa: BLE001
+                    partial = True
                     continue
                 if ent.get("ok"):
                     secondaries.append(("jira", ent))
                     fn = f"jira-{_slug(jk)}.md"
                     _write(os.path.join(base, fn), _md_for("jira", ent))
                     artifacts.append(fn)
+                else:
+                    partial = True
 
     # ── Merge into one dossier + stamp the cache.
     parts = [f"# Dossier — {kind}:{key}",
@@ -242,9 +251,13 @@ def gather(kind: str, key: str, *, force: bool = False,
         parts.append(_md_for(skind, ent))
     dossier = "\n".join(parts)
     _write(dossier_md, dossier)
+    # Stamp the cache with the live `updated` ONLY on a complete gather. If a
+    # linked fetch failed, leave `updated` null so the next request re-gathers
+    # (the incomplete dossier is still written + usable now, just not cached as
+    # authoritative).
     _write(meta_path, json.dumps({
-        "updated": live_updated, "artifacts": artifacts,
-        "links": len(secondaries),
+        "updated": None if partial else live_updated,
+        "artifacts": artifacts, "links": len(secondaries), "partial": partial,
     }))
 
     # ── Memory via md_store.capture: writes a per-context md note (repo=key)

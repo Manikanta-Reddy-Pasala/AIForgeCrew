@@ -31,8 +31,10 @@ _JIRA_URL_RE = re.compile(r"/browse/([A-Z][A-Z0-9]{1,20}-\d+)\b")
 # also present — otherwise common ALL-CAPS-NUMBER tokens (UTF-8, GPT-4, SHA-256,
 # ISO-8601, RFC-2119, CVE-2021, COVID-19 …) would false-positive and silently
 # re-home a plain chat into a bogus work/jira/<token> folder.
+# Deliberately UNAMBIGUOUS words only. Dropped bug/issue/story — they're common
+# English, so "the UTF-8 issue" would false-bind on the token UTF-8.
 _JIRA_SIGNAL_RE = re.compile(
-    r"\b(jira|ticket|issue|story|epic|sprint|backlog|board|sub-?task|bug)\b",
+    r"\b(jira|ticket|epic|sprint|backlog|sub-?task)\b",
     re.IGNORECASE)
 # Confluence page id inside a URL (…/pages/12345/… or pageId=12345).
 _CONF_URL_RE = re.compile(r"(?:/pages/|pageId=)(\d{4,})")
