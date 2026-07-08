@@ -273,6 +273,133 @@ def confluence_children(args: dict, cwd: str | None = None) -> dict:
     return {"ok": True, "id": pid, "count": len(kids), "children": kids}
 
 
+def confluence_spaces(args: dict, cwd: str | None = None) -> dict:
+    """List the spaces the token can see (key, name, type)."""
+    r = _request("GET", "/rest/api/space",
+                 params={"limit": int(args.get("limit", 50)),
+                         "type": args.get("type", "global")})
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    out = [{"key": s.get("key"), "name": s.get("name"), "type": s.get("type")}
+           for s in (d.get("results") or []) if isinstance(s, dict)]
+    return {"ok": True, "spaces": out, "count": len(out)}
+
+
+def confluence_page_by_title(args: dict, cwd: str | None = None) -> dict:
+    """Find a page by exact ``title`` within a ``space`` (key). Returns id +
+    version — the handle you need to update or comment on it."""
+    space = (args.get("space") or default_space() or "").strip()
+    title = (args.get("title") or "").strip()
+    if not space or not title:
+        return {"ok": False, "error": "space and title are required"}
+    r = _request("GET", "/rest/api/content",
+                 params={"spaceKey": space, "title": title,
+                         "expand": "version", "limit": 5})
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    res = d.get("results") or []
+    if not res:
+        return {"ok": True, "found": False, "space": space, "title": title}
+    p = res[0]
+    return {"ok": True, "found": True, "id": p.get("id"),
+            "title": p.get("title"),
+            "version": ((p.get("version") or {}) or {}).get("number"),
+            "url": _page_url(p)}
+
+
+def confluence_labels(args: dict, cwd: str | None = None) -> dict:
+    """Read the labels on a page. Required: ``id``."""
+    pid = str(args.get("id") or "").strip()
+    if not pid:
+        return {"ok": False, "error": "missing 'id'"}
+    r = _request("GET",
+                 f"/rest/api/content/{urllib.parse.quote(pid)}/label")
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    labels = [x.get("name") for x in (d.get("results") or [])
+              if isinstance(x, dict) and x.get("name")]
+    return {"ok": True, "id": pid, "labels": labels}
+
+
+def confluence_add_label(args: dict, cwd: str | None = None) -> dict:
+    """Add one or more labels to a page. Required: ``id``, ``labels`` (list or
+    comma string)."""
+    pid = str(args.get("id") or "").strip()
+    labels = args.get("labels")
+    if isinstance(labels, str):
+        labels = [x.strip() for x in labels.split(",") if x.strip()]
+    if not pid or not labels:
+        return {"ok": False, "error": "id and labels are required"}
+    body = [{"prefix": "global", "name": str(x)} for x in labels]
+    r = _request("POST",
+                 f"/rest/api/content/{urllib.parse.quote(pid)}/label", body=body)
+    if not r["ok"]:
+        return r
+    return {"ok": True, "id": pid, "added": labels}
+
+
+def confluence_comments(args: dict, cwd: str | None = None) -> dict:
+    """Read the comments on a page. Required: ``id``."""
+    pid = str(args.get("id") or "").strip()
+    if not pid:
+        return {"ok": False, "error": "missing 'id'"}
+    r = _request("GET",
+                 f"/rest/api/content/{urllib.parse.quote(pid)}/child/comment",
+                 params={"expand": "body.storage", "limit":
+                         int(args.get("limit", 25))})
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    out = []
+    for c in (d.get("results") or []):
+        if not isinstance(c, dict):
+            continue
+        val = (((c.get("body") or {}).get("storage") or {}).get("value") or "")
+        out.append({"id": c.get("id"), "body": val[:2000]})
+    return {"ok": True, "id": pid, "count": len(out), "comments": out}
+
+
+def confluence_comment(args: dict, cwd: str | None = None) -> dict:
+    """Add a comment to a page. Required: ``id`` (page id), ``body`` (storage
+    XHTML or plain text)."""
+    pid = str(args.get("id") or "").strip()
+    body = (args.get("body") or args.get("text") or "").strip()
+    if not pid or not body:
+        return {"ok": False, "error": "id and body are required"}
+    payload = {
+        "type": "comment",
+        "container": {"id": pid, "type": "page"},
+        "body": {"storage": {"value": body,
+                             "representation": args.get("representation",
+                                                        "storage")}},
+    }
+    r = _request("POST", "/rest/api/content", body=payload)
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    return {"ok": True, "id": d.get("id"), "page_id": pid}
+
+
+def confluence_descendants(args: dict, cwd: str | None = None) -> dict:
+    """List ALL descendant pages of a page (deep, not just direct children).
+    Required: ``id``."""
+    pid = str(args.get("id") or "").strip()
+    if not pid:
+        return {"ok": False, "error": "missing 'id'"}
+    r = _request("GET",
+                 f"/rest/api/content/{urllib.parse.quote(pid)}/descendant/page",
+                 params={"limit": int(args.get("limit", 100))})
+    if not r["ok"]:
+        return r
+    d = r["data"] if isinstance(r["data"], dict) else {}
+    kids = [{"id": c.get("id"), "title": c.get("title")}
+            for c in (d.get("results") or []) if isinstance(c, dict)]
+    return {"ok": True, "id": pid, "count": len(kids), "descendants": kids}
+
+
 def confluence_attach(args: dict, cwd: str | None = None) -> dict:
     """Attach a LOCAL file to a Confluence page. Required: ``id`` (page id),
     ``path`` (local file path). Uses a multipart upload (the JSON _request

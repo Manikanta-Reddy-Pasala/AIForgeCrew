@@ -51,10 +51,13 @@ _READONLY_ALWAYS_ALLOW = {
     "git_status", "git_diff", "git_log", "git_blame", "jira_transitions",
     "jira_worklog", "jira_myself", "jira_projects", "jira_boards",
     "jira_sprints", "jira_sprint_issues", "jira_dashboards",
-    "jira_dashboard_read", "confluence_children", "read_lines",
+    "jira_dashboard_read", "confluence_children", "confluence_spaces",
+    "confluence_page_by_title", "confluence_labels", "confluence_comments",
+    "confluence_descendants", "read_lines",
 }
 
 _DEFAULT_ASK = {"confluence_create", "confluence_update",
+                "confluence_add_label", "confluence_comment",
                 "jira_create", "jira_update", "jira_comment", "jira_log_work",
                 "jira_dashboard_create",
                 "jira_transition", "jira_assign", "jira_link_issues",

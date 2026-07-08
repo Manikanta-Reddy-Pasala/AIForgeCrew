@@ -1357,6 +1357,49 @@ def confluence_attach(id: str, path: str) -> dict:
     return _c.confluence_attach({"id": id, "path": path}, str(root()))
 
 
+def confluence_spaces(limit: int = 50) -> dict:
+    """List Confluence spaces the token can see."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_spaces({"limit": limit}, str(root()))
+
+
+def confluence_page_by_title(space: str, title: str) -> dict:
+    """Find a page by exact ``title`` in a ``space`` — returns id + version."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_page_by_title({"space": space, "title": title},
+                                       str(root()))
+
+
+def confluence_labels(id: str) -> dict:
+    """Read the labels on a Confluence page."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_labels({"id": id}, str(root()))
+
+
+def confluence_add_label(id: str, labels: str) -> dict:
+    """Add labels (comma-separated) to a Confluence page."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_add_label({"id": id, "labels": labels}, str(root()))
+
+
+def confluence_comments(id: str, limit: int = 25) -> dict:
+    """Read the comments on a Confluence page."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_comments({"id": id, "limit": limit}, str(root()))
+
+
+def confluence_comment(id: str, body: str) -> dict:
+    """Add a comment to a Confluence page."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_comment({"id": id, "body": body}, str(root()))
+
+
+def confluence_descendants(id: str, limit: int = 100) -> dict:
+    """List ALL descendant pages of a Confluence page (deep)."""
+    from aiforge_core.runtime.tools import confluence as _c
+    return _c.confluence_descendants({"id": id, "limit": limit}, str(root()))
+
+
 # ─── More code tools: git blame, line-range read, scoped rename ─────────
 
 def git_blame(path: str, start: int = 0, end: int = 0) -> dict:

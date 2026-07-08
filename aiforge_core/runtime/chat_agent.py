@@ -51,7 +51,9 @@ try:
 except (TypeError, ValueError):
     _MAX_OBS_READ = 80000
 _READ_OBS_TOOLS = frozenset({
-    "confluence_read", "jira_read", "jira_worklog", "jira_projects",
+    "confluence_read", "confluence_spaces", "confluence_page_by_title",
+    "confluence_labels", "confluence_comments", "confluence_descendants",
+    "jira_read", "jira_worklog", "jira_projects",
     "jira_boards", "jira_sprints", "jira_sprint_issues", "jira_dashboards",
     "jira_dashboard_read", "jira_myself", "file_read", "read_lines",
     "gitlab_read", "web_fetch", "email_read",
@@ -1505,6 +1507,41 @@ def _t_confluence_attach(args: dict, cwd: str) -> dict:
     return confluence.confluence_attach(args, cwd)
 
 
+def _t_confluence_spaces(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_spaces(args, cwd)
+
+
+def _t_confluence_page_by_title(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_page_by_title(args, cwd)
+
+
+def _t_confluence_labels(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_labels(args, cwd)
+
+
+def _t_confluence_add_label(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_add_label(args, cwd)
+
+
+def _t_confluence_comments(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_comments(args, cwd)
+
+
+def _t_confluence_comment(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_comment(args, cwd)
+
+
+def _t_confluence_descendants(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_descendants(args, cwd)
+
+
 def _t_git_blame(args: dict, cwd: str) -> dict:
     argv = ["--no-pager", "blame", "--date=short"]
     _s, _e = _coerce_int(args.get("start")), _coerce_int(args.get("end"))
@@ -1694,6 +1731,13 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_link_issues": _t_jira_link_issues,
     "confluence_children": _t_confluence_children,
     "confluence_attach": _t_confluence_attach,
+    "confluence_spaces": _t_confluence_spaces,
+    "confluence_page_by_title": _t_confluence_page_by_title,
+    "confluence_labels": _t_confluence_labels,
+    "confluence_add_label": _t_confluence_add_label,
+    "confluence_comments": _t_confluence_comments,
+    "confluence_comment": _t_confluence_comment,
+    "confluence_descendants": _t_confluence_descendants,
     "set_integration_default": _t_set_integration_default,
     "set_repo_folder": _t_set_repo_folder,
     "set_repo_root": _t_set_repo_root,
@@ -2072,6 +2116,11 @@ Tool arguments:
 - confluence_read   {{"id": "12345"}}  or  {{"title": "Page Title", "space": "ENG"}}      (read a page; body is storage XHTML)
 - confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page — needs your Approve)
 - confluence_update {{"id": "12345", "body": "<p>new storage XHTML</p>", "title": "optional"}}              (edit a page — needs your Approve)
+- confluence_spaces {{}}                                                                  (list spaces)
+- confluence_page_by_title {{"space": "ENG", "title": "Runbook"}}                          (find a page's id + version by exact title)
+- confluence_children {{"id": "12345"}}  ·  confluence_descendants {{"id": "12345"}}       (direct child pages · ALL descendants deep)
+- confluence_labels {{"id": "12345"}}  ·  confluence_add_label {{"id": "12345", "labels": ["runbook","ops"]}}   (read · add labels — add needs Approve)
+- confluence_comments {{"id": "12345"}}  ·  confluence_comment {{"id": "12345", "body": "<p>note</p>"}}         (read · add a comment — add needs Approve)
 - jira_search   {{"query": "..."}}  or  {{"jql": "project = ENG AND status = Open"}}   (find issues)
 - jira_read     {{"key": "ENG-123"}}                                                    (read an issue: fields, comments + time tracking — original/remaining estimate, time spent)
 - jira_search   {{"jql": "assignee = currentUser()", "time": true}}                     (add time:true to include estimate/spent per issue)
