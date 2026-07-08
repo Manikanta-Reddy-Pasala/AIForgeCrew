@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import random
+import re
 import threading
 import time
 import urllib.error
@@ -449,12 +450,41 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
     raise last
 
 
+# Reasoning models (qwen3-coder, deepseek-r1, …) sometimes emit their chain of
+# thought inside the *content* field wrapped in <think>…</think> (or the
+# lookalikes below) instead of the separate reasoning_content channel. When
+# they do, the real answer is whatever sits AFTER the closing tag — often
+# nothing, because the model spent its whole budget thinking. Strip the block
+# so the caller never sees raw reasoning as the answer, and so a think-only
+# reply collapses to "" and trips the garbage/retry path.
+_THINK_BLOCK_RE = re.compile(
+    r"<(think|thought|reasoning|thinking)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+# Unclosed opener: the stream ran out mid-thought. Everything from the opener
+# to end-of-string is reasoning with no answer following → drop it all.
+_THINK_OPEN_RE = re.compile(
+    r"<(think|thought|reasoning|thinking)\b[^>]*>.*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_think(text: str) -> str:
+    if "<" not in text:
+        return text
+    text = _THINK_BLOCK_RE.sub("", text)
+    text = _THINK_OPEN_RE.sub("", text)
+    return text.strip()
+
+
 def _extract_text(resp_body: dict) -> str:
     msg = (resp_body.get("choices") or [{}])[0].get("message", {}) or {}
-    content = (msg.get("content") or "").strip()
+    content = _strip_think((msg.get("content") or "").strip())
     if content:
         return content
-    return (msg.get("reasoning_content") or "").strip()
+    # content was empty or pure <think> — fall back to the reasoning channel,
+    # but strip any nested think markers there too (some proxies double-wrap).
+    return _strip_think((msg.get("reasoning_content") or "").strip())
 
 
 def _record_usage(role: str, resp_body: dict) -> None:
@@ -484,33 +514,51 @@ def _try_post(ep: Endpoint, messages: list[dict],
               *, temperature, max_tokens, top_p, extras,
               timeout_s: int, role: str,
               source: str) -> tuple[str, dict] | None:
-    """Single attempt against ``ep``. Returns (text, raw_body) on success
-    (text passing :func:`_is_garbage`), or ``None`` on transport error or
-    garbage. Caller decides whether to escalate / fall back."""
+    """Attempt against ``ep``. Returns (text, raw_body) on success (text
+    passing :func:`_is_garbage`), or ``None`` on transport error or persistent
+    garbage. Caller decides whether to escalate / fall back.
+
+    A 200-OK with empty / think-only content is intermittent on self-hosted
+    reasoning models (qwen3-coder in particular): the same prompt re-issued to
+    the SAME endpoint usually returns real content. With a single-model setup
+    there is no fallback provider to fall over to, so retrying the same
+    endpoint here is the only thing that turns a dropped learner capture or a
+    stalled generation back into a real answer. Retry count is
+    AIFORGE_LLM_EMPTY_RETRIES (default 2 → up to 3 total posts).
+    """
+    empty_retries = max(0, _int_env("AIFORGE_LLM_EMPTY_RETRIES", 2))
     payload = _build_body(ep, messages, temperature, max_tokens, top_p, extras)
-    try:
-        body = _post_with_retry(ep, payload, timeout_s,
-                                role=role, source=source)
-    except _LLMCancelled:
-        raise
-    except (urllib.error.URLError, urllib.error.HTTPError,
-            OSError, TimeoutError, ValueError):
-        # ValueError covers a non-JSON 200 (proxy HTML error page, truncated /
-        # streaming body) so a malformed response falls back to the next
-        # provider instead of crashing complete(). _post_with_retry already
-        # logged; the caller falls over per the retry chain.
-        return None
-    _record_usage(role, body)
-    text = _extract_text(body)
-    if _is_garbage(text):
+    for attempt in range(empty_retries + 1):
+        try:
+            body = _post_with_retry(ep, payload, timeout_s,
+                                    role=role, source=source)
+        except _LLMCancelled:
+            raise
+        except (urllib.error.URLError, urllib.error.HTTPError,
+                OSError, TimeoutError, ValueError):
+            # ValueError covers a non-JSON 200 (proxy HTML error page,
+            # truncated / streaming body) so a malformed response falls back to
+            # the next provider instead of crashing complete(). Transport
+            # errors are NOT retried here — _post_with_retry already exhausted
+            # its own transport retries; escalate to the next provider instead.
+            return None
+        _record_usage(role, body)
+        text = _extract_text(body)
+        if not _is_garbage(text):
+            return text, body
         _log.warning(
             "llm.empty_response",
             extra={"aiforge": {"role": role, "provider": ep.provider,
                                "model": ep.model, "source": source,
+                               "attempt": attempt + 1,
+                               "retries": empty_retries,
                                "preview": text[:80]}},
         )
-        return None
-    return text, body
+        if attempt < empty_retries:
+            # Brief jittered pause so a momentarily-wedged model (mid-reload,
+            # KV-cache thrash) gets a beat before the identical re-post.
+            time.sleep(0.4 + random.random() * 0.6)
+    return None
 
 
 def complete(role: str, messages: list[dict], *,

@@ -295,17 +295,26 @@ def _api_base_of(model: Any) -> str:
 
 
 def _is_empty(resp: LlmResponse) -> bool:
-    """A 200-OK that's actually useless — no text, no tool calls."""
+    """A 200-OK that's actually useless — no text, no tool calls.
+
+    Think-only replies count as empty: a reasoning model (qwen3-coder) that
+    emitted a ``<think>…</think>`` block and then ran out of budget before
+    writing an answer leaves part.text non-empty but content-free. Stripping
+    the think block collapses it to "" here, so the caller retries the next
+    candidate (or the trailing ``primary_retry`` slot in a single-model setup)
+    for a real answer instead of passing raw chain-of-thought to the agent.
+    """
     if resp.error_code:
         return True
     content = getattr(resp, "content", None)
     if content is None:
         return True
+    from aiforge_core.llm.client import _strip_think
     parts = getattr(content, "parts", None) or []
     has_signal = False
     for p in parts:
         text = getattr(p, "text", None)
-        if text and text.strip():
+        if text and _strip_think(text.strip()):
             has_signal = True
             break
         if getattr(p, "function_call", None):
