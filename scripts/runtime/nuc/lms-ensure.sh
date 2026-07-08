@@ -43,6 +43,22 @@ LEGACY_TTL="${AIFORGE_LMS_TTL:-43200}"
 PARALLEL="${AIFORGE_LMS_PARALLEL:-1}"
 SPECS="${AIFORGE_LMS_MODELS:-${LEGACY_MODEL}:${LEGACY_CTX}:${LEGACY_TTL}}"
 
+# Hard execution ceilings for the remote calls. ConnectTimeout only bounds the
+# TCP connect, NOT how long `lms load` runs — and a spec naming a model that
+# isn't downloaded makes `lms load` block INDEFINITELY, which hangs this whole
+# service and starves the primary model (observed: 15h stuck on a missing
+# model, doer left unloaded). `timeout` turns that hang into a skip so one bad
+# spec can never take the box down. LOAD is generous (a 45G model over the LAN
+# takes minutes); QUICK bounds ps / the JIT toggle. `timeout` is optional — if
+# absent (unusual), calls run unwrapped.
+LOAD_TIMEOUT="${AIFORGE_LMS_LOAD_TIMEOUT:-420}"
+QUICK_TIMEOUT="${AIFORGE_LMS_QUICK_TIMEOUT:-90}"
+if command -v timeout >/dev/null 2>&1; then
+    _TO_LOAD=(timeout "$LOAD_TIMEOUT"); _TO_QUICK=(timeout "$QUICK_TIMEOUT")
+else
+    _TO_LOAD=(); _TO_QUICK=()
+fi
+
 # Disable LM Studio Just-In-Time model loading — the "8192 trap". With JIT ON,
 # a request for a model auto-loads a SECOND instance under the base id at the
 # tiny default context (4096/8192), which then SERVES every request while our
@@ -50,7 +66,7 @@ SPECS="${AIFORGE_LMS_MODELS:-${LEGACY_MODEL}:${LEGACY_CTX}:${LEGACY_TTL}}"
 # 400s "tokens to keep from initial prompt > context length". Turning JIT off
 # means only our explicit --context-length load exists. Idempotent (no-op +
 # no server restart once already false).
-ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" '
+"${_TO_QUICK[@]}" ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" '
   CFG="$HOME/.lmstudio/.internal/http-server-config.json"
   if [ -f "$CFG" ] && grep -q "\"justInTimeModelLoading\": true" "$CFG"; then
     sed -i.bak "s/\"justInTimeModelLoading\": true/\"justInTimeModelLoading\": false/" "$CFG"
@@ -58,9 +74,9 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" '
     '"$BIN"' server start >/dev/null 2>&1 || true
     echo "lms-ensure: disabled JIT model loading + restarted server"
   fi
-' 2>/dev/null || echo "lms-ensure: JIT-disable step skipped (host unreachable)" >&2
+' 2>/dev/null || echo "lms-ensure: JIT-disable step skipped (host unreachable/slow)" >&2
 
-state=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "$BIN ps --json" \
+state=$("${_TO_QUICK[@]}" ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "$BIN ps --json" \
         2>/dev/null || echo "[]")
 
 rc=0
@@ -99,10 +115,23 @@ print(best)
     fi
 
     echo "lms-ensure: $MODEL ctx=$loaded_ctx < required $CTX — reloading"
-    ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" \
+    # timeout-bounded: a model that isn't downloaded makes `lms load` hang; the
+    # ceiling turns that into a skip (rc=1) so the NEXT spec still runs and the
+    # service never wedges. Put the PRIMARY model first in AIFORGE_LMS_MODELS so
+    # a later bad spec can never delay it.
+    if "${_TO_LOAD[@]}" ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" \
         "$BIN unload '$MODEL' >/dev/null 2>&1 || true; \
-         $BIN load '$MODEL' --context-length $CTX --parallel $PARALLEL --ttl $TTL --quiet" \
-        && echo "lms-ensure: reloaded $MODEL ctx=$CTX parallel=$PARALLEL ttl=${TTL}s" \
-        || { echo "lms-ensure: reload FAILED for $MODEL" >&2; rc=1; }
+         $BIN load '$MODEL' --context-length $CTX --parallel $PARALLEL --ttl $TTL --quiet"
+    then
+        echo "lms-ensure: reloaded $MODEL ctx=$CTX parallel=$PARALLEL ttl=${TTL}s"
+    else
+        _st=$?
+        if [ "$_st" = 124 ]; then
+            echo "lms-ensure: reload TIMED OUT for $MODEL after ${LOAD_TIMEOUT}s (not downloaded? skipping)" >&2
+        else
+            echo "lms-ensure: reload FAILED for $MODEL (exit $_st)" >&2
+        fi
+        rc=1
+    fi
 done
 exit $rc
