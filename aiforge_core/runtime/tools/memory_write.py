@@ -50,6 +50,7 @@ def memory_write(
     repo: str | None = None,
     source: str = "doer",
     embed_vec: "list[float] | None" = None,
+    scope: str = "",
 ) -> dict[str, Any]:
     """Persist a fact the Doer noticed during this run.
 
@@ -77,9 +78,17 @@ def memory_write(
     if not text:
         return {"ok": False, "error": "empty_text"}
 
-    repo = repo or _infer_repo()
-    if not repo:
-        return {"ok": False, "error": "no_repo_in_env"}
+    # GLOBAL memory: an explicit ``scope="global"`` writes a repo-less fact
+    # (repo IS NULL) that recall UNIONS into EVERY scope — so a lesson learned
+    # on one ticket is available across all tickets/pages/repos. Without this a
+    # repo was mandatory, so global memory could never be written. Any other
+    # scope keeps the per-context key (a Jira ticket, page, or repo).
+    if (scope or "").lower() in ("global", "all"):
+        repo = None
+    else:
+        repo = repo or _infer_repo()
+        if not repo:
+            return {"ok": False, "error": "no_repo_in_env"}
 
     tags = list(tags or [])
     tags.append("doer-self-write")

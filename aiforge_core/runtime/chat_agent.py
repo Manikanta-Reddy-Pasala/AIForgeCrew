@@ -497,12 +497,16 @@ def _t_memory_write(args: dict, cwd: str) -> dict:
         # filed under the repo the later recall queries — otherwise a subdir
         # write lands under the subdir basename and is never recalled.
         repo = args.get("repo") or _chat_repo_key(cwd) or "chat"
+        # scope="global" writes a repo-less fact recalled across EVERY ticket/
+        # page/repo (general knowledge); default scope keeps it to THIS context.
+        _scope = (args.get("scope") or "").lower()
         return _mw(
             text=args["text"],
             kind=args.get("kind", "note"),
             tags=list(args.get("tags") or []) + ["chat"],
             decision=bool(args.get("decision")),
             repo=repo,
+            scope=_scope,
         )
     except KeyError:
         return {"ok": False, "error": "missing arg: text"}
@@ -2102,7 +2106,8 @@ Tool arguments:
                  (persist a user rule for every session; same frontmatter as skills/workflows — name/description/triggers/scope; scope global|repo)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - search_chat_sessions {{"query": "...", "limit": 6}}     (find things you discussed with the user in PAST chat sessions)
-- memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false, "tags": ["tool:jira"]}}
+- memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false, "tags": ["tool:jira"], "scope": "global"}}
+                (scope defaults to THIS ticket/page/repo; scope:"global" = a lesson recalled across ALL tickets/repos — use for general knowledge, keep ticket-specifics unscoped)
                 (save a learning/decision for future recall; tag TOOL learnings "tool:jira|confluence|git|email|gitlab" so they resurface for that tool)
 - skill_search {{"query": "..."}}                        (find reusable SKILL.md playbooks)
 - learn_skill  {{"name": "...", "description": "when to use it", "body": "the step-by-step playbook", "triggers": ["word1","word2"], "scope": "global|repo"}}
