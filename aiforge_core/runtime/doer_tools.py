@@ -964,6 +964,59 @@ def jira_log_work(key: str, time_spent: str, comment: str = "") -> dict:
                              "comment": comment}, str(root()))
 
 
+def jira_myself() -> dict:
+    """The authenticated JIRA user (resolve "me"/"my")."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_myself({}, str(root()))
+
+
+def jira_projects(limit: int = 50) -> dict:
+    """List JIRA projects the token can see (key, name, lead)."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_projects({"limit": limit}, str(root()))
+
+
+def jira_boards(project: str = "", limit: int = 50) -> dict:
+    """List Agile boards, optionally for one ``project``."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_boards({"project": project, "limit": limit}, str(root()))
+
+
+def jira_sprints(board_id: str, state: str = "", limit: int = 50) -> dict:
+    """List sprints on a board. ``state`` = active|closed|future (optional)."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_sprints({"board_id": board_id, "state": state,
+                            "limit": limit}, str(root()))
+
+
+def jira_sprint_issues(sprint_id: str, time: bool = False,
+                       limit: int = 50) -> dict:
+    """Issues in a sprint. ``time`` adds estimate/spent per issue."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_sprint_issues({"sprint_id": sprint_id, "time": time,
+                                  "limit": limit}, str(root()))
+
+
+def jira_dashboards(limit: int = 50) -> dict:
+    """List JIRA dashboards visible to the token."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_dashboards({"limit": limit}, str(root()))
+
+
+def jira_dashboard_read(id: str) -> dict:
+    """Read one JIRA dashboard + its gadgets by ``id``."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_dashboard_read({"id": id}, str(root()))
+
+
+def jira_dashboard_create(name: str, description: str = "",
+                          share: str = "private") -> dict:
+    """Create a JIRA dashboard (Cloud). ``share`` = private|authenticated|global."""
+    from aiforge_core.runtime.tools import jira as _j
+    return _j.jira_dashboard_create({"name": name, "description": description,
+                                     "share": share}, str(root()))
+
+
 def jira_create(project: str, summary: str, description: str = "",
                 issuetype: str = "Task", labels: str = "") -> dict:
     """Create a JIRA issue. ``project`` = project key. ``labels`` = comma-separated."""

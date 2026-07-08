@@ -51,7 +51,9 @@ try:
 except (TypeError, ValueError):
     _MAX_OBS_READ = 80000
 _READ_OBS_TOOLS = frozenset({
-    "confluence_read", "jira_read", "jira_worklog", "file_read", "read_lines",
+    "confluence_read", "jira_read", "jira_worklog", "jira_projects",
+    "jira_boards", "jira_sprints", "jira_sprint_issues", "jira_dashboards",
+    "jira_dashboard_read", "jira_myself", "file_read", "read_lines",
     "gitlab_read", "web_fetch", "email_read",
 })
 
@@ -1083,6 +1085,46 @@ def _t_jira_log_work(args: dict, cwd: str) -> dict:
     return jira.jira_log_work(args, cwd)
 
 
+def _t_jira_myself(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_myself(args, cwd)
+
+
+def _t_jira_projects(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_projects(args, cwd)
+
+
+def _t_jira_boards(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_boards(args, cwd)
+
+
+def _t_jira_sprints(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_sprints(args, cwd)
+
+
+def _t_jira_sprint_issues(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_sprint_issues(args, cwd)
+
+
+def _t_jira_dashboards(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_dashboards(args, cwd)
+
+
+def _t_jira_dashboard_read(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_dashboard_read(args, cwd)
+
+
+def _t_jira_dashboard_create(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import jira
+    return jira.jira_dashboard_create(args, cwd)
+
+
 def _t_jira_create(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import jira
     return jira.jira_create(args, cwd)
@@ -1635,6 +1677,14 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_read": _t_jira_read,
     "jira_worklog": _t_jira_worklog,
     "jira_log_work": _t_jira_log_work,
+    "jira_myself": _t_jira_myself,
+    "jira_projects": _t_jira_projects,
+    "jira_boards": _t_jira_boards,
+    "jira_sprints": _t_jira_sprints,
+    "jira_sprint_issues": _t_jira_sprint_issues,
+    "jira_dashboards": _t_jira_dashboards,
+    "jira_dashboard_read": _t_jira_dashboard_read,
+    "jira_dashboard_create": _t_jira_dashboard_create,
     "jira_create": _t_jira_create,
     "jira_update": _t_jira_update,
     "jira_comment": _t_jira_comment,
@@ -2027,6 +2077,14 @@ Tool arguments:
 - jira_search   {{"jql": "assignee = currentUser()", "time": true}}                     (add time:true to include estimate/spent per issue)
 - jira_worklog  {{"key": "ENG-123"}}                                                    (all time LOGGED on an issue: who, how much, when + estimate/spent rollup — "how much time recorded on X")
 - jira_log_work {{"key": "ENG-123", "time_spent": "2h 30m", "comment": "..."}}          (record time against an issue — needs your Approve)
+- jira_myself   {{}}                                                                    (the current/authenticated user — resolve "me"/"my")
+- jira_projects {{}}                                                                    (list projects the token can see)
+- jira_boards   {{"project": "ENG"}}                                                    (list Agile boards)
+- jira_sprints  {{"board_id": 42, "state": "active"}}                                   (list sprints on a board)
+- jira_sprint_issues {{"sprint_id": 99, "time": true}}                                  (issues in a sprint, optionally with time)
+- jira_dashboards {{}}                                                                  (list dashboards)
+- jira_dashboard_read {{"id": 10000}}                                                   (read a dashboard + its gadgets)
+- jira_dashboard_create {{"name": "Team Velocity", "description": "...", "share": "authenticated"}}   (create a dashboard — Cloud only; needs your Approve)
 - jira_create   {{"project": "ENG", "summary": "...", "issuetype": "Task", "description": "..."}}   (new issue — needs your Approve)
 - jira_update   {{"key": "ENG-123", "summary": "...", "description": "...", "labels": ["a","b"]}}     (edit fields — needs your Approve)
 - jira_comment  {{"key": "ENG-123", "body": "comment text"}}                            (add a comment — needs your Approve)
