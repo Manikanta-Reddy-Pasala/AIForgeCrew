@@ -70,15 +70,29 @@ docker compose up -d --build      # api+ui on :8799, postgres, neo4j, embed, rer
   Autonomous ticket runs never block.
 - **VCS** — open **GitHub PRs** (`gh`) and **GitLab MRs** from the agent; targeted
   staging (blanket `git add -A` is refused).
-- **Integrations** — **Jira** / **Confluence** / **GitLab** (search/read/create/update,
-  incl. attached images + docs analysed as part of the task), **web search**
-  (keyed Tavily/Brave with DuckDuckGo fallback) + **web fetch**, **browser** automation,
-  **MCP** tools.
-- **Attachments & vision** — paste/attach **images, PDFs, xlsx, docx**; stored per
-  session, described + queryable all session; vision auto-detected or set per model.
+- **Integrations** — a broad **Jira** suite (search/read/create/update/comment,
+  transitions, assign, links, **time tracking** — estimates + worklogs + `log_work`,
+  **boards/sprints**, projects, **dashboards**) and **Confluence** (search/read/create/
+  update, spaces, page-by-title, labels, comments, descendants) for **Server/Data
+  Center**; **GitLab**; **web search** (keyed Tavily/Brave with DuckDuckGo fallback) +
+  **web fetch**; **browser** automation; **MCP** tools.
+- **Context dossier** — ask to explain a Jira ticket (or Confluence page) and
+  `context_gather` pulls the entity **plus its linked pages / tickets / images in
+  parallel**, saves each into the context folder, merges a `dossier.md`, and caches it —
+  re-asking is instant and refreshes only when the entity changed.
+- **Context workspaces** — a chat about a durable thing gets a **persistent folder
+  shared across sessions**: `~/.aiforge/work/jira/<KEY>/`, `…/confluence/<page-id>/`,
+  `…/repo/<name>/`. A ticket's images, its Confluence pages, and scratch all live inside
+  its folder; a plain chat stays an ephemeral per-session scratch dir.
+- **Attachments & vision** — paste/attach **images, PDFs, xlsx, docx**; docs' text is
+  extracted and images captioned by a vision model (route a `vision` agent at a VLM when
+  the chat model is text-only). Ticket/page attachments persist in the context folder.
 - **Workspace checkpoints** — auto-snapshot before each turn; one-click **restore**.
-- **Skills & workflows** — reusable `SKILL.md` / `WORKFLOW.md` playbooks, relevance-
-  searched + auto-injected; the agent **authors new ones** when it solves something.
+- **Skills, workflows & rules** — reusable playbooks + always-on rules with a **unified
+  frontmatter** (name / description / triggers / scope), relevance-matched + auto-injected;
+  a matching skill/workflow's **output format is reproduced exactly** (verbatim, even after
+  a tool call). Build them from chat (New skill/rule/workflow) or the Library; the agent
+  also **authors new ones** when it solves something.
 - **Memory** — frontier agent-memory that learns across runs (see **[Memory](#memory)**).
 - **Resilient streaming** — navigate away and back without losing a running turn;
   cancel/abort mid-generation; a **kill-all** to clear a wedged run.
@@ -119,8 +133,8 @@ tool-calling required):
 | **Search / nav** | `grep` (ripgrep) · `find` · **`glob`** · AST **`repo_map`** · **`lsp`** (goto-def / find-refs / hover) |
 | **Code** | `run_command` · **`run_tests`** (per-test) · **`typecheck`** · **`format`** · **`ipython`** (persistent REPL) · `project` (detect+build/test/run) · `serve` (background dev server) · `ensure_runtime` |
 | **VCS** | targeted `git` (via shell) · **`github_pr`** · **`gitlab_mr_create`** / `gitlab_mr_comment` |
-| **Integrations** | `jira_*` · `confluence_*` · `gitlab_*` · `web_search` · `web_fetch` · `browser` · `mcp` |
-| **Memory / learning** | `memory_lookup` · `memory_write` · `remember_rule` · `skill_search` / `learn_skill` · `workflow_search` / `learn_workflow` |
+| **Integrations** | `jira_*` (read/create/update/comment · transitions · worklog / `log_work` · boards / sprints / projects · dashboards · remote_links) · `confluence_*` (read/create/update · spaces · page_by_title · labels · comments · descendants) · **`context_gather`** (parallel cross-entity dossier) · `gitlab_*` · `web_search` · `web_fetch` · `browser` · `mcp` |
+| **Memory / learning** | `memory_lookup` · `memory_write` (per-context or **`scope:"global"`**) · `remember_rule` · `skill_search` / `learn_skill` · `workflow_search` / `learn_workflow` |
 
 Writes show a **diff**; risky/caution commands and external writes are **approval-gated**
 by default. An optional `AIFORGE_WORKSPACE_DIR` clamps file ops to a root for cautious
@@ -174,6 +188,14 @@ Frontier agent-memory — on par with Mem0 / Zep / Letta and **ahead** on code i
 - **Importance + decay** — salience-weighted ranking, recency decay, **sleep-time
   consolidation** (`aiforge-memory maintain`).
 - **Self-editing blocks** — the agent keeps its own persistent working-notes block per repo.
+- **Scoped + global** — memory is keyed to its context (a repo, or a Jira ticket /
+  Confluence page whose folder is the cwd) and **recall unions the scoped key with
+  global** — so a ticket chat sees both that ticket's own facts and cross-ticket
+  knowledge. `memory_write scope:"global"` writes a lesson recalled everywhere.
+- **Compaction** — every write folds into a compacted per-scope brief
+  (`compacted-<key>.md`) in one common path, re-summarised on a schedule to bound size;
+  the per-scope brief + the global brief are injected into each chat. Md files
+  (`~/.aiforge/memory`) and Neo4j stay in sync.
 - **User preferences** — durable, cross-repo prefs injected so "always do X" sticks.
 - **Code intelligence** *(ahead of the field)* — AST symbols, call-graph, LSP, repo-map,
   domains/flows/guided tours, cross-repo links, incremental delta-indexing.
@@ -214,7 +236,7 @@ AIFORGE_CHAT_AUTO_CHECKPOINT   1 = snapshot before each turn (default)
 AIFORGE_CHAT_AUTO_MEMORY       1 = persist a memory note per turn (default)
 AIFORGE_SKILLS_DIR             skill registry root (default ~/.aiforge/skills)
 
-# Reliability / timeouts (a slow local reasoning model + the compress hop)
+# Reliability / timeouts (a slow local reasoning model)
 AIFORGE_LLM_TIMEOUT_S          app→model read timeout (=900s / 15 min)
 AIFORGE_CHAT_LLM_RETRIES       transient-failure retries in chat before surfacing (=3)
 
@@ -226,15 +248,25 @@ AIFORGE_BRAVE_API_KEY          Brave Search key (fallback)
 AIFORGE_PG_URL                 Postgres tickets
 NEO4J_URI                      graph memory
 
-# Confluence (chat tools: search/read/create/update pages; Server/Data Center)
+# Jira (issues, time tracking, boards/sprints, dashboards; Server/Data Center)
+JIRA_BASE_URL                  e.g. https://jira.internal
+JIRA_TOKEN                     Personal Access Token (Bearer)
+JIRA_USER                      set ⇒ Basic auth (user + token) instead of Bearer
+JIRA_INSECURE_TLS=1            skip TLS verify for a self-signed internal cert
+# (all four also settable in the UI → Settings → Integrations)
+
+# Confluence (search/read/create/update, spaces, labels, comments; Server/Data Center)
 CONFLUENCE_BASE_URL            e.g. https://confluence.internal
 CONFLUENCE_TOKEN               Personal Access Token (Bearer)
 CONFLUENCE_USER                set ⇒ Basic auth (user + token) instead of Bearer
 CONFLUENCE_INSECURE_TLS=1      skip TLS verify for a self-signed internal cert
 ```
 
-Confluence writes (`confluence_create`/`confluence_update`) go through the chat
-**approval gate** by default — the agent proposes, you Approve/Reject.
+Jira/Confluence **writes** (create/update/comment/`log_work`, dashboard create) go
+through the chat **approval gate** — the agent proposes, you Approve/Reject; reads never
+prompt. On Jira **Data Center**, dashboard *reads* work but *create* has no REST endpoint
+(the tool returns a "create it in the UI" hint). Unconfigured tools degrade cleanly
+(`*_not_configured` with the env to set), never crash.
 
 ## Project layout
 
