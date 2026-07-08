@@ -3875,7 +3875,17 @@ def run_chat_agent(
             yield {"type": "builder_done", "kind": name}
         _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
         obs = json.dumps(result)[:_obs_cap]
-        convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
+        # Recency reminder: a strict output format from an APPLICABLE SKILL sits
+        # in the system prompt (far above), while this fresh tool result sits at
+        # the end where the model attends most — so after a tool round-trip it
+        # tends to summarize the result in its own words and drop the format
+        # (e.g. a jira-reading skill's exact layout). Re-assert the format right
+        # next to the data so the FINAL honours it. Only when a skill fired.
+        _tail = ("\n[format reminder] If your FINAL presents this result and an "
+                 "APPLICABLE SKILL above specifies an output format, reproduce "
+                 "it EXACTLY — no extra prose, headers, or table it does not "
+                 "specify.") if _bundle.skills_md else ""
+        convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
 
     _fire_stop("cap", cwd)
     yield {"type": "message",
