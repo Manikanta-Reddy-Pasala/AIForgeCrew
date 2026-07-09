@@ -1,0 +1,120 @@
+# Self-hosted Langfuse v3 stack (LLM observability) — brought up by
+# `./run.sh --with-langfuse` (or AIFORGE_LANGFUSE=1 in .env). Fully headless:
+# org/project/API keys are provisioned via LANGFUSE_INIT_* on first boot, so
+# no manual UI setup — run.sh generates the secrets once into
+# ~/.aiforge/langfuse.env and exports LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY to
+# the app, which then mirrors every LLM call automatically.
+#
+# Own postgres (not AIForge's) so versions/lifecycles stay decoupled.
+# UI: http://localhost:${LF_PORT:-3005}   login: admin@aiforge.local / $LF_ADMIN_PASSWORD
+
+services:
+  langfuse-web:
+    image: langfuse/langfuse:3
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_started
+      langfuse-minio:
+        condition: service_started
+    ports:
+      - "${LF_PORT:-3005}:3000"
+    environment: &lf_env
+      DATABASE_URL: postgresql://postgres:${LF_PG_PASSWORD}@langfuse-postgres:5432/postgres
+      NEXTAUTH_URL: http://localhost:${LF_PORT:-3005}
+      NEXTAUTH_SECRET: ${LF_NEXTAUTH_SECRET}
+      SALT: ${LF_SALT}
+      ENCRYPTION_KEY: ${LF_ENCRYPTION_KEY}
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
+      REDIS_CONNECTION_STRING: redis://langfuse-redis:6379
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LF_MINIO_PASSWORD}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LF_MINIO_PASSWORD}
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      TELEMETRY_ENABLED: "false"
+      # Headless first-boot provisioning — deterministic keys the app uses.
+      LANGFUSE_INIT_ORG_ID: aiforge
+      LANGFUSE_INIT_ORG_NAME: AIForge
+      LANGFUSE_INIT_PROJECT_ID: aiforge
+      LANGFUSE_INIT_PROJECT_NAME: AIForge
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LF_PUBLIC_KEY}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LF_SECRET_KEY}
+      LANGFUSE_INIT_USER_EMAIL: admin@aiforge.local
+      LANGFUSE_INIT_USER_NAME: admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LF_ADMIN_PASSWORD}
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_started
+      langfuse-minio:
+        condition: service_started
+    environment: *lf_env
+
+  langfuse-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${LF_PG_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - langfuse_pg:/var/lib/postgresql/data
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DB: default
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - langfuse_ch:/var/lib/clickhouse
+
+  langfuse-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+
+  langfuse-minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    entrypoint: ["sh", "-c", "mkdir -p /data/langfuse && exec minio server /data"]
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LF_MINIO_PASSWORD}
+    volumes:
+      - langfuse_minio:/data
+
+volumes:
+  langfuse_pg:
+  langfuse_ch:
+  langfuse_minio:

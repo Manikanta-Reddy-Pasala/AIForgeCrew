@@ -35,6 +35,9 @@
 #   --test       probe the configured model endpoint with the current SSL
 #                settings (OK/FAIL + error), then exit. Runs in the venv,
 #                needs no Docker; works in every mode.
+#   --with-langfuse  bring up a SELF-HOSTED Langfuse (LLM trace UI) via
+#                docker compose and auto-wire tracing (also: AIFORGE_LANGFUSE=1
+#                in .env). Secrets auto-generated once → ~/.aiforge/langfuse.env.
 #   --with-graphify  install the `graphify` CLI on the HOST (pip pkg
 #                `graphifyy`) so the concept-graph refresh + graphify_lookup
 #                tool have a binary to call. Opt-in; not needed to boot.
@@ -83,6 +86,7 @@ TEST=0
 MODE=hybrid       # infra in docker, agent on host — the DEFAULT
 NO_BUILD=0
 WITH_GRAPHIFY=0  # --with-graphify installs the graphify CLI on the host
+WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"  # --with-langfuse (or AIFORGE_LANGFUSE=1): self-hosted trace UI
 DOWN_FIRST=0      # full --docker restart tears down stale containers first
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -94,10 +98,11 @@ while [[ $# -gt 0 ]]; do
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
     --no-build) NO_BUILD=1 ;;
     --with-graphify) WITH_GRAPHIFY=1 ;;
+    --with-langfuse) WITH_LANGFUSE=1 ;;
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -408,6 +413,54 @@ if [[ $SKIP_WEB -eq 0 ]]; then
     echo "!! ============================================================" >&2
   else
     echo "==> npm not found — skipping UI build (dist present + current)" >&2
+  fi
+fi
+
+# ── Langfuse trace server (--with-langfuse / AIFORGE_LANGFUSE=1) ─────
+# Self-hosted Langfuse v3 (web+worker+pg+clickhouse+redis+minio) via
+# scripts/compose/langfuse-compose.yml. FULLY headless: secrets + API keys
+# are generated ONCE into ~/.aiforge/langfuse.env (never committed) and the
+# project is provisioned on first boot via LANGFUSE_INIT_* — then the app's
+# LANGFUSE_* env is exported here so every LLM call mirrors automatically.
+if [[ "$WITH_LANGFUSE" == "1" ]]; then
+  if [[ $MODE == lite ]] || ! command -v docker >/dev/null 2>&1; then
+    echo "==> --with-langfuse needs Docker (skipped in lite/no-docker mode)" >&2
+  else
+    _lf_env="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/langfuse.env"
+    if [[ ! -f "$_lf_env" ]]; then
+      echo "==> generating langfuse secrets (once) → $_lf_env"
+      mkdir -p "$(dirname "$_lf_env")"
+      _rand() { openssl rand -hex "${1:-16}" 2>/dev/null || head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-"$(( ${1:-16} * 2 ))"; }
+      {
+        echo "LF_PORT=${AIFORGE_LANGFUSE_PORT:-3005}"
+        echo "LF_PG_PASSWORD=$(_rand 12)"
+        echo "LF_CLICKHOUSE_PASSWORD=$(_rand 12)"
+        echo "LF_MINIO_PASSWORD=$(_rand 12)"
+        echo "LF_NEXTAUTH_SECRET=$(_rand 24)"
+        echo "LF_SALT=$(_rand 24)"
+        echo "LF_ENCRYPTION_KEY=$(_rand 32)"   # 64 hex chars, required length
+        echo "LF_PUBLIC_KEY=pk-lf-$(_rand 16)"
+        echo "LF_SECRET_KEY=sk-lf-$(_rand 16)"
+        echo "LF_ADMIN_PASSWORD=$(_rand 8)"
+      } > "$_lf_env"
+      chmod 600 "$_lf_env"
+    fi
+    set -a; . "$_lf_env"; set +a
+    if [[ -z "${DC[*]:-}" ]]; then
+      if docker compose version >/dev/null 2>&1; then DC=(docker compose)
+      else DC=(docker-compose); fi
+      docker info >/dev/null 2>&1 || DC=(sudo "${DC[@]}")
+    fi
+    echo "==> starting langfuse (trace UI) on http://localhost:${LF_PORT}"
+    if "${DC[@]}" -p aiforge-langfuse -f scripts/compose/langfuse-compose.yml up -d --quiet-pull; then
+      # Export the app-side mirror config; tracing turns on automatically.
+      export LANGFUSE_HOST="http://127.0.0.1:${LF_PORT}"
+      export LANGFUSE_PUBLIC_KEY="$LF_PUBLIC_KEY"
+      export LANGFUSE_SECRET_KEY="$LF_SECRET_KEY"
+      echo "    langfuse login: admin@aiforge.local / ${LF_ADMIN_PASSWORD}  (keys in $_lf_env)"
+    else
+      echo "==> WARN: langfuse bring-up failed — tracing stays off (stack boots fine)" >&2
+    fi
   fi
 fi
 
