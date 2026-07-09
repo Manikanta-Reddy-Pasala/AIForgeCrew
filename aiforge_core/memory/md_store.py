@@ -65,7 +65,8 @@ def _parse(path: Path) -> dict:
         for line in m.group(1).splitlines():
             if ":" in line:
                 k, v = line.split(":", 1)
-                meta[k.strip()] = v.strip()
+                # OKR-envelope briefs (work_notes) write JSON-quoted scalars
+                meta[k.strip()] = v.strip().strip('"')
     return {
         "name": path.stem,
         "file": path.name,
@@ -216,53 +217,81 @@ def capture(kind: str, text: str, *, repo: str | None = None,
 
 _BRIEF_CAP = 24_000   # chars; periodic re-summarize keeps it below this
 
+# Knowledge briefs share the same Google-OKR envelope as the managed work
+# notes (work_notes): Objective + Facts (write-time inbox, deduped) +
+# Learnings + free body (the LLM-consolidated prose). One standard, whether
+# the note is a Jira dossier or a memory brief.
+_BRIEF_OBJECTIVE = ("Keep durable, deduped knowledge for {key} current — "
+                    "write-time facts land here, periodic compaction folds "
+                    "them into the consolidated body below.")
+# LEGACY brief tail — old-format briefs kept fresh facts under "## Recent";
+# migrated into the OKR "## Facts" section on first touch.
+_LEGACY_RECENT_RE = re.compile(
+    r"(?:^|\n)##\s+Recent\s*\n((?:\s*[-*]\s+.*\n?)*)", re.IGNORECASE)
+
+
+def _render_brief(key: str, *, facts: list[str], body_md: str = "",
+                  learnings: list[str] | None = None, title: str = "") -> str:
+    from aiforge_core.runtime import work_notes
+    return work_notes.render_note(
+        "knowledge", key,
+        title=title or f"{key} memory (compacted)",
+        objective=_BRIEF_OBJECTIVE.format(key=key),
+        facts=facts, learnings=learnings, body_md=body_md)
+
+
+def _parse_brief(raw: str) -> dict:
+    """Parse a brief (OKR or legacy) → {"facts", "learnings", "body", "title"}.
+    A legacy brief's ``## Recent`` bullets migrate into facts; its prose stays
+    in body. Never raises."""
+    from aiforge_core.runtime import work_notes
+    parsed = work_notes.parse_note(raw or "")
+    facts = list(parsed["sections"].get("facts") or [])
+    body = parsed["body"] or ""
+    m = _LEGACY_RECENT_RE.search(body)
+    if m:
+        facts.extend(re.sub(r"^[-*]\s+", "", ln.strip())
+                     for ln in m.group(1).splitlines() if ln.strip())
+        body = (body[:m.start()] + body[m.end():]).strip("\n")
+    return {"facts": facts, "body": body, "title": parsed["title"],
+            "learnings": list(parsed["sections"].get("learnings") or [])}
+
 
 def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
-    """Append ``text`` as a bullet into ``compacted-<repo>.md`` immediately (no
-    LLM), deduped by content. Creates the brief if absent. Bounded: when it
-    exceeds ``_BRIEF_CAP`` the OLDEST bullets are dropped (the periodic
-    re-summarize pass reconstitutes a tight version)."""
+    """Fold ``text`` into ``compacted-<repo>.md`` immediately (no LLM), as a
+    deduped item under the OKR ``## Facts`` section. Creates the brief (OKR
+    envelope) if absent; legacy-format briefs are migrated in place. Bounded:
+    past ``_BRIEF_CAP`` the OLDEST facts are dropped (the periodic
+    re-summarize folds them into the consolidated body anyway)."""
     text = (text or "").strip()
     if not text:
         return
     slug = _slug(repo)
     path = memory_dir() / f"compacted-{slug}.md"
-    heading = f"# {repo} memory (compacted)"
-    head = (f"---\ntitle: {repo} memory (compacted)\n"
-            f"kind: compacted\nrepo: {repo}\nsource: brief:{slug}\n---\n\n")
     fact = text.replace("\n", " ").strip()
-    new_bullet = "- " + (f"[{topic}] " if topic else "") + fact
+    item = (f"[{topic}] " if topic else "") + fact
     with _WRITE_LOCK:
-        # PRESERVE the existing body (a periodic re-summarize writes PROSE, not
-        # bullets — extracting only bullets would clobber it). Append the new
-        # fact under a "## Recent" tail; dedup if the fact is already present
-        # anywhere (prose or bullet), so we never re-add summarized content.
+        facts: list[str] = []
+        body = ""
+        learnings: list[str] = []
+        title = ""
         if path.exists():
             raw = path.read_text(encoding="utf-8", errors="replace")
-            m = _FM_RE.match(raw)
-            body = (m.group(2).rstrip() if m else raw.rstrip())
-        else:
-            body = heading
-        if fact and fact in body:
+            b = _parse_brief(raw)
+            facts, body = b["facts"], b["body"]
+            learnings, title = b["learnings"], b["title"]
+        # dedupe: already captured as a fact (any topic), or folded into prose
+        if any(fact in f for f in facts) or (fact and fact in body):
             return
-        if "## Recent" not in body:
-            body = body + "\n\n## Recent"
-        body = body + "\n" + new_bullet
-        # bound: keep the heading + summarized top, trim the OLDEST "## Recent"
-        # bullets (the periodic re-summarize folds them into the prose anyway).
-        if len(body) > _BRIEF_CAP:
-            lines = body.splitlines()
-            recent_at = next((i for i, ln in enumerate(lines)
-                              if ln.strip() == "## Recent"), None)
-            if recent_at is not None:
-                top = lines[:recent_at + 1]
-                bl = lines[recent_at + 1:]
-                while bl and len("\n".join(top + bl)) > _BRIEF_CAP:
-                    bl.pop(0)
-                body = "\n".join(top + bl)
-            else:
-                body = body[-_BRIEF_CAP:]
-        path.write_text(head + body + "\n", encoding="utf-8")
+        facts.append(item)
+        # bound: drop OLDEST facts first (consolidated body is the keeper)
+        while len(facts) > 1 and \
+                (len(body) + sum(len(f) + 3 for f in facts)) > _BRIEF_CAP:
+            facts.pop(0)
+        path.write_text(
+            _render_brief(repo, facts=facts, body_md=body,
+                          learnings=learnings, title=title),
+            encoding="utf-8")
 
 
 def _find_by_source(source: str) -> Path | None:
@@ -663,19 +692,32 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                             "configure a model so compaction can summarise._\n\n"
                             "---\n\n" + body[-keep:])
 
-            fm = (
-                "---\n"
-                f"title: {title}\n"
-                "kind: compacted\n"
-                f"tags: {', '.join(all_tags)}\n"
-                f"source: compacted:{stem}\n"
-                f"created: {_now_iso()}\n"
-                f"count: {len(items)}\n"
-                f"summarized: {str(did_summarize).lower()}\n"
-                "---\n\n"
-            )
+            if group_by in ("repo", "topic"):
+                # Knowledge briefs use the standard OKR envelope (same as the
+                # managed work notes). The consolidation IS the body; Facts
+                # reset (they were folded in); Learnings survive verbatim.
+                prev_learnings = _parse_brief(
+                    path.read_text(encoding="utf-8", errors="replace")
+                )["learnings"] if path.exists() else []
+                content = _render_brief(
+                    key, facts=[],
+                    body_md=re.sub(r"^#\s[^\n]*\n+", "", body.strip()),
+                    learnings=prev_learnings, title=title)
+            else:
+                fm = (
+                    "---\n"
+                    f"title: {title}\n"
+                    "kind: compacted\n"
+                    f"tags: {', '.join(all_tags)}\n"
+                    f"source: compacted:{stem}\n"
+                    f"created: {_now_iso()}\n"
+                    f"count: {len(items)}\n"
+                    f"summarized: {str(did_summarize).lower()}\n"
+                    "---\n\n"
+                )
+                content = fm + body.strip() + "\n"
             prepared.append({"items": items, "path": path, "stem": stem,
-                             "tags": all_tags, "content": fm + body.strip() + "\n",
+                             "tags": all_tags, "content": content,
                              "summarized": did_summarize})
 
         # ── Phase 2: write consolidated, THEN archive originals, UNDER lock.
