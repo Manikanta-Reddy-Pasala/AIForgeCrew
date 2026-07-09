@@ -4058,6 +4058,19 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                    "text": "Multi-file build detected — routing through the build "
                            "pipeline (decompose → scaffold → implement → test) "
                            "instead of a single agent."}
+        elif (not team and not _psub_on and agent_mode != "plan"
+              and not _is_advice_question(prompt)
+              and _looks_like_multifile_build(prompt)):
+            # Multi-file build with the fan-out DISABLED: say so instead of
+            # silently grinding through N files with one agent — the operator
+            # can't fix a knob they can't see.
+            yield {"type": "thought", "role": "router",
+                   "text": "Multi-file build detected, but the parallel pipeline "
+                           "is disabled — running single-agent (sequential). "
+                           "Enable AIFORGE_PARALLEL_SUBTASKS=1 to decompose + "
+                           "fan out (set AIFORGE_PARALLEL_SUBTASKS_MAX=4 only "
+                           "if the model endpoint truly serves concurrent "
+                           "requests — a serial local endpoint gains nothing)."}
         # FOLLOW-UP / existing-repo routing: the decompose→build pipeline is for a
         # NEW project. A request on a repo that ALREADY has code — a follow-up
         # ("add a delete method", "fix the eviction bug") or an existing repo —
