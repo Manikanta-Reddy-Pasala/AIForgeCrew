@@ -1949,7 +1949,7 @@ def _perf_family(name: str) -> str:
 
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
 _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
-                   "search_chat_sessions",
+                   "search_chat_sessions", "graphify_lookup", "repo_map",
                    "skill_search", "confluence_search", "confluence_read",
                    "jira_search", "jira_read",
                    "email_read",
@@ -1962,7 +1962,21 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    # so Plan mode doesn't block a tool the policy calls read-only.
                    "git_status", "git_diff", "git_log", "git_blame",
                    "read_lines", "jira_transitions", "confluence_children",
-                   "list_services")
+                   "list_services",
+                   # Jira/Confluence READ suite + resolvers + the cross-entity
+                   # dossier — all read-only. These were ADDED after this list
+                   # was written and drifted out of sync, so PLAN MODE blocked
+                   # them ("can't read jira in plan mode"): the builtin
+                   # jira-read/confluence-read skills route through
+                   # context_gather, which this gate refused.
+                   "context_gather", "resolve_repo", "jira_resolve_project",
+                   "confluence_resolve_space", "jira_worklog", "jira_projects",
+                   "jira_remote_links", "jira_boards", "jira_sprints",
+                   "jira_sprint_issues", "jira_dashboards",
+                   "jira_dashboard_read", "jira_myself",
+                   "confluence_spaces", "confluence_page_by_title",
+                   "confluence_labels", "confluence_comments",
+                   "confluence_descendants")
 
 # Builder-finalize tools — a successful call ENDS the interview (one per builder
 # kind: job/skill/workflow/rule). Emitting `builder_done` lets the UI drop the

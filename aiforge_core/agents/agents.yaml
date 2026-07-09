@@ -299,6 +299,19 @@ agents:
         - stop_service              # stop a serve()'d process
         - subtask_update            # flip a subticket's live status
         - git_commit                # milestone snapshots
+        # Jira/Confluence READS — a ticket-driven subtask often references the
+        # issue/page (acceptance criteria, attachments, linked pages). Without
+        # these the enforcement filter stripped them and the pipeline Doer
+        # "couldn't read jira" while simple chat (unfiltered) could. Reads
+        # only — jira_create/update/comment etc. stay excluded.
+        - jira_search
+        - jira_read
+        - jira_worklog
+        - jira_remote_links
+        - jira_transitions
+        - confluence_search
+        - confluence_read
+        - confluence_children
       forbidden:
         - ask_user
         - start_long_term_update
@@ -487,6 +500,17 @@ agents:
         - web_search            # researcher is the ONE sanctioned web agent
         - web_read              # ungated page read (role-scoped; others can't)
         - web_crawl             # page → markdown dossier (work/web/, sanctioned)
+        # Jira/Confluence READS — the ticket/page IS the context this role
+        # gathers; without these the enforcement filter stripped them and the
+        # pipeline "couldn't read jira" while simple chat (unfiltered) could.
+        - jira_search
+        - jira_read
+        - jira_worklog
+        - jira_remote_links
+        - jira_transitions
+        - confluence_search
+        - confluence_read
+        - confluence_children
       forbidden:
         - file_write
         - file_patch

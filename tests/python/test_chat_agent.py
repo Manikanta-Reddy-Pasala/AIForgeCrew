@@ -623,6 +623,26 @@ def test_usage_meter_counts_history_not_system_prompt(tmp_path):
     assert usage and usage[0]["context_chars"] < 5000
 
 
+def test_plan_mode_allows_jira_confluence_reads(tmp_path):
+    """Plan-mode gate regression: the jira/confluence READ suite + the
+    context_gather dossier are read-only and must NOT be blocked — the gate
+    list drifted when those tools shipped, so plan mode 'couldn't read jira'
+    while simple chat could."""
+    for tool in ("context_gather", "jira_read", "confluence_read",
+                 "jira_worklog", "confluence_descendants", "jira_boards"):
+        fn = _scripted([
+            f'ACTION: {tool}\nARGS_JSON: {{"key": "CLR-1", "id": "1"}}',
+            "FINAL: done",
+        ])
+        evs = _collect(ca.run_chat_agent(
+            [{"role": "user", "content": "read CLR-1"}], cwd=str(tmp_path),
+            complete_fn=fn, mode="plan"))
+        tools = [e for e in evs if e["type"] == "tool" and e["name"] == tool]
+        assert tools, tool
+        # may fail as not-configured — but NEVER as a plan_mode block
+        assert tools[0]["result"].get("blocked") != "plan_mode", tool
+
+
 def test_split_asks_variants():
     # multi-sentence with connector + question → parts detected
     asks = ca._split_asks(
