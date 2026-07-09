@@ -104,3 +104,51 @@ def test_simple_mode_question_stays_single_agent(app_client, monkeypatch, tmp_pa
         "content": "how do I build a spring boot app with tests?",
         "mode": "simple", "cwd": str(tmp_path)})
     assert r.status_code == 200 and "answer" in r.text
+
+
+def test_doc_word_mention_does_not_veto_a_real_build(app_client, monkeypatch, tmp_path):
+    """Regression (live-caught): 'a monthly REPORT module' vetoed the build
+    matcher via the document blocklist → 10-file build ran single-agent."""
+    client, api = app_client
+    from aiforge_core.runtime import parallel_subtasks as pp
+    called = {"n": 0}
+    monkeypatch.setattr(pp, "_enhance", lambda *a, **k: "SPEC")
+    monkeypatch.setattr(pp, "_architect", lambda *a, **k: [
+        {"path": "a.py", "purpose": "x", "api": []},
+        {"path": "tests/test_a.py", "purpose": "t", "api": []}])
+    monkeypatch.setattr(pp, "_is_greenfield", lambda *a, **k: True)
+
+    def fake_team(spec, **kw):
+        called["n"] += 1
+        yield {"type": "message", "text": "pipeline ran"}
+
+    monkeypatch.setattr(pp, "stream_parallel_team", fake_team)
+    sid = client.post("/api/chat/sessions",
+                      json={"title": "t", "cwd": str(tmp_path)}).json()["id"]
+    r = client.post(f"/api/chat/sessions/{sid}/message", json={
+        "content": ("build an expense tracker cli tool in python: a storage "
+                    "module using sqlite, a monthly report module, and the "
+                    "cli entrypoint. include unit tests for every module"),
+        "mode": "simple", "cwd": str(tmp_path)})
+    assert r.status_code == 200 and called["n"] == 1
+    # pure DOC tasks still stay off the pipeline
+    assert "Multi-file build detected" in r.text
+
+
+def test_pure_doc_task_still_vetoed(app_client, monkeypatch, tmp_path):
+    client, api = app_client
+    from aiforge_core.runtime import parallel_subtasks as pp
+
+    def must_not_team(*a, **k):
+        raise AssertionError("doc task escalated")
+
+    monkeypatch.setattr(pp, "stream_parallel_team", must_not_team)
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent.run_chat_agent",
+                        lambda *a, **k: iter([{"type": "message", "text": "ok"},
+                                              {"type": "done"}]))
+    sid = client.post("/api/chat/sessions",
+                      json={"title": "t", "cwd": str(tmp_path)}).json()["id"]
+    r = client.post(f"/api/chat/sessions/{sid}/message", json={
+        "content": "write a jira ticket describing the rate limiting work",
+        "mode": "simple", "cwd": str(tmp_path)})
+    assert r.status_code == 200 and "ok" in r.text
