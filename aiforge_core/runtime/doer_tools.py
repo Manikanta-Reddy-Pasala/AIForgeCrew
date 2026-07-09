@@ -971,6 +971,13 @@ def jira_worklog(key: str, limit: int = 50) -> dict:
     return _j.jira_worklog({"key": key, "limit": limit}, str(root()))
 
 
+def resolve_repo(name: str) -> dict:
+    """Fuzzily resolve a repo/service/folder NAME to its local path (tolerates
+    case, spaces, missing hyphens, typos) — call before assuming a path."""
+    from aiforge_core.config import repo_map as _rm
+    return _rm.resolve(name or "")
+
+
 def jira_remote_links(key: str) -> dict:
     """Confluence pages + web links attached to a JIRA issue."""
     from aiforge_core.runtime.tools import jira as _j
@@ -1611,7 +1618,9 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         github_pr, multi_edit,
                         git_status, git_diff, git_log, git_blame,
                         jira_transitions, jira_transition, jira_assign,
-                        jira_link_issues, confluence_children, confluence_attach,
+                        jira_link_issues, jira_worklog, jira_remote_links,
+                        resolve_repo,
+                        confluence_children, confluence_attach,
                         read_lines, rename_symbol]
     aliases = [read, write, patch, edit, str_replace, ls, shell, bash, run,
                grep, search, http_get, web_fetch,
@@ -1687,6 +1696,7 @@ __all__ = [
     "github_pr", "multi_edit",
     "git_status", "git_diff", "git_log", "git_blame",
     "jira_transitions", "jira_transition", "jira_assign", "jira_link_issues",
+    "jira_worklog", "jira_remote_links", "resolve_repo",
     "confluence_children", "confluence_attach", "read_lines", "rename_symbol",
     "read", "write", "patch", "edit", "str_replace", "ls", "shell", "bash",
     "grep", "search", "http_get", "web_fetch", "web_read",

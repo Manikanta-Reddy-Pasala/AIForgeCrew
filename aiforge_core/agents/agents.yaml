@@ -100,14 +100,24 @@ agents:
       max_wall_s: 3600
     tools:
       allowed:
-        - graph_lookup
+        # NOTE: names must match the REAL doer_tools registry (audit: the old
+        # graph_lookup/search_memory/grep_repos era names matched nothing).
+        # create_parent_ticket/update_ticket are SERVER-side runtime ops.
         - graphify_lookup
-        - search_memory
+        - memory_lookup         # was: search_memory
         - editor                # view-only via editor_commands below
-        - grep_repos
-        - lookup_repo
-        - create_parent_ticket
-        - update_ticket
+        - grep_repo             # was: grep_repos (typo — matched nothing)
+        - repo_map
+        - resolve_repo          # was: lookup_repo
+        - create_parent_ticket  # server-side (documented, not a model tool)
+        - update_ticket         # server-side (documented, not a model tool)
+        # Jira/Confluence READS — designing from a ticket needs its content.
+        - jira_search
+        - jira_read
+        - jira_remote_links
+        - confluence_search
+        - confluence_read
+        - confluence_children
       forbidden:
         - edit_block
         - write_file
@@ -160,15 +170,28 @@ agents:
       max_wall_s: 1200
     tools:
       allowed:
-        - graph_lookup
+        # NOTE: names must match the REAL doer_tools registry (audit found the
+        # old graph_lookup/search_memory/grep_repos era names matched nothing —
+        # if this role ever gets a tool factory the starved list would ship an
+        # agent with ~2 tools). write_plan/create_child_ticket are SERVER-side
+        # runtime ops, not model tools — kept for documentation.
         - graphify_lookup
-        - search_memory
+        - memory_lookup         # was: search_memory / recall_similar_flows
         - editor                # view-only via editor_commands below
-        - grep_repos
-        - lookup_repo
-        - write_plan
-        - create_child_ticket
-        - recall_similar_flows
+        - grep_repo             # was: grep_repos (typo — matched nothing)
+        - repo_map
+        - resolve_repo          # was: lookup_repo
+        - write_plan            # server-side (documented, not a model tool)
+        - create_child_ticket   # server-side (documented, not a model tool)
+        # Jira/Confluence READS — planning a ticket-driven task needs the
+        # issue/page content (same read suite as doer/researcher).
+        - jira_search
+        - jira_read
+        - jira_worklog
+        - jira_remote_links
+        - confluence_search
+        - confluence_read
+        - confluence_children
       forbidden:
         - edit_block
         - write_file
