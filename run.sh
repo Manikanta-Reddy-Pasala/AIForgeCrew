@@ -118,7 +118,8 @@ if [[ "${STOP_LANGFUSE:-0}" == "1" ]]; then
   if docker compose version >/dev/null 2>&1; then DC=(docker compose)
   else DC=(docker-compose); fi
   docker info >/dev/null 2>&1 || DC=(sudo "${DC[@]}")
-  "${DC[@]}" -p aiforge-langfuse -f scripts/compose/langfuse-compose.yml down \
+  "${DC[@]}" -p aiforge-langfuse --env-file "${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/langfuse.env" \
+    -f scripts/compose/langfuse-compose.yml down \
     && echo "==> langfuse stopped (volumes kept — traces survive a restart)" \
     || echo "==> langfuse was not running (or docker unreachable)" >&2
   exit 0
@@ -468,7 +469,11 @@ if [[ "$WITH_LANGFUSE" == "1" ]]; then
       docker info >/dev/null 2>&1 || DC=(sudo "${DC[@]}")
     fi
     echo "==> starting langfuse (trace UI) on http://localhost:${LF_PORT}"
-    if "${DC[@]}" -p aiforge-langfuse -f scripts/compose/langfuse-compose.yml up -d --quiet-pull; then
+    # --env-file, NOT the sourced shell env: on hosts where docker needs
+    # sudo, `sudo docker compose` strips the exported LF_* vars and postgres
+    # boots with an EMPTY password → unhealthy → whole stack aborts.
+    if "${DC[@]}" -p aiforge-langfuse --env-file "$_lf_env" \
+         -f scripts/compose/langfuse-compose.yml up -d --quiet-pull; then
       # Export the app-side mirror config; tracing turns on automatically.
       export LANGFUSE_HOST="http://127.0.0.1:${LF_PORT}"
       export LANGFUSE_PUBLIC_KEY="$LF_PUBLIC_KEY"
