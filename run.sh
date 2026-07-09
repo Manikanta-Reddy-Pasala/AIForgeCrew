@@ -35,6 +35,7 @@
 #   --test       probe the configured model endpoint with the current SSL
 #                settings (OK/FAIL + error), then exit. Runs in the venv,
 #                needs no Docker; works in every mode.
+#   --stop-langfuse  stop the langfuse containers (trace data volumes kept)
 #   --with-langfuse  bring up a SELF-HOSTED Langfuse (LLM trace UI) via
 #                docker compose and auto-wire tracing (also: AIFORGE_LANGFUSE=1
 #                in .env). Secrets auto-generated once → ~/.aiforge/langfuse.env.
@@ -99,14 +100,29 @@ while [[ $# -gt 0 ]]; do
     --no-build) NO_BUILD=1 ;;
     --with-graphify) WITH_GRAPHIFY=1 ;;
     --with-langfuse) WITH_LANGFUSE=1 ;;
+    --stop-langfuse) STOP_LANGFUSE=1 ;;
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# ── Stop the langfuse stack (--stop-langfuse) ─────────────────────────
+# Tears the trace-server containers down (data VOLUMES are kept — traces
+# survive a later --with-langfuse). Full wipe: docker volume rm the
+# aiforge-langfuse_* volumes afterwards. Exits after stopping.
+if [[ "${STOP_LANGFUSE:-0}" == "1" ]]; then
+  if docker compose version >/dev/null 2>&1; then DC=(docker compose)
+  else DC=(docker-compose); fi
+  docker info >/dev/null 2>&1 || DC=(sudo "${DC[@]}")
+  "${DC[@]}" -p aiforge-langfuse -f scripts/compose/langfuse-compose.yml down \
+    && echo "==> langfuse stopped (volumes kept — traces survive a restart)" \
+    || echo "==> langfuse was not running (or docker unreachable)" >&2
+  exit 0
+fi
 
 # ── Reset saved agent config (--reset-config) ─────────────────────────
 # Wipe ~/.aiforge/agent_config.json so stale per-role rows can't shadow the
