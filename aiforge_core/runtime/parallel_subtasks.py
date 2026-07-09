@@ -39,30 +39,24 @@ _GIT_LOCK = threading.Lock()
 
 
 def enabled() -> bool:
-    return os.environ.get("AIFORGE_PARALLEL_SUBTASKS", "0").strip().lower() \
+    # DEFAULT ON (operator decision 2026-07-09): a multi-file build decomposes
+    # + fans out unless explicitly disabled with AIFORGE_PARALLEL_SUBTASKS=0.
+    return os.environ.get("AIFORGE_PARALLEL_SUBTASKS", "1").strip().lower() \
         in ("1", "true", "yes", "on")
 
 
 def _max_workers() -> int:
-    # Explicit operator override always wins (a batching server — vLLM / TGI —
-    # genuinely serves concurrent requests, so its operator sets this higher).
+    """Concurrent subtask workers — DEFAULT 4 (operator decision 2026-07-09;
+    was: auto-1 on a local endpoint). On a strictly SERIAL local server the
+    extra workers just queue on the one model (no speedup, some worktree
+    overhead) — set AIFORGE_PARALLEL_SUBTASKS_MAX=1 there; modern LM Studio /
+    llama.cpp slots and vLLM/TGI do serve concurrently and win from 4."""
     raw = os.environ.get("AIFORGE_PARALLEL_SUBTASKS_MAX")
     if raw is not None:
         try:
             return max(1, min(8, int(raw)))
         except ValueError:
             return 4
-    # Default: on a LOCAL single-model endpoint (mlx-lm / ollama / llama.cpp /
-    # LM Studio) serving requests SERIALLY, fanning out N Doer calls just queues
-    # them on one model — zero latency win, plus N× worktree + KV-cache thrash.
-    # Run subtasks sequentially there (still isolated worktrees, no false
-    # parallelism). A remote/cloud (or batching) endpoint keeps the fan-out.
-    try:
-        from aiforge_core.llm import router as _router
-        if _router.is_local_endpoint("doer"):
-            return 1
-    except Exception:  # noqa: BLE001
-        pass
     return 4
 
 

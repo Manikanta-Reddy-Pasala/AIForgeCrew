@@ -25,7 +25,7 @@ def app_client(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "memory.db"))
     for k in ("AIFORGE_MEMORY_BACKEND", "AIFORGE_NEO4J_URI", "NEO4J_URI"):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.delenv("AIFORGE_PARALLEL_SUBTASKS", raising=False)
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS", "0")  # single-agent path under test (default is now ON)
     monkeypatch.delenv("AIFORGE_BEST_OF_N", raising=False)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)

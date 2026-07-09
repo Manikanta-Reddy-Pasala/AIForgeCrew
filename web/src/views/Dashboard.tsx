@@ -72,6 +72,19 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Langfuse trace mirror (optional): the API exposes traces_url only
+          when LANGFUSE_* keys are configured — render a link out to the
+          self-hosted Langfuse UI where every LLM call is browsable. */}
+      {health.data?.traces_url && (
+        <div style={{ margin: '4px 0 12px' }}>
+          <a className="chip" href={health.data.traces_url} target="_blank"
+             rel="noreferrer"
+             title="Every LLM call (all roles, chat + pipeline) is mirrored to your self-hosted Langfuse">
+            LLM traces (Langfuse) ↗
+          </a>
+        </div>
+      )}
+
       <div className="grid grid-2">
         <div className="card">
           <div className="card-header">

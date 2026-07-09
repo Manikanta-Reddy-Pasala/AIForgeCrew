@@ -33,12 +33,14 @@ def test_escalating_markers_include_model_drop():
         assert m in joined
 
 
-def test_max_workers_serial_on_local(monkeypatch):
+def test_max_workers_default_four_even_on_local(monkeypatch):
+    # Operator decision 2026-07-09: default 4 everywhere (modern local servers
+    # batch); a strictly serial endpoint is downgraded via MAX=1 explicitly.
     from aiforge_core.runtime import parallel_subtasks as pp
     monkeypatch.delenv("AIFORGE_PARALLEL_SUBTASKS_MAX", raising=False)
     monkeypatch.setattr("aiforge_core.llm.router.is_local_endpoint",
                         lambda role="doer": True)
-    assert pp._max_workers() == 1
+    assert pp._max_workers() == 4
 
 
 def test_max_workers_parallel_on_remote(monkeypatch):

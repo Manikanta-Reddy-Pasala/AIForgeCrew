@@ -587,6 +587,28 @@ def _try_post(ep: Endpoint, messages: list[dict],
     return None
 
 
+def _trace_generation(role: str, messages: list[dict], output: str,
+                      latency_ms: int, error: str = "") -> None:
+    """Mirror one completion to Langfuse when configured (env keys). Pure
+    side-channel: soft-fails, never touches the call result. The file-based
+    tracing (perf/observability/chat_trace) is unaffected and stays the
+    source of truth."""
+    try:
+        from aiforge_core.integrations import langfuse_adapter as _lf
+        if not _lf.enabled():
+            return
+        model = ""
+        try:
+            model = resolve(role).model
+        except Exception:  # noqa: BLE001
+            model = ""
+        _lf.record_generation(role=role, model=model, messages=messages,
+                              output=output, latency_ms=latency_ms,
+                              error=error)
+    except Exception:  # noqa: BLE001 — tracing must never break a turn
+        pass
+
+
 def complete(role: str, messages: list[dict], *,
              temperature: float | None = None,
              max_tokens: int | None = None,
@@ -595,25 +617,39 @@ def complete(role: str, messages: list[dict], *,
              timeout_s: int | None = None) -> str:
     """Timed wrapper around the LLM call — records wall-ms under family "LLM"
     keyed by ``role`` (stable), then delegates to the real implementation.
-    Perf recording soft-fails and never affects the call result."""
+    Perf recording soft-fails and never affects the call result. When
+    Langfuse env keys are set, every completion is also mirrored there
+    (aiforge_core/integrations/langfuse_adapter)."""
     # Only the IMPORT is guarded — an exception raised from inside
     # _complete_impl must propagate, never trigger a SECOND (double-cost) call.
     try:
         from aiforge_core.runtime import perf_recorder
     except Exception:  # noqa: BLE001 — perf recording is optional
         perf_recorder = None
-    if perf_recorder is not None:
-        with perf_recorder.timed("LLM", role):
-            return _complete_impl(
+    import time as _time
+    _t0 = _time.monotonic()
+    try:
+        if perf_recorder is not None:
+            with perf_recorder.timed("LLM", role):
+                out = _complete_impl(
+                    role, messages, temperature=temperature,
+                    max_tokens=max_tokens, top_p=top_p, extras=extras,
+                    timeout_s=timeout_s,
+                )
+        else:
+            out = _complete_impl(
                 role, messages, temperature=temperature,
                 max_tokens=max_tokens, top_p=top_p, extras=extras,
                 timeout_s=timeout_s,
             )
-    return _complete_impl(
-        role, messages, temperature=temperature,
-        max_tokens=max_tokens, top_p=top_p, extras=extras,
-        timeout_s=timeout_s,
-    )
+    except Exception as exc:
+        _trace_generation(role, messages, "",
+                          int((_time.monotonic() - _t0) * 1000),
+                          error=str(exc))
+        raise
+    _trace_generation(role, messages, out or "",
+                      int((_time.monotonic() - _t0) * 1000))
+    return out
 
 
 def _complete_impl(role: str, messages: list[dict], *,

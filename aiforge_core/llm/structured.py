@@ -126,11 +126,20 @@ def structured_complete(role: str, messages: list[dict],
             try:
                 from aiforge_core.llm.client import resolve
                 ep = resolve(role)
-                return instructor_adapter.structured(
+                res = instructor_adapter.structured(
                     base_url=ep.base_url, api_key=ep.api_key, model=ep.model,
                     messages=messages, response_model=response_model,
                     max_retries=max_retries, max_tokens=max_tokens,
                     timeout_s=timeout_s, temperature=temperature)
+                # The instructor path talks to the endpoint directly (bypasses
+                # client.complete), so mirror it to Langfuse here too.
+                try:
+                    from aiforge_core.llm.client import _trace_generation
+                    _trace_generation(role, list(messages),
+                                      res.model_dump_json()[:8000], 0)
+                except Exception:  # noqa: BLE001 — tracing never breaks a call
+                    pass
+                return res
             except Exception as exc:  # noqa: BLE001 — fall back to our loop
                 log.info("instructor path failed (%s) — using fallback loop",
                          str(exc)[:200])

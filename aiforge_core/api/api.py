@@ -524,6 +524,14 @@ def health() -> dict:
             status["lm_studio"] = r.getcode() == 200
     except Exception:
         pass
+    # Langfuse trace mirror (optional): expose ONLY the host so the UI can
+    # render a "Traces ↗" link — never the keys.
+    try:
+        from aiforge_core.integrations import langfuse_adapter as _lfa
+        if _lfa.enabled():
+            status["traces_url"] = os.environ.get("LANGFUSE_HOST", "")
+    except Exception:  # noqa: BLE001
+        pass
     return status
 
 

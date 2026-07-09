@@ -75,6 +75,7 @@ xlsx = ["openpyxl>=3.1"]
 # code degrades gracefully when absent. See integrations/__init__.py.
 structured = ["instructor>=1.3"]                  # pydantic-validated LLM output
 crawl = ["crawl4ai>=0.4"]                         # URL → markdown dossiers
+tracing = ["langfuse>=2.0"]                       # LLM observability mirror
 # NOTE: ragas (RAG eval, scripts/rag_eval.py + integrations/ragas_adapter.py)
 # is intentionally NOT an extra: its langchain pins conflict with aider-chat
 # in one resolution universe. Run it as a dev-tool overlay instead:
