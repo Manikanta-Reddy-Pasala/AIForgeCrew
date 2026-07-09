@@ -294,6 +294,43 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
             encoding="utf-8")
 
 
+def migrate_to_okr() -> dict:
+    """One-shot: rewrite every knowledge BRIEF (``compacted-<scope>.md``) that
+    is still in the legacy shape (``# heading`` + ``## Recent`` bullets, or a
+    plain ``kind: compacted`` prose file) into the standard OKR envelope.
+
+    Idempotent — a brief already in OKR form (``kind: knowledge``) is skipped.
+    Only touches ``compacted-*.md`` (the memory briefs); per-session notes,
+    rule books and skills keep their own formats. Returns
+    ``{"ok", "migrated", "skipped", "files"}``; never raises."""
+    migrated: list[str] = []
+    skipped = 0
+    for p in sorted(memory_dir().glob("compacted-*.md")):
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = _FM_RE.match(raw)
+        fm_block = m.group(1) if m else ""
+        if re.search(r'^\s*kind:\s*"?knowledge"?\s*$', fm_block, re.MULTILINE):
+            skipped += 1
+            continue
+        # scope key = the part after "compacted-" in the filename
+        key = p.stem[len("compacted-"):] or "shared"
+        b = _parse_brief(raw)
+        with _WRITE_LOCK:
+            try:
+                p.write_text(
+                    _render_brief(key, facts=b["facts"], body_md=b["body"],
+                                  learnings=b["learnings"], title=b["title"]),
+                    encoding="utf-8")
+            except OSError:
+                continue
+        migrated.append(p.name)
+    return {"ok": True, "migrated": len(migrated), "skipped": skipped,
+            "files": migrated}
+
+
 def _find_by_source(source: str) -> Path | None:
     """Locate the md file whose frontmatter ``source`` matches (the stable
     key for a session), so repeated runs UPDATE one file instead of
@@ -654,11 +691,18 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
 
             # Existing consolidated body (re-compaction) — fed back so it gets
             # RE-SUMMARISED with the new notes, keeping the file bounded.
+            # For the knowledge axes (repo/topic) the previous file is an OKR
+            # envelope: parse it so ONLY the prior consolidated PROSE (not the
+            # Objective/Facts head or the sentinel) is re-fed — otherwise the
+            # envelope text would nest inside the new body every compaction.
             existing_body = ""
             if path.exists():
                 prev = path.read_text(encoding="utf-8", errors="replace")
-                pm = _FM_RE.match(prev)
-                existing_body = (pm.group(2).strip() if pm else prev.strip())
+                if group_by in ("repo", "topic"):
+                    existing_body = _parse_brief(prev)["body"].strip()
+                else:
+                    pm = _FM_RE.match(prev)
+                    existing_body = (pm.group(2).strip() if pm else prev.strip())
 
             sections, blocks = [], []
             if existing_body:

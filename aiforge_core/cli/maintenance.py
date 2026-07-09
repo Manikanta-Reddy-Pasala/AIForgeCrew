@@ -116,6 +116,12 @@ def _cmd_index_purge_noise(args) -> int:
     return 0
 
 
+def _cmd_memory_migrate_okr(args) -> int:
+    from aiforge_core.memory import md_store
+    print(json.dumps(md_store.migrate_to_okr()))
+    return 0
+
+
 def _cmd_repo_notes(args) -> int:
     from aiforge_core.indexing.repo_notes import generate_repo_notes
     try:
@@ -160,6 +166,10 @@ def main(argv: list[str] | None = None) -> int:
     mem_sub = mem.add_subparsers(dest="action", required=True)
     mem_sub.add_parser("decay").set_defaults(func=_cmd_memory_decay)
     mem_sub.add_parser("mine").set_defaults(func=_cmd_memory_mine)
+    mem_sub.add_parser("migrate-okr",
+                       help="rewrite legacy compacted-*.md knowledge briefs "
+                            "into the standard OKR envelope (idempotent)"
+                       ).set_defaults(func=_cmd_memory_migrate_okr)
 
     idx = sub.add_parser("index")
     idx_sub = idx.add_subparsers(dest="action", required=True)

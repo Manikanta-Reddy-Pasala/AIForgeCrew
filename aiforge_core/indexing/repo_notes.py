@@ -329,7 +329,36 @@ def _relations(notes: RepoNotes) -> dict[str, list[str]]:
 # ──────────── render ──────────────────────────────────────────────
 
 
+def _okr_facts(n: RepoNotes) -> list[str]:
+    """The measurable 'key results' of a scan — the counts that tell you at a
+    glance what this repo exposes (the OKR ## Facts of a repo-notes note)."""
+    f: list[str] = []
+    if n.controllers:
+        f.append(f"{len(n.controllers)} controllers")
+    if n.services:
+        f.append(f"{len(n.services)} services")
+    if n.repositories:
+        f.append(f"{len(n.repositories)} repositories")
+    kp = len(n.kafka_topics.get("publish") or [])
+    ks = len(n.kafka_topics.get("subscribe") or [])
+    if kp or ks:
+        f.append(f"Kafka: {kp} published / {ks} consumed topics")
+    npub = len(n.nats_subjects.get("publish") or [])
+    nsub = len(n.nats_subjects.get("subscribe") or [])
+    if npub or nsub:
+        f.append(f"NATS: {npub} published / {nsub} subscribed subjects")
+    if n.mongo_collections:
+        f.append(f"{len(n.mongo_collections)} MongoDB collections referenced")
+    if n.http_clients:
+        f.append(f"{len(n.http_clients)} outbound HTTP endpoints")
+    return f
+
+
 def render_markdown(n: RepoNotes) -> str:
+    """Render the repo-notes body (the structured reference), then wrap it in
+    the standard OKR note envelope (work_notes) so a repo-notes file carries
+    the SAME frontmatter/Objective/Facts head as every other managed md —
+    ``updated_at`` for staleness, deduped links, one parser everywhere."""
     out: list[str] = []
     out.append(f"# {n.repo} — repo notes")
     out.append("")
@@ -435,7 +464,21 @@ def render_markdown(n: RepoNotes) -> str:
             for v in vals[:15]:
                 out.append(f"  - `{v}`")
             out.append("")
-    return "\n".join(out) + "\n"
+    body = "\n".join(out).strip("\n")
+
+    # REPO_NOTES.md lives at <repo>/.aiforge/, OUTSIDE the work/<kind>/<key>/
+    # tree, so a relative cross-ref md link would not resolve from here — the
+    # cross-repo relations stay in the body's "Cross-repo / shared contracts"
+    # section instead of the frontmatter links list.
+    from aiforge_core.runtime import work_notes
+    return work_notes.render_note(
+        "repo", n.repo,
+        title=f"{n.repo} — repo notes",
+        objective=(f"Give agents a current structural map of {n.repo} — its "
+                   "controllers, services, event surface and cross-repo "
+                   "contracts — without an LLM scan each time."),
+        key_results=_okr_facts(n),
+        body_md=body)
 
 
 def generate_repo_notes(repo: str, *, write: bool = True) -> str:
