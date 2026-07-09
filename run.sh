@@ -328,6 +328,11 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   fi
   # crawl4ai renders with headless chromium — install best-effort (idempotent).
   .venv/bin/python -m playwright install chromium >/dev/null 2>&1 || true
+  # crawl4ai's deps pull urllib3/chardet versions newer than an older
+  # requests' hardcoded compat check → noisy RequestsDependencyWarning on
+  # EVERY python spawn. Newer requests widened the check — upgrade
+  # best-effort (cosmetic; nothing breaks either way).
+  uv pip install --python .venv/bin/python -U requests >/dev/null 2>&1 || true
 fi
 
 # ── venv self-heal ────────────────────────────────────────────────────
