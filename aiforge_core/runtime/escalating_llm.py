@@ -445,6 +445,40 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     return LiteLlm(**kwargs)
 
 
+def _mirror_to_langfuse(role: str, llm_request: LlmRequest,
+                        responses: list, model_name: str,
+                        latency_ms: int) -> None:
+    """Mirror one PIPELINE model call to Langfuse (chat goes through
+    llm.client.complete which mirrors itself — ADK agents come through
+    HERE instead, so without this only simple chat showed up). Extracts
+    plain text from the ADK request/response shapes; soft-fails."""
+    try:
+        from aiforge_core.integrations import langfuse_adapter as _lf
+        if not _lf.enabled():
+            return
+        msgs: list[dict] = []
+        sys_i = getattr(getattr(llm_request, "config", None),
+                        "system_instruction", None)
+        if sys_i:
+            msgs.append({"role": "system", "content": str(sys_i)})
+        for c in getattr(llm_request, "contents", None) or []:
+            txt = "".join(getattr(p, "text", "") or ""
+                          for p in (getattr(c, "parts", None) or []))
+            if txt:
+                msgs.append({"role": getattr(c, "role", "user") or "user",
+                             "content": txt})
+        out = ""
+        for r in responses:
+            cont = getattr(r, "content", None)
+            for p in (getattr(cont, "parts", None) or []):
+                out += getattr(p, "text", "") or ""
+        _lf.record_generation(role=role, model=model_name, messages=msgs,
+                              output=out, latency_ms=latency_ms,
+                              metadata={"path": "pipeline"})
+    except Exception:  # noqa: BLE001 — tracing must never break a call
+        pass
+
+
 class EscalatingLlm(BaseLlm):
     """Primary ADK model + ordered cloud fallback chain.
 
@@ -541,6 +575,8 @@ class EscalatingLlm(BaseLlm):
             )
 
         last_exc: Exception | None = None
+        import time as _time
+        _t0 = _time.monotonic()
         for idx, (label, model) in enumerate(candidates):
             if model is None:
                 continue
@@ -636,6 +672,10 @@ class EscalatingLlm(BaseLlm):
                                     "llm.recovered role=%s after_lm_reload",
                                     self.role,
                                 )
+                                _mirror_to_langfuse(
+                                    self.role, req_for_attempt, buffered,
+                                    getattr(model, "model", "") or label,
+                                    int((_time.monotonic() - _t0) * 1000))
                                 for r in buffered:
                                     yield r
                                 return
@@ -704,6 +744,10 @@ class EscalatingLlm(BaseLlm):
                     )
             except Exception as exc:  # noqa: BLE001 — accounting is best-effort
                 log.debug("budget.record failed: %s", exc)
+            _mirror_to_langfuse(
+                self.role, req_for_attempt, buffered,
+                getattr(model, "model", "") or label,
+                int((_time.monotonic() - _t0) * 1000))
             for r in buffered:
                 yield r
             return

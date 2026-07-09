@@ -46,6 +46,35 @@ def test_trace_crash_never_breaks_turn(monkeypatch):
         == "still fine"
 
 
+def test_pipeline_mirror_extracts_adk_shapes(monkeypatch):
+    """EscalatingLlm path (pipeline agents) mirrors too — chat goes through
+    client.complete, ADK agents through _mirror_to_langfuse. Regression for
+    'only simple chat shows up in langfuse'."""
+    from types import SimpleNamespace as NS
+
+    from aiforge_core.runtime import escalating_llm as esc
+    seen = {}
+
+    def fake_record(**kw):
+        seen.update(kw)
+
+    monkeypatch.setattr(
+        "aiforge_core.integrations.langfuse_adapter.enabled", lambda: True)
+    monkeypatch.setattr(
+        "aiforge_core.integrations.langfuse_adapter.record_generation",
+        fake_record)
+    req = NS(config=NS(system_instruction="you are the doer"),
+             contents=[NS(role="user", parts=[NS(text="fix the bug")])])
+    resp = [NS(content=NS(parts=[NS(text="FINAL: fixed")]))]
+    esc._mirror_to_langfuse("doer", req, resp, "qwen-local", 456)
+    assert seen["role"] == "doer" and seen["model"] == "qwen-local"
+    assert seen["messages"][0] == {"role": "system",
+                                   "content": "you are the doer"}
+    assert seen["messages"][1]["content"] == "fix the bug"
+    assert seen["output"] == "FINAL: fixed"
+    assert seen["metadata"] == {"path": "pipeline"}
+
+
 def test_ingestion_payload_shape(monkeypatch):
     """SDK-free path: one trace-create + one generation-create per call,
     payload capped, sent via _send (stubbed — no network)."""
