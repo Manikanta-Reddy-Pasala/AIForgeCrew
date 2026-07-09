@@ -107,15 +107,22 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
     if not text.strip():
         return {"ok": False, "error": "page fetched but no readable text"}
 
-    from aiforge_core.runtime import work_context
+    from aiforge_core.runtime import work_context, work_notes
     safe_url = _sanitize_url(url)   # never persist credentials/token values
     slug = _slug_for(url)
     ctx = work_context.context_dir("web", slug)
     page_path = os.path.join(ctx, "page.md")
     meta_path = os.path.join(ctx, "meta.json")
-    header = f"# {title or safe_url}\n\nSource: {safe_url}\n\n"
+    # Standard managed-note envelope (frontmatter + OKR sections) so this
+    # dossier is parseable/curatable like the jira/confluence ones; the full
+    # page text rides along untouched as the note body.
+    note = work_notes.render_note(
+        "web", slug, title=title or safe_url, source_url=safe_url,
+        facts=[f"title: {title or safe_url}", f"chars: {len(text)}",
+               f"engine: {engine}"],
+        links=[safe_url], body_md=text)
     try:
-        _write_atomic(page_path, header + text + "\n")
+        _write_atomic(page_path, note)
         _write_atomic(meta_path, json.dumps(
             {"url": safe_url, "title": title, "engine": engine,
              "fetched_at": int(time.time()), "chars": len(text)}, indent=1))

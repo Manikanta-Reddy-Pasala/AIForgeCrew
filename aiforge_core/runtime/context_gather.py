@@ -125,6 +125,64 @@ def _detect_jira_keys(primary: dict, self_key: str) -> list[str]:
     return keys[:_MAX_LINKS]
 
 
+# "Acceptance criteria" block in a ticket description — jira wiki (h3.),
+# markdown (###/**bold**) or a plain "Acceptance criteria:" label, followed by
+# its lines up to the next blank line / heading. Best-effort, capped.
+_AC_RE = re.compile(
+    r"(?:^|\n)\s*(?:h[1-6]\.\s*|#{1,6}\s*|\*\*)?acceptance criteria\*{0,2}:?"
+    r"\s*\n(.*?)(?=\n\s*\n|\n\s*(?:h[1-6]\.|#{1,6}\s)|\Z)",
+    re.IGNORECASE | re.DOTALL)
+
+
+def _acceptance_criteria(desc: str) -> list[str]:
+    m = _AC_RE.search(desc or "")
+    if not m:
+        return []
+    out = []
+    for ln in m.group(1).splitlines():
+        item = re.sub(r"^[\s*#\-\d.)]+", "", ln).strip()
+        if item:
+            out.append(item)
+    return out[:12]
+
+
+def _note_for(kind: str, key: str, primary: dict,
+              links: list[dict] | None = None) -> str:
+    """Wrap a primary entity in the STANDARD managed-note envelope
+    (work_notes.render_note): OKR sections up top for the curator/agent, the
+    full legacy dossier text preserved as the body. Cross-entity references
+    are emitted as wiki refs so notes link to each other, not to a base URL."""
+    from aiforge_core.runtime import work_notes
+    if kind == "jira":
+        note_links = [primary.get("url") or ""]
+        note_links += [lk.get("url") or "" for lk in (links or [])]
+        note_links += [f"[[confluence/{cid}]]"
+                       for cid in _detect_confluence_ids(primary, links or [])]
+        return work_notes.render_note(
+            "jira", key,
+            title=f"{key} — {primary.get('summary') or ''}".strip(" —"),
+            source_url=primary.get("url") or "",
+            objective=primary.get("summary") or "",
+            key_results=_acceptance_criteria(primary.get("description") or ""),
+            facts=[f"{f}: {primary.get(f)}" for f
+                   in ("status", "type", "assignee", "priority")
+                   if primary.get(f)],
+            links=note_links,
+            body_md=_md_for(kind, primary))
+    # confluence — link back to every ticket the page references.
+    note_links = [primary.get("url") or ""]
+    note_links += [f"[[jira/{jk}]]" for jk in _detect_jira_keys(primary, key)]
+    return work_notes.render_note(
+        "confluence", key,
+        title=primary.get("title") or key,
+        source_url=primary.get("url") or "",
+        objective=primary.get("title") or "",
+        facts=[f"{f}: {primary.get(f)}" for f in ("space", "version")
+               if primary.get(f)],
+        links=note_links,
+        body_md=_md_for(kind, primary))
+
+
 def _md_for(kind: str, ent: dict) -> str:
     if kind == "jira":
         lines = [f"# {ent.get('key','')} — {ent.get('summary','')}",
@@ -197,7 +255,7 @@ def gather(kind: str, key: str, *, force: bool = False,
                 "kind": kind, "key": key, "dir": base}
 
     _write(os.path.join(base, "ticket.md" if kind == "jira" else "page.md"),
-           _md_for(kind, primary))
+           _note_for(kind, key, primary, links))
     artifacts.append("ticket.md" if kind == "jira" else "page.md")
 
     # ── Phase 2: fan out the cross-linked entities IN PARALLEL, then merge.
@@ -241,15 +299,26 @@ def gather(kind: str, key: str, *, force: bool = False,
                 else:
                     partial = True
 
-    # ── Merge into one dossier + stamp the cache.
-    parts = [f"# Dossier — {kind}:{key}",
-             f"_gathered {len(secondaries)} linked item(s)_", "",
+    # ── Merge into one dossier + stamp the cache. The merged text is the
+    # BODY of a standard managed note (same envelope as ticket.md/page.md) so
+    # the dossier carries machine-readable identity + links up top.
+    parts = [f"_gathered {len(secondaries)} linked item(s)_", "",
              _md_for(kind, primary)]
     for skind, ent in secondaries:
         parts.append("\n\n---\n")
         parts.append(f"## Linked {skind}\n")
         parts.append(_md_for(skind, ent))
-    dossier = "\n".join(parts)
+    from aiforge_core.runtime import work_notes
+    dossier = work_notes.render_note(
+        kind, key, title=f"Dossier — {kind}:{key}",
+        source_url=primary.get("url") or "",
+        objective=primary.get("summary") or primary.get("title") or "",
+        facts=[f"linked items: {len(secondaries)}"],
+        links=([primary.get("url") or ""]
+               + [f"[[{sk}/{ent.get('key') or ent.get('id')}]]"
+                  for sk, ent in secondaries
+                  if ent.get("key") or ent.get("id")]),
+        body_md="\n".join(parts))
     _write(dossier_md, dossier)
     # Stamp the cache with the live `updated` ONLY on a complete gather. If a
     # linked fetch failed, leave `updated` null so the next request re-gathers
