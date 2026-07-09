@@ -372,6 +372,55 @@ def _preflight_missing_path(cmd: str, base: str) -> str | None:
     return None
 
 
+_OBS_TEXT_KEYS = ("content", "text", "body", "markdown", "preview", "stdout")
+
+
+def _smart_truncate_obs(result, cap: int) -> str:
+    """Serialize a tool result to at most ``cap`` chars for the OBSERVATION.
+
+    A plain ``json.dumps(result)[:cap]`` slices mid-sentence/mid-JSON —
+    the model reads a broken tail and mis-handles long files/pages. When a
+    content-read result exceeds the cap, cut its LARGEST text field at a
+    STRUCTURE boundary (chonkie RecursiveChunker when installed) with an
+    explicit continuation note, so the model knows the doc continues and
+    how to get more. Falls back to the old blunt slice on any failure."""
+    try:
+        raw = json.dumps(result)
+    except (TypeError, ValueError):
+        raw = json.dumps(str(result))
+    if len(raw) <= cap:
+        return raw
+    try:
+        if isinstance(result, dict):
+            key = max((k for k in _OBS_TEXT_KEYS
+                       if isinstance(result.get(k), str)),
+                      key=lambda k: len(result[k]), default=None)
+            if key and len(result[key]) > (len(raw) - cap):
+                from aiforge_core.integrations import chonkie_text_adapter
+                text = result[key]
+                budget = max(500, len(text) - (len(raw) - cap) - 200)
+                if chonkie_text_adapter.available():
+                    kept = chonkie_text_adapter.cut_at_structure(text, budget)
+                else:
+                    # dep-free structural fallback: last paragraph boundary
+                    kept = text[:budget]
+                    nl = kept.rfind("\n\n")
+                    if nl > budget // 2:
+                        kept = kept[:nl]
+                trimmed = dict(result)
+                trimmed[key] = (kept + f"\n…[TRUNCATED at a structure "
+                                f"boundary — {len(kept)} of {len(text)} chars "
+                                "shown. The document CONTINUES: use read_lines "
+                                "with an offset, or ask for a specific "
+                                "section.]")
+                out = json.dumps(trimmed)
+                if len(out) <= cap + 400:      # small tolerance for the note
+                    return out
+    except Exception:  # noqa: BLE001 — smart cut is best-effort
+        pass
+    return raw[:cap]
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
     cmd = args["cmd"]
     from aiforge_core.runtime.tools import delete_guard
@@ -4312,7 +4361,11 @@ def run_chat_agent(
             _builder_finalized = True
             yield {"type": "builder_done", "kind": name}
         _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
-        obs = json.dumps(result)[:_obs_cap]
+        # Content-READ tools: cut oversized documents at a STRUCTURE boundary
+        # (chonkie) with a continuation note, instead of a blunt slice that
+        # hands the model a broken JSON/sentence tail. Others keep the slice.
+        obs = (_smart_truncate_obs(result, _obs_cap)
+               if name in _READ_OBS_TOOLS else json.dumps(result)[:_obs_cap])
         # Recency reminder: a strict output format from an APPLICABLE SKILL sits
         # in the system prompt (far above), while this fresh tool result sits at
         # the end where the model attends most — so after a tool round-trip it

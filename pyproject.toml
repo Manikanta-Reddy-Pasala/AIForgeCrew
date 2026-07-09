@@ -75,6 +75,10 @@ xlsx = ["openpyxl>=3.1"]
 # code degrades gracefully when absent. See integrations/__init__.py.
 structured = ["instructor>=1.3"]                  # pydantic-validated LLM output
 crawl = ["crawl4ai>=0.4"]                         # URL → markdown dossiers
+# BASE chonkie only (RecursiveChunker, no tree-sitter): structure-aware text
+# chunking for files/docs sent to the LLM + memory doc ingestion. The
+# CodeChunker variant stays blocked by aider's tree-sitter-language-pack pin.
+chunking = ["chonkie>=1.0"]
 # tracing needs NO extra: the langfuse mirror posts to the REST ingestion
 # API with core httpx (the SDK's pins conflict with aider-chat).
 # NOTE: ragas (RAG eval, scripts/rag_eval.py + integrations/ragas_adapter.py)

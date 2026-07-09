@@ -20,6 +20,40 @@ _LANG_MAP = {
 }
 
 
+def doc_available() -> bool:
+    """DOC chunking needs only BASE chonkie (RecursiveChunker — markdown/
+    paragraph/sentence structure, NO tree-sitter), so unlike the CodeChunker
+    below it works alongside aider's tree-sitter-language-pack==0.13.0 pin —
+    i.e. in the main env, today."""
+    try:
+        import chonkie  # noqa: F401
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def chunk_doc(text: str, *,
+              chunk_tokens: int = 512) -> list[tuple[int, str, int, int]]:
+    """Structure-aware DOC chunks in the same tuple shape as the line-window
+    splitter — ``(idx, text, line_start, line_end)`` (1-based lines derived
+    from chonkie's char offsets). Raises on failure; caller falls back."""
+    from chonkie import RecursiveChunker
+    out: list[tuple[int, str, int, int]] = []
+    for idx, ch in enumerate(RecursiveChunker(chunk_size=chunk_tokens)
+                             .chunk(text)):
+        ch_text = getattr(ch, "text", "") or ""
+        if not ch_text.strip():
+            continue
+        start = int(getattr(ch, "start_index", 0) or 0)
+        end = int(getattr(ch, "end_index", start + len(ch_text)) or 0)
+        line_start = text.count("\n", 0, max(0, start)) + 1
+        line_end = text.count("\n", 0, max(start, end - 1)) + 1
+        out.append((idx, ch_text, line_start, line_end))
+    if not out:
+        raise ValueError("chonkie produced no doc chunks")
+    return out
+
+
 def available() -> bool:
     """Probe the EXACT symbols CodeChunker needs — not just ``import chonkie``.
     In the monorepo root env aider-chat pins an older

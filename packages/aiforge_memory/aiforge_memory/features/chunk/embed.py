@@ -103,7 +103,7 @@ def chunk_and_embed(
             continue
         text = data.decode("utf-8", errors="replace")
         chunks = (
-            _split_doc(text, file_path=wf.path)
+            _split_doc_smart(text, file_path=wf.path)
             if is_doc
             else _split_code(text, file_path=wf.path, lang=wf.lang)
         )
@@ -173,6 +173,23 @@ def _split(text: str, *, file_path: str) -> list[tuple[int, str, int, int]]:
             break
         i += step
     return out
+
+
+def _split_doc_smart(text: str, *,
+                     file_path: str) -> list[tuple[int, str, int, int]]:
+    """DOC chunker with backend selection (same pattern as _split_code):
+    chonkie's RecursiveChunker (structure-aware, BASE package — no
+    tree-sitter, so it runs in the main env alongside aider) when enabled +
+    installed, else the built-in heading-aware splitter. Adapter raises →
+    fallback; ingestion never breaks."""
+    if CHUNKER in ("auto", "chonkie"):
+        try:
+            from aiforge_memory.features.chunk import chonkie_adapter
+            if chonkie_adapter.doc_available():
+                return chonkie_adapter.chunk_doc(text, chunk_tokens=CHUNK_TOKENS)
+        except Exception:  # noqa: BLE001 — fallback below is always safe
+            pass
+    return _split_doc(text, file_path=file_path)
 
 
 def _split_doc(text: str, *, file_path: str) -> list[tuple[int, str, int, int]]:
