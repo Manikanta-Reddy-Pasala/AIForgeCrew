@@ -8,8 +8,13 @@
 # Own postgres (not AIForge's) so versions/lifecycles stay decoupled.
 # UI: http://localhost:${LF_PORT:-3005}   login: admin@aiforge.local / $LF_ADMIN_PASSWORD
 
+x-logging: &logcap
+  driver: json-file
+  options: {max-size: "10m", max-file: "1"}
+
 services:
   langfuse-web:
+    logging: *logcap
     image: langfuse/langfuse:3
     restart: unless-stopped
     depends_on:
@@ -55,8 +60,14 @@ services:
       LANGFUSE_INIT_USER_EMAIL: admin@aiforge.local
       LANGFUSE_INIT_USER_NAME: admin
       LANGFUSE_INIT_USER_PASSWORD: ${LF_ADMIN_PASSWORD}
+      # Retention: traces older than 1 day are PRUNED by the worker
+      # (clickhouse rows + minio event/media objects). Override with
+      # LF_RETENTION_DAYS in ~/.aiforge/langfuse.env.
+      LANGFUSE_INIT_PROJECT_RETENTION: ${LF_RETENTION_DAYS:-1}
+      LANGFUSE_LOG_LEVEL: warn
 
   langfuse-worker:
+    logging: *logcap
     image: langfuse/langfuse-worker:3
     restart: unless-stopped
     depends_on:
@@ -71,6 +82,7 @@ services:
     environment: *lf_env
 
   langfuse-postgres:
+    logging: *logcap
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
@@ -84,6 +96,7 @@ services:
       - langfuse_pg:/var/lib/postgresql/data
 
   langfuse-clickhouse:
+    logging: *logcap
     image: clickhouse/clickhouse-server:24.8-alpine
     restart: unless-stopped
     user: "101:101"
@@ -100,11 +113,13 @@ services:
       - langfuse_ch:/var/lib/clickhouse
 
   langfuse-redis:
+    logging: *logcap
     image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--maxmemory-policy", "noeviction"]
 
   langfuse-minio:
+    logging: *logcap
     image: minio/minio:latest
     restart: unless-stopped
     entrypoint: ["sh", "-c", "mkdir -p /data/langfuse && exec minio server /data"]
