@@ -61,6 +61,32 @@ def test_simple_mode_escalates_multifile_build(app_client, monkeypatch, tmp_path
     assert "Multi-file build detected" in body
 
 
+def test_single_task_fallback_still_writes_spec(app_client, monkeypatch, tmp_path):
+    """<2 subtasks → best-of-N/sequential fallback: SPEC.md must STILL land
+    in the workspace (was only written by stream_parallel_team)."""
+    import os
+    client, api = app_client
+    from aiforge_core.runtime import parallel_subtasks as pp
+    monkeypatch.setenv("AIFORGE_BEST_OF_N", "2")
+    monkeypatch.setattr(pp, "_enhance", lambda *a, **k: "ONE hard task spec")
+    monkeypatch.setattr(pp, "_architect", lambda *a, **k: [])
+    monkeypatch.setattr(pp, "_decompose", lambda *a, **k: [])
+    monkeypatch.setattr(pp, "_is_greenfield", lambda *a, **k: True)
+    from aiforge_core.runtime import best_of_n as bon
+    monkeypatch.setattr(bon, "stream_best_of_n",
+                        lambda *a, **k: iter([{"type": "message", "text": "ok"}]))
+    sid = client.post("/api/chat/sessions",
+                      json={"title": "t", "cwd": str(tmp_path)}).json()["id"]
+    r = client.post(f"/api/chat/sessions/{sid}/message", json={
+        "content": "create a single-file parser tool with tests",
+        "mode": "simple", "cwd": str(tmp_path)})
+    assert r.status_code == 200
+    spec = os.path.join(str(tmp_path), "SPEC.md")
+    assert os.path.isfile(spec), "SPEC.md missing on the single-task fallback"
+    assert "ONE hard task spec" in open(spec, encoding="utf-8").read()
+    assert "Wrote SPEC.md" in r.text
+
+
 def test_simple_mode_question_stays_single_agent(app_client, monkeypatch, tmp_path):
     client, api = app_client
     from aiforge_core.runtime import parallel_subtasks as pp

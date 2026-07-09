@@ -4119,6 +4119,21 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 yield {"type": "done"}
                 return
             # Couldn't split into ≥2 distinct files → it's really ONE task.
+            # STILL write SPEC.md (user requirement: every pipeline-routed run
+            # tracks against a spec): only stream_parallel_team used to write
+            # it, so the <2-subtask fallbacks (best-of-N / sequential / single
+            # agent) ran spec-less — 'sometimes there is no SPEC.md'.
+            try:
+                _spec_doc = _pp._render_spec_md(_spec, _subs)
+                with open(os.path.join(cwd, "SPEC.md"), "w",
+                          encoding="utf-8") as _fh:
+                    _fh.write(_spec_doc)
+                yield {"type": "thought", "role": "planner",
+                       "text": "Wrote SPEC.md (single-task plan) — the run "
+                               "builds and is verified against it."}
+            except Exception as _sexc:  # noqa: BLE001 — visible, never silent
+                yield {"type": "thought", "role": "planner",
+                       "text": f"⚠ SPEC.md write failed: {_sexc}"}
             # Best-of-N (Gap C, opt-in): when AIFORGE_BEST_OF_N is set, run the
             # single task N independent times in isolated worktrees, grade each,
             # keep the best. Otherwise fall back to the sequential team pipeline

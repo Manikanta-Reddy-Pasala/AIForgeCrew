@@ -1724,8 +1724,13 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         yield {"type": "thought", "role": "planner",
                "text": f"Wrote SPEC.md ({len(subs)} subtasks) — the shared "
                        "requirements doc each subtask builds against."}
-    except Exception as _exc:  # noqa: BLE001 — spec write is best-effort
-        log.debug("SPEC.md write skipped: %s", _exc)
+    except Exception as _exc:  # noqa: BLE001 — must be VISIBLE, not a debug log
+        # A silent skip here is how runs ended up spec-less with no trace
+        # (unwritable cwd etc.) — surface it so the operator can fix the cause.
+        log.warning("SPEC.md write failed in %s: %s", cwd, _exc)
+        yield {"type": "thought", "role": "planner",
+               "text": f"⚠ SPEC.md write failed ({_exc}) — subtasks still get "
+                       "the spec in-context, but nothing is persisted to disk."}
 
     # Record the pre-existing code so greenfield-only steps (scaffold, off-plan
     # prune) never touch an EXISTING repo — on a real repo they'd delete the whole
