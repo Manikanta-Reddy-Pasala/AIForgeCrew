@@ -36,7 +36,8 @@ over automatically.
 > container. Treat the chat box like a terminal.
 
 `./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
-`--skip-web` skips the UI rebuild.
+`--skip-web` skips the UI rebuild; `--with-langfuse` / `--stop-langfuse` manage the
+optional self-hosted LLM trace UI (see Features).
 
 ### Full "pro" stack with Docker Compose
 
@@ -51,10 +52,14 @@ docker compose up -d --build      # api+ui on :8799, postgres, neo4j, embed, rer
 
 - **Ticket → PR pipeline** — a plain-language ticket runs a multi-agent flow
   (triage → enhance → plan → verify → doer-loop → learn → validate) and opens a PR.
-- **Chat coding agent** — a full-filesystem agent in three modes: **Simple** (one agent),
-  **Plan** (read-only — proposes a plan before touching anything), **Team** (the full
-  pipeline, ticketless). Same strong tool surface as the pipeline Doer (see
-  **[Coding agent tools](#coding-agent-tools)**).
+  Multi-file builds **decompose into per-subtask runs** — each in its own fresh
+  context + git worktree (default **on**, up to 4 concurrent), all building against a
+  shared **SPEC.md** written up front.
+- **Chat coding agent** — a full-filesystem agent in three modes: **Simple** (one agent —
+  a multi-file *build* auto-routes through the build pipeline; multi-part asks show a
+  live checklist the agent ticks via `plan_progress`), **Plan** (read-only — proposes a
+  plan before touching anything), **Team** (the full pipeline, ticketless). Same strong
+  tool surface as the pipeline Doer (see **[Coding agent tools](#coding-agent-tools)**).
 - **Structured editing** — a syntax-checked **editor** (str_replace / insert / **undo**),
   **multi_edit** (batch find/replace across many files, validated then all-or-nothing),
   **diff preview** before writes.
@@ -74,28 +79,41 @@ docker compose up -d --build      # api+ui on :8799, postgres, neo4j, embed, rer
   transitions, assign, links, **time tracking** — estimates + worklogs + `log_work`,
   **boards/sprints**, projects, **dashboards**) and **Confluence** (search/read/create/
   update, spaces, page-by-title, labels, comments, descendants) for **Server/Data
-  Center**; **GitLab**; **web search** (keyed Tavily/Brave with DuckDuckGo fallback) +
-  **web fetch**; **browser** automation; **MCP** tools.
+  Center**; **GitLab**; **email** (SMTP send / IMAP read); **web search** (keyed
+  Tavily/Brave with DuckDuckGo fallback) + **web fetch** + **web crawl** (page →
+  saved markdown dossier); **browser** automation; **MCP** tools. Every configured
+  integration tool is also callable from shell scripts via the **`aiforge-tool`** CLI
+  (read-only tools by default) — job/workflow scripts use it instead of raw `curl`.
 - **Context dossier** — ask to explain a Jira ticket (or Confluence page) and
   `context_gather` pulls the entity **plus its linked pages / tickets / images in
   parallel**, saves each into the context folder, merges a `dossier.md`, and caches it —
   re-asking is instant and refreshes only when the entity changed.
 - **Context workspaces** — a chat about a durable thing gets a **persistent folder
   shared across sessions**: `~/.aiforge/work/jira/<KEY>/`, `…/confluence/<page-id>/`,
-  `…/repo/<name>/`. A ticket's images, its Confluence pages, and scratch all live inside
-  its folder; a plain chat stays an ephemeral per-session scratch dir.
+  `…/repo/<name>/`, `…/web/<slug>/` (crawled pages). A ticket's images, its Confluence
+  pages, and scratch all live inside its folder; a plain chat stays an ephemeral
+  per-session scratch dir.
 - **Attachments & vision** — paste/attach **images, PDFs, xlsx, docx**; docs' text is
   extracted and images captioned by a vision model (route a `vision` agent at a VLM when
   the chat model is text-only). Ticket/page attachments persist in the context folder.
 - **Workspace checkpoints** — auto-snapshot before each turn; one-click **restore**.
 - **Skills, workflows & rules** — reusable playbooks + always-on rules with a **unified
-  frontmatter** (name / description / triggers / scope), relevance-matched + auto-injected;
-  a matching skill/workflow's **output format is reproduced exactly** (verbatim, even after
-  a tool call). Build them from chat (New skill/rule/workflow) or the Library; the agent
-  also **authors new ones** when it solves something.
+  frontmatter** (name / description / triggers / scope), relevance-matched (fuzzy trigger
+  matching) + auto-injected; a matching skill/workflow's **output format is reproduced
+  exactly** (verbatim, even after a tool call). A workflow can carry **runnable scripts**
+  (`<name>/scripts/`) — each script's declared test command is **actually run before the
+  workflow saves** (a failing script is never saved). Rules inject as a **MANDATORY**
+  block; a matched workflow is mandatory too and survives Cave mode. Build them from chat
+  (New skill/rule/workflow) or the Library; the agent also **authors new ones** when it
+  solves something.
 - **Memory** — frontier agent-memory that learns across runs (see **[Memory](#memory)**).
 - **Resilient streaming** — navigate away and back without losing a running turn;
   cancel/abort mid-generation; a **kill-all** to clear a wedged run.
+- **Observability** — optional self-hosted **Langfuse** trace mirror (SDK-free REST,
+  async): **every** LLM call across chat + pipeline roles, plus memory recall/write.
+  `./run.sh --with-langfuse` hosts the stack for you (UI on :3005, keys auto-generated,
+  1-day retention prune) — or point `LANGFUSE_HOST` + keys at an existing server.
+  AIForge's own file tracing stays the source of truth; unset = zero overhead.
 - **Providers** — local (LM Studio / mlx-lm) or any OpenAI-compatible endpoint, with
   automatic cloud escalation; a **model registry** (add a model once, every agent picks
   it by name) with per-model vision + context window.
@@ -133,24 +151,30 @@ tool-calling required):
 | **Search / nav** | `grep` (ripgrep) · `find` · **`glob`** · AST **`repo_map`** · **`lsp`** (goto-def / find-refs / hover) |
 | **Code** | `run_command` · **`run_tests`** (per-test) · **`typecheck`** · **`format`** · **`ipython`** (persistent REPL) · `project` (detect+build/test/run) · `serve` (background dev server) · `ensure_runtime` |
 | **VCS** | targeted `git` (via shell) · **`github_pr`** · **`gitlab_mr_create`** / `gitlab_mr_comment` |
-| **Integrations** | `jira_*` (read/create/update/comment · transitions · worklog / `log_work` · boards / sprints / projects · dashboards · remote_links) · `confluence_*` (read/create/update · spaces · page_by_title · labels · comments · descendants) · **`context_gather`** (parallel cross-entity dossier) · `gitlab_*` · `web_search` · `web_fetch` · **`web_crawl`** (page → markdown dossier in `work/web/`, crawl4ai when installed) · `browser` · `mcp` |
+| **Integrations** | `jira_*` (read/create/update/comment · transitions · worklog / `log_work` · boards / sprints / projects · dashboards · remote_links) · `confluence_*` (read/create/update · spaces · page_by_title · labels · comments · descendants) · **`context_gather`** (parallel cross-entity dossier) · **resolvers** (`resolve_repo` · `jira_resolve_project` · `confluence_resolve_space` — loose name → real path/key) · `gitlab_*` · `email_send` / `email_read` · `web_search` · `web_fetch` · **`web_crawl`** (page → markdown dossier in `work/web/`, crawl4ai when installed) · `browser` · `mcp` |
 | **Memory / learning** | `memory_lookup` · `memory_write` (per-context or **`scope:"global"`**) · `remember_rule` · `skill_search` / `learn_skill` · `workflow_search` / `learn_workflow` |
+| **Progress** | **`plan_progress`** (multi-part asks in Simple mode get a live checklist; the agent flips items running → done) |
 
 Writes show a **diff**; risky/caution commands and external writes are **approval-gated**
 by default. An optional `AIFORGE_WORKSPACE_DIR` clamps file ops to a root for cautious
-deploys.
+deploys. Shell scripts (jobs, workflow scripts) call the same configured integration
+tools through the **`aiforge-tool`** console script (`aiforge-tool jira_search '{…}'`,
+`--list` to enumerate) — read-only tools only, by default.
 
 **Optional integration adapters** (`aiforge_core/integrations/` — separation of concerns:
-libs are imported ONLY behind thin adapters; every seam degrades gracefully without them):
-`pip install '.[structured]'` ([instructor](https://github.com/567-labs/instructor) —
-Pydantic-validated LLM output with auto-reask at the architect/grader/steering seams;
-a built-in schema-prompt+reask fallback always works), `pip install '.[crawl]'`
-([crawl4ai](https://github.com/unclecode/crawl4ai) — headless-browser markdown for
-`web_crawl`; plain fetch fallback), `aiforge-memory[chunking]`
-([chonkie](https://github.com/chonkie-inc/chonkie) — AST-aware code chunks for memory
-ingestion; line-window fallback), and [ragas](https://github.com/explodinggradients/ragas)
-RAG scoring via `scripts/rag_eval.py` (dev-tool overlay: `uv run --with 'ragas<0.4'
---with 'langchain-openai<1' python scripts/rag_eval.py`).
+libs are imported ONLY behind thin adapters; every seam degrades gracefully without them;
+`./run.sh` installs the first three automatically via `.[structured,crawl,chunking]`):
+[instructor](https://github.com/567-labs/instructor) — Pydantic-validated LLM output with
+auto-reask at the architect/grader/steering seams; a built-in schema-prompt+reask fallback
+always works. [crawl4ai](https://github.com/unclecode/crawl4ai) — headless-browser
+markdown for `web_crawl`; plain fetch fallback. [chonkie](https://github.com/chonkie-inc/chonkie)
+— structure-aware **doc/markdown** chunking + boundary-respecting truncation of LLM-bound
+files (code is chunked by our **own AST chunker** over `tree-sitter-language-pack`;
+line-window fallback). [langfuse](https://github.com/langfuse/langfuse) — SDK-free REST
+trace mirror (see Observability above). [ragas](https://github.com/explodinggradients/ragas)
+RAG scoring and [dspy](https://github.com/stanfordnlp/dspy) prompt experiments stay
+dev-tool overlays, never app dependencies (`uv run --with 'ragas<0.4'
+--with 'langchain-openai<1' python scripts/rag_eval.py`; `scripts/dspy_experiment.py`).
 
 ## Context engineering
 
@@ -165,9 +189,10 @@ How the agent stays coherent over long sessions on a finite window:
   **repo-map**, the project summary, session files, and the user's rule book — so
   follow-ups and post-compaction turns don't "forget".
 - **Cave mode** — a one-click lean-context toggle (chat top-bar / Settings): smaller
-  repo-map, skips the optional skills/workflows/mention blocks, fewer recall hits,
-  condenses sooner. Cheaper + faster on a small local model. Global, also applies to the
-  team pipeline.
+  repo-map, skips the optional skills/mention blocks, fewer recall hits, condenses
+  sooner. Matched **workflows still inject** — they're mandatory user procedure, cave
+  or not. Cheaper + faster on a small local model. Global, also applies to the team
+  pipeline.
 
 ## UI
 
@@ -211,6 +236,11 @@ Frontier agent-memory — on par with Mem0 / Zep / Letta and **ahead** on code i
 - **User preferences** — durable, cross-repo prefs injected so "always do X" sticks.
 - **Code intelligence** *(ahead of the field)* — AST symbols, call-graph, LSP, repo-map,
   domains/flows/guided tours, cross-repo links, incremental delta-indexing.
+- **Chunking** — code is chunked by our own **AST chunker** (tree-sitter, structure-first
+  packing to a token budget), docs by chonkie's recursive splitter, with a line-window
+  fallback (`AIFORGE_CODEMEM_CHUNKER` to pin a backend).
+- **Traceable** — with Langfuse enabled, every `memory.recall` and `memory.write` is
+  mirrored as a browsable trace next to the LLM calls.
 - **Procedural** — auto-authored **Skills** + pattern-mining of repeated wins.
 - **Tiers** — T1 episodic · T2 semantic · T3 procedural · T4 code; embedded SQLite by
   default, Postgres + Neo4j for the pro stack.
@@ -248,9 +278,18 @@ AIFORGE_CHAT_AUTO_CHECKPOINT   1 = snapshot before each turn (default)
 AIFORGE_CHAT_AUTO_MEMORY       1 = persist a memory note per turn (default)
 AIFORGE_SKILLS_DIR             skill registry root (default ~/.aiforge/skills)
 
+# Pipeline fan-out (per-subtask fresh context + git worktree)
+AIFORGE_PARALLEL_SUBTASKS      1 = decompose multi-file builds into per-subtask runs (default ON)
+AIFORGE_PARALLEL_SUBTASKS_MAX  concurrent subtasks (=4; set 1 on a strictly serial endpoint)
+AIFORGE_AUTO_ESCALATE          1 = Simple mode routes a multi-file build through the pipeline (default ON)
+
 # Reliability / timeouts (a slow local reasoning model)
 AIFORGE_LLM_TIMEOUT_S          app→model read timeout (=900s / 15 min)
-AIFORGE_CHAT_LLM_RETRIES       transient-failure retries in chat before surfacing (=3)
+AIFORGE_CHAT_LLM_RETRIES       transient-failure retries in chat before surfacing (=5)
+
+# Langfuse tracing (optional; see Observability)
+AIFORGE_LANGFUSE=1             run.sh hosts the trace stack (UI :3005, keys auto-generated)
+LANGFUSE_HOST / LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY   point at an existing server instead
 
 # Web search (optional keyed providers; falls back to keyless DuckDuckGo)
 AIFORGE_TAVILY_API_KEY         Tavily search key (preferred when set)
@@ -289,6 +328,8 @@ aiforge_core/
   runtime/        the ADK pipeline, chat agent, tools, memory wiring, guards
   api/            FastAPI app + UI (port 8799)
   memory/         unified_query (vector + full-text + graph) + decay + store
+  integrations/   optional lib adapters (instructor, crawl4ai, chonkie,
+                  langfuse, ragas) — thin seams, graceful without the lib
   config/         providers (agent_config) + env + roles
   llm/            litellm client + router
   tickets/        ticket lifecycle (SQLite or Postgres)

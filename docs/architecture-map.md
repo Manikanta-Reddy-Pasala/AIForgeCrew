@@ -24,12 +24,12 @@ feature module.
 | Concern | Where | Why it's split |
 |---|---|---|
 | **Agent execution engine** | `chat_agent.run_chat_agent` (ReAct text protocol) **+** `adk_runner` (ADK native function-calling) | INTENTIONAL — local models use the text protocol, cloud/ADK models use native tool-calls. A fix to `run_chat_agent` already propagates to chat/plan/parallel/text_doer (they all call it). |
-| **Tool registry** | `chat_agent._TOOLS` (`handler(args,cwd)→dict`) **+** `doer_tools` (typed `FunctionTool`) | Two calling conventions. NOT merged — the drift ("a tool in one surface not the other") is **guarded** by `tests/python/runtime/test_chat_tool_parity.py::test_cross_surface_tools_in_both_registries`. Add a cross-surface tool to BOTH + the guard's list. |
+| **Tool registry** | `chat_agent.TOOLS` (`handler(args,cwd)→dict`) **+** `doer_tools` (typed `FunctionTool`) | Two calling conventions. NOT merged — the drift ("a tool in one surface not the other") is **guarded** by `tests/python/runtime/test_chat_tool_parity.py::test_cross_surface_tools_in_both_registries`. Add a cross-surface tool to BOTH + the guard's list. |
 | **Post-turn capture** | `chat_learner` (distil facts) · `preference_capture` (subject-upsert prefs) · `rule_capture` (pre-agent directive classify) | Different purposes/timing. Unified the *gate* (`capture_cues`) and de-duped the double-write (a preference turn skips the fact-distiller). |
 | **Memory backends** | `sqlite_memory` (embedded) · Neo4j/AFM (pro) | `backend_select.embedded()` picks. Layers B (tree-sitter symbols) + C (graphify) are Neo4j-only. |
 
 ## Rules of thumb
-- Adding an **agent tool** → both `chat_agent._TOOLS` AND `doer_tools.__all__` (+ the parity-guard list if cross-surface).
+- Adding an **agent tool** → both `chat_agent.TOOLS` AND `doer_tools.__all__` (+ the parity-guard list if cross-surface).
 - Adding a **context source** → `context_bundle.build_bundle()`, nowhere else.
 - Needing the **repo key** → `repo_ident.repo_name()`. Never re-derive a basename.
 - Any **background task** → `background.spawn()`; CPU-bound → `kind="process"`.

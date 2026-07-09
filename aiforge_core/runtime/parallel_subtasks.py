@@ -4,8 +4,8 @@ When a ticket is decomposed into subtickets, this runs each one CONCURRENTLY in
 its OWN git worktree (isolation), updating the live subtask status, then merges
 the successful branches back into the ticket's working branch in order.
 
-Opt-in: ``AIFORGE_PARALLEL_SUBTASKS=1`` (default off — the in-order single-Doer
-path stays the default). Concurrency capped by ``AIFORGE_PARALLEL_SUBTASKS_MAX``
+Default ON: ``AIFORGE_PARALLEL_SUBTASKS=0`` disables (operator decision
+2026-07-09). Concurrency capped by ``AIFORGE_PARALLEL_SUBTASKS_MAX`` (default 4)
 (default 4).
 
 The per-subtask executor is INJECTED (``run_one``) so the orchestration —
