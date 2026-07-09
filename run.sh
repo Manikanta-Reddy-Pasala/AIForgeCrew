@@ -313,6 +313,23 @@ if [[ "${AIFORGE_SKIP_AIDER:-0}" != "1" ]]; then
   fi
 fi
 
+# ── Integration adapters (instructor / crawl4ai) ─────────────────────
+# Optional extras behind aiforge_core/integrations/: instructor = validated
+# structured LLM output (architect/grader/steering seams), crawl4ai =
+# browser-rendered markdown for web_crawl dossiers. Best-effort — every seam
+# has a built-in fallback, the stack boots without them. Skip with
+# AIFORGE_SKIP_INTEGRATIONS=1.
+if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
+  if ! .venv/bin/python -c "import instructor, crawl4ai" >/dev/null 2>&1; then
+    echo "==> installing integration extras (instructor + crawl4ai)…"
+    uv pip install --python .venv/bin/python -e '.[structured,crawl]' >/dev/null 2>&1 \
+      && echo "==> integration extras ready" \
+      || echo "==> integration extras skipped (built-in fallbacks active)"
+  fi
+  # crawl4ai renders with headless chromium — install best-effort (idempotent).
+  .venv/bin/python -m playwright install chromium >/dev/null 2>&1 || true
+fi
+
 # ── venv self-heal ────────────────────────────────────────────────────
 # A partial/interrupted install can leave the venv importable-but-broken —
 # classic symptom: pydantic is present but its compiled companion
@@ -390,6 +407,11 @@ if [[ $SKIP_WEB -eq 0 ]]; then
 fi
 
 # ── Launch (host: api + runner) ───────────────────────────────────────
+# Put the venv's bin on PATH for the API, the runner, AND every subprocess
+# they spawn — job/workflow scripts call the `aiforge-tool` console script
+# (configured jira/confluence/gitlab access) and must find it without
+# knowing the venv location.
+export PATH="$PWD/.venv/bin:$PATH"
 echo ""
 if [[ $MODE == hybrid ]]; then
   echo "  AIForge → http://${HOST}:${PORT}/ui/   mode: hybrid (infra docker, agent host)"

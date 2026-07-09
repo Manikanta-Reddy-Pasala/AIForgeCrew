@@ -623,6 +623,59 @@ def test_usage_meter_counts_history_not_system_prompt(tmp_path):
     assert usage and usage[0]["context_chars"] < 5000
 
 
+def test_split_asks_variants():
+    # multi-sentence with connector + question → parts detected
+    asks = ca._split_asks(
+        "fix the login timeout bug. also why does the meter reset on new "
+        "messages? and add a retry to the sync client")
+    assert len(asks) == 3
+    # bullets count as-is
+    asks = ca._split_asks("please handle:\n- update the README\n- add tests\n"
+                          "- push the changes")
+    assert len(asks) == 3
+    # single ask → no checklist
+    assert ca._split_asks("fix the login timeout bug in auth.py") == []
+    assert ca._split_asks("thanks") == []
+
+
+def test_multiask_final_gate_forces_completeness_pass(tmp_path):
+    """FINAL on a multi-part message triggers ONE self-check turn with the
+    checklist; the second FINAL passes through."""
+    prompts: list[str] = []
+
+    def fn(role, convo):
+        prompts.append(convo[-1]["content"] if isinstance(
+            convo[-1]["content"], str) else "")
+        if len(prompts) == 1:
+            return "FINAL: 1) fixed the bug"
+        return "FINAL: 1) fixed the bug 2) meter resets because X 3) retry added"
+
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content":
+          "fix the login bug. also why does the meter reset? and add a retry "
+          "to the sync client"}],
+        cwd=str(tmp_path), complete_fn=fn))
+    final = [e for e in evs if e["type"] == "message"][-1]
+    assert "retry added" in final["text"]          # second (complete) FINAL won
+    assert any("completeness check" in p for p in prompts)
+    # checklist also pinned in the system prompt
+    # (fn saw convo; check via the first call's system message)
+
+
+def test_multiask_single_question_untouched(tmp_path):
+    calls = {"n": 0}
+
+    def fn(role, convo):
+        calls["n"] += 1
+        return "FINAL: done"
+
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "fix the login timeout bug in auth.py"}],
+        cwd=str(tmp_path), complete_fn=fn))
+    assert calls["n"] == 1                          # no extra self-check call
+    assert [e for e in evs if e["type"] == "message"][-1]["text"] == "done"
+
+
 def test_cancellable_complete_returns_sentinel_when_cancelled():
     """H1: a cancel set while the LLM call runs makes the wrapper return the
     _CANCELLED sentinel promptly (the call is abandoned, not awaited)."""

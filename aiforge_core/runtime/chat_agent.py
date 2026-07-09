@@ -3359,6 +3359,48 @@ def _tool_tags(query: str) -> list[str]:
             if any(k in q for k in kws)]
 
 
+_ASK_LEAD_RE = re.compile(
+    r"^(?:also|and|plus|then|next|additionally|why|how|what|when|where|which|"
+    r"who|can|could|should|would|is|are|does|do|did|will|fix|add|make|check|"
+    r"recheck|verify|update|create|remove|delete|use|show|explain|list|"
+    r"implement|write|run|test|deploy|review|rename|refactor|change|ensure)\b",
+    re.IGNORECASE)
+
+
+def _split_asks(text: str, cap: int = 8) -> list[str]:
+    """Break the user's CURRENT message into its distinct asks so a
+    multi-part message ("fix X. also why does Y happen? and add Z") gets a
+    CHECKLIST instead of the model answering part 1 and stopping — simple
+    mode has no enhancer/spec, so nothing else tracks the parts. Heuristic
+    and conservative: bullets/numbered lines count as-is; otherwise sentence
+    segments that look like a question or an imperative. Returns [] (no
+    checklist) when only one ask is found."""
+    t = (text or "").strip()
+    if len(t) < 25:
+        return []
+    parts: list[str] = []
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    bullets = [re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", ln) for ln in lines
+               if re.match(r"^(?:[-*•]|\d+[.)])\s+", ln)]
+    if len(bullets) >= 2:
+        parts = bullets
+    else:
+        # sentence segmentation + " also "/" and then " connectors
+        segs: list[str] = []
+        for chunk in re.split(r"(?<=[?.!;])\s+|\n+", t):
+            segs.extend(re.split(
+                r"\s+(?=(?:also|and then|and also|plus|additionally)\b)",
+                chunk, flags=re.IGNORECASE))
+        for s in segs:
+            s = s.strip(" .")
+            if len(s) < 12:
+                continue
+            if s.endswith("?") or _ASK_LEAD_RE.match(s):
+                parts.append(s)
+    parts = [p[:160] for p in parts if p.strip()][:cap]
+    return parts if len(parts) >= 2 else []
+
+
 def _memory_recall(cwd: str, query: str, limit: int = 6,
                    session_id: "int | None" = None) -> str:
     """Proactive memory recall at SESSION START — pull prior decisions /
@@ -3552,6 +3594,16 @@ def run_chat_agent(
     rules = _rules_context(cwd, last_user)
     prefs = _preferences_context(cwd)
     sys_msg = _SYSTEM.format(cwd=cwd)
+    # Multi-part message (simple mode has no enhancer/spec, so nothing else
+    # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the
+    # system prompt — the model must cover every part, not answer #1 and stop.
+    _asks = [] if builder else _split_asks(last_user)
+    if _asks:
+        sys_msg = ("MULTI-PART REQUEST — the user's CURRENT message contains "
+                   f"{len(_asks)} distinct asks. Address EVERY one; number "
+                   "your final answer to match. Checklist:\n"
+                   + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
+                   + "\n\n" + sys_msg)
     if prefs:                       # standing user preferences — always applied
         sys_msg = prefs + "\n\n" + sys_msg
     if rules:                       # user rule book first — highest priority
@@ -3705,6 +3757,7 @@ def run_chat_agent(
     _builder_nudged = False
     _builder_finalized = False
     _builder_final_tries = 0
+    _multiask_checked = False   # one-time FINAL completeness gate (multi-ask)
     while n < safety:
         n += 1
         if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -3877,6 +3930,24 @@ def run_chat_agent(
                         "to make progress, or output `FINAL: <answer>` ONLY when "
                         "the work is actually done. Do not just narrate or 'test'."})
                     continue
+            # Multi-ask completeness gate (once): before accepting FINAL on a
+            # multi-part message, make the model self-check its answer against
+            # the checklist — the #1 simple-mode complaint is answering ask 1
+            # and silently dropping the rest.
+            if _asks and not _multiask_checked and not builder:
+                _multiask_checked = True
+                yield {"type": "thought", "role": "system",
+                       "text": f"✔ checking all {len(_asks)} parts of the "
+                               "request are addressed…"}
+                convo.append({"role": "user", "content":
+                    "[completeness check — not the user] The user's message "
+                    f"contained {len(_asks)} distinct asks:\n"
+                    + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
+                    + "\nRe-read your answer above. If EVERY ask is addressed, "
+                    "resend it unchanged as FINAL. If any is missing, do the "
+                    "missing work now (ACTIONs as needed) and produce ONE "
+                    "complete FINAL covering all parts, numbered."})
+                continue
             _fire_stop("final", cwd)
             yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
             yield {"type": "done"}
