@@ -1,55 +1,44 @@
-"""langfuse adapter — LLM observability traces (``pip install
-aiforgecrew[tracing]``).
+"""langfuse adapter — mirror LLM calls to a self-hosted Langfuse server.
 
-Mirrors every LLM completion to a (self-hosted) Langfuse server so runs are
-browsable per role/model with latency + input/output — ALONGSIDE the
-existing file-based tracing (observability/chat_trace/perf), which stays the
-source of truth. Adapter contract: ``available()``/``enabled()`` probes, one
-narrow capability, raises nothing into the hot path (the caller wraps).
+SIMPLEST possible integration: NO SDK (the langfuse python SDK's pins
+conflict with aider-chat, same class as ragas) — we POST directly to the
+public ingestion REST API (``/api/public/ingestion``, basic-auth pk/sk),
+which both server v2 and v3 accept. httpx is already a core dependency, so
+tracing needs NO extra install at all.
 
-Enable purely by env (config-driven, no code flag):
-    LANGFUSE_HOST=http://127.0.0.1:3000     # your self-hosted server
+Purpose is narrow by operator requirement: SEE the agents' messages and the
+LLM responses per call in the Langfuse UI. The existing file-based tracing
+stays the source of truth.
+
+Enable purely by env (run.sh --with-langfuse sets these automatically):
+    LANGFUSE_HOST=http://127.0.0.1:3005
     LANGFUSE_PUBLIC_KEY=pk-lf-…
     LANGFUSE_SECRET_KEY=sk-lf-…
 Optional: AIFORGE_LANGFUSE_DISABLE=1 kills it even with keys set;
 AIFORGE_LANGFUSE_MAX_CHARS caps per-field payload size (default 8000).
+
+Sends are fire-and-forget on a daemon thread — a slow/down Langfuse can
+never block or break a turn.
 """
 from __future__ import annotations
 
-import atexit
+import datetime
 import os
-
-_client = None
-_client_failed = False
+import threading
+import uuid
 
 
 def available() -> bool:
-    try:
-        import langfuse  # noqa: F401
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+    return True          # raw REST over httpx (core dep) — always available
 
 
 def enabled() -> bool:
     if str(os.environ.get("AIFORGE_LANGFUSE_DISABLE", "")).strip().lower() \
             in ("1", "true", "yes", "on"):
         return False
-    return bool(os.environ.get("LANGFUSE_PUBLIC_KEY")
-                and os.environ.get("LANGFUSE_SECRET_KEY")) and available()
-
-
-def _get():
-    """Singleton client (the SDK batches + flushes on its own thread)."""
-    global _client, _client_failed
-    if _client is None and not _client_failed:
-        try:
-            from langfuse import Langfuse
-            _client = Langfuse()   # reads LANGFUSE_* env itself
-            atexit.register(lambda: _client and _client.flush())
-        except Exception:  # noqa: BLE001 — a broken client must not retry per call
-            _client_failed = True
-    return _client
+    return bool(os.environ.get("LANGFUSE_HOST")
+                and os.environ.get("LANGFUSE_PUBLIC_KEY")
+                and os.environ.get("LANGFUSE_SECRET_KEY"))
 
 
 def _cap() -> int:
@@ -59,39 +48,50 @@ def _cap() -> int:
         return 8000
 
 
+def _send(payload: dict) -> None:
+    """POST one ingestion batch. Runs on the fire-and-forget thread."""
+    import httpx
+    host = (os.environ.get("LANGFUSE_HOST") or "").rstrip("/")
+    httpx.post(f"{host}/api/public/ingestion", json=payload,
+               auth=(os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
+                     os.environ.get("LANGFUSE_SECRET_KEY", "")),
+               timeout=5)
+
+
 def record_generation(*, role: str, model: str = "", messages=None,
                       output: str = "", latency_ms: int = 0,
                       error: str = "", session_id=None,
                       metadata: dict | None = None) -> None:
-    """One LLM completion → one Langfuse generation. Raises on failure —
-    the caller (llm.client) wraps in try/except so tracing can never break
-    a turn."""
-    lf = _get()
-    if lf is None:
-        return
+    """One LLM completion → one Langfuse trace+generation, sent async.
+    Raises only on payload-build errors — the caller wraps regardless."""
     cap = _cap()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    start = now - datetime.timedelta(milliseconds=max(0, latency_ms))
+    trace_id = str(uuid.uuid4())
     msgs = [{"role": m.get("role"), "content": str(m.get("content"))[:cap]}
             for m in (messages or []) if isinstance(m, dict)]
-    kwargs = dict(
-        name=f"llm:{role}",
-        model=model or None,
-        input=msgs,
-        output=(output or "")[:cap],
-        metadata={**(metadata or {}), "role": role,
-                  **({"error": error[:500]} if error else {}),
-                  **({"session_id": session_id} if session_id else {})},
-    )
-    if latency_ms:
-        kwargs["metadata"]["latency_ms"] = int(latency_ms)
-    if hasattr(lf, "generation"):                 # SDK v2
-        lf.generation(**kwargs)
-    elif hasattr(lf, "start_generation"):         # SDK v3 (OTEL)
-        g = lf.start_generation(name=kwargs["name"], model=kwargs["model"],
-                                input=kwargs["input"],
-                                metadata=kwargs["metadata"])
-        g.update(output=kwargs["output"])
-        g.end()
-    # else: unknown SDK surface — silently skip (file tracing still has it)
+    meta = {**(metadata or {}), "role": role}
+    if error:
+        meta["error"] = error[:500]
+    if session_id:
+        meta["session_id"] = session_id
+    payload = {"batch": [
+        {"id": str(uuid.uuid4()), "type": "trace-create",
+         "timestamp": now.isoformat(),
+         "body": {"id": trace_id, "name": f"llm:{role}",
+                  "timestamp": start.isoformat(), "metadata": meta,
+                  **({"sessionId": str(session_id)} if session_id else {})}},
+        {"id": str(uuid.uuid4()), "type": "generation-create",
+         "timestamp": now.isoformat(),
+         "body": {"id": str(uuid.uuid4()), "traceId": trace_id,
+                  "name": f"llm:{role}", "model": model or None,
+                  "startTime": start.isoformat(), "endTime": now.isoformat(),
+                  "input": msgs, "output": (output or "")[:cap],
+                  "metadata": meta,
+                  **({"level": "ERROR", "statusMessage": error[:500]}
+                     if error else {})}},
+    ]}
+    threading.Thread(target=_send, args=(payload,), daemon=True).start()
 
 
 __all__ = ["available", "enabled", "record_generation"]

@@ -1,16 +1,18 @@
-"""Langfuse mirror — env-gated, soft-fail, never touches the call result."""
+"""Langfuse mirror — env-gated, SDK-free REST ingestion, soft-fail, never
+touches the call result."""
 from __future__ import annotations
 
 from aiforge_core.integrations import langfuse_adapter as lf
 
 
 def test_disabled_without_keys(monkeypatch):
-    for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+    for k in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
         monkeypatch.delenv(k, raising=False)
     assert lf.enabled() is False
 
 
 def test_kill_switch_wins(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_HOST", "http://127.0.0.1:3005")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
     monkeypatch.setenv("AIFORGE_LANGFUSE_DISABLE", "1")
@@ -18,9 +20,7 @@ def test_kill_switch_wins(monkeypatch):
 
 
 def test_complete_unaffected_when_tracing_off(monkeypatch):
-    """client.complete returns the model output verbatim with tracing unset —
-    and a tracing crash can never propagate."""
-    for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+    for k in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
         monkeypatch.delenv(k, raising=False)
     from aiforge_core.llm import client
     monkeypatch.setattr(client, "_complete_impl",
@@ -35,10 +35,10 @@ def test_trace_crash_never_breaks_turn(monkeypatch):
     def boom(**k):
         raise RuntimeError("langfuse down")
 
+    monkeypatch.setenv("LANGFUSE_HOST", "http://127.0.0.1:3005")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
     monkeypatch.delenv("AIFORGE_LANGFUSE_DISABLE", raising=False)
-    monkeypatch.setattr(lf, "available", lambda: True)
     monkeypatch.setattr(lf, "record_generation", boom)
     monkeypatch.setattr(client, "_complete_impl",
                         lambda role, messages, **k2: "still fine")
@@ -46,18 +46,31 @@ def test_trace_crash_never_breaks_turn(monkeypatch):
         == "still fine"
 
 
-def test_record_payload_shape(monkeypatch):
-    """Adapter builds the v2 generation payload from our shapes."""
-    calls = {}
+def test_ingestion_payload_shape(monkeypatch):
+    """SDK-free path: one trace-create + one generation-create per call,
+    payload capped, sent via _send (stubbed — no network)."""
+    sent: list[dict] = []
+    monkeypatch.setattr(lf, "_send", lambda payload: sent.append(payload))
+    # make the fire-and-forget thread synchronous for the assertion
+    import threading
 
-    class _FakeLF:
-        def generation(self, **kw):
-            calls.update(kw)
+    class _SyncThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self._t, self._a = target, args
 
-    monkeypatch.setattr(lf, "_get", lambda: _FakeLF())
+        def start(self):
+            self._t(*self._a)
+
+    monkeypatch.setattr(threading, "Thread", _SyncThread)
     lf.record_generation(role="grader", model="qwen",
                          messages=[{"role": "user", "content": "x" * 20000}],
                          output="ok", latency_ms=123, error="")
-    assert calls["name"] == "llm:grader" and calls["model"] == "qwen"
-    assert len(calls["input"][0]["content"]) <= 8000     # payload capped
-    assert calls["metadata"]["latency_ms"] == 123
+    assert len(sent) == 1
+    batch = sent[0]["batch"]
+    kinds = [e["type"] for e in batch]
+    assert kinds == ["trace-create", "generation-create"]
+    gen = batch[1]["body"]
+    assert gen["name"] == "llm:grader" and gen["model"] == "qwen"
+    assert len(gen["input"][0]["content"]) <= 8000       # capped
+    assert gen["output"] == "ok"
+    assert gen["traceId"] == batch[0]["body"]["id"]      # linked

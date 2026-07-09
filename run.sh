@@ -341,9 +341,9 @@ fi
 # has a built-in fallback, the stack boots without them. Skip with
 # AIFORGE_SKIP_INTEGRATIONS=1.
 if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
-  if ! .venv/bin/python -c "import instructor, crawl4ai, langfuse" >/dev/null 2>&1; then
-    echo "==> installing integration extras (instructor + crawl4ai + langfuse)…"
-    uv pip install --python .venv/bin/python -e '.[structured,crawl,tracing]' >/dev/null 2>&1 \
+  if ! .venv/bin/python -c "import instructor, crawl4ai" >/dev/null 2>&1; then
+    echo "==> installing integration extras (instructor + crawl4ai)…"
+    uv pip install --python .venv/bin/python -e '.[structured,crawl]' >/dev/null 2>&1 \
       && echo "==> integration extras ready" \
       || echo "==> integration extras skipped (built-in fallbacks active)"
   fi

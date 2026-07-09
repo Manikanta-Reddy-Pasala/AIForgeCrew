@@ -1,55 +1,45 @@
-# Self-hosted Langfuse v3 stack (LLM observability) — brought up by
-# `./run.sh --with-langfuse` (or AIFORGE_LANGFUSE=1 in .env). Fully headless:
-# org/project/API keys are provisioned via LANGFUSE_INIT_* on first boot, so
-# no manual UI setup — run.sh generates the secrets once into
-# ~/.aiforge/langfuse.env and exports LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY to
-# the app, which then mirrors every LLM call automatically.
+# Self-hosted Langfuse v2 — SIMPLEST setup: one app container + postgres.
+# Purpose here is narrow: BROWSE the agents' LLM calls (input messages +
+# responses per role). v2 does that fully; v3 would add clickhouse + redis +
+# minio + a worker (6 containers) for analytics we don't need.
 #
-# Own postgres (not AIForge's) so versions/lifecycles stay decoupled.
-# UI: http://localhost:${LF_PORT:-3005}   login: admin@aiforge.local / $LF_ADMIN_PASSWORD
+# Brought up by `./run.sh --with-langfuse` (or AIFORGE_LANGFUSE=1 in .env).
+# Headless: org/project/API keys provisioned via LANGFUSE_INIT_* on first
+# boot; run.sh generates secrets once into ~/.aiforge/langfuse.env and
+# exports LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY so mirroring turns on
+# automatically.
+#
+# DATA IS DELIBERATELY SHORT-LIVED (operator requirement: max 1 day, no
+# forever storage, no log accrual):
+#   - postgres has NO volume → all traces vanish on `down`/recreate
+#   - the prune sidecar deletes rows older than LF_RETENTION_DAYS (default 1)
+#     every hour while the stack runs
+#   - container logs capped at 10MB × 1 file per service
+#
+# UI: http://localhost:${LF_PORT:-3005}  login: admin@aiforge.local / $LF_ADMIN_PASSWORD
 
 x-logging: &logcap
   driver: json-file
   options: {max-size: "10m", max-file: "1"}
 
 services:
-  langfuse-web:
+  langfuse:
     logging: *logcap
-    image: langfuse/langfuse:3
+    image: langfuse/langfuse:2
     restart: unless-stopped
     depends_on:
       langfuse-postgres:
         condition: service_healthy
-      langfuse-clickhouse:
-        condition: service_healthy
-      langfuse-redis:
-        condition: service_started
-      langfuse-minio:
-        condition: service_started
     ports:
       - "${LF_PORT:-3005}:3000"
-    environment: &lf_env
+    environment:
       DATABASE_URL: postgresql://postgres:${LF_PG_PASSWORD}@langfuse-postgres:5432/postgres
       NEXTAUTH_URL: http://localhost:${LF_PORT:-3005}
       NEXTAUTH_SECRET: ${LF_NEXTAUTH_SECRET}
       SALT: ${LF_SALT}
       ENCRYPTION_KEY: ${LF_ENCRYPTION_KEY}
-      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
-      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
-      REDIS_CONNECTION_STRING: redis://langfuse-redis:6379
-      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LF_MINIO_PASSWORD}
-      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
-      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LF_MINIO_PASSWORD}
-      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       TELEMETRY_ENABLED: "false"
+      LANGFUSE_LOG_LEVEL: warn
       # Headless first-boot provisioning — deterministic keys the app uses.
       LANGFUSE_INIT_ORG_ID: aiforge
       LANGFUSE_INIT_ORG_NAME: AIForge
@@ -60,31 +50,12 @@ services:
       LANGFUSE_INIT_USER_EMAIL: admin@aiforge.local
       LANGFUSE_INIT_USER_NAME: admin
       LANGFUSE_INIT_USER_PASSWORD: ${LF_ADMIN_PASSWORD}
-      # Retention: traces older than 1 day are PRUNED by the worker
-      # (clickhouse rows + minio event/media objects). Override with
-      # LF_RETENTION_DAYS in ~/.aiforge/langfuse.env.
-      LANGFUSE_INIT_PROJECT_RETENTION: ${LF_RETENTION_DAYS:-1}
-      LANGFUSE_LOG_LEVEL: warn
-
-  langfuse-worker:
-    logging: *logcap
-    image: langfuse/langfuse-worker:3
-    restart: unless-stopped
-    depends_on:
-      langfuse-postgres:
-        condition: service_healthy
-      langfuse-clickhouse:
-        condition: service_healthy
-      langfuse-redis:
-        condition: service_started
-      langfuse-minio:
-        condition: service_started
-    environment: *lf_env
 
   langfuse-postgres:
     logging: *logcap
     image: postgres:16-alpine
     restart: unless-stopped
+    # NO volume on purpose: traces are ephemeral — gone on down/recreate.
     environment:
       POSTGRES_PASSWORD: ${LF_PG_PASSWORD}
     healthcheck:
@@ -92,50 +63,29 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
-    volumes:
-      - langfuse_pg:/var/lib/postgresql/data
 
-  langfuse-clickhouse:
+  # Hourly retention prune: rows older than LF_RETENTION_DAYS (default 1)
+  # are deleted while the stack runs. Soft-fails per statement so a schema
+  # difference can't kill the loop.
+  langfuse-prune:
     logging: *logcap
-    image: clickhouse/clickhouse-server:24.8
+    image: postgres:16-alpine
     restart: unless-stopped
-    user: "101:101"
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
     environment:
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
-      CLICKHOUSE_DB: default
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-      start_period: 40s
-    volumes:
-      - langfuse_ch:/var/lib/clickhouse
-    # Running as uid 101 with NO writable log dir crashes the server on boot
-    # (root-owned /var/log/clickhouse-server) — tmpfs makes it writable AND
-    # keeps server logs in RAM only (gone on stop; nothing accrues on disk).
-    tmpfs:
-      - /var/log/clickhouse-server:size=64m,uid=101,gid=101
-
-  langfuse-redis:
-    logging: *logcap
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--maxmemory-policy", "noeviction"]
-
-  langfuse-minio:
-    logging: *logcap
-    image: minio/minio:latest
-    restart: unless-stopped
-    entrypoint: ["sh", "-c", "mkdir -p /data/langfuse && exec minio server /data"]
-    environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: ${LF_MINIO_PASSWORD}
-    volumes:
-      - langfuse_minio:/data
-
-volumes:
-  langfuse_pg:
-  langfuse_ch:
-  langfuse_minio:
+      PGPASSWORD: ${LF_PG_PASSWORD}
+      RETENTION_DAYS: ${LF_RETENTION_DAYS:-1}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        while true; do
+          sleep 3600
+          for t in "observations|start_time" "scores|timestamp" "traces|timestamp"; do
+            tbl="$${t%%|*}"; col="$${t##*|}"
+            psql -h langfuse-postgres -U postgres -d postgres -c \
+              "DELETE FROM \"$$tbl\" WHERE \"$$col\" < now() - interval '$${RETENTION_DAYS} days'" \
+              || true
+          done
+        done
