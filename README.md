@@ -172,9 +172,8 @@ markdown for `web_crawl`; plain fetch fallback. [chonkie](https://github.com/cho
 files (code is chunked by our **own AST chunker** over `tree-sitter-language-pack`;
 line-window fallback). [langfuse](https://github.com/langfuse/langfuse) — SDK-free REST
 trace mirror (see Observability above). [ragas](https://github.com/explodinggradients/ragas)
-RAG scoring and [dspy](https://github.com/stanfordnlp/dspy) prompt experiments stay
-dev-tool overlays, never app dependencies (`uv run --with 'ragas<0.4'
---with 'langchain-openai<1' python scripts/rag_eval.py`; `scripts/dspy_experiment.py`).
+RAG scoring stays a dev-tool overlay, never an app dependency (`uv run --with
+'ragas<0.4' --with 'langchain-openai<1' python scripts/rag_eval.py`).
 
 ## Context engineering
 
