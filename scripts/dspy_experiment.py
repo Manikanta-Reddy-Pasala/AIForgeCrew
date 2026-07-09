@@ -21,11 +21,10 @@ Prints per-arm accuracy on the held-out half. If C consistently beats A,
 the follow-up is a compiled-prompt export for the triage seam (adapter
 pattern, env-gated) — NOT a dspy runtime dependency.
 """
-from __future__ import annotations
-
 import argparse
 import json
 import re
+from typing import Literal
 
 # (ticket_text, gold_complexity) — gold follows the production heuristics:
 # trivial <=2 files mechanical; moderate 3-6 one subsystem; hard cross-cutting.
@@ -132,8 +131,6 @@ def main() -> int:
     lm = dspy.LM(f"openai/{args.model}", api_base=args.base_url,
                  api_key=args.api_key, temperature=0, max_tokens=300)
     dspy.configure(lm=lm)
-
-    from typing import Literal
 
     class Triage(dspy.Signature):
         """Classify a dev ticket's implementation complexity. trivial =
