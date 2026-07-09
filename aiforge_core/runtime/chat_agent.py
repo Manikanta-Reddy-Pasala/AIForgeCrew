@@ -2340,6 +2340,7 @@ user "clarified" or "changed their mind".
 - web_search    {{"query": "rust tokio select! cancellation", "limit": 5}}   (search the open web — no key — when you're stuck / need current docs)
 - web_fetch     {{"url": "https://...", "max_chars": 6000}}                  (read a result page's text)
 - web_crawl     {{"url": "https://..."}}                                     (fetch a page as clean markdown AND save it to the shared work/web/<slug>/ dossier for reuse across sessions — prefer this over web_fetch when the page is documentation worth keeping)
+- plan_progress {{"slug": "part-1", "status": "running|done|failed"}}        (multi-part request tracker: flip a checklist item so the user sees live progress — call when you start and finish each part)
 - serve         {{"cmd": "npm run dev", "port": 5173}}   (START a server/app in the BACKGROUND; returns its pid + the URL to open — use this to run the app, NOT run_command which would block)
 - stop_service  {{"pid": 12345}}                          (stop a service you started with serve)
 - list_services {{}}                                      (list services you started + whether each is alive)
@@ -3617,6 +3618,10 @@ def run_chat_agent(
                    f"{len(_asks)} distinct asks. Address EVERY one; number "
                    "your final answer to match. Checklist:\n"
                    + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
+                   + "\nTRACK your progress: when you START part N call "
+                     'ACTION: plan_progress ARGS_JSON: {"slug": "part-N", '
+                     '"status": "running"}, and when it is DONE call it again '
+                     'with "status": "done" — the user watches this live.'
                    + "\n\n" + sys_msg)
     if prefs:                       # standing user preferences — always applied
         sys_msg = prefs + "\n\n" + sys_msg
@@ -3779,6 +3784,13 @@ def run_chat_agent(
                        + " + ".join(_dropped_playbooks) + " block(s): matched "
                        "workflows/skills may NOT be followed this turn. Load "
                        "the model at a larger context window to fix this."}
+    # Simple-mode task tracking: surface the derived checklist in the UI's
+    # subtasks dock (same events the pipeline uses) so the user can watch the
+    # parts get worked live — the agent flips them via plan_progress.
+    if _asks:
+        yield {"type": "subtasks", "items": [
+            {"slug": f"part-{i + 1}", "title": a, "status": "pending"}
+            for i, a in enumerate(_asks)]}
 
     n = 0
     _builder_nudged = False
@@ -3975,6 +3987,13 @@ def run_chat_agent(
                     "missing work now (ACTIONs as needed) and produce ONE "
                     "complete FINAL covering all parts, numbered."})
                 continue
+            # FINAL accepted on a multi-part turn: close out the tracker so
+            # the dock never ends with stale pending items the model forgot
+            # to flip.
+            if _asks:
+                for _i in range(len(_asks)):
+                    yield {"type": "subtask_update",
+                           "slug": f"part-{_i + 1}", "status": "done"}
             _fire_stop("final", cwd)
             yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
             yield {"type": "done"}
@@ -4031,6 +4050,23 @@ def run_chat_agent(
 
         if step.get("thought"):
             yield {"type": "thought", "text": step["thought"]}
+
+        # Simple-mode task tracker: plan_progress flips a checklist item in
+        # the UI's subtasks dock. Pure bookkeeping — no side effects, allowed
+        # in every mode (incl. plan), never gated.
+        if name == "plan_progress":
+            _slug = str(args.get("slug") or args.get("part") or "").strip()
+            _st = str(args.get("status") or "done").strip().lower()
+            if _st not in ("pending", "running", "done", "failed"):
+                _st = "done"
+            if _slug:
+                yield {"type": "subtask_update", "slug": _slug, "status": _st}
+            result = {"ok": bool(_slug), "slug": _slug, "status": _st,
+                      **({} if _slug else {"error": "missing 'slug'"})}
+            yield {"type": "tool", "name": name, "args": args, "result": result}
+            convo.append({"role": "user",
+                          "content": f"OBSERVATION: {json.dumps(result)}"})
+            continue
 
         # PLAN mode (#2): block mutating tools — read-only only.
         if plan_mode and name not in _READONLY_TOOLS:

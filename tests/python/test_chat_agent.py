@@ -682,6 +682,28 @@ def test_multiask_final_gate_forces_completeness_pass(tmp_path):
     # (fn saw convo; check via the first call's system message)
 
 
+def test_multiask_tracked_as_subtasks(tmp_path):
+    """Multi-part turn: checklist surfaces in the UI subtasks dock, the agent
+    flips items via plan_progress, and FINAL closes out any stragglers."""
+    fn = _scripted([
+        'ACTION: plan_progress\nARGS_JSON: {"slug": "part-1", "status": "done"}',
+        "FINAL: 1) bug fixed 2) meter explained 3) retry added",
+        "FINAL: 1) bug fixed 2) meter explained 3) retry added",
+    ])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content":
+          "fix the login bug. also why does the meter reset? and add a retry "
+          "to the sync client"}],
+        cwd=str(tmp_path), complete_fn=fn))
+    docks = [e for e in evs if e["type"] == "subtasks"]
+    assert docks and len(docks[0]["items"]) == 3
+    assert docks[0]["items"][0]["slug"] == "part-1"
+    ups = [(e["slug"], e["status"]) for e in evs if e["type"] == "subtask_update"]
+    assert ("part-1", "done") in ups          # agent flipped it via the tool
+    # FINAL closes out the rest so nothing lingers pending
+    assert ("part-2", "done") in ups and ("part-3", "done") in ups
+
+
 def test_multiask_single_question_untouched(tmp_path):
     calls = {"n": 0}
 
