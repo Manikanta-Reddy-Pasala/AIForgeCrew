@@ -18,8 +18,8 @@
 # Schema is versioned via `schema_version` at the top of this file. Bump it
 # whenever a backwards-incompatible field is added or semantics change.
 #
-# See `docs/agent-rules.md` for the prose explanation of each constraint and
-# the F1–F7 eval findings that motivated them.
+# See `docs/TOOLS.md` (per-agent allowlists + enforcement layers) and
+# `docs/DECISIONS.md` for the prose explanation of each constraint.
 #
 # ─── IMPORTANT: identity fields are INFORMATIONAL ONLY ───────────────────────
 # The `identity.model` / `identity.base_url` / `identity.ctx_window` values on
@@ -211,7 +211,7 @@ agents:
     rule: >
       Planner reads everything, writes a plan and child subtickets, and never
       touches source files. Every test subticket MUST inject a test skeleton
-      template reference (see docs/agent-rules.md §4). The Verifier runs
+      template reference (docs/test-skeleton-templates/). The Verifier runs
       next; if it rejects, this agent is re-invoked with the issue list.
     termination_contract:
       - plan_md persisted under docs/plans/<ticket_id>.md

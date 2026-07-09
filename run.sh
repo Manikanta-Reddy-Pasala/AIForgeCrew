@@ -376,7 +376,7 @@ fi
 
 # ── graphify CLI (optional, --with-graphify) ──────────────────────────
 # Installs the host `graphify` binary (PyPI package: graphifyy) used by the
-# concept-graph refresh (docs/graphify-agents.md, aiforge-graphify-all.timer)
+# concept-graph refresh (docs/TOOLS.md → Graphify graph; aiforge-graphify-all.timer)
 # and the graphify_lookup tool. Opt-in — the stack boots fine without it.
 #
 # ISOLATED install ONLY (uv tool). graphify carries a large, independently
@@ -434,7 +434,8 @@ if [[ $SKIP_WEB -eq 0 ]]; then
 fi
 
 # ── Langfuse trace server (--with-langfuse / AIFORGE_LANGFUSE=1) ─────
-# Self-hosted Langfuse v3 (web+worker+pg+clickhouse+redis+minio) via
+# Self-hosted Langfuse v2 MINIMAL (app + postgres + hourly retention-prune
+# sidecar; deliberately NOT v3's clickhouse/redis/minio/worker stack) via
 # scripts/compose/langfuse-compose.yml. FULLY headless: secrets + API keys
 # are generated ONCE into ~/.aiforge/langfuse.env (never committed) and the
 # project is provisioned on first boot via LANGFUSE_INIT_* — then the app's
