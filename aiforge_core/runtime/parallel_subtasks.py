@@ -1343,9 +1343,37 @@ def _enhance(prompt: str, *, history: list[dict] | None = None,
             {"role": "system", "content": _ENHANCE_SYS},
             {"role": "user", "content": user_msg}], max_tokens=2048,
             timeout_s=_orchestrator_timeout_s())
-        return (out or "").strip() or prompt
+        out = (out or "").strip()
+        # DEGENERATE-SPEC GUARD: the enhancer is a single point of failure —
+        # everything downstream (architect → subtasks → verification) builds
+        # against its output. A collapsed or identifier-dropping rewrite must
+        # never silently replace the user's ask; fall back to the raw prompt.
+        _bad = _spec_degenerate(prompt, out)
+        if _bad:
+            log.warning("enhancer output rejected (%s) — using raw prompt", _bad)
+            return prompt
+        return out or prompt
     except Exception:  # noqa: BLE001
         return prompt
+
+
+def _spec_degenerate(prompt: str, out: str) -> str | None:
+    """Reason the enhanced spec is UNUSABLE, else None. Deterministic checks
+    only: (a) collapse — the rewrite lost most of a non-trivial ask; (b)
+    identifier loss — the prompt named concrete files/symbols and the rewrite
+    kept NONE of them (a spec that dropped every anchor builds the wrong
+    thing)."""
+    if not out:
+        return None                     # empty already handled by caller
+    if len(prompt) >= 80 and len(out) < max(40, int(len(prompt) * 0.3)):
+        return f"collapsed to {len(out)} chars from a {len(prompt)}-char ask"
+    import re as _re
+    anchors = set(_re.findall(r"\b[\w-]+\.[A-Za-z]{1,4}\b", prompt))  # files
+    anchors |= set(_re.findall(r"\b[a-z]+_[a-z_]+\b", prompt))        # snake ids
+    anchors = {a for a in anchors if len(a) > 4}
+    if anchors and not any(a.lower() in out.lower() for a in anchors):
+        return f"dropped every named anchor ({sorted(anchors)[:4]}…)"
+    return None
 
 
 # Public alias for clear imports elsewhere (api.py, etc.).
@@ -1412,6 +1440,47 @@ def _architect_context(spec: str, cwd: str | None) -> str:
     return "\n\n".join(parts)
 
 
+_PLAN_CODE_EXTS = {"py", "java", "js", "ts", "tsx", "go", "rs", "kt", "rb",
+                   "c", "cpp", "cs", "php"}
+
+
+def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
+    """Deterministic sanity gate on the architect's file plan — the plan is a
+    single point of failure (every subtask builds against it), so structural
+    defects must be caught BEFORE the fan-out, not discovered by 10 workers.
+    Returns ``(sanitized_files, issues)``: hard defects (dupes, escaping
+    paths) are FIXED in the sanitized list; soft defects (no tests, language
+    soup, absurd size) are reported for a semantic reask."""
+    issues: list[str] = []
+    seen: set[str] = set()
+    clean: list[dict] = []
+    for f in files:
+        p = str(f.get("path") or "").strip().lstrip("/")
+        if not p:
+            continue
+        if p.startswith("..") or "/../" in f"/{p}/":
+            issues.append(f"path escapes the workspace: {p!r} (dropped)")
+            continue
+        if p in seen:
+            issues.append(f"duplicate path: {p!r} (deduped)")
+            continue
+        seen.add(p)
+        clean.append({**f, "path": p})
+    paths = [f["path"] for f in clean]
+    exts = {p.rsplit(".", 1)[-1].lower() for p in paths if "." in p}
+    code_exts = exts & _PLAN_CODE_EXTS
+    if len(paths) > 40:
+        issues.append(f"{len(paths)} files is a dump, not a plan — collapse "
+                      "coupled concerns (aim well under 40)")
+    if code_exts and not any("test" in p.lower() for p in paths):
+        issues.append("plan has code modules but NO test files — every code "
+                      "module needs a test file in the SAME plan")
+    if len(code_exts - {"js", "ts", "tsx"}) > 2:
+        issues.append(f"plan mixes {sorted(code_exts)} languages — a single "
+                      "build uses the spec's one stack")
+    return clean, issues
+
+
 class _ArchFileSpec(BaseModel):
     path: str
     purpose: str = ""
@@ -1437,13 +1506,36 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
     user_msg = spec + (("\n\n" + context) if context else "")
     try:
         from aiforge_core.llm.structured import structured_complete
-        plan = structured_complete("architect", [
-            {"role": "system", "content": _ARCHITECT_SYS},
-            {"role": "user", "content": user_msg}],
-            _ArchitectPlan, max_tokens=4000,
-            timeout_s=_orchestrator_timeout_s())
-        return [{"path": f.path, "purpose": f.purpose, "api": f.api}
-                for f in plan.files if (f.path or "").strip()]
+
+        def _ask(msg: str) -> list[dict]:
+            plan = structured_complete("architect", [
+                {"role": "system", "content": _ARCHITECT_SYS},
+                {"role": "user", "content": msg}],
+                _ArchitectPlan, max_tokens=4000,
+                timeout_s=_orchestrator_timeout_s())
+            return [{"path": f.path, "purpose": f.purpose, "api": f.api}
+                    for f in plan.files if (f.path or "").strip()]
+
+        files = _ask(user_msg)
+        # PLAN GATE: the architect is a single point of failure — validate the
+        # plan structurally BEFORE the fan-out, and give the model ONE semantic
+        # reask naming the exact defects. Hard defects (dupes, escapes) are
+        # sanitized either way; a still-broken retry ships the sanitized plan
+        # with a warning rather than stalling the run.
+        files, issues = _validate_plan(files)
+        if issues:
+            log.warning("architect plan issues (reasking once): %s", issues)
+            retry = _ask(user_msg
+                         + "\n\nYOUR PREVIOUS PLAN HAD DEFECTS — produce a "
+                           "corrected plan fixing EVERY one of these:\n- "
+                         + "\n- ".join(issues))
+            retry, retry_issues = _validate_plan(retry)
+            if retry and len(retry_issues) < len(issues):
+                files, issues = retry, retry_issues
+            if issues:
+                log.warning("architect plan still imperfect after reask "
+                            "(shipping sanitized): %s", issues)
+        return files
     except Exception as exc:  # noqa: BLE001
         log.warning("architect step failed: %s", exc)
         return []

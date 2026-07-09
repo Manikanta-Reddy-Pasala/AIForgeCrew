@@ -286,3 +286,109 @@ def test_architect_context_soft_fails(monkeypatch):
         lambda *a, **k: json.dumps({"files": [{"path": "y.py", "purpose": "q"}]}))
     assert pp._architect("spec", cwd="/repo") == [
         {"path": "y.py", "purpose": "q", "api": []}]
+
+
+# ─── Orchestrator hardening gates (single-point-of-failure trio) ────────
+
+
+def test_enhancer_rejects_collapsed_spec(monkeypatch):
+    """A rewrite that collapsed a long ask must NOT replace it."""
+    monkeypatch.setattr("aiforge_core.memory.unified_query.query",
+                        lambda *a, **k: {"hits": [], "errors": []})
+    long_ask = ("build a spring boot service with a customer entity, a "
+                "repository layer, rest endpoints for crud, validation and "
+                "integration tests for every endpoint we ship to users")
+    monkeypatch.setattr("aiforge_core.llm.client.complete",
+                        lambda *a, **k: "Build a service.")
+    assert pp._enhance(long_ask) == long_ask         # degenerate → raw kept
+
+
+def test_enhancer_rejects_anchor_loss(monkeypatch):
+    monkeypatch.setattr("aiforge_core.memory.unified_query.query",
+                        lambda *a, **k: {"hits": [], "errors": []})
+    ask = ("refactor the retry_policy handling in sync_client.py and update "
+           "message_retry.py so both share one backoff helper module please")
+    monkeypatch.setattr(
+        "aiforge_core.llm.client.complete",
+        lambda *a, **k: "Refactor the retry handling so modules share one "
+                        "well-structured exponential backoff helper with tests.")
+    assert pp._enhance(ask) == ask                    # every anchor dropped
+
+
+def test_enhancer_keeps_good_spec(monkeypatch):
+    monkeypatch.setattr("aiforge_core.memory.unified_query.query",
+                        lambda *a, **k: {"hits": [], "errors": []})
+    ask = "fix the retry bug in sync_client.py and add a regression test"
+    good = ("GOAL: Fix the retry bug in sync_client.py.\n"
+            "- Reproduce, patch the backoff loop in sync_client.py\n"
+            "- Add a regression test covering the failure")
+    monkeypatch.setattr("aiforge_core.llm.client.complete",
+                        lambda *a, **k: good)
+    assert pp._enhance(ask) == good
+
+
+def test_validate_plan_sanitizes_and_reports():
+    files = [
+        {"path": "app.py", "purpose": "x", "api": []},
+        {"path": "app.py", "purpose": "dupe", "api": []},
+        {"path": "../../etc/evil.py", "purpose": "escape", "api": []},
+        {"path": "svc.go", "purpose": "wrong stack", "api": []},
+        {"path": "Main.java", "purpose": "wrong stack", "api": []},
+    ]
+    clean, issues = pp._validate_plan(files)
+    paths = [f["path"] for f in clean]
+    assert paths == ["app.py", "svc.go", "Main.java"]   # dupe+escape dropped
+    joined = " ".join(issues)
+    assert "duplicate" in joined and "escapes" in joined
+    assert "NO test files" in joined and "mixes" in joined
+
+
+def test_architect_reasks_once_on_plan_defects(monkeypatch, tmp_path):
+    """First plan has defects → ONE reask with the issue list → corrected
+    plan wins."""
+    monkeypatch.setenv("AIFORGE_STRUCTURED_MODE", "fallback")
+    calls = []
+    bad = ('{"files": [{"path": "a.py", "purpose": "x", "api": []},'
+           ' {"path": "a.py", "purpose": "dupe", "api": []}]}')
+    good = ('{"files": [{"path": "a.py", "purpose": "x", "api": []},'
+            ' {"path": "tests/test_a.py", "purpose": "t", "api": []}]}')
+
+    def fake(role, msgs, **k):
+        calls.append(msgs[-1]["content"])
+        return bad if len(calls) == 1 else good
+
+    monkeypatch.setattr("aiforge_core.llm.client.complete", fake)
+    monkeypatch.setattr("aiforge_core.runtime.skills.auto_context",
+                        lambda *a, **k: "")
+    monkeypatch.setattr("aiforge_core.runtime.workflows.auto_context",
+                        lambda *a, **k: "")
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent._rules_context",
+                        lambda cwd, query="": "")
+    files = pp._architect("build module a", cwd=str(tmp_path))
+    assert [f["path"] for f in files] == ["a.py", "tests/test_a.py"]
+    assert len(calls) == 2 and "PREVIOUS PLAN HAD DEFECTS" in calls[1]
+
+
+def test_adk_enhancer_guard_restores_raw_ask():
+    """3rd chat mode (sequential/ADK team): same degenerate gate via the
+    enhancer after-callback — collapsed rewrite → raw ask restored."""
+    from aiforge_core.runtime.pipeline import _make_enhancer_guard
+
+    class _Ctx:
+        def __init__(self, state):
+            self.state = state
+
+    raw = ("build a spring boot service with a customer entity, repository "
+           "layer, rest endpoints for crud and integration tests for all")
+    st = {"raw_ask": raw, "enhanced_body": "Build a service."}
+    _make_enhancer_guard()(callback_context=_Ctx(st))
+    assert st["enhanced_body"] == raw                 # degenerate → restored
+
+    good = "GOAL: Spring Boot customer service.\n- entity, repository, rest crud endpoints\n- integration tests for all endpoints"
+    st2 = {"raw_ask": raw, "enhanced_body": good}
+    _make_enhancer_guard()(callback_context=_Ctx(st2))
+    assert st2["enhanced_body"] == good               # good spec untouched
+
+    st3 = {"raw_ask": raw, "enhanced_body": "ENHANCE_BLOCKED: too vague"}
+    _make_enhancer_guard()(callback_context=_Ctx(st3))
+    assert st3["enhanced_body"].startswith("ENHANCE_BLOCKED")  # sentinel kept

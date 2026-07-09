@@ -998,6 +998,11 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
         initial_state["ticket_identifier"] = getattr(ticket, "identifier", "") or ""
         initial_state["ticket_project"] = getattr(ticket, "project", "") or ""
         initial_state["ticket_title"] = getattr(ticket, "title", "") or ""
+        # RAW ASK for the enhancer degenerate-output guard (pipeline.py):
+        # the guard compares state['enhanced_body'] against this and restores
+        # it when the rewrite collapsed / dropped every named anchor.
+        initial_state["raw_ask"] = ((getattr(ticket, "title", "") or "")
+                                    + "\n" + (getattr(ticket, "body", "") or "")).strip()
         # C6 scope enforcement: the UI stores the operator's allowlist in
         # ticket.metadata. Without this seed, scope_guard / verify_scope /
         # the Validator's rule 2 all judged a permanently-empty field.

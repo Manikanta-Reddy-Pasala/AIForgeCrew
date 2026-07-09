@@ -450,6 +450,12 @@ def build_pipeline(*, skip_researcher: bool = False,
     from .subtasks_callback import make_planner_subtasks_callback
     _append_after(planner, make_planner_subtasks_callback())
 
+    # ENHANCER DEGENERATE-OUTPUT GUARD (sequential/ADK path — same gate the
+    # parallel + escalated-simple paths get in parallel_subtasks._enhance):
+    # the enhancer is a single point of failure; a collapsed rewrite or one
+    # that dropped every named anchor must never replace the operator's ask.
+    _append_after(enhancer, _make_enhancer_guard())
+
     # LOC-plateau watcher on the Refiner — sees each loop turn AFTER the Doer
     # reported file_diffs. Sets state['loop_budget_kill'] which loop_gate
     # reads to exit the Doer loop early. (The old LoopAgent before-callback
@@ -571,6 +577,36 @@ def build_pipeline(*, skip_researcher: bool = False,
         if isinstance(_n, _LlmAgent) and getattr(_n, "mode", None) == "chat":
             _n.wait_for_output = False
     return wf
+
+
+def _make_enhancer_guard():
+    """After-callback for the ADK Enhancer: restore the RAW ask when the
+    rewrite is degenerate (collapsed, or lost every named file/symbol) —
+    everything downstream builds against ``enhanced_body``, so a bad rewrite
+    poisons the whole run. ``ENHANCE_BLOCKED`` sentinels pass through
+    untouched (that contract is handled by the runner)."""
+    def _cb(callback_context=None, **_kw):
+        try:
+            st = getattr(callback_context, "state", None)
+            if st is None:
+                return None
+            raw = st.get("raw_ask") or ""
+            body = st.get("enhanced_body")
+            if not raw or not isinstance(body, str):
+                return None
+            text = body.strip()
+            if not text or text.startswith("ENHANCE_BLOCKED"):
+                return None
+            from .parallel_subtasks import _spec_degenerate
+            bad = _spec_degenerate(raw, text)
+            if bad:
+                st["enhanced_body"] = raw
+                logging.getLogger("aiforge.pipeline").warning(
+                    "enhancer output rejected (%s) — raw ask restored", bad)
+        except Exception:  # noqa: BLE001 — the guard must never break a run
+            pass
+        return None
+    return _cb
 
 
 def _append_after(agent, cb) -> None:
