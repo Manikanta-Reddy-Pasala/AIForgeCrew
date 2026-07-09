@@ -206,6 +206,13 @@ def web_fetch(args: dict, cwd: str | None = None) -> dict:
         max_chars = int(args.get("max_chars", _TEXT_DEFAULT))
     except (TypeError, ValueError):
         max_chars = _TEXT_DEFAULT
+    return _fetch_readable(url, max_chars)
+
+
+def _fetch_readable(url: str, max_chars: int) -> dict:
+    """Gate-FREE readable-text fetch — the shared engine behind web_fetch and
+    web_ingest's fallback (the researcher's sanctioned path must not re-hit
+    the AIFORGE_ALLOW_WEB_FETCH gate web_fetch applies)."""
     try:
         raw = _get(url)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,

@@ -18,6 +18,7 @@ Defaults reproduce the historical bge-m3 / 1024-d behaviour exactly.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,11 @@ DOC_MAX_FILE_BYTES = int(os.environ.get("AIFORGE_CODEMEM_DOC_MAX_BYTES", "262144
 CHUNK_LINES = int(os.environ.get("AIFORGE_CODEMEM_CHUNK_LINES", "50"))
 DOC_CHUNK_LINES = int(os.environ.get("AIFORGE_CODEMEM_DOC_CHUNK_LINES", "60"))
 CHUNK_OVERLAP = int(os.environ.get("AIFORGE_CODEMEM_CHUNK_OVERLAP", "10"))
+# Code-chunker backend: "auto" uses the AST-aware chonkie adapter when the
+# optional dep is installed (better chunk boundaries → better vector recall),
+# "lines" forces the historical line windows, "chonkie" requires the adapter.
+CHUNKER = os.environ.get("AIFORGE_CODEMEM_CHUNKER", "auto").strip().lower()
+CHUNK_TOKENS = int(os.environ.get("AIFORGE_CODEMEM_CHUNK_TOKENS", "512"))
 
 
 def embed_config() -> dict:
@@ -99,7 +105,7 @@ def chunk_and_embed(
         chunks = (
             _split_doc(text, file_path=wf.path)
             if is_doc
-            else _split(text, file_path=wf.path)
+            else _split_code(text, file_path=wf.path, lang=wf.lang)
         )
 
         for idx, ch_text, line_start, line_end in chunks:
@@ -111,6 +117,40 @@ def chunk_and_embed(
                 line_start=line_start, line_end=line_end,
             ))
     return out, failed_paths
+
+
+_chonkie_forced_warned = False
+
+
+def _split_code(text: str, *, file_path: str,
+                lang: str = "") -> list[tuple[int, str, int, int]]:
+    """Code chunker with backend selection: AST-aware chonkie adapter when
+    enabled + installed + the language is supported, else the historical
+    line windows. The adapter raises on any failure → windows fallback, so
+    ingestion NEVER breaks on a chunker problem. Forced mode
+    (AIFORGE_CODEMEM_CHUNKER=chonkie) still falls back but WARNS once —
+    an operator who forced the backend must hear that it never ran."""
+    global _chonkie_forced_warned
+    if CHUNKER in ("auto", "chonkie"):
+        try:
+            from aiforge_memory.features.chunk import chonkie_adapter
+            if chonkie_adapter.available() and chonkie_adapter.supports_lang(lang):
+                return chonkie_adapter.chunk_code(
+                    text, lang, chunk_tokens=CHUNK_TOKENS)
+            if CHUNKER == "chonkie" and not _chonkie_forced_warned \
+                    and not chonkie_adapter.available():
+                _chonkie_forced_warned = True
+                logging.getLogger("aiforge.memory.chunk").warning(
+                    "AIFORGE_CODEMEM_CHUNKER=chonkie but the adapter is "
+                    "unavailable (pip install 'aiforge-memory[chunking]' in "
+                    "THIS env) — falling back to line windows")
+        except Exception as exc:  # noqa: BLE001 — fallback below is always safe
+            if CHUNKER == "chonkie" and not _chonkie_forced_warned:
+                _chonkie_forced_warned = True
+                logging.getLogger("aiforge.memory.chunk").warning(
+                    "forced chonkie chunker failed (%s) — falling back to "
+                    "line windows", exc)
+    return _split(text, file_path=file_path)
 
 
 def _split(text: str, *, file_path: str) -> list[tuple[int, str, int, int]]:

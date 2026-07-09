@@ -133,12 +133,24 @@ tool-calling required):
 | **Search / nav** | `grep` (ripgrep) · `find` · **`glob`** · AST **`repo_map`** · **`lsp`** (goto-def / find-refs / hover) |
 | **Code** | `run_command` · **`run_tests`** (per-test) · **`typecheck`** · **`format`** · **`ipython`** (persistent REPL) · `project` (detect+build/test/run) · `serve` (background dev server) · `ensure_runtime` |
 | **VCS** | targeted `git` (via shell) · **`github_pr`** · **`gitlab_mr_create`** / `gitlab_mr_comment` |
-| **Integrations** | `jira_*` (read/create/update/comment · transitions · worklog / `log_work` · boards / sprints / projects · dashboards · remote_links) · `confluence_*` (read/create/update · spaces · page_by_title · labels · comments · descendants) · **`context_gather`** (parallel cross-entity dossier) · `gitlab_*` · `web_search` · `web_fetch` · `browser` · `mcp` |
+| **Integrations** | `jira_*` (read/create/update/comment · transitions · worklog / `log_work` · boards / sprints / projects · dashboards · remote_links) · `confluence_*` (read/create/update · spaces · page_by_title · labels · comments · descendants) · **`context_gather`** (parallel cross-entity dossier) · `gitlab_*` · `web_search` · `web_fetch` · **`web_crawl`** (page → markdown dossier in `work/web/`, crawl4ai when installed) · `browser` · `mcp` |
 | **Memory / learning** | `memory_lookup` · `memory_write` (per-context or **`scope:"global"`**) · `remember_rule` · `skill_search` / `learn_skill` · `workflow_search` / `learn_workflow` |
 
 Writes show a **diff**; risky/caution commands and external writes are **approval-gated**
 by default. An optional `AIFORGE_WORKSPACE_DIR` clamps file ops to a root for cautious
 deploys.
+
+**Optional integration adapters** (`aiforge_core/integrations/` — separation of concerns:
+libs are imported ONLY behind thin adapters; every seam degrades gracefully without them):
+`pip install '.[structured]'` ([instructor](https://github.com/567-labs/instructor) —
+Pydantic-validated LLM output with auto-reask at the architect/grader/steering seams;
+a built-in schema-prompt+reask fallback always works), `pip install '.[crawl]'`
+([crawl4ai](https://github.com/unclecode/crawl4ai) — headless-browser markdown for
+`web_crawl`; plain fetch fallback), `aiforge-memory[chunking]`
+([chonkie](https://github.com/chonkie-inc/chonkie) — AST-aware code chunks for memory
+ingestion; line-window fallback), and [ragas](https://github.com/explodinggradients/ragas)
+RAG scoring via `scripts/rag_eval.py` (dev-tool overlay: `uv run --with 'ragas<0.4'
+--with 'langchain-openai<1' python scripts/rag_eval.py`).
 
 ## Context engineering
 

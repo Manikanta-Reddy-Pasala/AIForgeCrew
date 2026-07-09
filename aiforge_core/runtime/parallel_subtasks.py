@@ -24,6 +24,8 @@ import re
 import subprocess
 import threading
 
+from pydantic import BaseModel
+
 from aiforge_core.runtime import review_gates
 from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS, ensure_artifact_gitignore
 
@@ -1416,12 +1418,23 @@ def _architect_context(spec: str, cwd: str | None) -> str:
     return "\n\n".join(parts)
 
 
+class _ArchFileSpec(BaseModel):
+    path: str
+    purpose: str = ""
+    api: list[str] = []
+
+
+class _ArchitectPlan(BaseModel):
+    files: list[_ArchFileSpec] = []
+
+
 def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
     """Orchestrator agent 2: design the file structure (disjoint files), guided
     by the repo's skills/workflows/rules. Returns [{path, purpose}, ...] — the
-    single source of truth for the split. Backward compatible (cwd optional)."""
-    import json as _json
-    import re as _re
+    single source of truth for the split. Backward compatible (cwd optional).
+    Uses structured_complete (Pydantic-validated, schema-prompt + reask) —
+    replaces the old lossy ``re.search(r"{.*}")`` scrape that silently
+    returned [] on any malformed reply."""
     context = ""
     try:
         context = _architect_context(spec, cwd)
@@ -1429,15 +1442,14 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
         log.debug("architect context gather failed: %s", exc)
     user_msg = spec + (("\n\n" + context) if context else "")
     try:
-        from aiforge_core.llm import client
-        out = client.complete("architect", [
+        from aiforge_core.llm.structured import structured_complete
+        plan = structured_complete("architect", [
             {"role": "system", "content": _ARCHITECT_SYS},
-            {"role": "user", "content": user_msg}], max_tokens=4000,
+            {"role": "user", "content": user_msg}],
+            _ArchitectPlan, max_tokens=4000,
             timeout_s=_orchestrator_timeout_s())
-        m = _re.search(r"\{.*\}", out or "", _re.DOTALL)
-        obj = _json.loads(m.group(0)) if m else {}
-        files = obj.get("files") if isinstance(obj, dict) else None
-        return [f for f in (files or []) if isinstance(f, dict) and f.get("path")]
+        return [{"path": f.path, "purpose": f.purpose, "api": f.api}
+                for f in plan.files if (f.path or "").strip()]
     except Exception as exc:  # noqa: BLE001
         log.warning("architect step failed: %s", exc)
         return []
@@ -2364,7 +2376,12 @@ def _route_steering(txt: str, subs: list) -> dict:
     idx = "\n".join(f"- {s.get('slug')}: {s.get('path','')} — "
                     f"{(s.get('goal') or '')[:70]}" for s in subs)
     try:
-        from aiforge_core.llm.client import complete as _complete
+        from aiforge_core.llm.structured import structured_complete
+
+        class _SteerTarget(BaseModel):
+            target: str
+            note: str = ""
+
         prompt = (
             f"A build is running with these subtasks:\n{idx}\n\n"
             f"The user just commented mid-run:\n\"{txt[:500]}\"\n\n"
@@ -2373,14 +2390,13 @@ def _route_steering(txt: str, subs: list) -> dict:
             f"Rules: target=<slug> if it's about that ONE subtask/file; "
             f"global if it changes the whole spec/all subtasks; "
             f"new if it's a requirement not covered by any subtask.")
-        out = (_complete("chat", [{"role": "user", "content": prompt}]) or "").strip()
-        m = re.search(r"\{.*\}", out, re.S)
-        if m:
-            d = json.loads(m.group(0))
-            target = str(d.get("target") or "").strip()
-            note = str(d.get("note") or "").strip()[:120]
-            if target in slugs or target in ("global", "new"):
-                return {"target": target, "note": note}
+        d = structured_complete(
+            "chat", [{"role": "user", "content": prompt}], _SteerTarget,
+            max_retries=1)
+        target = (d.target or "").strip()
+        note = (d.note or "").strip()[:120]
+        if target in slugs or target in ("global", "new"):
+            return {"target": target, "note": note}
     except Exception:  # noqa: BLE001
         pass
     # Fallback: match the comment to a subtask by path/goal token overlap.

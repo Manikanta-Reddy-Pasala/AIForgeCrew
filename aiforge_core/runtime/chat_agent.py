@@ -58,7 +58,7 @@ _READ_OBS_TOOLS = frozenset({
     "confluence_resolve_space",
     "jira_boards", "jira_sprints", "jira_sprint_issues", "jira_dashboards",
     "jira_dashboard_read", "jira_myself", "file_read", "read_lines",
-    "gitlab_read", "web_fetch", "email_read",
+    "gitlab_read", "web_fetch", "web_crawl", "email_read",
 })
 
 
@@ -1357,6 +1357,13 @@ def _t_web_fetch(args: dict, cwd: str) -> dict:
     return web_search.web_fetch(args, cwd)
 
 
+def _t_web_crawl(args: dict, cwd: str) -> dict:
+    """Fetch a URL as clean markdown and file it as a work/web/<slug> dossier
+    (crawl4ai when installed, tag-strip fetch fallback)."""
+    from aiforge_core.runtime.tools import web_ingest
+    return web_ingest.web_crawl(args, cwd)
+
+
 def _t_serve(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import serve
     return serve.serve(args, cwd)
@@ -1417,21 +1424,16 @@ def _t_workflow_search(args: dict, cwd: str) -> dict:
 def _t_learn_workflow(args: dict, cwd: str) -> dict:
     """Author a reusable workflow (WORKFLOW.md) — an end-to-end procedure —
     so future sessions (or the user) can reuse it. scope: 'global' or 'repo'.
-    Optional ``scripts`` land in the workflow's own ``scripts/`` folder; they
-    MUST be tested first (``tested: true`` attests a run_command dry-run)."""
+    Optional ``scripts`` land in the workflow's own ``scripts/`` folder;
+    write_workflow HARD-tests each one (syntax check + actually RUNS its
+    ``test`` command or the script itself) and REFUSES the save on any
+    failure — job-builder parity, no honour-system flag."""
     try:
         from aiforge_core.runtime import workflows as _wf
         triggers = args.get("triggers") or []
         if isinstance(triggers, str):
             triggers = [t.strip() for t in triggers.split(",") if t.strip()]
         scripts = args.get("scripts") or []
-        tested = args.get("tested")
-        if scripts and not (tested is True or str(tested).lower() == "true"):
-            return {"ok": False, "error":
-                    "untested scripts — RUN each one first with run_command "
-                    "(a --dry-run path or a throwaway dir), verify the actual "
-                    "effect (not just exit 0), then call learn_workflow again "
-                    "with tested: true"}
         _name = args.get("name", "")
         _desc = args.get("description", "")
         _body = _elaborate_body("workflow", args.get("body") or args.get("content")
@@ -1908,6 +1910,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "gitlab_comment": _t_gitlab_comment,
     "web_search": _t_web_search,
     "web_fetch": _t_web_fetch,
+    "web_crawl": _t_web_crawl,
     "workflow_search": _t_workflow_search,
     "learn_workflow": _t_learn_workflow,
     "create_job_script": _t_create_job_script,
@@ -1951,7 +1954,7 @@ _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "jira_search", "jira_read",
                    "email_read",
                    "gitlab_search", "gitlab_read",
-                   "web_search", "web_fetch", "workflow_search",
+                   "web_search", "web_fetch", "web_crawl", "workflow_search",
                    "lsp", "typecheck",   # code-intel: read-only, OK in plan mode
                    # git inspect + line-range read + jira/confluence reads +
                    # list_services — all read-only (also in tool_policy's
@@ -2257,9 +2260,10 @@ Tool arguments:
 - learn_skill  {{"name": "...", "description": "when to use it", "body": "the step-by-step playbook", "triggers": ["word1","word2"], "scope": "global|repo"}}
                 (author a reusable skill after solving something non-trivial — also recorded in memory)
 - workflow_search {{"query": "..."}}                     (find reusable WORKFLOW.md end-to-end procedures)
-- learn_workflow  {{"name": "...", "description": "when to use it", "body": "the end-to-end steps", "triggers": ["word1"], "scope": "global|repo", "scripts": [{{"name": "step1.sh", "content": "#!/usr/bin/env bash\\n..."}}], "tested": true}}
+- learn_workflow  {{"name": "...", "description": "when to use it", "body": "the end-to-end steps", "triggers": ["word1"], "scope": "global|repo", "scripts": [{{"name": "step1.sh", "content": "#!/usr/bin/env bash\\n...", "test": "bash step1.sh --dry-run"}}]}}
                 (author a reusable multi-step workflow when the user asks or after running a repeatable procedure)
-                (optional scripts land in the workflow's own scripts/ folder, syntax-checked + chmod +x; the body should call them by path. TEST each script with run_command FIRST — with untested scripts the call is refused unless tested:true)
+                (optional scripts land in the workflow's own scripts/ folder, chmod +x; the body should call them by path. HARD GATE: every script is syntax-checked AND its "test" command — default: the script itself, no args — is actually RUN; ANY failure refuses the whole save, so write scripts that terminate cleanly or give each a fast --dry-run test. "test": "skip" only for a genuinely prod-only script, justified in the body)
+                (scripts needing Jira/Confluence/GitLab/email DATA must call `aiforge-tool <tool_name> '<json args>'` — the configured integration does the work; NEVER raw curl against the REST APIs)
 - create_job_script {{"name": "...", "cron": "0 9 * * *", "script": "<bash script text>", "description": "optional"}}
                 (JOB-BUILDER finalize: save the approved script to ~/.aiforge/jobs + schedule it as a recurring cron job — deterministic, no LLM per run)
 - confluence_search {{"query": "..."}}  or  {{"cql": "space = ENG AND text ~ 'foo'"}}   (find pages)
@@ -2321,6 +2325,7 @@ explicit alternative — never silently switch the deliverable or invent that th
 user "clarified" or "changed their mind".
 - web_search    {{"query": "rust tokio select! cancellation", "limit": 5}}   (search the open web — no key — when you're stuck / need current docs)
 - web_fetch     {{"url": "https://...", "max_chars": 6000}}                  (read a result page's text)
+- web_crawl     {{"url": "https://..."}}                                     (fetch a page as clean markdown AND save it to the shared work/web/<slug>/ dossier for reuse across sessions — prefer this over web_fetch when the page is documentation worth keeping)
 - serve         {{"cmd": "npm run dev", "port": 5173}}   (START a server/app in the BACKGROUND; returns its pid + the URL to open — use this to run the app, NOT run_command which would block)
 - stop_service  {{"pid": 12345}}                          (stop a service you started with serve)
 - list_services {{}}                                      (list services you started + whether each is alive)

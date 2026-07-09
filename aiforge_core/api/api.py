@@ -4249,7 +4249,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         try:
             from aiforge_core.runtime import work_context as _wc0
             _ctx0 = _wc0.context_for_path(cwd)
-            if _ctx0 and _ctx0[0] in ("jira", "confluence"):
+            if _ctx0 and _ctx0[0] in ("jira", "confluence", "web"):
                 _skip_worktree = True
                 _af_log.info("chat: no Changes view for %s dossier folder %s "
                              "(read-only context)", _ctx0[0], cwd)

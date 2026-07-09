@@ -29,6 +29,11 @@ ui = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
 ]
+# AST-aware code chunking (features/chunk/chonkie_adapter.py) — optional;
+# ingestion falls back to line windows when absent. NOTE: needs a newer
+# tree-sitter-language-pack than the monorepo root env (aider-chat pins an
+# old one) — install this extra in the memory service's own env.
+chunking = ["chonkie[code]>=0.4"]
 
 [project.scripts]
 aiforge-memory = "aiforge_memory.api.cli:main"

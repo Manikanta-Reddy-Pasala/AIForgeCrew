@@ -471,28 +471,26 @@ def _topic_labels(files: list[dict], role: str) -> dict:
     listing = "\n".join(f"{i}: {(d.get('title') or d.get('file') or '')[:80]}"
                         for i, d in enumerate(files))
     try:
-        from aiforge_core.llm.client import complete
-        out = complete(role, [
+        from pydantic import RootModel
+
+        from aiforge_core.llm.structured import structured_complete
+
+        class _Topics(RootModel[dict]):
+            pass
+
+        raw = structured_complete(role, [
             {"role": "system", "content":
              "Cluster these memory-note titles into 3-10 COHERENT topics (by "
              "subject/feature area). Reply ONLY a JSON object mapping each index "
              "(as a string) to a short kebab-case topic slug, e.g. "
              '{"0":"data-sync","1":"chat-ui"}. Every index must appear once.'},
             {"role": "user", "content": listing[:6000]},
-        ], max_tokens=800, temperature=0.0)
+        ], _Topics, max_tokens=800, max_retries=1, temperature=0.0).root
     except Exception:  # noqa: BLE001
         return {}
-    if not out:
+    if not isinstance(raw, dict):
         return {}
-    import json as _json
     import re as _re
-    m = _re.search(r"\{.*\}", out, _re.S)
-    if not m:
-        return {}
-    try:
-        raw = _json.loads(m.group(0))
-    except Exception:  # noqa: BLE001
-        return {}
     labels: dict = {}
     for k, v in raw.items():
         try:

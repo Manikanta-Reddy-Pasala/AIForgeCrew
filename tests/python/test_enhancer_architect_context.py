@@ -243,8 +243,8 @@ def test_architect_injects_skills_workflows_rules(monkeypatch):
     files = pp._architect("build a store", cwd="/some/repo")
     # Output contract preserved.
     assert files == [
-        {"path": "db.py", "purpose": "store"},
-        {"path": "main.py", "purpose": "entry"}]
+        {"path": "db.py", "purpose": "store", "api": []},
+        {"path": "main.py", "purpose": "entry", "api": []}]
     assert seen["role"] == "architect"
     # All three injected context blocks reach the architect's user message.
     assert "SKILLS:" in seen["user"]
@@ -267,7 +267,8 @@ def test_architect_backward_compatible_no_cwd(monkeypatch):
     monkeypatch.setattr(
         "aiforge_core.llm.client.complete",
         lambda *a, **k: json.dumps({"files": [{"path": "x.py", "purpose": "p"}]}))
-    assert pp._architect("a spec") == [{"path": "x.py", "purpose": "p"}]
+    assert pp._architect("a spec") == [
+        {"path": "x.py", "purpose": "p", "api": []}]
 
 
 def test_architect_context_soft_fails(monkeypatch):
@@ -283,4 +284,5 @@ def test_architect_context_soft_fails(monkeypatch):
     monkeypatch.setattr(
         "aiforge_core.llm.client.complete",
         lambda *a, **k: json.dumps({"files": [{"path": "y.py", "purpose": "q"}]}))
-    assert pp._architect("spec", cwd="/repo") == [{"path": "y.py", "purpose": "q"}]
+    assert pp._architect("spec", cwd="/repo") == [
+        {"path": "y.py", "purpose": "q", "api": []}]

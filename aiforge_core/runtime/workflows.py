@@ -227,28 +227,78 @@ def _check_script_syntax(path: Path) -> str | None:
     return None
 
 
-def _normalize_scripts(scripts) -> tuple[list[tuple[str, str]], str | None]:
-    """Validate the ``scripts`` argument into ``[(filename, content)]``.
-    Accepts a list of {name, content} dicts or a {name: content} mapping.
-    Rejects path traversal (any separator in the name) and empty content."""
+def _normalize_scripts(scripts) -> tuple[list[tuple[str, str, str]], str | None]:
+    """Validate the ``scripts`` argument into ``[(filename, content, test)]``.
+    Accepts a list of {name, content, test?} dicts or a {name: content}
+    mapping. ``test`` is the shell command the HARD gate runs to prove the
+    script works ("" → run the script itself; "skip" → explicitly untestable,
+    e.g. needs prod-only state). Rejects path traversal (any separator in the
+    name) and empty content."""
     if not scripts:
         return [], None
     if isinstance(scripts, dict):
         scripts = [{"name": k, "content": v} for k, v in scripts.items()]
     if not isinstance(scripts, list):
         return [], "scripts must be a list of {name, content}"
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str, str, str]] = []
     for s in scripts:
         if not isinstance(s, dict):
             return [], "each script must be a {name, content} object"
         fname = str(s.get("name") or s.get("filename") or "").strip()
         content = s.get("content") or s.get("body") or ""
+        test = str(s.get("test") or "").strip()
         if not fname or not _SCRIPT_NAME_RE.match(fname):
             return [], f"invalid script name {fname!r} (plain filename only, no paths)"
         if not isinstance(content, str) or not content.strip():
             return [], f"script {fname!r} has no content"
-        out.append((fname, content))
+        out.append((fname, content, test))
     return out, None
+
+
+_SCRIPT_RUNNER_BY_EXT = {".sh": "bash", ".bash": "bash", ".py": "python3",
+                         ".js": "node", ".mjs": "node", ".rb": "ruby",
+                         ".pl": "perl"}
+
+
+def _test_scripts_hard(staged_dir: Path,
+                       script_files: list[tuple[str, str, str]]) -> str | None:
+    """HARD gate (job-builder parity): actually RUN each staged script — its
+    declared ``test`` command, else the script itself with no args — inside
+    the staging dir. Returns an error string (with output tail) on the first
+    failure; a workflow with a failing script is never saved. ``test: skip``
+    opts a genuinely-untestable script out (prod-only state) — the builder
+    charter requires justifying that in the body."""
+    timeout = 60
+    try:
+        timeout = max(5, int(os.environ.get(
+            "AIFORGE_WORKFLOW_SCRIPT_TEST_TIMEOUT_S", "60")))
+    except ValueError:
+        timeout = 60
+    for fname, _content, test in script_files:
+        if test.lower() == "skip":
+            continue
+        if test:
+            cmd = test
+        else:
+            runner = _SCRIPT_RUNNER_BY_EXT.get(Path(fname).suffix.lower())
+            if runner is None:
+                continue           # no way to execute (e.g. .sql) — syntax-only
+            if runner in ("node", "ruby", "perl") and not shutil.which(runner):
+                continue           # interpreter absent on this host
+            cmd = f"{runner} {fname}"
+        try:
+            r = subprocess.run(cmd, shell=True, cwd=str(staged_dir),
+                               capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return (f"script {fname!r} test timed out after {timeout}s "
+                    f"(cmd: {cmd}) — make it terminate, or give it a fast "
+                    "--dry-run 'test' command")
+        if r.returncode != 0:
+            tail = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()[-800:]
+            return (f"script {fname!r} FAILED its test run (cmd: {cmd}, "
+                    f"exit {r.returncode}) — fix it and retry; a workflow "
+                    f"with a failing script is never saved:\n{tail}")
+    return None
 
 
 def write_workflow(name: str, description: str, body: str,
@@ -289,24 +339,30 @@ def write_workflow(name: str, description: str, body: str,
     front += "---\n"
     script_paths: list[str] = []
     try:
-        # Stage + syntax-check scripts in a scratch dir FIRST — a failing
-        # script aborts the whole write, so a broken workflow is never saved.
+        # Stage scripts in a scratch dir FIRST: syntax-check each, then the
+        # HARD gate actually RUNS them (test command or the script itself,
+        # job-builder parity) — any failure aborts the whole write, so a
+        # broken workflow is never saved.
         if script_files:
             import tempfile
             with tempfile.TemporaryDirectory() as td:
-                for fname, content in script_files:
+                for fname, content, _test in script_files:
                     sp = Path(td) / fname
                     sp.write_text(content, encoding="utf-8")
+                    sp.chmod(0o755)
                     serr = _check_script_syntax(sp)
                     if serr:
                         return {"ok": False,
                                 "error": f"script {fname!r} failed its syntax "
                                          f"check — fix and retry: {serr}"}
+                terr = _test_scripts_hard(Path(td), script_files)
+                if terr:
+                    return {"ok": False, "error": terr}
         wf_dir.mkdir(parents=True, exist_ok=True)
         if script_files:
             sdir = wf_dir / "scripts"
             sdir.mkdir(parents=True, exist_ok=True)
-            for fname, content in script_files:
+            for fname, content, _test in script_files:
                 dst = sdir / fname
                 dst.write_text(content, encoding="utf-8")
                 dst.chmod(0o755)

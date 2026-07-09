@@ -75,38 +75,27 @@ def _grade(spec: str, diff: str) -> dict:
     discarding everything when grading is offline (B5)."""
     capped = (diff or "")[:_DIFF_CAP]
     try:
-        from aiforge_core.llm import client
+        from pydantic import BaseModel
+
+        from aiforge_core.llm.structured import structured_complete
+
+        class _Grade(BaseModel):
+            score: int = 0
+            why: str = ""
+
         # CF5 — label the grader call "grader" (not "reviewer") so the Perf
         # page attributes grading latency to the grader, not the reviewer role.
-        out = client.complete("grader", [
+        # Structured path (schema-prompt + validate + reask): a malformed grade
+        # used to fail SILENTLY into graded=False and skew the best-of-N pick.
+        g = structured_complete("grader", [
             {"role": "system", "content": _GRADER_SYS},
             {"role": "user", "content": f"SPEC:\n{spec}\n\nDIFF:\n{capped}"}],
-            max_tokens=300)
+            _Grade, max_tokens=300, max_retries=1)
+        return {"score": max(0, min(100, int(g.score))),
+                "why": (g.why or "").strip()[:200], "graded": True}
     except Exception as exc:  # noqa: BLE001 — grader is best-effort
         log.warning("best_of_n grade LLM call failed: %s", exc)
         return dict(_GRADE_FAILED)
-    return _parse_grade(out)
-
-
-def _parse_grade(out: str | None) -> dict:
-    """Pull ``{"score":int,"why":str}`` out of an LLM response defensively.
-    Returns ``graded=False``/``score=None`` when nothing parseable is found."""
-    m = re.search(r"\{.*\}", out or "", re.DOTALL)
-    if not m:
-        return dict(_GRADE_FAILED)
-    try:
-        obj = json.loads(m.group(0))
-    except (ValueError, TypeError):
-        return dict(_GRADE_FAILED)
-    if not isinstance(obj, dict):
-        return dict(_GRADE_FAILED)
-    try:
-        score = int(obj.get("score", 0))
-    except (TypeError, ValueError):
-        score = 0
-    score = max(0, min(100, score))
-    why = str(obj.get("why") or "").strip()[:200]
-    return {"score": score, "why": why, "graded": True}
 
 
 def _attempt(spec: str, repo: str, base: str, i: int, run_one,

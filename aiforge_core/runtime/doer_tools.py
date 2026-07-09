@@ -778,6 +778,21 @@ def web_search(query: str, k: int = 5) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def web_crawl(url: str, max_chars: int = 3000) -> dict:
+    """Fetch a page as clean markdown AND save it to the shared
+    work/web/<slug>/ dossier for reuse across sessions — prefer this over
+    web_read when the page is documentation worth keeping. Researcher-only
+    tool, so it rides the role's sanctioned egress (parity with the ungated
+    web_read — gating it on AIFORGE_ALLOW_WEB_FETCH would make it dead on
+    arrival for the ONE agent that receives it)."""
+    try:
+        from aiforge_core.runtime.tools import web_ingest as _wi
+        return _wi.web_crawl({"url": url, "max_chars": int(max_chars or 3000),
+                              "sanctioned": True})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def commit(message: str) -> dict:
     """Alias for :func:`git_commit`."""
     return git_commit(message)
@@ -1610,7 +1625,9 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     # general fetch stays behind the AIFORGE_ALLOW_WEB_FETCH gate. This makes
     # the researcher the single sanctioned web-egress agent.
     if role == "researcher":
-        tools = tools + [FunctionTool(func=web_search), FunctionTool(func=web_read)]
+        tools = tools + [FunctionTool(func=web_search),
+                         FunctionTool(func=web_read),
+                         FunctionTool(func=web_crawl)]
     if role is None:
         return tools
     if os.environ.get("AIFORGE_TOOL_ENFORCE", "1").strip().lower() in (
@@ -1657,7 +1674,8 @@ __all__ = [
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
     "memory_lookup", "memory_block", "graphify_lookup", "skill_search", "learn_skill",
-    "workflow_search", "learn_workflow", "web_search", "serve", "stop_service",
+    "workflow_search", "learn_workflow", "web_search", "web_crawl",
+    "serve", "stop_service",
     "subtask_update",
     "confluence_search", "confluence_read", "confluence_create", "confluence_update",
     "jira_search", "jira_read", "jira_create", "jira_update", "jira_comment",

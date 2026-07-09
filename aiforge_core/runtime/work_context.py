@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import re
 
-_KINDS = ("jira", "confluence", "repo")
+_KINDS = ("jira", "confluence", "repo", "web")
 
 # JIRA issue key: PROJ-123 / ABC1-45. Uppercase project + dash + digits.
 _JIRA_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,20}-\d+)\b")
