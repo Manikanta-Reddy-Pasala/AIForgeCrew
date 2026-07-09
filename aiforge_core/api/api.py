@@ -3930,6 +3930,37 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         if _cmd_expanded:
             yield {"type": "thought", "role": "command",
                    "text": f"Expanded /{_cmd_expanded} command template."}
+        # Staleness auto-curation: a session bound to a jira/confluence
+        # context folder (cwd = work/<kind>/<key>) re-verifies that context's
+        # note when its updated_at crossed AIFORGE_NOTE_STALE_HOURS. The
+        # pre-check is cheap and network-free; the actual curation re-fetches
+        # the source, so it's HARD time-boxed (like the rule_capture pass
+        # below) — a dead Jira must never stall the chat turn. FAILS OPEN.
+        try:
+            from aiforge_core.runtime import note_curator as _nc
+            _stale_note = _nc.stale_note_path(cwd)
+            if _stale_note:
+                import concurrent.futures as _ncf
+                _cres = None
+                _nex = _ncf.ThreadPoolExecutor(max_workers=1)
+                try:
+                    _nbudget = float(os.environ.get(
+                        "AIFORGE_NOTE_CURATE_BUDGET_S", "10"))
+                    _cres = _nex.submit(_nc.curate_note,
+                                        _stale_note).result(timeout=_nbudget)
+                except Exception as _nexc:  # noqa: BLE001 — timeout/any → skip
+                    _af_log.debug("note curation timed out/failed: %s", _nexc)
+                finally:
+                    _nex.shutdown(wait=False)
+                # Visible only when something actually drifted — a silent
+                # freshness bump shouldn't add chat noise.
+                if _cres and _cres.get("ok") and _cres.get("changes"):
+                    yield {"type": "thought", "role": "curator",
+                           "text": ("Auto-curated stale note "
+                                    f"{os.path.basename(_stale_note)}: "
+                                    + "; ".join(_cres["changes"]))}
+        except Exception as _nexc2:  # noqa: BLE001 — must never break a turn
+            _af_log.debug("note staleness pass skipped: %s", _nexc2)
         # Rule / Memory / Feedback capture (deterministic, always-on) — runs
         # BEFORE any agent, independent of the agent's model, so a directive /
         # fact / correction stated in passing is captured + applied. FAILS OPEN:
