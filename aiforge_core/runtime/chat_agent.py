@@ -3666,23 +3666,25 @@ def run_chat_agent(
     _add_sys_block("project-memory", _bundle.project_brief_md)
     if _ctx_on("summary"):
         _add_sys_block("repo-summary", _bundle.repo_summary_md)
+    # WORKFLOWS before the (big) repo-map, and NOT skipped in cave mode: a
+    # matched workflow is a MANDATORY user procedure (branch/MR conventions,
+    # naming) — dropping it silently made the agent e.g. commit straight to
+    # main. Append order = drop order under a tight window, so procedures
+    # must outrank the repo-map (the agent can always grep structure back).
+    if _ctx_on("workflows"):
+        _add_sys_block("workflows", _bundle.workflows_md)
+    if not cave and _ctx_on("skills"):
+        _add_sys_block("skills", _bundle.skills_md)
     if _ctx_on("repomap"):
         _add_sys_block("repo-map", _bundle.repo_map_md)
-    # Skills / workflows / @-mentions — OPTIONAL context blocks. Cave mode skips
-    # them (the agent can still skill_search / workflow_search on demand); each is
-    # also independently toggleable.
-    if not cave:
-        if _ctx_on("skills"):
-            _add_sys_block("skills", _bundle.skills_md)
-        if _ctx_on("workflows"):
-            _add_sys_block("workflows", _bundle.workflows_md)
-        if _ctx_on("mentions"):
-            try:
-                from aiforge_core.runtime import mentions as _mentions
-                ment_block, _toks = _mentions.expand(last_user, cwd)
-                _add_sys_block("mentions", ment_block)
-            except Exception:  # noqa: BLE001
-                pass
+    # @-mentions — optional; cave mode skips (searchable on demand).
+    if not cave and _ctx_on("mentions"):
+        try:
+            from aiforge_core.runtime import mentions as _mentions
+            ment_block, _toks = _mentions.expand(last_user, cwd)
+            _add_sys_block("mentions", ment_block)
+        except Exception:  # noqa: BLE001
+            pass
     # Self-learning recall — EVERY turn, keyed to the CURRENT user message
     # (from the shared bundle). Cave mode pulls fewer hits.
     if _ctx_on("recall") and _proactive == "full":
@@ -3720,6 +3722,10 @@ def run_chat_agent(
     if _sys_dropped:                # one-line note so the trim is visible
         _add_sys_block("_note", "[context note: dropped/trimmed lower-priority "
                        "blocks to fit the window: " + ", ".join(_sys_dropped) + "]")
+    # A dropped WORKFLOWS/SKILLS block means the agent may skip a mandatory
+    # user procedure (e.g. branch-then-MR) — surface that to the USER instead
+    # of failing silently inside the prompt.
+    _dropped_playbooks = [b for b in ("workflows", "skills") if b in _sys_dropped]
     # Final backstop: guarantee the system prompt is under the cap (keeps the
     # core + rules at the front; truncates the injected tail).
     sys_msg = _cap_system_prompt(sys_msg, _sys_cap, protect=_sys_core_len)
@@ -3752,6 +3758,13 @@ def run_chat_agent(
             _ci.set_steerable(session_id, True)
         except Exception:  # noqa: BLE001
             pass
+
+    if _dropped_playbooks:
+        yield {"type": "thought", "role": "system",
+               "text": "⚠ context window too small — dropped the "
+                       + " + ".join(_dropped_playbooks) + " block(s): matched "
+                       "workflows/skills may NOT be followed this turn. Load "
+                       "the model at a larger context window to fix this."}
 
     n = 0
     _builder_nudged = False

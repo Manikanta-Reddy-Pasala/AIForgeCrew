@@ -96,14 +96,16 @@ def build_bundle(cwd: str, query: str, *, cave: bool = False,
     # Consolidated per-repo project memory (compacted brief) — load it whenever
     # we have a repo, so opening a project brings its accumulated memory.
     b.project_brief_md = _safe(lambda: _project_brief(cwd))
-    # Relevance-matched playbooks (skip in cave mode — agent can still search).
-    if not cave:
-        if ctx_on("skills"):
-            b.skills_md = _safe(lambda: _sk.auto_context(query, cwd))
-            b.used_skills = _safe(lambda: _sk.selected_names(query, cwd), default=[])
-        if ctx_on("workflows"):
-            b.workflows_md = _safe(lambda: _wf.auto_context(query, cwd))
-            b.used_workflows = _safe(lambda: _wf.selected_names(query, cwd), default=[])
+    # Relevance-matched playbooks. WORKFLOWS are built even in cave mode — a
+    # matched workflow is a MANDATORY user procedure (branch/MR conventions);
+    # silently dropping it on a small window made the agent skip it (e.g.
+    # commit straight to main). Skills stay cave-skipped (searchable on demand).
+    if ctx_on("workflows"):
+        b.workflows_md = _safe(lambda: _wf.auto_context(query, cwd))
+        b.used_workflows = _safe(lambda: _wf.selected_names(query, cwd), default=[])
+    if not cave and ctx_on("skills"):
+        b.skills_md = _safe(lambda: _sk.auto_context(query, cwd))
+        b.used_skills = _safe(lambda: _sk.selected_names(query, cwd), default=[])
     if want_summary and ctx_on("summary"):
         b.repo_summary_md = _safe(lambda: _ca._repo_context(cwd))
     if want_repo_map and ctx_on("repomap"):

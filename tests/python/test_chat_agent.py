@@ -730,7 +730,10 @@ def test_condense_summary_includes_earlier_asks(monkeypatch):
 
 
 def test_cave_mode_skips_optional_blocks_and_shrinks_budget(tmp_path, monkeypatch):
-    """Cave mode drops skills/workflows/mentions blocks + condenses sooner."""
+    """Cave mode drops skills/mentions blocks + condenses sooner. WORKFLOWS
+    are still built even in cave — a matched workflow is a MANDATORY user
+    procedure (branch/MR conventions); silently dropping it on small windows
+    made the agent e.g. commit straight to main."""
     from aiforge_core.runtime import chat_agent as ca
     seen = {"skills": 0, "workflows": 0, "mentions": 0}
     import aiforge_core.runtime.skills as sk
@@ -750,5 +753,7 @@ def test_cave_mode_skips_optional_blocks_and_shrinks_budget(tmp_path, monkeypatc
     fn = _scripted(["FINAL: done"])
     list(ca.run_chat_agent([{"role": "user", "content": "hi"}],
                            cwd=str(tmp_path), complete_fn=fn))
-    # In cave mode the optional blocks were never assembled.
-    assert seen == {"skills": 0, "workflows": 0, "mentions": 0}
+    # In cave mode the OPTIONAL blocks were never assembled; workflows
+    # (mandatory procedures) still were.
+    assert seen["skills"] == 0 and seen["mentions"] == 0
+    assert seen["workflows"] >= 1
