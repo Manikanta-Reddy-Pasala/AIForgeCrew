@@ -262,7 +262,10 @@ def _curate(path: str) -> dict:
     flagged = []
     for lk in links:
         s = str(lk)
-        if s.endswith(_DEAD_SUFFIX) or s.startswith("[["):
+        # "[" covers both cross-ref forms — canonical relative md file links
+        # ([kind/key](../../…/ticket.md)) and legacy [[kind/key]] wiki refs:
+        # local refs are the curator's own filesystem, not HTTP targets.
+        if s.endswith(_DEAD_SUFFIX) or s.startswith("["):
             flagged.append(s)
             continue
         if re.match(r"^https?://", s, re.IGNORECASE) and _link_dead(s):
