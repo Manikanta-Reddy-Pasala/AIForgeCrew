@@ -3416,6 +3416,19 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         result["ok"] = ok            # authoritative (matches the test runner)
         return
 
+    # CONFIG-VALIDITY GATE (live-e2e finding): ONE unterminated string in a
+    # merged pyproject.toml made every pytest/pip run die at CONFIG PARSE —
+    # exit != 0 with ZERO parsed failures — so reconcile burned all its
+    # passes reporting "failed (0 failing)" while patching the wrong files.
+    # Detect a broken config deterministically and point the fixer AT it.
+    _cfg_err = _broken_project_config(cwd)
+    if _cfg_err:
+        yield {"type": "thought", "role": "reconciler",
+               "text": f"⚠ project config invalid — {_cfg_err}. Fixing it "
+                       "first; every test/build run is blocked by it."}
+        output = (f"CONFIG ERROR — fix this FIRST, nothing can run until it "
+                  f"parses: {_cfg_err}\n\n{output}")
+
     max_rounds = _reconcile_rounds()
     rounds = 0
     prev_fails = _fail_count(output)
@@ -3448,8 +3461,12 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         # AIFORGE_RECONCILE_TEST_AUDIT=0.
         _audit = (os.environ.get("AIFORGE_RECONCILE_TEST_AUDIT", "1")
                   not in ("0", "false") and stalls >= 2)
+        # "0 failing" with a red run = the run ERRORED before tests executed
+        # (config/collection) — say so instead of the contradictory count.
+        _fail_desc = (f"{prev_fails} failing" if prev_fails
+                      else "run ERRORED before tests executed — config/collection")
         yield {"type": "thought", "role": "reconciler",
-               "text": f"Integration failed ({prev_fails} failing) — pass "
+               "text": f"Integration failed ({_fail_desc}) — pass "
                        f"{rounds}/{max_rounds}: "
                        + (f"escalating the residual to {_esc_model}…" if _use_esc
                           else "auditing whether a stuck test is itself wrong…"
@@ -3518,6 +3535,30 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         yield {"type": "thought", "role": "reconciler",
                "text": f"Reconciliation ran {rounds} pass(es) — some tests still "
                        "red; see the report + manual steps below."}
+
+
+def _broken_project_config(cwd: str) -> str | None:
+    """Deterministic parse check of the project's build/test config files —
+    a syntactically broken one blocks EVERY test/build run with an error the
+    fail-count parser reads as '0 failing'. Returns '<file>: <error>' or
+    None."""
+    import json as _json
+    py = os.path.join(cwd, "pyproject.toml")
+    if os.path.isfile(py):
+        try:
+            import tomllib
+            with open(py, "rb") as fh:
+                tomllib.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            return f"pyproject.toml: {str(exc)[:200]}"
+    pj = os.path.join(cwd, "package.json")
+    if os.path.isfile(pj):
+        try:
+            with open(pj, encoding="utf-8") as fh:
+                _json.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            return f"package.json: {str(exc)[:200]}"
+    return None
 
 
 def _render_spec_md(prompt: str, subs: list[dict]) -> str:
