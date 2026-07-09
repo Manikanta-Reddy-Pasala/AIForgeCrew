@@ -136,7 +136,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "chonkie", marker = "extra == 'chunking'", specifier = ">=1.0" },
-    { name = "chonkie", extras = ["code"], marker = "extra == 'chunking-code'", specifier = ">=0.4" },
     { name = "fastapi", marker = "extra == 'ui'", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "neo4j", specifier = ">=5.20" },
@@ -148,7 +147,7 @@ requires-dist = [
     { name = "tree-sitter-language-pack", specifier = ">=0.13,<1.0" },
     { name = "uvicorn", marker = "extra == 'ui'", specifier = ">=0.27" },
 ]
-provides-extras = ["dev", "ui", "chunking", "chunking-code"]
+provides-extras = ["dev", "ui", "chunking"]
 
 [[package]]
 name = "aiforgecrew"

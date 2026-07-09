@@ -141,9 +141,9 @@ def _split_code(text: str, *, file_path: str,
                     and not chonkie_adapter.available():
                 _chonkie_forced_warned = True
                 logging.getLogger("aiforge.memory.chunk").warning(
-                    "AIFORGE_CODEMEM_CHUNKER=chonkie but the adapter is "
-                    "unavailable (pip install 'aiforge-memory[chunking]' in "
-                    "THIS env) — falling back to line windows")
+                    "AIFORGE_CODEMEM_CHUNKER=chonkie but the AST chunker is "
+                    "unavailable (tree-sitter-language-pack missing?) — "
+                    "falling back to line windows")
         except Exception as exc:  # noqa: BLE001 — fallback below is always safe
             if CHUNKER == "chonkie" and not _chonkie_forced_warned:
                 _chonkie_forced_warned = True

@@ -33,8 +33,11 @@ ui = [
 # ingestion falls back to line windows when absent. NOTE: needs a newer
 # tree-sitter-language-pack than the monorepo root env (aider-chat pins an
 # old one) — install this extra in the memory service's own env.
-chunking = ["chonkie>=1.0"]          # BASE: doc chunking works alongside aider
-chunking-code = ["chonkie[code]>=0.4"]  # CodeChunker: needs tslp>=1.x (aider-free env)
+# BASE chonkie: DOC chunking (RecursiveChunker, no tree-sitter). CODE
+# chunking needs NO extra at all — own AST packer over the core
+# tree-sitter-language-pack dep (chonkie's CodeChunker was removed: it needs
+# tslp>=1.x, unresolvable next to aider's ==0.13.0 pin).
+chunking = ["chonkie>=1.0"]
 
 [project.scripts]
 aiforge-memory = "aiforge_memory.api.cli:main"
