@@ -51,6 +51,44 @@ def memory_write(
     source: str = "doer",
     embed_vec: "list[float] | None" = None,
     scope: str = "",
+) -> "dict[str, Any]":
+    """Public entry — delegates to the real writer, then mirrors the WRITE
+    to Langfuse (env-gated, soft-fail) so memory writes are observable next
+    to the recalls and LLM calls they feed."""
+    res = _memory_write_impl(text=text, kind=kind, tags=tags,
+                             media_refs=media_refs, decision=decision,
+                             repo=repo, source=source, embed_vec=embed_vec,
+                             scope=scope)
+    try:
+        import json as _json
+
+        from aiforge_core.integrations import langfuse_adapter as _lf
+        if _lf.enabled():
+            _lf.record_generation(
+                role="memory.write",
+                model="decision" if decision else (kind or "note"),
+                messages=[{"role": "user", "content": (text or "")[:2000]}],
+                output=_json.dumps({k: res.get(k) for k in
+                                    ("ok", "id", "label", "error")
+                                    if k in res}),
+                metadata={"path": "memory", "repo": repo or "",
+                          "scope": scope or "", "source": source,
+                          "tags": list(tags or [])[:8]})
+    except Exception:  # noqa: BLE001 — tracing never breaks a write
+        pass
+    return res
+
+
+def _memory_write_impl(
+    text: str,
+    kind: str = "gotcha",
+    tags: list[str] | None = None,
+    media_refs: list[str] | None = None,
+    decision: bool = False,
+    repo: str | None = None,
+    source: str = "doer",
+    embed_vec: "list[float] | None" = None,
+    scope: str = "",
 ) -> dict[str, Any]:
     """Persist a fact the Doer noticed during this run.
 

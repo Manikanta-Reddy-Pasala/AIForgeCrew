@@ -361,6 +361,26 @@ def query(
         if len(_QCACHE) >= _QCACHE_MAX:
             _QCACHE.clear()   # simple bound — cheap, TTL keeps it fresh anyway
         _QCACHE[_ck] = (time.time(), result)
+    # Langfuse mirror (env-gated, fire-and-forget): make MEMORY RECALL
+    # observable next to the LLM calls it feeds — what was asked, which
+    # sources answered, what came back. Soft-fails; recall never breaks.
+    try:
+        from aiforge_core.integrations import langfuse_adapter as _lf
+        if _lf.enabled():
+            _summary = "\n".join(
+                f"[{h.get('source') or h.get('source_uri') or '?'}] "
+                + str(h.get('text') or '')[:200]
+                for h in result["hits"][:8])
+            _lf.record_generation(
+                role="memory.recall", model=",".join(used) or "none",
+                messages=[{"role": "user", "content": text[:2000]}],
+                output=_summary,
+                metadata={"path": "memory", "sources": used,
+                          "hits": len(result["hits"]),
+                          **({"errors": errors[:3]} if errors else {}),
+                          **({"repo": repo} if repo else {})})
+    except Exception:  # noqa: BLE001 — tracing must never break recall
+        pass
     return result
 
 

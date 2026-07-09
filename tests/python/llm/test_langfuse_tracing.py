@@ -103,3 +103,29 @@ def test_ingestion_payload_shape(monkeypatch):
     assert len(gen["input"][0]["content"]) <= 8000       # capped
     assert gen["output"] == "ok"
     assert gen["traceId"] == batch[0]["body"]["id"]      # linked
+
+
+def test_memory_recall_and_write_mirrored(monkeypatch, tmp_path):
+    """Memory layer observability: unified_query recalls and memory writes
+    each produce a langfuse record (env-gated, soft-fail)."""
+    seen: list[dict] = []
+    monkeypatch.setattr(lf, "enabled", lambda: True)
+    monkeypatch.setattr(lf, "record_generation",
+                        lambda **kw: seen.append(kw))
+    monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
+    monkeypatch.setenv("AIFORGE_UQ_CACHE_TTL_S", "0")
+
+    from aiforge_core.runtime.tools.memory_write import memory_write
+    r = memory_write(text="sync retries use exponential backoff",
+                     kind="gotcha", repo="demo")
+    assert r.get("ok") is not None
+    writes = [e for e in seen if e["role"] == "memory.write"]
+    assert writes and writes[0]["metadata"]["path"] == "memory"
+
+    from aiforge_core.memory import unified_query
+    res = unified_query.query("how do sync retries work?", repo="demo")
+    assert isinstance(res.get("hits"), list)
+    recalls = [e for e in seen if e["role"] == "memory.recall"]
+    assert recalls and recalls[0]["metadata"]["hits"] == len(res["hits"])
+    assert "sync retries" in recalls[0]["messages"][0]["content"]
