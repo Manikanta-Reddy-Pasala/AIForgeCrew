@@ -151,7 +151,9 @@ def _note_for(kind: str, key: str, primary: dict,
     """Wrap a primary entity in the STANDARD managed-note envelope
     (work_notes.render_note): OKR sections up top for the curator/agent, the
     full legacy dossier text preserved as the body. Cross-entity references
-    are emitted as wiki refs so notes link to each other, not to a base URL."""
+    are emitted as managed cross-refs — normalize_links canonicalizes them
+    into RELATIVE MD FILE LINKS ([confluence/123](../../confluence/123/page.md))
+    so notes link to each other's files, not to a base URL."""
     from aiforge_core.runtime import work_notes
     if kind == "jira":
         note_links = [primary.get("url") or ""]

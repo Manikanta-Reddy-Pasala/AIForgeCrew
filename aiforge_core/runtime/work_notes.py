@@ -12,22 +12,26 @@ renderer/parser for all of them:
     updated_at: 2026-07-10T00:00:00+00:00
     links:
       - "https://jira/browse/PROJ-42"
-      - "[[confluence/12345]]"
+      - "[confluence/12345](../../confluence/12345/page.md)"
     ---
     # PROJ-42 — the title
 
-    ## Objective                ← OKR-style sections, fixed order
-    ## Key results
-    ## Facts
-    ## Links
+    ## Objective                ← Google-OKR sections, fixed order:
+    ## Key Results                an Objective + measurable Key Results
+    ## Facts                      (Google's structure); Facts/Links/
+    ## Links                      Learnings extend it for dossier upkeep
     ## Learnings
     <free body — the full page/ticket text, preserved verbatim>
 
-Cross-references to OTHER managed dossiers are stored as relative wiki-style
-refs ``[[kind/key]]`` so a note survives a base-URL change and the curator can
-resolve them locally. Rendering is DETERMINISTIC (stable section order, stable
-link order) so repeated writes of the same data produce byte-identical files —
-the git-ignored dossier folders never look "changed" from a re-render.
+Cross-references to OTHER managed dossiers are stored as RELATIVE MARKDOWN
+FILE LINKS to the target note's md file
+(``[jira/PROJ-42](../../jira/PROJ-42/ticket.md)``) — they render/click as
+plain markdown, survive a Jira/Confluence base-URL change, and the curator can
+resolve them locally. Legacy ``[[kind/key]]`` wiki refs are still accepted on
+input and upgraded to md links on the next write. Rendering is DETERMINISTIC
+(stable section order, stable link order) so repeated writes of the same data
+produce byte-identical files — the git-ignored dossier folders never look
+"changed" from a re-render.
 
 Soft-error contract: ``update_note`` returns ``{"ok": bool, ...}`` and never
 raises; ``parse_note`` is tolerant of hand-edited / legacy files (missing
@@ -41,7 +45,9 @@ import os
 import re
 
 # Canonical section order — the whole point of the standard. Never reorder.
-_SECTION_ORDER = ("Objective", "Key results", "Facts", "Links", "Learnings")
+# "Key Results" is title-cased per Google's OKR convention (whatmatters.com /
+# re:Work): an Objective plus measurable Key Results.
+_SECTION_ORDER = ("Objective", "Key Results", "Facts", "Links", "Learnings")
 # Tolerant heading → canonical kwarg mapping (hand-edits vary in case/underscores).
 _SECTION_KEYS = {
     "objective": "objective",
@@ -52,12 +58,22 @@ _SECTION_KEYS = {
     "learnings": "learnings",
 }
 _KEY_TO_HEADING = {
-    "objective": "Objective", "key_results": "Key results", "facts": "Facts",
+    "objective": "Objective", "key_results": "Key Results", "facts": "Facts",
     "links": "Links", "learnings": "Learnings",
 }
 
-# Wiki-style cross-reference to another managed dossier: [[jira/PROJ-42]].
+# Each kind's primary note file — the target a cross-reference md link points at.
+_PRIMARY_NOTE = {"jira": "ticket.md", "confluence": "page.md",
+                 "web": "page.md", "repo": "dossier.md"}
+
+# LEGACY wiki-style cross-ref ([[jira/PROJ-42]]) — accepted on INPUT only and
+# upgraded; the canonical output form is a relative md file link (_md_ref).
 _WIKI_REF_RE = re.compile(r"^\[\[(jira|confluence|repo|web)/([^\]\s][^\]]*)\]\]$")
+# Canonical cross-ref: a markdown link into a sibling context folder, e.g.
+# [jira/PROJ-42](../../jira/PROJ-42/ticket.md). Notes live at
+# work/<kind>/<key>/<file>.md, so ../../ walks to the work root.
+_MD_REF_RE = re.compile(
+    r"^\[[^\]]*\]\(\.\./\.\./(jira|confluence|repo|web)/([^/)\s]+)/[^)]*\.md\)$")
 # URL shapes that ARE managed dossiers (same regexes as work_context uses).
 _JIRA_URL_RE = re.compile(r"/browse/([A-Z][A-Z0-9]{1,20}-\d+)\b")
 _CONF_URL_RE = re.compile(r"(?:/pages/|pageId=)(\d{4,})")
@@ -83,16 +99,28 @@ def _yaml_str(v: str) -> str:
     return json.dumps(str(v), ensure_ascii=False)
 
 
+def _md_ref(ref_kind: str, ref_key: str) -> str:
+    """The canonical cross-reference: a relative markdown link to the target
+    dossier's primary md file. The path segment uses work_context's slug so
+    the link resolves to the folder that ACTUALLY exists on disk."""
+    from aiforge_core.runtime import work_context
+    slug = work_context._slug(str(ref_key))
+    return (f"[{ref_kind}/{ref_key}]"
+            f"(../../{ref_kind}/{slug}/{_PRIMARY_NOTE.get(ref_kind, 'dossier.md')})")
+
+
 def normalize_links(links, kind: str, key: str) -> list[str]:
     """Canonicalize a link list for a ``(kind, key)`` note.
 
     - only http(s) URLs pass the scheme filter (a persisted note is shared
       state — file:///javascript: etc. must never land in it);
-    - a URL that points at ANOTHER managed dossier (a /browse/KEY-123 or a
-      /pages/<id> URL) becomes a relative wiki ref ``[[kind/key]]`` — but the
-      note's OWN canonical URL stays a URL (it IS the source link);
-    - already-wiki refs are kept as-is; everything is deduped, order preserved
-      (first occurrence wins) so output is deterministic.
+    - a reference to ANOTHER managed dossier — a /browse/KEY-123 or
+      /pages/<id> URL, a legacy ``[[kind/key]]`` wiki ref, or an existing md
+      ref — becomes the canonical relative MARKDOWN FILE LINK
+      ``[kind/key](../../kind/key/ticket.md)``; the note's OWN canonical URL
+      stays a URL (it IS the source link);
+    - everything is deduped, order preserved (first occurrence wins) so
+      output is deterministic.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -102,17 +130,22 @@ def normalize_links(links, kind: str, key: str) -> list[str]:
         s = raw.strip()
         if not s:
             continue
-        if _WIKI_REF_RE.match(s):
-            canonical = s
+        mm = _MD_REF_RE.match(s)
+        wm = _WIKI_REF_RE.match(s)
+        if mm:
+            # re-canonicalize (label drift, filename drift) → stable dedupe
+            canonical = _md_ref(mm.group(1), mm.group(2))
+        elif wm:
+            canonical = _md_ref(wm.group(1), wm.group(2))
         else:
             if not re.match(r"^https?://", s, re.IGNORECASE):
                 continue                      # scheme filter — http(s) only
             jm = _JIRA_URL_RE.search(s)
             cm = _CONF_URL_RE.search(s)
             if jm and not (kind == "jira" and jm.group(1) == str(key)):
-                canonical = f"[[jira/{jm.group(1)}]]"
+                canonical = _md_ref("jira", jm.group(1))
             elif cm and not (kind == "confluence" and cm.group(1) == str(key)):
-                canonical = f"[[confluence/{cm.group(1)}]]"
+                canonical = _md_ref("confluence", cm.group(1))
             else:
                 canonical = s
         if canonical not in seen:
@@ -140,7 +173,7 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
                 links=None, learnings=None, body_md: str = "",
                 updated_at: str = "") -> str:
     """Render the standard note. Empty sections are skipped; ordering is fixed
-    (frontmatter → title → Objective → Key results → Facts → Links → Learnings
+    (frontmatter → title → Objective → Key Results → Facts → Links → Learnings
     → free body). ``updated_at`` is injectable for deterministic tests /
     read-modify-write; it defaults to now (UTC)."""
     norm_links = normalize_links(links, kind, key)
@@ -162,7 +195,7 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
     obj = (objective or "").strip()
     if obj:
         parts.append("## Objective\n\n" + obj)
-    for heading, items in (("Key results", _as_items(key_results)),
+    for heading, items in (("Key Results", _as_items(key_results)),
                            ("Facts", _as_items(facts)),
                            ("Links", norm_links),
                            ("Learnings", _as_items(learnings))):

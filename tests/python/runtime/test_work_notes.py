@@ -1,9 +1,9 @@
 """work_notes standard format + note_curator learner pass.
 
-Covers: render/parse roundtrip, link normalization (dedupe / wiki refs /
-scheme filter), read-modify-write preservation of unknown sections + body,
-the curator's fact-drift + Learnings audit trail (stubbed jira_read),
-the note_curate path jail, and staleness math.
+Covers: render/parse roundtrip, link normalization (dedupe / relative md
+file links for cross-refs / scheme filter), read-modify-write preservation
+of unknown sections + body, the curator's fact-drift + Learnings audit trail
+(stubbed jira_read), the note_curate path jail, and staleness math.
 """
 from __future__ import annotations
 
@@ -45,9 +45,11 @@ def test_render_parse_roundtrip():
     assert sec["objective"] == "fix the flux capacitor"
     assert sec["key_results"] == ["capacitor fluxes", "no smoke"]
     assert sec["facts"] == ["status: To Do", "assignee: Marty"]
-    # cross-ref to ANOTHER managed dossier became a wiki ref; own URL kept
-    assert sec["links"] == ["https://jira.local/browse/ENG-1",
-                            "[[confluence/12345]]"]
+    # cross-ref to ANOTHER managed dossier became a relative MD FILE LINK
+    # (a plain markdown link to that dossier's note file); own URL kept
+    assert sec["links"] == [
+        "https://jira.local/browse/ENG-1",
+        "[confluence/12345](../../confluence/12345/page.md)"]
     assert fm["links"] == sec["links"]    # frontmatter mirrors the section
     assert sec["learnings"] == ["2026-07-01: created (auto)"]
     assert "Long description here." in p["body"]
@@ -61,15 +63,23 @@ def test_render_skips_empty_sections_and_is_deterministic():
                                facts=["engine: fetch"])
     assert a == b                       # deterministic byte-for-byte
     assert "## Objective" not in a and "## Links" not in a
-    assert "## Learnings" not in a and "## Key results" not in a
+    assert "## Learnings" not in a and "## Key Results" not in a
     assert "## Facts" in a
-    # section order is fixed when several are present
+    # section order is fixed when several are present; heading uses the
+    # Google-OKR title case ("Key Results")
     full = work_notes.render_note(
         "web", "s1", title="T", objective="o", key_results=["k"],
         facts=["f"], links=["https://x.io/"], learnings=["l"])
-    idx = [full.index(h) for h in ("## Objective", "## Key results",
+    idx = [full.index(h) for h in ("## Objective", "## Key Results",
                                    "## Facts", "## Links", "## Learnings")]
     assert idx == sorted(idx)
+
+
+def test_parse_tolerates_legacy_heading_case():
+    """Notes written before the Google-OKR title-case switch say
+    '## Key results' — the parser must still map them onto key_results."""
+    p = work_notes.parse_note("# T\n\n## Key results\n\n- old style item\n")
+    assert p["sections"]["key_results"] == ["old style item"]
 
 
 def test_parse_tolerates_hand_edited_legacy_file():
@@ -83,13 +93,13 @@ def test_parse_tolerates_hand_edited_legacy_file():
 
 # ── link normalization ───────────────────────────────────────────────────
 
-def test_normalize_links_dedupe_wiki_refs_and_scheme_filter():
+def test_normalize_links_dedupe_md_refs_and_scheme_filter():
     links = [
-        "https://jira.local/browse/OPS-9",       # other ticket → wiki ref
+        "https://jira.local/browse/OPS-9",       # other ticket → md file link
         "https://jira.local/browse/ENG-1",       # SELF → stays a URL
-        "https://wiki.local/pages/77770/Doc",    # page → wiki ref
+        "https://wiki.local/pages/77770/Doc",    # page → md file link
         "https://wiki.local/x?pageId=77770",     # same page, other shape → dupe
-        "[[confluence/88880]]",                  # already a wiki ref → kept
+        "[[confluence/88880]]",                  # legacy wiki ref → upgraded
         "ftp://files.local/a",                   # bad scheme → dropped
         "javascript:alert(1)",                   # bad scheme → dropped
         "file:///etc/passwd",                    # bad scheme → dropped
@@ -97,14 +107,30 @@ def test_normalize_links_dedupe_wiki_refs_and_scheme_filter():
         "  ", "",                                # blanks → dropped
     ]
     out = work_notes.normalize_links(links, "jira", "ENG-1")
-    assert out == ["[[jira/OPS-9]]", "https://jira.local/browse/ENG-1",
-                   "[[confluence/77770]]", "[[confluence/88880]]"]
+    assert out == [
+        "[jira/OPS-9](../../jira/OPS-9/ticket.md)",
+        "https://jira.local/browse/ENG-1",
+        "[confluence/77770](../../confluence/77770/page.md)",
+        "[confluence/88880](../../confluence/88880/page.md)"]
 
 
 def test_normalize_links_confluence_self_stays_url():
     out = work_notes.normalize_links(
         ["https://wiki.local/pages/77770/Doc"], "confluence", "77770")
     assert out == ["https://wiki.local/pages/77770/Doc"]
+
+
+def test_normalize_links_md_ref_is_stable_and_dedupes_all_spellings():
+    """An already-canonical md file link stays byte-identical, and the URL /
+    legacy-wiki / label-drifted-md spellings of the SAME target collapse
+    into that one entry."""
+    md = "[confluence/77770](../../confluence/77770/page.md)"
+    out = work_notes.normalize_links(
+        [md, "[[confluence/77770]]",
+         "https://wiki.local/pages/77770/Doc",
+         "[my label](../../confluence/77770/page.md)"],
+        "jira", "ENG-1")
+    assert out == [md]
 
 
 # ── update_note: preservation + atomicity ────────────────────────────────
