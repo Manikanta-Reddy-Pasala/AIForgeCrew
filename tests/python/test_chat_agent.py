@@ -799,3 +799,17 @@ def test_cave_mode_skips_optional_blocks_and_shrinks_budget(tmp_path, monkeypatc
     # (mandatory procedures) still were.
     assert seen["skills"] == 0 and seen["mentions"] == 0
     assert seen["workflows"] >= 1
+
+
+def test_parse_inline_args_rescue():
+    """dspy A/B finding: `ACTION: tool {"item": "x"}` + empty `ARGS_JSON: {}`
+    — the empty marker slot must not shadow the good inline object."""
+    step = ca._parse('ACTION: lookup_price {"item": "coffee"}\nARGS_JSON: {}')
+    assert step["kind"] == "action" and step["tool"] == "lookup_price"
+    assert step["args"] == {"item": "coffee"}
+    # normal shape unaffected
+    step = ca._parse('ACTION: lookup_price\nARGS_JSON: {"item": "tea"}')
+    assert step["args"] == {"item": "tea"}
+    # genuinely empty args stay empty
+    step = ca._parse("ACTION: list_services\nARGS_JSON: {}")
+    assert step["args"] == {}

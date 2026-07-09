@@ -2647,6 +2647,14 @@ def _parse(out: str) -> dict:
         # else after the ACTION line. Handles ```json fenced args.
         m = re.search(r"ARGS_JSON\s*:?", out, re.IGNORECASE)
         args = _balanced_json(out, m.end() if m else act.end())
+        # Inline-args rescue (dspy A/B finding, verified 6/6 on the NUC):
+        # local models sometimes emit `ACTION: tool {"item": "x"}` followed by
+        # an EMPTY `ARGS_JSON: {}` — the marker's {} shadowed the good inline
+        # object and the tool ran arg-less forever (deterministic at temp 0).
+        # When the marker slot parsed empty but a non-empty balanced object
+        # sits right after the ACTION name, use the inline object.
+        if not args and m:
+            args = _balanced_json(out, act.end()) or args
         thought = _THOUGHT_RE.search(out)
         return {"kind": "action", "tool": name, "args": args,
                 "thought": thought.group(1).strip() if thought else ""}
