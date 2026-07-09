@@ -97,7 +97,7 @@ services:
 
   langfuse-clickhouse:
     logging: *logcap
-    image: clickhouse/clickhouse-server:24.8-alpine
+    image: clickhouse/clickhouse-server:24.8
     restart: unless-stopped
     user: "101:101"
     environment:
@@ -105,12 +105,18 @@ services:
       CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
       CLICKHOUSE_DB: default
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30
+      start_period: 40s
     volumes:
       - langfuse_ch:/var/lib/clickhouse
+    # Running as uid 101 with NO writable log dir crashes the server on boot
+    # (root-owned /var/log/clickhouse-server) — tmpfs makes it writable AND
+    # keeps server logs in RAM only (gone on stop; nothing accrues on disk).
+    tmpfs:
+      - /var/log/clickhouse-server:size=64m,uid=101,gid=101
 
   langfuse-redis:
     logging: *logcap
