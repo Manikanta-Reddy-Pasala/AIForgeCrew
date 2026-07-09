@@ -164,6 +164,10 @@ const BUILDER_HINTS: Record<BuilderKind, string> = {
 };
 // Persist the per-session builder so it survives reload / session switch.
 const LS_BUILDER_KEY = 'aiforge.chat.builderBySession';
+// Module-level builder-launch guard: epoch-ms of the last ?builder= launch.
+// Lives OUTSIDE the component so a lazy-route/Suspense REMOUNT can't reset it
+// (a useRef guard did, and one click created 2-3 chats).
+let builderLaunchAtMs = 0;
 
 // A pending human-approval gate (#1): the run is blocked until the user
 // Approves/Rejects this action.
@@ -497,27 +501,29 @@ export default function Chat() {
   }
 
   // Launch a builder from a `?builder=<kind>` query param: create a fresh session
-  // in that builder mode, then clear the param so a reload doesn't spawn another.
-  // Guard is PER-PARAM, not a one-time latch: a permanent latch meant the SECOND
-  // "New skill/rule/workflow" click (same page load) navigated to
-  // ?builder=<kind> but the effect returned early → no new chat opened. We
-  // instead remember which param value we're processing and reset when the
-  // param clears, so StrictMode's double-fire is deduped yet every genuine
-  // click opens a fresh builder chat.
-  const builderParamRef = useRef<string | null>(null);
+  // in that builder mode. TWO defenses against double-creates (one click used
+  // to open 2-3 chats — reproduced live):
+  //   1. Clear the param FIRST, synchronously — the old code cleared it only
+  //      AFTER the async create, so a Chat REMOUNT in that window (lazy route +
+  //      Suspense swap) saw the param still set with a fresh useRef and created
+  //      ANOTHER session.
+  //   2. A MODULE-level, time-boxed guard (below, outside the component) that
+  //      survives remounts — a useRef dies with each instance. Time-boxed so a
+  //      genuine later "New workflow via chat" click still opens a fresh chat.
   useEffect(() => {
     const b = searchParams.get('builder');
-    if (!b) { builderParamRef.current = null; return; }  // cleared → allow next
+    if (!b) return;
     if (!BUILDER_KINDS.includes(b as BuilderKind)) {
       setSearchParams({}, { replace: true });
       return;
     }
-    if (builderParamRef.current === b) return;   // already handling this launch
-    builderParamRef.current = b;
+    const now = Date.now();
+    if (now - builderLaunchAtMs < 3000) return;  // remount/double-fire dedupe
+    builderLaunchAtMs = now;
+    setSearchParams({}, { replace: true });      // clear BEFORE the async create
     (async () => {
       const id = await createSession();
       if (id !== null) setBuilderForSession(id, b as BuilderKind);
-      setSearchParams({}, { replace: true });
       setTimeout(() => textareaRef.current?.focus(), 50);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
