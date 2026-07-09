@@ -76,6 +76,86 @@ def test_library_ships_builtin_flow(wf, monkeypatch, tmp_path):
     assert wf.ensure_dirs()["workflows"]["removed_seeded"] == 0
 
 
+def test_write_with_scripts_creates_scripts_folder(wf):
+    r = wf.write_workflow(
+        "Nightly export", "export the data", "## Steps\n1. run scripts/export.sh",
+        triggers=["export"],
+        scripts=[{"name": "export.sh", "content": "#!/usr/bin/env bash\necho ok\n"},
+                 {"name": "verify.py", "content": "print('ok')\n"}])
+    assert r["ok"], r
+    paths = r["scripts"]
+    assert len(paths) == 2
+    for p in paths:
+        assert "/scripts/" in p and os.path.isfile(p)
+        assert os.access(p, os.X_OK)          # chmod +x applied
+    # runtime surfaces: auto_context tells the agent to RUN the scripts…
+    block = wf.auto_context("nightly export")
+    assert "helper scripts" in block and "export.sh" in block
+    # …and search hits carry the script paths.
+    hit = next(h for h in wf.search("nightly export") if h["name"] == "Nightly export")
+    assert any(p.endswith("export.sh") for p in hit["scripts"])
+
+
+def test_write_scripts_dict_form_accepted(wf):
+    r = wf.write_workflow("Dict flow", "x", "## body",
+                          scripts={"go.sh": "#!/usr/bin/env bash\necho hi\n"})
+    assert r["ok"] and r["scripts"][0].endswith("go.sh")
+
+
+def test_script_syntax_error_aborts_whole_write(wf):
+    r = wf.write_workflow("Broken flow", "x", "## body",
+                          scripts=[{"name": "bad.sh",
+                                    "content": "if [ ; then\nfi\n"}])
+    assert not r["ok"] and "syntax" in r["error"]
+    # nothing saved — the workflow must not exist half-written
+    assert not any(w.name == "Broken flow" for w in wf.load())
+    r2 = wf.write_workflow("Broken py", "x", "## body",
+                           scripts=[{"name": "bad.py", "content": "def f(:\n"}])
+    assert not r2["ok"] and "syntax" in r2["error"]
+
+
+def test_script_name_traversal_rejected(wf):
+    for bad in ("../evil.sh", "a/b.sh", "/etc/x.sh", ".hidden.sh", ""):
+        r = wf.write_workflow("Evil", "x", "## body",
+                              scripts=[{"name": bad, "content": "echo hi"}])
+        assert not r["ok"], bad
+
+
+def test_delete_removes_scripts_folder(wf):
+    r = wf.write_workflow("Temp flow", "x", "## body",
+                          scripts=[{"name": "t.sh", "content": "echo hi\n"}])
+    assert r["ok"]
+    wf_dir = os.path.dirname(r["path"])
+    assert os.path.isdir(os.path.join(wf_dir, "scripts"))
+    d = wf.delete_workflow("Temp flow")
+    assert d["ok"]
+    assert not os.path.exists(wf_dir)         # slug dir incl. scripts/ gone
+
+
+def test_learn_workflow_refuses_untested_scripts(wf, monkeypatch):
+    monkeypatch.setenv("AIFORGE_BUILDER_ELABORATE", "0")
+    from aiforge_core.runtime import chat_agent as ca
+    args = {"name": "Gated", "description": "x", "body": "## steps",
+            "scripts": [{"name": "s.sh", "content": "echo hi\n"}]}
+    r = ca._t_learn_workflow(dict(args), cwd=None)
+    assert not r["ok"] and "untested" in r["error"]
+    assert not any(w.name == "Gated" for w in wf.load())
+    r2 = ca._t_learn_workflow({**args, "tested": True}, cwd=None)
+    assert r2["ok"] and r2["scripts"][0].endswith("s.sh")
+
+
+def test_search_fuzzy_inflection_and_typo(wf):
+    """A QUESTION that doesn't use the exact trigger words still finds the
+    workflow: inflection (deployment≈deploy) and a close typo (releese≈release)
+    both score via the fuzzy overlap in the shared scorer."""
+    wf.write_workflow("Release cut", "ship a release",
+                      "## Steps\n1. tag\n2. push", triggers=["release", "deploy"])
+    assert any(h["name"] == "Release cut"
+               for h in wf.search("what is our deployment procedure?"))
+    assert any(h["name"] == "Release cut"
+               for h in wf.search("how do we cut a releese"))
+
+
 def test_migration_removes_stale_seeded_copies(wf, tmp_path):
     # A prior version seeded builtins (marked `source: builtin`) into the global
     # dir; the v2 migration in ensure_dirs removes those stale copies ONCE while

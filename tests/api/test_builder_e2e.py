@@ -49,7 +49,9 @@ def _stub_two_turns(monkeypatch, action: str):
      "e2e-wf"),
     ("rule",
      'ACTION: remember_rule {"text":"Always lint before commit","scope":"global"}',
-     "always-lint-before-commit"),
+     # rule name = the human-readable first line of the text (file is keyed by
+     # its slug) — the Library lists the display name, not the slug
+     "Always lint before commit"),
 ])
 def test_builder_creates_and_shows_in_library(app_client, monkeypatch,
                                               kind, action, needle):

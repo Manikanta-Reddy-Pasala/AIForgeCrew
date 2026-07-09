@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 from aiforge_core.runtime import skills as _sk
@@ -101,9 +103,41 @@ def load(cwd: str | None = None) -> list[Skill]:
     return list(by_name.values())
 
 
+def _scripts_dir(md_source: str) -> Path | None:
+    """Scripts folder for a workflow: ``<dir>/scripts`` next to its
+    ``WORKFLOW.md`` (dir form only — flat ``*.md`` workflows have no folder to
+    hold scripts, and builtins carry the ``builtin`` sentinel, not a path)."""
+    if not md_source or md_source == "builtin":
+        return None
+    p = Path(md_source)
+    if p.name != _FILENAME:
+        return None
+    d = p.parent / "scripts"
+    return d if d.is_dir() else None
+
+
+def scripts_for(md_source: str) -> list[str]:
+    """Absolute paths of a workflow's helper scripts (empty when none)."""
+    d = _scripts_dir(md_source)
+    if d is None:
+        return []
+    try:
+        return sorted(str(f) for f in d.iterdir() if f.is_file()
+                      and not f.name.startswith("."))
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def search(query: str, cwd: str | None = None, k: int = 5) -> list[dict]:
-    """Relevance-rank workflows for ``query`` (same scorer as skills)."""
-    return _sk.search(query, cwd, k=k, skills=load(cwd))
+    """Relevance-rank workflows for ``query`` (same scorer as skills). Hits
+    additionally carry ``scripts`` (the workflow's helper-script paths) so the
+    agent can run them instead of re-deriving the commands."""
+    hits = _sk.search(query, cwd, k=k, skills=load(cwd))
+    for h in hits:
+        scripts = scripts_for(h.get("source") or "")
+        if scripts:
+            h["scripts"] = scripts
+    return hits
 
 
 def select(query: str, cwd: str | None = None, k: int = 3) -> list[Skill]:
@@ -147,7 +181,12 @@ def auto_context(query: str, cwd: str | None = None, k: int = 3) -> str:
     parts = []
     for w in chosen:
         head = f"### {w.name}" + (f" — {w.description}" if w.description else "")
-        parts.append(f"{head}\n{w.body[:_WF_MAX_BODY]}")
+        block = f"{head}\n{w.body[:_WF_MAX_BODY]}"
+        scripts = scripts_for(getattr(w, "source", "") or "")
+        if scripts:
+            block += ("\n(helper scripts — RUN these with run_command instead "
+                      "of re-deriving the commands: " + ", ".join(scripts) + ")")
+        parts.append(block)
     return ("APPLICABLE WORKFLOWS — when a procedure below matches the request, "
             "follow its steps IN ORDER and honour any output format or naming "
             "convention it specifies EXACTLY (every label and delimiter). When "
@@ -157,19 +196,82 @@ def auto_context(query: str, cwd: str | None = None, k: int = 3) -> str:
             + "\n\n".join(parts))
 
 
+_SCRIPT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _check_script_syntax(path: Path) -> str | None:
+    """Static syntax check for a helper script — returns an error string or
+    None. Best-effort per language: bash -n for shell, py_compile for python,
+    node --check for js when node exists. Unknown extensions pass (there is no
+    checker to run)."""
+    ext = path.suffix.lower()
+    try:
+        if ext in (".sh", ".bash"):
+            r = subprocess.run(["bash", "-n", str(path)], capture_output=True,
+                               text=True, timeout=15)
+            if r.returncode != 0:
+                return (r.stderr or r.stdout or "bash -n failed").strip()[:500]
+        elif ext == ".py":
+            import py_compile
+            try:
+                py_compile.compile(str(path), doraise=True)
+            except py_compile.PyCompileError as exc:
+                return str(exc)[:500]
+        elif ext in (".js", ".mjs") and shutil.which("node"):
+            r = subprocess.run(["node", "--check", str(path)],
+                               capture_output=True, text=True, timeout=15)
+            if r.returncode != 0:
+                return (r.stderr or r.stdout or "node --check failed").strip()[:500]
+    except Exception:  # noqa: BLE001 — a missing/broken checker must not block authoring
+        return None
+    return None
+
+
+def _normalize_scripts(scripts) -> tuple[list[tuple[str, str]], str | None]:
+    """Validate the ``scripts`` argument into ``[(filename, content)]``.
+    Accepts a list of {name, content} dicts or a {name: content} mapping.
+    Rejects path traversal (any separator in the name) and empty content."""
+    if not scripts:
+        return [], None
+    if isinstance(scripts, dict):
+        scripts = [{"name": k, "content": v} for k, v in scripts.items()]
+    if not isinstance(scripts, list):
+        return [], "scripts must be a list of {name, content}"
+    out: list[tuple[str, str]] = []
+    for s in scripts:
+        if not isinstance(s, dict):
+            return [], "each script must be a {name, content} object"
+        fname = str(s.get("name") or s.get("filename") or "").strip()
+        content = s.get("content") or s.get("body") or ""
+        if not fname or not _SCRIPT_NAME_RE.match(fname):
+            return [], f"invalid script name {fname!r} (plain filename only, no paths)"
+        if not isinstance(content, str) or not content.strip():
+            return [], f"script {fname!r} has no content"
+        out.append((fname, content))
+    return out, None
+
+
 def write_workflow(name: str, description: str, body: str,
                    triggers: list[str] | None = None, *,
-                   cwd: str | None = None, scope: str = "global") -> dict:
+                   cwd: str | None = None, scope: str = "global",
+                   scripts: list | dict | None = None) -> dict:
     """Author/overwrite a reusable ``WORKFLOW.md``.
 
     ``scope`` = ``global`` (~/.aiforge/workflows) or ``repo``
-    (<repo>/.aiforge/workflows). Returns ``{ok, name, path}`` or
-    ``{ok: False, error}``. Also mirrored into the knowledge memory
-    (``kind=workflow``) so it surfaces in cross-source recall."""
+    (<repo>/.aiforge/workflows). ``scripts`` (optional) = helper scripts to
+    keep NEXT TO the workflow in ``<name>/scripts/`` — each is syntax-checked
+    (bash -n / py_compile / node --check) and made executable; a failing
+    script aborts the whole write so a broken workflow is never saved.
+    Returns ``{ok, name, path, scripts}`` or ``{ok: False, error}``. Also
+    mirrored into the knowledge memory (``kind=workflow``) so it surfaces in
+    cross-source recall."""
     name = (name or "").strip()
     body = (body or "").strip()
     if not name or not body:
         return {"ok": False, "error": "name and body are required"}
+    script_files, err = _normalize_scripts(scripts)
+    if err:
+        return {"ok": False, "error": err}
     if scope == "repo":
         root = _sk._repo_root(cwd)
         base = Path(root) / ".aiforge" / "workflows" if root else _global_dir()
@@ -185,8 +287,30 @@ def write_workflow(name: str, description: str, body: str,
         front += "triggers: [" + ", ".join(_json.dumps(t) for t in trig) + "]\n"
     front += "scope: " + _json.dumps((scope or "global").lower()) + "\n"
     front += "---\n"
+    script_paths: list[str] = []
     try:
+        # Stage + syntax-check scripts in a scratch dir FIRST — a failing
+        # script aborts the whole write, so a broken workflow is never saved.
+        if script_files:
+            import tempfile
+            with tempfile.TemporaryDirectory() as td:
+                for fname, content in script_files:
+                    sp = Path(td) / fname
+                    sp.write_text(content, encoding="utf-8")
+                    serr = _check_script_syntax(sp)
+                    if serr:
+                        return {"ok": False,
+                                "error": f"script {fname!r} failed its syntax "
+                                         f"check — fix and retry: {serr}"}
         wf_dir.mkdir(parents=True, exist_ok=True)
+        if script_files:
+            sdir = wf_dir / "scripts"
+            sdir.mkdir(parents=True, exist_ok=True)
+            for fname, content in script_files:
+                dst = sdir / fname
+                dst.write_text(content, encoding="utf-8")
+                dst.chmod(0o755)
+                script_paths.append(str(dst))
         path = wf_dir / _FILENAME
         path.write_text(front + "\n" + body + "\n", encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
@@ -205,7 +329,10 @@ def write_workflow(name: str, description: str, body: str,
         mem = bool(isinstance(res, dict) and res.get("ok", True))
     except Exception:  # noqa: BLE001
         mem = False
-    return {"ok": True, "name": name, "path": str(path), "memory": mem}
+    out = {"ok": True, "name": name, "path": str(path), "memory": mem}
+    if script_paths:
+        out["scripts"] = script_paths
+    return out
 
 
 def ensure_dirs() -> dict:
@@ -281,10 +408,15 @@ def delete_workflow(name: str, cwd: str | None = None) -> dict:
             continue
         try:
             p.unlink()
-            # remove an empty slug dir (dir form), but never a root itself
-            if (p.parent.resolve() not in roots and p.parent.is_dir()
-                    and not any(p.parent.iterdir())):
-                p.parent.rmdir()
+            # dir form: remove the slug dir INCLUDING its scripts/ folder,
+            # but never a root itself
+            if p.parent.resolve() not in roots and p.parent.is_dir():
+                leftovers = list(p.parent.iterdir())
+                if not leftovers:
+                    p.parent.rmdir()
+                elif (p.name == _FILENAME
+                      and all(x.name == "scripts" for x in leftovers)):
+                    shutil.rmtree(p.parent, ignore_errors=True)
             removed.append(str(p))
         except FileNotFoundError:
             pass
@@ -306,5 +438,5 @@ def clear_workflows(cwd: str | None = None) -> dict:
 
 
 __all__ = ["load", "search", "select", "select_or_ask", "selected_names",
-           "write_workflow", "ensure_dirs", "auto_context",
+           "write_workflow", "ensure_dirs", "auto_context", "scripts_for",
            "delete_workflow", "clear_workflows"]

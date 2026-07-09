@@ -310,6 +310,68 @@ def _t_list_dir(args: dict, cwd: str) -> dict:
     return {"ok": True, "entries": entries}
 
 
+_SCRIPT_RUNNERS = {"bash", "sh", "zsh", "python", "python3", "node", "ruby",
+                   "perl", "uv"}
+_SCRIPT_EXTS = (".sh", ".bash", ".py", ".js", ".mjs", ".rb", ".pl")
+
+
+def _preflight_missing_path(cmd: str, base: str) -> str | None:
+    """Cheap existence check BEFORE running: a `cd <dir>` into a folder that
+    doesn't exist, or `bash <script>` / `./script.sh` on a missing file, fails
+    with a cryptic shell error the model then thrashes on. Validate LITERAL
+    paths only — anything dynamic ($VAR, ``, $(), globs) is skipped (fail-open).
+    Tracks `cd` chains so `cd a && ./b.sh` checks b.sh under a/. Returns a
+    human-actionable error string, or None when nothing is provably missing."""
+    import shlex
+    cur = base
+    # split on the common separators; ignore parse errors (complex shell → skip)
+    for seg in re.split(r"&&|\|\||;|\n|\|", cmd or ""):
+        seg = seg.strip()
+        if not seg:
+            continue
+        try:
+            toks = shlex.split(seg)
+        except ValueError:
+            continue
+        if not toks:
+            continue
+
+        def _literal(p: str) -> bool:
+            return not any(ch in p for ch in ("$", "`", "*", "?", "(", "{"))
+
+        head = toks[0]
+        if head == "cd" and len(toks) >= 2:
+            tgt = toks[1]
+            if tgt == "-" or not _literal(tgt):
+                return None            # dynamic — stop tracking, fail open
+            d = os.path.expanduser(tgt)
+            d = d if os.path.isabs(d) else os.path.join(cur, d)
+            if not os.path.isdir(d):
+                return (f"cd target does not exist: {tgt!r} (resolved "
+                        f"{os.path.normpath(d)}). Nothing was run. Check the "
+                        "path first (list_dir / file_find) and re-issue with "
+                        "the real folder.")
+            cur = os.path.normpath(d)
+            continue
+        script = None
+        if head in _SCRIPT_RUNNERS:
+            cand = next((t for t in toks[1:] if not t.startswith("-")), None)
+            if cand and cand.lower().endswith(_SCRIPT_EXTS):
+                script = cand
+        elif (head.startswith("./") or os.path.isabs(head)) \
+                and head.lower().endswith(_SCRIPT_EXTS):
+            script = head
+        if script and _literal(script):
+            p = os.path.expanduser(script)
+            p = p if os.path.isabs(p) else os.path.join(cur, p)
+            if not os.path.isfile(p):
+                return (f"script does not exist: {script!r} (resolved "
+                        f"{os.path.normpath(p)}). Nothing was run. Find it "
+                        "first (file_find / list_dir) or create it, then "
+                        "re-issue.")
+    return None
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
     cmd = args["cmd"]
     from aiforge_core.runtime.tools import delete_guard
@@ -337,6 +399,12 @@ def _t_run_command(args: dict, cwd: str) -> dict:
                 "unrelated files. Stage ONLY the files you changed: "
                 "`git add <path1> <path2>` then `git commit -m \"...\"` then "
                 "`git push`."}
+    # Pre-flight: a literal `cd <missing dir>` or `bash <missing script>` is
+    # refused with an actionable error instead of the shell's cryptic
+    # "No such file or directory" (which the model then thrashes on).
+    _missing = _preflight_missing_path(cmd, base)
+    if _missing:
+        return {"ok": False, "blocked": "missing_path", "error": _missing}
     # Default generous so dependency installs / builds (npm ci, mvn package,
     # pip install) aren't killed mid-run; agent may override per call.
     default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
@@ -951,9 +1019,24 @@ def _rules_context(cwd: str, query: str = "") -> str:
                 blocks.extend("- " + s.body for s in tagged)
         if not blocks:
             return ""
-        return ("RULES — the user told you to ALWAYS follow these, every "
-                "session (HIGHEST priority, override defaults):\n"
-                + "\n".join(blocks)[:1800] + ambiguous_note)
+        # Rules are MANDATORY — never silently drop tail rules to a hard slice.
+        # Cap is env-tunable and a truncation is called out so the agent knows
+        # rules exist beyond the cut (and can look them up) instead of treating
+        # the visible subset as complete.
+        try:
+            cap = max(400, int(os.environ.get("AIFORGE_RULES_MAX_CHARS", "4000")))
+        except ValueError:
+            cap = 4000
+        body_txt = "\n".join(blocks)
+        if len(body_txt) > cap:
+            body_txt = (body_txt[:cap]
+                        + "\n- …more rules truncated — call memory_lookup"
+                          "(\"rules\") for the full list before acting")
+        return ("RULES — MANDATORY, non-negotiable: the user ordered these "
+                "ALWAYS followed, every session, HIGHEST priority (they "
+                "override defaults and convenience). Check your plan against "
+                "each rule before answering or acting:\n"
+                + body_txt + ambiguous_note)
     except Exception:  # noqa: BLE001
         return ""
 
@@ -1333,12 +1416,22 @@ def _t_workflow_search(args: dict, cwd: str) -> dict:
 
 def _t_learn_workflow(args: dict, cwd: str) -> dict:
     """Author a reusable workflow (WORKFLOW.md) — an end-to-end procedure —
-    so future sessions (or the user) can reuse it. scope: 'global' or 'repo'."""
+    so future sessions (or the user) can reuse it. scope: 'global' or 'repo'.
+    Optional ``scripts`` land in the workflow's own ``scripts/`` folder; they
+    MUST be tested first (``tested: true`` attests a run_command dry-run)."""
     try:
         from aiforge_core.runtime import workflows as _wf
         triggers = args.get("triggers") or []
         if isinstance(triggers, str):
             triggers = [t.strip() for t in triggers.split(",") if t.strip()]
+        scripts = args.get("scripts") or []
+        tested = args.get("tested")
+        if scripts and not (tested is True or str(tested).lower() == "true"):
+            return {"ok": False, "error":
+                    "untested scripts — RUN each one first with run_command "
+                    "(a --dry-run path or a throwaway dir), verify the actual "
+                    "effect (not just exit 0), then call learn_workflow again "
+                    "with tested: true"}
         _name = args.get("name", "")
         _desc = args.get("description", "")
         _body = _elaborate_body("workflow", args.get("body") or args.get("content")
@@ -1347,6 +1440,7 @@ def _t_learn_workflow(args: dict, cwd: str) -> dict:
             name=_name, description=_desc, body=_body,
             triggers=list(triggers), cwd=cwd,
             scope=(args.get("scope") or "global").lower(),
+            scripts=scripts,
         )
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
@@ -2163,8 +2257,9 @@ Tool arguments:
 - learn_skill  {{"name": "...", "description": "when to use it", "body": "the step-by-step playbook", "triggers": ["word1","word2"], "scope": "global|repo"}}
                 (author a reusable skill after solving something non-trivial — also recorded in memory)
 - workflow_search {{"query": "..."}}                     (find reusable WORKFLOW.md end-to-end procedures)
-- learn_workflow  {{"name": "...", "description": "when to use it", "body": "the end-to-end steps", "triggers": ["word1"], "scope": "global|repo"}}
+- learn_workflow  {{"name": "...", "description": "when to use it", "body": "the end-to-end steps", "triggers": ["word1"], "scope": "global|repo", "scripts": [{{"name": "step1.sh", "content": "#!/usr/bin/env bash\\n..."}}], "tested": true}}
                 (author a reusable multi-step workflow when the user asks or after running a repeatable procedure)
+                (optional scripts land in the workflow's own scripts/ folder, syntax-checked + chmod +x; the body should call them by path. TEST each script with run_command FIRST — with untested scripts the call is refused unless tested:true)
 - create_job_script {{"name": "...", "cron": "0 9 * * *", "script": "<bash script text>", "description": "optional"}}
                 (JOB-BUILDER finalize: save the approved script to ~/.aiforge/jobs + schedule it as a recurring cron job — deterministic, no LLM per run)
 - confluence_search {{"query": "..."}}  or  {{"cql": "space = ENG AND text ~ 'foo'"}}   (find pages)
@@ -3492,15 +3587,23 @@ def run_chat_agent(
     # selection/scoping/gating as chat-team + the pipeline). rules+prefs are
     # already injected above as high-priority blocks, so skip them here.
     from aiforge_core.runtime import context_bundle as _cb
-    _bundle = _cb.build_bundle(cwd, last_user, cave=cave, ctx_on=_ctx_on,
-                               session_id=session_id,
-                               want_rules=False, want_prefs=False)
     # Proactive-recall mode. "lite" (default): send a SMALL anchor (repo summary
     # + the compacted project brief) and let the model PULL specifics via the
     # memory tools on demand — instead of pre-dumping the full recall every turn.
     # "full": the old behaviour (dump memory_md + prior-session recall upfront).
+    # EXCEPTION even in lite: the SESSION-START turn injects one recall keyed to
+    # the opening request, so the agent arrives informed (self-learning) instead
+    # of re-deriving what past sessions worked out.
     _proactive = os.environ.get(
         "AIFORGE_CHAT_PROACTIVE_RECALL", "lite").strip().lower()
+    _is_init = not any(m.get("role") == "assistant" for m in messages)
+    # In lite mode a FOLLOW-UP turn doesn't inject recall at all — skip the
+    # unified_query work too instead of building a block that gets dropped.
+    _recall_wanted = _proactive == "full" or _is_init
+    _bundle = _cb.build_bundle(
+        cwd, last_user, cave=cave,
+        ctx_on=lambda b: _ctx_on(b) and (b != "recall" or _recall_wanted),
+        session_id=session_id, want_rules=False, want_prefs=False)
     # Project memory (compacted per-repo brief) — small + high-value; the
     # "you already know this repo" anchor. Always injected.
     _add_sys_block("project-memory", _bundle.project_brief_md)
@@ -3534,8 +3637,12 @@ def run_chat_agent(
             _add_sys_block("chat-recall", _chat_session_recall(
                 last_user, session_id, limit=(2 if cave else 4)))
     elif _ctx_on("recall"):
-        # LITE (default): don't pre-dump. Tell the model it HAS memory + the
-        # tools to reach it, so it pulls only what THIS turn needs.
+        # LITE (default): don't pre-dump on follow-ups — but the SESSION-START
+        # turn still gets the one-time recall keyed to the opening request.
+        if _is_init:
+            _add_sys_block("recall", _bundle.memory_md)
+        # Tell the model it HAS memory + the tools to reach it, so it pulls
+        # only what THIS turn needs.
         _add_sys_block("memory-tools",
             "MEMORY: a project brief for this repo is above. For anything "
             "specific you don't already see — past decisions/learnings, code, "
@@ -3649,8 +3756,15 @@ def run_chat_agent(
                    "text": "⚙ condensed earlier context to stay within the window"}
         # M3: surface how full the context window is (char-estimate; ~4 chars/
         # token) so the user can see they're approaching the condense point.
-        _ctx_chars = sum(len(m.get("content") or "") for m in convo)
-        _ctx_budget = _ctx_budget_chars(role)
+        # MUST mirror _compact_convo's math exactly (history-only sum vs a
+        # budget that reserves the ACTUAL system prompt, list-safe _text_of) —
+        # the old raw-len/whole-convo version double-counted the per-turn
+        # system prompt against a 14K estimate, so the meter jumped between
+        # turns and collapsed to ~0 on image turns.
+        _sys_len = (len(_text_of(convo[0]))
+                    if convo and convo[0].get("role") == "system" else 0)
+        _ctx_chars = sum(len(_text_of(m)) for m in convo[1:])
+        _ctx_budget = _ctx_budget_chars(role, sys_chars=_sys_len)
         if _ctx_budget > 0:
             # ~4 chars/token → surface ABSOLUTE token counts (in k) alongside the
             # pct so the UI can show "120k / 256k" not just a bare percentage.

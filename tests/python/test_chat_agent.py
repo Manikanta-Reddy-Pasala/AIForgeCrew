@@ -84,6 +84,29 @@ def test_run_command(tmp_path):
     assert "hello-cmd" in tool["result"]["stdout"]
 
 
+def test_run_command_preflight_missing_cd_and_script(tmp_path):
+    """A literal `cd <missing>` or `bash <missing.sh>` is refused with an
+    actionable error BEFORE the shell runs (no cryptic 'No such file')."""
+    repo = str(tmp_path)
+    r = ca._t_run_command({"cmd": "cd no/such/dir && ls"}, repo)
+    assert r["blocked"] == "missing_path" and "cd target" in r["error"]
+    r = ca._t_run_command({"cmd": "bash deploy.sh"}, repo)
+    assert r["blocked"] == "missing_path" and "script" in r["error"]
+    r = ca._t_run_command({"cmd": "./go.sh --fast"}, repo)
+    assert r["blocked"] == "missing_path"
+    # `cd` chain tracked: script checked under the cd-ed dir.
+    (tmp_path / "sub").mkdir()
+    r = ca._t_run_command({"cmd": "cd sub && python x.py"}, repo)
+    assert r["blocked"] == "missing_path" and "x.py" in r["error"]
+    # existing paths run fine…
+    (tmp_path / "sub" / "x.py").write_text("print('hi')\n")
+    r = ca._t_run_command({"cmd": "cd sub && python x.py"}, repo)
+    assert r.get("ok") is True and "hi" in r["stdout"]
+    # …and dynamic paths fail OPEN (no false block on $VARs / substitution).
+    r = ca._t_run_command({"cmd": "cd $HOME && echo ok"}, repo)
+    assert r.get("blocked") != "missing_path"
+
+
 def test_unknown_tool_reports_error(tmp_path):
     fn = _scripted([
         "ACTION: teleport\nARGS_JSON: {}",
@@ -586,6 +609,18 @@ def test_usage_event_emitted(tmp_path):
     usage = [e for e in evs if e["type"] == "usage"]
     assert usage and 0 <= usage[0]["pct"] <= 100
     assert usage[0]["budget_chars"] > 0
+
+
+def test_usage_meter_counts_history_not_system_prompt(tmp_path):
+    """Meter regression: the usage event must mirror _compact_convo's math —
+    HISTORY-ONLY chars (the system prompt is reserved out of the budget, not
+    re-counted). The old version summed the whole convo incl. the tens-of-KB
+    system prompt, so the meter jumped between turns as recall blocks changed."""
+    fn = _scripted(["THOUGHT: x\nFINAL: done"])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content": "hi"}], cwd=str(tmp_path), complete_fn=fn))
+    usage = [e for e in evs if e["type"] == "usage"]
+    assert usage and usage[0]["context_chars"] < 5000
 
 
 def test_cancellable_complete_returns_sentinel_when_cancelled():

@@ -29,10 +29,13 @@ def test_clear_workflows(cfg):
     from aiforge_core.runtime import workflows
     workflows.write_workflow("a", "d", "steps", ["x"])
     workflows.write_workflow("b", "d", "steps", ["y"])
-    assert len(workflows.load()) == 2
+    # load() also surfaces SHIPPED builtin playbooks — count only user-authored.
+    customs = [w for w in workflows.load() if w.source != "builtin"]
+    assert len(customs) == 2
     res = workflows.clear_workflows()
     assert res["ok"] and res["removed"] == 2
-    assert workflows.load() == []
+    # clear removes the user's workflows; undeletable builtins remain.
+    assert [w for w in workflows.load() if w.source != "builtin"] == []
 
 
 def test_delete_and_clear_rules(cfg):

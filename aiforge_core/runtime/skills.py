@@ -196,6 +196,31 @@ def _tokens(text: str) -> set[str]:
     return set(_WORD_RE.findall((text or "").lower()))
 
 
+def _fuzzy_overlap(qtok: set[str], stok: set[str]) -> float:
+    """Token overlap tolerant of inflections and typos — an exact token is
+    worth 1.0; otherwise the best stem hit (``deploy``≈``deployment``, one
+    side a prefix of the other, len ≥ 4) or a close difflib match (ratio ≥
+    0.8, catches ``comit``≈``commit``) scores fractionally. This is what lets
+    a QUESTION that doesn't use a playbook's exact trigger words still find
+    it."""
+    import difflib
+    score = 0.0
+    for q in qtok:
+        if q in stok:
+            score += 1.0
+            continue
+        best = 0.0
+        for s in stok:
+            if len(q) >= 4 and len(s) >= 4 and (s.startswith(q) or q.startswith(s)):
+                best = max(best, 0.9)
+            elif len(q) >= 4 and abs(len(q) - len(s)) <= 3:
+                r = difflib.SequenceMatcher(None, q, s).ratio()
+                if r >= 0.8:
+                    best = max(best, r)
+        score += best
+    return score
+
+
 def search(query: str, cwd: str | None = None, k: int = 5,
            skills: list[Skill] | None = None) -> list[dict]:
     """Relevance-rank skills for ``query``. Score = exact-trigger boost +
@@ -210,9 +235,8 @@ def search(query: str, cwd: str | None = None, k: int = 5,
         for t in sk.triggers:
             if t and t in q:
                 score += 5.0                       # exact trigger hit
-        overlap = qtok & _tokens(sk.name + " " + sk.description
-                                 + " " + " ".join(sk.triggers))
-        score += float(len(overlap))
+        score += _fuzzy_overlap(qtok, _tokens(sk.name + " " + sk.description
+                                              + " " + " ".join(sk.triggers)))
         if sk.always:
             score += 0.5
         if score > 0:

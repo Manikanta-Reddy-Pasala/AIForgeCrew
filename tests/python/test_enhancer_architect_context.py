@@ -225,9 +225,11 @@ def test_architect_injects_skills_workflows_rules(monkeypatch):
     monkeypatch.setattr(
         "aiforge_core.runtime.workflows.auto_context",
         lambda q, cwd=None, **k: "WORKFLOW_BLOCK: ship-it procedure")
+    # the architect's rule source is the SHARED bundle (_rules_context), not
+    # the old repo_rules.collect — stub the seam it actually uses
     monkeypatch.setattr(
-        "aiforge_core.runtime.repo_rules.collect",
-        lambda cwd, *a, **k: "RULE_BLOCK: always add tests")
+        "aiforge_core.runtime.chat_agent._rules_context",
+        lambda cwd, query="": "RULE_BLOCK: always add tests")
 
     def fake_complete(role, convo, **kw):
         seen["role"] = role

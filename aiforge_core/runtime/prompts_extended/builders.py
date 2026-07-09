@@ -65,8 +65,19 @@ WORKFLOW_BUILDER = (
     "PRECONDITION, and the final DONE-CHECK that proves success. Reasoning: a "
     "workflow is a runnable recipe — every step concrete and in dependency "
     "order, not a vague summary.\n"
-    "When ready, call learn_workflow(name, description, body, triggers, scope)."
-    "\n"
+    "SCRIPTS: when steps boil down to runnable commands, factor them into "
+    "small helper scripts and pass them as scripts:[{name, content}] — they "
+    "are saved into the workflow's own scripts/ folder (syntax-checked, "
+    "executable) and future runs execute them instead of re-deriving the "
+    "commands. Reference each script by name in the body's steps.\n"
+    "TEST FIRST (mandatory): before finalizing, write each script to a temp "
+    "location with run_command and RUN it (a --dry-run path or a throwaway "
+    "dir). Do NOT just report exit 0 — report the actual EFFECT (files "
+    "produced, N items matched). A script that was never run does not go into "
+    "a workflow; learn_workflow REFUSES untested scripts unless you pass "
+    "tested:true, which is your attestation the dry-runs passed.\n"
+    "When ready, call learn_workflow(name, description, body, triggers, "
+    "scope, scripts, tested).\n"
 )
 
 RULE_BUILDER = (

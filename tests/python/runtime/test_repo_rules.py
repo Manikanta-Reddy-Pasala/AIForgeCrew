@@ -97,6 +97,10 @@ def test_plan_promote_refreshes_rules(tmp_path, monkeypatch):
     """Once the plan widens scope, file-scoped rules load via the
     promote node."""
     _seed_repo(tmp_path)
+    # the promote node FAIL-OPENS (clears the globs) when they match no real
+    # file in the repo — give the plan's glob something to match.
+    (tmp_path / "src" / "x").mkdir(parents=True)
+    (tmp_path / "src" / "x" / "mod.py").write_text("x = 1\n")
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     from aiforge_core.runtime import graph_pipeline as gp
 
