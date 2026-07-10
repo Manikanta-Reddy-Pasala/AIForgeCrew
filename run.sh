@@ -92,7 +92,11 @@ HOST=127.0.0.1
 DEV=0
 SKIP_WEB=0
 TEST=0
-MODE=hybrid       # infra in docker, agent on host — the DEFAULT
+# Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
+# lite | hybrid | docker; a CLI flag below still overrides. So a headless
+# service can pick zero-docker (lite) without editing its unit.
+MODE="${AIFORGE_MODE:-hybrid}"
+case "$MODE" in lite|hybrid|docker) ;; *) MODE=hybrid ;; esac
 NO_BUILD=0
 WITH_GRAPHIFY=0  # --with-graphify installs the graphify CLI on the host
 WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"  # --with-langfuse (or AIFORGE_LANGFUSE=1): self-hosted trace UI
