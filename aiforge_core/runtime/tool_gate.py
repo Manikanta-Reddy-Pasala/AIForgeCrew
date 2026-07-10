@@ -59,9 +59,23 @@ def _is_mutating(name: str, args: dict | None) -> bool:
 def _preview(tool_name: str, args: dict) -> str:
     """Human-readable preview of a tool call for the approval prompt.
 
-    File-mutating tools show a REAL unified diff against the file currently on
-    disk (resolved via AIFORGE_REPO_ROOT) so the operator reviews the change,
-    not just the new body."""
+    Content-AWARE by tool type: code → unified diff; confluence/jira/gitlab
+    writes → formatted heading + fields + body (with a before/after diff for
+    updates); commands → the shell line; everything else → pretty JSON. Shared
+    with the simple/plan path so EVERY approval — simple, plan, or team — shows
+    the same rich preview instead of a raw ``{"...": "..."}`` dump."""
+    # Reuse the rich renderer (handles confluence/jira/gitlab/diff/JSON). It
+    # needs a cwd for on-disk diffs + fetching an item's current state; take it
+    # from the request context. Falls back to the simple diffs below on any error.
+    try:
+        from aiforge_core.runtime import chat_agent, request_context
+        cwd = (request_context.get_workspace_dir()
+               or request_context.get_repo_root() or ".")
+        md = chat_agent._diff_preview(tool_name, args or {}, cwd)
+        if md:
+            return md
+    except Exception:  # noqa: BLE001 — fall through to the local simple preview
+        pass
     from aiforge_core.runtime.diff_preview import unified_preview
     try:
         if tool_name in ("bash", "run_command", "run_shell", "shell"):
