@@ -129,3 +129,50 @@ def test_memory_recall_and_write_mirrored(monkeypatch, tmp_path):
     recalls = [e for e in seen if e["role"] == "memory.recall"]
     assert recalls and recalls[0]["metadata"]["hits"] == len(res["hits"])
     assert "sync retries" in recalls[0]["messages"][0]["content"]
+
+
+def test_score_payload_shape(monkeypatch):
+    """record_score → one trace-create + one score-create, score linked to the
+    trace and both tagged with the session so the Scores view populates."""
+    import threading
+    sent: list[dict] = []
+    monkeypatch.setattr(lf, "_send", lambda payload: sent.append(payload))
+
+    class _SyncThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self._t, self._a = target, args
+
+        def start(self):
+            self._t(*self._a)
+
+    monkeypatch.setattr(threading, "Thread", _SyncThread)
+    lf.record_score(name="turn_completed", value=1.0, session_id=42,
+                    comment="completed", metadata={"mode": "team"})
+    assert len(sent) == 1
+    batch = sent[0]["batch"]
+    assert [e["type"] for e in batch] == ["trace-create", "score-create"]
+    trace, score = batch[0]["body"], batch[1]["body"]
+    assert trace["sessionId"] == "42"
+    assert score["name"] == "turn_completed" and score["value"] == 1.0
+    assert score["dataType"] == "NUMERIC"
+    assert score["traceId"] == trace["id"]                # linked
+    assert score["comment"] == "completed"
+
+
+def test_session_id_threaded_into_generation(monkeypatch):
+    """A completion made inside a bound session tags its Langfuse generation
+    with that session id — regression for 'Sessions view empty'."""
+    from aiforge_core.llm import client
+    from aiforge_core.runtime import request_context
+    seen: dict = {}
+    monkeypatch.setattr(lf, "enabled", lambda: True)
+    monkeypatch.setattr(lf, "record_generation", lambda **kw: seen.update(kw))
+    monkeypatch.setattr(client, "_complete_impl",
+                        lambda role, messages, **k2: "answer")
+    tok = request_context.set_session_id(77)
+    try:
+        assert client.complete("chat", [{"role": "user", "content": "q"}]) \
+            == "answer"
+    finally:
+        request_context.reset_session_id(tok)
+    assert seen.get("session_id") == "77"

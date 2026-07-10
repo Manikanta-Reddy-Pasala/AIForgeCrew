@@ -94,4 +94,33 @@ def record_generation(*, role: str, model: str = "", messages=None,
     threading.Thread(target=_send, args=(payload,), daemon=True).start()
 
 
-__all__ = ["available", "enabled", "record_generation"]
+def record_score(*, name: str, value: float, session_id=None,
+                 comment: str = "", data_type: str = "NUMERIC",
+                 metadata: dict | None = None) -> None:
+    """One evaluation score → a Langfuse trace+score, sent async.
+
+    A score must reference a traceId, so we mint a tiny turn-level trace to
+    carry it and tag that trace with ``sessionId`` — so the score lands under
+    the session AND shows in the Scores view. Both server v2 and v3 accept
+    ``score-create`` with a numeric value + traceId over this REST endpoint."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    trace_id = str(uuid.uuid4())
+    meta = {**(metadata or {})}
+    if session_id:
+        meta["session_id"] = session_id
+    trace_body = {"id": trace_id, "name": f"score:{name}",
+                  "timestamp": now.isoformat(), "metadata": meta,
+                  **({"sessionId": str(session_id)} if session_id else {})}
+    score_body = {"id": str(uuid.uuid4()), "traceId": trace_id,
+                  "name": name, "value": value, "dataType": data_type,
+                  **({"comment": comment[:500]} if comment else {})}
+    payload = {"batch": [
+        {"id": str(uuid.uuid4()), "type": "trace-create",
+         "timestamp": now.isoformat(), "body": trace_body},
+        {"id": str(uuid.uuid4()), "type": "score-create",
+         "timestamp": now.isoformat(), "body": score_body},
+    ]}
+    threading.Thread(target=_send, args=(payload,), daemon=True).start()
+
+
+__all__ = ["available", "enabled", "record_generation", "record_score"]

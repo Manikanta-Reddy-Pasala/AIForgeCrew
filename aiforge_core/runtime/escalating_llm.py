@@ -472,9 +472,14 @@ def _mirror_to_langfuse(role: str, llm_request: LlmRequest,
             cont = getattr(r, "content", None)
             for p in (getattr(cont, "parts", None) or []):
                 out += getattr(p, "text", "") or ""
+        try:
+            from aiforge_core.runtime.request_context import get_session_id
+            _sid = get_session_id()
+        except Exception:  # noqa: BLE001
+            _sid = None
         _lf.record_generation(role=role, model=model_name, messages=msgs,
                               output=out, latency_ms=latency_ms,
-                              metadata={"path": "pipeline"})
+                              session_id=_sid, metadata={"path": "pipeline"})
     except Exception:  # noqa: BLE001 — tracing must never break a call
         pass
 

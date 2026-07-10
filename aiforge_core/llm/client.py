@@ -602,9 +602,14 @@ def _trace_generation(role: str, messages: list[dict], output: str,
             model = resolve(role).model
         except Exception:  # noqa: BLE001
             model = ""
+        try:
+            from aiforge_core.runtime.request_context import get_session_id
+            _sid = get_session_id()
+        except Exception:  # noqa: BLE001
+            _sid = None
         _lf.record_generation(role=role, model=model, messages=messages,
                               output=output, latency_ms=latency_ms,
-                              error=error)
+                              error=error, session_id=_sid)
     except Exception:  # noqa: BLE001 — tracing must never break a turn
         pass
 

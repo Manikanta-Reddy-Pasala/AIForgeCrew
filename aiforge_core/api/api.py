@@ -4466,6 +4466,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     def _produce():
         nonlocal team, _auto_downgraded, _parallel_team
         _PRODUCE_SEM.acquire()   # bounded — block until a producer slot frees
+        # Bind this producer thread to the session so LLM tracing (Langfuse
+        # sessions/scores) tags every generation with the run it belongs to.
+        # Covers ALL modes here (simple/plan run inline in this thread; team's
+        # _drive re-sets the env in its own thread). Env for cross-thread /
+        # subprocess reach; contextvar for concurrency-correct in-thread reads.
+        os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
+        from aiforge_core.runtime import request_context as _reqctx
+        _sess_token = _reqctx.set_session_id(session_id)
         # Auto-route classify + its dependents, run HERE (already off the
         # response-open path — see the note where `team`/`_parallel_team`
         # were declared above) rather than in the synchronous request
@@ -4577,6 +4585,26 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # Capture cancellation BEFORE finishing the token (finish pops
             # it, after which is_cancelled always reads False).
             cancelled = chat_cancel.is_cancelled(session_id)
+            # Emit one turn-outcome score per run so the Langfuse Scores view
+            # populates (0.0 stopped, 1.0 completed), tagged to this session.
+            # Side-channel: soft-fails, never affects the turn. Runs for every
+            # mode (this finally is hit inline for simple/plan/parallel and for
+            # a team run whether or not the ADK driver launched).
+            try:
+                from aiforge_core.integrations import langfuse_adapter as _lf
+                if _lf.enabled():
+                    _lf.record_score(
+                        name="turn_completed",
+                        value=0.0 if cancelled else 1.0,
+                        session_id=session_id,
+                        comment="cancelled" if cancelled else "completed",
+                        metadata={"mode": _turn_mode})
+            except Exception:  # noqa: BLE001 — tracing must never break a turn
+                pass
+            try:
+                _reqctx.reset_session_id(_sess_token)
+            except Exception:  # noqa: BLE001
+                pass
             # TEAM mode: the background driver owns the run's lifetime AND its
             # persistence (chat_pipeline._drive) — it survives a client
             # disconnect and holds the real final answer, so we must NOT

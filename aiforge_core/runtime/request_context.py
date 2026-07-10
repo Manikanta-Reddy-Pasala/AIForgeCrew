@@ -32,6 +32,7 @@ import os
 
 _REPO_ROOT_ENV = "AIFORGE_REPO_ROOT"
 _WORKSPACE_DIR_ENV = "AIFORGE_WORKSPACE_DIR"
+_SESSION_ID_ENV = "AIFORGE_CURRENT_SESSION"
 
 _REPO_ROOT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "aiforge_repo_root", default=None)
@@ -41,6 +42,12 @@ _WORKSPACE_DIR: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 # fallback; the OLD env var was only ever written by delegation itself).
 _DELEGATION_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
     "aiforge_delegation_depth", default=0)
+# Active chat/pipeline session id — used to tag observability (Langfuse
+# sessions/scores) with the run it belongs to. Env fallback keeps the
+# single-shot subprocess graph-runner + non-context-propagating executors
+# working, and mirrors the existing AIFORGE_CURRENT_SESSION mechanism.
+_SESSION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "aiforge_session_id", default=None)
 
 
 # ─────────────────────────── repo root ────────────────────────────
@@ -116,8 +123,34 @@ def reset_delegation(token) -> None:
         _DELEGATION_DEPTH.set(0)
 
 
+# ──────────────────────────── session id ──────────────────────────
+
+def set_session_id(value):
+    """Bind the current context's session id (None/empty clears). Returns a
+    Token for :func:`reset_session_id`."""
+    return _SESSION_ID.set(str(value) if value not in (None, "") else None)
+
+
+def reset_session_id(token) -> None:
+    try:
+        _SESSION_ID.reset(token)
+    except Exception:  # noqa: BLE001
+        _SESSION_ID.set(None)
+
+
+def get_session_id() -> "str | None":
+    """Active session id: contextvar first, then ``AIFORGE_CURRENT_SESSION``
+    env, else None. Never raises."""
+    try:
+        v = _SESSION_ID.get()
+    except Exception:  # noqa: BLE001
+        v = None
+    return v or os.environ.get(_SESSION_ID_ENV) or None
+
+
 __all__ = [
     "set_repo_root", "reset_repo_root", "get_repo_root",
     "set_workspace_dir", "reset_workspace_dir", "get_workspace_dir",
     "get_delegation_depth", "enter_delegation", "reset_delegation",
+    "set_session_id", "reset_session_id", "get_session_id",
 ]
