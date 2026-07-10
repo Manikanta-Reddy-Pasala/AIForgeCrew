@@ -3753,6 +3753,30 @@ def run_chat_agent(
     rules = _rules_context(cwd, last_user)
     prefs = _preferences_context(cwd)
     sys_msg = _SYSTEM.format(cwd=cwd)
+    # CodeGraph tools are only advertised to the model when a pre-built index is
+    # actually queryable — otherwise the model would call a tool that always
+    # errors. Gated so the "with vs without codegraph" comparison is a clean
+    # toggle: AIFORGE_CODEGRAPH_DISABLE=1 forces it off (the aider/grep-only
+    # arm). Without this block the tools are in TOOLS but absent from the
+    # catalog, so the model never learns they exist.
+    if os.environ.get("AIFORGE_CODEGRAPH_DISABLE", "0") not in ("1", "true"):
+        try:
+            from aiforge_core.runtime.tools import codegraph as _cg
+            if _cg.available():
+                sys_msg += (
+                    "\n\nCodeGraph (pre-indexed code relations — prefer over grep "
+                    "for 'who calls / what changes affect / where is X'):\n"
+                    "- codegraph_explore  {\"query\": \"push sync priority\"}   "
+                    "relevant symbols + source for a natural-language query\n"
+                    "- codegraph_query    {\"query\": \"publishToRemoteServer\"} "
+                    "find a symbol + its defining file:line\n"
+                    "- codegraph_callers  {\"symbol\": \"foo\"}   who calls foo "
+                    "(every call site)\n"
+                    "- codegraph_callees  {\"symbol\": \"foo\"}   what foo calls\n"
+                    "- codegraph_impact   {\"symbol\": \"foo\"}   blast-radius of "
+                    "changing foo — call BEFORE editing a shared symbol")
+        except Exception:  # noqa: BLE001 — never break prompt build
+            pass
     # Multi-part message (simple mode has no enhancer/spec, so nothing else
     # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the
     # system prompt — the model must cover every part, not answer #1 and stop.
