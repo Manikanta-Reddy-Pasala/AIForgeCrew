@@ -51,6 +51,17 @@ def test_risk_safe_normal_build():
     assert command_risk.assess("npm run build")["level"] == command_risk.SAFE
 
 
+def test_allow_ssh_downgrades_caution_only(monkeypatch):
+    # AIFORGE_ALLOW_SSH lets ssh deploys (remote sudo/systemctl) run free, but a
+    # DANGEROUS remote command still gates, and LOCAL sudo is unaffected.
+    monkeypatch.setenv("AIFORGE_ALLOW_SSH", "1")
+    assert command_risk.assess('ssh ai@h "sudo systemctl restart x"')["level"] == command_risk.SAFE
+    assert command_risk.assess('ssh ai@h "rm -rf /data"')["level"] == command_risk.DANGEROUS
+    assert command_risk.assess("sudo systemctl restart x")["level"] == command_risk.CAUTION
+    monkeypatch.setenv("AIFORGE_ALLOW_SSH", "0")
+    assert command_risk.assess('ssh ai@h "sudo systemctl restart x"')["level"] == command_risk.CAUTION
+
+
 def test_risk_any_push_and_pr_are_caution():
     # a push updates a remote (external) → always gates under ask policy, not
     # just force-push; PR/MR creation too. Local commit stays safe.

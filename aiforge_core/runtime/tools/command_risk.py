@@ -105,6 +105,18 @@ def _disabled() -> bool:
         "1", "true", "yes", "on")
 
 
+_SSH_RE = re.compile(r"^\s*ssh\b")
+
+
+def _ssh_allowed() -> bool:
+    """Operator opted to run ssh freely (e.g. deploys to their own boxes).
+    Downgrades a CAUTION ssh command (sudo/systemctl on the remote) to safe so
+    it runs without an approval prompt; a DANGEROUS remote command (rm -rf,
+    secret exfil) still gates."""
+    return os.environ.get("AIFORGE_ALLOW_SSH", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def assess(cmd: str) -> dict:
     """Classify ``cmd`` → ``{"level", "reason"}``.
 
@@ -124,6 +136,11 @@ def assess(cmd: str) -> dict:
         return {"level": DANGEROUS, "reason": "deletes files/data"}
     for rx, why in _CAUTION_C:
         if any(rx.search(f) for f in forms):
+            # ssh escape hatch: with AIFORGE_ALLOW_SSH, a caution-tier ssh
+            # command (the remote runs sudo/systemctl/etc.) runs free. Dangerous
+            # remote commands already returned above, so they still gate.
+            if _ssh_allowed() and any(_SSH_RE.match(f) for f in forms):
+                return {"level": SAFE, "reason": ""}
             return {"level": CAUTION, "reason": why}
     return {"level": SAFE, "reason": ""}
 
