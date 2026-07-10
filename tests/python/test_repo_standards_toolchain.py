@@ -87,3 +87,18 @@ def test_toolchain_brief_empty_when_no_lang(tmp_path):
     # bare dir, no markers → no fingerprint → empty (never a wrong guess)
     assert rs.toolchain_brief(str(tmp_path)) == ""
     assert rs.toolchain_brief(None) == ""
+
+
+def test_check_toolchain_flags_jdk_mismatch(tmp_path, monkeypatch):
+    """A repo requiring a newer JDK than the host → actionable install msg."""
+    from aiforge_core.config import repo_standards as rs
+    (tmp_path / "pom.xml").write_text(
+        "<project><properties><java.version>24</java.version>"
+        "</properties></project>")
+    (tmp_path / "mvnw").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(rs, "_installed_java_major", lambda: 21)
+    msgs = rs.check_toolchain(str(tmp_path))
+    assert any("JDK 24" in m and "21" in m for m in msgs), msgs
+    # host already has it → no message
+    monkeypatch.setattr(rs, "_installed_java_major", lambda: 24)
+    assert not [m for m in rs.check_toolchain(str(tmp_path)) if "JDK" in m]

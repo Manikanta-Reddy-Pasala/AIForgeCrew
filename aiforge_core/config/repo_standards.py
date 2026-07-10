@@ -166,15 +166,32 @@ def resolve_toolchain(lang: str, worktree: str | None = None) -> dict[str, str]:
                 "test_cmd":    f"{py} -m pytest -q",
             }
         elif lk == "java":
-            if worktree and os.path.isfile(os.path.join(worktree, "mvnw")):
-                mvn = "./mvnw"
+            # Gradle (incl. Kotlin/.kts) vs Maven — pick per marker/wrapper so a
+            # Kotlin/gradle repo doesn't get mvn commands it can't run.
+            is_gradle = bool(worktree and _glob.glob(
+                os.path.join(worktree, "build.gradle*")))
+            has_pom = bool(worktree and os.path.isfile(
+                os.path.join(worktree, "pom.xml")))
+            if is_gradle and not has_pom:
+                if worktree and os.path.isfile(os.path.join(worktree, "gradlew")):
+                    g = "./gradlew"
+                else:
+                    g = _first_on_path("gradle") or "./gradlew"
+                out = {
+                    "build_cmd":   f"{g} build -x test",
+                    "compile_cmd": f"{g} compileJava compileKotlin -x test",
+                    "test_cmd":    f"{g} test",
+                }
             else:
-                mvn = _first_on_path("mvn") or "./mvnw"
-            out = {
-                "build_cmd":   f"{mvn} clean package -DskipTests",
-                "compile_cmd": f"{mvn} -q -DskipTests compile",
-                "test_cmd":    f"{mvn} test",
-            }
+                if worktree and os.path.isfile(os.path.join(worktree, "mvnw")):
+                    mvn = "./mvnw"
+                else:
+                    mvn = _first_on_path("mvn") or "./mvnw"
+                out = {
+                    "build_cmd":   f"{mvn} clean package -DskipTests",
+                    "compile_cmd": f"{mvn} -q -DskipTests compile",
+                    "test_cmd":    f"{mvn} test",
+                }
         elif lk in ("node", "react"):
             if worktree and os.path.isfile(os.path.join(worktree, "yarn.lock")):
                 pm = "yarn"
@@ -190,26 +207,130 @@ def resolve_toolchain(lang: str, worktree: str | None = None) -> dict[str, str]:
     return out
 
 
+def _installed_java_major() -> int | None:
+    """Major version of the JDK on PATH (``java -version`` → 21), or None."""
+    java = shutil.which("java")
+    if not java:
+        return None
+    try:
+        import subprocess
+        p = subprocess.run([java, "-version"], capture_output=True, text=True,
+                           timeout=8)
+        blob = (p.stderr or "") + (p.stdout or "")
+        import re as _re
+        m = _re.search(r'version "(\d+)(?:\.(\d+))?', blob)
+        if not m:
+            return None
+        major = int(m.group(1))
+        # 1.8 → 8 (legacy scheme); 21 → 21
+        return int(m.group(2)) if major == 1 and m.group(2) else major
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _required_java_major(worktree: str) -> int | None:
+    """Java release the repo demands — parsed from pom.xml (java.version /
+    maven.compiler.release|source|target) or build.gradle* (sourceCompatibility
+    / languageVersion / jvmTarget). Highest number wins. None if unstated."""
+    import re as _re
+    cands: list[int] = []
+    pom = os.path.join(worktree, "pom.xml")
+    try:
+        if os.path.isfile(pom):
+            txt = open(pom, encoding="utf-8", errors="ignore").read()
+            for tag in ("java.version", "maven.compiler.release",
+                        "maven.compiler.source", "maven.compiler.target"):
+                for m in _re.finditer(rf"<{tag}>\s*(?:1\.)?(\d+)\s*</{tag}>", txt):
+                    cands.append(int(m.group(1)))
+        for gp in _glob.glob(os.path.join(worktree, "build.gradle*")):
+            txt = open(gp, encoding="utf-8", errors="ignore").read()
+            for pat in (r'sourceCompatibility\s*=?\s*[\'"]?(?:1\.)?(\d+)',
+                        r'targetCompatibility\s*=?\s*[\'"]?(?:1\.)?(\d+)',
+                        r'JavaLanguageVersion\.of\((\d+)\)',
+                        r'languageVersion\.set\(JavaLanguageVersion\.of\((\d+)\)',
+                        r'jvmTarget\s*=?\s*[\'"]?(?:1\.)?(\d+)',
+                        r'VERSION_(\d+)'):
+                for m in _re.finditer(pat, txt):
+                    cands.append(int(m.group(1)))
+    except Exception:  # noqa: BLE001
+        pass
+    return max(cands) if cands else None
+
+
+def check_toolchain(worktree: str | None) -> list[str]:
+    """Preflight: return actionable 'install X on the host' messages for any
+    MISSING or VERSION-MISMATCHED toolchain the repo needs. Empty list = ready.
+
+    Covers the common blocker where a repo moved to a newer JDK than the box
+    has (e.g. pom wants Java 24, host has 21 → every compile fails with
+    'release version 24 not supported'). Surfaced to the Doer/verifier and, on
+    a hard mismatch, used to block the ticket with a fix-it message rather than
+    letting it fail opaquely or fake a pass. Java + Kotlin (gradle) + Maven.
+    """
+    if not worktree or not os.path.isdir(worktree):
+        return []
+    msgs: list[str] = []
+    lang = detect_lang(worktree)
+    is_maven = os.path.isfile(os.path.join(worktree, "pom.xml"))
+    is_gradle = bool(_glob.glob(os.path.join(worktree, "build.gradle*")))
+    has_kotlin = bool(_glob.glob(os.path.join(worktree, "**", "*.kt"),
+                                 recursive=True) or is_gradle and _glob.glob(
+                                 os.path.join(worktree, "*.gradle.kts")))
+    if lang == "java" or is_maven or is_gradle:
+        req = _required_java_major(worktree)
+        inst = _installed_java_major()
+        if inst is None:
+            msgs.append("Install a JDK on the host (no `java` found)"
+                        + (f" — this repo targets Java {req}." if req else "."))
+        elif req and inst < req:
+            msgs.append(
+                f"Install JDK {req} on the host and point JAVA_HOME at it — "
+                f"this repo compiles with release {req} but the host has "
+                f"JDK {inst} (build fails: 'release version {req} not "
+                f"supported').")
+        # build tool present? (wrapper counts)
+        if is_maven and not (os.path.isfile(os.path.join(worktree, "mvnw"))
+                             or shutil.which("mvn")):
+            msgs.append("Install Maven (`mvn`) on the host, or commit the "
+                        "`mvnw` wrapper.")
+        if is_gradle and not (os.path.isfile(os.path.join(worktree, "gradlew"))
+                              or shutil.which("gradle")):
+            msgs.append("Install Gradle (`gradle`) on the host, or commit the "
+                        "`gradlew` wrapper.")
+        if has_kotlin and not is_gradle and not shutil.which("kotlinc"):
+            msgs.append("Install the Kotlin compiler (`kotlinc`) on the host.")
+    return msgs
+
+
 def toolchain_brief(worktree: str | None) -> str:
     """Doer-facing 'use these, don't re-discover' block of host-resolved
     commands for the repo at ``worktree``. Empty when the language can't
     be fingerprinted. Seeded into doer state so the agent never re-probes
-    python/python3/build tools per ticket."""
+    python/python3/build tools per ticket. Leads with a MISSING-TOOLCHAIN
+    banner when :func:`check_toolchain` finds an uninstalled/mismatched tool."""
     if not worktree:
         return ""
     lang = detect_lang(worktree)
     if not lang:
         return ""
+    missing = check_toolchain(worktree)
+    banner = ""
+    if missing:
+        banner = ("⚠ MISSING TOOLCHAIN — the host cannot build/test this repo "
+                  "until these are installed (ask the operator; do NOT fake a "
+                  "green compile):\n"
+                  + "\n".join(f"- {m}" for m in missing) + "\n\n")
     tc = resolve_toolchain(lang, worktree)
-    if not tc:
+    if not tc and not banner:
         return ""
     lines = [f"- {k.replace('_cmd', '').replace('_', ' ')}: `{v}`"
              for k, v in tc.items()]
-    return (
+    body = (
         f"DETECTED TOOLCHAIN ({lang}, host-verified — use these EXACT "
         "commands; do NOT re-probe for python/python3 or the build tool):\n"
         + "\n".join(lines)
-    )
+    ) if tc else ""
+    return banner + body
 
 
 def detect_lang(worktree_path: str) -> str:
