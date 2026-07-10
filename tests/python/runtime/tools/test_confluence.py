@@ -250,20 +250,7 @@ def test_create_converts_and_uploads_image(cfg, monkeypatch, tmp_path):
     assert out["attachments"][0]["ok"] and out["attachments"][0]["filename"] == "diagram.png"
 
 
-# ── draw.io diagram mode (AIFORGE_CONFLUENCE_DIAGRAM=drawio) ──────────────
-
-def test_mermaid_becomes_drawio_macro_and_attachment(monkeypatch):
-    monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "drawio")
-    body = "<p>arch</p>\n\n```mermaid\ngraph TD\n A[One] --> B[Two]\n```\n"
-    out, refs = cf._storagify_media(body)
-    assert '<ac:structured-macro ac:name="drawio">' in out
-    assert '<ac:parameter ac:name="diagramName">aiforge-diagram-1</ac:parameter>' in out
-    assert "```" not in out
-    # one diagram attachment queued, carrying the mxfile bytes
-    dia = [r for r in refs if r.get("is_diagram")]
-    assert len(dia) == 1 and dia[0]["filename"] == "aiforge-diagram-1.drawio"
-    assert dia[0]["data"].startswith(b"<mxfile")
-
+# ── mermaid diagram modes (code default / mermaid macro) ─────────────────
 
 def test_mermaid_default_mode_is_code_macro(monkeypatch):
     # DEFAULT: a code macro with the mermaid source, in place (renders anywhere)
@@ -278,30 +265,3 @@ def test_mermaid_mode_explicit_macro(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "mermaid")
     out, _ = cf._storagify_media("```mermaid\ngraph TD\n A-->B\n```")
     assert 'ac:name="mermaid"' in out
-
-
-def test_drawio_mode_unparseable_falls_back_to_code(monkeypatch):
-    monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "drawio")
-    out, refs = cf._storagify_media("```mermaid\nsequenceDiagram\n A->>B: hi\n```")
-    assert 'ac:name="code"' in out and "drawio" not in out   # source shown, not broken
-    assert refs == []
-
-
-def test_create_uploads_drawio_diagram(cfg, monkeypatch):
-    monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "drawio")
-    calls = []
-
-    def fake_urlopen(req, timeout=None, context=None):
-        calls.append(req)
-        if "/child/attachment" in req.full_url:
-            return _Resp({"results": [{"id": "att1"}]})
-        return _Resp({"id": "99", "_links": {"webui": "/x"}})
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    out = cf.confluence_create({"title": "Arch", "space": "ENG",
-                                "body": "```mermaid\ngraph TD\n A-->B\n```"})
-    assert out["ok"]
-    att = [r for r in calls if "/child/attachment" in r.full_url]
-    assert att and att[0].get_method() == "POST"
-    assert b"<mxfile" in att[0].data           # the .drawio XML was uploaded
-    assert out["attachments"][0]["ok"]

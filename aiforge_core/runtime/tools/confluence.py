@@ -121,13 +121,11 @@ def _diagram_mode() -> str:
 
     * 'code'    — a Confluence CODE macro holding the mermaid source, placed
                   where the diagram belongs. Renders on ANY instance (no app,
-                  no conversion). DEFAULT — the universally-safe choice.
-    * 'drawio'  — convert → a native, editable draw.io diagram attachment +
-                  the drawio macro (for instances using draw.io).
+                  no conversion). DEFAULT.
     * 'mermaid' — a mermaid macro (needs a mermaid app installed).
     """
     v = (os.environ.get("AIFORGE_CONFLUENCE_DIAGRAM") or "code").strip().lower()
-    return v if v in ("code", "drawio", "mermaid") else "code"
+    return v if v in ("code", "mermaid") else "code"
 
 
 def _mermaid_macro(code: str) -> str:
@@ -142,22 +140,6 @@ def _code_macro(code: str, lang: str = "") -> str:
     return (f'<ac:structured-macro ac:name="code">{param}'
             f'<ac:plain-text-body>{_cdata(code)}'
             f'</ac:plain-text-body></ac:structured-macro>')
-
-
-def _drawio_macro(name: str) -> str:
-    """The draw.io Confluence macro referencing an attached ``<name>.drawio``
-    diagram by name (Server/DC storage form)."""
-    return (
-        '<ac:structured-macro ac:name="drawio">'
-        f'<ac:parameter ac:name="diagramName">{name}</ac:parameter>'
-        '<ac:parameter ac:name="simpleViewer">false</ac:parameter>'
-        '<ac:parameter ac:name="width"></ac:parameter>'
-        '<ac:parameter ac:name="links"></ac:parameter>'
-        '<ac:parameter ac:name="tbstyle">top</ac:parameter>'
-        '<ac:parameter ac:name="lbox">true</ac:parameter>'
-        '<ac:parameter ac:name="diagramWidth">100%</ac:parameter>'
-        '<ac:parameter ac:name="revision">1</ac:parameter>'
-        '</ac:structured-macro>')
 
 
 _MERMAID_FENCE_RE = re.compile(r"```mermaid[^\n]*\n(.*?)```", re.S | re.I)
@@ -175,8 +157,7 @@ def _safe_filename(src: str) -> str:
 def _storagify_media(body: str) -> tuple[str, list[dict]]:
     """Rewrite mermaid/code fences + markdown/HTML images into storage macros.
 
-    Returns ``(new_body, refs)`` where each ref is either an image
-    ``{filename, src}`` or an inline diagram ``{filename, data, is_diagram}`` to
+    Returns ``(new_body, image_refs)`` where each ref is ``{filename, src}`` to
     be uploaded as a page attachment. No-op (body unchanged, no refs) when the
     body carries none of these constructs."""
     if "```" not in body and "![" not in body and "<img" not in body.lower():
@@ -186,16 +167,6 @@ def _storagify_media(body: str) -> tuple[str, list[dict]]:
 
     def _mermaid(m):
         code = m.group(1).rstrip()
-        if mode == "drawio":
-            from . import confluence_drawio
-            xml = confluence_drawio.to_drawio_xml(code)
-            if xml:
-                name = f"aiforge-diagram-{sum(1 for r in refs if r.get('is_diagram')) + 1}"
-                refs.append({"filename": f"{name}.drawio",
-                             "data": xml.encode("utf-8"), "is_diagram": True})
-                return _drawio_macro(name)
-            # unparseable → show the source (code macro), not a broken macro
-            return _code_macro(code, "mermaid")
         if mode == "mermaid":
             return _mermaid_macro(code)
         # 'code' (default): a code macro with the mermaid source, in place —
@@ -280,17 +251,10 @@ def _resolve_image_bytes(src: str, cwd: str | None) -> tuple[bytes, str] | None:
 
 
 def _upload_page_images(pid: str, refs: list[dict], cwd: str | None) -> list[dict]:
-    """Upload every referenced attachment: inline diagram bytes (``data``) go up
-    as-is; image refs (``src``) are resolved (local read / http download) first.
-    Returns per-attachment results."""
+    """Upload every image the body referenced (local read / http download).
+    Returns per-image results."""
     results = []
     for ref in refs:
-        if ref.get("is_diagram") and ref.get("data") is not None:
-            # a generated .drawio diagram — upload the XML bytes directly
-            results.append(_upload_attachment(
-                pid, ref["filename"], ref["data"],
-                "application/vnd.jgraph.mxfile"))
-            continue
         got = _resolve_image_bytes(ref["src"], cwd)
         if got is None:
             results.append({"filename": ref["filename"], "ok": False,
