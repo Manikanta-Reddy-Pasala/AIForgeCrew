@@ -37,12 +37,25 @@ def _bin() -> str | None:
 def _repo(cwd: str | None) -> str:
     p = os.environ.get("AIFORGE_CODEGRAPH_PATH")
     if p:
-        return p
+        return _main_repo(p)
     try:
         from aiforge_core.runtime import request_context
-        return request_context.get_repo_root() or cwd or "."
+        r = request_context.get_repo_root() or cwd or "."
     except Exception:  # noqa: BLE001
-        return cwd or "."
+        r = cwd or "."
+    return _main_repo(r)
+
+
+def _main_repo(path: str) -> str:
+    """Resolve to the repo that holds the ``.codegraph`` index. A ticket Doer
+    runs inside ``<repo>/.aiforge-worktrees/<TICKET>`` (or ``.worktrees/…``),
+    which has no index of its own — strip back to the parent repo so the
+    codegraph_* queries hit the real index instead of an empty worktree."""
+    for marker in (os.sep + ".aiforge-worktrees" + os.sep,
+                   os.sep + ".worktrees" + os.sep):
+        if marker in path:
+            return path.split(marker, 1)[0]
+    return path
 
 
 def available() -> bool:
