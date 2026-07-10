@@ -1,4 +1,5 @@
-# Self-hosted Langfuse v3 (pinned 3.211.0). Unlike v2's single container, v3
+# Self-hosted Langfuse v3 (pinned 3.210.0 — latest published; 3.211.0 is not
+# released on Docker Hub yet). Unlike v2's single container, v3
 # splits into web + worker and requires ClickHouse (analytics store for
 # traces/observations/scores), Redis (queue/cache) and an S3-compatible blob
 # store (MinIO, for event uploads). Postgres keeps the transactional data.
@@ -62,7 +63,7 @@ x-langfuse-env: &langfuse-env
 services:
   langfuse-web:
     logging: *logcap
-    image: langfuse/langfuse:3.211.0
+    image: langfuse/langfuse:3.210.0
     restart: unless-stopped
     depends_on:
       langfuse-postgres: {condition: service_healthy}
@@ -88,7 +89,7 @@ services:
 
   langfuse-worker:
     logging: *logcap
-    image: langfuse/langfuse-worker:3.211.0
+    image: langfuse/langfuse-worker:3.210.0
     restart: unless-stopped
     depends_on:
       langfuse-postgres: {condition: service_healthy}
