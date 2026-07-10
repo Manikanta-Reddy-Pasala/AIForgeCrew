@@ -65,6 +65,11 @@ _CAUTION = [
     (r"\bchown\b", "changes file ownership"),
     (r"\bgit\s+push\b[^\n]*--force(?!-with-lease)\b", "force-pushes (can clobber remote history)"),
     (r"\bgit\s+push\b[^\n]*\s-f\b", "force-pushes (can clobber remote history)"),
+    # ANY push is a durable EXTERNAL action (updates a remote, may trigger CI /
+    # a merge) — always worth a confirmation under ask policy, not just force.
+    (r"\bgit\s+push\b", "pushes commits to a remote (external; updates the remote branch)"),
+    (r"\bgh\s+pr\s+create\b", "opens a GitHub pull request"),
+    (r"\bglab\s+mr\s+create\b", "opens a GitLab merge request"),
     (r"\b(npm|yarn|pnpm)\s+(install|add)\b[^\n]*\s-g\b", "installs a global package"),
     (r"\bpip[0-9.]*\s+install\b[^\n]*\s--user\b", "installs a user-wide Python package"),
     (r"\bkill(all)?\b\s+-9\b", "force-kills processes"),

@@ -349,3 +349,45 @@ def test_unified_preview_resolves_repo_root(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
     diff = unified_preview("r.py", "two\n", "")
     assert "-one" in diff and "+two" in diff
+
+
+# ─── (c) push is never silently auto-approved by the commit flag ──────────
+
+def test_gate_push_not_auto_approved_even_with_commit_flag(monkeypatch):
+    """commit_auto_approve auto-approves a local `git commit`, but a `git push`
+    (external — updates the remote) must ALWAYS ask."""
+    from aiforge_core.runtime import request_context, rule_capture
+    monkeypatch.delenv("AIFORGE_TOOL_POLICY", raising=False)
+    monkeypatch.setenv("AIFORGE_RISK_ASK_CAUTION", "1")
+    sid = 7020
+    events: list = []
+    chat_approve.set_emitter(sid, events.append)
+    chat_cancel.set_active(sid)
+    tok = request_context.set_repo_root("/tmp/somerepo")
+    rule_capture.set_gate_flag("commit_auto_approve", scope="session", session_id=sid)
+    cb = tool_gate.make_approval_gate_callback()
+    try:
+        # local commit → auto-approved by the flag (no approval prompt)
+        out_commit = _run(cb(tool=_FakeTool("run_command"),
+                             args={"cmd": "git commit -m x"}, tool_context=None))
+        assert out_commit is None
+        assert not any(e.get("type") == "approval" for e in events)
+
+        # push → must STILL prompt; reject it from a side thread
+        def _auto():
+            for _ in range(80):
+                if chat_approve.resolve(sid, "reject"):
+                    return
+                time.sleep(0.02)
+        t = threading.Thread(target=_auto)
+        t.start()
+        out_push = _run(cb(tool=_FakeTool("run_command"),
+                           args={"cmd": "git push origin main"}, tool_context=None))
+        t.join(timeout=3)
+        assert any(e.get("type") == "approval" for e in events)
+        assert out_push and out_push.get("rejected") is True
+    finally:
+        request_context.reset_repo_root(tok)
+        chat_approve.clear_emitter(sid)
+        chat_approve.finish(sid)
+        chat_cancel.set_active(None)

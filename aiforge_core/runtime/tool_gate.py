@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 from aiforge_core.runtime import chat_approve, chat_cancel
 from aiforge_core.runtime.tools import tool_policy
@@ -111,18 +112,23 @@ def make_approval_gate_callback():
             if policy == tool_policy.ALLOW and not force_review:
                 return None
             # Captured-rule "never re-ask": an EXPLICITLY-enabled "commit
-            # directly" flag auto-approves a WHOLE-command git commit/add/push
+            # directly" flag auto-approves a WHOLE-command git commit/add
             # (is_commit_command rejects any chained/expanded command). Keep DENY
             # hard and never bypass a forced review. An AUTONOMOUS run (sid None)
             # ignores chat-set flags entirely (flag_active returns False), so it
             # is never weakened here. The bypass is AUDITED, not invisible.
+            # PUSH is explicitly EXCLUDED — a push updates a remote (external,
+            # may trigger CI / a merge), so it ALWAYS requires an explicit
+            # approval even when local commits are auto-approved.
             if policy != tool_policy.DENY and not force_review:
                 try:
                     from aiforge_core.runtime import rule_capture as _rc
                     _cmd = (args or {}).get("cmd") or (args or {}).get("command") or ""
                     from aiforge_core.runtime import request_context as _reqctx
                     _repo = _rc.repo_key(_reqctx.get_repo_root() or "")
-                    if _rc.is_commit_command(_cmd) and _rc.flag_active(
+                    _is_push = bool(re.search(r"\bgit\s+push\b", _cmd, re.I))
+                    if _rc.is_commit_command(_cmd) and not _is_push \
+                            and _rc.flag_active(
                             "commit_auto_approve", repo=_repo, session_id=sid):
                         _scope = _rc.flag_active_scope(
                             "commit_auto_approve", repo=_repo, session_id=sid)
