@@ -1281,6 +1281,31 @@ def _t_note_curate(args: dict, cwd: str) -> dict:
     return note_curator.curate_note(path, cwd=cwd)
 
 
+def _t_note_consolidate(args: dict, cwd: str) -> dict:
+    """Intelligently fold NEW knowledge into a managed note's OKR sections:
+    an LLM dedupes paraphrases, resolves contradictions, and MAPS each item to
+    the right section (Objective/Key Results/Facts/Links/Learnings); large input
+    is chunked on structure boundaries. Path defaults to the bound context's
+    note. WRITES — jailed to the managed work root (same boundary as
+    note_curate), so it stays ungated."""
+    from aiforge_core.runtime import note_curator, work_notes
+    text = str(args.get("text") or args.get("content") or "").strip()
+    if not text:
+        return {"ok": False, "error": "pass 'text' — the new knowledge to fold "
+                                      "into the note"}
+    path = str(args.get("path") or "").strip()
+    if not path:
+        path = note_curator.primary_note_for_cwd(cwd) or ""
+    if not path:
+        return {"ok": False,
+                "error": "no managed note found — pass 'path' or run inside "
+                         "a jira/confluence context workspace"}
+    if not note_curator._inside_work_root(path):
+        return {"ok": False,
+                "error": "path outside the managed work root — refusing"}
+    return work_notes.consolidate_note(path, text, role="learner")
+
+
 def _t_jira_log_work(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import jira
     return jira.jira_log_work(args, cwd)
@@ -1929,6 +1954,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "jira_remote_links": _t_jira_remote_links,
     "context_gather": _t_context_gather,
     "note_curate": _t_note_curate,
+    "note_consolidate": _t_note_consolidate,
     "resolve_repo": _t_resolve_repo,
     "jira_resolve_project": _t_jira_resolve_project,
     "confluence_resolve_space": _t_confluence_resolve_space,
@@ -2364,6 +2390,7 @@ Tool arguments:
 - context_gather {{"kind": "jira", "key": "ENG-123"}}  or  {{"kind": "confluence", "key": "12345"}}   (BEST for "explain/understand ticket or page": pulls the entity + its linked Confluence pages / Jira tickets + images IN PARALLEL, caches in the ticket/page folder, refreshes only if changed — call this first, then read the returned dossier)
 - jira_remote_links {{"key": "ENG-123"}}                                                (Confluence pages + web links attached to an issue)
 - note_curate   {{"path": "/optional/abs/path/to/ticket.md"}}                            (re-verify a saved ticket/page/web note against its live source: refresh drifted Facts — status/assignee/title —, flag dead links "(dead)", and log every change under ## Learnings; path defaults to the current ticket/page's note)
+- note_consolidate {{"text": "new knowledge to fold in", "path": "/optional/abs/note.md"}}  (intelligently merge NEW knowledge into a note's OKR sections — an LLM dedupes paraphrases, resolves contradictions, and maps each item to Objective/Key Results/Facts/Links/Learnings; large text is chunked on structure boundaries; path defaults to the current note)
 - resolve_repo {{"name": "pos client backend"}}                                         (loosely-typed repo/service/folder → local path; tolerates case/spaces/missing-hyphens/typos — ALWAYS use before assuming a repo folder)
 - jira_resolve_project {{"name": "one shell"}}                                          (loose project name → real Jira project key)
 - confluence_resolve_space {{"name": "dev docs"}}                                       (loose space name → real Confluence space key)

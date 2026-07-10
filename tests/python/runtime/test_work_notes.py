@@ -324,3 +324,120 @@ def test_stale_note_path_for_bound_context(workdir, monkeypatch):
     assert note_curator.stale_note_path(cwd) == path
     # a non-context cwd never yields a note
     assert note_curator.stale_note_path(str(workdir)) is None
+
+
+# ── intelligent consolidation (LLM map+dedupe → OKR) ─────────────────────
+
+def _stub_structured(monkeypatch, handler):
+    """Patch structured_complete to return an object shaped like the inner
+    ConsolidatedNote (attr access), driven by `handler(user_json) -> dict`."""
+    from types import SimpleNamespace as NS
+
+    def fake(role, messages, response_model, **kw):
+        user = next(m["content"] for m in messages if m["role"] == "user")
+        d = handler(user)
+        return NS(objective=d.get("objective", ""),
+                  key_results=d.get("key_results", []),
+                  facts=d.get("facts", []), links=d.get("links", []),
+                  learnings=d.get("learnings", []))
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", fake)
+
+
+def test_consolidate_llm_maps_and_dedupes(monkeypatch):
+    # the LLM folds new info: dedupes the paraphrased fact, supersedes status.
+    def handler(user_json):
+        payload = json.loads(user_json)
+        cur = payload["current_sections"]
+        assert "new_information" in payload
+        return {"objective": cur.get("objective", ""),
+                "key_results": cur.get("key_results", []),
+                "facts": ["status: In Progress", "owner: Marty"],  # superseded
+                "links": cur.get("links", []),
+                "learnings": cur.get("learnings", [])}
+    import json
+    _stub_structured(monkeypatch, handler)
+    existing = {"objective": "ship it", "facts": ["status: To Do",
+                                                  "owner: Marty"]}
+    out = work_notes.consolidate(existing, "moved to In Progress", role="learner")
+    assert out["objective"] == "ship it"
+    assert out["facts"] == ["status: In Progress", "owner: Marty"]
+    assert "status: To Do" not in out["facts"]      # stale line dropped
+
+
+def test_consolidate_falls_back_to_deterministic_merge(monkeypatch):
+    # model down → new content lands as a deduped Fact, nothing lost.
+    def boom(*a, **k):
+        raise RuntimeError("model down")
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", boom)
+    existing = {"facts": ["a", "A"], "learnings": ["x"]}
+    out = work_notes.consolidate(existing, "brand new fact", role="learner")
+    assert out["facts"] == ["a", "brand new fact"]   # 'A' deduped, new appended
+    assert out["learnings"] == ["x"]
+
+
+def test_consolidate_empty_content_just_dedupes(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("no LLM call for empty content")
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", boom)
+    out = work_notes.consolidate({"facts": ["dup", "DUP", "keep"]}, "  ")
+    assert out["facts"] == ["dup", "keep"]
+
+
+def test_consolidate_chunks_large_input_and_folds(monkeypatch):
+    # big input → multiple folds (chonkie or plain-slice). Each call appends its
+    # chunk's fact; assert every chunk was folded in.
+    import json
+    calls = {"n": 0}
+
+    def handler(user_json):
+        calls["n"] += 1
+        payload = json.loads(user_json)
+        cur = payload["current_sections"]
+        facts = list(cur.get("facts", []))
+        facts.append(f"chunk-{calls['n']}")
+        return {"objective": cur.get("objective", ""), "facts": facts,
+                "key_results": [], "links": [], "learnings": []}
+    _stub_structured(monkeypatch, handler)
+    big = ("sentence. " * 4000)          # ~40k chars, exceeds the input budget
+    out = work_notes.consolidate({}, big, role="learner", max_input_chars=8000)
+    assert calls["n"] >= 2               # folded across multiple chunks
+    assert any(f.startswith("chunk-") for f in out["facts"])
+
+
+def test_consolidate_note_rewrites_file_and_preserves_body(monkeypatch, tmp_path):
+    import json
+    _stub_structured(monkeypatch, lambda uj: {
+        **{k: json.loads(uj)["current_sections"].get(k, [])
+           for k in ("key_results", "links", "learnings")},
+        "objective": json.loads(uj)["current_sections"].get("objective", ""),
+        "facts": json.loads(uj)["current_sections"].get("facts", [])
+                 + ["consolidated: new insight"]})
+    path = str(tmp_path / "dossier.md")
+    text = work_notes.render_note("jira", "ENG-9", title="ENG-9 — t",
+                                  facts=["status: To Do"],
+                                  body_md="the full ticket text")
+    text += "\n## My scratch analysis\n\n- keep me exactly\n"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    r = work_notes.consolidate_note(path, "found a new insight worth noting")
+    assert r["ok"]
+    after = open(path, encoding="utf-8").read()
+    assert "consolidated: new insight" in after
+    assert "status: To Do" in after                  # existing fact kept
+    assert "## My scratch analysis" in after and "keep me exactly" in after
+    assert "the full ticket text" in after
+    assert not os.path.exists(path + ".tmp")
+
+
+def test_chat_tool_note_consolidate_wired_and_jailed(workdir):
+    from aiforge_core.runtime import chat_agent
+    assert "note_consolidate" in chat_agent.TOOLS
+    # it WRITES → must not be read-only (plan mode must block it)
+    assert "note_consolidate" not in chat_agent._READONLY_TOOLS
+    # missing text → soft error, no write
+    assert chat_agent.TOOLS["note_consolidate"](
+        {"path": "/etc/hosts"}, str(workdir))["ok"] is False
+    # path outside the work root → refused
+    r = chat_agent.TOOLS["note_consolidate"](
+        {"text": "x", "path": "/etc/hosts"}, str(workdir))
+    assert r["ok"] is False and "work root" in r["error"]
