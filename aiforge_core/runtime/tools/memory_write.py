@@ -147,10 +147,12 @@ def _memory_write_impl(
     # or a new scope is handled automatically with no extra wiring. Bulk ingest
     # (source="ingest") is exempt so chunk floods don't bloat the brief.
     def _feed_brief() -> None:
-        # Skip bulk ingest (chunk floods) AND the md-mirror path (source "md:*"),
-        # since md_store.capture already maintains that write's topic-aware brief
-        # — briefing again here would double the bullet.
-        if source == "ingest" or source.startswith("md:"):
+        # Skip bulk ingest (chunk floods), the md-mirror path (source "md:*"),
+        # AND a compacted-brief RE-INGEST (source "compacted:*" / "agent:*") —
+        # otherwise re-ingesting a topic brief would spawn a fresh note-unit per
+        # brief (the "agent:compacted:compacted-X" sprawl). capture already
+        # maintains the topic-aware brief for a genuine write.
+        if source == "ingest" or source.startswith(("md:", "compacted:", "agent:")):
             return
         try:
             # Route through the OKR library (capture) so EVERY agent's write is a
