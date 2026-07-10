@@ -117,6 +117,12 @@ export const api = {
       compacted?: string[]; summarized?: string[]; archive?: string; note?: string }>(
       `/memory/files/compact?${p.toString()}`, { method: 'POST' });
   },
+  memoryOkr: () => j<{ ok: boolean; counts: Record<string, number>;
+    active_kr: string | null; nodes: any[] }>('/memory/okr'),
+  memoryOkrSetActive: (active_kr: string | null) =>
+    j<any>('/memory/okr/active', { method: 'POST', body: JSON.stringify({ active_kr }) }),
+  memoryOkrMigrate: () => j<{ ok: boolean; migrated: number; topics: number }>(
+    '/memory/okr/migrate', { method: 'POST' }),
   memoryFilesCleanup: (dry_run?: boolean) =>
     j<{ ok: boolean; folded?: number; facts?: number; stale?: string[]; count?: number }>(
       `/memory/files/cleanup${dry_run ? '?dry_run=true' : ''}`, { method: 'POST' }),
