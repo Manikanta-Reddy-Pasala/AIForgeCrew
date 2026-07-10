@@ -429,6 +429,35 @@ def test_consolidate_note_rewrites_file_and_preserves_body(monkeypatch, tmp_path
     assert not os.path.exists(path + ".tmp")
 
 
+def test_render_note_writes_tags_frontmatter():
+    raw = work_notes.render_note("knowledge", "svc", title="T",
+                                 facts=["a fact"], tags=["Data Sync", "auth", "auth"])
+    p = work_notes.parse_note(raw)
+    # normalized (lowercased, spaces→-) + deduped, in frontmatter
+    assert p["frontmatter"]["tags"] == ["data-sync", "auth"]
+    # no tags → explicit empty list, still round-trips
+    p2 = work_notes.parse_note(work_notes.render_note("web", "k", title="T"))
+    assert p2["frontmatter"]["tags"] == []
+
+
+def test_dedupe_drops_containment_and_junk():
+    items = ["status: Done", "status: Done (auto)", "STATUS: done",
+             "### Heading", "---", "_source: chat", "real fact"]
+    out = work_notes._dedupe_ci(items)
+    # exact ci-dupe collapsed, shorter-contained-in-longer dropped, junk stripped
+    assert out == ["status: Done (auto)", "real fact"]
+
+
+def test_update_note_preserves_tags(tmp_path):
+    path = str(tmp_path / "n.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(work_notes.render_note("jira", "E-1", title="t",
+                                        facts=["x"], tags=["repo:svc"]))
+    work_notes.update_note(path, facts=["y"])
+    fm = work_notes.parse_note(open(path, encoding="utf-8").read())["frontmatter"]
+    assert fm["tags"] == ["repo:svc"]
+
+
 def test_chat_tool_note_consolidate_wired_and_jailed(workdir):
     from aiforge_core.runtime import chat_agent
     assert "note_consolidate" in chat_agent.TOOLS

@@ -156,6 +156,19 @@ def test_compact_structured_writes_okr_facts_when_model_available(cfg, monkeypat
     assert any("no direct mongo" in f for f in facts)
 
 
+def test_compact_brief_carries_tags(cfg, monkeypatch):
+    from aiforge_core.memory import md_store as m
+    from aiforge_core.runtime import work_notes
+    _stub_consolidate_llm(monkeypatch)
+    m.capture("project_learning", "svc: rule a", repo="svc", topic="arch")
+    m.capture("project_learning", "svc: rule b", repo="svc", topic="perf")
+    m.compact(group_by="repo", min_group=2, summarize=True)
+    fm = work_notes.parse_note(_raw("compacted-svc.md"))["frontmatter"]
+    # the units' repo:/topic: tags land in the brief frontmatter (colon kept)
+    assert "repo:svc" in fm["tags"]
+    assert any(t.startswith("topic:") for t in fm["tags"])
+
+
 def test_topic_compact_archives_raw_units(cfg, monkeypatch):
     from aiforge_core.memory import md_store as m
     _stub_consolidate_llm(monkeypatch)

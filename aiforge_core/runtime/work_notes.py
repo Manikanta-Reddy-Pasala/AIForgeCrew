@@ -173,15 +173,35 @@ def _as_items(value) -> list[str]:
     return out
 
 
+def normalize_tags(tags) -> list[str]:
+    """Canonicalize a tags list: lowercased, whitespace→'-', deduped, order
+    preserved. Accepts a list or a comma/space string. Non-strings dropped."""
+    if isinstance(tags, str):
+        tags = re.split(r"[,\s]+", tags)
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in tags or []:
+        if not isinstance(raw, str):
+            continue
+        # keep ':' so the repo:/topic: tag convention survives normalization
+        t = re.sub(r"[^a-z0-9._/:-]+", "-", raw.strip().lower()).strip("-.")
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
 def render_note(kind: str, key: str, *, title: str, source_url: str = "",
                 objective: str = "", key_results=None, facts=None,
                 links=None, learnings=None, body_md: str = "",
-                updated_at: str = "") -> str:
+                updated_at: str = "", tags=None) -> str:
     """Render the standard note. Empty sections are skipped; ordering is fixed
     (frontmatter → title → Objective → Key Results → Facts → Links → Learnings
     → free body). ``updated_at`` is injectable for deterministic tests /
-    read-modify-write; it defaults to now (UTC)."""
+    read-modify-write; it defaults to now (UTC). ``tags`` land in the
+    frontmatter (metadata, not a body section)."""
     norm_links = normalize_links(links, kind, key)
+    norm_tags = normalize_tags(tags)
     fm = [
         "---",
         f"kind: {_yaml_str(kind)}",
@@ -189,6 +209,11 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
         f"source_url: {_yaml_str(source_url or '')}",
         f"updated_at: {_yaml_str(updated_at or _now_iso())}",
     ]
+    if norm_tags:
+        fm.append("tags:")
+        fm.extend(f"  - {_yaml_str(t)}" for t in norm_tags)
+    else:
+        fm.append("tags: []")
     if norm_links:
         fm.append("links:")
         fm.extend(f"  - {_yaml_str(lk)}" for lk in norm_links)
@@ -339,6 +364,7 @@ def update_note(path: str, **section_updates) -> dict:
         learnings=_pick("learnings", sec.get("learnings")),
         body_md=_pick("body_md", parsed["body"]),
         updated_at=_now_iso(),      # the write IS the freshness event
+        tags=_pick("tags", fm.get("tags")),
     )
     tmp = path + ".tmp"
     try:
@@ -412,15 +438,35 @@ def _ci_key(s: str) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip().lower())
 
 
+_JUNK_ITEM_RE = re.compile(
+    r"^(?:#{1,6}\s|-{3,}\s*$|_source:|_gathered\b|```|<!--)", re.I)
+
+
 def _dedupe_ci(items) -> list[str]:
-    """Order-preserving, case-insensitive dedupe of a section's items."""
-    out: list[str] = []
+    """Order-preserving dedupe of a section's items. Beyond exact (case/space-
+    insensitive) dupes it drops a shorter item fully CONTAINED in a longer kept
+    one (the common near-dupe: "status: Done" vs "status: Done (auto)") and
+    strips obvious junk lines (markdown headers/rules/fences, source markers)
+    that leak in when a raw blob is folded without an LLM."""
+    cleaned: list[str] = []
     seen: set[str] = set()
     for it in _as_items(items):
-        k = _ci_key(it)
+        s = str(it).strip()
+        if not s or _JUNK_ITEM_RE.match(s):
+            continue
+        k = _ci_key(s)
         if k and k not in seen:
             seen.add(k)
-            out.append(it)
+            cleaned.append(s)
+    # containment pass: drop any item whose text is a substring of a longer one
+    out: list[str] = []
+    keys = [_ci_key(c) for c in cleaned]
+    for i, c in enumerate(cleaned):
+        ki = keys[i]
+        if any(i != j and ki in keys[j] and len(keys[j]) > len(ki)
+               for j in range(len(cleaned))):
+            continue
+        out.append(c)
     return out
 
 
@@ -553,7 +599,7 @@ def consolidate_note(path: str, new_content: str, *, role: str = "learner",
         objective=merged["objective"], key_results=merged["key_results"],
         facts=merged["facts"], links=merged["links"],
         learnings=merged["learnings"], body_md=parsed["body"],
-        updated_at=_now_iso())
+        updated_at=_now_iso(), tags=fm.get("tags"))
     tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as fh:

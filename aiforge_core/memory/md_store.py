@@ -231,13 +231,14 @@ _LEGACY_RECENT_RE = re.compile(
 
 
 def _render_brief(key: str, *, facts: list[str], body_md: str = "",
-                  learnings: list[str] | None = None, title: str = "") -> str:
+                  learnings: list[str] | None = None, title: str = "",
+                  tags: list[str] | None = None) -> str:
     from aiforge_core.runtime import work_notes
     return work_notes.render_note(
         "knowledge", key,
         title=title or f"{key} memory (compacted)",
         objective=_BRIEF_OBJECTIVE.format(key=key),
-        facts=facts, learnings=learnings, body_md=body_md)
+        facts=facts, learnings=learnings, body_md=body_md, tags=tags)
 
 
 def _parse_brief(raw: str) -> dict:
@@ -598,7 +599,8 @@ def _group_key(d: dict, group_by: str) -> str:
 
 
 def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
-                               model_role: str) -> str:
+                               model_role: str,
+                               tags: list[str] | None = None) -> str:
     """Build an OKR knowledge brief by LLM-consolidating this group's notes.
 
     Folds ``blocks`` (the group's units + any prior consolidated body) into the
@@ -610,20 +612,26 @@ def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
     when no model is reachable, so this never loses content."""
     from aiforge_core.runtime import work_notes
     existing: dict = {}
+    prev_tags: list = []
     if path.exists():
-        existing = work_notes.parse_note(
-            path.read_text(encoding="utf-8", errors="replace"))["sections"]
+        _parsed = work_notes.parse_note(
+            path.read_text(encoding="utf-8", errors="replace"))
+        existing = _parsed["sections"]
+        prev_tags = list((_parsed["frontmatter"] or {}).get("tags") or [])
     new_content = "\n\n".join(b for b in blocks if b.strip())
     merged = work_notes.consolidate(existing, new_content, role=model_role)
     learnings = list(merged.get("learnings") or [])
     for ln in (existing.get("learnings") or []):        # never lose the audit trail
         if ln not in learnings:
             learnings.append(ln)
+    # union the group's tags with the brief's prior tags (render normalizes/dedupes)
+    all_tags = list(prev_tags) + list(tags or [])
     return work_notes.render_note(
         "knowledge", key, title=title,
         objective=_BRIEF_OBJECTIVE.format(key=key),
         key_results=merged.get("key_results"), facts=merged.get("facts"),
-        links=merged.get("links"), learnings=learnings, body_md="")
+        links=merged.get("links"), learnings=learnings, body_md="",
+        tags=all_tags)
 
 
 def compact(*, group_by: str = "kind", min_group: int = 2,
@@ -780,7 +788,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 # LLM folds the group into structured OKR sections; the raw units
                 # then archive out (scheduler), so the topic note IS the memory.
                 content = _consolidate_brief_content(
-                    key, path, blocks, title, model_role)
+                    key, path, blocks, title, model_role, tags=all_tags)
                 did_summarize = True
             elif group_by in ("repo", "topic"):
                 # No model: keep the OKR envelope, consolidation lives in the body
@@ -791,7 +799,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 content = _render_brief(
                     key, facts=[],
                     body_md=re.sub(r"^#\s[^\n]*\n+", "", body.strip()),
-                    learnings=prev_learnings, title=title)
+                    learnings=prev_learnings, title=title, tags=all_tags)
             else:
                 fm = (
                     "---\n"
