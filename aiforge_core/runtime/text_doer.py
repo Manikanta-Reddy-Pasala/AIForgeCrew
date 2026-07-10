@@ -205,6 +205,36 @@ def _emit_section(parts: list[str], remaining: int, key: str, text: str,
     return remaining - overhead - len(text)
 
 
+# ENFORCE codegraph tool use (not context push). When a CodeGraph index exists
+# for the repo, the Doer MUST call codegraph before editing existing symbols.
+# The system-prompt directive alone did NOT move the local model (measured:
+# arm A had it, made 0 codegraph calls, defaulted to grep); an imperative in
+# the SEED does (measured: the force-run called explore/callers/impact within
+# 10s and returned all 5 exact call sites). Injected only when available() so a
+# repo with no index never gets a broken instruction.
+_CODEGRAPH_MANDATE = (
+    "MANDATORY — CodeGraph is indexed for THIS repo. It is the authoritative "
+    "source for code relations; grep is NOT allowed for finding callers.\n"
+    "- BEFORE editing ANY existing function/class/method, your FIRST actions "
+    "MUST be: codegraph_callers(symbol) to get every call site (file:line + the "
+    "enclosing function) AND codegraph_impact(symbol) for the blast radius. "
+    "Update every site it reports.\n"
+    "- To locate a definition use codegraph_query(query); to orient in an "
+    "unfamiliar area use codegraph_explore(query) — before any grep/list_dir.\n"
+    "- Do NOT grep or cat to discover who calls a symbol — call codegraph. "
+    "Skipping this is a defect: you will miss call sites.\n\n"
+)
+
+
+def _codegraph_mandate() -> str:
+    """The enforce-codegraph preamble, or "" when no index is queryable."""
+    try:
+        from aiforge_core.runtime.tools import codegraph as _cg
+        return _CODEGRAPH_MANDATE if _cg.available() else ""
+    except Exception:  # noqa: BLE001 — never break seed assembly
+        return ""
+
+
 def _build_seed(state: dict) -> str:
     """Fold the present, non-empty state vars into one BUDGETED seed message.
 
@@ -212,12 +242,15 @@ def _build_seed(state: dict) -> str:
     (:func:`_seed_budget_chars`): the plan + corrective signals stay full,
     the bulky gathered-context / memory briefs share whatever budget is
     left (each truncated with a marker, dropped only if nothing remains).
+    When a CodeGraph index exists, a MANDATORY codegraph-first preamble is
+    prepended (see :data:`_CODEGRAPH_MANDATE`).
     Soft-fail: on ANY error, fall back to the original un-budgeted
     concatenation so a budgeting slip can never crash the Doer."""
+    mandate = _codegraph_mandate()
     try:
         budget = _seed_budget_chars()
-        parts = [_SEED_HEADER]
-        remaining = budget - len(_SEED_HEADER)
+        parts = [mandate, _SEED_HEADER] if mandate else [_SEED_HEADER]
+        remaining = budget - len(_SEED_HEADER) - len(mandate)
         for key in _SEED_HIGH:
             remaining = _emit_section(parts, remaining, key,
                                       _present_text(state, key))
@@ -231,7 +264,7 @@ def _build_seed(state: dict) -> str:
             remaining = _emit_section(parts, remaining, key, text, cap=share)
         return "".join(parts)
     except Exception:  # noqa: BLE001
-        parts = [_SEED_HEADER]
+        parts = [mandate, _SEED_HEADER] if mandate else [_SEED_HEADER]
         for key, label in _SEED_VARS:
             text = _present_text(state, key)
             if text:

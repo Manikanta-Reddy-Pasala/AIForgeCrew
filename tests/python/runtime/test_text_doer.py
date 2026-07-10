@@ -331,3 +331,16 @@ def test_no_edit_guard_noop_when_edit_made(monkeypatch):
     monkeypatch.setattr(ca, "run_chat_agent", fake_edit)
     r = td.run_text_doer({"plan_md": "x"}, "/tmp", complete_fn=lambda *a, **k: "")
     assert len(passes) == 1 and r["edit_count"] == 1 and r["incomplete"] is False
+
+
+def test_seed_prepends_codegraph_mandate_when_available(monkeypatch):
+    """When a CodeGraph index exists, the Doer seed leads with the mandatory
+    codegraph-first rule; without an index the seed is unchanged."""
+    from aiforge_core.runtime import text_doer as td
+    from aiforge_core.runtime.tools import codegraph as cg
+    monkeypatch.setattr(cg, "available", lambda: True)
+    s = td._build_seed({"plan_md": "edit clean_amount"})
+    assert s.startswith("MANDATORY — CodeGraph")
+    assert "codegraph_callers" in s and "grep is NOT allowed" in s
+    monkeypatch.setattr(cg, "available", lambda: False)
+    assert not td._build_seed({"plan_md": "x"}).startswith("MANDATORY")

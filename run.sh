@@ -549,6 +549,32 @@ fi
 # (configured jira/confluence/gitlab access) and must find it without
 # knowing the venv location.
 export PATH="$PWD/.venv/bin:$PATH"
+
+# ── CodeGraph index (feeds the ENFORCED codegraph_* tool calls) ───────────
+# The Doer is required to call codegraph (callers/impact/explore) before
+# editing an existing symbol — see runtime/text_doer._CODEGRAPH_MANDATE. Those
+# calls only have data if an index exists, so build/refresh it here. Fully
+# config-driven + portable: a generic clone with no codegraph binary or no
+# repos configured SKIPS this cleanly.
+#   AIFORGE_CODEGRAPH_BIN    codegraph binary (else `codegraph` on PATH)
+#   AIFORGE_CODEGRAPH_REPOS  comma-separated repo paths to index (empty = skip)
+# First run → `init` (full, ~20s for 1200 files); thereafter → `sync`
+# (incremental). Both run in the background so boot is never blocked.
+_CG_BIN="${AIFORGE_CODEGRAPH_BIN:-$(command -v codegraph 2>/dev/null || true)}"
+if [[ -n "$_CG_BIN" && -x "$_CG_BIN" && -n "${AIFORGE_CODEGRAPH_REPOS:-}" ]]; then
+  IFS=',' read -ra _CG_REPOS <<< "$AIFORGE_CODEGRAPH_REPOS"
+  for _r in "${_CG_REPOS[@]}"; do
+    _r="$(echo "$_r" | xargs)"; [[ -d "$_r" ]] || continue
+    if [[ -d "$_r/.codegraph" ]]; then
+      ( "$_CG_BIN" sync "$_r" >/dev/null 2>&1 & )
+      echo "  codegraph: sync $_r (incremental, background)"
+    else
+      ( "$_CG_BIN" init "$_r" >/dev/null 2>&1 & )
+      echo "  codegraph: init $_r (first full index, background ~20s)"
+    fi
+  done
+fi
+
 echo ""
 if [[ $MODE == hybrid ]]; then
   echo "  AIForge → http://${HOST}:${PORT}/ui/   mode: hybrid (infra docker, agent host)"
