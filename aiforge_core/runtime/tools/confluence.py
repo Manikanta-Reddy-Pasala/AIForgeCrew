@@ -116,6 +116,45 @@ def _cdata(text: str) -> str:
     return "<![CDATA[" + str(text).replace("]]>", "]]]]><![CDATA[>") + "]]>"
 
 
+def _diagram_mode() -> str:
+    """How to render ```mermaid blocks: 'drawio' (convert → native draw.io
+    diagram attachment + drawio macro; app-agnostic rendering) or 'mermaid'
+    (a mermaid macro, needs a mermaid app). Env AIFORGE_CONFLUENCE_DIAGRAM;
+    default 'mermaid'."""
+    v = (os.environ.get("AIFORGE_CONFLUENCE_DIAGRAM") or "mermaid").strip().lower()
+    return v if v in ("drawio", "mermaid") else "mermaid"
+
+
+def _mermaid_macro(code: str) -> str:
+    return (f'<ac:structured-macro ac:name="{_mermaid_macro_name()}">'
+            f'<ac:plain-text-body>{_cdata(code)}'
+            f'</ac:plain-text-body></ac:structured-macro>')
+
+
+def _code_macro(code: str, lang: str = "") -> str:
+    param = (f'<ac:parameter ac:name="language">{lang}</ac:parameter>'
+             if lang else "")
+    return (f'<ac:structured-macro ac:name="code">{param}'
+            f'<ac:plain-text-body>{_cdata(code)}'
+            f'</ac:plain-text-body></ac:structured-macro>')
+
+
+def _drawio_macro(name: str) -> str:
+    """The draw.io Confluence macro referencing an attached ``<name>.drawio``
+    diagram by name (Server/DC storage form)."""
+    return (
+        '<ac:structured-macro ac:name="drawio">'
+        f'<ac:parameter ac:name="diagramName">{name}</ac:parameter>'
+        '<ac:parameter ac:name="simpleViewer">false</ac:parameter>'
+        '<ac:parameter ac:name="width"></ac:parameter>'
+        '<ac:parameter ac:name="links"></ac:parameter>'
+        '<ac:parameter ac:name="tbstyle">top</ac:parameter>'
+        '<ac:parameter ac:name="lbox">true</ac:parameter>'
+        '<ac:parameter ac:name="diagramWidth">100%</ac:parameter>'
+        '<ac:parameter ac:name="revision">1</ac:parameter>'
+        '</ac:structured-macro>')
+
+
 _MERMAID_FENCE_RE = re.compile(r"```mermaid[^\n]*\n(.*?)```", re.S | re.I)
 _CODE_FENCE_RE = re.compile(r"```([A-Za-z0-9_+#.-]*)[^\n]*\n(.*?)```", re.S)
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
@@ -131,36 +170,37 @@ def _safe_filename(src: str) -> str:
 def _storagify_media(body: str) -> tuple[str, list[dict]]:
     """Rewrite mermaid/code fences + markdown/HTML images into storage macros.
 
-    Returns ``(new_body, image_refs)`` where each ref is ``{filename, src}`` to
-    be uploaded as a page attachment. No-op (returns the body unchanged, no
-    refs) when the body carries none of these constructs."""
+    Returns ``(new_body, refs)`` where each ref is either an image
+    ``{filename, src}`` or an inline diagram ``{filename, data, is_diagram}`` to
+    be uploaded as a page attachment. No-op (body unchanged, no refs) when the
+    body carries none of these constructs."""
     if "```" not in body and "![" not in body and "<img" not in body.lower():
         return body, []
-    macro = _mermaid_macro_name()
+    refs: list[dict] = []
+    mode = _diagram_mode()
 
     def _mermaid(m):
-        return (f'<ac:structured-macro ac:name="{macro}">'
-                f'<ac:plain-text-body>{_cdata(m.group(1).rstrip())}'
-                f'</ac:plain-text-body></ac:structured-macro>')
+        code = m.group(1).rstrip()
+        if mode == "drawio":
+            from . import confluence_drawio
+            xml = confluence_drawio.to_drawio_xml(code)
+            if xml:
+                name = f"aiforge-diagram-{sum(1 for r in refs if r.get('is_diagram')) + 1}"
+                refs.append({"filename": f"{name}.drawio",
+                             "data": xml.encode("utf-8"), "is_diagram": True})
+                return _drawio_macro(name)
+            # unparseable → show the source (code macro), not a broken macro
+            return _code_macro(code, "mermaid")
+        return _mermaid_macro(code)
 
     body = _MERMAID_FENCE_RE.sub(_mermaid, body)
-
-    def _code(m):
-        lang, code = m.group(1), m.group(2).rstrip()
-        param = (f'<ac:parameter ac:name="language">{lang}</ac:parameter>'
-                 if lang else "")
-        return (f'<ac:structured-macro ac:name="code">{param}'
-                f'<ac:plain-text-body>{_cdata(code)}'
-                f'</ac:plain-text-body></ac:structured-macro>')
-
-    body = _CODE_FENCE_RE.sub(_code, body)
-
-    refs: list[dict] = []
+    body = _CODE_FENCE_RE.sub(
+        lambda m: _code_macro(m.group(2).rstrip(), m.group(1)), body)
 
     def _img(src: str) -> str:
         src = src.strip()
         fn = _safe_filename(src)
-        if not any(r["filename"] == fn and r["src"] == src for r in refs):
+        if not any(r.get("src") == src and r["filename"] == fn for r in refs):
             refs.append({"filename": fn, "src": src})
         return f'<ac:image><ri:attachment ri:filename="{fn}"/></ac:image>'
 
@@ -231,9 +271,17 @@ def _resolve_image_bytes(src: str, cwd: str | None) -> tuple[bytes, str] | None:
 
 
 def _upload_page_images(pid: str, refs: list[dict], cwd: str | None) -> list[dict]:
-    """Upload every image the body referenced. Returns per-image results."""
+    """Upload every referenced attachment: inline diagram bytes (``data``) go up
+    as-is; image refs (``src``) are resolved (local read / http download) first.
+    Returns per-attachment results."""
     results = []
     for ref in refs:
+        if ref.get("is_diagram") and ref.get("data") is not None:
+            # a generated .drawio diagram — upload the XML bytes directly
+            results.append(_upload_attachment(
+                pid, ref["filename"], ref["data"],
+                "application/vnd.jgraph.mxfile"))
+            continue
         got = _resolve_image_bytes(ref["src"], cwd)
         if got is None:
             results.append({"filename": ref["filename"], "ok": False,
