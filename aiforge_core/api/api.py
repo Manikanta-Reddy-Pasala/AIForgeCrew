@@ -229,10 +229,11 @@ def _start_daily_reindex() -> None:
         every_h = 3
     _pd.register("reindex", _spawn_reindex_all, every_s=every_h * 3600)
 
-    # Daily CHAT-MD COMPACTION — per-turn writes append forever to
+    # HOURLY CHAT-MD COMPACTION — per-turn writes append forever to
     # ~/.aiforge/memory/*.md; md_store.compact() consolidates them (map-reduce
     # summary, archives originals) so the memory folder stays bounded + legible.
-    # Was manual-only (POST /api/memory/files/compact); now scheduled.
+    # Was manual-only (POST /api/memory/files/compact); now scheduled hourly
+    # (AIFORGE_COMPACT_EVERY_H) so memory stays organized-by-topic within the hour.
     def _compact_chat_md() -> None:
         # Two axes, both kept (overlap intended): per-REPO → the project brief
         # you load when opening a repo; per-TOPIC → cross-repo theme notes.
@@ -259,8 +260,12 @@ def _start_daily_reindex() -> None:
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("md compaction failed: %s", exc)
 
+    try:
+        _compact_every_h = max(1, int(os.environ.get("AIFORGE_COMPACT_EVERY_H", "1")))
+    except (TypeError, ValueError):
+        _compact_every_h = 1
     _pd.register("chat-compact", _compact_chat_md,
-                 at_hour=max(0, min(23, hour + 1)))   # after the reindex
+                 every_s=_compact_every_h * 3600)   # hourly by default
 
     # Daily GRAPH MAINTENANCE (Neo4j only) — AFM decay + per-repo digest/dedupe;
     # no-op on the embedded backend. Best-effort.
