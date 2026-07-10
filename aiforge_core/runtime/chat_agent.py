@@ -3764,17 +3764,25 @@ def run_chat_agent(
             from aiforge_core.runtime.tools import codegraph as _cg
             if _cg.available():
                 sys_msg += (
-                    "\n\nCodeGraph (pre-indexed code relations — prefer over grep "
-                    "for 'who calls / what changes affect / where is X'):\n"
-                    "- codegraph_explore  {\"query\": \"push sync priority\"}   "
-                    "relevant symbols + source for a natural-language query\n"
-                    "- codegraph_query    {\"query\": \"publishToRemoteServer\"} "
-                    "find a symbol + its defining file:line\n"
-                    "- codegraph_callers  {\"symbol\": \"foo\"}   who calls foo "
-                    "(every call site)\n"
+                    "\n\nCODEGRAPH IS AVAILABLE (a pre-built code-relation index "
+                    "for THIS repo). USE IT — do not rediscover with grep what "
+                    "the graph already knows:\n"
+                    "- BEFORE editing or extending any EXISTING symbol, call "
+                    "codegraph_callers AND codegraph_impact on it to find every "
+                    "call site + everything a change would affect. Grep misses "
+                    "call sites and matches comments/strings; the graph does not.\n"
+                    "- To ORIENT on an unfamiliar area, call codegraph_explore "
+                    "with the task in plain words FIRST (before list_dir/grep).\n"
+                    "- To locate a definition, use codegraph_query, not grep.\n"
+                    "Tools:\n"
+                    "- codegraph_explore  {\"query\": \"where amounts are parsed\"}  "
+                    "relevant symbols + their source for a natural-language query\n"
+                    "- codegraph_query    {\"query\": \"clean_amount\"}   find a "
+                    "symbol + its defining file:line\n"
+                    "- codegraph_callers  {\"symbol\": \"foo\"}   every caller of foo\n"
                     "- codegraph_callees  {\"symbol\": \"foo\"}   what foo calls\n"
                     "- codegraph_impact   {\"symbol\": \"foo\"}   blast-radius of "
-                    "changing foo — call BEFORE editing a shared symbol")
+                    "changing foo — ALWAYS call before editing a shared symbol")
         except Exception:  # noqa: BLE001 — never break prompt build
             pass
     # Multi-part message (simple mode has no enhancer/spec, so nothing else
