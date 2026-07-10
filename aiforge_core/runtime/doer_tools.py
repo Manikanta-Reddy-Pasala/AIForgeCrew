@@ -417,6 +417,81 @@ def _digest_file_paths(digest: str) -> list[str]:
     return paths[:20]
 
 
+# ─────────────── CodeGraph (explicit code relations, SQLite) ────────────
+# The pipeline DOER builds its ADK tools from THIS module (not chat_agent),
+# so the codegraph tools MUST be registered here or the Doer never receives
+# them. Thin typed wrappers over runtime.tools.codegraph so ADK gets a clean
+# schema (the underlying fns take an ``args`` dict). Soft-fail: return the
+# tool's ``{ok: False, error}`` dict, never raise.
+
+def codegraph_impact(symbol: str) -> dict:
+    """Blast-radius of changing SYMBOL — everything that depends on it.
+
+    Call BEFORE editing a shared symbol so you touch every file that must
+    stay in sync (the cross-file linking a text grep misses). Reads a
+    pre-built, auto-synced code graph (tree-sitter + SQLite), so it returns
+    exact caller/impact edges, not fuzzy matches.
+
+    Args:
+      symbol: the function/method/class name to assess (e.g.
+        ``publishToRemoteServer``).
+    """
+    from aiforge_core.runtime.tools import codegraph as _cg
+    return _cg.codegraph_impact({"symbol": symbol}, cwd=str(root()))
+
+
+def codegraph_callers(symbol: str) -> dict:
+    """Functions/methods that CALL ``symbol`` (with file:line). Use to find
+    every call site you must update when changing a signature."""
+    from aiforge_core.runtime.tools import codegraph as _cg
+    return _cg.codegraph_callers({"symbol": symbol}, cwd=str(root()))
+
+
+def codegraph_callees(symbol: str) -> dict:
+    """Functions/methods that ``symbol`` CALLS. Use to understand what a
+    method depends on before editing it."""
+    from aiforge_core.runtime.tools import codegraph as _cg
+    return _cg.codegraph_callees({"symbol": symbol}, cwd=str(root()))
+
+
+def codegraph_explore(query: str) -> dict:
+    """Explore an area — relevant symbols + their source for a
+    natural-language ``query`` (e.g. 'push sync priority header'). One shot
+    to orient before editing."""
+    from aiforge_core.runtime.tools import codegraph as _cg
+    return _cg.codegraph_explore({"query": query}, cwd=str(root()))
+
+
+def codegraph_query(query: str) -> dict:
+    """Find symbols by name/semantics for ``query``. Returns matching
+    symbols + their defining file:line."""
+    from aiforge_core.runtime.tools import codegraph as _cg
+    return _cg.codegraph_query({"query": query}, cwd=str(root()))
+
+
+def _codegraph_enabled_for_run() -> bool:
+    """Per-ticket A/B toggle. ``ticket.metadata['codegraph'] == False``
+    (or 'false'/'0'/'off'/'no') removes the codegraph tools for this run —
+    the aider-RepoMap-only arm. Missing/anything-else = enabled (default on).
+    Read via ``AIFORGE_CURRENT_TICKET`` (the runner stamps it per run)."""
+    ident = os.environ.get("AIFORGE_CURRENT_TICKET", "")
+    if not ident:
+        return True
+    try:
+        from aiforge_core.tickets import store
+        t = store.get(ident)
+        md = (getattr(t, "metadata", None) or {}) if t else {}
+        val = md.get("codegraph")
+    except Exception:  # noqa: BLE001 — never break tool wiring over a DB read
+        return True
+    if val is False:
+        return False
+    if isinstance(val, str) and val.strip().lower() in (
+            "false", "0", "off", "no"):
+        return False
+    return True
+
+
 def impacted_tests(changed_files: str) -> dict:
     """Map changed files → the test files that likely cover them.
 
@@ -1613,6 +1688,8 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         jira_update, jira_comment, email_send, email_read,
                         gitlab_search, gitlab_read, gitlab_create, gitlab_update,
                         gitlab_comment, gitlab_mr_create, gitlab_mr_comment,
+                        codegraph_impact, codegraph_callers, codegraph_callees,
+                        codegraph_explore, codegraph_query,
                         typecheck, run_tests, lsp, format,
                         mcp, browse, execute_ipython_cell, delegate_to_agent,
                         github_pr, multi_edit,
@@ -1637,6 +1714,24 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
         tools = tools + [FunctionTool(func=web_search),
                          FunctionTool(func=web_read),
                          FunctionTool(func=web_crawl)]
+    # CodeGraph gate: drop the codegraph_* tools when the binary/index is
+    # absent (no point offering a tool that always errors) OR when this
+    # ticket opted out via metadata (the aider-graph-only A/B arm). Keeps
+    # the "with vs without codegraph" comparison a clean per-ticket toggle.
+    _cg_names = {"codegraph_impact", "codegraph_callers", "codegraph_callees",
+                 "codegraph_explore", "codegraph_query"}
+    _cg_on = _codegraph_enabled_for_run()
+    if _cg_on:
+        try:
+            from aiforge_core.runtime.tools import codegraph as _cg
+            _cg_on = _cg.available()
+        except Exception:  # noqa: BLE001
+            _cg_on = False
+    if not _cg_on:
+        tools = [t for t in tools
+                 if (getattr(t, "name", None)
+                     or getattr(getattr(t, "func", None), "__name__", ""))
+                 not in _cg_names]
     if role is None:
         return tools
     if os.environ.get("AIFORGE_TOOL_ENFORCE", "1").strip().lower() in (
@@ -1682,6 +1777,8 @@ __all__ = [
     "record_touch", "touched_paths", "reset_touched",
     "file_read", "file_write", "file_patch", "list_dir", "run_shell",
     "grep_repo", "repo_map", "impacted_tests", "fetch_url", "git_commit",
+    "codegraph_impact", "codegraph_callers", "codegraph_callees",
+    "codegraph_explore", "codegraph_query",
     "memory_lookup", "memory_block", "graphify_lookup", "skill_search", "learn_skill",
     "workflow_search", "learn_workflow", "web_search", "web_crawl",
     "serve", "stop_service",
