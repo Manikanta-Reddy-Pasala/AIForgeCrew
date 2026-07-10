@@ -645,6 +645,34 @@ function SourcesPanel() {
 
 // ─── Main Memory page ─────────────────────────────────────────────────────────
 
+// ── memory files → user-facing CATEGORIES (Tasks / Solutions / Workflows /
+// Commands / Topics), derived from kind + name + tags. One place, so the flat
+// "compacted-*" dump becomes a browsable, grouped library.
+const CATEGORY_ORDER = ['Workflows', 'Commands', 'Solutions', 'Tasks', 'Topics'] as const;
+type Category = typeof CATEGORY_ORDER[number];
+
+function categoryOf(f: any): Category {
+  const kind = String(f.kind || '').toLowerCase();
+  const name = String(f.name || '').toLowerCase();
+  const tags: string[] = (f.tags || []).map((t: string) => String(t).toLowerCase());
+  const has = (...xs: string[]) => xs.some(x => kind === x || tags.includes(x));
+  if (has('workflow') || name.startsWith('compacted-session-') || tags.includes('workflow')) return 'Workflows';
+  if (has('command') || tags.includes('command') || tags.includes('commands')) return 'Commands';
+  if (has('decision', 'gotcha', 'bug', 'solution', 'fix', 'feedback', 'learning', 'project_learning')) return 'Solutions';
+  if (has('task', 'session', 'project') || /^compacted-(jira|clr|rsp|\d)/.test(name)) return 'Tasks';
+  return 'Topics';
+}
+
+// "compacted-sync-retry-policy" → "sync retry policy"; keeps a real title as-is.
+function cleanTitle(f: any): string {
+  const t = String(f.title || f.name || '').replace(/\.md$/, '');
+  return t.replace(/^compacted-/, '').replace(/-/g, ' ').trim() || t;
+}
+
+const CAT_ICON: Record<Category, string> = {
+  Workflows: '🔧', Commands: '⌨️', Solutions: '💡', Tasks: '📋', Topics: '🧭',
+};
+
 function NotesPanel() {
   const [files, setFiles] = useState<any[] | null>(null);
   const [open, setOpen] = useState<any | null>(null);
@@ -652,6 +680,7 @@ function NotesPanel() {
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState('');
 
   const load = useCallback(() => {
     api.memoryFiles().then(setFiles).catch(() => setFiles([]));
@@ -675,15 +704,15 @@ function NotesPanel() {
   async function compact() {
     setBusy(true);
     try {
-      const plan = await api.memoryFilesCompact({ group_by: 'kind', dry_run: true });
+      const plan = await api.memoryFilesCompact({ group_by: 'topic', dry_run: true });
       const groups = Object.entries(plan.groups || {});
-      if (!groups.length) { toast('Nothing to compact — no group has 2+ files.'); return; }
+      if (!groups.length) { toast('Nothing to compact.'); return; }
       const summary = groups.map(([k, n]) => `${k} (${n})`).join(', ');
       if (!window.confirm(
-        `Compact ${plan.files_in} files → ${plan.files_out} grouped files?\n\n` +
-        `Groups: ${summary}\n\nOriginals are archived (not deleted) and can be restored.`,
+        `Compact ${plan.files_in} files → ${plan.files_out} topic briefs?\n\n` +
+        `Topics: ${summary}\n\nOriginals are archived (not deleted) and can be restored.`,
       )) return;
-      const r = await api.memoryFilesCompact({ group_by: 'kind' });
+      const r = await api.memoryFilesCompact({ group_by: 'topic' });
       const how = (r.summarized && r.summarized.length)
         ? `LLM-summarized ${r.summarized.length}/${r.files_out}`
         : 'merged (no model reachable)';
@@ -703,16 +732,26 @@ function NotesPanel() {
           automatically after each chat run, also searchable above.
         </span>
       </div>
-      <div className="row" style={{ gap: 8, marginBottom: 10 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         <button onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Note'}</button>
-        <button className="ghost" onClick={() => api.memoryFilesIngest().then(load)}>
-          Re-ingest folder
-        </button>
         <button className="ghost" onClick={compact} disabled={busy}
-                title="Group per-session notes into fewer standardized .md files (originals archived)">
-          Compact
+                title="Fold notes into topic briefs (originals archived, reversible)">
+          Compact by topic
         </button>
+        <button className="ghost" onClick={async () => {
+          if (!window.confirm('Tidy cryptic / id-named files into topic briefs? Originals archived (reversible).')) return;
+          setBusy(true);
+          try { const r: any = await api.memoryFilesCleanup?.(); toast.success(`Folded ${r?.folded ?? 0} legacy files`); load(); }
+          catch (e: any) { toast.error(`Cleanup failed: ${e.message}`); }
+          finally { setBusy(false); }
+        }} disabled={busy} title="Fold id-keyed / per-kind compacted files into topics">
+          Tidy legacy
+        </button>
+        <button className="ghost" onClick={() => api.memoryFilesIngest().then(load)}>Re-ingest</button>
         <button className="ghost" onClick={load}>Refresh</button>
+        <input placeholder="filter by name / tag…" value={filter}
+               onChange={e => setFilter(e.target.value)}
+               style={{ marginLeft: 'auto', minWidth: 200 }} />
       </div>
       {adding && (
         <div className="row" style={{ flexDirection: 'column', gap: 6, marginBottom: 12 }}>
@@ -726,22 +765,61 @@ function NotesPanel() {
       )}
       {files === null ? <div className="muted small">Loading…</div>
         : files.length === 0 ? <div className="muted small">No notes yet — they appear after chat runs, or add one.</div>
-        : (
-          <table className="table">
-            <thead><tr><th>Title</th><th>Kind</th><th>Source</th><th>Created</th><th /></tr></thead>
-            <tbody>
-              {files.map(f => (
-                <tr key={f.name}>
-                  <td><a style={{ cursor: 'pointer' }} onClick={() => view(f.name)}>{f.title}</a></td>
-                  <td><span className="chip sm">{f.kind}</span></td>
-                  <td className="small muted">{f.source}</td>
-                  <td className="small muted">{(f.created || '').slice(0, 16).replace('T', ' ')}</td>
-                  <td><button className="ghost sm" onClick={() => del(f.name)}>✕</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        : (() => {
+          const q = filter.trim().toLowerCase();
+          const shown = files.filter(f => !q
+            || cleanTitle(f).toLowerCase().includes(q)
+            || String(f.name).toLowerCase().includes(q)
+            || (f.tags || []).some((t: string) => String(t).toLowerCase().includes(q)));
+          const byCat = new Map<Category, any[]>();
+          for (const f of shown) {
+            const c = categoryOf(f);
+            (byCat.get(c) || byCat.set(c, []).get(c)!).push(f);
+          }
+          const cats = CATEGORY_ORDER.filter(c => (byCat.get(c) || []).length);
+          if (!cats.length) return <div className="muted small">No matches.</div>;
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {cats.map(cat => {
+                const rows = byCat.get(cat)!;
+                return (
+                  <details key={cat} open>
+                    <summary style={{ cursor: 'pointer', fontWeight: 600, padding: '4px 0' }}>
+                      {CAT_ICON[cat]} {cat} <span className="muted xs">({rows.length})</span>
+                    </summary>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
+                      {rows.map(f => {
+                        const tags: string[] = (f.tags || []).filter((t: string) =>
+                          !/^(doer-self-write|note|knowledge)$/i.test(t));
+                        return (
+                          <div key={f.name} className="row" style={{
+                            gap: 8, alignItems: 'center', padding: '5px 8px',
+                            borderRadius: 6, background: 'var(--bg-1)',
+                          }}>
+                            <a style={{ cursor: 'pointer', fontWeight: 500, minWidth: 200 }}
+                               onClick={() => view(f.name)}>{cleanTitle(f)}</a>
+                            <div className="row" style={{ gap: 4, flexWrap: 'wrap', flex: 1 }}>
+                              {tags.slice(0, 6).map((t: string) => (
+                                <span key={t} className="chip xs"
+                                      style={{ cursor: 'pointer' }}
+                                      onClick={() => setFilter(t)}>{t}</span>
+                              ))}
+                            </div>
+                            <span className="muted xs" style={{ whiteSpace: 'nowrap' }}>
+                              {(f.created || '').slice(0, 10)}
+                            </span>
+                            <button className="ghost sm" onClick={() => del(f.name)}
+                                    title="Delete">✕</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          );
+        })()}
       {open && (
         <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)',
                       border: '1px solid var(--border-0)', borderRadius: 8 }}>

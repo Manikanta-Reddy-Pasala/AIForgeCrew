@@ -117,6 +117,9 @@ export const api = {
       compacted?: string[]; summarized?: string[]; archive?: string; note?: string }>(
       `/memory/files/compact?${p.toString()}`, { method: 'POST' });
   },
+  memoryFilesCleanup: (dry_run?: boolean) =>
+    j<{ ok: boolean; folded?: number; facts?: number; stale?: string[]; count?: number }>(
+      `/memory/files/cleanup${dry_run ? '?dry_run=true' : ''}`, { method: 'POST' }),
   memoryFileDelete: (name: string) =>
     j<any>(`/memory/files/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   memoryValidatePath: (location: string) =>
