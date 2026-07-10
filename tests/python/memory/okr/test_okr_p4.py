@@ -1,0 +1,69 @@
+"""OKR-DAG P4 — auto-authoring nodes from a session (LLM stubbed)."""
+from __future__ import annotations
+
+import tempfile
+
+import pytest
+
+from aiforge_core.memory import okr
+
+
+@pytest.fixture()
+def cfg(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", tempfile.mkdtemp())
+    monkeypatch.setenv("AIFORGE_OKR_AUTHOR", "1")
+
+
+def _stub(monkeypatch, payload):
+    from types import SimpleNamespace as NS
+
+    def fake(role, messages, model, **k):
+        # rebuild the pydantic-ish object from the payload, filling field defaults
+        # (real pydantic models default the optional fields).
+        def obj(d, defaults):
+            return NS(**{**defaults, **d})
+        return NS(
+            objectives=[obj(o, {"title": "", "context": ""})
+                        for o in payload.get("objectives", [])],
+            key_results=[obj(k2, {"title": "", "objective_title": "", "metrics": ""})
+                         for k2 in payload.get("key_results", [])],
+            learnings=[obj(l, {"rule": "", "scope": "global"})
+                       for l in payload.get("learnings", [])])
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", fake)
+
+
+def test_extract_and_save_builds_graph(cfg, monkeypatch):
+    _stub(monkeypatch, {
+        "objectives": [{"title": "Stock engine", "context": "backtest momentum"}],
+        "key_results": [{"title": "Backtest logic", "objective_title": "Stock engine",
+                         "metrics": "cagr 15%"}],
+        "learnings": [{"rule": "no k8s for tests", "scope": "global"},
+                      {"rule": "survivorship-bias-free", "scope": "Stock engine"}],
+    })
+    r = okr.extract_and_save("a long enough session transcript about backtesting " * 3)
+    assert r["ok"] and r["objectives"] and r["key_results"]
+    g = okr.build(force=True)
+    oid = r["objectives"][0]
+    kid = r["key_results"][0]
+    assert g.objective_of(kid) == oid                 # KR linked to objective
+    learn = g.learnings_for(oid)
+    assert len(learn) == 2                             # global + scoped both apply
+    # retrieval over the just-authored graph
+    okr.set_active(kid)
+    block = okr.context_block()
+    assert "Stock engine" in block and "Backtest logic" in block and "no k8s" in block
+
+
+def test_extract_dedupes_objective_by_title(cfg, monkeypatch):
+    okr.save_node("objective", "O-01", {"title": "Stock engine", "status": "active"}, "x")
+    _stub(monkeypatch, {"objectives": [{"title": "stock ENGINE"}],  # same, diff case
+                        "key_results": [{"title": "kr", "objective_title": "Stock engine"}],
+                        "learnings": []})
+    r = okr.extract_and_save("session text long enough to pass the length gate here")
+    assert r["objectives"] == []                       # reused O-01, not a dup
+    assert okr.build(force=True).objective_of(r["key_results"][0]) == "O-01"
+
+
+def test_author_disabled(cfg, monkeypatch):
+    monkeypatch.setenv("AIFORGE_OKR_AUTHOR", "0")
+    assert okr.extract_and_save("x" * 100)["skipped"] == "disabled"

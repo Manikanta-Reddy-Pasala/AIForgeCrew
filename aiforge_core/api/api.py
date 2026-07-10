@@ -2067,6 +2067,35 @@ def memory_files_compact(group_by: str = Query("topic"),
                             dry_run=dry_run, summarize=summarize)
 
 
+@app.get("/api/memory/okr")
+def memory_okr_graph() -> dict:
+    """The OKR-DAG: nodes (by type) + the active KR. Lightweight — frontmatter
+    + a body preview, not full bodies."""
+    from aiforge_core.memory import okr
+    g = okr.build(force=True)
+    nodes = []
+    for nid, n in g.nodes.items():
+        m = n.get("meta") or {}
+        nodes.append({"id": nid, "type": n.get("type"),
+                      "title": m.get("title") or nid, "status": m.get("status"),
+                      "parent_objective": m.get("parent_objective"),
+                      "scope": m.get("scope"), "linked_krs": m.get("linked_krs"),
+                      "tags": m.get("tags"),
+                      "preview": (n.get("body") or "")[:200]})
+    return {"ok": True, "counts": g.counts(), "active_kr": okr.get_active(),
+            "nodes": nodes}
+
+
+class _OkrActive(BaseModel):
+    active_kr: str | None = None
+
+
+@app.post("/api/memory/okr/active")
+def memory_okr_set_active(body: _OkrActive) -> dict:
+    from aiforge_core.memory import okr
+    return okr.set_active(body.active_kr)
+
+
 @app.post("/api/memory/files/cleanup")
 def memory_files_cleanup(dry_run: bool = Query(False),
                          model_role: str = Query("learner")) -> dict:
@@ -4752,6 +4781,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             # working commands are reusable and don't get redone.
                             from aiforge_core.runtime import session_ledger
                             session_ledger.capture_working_workflow(session_id, _repo)
+                            # OKR-DAG auto-authoring: extract durable Objectives/
+                            # KeyResults/Learnings from this session into the graph,
+                            # and write a session node from the executed steps.
+                            try:
+                                from aiforge_core.memory import okr as _okr
+                                _msgs2 = chat_store.get_messages(session_id) or []
+                                _tx = "\n".join(
+                                    f"{m.get('role')}: {m.get('content')}"
+                                    for m in _msgs2 if isinstance(m, dict)
+                                    and m.get("content"))[:8000]
+                                _okr.extract_and_save(_tx)
+                                _led = session_ledger.ledger_block(session_id)
+                                if _led:
+                                    _okr.write_session_node(
+                                        title=f"chat session {session_id}", body=_led)
+                            except Exception:  # noqa: BLE001
+                                pass
                         except Exception:  # noqa: BLE001
                             pass
                     _bg.spawn(_chat_summarize, name="chat-summarize")

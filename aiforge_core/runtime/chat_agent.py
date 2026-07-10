@@ -3857,6 +3857,14 @@ def run_chat_agent(
             _add_sys_block("executed", session_ledger.ledger_block(session_id))
         except Exception:  # noqa: BLE001 — ledger must never break a turn
             pass
+    # OKR-DAG: surgical goal context for the ACTIVE Key Result (why/what/rules/
+    # recent) — the Objective→KR→Learning→Session graph, not the whole memory.
+    # Injected whenever an active KR is set (okr.set_active); empty otherwise.
+    try:
+        from aiforge_core.memory import okr as _okr
+        _add_sys_block("okr", _okr.context_block())
+    except Exception:  # noqa: BLE001 — okr context must never break a turn
+        pass
     if _sys_dropped:                # one-line note so the trim is visible
         _add_sys_block("_note", "[context note: dropped/trimmed lower-priority "
                        "blocks to fit the window: " + ", ".join(_sys_dropped) + "]")

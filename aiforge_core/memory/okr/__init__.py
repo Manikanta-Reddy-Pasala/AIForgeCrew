@@ -12,6 +12,7 @@ from .nodes import (
     render_node,
     validate,
 )
+from .author import extract_and_save, write_session_node
 from .graph import build, get_active, set_active
 from .retrieve import compile_prompt, context_block, retrieve
 from .store import (
@@ -28,4 +29,5 @@ __all__ = [
     "okr_root", "type_dir", "next_id", "save_node", "read_node", "load_all",
     "build", "set_active", "get_active",
     "retrieve", "compile_prompt", "context_block",
+    "extract_and_save", "write_session_node",
 ]
