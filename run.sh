@@ -24,6 +24,10 @@
 #   --hybrid     infra in docker, agent (api+runner) on host  [DEFAULT]
 #   --docker     full stack in containers (isolated agent)
 #   --lite       embedded single-process host mode (SQLite, no Docker)
+#   --migrate    one-shot: move Postgres (chat+tickets) → the SQLite --lite
+#                stores, then REMOVE the DB infra containers (neo4j/embed/rerank/
+#                postgres). Tracing (langfuse) is the only Docker left — bring it
+#                back with --with-langfuse (allowed in --lite now). Volumes kept.
 #   --dev        uvicorn --reload (host hot reload; implies host, not docker)
 #   --port N     listen port (default 8799)
 #   --host H     bind host (default 127.0.0.1)
@@ -104,6 +108,7 @@ DOWN_FIRST=0      # full --docker restart tears down stale containers first
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --lite) MODE=lite ;;
+    --migrate) MIGRATE=1 ;;   # PG → SQLite, then remove the DB infra containers
     --docker) MODE=docker ;;
     --hybrid) MODE=hybrid ;;
     --dev) DEV=1; [[ $MODE == docker ]] && MODE=hybrid ;;  # dev is a host concept
@@ -337,6 +342,39 @@ if ! uv pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
   uv pip install --python .venv/bin/python -e . >/dev/null
 fi
 
+# ── One-shot data migration + infra cleanup (--migrate) ───────────────
+# Move Postgres (chat + tickets) into the SQLite --lite stores, then REMOVE the
+# DB infra containers (neo4j/embed/rerank/postgres). Tracing (langfuse) is the
+# only container left — bring it back with --with-langfuse. Volumes are kept
+# (rm the container, not -v) so the source data stays recoverable. Exits after.
+if [[ "${MIGRATE:-0}" == "1" ]]; then
+  if docker compose version >/dev/null 2>&1 || command -v docker >/dev/null 2>&1; then
+    DKM=(docker); docker info >/dev/null 2>&1 || DKM=(sudo docker)
+  else
+    echo "==> --migrate needs Docker to read the source Postgres" >&2; exit 1
+  fi
+  # Stop the running agent so the SQLite files aren't write-locked mid-migrate.
+  systemctl --user stop aiforge-api >/dev/null 2>&1 || true
+  echo "==> --migrate: starting source Postgres to read from"
+  "${DKM[@]}" start aiforge-postgres >/dev/null 2>&1 || true
+  sleep 8
+  _PGU="${AIFORGE_PG_URL:-postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge}"
+  echo "==> migrating Postgres → SQLite (chat + tickets)"
+  if AIFORGE_PG_URL="$_PGU" AIFORGE_MODE=lite \
+        .venv/bin/python scripts/migrate_to_sqlite.py; then
+    echo "==> migration complete — cleaning up DB infra (tracing kept)"
+    "${DKM[@]}" rm -f aiforge-neo4j aiforge-embed aiforge-rerank \
+      aiforge-postgres >/dev/null 2>&1 || true
+    echo "==> removed neo4j/embed/rerank/postgres. Volumes kept (recoverable)."
+    echo "==> start the agent again: systemctl --user start aiforge-api"
+    echo "    (add --with-langfuse for tracing — the only Docker container left)"
+  else
+    echo "==> migration FAILED — infra left intact (nothing removed)." >&2
+    exit 1
+  fi
+  exit 0
+fi
+
 # ── Aider RepoMap (optional but preferred) ────────────────────────────────
 # The chat/doer repo context uses Aider's tree-sitter + PageRank RepoMap for a
 # RANKED symbol map. Install best-effort — if it fails/absent the agent falls
@@ -457,8 +495,11 @@ fi
 # project is provisioned on first boot via LANGFUSE_INIT_* — then the app's
 # LANGFUSE_* env is exported here so every LLM call mirrors automatically.
 if [[ "$WITH_LANGFUSE" == "1" ]]; then
-  if [[ $MODE == lite ]] || ! command -v docker >/dev/null 2>&1; then
-    echo "==> --with-langfuse needs Docker (skipped in lite/no-docker mode)" >&2
+  # Tracing is allowed even in --lite: lite means no DB infra in Docker, but
+  # langfuse (the ONLY container an operator may want) can still run when Docker
+  # is present. Only skip when Docker isn't installed at all.
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "==> --with-langfuse needs Docker (not installed) — skipped" >&2
   else
     _lf_env="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/langfuse.env"
     if [[ ! -f "$_lf_env" ]]; then
