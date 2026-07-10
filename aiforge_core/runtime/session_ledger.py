@@ -142,6 +142,47 @@ def _min_steps() -> int:
         return 2
 
 
+_VERIFY_SYS = (
+    "You verify whether a chat session's SUCCESSFUL shell commands form a "
+    "REUSABLE workflow worth saving as a playbook. Given the ordered commands, "
+    "decide `is_reusable`: true ONLY if they form a coherent, repeatable "
+    "procedure (e.g. build→test→deploy), false for random one-off exploration. "
+    "If reusable: return a short kebab-case `name`, a one-line `description`, "
+    "the cleaned ordered `steps` (DROP noise / duplicate / exploratory commands, "
+    "keep only the essential procedure; fix obvious ordering), and 1-3 short "
+    "`triggers`. If not coherent, set is_reusable=false and leave the rest empty. "
+    "Do NOT invent commands not in the input."
+)
+
+
+def _verify_workflow(title: str, commands: list[str]) -> "dict | None":
+    """LLM verification of a candidate workflow. Returns a dict
+    ``{is_reusable, name, description, steps, triggers}`` or None when no model
+    is reachable (caller then saves the raw capture). Never raises."""
+    try:
+        from pydantic import BaseModel
+
+        from aiforge_core.llm.structured import structured_complete
+
+        class _Verified(BaseModel):
+            is_reusable: bool = False
+            name: str = ""
+            description: str = ""
+            steps: list[str] = []
+            triggers: list[str] = []
+
+        payload = {"session_title": title, "successful_commands": commands}
+        import json as _json
+        res = structured_complete(
+            "learner",
+            [{"role": "system", "content": _VERIFY_SYS},
+             {"role": "user", "content": _json.dumps(payload, ensure_ascii=False)}],
+            _Verified, max_retries=1, max_tokens=1200, temperature=0.1)
+        return res.model_dump()
+    except Exception:  # noqa: BLE001 — no model / bad JSON → caller falls back
+        return None
+
+
 def capture_working_workflow(session_id, repo: str = "repo") -> dict:
     """Auto-author a reusable WORKFLOW from the session's WORKING steps (the
     commands that succeeded, in order) and file it into OKR knowledge memory
@@ -167,22 +208,42 @@ def capture_working_workflow(session_id, repo: str = "repo") -> dict:
     except Exception:  # noqa: BLE001
         title = f"session {session_id}"
     slug = _slug(title)
-    name = f"session-{slug}"
-    steps_md = "\n".join(f"{n + 1}. `{c['key'][4:]}`" for n, c in enumerate(cmds))
+    raw_cmds = [c["key"][4:] for c in cmds]
+    # VERIFY before creating: an LLM checks the successful commands actually form
+    # a coherent, reusable procedure (not random one-offs), and refines the
+    # name/description/ordered steps. A non-reusable session is skipped, so we
+    # don't save junk workflows. Falls back to the raw capture if no model.
+    verified = _verify_workflow(title, raw_cmds)
+    if verified is not None and not verified.get("is_reusable", False):
+        return {"ok": True, "skipped": "not_reusable"}
+    if verified:
+        name = f"session-{_slug(verified.get('name') or title)}"
+        description = (verified.get("description") or f"Working steps: {title}")[:120]
+        steps = [str(s) for s in (verified.get("steps") or raw_cmds) if str(s).strip()]
+        triggers = [_slug(t) for t in (verified.get("triggers") or [slug]) if t][:4] or [slug]
+        verified_note = ""
+    else:                                   # no model — save the raw capture
+        name = f"session-{slug}"
+        description = f"Captured working steps: {title}"[:120]
+        steps = raw_cmds
+        triggers = [slug]
+        verified_note = "\n\n_(unverified — no model reachable at capture time)_"
+    steps_md = "\n".join(f"{n + 1}. `{s}`" for n, s in enumerate(steps))
     files_md = ("\n\nFiles touched:\n"
                 + "\n".join(f"- {w['label']}" for w in writes)) if writes else ""
-    body = (f"Working steps captured from chat session {session_id} "
-            f"({title}). These ran successfully, in order — reuse them for the "
-            f"same task instead of re-deriving:\n\n{steps_md}{files_md}")
+    body = (f"Reusable procedure verified from chat session {session_id} "
+            f"({title}). Run these in order for the same task instead of "
+            f"re-deriving:\n\n{steps_md}{files_md}{verified_note}")
     tags = ["session", "workflow", f"session:{session_id}"]
     if repo and repo != "repo":
         tags.append(f"repo:{repo}")
     out = {"ok": False}
     try:
         from aiforge_core.runtime import workflows
+        # write_workflow itself hard-runs/syntax-checks any scripts before save.
         out = workflows.write_workflow(
-            name, description=f"Captured working steps: {title}"[:120],
-            body=body, triggers=[slug], scope="global")
+            name, description=description, body=body, triggers=triggers,
+            scope="global")
     except Exception as exc:  # noqa: BLE001
         out = {"ok": False, "error": str(exc)}
     # OKR topic note (proper tags) so the working procedure is in the briefs too.
