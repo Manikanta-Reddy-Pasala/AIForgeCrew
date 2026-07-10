@@ -1695,6 +1695,20 @@ def _process_one_ticket() -> bool:
                 ", ".join(pr_meta.get("test_only_files", [])[:5]),
             )
 
+        # Committed-but-partial: the Doer plateaued / hit its budget but DID
+        # land a reviewable diff (PR opened). Route to in_review so a human
+        # reviews the partial PR, rather than blocked. This is the terminal
+        # for the plateau/replan cap (see graph_pipeline._validator_gate):
+        # finished-but-imperfect work stops churning and waits at the gate.
+        # With no PR there is nothing to review, so partial stays blocked
+        # (the _VERDICT_TO_STATUS default).
+        if outcome == "partial" and pr_meta.get("pr_url"):
+            new_status = "in_review"
+            log.info(
+                "ticket=%s partial+PR → in_review (plateau cap; no replan of "
+                "finished work)", ticket.identifier,
+            )
+
         # Live verifier — runs HERE (post-PR) so its deploy recipe has a
         # real PR_URL to merge + roll out before testing. Only when the
         # PR actually opened and the verdict is otherwise a pass. A

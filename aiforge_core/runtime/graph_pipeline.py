@@ -443,6 +443,21 @@ async def _loop_gate(ctx):  # type: ignore[no-untyped-def]
 async def _validator_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     replans = int(state.get("replan_count", 0) or 0)
+    # Loop-engineering STOP condition (plateau/replan cap). If the Doer
+    # loop exited on a loop_budget_kill (LOC-plateau or wall-clock budget),
+    # the work is already as far as this local model will carry it. A
+    # replan just re-runs the SAME model on the SAME attempted work and it
+    # re-plateaus — a full wasted planner→verify→doer cycle (ONE-157 burnt
+    # ~24 min this way on an already-committed diff). Ship what exists to
+    # review instead of re-planning finished/stalled work; the runner maps
+    # partial+PR → in_review and partial+no-PR → blocked. Verifier replans
+    # (pre-Doer plan rejection) are unaffected — those DO help.
+    fv = str(state.get("feedback_verdict") or "")
+    if "loop_budget_kill" in fv:
+        state["_no_replan_reason"] = "doer_plateau"
+        ctx.route = ROUTE_DONE
+        _trace(":ValidatorNoReplanPlateau", {"feedback_verdict": fv[:80]})
+        return
     if _validator_failed(state) and replans < MAX_REPLANS:
         state["replan_count"] = replans + 1
         # Reset ALL loop-scoped state so the re-planned attempt starts

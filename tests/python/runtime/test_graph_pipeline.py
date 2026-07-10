@@ -126,6 +126,23 @@ def test_validator_gate_pass_routes_done() -> None:
     assert ctx.route == gp.ROUTE_DONE
 
 
+def test_validator_gate_plateau_no_replan() -> None:
+    # Doer loop exited on a loop_budget_kill (LOC-plateau / wall-clock). The
+    # Validator wants changes, but a replan just re-runs the same local model
+    # on already-attempted work and it re-plateaus — a wasted cycle. The gate
+    # must NOT replan; it routes straight to done (runner ships partial+PR →
+    # in_review). Guards against the ONE-157 24-min churn on a committed diff.
+    state = {
+        "validator_verdict": {"verdict": "request_changes"},
+        "feedback_verdict": "partial loop_budget_kill: loc_plateau:4x<3_after_900s",
+    }
+    ctx = _FakeCtx(state)
+    _run(gp._validator_gate(ctx))
+    assert ctx.route == gp.ROUTE_DONE
+    assert int(state.get("replan_count", 0)) == 0  # did NOT consume a replan
+    assert state.get("_no_replan_reason") == "doer_plateau"
+
+
 def test_validator_gate_replan_clears_stale_loop_state() -> None:
     # prior pass left a 'pass' feedback verdict + kill flag; replan must
     # wipe them so the next Doer loop doesn't exit at zero iterations.
