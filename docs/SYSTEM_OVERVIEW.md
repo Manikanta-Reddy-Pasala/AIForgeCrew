@@ -107,10 +107,28 @@ agent gets what) is **[TOOLS.md](TOOLS.md)**.
 
 ## 4. Memory & knowledge
 
+- **OKR-DAG** (`aiforge_core/memory/okr/`, see **[OKR_MEMORY.md](OKR_MEMORY.md)**):
+  the goal-oriented memory. Markdown nodes in `~/.aiforge/memory/okr/{objectives,
+  key_results,learnings,sessions}/` carry typed frontmatter edges
+  (`parent_objective`, `linked_krs`, `scope`), built into an **in-memory graph**
+  (plain dicts, no DB). *Surgical* retrieval for the active Key Result — ascend
+  (objective *why*), descend (KR *what*), constraints (global + scoped learnings),
+  recent (last N sessions) — compiles a bounded `<OBJECTIVE>/<ACTIVE_TASK>/
+  <CRITICAL_RULES>/<RECENT_ACTIVITY>` block into the prompt. Sessions **auto-author**
+  durable Objectives/KRs/Learnings (LLM-verified before save).
+- **OKR envelope + topic briefs** (`runtime/work_notes.py`, `memory/md_store.py`):
+  every write goes through `capture()` — a tagged unit (by **topic** and the
+  **agent** that wrote it) folded **hourly** into topic briefs that dedupe/merge
+  via an LLM, **split-on-oversize** into cross-referenced parts, and carry the
+  Google-OKR envelope. A **session execution ledger** (`runtime/session_ledger.py`)
+  injects "already ran — don't repeat" and auto-captures verified **working
+  workflows**.
 - **Unified recall** (`aiforge_core/memory/unified_query.py`): one query fans
-  out in parallel to all sources — Postgres/Neo4j hybrid search, ticket brief,
-  Neo4j graph hops, code-symbol lookup, markdown/SOP docs, external library
-  docs — then scores are normalised per source, weighted, deduped, top-K.
+  out in parallel to all sources — SQLite (embedded) or Neo4j vector/text search,
+  ticket brief, graph hops, code-symbol lookup, markdown/SOP docs, external
+  library docs — scored, weighted, deduped, top-K. **Code chunks are demoted**
+  (`AIFORGE_UMEM_CHUNK_SCORE`, default 0.4) so curated OKR/topic knowledge outranks
+  raw RAG. Neo4j is **optional** now — the OKR-DAG is DB-free.
 - **Shared work folders** (`runtime/work_context.py`): work about a durable
   thing lives in `~/.aiforge/work/<kind>/<key>/` (`jira/PROJ-123`,
   `confluence/<page>`, `repo/<name>`, `web/`) — shared across every session
@@ -126,8 +144,10 @@ agent gets what) is **[TOOLS.md](TOOLS.md)**.
   code graph) is loaded into Neo4j by `indexing/graphify_loader.py` and queried
   by the `graphify_lookup` tool (architect/planner/doer/researcher). Refresh:
   `scripts/runtime/aiforge-graphify-all.sh`; install via `run.sh --with-graphify`.
-- **Langfuse mirror**: when enabled, every LLM call *and* every memory recall
-  is mirrored to the local Langfuse UI, fire-and-forget
+- **Langfuse mirror**: when enabled, every LLM call *and* every memory recall is
+  mirrored to the local Langfuse **v2** UI (single container, no ClickHouse),
+  fire-and-forget — with **sessions** (per chat) and a per-turn **score**. Input/
+  output are set on the trace so the Sessions view isn't blank
   (`integrations/langfuse_adapter.py`, `memory/unified_query.py`).
 
 ---
@@ -184,13 +204,18 @@ The full decision history (what was chosen, why, evidence, date) lives in
 ```bash
 ./run.sh                 # hybrid (default): infra in Docker, agent on host
 ./run.sh --docker        # everything in containers (isolated agent)
-./run.sh --lite          # no Docker: SQLite tickets + SQLite memory
+./run.sh --lite          # ZERO-Docker: SQLite for tickets/chat/jobs + memory
+./run.sh --migrate       # move Postgres (chat+tickets) → SQLite, remove DB infra
 ./run.sh --dev           # uvicorn --reload | --port N | --host H
 ./run.sh --test          # probe the configured model endpoint
 ./run.sh --reset-config  # wipe ~/.aiforge/agent_config.json (backed up)
-./run.sh --with-langfuse # start the self-hosted trace UI (:3005)
+./run.sh --with-langfuse # start the self-hosted trace UI (:3005) — ok in --lite
 ./run.sh --stop-langfuse # stop it (ephemeral data anyway)
 ```
+
+Mode is also `AIFORGE_MODE`-driven (`lite`|`hybrid`|`docker`) so a headless service
+picks zero-Docker via `.env` without editing its unit. `--lite` + `--with-langfuse`
+= tracing is the only container.
 
 Config lives in `.env` (repo root) and `~/.aiforge/` (`agent_config.json`,
 `integrations.json`, `langfuse.env`, `work/` folders). Env always wins over

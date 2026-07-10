@@ -12,6 +12,7 @@ Plus a full-filesystem chat coding agent.
 | Doc | What's in it |
 |---|---|
 | **[SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md)** | How it works: request flow (chat + pipeline), memory, skills/workflows/rules, operating it |
+| **[OKR_MEMORY.md](docs/OKR_MEMORY.md)** | The OKR-DAG memory — markdown nodes (objectives/key-results/learnings/sessions), typed edges, in-memory graph, surgical retrieval |
 | **[TOOLS.md](docs/TOOLS.md)** | The complete tool reference — every tool, args, gating, per-agent allowlists |
 | **[DECISIONS.md](docs/DECISIONS.md)** | Why things are the way they are (ADR-lite log, evidence-linked) |
 | **[DEMO_GUIDE.md](docs/DEMO_GUIDE.md)** | A guided demo walkthrough |
@@ -41,9 +42,12 @@ over automatically — or run the whole pro stack with `docker compose up -d --b
 > file/exec operations to one directory, and run shared/untrusted deployments inside a
 > container. Treat the chat box like a terminal.
 
-`./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
-`--lite` runs without Docker; `--with-langfuse` / `--stop-langfuse` manage the
-optional self-hosted LLM trace UI.
+`./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind.
+Mode is `AIFORGE_MODE`-driven (`lite` | `hybrid` | `docker`; a flag still wins):
+`--lite` runs **zero-Docker** (host + SQLite for everything). `--migrate` moves an
+existing Postgres (chat + tickets) into the SQLite stores and removes the DB infra
+containers. `--with-langfuse` / `--stop-langfuse` manage the optional self-hosted
+LLM trace UI — allowed even in `--lite`, so tracing can be the only container.
 
 ## Features
 
@@ -74,16 +78,24 @@ optional self-hosted LLM trace UI.
 - **Human-in-the-loop** — per-tool **allow/ask/deny** policy + a command risk
   classifier; risky actions and external writes pause for **Approve/Reject** with a
   diff preview. Autonomous ticket runs never block.
-- **Memory** — frontier agent-memory: hybrid vector+text+graph retrieval, auto
-  fact-mining with dedup/contradiction handling, bi-temporal facts, decay +
-  consolidation, per-scope + global briefs, own AST code chunker. Details in
+- **Memory** — an **OKR-DAG**: markdown nodes (objectives → key results → learnings
+  → sessions) with typed frontmatter edges build an **in-memory graph** (no DB), and
+  *surgical* retrieval feeds the active goal's why/what/rules/recent into the prompt.
+  Sessions **auto-author** durable Objectives/KRs/Learnings; the OKR envelope is
+  topic-organized, tagged (by topic **and** which agent wrote it), split-on-oversize
+  with cross-links, and compacted hourly. Plus a session **execution ledger** ("don't
+  redo what already ran") and auto-captured **working workflows**. Vector+text+graph
+  recall (SQLite embedded, or optional Neo4j) sits underneath, with code chunks
+  demoted. Details: **[OKR_MEMORY.md](docs/OKR_MEMORY.md)** ·
   **[SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md#4-memory--knowledge)**.
 - **Context engineering** — auto-compaction near the window limit, fresh per-turn
   memory recall + repo-map injection, and **Cave mode** (lean context for small
   local models).
-- **Observability** — optional self-hosted **Langfuse** trace mirror (SDK-free REST):
-  every LLM call + memory recall/write. `./run.sh --with-langfuse` hosts it
-  (UI :3005, keys auto-generated, 1-day retention).
+- **Observability** — optional self-hosted **Langfuse v2** trace mirror (SDK-free REST,
+  single lightweight container — no ClickHouse): every LLM call + memory recall/write,
+  with sessions + a per-turn score. `./run.sh --with-langfuse` hosts it (UI :3005, keys
+  auto-generated, 1-day retention) — works in `--lite` too. Plus on-disk traces under
+  `~/.aiforge/` regardless.
 - **Providers** — local (LM Studio / mlx-lm) or any OpenAI-compatible endpoint, with
   automatic cloud escalation; a model registry with per-model vision + context window.
 - **Resilient streaming** — navigate away and back mid-turn; cancel/abort; checkpoints
