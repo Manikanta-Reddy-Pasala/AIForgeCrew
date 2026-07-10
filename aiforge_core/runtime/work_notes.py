@@ -360,6 +360,11 @@ def knowledge_text(note: str) -> str:
     parsed = parse_note(note or "")
     sec = parsed.get("sections") or {}
     out: list[str] = []
+    # measurable Key Results (a repo-note's scan counts) THEN Facts — both are
+    # knowledge; a memory brief only fills Facts, a repo-note only Key Results.
+    krs = sec.get("key_results") or []
+    if krs:
+        out.append("\n".join(f"- {k}" for k in krs))
     facts = sec.get("facts") or []
     if facts:
         out.append("\n".join(f"- {f}" for f in facts))

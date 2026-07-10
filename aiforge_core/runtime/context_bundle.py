@@ -25,6 +25,7 @@ class ContextBundle:
     skills_md: str = ""
     workflows_md: str = ""
     repo_summary_md: str = ""
+    repo_notes_md: str = ""          # <repo>/.aiforge/REPO_NOTES.md (structural map)
     repo_map_md: str = ""
     memory_md: str = ""
     ambiguous_rules_note: str = ""   # carried inside rules_md already; reserved
@@ -33,11 +34,13 @@ class ContextBundle:
 
     def blocks(self) -> list[str]:
         """Non-empty blocks in inject order (preferences + rules + project brief
-        highest — the project brief IS the consolidated repo memory)."""
+        highest — the project brief IS the consolidated repo memory). REPO_NOTES
+        (structural map) sits with the repo summary, above the raw repo map."""
         return [b for b in (self.preferences_md, self.rules_md,
                             self.project_brief_md, self.skills_md,
                             self.workflows_md, self.repo_summary_md,
-                            self.repo_map_md, self.memory_md) if b]
+                            self.repo_notes_md, self.repo_map_md,
+                            self.memory_md) if b]
 
 
 def _project_brief(cwd: str) -> str:
@@ -62,6 +65,43 @@ def _project_brief(cwd: str) -> str:
     if gk:
         parts.append("GLOBAL MEMORY:\n" + gk[:3000])
     return "\n\n".join(parts)
+
+
+def _repo_notes(cwd: str) -> str:
+    """Load ``<repo>/.aiforge/REPO_NOTES.md`` for ``cwd`` (structural repo map:
+    controllers, services, event surface, cross-repo contracts) and return its
+    KNOWLEDGE for injection — the OKR envelope's metadata (Objective, title,
+    sentinel) is stripped via ``work_notes.knowledge_text`` so only the actual
+    structure reaches the window. Empty when there's no notes file.
+
+    Looks in ``cwd`` and its git top-level (a chat/ticket cwd is usually the
+    worktree; the notes file lives at the repo root)."""
+    import os
+    cands: list[str] = []
+    if cwd:
+        cands.append(os.path.join(cwd, ".aiforge", "REPO_NOTES.md"))
+    try:
+        import subprocess
+        top = subprocess.run(
+            ["git", "-C", cwd or ".", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+        if top:
+            cands.append(os.path.join(top, ".aiforge", "REPO_NOTES.md"))
+    except Exception:  # noqa: BLE001
+        pass
+    for path in cands:
+        try:
+            if not os.path.isfile(path):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError:
+            continue
+        from aiforge_core.runtime import work_notes
+        know = work_notes.knowledge_text(raw).strip()
+        if know:
+            return "REPO STRUCTURE (from REPO_NOTES.md):\n" + know[:5000]
+    return ""
 
 
 def _brief_knowledge(d: dict | None) -> str:
@@ -122,6 +162,11 @@ def build_bundle(cwd: str, query: str, *, cave: bool = False,
         b.used_skills = _safe(lambda: _sk.selected_names(query, cwd), default=[])
     if want_summary and ctx_on("summary"):
         b.repo_summary_md = _safe(lambda: _ca._repo_context(cwd))
+        # Structural repo map (REPO_NOTES.md) — deterministic controllers/
+        # services/event-surface reference; loaded with the summary, cheap
+        # (single file read) and skipped in cave mode with the rest of summary.
+        if not cave:
+            b.repo_notes_md = _safe(lambda: _repo_notes(cwd))
     if want_repo_map and ctx_on("repomap"):
         b.repo_map_md = _safe(lambda: _ca._build_repo_map(
             cwd, max_entries=(60 if cave else 160), max_depth=(2 if cave else 3)))
