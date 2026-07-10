@@ -76,7 +76,32 @@ def migrate_tickets(pg_url: str) -> int:
                                  e.get("body"), e.get("metadata"))
             except Exception:  # noqa: BLE001
                 pass
+    _advance_ticket_counter(dst)
     return n
+
+
+def _advance_ticket_counter(dst) -> None:
+    """After inserting tickets with their ORIGINAL identifiers, bump the SQLite
+    ticket_counter past the max — else new_identifier() reuses a taken id and
+    the next create hits UNIQUE constraint failed: tickets.identifier."""
+    import re
+    import sqlite3
+    path = getattr(dst, "path", None) or getattr(dst, "_path", None)
+    if not path:
+        return
+    try:
+        with sqlite3.connect(path) as c:
+            nums = [int(m.group(1))
+                    for (i,) in c.execute("SELECT identifier FROM tickets")
+                    if (m := re.search(r"-(\d+)$", i or ""))]
+            if nums:
+                c.execute("UPDATE ticket_counter SET next_n=? "
+                          "WHERE singleton=1 AND next_n <= ?",
+                          (max(nums) + 1, max(nums)))
+                c.commit()
+    except Exception as exc:  # noqa: BLE001
+        import sys
+        print(f"  counter advance skipped: {exc}", file=sys.stderr)
 
 
 def main() -> int:
