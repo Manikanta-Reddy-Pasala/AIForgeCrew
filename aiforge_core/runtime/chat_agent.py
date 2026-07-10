@@ -1312,6 +1312,31 @@ def _t_note_consolidate(args: dict, cwd: str) -> dict:
     return work_notes.consolidate_note(path, text, role="learner")
 
 
+def _t_codegraph_query(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import codegraph
+    return codegraph.codegraph_query(args, cwd)
+
+
+def _t_codegraph_callers(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import codegraph
+    return codegraph.codegraph_callers(args, cwd)
+
+
+def _t_codegraph_callees(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import codegraph
+    return codegraph.codegraph_callees(args, cwd)
+
+
+def _t_codegraph_impact(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import codegraph
+    return codegraph.codegraph_impact(args, cwd)
+
+
+def _t_codegraph_explore(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import codegraph
+    return codegraph.codegraph_explore(args, cwd)
+
+
 def _t_jira_log_work(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.tools import jira
     return jira.jira_log_work(args, cwd)
@@ -1962,6 +1987,11 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "context_gather": _t_context_gather,
     "note_curate": _t_note_curate,
     "note_consolidate": _t_note_consolidate,
+    "codegraph_query": _t_codegraph_query,
+    "codegraph_callers": _t_codegraph_callers,
+    "codegraph_callees": _t_codegraph_callees,
+    "codegraph_impact": _t_codegraph_impact,
+    "codegraph_explore": _t_codegraph_explore,
     "resolve_repo": _t_resolve_repo,
     "jira_resolve_project": _t_jira_resolve_project,
     "confluence_resolve_space": _t_confluence_resolve_space,
@@ -2051,6 +2081,8 @@ def _perf_family(name: str) -> str:
 # PLAN mode (#2): read-only tool subset — inspect + recall, never mutate.
 _READONLY_TOOLS = ("file_read", "list_dir", "find", "grep", "memory_lookup",
                    "search_chat_sessions", "graphify_lookup", "repo_map",
+                   "codegraph_query", "codegraph_callers", "codegraph_callees",
+                   "codegraph_impact", "codegraph_explore",
                    "skill_search", "confluence_search", "confluence_read",
                    "jira_search", "jira_read",
                    "email_read",

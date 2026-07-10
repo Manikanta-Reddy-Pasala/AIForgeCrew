@@ -316,6 +316,11 @@ agents:
         - skill_search              # find reusable SKILL.md playbooks before solving
         - learn_skill               # author a reusable skill after solving (self-improve)
         - repo_map                  # tree-sitter PageRank repo map (AST, no vectors)
+        - codegraph_impact          # blast-radius of changing a symbol (pre-edit)
+        - codegraph_callers         # who calls a symbol
+        - codegraph_callees         # what a symbol calls
+        - codegraph_query           # find a symbol
+        - codegraph_explore         # relevant symbols + source for a NL query
         - impacted_tests            # diff→covering-tests map (run targeted slice)
         - grep_repo                 # fast pattern search
         - serve                     # boot the built app in the background
