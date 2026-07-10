@@ -126,10 +126,10 @@ if [[ "${STOP_LANGFUSE:-0}" == "1" ]]; then
   if docker compose version >/dev/null 2>&1; then DC=(docker compose)
   else DC=(docker-compose); fi
   docker info >/dev/null 2>&1 || DC=(sudo "${DC[@]}")
-  # --remove-orphans: the v2→v3 upgrade renamed services (langfuse → langfuse-
-  # web/-worker + clickhouse/redis/minio), so old v2 containers linger as
-  # ORPHANS in this project and hold the network open ("Resource is still in
-  # use"). Removing orphans clears them + the network in one pass.
+  # --remove-orphans: a compose change that renames/drops services (e.g. the
+  # v3↔v2 swap) leaves the old containers as ORPHANS in this project, holding
+  # the network open ("Resource is still in use"). Removing orphans clears them
+  # + the network in one pass.
   "${DC[@]}" -p aiforge-langfuse --env-file "${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/langfuse.env" \
     -f scripts/compose/langfuse-compose.yml down --remove-orphans \
     && echo "==> langfuse stopped (ephemeral — traces do not persist)" \
