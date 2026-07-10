@@ -43,6 +43,13 @@ LEGACY_TTL="${AIFORGE_LMS_TTL:-43200}"
 PARALLEL="${AIFORGE_LMS_PARALLEL:-1}"
 SPECS="${AIFORGE_LMS_MODELS:-${LEGACY_MODEL}:${LEGACY_CTX}:${LEGACY_TTL}}"
 
+# Marker dir: remember the (ctx:parallel) WE last loaded per model. The ctx-only
+# guard below can't see a parallel change (loaded_ctx stays >= required), so a
+# bump of AIFORGE_LMS_PARALLEL would never take effect. Comparing against this
+# marker forces exactly one reload when the desired ctx OR parallel changes.
+MARKER_DIR="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/lms-loaded"
+mkdir -p "$MARKER_DIR" 2>/dev/null || true
+
 # Hard execution ceilings for the remote calls. ConnectTimeout only bounds the
 # TCP connect, NOT how long `lms load` runs — and a spec naming a model that
 # isn't downloaded makes `lms load` block INDEFINITELY, which hangs this whole
@@ -109,12 +116,22 @@ for r in rows:
 print(best)
 ')
 
-    if [ "$loaded_ctx" -ge "$CTX" ] 2>/dev/null; then
-        echo "lms-ensure: $MODEL loaded ctx=$loaded_ctx (>= $CTX) — ok"
+    # Desired vs last-loaded spec (ctx:parallel). A parallel-only change keeps
+    # loaded_ctx >= CTX, so without this check it would be silently ignored.
+    want_spec="${CTX}:${PARALLEL}"
+    marker="$MARKER_DIR/$(echo "$MODEL" | tr '/:' '__').spec"
+    have_spec="$(cat "$marker" 2>/dev/null || echo "")"
+
+    if [ "$loaded_ctx" -ge "$CTX" ] 2>/dev/null && [ "$have_spec" = "$want_spec" ]; then
+        echo "lms-ensure: $MODEL loaded ctx=$loaded_ctx parallel=$PARALLEL (spec=$want_spec) — ok"
         continue
     fi
 
-    echo "lms-ensure: $MODEL ctx=$loaded_ctx < required $CTX — reloading"
+    if [ "$have_spec" != "$want_spec" ] && [ "$loaded_ctx" -ge "$CTX" ] 2>/dev/null; then
+        echo "lms-ensure: $MODEL spec changed ($have_spec -> $want_spec) — reloading for parallel/ctx"
+    else
+        echo "lms-ensure: $MODEL ctx=$loaded_ctx < required $CTX — reloading"
+    fi
     # timeout-bounded: a model that isn't downloaded makes `lms load` hang; the
     # ceiling turns that into a skip (rc=1) so the NEXT spec still runs and the
     # service never wedges. Put the PRIMARY model first in AIFORGE_LMS_MODELS so
@@ -124,6 +141,7 @@ print(best)
          $BIN load '$MODEL' --context-length $CTX --parallel $PARALLEL --ttl $TTL --quiet"
     then
         echo "lms-ensure: reloaded $MODEL ctx=$CTX parallel=$PARALLEL ttl=${TTL}s"
+        echo "$want_spec" > "$marker" 2>/dev/null || true
     else
         _st=$?
         if [ "$_st" = 124 ]; then
