@@ -233,7 +233,8 @@ def test_cleanup_folds_cryptic_into_topic(cfg, monkeypatch):
     for stem, fact in [("compacted-1852458641", "conf: page id fact"),
                        ("compacted-clr-3049", "ticket clr fact"),
                        ("compacted-session-1", "session one fact"),
-                       ("compacted-auth", "real auth topic fact")]:
+                       ("compacted-auth", "real auth topic fact"),
+                       ("compacted-auth-2", "auth split overflow fact")]:
         (m.memory_dir() / f"{stem}.md").write_text(
             work_notes.render_note("knowledge", stem[len("compacted-"):],
                                    title=stem, facts=[fact]), encoding="utf-8")
@@ -241,6 +242,7 @@ def test_cleanup_folds_cryptic_into_topic(cfg, monkeypatch):
     assert set(plan["stale"]) == {"compacted-1852458641.md",
                                   "compacted-clr-3049.md", "compacted-session-1.md"}
     assert "compacted-auth.md" not in plan["stale"]         # real topic kept
+    assert "compacted-auth-2.md" not in plan["stale"]       # split part kept
     r = m.cleanup_legacy_compacted()
     assert r["ok"] and r["folded"] == 3 and r["facts"] >= 3
     live = {p.name for p in m.memory_dir().glob("*.md")}

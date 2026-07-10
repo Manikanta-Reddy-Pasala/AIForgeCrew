@@ -1009,8 +1009,13 @@ def cleanup_legacy_compacted(*, dry_run: bool = False,
     stale: list = []
     for pth in memory_dir().glob("compacted-*.md"):
         base = pth.stem[len("compacted-"):]
-        # A split part (topic-2) is NOT stale — keep it with its topic.
-        if re.search(r"-\d+$", base) and not _CRYPTIC_KEY_RE.match(base):
+        # A split overflow part (compacted-<topic>-N) is NOT stale when its
+        # topic's primary brief exists and that topic name isn't itself cryptic
+        # — e.g. keep compacted-auth-2.md (topic 'auth'), but still flag a truly
+        # cryptic compacted-clr-3049.md (no compacted-clr.md primary).
+        mnum = re.match(r"^(.*)-\d+$", base)
+        if mnum and not _CRYPTIC_KEY_RE.match(mnum.group(1)) \
+                and (memory_dir() / f"compacted-{mnum.group(1)}.md").exists():
             continue
         if _CRYPTIC_KEY_RE.match(base):
             stale.append(pth)
