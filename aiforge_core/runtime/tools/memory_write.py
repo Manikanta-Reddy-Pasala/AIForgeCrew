@@ -130,6 +130,16 @@ def _memory_write_impl(
 
     tags = list(tags or [])
     tags.append("doer-self-write")
+    # ATTRIBUTE the write to the agent that made it, so memory is filterable by
+    # role. Prefer the active request-context role; fall back to the writer's
+    # `source` label. One shared tag scheme across every agent's writes.
+    try:
+        from aiforge_core.runtime import request_context as _rc
+        _role = _rc.get_role() or source
+    except Exception:  # noqa: BLE001
+        _role = source
+    if _role:
+        tags.append(f"agent:{_role}")
 
     # UNIFIED compaction feed: every durable memory write — whatever the backend,
     # whatever the scope (a repo, a Jira ticket, a Confluence page, or global) —
@@ -139,12 +149,18 @@ def _memory_write_impl(
     def _feed_brief() -> None:
         # Skip bulk ingest (chunk floods) AND the md-mirror path (source "md:*"),
         # since md_store.capture already maintains that write's topic-aware brief
-        # — briefing again here would drop the topic and double the bullet.
+        # — briefing again here would double the bullet.
         if source == "ingest" or source.startswith("md:"):
             return
         try:
-            from aiforge_core.memory.md_store import _brief_upsert
-            _brief_upsert(repo or "shared", text)
+            # Route through the OKR library (capture) so EVERY agent's write is a
+            # topic-organized, TAGGED unit (carrying the agent:<role> tag) that
+            # flows into the topic + repo briefs — not a bare repo-only bullet.
+            # ingest=False: the backend already holds this write; capture only
+            # maintains the OKR md side.
+            from aiforge_core.memory import md_store
+            md_store.capture(kind, text, repo=(repo or "shared"),
+                             tags=tags, source=f"agent:{source}", ingest=False)
         except Exception:  # noqa: BLE001 — brief upkeep never breaks a write
             pass
 

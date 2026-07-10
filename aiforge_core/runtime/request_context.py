@@ -48,6 +48,10 @@ _DELEGATION_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
 # working, and mirrors the existing AIFORGE_CURRENT_SESSION mechanism.
 _SESSION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "aiforge_session_id", default=None)
+# Active AGENT ROLE (doer/planner/architect/chat/…) — stamped on memory writes
+# so knowledge is attributable + filterable by which agent wrote it.
+_ROLE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "aiforge_agent_role", default=None)
 
 
 # ─────────────────────────── repo root ────────────────────────────
@@ -148,9 +152,33 @@ def get_session_id() -> "str | None":
     return v or os.environ.get(_SESSION_ID_ENV) or None
 
 
+# ──────────────────────────── agent role ──────────────────────────
+
+def set_role(value):
+    """Bind the current context's agent role (None/empty clears). Returns a
+    Token for :func:`reset_role`."""
+    return _ROLE.set(str(value) if value not in (None, "") else None)
+
+
+def reset_role(token) -> None:
+    try:
+        _ROLE.reset(token)
+    except Exception:  # noqa: BLE001
+        _ROLE.set(None)
+
+
+def get_role() -> "str | None":
+    """Active agent role for this context (None if unset). Never raises."""
+    try:
+        return _ROLE.get()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 __all__ = [
     "set_repo_root", "reset_repo_root", "get_repo_root",
     "set_workspace_dir", "reset_workspace_dir", "get_workspace_dir",
     "get_delegation_depth", "enter_delegation", "reset_delegation",
     "set_session_id", "reset_session_id", "get_session_id",
+    "set_role", "reset_role", "get_role",
 ]

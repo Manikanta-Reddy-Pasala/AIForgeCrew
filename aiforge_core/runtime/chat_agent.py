@@ -626,6 +626,7 @@ def _t_memory_write(args: dict, cwd: str) -> dict:
             decision=bool(args.get("decision")),
             repo=repo,
             scope=_scope,
+            source="chat",          # attribute the write to the chat agent
         )
     except KeyError:
         return {"ok": False, "error": "missing arg: text"}
