@@ -80,6 +80,13 @@ done
 export AIFORGE_LLM_SSL_VERIFY="${AIFORGE_LLM_SSL_VERIFY:-true}"
 [[ -n "${AIFORGE_LLM_CA_BUNDLE:-}" ]] && export AIFORGE_LLM_CA_BUNDLE
 
+# ssh deploys run free by default: a plain ssh is already safe, and an ssh whose
+# REMOTE command runs sudo/systemctl (the deploy case) would otherwise prompt
+# for approval every time. A DANGEROUS remote command (rm -rf / secret exfil)
+# still gates, and LOCAL sudo is unaffected. Set AIFORGE_ALLOW_SSH=0 in .env to
+# require approval for ssh again.
+export AIFORGE_ALLOW_SSH="${AIFORGE_ALLOW_SSH:-1}"
+
 PORT=8799
 HOST=127.0.0.1
 DEV=0
