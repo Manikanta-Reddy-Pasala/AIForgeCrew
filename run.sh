@@ -564,9 +564,11 @@ fi
   || echo "  chat fs scope: UNRESTRICTED (set AIFORGE_WORKSPACE_DIR to clamp)"
 echo ""
 
-# hybrid needs the team pipeline runner — start it on the HOST in the
-# background and reap it when uvicorn exits. lite has no runner (unchanged).
-if [[ $MODE == hybrid ]]; then
+# The team pipeline runner claims + processes tickets on the HOST. Needed in
+# BOTH hybrid AND lite — the SQLite claim (conditional UPDATE under the single-
+# writer lock) is atomic, so zero-docker runs the pipeline too. Only --docker
+# runs the runner inside its own container. Reaped when uvicorn exits.
+if [[ $MODE == hybrid || $MODE == lite ]]; then
   ( while true; do .venv/bin/python -m aiforge_core.runtime.adk_runner || true; sleep "${AIFORGE_RUNNER_POLL_SEC:-10}"; done ) &
   RUNNER_PID=$!
   trap 'kill $RUNNER_PID 2>/dev/null' EXIT INT TERM
