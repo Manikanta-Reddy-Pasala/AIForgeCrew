@@ -986,6 +986,80 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
     }
 
 
+# Compacted files whose KEY is not a real topic — id-keyed briefs (chat run in
+# a jira/confluence context / session scratch produced these) and per-kind
+# blobs. Their knowledge is re-captured as topic units then the file archived,
+# so a topic compaction re-folds them into meaningful topic briefs.
+_CRYPTIC_KEY_RE = re.compile(
+    r"^(?:\d{4,}|[a-z]{2,5}-\d+|session-\d+|"
+    r"session|project|project-learning|learning|chat-summary|notes|compacted)$",
+    re.IGNORECASE)
+
+
+def cleanup_legacy_compacted(*, dry_run: bool = False,
+                             model_role: str = "learner") -> dict:
+    """One-time tidy: fold id-keyed / per-kind ``compacted-*`` briefs back into
+    the TOPIC axis. Each stale file's Facts are re-captured as topic units (no
+    forced topic → the labeller re-clusters them), the original is archived
+    (reversible), then a topic compaction re-folds everything into meaningful,
+    tagged, split-aware topic briefs. ``dry_run`` reports the plan only."""
+    import shutil
+
+    from aiforge_core.runtime import work_notes
+    stale: list = []
+    for pth in memory_dir().glob("compacted-*.md"):
+        base = pth.stem[len("compacted-"):]
+        # A split part (topic-2) is NOT stale — keep it with its topic.
+        if re.search(r"-\d+$", base) and not _CRYPTIC_KEY_RE.match(base):
+            continue
+        if _CRYPTIC_KEY_RE.match(base):
+            stale.append(pth)
+    if dry_run:
+        return {"ok": True, "dry_run": True,
+                "stale": sorted(p.name for p in stale), "count": len(stale)}
+    if not stale:
+        return {"ok": True, "dry_run": False, "folded": 0, "facts": 0,
+                "note": "no id-keyed / per-kind compacted files to clean"}
+    archive = memory_dir() / "archive" / ("cleanup-" + _now_iso().replace(":", ""))
+    facts_moved = 0
+    folded = 0
+    with _COMPACT_LOCK:
+        archive.mkdir(parents=True, exist_ok=True)
+        for pth in stale:
+            try:
+                parsed = work_notes.parse_note(
+                    pth.read_text(encoding="utf-8", errors="replace"))
+            except Exception:  # noqa: BLE001
+                continue
+            facts = list(parsed["sections"].get("facts") or [])
+            # legacy per-kind blobs keep knowledge in the body, not Facts
+            if not facts:
+                body_know = work_notes.knowledge_text(
+                    pth.read_text(encoding="utf-8", errors="replace"))
+                facts = [ln.lstrip("-* ").strip()
+                         for ln in body_know.splitlines()
+                         if ln.strip() and not ln.startswith("#")][:200]
+            for f in facts:
+                if f.strip():
+                    try:
+                        capture("topic_learning", f.strip(), repo="notes",
+                                source="cleanup:legacy-compacted")
+                        facts_moved += 1
+                    except Exception:  # noqa: BLE001
+                        pass
+            try:
+                shutil.move(str(pth), str(archive / pth.name))
+                folded += 1
+            except Exception:  # noqa: BLE001
+                pass
+    # Re-fold the re-captured units into meaningful topic briefs.
+    topic = compact(group_by="topic", min_group=1, summarize=True,
+                    model_role=model_role, archive_sources=True)
+    return {"ok": True, "dry_run": False, "folded": folded,
+            "facts": facts_moved, "archive": str(archive),
+            "topic_compact": topic}
+
+
 def delete_file(name: str) -> bool:
     p = memory_dir() / (name if name.endswith(".md") else f"{name}.md")
     if p.is_file() and p.parent == memory_dir():

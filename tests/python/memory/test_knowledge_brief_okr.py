@@ -223,3 +223,28 @@ def test_topic_compact_archives_raw_units(cfg, monkeypatch):
     assert any(n.startswith("compacted-") for n in live)   # topic brief stays
     archived = list((m.memory_dir() / "archive").rglob("*.md"))
     assert len(archived) == 2                         # raw session notes cleared
+
+
+def test_cleanup_folds_cryptic_into_topic(cfg, monkeypatch):
+    from aiforge_core.memory import md_store as m
+    from aiforge_core.runtime import work_notes
+    _stub_consolidate_llm(monkeypatch)
+    # cryptic id-keyed / per-kind briefs (the sprawl) + one real topic brief
+    for stem, fact in [("compacted-1852458641", "conf: page id fact"),
+                       ("compacted-clr-3049", "ticket clr fact"),
+                       ("compacted-session-1", "session one fact"),
+                       ("compacted-auth", "real auth topic fact")]:
+        (m.memory_dir() / f"{stem}.md").write_text(
+            work_notes.render_note("knowledge", stem[len("compacted-"):],
+                                   title=stem, facts=[fact]), encoding="utf-8")
+    plan = m.cleanup_legacy_compacted(dry_run=True)
+    assert set(plan["stale"]) == {"compacted-1852458641.md",
+                                  "compacted-clr-3049.md", "compacted-session-1.md"}
+    assert "compacted-auth.md" not in plan["stale"]         # real topic kept
+    r = m.cleanup_legacy_compacted()
+    assert r["ok"] and r["folded"] == 3 and r["facts"] >= 3
+    live = {p.name for p in m.memory_dir().glob("*.md")}
+    assert "compacted-1852458641.md" not in live            # cryptic gone
+    assert "compacted-clr-3049.md" not in live
+    archived = {p.name for p in (m.memory_dir() / "archive").rglob("*.md")}
+    assert "compacted-1852458641.md" in archived            # reversible

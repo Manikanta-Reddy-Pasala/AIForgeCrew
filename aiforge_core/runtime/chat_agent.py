@@ -3849,6 +3849,13 @@ def run_chat_agent(
             _img_blocks = chat_media.image_blocks_for_turn(session_id, role)
         except Exception:  # noqa: BLE001 — images must never break a turn
             _img_blocks = []
+        # EXECUTION LEDGER: what this session ALREADY ran (exact commands + files
+        # + outcomes) so a follow-up doesn't redo completed work.
+        try:
+            from aiforge_core.runtime import session_ledger
+            _add_sys_block("executed", session_ledger.ledger_block(session_id))
+        except Exception:  # noqa: BLE001 — ledger must never break a turn
+            pass
     if _sys_dropped:                # one-line note so the trim is visible
         _add_sys_block("_note", "[context note: dropped/trimmed lower-priority "
                        "blocks to fit the window: " + ", ".join(_sys_dropped) + "]")

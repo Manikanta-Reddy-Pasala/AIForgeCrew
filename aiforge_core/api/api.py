@@ -2062,6 +2062,17 @@ def memory_files_compact(group_by: str = Query("topic"),
                             dry_run=dry_run, summarize=summarize)
 
 
+@app.post("/api/memory/files/cleanup")
+def memory_files_cleanup(dry_run: bool = Query(False),
+                         model_role: str = Query("learner")) -> dict:
+    """One-time tidy: fold id-keyed (compacted-<id>) and per-kind compacted
+    briefs back into meaningful, tagged TOPIC briefs; archive the originals
+    (reversible). ``dry_run=true`` lists what would be folded without touching
+    disk."""
+    from aiforge_core.memory import md_store
+    return md_store.cleanup_legacy_compacted(dry_run=dry_run, model_role=model_role)
+
+
 @app.delete("/api/memory/files/{name}")
 def memory_files_delete(name: str) -> dict:
     from aiforge_core.memory import md_store
@@ -4731,6 +4742,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                                 return
                             _repo = _chat_repo_key(cwd)   # git-toplevel, matches recall
                             chat_summary.summarize_session(session_id, _repo)
+                            # Auto-author a workflow from the session's WORKING
+                            # steps + file it into OKR memory with tags, so the
+                            # working commands are reusable and don't get redone.
+                            from aiforge_core.runtime import session_ledger
+                            session_ledger.capture_working_workflow(session_id, _repo)
                         except Exception:  # noqa: BLE001
                             pass
                     _bg.spawn(_chat_summarize, name="chat-summarize")
