@@ -919,7 +919,15 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
             "score": 0.90,
             "source_uri": f"afm://{repo}/conventions",
         })
-    # Code chunks — most concrete actionable evidence
+    # Code chunks — raw RAG evidence. DEMOTED below the curated sources
+    # (repo_map/conventions/notes and the OKR-DAG goal context): with a
+    # goal-oriented memory, a wall of code chunks should not dominate recall.
+    # Env-tunable AIFORGE_UMEM_CHUNK_SCORE (default 0.4, was 0.85).
+    try:
+        _chunk_score = max(0.0, min(1.0, float(
+            os.environ.get("AIFORGE_UMEM_CHUNK_SCORE", "0.4"))))
+    except (TypeError, ValueError):
+        _chunk_score = 0.4
     for c in (b.chunks or [])[:5]:
         path = c.get("file_path") or ""
         body = (c.get("text") or "").strip()
@@ -930,7 +938,7 @@ def _afm_bundle(text: str, *, repo: str, role: str | None) -> list[dict]:
             # per-group cap doesn't drop 5 doer-evidence chunks down to 3.
             "text": f"[afm/chunk {path}]\n{body[:800]}",
             "group": f"afm:chunk:{path}",
-            "score": 0.85,
+            "score": _chunk_score,
             "source_uri": f"afm://{repo}/{path}",
         })
     # Notes (MENTIONS-linked memos)

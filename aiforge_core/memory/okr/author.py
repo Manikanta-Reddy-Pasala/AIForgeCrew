@@ -138,4 +138,45 @@ def write_session_node(*, title: str, body: str,
     return _store.save_node("session", None, meta, body)
 
 
-__all__ = ["extract_and_save", "write_session_node"]
+def migrate_from_briefs() -> dict:
+    """Seed the OKR graph from the existing flat topic briefs: each
+    compacted-<topic>.md (+ its split parts) → one global Learning node
+    (category=<topic>, body=the topic's Facts). Idempotent — a topic already
+    migrated (a learning with that category) is skipped. Briefs are left in
+    place. Soft-fail."""
+    import re
+
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import work_notes
+    g = _graph.build(force=True)
+    have = {str((n.get("meta") or {}).get("category") or "").lower()
+            for n in g.nodes.values() if n.get("type") == "learning"}
+    # group split parts under their primary topic
+    facts_by_topic: dict[str, list[str]] = {}
+    for p in md_store.memory_dir().glob("compacted-*.md"):
+        base = p.stem[len("compacted-"):]
+        topic = re.sub(r"-\d+$", "", base)
+        try:
+            parsed = work_notes.parse_note(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            continue
+        if (parsed["frontmatter"] or {}).get("kind") != "knowledge":
+            continue                       # only real topic briefs
+        facts = parsed["sections"].get("facts") or []
+        if facts:
+            facts_by_topic.setdefault(topic, []).extend(facts)
+    made = 0
+    for topic, facts in facts_by_topic.items():
+        if topic.lower() in have or not facts:
+            continue
+        body = "\n".join(f"- {f}" for f in facts)[:4000]
+        r = _store.save_node("learning", None,
+                             {"scope": "global", "category": topic,
+                              "title": f"{topic} knowledge", "tags": [f"topic:{topic}"]},
+                             body)
+        if r.get("ok"):
+            made += 1
+    return {"ok": True, "migrated": made, "topics": len(facts_by_topic)}
+
+
+__all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs"]

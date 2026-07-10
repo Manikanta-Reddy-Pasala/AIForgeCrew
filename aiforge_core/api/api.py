@@ -2096,6 +2096,14 @@ def memory_okr_set_active(body: _OkrActive) -> dict:
     return okr.set_active(body.active_kr)
 
 
+@app.post("/api/memory/okr/migrate")
+def memory_okr_migrate() -> dict:
+    """Seed the OKR graph from the existing flat topic briefs (each topic → a
+    global Learning). Idempotent; briefs left in place."""
+    from aiforge_core.memory import okr
+    return okr.migrate_from_briefs()
+
+
 @app.post("/api/memory/files/cleanup")
 def memory_files_cleanup(dry_run: bool = Query(False),
                          model_role: str = Query("learner")) -> dict:

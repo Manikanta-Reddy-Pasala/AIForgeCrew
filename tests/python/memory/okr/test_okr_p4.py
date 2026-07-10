@@ -67,3 +67,28 @@ def test_extract_dedupes_objective_by_title(cfg, monkeypatch):
 def test_author_disabled(cfg, monkeypatch):
     monkeypatch.setenv("AIFORGE_OKR_AUTHOR", "0")
     assert okr.extract_and_save("x" * 100)["skipped"] == "disabled"
+
+
+def test_migrate_from_briefs(cfg, monkeypatch):
+    from aiforge_core.memory import md_store, okr
+    from aiforge_core.runtime import work_notes
+    # two topic briefs (one split) + a non-knowledge file
+    (md_store.memory_dir() / "compacted-auth.md").write_text(
+        work_notes.render_note("knowledge", "auth", title="auth",
+                               facts=["rotate keys 90d"]), encoding="utf-8")
+    (md_store.memory_dir() / "compacted-auth-2.md").write_text(
+        work_notes.render_note("knowledge", "auth-2", title="auth p2",
+                               facts=["mTLS between services"]), encoding="utf-8")
+    (md_store.memory_dir() / "compacted-sync.md").write_text(
+        work_notes.render_note("knowledge", "sync", title="sync",
+                               facts=["exponential backoff"]), encoding="utf-8")
+    r = okr.migrate_from_briefs()
+    assert r["ok"] and r["migrated"] == 2            # auth (merged parts) + sync
+    g = okr.build(force=True)
+    learns = [n for n in g.nodes.values() if n["type"] == "learning"]
+    cats = {(n.get("meta") or {}).get("category") for n in learns}
+    assert cats == {"auth", "sync"}
+    auth = next(n for n in learns if (n.get("meta") or {}).get("category") == "auth")
+    assert "rotate keys 90d" in auth["body"] and "mTLS" in auth["body"]  # split merged
+    # idempotent
+    assert okr.migrate_from_briefs()["migrated"] == 0
