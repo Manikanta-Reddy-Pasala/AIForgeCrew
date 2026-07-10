@@ -29,7 +29,7 @@ from pathlib import Path
 from aiforge_core.runtime import skills as _sk
 from aiforge_core.runtime.skills import Selection, Skill  # reuse the same types
 
-_REPO_SUBDIRS = (".aiforge/workflows", ".claude/workflows", ".openhands/workflows")
+_REPO_SUBDIRS = (".aiforge/workflows", ".claude/workflows")
 _FILENAME = "WORKFLOW.md"
 
 # Per-workflow body budget in the injected block. A workflow with an ordered

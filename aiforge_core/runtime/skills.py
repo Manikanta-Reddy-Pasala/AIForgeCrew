@@ -15,14 +15,10 @@ Closes two gaps vs Hermes Agent / OpenClaw:
      model). Authored skills land in the registry and resurface on the
      next relevant request — the learning loop.
 
-Back-compat: the loader also folds in the legacy single-file
-``microagents`` so nothing already shipped is lost.
-
 Roots (all merged; repo-local overrides global by ``name``):
     $AIFORGE_SKILLS_DIR or ~/.aiforge/skills/<name>/SKILL.md   (global)
     <repo>/.aiforge/skills/<name>/SKILL.md
     <repo>/.claude/skills/<name>/SKILL.md
-    <repo>/.openhands/skills/<name>/SKILL.md
 """
 from __future__ import annotations
 
@@ -38,7 +34,7 @@ except Exception:  # noqa: BLE001
     yaml = None  # type: ignore
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
-_REPO_SUBDIRS = (".aiforge/skills", ".claude/skills", ".openhands/skills")
+_REPO_SUBDIRS = (".aiforge/skills", ".claude/skills")
 # Per-skill body budget in the injected block. A skill that carries steps PLUS
 # a strict output format easily exceeds a small cap — and truncating mid-body
 # silently drops the format section the user needs honoured. Generous default,
@@ -178,17 +174,6 @@ def load(cwd: str | None = None) -> list[Skill]:
         for sub in _REPO_SUBDIRS:
             for sk in _scan_dir(Path(root) / sub):
                 by_name[sk.name] = sk
-    # Fold legacy single-file microagents in (don't lose anything shipped).
-    try:
-        from aiforge_core.runtime import microagents as _ma
-        for m in _ma.load_all(cwd):
-            if m.name not in by_name:
-                by_name[m.name] = Skill(
-                    name=m.name, description="", triggers=tuple(m.triggers),
-                    body=m.body, source=m.source,
-                    always=(m.type == "repo"), priority=m.priority)
-    except Exception:  # noqa: BLE001
-        pass
     return list(by_name.values())
 
 

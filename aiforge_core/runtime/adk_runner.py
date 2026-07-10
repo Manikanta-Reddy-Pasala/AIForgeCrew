@@ -1312,10 +1312,9 @@ def _build_prompt(ticket, memory_md: str) -> str:
     # compatibility; the runner routes it into initial_state instead.)
     _ = memory_md
 
-    # Skills + microagent injection. Relevance-search the skill registry
-    # (SKILL.md playbooks, incl. ones the Doer authored via learn_skill) +
-    # always-on repo skills, keyed on ticket title + body. Folds in legacy
-    # microagents. Best-effort: parse failures swallowed.
+    # Skill injection. Relevance-search the skill registry (SKILL.md playbooks,
+    # incl. ones the Doer authored via learn_skill) + always-on repo skills,
+    # keyed on ticket title + body. Best-effort: parse failures swallowed.
     hay = f"{ticket.title or ''} {ticket.body or ''}"
     # Pass the ticket's repo root so REPO-SCOPED skills/workflows (in
     # <repo>/.aiforge/…) load too, not just the global ones. cwd=None loaded

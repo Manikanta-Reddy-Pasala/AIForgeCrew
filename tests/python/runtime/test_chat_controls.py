@@ -1,5 +1,5 @@
 """Tests for the chat control features: command risk, tool policy,
-approval gate, plan mode, @-mentions, repo microagents, checkpoints."""
+approval gate, plan mode, @-mentions, repo skills, checkpoints."""
 from __future__ import annotations
 
 import subprocess
@@ -10,7 +10,6 @@ import pytest
 
 from aiforge_core.runtime import chat_agent as ca
 from aiforge_core.runtime import chat_approve, checkpoints, mentions
-from aiforge_core.runtime import microagents as ma
 from aiforge_core.runtime.tools import command_risk, tool_policy
 
 
@@ -324,27 +323,33 @@ def test_mentions_symlink_escape_blocked(tmp_path, monkeypatch):
     assert "outside workspace" in block
 
 
-# ─── #6 repo-local microagents ────────────────────────────────────────
+# ─── #6 repo-local keyword playbooks — now SKILLS (microagents removed) ────
 
-def test_repo_microagent_trigger(tmp_path, monkeypatch):
-    monkeypatch.setenv("AIFORGE_MICROAGENTS_DIR", str(tmp_path / "none"))
-    d = tmp_path / ".aiforge" / "microagents"
+def test_repo_skill_trigger(tmp_path, monkeypatch):
+    from aiforge_core.runtime import skills as _sk
+    monkeypatch.setenv("AIFORGE_SKILLS_DIR", str(tmp_path / "none"))
+    d = tmp_path / ".aiforge" / "skills" / "db"
     d.mkdir(parents=True)
-    (d / "db.md").write_text(
-        "---\ntriggers: [migration, flyway]\n---\nUse Flyway, never ddl-auto.")
-    fired = ma.inject_for("fix the flyway migration", str(tmp_path))
-    assert "Flyway" in fired
-    # non-matching request → not injected
-    assert ma.inject_for("rename a button", str(tmp_path)) == ""
+    (d / "SKILL.md").write_text(
+        "---\nname: db\ndescription: database migrations\n"
+        "triggers: [migration, flyway]\n---\nUse Flyway, never ddl-auto.")
+    hits = _sk.search("fix the flyway migration", str(tmp_path))
+    assert any(h["name"] == "db" for h in hits)       # keyword trigger → ranked
+    # the db skill must NOT fire on an unrelated request (builtins may still rank)
+    miss = _sk.search("rename a button", str(tmp_path))
+    assert not any(h["name"] == "db" for h in miss)
 
 
-def test_repo_microagent_always(tmp_path, monkeypatch):
-    monkeypatch.setenv("AIFORGE_MICROAGENTS_DIR", str(tmp_path / "none"))
-    d = tmp_path / ".openhands" / "microagents"
+def test_repo_skill_always(tmp_path, monkeypatch):
+    from aiforge_core.runtime import skills as _sk
+    monkeypatch.setenv("AIFORGE_SKILLS_DIR", str(tmp_path / "none"))
+    d = tmp_path / ".aiforge" / "skills" / "conv"
     d.mkdir(parents=True)
-    (d / "conv.md").write_text(
-        "---\ntype: repo\n---\nThis is a Spring Boot service.")
-    assert "Spring Boot" in ma.inject_for("anything at all", str(tmp_path))
+    (d / "SKILL.md").write_text(
+        "---\nname: conv\ndescription: repo conventions\nalways: true\n---\n"
+        "This is a Spring Boot service.")
+    loaded = _sk.load(str(tmp_path))
+    assert any(s.always and "Spring Boot" in s.body for s in loaded)
 
 
 # ─── #3 checkpoints ───────────────────────────────────────────────────

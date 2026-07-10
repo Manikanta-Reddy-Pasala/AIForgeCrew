@@ -3666,7 +3666,7 @@ def run_chat_agent(
         _turn_budget_s = 3600.0
     _turn_deadline = (time.monotonic() + _turn_budget_s) if _turn_budget_s > 0 else None
 
-    # Latest user message drives mentions (#4) + microagent triggers (#6) +
+    # Latest user message drives mentions (#4) + skill triggers (#6) +
     # memory recall. In simple/plan mode the API augments the last user turn
     # with an "[Interpreted request …]" enhancer block; key off the user's RAW
     # words (split that marker off) so recall/skills/mentions aren't diluted by
