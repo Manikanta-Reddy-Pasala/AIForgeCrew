@@ -164,10 +164,10 @@ export default function TicketDetail() {
           )}
 
           <div className="card">
-            <div className="card-header"><h2>Events ({data.events.length})</h2></div>
+            <div className="card-header"><h2>Events ({(data.events || []).length})</h2></div>
             <div className="event-log">
-              {data.events.length === 0 && <div className="empty">No events yet.</div>}
-              {data.events.map((e: any) => (
+              {(data.events || []).length === 0 && <div className="empty">No events yet.</div>}
+              {(data.events || []).map((e: any) => (
                 <div key={e.id} className="event-row">
                   <span className="ts">{(e.created_at || '').slice(11, 19)}</span>
                   <span className="role">{e.agent_role || 'system'}</span>
