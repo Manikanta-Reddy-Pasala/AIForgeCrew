@@ -1009,6 +1009,19 @@ def cleanup_legacy_compacted(*, dry_run: bool = False,
     stale: list = []
     for pth in memory_dir().glob("compacted-*.md"):
         base = pth.stem[len("compacted-"):]
+        # BUG ARTIFACT: a compacted-* file that is NOT a proper kind=knowledge
+        # brief (e.g. a stray kind=note unit written under a compacted name, or
+        # a source that starts 'agent:') — fold + archive it; the real topic
+        # brief is regenerated on the next compaction.
+        try:
+            fm = work_notes.parse_note(
+                pth.read_text(encoding="utf-8", errors="replace"))["frontmatter"]
+        except Exception:  # noqa: BLE001
+            fm = {}
+        if (fm.get("kind") and fm.get("kind") != "knowledge") \
+                or str(fm.get("source") or "").startswith("agent:"):
+            stale.append(pth)
+            continue
         # A split overflow part (compacted-<topic>-N) is NOT stale when its
         # topic's primary brief exists and that topic name isn't itself cryptic
         # — e.g. keep compacted-auth-2.md (topic 'auth'), but still flag a truly
