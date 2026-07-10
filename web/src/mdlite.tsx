@@ -171,15 +171,26 @@ export function MdLite({ text }: { text: string }) {
       continue;
     }
 
-    // ordered list (1. 2. …)
+    // ordered list (1. 2. …). Keep numbered items in ONE list across blank
+    // lines — LLM output routinely blank-separates items, and breaking there
+    // made each item its own <ol> that restarts at 1 (every item showed "1").
+    // Honor the source's first number via `start` so a list that begins at N
+    // renders from N.
     if (/^\s*\d+\.\s+/.test(line)) {
+      const startNum = parseInt(line.match(/^\s*(\d+)\./)?.[1] ?? '1', 10) || 1;
       const items: string[] = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
-        i++;
+      while (i < lines.length) {
+        if (/^\s*\d+\.\s+/.test(lines[i])) {
+          items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+          i++;
+        } else if (lines[i].trim() === '' && /^\s*\d+\.\s+/.test(lines[i + 1] ?? '')) {
+          i++;                       // skip a blank line BETWEEN numbered items
+        } else {
+          break;
+        }
       }
       out.push(
-        <ol key={`ol-${k++}`}>
+        <ol key={`ol-${k++}`} start={startNum}>
           {items.map((it, j) => <li key={j}>{renderInline(it, `oli-${k}-${j}`)}</li>)}
         </ol>,
       );
