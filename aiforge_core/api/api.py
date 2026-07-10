@@ -238,14 +238,20 @@ def _start_daily_reindex() -> None:
         # you load when opening a repo; per-TOPIC → cross-repo theme notes.
         try:
             from aiforge_core.memory import md_store
-            # Briefs are non-destructive projections (archive_sources=False) so a
-            # unit feeds BOTH its repo brief and its topic note (running one axis
-            # must not archive the sources the other axis needs).
+            # Order matters: REPO first as a non-destructive projection
+            # (archive_sources=False) so every unit is folded into its project
+            # brief while the raw file still exists. TOPIC runs second and
+            # ARCHIVES the folded raw units (archive_sources=True) — so memory is
+            # organized BY TOPIC and the per-session raw notes stop piling up in
+            # the live folder (moved to archive/<ts>/, reversible). Both briefs
+            # re-feed their own consolidated OKR sections on the next run, so a
+            # unit's knowledge survives in both briefs after its raw file clears.
             r_repo = md_store.compact(group_by="repo", summarize=True,
                                       model_role="learner", archive_sources=False)
             r_topic = md_store.compact(group_by="topic", summarize=True,
-                                       model_role="learner", archive_sources=False)
-            _af_log.info("md brief projection: repo=%s topic=%s", r_repo, r_topic)
+                                       model_role="learner", archive_sources=True)
+            _af_log.info("md brief: repo(projection)=%s topic(archived)=%s",
+                         r_repo, r_topic)
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("md compaction failed: %s", exc)
 

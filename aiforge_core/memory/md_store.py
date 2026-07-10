@@ -597,6 +597,35 @@ def _group_key(d: dict, group_by: str) -> str:
     return d.get("kind") or "note"
 
 
+def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
+                               model_role: str) -> str:
+    """Build an OKR knowledge brief by LLM-consolidating this group's notes.
+
+    Folds ``blocks`` (the group's units + any prior consolidated body) into the
+    prior brief's OKR sections via ``work_notes.consolidate`` — dedupe
+    paraphrases, resolve contradictions (newer supersedes), MAP each item to
+    Objective/Key Results/Facts/Links/Learnings; chonkie chunks large input.
+    Prior hand-added Learnings (the audit trail) are unioned back in so the LLM
+    can never drop them. consolidate() degrades to a deterministic union+dedupe
+    when no model is reachable, so this never loses content."""
+    from aiforge_core.runtime import work_notes
+    existing: dict = {}
+    if path.exists():
+        existing = work_notes.parse_note(
+            path.read_text(encoding="utf-8", errors="replace"))["sections"]
+    new_content = "\n\n".join(b for b in blocks if b.strip())
+    merged = work_notes.consolidate(existing, new_content, role=model_role)
+    learnings = list(merged.get("learnings") or [])
+    for ln in (existing.get("learnings") or []):        # never lose the audit trail
+        if ln not in learnings:
+            learnings.append(ln)
+    return work_notes.render_note(
+        "knowledge", key, title=title,
+        objective=_BRIEF_OBJECTIVE.format(key=key),
+        key_results=merged.get("key_results"), facts=merged.get("facts"),
+        links=merged.get("links"), learnings=learnings, body_md="")
+
+
 def compact(*, group_by: str = "kind", min_group: int = 2,
             dry_run: bool = False, summarize: bool = True,
             model_role: str = "learner", archive_sources: bool = True) -> dict:
@@ -718,14 +747,21 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 else f"# {title}\n\n"
             merged_body = merged_prefix + "\n\n---\n\n".join(sections)
 
+            # Knowledge axes (repo/topic) with a model → STRUCTURED consolidation
+            # into real OKR sections (Facts/Links/Learnings), via
+            # work_notes.consolidate (dedupe / map / supersede; chonkie chunks
+            # big input). The prose-summary + deterministic-merge paths below
+            # stay for the kind axis and for the no-model (summarize=False) case.
+            _use_structured = (group_by in ("repo", "topic")) and summarize
+
             body = None
             did_summarize = False
-            if summarize:
+            if summarize and not _use_structured:
                 summary = _summarize_notes(blocks, model_role)   # SLOW
                 if summary:
                     body = f"# {title}\n\n{summary}"
                     did_summarize = True
-            if body is None:
+            if body is None and not _use_structured:
                 body = merged_body
                 # Bound the deterministic-merge fallback so an always-down model
                 # can't grow the file every run (the "file too big" problem).
@@ -736,10 +772,15 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                             "configure a model so compaction can summarise._\n\n"
                             "---\n\n" + body[-keep:])
 
-            if group_by in ("repo", "topic"):
-                # Knowledge briefs use the standard OKR envelope (same as the
-                # managed work notes). The consolidation IS the body; Facts
-                # reset (they were folded in); Learnings survive verbatim.
+            if _use_structured:
+                # LLM folds the group into structured OKR sections; the raw units
+                # then archive out (scheduler), so the topic note IS the memory.
+                content = _consolidate_brief_content(
+                    key, path, blocks, title, model_role)
+                did_summarize = True
+            elif group_by in ("repo", "topic"):
+                # No model: keep the OKR envelope, consolidation lives in the body
+                # (Facts reset — they were folded in); Learnings survive verbatim.
                 prev_learnings = _parse_brief(
                     path.read_text(encoding="utf-8", errors="replace")
                 )["learnings"] if path.exists() else []

@@ -115,3 +115,56 @@ def test_writetime_then_compact_then_writetime(cfg):
     raw = _raw("compacted-svc.md")
     assert "- gamma fresh fact" in raw
     assert "alpha" in raw and "beta" in raw          # folded content kept
+
+
+# ── structured (LLM) compaction into OKR sections + topic archiving ─────────
+
+def _stub_consolidate_llm(monkeypatch):
+    """Patch structured_complete so work_notes.consolidate takes its LLM path:
+    the stub folds each new line of content into Facts (dedupe, keep existing)."""
+    import json
+    from types import SimpleNamespace as NS
+
+    def fake(role, messages, response_model, **kw):
+        payload = json.loads(next(m["content"] for m in messages
+                                  if m["role"] == "user"))
+        cur = payload["current_sections"]
+        facts = list(cur.get("facts", []))
+        for line in (payload["new_information"] or "").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#") and s not in facts and len(s) < 200:
+                facts.append(s)
+        return NS(objective=cur.get("objective", ""), key_results=[],
+                  facts=facts, links=cur.get("links", []),
+                  learnings=cur.get("learnings", []))
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", fake)
+
+
+def test_compact_structured_writes_okr_facts_when_model_available(cfg, monkeypatch):
+    from aiforge_core.memory import md_store as m
+    from aiforge_core.runtime import work_notes
+    _stub_consolidate_llm(monkeypatch)
+    m.capture("project_learning", "svc: validate at boundary", repo="svc", topic="a")
+    m.capture("project_learning", "svc: no direct mongo", repo="svc", topic="b")
+    r = m.compact(group_by="repo", min_group=2, summarize=True)
+    assert r["groups"].get("svc") == 2
+    parsed = work_notes.parse_note(_raw("compacted-svc.md"))
+    assert parsed["frontmatter"]["kind"] == "knowledge"
+    facts = parsed["sections"]["facts"]
+    # content landed in STRUCTURED Facts, not a prose body blob
+    assert any("validate at boundary" in f for f in facts)
+    assert any("no direct mongo" in f for f in facts)
+
+
+def test_topic_compact_archives_raw_units(cfg, monkeypatch):
+    from aiforge_core.memory import md_store as m
+    _stub_consolidate_llm(monkeypatch)
+    m.capture("topic_learning", "auth: rotate keys 90d", repo="a", topic="auth")
+    m.capture("topic_learning", "auth: mTLS between svcs", repo="b", topic="auth")
+    r = m.compact(group_by="topic", min_group=2, summarize=True,
+                  archive_sources=True)
+    assert r["files_in"] == 2                         # 2 raw units MOVED out
+    live = {p.name for p in m.memory_dir().glob("*.md")}
+    assert any(n.startswith("compacted-") for n in live)   # topic brief stays
+    archived = list((m.memory_dir() / "archive").rglob("*.md"))
+    assert len(archived) == 2                         # raw session notes cleared
