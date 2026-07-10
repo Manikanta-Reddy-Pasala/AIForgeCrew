@@ -1695,6 +1695,29 @@ def _process_one_ticket() -> bool:
                 ", ".join(pr_meta.get("test_only_files", [])[:5]),
             )
 
+        # Empty-diff false pass (root cause of "done but nothing changed"):
+        # the Doer changed NO files (clean tree → pr_skip_reason='no_changes',
+        # no PR) yet the verdict came back non-fail. It narrated an edit it
+        # never wrote — feedback/validator trusted the prose, not ground truth
+        # (git diff). A pass with zero file changes is never a real pass.
+        # Demote to blocked so the operator sees the ticket was NOT done.
+        # (ONE-163/164: both "done", both empty, no commit.) Escape hatch:
+        # AIFORGE_ALLOW_EMPTY_PASS=1 keeps the old trust-the-narration path.
+        if (pr_meta.get("pr_skip_reason") == "no_changes"
+                and not pr_meta.get("pr_url")
+                and outcome not in ("scope_violation", "fail")
+                and os.environ.get("AIFORGE_ALLOW_EMPTY_PASS", "0")
+                    not in ("1", "true")):
+            log.warning(
+                "ticket=%s verdict=%s but clean tree (no_changes) — Doer wrote "
+                "nothing; demoting to blocked (false pass on empty diff).",
+                ticket.identifier, outcome)
+            outcome = "fail"
+            new_status = "blocked"
+            reason = ("empty diff: Doer reported success but changed no files "
+                      "(no edit reached the worktree). Not actually done.")
+            _record_verdict_event(ticket.id, "fail", reason)
+
         # Committed-but-partial: the Doer plateaued / hit its budget but DID
         # land a reviewable diff (PR opened). Route to in_review so a human
         # reviews the partial PR, rather than blocked. This is the terminal

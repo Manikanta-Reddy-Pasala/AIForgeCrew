@@ -38,7 +38,7 @@ def _globs_match_any_repo_file(globs: "list[str]", repo_root: "str | None" = Non
     of ``globs``. Used to detect a bad plan whose scope allowlist matches
     nothing in THIS repo. Soft-fails to True (don't clear on a probe error —
     only clear when we're SURE nothing matches)."""
-    root = repo_root or os.environ.get("AIFORGE_REPO_ROOT") or ""
+    root = repo_root or _repo_root_for_scope()
     if not root or not globs:
         return True
     try:
@@ -51,17 +51,40 @@ def _globs_match_any_repo_file(globs: "list[str]", repo_root: "str | None" = Non
         for p in base.rglob("*"):
             if not p.is_file():
                 continue
-            if any(part in _skip for part in p.parts):
+            try:
+                rel_path = p.relative_to(base)
+            except ValueError:
+                continue
+            # Check _skip against the path RELATIVE to base — not p.parts. The
+            # ticket worktree lives UNDER .aiforge-worktrees/, so an absolute
+            # p.parts check matched '.aiforge-worktrees' on EVERY file and
+            # skipped the whole tree → "matches nothing" → scope wrongly
+            # cleared → Doer edited nothing (ONE-163/164 empty pass).
+            if any(part in _skip for part in rel_path.parts):
                 continue
             n += 1
             if n > max_files:
                 return True                # too big to fully scan → don't clear
-            rel = str(p.relative_to(base))
-            if scope_guard._matches_any(rel, globs):
+            if scope_guard._matches_any(str(rel_path), globs):
                 return True
         return False
     except Exception:  # noqa: BLE001 — a probe failure must not clear the scope
         return True
+
+
+def _repo_root_for_scope() -> str:
+    """The ticket's actual worktree root for scope/rule matching. The runner
+    sets it on request_context per run; AIFORGE_REPO_ROOT is a generic
+    workspace fallback (was the ONLY source before — so the glob check scanned
+    the wrong, near-empty dir and cleared every plan's scope)."""
+    try:
+        from aiforge_core.runtime import request_context
+        r = request_context.get_repo_root()
+        if r:
+            return str(r)
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get("AIFORGE_REPO_ROOT") or ""
 
 # Route label constants — keep in sync with the edge wiring in pipeline.py.
 ROUTE_TRIVIAL = "trivial"
@@ -607,11 +630,8 @@ async def _plan_promote(ctx):  # type: ignore[no-untyped-def]
         # so file-scoped rules the operator seed didn't reach now load
         # (Cursor semantics: rules follow the files being touched).
         try:
-            import os as _os
-
             from . import repo_rules
-            refreshed = repo_rules.collect(
-                _os.environ.get("AIFORGE_REPO_ROOT", ""), merged)
+            refreshed = repo_rules.collect(_repo_root_for_scope(), merged)
             if refreshed:
                 state["rules_md"] = refreshed
         except Exception:
