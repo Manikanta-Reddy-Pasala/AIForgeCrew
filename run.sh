@@ -119,8 +119,12 @@ if [[ "${STOP_LANGFUSE:-0}" == "1" ]]; then
   if docker compose version >/dev/null 2>&1; then DC=(docker compose)
   else DC=(docker-compose); fi
   docker info >/dev/null 2>&1 || DC=(sudo "${DC[@]}")
+  # --remove-orphans: the v2→v3 upgrade renamed services (langfuse → langfuse-
+  # web/-worker + clickhouse/redis/minio), so old v2 containers linger as
+  # ORPHANS in this project and hold the network open ("Resource is still in
+  # use"). Removing orphans clears them + the network in one pass.
   "${DC[@]}" -p aiforge-langfuse --env-file "${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}/langfuse.env" \
-    -f scripts/compose/langfuse-compose.yml down \
+    -f scripts/compose/langfuse-compose.yml down --remove-orphans \
     && echo "==> langfuse stopped (ephemeral — traces do not persist)" \
     || echo "==> langfuse was not running (or docker unreachable)" >&2
   exit 0
@@ -475,7 +479,7 @@ if [[ "$WITH_LANGFUSE" == "1" ]]; then
     # sudo, `sudo docker compose` strips the exported LF_* vars and postgres
     # boots with an EMPTY password → unhealthy → whole stack aborts.
     if "${DC[@]}" -p aiforge-langfuse --env-file "$_lf_env" \
-         -f scripts/compose/langfuse-compose.yml up -d --quiet-pull; then
+         -f scripts/compose/langfuse-compose.yml up -d --quiet-pull --remove-orphans; then
       # Export the app-side mirror config; tracing turns on automatically.
       export LANGFUSE_HOST="http://127.0.0.1:${LF_PORT}"
       export LANGFUSE_PUBLIC_KEY="$LF_PUBLIC_KEY"
