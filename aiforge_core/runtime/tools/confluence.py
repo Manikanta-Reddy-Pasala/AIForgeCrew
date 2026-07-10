@@ -117,12 +117,17 @@ def _cdata(text: str) -> str:
 
 
 def _diagram_mode() -> str:
-    """How to render ```mermaid blocks: 'drawio' (convert → native draw.io
-    diagram attachment + drawio macro; app-agnostic rendering) or 'mermaid'
-    (a mermaid macro, needs a mermaid app). Env AIFORGE_CONFLUENCE_DIAGRAM;
-    default 'mermaid'."""
-    v = (os.environ.get("AIFORGE_CONFLUENCE_DIAGRAM") or "mermaid").strip().lower()
-    return v if v in ("drawio", "mermaid") else "mermaid"
+    """How to render ```mermaid blocks (env AIFORGE_CONFLUENCE_DIAGRAM):
+
+    * 'code'    — a Confluence CODE macro holding the mermaid source, placed
+                  where the diagram belongs. Renders on ANY instance (no app,
+                  no conversion). DEFAULT — the universally-safe choice.
+    * 'drawio'  — convert → a native, editable draw.io diagram attachment +
+                  the drawio macro (for instances using draw.io).
+    * 'mermaid' — a mermaid macro (needs a mermaid app installed).
+    """
+    v = (os.environ.get("AIFORGE_CONFLUENCE_DIAGRAM") or "code").strip().lower()
+    return v if v in ("code", "drawio", "mermaid") else "code"
 
 
 def _mermaid_macro(code: str) -> str:
@@ -191,7 +196,11 @@ def _storagify_media(body: str) -> tuple[str, list[dict]]:
                 return _drawio_macro(name)
             # unparseable → show the source (code macro), not a broken macro
             return _code_macro(code, "mermaid")
-        return _mermaid_macro(code)
+        if mode == "mermaid":
+            return _mermaid_macro(code)
+        # 'code' (default): a code macro with the mermaid source, in place —
+        # renders on any instance, no diagram app required.
+        return _code_macro(code, "mermaid")
 
     body = _MERMAID_FENCE_RE.sub(_mermaid, body)
     body = _CODE_FENCE_RE.sub(

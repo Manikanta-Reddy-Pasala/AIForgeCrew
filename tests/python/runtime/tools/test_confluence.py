@@ -192,6 +192,7 @@ def test_read_attachments_can_be_disabled(cfg, monkeypatch):
 # ── media → storage macros (mermaid / code / image attachments) ──────────
 
 def test_storagify_mermaid_code_and_image(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "mermaid")   # test the macro path
     monkeypatch.delenv("AIFORGE_CONFLUENCE_MERMAID_MACRO", raising=False)
     body = ("```mermaid\ngraph TD;A-->B\n```\n\n"
             "```python\nprint(1)\n```\n\n"
@@ -207,6 +208,7 @@ def test_storagify_mermaid_code_and_image(monkeypatch):
 
 
 def test_storagify_mermaid_macro_env_override(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "mermaid")
     monkeypatch.setenv("AIFORGE_CONFLUENCE_MERMAID_MACRO", "mermaid-cloud")
     out, _ = cf._storagify_media("```mermaid\nA-->B\n```")
     assert 'ac:name="mermaid-cloud"' in out
@@ -263,11 +265,19 @@ def test_mermaid_becomes_drawio_macro_and_attachment(monkeypatch):
     assert dia[0]["data"].startswith(b"<mxfile")
 
 
-def test_mermaid_default_mode_is_mermaid_macro(monkeypatch):
+def test_mermaid_default_mode_is_code_macro(monkeypatch):
+    # DEFAULT: a code macro with the mermaid source, in place (renders anywhere)
     monkeypatch.delenv("AIFORGE_CONFLUENCE_DIAGRAM", raising=False)
     out, refs = cf._storagify_media("```mermaid\ngraph TD\n A-->B\n```")
-    assert 'ac:name="mermaid"' in out and "drawio" not in out
-    assert refs == []
+    assert 'ac:name="code"' in out and "drawio" not in out
+    assert '<ac:parameter ac:name="language">mermaid</ac:parameter>' in out
+    assert "graph TD" in out and refs == []
+
+
+def test_mermaid_mode_explicit_macro(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "mermaid")
+    out, _ = cf._storagify_media("```mermaid\ngraph TD\n A-->B\n```")
+    assert 'ac:name="mermaid"' in out
 
 
 def test_drawio_mode_unparseable_falls_back_to_code(monkeypatch):
