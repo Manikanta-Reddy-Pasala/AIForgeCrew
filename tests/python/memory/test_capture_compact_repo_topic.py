@@ -88,6 +88,25 @@ def test_compact_min_group_1_folds_a_lone_note(cfg):
     assert any(n.startswith("compacted-") for n in live)   # topic brief made
 
 
+def test_session_notes_fold_into_topic_not_repo(cfg):
+    # Per-session transcripts (kind="session") were EXCLUDED from both brief
+    # axes, so they lingered forever + compaction said "nothing to compact".
+    # They now belong to the TOPIC axis (memory by topic); REPO stays curated.
+    from aiforge_core.memory import md_store as m
+    m.upsert_section(source="chat-session:1", title="session one",
+                     section_title="2026-07-10 10:00", section_body="did A",
+                     kind="session", tags=["chat"])
+    m.upsert_section(source="chat-session:2", title="session two",
+                     section_title="2026-07-10 11:00", section_body="did B",
+                     kind="session", tags=["chat"])
+    # REPO axis still excludes raw sessions
+    rr = m.compact(group_by="repo", min_group=1, summarize=False, dry_run=True)
+    assert rr["files_in"] == 0
+    # TOPIC axis now includes them (no model → they group under "session")
+    rt = m.compact(group_by="topic", min_group=1, summarize=False, dry_run=True)
+    assert rt["files_in"] == 2
+
+
 def test_writetime_brief_is_fresh_immediately(cfg):
     # Write-time maintenance: a captured learning appears in the repo brief
     # IMMEDIATELY (no periodic compaction), so recall never misses latest data.

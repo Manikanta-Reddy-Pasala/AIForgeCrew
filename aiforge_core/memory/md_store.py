@@ -659,10 +659,14 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
             except Exception:  # noqa: BLE001
                 continue
         live = [d for d in files if not d["file"].startswith("compacted-")]
-        # The repo/topic briefs are LEARNING projections — exclude raw session
-        # transcripts (kind="session"), which are large and belong to the
-        # session-summary compaction, not a project/topic brief.
-        if group_by in ("repo", "topic"):
+        # The REPO brief is a curated project-learning projection — keep raw
+        # per-session transcripts (kind="session") out of it. But the TOPIC axis
+        # is exactly where sessions belong: memory organized BY TOPIC. Large
+        # transcripts are fine here now — consolidate() distils them via the LLM
+        # (chonkie chunks big input) into Facts/Learnings rather than dumping,
+        # and the raw file archives out after folding. Excluding them was why
+        # per-session memory lingered and compaction said "nothing to compact".
+        if group_by == "repo":
             live = [d for d in live if (d.get("kind") or "") != "session"]
         # TOPIC mode: one LLM pass labels every note with a coherent topic slug so
         # compaction yields several browsable topical files instead of ONE blob
