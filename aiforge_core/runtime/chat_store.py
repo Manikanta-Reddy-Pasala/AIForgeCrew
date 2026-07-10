@@ -75,6 +75,7 @@ def _message_out(d: dict) -> dict:
         steps = []
     return {"id": d["id"], "role": d["role"], "content": d["content"],
             "steps": steps, "checkpoint_sha": d.get("checkpoint_sha"),
+            "mode": (d.get("mode") or "simple"),
             "created_at": _iso(d["created_at"])}
 
 
@@ -129,6 +130,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     content        TEXT NOT NULL DEFAULT '',
     steps          TEXT NOT NULL DEFAULT '[]',
     checkpoint_sha TEXT,
+    mode           TEXT NOT NULL DEFAULT 'simple',
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS chat_messages_session ON chat_messages(session_id, id);
@@ -178,6 +180,11 @@ class _SqliteChatStore:
             mcols = {r[1] for r in c.execute("PRAGMA table_info(chat_messages)")}
             if "checkpoint_sha" not in mcols:
                 c.execute("ALTER TABLE chat_messages ADD COLUMN checkpoint_sha TEXT")
+            # Per-turn run mode (simple|plan|team) — so the UI can badge which
+            # mode each turn/session ran in (was composer-only, never persisted).
+            if "mode" not in mcols:
+                c.execute("ALTER TABLE chat_messages ADD COLUMN mode TEXT "
+                          "NOT NULL DEFAULT 'simple'")
             yield c
             c.commit()
         finally:
@@ -213,13 +220,16 @@ class _SqliteChatStore:
         with self._conn() as c:
             rows = c.execute(
                 "SELECT s.*, "
-                "(SELECT COUNT(*) FROM chat_messages m WHERE m.session_id=s.id) AS n "
+                "(SELECT COUNT(*) FROM chat_messages m WHERE m.session_id=s.id) AS n, "
+                "(SELECT m.mode FROM chat_messages m WHERE m.session_id=s.id "
+                " AND m.role='user' ORDER BY m.id DESC LIMIT 1) AS last_mode "
                 "FROM chat_sessions s ORDER BY s.updated_at DESC, s.id DESC"
             ).fetchall()
         out = []
         for r in rows:
             d = _session_out(dict(r))
             d["message_count"] = r["n"]
+            d["last_mode"] = (r["last_mode"] or "simple")
             out.append(d)
         return out
 
@@ -232,7 +242,8 @@ class _SqliteChatStore:
     def get_messages(self, session_id) -> list[dict]:
         with self._conn() as c:
             rows = c.execute(
-                "SELECT id, role, content, steps, checkpoint_sha, created_at "
+                "SELECT id, role, content, steps, checkpoint_sha, mode, "
+                "created_at "
                 "FROM chat_messages WHERE session_id=? ORDER BY id ASC",
                 (session_id,),
             ).fetchall()
@@ -255,12 +266,14 @@ class _SqliteChatStore:
         with self._conn() as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
 
-    def add_message(self, session_id, role, content, steps=None) -> int:
+    def add_message(self, session_id, role, content, steps=None,
+                    mode="simple") -> int:
         with _LOCK, self._conn() as c:
             cur = c.execute(
-                "INSERT INTO chat_messages(session_id, role, content, steps) "
-                "VALUES (?,?,?,?)",
-                (session_id, role, content, json.dumps(steps or [])),
+                "INSERT INTO chat_messages(session_id, role, content, steps, "
+                "mode) VALUES (?,?,?,?,?)",
+                (session_id, role, content, json.dumps(steps or []),
+                 mode or "simple"),
             )
             c.execute(f"UPDATE chat_sessions SET updated_at={_NOW} WHERE id=?",
                       (session_id,))
@@ -376,6 +389,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     content        text NOT NULL DEFAULT '',
     steps          text NOT NULL DEFAULT '[]',
     checkpoint_sha text,
+    mode           text NOT NULL DEFAULT 'simple',
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS chat_messages_session ON chat_messages(session_id, id);
@@ -420,6 +434,9 @@ class _PgChatStore:
             try:
                 with c.cursor() as cur:
                     cur.execute(_PG_DDL)
+                    # Per-turn run mode — idempotent add for pre-existing tables.
+                    cur.execute("ALTER TABLE chat_messages ADD COLUMN IF NOT "
+                                "EXISTS mode text NOT NULL DEFAULT 'simple'")
                 c.commit()
             except Exception:
                 c.rollback()
@@ -459,13 +476,16 @@ class _PgChatStore:
         with self._conn() as c, self._cur(c) as cur:
             cur.execute(
                 "SELECT s.*, "
-                "(SELECT COUNT(*) FROM chat_messages m WHERE m.session_id=s.id) AS n "
+                "(SELECT COUNT(*) FROM chat_messages m WHERE m.session_id=s.id) AS n, "
+                "(SELECT m.mode FROM chat_messages m WHERE m.session_id=s.id "
+                " AND m.role='user' ORDER BY m.id DESC LIMIT 1) AS last_mode "
                 "FROM chat_sessions s ORDER BY s.updated_at DESC, s.id DESC")
             rows = cur.fetchall()
         out = []
         for r in rows:
             d = _session_out(r)
             d["message_count"] = r["n"]
+            d["last_mode"] = (r.get("last_mode") or "simple")
             out.append(d)
         return out
 
@@ -478,7 +498,8 @@ class _PgChatStore:
     def get_messages(self, session_id) -> list[dict]:
         with self._conn() as c, self._cur(c) as cur:
             cur.execute(
-                "SELECT id, role, content, steps, checkpoint_sha, created_at "
+                "SELECT id, role, content, steps, checkpoint_sha, mode, "
+                "created_at "
                 "FROM chat_messages WHERE session_id=%s ORDER BY id ASC",
                 (session_id,))
             rows = cur.fetchall()
@@ -502,12 +523,14 @@ class _PgChatStore:
             cur.execute(sql, params)
             return list(cur.fetchall())
 
-    def add_message(self, session_id, role, content, steps=None) -> int:
+    def add_message(self, session_id, role, content, steps=None,
+                    mode="simple") -> int:
         with self._conn() as c, self._cur(c) as cur:
             cur.execute(
-                "INSERT INTO chat_messages(session_id, role, content, steps) "
-                "VALUES (%s,%s,%s,%s) RETURNING id",
-                (session_id, role, content, json.dumps(steps or [])))
+                "INSERT INTO chat_messages(session_id, role, content, steps, "
+                "mode) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                (session_id, role, content, json.dumps(steps or []),
+                 mode or "simple"))
             mid = cur.fetchone()["id"]
             cur.execute("UPDATE chat_sessions SET updated_at=now() WHERE id=%s",
                         (session_id,))
@@ -688,8 +711,8 @@ def search_messages(query: str, *, limit: int = 6,
 
 
 def add_message(session_id: int, role: str, content: str,
-                steps: "list | None" = None) -> int:
-    return _backend().add_message(session_id, role, content, steps)
+                steps: "list | None" = None, mode: str = "simple") -> int:
+    return _backend().add_message(session_id, role, content, steps, mode)
 
 
 def set_message_checkpoint(message_id: int, sha: str) -> None:

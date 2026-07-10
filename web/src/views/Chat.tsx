@@ -143,6 +143,29 @@ const LS_MODE_KEY = 'aiforge.chat.flowmode';
 
 type ChatMode = 'simple' | 'plan' | 'team';
 
+// Per-session/turn mode chip — so 'plan' / 'team' runs are visually distinct
+// from an ordinary simple chat in the sidebar (simple = no chip, it's the norm).
+const MODE_CHIP: Record<string, { label: string; bg: string }> = {
+  plan: { label: 'Plan', bg: '#a371f7' },
+  team: { label: 'Pipeline', bg: '#2f81f7' },
+};
+function ModeBadge({ mode }: { mode?: string }) {
+  const c = mode ? MODE_CHIP[mode] : undefined;
+  if (!c) return null;   // simple (or unknown) → no chip
+  return (
+    <span
+      title={mode === 'team'
+        ? 'Ran in Team / Pipeline mode (full planner→doer→learner)'
+        : 'Ran in Plan mode (read-only, proposes a plan first)'}
+      style={{
+        marginLeft: 6, padding: '0 6px', borderRadius: 8, fontSize: 10,
+        fontWeight: 600, color: '#fff', background: c.bg, verticalAlign: 'middle',
+        whiteSpace: 'nowrap',
+      }}
+    >{c.label}</span>
+  );
+}
+
 // ── Builder flows ─────────────────────────────────────────────────────────────
 // A "builder" runs a focused single-agent interview that ends by calling a
 // finalize tool. It's selected per-session and sent on EVERY message of that
@@ -1491,7 +1514,10 @@ export default function Chat() {
                   />
                 ) : (
                   <>
-                    <div className="chat-session-title" title={s.title}>{s.title || 'Untitled'}</div>
+                    <div className="chat-session-title" title={s.title}>
+                      {s.title || 'Untitled'}
+                      <ModeBadge mode={s.last_mode} />
+                    </div>
                     <div className="chat-session-meta">
                       <span title={new Date(s.updated_at).toLocaleString()}>
                         {dateTimeLabel(s.updated_at)} · {relTime(s.updated_at)}

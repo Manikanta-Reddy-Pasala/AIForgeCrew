@@ -3768,7 +3768,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     except Exception as _cexc:  # noqa: BLE001 — expansion must never break a turn
         _af_log.debug("slash-command expand skipped: %s", _cexc)
 
-    _user_msg_id = chat_store.add_message(session_id, "user", body.content)
+    # Persist the run mode on the user turn so the UI can badge which mode each
+    # turn/session ran in (was composer-only client state, never stored).
+    _turn_mode = body.mode if body.mode in ("simple", "plan", "team") else "simple"
+    _user_msg_id = chat_store.add_message(session_id, "user", body.content,
+                                          mode=_turn_mode)
     # Provisional title now (instant), upgraded to a model-generated one after
     # the turn (see _produce). _fresh marks a still-unnamed session.
     _fresh_title = (session.get("title") or "New chat") == "New chat"
