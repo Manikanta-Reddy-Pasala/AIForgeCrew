@@ -293,3 +293,41 @@ def test_node_pins_workspace_jail_during_run_and_restores(monkeypatch):
     assert seen["ws_during"] == seen["cwd"] == "/the/worktree"
     # restored (was unset going in)
     assert os.environ.get("AIFORGE_WORKSPACE_DIR") is None
+
+
+def test_no_edit_guard_retries_then_flags_incomplete(monkeypatch):
+    """A Doer that finishes with ZERO edits (hallucinated 'already done') gets
+    one corrective retry and, still empty, is flagged incomplete."""
+    import os
+    from aiforge_core.runtime import text_doer as td
+    from aiforge_core.runtime import chat_agent as ca
+    monkeypatch.setenv("AIFORGE_DOER_MIN_EDIT_RETRIES", "1")
+    passes = []
+
+    def fake_no_edit(msgs, **kw):
+        passes.append(msgs[0]["content"])
+        yield {"type": "message", "text": "FINAL: already implemented, compiles"}
+        yield {"type": "done"}
+    monkeypatch.setattr(ca, "run_chat_agent", fake_no_edit)
+    r = td.run_text_doer({"plan_md": "add priority"}, "/tmp",
+                         complete_fn=lambda *a, **k: "")
+    assert len(passes) == 2                      # original + 1 corrective retry
+    assert "CORRECTION" in passes[1]             # retry seed carries the nudge
+    assert r["edit_count"] == 0 and r["incomplete"] is True
+    assert "INCOMPLETE" in r["doer_outcome"]
+
+
+def test_no_edit_guard_noop_when_edit_made(monkeypatch):
+    """A Doer that makes a real edit is NOT retried and NOT flagged."""
+    from aiforge_core.runtime import text_doer as td
+    from aiforge_core.runtime import chat_agent as ca
+    passes = []
+
+    def fake_edit(msgs, **kw):
+        passes.append(1)
+        yield {"type": "tool", "name": "file_patch", "result": {"ok": True}}
+        yield {"type": "message", "text": "FINAL: patched"}
+        yield {"type": "done"}
+    monkeypatch.setattr(ca, "run_chat_agent", fake_edit)
+    r = td.run_text_doer({"plan_md": "x"}, "/tmp", complete_fn=lambda *a, **k: "")
+    assert len(passes) == 1 and r["edit_count"] == 1 and r["incomplete"] is False

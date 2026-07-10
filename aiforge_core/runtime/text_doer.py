@@ -276,34 +276,64 @@ def run_text_doer(
         signals: dict[str, bool] = {}
         last_msg = ""
         err_text = ""
-        for ev in chat_agent.run_chat_agent(
-            [{"role": "user", "content": seed}],
-            cwd=cwd, role=role, max_steps=max_steps,
-            complete_fn=complete_fn, session_id=None, mode="act",
-            scope_globs=scope_globs or None, strict_finish=True,
-        ):
-            etype = ev.get("type")
-            if etype == "tool":
-                # Replicate quality_gate.make_quality_signal_callback: map the
-                # run_tests / typecheck / format tool RESULT's ``ok`` bool onto
-                # the matching signal key. Only a real bool counts (a missing /
-                # errored tool leaves the signal unset, matching native).
-                key = _TOOL_SIGNAL_KEYS.get(ev.get("name") or "")
-                res = ev.get("result")
-                if key and isinstance(res, dict):
-                    ok = res.get("ok")
-                    if isinstance(ok, bool):
-                        signals[key] = ok
-            elif etype == "message":
-                txt = ev.get("text")
-                if txt:
-                    last_msg = txt        # last FINAL / message text wins
-            elif etype == "error":
-                txt = ev.get("text")
-                if txt:
-                    err_text = txt        # fallback outcome if no message
-            elif etype == "done":
-                break
+
+        def _one_pass(seed_msg: str) -> int:
+            """Drive one full chat ReAct loop; update last_msg/err_text/signals
+            in the enclosing scope; return the number of EDIT-tool calls it
+            made (file_write/file_patch/editor/…)."""
+            nonlocal last_msg, err_text
+            edits = 0
+            for ev in chat_agent.run_chat_agent(
+                [{"role": "user", "content": seed_msg}],
+                cwd=cwd, role=role, max_steps=max_steps,
+                complete_fn=complete_fn, session_id=None, mode="act",
+                scope_globs=scope_globs or None, strict_finish=True,
+            ):
+                etype = ev.get("type")
+                if etype == "tool":
+                    name = ev.get("name") or ""
+                    if name in _EDIT_TOOLS:
+                        res = ev.get("result")
+                        # count only edits that actually landed (ok is not False)
+                        if not (isinstance(res, dict) and res.get("ok") is False):
+                            edits += 1
+                    key = _TOOL_SIGNAL_KEYS.get(name)
+                    res = ev.get("result")
+                    if key and isinstance(res, dict):
+                        ok = res.get("ok")
+                        if isinstance(ok, bool):
+                            signals[key] = ok
+                elif etype == "message":
+                    txt = ev.get("text")
+                    if txt:
+                        last_msg = txt        # last FINAL / message text wins
+                elif etype == "error":
+                    txt = ev.get("text")
+                    if txt:
+                        err_text = txt        # fallback outcome if no message
+                elif etype == "done":
+                    break
+            return edits
+
+        total_edits = _one_pass(seed)
+        # No-edit guard: a local model routinely HALLUCINATES that the change
+        # "already exists", runs only a compile, and declares success WITHOUT
+        # writing a single file (trace: ACTION run_command mvnw compile, 0
+        # file_write) — the base repo compiles green, so it reads as done. Force
+        # a corrective pass that DEMANDS a real edit. Bounded; opt-out via
+        # AIFORGE_DOER_MIN_EDIT_RETRIES=0. Only fires when the last pass finished
+        # cleanly (not a stop/deadline banner) with zero edits.
+        try:
+            _retries = int(os.environ.get("AIFORGE_DOER_MIN_EDIT_RETRIES", "1"))
+        except (TypeError, ValueError):
+            _retries = 1
+        _attempt = 0
+        while (total_edits == 0 and _attempt < _retries
+               and not _is_stopped_outcome(last_msg or err_text or "")):
+            _attempt += 1
+            more = _one_pass(seed + _NO_EDIT_CORRECTION)
+            total_edits += more
+        result["edit_count"] = total_edits
         outcome = (last_msg or err_text or "text-doer produced no final output")
         result["doer_outcome"] = outcome
         result.update(signals)
@@ -313,8 +343,19 @@ def run_text_doer(
         # the run incomplete so the quality gate downgrades a model ``pass``.
         # Mirrors parallel_subtasks' ``.startswith("(stopped:")`` detection.
         stopped = _is_stopped_outcome(outcome)
+        # Zero edits after the corrective retry = the Doer never implemented
+        # anything (hallucinated "already done"). That is NOT a clean pass —
+        # flag incomplete so the quality gate / feedback downgrade the model's
+        # self-reported success (belt-and-suspenders with the runner's
+        # empty-diff → blocked demotion).
+        no_edits = total_edits == 0
         result["stopped"] = stopped
-        result["incomplete"] = stopped
+        result["incomplete"] = stopped or no_edits
+        if no_edits and not stopped:
+            result["doer_outcome"] = (
+                "INCOMPLETE: the Doer made ZERO file edits — no change was "
+                "implemented (likely assumed the feature already existed). "
+                + outcome[:400])
     except Exception as exc:  # noqa: BLE001 — never crash the pipeline
         result["doer_outcome"] = f"text-doer error: {exc}"
     return result
@@ -338,6 +379,27 @@ except Exception:  # noqa: BLE001 — fall back to the documented mapping
         "typecheck": "typecheck_ok",
         "format": "lint_ok",
     }
+
+# Tools that actually MUTATE files — used by the no-edit guard to tell a real
+# implementation pass from a hallucinated "already done" one (which only reads
+# + compiles). Canonical names + the aliases chat_agent may surface.
+# NOTE: run_command/bash/run_shell are shells, NOT edits — deliberately absent.
+_EDIT_TOOLS = frozenset({
+    "file_write", "file_patch", "multi_edit", "str_replace", "editor",
+    "rename_symbol", "write", "patch", "edit",
+})
+
+# Appended to the seed on a corrective retry when the Doer finished with zero
+# edits. Confronts the specific failure: assuming the change already exists.
+_NO_EDIT_CORRECTION = (
+    "\n\n=== CORRECTION (you made ZERO file edits) ===\n"
+    "You finished WITHOUT calling file_write or file_patch even once. Running a "
+    "compile or reading files is NOT implementing the change. Do NOT assume the "
+    "feature already exists — it does NOT. Re-read the exact target files, then "
+    "you MUST call file_patch (or file_write) to make the required change, and "
+    "verify the diff is non-empty BEFORE you compile. Do not reply FINAL until "
+    "you have actually edited the file(s)."
+)
 
 
 def _resolve_cwd() -> str:
