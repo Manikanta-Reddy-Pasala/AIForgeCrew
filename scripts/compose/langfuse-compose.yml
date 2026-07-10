@@ -1,20 +1,25 @@
-# Self-hosted Langfuse v2 — SIMPLEST setup: one app container + postgres.
-# Purpose here is narrow: BROWSE the agents' LLM calls (input messages +
-# responses per role). v2 does that fully; v3 would add clickhouse + redis +
-# minio + a worker (6 containers) for analytics we don't need.
+# Self-hosted Langfuse v3 (pinned 3.211.0). Unlike v2's single container, v3
+# splits into web + worker and requires ClickHouse (analytics store for
+# traces/observations/scores), Redis (queue/cache) and an S3-compatible blob
+# store (MinIO, for event uploads). Postgres keeps the transactional data.
+#
+# Purpose here is still narrow: BROWSE the agents' LLM calls (input messages +
+# responses per role) — but on the current Langfuse line so the UI + ingestion
+# API match what the operator runs.
 #
 # Brought up by `./run.sh --with-langfuse` (or AIFORGE_LANGFUSE=1 in .env).
 # Headless: org/project/API keys provisioned via LANGFUSE_INIT_* on first
-# boot; run.sh generates secrets once into ~/.aiforge/langfuse.env and
-# exports LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY so mirroring turns on
-# automatically.
+# boot; run.sh generates secrets once into ~/.aiforge/langfuse.env (incl.
+# LF_CLICKHOUSE_PASSWORD / LF_MINIO_PASSWORD) and exports LANGFUSE_HOST/
+# PUBLIC_KEY/SECRET_KEY so mirroring turns on automatically.
 #
-# DATA IS DELIBERATELY SHORT-LIVED (operator requirement: max 1 day, no
-# forever storage, no log accrual):
-#   - postgres has NO volume → all traces vanish on `down`/recreate
-#   - the prune sidecar deletes rows older than LF_RETENTION_DAYS (default 1)
-#     every hour while the stack runs
-#   - container logs capped at 10MB × 1 file per service
+# DATA IS DELIBERATELY SHORT-LIVED (operator requirement: max 1 day, no forever
+# storage, no log accrual):
+#   - NO volumes on postgres / clickhouse / redis / minio → all traces vanish
+#     on `down`/recreate
+#   - the prune sidecar deletes ClickHouse rows older than LF_RETENTION_DAYS
+#     (default 1) every hour while the stack runs
+#   - container logs capped at 10MB x 1 file per service
 #
 # UI: http://localhost:${LF_PORT:-3005}  login: admin@aiforge.local / $LF_ADMIN_PASSWORD
 
@@ -22,24 +27,54 @@ x-logging: &logcap
   driver: json-file
   options: {max-size: "10m", max-file: "1"}
 
+# Shared web+worker env — same connection strings + secrets for both.
+x-langfuse-env: &langfuse-env
+  DATABASE_URL: postgresql://postgres:${LF_PG_PASSWORD}@langfuse-postgres:5432/postgres
+  SALT: ${LF_SALT}
+  ENCRYPTION_KEY: ${LF_ENCRYPTION_KEY}
+  TELEMETRY_ENABLED: "false"
+  LANGFUSE_LOG_LEVEL: warn
+  # ClickHouse — analytics store (traces/observations/scores). web runs the
+  # migrations on boot via CLICKHOUSE_MIGRATION_URL.
+  CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  # Redis — queue + cache (no auth; internal bridge network only).
+  REDIS_CONNECTION_STRING: redis://langfuse-redis:6379/0
+  # S3/MinIO — event uploads (required in v3). Media uploads reuse the bucket.
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LF_MINIO_PASSWORD}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "events/"
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LF_MINIO_PASSWORD}
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "media/"
+
 services:
-  langfuse:
+  langfuse-web:
     logging: *logcap
-    image: langfuse/langfuse:2
+    image: langfuse/langfuse:3.211.0
     restart: unless-stopped
     depends_on:
-      langfuse-postgres:
-        condition: service_healthy
+      langfuse-postgres: {condition: service_healthy}
+      langfuse-clickhouse: {condition: service_healthy}
+      langfuse-redis: {condition: service_healthy}
+      langfuse-minio: {condition: service_healthy}
     ports:
       - "${LF_PORT:-3005}:3000"
     environment:
-      DATABASE_URL: postgresql://postgres:${LF_PG_PASSWORD}@langfuse-postgres:5432/postgres
+      <<: *langfuse-env
       NEXTAUTH_URL: http://localhost:${LF_PORT:-3005}
       NEXTAUTH_SECRET: ${LF_NEXTAUTH_SECRET}
-      SALT: ${LF_SALT}
-      ENCRYPTION_KEY: ${LF_ENCRYPTION_KEY}
-      TELEMETRY_ENABLED: "false"
-      LANGFUSE_LOG_LEVEL: warn
       # Headless first-boot provisioning — deterministic keys the app uses.
       LANGFUSE_INIT_ORG_ID: aiforge
       LANGFUSE_INIT_ORG_NAME: AIForge
@@ -50,6 +85,18 @@ services:
       LANGFUSE_INIT_USER_EMAIL: admin@aiforge.local
       LANGFUSE_INIT_USER_NAME: admin
       LANGFUSE_INIT_USER_PASSWORD: ${LF_ADMIN_PASSWORD}
+
+  langfuse-worker:
+    logging: *logcap
+    image: langfuse/langfuse-worker:3.211.0
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres: {condition: service_healthy}
+      langfuse-clickhouse: {condition: service_healthy}
+      langfuse-redis: {condition: service_healthy}
+      langfuse-minio: {condition: service_healthy}
+    environment:
+      <<: *langfuse-env
 
   langfuse-postgres:
     logging: *logcap
@@ -64,28 +111,74 @@ services:
       timeout: 5s
       retries: 20
 
-  # Hourly retention prune: rows older than LF_RETENTION_DAYS (default 1)
-  # are deleted while the stack runs. Soft-fails per statement so a schema
+  langfuse-clickhouse:
+    logging: *logcap
+    image: clickhouse/clickhouse-server:24.3
+    restart: unless-stopped
+    # NO volume: ephemeral analytics store.
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  langfuse-redis:
+    logging: *logcap
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  langfuse-minio:
+    logging: *logcap
+    image: minio/minio
+    restart: unless-stopped
+    # NO volume: pre-create the path-style bucket dir on every boot (ephemeral).
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LF_MINIO_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Hourly retention prune: ClickHouse rows older than LF_RETENTION_DAYS
+  # (default 1) are deleted while the stack runs (v3 keeps traces/observations/
+  # scores in ClickHouse, not Postgres). Soft-fails per statement so a schema
   # difference can't kill the loop.
   langfuse-prune:
     logging: *logcap
-    image: postgres:16-alpine
+    image: clickhouse/clickhouse-server:24.3
     restart: unless-stopped
     depends_on:
-      langfuse-postgres:
-        condition: service_healthy
+      langfuse-clickhouse: {condition: service_healthy}
     environment:
-      PGPASSWORD: ${LF_PG_PASSWORD}
+      CH_PASSWORD: ${LF_CLICKHOUSE_PASSWORD}
       RETENTION_DAYS: ${LF_RETENTION_DAYS:-1}
     entrypoint: ["sh", "-c"]
     command:
       - |
         while true; do
           sleep 3600
-          for t in "observations|start_time" "scores|timestamp" "traces|timestamp"; do
+          for t in "traces|timestamp" "observations|start_time" "scores|timestamp"; do
             tbl="$${t%%|*}"; col="$${t##*|}"
-            psql -h langfuse-postgres -U postgres -d postgres -c \
-              "DELETE FROM \"$$tbl\" WHERE \"$$col\" < now() - interval '$${RETENTION_DAYS} days'" \
+            clickhouse-client --host langfuse-clickhouse --user clickhouse \
+              --password "$${CH_PASSWORD}" --query \
+              "DELETE FROM $$tbl WHERE $$col < now() - INTERVAL $${RETENTION_DAYS} DAY" \
               || true
           done
         done
