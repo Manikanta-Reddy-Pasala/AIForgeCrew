@@ -246,9 +246,13 @@ def _start_daily_reindex() -> None:
             # the live folder (moved to archive/<ts>/, reversible). Both briefs
             # re-feed their own consolidated OKR sections on the next run, so a
             # unit's knowledge survives in both briefs after its raw file clears.
-            r_repo = md_store.compact(group_by="repo", summarize=True,
+            # min_group=1: fold even a LONE note into its brief — a single
+            # session is often its own topic, so min_group=2 would leave it
+            # sitting raw forever ("nothing to compact"). Singletons still get
+            # organized by topic + archived.
+            r_repo = md_store.compact(group_by="repo", min_group=1, summarize=True,
                                       model_role="learner", archive_sources=False)
-            r_topic = md_store.compact(group_by="topic", summarize=True,
+            r_topic = md_store.compact(group_by="topic", min_group=1, summarize=True,
                                        model_role="learner", archive_sources=True)
             _af_log.info("md brief: repo(projection)=%s topic(archived)=%s",
                          r_repo, r_topic)
@@ -2039,7 +2043,7 @@ def memory_files_ingest() -> dict:
 
 @app.post("/api/memory/files/compact")
 def memory_files_compact(group_by: str = Query("topic"),
-                         min_group: int = Query(2, ge=2),
+                         min_group: int = Query(1, ge=1),
                          dry_run: bool = Query(False),
                          summarize: bool = Query(True),
                          model_role: str = Query("learner")) -> dict:

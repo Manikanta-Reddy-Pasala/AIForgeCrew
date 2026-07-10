@@ -74,6 +74,20 @@ def test_both_axes_nondestructive_sequence(cfg):
     assert rt["groups"].get("proxies") == 2                       # topic STILL sees both
 
 
+def test_compact_min_group_1_folds_a_lone_note(cfg):
+    # "nothing to compact" fix: a single-note topic (min_group=2 would skip it)
+    # still folds + archives when min_group=1, so lone sessions don't linger.
+    from aiforge_core.memory import md_store as m
+    m.capture("topic_learning", "solo: one-off insight", repo="a", topic="solo")
+    skipped = m.compact(group_by="topic", min_group=2, summarize=False)
+    assert "solo" not in skipped["groups"]                 # skipped at 2
+    r = m.compact(group_by="topic", min_group=1, summarize=False,
+                  archive_sources=True)
+    assert r["groups"].get("solo") == 1                    # folded at 1
+    live = {p.name for p in m.memory_dir().glob("*.md")}
+    assert any(n.startswith("compacted-") for n in live)   # topic brief made
+
+
 def test_writetime_brief_is_fresh_immediately(cfg):
     # Write-time maintenance: a captured learning appears in the repo brief
     # IMMEDIATELY (no periodic compaction), so recall never misses latest data.
