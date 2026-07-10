@@ -98,11 +98,36 @@ def test_ingestion_payload_shape(monkeypatch):
     batch = sent[0]["batch"]
     kinds = [e["type"] for e in batch]
     assert kinds == ["trace-create", "generation-create"]
+    trace = batch[0]["body"]
+    # input/output mirrored onto the TRACE so the trace header + Sessions view
+    # don't show null (the reported bug).
+    assert trace["input"] and trace["output"] == "ok"
     gen = batch[1]["body"]
     assert gen["name"] == "llm:grader" and gen["model"] == "qwen"
     assert len(gen["input"][0]["content"]) <= 8000       # capped
     assert gen["output"] == "ok"
-    assert gen["traceId"] == batch[0]["body"]["id"]      # linked
+    assert gen["traceId"] == trace["id"]                 # linked
+
+
+def test_generation_omits_null_model(monkeypatch):
+    """No model → the ``model`` key is omitted, not sent as null (some Langfuse
+    versions reject an explicit null model on generation-create)."""
+    import threading
+    sent: list[dict] = []
+    monkeypatch.setattr(lf, "_send", lambda payload: sent.append(payload))
+
+    class _SyncThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self._t, self._a = target, args
+
+        def start(self):
+            self._t(*self._a)
+
+    monkeypatch.setattr(threading, "Thread", _SyncThread)
+    lf.record_generation(role="chat", model="", messages=[{"role": "user",
+                         "content": "q"}], output="a", latency_ms=1)
+    gen = sent[0]["batch"][1]["body"]
+    assert "model" not in gen
 
 
 def test_memory_recall_and_write_mirrored(monkeypatch, tmp_path):

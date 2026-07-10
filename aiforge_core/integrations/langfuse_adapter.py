@@ -49,13 +49,35 @@ def _cap() -> int:
 
 
 def _send(payload: dict) -> None:
-    """POST one ingestion batch. Runs on the fire-and-forget thread."""
+    """POST one ingestion batch. Runs on the fire-and-forget thread.
+
+    Logs a WARNING when the ingestion API rejects events — the endpoint always
+    returns 207 with a per-event ``errors`` list, so a silently-dropped
+    generation (input/output never showing in the UI) becomes visible in the
+    aiforge logs instead of a black box."""
+    import logging
+
     import httpx
     host = (os.environ.get("LANGFUSE_HOST") or "").rstrip("/")
-    httpx.post(f"{host}/api/public/ingestion", json=payload,
-               auth=(os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
-                     os.environ.get("LANGFUSE_SECRET_KEY", "")),
-               timeout=5)
+    log = logging.getLogger("aiforge.langfuse")
+    try:
+        r = httpx.post(f"{host}/api/public/ingestion", json=payload,
+                       auth=(os.environ.get("LANGFUSE_PUBLIC_KEY", ""),
+                             os.environ.get("LANGFUSE_SECRET_KEY", "")),
+                       timeout=5)
+    except Exception as exc:  # noqa: BLE001 — network down, never fatal
+        log.debug("langfuse ingest send failed: %s", exc)
+        return
+    if r.status_code >= 300 and r.status_code != 207:
+        log.warning("langfuse ingest HTTP %s: %s", r.status_code, r.text[:500])
+        return
+    try:
+        errs = (r.json() or {}).get("errors") or []
+    except Exception:  # noqa: BLE001 — non-JSON body
+        errs = []
+    if errs:
+        log.warning("langfuse ingest rejected %d event(s): %s",
+                    len(errs), str(errs)[:500])
 
 
 def record_generation(*, role: str, model: str = "", messages=None,
@@ -75,19 +97,25 @@ def record_generation(*, role: str, model: str = "", messages=None,
         meta["error"] = error[:500]
     if session_id:
         meta["session_id"] = session_id
+    out = (output or "")[:cap]
+    # Mirror input/output onto the TRACE too — the Langfuse trace header and the
+    # Sessions view surface trace-level input/output, so setting them only on the
+    # nested generation left the trace/session showing null. Belt-and-suspenders:
+    # the generation carries them as well for the observation detail.
     payload = {"batch": [
         {"id": str(uuid.uuid4()), "type": "trace-create",
          "timestamp": now.isoformat(),
          "body": {"id": trace_id, "name": f"llm:{role}",
                   "timestamp": start.isoformat(), "metadata": meta,
+                  "input": msgs, "output": out,
                   **({"sessionId": str(session_id)} if session_id else {})}},
         {"id": str(uuid.uuid4()), "type": "generation-create",
          "timestamp": now.isoformat(),
          "body": {"id": str(uuid.uuid4()), "traceId": trace_id,
-                  "name": f"llm:{role}", "model": model or None,
+                  "name": f"llm:{role}",
                   "startTime": start.isoformat(), "endTime": now.isoformat(),
-                  "input": msgs, "output": (output or "")[:cap],
-                  "metadata": meta,
+                  "input": msgs, "output": out, "metadata": meta,
+                  **({"model": model} if model else {}),
                   **({"level": "ERROR", "statusMessage": error[:500]}
                      if error else {})}},
     ]}
