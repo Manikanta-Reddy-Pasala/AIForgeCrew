@@ -12,6 +12,8 @@ from .nodes import (
     render_node,
     validate,
 )
+from .graph import build, get_active, set_active
+from .retrieve import compile_prompt, context_block, retrieve
 from .store import (
     load_all,
     next_id,
@@ -24,4 +26,6 @@ from .store import (
 __all__ = [
     "NODE_TYPES", "render_node", "parse_node", "edges_of", "validate",
     "okr_root", "type_dir", "next_id", "save_node", "read_node", "load_all",
+    "build", "set_active", "get_active",
+    "retrieve", "compile_prompt", "context_block",
 ]
