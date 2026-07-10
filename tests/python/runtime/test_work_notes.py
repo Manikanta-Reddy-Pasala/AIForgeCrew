@@ -49,7 +49,7 @@ def test_render_parse_roundtrip():
     # (a plain markdown link to that dossier's note file); own URL kept
     assert sec["links"] == [
         "https://jira.local/browse/ENG-1",
-        "[confluence/12345](../../confluence/12345/page.md)"]
+        "[confluence/12345](../../confluence/12345/dossier.md)"]
     assert fm["links"] == sec["links"]    # frontmatter mirrors the section
     assert sec["learnings"] == ["2026-07-01: created (auto)"]
     assert "Long description here." in p["body"]
@@ -108,10 +108,10 @@ def test_normalize_links_dedupe_md_refs_and_scheme_filter():
     ]
     out = work_notes.normalize_links(links, "jira", "ENG-1")
     assert out == [
-        "[jira/OPS-9](../../jira/OPS-9/ticket.md)",
+        "[jira/OPS-9](../../jira/OPS-9/dossier.md)",
         "https://jira.local/browse/ENG-1",
-        "[confluence/77770](../../confluence/77770/page.md)",
-        "[confluence/88880](../../confluence/88880/page.md)"]
+        "[confluence/77770](../../confluence/77770/dossier.md)",
+        "[confluence/88880](../../confluence/88880/dossier.md)"]
 
 
 def test_normalize_links_confluence_self_stays_url():
@@ -124,11 +124,11 @@ def test_normalize_links_md_ref_is_stable_and_dedupes_all_spellings():
     """An already-canonical md file link stays byte-identical, and the URL /
     legacy-wiki / label-drifted-md spellings of the SAME target collapse
     into that one entry."""
-    md = "[confluence/77770](../../confluence/77770/page.md)"
+    md = "[confluence/77770](../../confluence/77770/dossier.md)"
     out = work_notes.normalize_links(
         [md, "[[confluence/77770]]",
          "https://wiki.local/pages/77770/Doc",
-         "[my label](../../confluence/77770/page.md)"],
+         "[my label](../../confluence/77770/dossier.md)"],
         "jira", "ENG-1")
     assert out == [md]
 

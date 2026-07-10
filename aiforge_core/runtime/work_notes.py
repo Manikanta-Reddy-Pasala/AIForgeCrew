@@ -63,7 +63,12 @@ _KEY_TO_HEADING = {
 }
 
 # Each kind's primary note file — the target a cross-reference md link points at.
-_PRIMARY_NOTE = {"jira": "ticket.md", "confluence": "page.md",
+# jira/confluence write BOTH a raw source dump (ticket.md/page.md) AND a curated,
+# OKR-enveloped merged note (dossier.md, see context_gather.gather). A cross-link
+# must land on the CURATED dossier — the reader-facing note that carries the
+# envelope + its own links — not the raw dump. web writes only page.md (its
+# render_note note IS page.md, no separate merge) and repo only dossier.md.
+_PRIMARY_NOTE = {"jira": "dossier.md", "confluence": "dossier.md",
                  "web": "page.md", "repo": "dossier.md"}
 
 # LEGACY wiki-style cross-ref ([[jira/PROJ-42]]) — accepted on INPUT only and
