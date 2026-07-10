@@ -16,8 +16,13 @@ raises into the agent loop. Page bodies are Confluence "storage" XHTML.
 from __future__ import annotations
 
 import base64
+import mimetypes
 import os
+import re
+import urllib.error
 import urllib.parse
+import urllib.request
+import uuid
 
 from . import _http_integration as _http
 
@@ -87,6 +92,156 @@ def _page_url(d: dict) -> str:
     links = d.get("_links") if isinstance(d.get("_links"), dict) else {}
     webui = links.get("webui") or ""
     return (_base() + webui) if webui else ""
+
+
+# ───────────────────── media → storage-format macros ────────────────────
+#
+# A page body handed to us is Confluence "storage" XHTML — but agents (and
+# pasted markdown) routinely carry ```mermaid fences, ```code fences, and
+# markdown/HTML <img> that Confluence does NOT render. We rewrite those into the
+# proper storage macros: mermaid → the diagram macro (app name is env-tunable);
+# code → the code macro; images → <ac:image><ri:attachment> AND the referenced
+# files are uploaded as page attachments (create/update do this once the page
+# id exists). Plain storage bodies (no fence / no image) pass through untouched.
+
+def _mermaid_macro_name() -> str:
+    """Confluence mermaid macro name — app-specific. Default 'mermaid' ('Mermaid
+    for Confluence'); set AIFORGE_CONFLUENCE_MERMAID_MACRO for e.g.
+    'mermaid-cloud' (Stratus)."""
+    return (os.environ.get("AIFORGE_CONFLUENCE_MERMAID_MACRO") or "mermaid").strip()
+
+
+def _cdata(text: str) -> str:
+    """Wrap in CDATA, splitting any literal ``]]>`` so it can't close early."""
+    return "<![CDATA[" + str(text).replace("]]>", "]]]]><![CDATA[>") + "]]>"
+
+
+_MERMAID_FENCE_RE = re.compile(r"```mermaid[^\n]*\n(.*?)```", re.S | re.I)
+_CODE_FENCE_RE = re.compile(r"```([A-Za-z0-9_+#.-]*)[^\n]*\n(.*?)```", re.S)
+_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_HTML_IMG_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"'][^>]*/?>", re.I)
+
+
+def _safe_filename(src: str) -> str:
+    fn = os.path.basename(urllib.parse.urlparse(src).path) or "image"
+    fn = re.sub(r"[^A-Za-z0-9._-]+", "_", fn).strip("_.")
+    return fn or "image.png"
+
+
+def _storagify_media(body: str) -> tuple[str, list[dict]]:
+    """Rewrite mermaid/code fences + markdown/HTML images into storage macros.
+
+    Returns ``(new_body, image_refs)`` where each ref is ``{filename, src}`` to
+    be uploaded as a page attachment. No-op (returns the body unchanged, no
+    refs) when the body carries none of these constructs."""
+    if "```" not in body and "![" not in body and "<img" not in body.lower():
+        return body, []
+    macro = _mermaid_macro_name()
+
+    def _mermaid(m):
+        return (f'<ac:structured-macro ac:name="{macro}">'
+                f'<ac:plain-text-body>{_cdata(m.group(1).rstrip())}'
+                f'</ac:plain-text-body></ac:structured-macro>')
+
+    body = _MERMAID_FENCE_RE.sub(_mermaid, body)
+
+    def _code(m):
+        lang, code = m.group(1), m.group(2).rstrip()
+        param = (f'<ac:parameter ac:name="language">{lang}</ac:parameter>'
+                 if lang else "")
+        return (f'<ac:structured-macro ac:name="code">{param}'
+                f'<ac:plain-text-body>{_cdata(code)}'
+                f'</ac:plain-text-body></ac:structured-macro>')
+
+    body = _CODE_FENCE_RE.sub(_code, body)
+
+    refs: list[dict] = []
+
+    def _img(src: str) -> str:
+        src = src.strip()
+        fn = _safe_filename(src)
+        if not any(r["filename"] == fn and r["src"] == src for r in refs):
+            refs.append({"filename": fn, "src": src})
+        return f'<ac:image><ri:attachment ri:filename="{fn}"/></ac:image>'
+
+    body = _MD_IMG_RE.sub(lambda m: _img(m.group(1)), body)
+    body = _HTML_IMG_RE.sub(lambda m: _img(m.group(1)), body)
+    return body, refs
+
+
+def _upload_attachment(pid: str, filename: str, data: bytes,
+                       content_type: str = "application/octet-stream") -> dict:
+    """Upload (or replace) one attachment on a page via multipart. Idempotent:
+    an existing same-name attachment reports ok. Never raises."""
+    if not _configured():
+        return {"ok": False, "error": "confluence_not_configured"}
+    boundary = "----aiforge" + uuid.uuid4().hex
+    pre = (f"--{boundary}\r\n"
+           f'Content-Disposition: form-data; name="file"; filename="{filename}"'
+           f"\r\nContent-Type: {content_type}\r\n\r\n").encode()
+    payload = pre + data + f"\r\n--{boundary}--\r\n".encode()
+    c = _conf()
+    headers = {"X-Atlassian-Token": "nocheck",
+               "User-Agent": "AIForgeCrew-Confluence/1.0",
+               "Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if c["user"]:
+        headers["Authorization"] = "Basic " + base64.b64encode(
+            f"{c['user']}:{c['token']}".encode()).decode()
+    else:
+        headers["Authorization"] = "Bearer " + c["token"]
+    url = _base() + f"/rest/api/content/{pid}/child/attachment"
+    req = urllib.request.Request(url, data=payload, headers=headers,
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_S,
+                                    context=_ssl_ctx()) as resp:
+            resp.read()
+        return {"ok": True, "filename": filename}
+    except urllib.error.HTTPError as e:  # noqa: PERF203
+        msg = (e.read() or b"")[:300].decode(errors="replace")
+        # Same-name attachment already present → treat as success (the page's
+        # <ri:attachment> reference resolves either way).
+        if e.code == 400 and ("already exist" in msg.lower()
+                              or "same file name" in msg.lower()):
+            return {"ok": True, "filename": filename, "note": "exists"}
+        return {"ok": False, "error": f"http {e.code}: {msg}"}
+    except Exception as exc:  # noqa: BLE001 — network/TLS, never fatal
+        return {"ok": False, "error": str(exc)}
+
+
+def _resolve_image_bytes(src: str, cwd: str | None) -> tuple[bytes, str] | None:
+    """Fetch an image ref → (bytes, content_type). http(s) is downloaded; a
+    local path is resolved against cwd. None on any failure (skip that image)."""
+    ct = mimetypes.guess_type(src)[0] or "application/octet-stream"
+    if re.match(r"^https?://", src, re.I):
+        try:
+            got = _http.http_get_bytes(src, headers={
+                "User-Agent": "AIForgeCrew-Confluence/1.0"},
+                timeout=_TIMEOUT_S, context=_ssl_ctx())
+            data = got.get("bytes") if isinstance(got, dict) else got
+            return (data, ct) if data else None
+        except Exception:  # noqa: BLE001
+            return None
+    path = src if os.path.isabs(src) else os.path.join(cwd or ".", src)
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(), ct
+    except OSError:
+        return None
+
+
+def _upload_page_images(pid: str, refs: list[dict], cwd: str | None) -> list[dict]:
+    """Upload every image the body referenced. Returns per-image results."""
+    results = []
+    for ref in refs:
+        got = _resolve_image_bytes(ref["src"], cwd)
+        if got is None:
+            results.append({"filename": ref["filename"], "ok": False,
+                            "error": f"unresolved: {ref['src']}"})
+            continue
+        data, ct = got
+        results.append(_upload_attachment(pid, ref["filename"], data, ct))
+    return results
 
 
 # ─────────────────────────── tools ──────────────────────────────────
@@ -249,10 +404,13 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     for k in ("title", "space", "body"):
         if not args.get(k):
             return {"ok": False, "error": f"missing '{k}'"}
+    # Rewrite mermaid/code fences + images into storage macros; images are
+    # uploaded as attachments after the page exists (id needed).
+    xhtml, img_refs = _storagify_media(str(args["body"]))
     payload: dict = {
         "type": "page", "title": args["title"],
         "space": {"key": args["space"]},
-        "body": {"storage": {"value": args["body"],
+        "body": {"storage": {"value": xhtml,
                              "representation": args.get("representation", "storage")}},
     }
     if args.get("parent_id"):
@@ -261,10 +419,13 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
-    return {"ok": True, "id": d.get("id"), "title": d.get("title"),
-            "url": _page_url(d),
-            "written": {"title": d.get("title") or args["title"],
-                        "body": str(args["body"])[:2000]}}
+    out = {"ok": True, "id": d.get("id"), "title": d.get("title"),
+           "url": _page_url(d),
+           "written": {"title": d.get("title") or args["title"],
+                       "body": xhtml[:2000]}}
+    if img_refs and d.get("id"):
+        out["attachments"] = _upload_page_images(str(d["id"]), img_refs, cwd)
+    return out
 
 
 def confluence_update(args: dict, cwd: str | None = None) -> dict:
@@ -281,19 +442,46 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     d = cur["data"] if isinstance(cur["data"], dict) else {}
     next_ver = ((d.get("version") or {}).get("number") or 0) + 1
     title = args.get("title") or d.get("title")
+    xhtml, img_refs = _storagify_media(str(args["body"]))
+    # Upload attachments FIRST (page id already exists) so the <ri:attachment>
+    # references in the new body resolve as soon as the version is published.
+    attachments = _upload_page_images(str(pid), img_refs, cwd) if img_refs else []
     payload = {
         "type": "page", "title": title,
         "version": {"number": next_ver},
-        "body": {"storage": {"value": args["body"],
+        "body": {"storage": {"value": xhtml,
                              "representation": args.get("representation", "storage")}},
     }
     r = _request("PUT", f"/rest/api/content/{pid}", body=payload)
     if not r["ok"]:
         return r
     rd = r["data"] if isinstance(r["data"], dict) else {}
-    return {"ok": True, "id": pid, "version": next_ver, "title": title,
-            "url": _page_url(rd),
-            "written": {"title": title, "body": str(args["body"])[:2000]}}
+    out = {"ok": True, "id": pid, "version": next_ver, "title": title,
+           "url": _page_url(rd), "written": {"title": title, "body": xhtml[:2000]}}
+    if attachments:
+        out["attachments"] = attachments
+    return out
+
+
+def confluence_attach(args: dict, cwd: str | None = None) -> dict:
+    """Upload a file as a page attachment. Required: ``id`` (page id) and
+    ``path`` (local file) OR ``url`` (http(s) to fetch). Optional ``filename``
+    to override the stored name. Reference it in the page body with
+    ``<ac:image><ri:attachment ri:filename="NAME"/></ac:image>`` (images) or the
+    view-file macro (docs). create/update do this automatically for images in
+    the body — use this for a standalone upload."""
+    pid = args.get("id")
+    if not pid:
+        return {"ok": False, "error": "missing 'id'"}
+    src = str(args.get("path") or args.get("url") or "").strip()
+    if not src:
+        return {"ok": False, "error": "missing 'path' or 'url'"}
+    got = _resolve_image_bytes(src, cwd)
+    if got is None:
+        return {"ok": False, "error": f"could not read {src}"}
+    data, ct = got
+    filename = str(args.get("filename") or _safe_filename(src))
+    return _upload_attachment(str(pid), filename, data, ct)
 
 
 def confluence_children(args: dict, cwd: str | None = None) -> dict:

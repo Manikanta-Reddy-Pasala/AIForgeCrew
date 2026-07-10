@@ -1133,6 +1133,11 @@ def _t_confluence_update(args: dict, cwd: str) -> dict:
     return confluence.confluence_update(args, cwd)
 
 
+def _t_confluence_attach(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.tools import confluence
+    return confluence.confluence_attach(args, cwd)
+
+
 def _t_set_repo_folder(args: dict, cwd: str) -> dict:
     """Persist the local FOLDER for a repo so tickets/pipeline runs for that
     repo resolve to it — ``repo`` = the project name, ``path`` = its absolute
@@ -1947,6 +1952,7 @@ TOOLS: dict[str, Callable[[dict, str], dict]] = {
     "confluence_read": _t_confluence_read,
     "confluence_create": _t_confluence_create,
     "confluence_update": _t_confluence_update,
+    "confluence_attach": _t_confluence_attach,
     "jira_search": _t_jira_search,
     "jira_read": _t_jira_read,
     "jira_worklog": _t_jira_worklog,
@@ -2376,8 +2382,9 @@ Tool arguments:
                 (JOB-BUILDER finalize: save the approved script to ~/.aiforge/jobs + schedule it as a recurring cron job — deterministic, no LLM per run)
 - confluence_search {{"query": "..."}}  or  {{"cql": "space = ENG AND text ~ 'foo'"}}   (find pages)
 - confluence_read   {{"id": "12345"}}  or  {{"title": "Page Title", "space": "ENG"}}      (read a page; body is storage XHTML)
-- confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page — needs your Approve)
-- confluence_update {{"id": "12345", "body": "<p>new storage XHTML</p>", "title": "optional"}}              (edit a page — needs your Approve)
+- confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page — needs your Approve. In the body you MAY use ```mermaid fences, ```lang code fences and markdown/HTML images — they auto-convert to the proper storage macros; images are uploaded as page attachments)
+- confluence_update {{"id": "12345", "body": "<p>new storage XHTML</p>", "title": "optional"}}              (edit a page — needs your Approve. Same auto mermaid/code/image → macro conversion as create)
+- confluence_attach {{"id": "12345", "path": "/abs/diagram.png"}}  or  {{"id":"12345","url":"https://…/img.png"}}   (upload a file as a page attachment; reference it as <ac:image><ri:attachment ri:filename="diagram.png"/></ac:image> — needs your Approve)
 - confluence_spaces {{}}                                                                  (list spaces)
 - confluence_page_by_title {{"space": "ENG", "title": "Runbook"}}                          (find a page's id + version by exact title)
 - confluence_children {{"id": "12345"}}  ·  confluence_descendants {{"id": "12345"}}       (direct child pages · ALL descendants deep)

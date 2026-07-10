@@ -187,3 +187,62 @@ def test_read_attachments_can_be_disabled(cfg, monkeypatch):
                         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or [])
     out = cf.confluence_read({"id": "10", "attachments": False})
     assert "attachments" not in out and called["n"] == 0
+
+
+# ── media → storage macros (mermaid / code / image attachments) ──────────
+
+def test_storagify_mermaid_code_and_image(monkeypatch):
+    monkeypatch.delenv("AIFORGE_CONFLUENCE_MERMAID_MACRO", raising=False)
+    body = ("```mermaid\ngraph TD;A-->B\n```\n\n"
+            "```python\nprint(1)\n```\n\n"
+            "![chart](/tmp/c.png)")
+    out, refs = cf._storagify_media(body)
+    assert '<ac:structured-macro ac:name="mermaid">' in out
+    assert "graph TD;A-->B" in out
+    assert '<ac:structured-macro ac:name="code">' in out
+    assert '<ac:parameter ac:name="language">python</ac:parameter>' in out
+    assert '<ac:image><ri:attachment ri:filename="c.png"/></ac:image>' in out
+    assert refs == [{"filename": "c.png", "src": "/tmp/c.png"}]
+    assert "```" not in out and "![chart]" not in out    # md fences + img gone
+
+
+def test_storagify_mermaid_macro_env_override(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_MERMAID_MACRO", "mermaid-cloud")
+    out, _ = cf._storagify_media("```mermaid\nA-->B\n```")
+    assert 'ac:name="mermaid-cloud"' in out
+
+
+def test_storagify_passthrough_plain_storage():
+    body = "<p>plain <strong>storage</strong> body, no fences</p>"
+    out, refs = cf._storagify_media(body)
+    assert out == body and refs == []
+
+
+def test_storagify_cdata_escapes_early_close():
+    out, _ = cf._storagify_media("```\nvar x = ']]>';\n```")
+    assert "]]]]><![CDATA[>" in out          # the ]]> was split, CDATA stays valid
+
+
+def test_create_converts_and_uploads_image(cfg, monkeypatch, tmp_path):
+    img = tmp_path / "diagram.png"
+    img.write_bytes(b"\x89PNG\r\nfake")
+    calls = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        calls.append(req)
+        if "/child/attachment" in req.full_url:
+            return _Resp({"results": [{"id": "att1"}]})
+        return _Resp({"id": "99", "_links": {"webui": "/display/ENG/New"}})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    out = cf.confluence_create({"title": "New", "space": "ENG",
+                                "body": f"<p>see</p>\n\n![d]({img})\n"})
+    assert out["ok"]
+    create = [r for r in calls if "/child/attachment" not in r.full_url][0]
+    sent = json.loads(create.data.decode())["body"]["storage"]["value"]
+    assert '<ac:image><ri:attachment ri:filename="diagram.png"/></ac:image>' in sent
+    assert "![" not in sent
+    att = [r for r in calls if "/child/attachment" in r.full_url]
+    assert att and att[0].get_method() == "POST"
+    assert att[0].headers.get("X-atlassian-token") == "nocheck"
+    assert out["attachments"][0]["ok"] and out["attachments"][0]["filename"] == "diagram.png"
