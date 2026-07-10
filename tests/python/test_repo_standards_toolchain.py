@@ -89,16 +89,15 @@ def test_toolchain_brief_empty_when_no_lang(tmp_path):
     assert rs.toolchain_brief(None) == ""
 
 
-def test_check_toolchain_flags_jdk_mismatch(tmp_path, monkeypatch):
-    """A repo requiring a newer JDK than the host → actionable install msg."""
+def test_check_toolchain_flags_missing_binary(tmp_path, monkeypatch):
+    """Dynamic presence check: a Maven repo with no java/mvn on PATH → install
+    messages. No hardcoded versions — just shutil.which."""
     from aiforge_core.config import repo_standards as rs
-    (tmp_path / "pom.xml").write_text(
-        "<project><properties><java.version>24</java.version>"
-        "</properties></project>")
-    (tmp_path / "mvnw").write_text("#!/bin/sh\n")
-    monkeypatch.setattr(rs, "_installed_java_major", lambda: 21)
+    (tmp_path / "pom.xml").write_text("<project/>")
+    monkeypatch.setattr(rs.shutil, "which", lambda _n: None)
     msgs = rs.check_toolchain(str(tmp_path))
-    assert any("JDK 24" in m and "21" in m for m in msgs), msgs
-    # host already has it → no message
-    monkeypatch.setattr(rs, "_installed_java_major", lambda: 24)
-    assert not [m for m in rs.check_toolchain(str(tmp_path)) if "JDK" in m]
+    assert any("java" in m.lower() for m in msgs)
+    assert any("maven" in m.lower() or "mvn" in m.lower() for m in msgs)
+    # tools present → no messages
+    monkeypatch.setattr(rs.shutil, "which", lambda _n: "/usr/bin/" + _n)
+    assert rs.check_toolchain(str(tmp_path)) == []
