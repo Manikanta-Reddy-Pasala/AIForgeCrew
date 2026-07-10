@@ -26,6 +26,7 @@ Rendered as one capped markdown block → ``state['rules_md']`` →
 """
 from __future__ import annotations
 
+import datetime as _dt
 import fnmatch
 import json
 import logging
@@ -54,6 +55,8 @@ class Rule:
     triggers: tuple[str, ...] = ()   # optional topic gate (OR'd with globs)
     description: str = ""            # unified frontmatter (name/description/triggers/scope)
     scope: str = "global"
+    links: tuple[str, ...] = ()      # cross-links to other artifacts (kind:name)
+    updated_at: str = ""             # ISO-8601; provenance/freshness (body untouched)
 
 
 def _parse_rule_file(path: Path) -> Rule | None:
@@ -90,9 +93,13 @@ def _parse_rule_file(path: Path) -> Rule | None:
     name = str(meta.get("name") or meta.get("description") or path.stem)
     description = str(meta.get("description") or "")
     scope = str(meta.get("scope") or "global").lower()
+    from aiforge_core.runtime import artifact_links as _al
+    links = tuple(_al.parse_links(meta.get("links")))
+    updated_at = str(meta.get("updated_at") or "")
     return Rule(
         name=name, globs=globs, always=always, body=body, source=str(path),
         triggers=triggers, description=description, scope=scope,
+        links=links, updated_at=updated_at,
     )
 
 
@@ -118,13 +125,17 @@ def load_global_rules() -> list[Rule]:
 
 def write_rule(name: str, body: str, *, globs: list[str] | None = None,
                always: bool = True, description: str = "",
-               triggers: list[str] | None = None, scope: str = "global") -> dict:
+               triggers: list[str] | None = None, scope: str = "global",
+               links: list[str] | None = None) -> dict:
     """Author/overwrite a global rule at ~/.aiforge/rules/<slug>.md.
 
     Emits the UNIFIED artifact frontmatter shared by rules, skills, and
-    workflows — ``name`` / ``description`` / ``triggers`` / ``scope`` — plus the
+    workflows — ``name`` / ``description`` / ``triggers`` / ``scope`` /
+    ``links`` (cross-links to other artifacts) / ``updated_at`` — plus the
     Cursor-compat ``alwaysApply`` / ``globs`` the deterministic scope-matcher
-    still reads. Returns ``{ok, name, path}`` or ``{ok: False, error}``."""
+    still reads. The BODY is never touched (a rule stays a terse directive) —
+    only the metadata is unified. Returns ``{ok, name, path}`` or
+    ``{ok: False, error}``."""
     name = (name or "").strip()
     body = (body or "").strip()
     if not name or not body:
@@ -151,6 +162,14 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
         front.append(f"alwaysApply: {str(bool(always)).lower()}")
         if gl:
             front.append("globs: [" + ", ".join(json.dumps(g) for g in gl) + "]")
+        # Unified metadata: cross-links (kind:name) + freshness stamp. Body stays
+        # untouched — a rule is still a terse directive, this is frontmatter only.
+        from aiforge_core.runtime import artifact_links as _al
+        norm_links = _al.normalize_links(links)
+        if norm_links:
+            front.append(_al.yaml_line(norm_links))
+        front.append("updated_at: " + json.dumps(
+            _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat()))
         front.append("---")
         path = d / f"{slug}.md"
         tmp = path.with_suffix(".md.tmp")

@@ -53,16 +53,30 @@ def _project_brief(cwd: str) -> str:
     repo = repo_ident.repo_name(cwd, sentinel="")
     parts: list[str] = []
     if repo and md_store._slug(repo) != "shared":
-        d = md_store.read_file(f"compacted-{md_store._slug(repo)}")
-        body = ((d or {}).get("body") or "").strip()
-        if body:
-            parts.append("PROJECT MEMORY (" + repo + "):\n" + body[:6000])
+        knowledge = _brief_knowledge(
+            md_store.read_file(f"compacted-{md_store._slug(repo)}"))
+        if knowledge:
+            parts.append("PROJECT MEMORY (" + repo + "):\n" + knowledge[:6000])
     # Global compacted brief — unioned into EVERY context (skip when we ARE it).
-    g = md_store.read_file("compacted-shared")
-    gbody = ((g or {}).get("body") or "").strip()
-    if gbody:
-        parts.append("GLOBAL MEMORY:\n" + gbody[:3000])
+    gk = _brief_knowledge(md_store.read_file("compacted-shared"))
+    if gk:
+        parts.append("GLOBAL MEMORY:\n" + gk[:3000])
     return "\n\n".join(parts)
+
+
+def _brief_knowledge(d: dict | None) -> str:
+    """The injectable KNOWLEDGE of an OKR memory brief — Facts + consolidated
+    body, minus the envelope metadata (Objective boilerplate, title, sentinel).
+    Delegates to the shared ``work_notes.knowledge_text`` so injection and
+    recall-ingest strip identically. Legacy briefs degrade to their raw body."""
+    body = ((d or {}).get("body") or "").strip()
+    if not body:
+        return ""
+    try:
+        from aiforge_core.runtime import work_notes
+        return work_notes.knowledge_text(body)   # read_file already stripped fm
+    except Exception:  # noqa: BLE001
+        return body
 
 
 def _safe(fn, default=""):

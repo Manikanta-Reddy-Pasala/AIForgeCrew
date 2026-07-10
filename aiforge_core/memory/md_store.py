@@ -794,7 +794,17 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 continue                       # write failed → don't ingest
             try:
                 doc = _parse(p["path"])
-                _ingest_unit(title=doc["title"], body=doc["body"],
+                ingest_body = doc["body"]
+                # Knowledge briefs (repo/topic) are OKR envelopes — ingest ONLY
+                # the knowledge (Facts + consolidated body) so recall vectors
+                # don't carry the identical Objective boilerplate every brief has.
+                if group_by in ("repo", "topic"):
+                    try:
+                        from aiforge_core.runtime import work_notes
+                        ingest_body = work_notes.knowledge_text(doc["body"])
+                    except Exception:  # noqa: BLE001
+                        pass
+                _ingest_unit(title=doc["title"], body=ingest_body,
                              kind="compacted", tags=p["tags"],
                              source=f"compacted:{p['stem']}", repo="notes")
             except Exception:  # noqa: BLE001

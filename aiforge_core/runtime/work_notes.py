@@ -348,4 +348,25 @@ def update_note(path: str, **section_updates) -> dict:
     return {"ok": True, "path": path}
 
 
-__all__ = ["render_note", "parse_note", "normalize_links", "update_note"]
+def knowledge_text(note: str) -> str:
+    """The KNOWLEDGE content of a note for injection/recall — its Facts +
+    consolidated free body — WITHOUT the envelope's own metadata (the
+    ``## Objective`` boilerplate that describes what the file is, the title, the
+    ``<!-- aiforge:body -->`` sentinel). Use this wherever a note is fed to a
+    model as context (auto-injected briefs, recall ingest) so the machine
+    scaffolding never reads as a project fact. A legacy/plain note with no OKR
+    sections degrades to its whole body. Accepts a full note OR a
+    frontmatter-stripped body (``md_store.read_file`` returns the latter)."""
+    parsed = parse_note(note or "")
+    sec = parsed.get("sections") or {}
+    out: list[str] = []
+    facts = sec.get("facts") or []
+    if facts:
+        out.append("\n".join(f"- {f}" for f in facts))
+    if parsed.get("body"):
+        out.append(parsed["body"].strip())
+    return "\n\n".join(out).strip() or (note or "").strip()
+
+
+__all__ = ["render_note", "parse_note", "normalize_links", "update_note",
+           "knowledge_text"]
