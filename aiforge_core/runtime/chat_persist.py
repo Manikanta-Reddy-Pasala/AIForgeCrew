@@ -12,6 +12,32 @@ from __future__ import annotations
 import os
 
 
+def _is_real_repo(cwd: str | None) -> bool:
+    """True only when ``cwd`` is inside a REAL git repo — not a managed work
+    context (work/jira|confluence|web/<key>) and not a session scratch dir.
+    Used to gate the per-repo project-memory unit so chat inside a ticket/page
+    context doesn't create a cryptic ``compacted-<id>`` brief."""
+    if not cwd:
+        return False
+    try:
+        from aiforge_core.runtime import work_context
+        if work_context.context_for_path(cwd) is not None:
+            return False              # jira/confluence/web context folder
+    except Exception:  # noqa: BLE001
+        pass
+    if os.path.basename(os.path.normpath(cwd)).startswith("session-"):
+        return False                  # per-session scratch dir
+    # walk up looking for a .git — cheap, no subprocess
+    d = os.path.abspath(cwd)
+    while True:
+        if os.path.isdir(os.path.join(d, ".git")):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
 def persist_turn(*, session_id: int, cwd: str, prompt: str,
                  final_text: str, steps: list[dict], team: bool,
                  cancelled: bool, awaiting: bool) -> None:
@@ -76,12 +102,18 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
             source=f"chat-session:{session_id}", title=note_title,
             section_title=when, section_body=section, kind="session",
             tags=["chat", "team" if team else "simple"])
-        repo = _chat_repo_key(cwd)
-        md_store.upsert_section(
-            source=f"repo:{repo}", title=f"{repo} — project memory",
-            section_title=f"{when} · {prompt.strip()[:50]}",
-            section_body=f"{final_text[:600]}", kind="project",
-            tags=["repo", repo])
+        # PROJECT memory only for a REAL git repo. Chat run inside a jira/
+        # confluence context folder (or a session scratch dir) has a "repo key"
+        # that is actually a ticket/page-id / session-N — filing a repo: unit
+        # there produced cryptic compacted-<id>.md briefs. Skip it; that
+        # knowledge still reaches memory via the topic axis + the learner.
+        if _is_real_repo(cwd):
+            repo = _chat_repo_key(cwd)
+            md_store.upsert_section(
+                source=f"repo:{repo}", title=f"{repo} — project memory",
+                section_title=f"{when} · {prompt.strip()[:50]}",
+                section_body=f"{final_text[:600]}", kind="project",
+                tags=["repo", repo])
     except Exception:  # noqa: BLE001
         pass
 

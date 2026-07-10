@@ -598,6 +598,101 @@ def _group_key(d: dict, group_by: str) -> str:
     return d.get("kind") or "note"
 
 
+def _topic_split_cap() -> int:
+    """Facts-size (chars) beyond which a topic brief SPLITS into linked parts.
+    A major topic that outgrows this becomes compacted-<topic>.md +
+    compacted-<topic>-2.md … cross-referenced. Env AIFORGE_TOPIC_SPLIT_CAP."""
+    try:
+        return max(500, int(os.environ.get("AIFORGE_TOPIC_SPLIT_CAP", "12000")))
+    except (TypeError, ValueError):
+        return 12000
+
+
+def _brief_parts(key: str, sections: dict, tags, title: str) -> list[tuple[str, str]]:
+    """Render an OKR knowledge brief → ``[(stem, content), …]``. Facts are paged
+    under the split cap: a topic that fits is ONE file; a topic that outgrows it
+    splits into compacted-<key>.md + compacted-<key>-2.md … each carrying the
+    OKR envelope (kind/tags/objective) and a cross-reference back to part 1 /
+    forward to the next (the "split and refer" pattern). Key Results + Learnings
+    stay on part 1 (the canonical head)."""
+    from aiforge_core.runtime import work_notes
+    facts = [str(f) for f in (sections.get("facts") or [])]
+    kr = sections.get("key_results") or []
+    links = sections.get("links") or []
+    learnings = sections.get("learnings") or []
+    cap = _topic_split_cap()
+    pages: list[list[str]] = []
+    cur: list[str] = []
+    size = 0
+    for f in facts:
+        if cur and size + len(f) + 3 > cap:
+            pages.append(cur)
+            cur, size = [], 0
+        cur.append(f)
+        size += len(f) + 3
+    if cur:
+        pages.append(cur)
+    pages = pages or [[]]
+    n = len(pages)
+    base = _slug(key)
+    parts: list[tuple[str, str]] = []
+    for i, page in enumerate(pages):
+        part_key = key if i == 0 else f"{key}-{i + 1}"
+        stem = f"compacted-{base}" if i == 0 else f"compacted-{base}-{i + 1}"
+        xref: list[str] = []
+        if n > 1:
+            if i > 0:
+                xref.append(f"**Part {i + 1} of {n}** · main topic: "
+                            f"[{base}](compacted-{base}.md)")
+            if i < n - 1:
+                xref.append(f"**Continued in:** "
+                            f"[part {i + 2}](compacted-{base}-{i + 2}.md)")
+        content = work_notes.render_note(
+            "knowledge", part_key,
+            title=(title if n == 1 else f"{title} (part {i + 1}/{n})"),
+            objective=_BRIEF_OBJECTIVE.format(key=key),
+            key_results=(kr if i == 0 else None),
+            facts=page, links=links,
+            learnings=(learnings if i == 0 else None),
+            tags=tags, body_md="\n\n".join(xref))
+        parts.append((stem, content))
+    return parts
+
+
+def _consolidate_brief_sections(key: str, path, blocks: list[str],
+                                model_role: str, tags) -> tuple[dict, list]:
+    """LLM-consolidate the group into OKR sections (dedupe/map/supersede via
+    work_notes.consolidate) and return ``(sections, merged_tags)``. Prior
+    hand-added Learnings + the brief's prior tags are preserved."""
+    from aiforge_core.runtime import work_notes
+    # Read the primary brief AND every split-out part (compacted-<key>-N.md) so a
+    # re-fold NEVER loses facts that a previous oversize split moved into part 2+.
+    existing: dict = {"facts": [], "learnings": [], "links": [], "key_results": [],
+                      "objective": ""}
+    prev_tags: list = []
+    base = _slug(key)
+    part_paths = [path] + sorted(memory_dir().glob(f"compacted-{base}-*.md"))
+    for pp in part_paths:
+        if not pp.exists():
+            continue
+        parsed = work_notes.parse_note(pp.read_text(encoding="utf-8", errors="replace"))
+        sec = parsed["sections"]
+        existing["objective"] = existing["objective"] or (sec.get("objective") or "")
+        for fld in ("facts", "learnings", "links", "key_results"):
+            for it in sec.get(fld) or []:
+                if it not in existing[fld]:
+                    existing[fld].append(it)
+        prev_tags += list((parsed["frontmatter"] or {}).get("tags") or [])
+    new_content = "\n\n".join(b for b in blocks if b.strip())
+    merged = work_notes.consolidate(existing, new_content, role=model_role)
+    learnings = list(merged.get("learnings") or [])
+    for ln in (existing.get("learnings") or []):        # keep the audit trail
+        if ln not in learnings:
+            learnings.append(ln)
+    merged["learnings"] = learnings
+    return merged, list(prev_tags) + list(tags or [])
+
+
 def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
                                model_role: str,
                                tags: list[str] | None = None) -> str:
@@ -785,10 +880,13 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                             "---\n\n" + body[-keep:])
 
             if _use_structured:
-                # LLM folds the group into structured OKR sections; the raw units
-                # then archive out (scheduler), so the topic note IS the memory.
-                content = _consolidate_brief_content(
-                    key, path, blocks, title, model_role, tags=all_tags)
+                # LLM folds the group into structured OKR sections, then Facts
+                # are paged: a topic that outgrows the split cap becomes several
+                # cross-referenced parts. The raw units archive out (scheduler),
+                # so the topic note(s) ARE the memory.
+                merged, all_tags = _consolidate_brief_sections(
+                    key, path, blocks, model_role, all_tags)
+                part_list = _brief_parts(key, merged, all_tags, title)
                 did_summarize = True
             elif group_by in ("repo", "topic"):
                 # No model: keep the OKR envelope, consolidation lives in the body
@@ -796,10 +894,10 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 prev_learnings = _parse_brief(
                     path.read_text(encoding="utf-8", errors="replace")
                 )["learnings"] if path.exists() else []
-                content = _render_brief(
+                part_list = [(stem, _render_brief(
                     key, facts=[],
                     body_md=re.sub(r"^#\s[^\n]*\n+", "", body.strip()),
-                    learnings=prev_learnings, title=title, tags=all_tags)
+                    learnings=prev_learnings, title=title, tags=all_tags))]
             else:
                 fm = (
                     "---\n"
@@ -812,9 +910,9 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                     f"summarized: {str(did_summarize).lower()}\n"
                     "---\n\n"
                 )
-                content = fm + body.strip() + "\n"
-            prepared.append({"items": items, "path": path, "stem": stem,
-                             "tags": all_tags, "content": content,
+                part_list = [(stem, fm + body.strip() + "\n")]
+            prepared.append({"items": items, "base_stem": stem,
+                             "parts": part_list, "tags": all_tags,
                              "summarized": did_summarize})
 
         # ── Phase 2: write consolidated, THEN archive originals, UNDER lock.
@@ -823,17 +921,31 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         with _WRITE_LOCK:
             archive.mkdir(parents=True, exist_ok=True)
             for p in prepared:
-                try:
-                    p["path"].write_text(p["content"], encoding="utf-8")
-                except Exception:  # noqa: BLE001 — keep originals; skip this group
-                    continue
-                out_files.append(p["path"].name)
-                if p["summarized"]:
-                    summarized_files.append(p["path"].name)
-                if not archive_sources:
-                    continue    # projection mode: keep raw units for the OTHER
-                                # axis (a unit belongs to BOTH its repo brief and
-                                # its topic note) — briefs are derived views.
+                new_stems = {st for st, _ in p["parts"]}
+                # Retire STALE split overflow: prior parts of this topic that the
+                # new (smaller) fold no longer produces — archive them so a topic
+                # that shrank doesn't leave orphaned compacted-<key>-N.md files.
+                for old in memory_dir().glob(f"{p['base_stem']}-*.md"):
+                    if old.stem not in new_stems and re.match(
+                            rf"^{re.escape(p['base_stem'])}-\d+$", old.stem):
+                        try:
+                            shutil.move(str(old), str(archive / old.name))
+                        except Exception:  # noqa: BLE001
+                            pass
+                wrote_any = False
+                for st, content in p["parts"]:
+                    fpath = memory_dir() / f"{st}.md"
+                    try:
+                        fpath.write_text(content, encoding="utf-8")
+                    except Exception:  # noqa: BLE001 — keep originals; skip
+                        continue
+                    out_files.append(fpath.name)
+                    wrote_any = True
+                    if p["summarized"]:
+                        summarized_files.append(fpath.name)
+                if not wrote_any or not archive_sources:
+                    continue    # projection mode keeps raw units for the OTHER
+                                # axis (a unit feeds both its repo + topic brief).
                 for d in p["items"]:
                     try:
                         shutil.move(str(d["_path"]), str(archive / d["file"]))
@@ -843,25 +955,27 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
 
         # ── Phase 3: re-ingest into the search backend ──────────────────
         for p in prepared:
-            if p["path"].name not in out_files:
-                continue                       # write failed → don't ingest
-            try:
-                doc = _parse(p["path"])
-                ingest_body = doc["body"]
-                # Knowledge briefs (repo/topic) are OKR envelopes — ingest ONLY
-                # the knowledge (Facts + consolidated body) so recall vectors
-                # don't carry the identical Objective boilerplate every brief has.
-                if group_by in ("repo", "topic"):
-                    try:
-                        from aiforge_core.runtime import work_notes
-                        ingest_body = work_notes.knowledge_text(doc["body"])
-                    except Exception:  # noqa: BLE001
-                        pass
-                _ingest_unit(title=doc["title"], body=ingest_body,
-                             kind="compacted", tags=p["tags"],
-                             source=f"compacted:{p['stem']}", repo="notes")
-            except Exception:  # noqa: BLE001
-                pass
+            for st, _ in p["parts"]:
+                fpath = memory_dir() / f"{st}.md"
+                if fpath.name not in out_files or not fpath.exists():
+                    continue                   # write failed → don't ingest
+                try:
+                    doc = _parse(fpath)
+                    ingest_body = doc["body"]
+                    # Knowledge briefs (repo/topic) are OKR envelopes — ingest
+                    # ONLY the knowledge (Facts + body) so recall vectors don't
+                    # carry the identical Objective boilerplate every brief has.
+                    if group_by in ("repo", "topic"):
+                        try:
+                            from aiforge_core.runtime import work_notes
+                            ingest_body = work_notes.knowledge_text(doc["body"])
+                        except Exception:  # noqa: BLE001
+                            pass
+                    _ingest_unit(title=doc["title"], body=ingest_body,
+                                 kind="compacted", tags=p["tags"],
+                                 source=f"compacted:{st}", repo="notes")
+                except Exception:  # noqa: BLE001
+                    pass
 
     return {
         "ok": True, "dry_run": False, "group_by": group_by,

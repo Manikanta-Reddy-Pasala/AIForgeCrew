@@ -140,6 +140,48 @@ def _stub_consolidate_llm(monkeypatch):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", fake)
 
 
+def test_topic_splits_into_linked_parts_when_oversize(cfg, monkeypatch):
+    # a topic that outgrows the split cap becomes compacted-<topic>.md +
+    # compacted-<topic>-2.md, each an OKR envelope, cross-referenced.
+    from aiforge_core.memory import md_store as m
+    from aiforge_core.runtime import work_notes
+    monkeypatch.setenv("AIFORGE_TOPIC_SPLIT_CAP", "500")   # tiny → forces a split
+    _stub_consolidate_llm(monkeypatch)
+    for i in range(12):
+        m.capture("topic_learning", f"authfact number {i} " + "x" * 40,
+                  repo=f"r{i}", topic="auth")
+    r = m.compact(group_by="topic", min_group=1, summarize=True)
+    files = {p.name for p in m.memory_dir().glob("compacted-auth*.md")}
+    assert "compacted-auth.md" in files
+    assert "compacted-auth-2.md" in files                 # split happened
+    head = work_notes.parse_note(_raw("compacted-auth.md"))
+    assert head["frontmatter"]["kind"] == "knowledge"     # OKR envelope
+    assert "Continued in" in _raw("compacted-auth.md")    # forward cross-ref
+    assert "main topic" in _raw("compacted-auth-2.md")    # back cross-ref
+
+
+def test_topic_shrink_retires_stale_split_parts(cfg, monkeypatch):
+    from aiforge_core.memory import md_store as m
+    from aiforge_core.runtime import work_notes
+    monkeypatch.setenv("AIFORGE_TOPIC_SPLIT_CAP", "500")
+    _stub_consolidate_llm(monkeypatch)
+    for i in range(12):
+        m.capture("topic_learning", f"bigfact {i} " + "y" * 40, repo=f"r{i}", topic="ops")
+    m.compact(group_by="topic", min_group=1, summarize=True)
+    assert (m.memory_dir() / "compacted-ops-2.md").exists()
+    p2_facts = work_notes.parse_note(_raw("compacted-ops-2.md"))["sections"]["facts"]
+    assert p2_facts                                   # part 2 holds real facts
+    # recompact with a HUGE cap + one new unit → the topic re-folds (reading ALL
+    # parts), everything fits in one file, and the stale part-2 is retired.
+    monkeypatch.setenv("AIFORGE_TOPIC_SPLIT_CAP", "100000")
+    m.capture("topic_learning", "one more ops fact", repo="rx", topic="ops")
+    m.compact(group_by="topic", min_group=1, summarize=True)
+    assert not (m.memory_dir() / "compacted-ops-2.md").exists()
+    head = _raw("compacted-ops.md")
+    # facts from the retired part 2 were re-folded into the single file (not lost)
+    assert p2_facts[0] in head
+
+
 def test_compact_structured_writes_okr_facts_when_model_available(cfg, monkeypatch):
     from aiforge_core.memory import md_store as m
     from aiforge_core.runtime import work_notes
