@@ -87,7 +87,6 @@ def _ensure_skill_workflow_dirs() -> None:
         pass
 
 
-@app.on_event("startup")
 # Postgres/Neo4j pointers from a prior HYBRID setup that may still linger in
 # runtime.env — this build is SQLite-only, so restoring them would make tickets/
 # chat/memory try a Postgres/Neo4j that no longer exists ("Postgres unreachable"
@@ -100,6 +99,7 @@ _RUNTIME_ENV_DB_KEYS = frozenset({
 })
 
 
+@app.on_event("startup")
 def _load_runtime_env() -> None:
     """Restore UI-persisted toggles (runtime.env) into the process env on boot
     using a plain KEY=VALUE parser — NOT a shell source — so a value can never
