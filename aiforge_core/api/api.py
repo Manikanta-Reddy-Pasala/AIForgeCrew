@@ -167,16 +167,19 @@ def _check_tool_parity() -> None:
 
 
 @app.on_event("startup")
-def _migrate_okr_scoped() -> None:
-    """One-shot idempotent migration: move any legacy FLAT okr/<dir>/ nodes into
-    the scope-segregated layout (global/ + projects/<workspace>/). No-op once
-    migrated. Never blocks startup."""
+def _run_memory_migrations() -> None:
+    """Auto-upgrade EVERY deployment's memory into the current scoped-OKR shape:
+    legacy brief format → OKR envelope, compacted briefs → OKR learnings, old
+    Neo4j Observation/Decision nodes → md captures, then flat okr/ → global/ +
+    projects/<repo>/. Idempotent (one-shot steps are marker-guarded); never
+    blocks startup. This is the migration path new/upgrading users get for free
+    on ``run.sh`` (which boots this API)."""
     try:
-        from aiforge_core.memory.okr import store as _okrs
-        r = _okrs.migrate_scoped()
-        if r.get("moved"):
-            _af_log.info("okr scope migration: moved %d node(s); scopes=%s",
-                         r["moved"], r.get("scopes"))
+        from aiforge_core.memory import migrations
+        r = migrations.run_startup_migrations()
+        _af_log.info("memory migrations: %s",
+                     {k: (v.get("moved") or v.get("migrated") or v.get("skipped")
+                          or v.get("ok")) for k, v in r.items()})
     except Exception:  # noqa: BLE001 — migration is best-effort
         pass
 
