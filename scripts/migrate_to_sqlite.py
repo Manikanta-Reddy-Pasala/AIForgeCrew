@@ -19,6 +19,15 @@ def migrate_chat(pg_url: str) -> tuple[int, int]:
     from aiforge_core.runtime.chat_store import _PgChatStore, _SqliteChatStore
     src = _PgChatStore(pg_url)
     dst = _SqliteChatStore()
+    # IDEMPOTENT: chat has no natural unique key and create_session always makes a
+    # NEW row, so re-running would DUPLICATE every session on each boot. If the
+    # SQLite chat store already has sessions, it was already migrated → skip.
+    try:
+        if dst.list_sessions():
+            print("  chat: SQLite already has sessions — skip (already migrated)")
+            return 0, 0
+    except Exception:  # noqa: BLE001 — best-effort; proceed if it can't check
+        pass
     n_s = n_m = 0
     for s in src.list_sessions():
         new = dst.create_session(title=s.get("title") or "chat",

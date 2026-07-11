@@ -98,6 +98,7 @@ WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"  # --with-langfuse (or AIFORGE_LANGFUSE=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --lite|--hybrid|--docker|--no-build) : ;;  # legacy no-ops (always SQLite now)
+    --migrate) MIGRATE=1 ;;   # force a (re-)converge: migrate PG/Neo4j → SQLite/OKR + remove docker, then start
     --dev) DEV=1 ;;
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
@@ -233,13 +234,15 @@ fi
 # Windows — run.sh just invokes it. Marker-guarded; opt out AIFORGE_AUTO_MIGRATE=0.
 _cfgdir="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
 _automig_marker="$_cfgdir/.data_migrated_v1"
-if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" && "${MIGRATE:-0}" != "1" ]]; then
+# Default: auto-converge ONCE (marker-guarded). `./run.sh --migrate` forces a
+# (re-)converge now, then continues to start. Opt out entirely: AIFORGE_AUTO_MIGRATE=0.
+if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" || "${MIGRATE:-0}" == "1" ]]; then
   # NOTE: do NOT 'systemctl stop aiforge-api' here — run.sh IS the service's
   # ExecStart, so that would kill this very process. systemd already stopped the
   # previous instance before starting us, so the SQLite files are free to migrate.
-  .venv/bin/python -m aiforge_core.deploy.converge || true
-  # if it converged (no docker / migrated), run this session in lite
-  [[ -f "$_automig_marker" ]] && MODE=lite
+  _cvg=()
+  [[ "${MIGRATE:-0}" == "1" ]] && _cvg=(--force)
+  .venv/bin/python -m aiforge_core.deploy.converge "${_cvg[@]}" || true
 fi
 
 # (PG/Neo4j env was already stripped right after .env load; docker cleanup —
