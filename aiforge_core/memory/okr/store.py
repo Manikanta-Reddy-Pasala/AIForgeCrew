@@ -78,7 +78,33 @@ def save_node(node_type: str, node_id: str | None, meta: dict,
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         return {"ok": False, "error": f"write failed: {exc}"}
+    _write_index()   # keep the reserved OKF navigation file fresh
     return {"ok": True, "id": nid, "path": path}
+
+
+def _write_index() -> str:
+    """(Re)generate the reserved OKF ``index.md`` at the bundle root — pure
+    navigation, NO frontmatter (spec §3). Lists every concept grouped by folder,
+    with absolute bundle-relative links. Soft-fail (best-effort)."""
+    try:
+        from aiforge_core.memory import okf
+        root = okr_root()
+        entries: list[tuple[str, str]] = []
+        for d in load_all():
+            p = d.get("path", "")
+            rel = "/" + os.path.relpath(p, root).replace(os.sep, "/")
+            meta = d.get("meta") or {}
+            hook = (meta.get("title") or meta.get("description")
+                    or (d.get("body") or "").strip().split("\n", 1)[0])[:80]
+            entries.append((rel, hook))
+        entries.sort()
+        text = okf.render_index("OKR Knowledge Bundle", entries)
+        idx = os.path.join(root, "index.md")
+        with open(idx, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return idx
+    except Exception:  # noqa: BLE001 — index is navigation, never block a save
+        return ""
 
 
 def read_node(node_type: str, node_id: str) -> dict | None:

@@ -415,6 +415,16 @@ def knowledge_text(note: str) -> str:
 # failure degrades to a deterministic union+dedupe merge — never raises, never
 # loses the new content.
 
+def _okf_rules() -> str:
+    """The OKF v0.1 producer rules (single source: memory.okf) — appended to the
+    consolidation prompt so the compacted note stays an OKF-valid concept."""
+    try:
+        from aiforge_core.memory.okf import OKF_RULES
+        return OKF_RULES
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 _CONSOLIDATE_SYS = (
     "You maintain a knowledge note in Google-OKR format. You are given the "
     "note's CURRENT sections (JSON) and NEW information. Produce the CONSOLIDATED "
@@ -429,7 +439,9 @@ _CONSOLIDATE_SYS = (
     "current state; Links = URLs / cross-references (COPY VERBATIM, never reword "
     "or invent); Learnings = discoveries, gotchas, dated changes.\n"
     "- Keep every item ONE concise sentence. Do NOT invent facts not present in "
-    "the inputs. Preserve existing content unless a rule above removes it."
+    "the inputs. Preserve existing content unless a rule above removes it.\n"
+    "\n"
+    + _okf_rules()
 )
 
 

@@ -58,7 +58,16 @@ PROMPT = (
     "  - {text: 'DECISION: Doer LLM call cap raised to 60 for mvn builds.', "
     "topic: 'ci-cd', about: []}\n"
     "  - {text: 'User: always run ONE targeted test file, never the whole suite.', "
-    "topic: 'testing', about: []}"
+    "topic: 'testing', about: []}\n"
+    "\n"
+    "OKF (Open Knowledge Format): each fact is persisted as one knowledge "
+    "CONCEPT file — its file PATH is its identity, its `type` is set on write, "
+    "`tags`+`topic` become its tags, and each `about` entry (a repo-relative "
+    "path / fqn / ticket) becomes a LINK to a related concept. So: make `text` a "
+    "self-contained concept whose FIRST clause reads as a title/one-line summary "
+    "(it becomes the note's description), and put the real related paths/symbols/"
+    "tickets in `about` so the knowledge graph links up. Untyped edges — the "
+    "relationship's meaning lives in the `text`, not the link."
 )
 
 __all__ = ["PROMPT"]
