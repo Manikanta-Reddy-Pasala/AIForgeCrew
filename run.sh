@@ -51,6 +51,17 @@ for _envf in .env aiforge.env; do
   fi
 done
 
+# SINGLE MODE = embedded SQLite. Immediately drop any Postgres/Neo4j pointers a
+# stale .env (from an old hybrid setup) may have set, so NOTHING run.sh spawns
+# (converge, the api, the runner) tries a Postgres that no longer exists and
+# spams "Postgres unreachable". converge provides its own PG url internally when
+# it actually migrates. Set AIFORGE_KEEP_PG=1 only if you truly run external PG.
+if [[ "${AIFORGE_KEEP_PG:-0}" != "1" ]]; then
+  unset AIFORGE_PG_URL AIFORGE_DSN AIFORGE_FORCE_PG \
+        AIFORGE_NEO4J_URI NEO4J_URI AIFORGE_REQUIRE_DATA_BACKEND || true
+  [[ "${AIFORGE_MEMORY_BACKEND:-}" == "neo4j" ]] && export AIFORGE_MEMORY_BACKEND=sqlite
+fi
+
 # NOTE: ~/.aiforge/runtime.env (UI-persisted toggles) is intentionally NOT
 # sourced here — sourcing it would execute any shell metacharacters a value
 # contains. The API loads it itself with a plain KEY=VALUE parser at startup
@@ -231,15 +242,8 @@ if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" && "${MIGRATE:-0}" != "1" ]]; then
   [[ -f "$_automig_marker" ]] && MODE=lite
 fi
 
-# LITE = embedded SQLite: strip any stale hybrid AIFORGE_PG_URL / DSN / Neo4j env
-# (e.g. left in .env from a prior hybrid run) so the app doesn't try a Postgres/
-# Neo4j that no longer exists and complain before falling back to SQLite.
-if [[ "$MODE" == "lite" ]]; then
-  unset AIFORGE_PG_URL AIFORGE_DSN AIFORGE_FORCE_PG AIFORGE_NEO4J_URI NEO4J_URI
-  [[ "${AIFORGE_MEMORY_BACKEND:-}" == "neo4j" ]] && export AIFORGE_MEMORY_BACKEND=sqlite
-fi
-
-# (Docker cleanup — stopping/removing leftover DB-infra — is handled inside the
+# (PG/Neo4j env was already stripped right after .env load; docker cleanup —
+# stopping/removing leftover DB-infra — is handled inside the
 # converge module above, portably; nothing to do here.)
 
 # ── Aider RepoMap (optional but preferred) ────────────────────────────────
