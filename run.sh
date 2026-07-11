@@ -173,6 +173,23 @@ export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
 export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
 export LITELLM_TELEMETRY="${LITELLM_TELEMETRY:-False}"
 
+# ── Maintenance commands (use the existing venv, no uv/deps step, then EXIT) ─
+# ./run.sh --dedupe | --recompact-all | --purge-code
+if [[ -n "${MAINT:-}" ]]; then
+  if [[ ! -x .venv/bin/python ]]; then
+    echo "==> no .venv yet — run ./run.sh once to set it up before a maintenance command" >&2
+    exit 1
+  fi
+  case "$MAINT" in
+    dedupe)    echo "==> dedupe: removing duplicate OKR nodes + chat sessions…"
+               .venv/bin/python -m aiforge_core.memory.migrations --dedupe; exit $? ;;
+    recompact) echo "==> recompact-all: re-LLM every brief + rebuild (minutes)…"
+               .venv/bin/python -m aiforge_core.memory.migrations --recompact-all; exit $? ;;
+    purge)     echo "==> purge-code: dropping code-as-learnings…"
+               .venv/bin/python -m aiforge_core.memory.migrations --purge-code; exit $? ;;
+  esac
+fi
+
 # ── Python env ────────────────────────────────────────────────────────
 if ! command -v uv >/dev/null 2>&1; then
   echo "==> 'uv' not found. Install it: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)" >&2
@@ -226,20 +243,6 @@ if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
     fi
   fi
 fi
-
-# ── Maintenance commands (run in the venv, then EXIT) ──────────────────────
-# ./run.sh --dedupe | --recompact-all | --purge-code
-case "${MAINT:-}" in
-  dedupe)
-    echo "==> dedupe: removing duplicate OKR nodes + chat sessions…"
-    .venv/bin/python -m aiforge_core.memory.migrations --dedupe; exit $? ;;
-  recompact)
-    echo "==> recompact-all: re-LLM every brief + rebuild (may take minutes)…"
-    .venv/bin/python -m aiforge_core.memory.migrations --recompact-all; exit $? ;;
-  purge)
-    echo "==> purge-code: dropping code-as-learnings from a bad drain…"
-    .venv/bin/python -m aiforge_core.memory.migrations --purge-code; exit $? ;;
-esac
 
 # ── AUTO-DETECT + converge to latest (SQLite, no infra Docker) ────────────
 # On ANY invocation, identify a PRIOR install and migrate it to the current
