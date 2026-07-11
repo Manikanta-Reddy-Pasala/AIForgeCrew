@@ -20,6 +20,15 @@ def _slug(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
 
+def _dedup_key(s: str) -> str:
+    """Normalized fingerprint of a solution summary for duplicate detection:
+    lowercased, punctuation stripped, whitespace collapsed, a 'DID:' prefix
+    dropped. Two summaries with the same key are the same solution."""
+    import re
+    s = re.sub(r"^\s*did:\s*", "", (s or "").strip(), flags=re.I)
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", "", s.lower())).strip()
+
+
 def _existing_objective_by_title(g, title: str) -> str | None:
     key = _slug(title)
     for nid, n in g.nodes.items():
@@ -136,6 +145,80 @@ def write_session_node(*, title: str, body: str,
     meta = {"date": _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d"),
             "linked_krs": krs, "title": title}
     return _store.save_node("session", None, meta, body)
+
+
+def record_solution(*, kind: str, summary: str, workspace: str = "",
+                    topic: str = "", tables: "list[str] | None" = None,
+                    services: "list[str] | None" = None,
+                    files: "list[str] | None" = None,
+                    about: "list[str] | None" = None,
+                    ticket: str = "", body: str = "", date: str = "") -> dict:
+    """Record ONE completed feature or bug fix as an OKF ``solution`` node AND a
+    dated ``log.md`` entry — so the OKR bundle is a queryable changelog of what
+    was solved, mapped to the workspace/repo it touched, the topic, and the DB
+    tables + connected services involved.
+
+    ``kind`` is 'feature' or 'fix'. ``date`` (ISO YYYY-MM-DD) is passed in by the
+    caller (no clock here — keeps it reproducible/testable). Soft-fail: never
+    raises into the persistence path."""
+    try:
+        kind = "fix" if str(kind).lower().startswith(("fix", "bug")) else "feature"
+        title = (summary or "").strip().split("\n", 1)[0][:90] or f"{kind}"
+        # DEDUP: never write a second solution node for the same fix. Match on
+        # (ticket + kind) or a normalized summary already recorded — so re-runs
+        # of the learner on the same work don't pile up duplicate S-NN nodes.
+        _norm = _dedup_key(summary)
+        for _d in _store.load_all():
+            if _d.get("type") != "solution":
+                continue
+            _m = _d.get("meta") or {}
+            if (ticket and _m.get("ticket") == ticket and _m.get("kind") == kind) \
+               or (_norm and _dedup_key(_m.get("description") or _m.get("title")
+                                        or "") == _norm):
+                return {"ok": True, "id": _d.get("id"), "path": _d.get("path"),
+                        "deduped": True}
+        meta: dict = {"kind": kind, "title": title,
+                      "description": (summary or "").strip()[:200]}
+        if workspace:
+            meta["workspace"] = workspace
+            meta["resource"] = f"repo:{workspace}"     # OKF `resource` URI
+        if topic:
+            meta["topic"] = topic
+        if tables:
+            meta["tables"] = [str(t).strip() for t in tables if str(t).strip()]
+        if services:
+            meta["services"] = [str(s).strip() for s in services if str(s).strip()]
+        if files:
+            meta["files"] = [str(f).strip() for f in files if str(f).strip()][:20]
+        if ticket:
+            meta["ticket"] = ticket
+        if date:
+            meta["timestamp"] = date
+        # about → OKF links (the symbols/paths/tickets this solution relates to)
+        meta["about"] = list(about or [])
+        r = _store.save_node("solution", None, meta, body or (summary or "").strip())
+        # dated audit trail (reserved OKF log.md, newest-first)
+        if date and r.get("ok"):
+            try:
+                from aiforge_core.memory import okf
+                import os as _os
+                extra = []
+                if workspace:
+                    extra.append(f"workspace:{workspace}")
+                if tables:
+                    extra.append(f"tables:{','.join(tables[:6])}")
+                if services:
+                    extra.append(f"services:{','.join(services[:6])}")
+                entry = (f"[{kind}] {title}"
+                         + (f" ({'; '.join(extra)})" if extra else "")
+                         + (f" · {r.get('id')}"))
+                okf.append_log(_os.path.join(_store.okr_root(), "log.md"),
+                               entry, date=date)
+            except Exception:  # noqa: BLE001 — log is best-effort
+                pass
+        return r
+    except Exception as exc:  # noqa: BLE001 — never break the learner path
+        return {"ok": False, "error": str(exc)}
 
 
 def migrate_from_briefs() -> dict:

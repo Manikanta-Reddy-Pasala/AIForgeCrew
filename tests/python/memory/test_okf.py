@@ -49,3 +49,27 @@ def test_okr_store_writes_reserved_index_without_frontmatter(monkeypatch):
     assert os.path.isfile(idx)
     assert not open(idx).read().startswith("---")       # reserved: NO frontmatter
     assert "/objectives/" in open(idx).read()           # absolute bundle link
+
+
+def test_record_solution_okf_node_log_and_dedup(monkeypatch, tmp_path):
+    """A completed feature/fix → an OKF `solution` node (kind + workspace +
+    topic + tables + services) + a dated log.md entry; a duplicate is skipped."""
+    monkeypatch.setenv("AIFORGE_OKR_ROOT", str(tmp_path))
+    from aiforge_core.memory.okr import author, store
+    r = author.record_solution(
+        kind="fix", summary="MessageRetryService reads priority header",
+        workspace="PosClientBackend", topic="sync",
+        tables=["productTxn"], services=["NATS", "PosServerBackend"],
+        about=["MessageRetryService.java"], ticket="ONE-9", date="2026-07-11")
+    assert r["ok"]
+    node = open(r["path"]).read()
+    for want in ("type: solution", "kind: fix", "workspace: PosClientBackend",
+                 "topic: sync", "productTxn", "NATS", "PosServerBackend"):
+        assert want in node, want
+    log = open(str(tmp_path) + "/log.md").read()
+    assert "## 2026-07-11" in log and "[fix]" in log
+    # dedup: same fix again → no second node
+    author.record_solution(kind="fix", summary="did: MessageRetryService reads priority header",
+                           workspace="PosClientBackend", ticket="ONE-9", date="2026-07-11")
+    sols = [d for d in store.load_all() if d.get("type") == "solution"]
+    assert len(sols) == 1

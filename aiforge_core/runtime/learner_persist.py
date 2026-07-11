@@ -166,6 +166,41 @@ def persist_facts(
     except Exception:  # noqa: BLE001 — md mirror is best-effort
         pass
 
+    # OKR: for each completed feature/fix (the DID / task-history record), author
+    # an OKF `solution` node + a dated log.md entry — a queryable changelog of
+    # what was SOLVED, mapped to the workspace/repo, topic, and the DB tables +
+    # connected services the change touched. Best-effort; never raises.
+    try:
+        import datetime as _dt
+        from aiforge_core.memory.okr import author as _okr_author
+        _date = _dt.datetime.fromtimestamp(
+            event_time, _dt.UTC).strftime("%Y-%m-%d") if event_time \
+            else _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d")
+        for _f in facts:
+            if not isinstance(_f, dict):
+                continue
+            _txt = (_f.get("text") or "").strip()
+            _kind = str(_f.get("kind") or "").lower()
+            _is_sol = (_kind in ("feature", "fix")
+                       or _txt.upper().startswith("DID:")
+                       or _f.get("topic") == "task-history")
+            if not _is_sol or not _txt:
+                continue
+            _summary = _txt[4:].strip() if _txt.upper().startswith("DID:") else _txt
+            # real theme: the fact's topic (unless it's the generic 'task-history')
+            # else the first tag, with any 'topic:' prefix stripped.
+            _tp = _f.get("topic")
+            if _tp == "task-history":
+                _tag = ((_f.get("tags") or [""]) or [""])[0] or ""
+                _tp = _tag.split("topic:", 1)[-1] if _tag else ""
+            _okr_author.record_solution(
+                kind=_kind or "feature", summary=_summary, workspace=repo,
+                topic=_tp or "", tables=_f.get("tables"),
+                services=_f.get("services"), about=_f.get("about"),
+                ticket=ticket_identifier or "", date=_date)
+    except Exception:  # noqa: BLE001 — solution authoring is best-effort
+        pass
+
     # Embedded (zero-infra) path — write learnings to the SQLite memory
     # store instead of Neo4j/AFM. Same result-dict shape, never raises.
     from aiforge_core.memory import backend_select as _bsel

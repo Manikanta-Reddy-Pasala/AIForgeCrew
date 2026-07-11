@@ -14,7 +14,8 @@ from . import nodes as _n
 
 # type → folder name.
 _DIR = {"objective": "objectives", "key_result": "key_results",
-        "learning": "learnings", "session": "sessions"}
+        "learning": "learnings", "session": "sessions",
+        "solution": "solutions"}
 
 
 def okr_root() -> str:

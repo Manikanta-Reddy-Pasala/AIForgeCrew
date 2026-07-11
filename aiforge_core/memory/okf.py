@@ -123,6 +123,40 @@ def append_log(log_path: str, entry: str, *, date: str) -> None:
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
     with open(log_path, "w", encoding="utf-8") as fh:
         fh.write(out)
+    _rotate_log(log_path, out)
+
+
+def _rotate_log(log_path: str, text: str) -> None:
+    """Split an oversized log.md so no single file grows unbounded: keep the
+    newest date sections in log.md, move the older half to a sibling
+    ``log-archive.md`` (newest-first, appended). Cap via AIFORGE_OKF_LOG_MAX_BYTES
+    (default 64 KB). No-op below the cap."""
+    try:
+        cap = int(os.environ.get("AIFORGE_OKF_LOG_MAX_BYTES", "65536"))
+    except (TypeError, ValueError):
+        cap = 65536
+    if cap <= 0 or len(text.encode("utf-8")) <= cap:
+        return
+    # split on date headings (## YYYY-MM-DD) — keep the newest ~half, archive rest
+    parts = re.split(r"(?m)(?=^## \d{4}-\d{2}-\d{2}\b)", text)
+    head = [p for p in parts if not p.strip().startswith("## ")]
+    days = [p for p in parts if p.strip().startswith("## ")]
+    if len(days) < 4:
+        return
+    keep_n = max(1, len(days) // 2)
+    keep, archive = days[:keep_n], days[keep_n:]
+    try:
+        with open(log_path, "w", encoding="utf-8") as fh:
+            fh.write("".join(head) + "".join(keep))
+        arch = os.path.join(os.path.dirname(log_path), "log-archive.md")
+        prev = ""
+        if os.path.isfile(arch):
+            with open(arch, encoding="utf-8") as fh:
+                prev = fh.read()
+        with open(arch, "w", encoding="utf-8") as fh:
+            fh.write("".join(archive) + prev)
+    except Exception:  # noqa: BLE001 — rotation is best-effort
+        pass
 
 
 def render_index(title: str, entries: "list[tuple[str, str]]") -> str:

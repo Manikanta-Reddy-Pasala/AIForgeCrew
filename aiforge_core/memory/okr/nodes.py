@@ -12,10 +12,11 @@ import datetime as _dt
 import json
 import re
 
-NODE_TYPES = ("objective", "key_result", "learning", "session")
+NODE_TYPES = ("objective", "key_result", "learning", "session", "solution")
 
 # id prefixes per type (session ids are date-based, handled in the store).
-_ID_PREFIX = {"objective": "O", "key_result": "KR", "learning": "L"}
+_ID_PREFIX = {"objective": "O", "key_result": "KR", "learning": "L",
+              "solution": "S"}
 
 # Required + optional frontmatter keys per type (beyond `type` + `id`).
 _SCHEMA: dict[str, dict] = {
@@ -25,6 +26,12 @@ _SCHEMA: dict[str, dict] = {
                    "opt": ("title", "status", "metrics")},
     "learning": {"required": ("scope",), "opt": ("title", "category")},
     "session": {"required": (), "opt": ("date", "linked_krs")},
+    # A completed feature or bug fix — what was solved, and the entities it
+    # touched (mapped to workspace/repo, topic, DB tables, connected services).
+    "solution": {"required": ("kind",),
+                 "opt": ("title", "description", "workspace", "topic",
+                         "tables", "services", "files", "resource",
+                         "timestamp", "about", "ticket", "scope")},
 }
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
