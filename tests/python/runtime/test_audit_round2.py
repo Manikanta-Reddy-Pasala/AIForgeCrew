@@ -173,9 +173,15 @@ def test_pipeline_modes_and_retry(monkeypatch) -> None:
     # 3-axis verify fan-out collapsed to ONE single-turn verifier call.
     for judge in ("triage", "validator", "verifier"):
         assert nodes[judge].mode == "single_turn", judge
-    for chatty in ("enhancer", "planner", "doer", "refiner", "feedback",
-                   "learner"):
+    # Chatty LlmAgents preserve conversation history (mode="chat"). The DOER is a
+    # text-doer FunctionNode — it drives its OWN ReAct loop, so chat/single_turn
+    # is meaningless and it carries no `mode` field (pydantic model). Assert that
+    # explicitly rather than expecting a mode on it.
+    for chatty in ("enhancer", "planner", "refiner", "feedback", "learner"):
         assert nodes[chatty].mode == "chat", chatty
+    assert not hasattr(nodes["doer"], "mode"), "doer is a FunctionNode, no mode"
+    # Critical-path chokepoints (incl the doer FunctionNode) carry node-level
+    # retry so a transient blip retries instead of aborting the graph.
     for guarded in ("triage", "enhancer", "planner", "doer", "validator",
                     "verifier"):
         assert nodes[guarded].retry_config is not None, guarded
