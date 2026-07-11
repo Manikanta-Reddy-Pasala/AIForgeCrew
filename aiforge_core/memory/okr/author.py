@@ -314,20 +314,33 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
         decisions: "list[_Decision]" = []
 
     import json as _json
-    try:
-        res = structured_complete(
-            "learner",
-            [{"role": "system", "content": _RECLASSIFY_SYS},
-             {"role": "user", "content":
-                 "REPOS:\n" + ", ".join(sorted(repo_set)) + "\n\nLEARNINGS:\n"
-                 + _json.dumps(items, ensure_ascii=False)}],
-            _Out, max_retries=1, max_tokens=2500, temperature=0.0)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"llm: {exc}"}
+    repo_list = ", ".join(sorted(repo_set))
+    # Small batches: a local model reasons far better over ~8 items than 40 —
+    # a big JSON blob made it skip every project mapping. Chunk + accumulate.
+    all_dec = []
+    for i in range(0, len(items), 8):
+        batch = items[i:i + 8]
+        try:
+            res = structured_complete(
+                "learner",
+                [{"role": "system", "content": _RECLASSIFY_SYS},
+                 {"role": "user", "content":
+                     "REPOS: " + repo_list + "\n\n"
+                     "For each learning below, if its text names a class / "
+                     "service / package / module, MAP it to the repo that owns "
+                     "that name (match by name similarity to a repo, e.g. a "
+                     "'CacheLayer' fact → CacheLayer, a 'SagaTransaction'/saga "
+                     "fact → the server backend, a 'ChartOfAccounts' cache → the "
+                     "cache repo). Only 'noise' for scratch/test-session junk.\n\n"
+                     "LEARNINGS:\n" + _json.dumps(batch, ensure_ascii=False)}],
+                _Out, max_retries=1, max_tokens=1200, temperature=0.0)
+            all_dec.extend(res.decisions)
+        except Exception:  # noqa: BLE001 — a bad batch just keeps those global
+            continue
 
     by_id = {d.get("id"): d for d in glob}
     plan = {"move": [], "delete": [], "keep": []}
-    for dec in res.decisions:
+    for dec in all_dec:
         node = by_id.get(dec.id)
         if not node:
             continue
