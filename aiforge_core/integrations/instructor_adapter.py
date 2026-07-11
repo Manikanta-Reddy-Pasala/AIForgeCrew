@@ -30,10 +30,25 @@ def structured(*, base_url: str, api_key: str, model: str,
     import instructor
     from openai import OpenAI
 
-    cli = instructor.from_openai(
-        OpenAI(base_url=base_url, api_key=api_key or "not-needed",
-               timeout=timeout_s or 120),
-        mode=instructor.Mode.MD_JSON)
+    # The OpenAI SDK builds its own httpx client that, by default, IGNORES
+    # AIForge's TLS policy — so a self-hosted HTTPS/self-signed model endpoint
+    # (AIFORGE_LLM_SSL_VERIFY=false / a CA bundle) fails with a bare "Connection
+    # error" while the litellm fallback connects. Hand OpenAI an httpx client
+    # using the same verify policy litellm uses.
+    _http = None
+    try:
+        import httpx
+        from aiforge_core.net.ssl import httpx_verify
+        _http = httpx.Client(verify=httpx_verify(base_url),
+                             timeout=timeout_s or 120)
+    except Exception:  # noqa: BLE001 — fall back to the SDK default client
+        _http = None
+    _oai_kwargs = {"base_url": base_url, "api_key": api_key or "not-needed",
+                   "timeout": timeout_s or 120}
+    if _http is not None:
+        _oai_kwargs["http_client"] = _http
+    cli = instructor.from_openai(OpenAI(**_oai_kwargs),
+                                 mode=instructor.Mode.MD_JSON)
     kwargs: dict = {}
     if max_tokens:
         kwargs["max_tokens"] = max_tokens

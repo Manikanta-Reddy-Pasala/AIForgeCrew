@@ -141,7 +141,9 @@ def structured_complete(role: str, messages: list[dict],
                     pass
                 return res
             except Exception as exc:  # noqa: BLE001 — fall back to our loop
-                log.info("instructor path failed (%s) — using fallback loop",
+                log.info("instructor path failed [role=%s base_url=%s]: %s: %s "
+                         "— using fallback loop", role,
+                         getattr(ep, "base_url", "?"), type(exc).__name__,
                          str(exc)[:200])
         elif mode == "instructor":
             raise ImportError(

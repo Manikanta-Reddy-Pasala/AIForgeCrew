@@ -331,3 +331,26 @@ def context_for(url: str | None) -> ssl.SSLContext | None:
 
     # Public host, or verify left on: full default verification.
     return ssl.create_default_context()
+
+
+def httpx_verify(url: str | None = None):
+    """The ``verify`` value to hand an ``httpx.Client`` (and thus the OpenAI /
+    instructor SDK) for an AIForge self-hosted endpoint, so those SDKs honour the
+    SAME TLS policy litellm does — a CA bundle, or a scoped insecure context for
+    a trusted internal host with AIFORGE_LLM_SSL_VERIFY=false. Returns
+    True | False | <ssl.SSLContext>. httpx accepts all three."""
+    ctx = context_for(url)
+    if ctx is not None:                     # https → CA-anchored or insecure ctx
+        return ctx
+    ca = _ca_bundle()
+    if ca:
+        return ca
+    # http:// (or unknown) — but if the operator globally disabled verification
+    # for an internal box, honour it so a self-signed https base_url still works.
+    if not _verify_enabled():
+        import ssl as _s
+        c = _s.create_default_context()
+        c.check_hostname = False
+        c.verify_mode = _s.CERT_NONE
+        return c
+    return True
