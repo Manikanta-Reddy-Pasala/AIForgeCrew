@@ -348,6 +348,26 @@ def _start_daily_reindex() -> None:
 
     _pd.register("memory-dedup", _dedupe_memory,
                  at_hour=max(0, min(23, hour + 3)))
+
+    # Daily FULL RECOMPACT — the hourly chat-compact only folds briefs with NEW
+    # live captures; a fact-only brief whose topic saw no new note keeps raw
+    # Facts in its inbox, never LLM-consolidated into prose. Once a day, force a
+    # full recompact so EVERY brief is re-folded through the model (dedupe /
+    # supersede / re-map its accumulated facts), then dedupe + repo-profiles +
+    # reingest. Heavy (LLM per brief) → daily, off-peak, opt-out via
+    # AIFORGE_RECOMPACT_DAILY=0. Serializes against manual compact-all on
+    # _COMPACT_LOCK, so overlap is safe.
+    def _recompact_all() -> None:
+        try:
+            from aiforge_core.memory import migrations
+            r = migrations.force_recompact_all()
+            _af_log.info("daily recompact-all: %s", r)
+        except Exception as exc:  # noqa: BLE001
+            _af_log.warning("daily recompact-all failed: %s", exc)
+
+    if os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") != "0":
+        _pd.register("recompact-all", _recompact_all,
+                     at_hour=max(0, min(23, hour + 4)))
     _pd.start()
 
 
