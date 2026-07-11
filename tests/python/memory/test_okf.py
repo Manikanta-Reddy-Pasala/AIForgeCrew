@@ -42,7 +42,7 @@ def test_okf_rules_injected_into_producers():
 
 
 def test_okr_store_writes_reserved_index_without_frontmatter(monkeypatch):
-    monkeypatch.setenv("AIFORGE_OKR_ROOT", tempfile.mkdtemp())
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", tempfile.mkdtemp())
     from aiforge_core.memory.okr import store
     store.save_node("objective", None, {"title": "O"}, "body")
     idx = os.path.join(store.okr_root(), "index.md")
@@ -54,7 +54,7 @@ def test_okr_store_writes_reserved_index_without_frontmatter(monkeypatch):
 def test_record_solution_okf_node_log_and_dedup(monkeypatch, tmp_path):
     """A completed feature/fix → an OKF `solution` node (kind + workspace +
     topic + tables + services) + a dated log.md entry; a duplicate is skipped."""
-    monkeypatch.setenv("AIFORGE_OKR_ROOT", str(tmp_path))
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
     from aiforge_core.memory.okr import author, store
     r = author.record_solution(
         kind="fix", summary="MessageRetryService reads priority header",
@@ -66,7 +66,8 @@ def test_record_solution_okf_node_log_and_dedup(monkeypatch, tmp_path):
     for want in ("type: solution", 'kind: "fix"', "PosClientBackend",
                  "sync", "productTxn", "NATS", "PosServerBackend"):
         assert want in node, want
-    log = open(str(tmp_path) + "/log.md").read()
+    import os as _os
+    log = open(_os.path.join(store.okr_root(), "log.md")).read()
     assert "## 2026-07-11" in log and "[fix]" in log
     # dedup: same fix again → no second node
     author.record_solution(kind="fix", summary="did: MessageRetryService reads priority header",
