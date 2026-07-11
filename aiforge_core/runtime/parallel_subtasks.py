@@ -3203,6 +3203,39 @@ def _fail_count(output: str) -> int:
     return 0
 
 
+_SRC_EXTS = (".py", ".java", ".go", ".js", ".mjs", ".ts", ".tsx", ".c", ".cc",
+             ".cpp", ".h", ".hpp", ".rs", ".rb", ".php", ".cs", ".kt", ".swift",
+             ".scala", ".sh")
+
+
+def _change_in_error(cwd: str, output: str) -> bool:
+    """True if any source file THIS turn changed is named in the test/build
+    error — i.e. the failure plausibly stems from the change (so repair it).
+    False means the harness error references none of the changed files, so it's
+    pre-existing/unrelated. Best-effort; True on any doubt (git unusable) so we
+    keep the normal repair loop rather than wrongly skip a real regression."""
+    import os as _os
+    import subprocess as _sp
+    out = output or ""
+    try:
+        r = _sp.run(["git", "-C", cwd, "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return True                       # git unusable → don't skip
+        changed = [ln[3:].strip() for ln in (r.stdout or "").splitlines()
+                   if ln.strip() and ln[3:].strip().endswith(_SRC_EXTS)]
+    except Exception:  # noqa: BLE001
+        return True
+    if not changed:
+        return False                          # nothing source changed → not the cause
+    for f in changed:
+        f = f.strip().strip('"')
+        if f and (f in out or _os.path.basename(f) in out
+                  or _os.path.splitext(_os.path.basename(f))[0] in out):
+            return True
+    return False
+
+
 def _prune_dead_python_imports(cwd: str) -> list[str]:
     """DETERMINISTIC pre-fix (general Python): remove `from <local_mod> import X`
     names — and matching `__all__` entries — where X isn't defined at MODULE
@@ -3414,6 +3447,26 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
     if ok or os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
         result["rep"] = build_and_test_report(cwd)
         result["ok"] = ok            # authoritative (matches the test runner)
+        return
+
+    # PRE-EXISTING-FAILURE GATE: the harness ERRORED before any test ran
+    # (0 parsed failures — a collection/import error), the config in THIS tree
+    # parses fine, and NONE of this turn's changed files appear in the error.
+    # That failure is pre-existing / environmental (e.g. an unrelated module the
+    # repo can't import), NOT caused by the change — so the 12-round repair loop
+    # would churn qwen against something it can't fix and that isn't the change's
+    # fault. Stop: report ok=None (not a regression, not verified). Opt out with
+    # AIFORGE_RECONCILE_SKIP_PREEXISTING=0.
+    if os.environ.get("AIFORGE_RECONCILE_SKIP_PREEXISTING", "1") not in ("0", "false") \
+            and _fail_count(output) in (0, 999) and not _broken_project_config(cwd) \
+            and not _change_in_error(cwd, output):
+        yield {"type": "thought", "role": "reconciler",
+               "text": "⚠ tests don't collect on this repo independent of your "
+                       "change (pre-existing import/config error, not referenced "
+                       "by your edit) — skipping the repair loop; your change is "
+                       "not the cause."}
+        result["rep"] = build_and_test_report(cwd)
+        result["ok"] = None          # pre-existing failure — not a regression
         return
 
     # CONFIG-VALIDITY GATE (live-e2e finding): ONE unterminated string in a
