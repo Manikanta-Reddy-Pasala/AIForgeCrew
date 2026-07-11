@@ -88,15 +88,29 @@ def _ensure_skill_workflow_dirs() -> None:
 
 
 @app.on_event("startup")
+# Postgres/Neo4j pointers from a prior HYBRID setup that may still linger in
+# runtime.env — this build is SQLite-only, so restoring them would make tickets/
+# chat/memory try a Postgres/Neo4j that no longer exists ("Postgres unreachable"
+# spam). Never restore them (unless AIFORGE_KEEP_PG=1 for a real external PG).
+_RUNTIME_ENV_DB_KEYS = frozenset({
+    "AIFORGE_PG_URL", "AIFORGE_DSN", "AIFORGE_FORCE_PG", "AIFORGE_PGMEM_DSN",
+    "AIFORGE_NEO4J_URI", "NEO4J_URI", "AIFORGE_NEO4J_USER",
+    "AIFORGE_NEO4J_PASSWORD", "AIFORGE_NEO4J_PASS",
+    "AIFORGE_REQUIRE_DATA_BACKEND", "AIFORGE_MEMORY_BACKEND",
+})
+
+
 def _load_runtime_env() -> None:
     """Restore UI-persisted toggles (runtime.env) into the process env on boot
     using a plain KEY=VALUE parser — NOT a shell source — so a value can never
     be executed. A real env var / project .env already in the environment WINS
-    (setdefault), keeping them the operator's explicit escape hatch."""
+    (setdefault), keeping them the operator's explicit escape hatch. Stale
+    Postgres/Neo4j backend keys are SKIPPED (single mode is SQLite)."""
     try:
         path = _RUNTIME_ENV_PATH
         if not os.path.isfile(path):
             return
+        _keep_pg = os.environ.get("AIFORGE_KEEP_PG") == "1"
         with open(path) as f:
             for raw in f:
                 line = raw.strip()
@@ -104,6 +118,8 @@ def _load_runtime_env() -> None:
                     continue
                 k, _, v = line.partition("=")
                 k = k.strip()
+                if k in _RUNTIME_ENV_DB_KEYS and not _keep_pg:
+                    continue                          # SQLite-only; ignore stale DB pointers
                 if k and k not in os.environ:        # don't clobber real env/.env
                     os.environ[k] = v.strip()
     except Exception:  # noqa: BLE001

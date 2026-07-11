@@ -152,27 +152,34 @@ def _remove_db_infra() -> dict:
     return removed
 
 
+# Backend-pointer keys that belong to the removed hybrid mode. This build is
+# SQLite-only; neutralise them wherever they linger so nothing tries a gone PG.
+_DB_KEY_RE = re.compile(
+    r"^\s*(AIFORGE_PG_URL|AIFORGE_DSN|AIFORGE_PGMEM_DSN|AIFORGE_FORCE_PG|"
+    r"AIFORGE_MEMORY_BACKEND|AIFORGE_NEO4J_URI|NEO4J_URI|AIFORGE_NEO4J_USER|"
+    r"AIFORGE_NEO4J_PASSWORD|AIFORGE_NEO4J_PASS|AIFORGE_REQUIRE_DATA_BACKEND)\s*=")
+
+
 def _clear_pg_from_env() -> None:
-    """Comment out AIFORGE_PG_URL / DSN / FORCE_PG / MEMORY_BACKEND=neo4j lines in
-    a repo .env so a future run doesn't re-point the app at the removed PG."""
-    for fn in ("aiforge.env", ".env"):
-        p = _repo_root() / fn
+    """Comment out stale Postgres/Neo4j backend lines in the repo .env AND the
+    UI-persisted ~/.aiforge/runtime.env, so a future boot never re-points the
+    SQLite-only app at a removed Postgres/Neo4j."""
+    targets = [_repo_root() / "aiforge.env", _repo_root() / ".env",
+               _config_dir() / "runtime.env"]
+    for p in targets:
         if not p.is_file():
             continue
         try:
-            lines = p.read_text(encoding="utf-8").splitlines()
             out, changed = [], False
-            for ln in lines:
-                if re.match(r"^\s*(AIFORGE_PG_URL|AIFORGE_DSN|AIFORGE_FORCE_PG|"
-                            r"AIFORGE_MEMORY_BACKEND)\s*=", ln) \
-                        and not ln.lstrip().startswith("#"):
-                    out.append("# [converge→lite] " + ln)
+            for ln in p.read_text(encoding="utf-8").splitlines():
+                if _DB_KEY_RE.match(ln) and not ln.lstrip().startswith("#"):
+                    out.append("# [converge→sqlite] " + ln)
                     changed = True
                 else:
                     out.append(ln)
             if changed:
                 p.write_text("\n".join(out) + "\n", encoding="utf-8")
-                log.info("converge: neutralised PG/Neo4j lines in %s", fn)
+                log.info("converge: neutralised PG/Neo4j lines in %s", p.name)
         except Exception:  # noqa: BLE001
             pass
 
@@ -181,6 +188,7 @@ def converge(*, force: bool = False) -> dict:
     """Run the convergence once. Returns a summary; never raises."""
     if os.environ.get("AIFORGE_AUTO_MIGRATE", "1").lower() in ("0", "false", "no"):
         return {"skipped": "disabled"}
+    _clear_pg_from_env()               # SQLite-only: neutralise stale PG/Neo4j env always
     if _marker().exists() and not force:
         # already migrated → but if DB-infra containers still linger (a prior run
         # only stopped them, or docker came up again), remove them now: the data
