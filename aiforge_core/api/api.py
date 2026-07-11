@@ -166,6 +166,21 @@ def _check_tool_parity() -> None:
         pass
 
 
+@app.on_event("startup")
+def _migrate_okr_scoped() -> None:
+    """One-shot idempotent migration: move any legacy FLAT okr/<dir>/ nodes into
+    the scope-segregated layout (global/ + projects/<workspace>/). No-op once
+    migrated. Never blocks startup."""
+    try:
+        from aiforge_core.memory.okr import store as _okrs
+        r = _okrs.migrate_scoped()
+        if r.get("moved"):
+            _af_log.info("okr scope migration: moved %d node(s); scopes=%s",
+                         r["moved"], r.get("scopes"))
+    except Exception:  # noqa: BLE001 — migration is best-effort
+        pass
+
+
 def _start_jobs_scheduler() -> None:
     """Scheduled-jobs tick loop — daemon thread, same pattern as the
     other background workers. AIFORGE_JOBS_DISABLE=1 skips it."""

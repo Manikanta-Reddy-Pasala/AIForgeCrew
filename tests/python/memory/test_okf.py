@@ -74,3 +74,31 @@ def test_record_solution_okf_node_log_and_dedup(monkeypatch, tmp_path):
                            workspace="PosClientBackend", ticket="ONE-9", date="2026-07-11")
     sols = [d for d in store.load_all() if d.get("type") == "solution"]
     assert len(sols) == 1
+
+
+def test_okr_scope_segregation_global_vs_project(monkeypatch, tmp_path):
+    """Solutions/learnings segregate into global/ vs projects/<workspace>/ by
+    derived scope; ids stay globally unique; index groups by scope; a legacy
+    flat node migrates to its scoped home."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
+    import os
+    from aiforge_core.memory.okr import store as s
+    # legacy flat node (pre-segregation) with a workspace
+    os.makedirs(os.path.join(s.okr_root(), "solutions"))
+    open(os.path.join(s.okr_root(), "solutions", "S-01.md"), "w").write(
+        '---\ntype: solution\nid: "S-01"\nkind: "fix"\nworkspace: "RepoA"\n---\nx')
+    s.save_node("solution", None, {"kind": "feature", "title": "T",
+                                   "workspace": "RepoB"}, "b")     # → projects/RepoB
+    s.save_node("learning", None, {"scope": "global", "title": "G"}, "g")  # → global
+    s.save_node("learning", None, {"scope": "repo:RepoA", "title": "R"}, "r")  # RepoA
+    assert s.next_id("solution") == "S-03"       # globally unique (S-01+S-02 taken)
+    r = s.migrate_scoped()
+    assert r["moved"] == 1                                    # the flat S-01 moved
+    assert set(s.okr_scopes()) == {"RepoA", "RepoB"}
+    assert (s.read_node("solution", "S-01") or {})["path"].endswith(
+        "projects/RepoA/solutions/S-01.md")
+    assert sorted(d["id"] for d in s.load_all("global")) == ["L-01"]
+    assert sorted(d["id"] for d in s.load_all("RepoA")) == ["L-02", "S-01"]
+    idx = open(os.path.join(s.okr_root(), "index.md")).read()
+    assert "## Global" in idx and "## RepoA" in idx and "## RepoB" in idx
+    assert not idx.startswith("---")                          # reserved: no frontmatter
