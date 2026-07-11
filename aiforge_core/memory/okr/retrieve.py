@@ -105,12 +105,42 @@ def compile_prompt(ctx: dict) -> str:
     return "\n\n".join(parts)
 
 
-def _scoped_block(repo: str | None, *, max_global: int = 10,
-                  max_repo_learn: int = 12, max_repo_sol: int = 8) -> str:
-    """SCOPE-aware memory: universal (global) rules + THIS repo's learnings and
-    recent solutions — and nothing from OTHER projects. This is what stops every
-    task from getting every document: a repo sees its own knowledge + the truly
-    global rules, not the whole bundle."""
+def _tokens(text: str) -> set:
+    import re
+    return set(re.findall(r"[a-z0-9]{4,}", (text or "").lower()))
+
+
+def _rank_by_query(nodes: list, query: str, top_k: int,
+                   recent_key=None) -> list:
+    """Return the ``top_k`` nodes most RELEVANT to ``query`` — token overlap over
+    each node's title/category/body. No query (or no overlap at all) falls back
+    to ``recent_key`` order (or the given order) so context is never empty. This
+    is what makes read return RELATED documents per task, not the whole scope."""
+    if not nodes:
+        return []
+    q = _tokens(query)
+    if q:
+        def _score(d):
+            m = d.get("meta") or {}
+            txt = (str(m.get("title") or "") + " " + str(m.get("category") or "")
+                   + " " + (d.get("body") or ""))
+            return len(q & _tokens(txt))
+        scored = sorted(nodes, key=_score, reverse=True)
+        if _score(scored[0]) > 0:                       # at least one relevant
+            return [d for d in scored if _score(d) > 0][:top_k]
+    # no query / nothing matched → recency (or original) order
+    if recent_key:
+        nodes = sorted(nodes, key=recent_key, reverse=True)
+    return nodes[:top_k]
+
+
+def _scoped_block(repo: str | None, *, query: str = "", max_global: int = 8,
+                  max_repo_learn: int = 10, max_repo_sol: int = 6) -> str:
+    """SCOPE- AND QUERY-aware memory: the global rules + THIS repo's learnings
+    and solutions that are most RELEVANT to ``query`` — not every document in the
+    scope, and nothing from OTHER projects. Scope stops cross-project leakage;
+    the query ranking stops dumping the whole bundle when only a few notes
+    matter."""
     try:
         from . import store
     except Exception:  # noqa: BLE001
@@ -122,25 +152,26 @@ def _scoped_block(repo: str | None, *, max_global: int = 10,
         head = (m.get("title") or (d.get("body") or "").strip().split("\n", 1)[0])
         return f"- {('[' + cat + '] ') if cat else ''}{_cap(head, 160)}"
 
+    def _recency(d):
+        return ((d.get("meta") or {}).get("timestamp") or "", d.get("id") or "")
+
     parts: list[str] = []
     gl = [d for d in store.load_all("global") if d.get("type") == "learning"]
+    gl = _rank_by_query(gl, query, max_global)
     if gl:
         parts.append("<GLOBAL_RULES>\n"
-                     + "\n".join(_line(d) for d in gl[:max_global])
-                     + "\n</GLOBAL_RULES>")
+                     + "\n".join(_line(d) for d in gl) + "\n</GLOBAL_RULES>")
     if repo:
         proj = store.load_all(repo)
-        rl = [d for d in proj if d.get("type") == "learning"]
-        sols = [d for d in proj if d.get("type") == "solution"]
-        # recent solutions first (by timestamp, else id)
-        sols.sort(key=lambda d: ((d.get("meta") or {}).get("timestamp") or "",
-                                 d.get("id") or ""), reverse=True)
+        rl = _rank_by_query([d for d in proj if d.get("type") == "learning"],
+                            query, max_repo_learn, recent_key=_recency)
+        sols = _rank_by_query([d for d in proj if d.get("type") == "solution"],
+                              query, max_repo_sol, recent_key=_recency)
         body: list[str] = []
         if rl:
-            body.append("Learnings:\n" + "\n".join(_line(d) for d in rl[:max_repo_learn]))
+            body.append("Learnings:\n" + "\n".join(_line(d) for d in rl))
         if sols:
-            body.append("Recently solved:\n" + "\n".join(
-                _line(d) for d in sols[:max_repo_sol]))
+            body.append("Recently solved:\n" + "\n".join(_line(d) for d in sols))
         if body:
             parts.append(f"<PROJECT_MEMORY repo=\"{repo}\">\n"
                          + "\n\n".join(body) + "\n</PROJECT_MEMORY>")
@@ -148,15 +179,16 @@ def _scoped_block(repo: str | None, *, max_global: int = 10,
 
 
 def context_block(kr_id: str | None = None, *, repo: str | None = None,
-                  **kw) -> str:
-    """One-shot: the (active) KR's goal context PLUS scope-aware memory — global
-    rules + THIS ``repo``'s learnings/solutions, never other projects'. This is
-    what the context bundle injects. Never raises — returns '' on any error."""
+                  query: str = "", **kw) -> str:
+    """One-shot: the (active) KR's goal context PLUS scope- and query-aware
+    memory — the global rules + THIS ``repo``'s learnings/solutions most RELEVANT
+    to ``query``, never other projects' and never the whole bundle. This is what
+    the context bundle injects. Never raises — returns '' on any error."""
     try:
         base = compile_prompt(retrieve(kr_id, **kw))
     except Exception:  # noqa: BLE001
         base = ""
-    scoped = _scoped_block(repo)
+    scoped = _scoped_block(repo, query=query)
     return "\n\n".join(x for x in (base, scoped) if x)
 
 

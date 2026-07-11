@@ -19,8 +19,27 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 
 from . import nodes as _n
+
+# Serialize node mutations (write + de-dupe + index) so two concurrent chat
+# turns authoring solutions can't interleave a dedup-miss into a double write or
+# clobber the index. Re-entrant: save_node → _write_index → load_all all under it.
+_LOCK = threading.RLock()
+
+# Parse cache: load_all re-parses EVERY node file on every call (graph.build,
+# retrieve×2/turn, dedup, the index rewrite). Cache the full parsed set keyed on
+# a cheap directory signature (newest mtime + file count → catches add/edit/
+# delete); scope filtering runs in-memory over the cached list.
+_CACHE: dict = {"sig": None, "all": None}
+
+
+def _invalidate() -> None:
+    """Drop the parse cache — called after any node file mutation so the next
+    read reparses (deterministic; not reliant on mtime granularity)."""
+    with _LOCK:
+        _CACHE["sig"] = None
 
 # type → folder name.
 _DIR = {"objective": "objectives", "key_result": "key_results",
@@ -139,33 +158,38 @@ def _list_files(node_type: str) -> list[str]:
 
 
 def save_node(node_type: str, node_id: str | None, meta: dict,
-              body: str = "") -> dict:
+              body: str = "", *, reindex: bool = True) -> dict:
     """Render + write a node atomically. ``node_id=None`` allocates one.
-    Returns ``{ok, id, path}`` (soft-fail)."""
+    ``reindex=False`` skips the (O(N)) index rewrite — bulk callers pass it and
+    call :func:`_write_index` ONCE at the end instead of N times. Returns
+    ``{ok, id, path, scope}`` (soft-fail)."""
     if node_type not in _n.NODE_TYPES:
         return {"ok": False, "error": f"unknown type {node_type!r}"}
     import contextlib
-    nid = str(node_id or next_id(node_type))
-    scope = _scope_of(node_type, meta)               # global "" or a project
-    path = os.path.join(type_dir(node_type, scope), _filename(node_type, nid))
-    # De-dupe across scopes: if this id already lives elsewhere (a legacy flat
-    # file, or a different scope because a workspace was just added), drop the
-    # stale copy so the node exists in exactly ONE place.
-    for old in _find_node_files(node_type, nid):
-        if os.path.abspath(old) != os.path.abspath(path):
+    with _LOCK:
+        nid = str(node_id or next_id(node_type))
+        scope = _scope_of(node_type, meta)           # global "" or a project
+        path = os.path.join(type_dir(node_type, scope), _filename(node_type, nid))
+        # De-dupe across scopes: if this id already lives elsewhere (a legacy
+        # flat file, or a different scope because a workspace was just added),
+        # drop the stale copy so the node exists in exactly ONE place.
+        for old in _find_node_files(node_type, nid):
+            if os.path.abspath(old) != os.path.abspath(path):
+                with contextlib.suppress(OSError):
+                    os.unlink(old)
+        text = _n.render_node(node_type, nid, meta, body)
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(tmp, path)
+        except OSError as exc:
             with contextlib.suppress(OSError):
-                os.unlink(old)
-    text = _n.render_node(node_type, nid, meta, body)
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, path)
-    except OSError as exc:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        return {"ok": False, "error": f"write failed: {exc}"}
-    _write_index()   # keep the reserved OKF navigation file fresh
+                os.unlink(tmp)
+            return {"ok": False, "error": f"write failed: {exc}"}
+        _invalidate()        # a node changed → next read reparses
+        if reindex:
+            _write_index()   # keep the reserved OKF navigation file fresh
     return {"ok": True, "id": nid, "path": path, "scope": scope or "global"}
 
 
@@ -196,8 +220,10 @@ def _write_index() -> str:
                              + (f" — {hook}" if hook else ""))
             lines.append("")
         idx = os.path.join(root, "index.md")
-        with open(idx, "w", encoding="utf-8") as fh:
+        tmp = idx + ".tmp"                     # atomic: never a half-written index
+        with open(tmp, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines).rstrip() + "\n")
+        os.replace(tmp, idx)
         return idx
     except Exception:  # noqa: BLE001 — index is navigation, never block a save
         return ""
@@ -218,19 +244,30 @@ def read_node(node_type: str, node_id: str) -> dict | None:
     return None
 
 
-def load_all(scope: str | None = None) -> list[dict]:
-    """Every OKR node across all scopes (parsed). ``scope`` filters: None = all,
-    "global" = the global subtree only, "<workspace>" = that project only.
-    Each dict is ``{type, id, meta, body, path}``. Skips unreadable files."""
-    want = None if scope is None else (_scope_slug(scope) or "global")
+def _dir_signature() -> tuple:
+    """A CHEAP fingerprint of the whole bundle: (newest mtime, .md count).
+    Changes on any add / edit / delete, so it invalidates the parse cache
+    without re-reading file contents (stat only)."""
+    root = okr_root()
+    newest = 0.0
+    n = 0
+    for dp, _dn, fns in (os.walk(root) if os.path.isdir(root) else []):
+        for f in fns:
+            if f.endswith(".md"):
+                n += 1
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(dp, f)))
+                except OSError:
+                    pass
+    # include the ROOT so two different memory dirs with the same (mtime, count)
+    # never collide (test isolation / a re-pointed AIFORGE_MEMORY_MD_DIR).
+    return (root, round(newest, 3), n)
+
+
+def _load_all_uncached() -> list[dict]:
     out: list[dict] = []
     for t in _n.NODE_TYPES:
         for f in _list_files(t):
-            if want is not None:
-                lbl = _scope_label_from_path(f)
-                lbl = "global" if lbl == "Global" else _scope_slug(lbl)
-                if lbl != want:
-                    continue
             try:
                 with open(f, encoding="utf-8") as fh:
                     d = _n.parse_node(fh.read())
@@ -242,6 +279,32 @@ def load_all(scope: str | None = None) -> list[dict]:
                 out.append(d)
             except OSError:
                 continue
+    return out
+
+
+def load_all(scope: str | None = None) -> list[dict]:
+    """Every OKR node across all scopes (parsed). ``scope`` filters: None = all,
+    "global" = the global subtree only, "<workspace>" = that project only.
+    Each dict is ``{type, id, meta, body, path}``. Skips unreadable files.
+
+    The full parse is CACHED on a cheap dir signature — so repeated reads in a
+    turn (retrieve does global+repo; the index rewrite; dedup) parse the files
+    at most once until something changes. Scope filtering runs in-memory."""
+    with _LOCK:
+        sig = _dir_signature()
+        if _CACHE["sig"] != sig or _CACHE["all"] is None:
+            _CACHE["all"] = _load_all_uncached()
+            _CACHE["sig"] = sig
+        data = _CACHE["all"]
+    if scope is None:
+        return list(data)
+    want = _scope_slug(scope) or "global"
+    out = []
+    for d in data:
+        lbl = _scope_label_from_path(d.get("path", ""))
+        lbl = "global" if lbl == "Global" else _scope_slug(lbl)
+        if lbl == want:
+            out.append(d)
     return out
 
 
@@ -279,6 +342,7 @@ def migrate_scoped() -> dict:
                 os.rmdir(legacy)
         except OSError:
             pass
+    _invalidate()          # files moved on disk → drop stale parse cache
     _write_index()
     return {"ok": True, "moved": moved, "scopes": okr_scopes()}
 

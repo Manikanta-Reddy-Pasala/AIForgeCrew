@@ -144,3 +144,43 @@ def test_context_block_scoped_no_cross_project_leak(monkeypatch, tmp_path):
     blk = R.context_block(repo="RepoA")
     assert "univ rule" in blk and "A rule" in blk
     assert "B SECRET" not in blk               # no cross-project leak
+
+
+def test_okr_load_all_cache_and_deferred_index(monkeypatch, tmp_path):
+    """load_all caches the full parse on a dir signature (invalidated by a
+    write); reindex=False skips the per-node index rewrite so bulk callers pay
+    it once."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
+    import os
+    from aiforge_core.memory.okr import store as s
+    s.save_node("learning", None, {"scope": "global", "title": "A"}, "a")
+    a = s.load_all()
+    assert a is not s.load_all()          # returns a fresh list copy…
+    assert s._CACHE["all"] is not None    # …but the underlying parse is cached
+    # a new write changes the signature → cache refreshes, new node visible
+    s.save_node("learning", None, {"scope": "repo:RepoX", "workspace": "RepoX"}, "b")
+    assert len(s.load_all()) == 2
+    # reindex=False: index NOT rewritten by the save itself
+    idx = os.path.join(s.okr_root(), "index.md")
+    os.remove(idx)
+    s.save_node("learning", None, {"scope": "global", "title": "C"}, "c",
+                reindex=False)
+    assert not os.path.exists(idx)        # deferred — no index write
+    s._write_index()
+    assert os.path.exists(idx) and "## RepoX" in open(idx).read()
+
+
+def test_context_block_query_relevance_returns_related_only(monkeypatch, tmp_path):
+    """Read returns only documents RELATED to the query, not the whole scope."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
+    import importlib
+    from aiforge_core.memory.okr import store
+    R = importlib.import_module("aiforge_core.memory.okr.retrieve")
+    for cat, body in [("sync", "sync retries use exponential backoff resilience4j"),
+                      ("cache", "cache eviction uses TTL and size limits"),
+                      ("auth", "JWT tokens expire after 15 minutes")]:
+        store.save_node("learning", None,
+                        {"scope": "repo:R", "workspace": "R", "category": cat}, body)
+    blk = R.context_block(repo="R", query="fix the cache eviction bug")
+    assert "eviction" in blk                      # the related doc surfaces
+    assert "resilience4j" not in blk and "JWT" not in blk   # unrelated filtered

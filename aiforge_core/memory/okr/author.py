@@ -122,7 +122,7 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None,
         if not oid:
             r = _store.save_node("objective", None,
                                  {"title": o.title.strip(), "status": "active"},
-                                 o.context.strip())
+                                 o.context.strip(), reindex=False)
             oid = r.get("id")
             made["objectives"].append(oid)
         title_to_oid[_slug(o.title)] = oid
@@ -138,7 +138,7 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None,
             meta["parent_objective"] = oid
         if kr.metrics.strip():
             meta["metrics"] = kr.metrics.strip()
-        r = _store.save_node("key_result", None, meta, "")
+        r = _store.save_node("key_result", None, meta, "", reindex=False)
         made["key_results"].append(r.get("id"))
     for ln in res.learnings:
         if not ln.rule.strip():
@@ -161,8 +161,11 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None,
             if tp:
                 meta["category"] = tp
                 meta["tags"] = [f"topic:{tp}"]
-        r = _store.save_node("learning", None, meta, ln.rule.strip())
+        r = _store.save_node("learning", None, meta, ln.rule.strip(),
+                             reindex=False)
         made["learnings"].append(r.get("id"))
+    if made["objectives"] or made["key_results"] or made["learnings"]:
+        _store._write_index()          # one index rewrite for the whole batch
     made["ok"] = True
     return made
 
@@ -385,7 +388,8 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
         meta = dict(node.get("meta") or {})
         meta["scope"] = f"repo:{repo}"
         meta["workspace"] = repo               # → projects/<repo>/ via _scope_of
-        r = _store.save_node("learning", nid, meta, node.get("body") or "")
+        r = _store.save_node("learning", nid, meta, node.get("body") or "",
+                             reindex=False)
         if r.get("ok"):
             moved += 1
     # REVERSIBLE delete: noise nodes MOVE to okr/.trash/ (not unlink) so a
@@ -396,6 +400,7 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
             _os.makedirs(trash, exist_ok=True)
             _sh.move(by_id[nid]["path"], _os.path.join(trash, f"{nid}.md"))
             deleted += 1
+    _store._invalidate()       # nodes moved to .trash → drop stale parse cache
     _store._write_index()
     return {"ok": True, "moved": moved, "deleted_to_trash": deleted,
             "kept": len(plan["keep"]), "scopes": _store.okr_scopes()}
@@ -436,9 +441,11 @@ def migrate_from_briefs() -> dict:
         r = _store.save_node("learning", None,
                              {"scope": "global", "category": topic,
                               "title": f"{topic} knowledge", "tags": [f"topic:{topic}"]},
-                             body)
+                             body, reindex=False)
         if r.get("ok"):
             made += 1
+    if made:
+        _store._write_index()          # one rewrite for the whole migration
     return {"ok": True, "migrated": made, "topics": len(facts_by_topic)}
 
 
