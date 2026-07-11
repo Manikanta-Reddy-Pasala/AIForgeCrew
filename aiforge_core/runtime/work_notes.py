@@ -627,14 +627,24 @@ def _consolidate_once(existing: dict, new_content: str, role: str) -> dict:
 
 
 def consolidate(existing: dict, new_content: str, *, role: str = "learner",
-                max_input_chars: int = 12000) -> dict:
+                max_input_chars: int | None = None) -> dict:
     """Fold ``new_content`` into ``existing`` OKR sections via an LLM that
     dedupes, resolves contradictions, and maps each item to its section.
 
     ``existing`` is a sections dict (objective:str, the rest lists — missing
     keys tolerated). Large ``new_content`` is cut on STRUCTURE boundaries
     (chonkie) and folded chunk-by-chunk. Returns a consolidated sections dict;
-    degrades to a deterministic union+dedupe merge if no model is reachable."""
+    degrades to a deterministic union+dedupe merge if no model is reachable.
+
+    ``max_input_chars`` is the total per-call input window (existing JSON + one
+    chunk). Defaults from AIFORGE_CONSOLIDATE_INPUT_CHARS (48000) — modern
+    long-context models swallow that whole, and a conservative 12k window made
+    a large brief collapse to a 1k budget → dozens of tiny chunks (slow + poor
+    distillation)."""
+    import os as _os
+    if max_input_chars is None:
+        max_input_chars = int(
+            _os.environ.get("AIFORGE_CONSOLIDATE_INPUT_CHARS", "48000"))
     cur = _sections_dict(**{k: existing.get(k) for k in
                             ("objective", "key_results", "facts", "links",
                              "learnings") if k in existing}) \
@@ -650,7 +660,9 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
 
     # Budget the per-call input: reserve room for the existing sections JSON.
     reserve = len(json.dumps(cur, ensure_ascii=False))
-    budget = max(1000, max_input_chars - reserve)
+    # Never collapse to a sliver: a big existing brief must still get a usable
+    # chunk budget (else 25k of new text becomes 27 folds). Floor at 8k.
+    budget = max(8000, max_input_chars - reserve)
     chunks: list[str]
     if len(text) <= budget:
         chunks = [text]
