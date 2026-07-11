@@ -340,20 +340,38 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
 
     by_id = {d.get("id"): d for d in glob}
     plan = {"move": [], "delete": [], "keep": []}
+    decided = {}
     for dec in all_dec:
-        node = by_id.get(dec.id)
-        if not node:
+        if dec.id in by_id:
+            decided[dec.id] = dec
+    # DETERMINISTIC repo-name assist: a local model reliably marks noise but
+    # rarely maps to a repo. For anything it left global, if a repo NAME appears
+    # verbatim in the learning's category/body (token ≥5 chars, so 'Cache' alone
+    # won't false-hit), move it there — generic name matching, no hardcoded
+    # service→repo table.
+    def _name_match(node) -> str:
+        m = node.get("meta") or {}
+        hay = (str(m.get("category") or "") + " "
+               + (node.get("body") or "")).lower().replace("-", "")
+        best = ""
+        for rp in repo_set:
+            key = rp.lower().replace("-", "")
+            if len(key) >= 5 and key in hay and len(key) > len(best):
+                best = rp
+        return best
+    for nid, node in by_id.items():
+        dec = decided.get(nid)
+        if dec and dec.decision == "noise":
+            plan["delete"].append(nid)
             continue
-        if dec.decision == "project" and dec.repo.strip() in repo_set:
-            plan["move"].append((dec.id, dec.repo.strip()))
-        elif dec.decision == "noise":
-            plan["delete"].append(dec.id)
+        if dec and dec.decision == "project" and dec.repo.strip() in repo_set:
+            plan["move"].append((nid, dec.repo.strip()))
+            continue
+        hit = _name_match(node)                # LLM said global/none → try name
+        if hit:
+            plan["move"].append((nid, hit))
         else:
-            plan["keep"].append(dec.id)
-    # anything the model didn't rule on → keep
-    ruled = {i for i, _ in plan["move"]} | set(plan["delete"]) | set(plan["keep"])
-    plan["keep"] += [i for i in by_id if i not in ruled]
-
+            plan["keep"].append(nid)
     if dry_run:
         return {"ok": True, "dry_run": True,
                 "move": plan["move"], "delete": plan["delete"],
