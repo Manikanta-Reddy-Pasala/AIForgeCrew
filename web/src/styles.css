@@ -361,6 +361,9 @@ main.page {
   min-width: 0;          /* let wide children scroll in their own panel */
   overflow-x: hidden;    /* never push a page-level horizontal scrollbar */
 }
+/* Chat uses the FULL width — no centered 1680px cap — so on a 26" screen the
+   conversation isn't stranded with a huge gap next to the (collapsed) sidebar. */
+main.page.page-wide { max-width: none; padding: var(--s-5) var(--s-6); }
 
 /* ---------- typography ---------- */
 h1, h2, h3, h4 { color: var(--fg-0); margin: 0; line-height: var(--lh-tight); letter-spacing: -0.01em; }

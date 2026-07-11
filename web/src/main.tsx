@@ -64,26 +64,26 @@ const NAV: { group: string; items: NavItem[] }[] = [
       { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },
       { to: '/jobs',      label: 'Jobs',       icon: 'Refresh' },
       { to: '/chat',      label: 'Chat',       icon: 'Chat' },
-      { to: '/',          label: 'Settings',   icon: 'Tool',    end: true },
+      { to: '/',          label: 'Settings',   icon: 'Settings', end: true },
     ],
   },
   {
     group: 'Reason',
     items: [
-      { to: '/tools',     label: 'MCP Tools',  icon: 'Tool' },
+      { to: '/tools',     label: 'MCP Tools',  icon: 'Mcp' },
       { to: '/memory',    label: 'Memory',     icon: 'Memory' },
-      { to: '/skills',    label: 'Skills',     icon: 'Tool' },
-      { to: '/workflows', label: 'Workflows',  icon: 'Tool' },
-      { to: '/rules',     label: 'Rules',      icon: 'Tool' },
+      { to: '/skills',    label: 'Skills',     icon: 'Skill' },
+      { to: '/workflows', label: 'Workflows',  icon: 'Workflow' },
+      { to: '/rules',     label: 'Rules',      icon: 'Rules' },
     ],
   },
   {
     group: 'Observe',
     items: [
-      { to: '/agents',   label: 'Agents',     icon: 'Agents' },
-      { to: '/workflow', label: 'Workflow',   icon: 'Tool' },
-      { to: '/perf',     label: 'Perf',       icon: 'Tool' },
-      { to: '/logs',     label: 'Live logs',  icon: 'Logs' },
+      { to: '/agents',   label: 'Agents',        icon: 'Agents' },
+      { to: '/workflow', label: 'Orchestration', icon: 'Orchestration' },
+      { to: '/perf',     label: 'Perf',          icon: 'Gauge' },
+      { to: '/logs',     label: 'Live logs',     icon: 'Logs' },
     ],
   },
 ];
@@ -101,7 +101,7 @@ const TITLE_MAP: Record<string, string> = {
   '/workflows':  'Workflows',
   '/rules':      'Rules',
   '/agents':     'Agents',
-  '/workflow':   'Workflow',
+  '/workflow':   'Orchestration',
   '/perf':       'Perf',
   '/logs':       'Live logs',
 };
@@ -146,13 +146,14 @@ function ThemeToggle() {
   );
 }
 
-function TopBar({ onToggleSidebar }: { onToggleSidebar: () => void }) {
+function TopBar({ onToggleSidebar, collapsed }: { onToggleSidebar: () => void; collapsed?: boolean }) {
   const loc = useLocation();
   const title = useTitle(loc.pathname);
+  const tip = collapsed ? 'Show dashboard' : 'Hide dashboard';
 
   return (
     <div className="topbar">
-      <button className="icon" onClick={onToggleSidebar} title="Toggle sidebar" aria-label="Toggle sidebar">
+      <button className="icon" onClick={onToggleSidebar} title={tip} aria-label={tip}>
         <Icon.PanelLeft size={16} />
       </button>
       <div>
@@ -196,16 +197,32 @@ function Sidebar() {
   );
 }
 
+const SIDEBAR_KEY = 'aiforge.sidebar.collapsed';
+
 function Shell() {
-  const [collapsed, setCollapsed] = useState(() =>
-    window.matchMedia('(max-width: 900px)').matches,
-  );
+  // Icons-only by DEFAULT (a wide 26" screen otherwise wastes a big gap between
+  // the labelled panel and the content). Persisted; expand via the toolbar
+  // "Show dashboard" toggle.
+  const [collapsed, setCollapsed] = useState(() => {
+    try { const v = localStorage.getItem(SIDEBAR_KEY); if (v !== null) return v === '1'; } catch { /* storage off */ }
+    return true;
+  });
   const location = useLocation();
+  // Entering Chat collapses to pure icons (max room for the conversation);
+  // "Show dashboard" re-expands while you stay on the page.
+  useEffect(() => {
+    if (location.pathname.startsWith('/chat')) setCollapsed(true);
+  }, [location.pathname]);
+  const toggle = () => setCollapsed(c => {
+    const n = !c;
+    try { localStorage.setItem(SIDEBAR_KEY, n ? '1' : '0'); } catch { /* storage off */ }
+    return n;
+  });
   return (
     <div className={`shell${collapsed ? ' collapsed' : ''}`}>
       <Sidebar />
-      <TopBar onToggleSidebar={() => setCollapsed(c => !c)} />
-      <main className="page">
+      <TopBar onToggleSidebar={toggle} collapsed={collapsed} />
+      <main className={`page${location.pathname.startsWith('/chat') ? ' page-wide' : ''}`}>
         {/* key on the first path SEGMENT so switching views resets the boundary,
             but a param change within a view (/tickets/1→/tickets/2) doesn't
             needlessly remount the view and drop its transient state. */}
