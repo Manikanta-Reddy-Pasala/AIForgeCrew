@@ -287,6 +287,11 @@ def run_startup_migrations() -> dict:
         except Exception as exc:  # noqa: BLE001
             out["repo_profiles"] = {"ok": False, "error": str(exc)}
 
+    # Surface any step that failed — soft-fail steps otherwise swallow errors.
+    for _k, _v in out.items():
+        if isinstance(_v, dict) and _v.get("ok") is False:
+            log.error("startup-migration: step '%s' FAILED: %s",
+                      _k, _v.get("error") or _v)
     _save_marker({"done": sorted(done), "version": 1})
     return out
 
@@ -340,9 +345,12 @@ def force_recompact_all(on_step=None) -> dict:
                 pass
         try:
             out[name] = fn()
+            if isinstance(out[name], dict) and out[name].get("ok") is False:
+                log.error("compact-all: step %s reported failure: %s",
+                          name, out[name].get("error") or out[name])
         except Exception as exc:  # noqa: BLE001
             out[name] = {"ok": False, "error": str(exc)}
-            log.warning("compact-all: step %s failed: %s", name, exc)
+            log.exception("compact-all: step %s CRASHED: %s", name, exc)
         log.info("compact-all: [%d/%d] %s done", i, len(steps), name)
         if on_step:
             try:

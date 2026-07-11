@@ -97,10 +97,12 @@ DEV=0
 SKIP_WEB=0
 TEST=0
 # Default mode is config-driven: AIFORGE_MODE (from .env / the service env) →
-# lite | hybrid | docker; a CLI flag below still overrides. So a headless
-# service can pick zero-docker (lite) without editing its unit.
-MODE="${AIFORGE_MODE:-hybrid}"
-case "$MODE" in lite|hybrid|docker) ;; *) MODE=hybrid ;; esac
+# lite | hybrid | docker; a CLI flag below still overrides. DEFAULT is LITE
+# (zero-Docker, embedded SQLite) — matches the deploy-anywhere direction and
+# means a fresh clone never spins up Postgres/Neo4j containers unless the
+# operator explicitly asks (--hybrid / --docker / AIFORGE_MODE=hybrid).
+MODE="${AIFORGE_MODE:-lite}"
+case "$MODE" in lite|hybrid|docker) ;; *) MODE=lite ;; esac
 NO_BUILD=0
 WITH_GRAPHIFY=0  # --with-graphify installs the graphify CLI on the host
 WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"  # --with-langfuse (or AIFORGE_LANGFUSE=1): self-hosted trace UI
@@ -451,6 +453,23 @@ if [[ ! -f "$_automig_marker" && "${AIFORGE_AUTO_MIGRATE:-1}" != "0" && "${MIGRA
     fi
   fi
   mkdir -p "$_cfgdir" && date -u +%Y-%m-%dT%H:%M:%SZ > "$_automig_marker" 2>/dev/null || true
+fi
+
+# ── LITE = zero-Docker: stop any leftover aiforge-* CONTAINERS ─────────────
+# A prior hybrid run (or the old hybrid default) may have left Postgres/Neo4j/
+# sidecar containers running. In lite the app uses SQLite/OKR, so nothing Docker
+# is needed — stop them so they don't hog RAM/ports. Data was already migrated
+# (or was empty). Containers are STOPPED (reversible), not removed; IMAGES are
+# left (they don't run) — reclaim disk yourself with 'docker system prune -a'.
+# Skip with AIFORGE_KEEP_DOCKER=1.
+if [[ "$MODE" == "lite" && "${AIFORGE_KEEP_DOCKER:-0}" != "1" ]] \
+     && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  _stale_ct="$(docker ps -q --filter 'name=aiforge-' 2>/dev/null)"
+  if [[ -n "$_stale_ct" ]]; then
+    echo "==> lite mode — stopping leftover Docker containers (app runs on SQLite/OKR)"
+    docker stop $_stale_ct >/dev/null 2>&1 || true
+    echo "    containers stopped (images kept). Reclaim disk: docker system prune -a"
+  fi
 fi
 
 # ── Aider RepoMap (optional but preferred) ────────────────────────────────
