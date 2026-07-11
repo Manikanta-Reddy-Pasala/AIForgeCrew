@@ -184,3 +184,19 @@ def test_context_block_query_relevance_returns_related_only(monkeypatch, tmp_pat
     blk = R.context_block(repo="R", query="fix the cache eviction bug")
     assert "eviction" in blk                      # the related doc surfaces
     assert "resilience4j" not in blk and "JWT" not in blk   # unrelated filtered
+
+
+def test_context_block_fuzzy_fallback_ladder(monkeypatch, tmp_path):
+    """Read ranks EXACT → FUZZY (stem/typo) → recency: a stemmed or misspelled
+    query still finds the note; a totally unrelated query falls back non-empty."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
+    import importlib
+    from aiforge_core.memory.okr import store
+    R = importlib.import_module("aiforge_core.memory.okr.retrieve")
+    for cat, body in [("sync", "sync retries use exponential backoff"),
+                      ("cache", "cache eviction uses TTL and size limits")]:
+        store.save_node("learning", None,
+                        {"scope": "repo:R", "workspace": "R", "category": cat}, body)
+    assert "eviction" in R.context_block(repo="R", query="evicting from cache")  # stem
+    assert "eviction" in R.context_block(repo="R", query="cach evicton bug")     # typo
+    assert R.context_block(repo="R", query="kubernetes deploy pipeline")          # fallback non-empty

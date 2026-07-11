@@ -110,25 +110,53 @@ def _tokens(text: str) -> set:
     return set(re.findall(r"[a-z0-9]{4,}", (text or "").lower()))
 
 
+def _node_tokens(d: dict) -> set:
+    m = d.get("meta") or {}
+    return _tokens(str(m.get("title") or "") + " " + str(m.get("category") or "")
+                   + " " + (d.get("body") or ""))
+
+
+def _fuzzy_score(q: set, nt: set) -> float:
+    """Typo/stem-tolerant overlap between query tokens ``q`` and node tokens
+    ``nt``: a shared 5-char prefix (evict/eviction/evicting) or an edit-distance
+    ratio ≥ 0.8 (evicton→eviction) counts. Used only when EXACT overlap is 0."""
+    import difflib
+    total = 0.0
+    for qt in q:
+        best = 0.0
+        for t in nt:
+            if len(qt) >= 5 and len(t) >= 5 and (t[:5] == qt[:5]):
+                best = max(best, 0.9)
+            else:
+                r = difflib.SequenceMatcher(None, qt, t).ratio()
+                if r >= 0.8:
+                    best = max(best, r)
+        total += best
+    return total
+
+
 def _rank_by_query(nodes: list, query: str, top_k: int,
                    recent_key=None) -> list:
-    """Return the ``top_k`` nodes most RELEVANT to ``query`` — token overlap over
-    each node's title/category/body. No query (or no overlap at all) falls back
-    to ``recent_key`` order (or the given order) so context is never empty. This
-    is what makes read return RELATED documents per task, not the whole scope."""
+    """Return the ``top_k`` nodes most RELEVANT to ``query`` via a fallback
+    LADDER: (1) EXACT token overlap; (2) if nothing matched exactly, a FUZZY
+    pass (shared prefix / edit-distance, so a typo or a stem still finds the
+    note); (3) if still nothing, recency (or given) order — context is never
+    empty. This is what makes read return RELATED documents per task even when
+    the wording doesn't match verbatim, not the whole scope."""
     if not nodes:
         return []
     q = _tokens(query)
     if q:
-        def _score(d):
-            m = d.get("meta") or {}
-            txt = (str(m.get("title") or "") + " " + str(m.get("category") or "")
-                   + " " + (d.get("body") or ""))
-            return len(q & _tokens(txt))
-        scored = sorted(nodes, key=_score, reverse=True)
-        if _score(scored[0]) > 0:                       # at least one relevant
-            return [d for d in scored if _score(d) > 0][:top_k]
-    # no query / nothing matched → recency (or original) order
+        # tier 1 — exact
+        exact = sorted(nodes, key=lambda d: len(q & _node_tokens(d)), reverse=True)
+        if len(q & _node_tokens(exact[0])) > 0:
+            return [d for d in exact if len(q & _node_tokens(d)) > 0][:top_k]
+        # tier 2 — fuzzy (only when NO exact hit anywhere)
+        fuzzy = sorted(nodes, key=lambda d: _fuzzy_score(q, _node_tokens(d)),
+                       reverse=True)
+        if _fuzzy_score(q, _node_tokens(fuzzy[0])) > 0:
+            return [d for d in fuzzy if _fuzzy_score(q, _node_tokens(d)) > 0][:top_k]
+    # tier 3 — no query / nothing matched → recency (or original) order
     if recent_key:
         nodes = sorted(nodes, key=recent_key, reverse=True)
     return nodes[:top_k]
