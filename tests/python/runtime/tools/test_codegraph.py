@@ -40,3 +40,18 @@ def test_builds_cmd_with_path(monkeypatch):
     r = cg.codegraph_callers({"symbol": "Foo"}, "/cwd")
     assert r["ok"] and "Bar.baz" in r["result"]
     assert seen["cmd"] == ["/usr/bin/codegraph", "callers", "Foo", "--path", "/repo/x"]
+
+
+def test_enabled_for_run_requires_index(tmp_path, monkeypatch):
+    """The single gate: binary + real .codegraph index + not disabled + not
+    opted out. Binary alone is NOT enough."""
+    from aiforge_core.runtime.tools import codegraph as cg
+    monkeypatch.setattr(cg, "_bin", lambda: "/usr/bin/true")
+    monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", str(tmp_path))
+    monkeypatch.delenv("AIFORGE_CODEGRAPH_DISABLE", raising=False)
+    monkeypatch.delenv("AIFORGE_CURRENT_TICKET", raising=False)
+    assert cg.enabled_for_run() is False          # no .codegraph yet
+    (tmp_path / ".codegraph").mkdir()
+    assert cg.enabled_for_run() is True            # index present
+    monkeypatch.setenv("AIFORGE_CODEGRAPH_DISABLE", "1")
+    assert cg.enabled_for_run() is False           # env-disabled

@@ -560,7 +560,10 @@ export PATH="$PWD/.venv/bin:$PATH"
 #   AIFORGE_CODEGRAPH_REPOS  comma-separated repo paths to index (empty = skip)
 # First run → `init` (full, ~20s for 1200 files); thereafter → `sync`
 # (incremental). Both run in the background so boot is never blocked.
-_CG_BIN="${AIFORGE_CODEGRAPH_BIN:-$(command -v codegraph 2>/dev/null || true)}"
+_CG_BIN="${AIFORGE_CODEGRAPH_BIN:-codegraph}"
+# Accept a bare command name (resolve via PATH) as well as an absolute path —
+# mirrors AIFORGE_LMS_BIN conventions; otherwise `-x` on a bare name fails.
+[[ "$_CG_BIN" != */* ]] && _CG_BIN="$(command -v "$_CG_BIN" 2>/dev/null || true)"
 if [[ -n "$_CG_BIN" && -x "$_CG_BIN" && -n "${AIFORGE_CODEGRAPH_REPOS:-}" ]]; then
   IFS=',' read -ra _CG_REPOS <<< "$AIFORGE_CODEGRAPH_REPOS"
   for _r in "${_CG_REPOS[@]}"; do

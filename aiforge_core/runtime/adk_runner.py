@@ -1716,7 +1716,9 @@ def _process_one_ticket() -> bool:
             new_status = "blocked"
             reason = ("empty diff: Doer reported success but changed no files "
                       "(no edit reached the worktree). Not actually done.")
-            _record_verdict_event(ticket.id, "fail", reason)
+            # NB: the verdict_attempt row was already recorded above; don't
+            # re-record (the sibling test_only_diff demotion doesn't either).
+            # new_status/outcome drive the final ticket state.
 
         # Committed-but-partial: the Doer plateaued / hit its budget but DID
         # land a reviewable diff (PR opened). Route to in_review so a human

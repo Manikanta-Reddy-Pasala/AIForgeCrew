@@ -338,9 +338,11 @@ def test_seed_prepends_codegraph_mandate_when_available(monkeypatch):
     codegraph-first rule; without an index the seed is unchanged."""
     from aiforge_core.runtime import text_doer as td
     from aiforge_core.runtime.tools import codegraph as cg
-    monkeypatch.setattr(cg, "available", lambda: True)
+    # gated on the SINGLE shared gate (binary + index + not disabled + not
+    # opted out), not just the binary — so it never bans grep on an un-indexed repo.
+    monkeypatch.setattr(cg, "enabled_for_run", lambda cwd=None: True)
     s = td._build_seed({"plan_md": "edit clean_amount"})
     assert s.startswith("MANDATORY — CodeGraph")
     assert "codegraph_callers" in s and "grep is NOT allowed" in s
-    monkeypatch.setattr(cg, "available", lambda: False)
+    monkeypatch.setattr(cg, "enabled_for_run", lambda cwd=None: False)
     assert not td._build_seed({"plan_md": "x"}).startswith("MANDATORY")

@@ -234,10 +234,13 @@ _CODEGRAPH_MANDATE = (
 
 
 def _codegraph_mandate() -> str:
-    """The enforce-codegraph preamble, or "" when no index is queryable."""
+    """The enforce-codegraph preamble, or "" when codegraph isn't usable on this
+    run. Gated by the SINGLE shared gate (binary + real index for this repo +
+    not env-disabled + not opted out per-ticket) so the mandate never bans grep
+    on an un-indexed repo and honors the A/B opt-out on the local text path."""
     try:
         from aiforge_core.runtime.tools import codegraph as _cg
-        return _CODEGRAPH_MANDATE if _cg.available() else ""
+        return _CODEGRAPH_MANDATE if _cg.enabled_for_run() else ""
     except Exception:  # noqa: BLE001 — never break seed assembly
         return ""
 
@@ -371,6 +374,11 @@ def run_text_doer(
         while (total_edits == 0 and _attempt < _retries
                and not _is_stopped_outcome(last_msg or err_text or "")):
             _attempt += 1
+            # Drop pass-1's quality signals: they were measured on the UNEDITED
+            # tree (the hallucinated "already done" pass). A stale typecheck_ok/
+            # tests_ok=True must not survive to vouch for pass-2's real edit if
+            # the model forgets to re-verify. The corrective pass re-populates.
+            signals.clear()
             more = _one_pass(seed + _NO_EDIT_CORRECTION)
             total_edits += more
         result["edit_count"] = total_edits

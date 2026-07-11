@@ -469,28 +469,6 @@ def codegraph_query(query: str) -> dict:
     return _cg.codegraph_query({"query": query}, cwd=str(root()))
 
 
-def _codegraph_enabled_for_run() -> bool:
-    """Per-ticket A/B toggle. ``ticket.metadata['codegraph'] == False``
-    (or 'false'/'0'/'off'/'no') removes the codegraph tools for this run —
-    the aider-RepoMap-only arm. Missing/anything-else = enabled (default on).
-    Read via ``AIFORGE_CURRENT_TICKET`` (the runner stamps it per run)."""
-    ident = os.environ.get("AIFORGE_CURRENT_TICKET", "")
-    if not ident:
-        return True
-    try:
-        from aiforge_core.tickets import store
-        t = store.get(ident)
-        md = (getattr(t, "metadata", None) or {}) if t else {}
-        val = md.get("codegraph")
-    except Exception:  # noqa: BLE001 — never break tool wiring over a DB read
-        return True
-    if val is False:
-        return False
-    if isinstance(val, str) and val.strip().lower() in (
-            "false", "0", "off", "no"):
-        return False
-    return True
-
 
 def impacted_tests(changed_files: str) -> dict:
     """Map changed files → the test files that likely cover them.
@@ -1714,19 +1692,17 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
         tools = tools + [FunctionTool(func=web_search),
                          FunctionTool(func=web_read),
                          FunctionTool(func=web_crawl)]
-    # CodeGraph gate: drop the codegraph_* tools when the binary/index is
-    # absent (no point offering a tool that always errors) OR when this
-    # ticket opted out via metadata (the aider-graph-only A/B arm). Keeps
-    # the "with vs without codegraph" comparison a clean per-ticket toggle.
+    # CodeGraph gate: drop the codegraph_* tools unless codegraph is actually
+    # usable on this run — the SINGLE shared gate (binary + real index for the
+    # repo + not env-disabled + not opted out per-ticket). Same gate the Doer
+    # seed mandate and the chat catalog use, so all three agree.
     _cg_names = {"codegraph_impact", "codegraph_callers", "codegraph_callees",
                  "codegraph_explore", "codegraph_query"}
-    _cg_on = _codegraph_enabled_for_run()
-    if _cg_on:
-        try:
-            from aiforge_core.runtime.tools import codegraph as _cg
-            _cg_on = _cg.available()
-        except Exception:  # noqa: BLE001
-            _cg_on = False
+    try:
+        from aiforge_core.runtime.tools import codegraph as _cg
+        _cg_on = _cg.enabled_for_run()
+    except Exception:  # noqa: BLE001
+        _cg_on = False
     if not _cg_on:
         tools = [t for t in tools
                  if (getattr(t, "name", None)

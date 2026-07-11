@@ -157,8 +157,9 @@ _TOOLCHAIN_CACHE: dict[tuple[str, str], dict[str, str]] = {}
 
 
 def _reset_toolchain_cache() -> None:
-    """Test-only — clear the probe cache."""
+    """Test-only — clear the probe + lang caches."""
     _TOOLCHAIN_CACHE.clear()
+    _LANG_CACHE.clear()
 
 
 def _first_on_path(*candidates: str) -> str | None:
@@ -231,9 +232,13 @@ def resolve_toolchain(lang: str, worktree: str | None = None) -> dict[str, str]:
     return out
 
 
-def check_toolchain(worktree: str | None) -> list[str]:
+def check_toolchain(worktree: str | None,
+                    lang: str | None = None) -> list[str]:
     """Preflight: which build tools the repo needs are ENTIRELY ABSENT from the
     host (dynamic ``shutil.which`` — no hardcoded versions). Empty = tools present.
+
+    ``lang`` may be passed by the caller (``toolchain_brief`` already resolved
+    it) to avoid re-running ``detect_lang``'s tree walk twice per seed.
 
     Only presence is checked here. VERSION mismatches (e.g. the repo compiles
     with a newer JDK than the host has) are NOT guessed from build-file regex —
@@ -248,7 +253,7 @@ def check_toolchain(worktree: str | None) -> list[str]:
     msgs: list[str] = []
     is_maven = os.path.isfile(os.path.join(worktree, "pom.xml"))
     is_gradle = bool(_glob.glob(os.path.join(worktree, "build.gradle*")))
-    lang = detect_lang(worktree)
+    lang = lang if lang is not None else detect_lang(worktree)
     jvm = is_maven or is_gradle or lang == "java"
     if jvm and not shutil.which("java"):
         msgs.append("No `java` on the host — install a JDK (the repo's build "
@@ -260,12 +265,16 @@ def check_toolchain(worktree: str | None) -> list[str]:
                           or shutil.which("gradle")):
         msgs.append("No Gradle — install `gradle`, or commit the `gradlew` "
                     "wrapper.")
-    # standalone kotlinc only matters when there's no gradle to drive it
-    if (not is_gradle
+    # Standalone kotlinc only matters when Kotlin is the PRIMARY build with no
+    # Maven/Gradle driver — otherwise mvn (kotlin-maven-plugin) / gradle compile
+    # it. Guarding on `not is_maven and not is_gradle` also avoids the expensive
+    # recursive **/*.kt walk on every Java/Maven repo, and stops a bogus
+    # "install kotlinc" banner for a Java repo that merely has a stray .kt file.
+    if (not is_gradle and not is_maven
             and _glob.glob(os.path.join(worktree, "**", "*.kt"), recursive=True)
             and not shutil.which("kotlinc")):
-        msgs.append("Kotlin sources but no `kotlinc` and no Gradle — install "
-                    "the Kotlin compiler.")
+        msgs.append("Kotlin sources but no build driver and no `kotlinc` — "
+                    "install the Kotlin compiler.")
     # Rust
     if os.path.isfile(os.path.join(worktree, "Cargo.toml")) \
             and not shutil.which("cargo"):
@@ -299,10 +308,10 @@ def toolchain_brief(worktree: str | None) -> str:
     banner when :func:`check_toolchain` finds an uninstalled/mismatched tool."""
     if not worktree:
         return ""
-    lang = detect_lang(worktree)
+    lang = detect_lang(worktree)          # resolved ONCE; passed to check below
     if not lang:
         return ""
-    missing = check_toolchain(worktree)
+    missing = check_toolchain(worktree, lang)
     banner = ""
     if missing:
         banner = ("⚠ MISSING TOOLCHAIN — the host cannot build/test this repo "
@@ -338,6 +347,21 @@ def detect_lang(worktree_path: str) -> str:
     if not worktree_path:
         return ""
     base = os.path.abspath(worktree_path)
+    cached = _LANG_CACHE.get(base)
+    if cached is not None:
+        return cached
+    lang = _detect_lang_uncached(base)
+    _LANG_CACHE[base] = lang
+    return lang
+
+
+# detect_lang can walk recursive ``**`` globs (C/C++/shell fallback); memoize
+# per abspath so ``toolchain_brief`` → ``check_toolchain`` don't re-walk a big
+# tree twice per seed. Cleared by tests via _reset_toolchain_cache.
+_LANG_CACHE: dict[str, str] = {}
+
+
+def _detect_lang_uncached(base: str) -> str:
     if not os.path.isdir(base):
         return ""
     if os.path.isfile(os.path.join(base, "pom.xml")):
@@ -355,19 +379,23 @@ def detect_lang(worktree_path: str) -> str:
         or os.path.isfile(os.path.join(base, "requirements.txt"))
     ):
         return "python"
-    # C / C++ — a CMake/Make build or C/C++ sources. Prefer cpp when any C++
-    # source/header is present (a C++ project usually also has .c/.h).
+    # C / C++ — C++ source/header wins (a C++ project usually also has .c/.h);
+    # else any .c source OR a make/cmake build (headers-only C libs) → C.
     cpp_src = _glob.glob(os.path.join(base, "**", "*.cpp"), recursive=True) \
         or _glob.glob(os.path.join(base, "**", "*.cc"), recursive=True) \
         or _glob.glob(os.path.join(base, "**", "*.cxx"), recursive=True) \
         or _glob.glob(os.path.join(base, "**", "*.hpp"), recursive=True)
+    if cpp_src:
+        return "cpp"
     c_src = _glob.glob(os.path.join(base, "**", "*.c"), recursive=True)
     has_make = (os.path.isfile(os.path.join(base, "CMakeLists.txt"))
                 or os.path.isfile(os.path.join(base, "Makefile"))
                 or os.path.isfile(os.path.join(base, "makefile")))
-    if cpp_src:
-        return "cpp"
-    if c_src or (has_make and (c_src or cpp_src)):
+    # .c sources → C; or a make/cmake build WITH C headers (a headers-only C
+    # lib). A bare Makefile with no C evidence is NOT enough (a shell repo may
+    # ship a Makefile) — fall through to the shell check.
+    c_hdr = _glob.glob(os.path.join(base, "**", "*.h"), recursive=True)
+    if c_src or (has_make and c_hdr):
         return "c"
     # Shell — a repo of scripts (no other build system matched above).
     if _glob.glob(os.path.join(base, "**", "*.sh"), recursive=True) \

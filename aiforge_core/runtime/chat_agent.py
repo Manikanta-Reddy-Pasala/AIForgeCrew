@@ -3753,16 +3753,16 @@ def run_chat_agent(
     rules = _rules_context(cwd, last_user)
     prefs = _preferences_context(cwd)
     sys_msg = _SYSTEM.format(cwd=cwd)
-    # CodeGraph tools are only advertised to the model when a pre-built index is
-    # actually queryable — otherwise the model would call a tool that always
-    # errors. Gated so the "with vs without codegraph" comparison is a clean
-    # toggle: AIFORGE_CODEGRAPH_DISABLE=1 forces it off (the aider/grep-only
-    # arm). Without this block the tools are in TOOLS but absent from the
-    # catalog, so the model never learns they exist.
-    if os.environ.get("AIFORGE_CODEGRAPH_DISABLE", "0") not in ("1", "true"):
+    # CodeGraph tools are advertised ONLY when actually usable on this run — the
+    # single shared gate (binary + real index for THIS repo + not env-disabled +
+    # not opted out per-ticket). Otherwise the model would be told to call a tool
+    # that always errors (un-indexed repo) / the A/B "without" arm would leak.
+    # Without this block the tools are in TOOLS but absent from the catalog, so
+    # the model never learns they exist.
+    if True:  # noqa: SIM103 — keep the try/except scoped without re-indenting
         try:
             from aiforge_core.runtime.tools import codegraph as _cg
-            if _cg.available():
+            if _cg.enabled_for_run(cwd):
                 sys_msg += (
                     "\n\nCODEGRAPH IS AVAILABLE (a pre-built code-relation index "
                     "for THIS repo). USE IT — do not rediscover with grep what "
