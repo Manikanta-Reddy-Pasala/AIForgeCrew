@@ -375,6 +375,48 @@ if [[ "${MIGRATE:-0}" == "1" ]]; then
   exit 0
 fi
 
+# ── AUTO-DETECT + converge to latest (SQLite, no infra Docker) ────────────
+# On ANY invocation, identify a PRIOR install and migrate it to the current
+# architecture ONCE, so an upgrade "just works" without the operator knowing to
+# pass --migrate: if a dockerized Postgres with data is present, move its chat +
+# tickets into the SQLite stores and remove the DB infra containers (neo4j/embed/
+# rerank/postgres — volumes kept, recoverable), then run in --lite. The memory
+# side (flat md / old Neo4j → scoped OKR) migrates on API startup separately
+# (aiforge_core.memory.migrations). Marker-guarded (runs once); opt out with
+# AIFORGE_AUTO_MIGRATE=0.
+_cfgdir="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
+_automig_marker="$_cfgdir/.data_migrated_v1"
+if [[ ! -f "$_automig_marker" && "${AIFORGE_AUTO_MIGRATE:-1}" != "0" && "${MIGRATE:-0}" != "1" ]]; then
+  _DKA=(docker); command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1 && _DKA=(sudo docker)
+  if command -v docker >/dev/null 2>&1 \
+       && "${_DKA[@]}" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'aiforge-postgres'; then
+    echo "==> auto-migrate: prior dockerized Postgres detected — converging to SQLite (latest)"
+    systemctl --user stop aiforge-api >/dev/null 2>&1 || true
+    "${_DKA[@]}" start aiforge-postgres >/dev/null 2>&1 || true
+    # bring Neo4j up too (if it exists) so the memory drain can read it BEFORE we
+    # tear it down — else the old graph memory would be lost.
+    "${_DKA[@]}" start aiforge-neo4j >/dev/null 2>&1 || true
+    sleep 6
+    _PGU="${AIFORGE_PG_URL:-postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge}"
+    if AIFORGE_PG_URL="$_PGU" AIFORGE_MODE=lite \
+         .venv/bin/python scripts/migrate_to_sqlite.py; then
+      # DRAIN memory (incl old Neo4j Observation/Decision) into the scoped OKR
+      # NOW, while neo4j is still running — the API-startup migration can't (the
+      # container is about to be removed).
+      AIFORGE_MODE=lite AIFORGE_MIGRATE_NEO4J=1 \
+        .venv/bin/python -c "from aiforge_core.memory import migrations; migrations.run_startup_migrations()" \
+        >/dev/null 2>&1 || true
+      "${_DKA[@]}" rm -f aiforge-neo4j aiforge-embed aiforge-rerank \
+        aiforge-postgres >/dev/null 2>&1 || true
+      echo "==> auto-migrate: data + memory moved to SQLite/OKR; removed neo4j/embed/rerank/postgres (volumes kept)"
+      MODE=lite                 # converge to zero-Docker for the rest of this run
+    else
+      echo "==> auto-migrate: data migration FAILED — leaving infra intact, staying on '$MODE'" >&2
+    fi
+  fi
+  mkdir -p "$_cfgdir" && date -u +%Y-%m-%dT%H:%M:%SZ > "$_automig_marker" 2>/dev/null || true
+fi
+
 # ── Aider RepoMap (optional but preferred) ────────────────────────────────
 # The chat/doer repo context uses Aider's tree-sitter + PageRank RepoMap for a
 # RANKED symbol map. Install best-effort — if it fails/absent the agent falls
