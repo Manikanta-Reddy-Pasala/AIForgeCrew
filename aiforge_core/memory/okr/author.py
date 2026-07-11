@@ -536,19 +536,22 @@ def build_repo_profiles() -> dict:
             buckets.setdefault(cat, []).append(
                 (d.get("body") or "").strip().lstrip("- ").strip())
 
-        def _first(cats):
-            for c in cats:
-                for cat, facts in buckets.items():
-                    if c in cat and facts:
-                        return facts[0][:200]
-            return ""
-        build = _first(["build", "ci-cd", "compile"])
-        test = _first(["test", "mocking"])
-        structure = _first(["structure", "architecture", "layout"])
+        # A repo's learnings are FACTS, not clean commands — so don't guess a
+        # build/test COMMAND from them (that mislabels 'sync retries…' as a test
+        # cmd). Only lift a genuine structure note; collect everything as gotchas.
+        # build/test/run fill in properly via the learner hook when a real
+        # command (topic: build/testing) is discovered.
+        structure = ""
+        for cat, facts in buckets.items():
+            if ("structure" in cat or "architecture" in cat or "layout" in cat) \
+                    and facts:
+                structure = facts[0][:200]
+                break
         gotchas = [f for facts in buckets.values() for f in facts if f][:12]
         r = record_repo_profile(
-            ws, build=build, test=test, structure=structure, gotchas=gotchas,
-            body="Auto-built from this repo's learnings; refine as you work.")
+            ws, structure=structure, gotchas=gotchas,
+            body="Auto-built from this repo's learnings; build/test/run fill in "
+                 "as they're discovered.")
         if r.get("ok"):
             made += 1
     return {"ok": True, "profiles": made}
