@@ -156,8 +156,9 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None,
         else:
             oid = title_to_oid.get(_slug(sc)) or _existing_objective_by_title(g, sc)
             meta["scope"] = [oid] if oid else "global"
-        if ln.topic.strip():                       # theme axis (orthogonal)
-            tp = _topic_slug(ln.topic)
+        _topic = (getattr(ln, "topic", "") or "").strip()   # theme axis (orthogonal)
+        if _topic:
+            tp = _topic_slug(_topic)
             if tp:
                 meta["category"] = tp
                 meta["tags"] = [f"topic:{tp}"]

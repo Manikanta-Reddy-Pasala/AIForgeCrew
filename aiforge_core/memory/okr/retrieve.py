@@ -251,7 +251,10 @@ def context_block(kr_id: str | None = None, *, repo: str | None = None,
         base = compile_prompt(retrieve(kr_id, **kw))
     except Exception:  # noqa: BLE001
         base = ""
-    scoped = _scoped_block(repo, query=query)
+    # Only surface scoped memory when there's a context signal (a repo or a
+    # query) to attach it to — a bare call with neither stays empty rather than
+    # dumping the global rules into a contextless prompt.
+    scoped = _scoped_block(repo, query=query) if (repo or query) else ""
     return "\n\n".join(x for x in (base, scoped) if x)
 
 
