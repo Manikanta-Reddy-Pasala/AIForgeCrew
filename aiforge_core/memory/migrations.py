@@ -299,13 +299,28 @@ def force_recompact_all(on_step=None) -> dict:
     Soft-fail per step. ``on_step(name, phase, result)`` is called at the start
     ('run') and end ('done') of each step for progress reporting."""
     from aiforge_core.memory import md_store
+
+    # per-group sub-progress for the (slow, LLM-per-brief) compact steps →
+    # surfaced through on_step so the UI shows 'topic 12/34' not a frozen 0/6.
+    def _prog(name):
+        def _cb(done, total, key):
+            log.info("compact-all: %s %d/%d (%s)", name, done, total, key)
+            if on_step:
+                try:
+                    on_step(name, "progress", {"done": done, "total": total, "key": key})
+                except Exception:  # noqa: BLE001
+                    pass
+        return _cb
+
     out: dict = {}
     steps = [
         ("tidy_legacy", lambda: md_store.cleanup_legacy_compacted()),
         ("repo", lambda: md_store.compact(group_by="repo", force=True,
-                                          model_role="learner", archive_sources=False)),
+                                          model_role="learner", archive_sources=False,
+                                          progress=_prog("repo"))),
         ("topic", lambda: md_store.compact(group_by="topic", force=True,
-                                           model_role="learner", archive_sources=True)),
+                                           model_role="learner", archive_sources=True,
+                                           progress=_prog("topic"))),
         ("sweep", lambda: md_store.sweep_stale_captures(archive=True)),
         ("repo_profiles", lambda: __import__(
             "aiforge_core.memory.okr.author", fromlist=["build_repo_profiles"]

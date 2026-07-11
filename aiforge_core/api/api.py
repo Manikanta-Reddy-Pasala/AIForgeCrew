@@ -2122,8 +2122,13 @@ def memory_compact_all() -> dict:
     def _on_step(name, phase, result):
         if phase == "run":
             _compact_all_state["current"] = name
+        elif phase == "progress":
+            r = result or {}
+            _compact_all_state["current"] = (
+                f"{name} {r.get('done')}/{r.get('total')}")
         else:
             _compact_all_state["steps"].append({"name": name, "result": result})
+            _compact_all_state["current"] = name
 
     def _run():
         try:

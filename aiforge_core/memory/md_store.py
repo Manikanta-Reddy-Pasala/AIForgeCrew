@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import logging
 import os
 import re
 import threading
+import time as _time
 from pathlib import Path
 
+_log = logging.getLogger("aiforge.md_store")
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 
 # Serialize read-modify-write on the .md files — two concurrent chat turns
@@ -777,7 +780,7 @@ def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
 def compact(*, group_by: str = "kind", min_group: int = 2,
             dry_run: bool = False, summarize: bool = True,
             model_role: str = "learner", archive_sources: bool = True,
-            force: bool = False) -> dict:
+            force: bool = False, progress=None) -> dict:
     """Consolidate the sprawl of per-session ``.md`` memories into ONE
     standardized file per group, so the Memory folder stays legible.
 
@@ -884,7 +887,13 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         # ── Phase 1: build each group's body (LLM summarise; no _WRITE_LOCK
         # so concurrent chat-turn writes aren't frozen during the slow call) ──
         prepared: list[dict] = []
-        for key, items in sorted(planned.items()):
+        _ptotal = len(planned)
+        for _pi, (key, items) in enumerate(sorted(planned.items()), 1):
+            if progress:
+                try:
+                    progress(_pi, _ptotal, key)
+                except Exception:  # noqa: BLE001
+                    pass
             items.sort(key=lambda d: d.get("created") or "")
             all_tags = sorted({t for d in items for t in d.get("tags") or []})
             title = f"{key.replace('-', ' ').strip().capitalize()} memory (compacted)"
