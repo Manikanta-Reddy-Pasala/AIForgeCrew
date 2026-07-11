@@ -25,6 +25,11 @@
 #                Docker piece; also AIFORGE_LANGFUSE=1 in .env)
 #   --stop-langfuse  stop the langfuse containers (traces are ephemeral)
 #   --with-graphify  install the `graphify` CLI (concept-graph tool)
+#   --migrate    force a (re-)converge: migrate a prior PG/Neo4j install →
+#                SQLite/OKR + remove docker, then start
+#   --dedupe     remove duplicate OKR nodes + chat sessions, then exit
+#   --recompact-all  re-LLM every memory brief + rebuild from scratch, then exit
+#   --purge-code     drop code-as-learnings from a bad migration, then exit
 #   (--lite/--hybrid/--docker/--no-build are legacy no-ops — always SQLite now)
 #
 # Self-hosted model over HTTPS with an internal/self-signed cert? Drop an `.env`
@@ -99,6 +104,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --lite|--hybrid|--docker|--no-build) : ;;  # legacy no-ops (always SQLite now)
     --migrate) MIGRATE=1 ;;   # force a (re-)converge: migrate PG/Neo4j → SQLite/OKR + remove docker, then start
+    --dedupe) MAINT=dedupe ;;         # remove duplicate OKR nodes + chat sessions, then exit
+    --recompact-all) MAINT=recompact ;;  # re-LLM every brief + rebuild, then exit
+    --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
     --dev) DEV=1 ;;
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
@@ -218,6 +226,20 @@ if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
     fi
   fi
 fi
+
+# ── Maintenance commands (run in the venv, then EXIT) ──────────────────────
+# ./run.sh --dedupe | --recompact-all | --purge-code
+case "${MAINT:-}" in
+  dedupe)
+    echo "==> dedupe: removing duplicate OKR nodes + chat sessions…"
+    .venv/bin/python -m aiforge_core.memory.migrations --dedupe; exit $? ;;
+  recompact)
+    echo "==> recompact-all: re-LLM every brief + rebuild (may take minutes)…"
+    .venv/bin/python -m aiforge_core.memory.migrations --recompact-all; exit $? ;;
+  purge)
+    echo "==> purge-code: dropping code-as-learnings from a bad drain…"
+    .venv/bin/python -m aiforge_core.memory.migrations --purge-code; exit $? ;;
+esac
 
 # ── AUTO-DETECT + converge to latest (SQLite, no infra Docker) ────────────
 # On ANY invocation, identify a PRIOR install and migrate it to the current
