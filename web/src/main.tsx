@@ -8,7 +8,6 @@ import { Toaster } from 'sonner';
 import './styles.css';
 import { Icon } from './icons';
 import { ErrorBoundary } from './ErrorBoundary';
-import { api } from './api';
 
 // Dashboard is the biggest view (pulls recharts). Lazy-load so the
 // main bundle stays small and other pages load instantly.

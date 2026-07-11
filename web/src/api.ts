@@ -494,9 +494,6 @@ export function logStreamURL(role: string): string {
   return `${BASE}/logs/${role}/stream`;
 }
 
-export function chatAgentURL(): string {
-  return `${BASE}/chat/agent`;
-}
 
 // ── Chat session types ────────────────────────────────────────────
 
@@ -903,37 +900,8 @@ export function clearGateFlag(
     .catch(() => ({ ok: false }));
 }
 
-export function chatSessionTicket(
-  id: number,
-  content: string,
-  project?: string,
-): Promise<{ ticket: string; ticket_id: number; project: string | null; trace_url: string }> {
-  return j(`/chat/sessions/${id}/ticket`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, ...(project ? { project } : {}) }),
-  });
-}
 
-export function traceStreamURL(identifier: string): string {
-  // DB-sourced ticket-event stream (works across api/runner containers,
-  // surfaces clarification + status); not the log-tail trace.
-  return `${BASE}/tickets/${identifier}/events/stream`;
-}
 
 /** Poll ticket status — returns the raw ticket object including metadata. */
-export function ticketStatus(identifier: string): Promise<{ ticket: { status: string; metadata?: Record<string, any> } }> {
-  return j(`/tickets/${identifier}`);
-}
 
 /** Submit a clarification answer. Returns the re-queued ticket plus a trace_url for resuming. */
-export function ticketAnswer(
-  identifier: string,
-  content: string,
-): Promise<{ ticket: string; status: string; trace_url: string }> {
-  return j(`/tickets/${identifier}/answer`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  });
-}

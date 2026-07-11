@@ -1,11 +1,10 @@
-import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
   api, MemorySource, MemoryOverview, MemoryStoreSection,
 } from '../api';
 import { Icon } from '../icons';
 
-const ROLES = ['supervisor', 'planner', 'doer', 'feedback', 'learner'];
 
 const KIND_OPTIONS = [
   { value: 'repo',  label: 'Code repo' },
@@ -74,13 +73,6 @@ const OVERVIEW_STORES: {
   },
 ];
 
-function labelSummary(s: MemoryStoreSection, unit: string): string {
-  const n = s.total ?? 0;
-  if (n === 0) return `0 ${unit} — nothing indexed yet`;
-  const parts = Object.entries(s.labels || {})
-    .map(([k, v]) => `${k} ${v}`).join(', ');
-  return `${n.toLocaleString()} ${unit}` + (parts ? ` — ${parts}` : '');
-}
 
 
 function OverviewPanel() {
