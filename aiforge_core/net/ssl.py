@@ -333,24 +333,18 @@ def context_for(url: str | None) -> ssl.SSLContext | None:
     return ssl.create_default_context()
 
 
-def httpx_verify(url: str | None = None):
+def httpx_verify(url: str | None = None, *, insecure_tls: bool = False):
     """The ``verify`` value to hand an ``httpx.Client`` (and thus the OpenAI /
-    instructor SDK) for an AIForge self-hosted endpoint, so those SDKs honour the
-    SAME TLS policy litellm does — a CA bundle, or a scoped insecure context for
-    a trusted internal host with AIFORGE_LLM_SSL_VERIFY=false. Returns
-    True | False | <ssl.SSLContext>. httpx accepts all three."""
+    instructor SDK) so those SDKs honour the EXACT SAME TLS policy litellm uses
+    for the working client.complete path — otherwise a self-signed internal
+    model endpoint connects on chat but 'Connection error's on the structured
+    path. Mirrors ``client.py``'s resolution: an explicit ``insecure_tls`` OR an
+    auto-relaxed internal host → verification OFF (unless a CA bundle pins it);
+    else the per-url context / CA bundle / default verify. Returns
+    True | <ssl.SSLContext>. httpx accepts both."""
+    if (insecure_tls or auto_relax_internal(url)) and not _ca_bundle():
+        return insecure_context()           # ssl.SSLContext with CERT_NONE
     ctx = context_for(url)
-    if ctx is not None:                     # https → CA-anchored or insecure ctx
+    if ctx is not None:
         return ctx
-    ca = _ca_bundle()
-    if ca:
-        return ca
-    # http:// (or unknown) — but if the operator globally disabled verification
-    # for an internal box, honour it so a self-signed https base_url still works.
-    if not _verify_enabled():
-        import ssl as _s
-        c = _s.create_default_context()
-        c.check_hostname = False
-        c.verify_mode = _s.CERT_NONE
-        return c
-    return True
+    return _ca_bundle() or True
