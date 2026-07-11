@@ -2099,6 +2099,15 @@ def memory_files_compact(group_by: str = Query("topic"),
                             dry_run=dry_run, summarize=summarize, force=force)
 
 
+@app.post("/api/memory/compact-all")
+def memory_compact_all() -> dict:
+    """COMPACT ALL — redo everything from scratch: tidy legacy briefs, re-run the
+    LLM (chonkie) over EVERY brief, rebuild OKR repo cards, re-ingest the search
+    index. Heavy (full LLM pass). The plain 'Compact' only folds NEW files."""
+    from aiforge_core.memory import migrations
+    return migrations.force_recompact_all()
+
+
 @app.get("/api/memory/okr")
 def memory_okr_graph() -> dict:
     """The OKR-DAG: nodes (by type) + the active KR. Lightweight — frontmatter

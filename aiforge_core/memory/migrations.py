@@ -292,21 +292,36 @@ def run_startup_migrations() -> dict:
 
 
 def force_recompact_all() -> dict:
-    """COMPACT AT ANY COST — re-read every md, re-chunk (chonkie) + re-run the
-    LLM over EVERY brief (not just new files), rebuild all briefs from scratch,
-    sweep stale captures. Heavy (full LLM pass); run on demand. Soft-fail."""
+    """COMPACT ALL — redo EVERYTHING from scratch: tidy legacy/cryptic briefs,
+    re-chunk (chonkie) + re-run the LLM over EVERY flat brief (not just new
+    files), sweep stale captures, rebuild the OKR repo CARDS from learnings, and
+    re-ingest into the search index. Heavy (full LLM pass); run on demand.
+    Soft-fail per step — one bad step never aborts the rest."""
     from aiforge_core.memory import md_store
     out: dict = {}
-    try:
-        out["repo"] = md_store.compact(group_by="repo", force=True,
-                                       model_role="learner", archive_sources=False)
-        out["topic"] = md_store.compact(group_by="topic", force=True,
-                                        model_role="learner", archive_sources=True)
-        out["sweep"] = md_store.sweep_stale_captures(archive=True)
-        out["ok"] = True
-    except Exception as exc:  # noqa: BLE001
-        out["ok"] = False
-        out["error"] = str(exc)
+
+    def _step(name, fn):
+        try:
+            out[name] = fn()
+        except Exception as exc:  # noqa: BLE001
+            out[name] = {"ok": False, "error": str(exc)}
+
+    # 1. fold cryptic / id-named legacy briefs into topics first
+    _step("tidy_legacy", lambda: md_store.cleanup_legacy_compacted())
+    # 2. force re-consolidate EVERY flat brief (repo + topic axes), re-LLM
+    _step("repo", lambda: md_store.compact(group_by="repo", force=True,
+                                           model_role="learner", archive_sources=False))
+    _step("topic", lambda: md_store.compact(group_by="topic", force=True,
+                                            model_role="learner", archive_sources=True))
+    _step("sweep", lambda: md_store.sweep_stale_captures(archive=True))
+    # 3. rebuild the OKR repo cards from the (now-fresh) learnings
+    def _okr():
+        from aiforge_core.memory.okr import author
+        return author.build_repo_profiles()
+    _step("repo_profiles", _okr)
+    # 4. re-ingest everything into the search index
+    _step("reingest", lambda: md_store.ingest_dir())
+    out["ok"] = True
     return out
 
 

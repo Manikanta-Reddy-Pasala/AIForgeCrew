@@ -117,6 +117,7 @@ export const api = {
       compacted?: string[]; summarized?: string[]; archive?: string; note?: string }>(
       `/memory/files/compact?${p.toString()}`, { method: 'POST' });
   },
+  memoryCompactAll: () => j<any>('/memory/compact-all', { method: 'POST' }),
   memoryOkr: () => j<{ ok: boolean; counts: Record<string, number>;
     active_kr: string | null; nodes: any[] }>('/memory/okr'),
   memoryOkrSetActive: (active_kr: string | null) =>

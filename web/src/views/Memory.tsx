@@ -689,19 +689,18 @@ function NotesPanel() {
       <div className="row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         <button onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Note'}</button>
         <button className="ghost" onClick={compact} disabled={busy}
-                title="Fold notes into topic briefs (originals archived, reversible)">
-          Compact by topic
+                title="Fold only NEW/undone notes into topic briefs (originals archived, reversible)">
+          Compact
         </button>
         <button className="ghost" onClick={async () => {
-          if (!window.confirm('Tidy cryptic / id-named files into topic briefs? Originals archived (reversible).')) return;
+          if (!window.confirm('Compact ALL — redo everything from scratch: tidy legacy, re-run the LLM over EVERY brief, rebuild OKR repo cards, re-ingest. Heavy (full LLM pass). Continue?')) return;
           setBusy(true);
-          try { const r: any = await api.memoryFilesCleanup?.(); toast.success(`Folded ${r?.folded ?? 0} legacy files`); load(); }
-          catch (e: any) { toast.error(`Cleanup failed: ${e.message}`); }
+          try { const r: any = await api.memoryCompactAll(); toast.success(`Recompacted all · topic ${r?.topic?.files_out ?? 0} briefs`); load(); }
+          catch (e: any) { toast.error(`Compact all failed: ${e.message}`); }
           finally { setBusy(false); }
-        }} disabled={busy} title="Fold id-keyed / per-kind compacted files into topics">
-          Tidy legacy
+        }} disabled={busy} title="Redo EVERYTHING: tidy legacy + re-LLM every brief + rebuild OKR cards + re-ingest">
+          Compact all
         </button>
-        <button className="ghost" onClick={() => api.memoryFilesIngest().then(load)}>Re-ingest</button>
         <button className="ghost" onClick={load}>Refresh</button>
         <input placeholder="filter by name / tag…" value={filter}
                onChange={e => setFilter(e.target.value)}
