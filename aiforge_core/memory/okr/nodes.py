@@ -12,11 +12,13 @@ import datetime as _dt
 import json
 import re
 
-NODE_TYPES = ("objective", "key_result", "learning", "session", "solution")
+NODE_TYPES = ("objective", "key_result", "learning", "session", "solution",
+              "repo", "script", "task")
 
-# id prefixes per type (session ids are date-based, handled in the store).
+# id prefixes per type (session ids are date-based, handled in the store; a repo
+# id is R-<workspace-slug> — one card per repo — set by the author, not counted).
 _ID_PREFIX = {"objective": "O", "key_result": "KR", "learning": "L",
-              "solution": "S"}
+              "solution": "S", "repo": "R", "script": "SC", "task": "T"}
 
 # Required + optional frontmatter keys per type (beyond `type` + `id`).
 _SCHEMA: dict[str, dict] = {
@@ -32,6 +34,20 @@ _SCHEMA: dict[str, dict] = {
                  "opt": ("title", "description", "workspace", "topic",
                          "tables", "services", "files", "resource",
                          "timestamp", "about", "ticket", "scope")},
+    # The canonical, detailed profile card for ONE repo (the hub) — how to
+    # build/test/run it, where things live, how it deploys, what it connects to.
+    "repo": {"required": ("workspace",),
+             "opt": ("title", "stack", "build", "test", "run", "structure",
+                     "entry_points", "deploy", "services", "tables", "gotchas",
+                     "conventions", "scripts", "workflows", "scope",
+                     "timestamp")},
+    # A reusable shell / python script: what it does + how to run it.
+    "script": {"required": ("name", "lang"),
+               "opt": ("title", "purpose", "path", "run", "workspace",
+                       "about", "scope", "timestamp")},
+    # A small-task recipe — "how to do X in this repo" (steps in the body).
+    "task": {"required": ("title",),
+             "opt": ("workspace", "about", "tags", "scope", "timestamp")},
 }
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)

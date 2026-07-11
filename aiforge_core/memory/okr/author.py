@@ -406,6 +406,154 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
             "kept": len(plan["keep"]), "scopes": _store.okr_scopes()}
 
 
+def record_repo_profile(workspace: str, *, stack: str = "", build: str = "",
+                        test: str = "", run: str = "", structure: str = "",
+                        entry_points=None, deploy: str = "", services=None,
+                        tables=None, gotchas=None, conventions=None,
+                        scripts=None, workflows=None, body: str = "",
+                        date: str = "") -> dict:
+    """UPSERT the ONE canonical ``repo`` card for ``workspace`` (id
+    R-<slug>) — the detailed hub: how to build/test/run it, structure, deploy,
+    connected services/tables, gotchas, and its scripts/workflows. Scalars
+    overwrite when provided; list fields UNION so the card accretes knowledge
+    across sessions instead of churning. Lives at projects/<repo>/repo/. Soft-
+    fail."""
+    try:
+        ws = (workspace or "").strip()
+        if not ws:
+            return {"ok": False, "error": "no workspace"}
+        nid = "R-" + _slug(ws).replace(" ", "-")
+        existing = next((d for d in _store.load_all(ws)
+                         if d.get("type") == "repo" and d.get("id") == nid), None)
+        meta = dict((existing or {}).get("meta") or {})
+        meta["workspace"] = ws
+        meta["scope"] = f"repo:{ws}"
+        meta.setdefault("title", ws)
+        for k, v in (("stack", stack), ("build", build), ("test", test),
+                     ("run", run), ("structure", structure), ("deploy", deploy)):
+            if v and str(v).strip():
+                meta[k] = str(v).strip()
+
+        def _union(key, new):
+            cur = list(meta.get(key) or [])
+            for x in (new or []):
+                x = str(x).strip()
+                if x and x not in cur:
+                    cur.append(x)
+            if cur:
+                meta[key] = cur[:30]
+        _union("entry_points", entry_points)
+        _union("services", services)
+        _union("tables", tables)
+        _union("gotchas", gotchas)
+        _union("conventions", conventions)
+        _union("scripts", scripts)
+        _union("workflows", workflows)
+        if date:
+            meta["timestamp"] = date
+        newbody = (body or "").strip() or (existing or {}).get("body") or ""
+        return _store.save_node("repo", nid, meta, newbody)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def record_script(*, name: str, lang: str, purpose: str = "", path: str = "",
+                  run: str = "", workspace: str = "", about=None,
+                  body: str = "", date: str = "") -> dict:
+    """Record a reusable shell/python ``script`` node (what it does + how to run
+    it), scoped to its repo. Deduped by (workspace, name). Soft-fail."""
+    try:
+        name = (name or "").strip()
+        if not name:
+            return {"ok": False, "error": "no name"}
+        lang = "python" if "py" in (lang or "").lower() else "shell"
+        for d in _store.load_all(workspace or None):
+            if d.get("type") == "script":
+                m = d.get("meta") or {}
+                if m.get("name") == name and (m.get("workspace") or "") == (workspace or ""):
+                    return {"ok": True, "id": d.get("id"), "deduped": True}
+        meta: dict = {"name": name, "lang": lang,
+                      "title": f"{name} ({lang})"}
+        if purpose:
+            meta["purpose"] = purpose.strip()[:200]
+        if path:
+            meta["path"] = path
+        if run:
+            meta["run"] = run
+        if workspace:
+            meta["workspace"] = workspace
+            meta["scope"] = f"repo:{workspace}"
+        meta["about"] = list(about or [])
+        if date:
+            meta["timestamp"] = date
+        return _store.save_node("script", None, meta, body or purpose)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def record_task(*, title: str, workspace: str = "", about=None, body: str = "",
+                tags=None, date: str = "") -> dict:
+    """Record a small-task recipe (``task`` node) — 'how to do X in this repo',
+    steps in the body. Deduped by (workspace, normalized title). Soft-fail."""
+    try:
+        title = (title or "").strip()
+        if not title:
+            return {"ok": False, "error": "no title"}
+        key = _dedup_key(title)
+        for d in _store.load_all(workspace or None):
+            if d.get("type") == "task":
+                m = d.get("meta") or {}
+                if _dedup_key(m.get("title") or "") == key \
+                        and (m.get("workspace") or "") == (workspace or ""):
+                    return {"ok": True, "id": d.get("id"), "deduped": True}
+        meta: dict = {"title": title}
+        if workspace:
+            meta["workspace"] = workspace
+            meta["scope"] = f"repo:{workspace}"
+        meta["about"] = list(about or [])
+        if tags:
+            meta["tags"] = list(tags)
+        if date:
+            meta["timestamp"] = date
+        return _store.save_node("task", None, meta, body or title)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
+def build_repo_profiles() -> dict:
+    """Seed/refresh each project's ``repo`` card by AGGREGATING its learnings —
+    pull build/test/structure from category-matched learnings, collect the rest
+    as gotchas. A deterministic starting card the learner then refines. One card
+    per project scope. Soft-fail."""
+    made = 0
+    for ws in _store.okr_scopes():
+        learns = [d for d in _store.load_all(ws) if d.get("type") == "learning"]
+        if not learns:
+            continue
+        buckets: dict[str, list[str]] = {}
+        for d in learns:
+            cat = str((d.get("meta") or {}).get("category") or "notes").lower()
+            buckets.setdefault(cat, []).append(
+                (d.get("body") or "").strip().lstrip("- ").strip())
+
+        def _first(cats):
+            for c in cats:
+                for cat, facts in buckets.items():
+                    if c in cat and facts:
+                        return facts[0][:200]
+            return ""
+        build = _first(["build", "ci-cd", "compile"])
+        test = _first(["test", "mocking"])
+        structure = _first(["structure", "architecture", "layout"])
+        gotchas = [f for facts in buckets.values() for f in facts if f][:12]
+        r = record_repo_profile(
+            ws, build=build, test=test, structure=structure, gotchas=gotchas,
+            body="Auto-built from this repo's learnings; refine as you work.")
+        if r.get("ok"):
+            made += 1
+    return {"ok": True, "profiles": made}
+
+
 def migrate_from_briefs() -> dict:
     """Seed the OKR graph from the existing flat briefs: each compacted-<key>.md
     (+ its split parts) → one GLOBAL Learning node (category=<topic>, body = the
@@ -452,4 +600,6 @@ def migrate_from_briefs() -> dict:
 
 
 __all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs",
-           "record_solution", "reclassify_global_learnings"]
+           "record_solution", "reclassify_global_learnings",
+           "record_repo_profile", "record_script", "record_task",
+           "build_repo_profiles"]

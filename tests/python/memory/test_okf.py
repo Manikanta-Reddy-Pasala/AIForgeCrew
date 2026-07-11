@@ -200,3 +200,28 @@ def test_context_block_fuzzy_fallback_ladder(monkeypatch, tmp_path):
     assert "eviction" in R.context_block(repo="R", query="evicting from cache")  # stem
     assert "eviction" in R.context_block(repo="R", query="cach evicton bug")     # typo
     assert R.context_block(repo="R", query="kubernetes deploy pipeline")          # fallback non-empty
+
+
+def test_repo_script_task_nodes_and_retrieval(monkeypatch, tmp_path):
+    """repo card upserts (scalars overwrite, lists union); script/task dedup;
+    read surfaces the repo hub first, then scripts + task recipes."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
+    import importlib
+    from aiforge_core.memory.okr import author, store
+    R = importlib.import_module("aiforge_core.memory.okr.retrieve")
+    author.record_repo_profile("CacheLayer", stack="Java", build="./mvnw package",
+                               gotchas=["L1+L2 together"])
+    author.record_repo_profile("CacheLayer", test="./mvnw test",
+                               gotchas=["eviction TTL"])            # upsert/merge
+    author.record_script(name="reindex.sh", lang="shell", purpose="rebuild FTS",
+                         workspace="CacheLayer")
+    author.record_script(name="reindex.sh", lang="shell", workspace="CacheLayer")  # dedup
+    author.record_task(title="add a cache region", workspace="CacheLayer", body="steps")
+    proj = store.load_all("CacheLayer")
+    card = next(d for d in proj if d["type"] == "repo")
+    assert card["id"] == "R-cachelayer"
+    assert card["meta"]["build"] == "./mvnw package" and card["meta"]["test"] == "./mvnw test"
+    assert len(card["meta"]["gotchas"]) == 2                       # unioned
+    assert len([d for d in proj if d["type"] == "script"]) == 1    # deduped
+    blk = R.context_block(repo="CacheLayer", query="how to build the cache")
+    assert "Profile:" in blk and "reindex.sh" in blk and "add a cache region" in blk

@@ -44,7 +44,8 @@ def _invalidate() -> None:
 # type → folder name.
 _DIR = {"objective": "objectives", "key_result": "key_results",
         "learning": "learnings", "session": "sessions",
-        "solution": "solutions"}
+        "solution": "solutions", "repo": "repo", "script": "scripts",
+        "task": "tasks"}
 
 
 def okr_root() -> str:

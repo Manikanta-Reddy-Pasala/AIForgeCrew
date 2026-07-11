@@ -191,11 +191,27 @@ def _scoped_block(repo: str | None, *, query: str = "", max_global: int = 8,
                      + "\n".join(_line(d) for d in gl) + "\n</GLOBAL_RULES>")
     if repo:
         proj = store.load_all(repo)
+        # the repo CARD first — the hub: how to build/test/run, structure, etc.
+        card = next((d for d in proj if d.get("type") == "repo"), None)
         rl = _rank_by_query([d for d in proj if d.get("type") == "learning"],
                             query, max_repo_learn, recent_key=_recency)
         sols = _rank_by_query([d for d in proj if d.get("type") == "solution"],
                               query, max_repo_sol, recent_key=_recency)
+        scripts = _rank_by_query([d for d in proj if d.get("type") == "script"],
+                                 query, 6, recent_key=_recency)
+        tasks = _rank_by_query([d for d in proj if d.get("type") == "task"],
+                               query, 6, recent_key=_recency)
         body: list[str] = []
+        if card:
+            body.append("Profile:\n" + _repo_card(card))
+        if scripts:
+            body.append("Scripts:\n" + "\n".join(
+                f"- {(d.get('meta') or {}).get('name')} "
+                f"[{(d.get('meta') or {}).get('lang')}]"
+                f"{(' — ' + (d.get('meta') or {}).get('purpose')) if (d.get('meta') or {}).get('purpose') else ''}"
+                for d in scripts))
+        if tasks:
+            body.append("Task recipes:\n" + "\n".join(_line(d) for d in tasks))
         if rl:
             body.append("Learnings:\n" + "\n".join(_line(d) for d in rl))
         if sols:
@@ -204,6 +220,25 @@ def _scoped_block(repo: str | None, *, query: str = "", max_global: int = 8,
             parts.append(f"<PROJECT_MEMORY repo=\"{repo}\">\n"
                          + "\n\n".join(body) + "\n</PROJECT_MEMORY>")
     return "\n\n".join(parts)
+
+
+def _repo_card(d: dict) -> str:
+    """Compact render of a repo hub card — the build/test/run/structure lines
+    that matter, then a couple of gotchas."""
+    m = d.get("meta") or {}
+    lines = []
+    for k in ("stack", "build", "test", "run", "structure", "deploy"):
+        v = m.get(k)
+        if v:
+            lines.append(f"  {k}: {_cap(str(v), 160)}")
+    for k in ("services", "tables", "scripts", "workflows"):
+        v = m.get(k)
+        if v:
+            lines.append(f"  {k}: {', '.join(str(x) for x in v[:8])}")
+    goch = m.get("gotchas") or []
+    if goch:
+        lines.append("  gotchas: " + "; ".join(str(g) for g in goch[:4]))
+    return "\n".join(lines) or "  (empty)"
 
 
 def context_block(kr_id: str | None = None, *, repo: str | None = None,

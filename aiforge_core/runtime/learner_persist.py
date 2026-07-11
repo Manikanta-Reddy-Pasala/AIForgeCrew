@@ -202,6 +202,38 @@ def persist_facts(
     except Exception:  # noqa: BLE001 — solution authoring is best-effort
         pass
 
+    # REPO CARD: structural facts (build/test/structure/deploy) about THIS repo
+    # keep the repo hub profile current; services/tables mentioned accrete onto
+    # it. Best-effort; only when we know the repo.
+    try:
+        if repo and repo not in ("notes", "shared", "repo"):
+            import datetime as _dt2
+            from aiforge_core.memory.okr import author as _oa
+            _dt = _dt2.datetime.fromtimestamp(
+                event_time, _dt2.UTC).strftime("%Y-%m-%d") if event_time else ""
+            _FIELD = {"build": "build", "ci-cd": "build", "testing": "test",
+                      "structure": "structure", "architecture": "structure",
+                      "deploy": "deploy"}
+            for _f in facts:
+                if not isinstance(_f, dict):
+                    continue
+                _tp = str(_f.get("topic") or "").lower()
+                _txt = (_f.get("text") or "").strip()
+                if not _txt:
+                    continue
+                kw = {"services": _f.get("services"), "tables": _f.get("tables"),
+                      "date": _dt}
+                fld = _FIELD.get(_tp)
+                if fld:
+                    kw[fld] = _txt
+                elif _tp in ("conventions", "patterns"):
+                    kw["conventions"] = [_txt]
+                elif not (_f.get("services") or _f.get("tables")):
+                    continue          # nothing card-worthy in this fact
+                _oa.record_repo_profile(repo, **kw)
+    except Exception:  # noqa: BLE001 — card upkeep never breaks the learner
+        pass
+
     # Embedded (zero-infra) path — write learnings to the SQLite memory
     # store instead of Neo4j/AFM. Same result-dict shape, never raises.
     from aiforge_core.memory import backend_select as _bsel

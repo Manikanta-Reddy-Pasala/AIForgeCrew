@@ -193,6 +193,15 @@ def run_startup_migrations() -> dict:
             out["classify"] = {"skipped": "no repos discovered"}
             # leave unmarked → retry next boot once repos are discoverable
 
+    # ── build the per-repo hub CARDS from each project's learnings (one-shot) ─
+    if "repo_profiles" not in done:
+        try:
+            from aiforge_core.memory.okr import author
+            out["repo_profiles"] = author.build_repo_profiles()
+            done.add("repo_profiles")
+        except Exception as exc:  # noqa: BLE001
+            out["repo_profiles"] = {"ok": False, "error": str(exc)}
+
     _save_marker({"done": sorted(done), "version": 1})
     return out
 
