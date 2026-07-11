@@ -104,8 +104,13 @@ def _neo4j_drain(limit: int = 5000) -> dict:
     moved = 0
     try:
         with drv.session() as s:
+            # ONLY durable MEMORY FACTS — NOT ingested repo content. Observation_v2
+            # with kind IN (code, doc) is the RAG search index (thousands of
+            # source-file chunks); draining those would flood learnings with repo
+            # code. That index is regenerable (reindex), so skip it.
             rows = s.run(
-                "MATCH (n) WHERE n:Observation_v2 OR n:Decision_v2 "
+                "MATCH (n) WHERE (n:Observation_v2 OR n:Decision_v2) "
+                "AND coalesce(n.kind, '') NOT IN ['code', 'doc', 'chunk'] "
                 "RETURN labels(n) AS labels, n.text AS text, n.repo AS repo, "
                 "n.tags AS tags, n.topic AS topic LIMIT $lim", lim=limit)
             for r in rows:
