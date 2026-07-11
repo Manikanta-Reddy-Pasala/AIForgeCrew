@@ -1,11 +1,9 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import { toast } from 'sonner';
 import {
-  api, memoryApi, MemorySource, MemoryOverview, MemoryStoreSection,
-  MemoryGraphSample,
+  api, MemorySource, MemoryOverview, MemoryStoreSection,
 } from '../api';
 import { Icon } from '../icons';
-import GraphExplorer from '../components/GraphExplorer';
 
 const ROLES = ['supervisor', 'planner', 'doer', 'feedback', 'learner'];
 
@@ -53,30 +51,6 @@ const OVERVIEW_STORES: {
   summary: (s: MemoryStoreSection) => string;
 }[] = [
   {
-    key: 'graph_facts', label: 'Neo4j graph — facts',
-    hint: 'observations / decisions / facts',
-    summary: s => labelSummary(s, 'nodes'),
-  },
-  {
-    key: 'symbols', label: 'Tree-sitter symbols',
-    hint: 'code symbols + call/extends/implements edges',
-    summary: s => {
-      const nodes = (s.total ?? 0).toLocaleString();
-      const rels = Object.values(s.relationships || {}).reduce((a, b) => a + b, 0);
-      return `${nodes} symbol nodes` + (rels ? `, ${rels.toLocaleString()} edges` : '');
-    },
-  },
-  {
-    key: 'graphify', label: 'Graphify',
-    hint: "graphify-tagged nodes (source='graphify')",
-    summary: s => `${(s.count ?? 0).toLocaleString()} nodes`,
-  },
-  {
-    key: 'chunks', label: 'Code / doc chunks',
-    hint: 'embedded content chunks',
-    summary: s => labelSummary(s, 'chunks'),
-  },
-  {
     key: 'sqlite', label: 'SQLite memory',
     hint: 'embedded units (learnings / failures / notes)',
     summary: s => {
@@ -108,97 +82,12 @@ function labelSummary(s: MemoryStoreSection, unit: string): string {
   return `${n.toLocaleString()} ${unit}` + (parts ? ` — ${parts}` : '');
 }
 
-// The four Neo4j-backed stores that support an in-app preview + explorer.
-const GRAPH_STORES = new Set(['graph_facts', 'symbols', 'graphify', 'chunks']);
-
-// Inline SVG node-link preview of ONE graph store. Pure SVG + React (no CDN /
-// external libs — CSP forbids them). Deterministic circular layout (no random).
-function GraphPreview({ store }: { store: string }) {
-  const [data, setData] = useState<MemoryGraphSample | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    memoryApi.getGraph(store)
-      .then(d => { if (alive) setData(d); })
-      .catch(() => { if (alive) setData({ available: false, nodes: [], edges: [] }); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [store]);
-
-  const shell: CSSProperties = {
-    marginTop: 8, marginBottom: 8, overflow: 'auto', maxHeight: 280,
-    background: 'var(--bg-1)', border: '1px solid var(--border-0)',
-    borderRadius: 8, padding: 6,
-  };
-
-  if (loading)
-    return <div style={shell}><div className="muted small">loading…</div></div>;
-  if (!data || !data.available || data.nodes.length === 0)
-    return <div style={shell}><div className="muted small">nothing to visualize</div></div>;
-
-  const W = 320, H = 260, CX = W / 2, CY = H / 2;
-  const nodes = data.nodes.slice(0, 60);
-  const n = nodes.length;
-  const radius = Math.min(CX, CY) - 24;
-  const pos = new Map<string, { x: number; y: number }>();
-  nodes.forEach((nd, i) => {
-    const a = (i / n) * Math.PI * 2;
-    pos.set(nd.id, { x: CX + radius * Math.cos(a), y: CY + radius * Math.sin(a) });
-  });
-  const showLabels = n <= 40;
-
-  return (
-    <div style={shell}>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block' }}
-           role="img" aria-label={`${store} graph preview`}>
-        {data.edges.map((e, i) => {
-          const a = pos.get(e.from), b = pos.get(e.to);
-          if (!a || !b) return null;
-          return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                       stroke="var(--border-1)" strokeWidth={1} />;
-        })}
-        {nodes.map(nd => {
-          const p = pos.get(nd.id)!;
-          return (
-            <g key={nd.id}>
-              <circle cx={p.x} cy={p.y} r={6} fill="var(--accent)">
-                <title>{nd.label}</title>
-              </circle>
-              {showLabels && (
-                <text x={p.x + 8} y={p.y + 3}
-                      style={{ fill: 'var(--fg-1)', fontSize: 9 }}>
-                  {nd.label.length > 14 ? nd.label.slice(0, 14) + '…' : nd.label}
-                </text>
-              )}
-            </g>
-          );
-        })}
-      </svg>
-      <div className="muted xs" style={{ marginTop: 4 }}>
-        {n} node{n !== 1 ? 's' : ''}
-        {data.edges.length ? `, ${data.edges.length} edge${data.edges.length !== 1 ? 's' : ''}` : ''}
-        {data.nodes.length > n ? ` (showing first ${n})` : ''}
-      </div>
-    </div>
-  );
-}
 
 function OverviewPanel() {
   const [ov, setOv] = useState<MemoryOverview | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(true);   // collapsed by default
-  const [openGraphs, setOpenGraphs] = useState<Set<string>>(new Set());
-  // Which store (if any) is open in the full-screen interactive explorer.
-  const [explorerStore, setExplorerStore] = useState<string | null>(null);
-
-  const toggleGraph = (key: string) => setOpenGraphs(prev => {
-    const next = new Set(prev);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    return next;
-  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -284,8 +173,6 @@ function OverviewPanel() {
           {OVERVIEW_STORES.map(store => {
             const s = ov.stores[store.key] || {};
             const unavailable = s.available === false;
-            const isGraph = GRAPH_STORES.has(store.key);
-            const graphOpen = openGraphs.has(store.key);
             return (
               <div key={store.key} style={{ borderBottom: '1px solid var(--border-0)' }}>
                 <div
@@ -305,24 +192,6 @@ function OverviewPanel() {
                     <div className="muted xs" style={{ marginTop: 2 }}>{store.hint}</div>
                   </div>
                   <div className="row tight" style={{ alignItems: 'center', flexShrink: 0 }}>
-                    {isGraph && !unavailable && (
-                      <>
-                        <button
-                          className="ghost sm"
-                          onClick={() => toggleGraph(store.key)}
-                          title={graphOpen ? 'Hide preview' : 'Render a small SVG node-link preview'}
-                        >
-                          {graphOpen ? 'Hide graph' : 'Preview graph'}
-                        </button>
-                        <button
-                          className="ghost sm"
-                          onClick={() => setExplorerStore(store.key)}
-                          title="Open the full-screen interactive graph explorer (pan / zoom / click to expand)"
-                        >
-                          Explore ↗
-                        </button>
-                      </>
-                    )}
                     <button
                       className="ghost danger"
                       onClick={() => clearStore(store.key, store.label)}
@@ -333,7 +202,6 @@ function OverviewPanel() {
                     </button>
                   </div>
                 </div>
-                {isGraph && !unavailable && graphOpen && <GraphPreview store={store.key} />}
               </div>
             );
           })}
@@ -356,17 +224,6 @@ function OverviewPanel() {
             </div>
           )}
         </div>
-      )}
-
-      {explorerStore && (
-        <GraphExplorer
-          store={explorerStore}
-          label={
-            (OVERVIEW_STORES.find(s => s.key === explorerStore)?.label
-              || explorerStore) + ' — explorer'
-          }
-          onClose={() => setExplorerStore(null)}
-        />
       )}
     </div>
   );
@@ -502,7 +359,9 @@ function SourcesPanel() {
     <div className="card">
       <div className="card-header">
         <h2>Sources</h2>
-        <span className="muted small">{sources.length} source{sources.length !== 1 ? 's' : ''}</span>
+        <span className="muted small">
+          {sources.length} source{sources.length !== 1 ? 's' : ''} · add markdown or code — indexed on the go (Aider RepoMap + CodeGraph for code relations)
+        </span>
       </div>
 
       {/* ── Add source form ── */}
@@ -832,7 +691,7 @@ function NotesPanel() {
         <h2>Notes (markdown memory)</h2>
         <span className="muted small">
           Plain <code>.md</code> files in <code>~/.aiforge/memory</code> — written
-          automatically after each chat run, also searchable above.
+          automatically after each chat run. Click a note to view it.
         </span>
       </div>
       <div className="row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -924,14 +783,21 @@ function NotesPanel() {
           );
         })()}
       {open && (
-        <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)',
-                      border: '1px solid var(--border-0)', borderRadius: 8 }}>
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <strong>{open.title}</strong>
-            <button className="ghost sm" onClick={() => setOpen(null)}>close</button>
+        <div onClick={() => setOpen(null)}
+             style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      zIndex: 1000, padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+               style={{ background: 'var(--bg-0)', border: '1px solid var(--border-1)',
+                        borderRadius: 10, maxWidth: 820, width: '100%', maxHeight: '85vh',
+                        overflow: 'auto', padding: 16, boxShadow: '0 12px 48px rgba(0,0,0,0.45)' }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <strong>{open.title}</strong>
+              <button className="ghost sm" onClick={() => setOpen(null)}><Icon.X size={14} /> close</button>
+            </div>
+            <div className="small muted" style={{ margin: '4px 0' }}>{open.file}</div>
+            <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, margin: 0 }}>{open.body}</pre>
           </div>
-          <div className="small muted" style={{ margin: '4px 0' }}>{open.file}</div>
-          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{open.body}</pre>
         </div>
       )}
     </div>
@@ -939,28 +805,12 @@ function NotesPanel() {
 }
 
 export default function Memory() {
-  const [q, setQ]         = useState('');
-  const [role, setRole]   = useState('planner');
-  const [hits, setHits]   = useState<any[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function search() {
-    if (q.trim().length < 2) return;
-    setLoading(true);
-    try {
-      const r = await api.memorySearch(q, role, 15);
-      setHits(r);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
     <>
       <div className="page-header">
         <div>
           <h1>Memory</h1>
-          <div className="subtitle">Manage memory sources, view what's indexed, and search across all wings.</div>
+          <div className="subtitle">Goal graph, indexed sources, and human-readable notes.</div>
         </div>
       </div>
 
@@ -975,67 +825,6 @@ export default function Memory() {
 
       {/* Sources management */}
       <SourcesPanel />
-
-      {/* Search */}
-      <div className="card">
-        <div className="card-header">
-          <h2>Search</h2>
-          <span className="muted small">Hybrid vector + BM25 across T1–T4, scoped to a role profile</span>
-        </div>
-        <div className="row">
-          <div className="input-search" style={{ flex: 1, minWidth: 300 }}>
-            <Icon.Search size={14} />
-            <input
-              placeholder="query (e.g. stock transfer sync rules)"
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && search()}
-              autoFocus
-            />
-          </div>
-          <label className="field" style={{ flexDirection: 'row', alignItems: 'center' }}>
-            Role
-            <select value={role} onChange={e => setRole(e.target.value)} style={{ minWidth: 130 }}>
-              {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </label>
-          <button onClick={search} disabled={loading || q.trim().length < 2}>
-            {loading ? 'Searching…' : <><Icon.Search size={14} /> Search</>}
-          </button>
-        </div>
-      </div>
-
-      {hits !== null && (
-        hits.length === 0 ? (
-          <div className="card">
-            <div className="empty">
-              <div className="empty-icon">∅</div>
-              <div style={{ color: 'var(--fg-0)', fontWeight: 500 }}>No hits</div>
-              <div>Try a broader query or a different role.</div>
-            </div>
-          </div>
-        ) : (
-          <div className="card">
-            <div className="card-header">
-              <h2>{hits.length} hits</h2>
-              <span className="muted small">role: <code>{role}</code></span>
-            </div>
-            <div className="stack">
-              {hits.map((h: any, i: number) => (
-                <div key={i} style={{ paddingBottom: 12, borderBottom: '1px solid var(--border-0)' }}>
-                  <div className="row tight" style={{ marginBottom: 6 }}>
-                    <span className="chip sm">{h.tier}</span>
-                    <span className="chip sm mono">{h.wing}</span>
-                    <span className="muted xs mono">score {Number(h.score).toFixed(3)}</span>
-                    {h.source && <span className="muted xs">· {h.source}</span>}
-                  </div>
-                  <pre style={{ margin: 0, fontSize: 12 }}>{(h.text || '').slice(0, 1500)}</pre>
-                </div>
-              ))}
-            </div>
-          </div>
-        )
-      )}
     </>
   );
 }

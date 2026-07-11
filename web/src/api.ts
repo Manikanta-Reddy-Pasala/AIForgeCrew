@@ -162,16 +162,6 @@ export const api = {
   },
   // Memory admin — per-datasource overview + DESTRUCTIVE clear (confirm-guarded).
   memoryOverview: () => j<MemoryOverview>('/memory/overview'),
-  // Small node-link sample of ONE graph store for the in-app SVG preview.
-  memoryGetGraph: (store: string, limit = 60) =>
-    j<MemoryGraphSample>(
-      `/memory/graph?store=${encodeURIComponent(store)}&limit=${limit}`),
-  // Neighborhood of ONE node (node + directly-connected neighbors + edges) —
-  // powers the interactive explorer's click-to-expand.
-  memoryExpandGraph: (store: string, nodeId: string, limit = 40) =>
-    j<MemoryGraphSample>(
-      `/memory/graph/expand?store=${encodeURIComponent(store)}` +
-      `&node_id=${encodeURIComponent(nodeId)}&limit=${limit}`),
   memoryClearStore: (store: string) =>
     j<any>(`/memory/clear/${encodeURIComponent(store)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -315,10 +305,6 @@ export const api = {
     j<{ ok: boolean; job: Job }>(`/jobs/${id}/run-now`, { method: 'POST' }),
 };
 
-// Memory-graph visualization helpers (thin namespace over `api`).
-export const memoryApi = {
-  getGraph: (store: string, limit = 60) => api.memoryGetGraph(store, limit),
-};
 
 // ── memory source types ───────────────────────────────────────────
 
@@ -365,15 +351,6 @@ export interface MemoryOverview {
   neo4j_bolt?: string | null;
   neo4j_connect?: string | null;
   neo4j_user?: string | null;
-}
-
-// ── memory graph sample (in-app SVG preview) types ────────────────
-export interface MemoryGraphNode { id: string; label: string; kind: string; }
-export interface MemoryGraphEdge { from: string; to: string; type: string; }
-export interface MemoryGraphSample {
-  available: boolean;
-  nodes: MemoryGraphNode[];
-  edges: MemoryGraphEdge[];
 }
 
 // ── agent v2 config types ─────────────────────────────────────────
