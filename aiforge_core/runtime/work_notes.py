@@ -520,12 +520,17 @@ def _consolidate_once(existing: dict, new_content: str, role: str) -> dict:
     payload = json.dumps({"current_sections": existing,
                           "new_information": new_content}, ensure_ascii=False)
     try:
+        import os as _os
         from aiforge_core.llm.structured import structured_complete
+        # The consolidated JSON accumulates facts across folds, so a small output
+        # cap truncates it (IncompleteOutputException). Give it real headroom;
+        # override with AIFORGE_CONSOLIDATE_MAX_TOKENS.
+        _mt = int(_os.environ.get("AIFORGE_CONSOLIDATE_MAX_TOKENS", "8192"))
         res = structured_complete(
             role,
             [{"role": "system", "content": _CONSOLIDATE_SYS},
              {"role": "user", "content": payload}],
-            ConsolidatedNote, max_retries=1, max_tokens=4096, temperature=0.1)
+            ConsolidatedNote, max_retries=1, max_tokens=_mt, temperature=0.1)
         return {"objective": (res.objective or "").strip(),
                 "key_results": _dedupe_ci(res.key_results),
                 "facts": _dedupe_ci(res.facts),
