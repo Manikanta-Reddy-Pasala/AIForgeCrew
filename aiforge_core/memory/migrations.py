@@ -291,12 +291,34 @@ def run_startup_migrations() -> dict:
     return out
 
 
-__all__ = ["run_startup_migrations", "purge_migrated_code"]
+def force_recompact_all() -> dict:
+    """COMPACT AT ANY COST — re-read every md, re-chunk (chonkie) + re-run the
+    LLM over EVERY brief (not just new files), rebuild all briefs from scratch,
+    sweep stale captures. Heavy (full LLM pass); run on demand. Soft-fail."""
+    from aiforge_core.memory import md_store
+    out: dict = {}
+    try:
+        out["repo"] = md_store.compact(group_by="repo", force=True,
+                                       model_role="learner", archive_sources=False)
+        out["topic"] = md_store.compact(group_by="topic", force=True,
+                                        model_role="learner", archive_sources=True)
+        out["sweep"] = md_store.sweep_stale_captures(archive=True)
+        out["ok"] = True
+    except Exception as exc:  # noqa: BLE001
+        out["ok"] = False
+        out["error"] = str(exc)
+    return out
 
 
-if __name__ == "__main__":       # python -m aiforge_core.memory.migrations --purge-code
+__all__ = ["run_startup_migrations", "purge_migrated_code",
+           "force_recompact_all"]
+
+
+if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [flag]
     import sys
     if "--purge-code" in sys.argv:
         print(purge_migrated_code())
+    elif "--recompact-all" in sys.argv:      # compact at any cost
+        print(force_recompact_all())
     else:
         print(run_startup_migrations())

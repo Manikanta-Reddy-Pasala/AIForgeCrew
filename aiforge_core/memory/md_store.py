@@ -776,7 +776,8 @@ def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
 
 def compact(*, group_by: str = "kind", min_group: int = 2,
             dry_run: bool = False, summarize: bool = True,
-            model_role: str = "learner", archive_sources: bool = True) -> dict:
+            model_role: str = "learner", archive_sources: bool = True,
+            force: bool = False) -> dict:
     """Consolidate the sprawl of per-session ``.md`` memories into ONE
     standardized file per group, so the Memory folder stays legible.
 
@@ -794,8 +795,17 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
     never deleted) and the result is re-ingested into the searchable backend.
 
     ``dry_run`` returns the plan (group → file count) without touching disk.
+
+    ``force`` ("compact at any cost"): re-consolidate EVERY existing brief too —
+    not just scopes with new files. Each brief is re-read, re-chunked (chonkie)
+    and re-summarised by the LLM from scratch, and singletons always fold
+    (min_group→1, summarize→on). Use to rebuild the whole memory after a bad
+    import, or to re-run the LLM pass over everything.
     """
     import shutil
+    if force:
+        summarize = True
+        min_group = 1
 
     def _gather_planned() -> dict[str, list[dict]]:
         files: list[dict] = []
@@ -830,7 +840,18 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         groups: dict[str, list[dict]] = {}
         for d in live:
             groups.setdefault(_group_key(d, group_by), []).append(d)
-        return {k: v for k, v in groups.items() if len(v) >= min_group}
+        result = {k: v for k, v in groups.items() if len(v) >= min_group}
+        if force:
+            # re-consolidate every EXISTING brief too (recheck all files) — add
+            # each compacted-<scope>.md as its own group so the loop re-reads +
+            # re-summarises it even with no new live sources. Skip split-part /
+            # per-run-named files (they fold via their primary scope).
+            for p in memory_dir().glob("compacted-*.md"):
+                if re.search(r"-\d{8}-[0-9a-f]{6}$", p.stem):
+                    continue
+                key = p.stem[len("compacted-"):] or "shared"
+                result.setdefault(key, [])       # empty live → existing_body re-consolidated
+        return result
 
     if dry_run:                      # read-only preview — no lock (don't wait
         planned = _gather_planned()  # behind a long-running compaction)

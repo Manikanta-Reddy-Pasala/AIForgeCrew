@@ -2082,6 +2082,7 @@ def memory_files_compact(group_by: str = Query("topic"),
                          min_group: int = Query(1, ge=1),
                          dry_run: bool = Query(False),
                          summarize: bool = Query(True),
+                         force: bool = Query(False),
                          model_role: str = Query("learner")) -> dict:
     """Consolidate per-session md memories into fewer standardized files.
 
@@ -2095,7 +2096,7 @@ def memory_files_compact(group_by: str = Query("topic"),
     from aiforge_core.memory import md_store
     return md_store.compact(group_by=group_by, min_group=min_group,
                             model_role=model_role,
-                            dry_run=dry_run, summarize=summarize)
+                            dry_run=dry_run, summarize=summarize, force=force)
 
 
 @app.get("/api/memory/okr")
