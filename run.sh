@@ -592,6 +592,24 @@ fi
 # knowing the venv location.
 export PATH="$PWD/.venv/bin:$PATH"
 
+# ── CodeGraph binary — best-effort auto-install ───────────────────────────
+# The Doer's codegraph_* tool calls are ENFORCED, so install the indexer if it's
+# missing (npm package @colbymchenry/codegraph, user prefix, no sudo). Skip with
+# AIFORGE_SKIP_CODEGRAPH=1. npm-user-global bin is put on PATH so the index block
+# below resolves it. Best-effort — a box with no npm just skips (enforcement
+# self-gates off when no binary/index).
+if [[ "${AIFORGE_SKIP_CODEGRAPH:-0}" != "1" ]]; then
+  [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
+  if ! command -v codegraph >/dev/null 2>&1 && [[ -z "${AIFORGE_CODEGRAPH_BIN:-}" ]] \
+       && command -v npm >/dev/null 2>&1; then
+    echo "==> installing CodeGraph (code-graph indexer)…"
+    bash scripts/install-codegraph.sh >/dev/null 2>&1 \
+      && echo "==> codegraph ready" \
+      || echo "==> codegraph install skipped (npm/network) — enforcement stays off"
+    [[ -d "$HOME/.npm-global/bin" ]] && export PATH="$HOME/.npm-global/bin:$PATH"
+  fi
+fi
+
 # ── CodeGraph index (feeds the ENFORCED codegraph_* tool calls) ───────────
 # The Doer is required to call codegraph (callers/impact/explore) before
 # editing an existing symbol — see runtime/text_doer._CODEGRAPH_MANDATE. Those
@@ -602,6 +620,10 @@ export PATH="$PWD/.venv/bin:$PATH"
 #   AIFORGE_CODEGRAPH_REPOS  comma-separated repo paths to index (empty = skip)
 # First run → `init` (full, ~20s for 1200 files); thereafter → `sync`
 # (incremental). Both run in the background so boot is never blocked.
+# No repos set but the binary is here → hint the operator (indexing is opt-in).
+if [[ -z "${AIFORGE_CODEGRAPH_REPOS:-}" ]] && command -v codegraph >/dev/null 2>&1; then
+  echo "  codegraph: installed but idle — set AIFORGE_CODEGRAPH_REPOS=\"/path/a,/path/b\" to index"
+fi
 _CG_BIN="${AIFORGE_CODEGRAPH_BIN:-codegraph}"
 # Accept a bare command name (resolve via PATH) as well as an absolute path —
 # mirrors AIFORGE_LMS_BIN conventions; otherwise `-x` on a bare name fails.
