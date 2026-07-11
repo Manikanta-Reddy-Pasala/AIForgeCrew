@@ -330,7 +330,8 @@ def write_workflow(name: str, description: str, body: str,
     wf_dir = base / _sk._slug(name)
     trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
     import json as _json
-    front = "---\n" + "name: " + _json.dumps(name) + "\n"
+    # OKF v0.1: `type:` required; `name` = OKF title; triggers/scope preserved.
+    front = "---\n" + "type: workflow\n" + "name: " + _json.dumps(name) + "\n"
     if description:
         front += "description: " + _json.dumps(description.strip()) + "\n"
     if trig:

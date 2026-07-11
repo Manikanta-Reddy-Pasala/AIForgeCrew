@@ -404,7 +404,10 @@ def write_skill(name: str, description: str, body: str,
         fm["description"] = description.strip()
     trig = [t.strip().lower() for t in (triggers or []) if str(t).strip()]
     import json as _json
+    # OKF v0.1: `type:` is the one required frontmatter field. `name` doubles as
+    # the OKF `title`; `triggers`/`scope` are preserved custom keys.
     front = "---\n"
+    front += "type: skill\n"
     front += "name: " + _json.dumps(fm["name"]) + "\n"
     if description:
         front += "description: " + _json.dumps(description.strip()) + "\n"
