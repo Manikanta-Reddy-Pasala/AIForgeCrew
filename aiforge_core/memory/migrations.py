@@ -141,6 +141,69 @@ def _neo4j_drain(limit: int = 5000) -> dict:
     return {"ok": True, "moved": moved}
 
 
+def purge_migrated_code() -> dict:
+    """Undo a buggy neo4j drain that captured repo CODE as learnings, WITHOUT
+    touching real memory. Removes (1) flat md files stamped
+    ``source: migrate:neo4j``, (2) OKR ``learning`` nodes whose body is clearly
+    source code (not prose), then re-compacts briefs + rebuilds the index. Prose
+    learnings, solutions, repo cards, tasks, scripts are KEPT. Soft-fail."""
+    import re
+    out = {"removed_md": 0, "removed_okr_learnings": 0, "kept_learnings": 0}
+    try:
+        from aiforge_core.memory import md_store
+        from aiforge_core.memory.okr import store as okr_store
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+    # 1. flat md captured by the drain (per-note files + any it created)
+    for p in md_store.memory_dir().glob("*.md"):
+        try:
+            d = md_store._parse(p)
+        except Exception:  # noqa: BLE001
+            continue
+        if str(d.get("source") or "") == "migrate:neo4j":
+            try:
+                p.unlink()
+                out["removed_md"] += 1
+            except OSError:
+                pass
+
+    # 2. OKR learnings whose BODY is source code, not prose. A real learning is a
+    # sentence; a drained chunk is code. Flag when several code tokens appear.
+    code_re = re.compile(
+        r"(?m)(^\s*(def |class |import |from \w+ import|public |private |func |"
+        r"function |const |let |var |return |package |#include|@\w+)|[{};]\s*$|"
+        r"=>|::|\bself\.|\bpublic static\b)")
+    for d in okr_store.load_all():
+        if d.get("type") != "learning":
+            continue
+        body = (d.get("body") or "")
+        hits = len(code_re.findall(body))
+        looks_code = hits >= 3 or (hits >= 1 and len(body) < 240
+                                   and re.search(r"(def |import |class |[{};])", body))
+        if looks_code:
+            try:
+                import os as _os
+                _os.unlink(d["path"])
+                out["removed_okr_learnings"] += 1
+            except OSError:
+                pass
+        else:
+            out["kept_learnings"] += 1
+
+    # 3. rebuild: re-compact remaining md into clean briefs + refresh the index
+    try:
+        md_store.compact(group_by="topic", min_group=1, summarize=False,
+                         archive_sources=True)
+        md_store.sweep_stale_captures(archive=True)
+        okr_store._invalidate()
+        okr_store._write_index()
+    except Exception:  # noqa: BLE001
+        pass
+    out["ok"] = True
+    return out
+
+
 def run_startup_migrations() -> dict:
     """Run the full idempotent migration chain. Called once per API boot; each
     step no-ops when nothing needs doing. Returns a per-step summary; never
@@ -228,4 +291,12 @@ def run_startup_migrations() -> dict:
     return out
 
 
-__all__ = ["run_startup_migrations"]
+__all__ = ["run_startup_migrations", "purge_migrated_code"]
+
+
+if __name__ == "__main__":       # python -m aiforge_core.memory.migrations --purge-code
+    import sys
+    if "--purge-code" in sys.argv:
+        print(purge_migrated_code())
+    else:
+        print(run_startup_migrations())
