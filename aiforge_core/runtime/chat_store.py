@@ -660,7 +660,22 @@ def _backend():
             if getattr(_env, "AIFORGE_USE_SQLITE", True):
                 _BACKEND = _SqliteChatStore()
             else:
-                _BACKEND = _PgChatStore(_env.AIFORGE_PG_URL)
+                # Postgres configured but maybe unreachable (no Docker / PG down)
+                # → degrade to embedded SQLite instead of failing every chat
+                # turn. AIFORGE_REQUIRE_PG=1 hard-fails instead.
+                try:
+                    be = _PgChatStore(_env.AIFORGE_PG_URL)
+                    with be._conn():                   # probe: real connection
+                        pass
+                    _BACKEND = be
+                except Exception as exc:  # noqa: BLE001
+                    import os
+                    if os.environ.get("AIFORGE_REQUIRE_PG") == "1":
+                        raise
+                    import logging
+                    logging.getLogger("aiforge.chat").warning(
+                        "Postgres unreachable (%s) — chat using embedded SQLite", exc)
+                    _BACKEND = _SqliteChatStore()
     return _BACKEND
 
 

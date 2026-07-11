@@ -127,6 +127,18 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# ── No Docker on this box? A hybrid/docker mode can't run Postgres/Neo4j — fall
+# back to the zero-Docker SQLite path so a fresh machine (e.g. WSL without a
+# Docker daemon) just works instead of pointing the runner at a dead PG. Force
+# with AIFORGE_MODE=hybrid + a running Docker; opt out of the auto-fallback with
+# AIFORGE_NO_LITE_FALLBACK=1.
+if [[ "$MODE" != "lite" && "${MIGRATE:-0}" != "1" && "${AIFORGE_NO_LITE_FALLBACK:-0}" != "1" ]]; then
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    echo "==> Docker unavailable — falling back to --lite (SQLite, no infra containers)"
+    MODE=lite
+  fi
+fi
+
 # ── Stop the langfuse stack (--stop-langfuse) ─────────────────────────
 # Tears the trace-server containers down. Data is EPHEMERAL by design — the
 # v3 stack runs with NO volumes (postgres/clickhouse/redis/minio), so all
