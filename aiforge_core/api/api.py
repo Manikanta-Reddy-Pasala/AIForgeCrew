@@ -4824,16 +4824,21 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             # and write a session node from the executed steps.
                             try:
                                 from aiforge_core.memory import okr as _okr
+                                from aiforge_core.runtime.chat_agent import (
+                                    _chat_repo_key)
+                                _rkey = _chat_repo_key(cwd)
                                 _msgs2 = chat_store.get_messages(session_id) or []
                                 _tx = "\n".join(
                                     f"{m.get('role')}: {m.get('content')}"
                                     for m in _msgs2 if isinstance(m, dict)
                                     and m.get("content"))[:8000]
-                                _okr.extract_and_save(_tx)
+                                # classify each learning global vs THIS repo
+                                _okr.extract_and_save(_tx, repo=_rkey)
                                 _led = session_ledger.ledger_block(session_id)
                                 if _led:
                                     _okr.write_session_node(
-                                        title=f"chat session {session_id}", body=_led)
+                                        title=f"chat session {session_id}",
+                                        body=_led, repo=_rkey)
                             except Exception:  # noqa: BLE001
                                 pass
                         except Exception:  # noqa: BLE001

@@ -41,16 +41,38 @@ def _existing_objective_by_title(g, title: str) -> str | None:
 _EXTRACT_SYS = (
     "Extract DURABLE goal-memory from a work session. Return objectives (long-"
     "lived goals), key_results (measurable milestones, each tied to an objective "
-    "title), and learnings (rules/constraints discovered — a learning's scope is "
-    "'global' or the objective title it applies to). Only extract things worth "
-    "keeping across sessions; skip one-off chatter. Do NOT invent — use what the "
-    "session shows. Empty lists are fine."
+    "title), and learnings (rules/constraints discovered). Only extract things "
+    "worth keeping across sessions; skip one-off chatter. Do NOT invent — use "
+    "what the session shows. Empty lists are fine.\n"
+    "\n"
+    "CLASSIFY each learning on TWO axes:\n"
+    "1. scope — where it applies. Use exactly one of:\n"
+    "   • 'global' — a rule that holds for ALL repos: a user preference, a "
+    "cross-cutting convention, a decision about how to work generally.\n"
+    "   • 'repo' — knowledge SPECIFIC to THIS repository: its folder/module "
+    "layout, the build/test command that works here, entry points, a pattern or "
+    "naming convention used in this codebase, a repo-specific gotcha.\n"
+    "   • an objective title — a constraint that belongs to that goal.\n"
+    "   When unsure between global and repo, prefer 'repo' if it names files/"
+    "paths/commands of this codebase, else 'global'.\n"
+    "2. topic — a SHORT kebab-case theme slug the learning is about (e.g. sync, "
+    "auth, build, testing, error-handling, conventions, deploy). The theme is "
+    "the cross-repo axis, orthogonal to scope."
 )
 
 
-def extract_and_save(session_text: str, *, active_kr: str | None = None) -> dict:
+def _topic_slug(s: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").strip().lower()).strip("-")[:40]
+
+
+def extract_and_save(session_text: str, *, active_kr: str | None = None,
+                     repo: str | None = None) -> dict:
     """LLM-extract objectives/KRs/learnings from ``session_text`` and save them
-    as nodes (deduped by title). Returns a summary; never raises. Disable with
+    as nodes (deduped by title). Each learning is CLASSIFIED by scope
+    (global / this ``repo`` / an objective) and tagged with its topic, so
+    repo-specific knowledge segregates into ``projects/<repo>/`` instead of
+    piling into the global bucket. Returns a summary; never raises. Disable with
     AIFORGE_OKR_AUTHOR=0."""
     if os.environ.get("AIFORGE_OKR_AUTHOR", "1").strip().lower() in (
             "0", "false", "no", "off"):
@@ -74,7 +96,8 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None) -> dict
 
         class _Learn(BaseModel):
             rule: str
-            scope: str = "global"
+            scope: str = "global"        # 'global' | 'repo' | an objective title
+            topic: str = ""              # theme slug (cross-repo axis)
 
         class _Extract(BaseModel):
             objectives: list[_Obj] = []
@@ -121,21 +144,35 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None) -> dict
         if not ln.rule.strip():
             continue
         sc = ln.scope.strip()
-        if sc.lower() == "global" or not sc:
-            scope: object = "global"
+        low = sc.lower()
+        meta: dict = {}
+        if low == "repo" and repo:
+            # project-specific → segregates into projects/<repo>/ (workspace is
+            # what store._scope_of keys on).
+            meta["scope"] = f"repo:{repo}"
+            meta["workspace"] = repo
+        elif low in ("global", "") or (low == "repo" and not repo):
+            meta["scope"] = "global"
         else:
             oid = title_to_oid.get(_slug(sc)) or _existing_objective_by_title(g, sc)
-            scope = [oid] if oid else "global"
-        r = _store.save_node("learning", None, {"scope": scope}, ln.rule.strip())
+            meta["scope"] = [oid] if oid else "global"
+        if ln.topic.strip():                       # theme axis (orthogonal)
+            tp = _topic_slug(ln.topic)
+            if tp:
+                meta["category"] = tp
+                meta["tags"] = [f"topic:{tp}"]
+        r = _store.save_node("learning", None, meta, ln.rule.strip())
         made["learnings"].append(r.get("id"))
     made["ok"] = True
     return made
 
 
 def write_session_node(*, title: str, body: str,
-                       linked_krs: list[str] | None = None) -> dict:
+                       linked_krs: list[str] | None = None,
+                       repo: str | None = None) -> dict:
     """Write a ``session`` node (chronological log) from a run's steps, linked to
-    the KRs it advanced (defaults to the active KR). Soft-fail."""
+    the KRs it advanced (defaults to the active KR). A ``repo`` scopes the
+    session into ``projects/<repo>/`` (it's that repo's activity). Soft-fail."""
     krs = list(linked_krs or [])
     if not krs:
         act = _graph.get_active()
@@ -144,6 +181,8 @@ def write_session_node(*, title: str, body: str,
     import datetime as _dt
     meta = {"date": _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d"),
             "linked_krs": krs, "title": title}
+    if repo:
+        meta["workspace"] = repo
     return _store.save_node("session", None, meta, body)
 
 

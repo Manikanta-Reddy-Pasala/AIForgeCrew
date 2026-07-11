@@ -105,13 +105,59 @@ def compile_prompt(ctx: dict) -> str:
     return "\n\n".join(parts)
 
 
-def context_block(kr_id: str | None = None, **kw) -> str:
-    """One-shot: retrieve for the (active) KR and compile → prompt block. This
-    is what the context bundle injects. Never raises — returns '' on any error."""
+def _scoped_block(repo: str | None, *, max_global: int = 10,
+                  max_repo_learn: int = 12, max_repo_sol: int = 8) -> str:
+    """SCOPE-aware memory: universal (global) rules + THIS repo's learnings and
+    recent solutions — and nothing from OTHER projects. This is what stops every
+    task from getting every document: a repo sees its own knowledge + the truly
+    global rules, not the whole bundle."""
     try:
-        return compile_prompt(retrieve(kr_id, **kw))
+        from . import store
     except Exception:  # noqa: BLE001
         return ""
+
+    def _line(d: dict) -> str:
+        m = d.get("meta") or {}
+        cat = m.get("category") or m.get("topic")
+        head = (m.get("title") or (d.get("body") or "").strip().split("\n", 1)[0])
+        return f"- {('[' + cat + '] ') if cat else ''}{_cap(head, 160)}"
+
+    parts: list[str] = []
+    gl = [d for d in store.load_all("global") if d.get("type") == "learning"]
+    if gl:
+        parts.append("<GLOBAL_RULES>\n"
+                     + "\n".join(_line(d) for d in gl[:max_global])
+                     + "\n</GLOBAL_RULES>")
+    if repo:
+        proj = store.load_all(repo)
+        rl = [d for d in proj if d.get("type") == "learning"]
+        sols = [d for d in proj if d.get("type") == "solution"]
+        # recent solutions first (by timestamp, else id)
+        sols.sort(key=lambda d: ((d.get("meta") or {}).get("timestamp") or "",
+                                 d.get("id") or ""), reverse=True)
+        body: list[str] = []
+        if rl:
+            body.append("Learnings:\n" + "\n".join(_line(d) for d in rl[:max_repo_learn]))
+        if sols:
+            body.append("Recently solved:\n" + "\n".join(
+                _line(d) for d in sols[:max_repo_sol]))
+        if body:
+            parts.append(f"<PROJECT_MEMORY repo=\"{repo}\">\n"
+                         + "\n\n".join(body) + "\n</PROJECT_MEMORY>")
+    return "\n\n".join(parts)
+
+
+def context_block(kr_id: str | None = None, *, repo: str | None = None,
+                  **kw) -> str:
+    """One-shot: the (active) KR's goal context PLUS scope-aware memory — global
+    rules + THIS ``repo``'s learnings/solutions, never other projects'. This is
+    what the context bundle injects. Never raises — returns '' on any error."""
+    try:
+        base = compile_prompt(retrieve(kr_id, **kw))
+    except Exception:  # noqa: BLE001
+        base = ""
+    scoped = _scoped_block(repo)
+    return "\n\n".join(x for x in (base, scoped) if x)
 
 
 __all__ = ["retrieve", "compile_prompt", "context_block"]

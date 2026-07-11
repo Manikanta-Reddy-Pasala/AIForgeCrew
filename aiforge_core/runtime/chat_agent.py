@@ -3926,7 +3926,9 @@ def run_chat_agent(
     # Injected whenever an active KR is set (okr.set_active); empty otherwise.
     try:
         from aiforge_core.memory import okr as _okr
-        _add_sys_block("okr", _okr.context_block())
+        # repo-scoped: global rules + THIS repo's learnings/solutions only —
+        # never every project's docs (that was the "links all documents" noise).
+        _add_sys_block("okr", _okr.context_block(repo=_chat_repo_key(cwd)))
     except Exception:  # noqa: BLE001 — okr context must never break a turn
         pass
     if _sys_dropped:                # one-line note so the trim is visible

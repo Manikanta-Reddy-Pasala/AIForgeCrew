@@ -102,3 +102,45 @@ def test_okr_scope_segregation_global_vs_project(monkeypatch, tmp_path):
     idx = open(os.path.join(s.okr_root(), "index.md")).read()
     assert "## Global" in idx and "## RepoA" in idx and "## RepoB" in idx
     assert not idx.startswith("---")                          # reserved: no frontmatter
+
+
+def test_okr_learning_classification_global_vs_repo(monkeypatch, tmp_path):
+    """extract_and_save classifies each learning: scope 'repo' → projects/<repo>/
+    with a topic category; scope 'global' → global/."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
+    from aiforge_core.memory.okr import author, store
+
+    class _L:
+        def __init__(s, rule, scope, topic=""):
+            s.rule, s.scope, s.topic = rule, scope, topic
+
+    class _R:
+        objectives, key_results = [], []
+        learnings = [_L("handlers live in src/api", "repo", "structure"),
+                     _L("always target one test file", "global", "testing")]
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete",
+                        lambda *a, **k: _R())
+    author.extract_and_save("a work session long enough to pass the gate here",
+                            repo="RepoA")
+    assert store.okr_scopes() == ["RepoA"]
+    repo_l = store.load_all("RepoA")
+    assert repo_l and (repo_l[0]["meta"] or {}).get("category") == "structure"
+    glob_l = store.load_all("global")
+    assert glob_l and "target one test" in (glob_l[0].get("body") or "")
+
+
+def test_context_block_scoped_no_cross_project_leak(monkeypatch, tmp_path):
+    """Repo context = global rules + THIS repo only; another project's learning
+    never leaks in (the 'links all documents' fix)."""
+    monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
+    import importlib
+    from aiforge_core.memory.okr import store
+    R = importlib.import_module("aiforge_core.memory.okr.retrieve")
+    store.save_node("learning", None, {"scope": "global", "title": "univ rule"}, "g")
+    store.save_node("learning", None,
+                    {"scope": "repo:RepoA", "workspace": "RepoA"}, "A rule")
+    store.save_node("learning", None,
+                    {"scope": "repo:RepoB", "workspace": "RepoB"}, "B SECRET rule")
+    blk = R.context_block(repo="RepoA")
+    assert "univ rule" in blk and "A rule" in blk
+    assert "B SECRET" not in blk               # no cross-project leak
