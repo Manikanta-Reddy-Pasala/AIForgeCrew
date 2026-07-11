@@ -1072,7 +1072,8 @@ _CRYPTIC_KEY_RE = re.compile(
 
 
 def cleanup_legacy_compacted(*, dry_run: bool = False,
-                             model_role: str = "learner") -> dict:
+                             model_role: str = "learner",
+                             refold: bool = True, progress=None) -> dict:
     """One-time tidy: fold id-keyed / per-kind ``compacted-*`` briefs back into
     the TOPIC axis. Each stale file's Facts are re-captured as topic units (no
     forced topic → the labeller re-clusters them), the original is archived
@@ -1145,9 +1146,14 @@ def cleanup_legacy_compacted(*, dry_run: bool = False,
                 folded += 1
             except Exception:  # noqa: BLE001
                 pass
-    # Re-fold the re-captured units into meaningful topic briefs.
-    topic = compact(group_by="topic", min_group=1, summarize=True,
-                    model_role=model_role, archive_sources=True)
+    # Re-fold the re-captured units into meaningful topic briefs — SKIP when the
+    # caller (e.g. 'compact all') runs its own topic pass right after, so the
+    # heavy LLM consolidation isn't done twice.
+    topic = None
+    if refold:
+        topic = compact(group_by="topic", min_group=1, summarize=True,
+                        model_role=model_role, archive_sources=True,
+                        progress=progress)
     return {"ok": True, "dry_run": False, "folded": folded,
             "facts": facts_moved, "archive": str(archive),
             "topic_compact": topic}

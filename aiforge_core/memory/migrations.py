@@ -314,7 +314,10 @@ def force_recompact_all(on_step=None) -> dict:
 
     out: dict = {}
     steps = [
-        ("tidy_legacy", lambda: md_store.cleanup_legacy_compacted()),
+        # fold cryptic/id-named files only — the topic step below does the heavy
+        # LLM consolidation (with progress), so don't re-fold here (was the 600s
+        # 'stuck at tidy_legacy').
+        ("tidy_legacy", lambda: md_store.cleanup_legacy_compacted(refold=False)),
         ("repo", lambda: md_store.compact(group_by="repo", force=True,
                                           model_role="learner", archive_sources=False,
                                           progress=_prog("repo"))),
