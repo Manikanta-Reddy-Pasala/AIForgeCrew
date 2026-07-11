@@ -10,16 +10,21 @@ truth in code: [`aiforge_core/memory/okf.py`](../aiforge_core/memory/okf.py)
 
 - Every non-reserved `.md` file starts with a parseable **YAML frontmatter**
   block delimited by `---` on its own line.
-- Frontmatter MUST contain a non-empty **`type:`** field (`type: objective`,
-  `type: learning`, `type: table`, …).
+- Frontmatter MUST contain a non-empty **`type:`** field. AIForge's OKR types:
+  `objective`, `key_result`, `learning`, `session`, `solution`, `repo` (a
+  repository's hub card), `script`, `task`.
 - Every concept is a **UTF-8 Markdown** file: frontmatter + free-form body.
+- **Scope layout** — the bundle splits into `global/<type>/` (universal) and
+  `projects/<repo>/<type>/` (repo-specific); scope is derived from a node's
+  `workspace`/`scope` frontmatter. See `docs/OKR_MEMORY.md`.
 
 ## 2. Identity & linking
 
-- **Path is identity** — the file path *is* the concept id (`/learnings/L-03.md`).
+- **Path is identity** — the file path *is* the concept id
+  (`/projects/CacheLayer/learnings/L-03.md`, `/global/learnings/L-07.md`).
   No external IDs or databases.
 - **Links** build the graph. Prefer **absolute** bundle-relative links
-  (`/objectives/O-01.md`); relative (`./other.md`) also allowed.
+  (`/projects/CacheLayer/repo/R-cachelayer.md`); relative (`./other.md`) also allowed.
 - **Untyped edges** — the *meaning* of a link (parent, depends-on, supersedes)
   lives in the surrounding prose, not the link syntax.
 
