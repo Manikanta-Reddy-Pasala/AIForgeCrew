@@ -101,3 +101,26 @@ def test_check_toolchain_flags_missing_binary(tmp_path, monkeypatch):
     # tools present → no messages
     monkeypatch.setattr(rs.shutil, "which", lambda _n: "/usr/bin/" + _n)
     assert rs.check_toolchain(str(tmp_path)) == []
+
+
+def test_detect_lang_c_cpp_rust_shell(tmp_path):
+    from aiforge_core.config import repo_standards as rs
+    import os
+
+    def mk(name, files):
+        d = tmp_path / name
+        d.mkdir()
+        for f in files:
+            (d / f).write_text("x")
+        return str(d)
+    assert rs.detect_lang(mk("r", ["Cargo.toml"])) == "rust"
+    assert rs.detect_lang(mk("cc", ["foo.cpp", "CMakeLists.txt"])) == "cpp"
+    assert rs.detect_lang(mk("c", ["main.c", "Makefile"])) == "c"
+    assert rs.detect_lang(mk("s", ["deploy.sh"])) == "shell"
+
+
+def test_check_toolchain_rust_c_missing(tmp_path, monkeypatch):
+    from aiforge_core.config import repo_standards as rs
+    (tmp_path / "Cargo.toml").write_text("[package]")
+    monkeypatch.setattr(rs.shutil, "which", lambda _n: None)
+    assert any("cargo" in m.lower() for m in rs.check_toolchain(str(tmp_path)))

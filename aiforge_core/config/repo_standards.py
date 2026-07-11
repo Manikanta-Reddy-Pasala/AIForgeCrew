@@ -111,6 +111,30 @@ _DEFAULTS_BY_LANG: dict[str, dict[str, str]] = {
         "format_cmd":        "cargo fmt",
         "security_scan_cmd": "cargo audit",
     },
+    # Bootstrap defaults only — the real build/test come from learning
+    # (repo_catalog). These are last-resort fallbacks so a fresh C/C++/shell
+    # repo still runs. resolve_toolchain refines them to what's on the host.
+    "c": {
+        "build_cmd":   "make",
+        "compile_cmd": "make",
+        "test_cmd":    "make test",
+        "lint_cmd":    "",
+        "format_cmd":  "clang-format -i **/*.c **/*.h",
+    },
+    "cpp": {
+        "build_cmd":   "cmake --build build",
+        "compile_cmd": "cmake --build build",
+        "test_cmd":    "ctest --output-on-failure --test-dir build",
+        "lint_cmd":    "",
+        "format_cmd":  "clang-format -i **/*.cpp **/*.hpp",
+    },
+    "shell": {
+        "build_cmd":   "",
+        "compile_cmd": "bash -n",          # syntax check (per-file via resolve)
+        "test_cmd":    "bats .",
+        "lint_cmd":    "shellcheck",
+        "format_cmd":  "shfmt -w .",
+    },
     "react": {
         "build_cmd":         "yarn install && yarn build",
         "compile_cmd":       "yarn tsc --noEmit",
@@ -224,7 +248,8 @@ def check_toolchain(worktree: str | None) -> list[str]:
     msgs: list[str] = []
     is_maven = os.path.isfile(os.path.join(worktree, "pom.xml"))
     is_gradle = bool(_glob.glob(os.path.join(worktree, "build.gradle*")))
-    jvm = is_maven or is_gradle or detect_lang(worktree) == "java"
+    lang = detect_lang(worktree)
+    jvm = is_maven or is_gradle or lang == "java"
     if jvm and not shutil.which("java"):
         msgs.append("No `java` on the host — install a JDK (the repo's build "
                     "files / first build error state which version).")
@@ -241,6 +266,28 @@ def check_toolchain(worktree: str | None) -> list[str]:
             and not shutil.which("kotlinc")):
         msgs.append("Kotlin sources but no `kotlinc` and no Gradle — install "
                     "the Kotlin compiler.")
+    # Rust
+    if os.path.isfile(os.path.join(worktree, "Cargo.toml")) \
+            and not shutil.which("cargo"):
+        msgs.append("Rust repo but no `cargo` — install the Rust toolchain "
+                    "(rustup).")
+    # C / C++ — need a compiler, plus the build driver the repo uses
+    if lang in ("c", "cpp"):
+        if not (shutil.which("cc") or shutil.which("gcc")
+                or shutil.which("clang")):
+            msgs.append("C/C++ repo but no compiler — install gcc or clang.")
+        if os.path.isfile(os.path.join(worktree, "CMakeLists.txt")) \
+                and not shutil.which("cmake"):
+            msgs.append("CMake build but no `cmake` — install CMake.")
+        elif (os.path.isfile(os.path.join(worktree, "Makefile"))
+              or os.path.isfile(os.path.join(worktree, "makefile"))) \
+                and not shutil.which("make"):
+            msgs.append("Makefile build but no `make` — install make "
+                        "(build-essential).")
+    # Shell — bash to run, shellcheck to lint (optional; only warn if scripts
+    # exist and neither bash nor sh is present, which is essentially never).
+    if lang == "shell" and not (shutil.which("bash") or shutil.which("sh")):
+        msgs.append("Shell repo but no `bash`/`sh` — install bash.")
     return msgs
 
 
@@ -308,6 +355,24 @@ def detect_lang(worktree_path: str) -> str:
         or os.path.isfile(os.path.join(base, "requirements.txt"))
     ):
         return "python"
+    # C / C++ — a CMake/Make build or C/C++ sources. Prefer cpp when any C++
+    # source/header is present (a C++ project usually also has .c/.h).
+    cpp_src = _glob.glob(os.path.join(base, "**", "*.cpp"), recursive=True) \
+        or _glob.glob(os.path.join(base, "**", "*.cc"), recursive=True) \
+        or _glob.glob(os.path.join(base, "**", "*.cxx"), recursive=True) \
+        or _glob.glob(os.path.join(base, "**", "*.hpp"), recursive=True)
+    c_src = _glob.glob(os.path.join(base, "**", "*.c"), recursive=True)
+    has_make = (os.path.isfile(os.path.join(base, "CMakeLists.txt"))
+                or os.path.isfile(os.path.join(base, "Makefile"))
+                or os.path.isfile(os.path.join(base, "makefile")))
+    if cpp_src:
+        return "cpp"
+    if c_src or (has_make and (c_src or cpp_src)):
+        return "c"
+    # Shell — a repo of scripts (no other build system matched above).
+    if _glob.glob(os.path.join(base, "**", "*.sh"), recursive=True) \
+            or _glob.glob(os.path.join(base, "**", "*.bash"), recursive=True):
+        return "shell"
     return ""
 
 
