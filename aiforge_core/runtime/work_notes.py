@@ -41,8 +41,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import os
 import re
+
+_log = logging.getLogger("aiforge.work_notes")
 
 # Canonical section order — the whole point of the standard. Never reorder.
 # "Key Results" is title-cased per Google's OKR convention (whatmatters.com /
@@ -589,7 +592,12 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
         except Exception:  # noqa: BLE001 — chunker down → plain slices
             chunks = [text[i:i + budget] for i in range(0, len(text), budget)]
 
-    for ch in chunks:
+    if len(chunks) > 1:
+        _log.info("consolidate: folding %d chunk(s) (%d chars) via LLM…",
+                  len(chunks), len(text))
+    for _ci, ch in enumerate(chunks, 1):
+        if len(chunks) > 1:
+            _log.info("consolidate: chunk %d/%d (%d chars)…", _ci, len(chunks), len(ch))
         cur = _consolidate_once(cur, ch, role)
     return cur
 

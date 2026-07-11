@@ -888,12 +888,18 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         # so concurrent chat-turn writes aren't frozen during the slow call) ──
         prepared: list[dict] = []
         _ptotal = len(planned)
+        _will_llm = summarize and group_by in ("repo", "topic")
+        _log.info("compact[%s]: %d brief(s) to fold%s", group_by, _ptotal,
+                  " via LLM" if _will_llm else " (deterministic)")
         for _pi, (key, items) in enumerate(sorted(planned.items()), 1):
             if progress:
                 try:
                     progress(_pi, _ptotal, key)
                 except Exception:  # noqa: BLE001
                     pass
+            _log.info("compact[%s]: [%d/%d] folding '%s' (%d file%s)…",
+                      group_by, _pi, _ptotal, key, len(items),
+                      "" if len(items) == 1 else "s")
             items.sort(key=lambda d: d.get("created") or "")
             all_tags = sorted({t for d in items for t in d.get("tags") or []})
             title = f"{key.replace('-', ' ').strip().capitalize()} memory (compacted)"
@@ -1112,8 +1118,11 @@ def cleanup_legacy_compacted(*, dry_run: bool = False,
         return {"ok": True, "dry_run": True,
                 "stale": sorted(p.name for p in stale), "count": len(stale)}
     if not stale:
+        _log.info("tidy-legacy: no cryptic/id-named briefs to fold")
         return {"ok": True, "dry_run": False, "folded": 0, "facts": 0,
                 "note": "no id-keyed / per-kind compacted files to clean"}
+    _log.info("tidy-legacy: folding %d cryptic/id-named brief(s)%s",
+              len(stale), " + re-compacting" if refold else "")
     archive = memory_dir() / "archive" / ("cleanup-" + _now_iso().replace(":", ""))
     facts_moved = 0
     folded = 0
