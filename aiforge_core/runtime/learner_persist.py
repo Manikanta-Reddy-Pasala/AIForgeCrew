@@ -197,6 +197,7 @@ def persist_facts(
                 kind=_kind or "feature", summary=_summary, workspace=repo,
                 topic=_tp or "", tables=_f.get("tables"),
                 services=_f.get("services"), about=_f.get("about"),
+                files=_f.get("files"),
                 ticket=ticket_identifier or "", date=_date)
     except Exception:  # noqa: BLE001 — solution authoring is best-effort
         pass
