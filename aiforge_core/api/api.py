@@ -2104,6 +2104,14 @@ _compact_all_state: dict = {"running": False, "started_at": None,
                             "result": None, "error": None}
 
 
+@app.post("/api/memory/dedupe")
+def memory_dedupe() -> dict:
+    """Remove duplicate OKR nodes + duplicate chat sessions (from repeated /
+    non-idempotent migrations). Also runs inside 'Compact all'."""
+    from aiforge_core.memory import migrations
+    return migrations.dedupe_all()
+
+
 @app.post("/api/memory/compact-all")
 def memory_compact_all() -> dict:
     """COMPACT ALL — redo everything from scratch: tidy legacy briefs, re-run the

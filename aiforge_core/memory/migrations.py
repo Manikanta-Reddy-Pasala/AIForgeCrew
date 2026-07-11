@@ -296,6 +296,24 @@ def run_startup_migrations() -> dict:
     return out
 
 
+def dedupe_all() -> dict:
+    """Remove duplicate OKR nodes AND duplicate chat sessions (from repeated /
+    non-idempotent migrations). Soft-fail per side."""
+    out: dict = {}
+    try:
+        from aiforge_core.memory.okr import store as _store
+        out["okr"] = _store.dedupe_nodes()
+    except Exception as exc:  # noqa: BLE001
+        out["okr"] = {"ok": False, "error": str(exc)}
+    try:
+        from aiforge_core.runtime import chat_store
+        out["chat"] = chat_store.dedupe_sessions()
+    except Exception as exc:  # noqa: BLE001
+        out["chat"] = {"ok": False, "error": str(exc)}
+    log.info("dedupe_all: okr=%s chat=%s", out.get("okr"), out.get("chat"))
+    return out
+
+
 def force_recompact_all(on_step=None) -> dict:
     """COMPACT ALL — redo EVERYTHING from scratch: tidy legacy/cryptic briefs,
     re-chunk (chonkie) + re-run the LLM over EVERY flat brief (not just new
@@ -330,6 +348,7 @@ def force_recompact_all(on_step=None) -> dict:
                                            model_role="learner", archive_sources=True,
                                            progress=_prog("topic"))),
         ("sweep", lambda: md_store.sweep_stale_captures(archive=True)),
+        ("dedupe", dedupe_all),
         ("repo_profiles", lambda: __import__(
             "aiforge_core.memory.okr.author", fromlist=["build_repo_profiles"]
         ).build_repo_profiles()),
@@ -363,14 +382,16 @@ def force_recompact_all(on_step=None) -> dict:
 
 
 __all__ = ["run_startup_migrations", "purge_migrated_code",
-           "force_recompact_all"]
+           "force_recompact_all", "dedupe_all"]
 
 
 if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [flag]
     import sys
     if "--purge-code" in sys.argv:
         print(purge_migrated_code())
-    elif "--recompact-all" in sys.argv:      # compact at any cost
+    elif "--dedupe" in sys.argv:              # remove duplicate OKR + chat
+        print(dedupe_all())
+    elif "--recompact-all" in sys.argv:      # compact at any cost (+ dedupe)
         print(force_recompact_all())
     else:
         print(run_startup_migrations())

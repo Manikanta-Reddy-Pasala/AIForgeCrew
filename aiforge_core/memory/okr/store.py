@@ -348,5 +348,43 @@ def migrate_scoped() -> dict:
     return {"ok": True, "moved": moved, "scopes": okr_scopes()}
 
 
+def dedupe_nodes() -> dict:
+    """Remove DUPLICATE OKR nodes — same type + same SCOPE + same normalized
+    content (title / description / body). Keeps the first (lowest id), deletes
+    the rest. Fixes learnings/solutions duplicated by repeated migrations.
+    Returns {ok, removed, kept}. Soft-fail."""
+    import os
+    seen: dict = {}
+    removed = 0
+
+    def _norm(s: str) -> str:
+        return re.sub(r"\s+", " ",
+                      re.sub(r"[^a-z0-9 ]", "", (s or "").lower())).strip()
+    try:
+        nodes = sorted(load_all(), key=lambda d: str(d.get("id") or ""))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    for d in nodes:
+        m = d.get("meta") or {}
+        # key on the CONTENT (body) first — duplicates share the same rule/fact
+        # text even when their titles differ; fall back to description/title.
+        key_text = _norm(d.get("body") or m.get("description") or m.get("title") or "")
+        if not key_text:
+            continue
+        sig = (d.get("type"), _scope_label_from_path(d.get("path", "")), key_text)
+        if sig in seen:
+            try:
+                os.unlink(d["path"])
+                removed += 1
+            except OSError:
+                pass
+        else:
+            seen[sig] = d.get("id")
+    if removed:
+        _invalidate()
+        _write_index()
+    return {"ok": True, "removed": removed, "kept": len(seen)}
+
+
 __all__ = ["okr_root", "type_dir", "next_id", "save_node", "read_node",
-           "load_all", "okr_scopes", "migrate_scoped"]
+           "load_all", "okr_scopes", "migrate_scoped", "dedupe_nodes"]
