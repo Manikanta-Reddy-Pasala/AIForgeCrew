@@ -429,7 +429,9 @@ fi
 _cfgdir="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
 _automig_marker="$_cfgdir/.data_migrated_v1"
 if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" && "${MIGRATE:-0}" != "1" ]]; then
-  systemctl --user stop aiforge-api >/dev/null 2>&1 || true   # unlock SQLite for the migrate
+  # NOTE: do NOT 'systemctl stop aiforge-api' here — run.sh IS the service's
+  # ExecStart, so that would kill this very process. systemd already stopped the
+  # previous instance before starting us, so the SQLite files are free to migrate.
   .venv/bin/python -m aiforge_core.deploy.converge || true
   # if it converged (no docker / migrated), run this session in lite
   [[ -f "$_automig_marker" ]] && MODE=lite
