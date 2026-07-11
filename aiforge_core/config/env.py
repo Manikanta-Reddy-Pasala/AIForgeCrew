@@ -16,13 +16,18 @@ AIFORGE_DSN = os.environ.get(
 )
 
 # ─────────────────────────── storage backend ───────────────────────────
-# Default to embedded SQLite. Postgres only when AIFORGE_PG_URL is set
-# (or the legacy AIFORGE_DSN explicitly points at a postgres:// URL).
-AIFORGE_PG_URL = os.environ.get("AIFORGE_PG_URL") or (
+# SQLite-ONLY by default (single-mode build). Postgres is OPT-IN: it is used
+# ONLY when AIFORGE_KEEP_PG=1 AND a postgres URL is given. This means a stray
+# AIFORGE_PG_URL / AIFORGE_DSN left over from an old hybrid setup (shell export,
+# .env, ~/.aiforge/runtime.env) can NEVER flip the app to a Postgres that no
+# longer exists — killing the "Postgres unreachable" spam at the source.
+_KEEP_PG = os.environ.get("AIFORGE_KEEP_PG") == "1"
+_pg_candidate = os.environ.get("AIFORGE_PG_URL") or (
     AIFORGE_DSN if str(AIFORGE_DSN).startswith(("postgres://", "postgresql://"))
     and os.environ.get("AIFORGE_FORCE_PG") == "1"
     else None
 )
+AIFORGE_PG_URL = _pg_candidate if _KEEP_PG else None
 AIFORGE_DB_PATH = os.environ.get(
     "AIFORGE_DB_PATH",
     os.path.join(os.path.expanduser(os.environ.get("AIFORGE_CONFIG_DIR", "~/.aiforge")),
