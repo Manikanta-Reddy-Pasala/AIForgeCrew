@@ -144,6 +144,23 @@ def run_startup_migrations() -> dict:
     marker = _load_marker()
     done = set(marker.get("done") or [])
 
+    # ── compact FIRST: fold old-format per-note .md files into their topic/repo
+    # briefs + retire masquerading captures NOW (don't wait for the hourly job),
+    # so the brief→OKR step below sees consolidated briefs. Same passes as the
+    # hourly _compact_chat_md. Idempotent; safe every boot.
+    try:
+        from aiforge_core.memory import md_store
+        r_repo = md_store.compact(group_by="repo", min_group=1, summarize=True,
+                                  model_role="learner", archive_sources=False)
+        r_topic = md_store.compact(group_by="topic", min_group=1, summarize=True,
+                                   model_role="learner", archive_sources=True)
+        r_sweep = md_store.sweep_stale_captures(archive=True)
+        out["compact"] = {"repo_in": r_repo.get("files_in"),
+                          "topic_in": r_topic.get("files_in"),
+                          "swept": r_sweep.get("swept")}
+    except Exception as exc:  # noqa: BLE001
+        out["compact"] = {"ok": False, "error": str(exc)}
+
     # ── always-safe, idempotent steps ──────────────────────────────────────
     try:
         from aiforge_core.memory import md_store
