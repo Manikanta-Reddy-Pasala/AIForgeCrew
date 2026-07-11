@@ -24,6 +24,34 @@ import os
 log = logging.getLogger("aiforge.memory.migrations")
 
 
+def _discover_repos() -> list:
+    """Best-effort GENERIC repo list for classification — no hardcoded paths.
+    Sources: AIFORGE_REPOS_ROOT (explicit), sibling git repos of the running
+    checkout (repos are usually cloned side by side), and any repo context
+    folders under the workspace. Returns real repo NAMES."""
+    import subprocess
+    repos: set = set()
+    roots: list = []
+    env_root = os.environ.get("AIFORGE_REPOS_ROOT", "").strip()
+    if env_root:
+        roots.append(env_root)
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=5)
+        if top.returncode == 0 and top.stdout.strip():
+            roots.append(os.path.dirname(top.stdout.strip()))   # siblings
+    except Exception:  # noqa: BLE001
+        pass
+    for rt in roots:
+        try:
+            for name in os.listdir(rt):
+                if os.path.isdir(os.path.join(rt, name, ".git")):
+                    repos.add(name)
+        except OSError:
+            continue
+    return sorted(repos)
+
+
 def _marker_path() -> str:
     from aiforge_core.memory.okr import store as _store
     return os.path.join(_store.okr_root(), ".migrations.json")
@@ -142,12 +170,28 @@ def run_startup_migrations() -> dict:
         elif r.get("skipped"):
             done.add("neo4j_drain")     # nothing to drain — don't retry forever
 
-    # ── scoped segregation last (moves everything the above produced) ──────
+    # ── scoped segregation (moves what the above produced into global/projects)
     try:
         from aiforge_core.memory.okr import store as _store
         out["scoped"] = _store.migrate_scoped()
     except Exception as exc:  # noqa: BLE001
         out["scoped"] = {"ok": False, "error": str(exc)}
+
+    # ── CLASSIFY: an LLM sorts the migrated GLOBAL learnings into their project
+    # (or trashes noise). Deterministic tag/key parsing can't reliably tell a
+    # repo brief from a topic brief; the LLM + repo-name match can. One-shot.
+    if "classify" not in done:
+        repos = _discover_repos()
+        if repos:
+            try:
+                from aiforge_core.memory.okr import author
+                out["classify"] = author.reclassify_global_learnings(repos)
+                done.add("classify")
+            except Exception as exc:  # noqa: BLE001
+                out["classify"] = {"ok": False, "error": str(exc)}
+        else:
+            out["classify"] = {"skipped": "no repos discovered"}
+            # leave unmarked → retry next boot once repos are discoverable
 
     _save_marker({"done": sorted(done), "version": 1})
     return out

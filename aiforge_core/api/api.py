@@ -174,14 +174,22 @@ def _run_memory_migrations() -> None:
     projects/<repo>/. Idempotent (one-shot steps are marker-guarded); never
     blocks startup. This is the migration path new/upgrading users get for free
     on ``run.sh`` (which boots this API)."""
+    def _run():
+        try:
+            from aiforge_core.memory import migrations
+            r = migrations.run_startup_migrations()
+            _af_log.info("memory migrations: %s",
+                         {k: (v.get("moved") or v.get("migrated")
+                              or v.get("skipped") or v.get("ok"))
+                          for k, v in r.items()})
+        except Exception:  # noqa: BLE001 — migration is best-effort
+            pass
+    # background thread: the classify step calls the LLM, which must not delay
+    # the API coming up. Migrations are idempotent + marker-guarded.
     try:
-        from aiforge_core.memory import migrations
-        r = migrations.run_startup_migrations()
-        _af_log.info("memory migrations: %s",
-                     {k: (v.get("moved") or v.get("migrated") or v.get("skipped")
-                          or v.get("ok")) for k, v in r.items()})
-    except Exception:  # noqa: BLE001 — migration is best-effort
-        pass
+        _spawn(_run, name="memory-migrations")
+    except Exception:  # noqa: BLE001
+        _run()
 
 
 def _start_jobs_scheduler() -> None:
