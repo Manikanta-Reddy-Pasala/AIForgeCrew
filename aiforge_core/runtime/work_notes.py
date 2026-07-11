@@ -176,6 +176,72 @@ def _as_items(value) -> list[str]:
     return out
 
 
+# ── Structure repair (write-path self-heal, never rejects) ────────────────
+# Junk that a model (or a bad legacy fold) can leak INTO a Facts/Key results/
+# Learnings item: the body sentinel, a markdown heading, a bare section label,
+# a rule separator, or the brief's own Objective boilerplate. These aren't
+# knowledge — they're the envelope scaffolding read back as content (the exact
+# bug class we hit before). Scrubbed at render time so it never reaches disk.
+_LEAK_ITEM_RE = re.compile(
+    r"""^(?:
+          \#{1,6}\s                                  # markdown heading
+        | \#{0,2}\s*(?:objective|key\s*results|facts|links|learnings)\s*:?\s*$
+        | -{3,}\s*$ | —{2,}\s*$                       # rule / separator
+    )""", re.IGNORECASE | re.VERBOSE)
+# Known envelope-boilerplate fragments that must never sit in a list item.
+_BOILERPLATE_SUBSTR = ("keep durable, deduped knowledge",)
+
+
+def _is_leak_item(s: str) -> bool:
+    t = (s or "").strip()
+    if not t or _BODY_MARK in t:
+        return True
+    if _LEAK_ITEM_RE.match(t):
+        return True
+    low = t.lower()
+    return any(b in low for b in _BOILERPLATE_SUBSTR)
+
+
+def scrub_items(value) -> list[str]:
+    """`_as_items` + drop envelope-scaffolding leaks (heading/sentinel/section
+    label/separator/boilerplate). Repair, not reject: bad items vanish, good
+    ones stay."""
+    return [s for s in _as_items(value) if not _is_leak_item(s)]
+
+
+# Kinds this repo mints notes for; a blank/None kind is repaired to "knowledge"
+# (the memory-brief default) rather than writing a header with no identity.
+_KNOWN_KINDS = frozenset({"jira", "confluence", "web", "repo", "knowledge",
+                          "topic", "session", "compacted", "rule", "prefs",
+                          "note", "dossier"})
+
+
+def validate_note(text: str) -> tuple[bool, list[str]]:
+    """Re-parse a rendered note and report structure issues (does NOT mutate).
+    Used by the write path to log what it repaired and by tests to assert the
+    contract. ``ok`` is True when no issues remain."""
+    issues: list[str] = []
+    parsed = parse_note(text or "")
+    fm = parsed.get("frontmatter") or {}
+    for req in ("kind", "key", "updated_at"):
+        if not str(fm.get(req) or "").strip():
+            issues.append(f"missing frontmatter '{req}'")
+    if not str(parsed.get("title") or "").strip():
+        issues.append("missing title")
+    sec = parsed.get("sections") or {}
+    body = (parsed.get("body") or "").strip()
+    has_content = bool((sec.get("objective") or "").strip()
+                       or sec.get("facts") or sec.get("key_results")
+                       or sec.get("learnings") or body)
+    if not has_content:
+        issues.append("empty note (no Objective/Facts/KR/Learnings/body)")
+    for fld in ("facts", "key_results", "learnings"):
+        for it in sec.get(fld) or []:
+            if _is_leak_item(it):
+                issues.append(f"scaffolding leaked into {fld}: {it[:40]!r}")
+    return (not issues), issues
+
+
 def normalize_tags(tags) -> list[str]:
     """Canonicalize a tags list: lowercased, whitespace→'-', deduped, order
     preserved. Accepts a list or a comma/space string. Non-strings dropped."""
@@ -203,6 +269,10 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
     → free body). ``updated_at`` is injectable for deterministic tests /
     read-modify-write; it defaults to now (UTC). ``tags`` land in the
     frontmatter (metadata, not a body section)."""
+    # Repair (never reject): a blank kind gets the memory-brief default so the
+    # header always has an identity; unknown kinds pass through (repo mints new
+    # ones over time — don't gate on an allow-list).
+    kind = (str(kind or "").strip() or "knowledge")
     norm_links = normalize_links(links, kind, key)
     norm_tags = normalize_tags(tags)
     fm = [
@@ -228,17 +298,25 @@ def render_note(kind: str, key: str, *, title: str, source_url: str = "",
     obj = (objective or "").strip()
     if obj:
         parts.append("## Objective\n\n" + obj)
-    for heading, items in (("Key Results", _as_items(key_results)),
-                           ("Facts", _as_items(facts)),
+    # scrub_items drops envelope scaffolding (heading/sentinel/section-label/
+    # boilerplate) that a model or bad fold leaked into a list section.
+    for heading, items in (("Key Results", scrub_items(key_results)),
+                           ("Facts", scrub_items(facts)),
                            ("Links", norm_links),
-                           ("Learnings", _as_items(learnings))):
+                           ("Learnings", scrub_items(learnings))):
         if items:
             parts.append(f"## {heading}\n\n"
                          + "\n".join(f"- {i}" for i in items))
     body = (body_md or "").strip("\n")
     if body:
         parts.append(_BODY_MARK + "\n\n" + body)
-    return "\n\n".join(parts) + "\n"
+    text = "\n\n".join(parts) + "\n"
+    # Safety net: re-parse and log anything the scrub couldn't fix (never
+    # raises — write proceeds; the log surfaces a real structural regression).
+    ok, issues = validate_note(text)
+    if not ok:
+        _log.warning("render_note[%s/%s] structure issues: %s", kind, key, issues)
+    return text
 
 
 def parse_note(text: str) -> dict:
