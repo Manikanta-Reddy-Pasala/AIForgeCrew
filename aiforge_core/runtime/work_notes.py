@@ -525,10 +525,14 @@ def _consolidate_once(existing: dict, new_content: str, role: str) -> dict:
     try:
         import os as _os
         from aiforge_core.llm.structured import structured_complete
-        # The consolidated JSON accumulates facts across folds, so a small output
-        # cap truncates it (IncompleteOutputException). Give it real headroom;
-        # override with AIFORGE_CONSOLIDATE_MAX_TOKENS.
-        _mt = int(_os.environ.get("AIFORGE_CONSOLIDATE_MAX_TOKENS", "8192"))
+        # The consolidated JSON re-emits EVERY accumulated fact each fold, so a
+        # fixed output cap truncates a fact-heavy brief (IncompleteOutputException
+        # → fallback loop). A dedupe-fold never EXPANDS its input, so size the
+        # output budget from the actual payload (≈chars/3 tokens + slack), clamped
+        # to a ceiling. Dynamic, not a magic constant; override the ceiling with
+        # AIFORGE_CONSOLIDATE_MAX_TOKENS.
+        _cap = int(_os.environ.get("AIFORGE_CONSOLIDATE_MAX_TOKENS", "32768"))
+        _mt = max(4096, min(_cap, len(payload) // 3 + 1024))
         res = structured_complete(
             role,
             [{"role": "system", "content": _CONSOLIDATE_SYS},
