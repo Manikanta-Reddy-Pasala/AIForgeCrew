@@ -406,36 +406,23 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
             "kept": len(plan["keep"]), "scopes": _store.okr_scopes()}
 
 
-def _brief_repo(fm: dict) -> str:
-    """The repo a brief belongs to, from its frontmatter — the ``key`` (repo
-    briefs carry the real-cased repo name) confirmed by a ``repo:<slug>`` tag,
-    else the repo tag's value. Empty for a global/shared/topic brief."""
-    tags = [t for t in (fm.get("tags") or []) if isinstance(t, str)]
-    repo_tag = next((t.split(":", 1)[1].strip() for t in tags
-                     if t.startswith("repo:")), "")
-    if not repo_tag or repo_tag.lower() in ("notes", "shared"):
-        return ""
-    key = str(fm.get("key") or "").strip()
-    # prefer the key's real casing when it IS the repo (key slug == repo tag)
-    return key if key and _slug(key).replace(" ", "-") == repo_tag else repo_tag
-
-
 def migrate_from_briefs() -> dict:
-    """Seed the OKR graph from the existing flat briefs: each
-    compacted-<key>.md (+ its split parts) → one Learning node (body = the
-    brief's Facts), SCOPED to the repo it belongs to (``projects/<repo>/``) when
-    the brief carries a repo, else global. Idempotent — a (repo, category)
-    already migrated is skipped. Briefs are left in place. Soft-fail."""
+    """Seed the OKR graph from the existing flat briefs: each compacted-<key>.md
+    (+ its split parts) → one GLOBAL Learning node (category=<topic>, body = the
+    brief's Facts). Scoping to a project is NOT done here — deterministic tag/key
+    parsing can't tell a repo brief from a topic brief and produces casing splits
+    (AIForgeCrew vs aiforgecrew) and bogus projects (session ids). The migration
+    chain's LLM ``classify`` step (which has the real repo list) sorts these
+    global learnings into projects/noise afterwards, with consistent casing.
+    Idempotent — a category already migrated is skipped. Soft-fail."""
     import re
 
     from aiforge_core.memory import md_store
     from aiforge_core.runtime import work_notes
     g = _graph.build(force=True)
-    have = {(str((n.get("meta") or {}).get("workspace") or "").lower(),
-             str((n.get("meta") or {}).get("category") or "").lower())
+    have = {str((n.get("meta") or {}).get("category") or "").lower()
             for n in g.nodes.values() if n.get("type") == "learning"}
-    # group split parts under their (repo, primary-topic) so repo scope survives
-    facts_by: dict[tuple, list[str]] = {}
+    facts_by_topic: dict[str, list[str]] = {}
     for p in md_store.memory_dir().glob("compacted-*.md"):
         base = p.stem[len("compacted-"):]
         topic = re.sub(r"-\d+$", "", base)
@@ -443,30 +430,25 @@ def migrate_from_briefs() -> dict:
             parsed = work_notes.parse_note(p.read_text(encoding="utf-8", errors="replace"))
         except Exception:  # noqa: BLE001
             continue
-        fm = parsed["frontmatter"] or {}
-        if fm.get("kind") != "knowledge":
-            continue                       # only real briefs
+        if (parsed["frontmatter"] or {}).get("kind") != "knowledge":
+            continue
         facts = parsed["sections"].get("facts") or []
         if facts:
-            facts_by.setdefault((_brief_repo(fm), topic), []).extend(facts)
+            facts_by_topic.setdefault(topic, []).extend(facts)
     made = 0
-    for (repo, topic), facts in facts_by.items():
-        if (repo.lower(), topic.lower()) in have or not facts:
+    for topic, facts in facts_by_topic.items():
+        if topic.lower() in have or not facts:
             continue
         body = "\n".join(f"- {f}" for f in facts)[:4000]
-        meta = {"category": topic, "title": f"{topic} knowledge",
-                "tags": [f"topic:{topic}"]}
-        if repo:                           # repo brief → projects/<repo>/
-            meta["scope"] = f"repo:{repo}"
-            meta["workspace"] = repo
-        else:
-            meta["scope"] = "global"
-        r = _store.save_node("learning", None, meta, body, reindex=False)
+        r = _store.save_node("learning", None,
+                             {"scope": "global", "category": topic,
+                              "title": f"{topic} knowledge", "tags": [f"topic:{topic}"]},
+                             body, reindex=False)
         if r.get("ok"):
             made += 1
     if made:
         _store._write_index()          # one rewrite for the whole migration
-    return {"ok": True, "migrated": made, "briefs": len(facts_by)}
+    return {"ok": True, "migrated": made, "topics": len(facts_by_topic)}
 
 
 __all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs",
