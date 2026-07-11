@@ -378,6 +378,7 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
                 "keep": len(plan["keep"])}
 
     import os as _os
+    import shutil as _sh
     moved = deleted = 0
     for nid, repo in plan["move"]:
         node = by_id[nid]
@@ -387,12 +388,16 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
         r = _store.save_node("learning", nid, meta, node.get("body") or "")
         if r.get("ok"):
             moved += 1
+    # REVERSIBLE delete: noise nodes MOVE to okr/.trash/ (not unlink) so a
+    # mis-classified learning can be restored.
+    trash = _os.path.join(_store.okr_root(), ".trash")
     for nid in plan["delete"]:
         with __import__("contextlib").suppress(OSError):
-            _os.unlink(by_id[nid]["path"])
+            _os.makedirs(trash, exist_ok=True)
+            _sh.move(by_id[nid]["path"], _os.path.join(trash, f"{nid}.md"))
             deleted += 1
     _store._write_index()
-    return {"ok": True, "moved": moved, "deleted": deleted,
+    return {"ok": True, "moved": moved, "deleted_to_trash": deleted,
             "kept": len(plan["keep"]), "scopes": _store.okr_scopes()}
 
 
