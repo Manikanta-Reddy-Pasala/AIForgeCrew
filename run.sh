@@ -354,6 +354,30 @@ if ! uv pip install --python .venv/bin/python -e . >/dev/null 2>&1; then
   uv pip install --python .venv/bin/python -e . >/dev/null
 fi
 
+# POST-install SMOKE IMPORT: on WSL /mnt/c (DrvFs) a copy can leave a package
+# HALF-WRITTEN even though the install exits 0 — e.g. urllib3 with no
+# urllib3/util dir → "ModuleNotFoundError: No module named 'urllib3.util'" at
+# runtime. Import the fragile core deps; on failure, force-reinstall them, and
+# if STILL broken, nuke + rebuild the whole venv. Skip with AIFORGE_SKIP_SMOKE=1.
+if [[ "${AIFORGE_SKIP_SMOKE:-0}" != "1" ]]; then
+  _smoke='import urllib3.util, urllib3.util.connection, requests, charset_normalizer, certifi, idna, google.adk'
+  if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
+    echo "==> core deps import broken (partial install — common on WSL /mnt/c) — repairing…"
+    uv pip install --python .venv/bin/python --reinstall \
+      urllib3 requests charset_normalizer certifi idna >/dev/null 2>&1 || true
+    if ! .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
+      echo "==> still broken — rebuilding .venv from scratch"
+      rm -rf .venv && uv venv .venv
+      uv pip install --python .venv/bin/python -e . >/dev/null 2>&1 || true
+    fi
+    if .venv/bin/python -c "$_smoke" >/dev/null 2>&1; then
+      echo "==> deps repaired"
+    else
+      echo "==> WARN: deps still broken. If on /mnt/c, move the repo to the Linux FS (e.g. ~/AIForgeCrew) — DrvFs corrupts venvs." >&2
+    fi
+  fi
+fi
+
 # ── One-shot data migration + infra cleanup (--migrate) ───────────────
 # Move Postgres (chat + tickets) into the SQLite --lite stores, then REMOVE the
 # DB infra containers (neo4j/embed/rerank/postgres). Tracing (langfuse) is the
