@@ -239,31 +239,8 @@ if [[ "$MODE" == "lite" ]]; then
   [[ "${AIFORGE_MEMORY_BACKEND:-}" == "neo4j" ]] && export AIFORGE_MEMORY_BACKEND=sqlite
 fi
 
-# ── LITE = zero-Docker: stop any leftover aiforge-* CONTAINERS ─────────────
-# A prior hybrid run (or the old hybrid default) may have left Postgres/Neo4j/
-# sidecar containers running. In lite the app uses SQLite/OKR, so nothing Docker
-# is needed — stop them so they don't hog RAM/ports. Data was already migrated
-# (or was empty). Containers are STOPPED (reversible), not removed; IMAGES are
-# left (they don't run) — reclaim disk yourself with 'docker system prune -a'.
-# Skip with AIFORGE_KEEP_DOCKER=1.
-if [[ "$MODE" == "lite" && "${AIFORGE_KEEP_DOCKER:-0}" != "1" ]] \
-     && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  # Leftover DB-INFRA from a prior hybrid run → only STOP it (reversible), NEVER
-  # remove here: a stale marker could otherwise delete data that wasn't fully
-  # migrated. Actual REMOVAL of containers/images/volumes happens ONLY in the
-  # auto-migrate above, after it VERIFIES the Postgres+Neo4j data reached
-  # SQLite/OKR. NEVER touch langfuse (its own postgres powers the trace UI).
-  _INFRA=(aiforge-neo4j aiforge-embed aiforge-rerank aiforge-postgres)
-  _running=""
-  for _c in "${_INFRA[@]}"; do
-    docker ps -q -f "name=^${_c}$" 2>/dev/null | grep -q . && _running="$_running $_c"
-  done
-  if [[ -n "$_running" ]]; then
-    echo "==> lite — stopping leftover DB-infra ($_running) (KEEPING langfuse; app on SQLite/OKR)"
-    docker stop $_running >/dev/null 2>&1 || true
-    echo "    (to fully remove after a verified migration: rm $_automig_marker && ./run.sh)"
-  fi
-fi
+# (Docker cleanup — stopping/removing leftover DB-infra — is handled inside the
+# converge module above, portably; nothing to do here.)
 
 # ── Aider RepoMap (optional but preferred) ────────────────────────────────
 # The chat/doer repo context uses Aider's tree-sitter + PageRank RepoMap for a

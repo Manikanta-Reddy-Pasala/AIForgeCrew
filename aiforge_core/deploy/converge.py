@@ -182,6 +182,14 @@ def converge(*, force: bool = False) -> dict:
     if os.environ.get("AIFORGE_AUTO_MIGRATE", "1").lower() in ("0", "false", "no"):
         return {"skipped": "disabled"}
     if _marker().exists() and not force:
+        # already migrated → but if DB-infra containers still linger (a prior run
+        # only stopped them, or docker came up again), remove them now: the data
+        # is already on SQLite/OKR (marker proves it). langfuse untouched.
+        if _docker_ok() and any(_container_exists(n) for n in _INFRA):
+            removed = _remove_db_infra()
+            _clear_pg_from_env()
+            log.info("converge: removed lingering DB-infra (data already migrated)")
+            return {"ok": True, "cleaned": removed}
         return {"skipped": "already done"}
     if not _docker_ok():
         _mark_done()                       # no docker → nothing to converge
