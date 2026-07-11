@@ -635,6 +635,7 @@ function NotesPanel() {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState('');
+  const [caStep, setCaStep] = useState<string | null>(null);   // 'Compact all' progress
 
   const load = useCallback(() => {
     api.memoryFiles().then(setFiles).catch(() => setFiles([]));
@@ -676,6 +677,37 @@ function NotesPanel() {
       toast.error(`Compact failed: ${e.message}`);
     } finally { setBusy(false); }
   }
+  async function compactAll() {
+    if (!window.confirm('Compact ALL — redo everything from scratch: tidy legacy, re-run the LLM over EVERY brief, rebuild OKR repo cards, re-ingest. Heavy (full LLM pass, can take minutes). Continue?')) return;
+    try {
+      setCaStep('starting…');
+      await api.memoryCompactAll();
+      const t = toast.loading('Compact all: starting…');
+      await new Promise<void>((resolve) => {
+        const poll = setInterval(async () => {
+          try {
+            const s = await api.memoryCompactAllStatus();
+            const label = s.running
+              ? `Compact all: ${s.current || '…'} (${s.steps_done.length}/${s.total_steps}, ${s.elapsed_s}s)`
+              : 'Compact all: finishing…';
+            setCaStep(s.current || 'working…');
+            toast.loading(label, { id: t });
+            if (s.done || !s.running) {
+              clearInterval(poll);
+              setCaStep(null);
+              if (s.error) toast.error(`Compact all failed: ${s.error}`, { id: t });
+              else toast.success(`Compact all done · ${s.result?.topic?.files_out ?? 0} briefs, ${s.result?.repo_profiles?.profiles ?? 0} cards · ${s.elapsed_s}s`, { id: t });
+              load();
+              resolve();
+            }
+          } catch { /* keep polling */ }
+        }, 2000);
+      });
+    } catch (e: any) {
+      setCaStep(null);
+      toast.error(`Compact all failed: ${e.message}`);
+    }
+  }
 
   return (
     <div className="card">
@@ -692,14 +724,9 @@ function NotesPanel() {
                 title="Fold only NEW/undone notes into topic briefs (originals archived, reversible)">
           Compact
         </button>
-        <button className="ghost" onClick={async () => {
-          if (!window.confirm('Compact ALL — redo everything from scratch: tidy legacy, re-run the LLM over EVERY brief, rebuild OKR repo cards, re-ingest. Heavy (full LLM pass). Continue?')) return;
-          setBusy(true);
-          try { const r: any = await api.memoryCompactAll(); toast.success(`Recompacted all · topic ${r?.topic?.files_out ?? 0} briefs`); load(); }
-          catch (e: any) { toast.error(`Compact all failed: ${e.message}`); }
-          finally { setBusy(false); }
-        }} disabled={busy} title="Redo EVERYTHING: tidy legacy + re-LLM every brief + rebuild OKR cards + re-ingest">
-          Compact all
+        <button className="ghost" onClick={compactAll} disabled={busy || caStep !== null}
+                title="Redo EVERYTHING: tidy legacy + re-LLM every brief + rebuild OKR cards + re-ingest">
+          {caStep !== null ? `⏳ ${caStep}` : 'Compact all'}
         </button>
         <button className="ghost" onClick={load}>Refresh</button>
         <input placeholder="filter by name / tag…" value={filter}

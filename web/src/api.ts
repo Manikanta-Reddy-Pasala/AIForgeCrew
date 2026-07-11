@@ -118,6 +118,10 @@ export const api = {
       `/memory/files/compact?${p.toString()}`, { method: 'POST' });
   },
   memoryCompactAll: () => j<any>('/memory/compact-all', { method: 'POST' }),
+  memoryCompactAllStatus: () => j<{ running: boolean; done: boolean;
+    current: string | null; steps_done: string[]; total_steps: number;
+    error: string | null; elapsed_s: number; result: any }>(
+    '/memory/compact-all/status'),
   memoryOkr: () => j<{ ok: boolean; counts: Record<string, number>;
     active_kr: string | null; nodes: any[] }>('/memory/okr'),
   memoryOkrSetActive: (active_kr: string | null) =>

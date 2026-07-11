@@ -2099,13 +2099,58 @@ def memory_files_compact(group_by: str = Query("topic"),
                             dry_run=dry_run, summarize=summarize, force=force)
 
 
+_compact_all_state: dict = {"running": False, "started_at": None,
+                            "steps": [], "current": None, "done": False,
+                            "result": None, "error": None}
+
+
 @app.post("/api/memory/compact-all")
 def memory_compact_all() -> dict:
     """COMPACT ALL — redo everything from scratch: tidy legacy briefs, re-run the
     LLM (chonkie) over EVERY brief, rebuild OKR repo cards, re-ingest the search
-    index. Heavy (full LLM pass). The plain 'Compact' only folds NEW files."""
+    index. Heavy (full LLM pass) → runs in the BACKGROUND; poll
+    /api/memory/compact-all/status for progress. The plain 'Compact' only folds
+    NEW files (fast, synchronous)."""
+    import time as _t
+    if _compact_all_state["running"]:
+        return {"ok": True, "already_running": True,
+                "current": _compact_all_state["current"]}
     from aiforge_core.memory import migrations
-    return migrations.force_recompact_all()
+    _compact_all_state.update(running=True, started_at=_t.time(), steps=[],
+                              current=None, done=False, result=None, error=None)
+
+    def _on_step(name, phase, result):
+        if phase == "run":
+            _compact_all_state["current"] = name
+        else:
+            _compact_all_state["steps"].append({"name": name, "result": result})
+
+    def _run():
+        try:
+            r = migrations.force_recompact_all(on_step=_on_step)
+            _compact_all_state["result"] = r
+        except Exception as exc:  # noqa: BLE001
+            _compact_all_state["error"] = str(exc)
+        finally:
+            _compact_all_state.update(running=False, done=True, current=None)
+
+    _spawn(_run, name="compact-all")
+    return {"ok": True, "started": True}
+
+
+@app.get("/api/memory/compact-all/status")
+def memory_compact_all_status() -> dict:
+    """Progress of a running 'Compact all' — {running, current step, completed
+    steps, done, result}. UI polls this to show a spinner + progress."""
+    import time as _t
+    s = _compact_all_state
+    return {
+        "running": s["running"], "done": s["done"], "current": s["current"],
+        "steps_done": [x["name"] for x in s["steps"]],
+        "total_steps": 6, "error": s["error"],
+        "elapsed_s": round(_t.time() - s["started_at"], 1) if s["started_at"] else 0,
+        "result": s["result"] if s["done"] else None,
+    }
 
 
 @app.get("/api/memory/okr")
