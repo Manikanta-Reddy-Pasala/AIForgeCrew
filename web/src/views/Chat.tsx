@@ -725,7 +725,11 @@ export default function Chat() {
     loadMedia(id);              // pull this session's attached images
     try {
       const res = await chatApi.sessionGet(id);
-      setMessages(res.messages);
+      // Map the server-persisted per-turn duration → elapsedSec so EVERY turn
+      // (simple/plan/team) shows its time-taken after reload, not just live.
+      setMessages((res.messages || []).map((m: any) =>
+        m.duration_s != null && m.elapsedSec === undefined
+          ? { ...m, elapsedSec: m.duration_s } : m));
       // M4 — rehydrate the "Approve & Execute" button if the LAST assistant
       // turn ended with an un-acted plan_ready step (persisted server-side but
       // dropped by toAgentStep). Only the last turn — older plans are stale.

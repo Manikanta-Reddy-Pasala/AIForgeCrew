@@ -20,6 +20,12 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import time
+
+
+def _dur(started_at: "float | None") -> "float | None":
+    """Per-turn wall-clock seconds since ``started_at`` (None → unknown)."""
+    return round(time.time() - started_at, 2) if started_at else None
 from collections.abc import Callable, Iterator
 
 _SENTINEL = object()
@@ -200,7 +206,8 @@ def _finalize_subtasks(items: list[dict] | None, run_ok: bool,
 
 def stream_chat_pipeline(prompt: str, *, cwd: str,
                          session_id: int | None = None,
-                         history: list[dict] | None = None) -> Iterator[dict]:
+                         history: list[dict] | None = None,
+                         started_at: float | None = None) -> Iterator[dict]:
     q: queue.Queue = queue.Queue()
     from aiforge_core.runtime import chat_cancel
     raw_prompt = prompt   # the user's actual request (before context augmentation)
@@ -276,7 +283,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                         chat_persist.persist_turn(
                             session_id=session_id, cwd=cwd, prompt=raw_prompt,
                             final_text="(stopped before the run started)",
-                            steps=[], team=True, cancelled=True, awaiting=False)
+                            steps=[], team=True, cancelled=True, awaiting=False,
+                            mode="team", duration_s=_dur(started_at))
                     except Exception:  # noqa: BLE001
                         pass
                     chat_cancel.finish(session_id)
@@ -550,7 +558,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                     chat_persist.persist_turn(
                         session_id=session_id, cwd=cwd, prompt=raw_prompt,
                         final_text=final_text, steps=steps, team=True,
-                        cancelled=cancelled, awaiting=False)
+                        cancelled=cancelled, awaiting=False,
+                        mode="team", duration_s=_dur(started_at))
                 except Exception:  # noqa: BLE001
                     pass
             if session_id is not None:
@@ -617,7 +626,8 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 chat_persist.persist_turn(
                     session_id=session_id, cwd=cwd, prompt=raw_prompt,
                     final_text=fb_final, steps=fb_steps, team=False,
-                    cancelled=cancelled_fb, awaiting=False)
+                    cancelled=cancelled_fb, awaiting=False,
+                    mode="team", duration_s=_dur(started_at))
                 _cc.finish(session_id)
                 # CC4 — also finish the approval gate; a fallback torn down
                 # mid-approval would otherwise leak _PENDING/_REVIEW_EDITS for

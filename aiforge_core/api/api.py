@@ -3835,6 +3835,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # Persist the run mode on the user turn so the UI can badge which mode each
     # turn/session ran in (was composer-only client state, never stored).
     _turn_mode = body.mode if body.mode in ("simple", "plan", "team") else "simple"
+    import time as _time
+    _turn_t0 = _time.time()   # wall-clock start → per-turn duration (all 3 modes)
     _user_msg_id = chat_store.add_message(session_id, "user", body.content,
                                           mode=_turn_mode)
     # Provisional title now (instant), upgraded to a model-generated one after
@@ -4261,7 +4263,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # line) still persists + cleans up inline in _gen's finally.
             _path["driver"] = True
             yield from stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
-                                            history=history)
+                                            history=history, started_at=_turn_t0)
             return
         # SIMPLE and PLAN modes — the Enhancer is MANDATORY on the FIRST turn
         # of a session (fresh context, referents to resolve, no memory pulled
@@ -4589,6 +4591,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         emitted_done = False   # forwarded a terminal `done` yet?
         try:
             for ev in _events():
+                # Stamp per-turn wall-clock on the terminal event so the UI shows
+                # time-taken for EVERY turn in ALL three modes (simple/plan/team),
+                # server-authoritative (the client timer is live-only).
+                if ev.get("type") == "done" and "elapsed_s" not in ev:
+                    ev = {**ev, "elapsed_s": round(_time.time() - _turn_t0, 2),
+                          "mode": _turn_mode}
                 if _clog is not None and emit is not None and \
                         ev.get("type") in ("thought", "tool", "message", "error"):
                     try:
@@ -4691,7 +4699,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     session_id=session_id, cwd=cwd, prompt=prompt,
                     final_text=final_text, steps=steps,
                     team=(team or _path["parallel"]),
-                    cancelled=cancelled, awaiting=awaiting)
+                    cancelled=cancelled, awaiting=awaiting,
+                    mode=_turn_mode, duration_s=_time.time() - _turn_t0)
                 # Single-chat (simple/plan) memory writeback. The team
                 # pipeline runs a Learner node + memory callbacks itself;
                 # the inline simple/plan path never did, so chat work never

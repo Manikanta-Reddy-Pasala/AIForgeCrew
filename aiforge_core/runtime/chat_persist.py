@@ -40,7 +40,8 @@ def _is_real_repo(cwd: str | None) -> bool:
 
 def persist_turn(*, session_id: int, cwd: str, prompt: str,
                  final_text: str, steps: list[dict], team: bool,
-                 cancelled: bool, awaiting: bool) -> None:
+                 cancelled: bool, awaiting: bool,
+                 mode: str = "simple", duration_s: "float | None" = None) -> None:
     from aiforge_core.runtime import chat_store
 
     final_text = final_text or ""
@@ -56,7 +57,8 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
     # Skip an empty, content-less turn (e.g. an immediate Stop before any
     # output) — don't leave a blank assistant bubble.
     if final_text.strip() or steps:
-        chat_store.add_message(session_id, "assistant", final_text, steps)
+        chat_store.add_message(session_id, "assistant", final_text, steps,
+                               mode=mode, duration_s=duration_s)
 
     # Reviewable on-disk trace: every action + response per message, per
     # session, to ~/.aiforge/chat_traces/. Covers BOTH simple and team modes

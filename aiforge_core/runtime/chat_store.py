@@ -76,6 +76,7 @@ def _message_out(d: dict) -> dict:
     return {"id": d["id"], "role": d["role"], "content": d["content"],
             "steps": steps, "checkpoint_sha": d.get("checkpoint_sha"),
             "mode": (d.get("mode") or "simple"),
+            "duration_s": d.get("duration_s"),
             "created_at": _iso(d["created_at"])}
 
 
@@ -185,6 +186,10 @@ class _SqliteChatStore:
             if "mode" not in mcols:
                 c.execute("ALTER TABLE chat_messages ADD COLUMN mode TEXT "
                           "NOT NULL DEFAULT 'simple'")
+            # Per-turn wall-clock seconds — so every turn (simple/plan/team)
+            # shows its time-taken even after reload (client timer is live-only).
+            if "duration_s" not in mcols:
+                c.execute("ALTER TABLE chat_messages ADD COLUMN duration_s REAL")
             yield c
             c.commit()
         finally:
@@ -243,7 +248,7 @@ class _SqliteChatStore:
         with self._conn() as c:
             rows = c.execute(
                 "SELECT id, role, content, steps, checkpoint_sha, mode, "
-                "created_at "
+                "duration_s, created_at "
                 "FROM chat_messages WHERE session_id=? ORDER BY id ASC",
                 (session_id,),
             ).fetchall()
@@ -267,13 +272,13 @@ class _SqliteChatStore:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
 
     def add_message(self, session_id, role, content, steps=None,
-                    mode="simple") -> int:
+                    mode="simple", duration_s=None) -> int:
         with _LOCK, self._conn() as c:
             cur = c.execute(
                 "INSERT INTO chat_messages(session_id, role, content, steps, "
-                "mode) VALUES (?,?,?,?,?)",
+                "mode, duration_s) VALUES (?,?,?,?,?,?)",
                 (session_id, role, content, json.dumps(steps or []),
-                 mode or "simple"),
+                 mode or "simple", duration_s),
             )
             c.execute(f"UPDATE chat_sessions SET updated_at={_NOW} WHERE id=?",
                       (session_id,))
@@ -390,9 +395,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     steps          text NOT NULL DEFAULT '[]',
     checkpoint_sha text,
     mode           text NOT NULL DEFAULT 'simple',
+    duration_s     real,
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS chat_messages_session ON chat_messages(session_id, id);
+-- migrate pre-existing tables (CREATE IF NOT EXISTS won't add the column)
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS duration_s real;
 CREATE TABLE IF NOT EXISTS chat_media (
     id          bigserial PRIMARY KEY,
     session_id  bigint NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
@@ -499,7 +507,7 @@ class _PgChatStore:
         with self._conn() as c, self._cur(c) as cur:
             cur.execute(
                 "SELECT id, role, content, steps, checkpoint_sha, mode, "
-                "created_at "
+                "duration_s, created_at "
                 "FROM chat_messages WHERE session_id=%s ORDER BY id ASC",
                 (session_id,))
             rows = cur.fetchall()
@@ -524,13 +532,13 @@ class _PgChatStore:
             return list(cur.fetchall())
 
     def add_message(self, session_id, role, content, steps=None,
-                    mode="simple") -> int:
+                    mode="simple", duration_s=None) -> int:
         with self._conn() as c, self._cur(c) as cur:
             cur.execute(
                 "INSERT INTO chat_messages(session_id, role, content, steps, "
-                "mode) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                "mode, duration_s) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
                 (session_id, role, content, json.dumps(steps or []),
-                 mode or "simple"))
+                 mode or "simple", duration_s))
             mid = cur.fetchone()["id"]
             cur.execute("UPDATE chat_sessions SET updated_at=now() WHERE id=%s",
                         (session_id,))
@@ -711,8 +719,10 @@ def search_messages(query: str, *, limit: int = 6,
 
 
 def add_message(session_id: int, role: str, content: str,
-                steps: "list | None" = None, mode: str = "simple") -> int:
-    return _backend().add_message(session_id, role, content, steps, mode)
+                steps: "list | None" = None, mode: str = "simple",
+                duration_s: "float | None" = None) -> int:
+    return _backend().add_message(session_id, role, content, steps, mode,
+                                  duration_s)
 
 
 def set_message_checkpoint(message_id: int, sha: str) -> None:
