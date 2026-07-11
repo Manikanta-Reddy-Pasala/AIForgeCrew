@@ -208,11 +208,6 @@ function Shell() {
     return true;
   });
   const location = useLocation();
-  // Entering Chat collapses to pure icons (max room for the conversation);
-  // "Show dashboard" re-expands while you stay on the page.
-  useEffect(() => {
-    if (location.pathname.startsWith('/chat')) setCollapsed(true);
-  }, [location.pathname]);
   const toggle = () => setCollapsed(c => {
     const n = !c;
     try { localStorage.setItem(SIDEBAR_KEY, n ? '1' : '0'); } catch { /* storage off */ }

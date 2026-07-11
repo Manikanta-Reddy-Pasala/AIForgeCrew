@@ -340,15 +340,6 @@ export default function Chat() {
   // Sessions list
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
-    try { return localStorage.getItem('aiforge.chat.sidebarCollapsed') === '1'; } catch { return false; }
-  });
-  const toggleSidebar = () => setSidebarCollapsed(v => {
-    const n = !v;
-    try { localStorage.setItem('aiforge.chat.sidebarCollapsed', n ? '1' : '0'); } catch { /* ignore */ }
-    return n;
-  });
-
   // Active session
   const [activeId, setActiveId] = useState<number | null>(() => {
     try {
@@ -1424,22 +1415,12 @@ export default function Chat() {
 
   return (
     <RuleStateCtx.Provider value={ruleState}>
-    <div className={`chat-shell-v2${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
-      {/* Floating expand button — only when collapsed */}
-      {sidebarCollapsed && (
-        <button className="chat-sidebar-expand" title="Show chats" onClick={toggleSidebar}>
-          <Icon.ChevronRight size={16} />
-        </button>
-      )}
+    <div className="chat-shell-v2">
       {/* ── Left sidebar: sessions list ─────────────────────────────────────── */}
       <div className="chat-sessions-sidebar">
         <div className="chat-sessions-header" style={{ display: 'flex', gap: 6 }}>
           <button onClick={handleNewChat} disabled={busy} style={{ flex: 1 }}>
             <Icon.Plus size={13} /> New chat
-          </button>
-          <button onClick={toggleSidebar} title="Collapse panel"
-                  style={{ padding: '0 8px', display: 'inline-flex', alignItems: 'center' }}>
-            <Icon.ChevronLeft size={15} />
           </button>
           <button onClick={handleNewChatHere} disabled={busy}
                   title="New chat with a specific working directory"
