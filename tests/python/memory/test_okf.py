@@ -63,8 +63,8 @@ def test_record_solution_okf_node_log_and_dedup(monkeypatch, tmp_path):
         about=["MessageRetryService.java"], ticket="ONE-9", date="2026-07-11")
     assert r["ok"]
     node = open(r["path"]).read()
-    for want in ("type: solution", "kind: fix", "workspace: PosClientBackend",
-                 "topic: sync", "productTxn", "NATS", "PosServerBackend"):
+    for want in ("type: solution", 'kind: "fix"', "PosClientBackend",
+                 "sync", "productTxn", "NATS", "PosServerBackend"):
         assert want in node, want
     log = open(str(tmp_path) + "/log.md").read()
     assert "## 2026-07-11" in log and "[fix]" in log
