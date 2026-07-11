@@ -260,6 +260,111 @@ def record_solution(*, kind: str, summary: str, workspace: str = "",
         return {"ok": False, "error": str(exc)}
 
 
+_RECLASSIFY_SYS = (
+    "You are triaging accumulated GLOBAL learnings in a memory bundle. For EACH "
+    "learning decide ONE:\n"
+    "• 'project' — it is knowledge SPECIFIC to one repository (its classes, "
+    "modules, build/test setup, domain fields, a bug fixed in it). Set `repo` to "
+    "the matching name from the provided repo list (best match; the learning's "
+    "category or body usually names a class/service/package that belongs to a "
+    "repo).\n"
+    "• 'global' — a genuinely universal rule that holds across ALL repos (a user "
+    "preference, a general convention, a cross-cutting decision).\n"
+    "• 'noise' — a transient TEST-SESSION artifact with no durable value: a "
+    "one-off status line, a scratch experiment (expense-tracker, httptiny, "
+    "user-count, calc, directory listing), 'the model did not respond', an empty "
+    "workspace note, a jira ticket status snapshot. These should be DELETED.\n"
+    "Only pick 'project' when the repo is a confident match — otherwise 'global' "
+    "or 'noise'. Never invent a repo not in the list."
+)
+
+
+def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) -> dict:
+    """Triage the learnings currently in ``global/``: an LLM decides each is a
+    real GLOBAL rule (keep), PROJECT-specific (→ move to projects/<repo>/ by
+    setting workspace), or NOISE (a transient test-session artifact → delete).
+    ``repos`` is the known-repo whitelist the classifier maps to. ``dry_run``
+    returns the plan without touching disk. Soft-fail; never raises."""
+    try:
+        from pydantic import BaseModel
+
+        from aiforge_core.llm.structured import structured_complete
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"import: {exc}"}
+
+    glob = [d for d in _store.load_all("global") if d.get("type") == "learning"]
+    if not glob:
+        return {"ok": True, "moved": 0, "deleted": 0, "kept": 0, "note": "no global learnings"}
+    repo_set = {r.strip() for r in repos if r.strip()}
+
+    # compact catalogue for the model: id · category · first line
+    items = []
+    for d in glob:
+        m = d.get("meta") or {}
+        head = (d.get("body") or "").strip().split("\n", 1)[0][:160]
+        items.append({"id": d.get("id"), "category": m.get("category") or "",
+                      "text": head})
+
+    class _Decision(BaseModel):
+        id: str
+        decision: str = "global"       # global | project | noise
+        repo: str = ""
+
+    class _Out(BaseModel):
+        decisions: "list[_Decision]" = []
+
+    import json as _json
+    try:
+        res = structured_complete(
+            "learner",
+            [{"role": "system", "content": _RECLASSIFY_SYS},
+             {"role": "user", "content":
+                 "REPOS:\n" + ", ".join(sorted(repo_set)) + "\n\nLEARNINGS:\n"
+                 + _json.dumps(items, ensure_ascii=False)}],
+            _Out, max_retries=1, max_tokens=2500, temperature=0.0)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"llm: {exc}"}
+
+    by_id = {d.get("id"): d for d in glob}
+    plan = {"move": [], "delete": [], "keep": []}
+    for dec in res.decisions:
+        node = by_id.get(dec.id)
+        if not node:
+            continue
+        if dec.decision == "project" and dec.repo.strip() in repo_set:
+            plan["move"].append((dec.id, dec.repo.strip()))
+        elif dec.decision == "noise":
+            plan["delete"].append(dec.id)
+        else:
+            plan["keep"].append(dec.id)
+    # anything the model didn't rule on → keep
+    ruled = {i for i, _ in plan["move"]} | set(plan["delete"]) | set(plan["keep"])
+    plan["keep"] += [i for i in by_id if i not in ruled]
+
+    if dry_run:
+        return {"ok": True, "dry_run": True,
+                "move": plan["move"], "delete": plan["delete"],
+                "keep": len(plan["keep"])}
+
+    import os as _os
+    moved = deleted = 0
+    for nid, repo in plan["move"]:
+        node = by_id[nid]
+        meta = dict(node.get("meta") or {})
+        meta["scope"] = f"repo:{repo}"
+        meta["workspace"] = repo               # → projects/<repo>/ via _scope_of
+        r = _store.save_node("learning", nid, meta, node.get("body") or "")
+        if r.get("ok"):
+            moved += 1
+    for nid in plan["delete"]:
+        with __import__("contextlib").suppress(OSError):
+            _os.unlink(by_id[nid]["path"])
+            deleted += 1
+    _store._write_index()
+    return {"ok": True, "moved": moved, "deleted": deleted,
+            "kept": len(plan["keep"]), "scopes": _store.okr_scopes()}
+
+
 def migrate_from_briefs() -> dict:
     """Seed the OKR graph from the existing flat topic briefs: each
     compacted-<topic>.md (+ its split parts) → one global Learning node
@@ -301,4 +406,5 @@ def migrate_from_briefs() -> dict:
     return {"ok": True, "migrated": made, "topics": len(facts_by_topic)}
 
 
-__all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs"]
+__all__ = ["extract_and_save", "write_session_node", "migrate_from_briefs",
+           "record_solution", "reclassify_global_learnings"]
