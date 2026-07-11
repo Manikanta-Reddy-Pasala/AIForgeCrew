@@ -422,59 +422,25 @@ fi
 # side (flat md / old Neo4j → scoped OKR) migrates on API startup separately
 # (aiforge_core.memory.migrations). Marker-guarded (runs once); opt out with
 # AIFORGE_AUTO_MIGRATE=0.
+# The whole detect → migrate (PG→SQLite, Neo4j→OKR) → verify → remove DB-infra
+# (containers/images/volumes, KEEP langfuse) flow lives in ONE PORTABLE Python
+# module (aiforge_core.deploy.converge) so it runs the same on Linux/macOS/WSL/
+# Windows — run.sh just invokes it. Marker-guarded; opt out AIFORGE_AUTO_MIGRATE=0.
 _cfgdir="${AIFORGE_CONFIG_DIR:-$HOME/.aiforge}"
 _automig_marker="$_cfgdir/.data_migrated_v1"
-if [[ ! -f "$_automig_marker" && "${AIFORGE_AUTO_MIGRATE:-1}" != "0" && "${MIGRATE:-0}" != "1" ]]; then
-  _DKA=(docker); command -v docker >/dev/null 2>&1 && ! docker info >/dev/null 2>&1 && _DKA=(sudo docker)
-  if command -v docker >/dev/null 2>&1 \
-       && "${_DKA[@]}" ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'aiforge-postgres'; then
-    echo "==> auto-migrate: prior dockerized Postgres detected — migrating to SQLite/OKR"
-    systemctl --user stop aiforge-api >/dev/null 2>&1 || true
-    "${_DKA[@]}" start aiforge-postgres >/dev/null 2>&1 || true
-    # bring Neo4j up too (if it exists) so the memory drain reads it BEFORE teardown.
-    "${_DKA[@]}" start aiforge-neo4j >/dev/null 2>&1 || true
-    sleep 6
-    _PGU="${AIFORGE_PG_URL:-postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge}"
-    _mig_ok=0
-    # STEP 1 — Postgres chat+tickets → SQLite (exit 0 = complete)
-    if AIFORGE_PG_URL="$_PGU" AIFORGE_MODE=lite \
-         .venv/bin/python scripts/migrate_to_sqlite.py; then
-      # STEP 2 — Neo4j Observation/Decision → scoped OKR (CHECKED, not ignored)
-      if AIFORGE_MODE=lite AIFORGE_MIGRATE_NEO4J=1 \
-           .venv/bin/python -c "from aiforge_core.memory import migrations; import sys; r=migrations.run_startup_migrations(); sys.exit(0 if (r.get('neo4j_drain') or {}).get('ok') is not False else 1)"; then
-        _mig_ok=1
-      else
-        echo "==> auto-migrate: Neo4j drain FAILED — keeping Docker intact (data not lost)" >&2
-      fi
-    else
-      echo "==> auto-migrate: Postgres→SQLite FAILED — keeping Docker intact (data not lost)" >&2
-    fi
+if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" && "${MIGRATE:-0}" != "1" ]]; then
+  systemctl --user stop aiforge-api >/dev/null 2>&1 || true   # unlock SQLite for the migrate
+  .venv/bin/python -m aiforge_core.deploy.converge || true
+  # if it converged (no docker / migrated), run this session in lite
+  [[ -f "$_automig_marker" ]] && MODE=lite
+fi
 
-    if [[ "$_mig_ok" == "1" ]]; then
-      # FULL migration verified → NOW safe to remove the DB-INFRA containers +
-      # their images + volumes. NEVER touch langfuse (the trace UI the user keeps)
-      # or anything else — use the EXPLICIT DB-infra names only.
-      echo "==> auto-migrate: migration complete — removing DB-infra Docker (KEEPING langfuse)"
-      _INFRA=(aiforge-neo4j aiforge-embed aiforge-rerank aiforge-postgres)
-      "${_DKA[@]}" rm -f "${_INFRA[@]}" >/dev/null 2>&1 || true
-      # volumes: aiforge-named, EXCLUDING any langfuse volume
-      for _v in $("${_DKA[@]}" volume ls -q 2>/dev/null | grep -i aiforge | grep -vi langfuse); do
-        "${_DKA[@]}" volume rm "$_v" >/dev/null 2>&1 || true
-      done
-      # images: aiforge-tagged, EXCLUDING langfuse
-      for _im in $("${_DKA[@]}" images --filter reference='*aiforge*' --format '{{.Repository}}:{{.Tag}} {{.ID}}' 2>/dev/null \
-                     | grep -vi langfuse | awk '{print $2}' | sort -u); do
-        "${_DKA[@]}" rmi -f "$_im" >/dev/null 2>&1 || true
-      done
-      echo "==> auto-migrate: done — DB-infra containers/images/volumes removed; langfuse untouched; app on SQLite/OKR"
-      MODE=lite
-      mkdir -p "$_cfgdir" && date -u +%Y-%m-%dT%H:%M:%SZ > "$_automig_marker" 2>/dev/null || true
-    fi
-    # migration failed → do NOT mark done, do NOT remove anything → retry next boot
-  else
-    # no dockerized Postgres → nothing to migrate; mark done so we don't re-check
-    mkdir -p "$_cfgdir" && date -u +%Y-%m-%dT%H:%M:%SZ > "$_automig_marker" 2>/dev/null || true
-  fi
+# LITE = embedded SQLite: strip any stale hybrid AIFORGE_PG_URL / DSN / Neo4j env
+# (e.g. left in .env from a prior hybrid run) so the app doesn't try a Postgres/
+# Neo4j that no longer exists and complain before falling back to SQLite.
+if [[ "$MODE" == "lite" ]]; then
+  unset AIFORGE_PG_URL AIFORGE_DSN AIFORGE_FORCE_PG AIFORGE_NEO4J_URI NEO4J_URI
+  [[ "${AIFORGE_MEMORY_BACKEND:-}" == "neo4j" ]] && export AIFORGE_MEMORY_BACKEND=sqlite
 fi
 
 # ── LITE = zero-Docker: stop any leftover aiforge-* CONTAINERS ─────────────
