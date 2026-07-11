@@ -141,6 +141,12 @@ def write(title: str, text: str, *, kind: str = "note",
     created = _now_iso()
     digest = hashlib.sha1((title + text).encode()).hexdigest()[:6]
     stem = f"{_slug(title)}-{created[:10].replace('-', '')}-{digest}"
+    # RESERVED PREFIX GUARD: never let a per-note capture start with
+    # ``compacted-``. compact() EXCLUDES every ``compacted-*`` file from its
+    # live set (treats it as an already-canonical brief), so a masquerading
+    # capture would slip past compaction FOREVER and pile up. Strip the prefix
+    # (the date+hex suffix still keeps the name unique).
+    stem = re.sub(r"^compacted[-_]+", "", stem) or f"note-{digest}"
     path = memory_dir() / f"{stem}.md"
     fm = (
         "---\n"
@@ -213,6 +219,45 @@ def capture(kind: str, text: str, *, repo: str | None = None,
     except Exception:  # noqa: BLE001 — brief upkeep never breaks a write
         pass
     return res
+
+
+def sweep_stale_captures(*, archive: bool = True) -> dict:
+    """Retire per-run capture files that MASQUERADE as canonical briefs.
+
+    A capture is stamped ``<slug>-YYYYMMDD-<6hex>.md``. When its title happened
+    to start with "compacted" (e.g. the legacy-cleanup re-writing a brief's own
+    title) the slug became ``compacted-…`` — and ``compact()`` excludes every
+    ``compacted-*`` file from its live set, so these transient captures slip
+    past compaction FOREVER and accumulate (``compacted-retry-on-empty-fix`` &
+    friends). Their facts are already folded into the real
+    ``compacted-<topic>.md`` brief by ``_brief_upsert`` at write time, so they
+    carry nothing new.
+
+    Moves each masquerader into ``archive/<ts>/`` (reversible; ``archive=False``
+    deletes). Canonical briefs — ``compacted-<topic>.md`` with NO date-hex
+    suffix — are untouched. Runs in the hourly compaction. Never raises."""
+    import shutil
+    sig = re.compile(r"-\d{8}-[0-9a-f]{6}\.md$")   # per-run capture signature
+    swept: list[str] = []
+    dst = memory_dir() / "archive" / _now_iso().replace(":", "")
+    try:
+        with _COMPACT_LOCK:
+            for p in memory_dir().glob("compacted-*.md"):
+                if not sig.search(p.name):
+                    continue                    # real canonical brief — keep
+                try:
+                    if archive:
+                        dst.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(p), str(dst / p.name))
+                    else:
+                        p.unlink()
+                    swept.append(p.name)
+                except OSError:
+                    continue
+    except Exception as exc:  # noqa: BLE001 — sweep is best-effort upkeep
+        return {"ok": False, "error": str(exc), "swept": len(swept)}
+    return {"ok": True, "swept": len(swept), "archived": archive,
+            "files": swept}
 
 
 _BRIEF_CAP = 24_000   # chars; periodic re-summarize keeps it below this

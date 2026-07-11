@@ -255,8 +255,13 @@ def _start_daily_reindex() -> None:
                                       model_role="learner", archive_sources=False)
             r_topic = md_store.compact(group_by="topic", min_group=1, summarize=True,
                                        model_role="learner", archive_sources=True)
-            _af_log.info("md brief: repo(projection)=%s topic(archived)=%s",
-                         r_repo, r_topic)
+            # Retire per-run captures that masquerade as canonical briefs
+            # (compacted-<desc>-YYYYMMDD-hex.md) — compact() can never see them,
+            # so they'd pile up forever; their facts already live in the real
+            # compacted-<topic>.md brief. Archive them out (reversible).
+            r_sweep = md_store.sweep_stale_captures(archive=True)
+            _af_log.info("md brief: repo(projection)=%s topic(archived)=%s sweep=%s",
+                         r_repo, r_topic, r_sweep)
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("md compaction failed: %s", exc)
 

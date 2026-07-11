@@ -39,6 +39,30 @@ def test_compact_by_repo_makes_project_brief(cfg):
     assert briefs == ["compacted-svc.md"]
 
 
+def test_capture_title_never_masquerades_as_compacted_brief(cfg):
+    # A title starting with "compacted" must NOT produce a compacted-*.md file:
+    # compact() excludes compacted-* from its live set, so such a capture would
+    # slip past compaction FOREVER and pile up (the compacted-retry-on-empty-fix
+    # sprawl). The reserved-prefix guard strips it.
+    from aiforge_core.memory import md_store as m
+    d = m.capture("topic_learning", "compacted retry on empty fix",
+                  repo="notes", topic="retry")
+    assert not d["file"].startswith("compacted-")
+
+
+def test_sweep_stale_captures_archives_masqueraders_keeps_briefs(cfg):
+    # Legacy masqueraders (compacted-<desc>-YYYYMMDD-hex.md) get archived out;
+    # real canonical briefs (compacted-<topic>.md, no date-hex) stay put.
+    from aiforge_core.memory import md_store as m
+    md = m.memory_dir()
+    (md / "compacted-foo-bar-20260710-abc123.md").write_text("---\ntype: x\n---\nj")
+    (md / "compacted-sync.md").write_text("---\nkind: knowledge\n---\nreal")
+    r = m.sweep_stale_captures(archive=True)
+    assert r["swept"] == 1
+    assert (md / "compacted-sync.md").exists()                 # brief kept
+    assert not (md / "compacted-foo-bar-20260710-abc123.md").exists()  # swept
+
+
 def test_compact_by_topic_groups_cross_repo(cfg):
     from aiforge_core.memory import md_store as m
     m.capture("topic_learning", "auth: rotate keys 90d", repo="a", topic="auth")
