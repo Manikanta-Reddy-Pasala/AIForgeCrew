@@ -2078,9 +2078,10 @@ def memory_okr_graph() -> dict:
         m = n.get("meta") or {}
         nodes.append({"id": nid, "type": n.get("type"),
                       "title": m.get("title") or nid, "status": m.get("status"),
+                      "description": m.get("description"),
                       "parent_objective": m.get("parent_objective"),
                       "scope": m.get("scope"), "linked_krs": m.get("linked_krs"),
-                      "tags": m.get("tags"),
+                      "tags": m.get("tags"), "timestamp": m.get("timestamp"),
                       "preview": (n.get("body") or "")[:200]})
     return {"ok": True, "counts": g.counts(), "active_kr": okr.get_active(),
             "nodes": nodes}
