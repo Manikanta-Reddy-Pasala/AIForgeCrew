@@ -97,9 +97,15 @@ def learn_from_chat(*, prompt: str, final_text: str, steps: list | None,
         {"role": "system", "content": prompts.LEARNER},
         {"role": "user", "content":
             "Distil durable, reusable facts from this chat turn. Output ONLY "
-            "the JSON array of fact objects (each {text, about?, tags?}); use "
-            "[] when nothing is worth remembering long-term. Skip pleasantries "
-            "and one-off chatter.\n\n" + _transcript(prompt, final_text, steps)},
+            "the JSON array of fact objects, following the schema in the system "
+            "prompt: each fact is {text, topic, about?, tags?}. IMPORTANT — when "
+            "this turn actually CHANGED the repo (created/edited/fixed files), "
+            "ALSO emit the task-done record: {text:'DID: <what was asked + what "
+            "changed>', topic:'task-history', kind:'feature'|'fix', tables?:[…], "
+            "services?:[…], about?:[files/symbols]} — this is what builds the "
+            "solution changelog, so never omit it on a real change. Use [] when "
+            "nothing is worth remembering long-term. Skip pleasantries and "
+            "one-off chatter.\n\n" + _transcript(prompt, final_text, steps)},
     ]
     try:
         raw = _llm.complete(
