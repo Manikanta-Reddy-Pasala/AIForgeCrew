@@ -157,6 +157,45 @@ if [[ "${RESET_CONFIG:-0}" == "1" ]]; then
   fi
 fi
 
+# ── Local access bootstrap ────────────────────────────────────────────
+# A fresh host often can't read logs (journald), talk to the Docker socket, or
+# use systemd-user linger — the "run as root or add user to adm/docker" wall.
+# Add the CURRENT user to the groups that grant that access, once, idempotently,
+# via a NON-INTERACTIVE sudo (skip silently if sudo needs a password or isn't
+# there — never block startup, never prompt). Only groups that EXIST on the box
+# and that the user is NOT already in are touched. New membership needs a fresh
+# login to take hold in this shell; docker/converge already sudo-fall-back this
+# run, so nothing is blocked meanwhile. Opt out: AIFORGE_FIX_PERMS=0.
+_ensure_access() {
+  [[ "${AIFORGE_FIX_PERMS:-1}" == "0" ]] && return 0
+  command -v usermod >/dev/null 2>&1 || return 0          # not a Linux/usermod box
+  local u; u="$(id -un)"
+  [[ "$u" == "root" ]] && return 0                        # already all-access
+  # sudo that will NOT prompt; if it would, bail quietly (operator can add perms)
+  local SUDO=""
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo -n"
+  else return 0; fi
+  # docker group only matters when the socket exists AND the daemon rejects us
+  local want=(adm systemd-journal)
+  if [[ -S /var/run/docker.sock ]] && ! docker info >/dev/null 2>&1; then
+    want+=(docker)
+  fi
+  local added=()
+  for g in "${want[@]}"; do
+    getent group "$g" >/dev/null 2>&1 || continue         # group must exist
+    id -nG "$u" 2>/dev/null | tr ' ' '\n' | grep -qx "$g" && continue  # already in
+    $SUDO usermod -aG "$g" "$u" 2>/dev/null && added+=("$g")
+  done
+  # user-service linger so systemctl --user survives logout (deploy target)
+  if command -v loginctl >/dev/null 2>&1; then
+    $SUDO loginctl enable-linger "$u" >/dev/null 2>&1 || true
+  fi
+  if (( ${#added[@]} )); then
+    echo "==> access: added '$u' to ${added[*]} — log out/in (or 'newgrp ${added[0]}') for it to take effect in your shell" >&2
+  fi
+}
+_ensure_access
+
 # ── Single mode: SQLite on the host (no Docker infra to bring up) ─────────
 # The app runs on embedded SQLite + the scoped-OKR memory, with Aider RepoMap +
 # CodeGraph for code context. Nothing to start here — fall through to venv +
