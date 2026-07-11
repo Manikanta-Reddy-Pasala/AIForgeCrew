@@ -687,10 +687,18 @@ function NotesPanel() {
         const poll = setInterval(async () => {
           try {
             const s = await api.memoryCompactAllStatus();
+            // step N/6 · <current step> · brief M/K (which brief) · elapsed
+            const stepNo = Math.min(s.steps_done.length + 1, s.total_steps);
+            const brief = s.sub && s.sub.total
+              ? ` · brief ${s.sub.done}/${s.sub.total}${s.sub.key ? ` (${s.sub.key})` : ''}`
+              : '';
+            const short = s.sub && s.sub.total
+              ? `${s.current} ${s.sub.done}/${s.sub.total}`
+              : (s.current || 'working…');
             const label = s.running
-              ? `Compact all: ${s.current || '…'} (${s.steps_done.length}/${s.total_steps}, ${s.elapsed_s}s)`
+              ? `Compact all — step ${stepNo}/${s.total_steps}: ${s.current || '…'}${brief} · ${s.elapsed_s}s`
               : 'Compact all: finishing…';
-            setCaStep(s.current || 'working…');
+            setCaStep(short);
             toast.loading(label, { id: t });
             if (s.done || !s.running) {
               clearInterval(poll);

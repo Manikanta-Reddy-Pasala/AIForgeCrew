@@ -119,7 +119,9 @@ export const api = {
   },
   memoryCompactAll: () => j<any>('/memory/compact-all', { method: 'POST' }),
   memoryCompactAllStatus: () => j<{ running: boolean; done: boolean;
-    current: string | null; steps_done: string[]; total_steps: number;
+    current: string | null;
+    sub: { done: number; total: number; key: string } | null;
+    steps_done: string[]; total_steps: number;
     error: string | null; elapsed_s: number; result: any }>(
     '/memory/compact-all/status'),
   memoryOkr: () => j<{ ok: boolean; counts: Record<string, number>;

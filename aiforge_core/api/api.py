@@ -2116,8 +2116,8 @@ def memory_files_compact(group_by: str = Query("topic"),
 
 
 _compact_all_state: dict = {"running": False, "started_at": None,
-                            "steps": [], "current": None, "done": False,
-                            "result": None, "error": None}
+                            "steps": [], "current": None, "sub": None,
+                            "done": False, "result": None, "error": None}
 
 
 @app.post("/api/memory/dedupe")
@@ -2141,18 +2141,23 @@ def memory_compact_all() -> dict:
                 "current": _compact_all_state["current"]}
     from aiforge_core.memory import migrations
     _compact_all_state.update(running=True, started_at=_t.time(), steps=[],
-                              current=None, done=False, result=None, error=None)
+                              current=None, sub=None, done=False,
+                              result=None, error=None)
 
     def _on_step(name, phase, result):
         if phase == "run":
             _compact_all_state["current"] = name
+            _compact_all_state["sub"] = None
         elif phase == "progress":
             r = result or {}
-            _compact_all_state["current"] = (
-                f"{name} {r.get('done')}/{r.get('total')}")
+            _compact_all_state["current"] = name
+            _compact_all_state["sub"] = {"done": r.get("done"),
+                                         "total": r.get("total"),
+                                         "key": r.get("key")}
         else:
             _compact_all_state["steps"].append({"name": name, "result": result})
             _compact_all_state["current"] = name
+            _compact_all_state["sub"] = None
 
     def _run():
         try:
@@ -2175,6 +2180,7 @@ def memory_compact_all_status() -> dict:
     s = _compact_all_state
     return {
         "running": s["running"], "done": s["done"], "current": s["current"],
+        "sub": s["sub"],                       # {done,total,key} per-brief progress
         "steps_done": [x["name"] for x in s["steps"]],
         "total_steps": 6, "error": s["error"],
         "elapsed_s": round(_t.time() - s["started_at"], 1) if s["started_at"] else 0,
