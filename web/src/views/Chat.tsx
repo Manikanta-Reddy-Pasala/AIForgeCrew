@@ -882,15 +882,6 @@ export default function Chat() {
     setTimeout(() => textareaRef.current?.focus(), 50);
   }
 
-  // M1: new chat with an explicit working directory (the agent reads/writes
-  // there). Blank = default isolated workspace.
-  async function handleNewChatHere() {
-    const dir = window.prompt('Working directory for this chat (absolute path; blank = default workspace):', '');
-    if (dir === null) return;   // cancelled
-    await createSession(dir.trim() || undefined);
-    setTimeout(() => textareaRef.current?.focus(), 50);
-  }
-
   // ── Delete a session ──────────────────────────────────────────────────────
 
   async function deleteSession(id: number) {
@@ -1421,11 +1412,6 @@ export default function Chat() {
         <div className="chat-sessions-header" style={{ display: 'flex', gap: 6 }}>
           <button onClick={handleNewChat} disabled={busy} style={{ flex: 1 }}>
             <Icon.Plus size={13} /> New chat
-          </button>
-          <button onClick={handleNewChatHere} disabled={busy}
-                  title="New chat with a specific working directory"
-                  style={{ padding: '0 8px', display: 'inline-flex', alignItems: 'center' }}>
-            <Icon.Folder size={15} />
           </button>
           {sessions.length > 0 && (
             <button
