@@ -732,6 +732,17 @@ def _consolidate_brief_sections(key: str, path, blocks: list[str],
                     existing[fld].append(it)
         prev_tags += list((parsed["frontmatter"] or {}).get("tags") or [])
     new_content = "\n\n".join(b for b in blocks if b.strip())
+    # RE-FOLD a fact-only brief. Force compaction adds every existing brief as an
+    # empty-live group; a brief that carries Facts but no consolidated PROSE body
+    # yields blocks=[] → new_content="" → consolidate() takes its no-LLM
+    # "nothing new" path and the force pass does zero real work (270 briefs in 8s,
+    # no model calls). Feed the brief's existing Facts back as content so the LLM
+    # genuinely re-consolidates (dedupe/supersede/re-map) them. Only fires when
+    # there is no new content, i.e. exactly the force re-fold case — normal
+    # compaction always has live items, so new_content is non-empty and this is
+    # a no-op there.
+    if not new_content.strip() and existing.get("facts"):
+        new_content = "\n".join(f"- {f}" for f in existing["facts"])
     merged = work_notes.consolidate(existing, new_content, role=model_role)
     learnings = list(merged.get("learnings") or [])
     for ln in (existing.get("learnings") or []):        # keep the audit trail
