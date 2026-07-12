@@ -94,7 +94,7 @@ semantic = ["sentence-transformers>=2.2", "sqlite-vec>=0.1"]
 [project.scripts]
 aiforge-agents-tb = "aiforge_core.memory.trial_balance:main"
 aiforge-tool = "aiforge_core.runtime.tool_cli:main"
-aiforge-memory-claude = "aiforge_core.memory.claude_ingest:main"
+aiforge-memory-instructions = "aiforge_core.memory.instructions_ingest:main"
 
 [tool.setuptools.packages.find]
 include = ["aiforge_core*"]
