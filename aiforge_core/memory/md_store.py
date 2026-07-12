@@ -189,10 +189,236 @@ _CAPTURE_KINDS = {
 }
 
 
+# ── scope classifier: global | project:<repo> | topic:<slug> ─────────────────
+# A captured fact belongs to exactly one scope, which decides its brief axis:
+#   global          → cross-project knowledge → compacted-shared.md
+#   project:<repo>  → one repo only           → compacted-<repo>.md
+#   topic:<slug>    → cross-cutting theme      → compacted-<slug>.md
+# The caller's repo/topic args are HINTS; an LLM (learner role, config-driven)
+# may PROMOTE a repo-hinted but universally-true fact to global — the "is this
+# global or per-project?" decision the user asked compaction to understand.
+_SCOPE_SYS = (
+    "Classify ONE captured knowledge item into its memory SCOPE.\n"
+    "- global  : cross-project knowledge — CLI/tool behaviour, coding "
+    "conventions, stack/model/endpoint facts; true regardless of repository.\n"
+    "- project : meaningful for ONE repository/service only (its classes, "
+    "endpoints, bugs, config).\n"
+    "- topic   : a cross-cutting theme/workflow spanning repos (e.g. data-sync, "
+    "auth, ci) that is neither a single repo nor truly global.\n"
+    "Prefer the caller's hint UNLESS the content is clearly broader — promote a "
+    "repo-hinted but universally-true fact to global. Reply scope plus, for "
+    "project the repo slug, for topic a short kebab-case topic slug."
+)
+
+
+def classify_scope(text: str, *, hint_repo: str | None = None,
+                   hint_topic: str | None = None, role: str = "learner") -> dict:
+    """Decide a captured item's memory scope → ``{scope, repo, topic}``.
+
+    Deterministic fallback (``AIFORGE_OKR_SCOPE_LLM=0`` or the model is
+    unreachable): honour the hints — repo→project, else topic→topic, else
+    global — so existing capture behaviour is unchanged. With the LLM on it may
+    re-route a repo-hinted fact to global when it is universally true. Never
+    raises."""
+    hint_repo = (hint_repo or "").strip() or None
+    hint_topic = (hint_topic or "").strip() or None
+
+    def _fallback() -> dict:
+        if hint_repo:
+            return {"scope": "project", "repo": hint_repo, "topic": None}
+        if hint_topic:
+            return {"scope": "topic", "repo": None, "topic": _slug(hint_topic)}
+        return {"scope": "global", "repo": None, "topic": None}
+
+    body = (text or "").strip()
+    if not body or os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0":
+        return _fallback()
+    try:
+        from pydantic import BaseModel
+
+        from aiforge_core.llm.structured import structured_complete
+
+        class ScopeDecision(BaseModel):
+            scope: str = ""
+            repo: str = ""
+            topic: str = ""
+
+        hint = f"hint_repo={hint_repo or '-'} hint_topic={hint_topic or '-'}"
+        res = structured_complete(
+            role,
+            [{"role": "system", "content": _SCOPE_SYS},
+             {"role": "user", "content": f"{hint}\n\nITEM:\n{body[:2000]}"}],
+            ScopeDecision, max_tokens=200, max_retries=1, temperature=0.0)
+        scope = (getattr(res, "scope", "") or "").strip().lower()
+        repo = (getattr(res, "repo", "") or "").strip() or None
+        topic = (getattr(res, "topic", "") or "").strip() or None
+    except Exception:  # noqa: BLE001 — model down / bad JSON → honour hints
+        return _fallback()
+
+    if scope == "global":
+        return {"scope": "global", "repo": None, "topic": None}
+    if scope == "project":
+        # LLM-named repo is slugged; a bare hint repo is already caller-canonical.
+        r = _slug(repo) if repo else hint_repo
+        return {"scope": "project", "repo": r, "topic": None} if r else _fallback()
+    if scope == "topic":
+        t = topic or hint_topic
+        return {"scope": "topic", "repo": None, "topic": _slug(t)} if t else _fallback()
+    return _fallback()
+
+
+# ── cross-scope mapping: link related briefs (project ↔ global ↔ topic) ───────
+_CAPTURE_SIG_RE = re.compile(r"-\d{8}-[0-9a-f]{6}\.md$")  # per-run capture stamp
+
+
+def _live_briefs() -> list[dict]:
+    """Canonical scope briefs (``compacted-<scope>.md``), excluding per-run
+    capture masqueraders. Each: ``{key, file, path, summary}``."""
+    from aiforge_core.runtime import work_notes
+    out: list[dict] = []
+    for p in sorted(memory_dir().glob("compacted-*.md")):
+        if _CAPTURE_SIG_RE.search(p.name):
+            continue
+        key = p.stem[len("compacted-"):]
+        if not key:
+            continue
+        try:
+            d = _parse(p)
+            summary = work_notes.knowledge_text(d.get("body") or "")[:200]
+        except Exception:  # noqa: BLE001
+            continue
+        out.append({"key": key, "file": p.name, "path": p, "summary": summary})
+    return out
+
+
+_MAP_SYS = (
+    "You relate KNOWLEDGE-MEMORY briefs across scopes. Each brief is one scope: "
+    "a project (a repo), a cross-cutting topic, or 'shared' (global knowledge). "
+    "Given the briefs (key: summary), return the pairs that are genuinely "
+    "RELATED — a project brief and the global/topic brief whose subject it "
+    "shares (deploys, sync, auth, a shared convention). Only real overlaps; no "
+    "trivial or speculative links. Use the EXACT keys given."
+)
+
+
+def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
+    """Link related scope briefs BIDIRECTIONALLY: an LLM proposes which briefs
+    share subject matter (a project ↔ the global/topic brief it relates to) and
+    each gets a same-dir mapping link to the other in its Links section. Gated on
+    ``AIFORGE_OKR_SCOPE_LLM`` (off → no-op). Never raises."""
+    if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0":
+        return {"edges": 0, "skipped": "llm_off"}
+    briefs = _live_briefs()
+    if len(briefs) < 2:
+        return {"edges": 0}
+    by_key = {b["key"]: b for b in briefs}
+    listing = "\n".join(f"- {b['key']}: {b['summary']}" for b in briefs)
+    try:
+        from pydantic import BaseModel
+
+        from aiforge_core.llm.structured import structured_complete
+
+        class _Edges(BaseModel):
+            edges: list[dict] = []
+
+        res = structured_complete(
+            role,
+            [{"role": "system", "content": _MAP_SYS},
+             {"role": "user", "content": listing[:8000]}],
+            _Edges, max_tokens=1200, max_retries=1, temperature=0.0)
+        raw_edges = getattr(res, "edges", None) or []
+    except Exception as exc:  # noqa: BLE001 — model down → no mapping this pass
+        _log.debug("map_scopes: LLM failed: %s", exc)
+        return {"edges": 0, "error": "llm_unreachable"}
+
+    adj: dict[str, set[str]] = {}
+    n = 0
+    for e in raw_edges:
+        if not isinstance(e, dict):
+            continue
+        a = str(e.get("a") or "").strip()
+        b = str(e.get("b") or "").strip()
+        if a not in by_key or b not in by_key or a == b:
+            continue
+        if b in adj.get(a, set()):
+            continue                       # already counted this undirected pair
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+        n += 1
+    if dry_run or not adj:
+        return {"edges": n, "adj": {k: sorted(v) for k, v in adj.items()}}
+
+    from aiforge_core.runtime import work_notes
+    with _WRITE_LOCK:
+        for key, targets in adj.items():
+            b = by_key[key]
+            try:
+                parsed = work_notes.parse_note(
+                    b["path"].read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            links = list(parsed["sections"].get("links") or [])
+            links += [f"[{t}]({by_key[t]['file']})" for t in sorted(targets)]
+            work_notes.update_note(str(b["path"]), links=links,
+                                   kind="knowledge", key=key)
+    return {"edges": n, "updated": sorted(adj.keys())}
+
+
+def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
+    """Self-heal mis-scoped facts: re-classify each fact in every PROJECT/TOPIC
+    brief and MOVE the ones that are actually global into the shared brief
+    (facts captured before scope classification, or mis-hinted, end up in the
+    wrong brief). The shared/global brief is never demoted into a project. Gated
+    on ``AIFORGE_OKR_SCOPE_LLM`` (off → no-op). Never raises."""
+    if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0":
+        return {"moved": 0, "skipped": "llm_off"}
+    from aiforge_core.runtime import work_notes
+    moved = 0
+    healed: list[str] = []
+    # _COMPACT_LOCK (NOT _WRITE_LOCK): capture()→_brief_upsert takes _WRITE_LOCK,
+    # so holding it here would self-deadlock. This serialises reheal against
+    # compaction, which is the right granularity.
+    with _COMPACT_LOCK:
+        for b in _live_briefs():
+            key = b["key"]
+            if key == "shared":            # global brief — nothing to promote out
+                continue
+            try:
+                parsed = work_notes.parse_note(b["path"].read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            facts = parsed["sections"].get("facts") or []
+            if not facts:
+                continue
+            keep, promote = [], []
+            for f in facts[:max_per_brief]:
+                try:
+                    sc = classify_scope(f, hint_repo=key, role=role)
+                except Exception:  # noqa: BLE001
+                    keep.append(f)
+                    continue
+                (promote if sc["scope"] == "global" else keep).append(f)
+            keep.extend(facts[max_per_brief:])   # untouched tail stays put
+            if not promote:
+                continue
+            for f in promote:                    # → shared brief via capture
+                try:
+                    capture("learning", f, repo=None, classify=False,
+                            source="reheal")
+                except Exception:  # noqa: BLE001
+                    keep.append(f)               # couldn't move → don't lose it
+                    continue
+                moved += 1
+            work_notes.update_note(str(b["path"]), facts=keep,
+                                   kind="knowledge", key=key)
+            healed.append(key)
+    return {"moved": moved, "healed": healed}
+
+
 def capture(kind: str, text: str, *, repo: str | None = None,
             topic: str | None = None, title: str | None = None,
             source: str = "capture", tags: list[str] | None = None,
-            ingest: bool = True) -> dict:
+            ingest: bool = True, classify: bool = True) -> dict:
     """Persist one captured item as an md memory (repo + topic stamped + tagged),
     so it flows into both compaction axes. ``kind`` should be one of
     ``_CAPTURE_KINDS`` (falls back to a plain note otherwise). Returns the parsed
@@ -201,6 +427,19 @@ def capture(kind: str, text: str, *, repo: str | None = None,
     if not text:
         return {"skipped": "empty"}
     k = kind if kind in _CAPTURE_KINDS else "note"
+    # Scope decision: a repo-hinted fact that is actually cross-project gets
+    # PROMOTED to the shared (global) brief. Promotion-only — never demote a
+    # global capture into a repo — so the deterministic/off path (which returns
+    # "project" for any repo hint) leaves existing behaviour untouched. A caller
+    # that already resolved the scope (e.g. session compaction) passes
+    # ``classify=False`` to avoid a second LLM call.
+    if repo and classify:
+        try:
+            if classify_scope(text, hint_repo=repo,
+                              hint_topic=topic)["scope"] == "global":
+                repo, topic = None, None
+        except Exception:  # noqa: BLE001 — scope upkeep never breaks a write
+            pass
     tset = list(tags or [])
     if repo:
         tset.append(f"repo:{_slug(repo)}")

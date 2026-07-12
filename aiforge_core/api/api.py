@@ -372,6 +372,58 @@ def _start_daily_reindex() -> None:
     if os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") != "0":
         _pd.register("recompact-all", _recompact_all,
                      at_hour=max(0, min(23, hour + 4)))
+
+    # Session-end OKR compaction — IDLE trigger. AIFORGE_SESSION_COMPACT selects
+    # the trigger (idle | turns | explicit | off); the daemon only runs the idle
+    # scan. Idle is detected without parsing message timestamps: a session whose
+    # message count is UNCHANGED across two consecutive scans (spaced
+    # AIFORGE_SESSION_IDLE_MIN apart) has gone quiet → compact it once. State is
+    # in-process (resets on restart, which is fine — an active session just waits
+    # one more idle window).
+    _session_scan_state: dict = {}
+
+    def _compact_idle_sessions() -> None:
+        if os.environ.get("AIFORGE_SESSION_COMPACT", "idle") != "idle":
+            return
+        try:
+            from aiforge_core.runtime import chat_okr, chat_store
+            from aiforge_core.runtime.chat_agent import _chat_repo_key
+            sessions = chat_store.list_sessions() or []
+        except Exception as exc:  # noqa: BLE001
+            _af_log.debug("session-okr scan setup failed: %s", exc)
+            return
+        for s in sessions:
+            sid = (s or {}).get("id")
+            if sid is None:
+                continue
+            try:
+                count = len(chat_store.get_messages(sid) or [])
+            except Exception:  # noqa: BLE001
+                continue
+            prev = _session_scan_state.get(sid)
+            if count > 0 and prev is not None \
+                    and prev.get("count") == count and not prev.get("done"):
+                cwd = (s or {}).get("cwd")
+                repo = _chat_repo_key(cwd) if cwd else None
+                try:
+                    r = chat_okr.compact_session(sid, repo=repo)
+                    _af_log.info("idle session compact sid=%s: %s", sid, r)
+                except Exception as exc:  # noqa: BLE001
+                    _af_log.warning("idle session compact sid=%s failed: %s", sid, exc)
+                _session_scan_state[sid] = {"count": count, "done": True}
+            elif prev is None or prev.get("count") != count:
+                _session_scan_state[sid] = {"count": count, "done": False}
+        live = {(s or {}).get("id") for s in sessions}
+        for sid in list(_session_scan_state):
+            if sid not in live:
+                _session_scan_state.pop(sid, None)
+
+    try:
+        _idle_min = max(1, int(os.environ.get("AIFORGE_SESSION_IDLE_MIN", "30")))
+    except (TypeError, ValueError):
+        _idle_min = 30
+    _pd.register("session-okr-compact", _compact_idle_sessions,
+                 every_s=max(300, _idle_min * 60))
     _pd.start()
 
 
@@ -2206,7 +2258,7 @@ def memory_compact_all_status() -> dict:
         "running": s["running"], "done": s["done"], "current": s["current"],
         "sub": s["sub"],                       # {done,total,key} per-brief progress
         "steps_done": [x["name"] for x in s["steps"]],
-        "total_steps": 8, "error": s["error"],
+        "total_steps": 10, "error": s["error"],  # matches force_recompact_all steps
         "elapsed_s": round(_t.time() - s["started_at"], 1) if s["started_at"] else 0,
         "result": s["result"] if s["done"] else None,
     }
@@ -3689,6 +3741,20 @@ def chat_session_get(session_id: int) -> dict:
     if not s:
         raise HTTPException(404, f"session {session_id} not found")
     return {"session": s, "messages": chat_store.get_messages(session_id)}
+
+
+@app.post("/api/chat/sessions/{session_id}/compact")
+def chat_session_compact(session_id: int) -> dict:
+    """Session-end OKR compaction (explicit trigger): distil this session into
+    scoped OKR briefs (global / project / topic) via chat_okr.compact_session."""
+    from aiforge_core.runtime import chat_okr, chat_store
+    from aiforge_core.runtime.chat_agent import _chat_repo_key
+    sess = chat_store.get_session(session_id)
+    if not sess:
+        raise HTTPException(404, f"session {session_id} not found")
+    cwd = sess.get("cwd")
+    repo = _chat_repo_key(cwd) if cwd else None
+    return chat_okr.compact_session(session_id, repo=repo)
 
 
 @app.get("/api/chat/sessions/{session_id}/trace")
@@ -5797,11 +5863,42 @@ except OSError:
     # Never let an unwritable attachments dir crash API boot; the mount uses
     # check_dir=False and uploads makedirs(parents=True) on demand.
     pass
-app.mount(
-    "/files",
-    StaticFiles(directory=_TICKET_FILES_ROOT, check_dir=False),
-    name="ticket-files",
-)
+@app.get("/files/{identifier}/{name}")
+def serve_ticket_file(identifier: str, name: str):
+    """Serve a ticket attachment by (ticket, filename).
+
+    A dynamic route rather than a ``StaticFiles`` mount: the mount binds ONE
+    directory at import time, but the runner rebinds ``AIFORGE_REPO_ROOT`` per
+    ticket, so uploads land in a per-ticket worktree
+    (``/home/ai/codeRepo/<repo>/.aiforge/ticket-files/...``) that the boot-time
+    mount root does not point at → every such attachment 404'd. The ticket's
+    ``metadata.attached_files[].abs_path`` records the real write location, so
+    resolve from there first, then fall back to the persistent base dir.
+    """
+    from pathlib import Path as _Path
+    safe_name = _Path(name).name  # contain path traversal to the ticket dir
+    candidates: list[_Path] = []
+    try:
+        t = tickets_mod.get_enriched(identifier)
+    except Exception:  # noqa: BLE001 — a store hiccup must not 500 the asset
+        t = None
+    if t:
+        for f in ((t.get("metadata") or {}).get("attached_files") or []):
+            if not isinstance(f, dict) or (f.get("name") or "") != safe_name:
+                continue
+            ap = f.get("abs_path")
+            if ap:
+                candidates.append(_Path(ap))
+    # Fallbacks: the persistent base (current env) + the boot-time mount root.
+    candidates.append(_ticket_files_base() / identifier / safe_name)
+    candidates.append(_Path(_TICKET_FILES_ROOT) / identifier / safe_name)
+    for p in candidates:
+        try:
+            if p.is_file():
+                return FileResponse(str(p))
+        except OSError:
+            continue
+    raise HTTPException(404, f"attachment {identifier}/{safe_name} not found")
 
 # ─────────────────────────── Static UI ──────────────────────────────────
 # If the Vite production build exists, serve it at /ui/ and redirect "/" to it.

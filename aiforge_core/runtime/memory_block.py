@@ -33,6 +33,18 @@ def fetch(ticket) -> str:
     if not hits:
         return ""
 
+    # Map→summarize: when many scattered hits come back, fold them into ONE
+    # compact briefing (LLM) instead of dumping snippets. Empty → keep raw list.
+    try:
+        from aiforge_core.memory import recall_summary
+        brief = recall_summary.summarize_hits(text, hits)
+    except Exception:  # noqa: BLE001
+        brief = ""
+    if brief:
+        sources = ",".join(result.get("used_sources") or [])
+        log.info("memory: %d hits summarized (sources=%s)", len(hits), sources)
+        return f"## Memory briefing (AiForgeMemory)\n\n{brief}\n"
+
     lines = ["## Memory hits (AiForgeMemory)", ""]
     for h in hits[:8]:
         src = h.get("source", "?")

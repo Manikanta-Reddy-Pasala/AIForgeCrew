@@ -82,6 +82,11 @@ _WIKI_REF_RE = re.compile(r"^\[\[(jira|confluence|repo|web)/([^\]\s][^\]]*)\]\]$
 # work/<kind>/<key>/<file>.md, so ../../ walks to the work root.
 _MD_REF_RE = re.compile(
     r"^\[[^\]]*\]\(\.\./\.\./(jira|confluence|repo|web)/([^/)\s]+)/[^)]*\.md\)$")
+# Cross-SCOPE mapping between memory briefs. Briefs live FLAT in the memory dir
+# (compacted-<scope>.md), not in the work/<kind>/<key>/ tree, so their
+# cross-references are same-directory relative links to a sibling brief file,
+# e.g. [global](compacted-shared.md). Kept verbatim (already canonical).
+_BRIEF_REF_RE = re.compile(r"^\[[^\]]*\]\((compacted-[a-z0-9][a-z0-9-]*\.md)\)$")
 # URL shapes that ARE managed dossiers (same regexes as work_context uses).
 _JIRA_URL_RE = re.compile(r"/browse/([A-Z][A-Z0-9]{1,20}-\d+)\b")
 _CONF_URL_RE = re.compile(r"(?:/pages/|pageId=)(\d{4,})")
@@ -140,11 +145,14 @@ def normalize_links(links, kind: str, key: str) -> list[str]:
             continue
         mm = _MD_REF_RE.match(s)
         wm = _WIKI_REF_RE.match(s)
+        bm = _BRIEF_REF_RE.match(s)
         if mm:
             # re-canonicalize (label drift, filename drift) → stable dedupe
             canonical = _md_ref(mm.group(1), mm.group(2))
         elif wm:
             canonical = _md_ref(wm.group(1), wm.group(2))
+        elif bm:
+            canonical = s          # sibling-brief mapping link — already canonical
         else:
             if not re.match(r"^https?://", s, re.IGNORECASE):
                 continue                      # scheme filter — http(s) only
@@ -506,6 +514,21 @@ def _okf_rules() -> str:
         return ""
 
 
+def _supersede_directive() -> str:
+    """The contradiction-handling rule for consolidation — config-driven via
+    ``AIFORGE_OKR_SUPERSEDE`` (``archive`` | ``keep``). ``archive`` (default)
+    drops the stale line (OKR cycle-close; git history keeps the old value);
+    ``keep`` tags it ``[superseded <date>]`` and keeps both (a visible
+    retrospective trail in the brief). Read per call so the env is live."""
+    if os.environ.get("AIFORGE_OKR_SUPERSEDE", "archive").strip().lower() == "keep":
+        today = _dt.datetime.now(_dt.UTC).date().isoformat()
+        return (f"SUPERSEDE: when new info contradicts an old line, KEEP BOTH — "
+                f"append ' [superseded {today}]' to the stale line and add the "
+                f"new value as a fresh line; never delete the old value.")
+    return ("SUPERSEDE: when new info contradicts an old line (status/owner/value "
+            "changed), keep the NEW value and DROP the stale line.")
+
+
 _CONSOLIDATE_SYS = (
     "You maintain a knowledge note in Google-OKR format. You are given the "
     "note's CURRENT sections (JSON) and NEW information. Produce the CONSOLIDATED "
@@ -513,12 +536,12 @@ _CONSOLIDATE_SYS = (
     "Rules:\n"
     "- DEDUPE: merge paraphrases/near-duplicates into one crisp line; never emit "
     "two lines saying the same thing.\n"
-    "- SUPERSEDE: when new info contradicts an old line (status/owner/value "
-    "changed), keep the NEW value and drop the stale line.\n"
     "- MAP each item to the correct section: Objective = the one-line goal; "
-    "Key Results = measurable outcomes/targets; Facts = stable truths, config, "
-    "current state; Links = URLs / cross-references (COPY VERBATIM, never reword "
-    "or invent); Learnings = discoveries, gotchas, dated changes.\n"
+    "Key Results = measurable outcomes/targets AND tickets worked — a jira/issue "
+    "key (e.g. PROJ-123) IS a Key Result (the concrete measurable work) and its "
+    "reference is ALSO copied into Links; Facts = stable truths, config, points "
+    "to remember, current state; Links = URLs / cross-references (COPY VERBATIM, "
+    "never reword or invent); Learnings = discoveries, gotchas, dated changes.\n"
     "- Keep every item ONE concise sentence. Do NOT invent facts not present in "
     "the inputs. Preserve existing content unless a rule above removes it.\n"
     "\n"
@@ -611,9 +634,12 @@ def _consolidate_once(existing: dict, new_content: str, role: str) -> dict:
         # AIFORGE_CONSOLIDATE_MAX_TOKENS.
         _cap = int(_os.environ.get("AIFORGE_CONSOLIDATE_MAX_TOKENS", "32768"))
         _mt = max(4096, min(_cap, len(payload) // 3 + 1024))
+        # Inject the supersede directive at call time (env is live) so the
+        # contradiction policy (archive vs keep) is honoured per run.
+        sys_prompt = _CONSOLIDATE_SYS + "\n- " + _supersede_directive()
         res = structured_complete(
             role,
-            [{"role": "system", "content": _CONSOLIDATE_SYS},
+            [{"role": "system", "content": sys_prompt},
              {"role": "user", "content": payload}],
             ConsolidatedNote, max_retries=1, max_tokens=_mt, temperature=0.1)
         return {"objective": (res.objective or "").strip(),

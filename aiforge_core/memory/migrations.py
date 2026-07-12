@@ -350,6 +350,14 @@ def force_recompact_all(on_step=None) -> dict:
         ("sweep", lambda: md_store.sweep_stale_captures(archive=True)),
         ("sweep_empty", lambda: md_store.sweep_empty_briefs(archive=True)),
         ("dedupe", dedupe_all),
+        # self-heal mis-scoped facts (move globals out of project briefs) — heavy
+        # (LLM per fact), so opt-in via AIFORGE_OKR_REHEAL=1.
+        ("reheal", lambda: md_store.reheal_scopes()
+            if os.environ.get("AIFORGE_OKR_REHEAL", "0") == "1"
+            else {"skipped": "disabled"}),
+        # cross-scope mapping: link related briefs (project ↔ global ↔ topic)
+        # AFTER they've settled (consolidated, deduped, empties swept, rehealed).
+        ("map_scopes", lambda: md_store.map_scopes()),
         ("repo_profiles", lambda: __import__(
             "aiforge_core.memory.okr.author", fromlist=["build_repo_profiles"]
         ).build_repo_profiles()),

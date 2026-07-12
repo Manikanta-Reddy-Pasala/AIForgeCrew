@@ -82,3 +82,44 @@ steps are marker-guarded (`.migrations.json`).
 stdlib + `yaml` (already used). DAG is plain dicts (no NetworkX); prompt compile
 is a bounded template (no Jinja2 dep). `watchdog` is optional — a boot-time +
 on-write rebuild covers the single-process case.
+
+## Flat-brief scope memory (2026-07-12)
+
+Alongside the OKR-DAG, the human-facing flat briefs (`compacted-<scope>.md` under
+`~/.aiforge/memory/`, rendered through `runtime/work_notes.py`, the ONE Google-OKR
+envelope) are now scope-aware end to end. **We stay on the OKR standard —
+Objective + Key Results + Facts + Links + Learnings — and only tweak how it is
+populated; no new sections.**
+
+- **Scope classifier** — `md_store.classify_scope(text, hint_repo, hint_topic)`
+  decides `global | project:<repo> | topic:<slug>` with the learner LLM
+  (`AIFORGE_OKR_SCOPE_LLM`, default on; deterministic hint-honouring fallback when
+  off/unreachable). `capture()` uses it to **promote** a repo-hinted but
+  universally-true fact to the shared (global) brief.
+- **OKR category mapping** — tickets worked = **Key Results** (the measurable
+  work; the jira ref is also copied into **Links**); points-to-remember = **Facts**;
+  lessons = **Learnings**. Enforced in the consolidation prompt.
+- **Cross-scope mapping** — `md_store.map_scopes()` asks the LLM which briefs are
+  related (project ↔ global ↔ topic) and writes **bidirectional** same-dir links
+  (`[global](compacted-shared.md)`) into both briefs' Links. A `map_scopes` step
+  runs in `force_recompact_all`.
+- **Session-end compaction** — `runtime/chat_okr.compact_session(session_id, repo)`
+  distils a transcript into atomic durable items (decisions, learnings,
+  **meaningful user inputs only** — chit-chat dropped) and routes each to its
+  scope via `capture`. Trigger `AIFORGE_SESSION_COMPACT` = `idle` (default) |
+  `turns` | `explicit` | `off`; the idle daemon compacts sessions gone quiet for
+  `AIFORGE_SESSION_IDLE_MIN` (default 30) min; explicit via
+  `POST /api/chat/sessions/{id}/compact`.
+- **Previous-session continuity** — at session start the chat agent injects
+  `chat_okr.previous_session_brief()` (tail of the last session, framed as
+  supersedable). `AIFORGE_SESSION_PREV_CONTEXT=0` disables.
+- **Supersession** — when new info contradicts a stored fact, `AIFORGE_OKR_SUPERSEDE`
+  = `archive` (default — drop the stale line, git keeps history) | `keep` (tag it
+  `[superseded <date>]`, keep both).
+- **Map→summarize recall** — `memory.recall_summary.summarize_hits(query, hits)`
+  folds many scattered recall hits into ONE compact LLM briefing before injection
+  (used by `memory_block.fetch` and chat `_memory_recall`).
+  `AIFORGE_UMEM_SUMMARIZE` (default on), `AIFORGE_UMEM_SUMMARIZE_MIN` (default 5).
+- **Self-heal** — `md_store.reheal_scopes()` re-classifies facts in project/topic
+  briefs and moves globals to the shared brief. Heavy (LLM per fact) → opt-in via
+  `AIFORGE_OKR_REHEAL=1`; runs as a `reheal` step in `force_recompact_all`.

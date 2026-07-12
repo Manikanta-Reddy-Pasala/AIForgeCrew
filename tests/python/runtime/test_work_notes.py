@@ -470,3 +470,25 @@ def test_chat_tool_note_consolidate_wired_and_jailed(workdir):
     r = chat_agent.TOOLS["note_consolidate"](
         {"text": "x", "path": "/etc/hosts"}, str(workdir))
     assert r["ok"] is False and "work root" in r["error"]
+
+
+def test_consolidate_prompt_maps_tickets_to_key_results():
+    """OKR-native: tickets worked are Key Results (the measurable work),
+    points-to-remember are Facts. Guards the mapping contract from regression."""
+    from aiforge_core.runtime.work_notes import _CONSOLIDATE_SYS
+    s = _CONSOLIDATE_SYS.lower()
+    assert "ticket" in s and "key results" in s
+    assert "points to remember" in s
+
+
+def test_supersede_archive_is_default():
+    from aiforge_core.runtime.work_notes import _supersede_directive
+    d = _supersede_directive().lower()
+    assert "drop" in d and "stale" in d
+
+
+def test_supersede_keep_mode_tags_instead_of_dropping(monkeypatch):
+    monkeypatch.setenv("AIFORGE_OKR_SUPERSEDE", "keep")
+    from aiforge_core.runtime.work_notes import _supersede_directive
+    d = _supersede_directive().lower()
+    assert "superseded" in d and "keep both" in d

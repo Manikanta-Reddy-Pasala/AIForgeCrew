@@ -3584,6 +3584,20 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
             hits = res.get("hits", []) or []
     except Exception:  # noqa: BLE001
         hits = []
+    if not hits:
+        return ""
+    _preamble = ("RELEVANT MEMORY recalled for this request (prior decisions / "
+                 "gotchas / learnings from earlier sessions — consult before "
+                 "re-deriving):\n")
+    # Map→summarize: many scattered hits → ONE compact briefing (LLM). Empty
+    # (disabled / too few / model down) falls back to the raw ranked list.
+    try:
+        from aiforge_core.memory import recall_summary
+        brief = recall_summary.summarize_hits(q, hits)
+    except Exception:  # noqa: BLE001
+        brief = ""
+    if brief:
+        return _preamble + brief
     lines: list[str] = []
     for h in hits:
         txt = (h.get("text") or "").strip().replace("\n", " ")
@@ -3595,9 +3609,7 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
             break
     if not lines:
         return ""
-    return ("RELEVANT MEMORY recalled for this request (prior decisions / "
-            "gotchas / learnings from earlier sessions — consult before "
-            "re-deriving):\n" + "\n".join(lines))
+    return _preamble + "\n".join(lines)
 
 
 def _chat_session_recall(query: str, session_id: "int | None",
@@ -3904,6 +3916,19 @@ def run_chat_agent(
             "memory_lookup(query) for learnings/decisions, graphify_lookup for "
             "concept-graph, grep/repo_map/read for code, search_chat_sessions "
             "for prior chats. Look it up; don't guess or assume it's absent.")
+    # PREVIOUS SESSION continuity — at session START, carry the last
+    # conversation forward so a follow-up asked in a NEW chat has its context
+    # (the tail of the prior session, framed as SUPERSEDABLE — a contradicting
+    # new ask wins). Cheap local scan, opening turn only; AIFORGE_SESSION_PREV_
+    # CONTEXT=0 disables. Skipped in cave mode (tight window).
+    if _is_init and not cave and session_id is not None \
+            and os.environ.get("AIFORGE_SESSION_PREV_CONTEXT", "1") != "0":
+        try:
+            from aiforge_core.runtime import chat_okr as _cokr
+            _add_sys_block("prev-session",
+                           _cokr.previous_session_brief(session_id))
+        except Exception:  # noqa: BLE001 — continuity must never break a turn
+            pass
     # SESSION IMAGES: descriptions of images the user attached, so the (maybe
     # text-only) model can answer questions about them all session long.
     _img_blocks: list[dict] = []
