@@ -93,3 +93,13 @@ def test_w1_generic_leader_not_supersede(mem):
     # two unrelated "note:" facts must both survive
     assert any("retry backoff" in f for f in facts)
     assert any("port changed" in f for f in facts)
+
+
+def test_w6_prefix_needs_word_boundary(mem):
+    """A distinct prefix that is not a word-boundary extension is NOT pruned."""
+    from aiforge_core.memory import md_store
+    md_store._brief_upsert("svc", "config set")
+    md_store._brief_upsert("svc", "config setup is a different thing entirely")
+    facts, _ = _facts_kr(md_store)
+    assert any(md_store._fact_body(f) == "config set" for f in facts)  # kept
+    assert any("different thing" in f for f in facts)

@@ -120,7 +120,10 @@ def project_brief_text(repo: str) -> str:
                       seen_lines)
     if gk:
         parts.append("GLOBAL MEMORY:\n" + gk[:3000])
-    return "\n\n".join(parts)[:_BRIEF_TOTAL_CAP]
+    out = "\n\n".join(parts)
+    if len(out) > _BRIEF_TOTAL_CAP:      # clamp on a line boundary, not mid-fact
+        out = out[:_BRIEF_TOTAL_CAP].rsplit("\n", 1)[0]
+    return out
 
 
 def _project_brief(cwd: str) -> str:

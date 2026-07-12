@@ -572,7 +572,7 @@ def cleanup_reheal(*, role: str = "learner") -> dict:
         except Exception:  # noqa: BLE001
             continue
         if sc["scope"] != "global":
-            remove_keys.add(work_notes._ci_key(r["fact"]))
+            remove_keys.add(work_notes._ci_key(_fact_body(r["fact"])))
             remove_paths.append(r["path"])
 
     removed = 0
@@ -587,7 +587,7 @@ def cleanup_reheal(*, role: str = "learner") -> dict:
                 facts = parsed["sections"].get("facts") or []
                 kept = []
                 for f in facts:
-                    k = work_notes._ci_key(f)
+                    k = work_notes._ci_key(_fact_body(f))
                     if k in remove_keys:
                         matched.add(k)
                         removed += 1
@@ -603,9 +603,10 @@ def cleanup_reheal(*, role: str = "learner") -> dict:
     deleted = 0
     orphaned = 0
     for r in reheal:
-        if work_notes._ci_key(r["fact"]) not in remove_keys:
+        _rk = work_notes._ci_key(_fact_body(r["fact"]))
+        if _rk not in remove_keys:
             continue                              # stays global — keep
-        if work_notes._ci_key(r["fact"]) in matched:
+        if _rk in matched:
             try:
                 r["path"].unlink()
                 deleted += 1
@@ -876,8 +877,11 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
 
         def _keep(f: str) -> bool:
             fb = _fact_body(f)
-            if len(fb) >= 8 and fb != fact and fact.startswith(fb):
-                return False                           # W6 prefix-extend prune
+            # W6 prefix-extend prune — the new fact EXTENDS the old at a WORD
+            # boundary (so "config set" is NOT pruned by "config setup").
+            if (len(fb) >= 8 and fb != fact and fact.startswith(fb)
+                    and fact[len(fb):len(fb) + 1] in ("", " ")):
+                return False
             if new_key:                                # W1 supersede same key
                 mm = _KEY_PREFIX_RE.match(fb)
                 if mm and mm.group(1).strip().lower() == new_key:
@@ -891,11 +895,14 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
         # must also leave the index, else recall keeps surfacing the stale value
         # until the next dedupe sweep (audit STORING HIGH-1).
         for _df in dropped:
+            _dfb = _fact_body(_df)
+            if len(_dfb) < 12:
+                continue        # too short → a substring match would over-delete
             try:
                 from aiforge_core.memory import backend_select, sqlite_memory
                 if backend_select.embedded():
                     sqlite_memory.delete_by_text_contains(
-                        _fact_body(_df), repo=slug, exclude_kind="compacted")
+                        _dfb, repo=slug, exclude_kind="compacted")
             except Exception:  # noqa: BLE001
                 pass
         # W2: seed a jira/issue key into Key Results (the measurable work) —
@@ -1320,14 +1327,14 @@ def _brief_parts(key: str, sections: dict, tags, title: str) -> list[tuple[str, 
 
 
 def _union_back(new_list, old_list) -> list:
-    """Append any items from ``old_list`` missing from ``new_list`` (order-
-    preserving, exact match). Guarantees an LLM fold can't silently DROP curated
-    content (Learnings / Key Results / Links)."""
-    out = list(new_list or [])
-    for x in (old_list or []):
-        if x not in out:
-            out.append(x)
-    return out
+    """Recover items from ``old_list`` missing from ``new_list`` so an LLM fold
+    can't silently DROP curated content (Learnings / Key Results / Links). The
+    recovered (older) items are PREPENDED, keeping ``new_list`` (the LLM's
+    current view / the chronological tail) LAST — so a downstream ``[-N:]``
+    recency cap still selects the newest, not the resurrected old ones."""
+    new = list(new_list or [])
+    missing = [x for x in (old_list or []) if x not in new]
+    return missing + new
 
 
 def _consolidate_brief_sections(key: str, path, blocks: list[str],
