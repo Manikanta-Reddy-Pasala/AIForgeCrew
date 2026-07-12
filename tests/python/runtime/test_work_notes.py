@@ -492,3 +492,16 @@ def test_supersede_keep_mode_tags_instead_of_dropping(monkeypatch):
     from aiforge_core.runtime.work_notes import _supersede_directive
     d = _supersede_directive().lower()
     assert "superseded" in d and "keep both" in d
+
+
+def test_knowledge_text_includes_learnings():
+    """R3: gotchas/discoveries in ## Learnings must be surfaced to the model,
+    not dropped from the injected/recalled projection."""
+    from aiforge_core.runtime.work_notes import render_note, knowledge_text
+    note = render_note("knowledge", "svc", title="svc",
+                       objective="Keep durable knowledge.",
+                       facts=["port is 8090"],
+                       learnings=["LM Studio TTL=1h idle-unloads; use --ttl 43200"])
+    kt = knowledge_text(note)
+    assert "port is 8090" in kt
+    assert "idle-unloads" in kt      # learning surfaced

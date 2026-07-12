@@ -488,6 +488,13 @@ def knowledge_text(note: str) -> str:
     facts = sec.get("facts") or []
     if facts:
         out.append("\n".join(f"- {f}" for f in facts))
+    # Learnings — discoveries, gotchas, dated changes — are the HIGHEST-signal
+    # recall content; surface them too (they were dropped before, so a model
+    # never saw a brief's gotchas). Objective boilerplate + title + sentinel
+    # stay stripped (that's the scaffolding this projection exists to remove).
+    learnings = sec.get("learnings") or []
+    if learnings:
+        out.append("\n".join(f"- {l}" for l in learnings))
     if parsed.get("body"):
         out.append(parsed["body"].strip())
     return "\n\n".join(out).strip() or (note or "").strip()

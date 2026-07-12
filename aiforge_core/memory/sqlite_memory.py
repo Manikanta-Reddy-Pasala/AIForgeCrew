@@ -176,8 +176,12 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
         return []
     with _conn() as c:
         if repo:
+            # GLOBAL knowledge (stored under repo='shared') and repo-agnostic
+            # rows (NULL) are always available to a repo-scoped recall — that's
+            # what makes global memory reachable for every project.
             rows = c.execute(
-                "SELECT * FROM memory_units WHERE repo = ? OR repo IS NULL",
+                "SELECT * FROM memory_units "
+                "WHERE repo = ? OR repo IS NULL OR repo = 'shared'",
                 (repo,),
             ).fetchall()
         else:

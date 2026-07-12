@@ -910,8 +910,22 @@ def ingest_dir() -> dict:
     for p in memory_dir().glob("*.md"):
         try:
             d = _parse(p)
-            _ingest_unit(title=d["title"], body=d["body"], kind=d["kind"],
-                         tags=d["tags"], source=f"md:{p.stem}", repo="notes")
+            body, repo = d["body"], "notes"
+            if p.stem.startswith("compacted-"):
+                # a consolidated brief: ingest under its scope (repo / 'shared'),
+                # envelope stripped — mirrors compact()'s Phase-3 so a reindex
+                # doesn't re-bury briefs under 'notes' and hide them from recall.
+                key = re.sub(r"-\d+$", "", p.stem[len("compacted-"):])
+                repo = key or "notes"
+                try:
+                    from aiforge_core.runtime import work_notes
+                    body = work_notes.knowledge_text(d["body"])
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                repo = d.get("repo") or "notes"
+            _ingest_unit(title=d["title"], body=body, kind=d["kind"],
+                         tags=d["tags"], source=f"md:{p.stem}", repo=repo)
             n += 1
         except Exception:  # noqa: BLE001
             continue
@@ -1427,7 +1441,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                     "---\n\n"
                 )
                 part_list = [(stem, fm + body.strip() + "\n")]
-            prepared.append({"items": items, "base_stem": stem,
+            prepared.append({"items": items, "base_stem": stem, "key": key,
                              "parts": part_list, "tags": all_tags,
                              "summarized": did_summarize})
 
@@ -1487,9 +1501,18 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                             ingest_body = work_notes.knowledge_text(doc["body"])
                         except Exception:  # noqa: BLE001
                             pass
+                    # Ingest the brief under its REAL scope so recall can reach
+                    # it: a project brief → its repo; the shared brief →
+                    # 'shared' (global, surfaced for every repo query); a topic
+                    # brief → NULL (repo-agnostic, globally visible). Burying
+                    # every brief under 'notes' (the old default) made all
+                    # consolidated OKR knowledge invisible to repo-scoped recall.
+                    _bkey = p.get("key")
+                    _brepo = ((None if group_by == "topic" else _bkey)
+                              if _bkey else "notes")
                     _ingest_unit(title=doc["title"], body=ingest_body,
                                  kind="compacted", tags=p["tags"],
-                                 source=f"compacted:{st}", repo="notes")
+                                 source=f"compacted:{st}", repo=_brepo)
                 except Exception:  # noqa: BLE001
                     pass
 
