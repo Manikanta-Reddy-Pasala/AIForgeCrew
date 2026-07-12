@@ -163,10 +163,15 @@ def ingest_instruction_files(
             if len(fact.strip()) < _MIN_SECTION_CHARS:
                 out["skipped"] += 1
                 continue
-            topic = heading or path.parent.name
+            # Scope by REPO, not per-heading. Passing the heading as `topic` would
+            # mint one compacted-<heading>.md brief per section (dozens of briefs
+            # from one file = proliferation). The heading is preserved inside the
+            # fact text instead, so all of a repo's sections fold into its single
+            # compacted-<repo>.md brief. The scope classifier may still promote a
+            # genuinely cross-project fact to the global (shared) brief.
             try:
                 md_store.capture(
-                    "learning", fact, repo=repo, topic=topic,
+                    "learning", fact, repo=repo,
                     title=(heading or path.name)[:70],
                     source=f"instructions:{path.name}")
                 out["captured"] += 1
