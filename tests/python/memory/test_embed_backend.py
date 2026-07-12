@@ -42,3 +42,21 @@ def test_vec_enabled_flag(monkeypatch):
     assert sm._vec_enabled() is False
     monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "semantic")
     assert sm._vec_enabled() is True
+
+
+def test_reembed_all_and_dim_match(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "m.db"))
+    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "hash")
+    import importlib
+    import aiforge_core.memory.local_embed as le
+    monkeypatch.setattr(le, "embed", lambda t: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(le, "embed_dim", lambda: 3)
+    import aiforge_core.memory.sqlite_memory as sm
+    importlib.reload(sm)
+    sm.write_unit(text="fact one", kind="learning", repo="svc")
+    sm.write_unit(text="fact two", kind="learning", repo="svc")
+    assert sm.stored_dim_mismatch() is False        # stored (3) == active (3)
+    assert sm.reembed_all()["reembedded"] == 2
+    # a dim change is now detected
+    monkeypatch.setattr(le, "embed_dim", lambda: 5)
+    assert sm.stored_dim_mismatch() is True

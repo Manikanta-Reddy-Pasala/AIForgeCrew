@@ -212,6 +212,20 @@ def run_startup_migrations() -> dict:
     marker = _load_marker()
     done = set(marker.get("done") or [])
 
+    # ── RE-EMBED first when the stored embeddings don't match the ACTIVE
+    # embedder — a backend/model switch or a migration that imported rows from a
+    # different embedder leaves mixed dims → broken KNN. Recompute all embeddings
+    # with the current embedder + rebuild the vec index (same memory API the
+    # ingest path uses). No-op (and skipped) when dims already match. Embedded
+    # (SQLite) backend only.
+    try:
+        from aiforge_core.memory import backend_select, sqlite_memory
+        if backend_select.embedded() and sqlite_memory.stored_dim_mismatch():
+            log.info("migration: embedding dim mismatch → re-embedding all units")
+            out["reembed"] = sqlite_memory.reembed_all()
+    except Exception as exc:  # noqa: BLE001
+        out["reembed"] = {"ok": False, "error": str(exc)}
+
     # ── compact FIRST: fold old-format per-note .md files into their topic/repo
     # briefs + retire masquerading captures NOW (don't wait for the hourly job),
     # so the brief→OKR step below sees consolidated briefs. Same passes as the

@@ -101,20 +101,34 @@ def _init_vec(c) -> None:
     sqlite_vec.load(c)
     c.enable_load_extension(False)
     dim = int(local_embed.embed_dim())
+    # If a vec_memory table exists at a DIFFERENT dimension (backend/model
+    # switched, or a migration imported rows from another embedder), DROP it so
+    # it's recreated at the active dim — else every insert would dim-mismatch and
+    # KNN would silently return nothing.
+    existing = c.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'vec_memory'").fetchone()
+    if existing and existing[0] and f"float[{dim}]" not in existing[0]:
+        c.execute("DROP TABLE vec_memory")
     c.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS vec_memory USING "
         f"vec0(embedding float[{dim}] distance_metric=cosine)")
     c.executescript(_VEC_TRIGGERS)
     vn = c.execute("SELECT count(*) FROM vec_memory").fetchone()[0]
     un = c.execute("SELECT count(*) FROM memory_units").fetchone()[0]
-    if un and vn < un:                     # backfill rows written before the index
-        c.execute("DELETE FROM vec_memory")
-        for r in c.execute("SELECT id, embedding FROM memory_units").fetchall():
+    if un and vn < un:
+        # INCREMENTAL backfill — insert only rows MISSING from the vec index, no
+        # destructive DELETE-all rebuild. So concurrent readers (which enter
+        # _conn without _LOCK) don't race on a table-wide delete, and a row that
+        # can't be inserted doesn't force a full re-scan every connection — the
+        # NOT IN gap just shrinks to it and skips otherwise.
+        for r in c.execute(
+                "SELECT id, embedding FROM memory_units "
+                "WHERE id NOT IN (SELECT rowid FROM vec_memory)").fetchall():
             try:
                 c.execute("INSERT INTO vec_memory(rowid, embedding) VALUES (?, ?)",
                           (r["id"], r["embedding"]))
             except sqlite3.OperationalError:
-                continue                   # dim mismatch (pre-switch row) → skip
+                continue                   # unbackfillable row → leave it out
 
 
 def _db_path() -> str:
@@ -357,7 +371,10 @@ def _vec_recall(text, qvec, repo, limit: int, boost: set) -> list[dict]:
     Over-fetches, then repo-scopes + applies the tag boost + dedups, matching
     :func:`recall`'s hit shape. Raises if the extension isn't loadable (no
     silent cosine fallback)."""
-    k = max(limit * 6, 48)
+    # KNN over-fetch, then repo-scope in the join below. Over-fetch MUCH larger
+    # when a repo is given: the top neighbours may be mostly OTHER repos, and the
+    # repo filter would otherwise shrink the result under `limit`.
+    k = max(limit * 20, 200) if repo else max(limit * 6, 48)
     with _conn() as c:
         rows = c.execute(
             "SELECT rowid AS id, distance FROM vec_memory "
@@ -518,6 +535,44 @@ def prune_missing_file_rows(present_sources) -> int:
         for i in ids:
             c.execute("DELETE FROM memory_units WHERE id = ?", (i,))
         return len(ids)
+
+
+def stored_dim_mismatch() -> bool:
+    """True if the stored embeddings' dimension differs from the ACTIVE embedder
+    — i.e. a backend/model switch or a migration left rows embedded by a
+    different embedder, so KNN is broken until a reembed. Cheap (samples 1 row)."""
+    try:
+        active = int(local_embed.embed_dim())
+    except Exception:  # noqa: BLE001
+        return False
+    with _conn() as c:
+        row = c.execute(
+            "SELECT embedding FROM memory_units WHERE embedding != '[]' LIMIT 1"
+        ).fetchone()
+    if not row:
+        return False
+    try:
+        return len(json.loads(row["embedding"] or "[]")) != active
+    except (TypeError, ValueError):
+        return False
+
+
+def reembed_all() -> dict:
+    """Recompute EVERY unit's embedding with the ACTIVE embedder. Needed after a
+    backend/model switch or a migration that imported rows embedded by a
+    DIFFERENT embedder (mixed dims → broken KNN). The vec index rebuilds
+    automatically: _conn's _init_vec recreates vec_memory at the active dim
+    (dropping a stale-dim one) and the per-row UPDATE triggers repopulate it.
+    Idempotent. Returns the count re-embedded."""
+    n = 0
+    with _LOCK, _conn() as c:      # _init_vec (in _conn) already fixed the vec dim
+        rows = c.execute("SELECT id, text FROM memory_units").fetchall()
+        for r in rows:
+            v = local_embed.embed(r["text"] or "")
+            c.execute("UPDATE memory_units SET embedding = ? WHERE id = ?",
+                      (json.dumps(v), r["id"]))
+            n += 1
+    return {"reembedded": n}
 
 
 def source_text_unchanged(source: str, text: str) -> bool:

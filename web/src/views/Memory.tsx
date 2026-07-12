@@ -877,7 +877,7 @@ function SearchPanel() {
           {hits.map((h, i) => (
             <div key={i} className="card" style={{ padding: '10px 12px' }}>
               <div className="row small muted" style={{ gap: 8, marginBottom: 4 }}>
-                <span className="pill">{h.wing || 'memory'}</span>
+                <span className="mem-wing-pill">{h.wing || 'memory'}</span>
                 {h.source && <span>{truncate(h.source, 32)}</span>}
                 {h.metadata?.repo && <span>· {h.metadata.repo}</span>}
                 {typeof h.score === 'number' && (
