@@ -37,7 +37,14 @@ def _load():
         "AIFORGE_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
     device = os.environ.get("AIFORGE_EMBED_DEVICE", "cpu")
     _MODEL = SentenceTransformer(name, device=device)
-    _DIM = int(_MODEL.get_sentence_embedding_dimension())
+    # dimension: newer sentence-transformers renamed the accessor — try both,
+    # else probe with a tiny encode.
+    if hasattr(_MODEL, "get_embedding_dimension"):
+        _DIM = int(_MODEL.get_embedding_dimension())
+    elif hasattr(_MODEL, "get_sentence_embedding_dimension"):
+        _DIM = int(_MODEL.get_sentence_embedding_dimension())
+    else:
+        _DIM = int(len(_MODEL.encode("x", normalize_embeddings=True)))
     _log.info("semantic embedder loaded: %s (dim=%d, %s)", name, _DIM, device)
     return _MODEL
 
