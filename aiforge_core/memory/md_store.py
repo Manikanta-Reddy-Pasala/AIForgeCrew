@@ -263,6 +263,53 @@ def sweep_stale_captures(*, archive: bool = True) -> dict:
             "files": swept}
 
 
+def sweep_empty_briefs(*, archive: bool = True) -> dict:
+    """Retire DEAD canonical briefs — a ``compacted-<key>.md`` that carries only
+    the boilerplate Objective with NO Facts, Key results, Learnings, or body.
+
+    These accumulate when a topic's facts all migrate into another brief (the
+    labeller re-clusters), when a fact-only brief is emptied, or from legacy
+    ``compacted-compacted-*`` double-fold artifacts — leaving a stub that shows
+    up as an "empty" memory but holds no knowledge. Moves each into
+    ``archive/<ts>/`` (reversible; ``archive=False`` deletes). A brief with ANY
+    real content is never touched. Never raises."""
+    import shutil
+
+    from aiforge_core.runtime import work_notes
+    sig = re.compile(r"-\d{8}-[0-9a-f]{6}\.md$")   # skip per-run captures
+    swept: list[str] = []
+    dst = memory_dir() / "archive" / _now_iso().replace(":", "")
+    try:
+        with _COMPACT_LOCK:
+            for p in memory_dir().glob("compacted-*.md"):
+                if sig.search(p.name):
+                    continue                        # capture — sweep_stale owns it
+                try:
+                    parsed = work_notes.parse_note(
+                        p.read_text(encoding="utf-8", errors="replace"))
+                except Exception:  # noqa: BLE001
+                    continue
+                sec = parsed.get("sections") or {}
+                # objective is ALWAYS the boilerplate line — a brief is "dead"
+                # only when it has no Facts / Key results / Learnings / body.
+                if (sec.get("facts") or sec.get("learnings")
+                        or sec.get("key_results")
+                        or (parsed.get("body") or "").strip()):
+                    continue                        # has real content — keep
+                try:
+                    if archive:
+                        dst.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(p), str(dst / p.name))
+                    else:
+                        p.unlink()
+                    swept.append(p.name)
+                except OSError:
+                    continue
+    except Exception as exc:  # noqa: BLE001 — best-effort upkeep
+        return {"ok": False, "error": str(exc), "swept": len(swept)}
+    return {"ok": True, "swept": len(swept), "archived": archive, "files": swept}
+
+
 _BRIEF_CAP = 24_000   # chars; periodic re-summarize keeps it below this
 
 # Knowledge briefs share the same Google-OKR envelope as the managed work

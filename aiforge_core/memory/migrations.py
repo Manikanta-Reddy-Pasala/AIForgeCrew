@@ -348,6 +348,7 @@ def force_recompact_all(on_step=None) -> dict:
                                            model_role="learner", archive_sources=True,
                                            progress=_prog("topic"))),
         ("sweep", lambda: md_store.sweep_stale_captures(archive=True)),
+        ("sweep_empty", lambda: md_store.sweep_empty_briefs(archive=True)),
         ("dedupe", dedupe_all),
         ("repo_profiles", lambda: __import__(
             "aiforge_core.memory.okr.author", fromlist=["build_repo_profiles"]

@@ -302,8 +302,12 @@ def _start_daily_reindex() -> None:
             # so they'd pile up forever; their facts already live in the real
             # compacted-<topic>.md brief. Archive them out (reversible).
             r_sweep = md_store.sweep_stale_captures(archive=True)
-            _af_log.info("md brief: repo(projection)=%s topic(archived)=%s sweep=%s",
-                         r_repo, r_topic, r_sweep)
+            # Retire DEAD briefs — a compacted-<key>.md left with only the
+            # boilerplate Objective (facts migrated elsewhere / emptied /
+            # compacted-compacted-* artifact). They read as "empty" memories.
+            r_empty = md_store.sweep_empty_briefs(archive=True)
+            _af_log.info("md brief: repo=%s topic=%s sweep=%s empty=%s",
+                         r_repo, r_topic, r_sweep, r_empty)
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("md compaction failed: %s", exc)
 
@@ -2202,7 +2206,7 @@ def memory_compact_all_status() -> dict:
         "running": s["running"], "done": s["done"], "current": s["current"],
         "sub": s["sub"],                       # {done,total,key} per-brief progress
         "steps_done": [x["name"] for x in s["steps"]],
-        "total_steps": 6, "error": s["error"],
+        "total_steps": 8, "error": s["error"],
         "elapsed_s": round(_t.time() - s["started_at"], 1) if s["started_at"] else 0,
         "result": s["result"] if s["done"] else None,
     }
