@@ -58,3 +58,38 @@ def test_existing_superset_skips_redundant_new(mem):
     md_store._brief_upsert("svc", "retries 3x")   # contained → skipped
     facts, _ = _facts_kr(md_store)
     assert len([f for f in facts if "retries 3x" in f]) == 1
+
+
+def test_w6_does_not_prune_on_negation(mem):
+    """A distinct/opposite fact must NOT be deleted just for substring overlap."""
+    from aiforge_core.memory import md_store
+    md_store._brief_upsert("svc", "retries 3x")
+    md_store._brief_upsert("svc", "no retries here, fails fast on timeout")
+    facts, _ = _facts_kr(md_store)
+    assert any(md_store._fact_body(f) == "retries 3x" for f in facts)  # kept
+    assert any("fails fast" in f for f in facts)
+
+
+def test_w6_short_fact_not_pruned(mem):
+    from aiforge_core.memory import md_store
+    md_store._brief_upsert("svc", "auth")
+    md_store._brief_upsert("svc", "reauthentication flow added to gateway")
+    facts, _ = _facts_kr(md_store)
+    assert any(md_store._fact_body(f) == "auth" for f in facts)  # not swallowed
+
+
+def test_w2_denies_encoding_tokens(mem):
+    from aiforge_core.memory import md_store
+    md_store._brief_upsert("svc", "responses are UTF-8 and hashed with SHA-256")
+    _, kr = _facts_kr(md_store)
+    assert not kr  # no fake ticket KR
+
+
+def test_w1_generic_leader_not_supersede(mem):
+    from aiforge_core.memory import md_store
+    md_store._brief_upsert("svc", "note: check the retry backoff")
+    md_store._brief_upsert("svc", "note: the port changed to 8091")
+    facts, _ = _facts_kr(md_store)
+    # two unrelated "note:" facts must both survive
+    assert any("retry backoff" in f for f in facts)
+    assert any("port changed" in f for f in facts)

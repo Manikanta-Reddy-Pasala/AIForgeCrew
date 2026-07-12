@@ -47,7 +47,13 @@ def summarize_hits(query, hits, *, role: str = "learner",
     for h in rows[:20]:
         body = (h.get("text") or h.get("body") or h.get("summary") or "").strip()
         if body:
-            snippets.append(f"- [{h.get('source', '?')}] {body[:400]}")
+            # Carry the SCOPE so the fold can tell a global/shared fact from a
+            # repo-specific one (both surface under a repo query); without it the
+            # summary presents them as equally authoritative.
+            _rp = (h.get("repo") or "").strip()
+            _scope = "global" if _rp in ("", "shared") else _rp
+            snippets.append(
+                f"- [{h.get('source', '?')}·{_scope}] {body[:400]}")
     if len(snippets) < min_n:
         return ""
     payload = f"QUERY: {query}\n\nRETRIEVED SNIPPETS:\n" + "\n".join(snippets)

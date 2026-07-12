@@ -111,13 +111,18 @@ def read_file(name: str) -> dict | None:
 
 
 def _ingest_unit(*, title: str, body: str, kind: str, tags: list[str],
-                 source: str, repo: str) -> None:
-    """Mirror a note into the active memory backend so it's searchable."""
+                 source: str, repo: str, replace: bool = False) -> None:
+    """Mirror a note into the active memory backend so it's searchable.
+    ``replace=True`` deletes any prior row(s) with this ``source`` first — used
+    for briefs so a re-ingest reclaims the old generation instead of piling up
+    stale/orphan rows (incl. pre-scope-fix ``repo='notes'`` copies)."""
     text = f"{title}\n\n{body}".strip()
     from aiforge_core.memory import backend_select as _bsel
     try:
         if _bsel.embedded():
             from aiforge_core.memory import sqlite_memory as _sqlmem
+            if replace:
+                _sqlmem.delete_by_source(source)
             _sqlmem.write_unit(text=text, kind=kind, source=source,
                                tags=tags, metadata={"md": True}, repo=repo)
         else:
@@ -446,6 +451,27 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
     return {"edges": n, "updated": sorted(updated)}
 
 
+def _remove_facts_locked(path, key: str, remove_ci_keys: set) -> int:
+    """Remove facts whose ``_ci_key(_fact_body(f))`` is in ``remove_ci_keys`` from
+    a brief, re-reading it FRESH under ``_WRITE_LOCK`` so a concurrent capture
+    (which also holds ``_WRITE_LOCK``) is never clobbered by a stale snapshot.
+    Returns the count removed. Never raises on a bad path."""
+    from aiforge_core.runtime import work_notes
+    with _WRITE_LOCK:
+        try:
+            parsed = work_notes.parse_note(path.read_text(encoding="utf-8"))
+        except OSError:
+            return 0
+        facts = parsed["sections"].get("facts") or []
+        kept = [f for f in facts
+                if work_notes._ci_key(_fact_body(f)) not in remove_ci_keys]
+        removed = len(facts) - len(kept)
+        if removed:
+            work_notes.update_note(str(path), facts=kept, kind="knowledge",
+                                   key=key)
+        return removed
+
+
 def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
     """Self-heal mis-scoped facts: re-classify each fact in every PROJECT/TOPIC
     brief and MOVE the ones that are actually global into the shared brief
@@ -472,36 +498,39 @@ def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
             facts = parsed["sections"].get("facts") or []
             if not facts:
                 continue
-            keep, promote = [], []
+            moved_facts: list[str] = []
             for f in facts[:max_per_brief]:
                 try:
                     sc = classify_scope(f, hint_repo=key, role=role)
                 except Exception:  # noqa: BLE001
-                    keep.append(f)
                     continue
-                (promote if sc["scope"] == "global" else keep).append(f)
-            keep.extend(facts[max_per_brief:])   # untouched tail stays put
-            if not promote:
-                continue
-            for f in promote:                    # → shared brief via capture
-                try:
+                if sc["scope"] != "global":
+                    continue
+                try:                              # → shared brief via capture
                     capture("learning", f, repo=None, classify=False,
                             source="reheal")
                 except Exception:  # noqa: BLE001
-                    keep.append(f)               # couldn't move → don't lose it
-                    continue
+                    continue                      # couldn't move → leave in place
                 moved += 1
+                moved_facts.append(f)
                 # W4: drop the stale project-scoped INDEX row so the moved fact
                 # isn't duplicated under both the old repo and 'shared'.
                 try:
                     from aiforge_core.memory import backend_select, sqlite_memory
                     if backend_select.embedded():
+                        # exclude 'compacted' so we delete the stale per-capture
+                        # row, NOT the brief row (whose text contains every fact).
                         sqlite_memory.delete_by_text_contains(
-                            _fact_body(f), repo=key)
+                            _fact_body(f), repo=key, exclude_kind="compacted")
                 except Exception:  # noqa: BLE001
                     pass
-            work_notes.update_note(str(b["path"]), facts=keep,
-                                   kind="knowledge", key=key)
+            if not moved_facts:
+                continue
+            # Remove ONLY the moved facts, re-reading the brief FRESH under
+            # _WRITE_LOCK — a concurrent capture that landed during the (slow)
+            # classification is preserved instead of clobbered by a stale snapshot.
+            _remove_facts_locked(b["path"], key, {
+                work_notes._ci_key(_fact_body(x)) for x in moved_facts})
             healed.append(key)
     return {"moved": moved, "healed": healed}
 
@@ -547,25 +576,49 @@ def cleanup_reheal(*, role: str = "learner") -> dict:
             remove_paths.append(r["path"])
 
     removed = 0
+    matched: set[str] = set()
     if remove_keys:
-        with _COMPACT_LOCK:
+        # Fresh read-modify-write under _WRITE_LOCK (concurrent captures to shared
+        # also take _WRITE_LOCK — don't clobber them with a stale snapshot).
+        with _WRITE_LOCK:
             shared = memory_dir() / "compacted-shared.md"
             if shared.is_file():
                 parsed = work_notes.parse_note(shared.read_text(encoding="utf-8"))
                 facts = parsed["sections"].get("facts") or []
-                kept = [f for f in facts
-                        if work_notes._ci_key(f) not in remove_keys]
-                removed = len(facts) - len(kept)
+                kept = []
+                for f in facts:
+                    k = work_notes._ci_key(f)
+                    if k in remove_keys:
+                        matched.add(k)
+                        removed += 1
+                    else:
+                        kept.append(f)
                 if removed:
                     work_notes.update_note(str(shared), facts=kept,
                                            kind="knowledge", key="shared")
-            for p in remove_paths:
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
+    # P2 shortfall guard: only delete a capture file whose fact was actually
+    # found + removed from shared. A flagged fact NOT found (the shared brief was
+    # reworded by a compaction since reheal) keeps its capture file, so the
+    # recovery source isn't lost while an orphan remains in the brief.
+    deleted = 0
+    orphaned = 0
+    for r in reheal:
+        if work_notes._ci_key(r["fact"]) not in remove_keys:
+            continue                              # stays global — keep
+        if work_notes._ci_key(r["fact"]) in matched:
+            try:
+                r["path"].unlink()
+                deleted += 1
+            except OSError:
+                pass
+        else:
+            orphaned += 1
+    if orphaned:
+        _log.warning("cleanup_reheal: %d flagged fact(s) not found verbatim in "
+                     "shared (reworded by a compaction?) — capture files kept "
+                     "for recovery; run BEFORE a recompact next time", orphaned)
     return {"checked": checked, "removed": removed,
-            "capture_files_deleted": len(remove_paths)}
+            "capture_files_deleted": deleted, "orphaned": orphaned}
 
 
 def capture(kind: str, text: str, *, repo: str | None = None,
@@ -683,9 +736,11 @@ def sweep_empty_briefs(*, archive: bool = True) -> dict:
                     continue
                 sec = parsed.get("sections") or {}
                 # objective is ALWAYS the boilerplate line — a brief is "dead"
-                # only when it has no Facts / Key results / Learnings / body.
+                # only when it has no Facts / Key results / Learnings / Links /
+                # body. Links matter: map_scopes links are BIDIRECTIONAL, so
+                # deleting a links-only brief orphans its sibling's inbound link.
                 if (sec.get("facts") or sec.get("learnings")
-                        or sec.get("key_results")
+                        or sec.get("key_results") or sec.get("links")
                         or (parsed.get("body") or "").strip()):
                     continue                        # has real content — keep
                 try:
@@ -753,6 +808,18 @@ def _parse_brief(raw: str) -> dict:
 _KEY_PREFIX_RE = re.compile(r"^([a-z][a-z0-9_ /-]{0,18}):\s+\S")
 # A jira/issue key inside a fact → also a Key Result (the measurable work).
 _TICKET_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+# Prefixes that are ENCODINGS/STANDARDS/versions, not jira projects — a match
+# here is a false ticket and must not seed a Key Result.
+_TICKET_DENY = frozenset({
+    "UTF", "SHA", "HTTP", "HTTPS", "ISO", "GPT", "AES", "RFC", "MD", "IPV",
+    "IPV4", "IPV6", "COVID", "TLS", "SSL", "BASE", "X", "P", "T", "H", "K",
+    "SO", "CVE", "PEP", "ES", "UI", "API"})
+# Generic prose leaders ("note:", "todo:") are NOT supersede keys — two unrelated
+# facts sharing one must not collide.
+_KEY_DENY = frozenset({
+    "note", "todo", "fix", "fixme", "warning", "warn", "error", "info",
+    "update", "nb", "eg", "tip", "hint", "see", "also", "aside", "hack",
+    "xxx", "caveat", "gotcha", "important", "reminder"})
 
 
 def _fact_body(s: str) -> str:
@@ -793,26 +860,51 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
         # already captured (contained in an existing fact) or folded into prose
         if any(fact in _fact_body(f) for f in facts) or (fact and fact in body):
             return
-        # W6: the new fact is a SUPERSET of an existing shorter one → drop short.
-        # W1: a new `key: value` supersedes the stale value for the same key.
+        # W6: the new fact EXTENDS an existing shorter one → drop the short.
+        # PREFIX-ANCHORED + length-gated, NOT bare substring — bare containment
+        # silently deletes distinct/opposite facts ("retries 3x" swallowed by
+        # "no retries 3x here") and short tokens ("auth" by "reauth…").
+        # W1: a new `key: value` supersedes the stale value for the SAME key —
+        # but generic prose leaders (note:/todo:) are excluded, and a key whose
+        # value still holds a ':' is rejected (kills "note: the port: …" grabbing
+        # the wrong key).
         kp = _KEY_PREFIX_RE.match(fact)
         new_key = kp.group(1).strip().lower() if kp else None
+        if new_key and (new_key in _KEY_DENY
+                        or ":" in fact.split(":", 1)[1]):
+            new_key = None
 
         def _keep(f: str) -> bool:
             fb = _fact_body(f)
-            if fb and fb in fact and fb != fact:      # W6 superset prune
-                return False
+            if len(fb) >= 8 and fb != fact and fact.startswith(fb):
+                return False                           # W6 prefix-extend prune
             if new_key:                                # W1 supersede same key
                 mm = _KEY_PREFIX_RE.match(fb)
                 if mm and mm.group(1).strip().lower() == new_key:
                     return False
             return True
 
+        dropped = [f for f in facts if not _keep(f)]
         facts = [f for f in facts if _keep(f)]
         facts.append(item)
-        # W2: seed a ticket key into Key Results (the measurable work).
+        # Reconcile the search index: a fact superseded/pruned from the brief
+        # must also leave the index, else recall keeps surfacing the stale value
+        # until the next dedupe sweep (audit STORING HIGH-1).
+        for _df in dropped:
+            try:
+                from aiforge_core.memory import backend_select, sqlite_memory
+                if backend_select.embedded():
+                    sqlite_memory.delete_by_text_contains(
+                        _fact_body(_df), repo=slug, exclude_kind="compacted")
+            except Exception:  # noqa: BLE001
+                pass
+        # W2: seed a jira/issue key into Key Results (the measurable work) —
+        # skipping encoding/standard tokens (UTF-8, SHA-256) and deduping on a
+        # word boundary so ABC-12 isn't masked by an existing ABC-123.
         for tk in _TICKET_RE.findall(fact):
-            if not any(tk in k for k in key_results):
+            if tk.split("-", 1)[0] in _TICKET_DENY:
+                continue
+            if not any(re.search(rf"\b{re.escape(tk)}\b", k) for k in key_results):
                 key_results.append(fact if len(fact) <= 140 else tk)
             break
         # bound: drop OLDEST facts first (consolidated body is the keeper)
@@ -968,13 +1060,20 @@ def ingest_dir() -> dict:
     for p in memory_dir().glob("*.md"):
         try:
             d = _parse(p)
-            body, repo = d["body"], "notes"
+            body, repo, replace = d["body"], "notes", False
             if p.stem.startswith("compacted-"):
                 # a consolidated brief: ingest under its scope (repo / 'shared'),
                 # envelope stripped — mirrors compact()'s Phase-3 so a reindex
                 # doesn't re-bury briefs under 'notes' and hide them from recall.
-                key = re.sub(r"-\d+$", "", p.stem[len("compacted-"):])
-                repo = key or "notes"
+                base = p.stem[len("compacted-"):]
+                # Only strip a `-N` split-part suffix when the primary
+                # compacted-<base>.md exists — else a real slug ending in a
+                # number (log4j-2, s3-bucket-1) would be mangled to the wrong key.
+                m = re.match(r"^(.*)-\d+$", base)
+                if m and (memory_dir() / f"compacted-{m.group(1)}.md").exists():
+                    base = m.group(1)
+                repo = base or "notes"
+                replace = True                      # reclaim the prior brief row
                 try:
                     from aiforge_core.runtime import work_notes
                     body = work_notes.knowledge_text(d["body"])
@@ -983,7 +1082,8 @@ def ingest_dir() -> dict:
             else:
                 repo = d.get("repo") or "notes"
             _ingest_unit(title=d["title"], body=body, kind=d["kind"],
-                         tags=d["tags"], source=f"md:{p.stem}", repo=repo)
+                         tags=d["tags"], source=f"md:{p.stem}", repo=repo,
+                         replace=replace)
             n += 1
         except Exception:  # noqa: BLE001
             continue
@@ -1203,6 +1303,17 @@ def _brief_parts(key: str, sections: dict, tags, title: str) -> list[tuple[str, 
     return parts
 
 
+def _union_back(new_list, old_list) -> list:
+    """Append any items from ``old_list`` missing from ``new_list`` (order-
+    preserving, exact match). Guarantees an LLM fold can't silently DROP curated
+    content (Learnings / Key Results / Links)."""
+    out = list(new_list or [])
+    for x in (old_list or []):
+        if x not in out:
+            out.append(x)
+    return out
+
+
 def _consolidate_brief_sections(key: str, path, blocks: list[str],
                                 model_role: str, tags) -> tuple[dict, list]:
     """LLM-consolidate the group into OKR sections (dedupe/map/supersede via
@@ -1240,11 +1351,15 @@ def _consolidate_brief_sections(key: str, path, blocks: list[str],
     if not new_content.strip() and existing.get("facts"):
         new_content = "\n".join(f"- {f}" for f in existing["facts"])
     merged = work_notes.consolidate(existing, new_content, role=model_role)
-    learnings = list(merged.get("learnings") or [])
-    for ln in (existing.get("learnings") or []):        # keep the audit trail
-        if ln not in learnings:
-            learnings.append(ln)
-    merged["learnings"] = learnings
+    # Deterministic UNION-BACK of derived/curated sections the LLM might omit:
+    # Learnings (audit trail), Key Results (write-time W2 tickets) and Links
+    # (map_scopes sibling links). Without this a single fold that drops them
+    # loses that content permanently on the daily recompact.
+    merged["learnings"] = _union_back(merged.get("learnings"),
+                                      existing.get("learnings"))
+    merged["key_results"] = _union_back(merged.get("key_results"),
+                                        existing.get("key_results"))
+    merged["links"] = _union_back(merged.get("links"), existing.get("links"))
     return merged, list(prev_tags) + list(tags or [])
 
 
@@ -1270,18 +1385,19 @@ def _consolidate_brief_content(key: str, path, blocks: list[str], title: str,
         prev_tags = list((_parsed["frontmatter"] or {}).get("tags") or [])
     new_content = "\n\n".join(b for b in blocks if b.strip())
     merged = work_notes.consolidate(existing, new_content, role=model_role)
-    learnings = list(merged.get("learnings") or [])
-    for ln in (existing.get("learnings") or []):        # never lose the audit trail
-        if ln not in learnings:
-            learnings.append(ln)
+    # Union-back the derived/curated sections the LLM might drop (see
+    # _consolidate_brief_sections): Learnings, Key Results, Links.
+    learnings = _union_back(merged.get("learnings"), existing.get("learnings"))
+    key_results = _union_back(merged.get("key_results"),
+                              existing.get("key_results"))
+    links = _union_back(merged.get("links"), existing.get("links"))
     # union the group's tags with the brief's prior tags (render normalizes/dedupes)
     all_tags = list(prev_tags) + list(tags or [])
     return work_notes.render_note(
         "knowledge", key, title=title,
         objective=_BRIEF_OBJECTIVE.format(key=key),
-        key_results=merged.get("key_results"), facts=merged.get("facts"),
-        links=merged.get("links"), learnings=learnings, body_md="",
-        tags=all_tags)
+        key_results=key_results, facts=merged.get("facts"),
+        links=links, learnings=learnings, body_md="", tags=all_tags)
 
 
 def compact(*, group_by: str = "kind", min_group: int = 2,
@@ -1570,7 +1686,8 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                               if _bkey else "notes")
                     _ingest_unit(title=doc["title"], body=ingest_body,
                                  kind="compacted", tags=p["tags"],
-                                 source=f"compacted:{st}", repo=_brepo)
+                                 source=f"compacted:{st}", repo=_brepo,
+                                 replace=True)
                 except Exception:  # noqa: BLE001
                     pass
 

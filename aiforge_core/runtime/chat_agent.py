@@ -3613,7 +3613,7 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
 
 
 def _chat_session_recall(query: str, session_id: "int | None",
-                         limit: int = 4) -> str:
+                         limit: int = 4, drop_session: "int | None" = None) -> str:
     """Proactive recall from PRIOR CHAT SESSIONS — surface things the user
     discussed in OTHER conversations that may bear on this request, so simple
     chat has continuity across sessions (not just within one). Cheap + local
@@ -3623,15 +3623,21 @@ def _chat_session_recall(query: str, session_id: "int | None",
         return ""
     try:
         from aiforge_core.runtime import chat_store
-        hits = chat_store.search_messages(q, limit=limit,
+        hits = chat_store.search_messages(q, limit=limit + 2,
                                           exclude_session=session_id)
     except Exception:  # noqa: BLE001
         hits = []
     lines: list[str] = []
     for h in hits:
+        # the immediate-prior session is already injected as prev-session — skip
+        # its hits here so it doesn't double-surface (older sessions still show).
+        if drop_session is not None and h.get("session_id") == drop_session:
+            continue
         content = (h.get("content") or "").strip().replace("\n", " ")
         if not content:
             continue
+        if len(lines) >= limit:
+            break
         title = h.get("session_title") or "chat"
         role = h.get("role") or "user"
         lines.append(f"- [{title}] {role}: {content}")
@@ -3913,9 +3919,20 @@ def run_chat_agent(
         # Prior CHAT SESSIONS — surface what the user discussed in OTHER
         # conversations (excludes the current session). Cave mode → fewer hits.
         # Local SQLite scan, so cheap enough to run every turn there IS a query.
-        if last_user and not _prev_session_on:
+        if last_user:
+            # Keep prior-chat recall, but when the prev-session continuity block
+            # is injected, exclude ONLY that one session's hits (not all of
+            # them) so older relevant sessions still surface (audit R6).
+            _drop = None
+            if _prev_session_on:
+                try:
+                    from aiforge_core.runtime import chat_okr as _cokr
+                    _drop = _cokr.previous_session_id(session_id)
+                except Exception:  # noqa: BLE001
+                    _drop = None
             _add_sys_block("chat-recall", _chat_session_recall(
-                last_user, session_id, limit=(2 if cave else 4)))
+                last_user, session_id, limit=(2 if cave else 4),
+                drop_session=_drop))
     elif _ctx_on("recall"):
         # LITE (default): don't pre-dump on follow-ups — but the SESSION-START
         # turn still gets the one-time recall keyed to the opening request.

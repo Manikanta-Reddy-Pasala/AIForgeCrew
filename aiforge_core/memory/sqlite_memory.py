@@ -233,19 +233,37 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
     return out
 
 
-def delete_by_text_contains(fragment: str, *, repo: str) -> int:
+def delete_by_source(source: str) -> int:
+    """Delete every unit with this exact ``source``. Used to reclaim a brief's
+    PRIOR index generation before re-ingesting the new one — otherwise each
+    recompaction that changes a brief mints a new row and the old ones (incl.
+    pre-scope-fix ``repo='notes'`` copies) pile up forever. Returns count removed."""
+    source = (source or "").strip()
+    if not source:
+        return 0
+    with _LOCK, _conn() as c:
+        cur = c.execute("DELETE FROM memory_units WHERE source = ?", (source,))
+        return cur.rowcount or 0
+
+
+def delete_by_text_contains(fragment: str, *, repo: str,
+                            exclude_kind: str | None = None) -> int:
     """Delete units under ``repo`` whose stored text CONTAINS ``fragment``.
     Used when a fact is MOVED between scopes (reheal promotion) so the stale
     row doesn't linger under the old repo and duplicate the moved copy. Repo is
-    required (never a blanket delete). Returns the count removed."""
+    required (never a blanket delete). ``exclude_kind`` skips rows of that kind —
+    pass ``"compacted"`` so a fact fragment can't match (and delete) the whole
+    consolidated brief row, which contains every fact. Returns the count removed."""
     frag = (fragment or "").strip()
     repo = (repo or "").strip()
     if not frag or not repo:
         return 0
     with _LOCK, _conn() as c:
         rows = c.execute(
-            "SELECT id, text FROM memory_units WHERE repo = ?", (repo,)).fetchall()
-        ids = [r["id"] for r in rows if frag in (r["text"] or "")]
+            "SELECT id, text, kind FROM memory_units WHERE repo = ?",
+            (repo,)).fetchall()
+        ids = [r["id"] for r in rows if frag in (r["text"] or "")
+               and (exclude_kind is None or r["kind"] != exclude_kind)]
         for i in ids:
             c.execute("DELETE FROM memory_units WHERE id = ?", (i,))
         return len(ids)

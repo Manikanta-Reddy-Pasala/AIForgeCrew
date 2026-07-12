@@ -233,7 +233,9 @@ def query(
     # conventions/notes/docs/vector observations). Repo identifier from
     # caller kwarg or AIFORGE_AFM_REPO env fallback.
     afm_repo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
-    if afm_repo and os.environ.get("AIFORGE_AFM_BUNDLE_ENABLED", "1") == "1":
+    from aiforge_core.memory import backend_select as _bsel0
+    if afm_repo and not _bsel0.embedded() \
+            and os.environ.get("AIFORGE_AFM_BUNDLE_ENABLED", "1") == "1":
         try:
             rows = _afm_bundle(text, repo=afm_repo, role=role)
             if rows:
@@ -282,7 +284,8 @@ def query(
     # AiForgeMemory already computes so a ticket touching X sees its
     # cross-repo callers/callees. Needs a known repo; flag-guarded.
     xrepo_repo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
-    if xrepo_repo and os.environ.get("AIFORGE_XREPO_ENABLED", "1") == "1":
+    if xrepo_repo and not _bsel0.embedded() \
+            and os.environ.get("AIFORGE_XREPO_ENABLED", "1") == "1":
         try:
             rows = _cross_repo_links(text, repo=xrepo_repo)
             if rows:

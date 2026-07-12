@@ -494,7 +494,14 @@ def knowledge_text(note: str) -> str:
     # stay stripped (that's the scaffolding this projection exists to remove).
     learnings = sec.get("learnings") or []
     if learnings:
-        out.append("\n".join(f"- {l}" for l in learnings))
+        # Cap: a brief's Learnings is an ever-growing audit trail; inject only
+        # the most RECENT so it doesn't dominate (or evict Facts/body from) the
+        # window. Full history stays on disk. Env AIFORGE_KNOWLEDGE_MAX_LEARNINGS.
+        try:
+            _kl = max(1, int(os.environ.get("AIFORGE_KNOWLEDGE_MAX_LEARNINGS", "12")))
+        except (TypeError, ValueError):
+            _kl = 12
+        out.append("\n".join(f"- {l}" for l in learnings[-_kl:]))
     if parsed.get("body"):
         out.append(parsed["body"].strip())
     return "\n\n".join(out).strip() or (note or "").strip()

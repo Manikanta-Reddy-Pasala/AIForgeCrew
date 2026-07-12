@@ -137,6 +137,21 @@ def compact_session(session_id, *, repo: str | None = None,
     return {"ok": True, "captured": captured}
 
 
+def previous_session_id(exclude_session_id):
+    """The id of the MOST RECENT prior session (excluding the current), or None.
+    Used so recall can exclude exactly what previous_session_brief already
+    injects — without dropping OLDER sessions' recall. Never raises."""
+    try:
+        from aiforge_core.runtime import chat_store
+        for s in (chat_store.list_sessions() or []):   # newest-first
+            sid = (s or {}).get("id")
+            if sid is not None and sid != exclude_session_id:
+                return sid
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def previous_session_brief(exclude_session_id, *, max_turns: int = 6,
                            max_chars: int = 1200) -> str:
     """A short continuity block from the MOST RECENT prior session (excluding the

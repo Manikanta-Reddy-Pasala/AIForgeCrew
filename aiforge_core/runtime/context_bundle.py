@@ -61,35 +61,66 @@ def _linked_brief_keys(d: dict | None) -> list[str]:
     return out
 
 
+_BRIEF_MAX_LINKED = 3        # cap linked-brief blocks (AIFORGE_OKR_BRIEF_MAX_LINKED)
+_BRIEF_TOTAL_CAP = 12000     # hard ceiling on the assembled brief text
+
+
+def _dedup_lines(text: str, seen: set[str]) -> str:
+    """Drop bullet lines whose normalized form was already emitted in an earlier
+    block, so the SAME fact doesn't appear in project ∪ linked ∪ global."""
+    out: list[str] = []
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if s.startswith(("- ", "* ")):
+            key = " ".join(s[2:].lower().split())
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
 def project_brief_text(repo: str) -> str:
     """The compacted brief knowledge for ``repo`` — its ``compacted-<repo>.md``
     UNIONED with the sibling briefs it LINKS to (map_scopes topic/global cross-
     scope links) and the GLOBAL ``compacted-shared.md``. Mirrors the recall union
     so chat AND the pipeline see the same consolidated OKR memory. Empty until
-    the axis has compacted once; capped per part so none dominates the window."""
+    the axis has compacted once. Bounded: linked-brief COUNT capped, facts
+    deduped across the parts, and the whole thing clamped to a hard ceiling so it
+    can never balloon the window (esp. on the pipeline path, which has no other
+    size guard)."""
+    import os
     from aiforge_core.memory import md_store
+    try:
+        max_linked = max(0, int(os.environ.get("AIFORGE_OKR_BRIEF_MAX_LINKED",
+                                                str(_BRIEF_MAX_LINKED))))
+    except (TypeError, ValueError):
+        max_linked = _BRIEF_MAX_LINKED
     parts: list[str] = []
-    seen: set[str] = {"shared"}
+    seen_keys: set[str] = {"shared"}      # brief keys already loaded
+    seen_lines: set[str] = set()          # normalized fact lines already emitted
     slug = md_store._slug(repo) if repo else ""
     if slug and slug != "shared":
-        seen.add(slug)
+        seen_keys.add(slug)
         d = md_store.read_file(f"compacted-{slug}")
-        knowledge = _brief_knowledge(d)
+        knowledge = _dedup_lines(_brief_knowledge(d), seen_lines)
         if knowledge:
             parts.append("PROJECT MEMORY (" + repo + "):\n" + knowledge[:6000])
-        # R5/R4: follow this brief's cross-scope links to sibling briefs.
-        for lk in _linked_brief_keys(d):
-            if lk in seen:
+        # R5/R4: follow this brief's cross-scope links (bounded count).
+        for lk in _linked_brief_keys(d)[:max_linked]:
+            if lk in seen_keys:
                 continue
-            seen.add(lk)
-            lk_know = _brief_knowledge(md_store.read_file(f"compacted-{lk}"))
+            seen_keys.add(lk)
+            lk_know = _dedup_lines(
+                _brief_knowledge(md_store.read_file(f"compacted-{lk}")), seen_lines)
             if lk_know:
                 parts.append(f"LINKED MEMORY ({lk}):\n" + lk_know[:2000])
     # Global compacted brief — unioned into EVERY context.
-    gk = _brief_knowledge(md_store.read_file("compacted-shared"))
+    gk = _dedup_lines(_brief_knowledge(md_store.read_file("compacted-shared")),
+                      seen_lines)
     if gk:
         parts.append("GLOBAL MEMORY:\n" + gk[:3000])
-    return "\n\n".join(parts)
+    return "\n\n".join(parts)[:_BRIEF_TOTAL_CAP]
 
 
 def _project_brief(cwd: str) -> str:
