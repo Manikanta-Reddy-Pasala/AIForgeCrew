@@ -1057,14 +1057,29 @@ def ingest_dir() -> dict:
     content hashing, so re-running is safe.
     """
     n = 0
+    # Reclaim compacted-brief rows stranded under repo='notes' before briefs were
+    # ingested under their real scope (else they linger as duplicates forever).
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if _bsel.embedded():
+            from aiforge_core.memory import sqlite_memory as _sqlmem
+            _purged = _sqlmem.delete_stale_compacted_notes()
+            if _purged:
+                _log.info("ingest_dir: purged %d stale repo=notes brief rows", _purged)
+    except Exception:  # noqa: BLE001
+        pass
     for p in memory_dir().glob("*.md"):
         try:
             d = _parse(p)
             body, repo, replace = d["body"], "notes", False
+            kind, source = d["kind"], f"md:{p.stem}"
             if p.stem.startswith("compacted-"):
-                # a consolidated brief: ingest under its scope (repo / 'shared'),
-                # envelope stripped — mirrors compact()'s Phase-3 so a reindex
-                # doesn't re-bury briefs under 'notes' and hide them from recall.
+                # a consolidated brief: ingest EXACTLY as compact()'s Phase-3
+                # does — same kind ("compacted") AND source ("compacted:<stem>")
+                # — so the two ingest paths reclaim ONE row instead of storing
+                # the same brief twice (once kind=knowledge/md:, once
+                # kind=compacted/compacted:). Scope = repo / 'shared' / topic
+                # (best-effort from the name), envelope stripped.
                 base = p.stem[len("compacted-"):]
                 # Only strip a `-N` split-part suffix when the primary
                 # compacted-<base>.md exists — else a real slug ending in a
@@ -1073,6 +1088,7 @@ def ingest_dir() -> dict:
                 if m and (memory_dir() / f"compacted-{m.group(1)}.md").exists():
                     base = m.group(1)
                 repo = base or "notes"
+                kind, source = "compacted", f"compacted:{p.stem}"
                 replace = True                      # reclaim the prior brief row
                 try:
                     from aiforge_core.runtime import work_notes
@@ -1081,8 +1097,8 @@ def ingest_dir() -> dict:
                     pass
             else:
                 repo = d.get("repo") or "notes"
-            _ingest_unit(title=d["title"], body=body, kind=d["kind"],
-                         tags=d["tags"], source=f"md:{p.stem}", repo=repo,
+            _ingest_unit(title=d["title"], body=body, kind=kind,
+                         tags=d["tags"], source=source, repo=repo,
                          replace=replace)
             n += 1
         except Exception:  # noqa: BLE001

@@ -233,6 +233,16 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
     return out
 
 
+def delete_stale_compacted_notes() -> int:
+    """Remove compacted-brief rows stranded under ``repo='notes'`` — the pre-fix
+    default before briefs were ingested under their real scope. Idempotent
+    (0 once clean). Returns count removed."""
+    with _LOCK, _conn() as c:
+        cur = c.execute(
+            "DELETE FROM memory_units WHERE kind = 'compacted' AND repo = 'notes'")
+        return cur.rowcount or 0
+
+
 def delete_by_source(source: str) -> int:
     """Delete every unit with this exact ``source``. Used to reclaim a brief's
     PRIOR index generation before re-ingesting the new one — otherwise each
