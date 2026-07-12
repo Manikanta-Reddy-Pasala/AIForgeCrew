@@ -210,7 +210,14 @@ links: ["[global](compacted-shared.md)"]   <span class="cm"># cross-scope map</s
       <div class="d">folds the fact into <code>compacted-&lt;scope&gt;.md</code> right now, so recall
       sees just-written data. Periodic compaction later only re-summarizes to bound size.</div>
     </div>
-    <div class="arrow" style="--c:var(--ink-3)"><span class="glyph">⇒</span><span class="lbl">mirror into the embedded SQLite index for ranked search</span></div>
+    <div class="arrow" style="--c:var(--write)"><span class="glyph">↓</span><span class="lbl">write-time hygiene (no stale window)</span></div>
+    <div class="node" style="--c:var(--write)">
+      <div class="t">supersede · dedupe · seed</div>
+      <div class="d">a new <code>key: value</code> replaces the stale value for that key;
+      a superset fact prunes the shorter one it contains; a ticket key is seeded
+      into <b>Key Results</b> — all at write time, before compaction runs.</div>
+    </div>
+    <div class="arrow" style="--c:var(--ink-3)"><span class="glyph">⇒</span><span class="lbl">mirror into the embedded SQLite index (global under 'shared', visible to every repo)</span></div>
   </div>
 
   <!-- 5. SESSION END -->
@@ -290,6 +297,12 @@ links: ["[global](compacted-shared.md)"]   <span class="cm"># cross-scope map</s
       <div class="d"><code>[global](compacted-shared.md)</code> in the project brief, and the
       project link back in global. Fan-out capped; recomputed clean each run.</div>
     </div>
+    <div class="arrow" style="--c:var(--accent)"><span class="glyph">↓</span><span class="lbl">and these links are FOLLOWED at read time</span></div>
+    <div class="node" style="--c:var(--accent)">
+      <div class="t">read-time union</div>
+      <div class="d">when a project brief is recalled, its linked topic/global briefs
+      are pulled in with it — the mapping is live at read, not write-only.</div>
+    </div>
   </div>
   <div class="split" style="margin-top:8px">
     <div class="node" style="--c:var(--g-project)">
@@ -309,7 +322,14 @@ links: ["[global](compacted-shared.md)"]   <span class="cm"># cross-scope map</s
     <div class="node" style="--c:var(--read)">
       <div class="t">user turn <span class="anno">query + repo scope</span></div>
     </div>
-    <div class="arrow" style="--c:var(--read)"><span class="glyph">↓</span><span class="lbl">fan out</span></div>
+    <div class="arrow" style="--c:var(--read)"><span class="glyph">↓</span><span class="lbl">always inject the consolidated brief</span></div>
+    <div class="node" style="--c:var(--read)">
+      <div class="t"><code>project_brief_text(repo)</code> <span class="anno">chat + pipeline</span></div>
+      <div class="d">the project brief <b>∪ its linked</b> topic/global briefs <b>∪ global</b>
+      — Facts, Key Results AND <b>Learnings</b> (gotchas). The Doer gets the same
+      consolidated OKR memory as chat, not just whatever raw hits rank.</div>
+    </div>
+    <div class="arrow" style="--c:var(--read)"><span class="glyph">↓</span><span class="lbl">plus recall for THIS request</span></div>
     <div class="node" style="--c:var(--read)">
       <div class="t"><code>unified_query()</code></div>
       <div class="d">~10 sources in parallel (project brief, vector, graph hops, prior chats,
