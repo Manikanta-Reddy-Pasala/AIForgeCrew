@@ -110,6 +110,13 @@ def read_file(name: str) -> dict | None:
     return _parse(p)
 
 
+def _brief_title(key: str) -> str:
+    """Human title for a brief from its scope key: ``deployment`` → "Deployment",
+    ``cicd-pipeline`` → "Cicd Pipeline". So search/UI show a real title, not the
+    internal ``compacted-<key>`` stem."""
+    return (key or "").replace("-", " ").replace("_", " ").strip().title() or key
+
+
 def _ingest_unit(*, title: str, body: str, kind: str, tags: list[str],
                  source: str, repo: str, replace: bool = False) -> None:
     """Mirror a note into the active memory backend so it's searchable.
@@ -597,7 +604,7 @@ def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
                         # exclude 'compacted' so we delete the stale per-capture
                         # row, NOT the brief row (whose text contains every fact).
                         sqlite_memory.delete_by_text_contains(
-                            _fact_body(f), repo=key, exclude_kind="compacted")
+                            _fact_body(f), repo=key, exclude_kind="knowledge")
                 except Exception:  # noqa: BLE001
                     pass
             if not moved_facts:
@@ -1109,7 +1116,7 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
                 from aiforge_core.memory import backend_select, sqlite_memory
                 if backend_select.embedded():
                     sqlite_memory.delete_by_text_contains(
-                        _dfb, repo=slug, exclude_kind="compacted")
+                        _dfb, repo=slug, exclude_kind="knowledge")
             except Exception:  # noqa: BLE001
                 pass
         # W2: seed a jira/issue key into Key Results (the measurable work) —
@@ -1303,7 +1310,12 @@ def ingest_dir() -> dict:
                 if m and (memory_dir() / f"compacted-{m.group(1)}.md").exists():
                     base = m.group(1)
                 repo = base or "notes"
-                kind, source = "compacted", f"compacted:{p.stem}"
+                # kind = the brief's REAL kind ('knowledge'), not the mechanical
+                # 'compacted' (that showed up as the label in search/UI); a clean
+                # human title, not the compacted-<key> stem. Source stays
+                # compacted:<stem> so the two ingest paths still reclaim one row.
+                kind, source = "knowledge", f"compacted:{p.stem}"
+                d = {**d, "title": _brief_title(base)}
                 replace = True                      # reclaim the prior brief row
                 try:
                     from aiforge_core.runtime import work_notes
@@ -1929,8 +1941,9 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                     _bkey = p.get("key")
                     _brepo = ((None if group_by == "topic" else _bkey)
                               if _bkey else "notes")
-                    _ingest_unit(title=doc["title"], body=ingest_body,
-                                 kind="compacted", tags=p["tags"],
+                    # real kind ('knowledge') + clean human title (see ingest_dir)
+                    _ingest_unit(title=_brief_title(_bkey or st), body=ingest_body,
+                                 kind="knowledge", tags=p["tags"],
                                  source=f"compacted:{st}", repo=_brepo,
                                  replace=True)
                 except Exception:  # noqa: BLE001

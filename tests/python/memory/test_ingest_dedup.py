@@ -35,8 +35,8 @@ def test_ingest_dir_one_row_per_brief(mem):
         encoding="utf-8")
     md_store.ingest_dir()
     md_store.ingest_dir()   # re-run must NOT accumulate
-    assert _rows("compacted") == 1
-    assert _rows("knowledge") == 0   # brief not double-stored under knowledge
+    assert _rows("knowledge") == 1     # brief ingested under its real kind
+    assert _rows() == 1               # not double-stored
 
 
 def test_delete_stale_compacted_notes(mem):

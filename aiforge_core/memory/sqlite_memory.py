@@ -498,7 +498,8 @@ def delete_stale_compacted_notes() -> int:
     with _LOCK, _conn() as c:
         cur = c.execute(
             "DELETE FROM memory_units WHERE (kind = 'compacted' AND repo = 'notes')"
-            " OR source LIKE 'md:compacted-%'")
+            " OR source LIKE 'md:compacted-%'"
+            " OR (source LIKE 'compacted:%' AND repo = 'notes')")
         return cur.rowcount or 0
 
 

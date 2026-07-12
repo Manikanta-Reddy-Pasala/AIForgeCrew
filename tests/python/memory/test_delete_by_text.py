@@ -31,10 +31,10 @@ def test_delete_requires_repo(sm):
 def test_delete_excludes_compacted_brief_row(sm):
     # the consolidated brief row contains every fact; must NOT be deleted
     sm.write_unit(text="svc brief\n\n- OrderController maps /orders\n- more",
-                  kind="compacted", repo="svc")
+                  kind="knowledge", repo="svc")
     sm.write_unit(text="OrderController maps /orders", kind="learning", repo="svc")
     n = sm.delete_by_text_contains("OrderController maps /orders", repo="svc",
-                                   exclude_kind="compacted")
+                                   exclude_kind="knowledge")
     assert n == 1  # only the per-capture row, not the brief
     hits = sm.recall("OrderController", repo="svc", limit=10)
-    assert any(h.get("kind") == "compacted" for h in hits)  # brief survived
+    assert any(h.get("kind") == "knowledge" for h in hits)  # brief survived
