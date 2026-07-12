@@ -340,6 +340,20 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
       && echo "==> integration extras ready" \
       || echo "==> integration extras skipped (built-in fallbacks active)"
   fi
+  # LOCAL semantic memory (sentence-transformer embedder + sqlite-vec ANN).
+  # Install best-effort; when present, select it as the embedder backend so
+  # recall uses real semantic KNN (opt-out: AIFORGE_EMBED_BACKEND=hash).
+  if [[ "${AIFORGE_EMBED_BACKEND:-}" != "hash" ]]; then
+    if ! .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
+      echo "==> installing semantic memory (sentence-transformers + sqlite-vec)…"
+      uv pip install --python .venv/bin/python -e '.[semantic]' >/dev/null 2>&1 \
+        && echo "==> semantic memory ready" \
+        || echo "==> semantic memory skipped (hash backend active)"
+    fi
+    if .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
+      export AIFORGE_EMBED_BACKEND=semantic   # inherited by the api/runner below
+    fi
+  fi
   # crawl4ai renders with headless chromium — install best-effort (idempotent).
   .venv/bin/python -m playwright install chromium >/dev/null 2>&1 || true
   # crawl4ai's deps pull urllib3/chardet versions newer than an older

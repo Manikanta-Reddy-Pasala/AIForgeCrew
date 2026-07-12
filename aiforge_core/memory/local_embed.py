@@ -44,11 +44,32 @@ def _tokens(text: str) -> list[str]:
 
 
 def embed(text: str) -> list[float]:
-    """Return an L2-normalized ``EMBED_DIM``-length float vector.
+    """The active embedder. ``AIFORGE_EMBED_BACKEND=semantic`` → the LOCAL
+    sentence-transformer (real semantic vectors; RAISES if the model is missing —
+    no silent degrade). Default ``hash`` → the dependency-free lexical embedder
+    below (dev/test path)."""
+    import os as _os
+    if _os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower() in (
+            "semantic", "st", "sentence-transformers"):
+        from aiforge_core.integrations import semantic_embed as _se
+        return _se.embed(text)          # no hash fallback — errors are loud
+    return _hash_embed(text)
 
-    Empty / whitespace input returns a zero vector (cosine 0 with
-    everything), which the store treats as a non-match.
-    """
+
+def embed_dim() -> int:
+    """Dimension of the ACTIVE embedder (semantic model dim, or the hash dim)."""
+    import os as _os
+    if _os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower() in (
+            "semantic", "st", "sentence-transformers"):
+        from aiforge_core.integrations import semantic_embed as _se
+        return _se.dim()
+    return EMBED_DIM
+
+
+def _hash_embed(text: str) -> list[float]:
+    """Dependency-free lexical (feature-hashing) embedder — the dev/test backend.
+    Return an L2-normalized ``EMBED_DIM``-length float vector; empty input → zero
+    vector (cosine 0 = non-match)."""
     vec = [0.0] * EMBED_DIM
     counts: dict[str, int] = {}
     for tok in _tokens(text or ""):

@@ -79,6 +79,11 @@ crawl = ["crawl4ai>=0.4"]                         # URL → markdown dossiers
 # chunking for files/docs sent to the LLM + memory doc ingestion. The
 # CodeChunker variant stays blocked by aider's tree-sitter-language-pack pin.
 chunking = ["chonkie>=1.0"]
+# LOCAL semantic memory: a sentence-transformer embedder (real paraphrase
+# recall) + the sqlite-vec ANN index (fast KNN vs the O(N) hash-cosine scan).
+# Selected by AIFORGE_EMBED_BACKEND=semantic; both run entirely on-box, no
+# network. Without this extra the dependency-free hash backend is used.
+semantic = ["sentence-transformers>=2.2", "sqlite-vec>=0.1"]
 # tracing needs NO extra: the langfuse mirror posts to the REST ingestion
 # API with core httpx (the SDK's pins conflict with aider-chat).
 # NOTE: ragas (RAG eval, scripts/rag_eval.py + integrations/ragas_adapter.py)

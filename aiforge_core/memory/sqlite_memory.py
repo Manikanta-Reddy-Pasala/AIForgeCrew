@@ -66,6 +66,57 @@ END;
 """
 
 
+# sqlite-vec ANN index — the production vector path (AIFORGE_EMBED_BACKEND=
+# semantic). vec0 virtual table mirrors memory_units.embedding via triggers;
+# recall does a real KNN instead of an O(N) Python cosine scan. NO fallback:
+# when the semantic backend is selected the extension is REQUIRED (recall raises
+# if it's missing) — the Python-cosine path below runs only under the dev/test
+# 'hash' backend.
+_VEC_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS vec_memory_ai AFTER INSERT ON memory_units BEGIN
+    INSERT INTO vec_memory(rowid, embedding) VALUES (new.id, new.embedding);
+END;
+CREATE TRIGGER IF NOT EXISTS vec_memory_ad AFTER DELETE ON memory_units BEGIN
+    DELETE FROM vec_memory WHERE rowid = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS vec_memory_au AFTER UPDATE ON memory_units BEGIN
+    DELETE FROM vec_memory WHERE rowid = old.id;
+    INSERT INTO vec_memory(rowid, embedding) VALUES (new.id, new.embedding);
+END;
+"""
+
+
+def _vec_enabled() -> bool:
+    return os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower() in (
+        "semantic", "st", "sentence-transformers")
+
+
+def _init_vec(c) -> None:
+    """Load sqlite-vec + create the vec0 table (dim = active embedder) + sync
+    triggers, backfilling existing rows. Raises so a broken semantic setup is
+    LOUD (no silent cosine fallback)."""
+    import sqlite_vec
+    from aiforge_core.memory import local_embed
+    c.enable_load_extension(True)
+    sqlite_vec.load(c)
+    c.enable_load_extension(False)
+    dim = int(local_embed.embed_dim())
+    c.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS vec_memory USING "
+        f"vec0(embedding float[{dim}] distance_metric=cosine)")
+    c.executescript(_VEC_TRIGGERS)
+    vn = c.execute("SELECT count(*) FROM vec_memory").fetchone()[0]
+    un = c.execute("SELECT count(*) FROM memory_units").fetchone()[0]
+    if un and vn < un:                     # backfill rows written before the index
+        c.execute("DELETE FROM vec_memory")
+        for r in c.execute("SELECT id, embedding FROM memory_units").fetchall():
+            try:
+                c.execute("INSERT INTO vec_memory(rowid, embedding) VALUES (?, ?)",
+                          (r["id"], r["embedding"]))
+            except sqlite3.OperationalError:
+                continue                   # dim mismatch (pre-switch row) → skip
+
+
 def _db_path() -> str:
     return os.environ.get(
         "AIFORGE_MEMORY_DB_PATH",
@@ -89,6 +140,8 @@ def _conn() -> Iterator[sqlite3.Connection]:
             c.executescript(_FTS_DDL)          # FTS5 may be unavailable → soft
         except sqlite3.OperationalError:
             pass
+        if _vec_enabled():                     # sqlite-vec ANN (semantic backend)
+            _init_vec(c)                       # RAISES if the extension is missing
         yield c
         c.commit()
     finally:
@@ -299,6 +352,58 @@ def upsert_by_tag(*, text: str, tag: str, kind: str = "learning",
                       metadata=metadata, repo=repo)
 
 
+def _vec_recall(text, qvec, repo, limit: int, boost: set) -> list[dict]:
+    """sqlite-vec KNN recall — semantic nearest-neighbours over the vec0 index.
+    Over-fetches, then repo-scopes + applies the tag boost + dedups, matching
+    :func:`recall`'s hit shape. Raises if the extension isn't loadable (no
+    silent cosine fallback)."""
+    k = max(limit * 6, 48)
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT rowid AS id, distance FROM vec_memory "
+            "WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+            (json.dumps(qvec), k)).fetchall()
+        if not rows:
+            return []
+        dist = {r["id"]: float(r["distance"]) for r in rows}
+        ids = list(dist)
+        ph = ",".join("?" * len(ids))
+        where = f"id IN ({ph})"
+        params: list = list(ids)
+        if repo:
+            where += " AND (repo = ? OR repo IS NULL OR repo = 'shared')"
+            params.append(repo)
+        urows = c.execute(
+            f"SELECT * FROM memory_units WHERE {where}", params).fetchall()
+    scored: list[dict] = []
+    for r in urows:
+        # cosine distance in [0,2] → similarity in [0,1]
+        score = max(0.0, 1.0 - dist.get(r["id"], 2.0))
+        if boost:
+            try:
+                row_tags = {str(t).lower() for t in json.loads(r["tags"] or "[]")}
+            except (TypeError, ValueError):
+                row_tags = set()
+            if row_tags & boost:
+                score = min(1.0, score + 0.3)
+        scored.append({
+            "text": r["text"], "title": r["title"],
+            "source": r["source"] or "memory", "group": f"sqlite:{r['id']}",
+            "kind": r["kind"], "ticket": r["ticket"], "repo": r["repo"],
+            "score": score})
+    scored.sort(key=lambda h: -h["score"])
+    seen: set = set()
+    out: list[dict] = []
+    for h in scored:
+        if h["text"] in seen:
+            continue
+        seen.add(h["text"])
+        out.append(h)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def recall(text: str, *, limit: int = 8, repo: str | None = None,
            boost_tags: list[str] | None = None) -> list[dict]:
     """Brute-force cosine recall. Returns hits sorted by score desc.
@@ -319,6 +424,11 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
     qvec = local_embed.embed(text)
     if not any(qvec):
         return []
+    # Semantic backend → sqlite-vec KNN (real nearest-neighbour, no O(N) scan).
+    # No cosine fallback here: a missing extension raises (loud) as the user
+    # requires; the brute-force path below is only the dev/test 'hash' backend.
+    if _vec_enabled():
+        return _vec_recall(text, qvec, repo, limit, boost)
     with _conn() as c:
         if repo:
             # GLOBAL knowledge (stored under repo='shared') and repo-agnostic

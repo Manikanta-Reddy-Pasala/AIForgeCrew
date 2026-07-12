@@ -2068,7 +2068,10 @@ def memory_search(q: str = Query(..., min_length=2),
     from aiforge_core.memory import backend_select as _bsel
     backend = _bsel.memory_backend()
     if backend == "sqlite":
-        from aiforge_core.memory import sqlite_memory as _sqlmem
+        # Full HYBRID (same as the agents' memory_lookup): semantic KNN
+        # (sqlite-vec) + keyword/BM25 + spell-correction, fused + ranked.
+        from aiforge_core.memory import unified_query as _uq
+        res = _uq.query(q, role=role, limit=top_k)
         return [
             {
                 "tier": "embedded", "wing": h.get("kind"),
@@ -2076,7 +2079,7 @@ def memory_search(q: str = Query(..., min_length=2),
                 "text": (h.get("text") or "")[:800], "score": h.get("score"),
                 "metadata": {"ticket": h.get("ticket"), "repo": h.get("repo")},
             }
-            for h in _sqlmem.recall(q, limit=top_k)
+            for h in res.get("hits", [])
         ]
     if backend == "neo4j":
         # Use the unified recall (afm_bundle + graph hops); map to UI rows.
