@@ -51,6 +51,7 @@ def test_snap_topic_merges_near_duplicate(monkeypatch, mem):
 
 def test_reconcile_briefs_collapses_cross_scope(monkeypatch, mem):
     monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "1")
+    monkeypatch.setenv("AIFORGE_OKR_RECONCILE", "1")
     import types
     from aiforge_core.memory import md_store
     from aiforge_core.runtime.work_notes import parse_note

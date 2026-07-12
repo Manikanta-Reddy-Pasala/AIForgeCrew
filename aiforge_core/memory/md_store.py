@@ -630,8 +630,12 @@ def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
     canonical version in the broadest scope. Feasible only at a bounded fact
     count (skips above ``max_facts`` so it stays a single call). Gated on
     ``AIFORGE_OKR_SCOPE_LLM``; ``AIFORGE_OKR_RECONCILE=0`` disables. Never raises."""
+    # OPT-IN (default OFF): an LLM removing facts across briefs unsupervised can
+    # be over-aggressive (it dropped ~24% on a stress run) and is inconsistent —
+    # too risky for the automatic pipeline. Enable AIFORGE_OKR_RECONCILE=1 to run
+    # it (manually or in recompact) when you want an aggressive cross-scope pass.
     if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0" \
-            or os.environ.get("AIFORGE_OKR_RECONCILE", "1") == "0":
+            or os.environ.get("AIFORGE_OKR_RECONCILE", "0") != "1":
         return {"removed": 0, "skipped": "disabled"}
     from aiforge_core.runtime import work_notes
     briefs: dict = {}          # key -> [facts]
