@@ -32,8 +32,15 @@ def _archive_okr_dag_folder() -> dict:
     try:
         from aiforge_core.memory.md_store import memory_dir
         src = memory_dir() / "okr"
-        if not src.is_dir() or not any(src.iterdir()):
+        # A folder holding ONLY the migration bookkeeping marker (.migrations.json,
+        # which _save_marker rewrites into okr_root after each archive) is NOT real
+        # DAG data — treat it as empty so we don't re-archive a marker-only folder
+        # into okr-1, okr-2… on every restart.
+        if not src.is_dir():
             return {"skipped": "no live okr/ folder"}
+        real = [p for p in src.iterdir() if p.name != ".migrations.json"]
+        if not real:
+            return {"skipped": "only migration marker — nothing to archive"}
         arch_root = memory_dir().parent / "memory-archive"
         arch_root.mkdir(parents=True, exist_ok=True)
         dest = arch_root / "okr"
