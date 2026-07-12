@@ -49,6 +49,83 @@ def memory_dir() -> Path:
     return p
 
 
+def briefs_dir() -> Path:
+    """Subfolder holding the consolidated OKR briefs (``compacted-<scope>.md``),
+    kept OUT of the memory-dir root (like ``memory-archive/``) so the root only
+    holds transient per-run captures. Created lazily. ``migrate_briefs_to_folder``
+    moves any legacy root-level briefs in here on startup."""
+    p = memory_dir() / "compacted"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def brief_path(slug: str) -> Path:
+    """Path to a brief file (``<memory>/compacted/compacted-<slug>.md``)."""
+    return briefs_dir() / f"compacted-{slug}.md"
+
+
+def iter_briefs() -> list[Path]:
+    """Every consolidated brief file, sorted. Reads the ``compacted/`` subfolder
+    AND (transitionally) any legacy root-level ``compacted-*.md`` not yet moved."""
+    seen: dict[str, Path] = {}
+    for p in briefs_dir().glob("compacted-*.md"):
+        seen[p.name] = p
+    for p in memory_dir().glob("compacted-*.md"):   # legacy root (pre-migration)
+        seen.setdefault(p.name, p)
+    return [seen[k] for k in sorted(seen)]
+
+
+def _md_path_for_stem(stem: str) -> Path:
+    """Path for a note stem: a brief (``compacted-*``) lives in the ``compacted/``
+    subfolder, every other (per-run capture / session note) in the root."""
+    if stem.startswith("compacted-"):
+        return briefs_dir() / f"{stem}.md"
+    return memory_dir() / f"{stem}.md"
+
+
+def _brief_part_paths(base: str) -> list[Path]:
+    """Split-part briefs ``compacted-<base>-N.md`` from the briefs folder AND the
+    legacy root (pre-migration), de-duplicated by name, sorted."""
+    seen: dict[str, Path] = {}
+    for p in list(briefs_dir().glob(f"compacted-{base}-*.md")) \
+            + list(memory_dir().glob(f"compacted-{base}-*.md")):
+        seen.setdefault(p.name, p)
+    return [seen[k] for k in sorted(seen)]
+
+
+def _all_md_files() -> list[Path]:
+    """Every md memory file — root-level per-run captures PLUS the briefs in the
+    ``compacted/`` subfolder. De-duplicated by resolved path (a legacy brief may
+    still sit in the root before migration)."""
+    seen: dict[str, Path] = {}
+    for p in list(memory_dir().glob("*.md")) + iter_briefs():
+        try:
+            seen[str(p.resolve())] = p
+        except OSError:
+            seen[str(p)] = p
+    return list(seen.values())
+
+
+def migrate_briefs_to_folder() -> dict:
+    """Move legacy root-level ``compacted-*.md`` briefs into ``compacted/``.
+    Idempotent; never raises. Skips captures (``<slug>-YYYYMMDD-<6hex>.md``)."""
+    moved = 0
+    bdir = briefs_dir()
+    for p in list(iter_briefs()):
+        if _CAPTURE_SIG_RE.search(p.name):
+            continue                                # transient capture, not a brief
+        dest = bdir / p.name
+        try:
+            if dest.exists():
+                p.unlink()                          # already migrated → drop dup
+            else:
+                p.rename(dest)
+            moved += 1
+        except OSError:
+            continue
+    return {"ok": True, "moved": moved}
+
+
 def _slug(title: str, maxlen: int = 80) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", (title or "note").lower()).strip("-")
     return (s or "note")[:maxlen]
@@ -91,7 +168,7 @@ def _parse(path: Path) -> dict:
 def list_files() -> list[dict]:
     """All md memories (newest first), without full body."""
     out = []
-    for p in sorted(memory_dir().glob("*.md"), reverse=True):
+    for p in sorted(_all_md_files(), key=lambda x: x.name, reverse=True):
         try:
             d = _parse(p)
             d.pop("body", None)
@@ -103,11 +180,22 @@ def list_files() -> list[dict]:
     return out
 
 
-def read_file(name: str) -> dict | None:
-    p = memory_dir() / (name if name.endswith(".md") else f"{name}.md")
-    if not p.is_file() or p.parent != memory_dir():
+def _resolve_md(name: str) -> Path | None:
+    """Resolve a memory-file name to its path in the root OR the ``compacted/``
+    briefs subfolder. Rejects any name with a path separator (traversal guard)."""
+    fn = name if name.endswith(".md") else f"{name}.md"
+    if os.path.basename(fn) != fn:
         return None
-    return _parse(p)
+    for d in (memory_dir(), briefs_dir()):
+        p = d / fn
+        if p.is_file():
+            return p
+    return None
+
+
+def read_file(name: str) -> dict | None:
+    p = _resolve_md(name)
+    return _parse(p) if p else None
 
 
 def _brief_title(key: str) -> str:
@@ -183,7 +271,7 @@ def write(title: str, text: str, *, kind: str = "note",
                 return _exd
         except Exception:  # noqa: BLE001
             continue
-    path = memory_dir() / f"{stem}.md"
+    path = _md_path_for_stem(stem)
     fm = (
         "---\n"
         f"title: {title}\n"
@@ -319,7 +407,7 @@ def _snap_topic(slug: str) -> str:
     try:
         import difflib
         existing = [p.stem[len("compacted-"):]
-                    for p in memory_dir().glob("compacted-*.md")
+                    for p in iter_briefs()
                     if p.stem != "compacted-shared"
                     and not _CAPTURE_SIG_RE.search(p.name)]
         if slug in existing:
@@ -339,7 +427,7 @@ def _live_briefs() -> list[dict]:
     capture masqueraders. Each: ``{key, file, path, summary}``."""
     from aiforge_core.runtime import work_notes
     out: list[dict] = []
-    for p in sorted(memory_dir().glob("compacted-*.md")):
+    for p in iter_briefs():
         if _CAPTURE_SIG_RE.search(p.name):
             continue
         key = p.stem[len("compacted-"):]
@@ -725,7 +813,7 @@ def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
     from aiforge_core.runtime import work_notes
     briefs: dict = {}          # key -> [facts]
     total = 0
-    for p in sorted(memory_dir().glob("compacted-*.md")):
+    for p in iter_briefs():
         if _CAPTURE_SIG_RE.search(p.name):
             continue
         key = p.stem[len("compacted-"):]
@@ -774,7 +862,7 @@ def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
     removed = 0
     with _WRITE_LOCK:
         for k, dks in drop.items():
-            p = memory_dir() / f"compacted-{k}.md"
+            p = brief_path(k)
             try:
                 parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
             except OSError:
@@ -795,7 +883,7 @@ def dedupe_global_copies() -> dict:
     — dropping them de-duplicates the md layer without any recall loss. Fresh
     read-modify-write under ``_WRITE_LOCK``. Never raises."""
     from aiforge_core.runtime import work_notes
-    shared = memory_dir() / "compacted-shared.md"
+    shared = brief_path("shared")
     if not shared.is_file():
         return {"removed": 0, "briefs": 0}
     try:
@@ -809,7 +897,7 @@ def dedupe_global_copies() -> dict:
     removed = 0
     touched = 0
     with _WRITE_LOCK:
-        for p in sorted(memory_dir().glob("compacted-*.md")):
+        for p in iter_briefs():
             if p.name == "compacted-shared.md" or _CAPTURE_SIG_RE.search(p.name):
                 continue
             try:
@@ -873,7 +961,7 @@ def cleanup_reheal(*, role: str = "learner") -> dict:
         # Fresh read-modify-write under _WRITE_LOCK (concurrent captures to shared
         # also take _WRITE_LOCK — don't clobber them with a stale snapshot).
         with _WRITE_LOCK:
-            shared = memory_dir() / "compacted-shared.md"
+            shared = brief_path("shared")
             if shared.is_file():
                 parsed = work_notes.parse_note(shared.read_text(encoding="utf-8"))
                 facts = parsed["sections"].get("facts") or []
@@ -983,7 +1071,7 @@ def sweep_stale_captures(*, archive: bool = True) -> dict:
     dst = memory_dir() / "archive" / _now_iso().replace(":", "")
     try:
         with _COMPACT_LOCK:
-            for p in memory_dir().glob("compacted-*.md"):
+            for p in iter_briefs():
                 if not sig.search(p.name):
                     continue                    # real canonical brief — keep
                 try:
@@ -1019,7 +1107,7 @@ def sweep_empty_briefs(*, archive: bool = True) -> dict:
     dst = memory_dir() / "archive" / _now_iso().replace(":", "")
     try:
         with _COMPACT_LOCK:
-            for p in memory_dir().glob("compacted-*.md"):
+            for p in iter_briefs():
                 if sig.search(p.name):
                     continue                        # capture — sweep_stale owns it
                 try:
@@ -1135,7 +1223,7 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
     if not text:
         return
     slug = _slug(repo)
-    path = memory_dir() / f"compacted-{slug}.md"
+    path = brief_path(slug)
     fact = text.replace("\n", " ").strip()
     item = (f"[{topic}] " if topic else "") + fact
     with _WRITE_LOCK:
@@ -1227,7 +1315,7 @@ def migrate_to_okr() -> dict:
     ``{"ok", "migrated", "skipped", "files"}``; never raises."""
     migrated: list[str] = []
     skipped = 0
-    for p in sorted(memory_dir().glob("compacted-*.md")):
+    for p in iter_briefs():
         try:
             raw = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -1257,7 +1345,7 @@ def _find_by_source(source: str) -> Path | None:
     """Locate the md file whose frontmatter ``source`` matches (the stable
     key for a session), so repeated runs UPDATE one file instead of
     spawning a new hashed file every time."""
-    for p in memory_dir().glob("*.md"):
+    for p in _all_md_files():
         try:
             if _parse(p).get("source") == source:
                 return p
@@ -1284,10 +1372,10 @@ def upsert_section(*, source: str, title: str, section_title: str,
             path = existing
         else:
             stem = _slug(title)
-            path = memory_dir() / f"{stem}.md"
+            path = _md_path_for_stem(stem)
             i = 1
             while path.exists():       # different session, same title → suffix
-                path = memory_dir() / f"{stem}-{i}.md"
+                path = _md_path_for_stem(f"{stem}-{i}")
                 i += 1
             fm = (
                 "---\n"
@@ -1327,10 +1415,10 @@ def append_bullet(*, source: str, title: str, bullet: str,
             path = existing
         else:
             stem = _slug(title)
-            path = memory_dir() / f"{stem}.md"
+            path = _md_path_for_stem(stem)
             i = 1
             while path.exists():
-                path = memory_dir() / f"{stem}-{i}.md"
+                path = _md_path_for_stem(f"{stem}-{i}")
                 i += 1
             fm = (
                 "---\n"
@@ -1368,7 +1456,7 @@ def ingest_dir() -> dict:
                 _log.info("ingest_dir: purged %d stale repo=notes brief rows", _purged)
     except Exception:  # noqa: BLE001
         pass
-    for p in memory_dir().glob("*.md"):
+    for p in _all_md_files():
         try:
             d = _parse(p)
             body, repo, replace = d["body"], "notes", False
@@ -1385,7 +1473,7 @@ def ingest_dir() -> dict:
                 # compacted-<base>.md exists — else a real slug ending in a
                 # number (log4j-2, s3-bucket-1) would be mangled to the wrong key.
                 m = re.match(r"^(.*)-\d+$", base)
-                if m and (memory_dir() / f"compacted-{m.group(1)}.md").exists():
+                if m and (_resolve_md("compacted-" + m.group(1)) is not None):
                     base = m.group(1)
                 repo = base or "notes"
                 # kind = the brief's REAL kind ('knowledge'), not the mechanical
@@ -1661,7 +1749,7 @@ def _consolidate_brief_sections(key: str, path, blocks: list[str],
                       "objective": ""}
     prev_tags: list = []
     base = _slug(key)
-    part_paths = [path] + sorted(memory_dir().glob(f"compacted-{base}-*.md"))
+    part_paths = [path] + _brief_part_paths(base)
     for pp in part_paths:
         if not pp.exists():
             continue
@@ -1807,7 +1895,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
             # each compacted-<scope>.md as its own group so the loop re-reads +
             # re-summarises it even with no new live sources. Skip split-part /
             # per-run-named files (they fold via their primary scope).
-            for p in memory_dir().glob("compacted-*.md"):
+            for p in iter_briefs():
                 if re.search(r"-\d{8}-[0-9a-f]{6}$", p.stem):
                     continue
                 key = p.stem[len("compacted-"):] or "shared"
@@ -1862,7 +1950,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
             all_tags = sorted({t for d in items for t in d.get("tags") or []})
             title = f"{key.replace('-', ' ').strip().capitalize()} memory (compacted)"
             stem = f"compacted-{_slug(key)}"
-            path = memory_dir() / f"{stem}.md"
+            path = _md_path_for_stem(stem)
 
             # Existing consolidated body (re-compaction) — fed back so it gets
             # RE-SUMMARISED with the new notes, keeping the file bounded.
@@ -1964,7 +2052,9 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                 # Retire STALE split overflow: prior parts of this topic that the
                 # new (smaller) fold no longer produces — archive them so a topic
                 # that shrank doesn't leave orphaned compacted-<key>-N.md files.
-                for old in memory_dir().glob(f"{p['base_stem']}-*.md"):
+                _base = p["base_stem"][len("compacted-"):] \
+                    if p["base_stem"].startswith("compacted-") else p["base_stem"]
+                for old in _brief_part_paths(_base):
                     if old.stem not in new_stems and re.match(
                             rf"^{re.escape(p['base_stem'])}-\d+$", old.stem):
                         try:
@@ -1973,7 +2063,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
                             pass
                 wrote_any = False
                 for st, content in p["parts"]:
-                    fpath = memory_dir() / f"{st}.md"
+                    fpath = _md_path_for_stem(st)
                     try:
                         fpath.write_text(content, encoding="utf-8")
                     except Exception:  # noqa: BLE001 — keep originals; skip
@@ -1995,7 +2085,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         # ── Phase 3: re-ingest into the search backend ──────────────────
         for p in prepared:
             for st, _ in p["parts"]:
-                fpath = memory_dir() / f"{st}.md"
+                fpath = _md_path_for_stem(st)
                 if fpath.name not in out_files or not fpath.exists():
                     continue                   # write failed → don't ingest
                 try:
@@ -2058,7 +2148,7 @@ def cleanup_legacy_compacted(*, dry_run: bool = False,
 
     from aiforge_core.runtime import work_notes
     stale: list = []
-    for pth in memory_dir().glob("compacted-*.md"):
+    for pth in iter_briefs():
         base = pth.stem[len("compacted-"):]
         # BUG ARTIFACT: a compacted-* file that is NOT a proper kind=knowledge
         # brief (e.g. a stray kind=note unit written under a compacted name, or
@@ -2079,7 +2169,7 @@ def cleanup_legacy_compacted(*, dry_run: bool = False,
         # cryptic compacted-clr-3049.md (no compacted-clr.md primary).
         mnum = re.match(r"^(.*)-\d+$", base)
         if mnum and not _CRYPTIC_KEY_RE.match(mnum.group(1)) \
-                and (memory_dir() / f"compacted-{mnum.group(1)}.md").exists():
+                and (_resolve_md("compacted-" + mnum.group(1)) is not None):
             continue
         if _CRYPTIC_KEY_RE.match(base):
             stale.append(pth)
@@ -2138,8 +2228,8 @@ def cleanup_legacy_compacted(*, dry_run: bool = False,
 
 
 def delete_file(name: str) -> bool:
-    p = memory_dir() / (name if name.endswith(".md") else f"{name}.md")
-    if p.is_file() and p.parent == memory_dir():
+    p = _resolve_md(name)
+    if p and p.is_file():
         stem = p.stem
         p.unlink()
         # Sync the vector index: drop this file's row(s) immediately (md is the

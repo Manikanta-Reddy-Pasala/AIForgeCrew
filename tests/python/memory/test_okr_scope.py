@@ -116,8 +116,8 @@ def test_capture_promotes_repo_fact_to_shared(monkeypatch, mem):
     assert res["repo"] == "shared"
     assert not any(t.startswith("repo:") for t in res.get("tags", []))
     # brief maintenance landed in the shared brief, not the repo brief
-    assert (md_store.memory_dir() / "compacted-shared.md").exists()
-    assert not (md_store.memory_dir() / "compacted-oneshell-pos.md").exists()
+    assert (md_store.brief_path("shared")).exists()
+    assert not (md_store.brief_path("oneshell-pos")).exists()
 
 
 def test_capture_keeps_repo_fact_when_not_promoted(monkeypatch, mem):

@@ -53,8 +53,8 @@ def test_compact_session_routes_items_to_scoped_briefs(monkeypatch, mem):
     res = chat_okr.compact_session("s1", repo="svc")
     assert res["ok"] and res["captured"] == 2
     # global item promoted to shared, project item under its repo
-    assert (md_store.memory_dir() / "compacted-shared.md").exists()
-    assert (md_store.memory_dir() / "compacted-svc.md").exists()
+    assert (md_store.brief_path("shared")).exists()
+    assert (md_store.brief_path("svc")).exists()
 
 
 def test_compact_session_skips_short(monkeypatch, mem):

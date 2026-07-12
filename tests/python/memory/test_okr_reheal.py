@@ -26,7 +26,7 @@ def _write_brief(md_store, key, facts):
         "knowledge", key, title=f"{key} brief",
         objective="Durable knowledge.", facts=facts,
         updated_at="2026-07-12T00:00:00+00:00")
-    (md_store.memory_dir() / f"compacted-{key}.md").write_text(text, encoding="utf-8")
+    (md_store.brief_path(key)).write_text(text, encoding="utf-8")
 
 
 def test_reheal_moves_global_fact_to_shared(monkeypatch, mem):
@@ -45,11 +45,11 @@ def test_reheal_moves_global_fact_to_shared(monkeypatch, mem):
     assert res["moved"] == 1
 
     from aiforge_core.runtime.work_notes import parse_note
-    svc = parse_note((md_store.memory_dir() / "compacted-svc.md").read_text())
+    svc = parse_note((md_store.brief_path("svc")).read_text())
     facts = svc["sections"].get("facts", [])
     assert not any("tests" in f for f in facts)
     assert any("OrderController" in f for f in facts)
-    assert (md_store.memory_dir() / "compacted-shared.md").exists()
+    assert (md_store.brief_path("shared")).exists()
 
 
 def test_reheal_noop_when_llm_off(mem):

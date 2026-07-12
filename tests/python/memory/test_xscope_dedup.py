@@ -15,7 +15,7 @@ def mem(monkeypatch, tmp_path):
 
 def _brief(md_store, key, facts):
     from aiforge_core.runtime import work_notes
-    (md_store.memory_dir() / f"compacted-{key}.md").write_text(
+    (md_store.brief_path(key)).write_text(
         work_notes.render_note("knowledge", key, title=key, objective="d.",
                                facts=facts, updated_at="2026-07-12T00:00:00+00:00"),
         encoding="utf-8")
@@ -29,10 +29,10 @@ def test_dedupe_global_copies(mem):
     _brief(md_store, "data-sync", ["run tests first", "last-write-wins on updatedAt"])
     res = md_store.dedupe_global_copies()
     assert res["removed"] == 2
-    svc = parse_note((md_store.memory_dir() / "compacted-svc.md").read_text())["sections"]["facts"]
+    svc = parse_note((md_store.brief_path("svc")).read_text())["sections"]["facts"]
     assert not any("commit directly" in f for f in svc)      # global copy dropped
     assert any("OrderController" in f for f in svc)           # own fact kept
-    shared = parse_note((md_store.memory_dir() / "compacted-shared.md").read_text())["sections"]["facts"]
+    shared = parse_note((md_store.brief_path("shared")).read_text())["sections"]["facts"]
     assert any("commit directly" in f for f in shared)        # global kept
 
 
@@ -68,9 +68,9 @@ def test_reconcile_briefs_collapses_cross_scope(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     res = md_store.reconcile_briefs()
     assert res["removed"] == 1
-    a = parse_note((md_store.memory_dir() / "compacted-repo-a.md").read_text())["sections"].get("facts", [])
+    a = parse_note((md_store.brief_path("repo-a")).read_text())["sections"].get("facts", [])
     assert not any("docker" in f for f in a)               # stale dropped
-    b = parse_note((md_store.memory_dir() / "compacted-repo-b.md").read_text())["sections"]["facts"]
+    b = parse_note((md_store.brief_path("repo-b")).read_text())["sections"]["facts"]
     assert any("systemctl" in f for f in b)                # canonical kept
     assert any("OrderController" in f for f in b)          # unrelated untouched
 

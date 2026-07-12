@@ -28,7 +28,7 @@ def _rows(kind=None):
 def test_ingest_dir_one_row_per_brief(mem):
     from aiforge_core.memory import md_store
     from aiforge_core.runtime import work_notes
-    (md_store.memory_dir() / "compacted-svc.md").write_text(
+    (md_store.brief_path("svc")).write_text(
         work_notes.render_note("knowledge", "svc", title="svc",
                                objective="Durable.", facts=["fact one"],
                                updated_at="2026-07-12T00:00:00+00:00"),

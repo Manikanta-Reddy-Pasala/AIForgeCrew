@@ -188,7 +188,7 @@ def ingest_instruction_files(
         except Exception as exc:  # noqa: BLE001
             out.setdefault("errors", []).append(f"compact: {exc}")
     try:
-        out["briefs"] = len(list(md_store.memory_dir().glob("compacted-*.md")))
+        out["briefs"] = len(md_store.iter_briefs())
     except OSError:
         out["briefs"] = None
     out["ok"] = True

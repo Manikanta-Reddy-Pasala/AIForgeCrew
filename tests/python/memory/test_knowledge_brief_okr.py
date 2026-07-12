@@ -20,7 +20,8 @@ def cfg(monkeypatch):
 
 def _raw(name):
     from aiforge_core.memory import md_store as m
-    return (m.memory_dir() / name).read_text(encoding="utf-8")
+    p = m._resolve_md(name) or (m.memory_dir() / name)
+    return p.read_text(encoding="utf-8")
 
 
 def test_new_brief_is_okr_envelope(cfg):
@@ -59,7 +60,7 @@ def test_legacy_recent_brief_migrates(cfg):
               "repo: svc\nsource: brief:svc\n---\n\n"
               "# svc memory (compacted)\n\nOld consolidated prose.\n\n"
               "## Recent\n- old bullet one\n- old bullet two\n")
-    (m.memory_dir() / "compacted-svc.md").write_text(legacy, encoding="utf-8")
+    (m.brief_path("svc")).write_text(legacy, encoding="utf-8")
     m._brief_upsert("svc", "new fact")
     raw = _raw("compacted-svc.md")
     assert 'kind: "knowledge"' in raw            # migrated envelope
@@ -88,7 +89,7 @@ def test_compact_preserves_learnings(cfg):
     m.capture("project_learning", "svc: rule two", repo="svc", topic="y")
     m.compact(group_by="repo", min_group=2, summarize=False)
     # hand-add a learning (as the curator would)
-    p = m.memory_dir() / "compacted-svc.md"
+    p = m.brief_path("svc")
     work_notes.update_note(str(p), learnings=["2026-07-10: svc split into two"])
     m.capture("project_learning", "svc: rule three", repo="svc", topic="z")
     m.compact(group_by="repo", min_group=1, summarize=False)
@@ -151,7 +152,7 @@ def test_topic_splits_into_linked_parts_when_oversize(cfg, monkeypatch):
         m.capture("topic_learning", f"authfact number {i} " + "x" * 40,
                   repo=f"r{i}", topic="auth")
     r = m.compact(group_by="topic", min_group=1, summarize=True)
-    files = {p.name for p in m.memory_dir().glob("compacted-auth*.md")}
+    files = {p.name for p in m.iter_briefs() if p.name.startswith("compacted-auth")}
     assert "compacted-auth.md" in files
     assert "compacted-auth-2.md" in files                 # split happened
     head = work_notes.parse_note(_raw("compacted-auth.md"))
@@ -168,7 +169,7 @@ def test_topic_shrink_retires_stale_split_parts(cfg, monkeypatch):
     for i in range(12):
         m.capture("topic_learning", f"bigfact {i} " + "y" * 40, repo=f"r{i}", topic="ops")
     m.compact(group_by="topic", min_group=1, summarize=True)
-    assert (m.memory_dir() / "compacted-ops-2.md").exists()
+    assert (m.brief_path("ops-2")).exists()
     p2_facts = work_notes.parse_note(_raw("compacted-ops-2.md"))["sections"]["facts"]
     assert p2_facts                                   # part 2 holds real facts
     # recompact with a HUGE cap + one new unit → the topic re-folds (reading ALL
@@ -176,7 +177,7 @@ def test_topic_shrink_retires_stale_split_parts(cfg, monkeypatch):
     monkeypatch.setenv("AIFORGE_TOPIC_SPLIT_CAP", "100000")
     m.capture("topic_learning", "one more ops fact", repo="rx", topic="ops")
     m.compact(group_by="topic", min_group=1, summarize=True)
-    assert not (m.memory_dir() / "compacted-ops-2.md").exists()
+    assert not (m.brief_path("ops-2")).exists()
     head = _raw("compacted-ops.md")
     # facts from the retired part 2 were re-folded into the single file (not lost)
     assert p2_facts[0] in head
@@ -219,7 +220,7 @@ def test_topic_compact_archives_raw_units(cfg, monkeypatch):
     r = m.compact(group_by="topic", min_group=2, summarize=True,
                   archive_sources=True)
     assert r["files_in"] == 2                         # 2 raw units MOVED out
-    live = {p.name for p in m.memory_dir().glob("*.md")}
+    live = {p.name for p in m._all_md_files()}
     assert any(n.startswith("compacted-") for n in live)   # topic brief stays
     archived = list((m.memory_dir() / "archive").rglob("*.md"))
     assert len(archived) == 2                         # raw session notes cleared
@@ -245,7 +246,7 @@ def test_cleanup_folds_cryptic_into_topic(cfg, monkeypatch):
     assert "compacted-auth-2.md" not in plan["stale"]       # split part kept
     r = m.cleanup_legacy_compacted()
     assert r["ok"] and r["folded"] == 3 and r["facts"] >= 3
-    live = {p.name for p in m.memory_dir().glob("*.md")}
+    live = {p.name for p in m._all_md_files()}
     assert "compacted-1852458641.md" not in live            # cryptic gone
     assert "compacted-clr-3049.md" not in live
     archived = {p.name for p in (m.memory_dir() / "archive").rglob("*.md")}

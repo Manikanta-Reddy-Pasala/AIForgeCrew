@@ -28,7 +28,7 @@ def test_cleanup_reheal_strips_nonglobal_keeps_global(monkeypatch, mem):
     WRONG = "get_environ_proxies lives in src/requests/utils.py"
 
     # shared brief holds both facts (as reheal folded them)
-    (md_store.memory_dir() / "compacted-shared.md").write_text(
+    (md_store.brief_path("shared")).write_text(
         work_notes.render_note("knowledge", "shared", title="shared brief",
                                objective="Global knowledge.",
                                facts=[GLOBAL, WRONG],
@@ -49,7 +49,7 @@ def test_cleanup_reheal_strips_nonglobal_keeps_global(monkeypatch, mem):
     assert res["removed"] == 1
 
     shared = work_notes.parse_note(
-        (md_store.memory_dir() / "compacted-shared.md").read_text())
+        (md_store.brief_path("shared")).read_text())
     facts = shared["sections"].get("facts", [])
     assert any("commit directly" in f for f in facts)      # global kept
     assert not any("requests/utils.py" in f for f in facts)  # wrong stripped

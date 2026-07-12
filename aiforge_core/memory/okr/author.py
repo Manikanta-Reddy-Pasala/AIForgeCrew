@@ -575,7 +575,7 @@ def migrate_from_briefs() -> dict:
     have = {str((n.get("meta") or {}).get("category") or "").lower()
             for n in g.nodes.values() if n.get("type") == "learning"}
     facts_by_topic: dict[str, list[str]] = {}
-    for p in md_store.memory_dir().glob("compacted-*.md"):
+    for p in md_store.iter_briefs():
         base = p.stem[len("compacted-"):]
         topic = re.sub(r"-\d+$", "", base)
         try:

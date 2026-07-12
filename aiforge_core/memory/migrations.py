@@ -257,6 +257,14 @@ def run_startup_migrations() -> dict:
     except Exception as exc:  # noqa: BLE001
         out["reembed"] = {"ok": False, "error": str(exc)}
 
+    # ── move legacy root-level compacted-*.md briefs into the compacted/ folder
+    # (keeps the memory-dir root to transient captures only). Idempotent.
+    try:
+        from aiforge_core.memory import md_store
+        out["briefs_folder"] = md_store.migrate_briefs_to_folder()
+    except Exception as exc:  # noqa: BLE001
+        out["briefs_folder"] = {"ok": False, "error": str(exc)}
+
     # ── compact FIRST: fold old-format per-note .md files into their topic/repo
     # briefs + retire masquerading captures NOW (don't wait for the hourly job),
     # so the brief→OKR step below sees consolidated briefs. Same passes as the

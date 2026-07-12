@@ -23,14 +23,14 @@ def test_union_back_appends_missing():
 def test_sweep_empty_keeps_links_only_brief(mem):
     from aiforge_core.memory import md_store
     from aiforge_core.runtime import work_notes
-    (md_store.memory_dir() / "compacted-svc.md").write_text(
+    (md_store.brief_path("svc")).write_text(
         work_notes.render_note("knowledge", "svc", title="svc",
                                objective="Durable knowledge.",
                                links=["[global](compacted-shared.md)"],
                                updated_at="2026-07-12T00:00:00+00:00"),
         encoding="utf-8")
     md_store.sweep_empty_briefs(archive=True)
-    assert (md_store.memory_dir() / "compacted-svc.md").exists()  # links = content
+    assert (md_store.brief_path("svc")).exists()  # links = content
 
 
 def test_learnings_cap_keeps_newest_after_union_back(monkeypatch):

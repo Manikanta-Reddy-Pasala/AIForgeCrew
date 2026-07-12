@@ -21,7 +21,7 @@ def mem(monkeypatch, tmp_path):
 
 def _facts_kr(md_store, repo="svc"):
     from aiforge_core.runtime.work_notes import parse_note
-    p = md_store.memory_dir() / f"compacted-{md_store._slug(repo)}.md"
+    p = md_store.brief_path(md_store._slug(repo))
     sec = parse_note(p.read_text())["sections"]
     return sec.get("facts", []), sec.get("key_results", [])
 

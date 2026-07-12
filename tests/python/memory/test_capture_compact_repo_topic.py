@@ -35,7 +35,7 @@ def test_compact_by_repo_makes_project_brief(cfg):
     r = m.compact(group_by="repo", min_group=2, summarize=False)
     assert r["groups"].get("svc") == 2          # svc rolled up
     assert "other" not in r["groups"]           # singleton left alone
-    briefs = sorted(p.name for p in m.memory_dir().glob("compacted-svc.md"))
+    briefs = sorted(p.name for p in m.iter_briefs() if p.name == "compacted-svc.md")
     assert briefs == ["compacted-svc.md"]
 
 
@@ -108,7 +108,7 @@ def test_compact_min_group_1_folds_a_lone_note(cfg):
     r = m.compact(group_by="topic", min_group=1, summarize=False,
                   archive_sources=True)
     assert r["groups"].get("solo") == 1                    # folded at 1
-    live = {p.name for p in m.memory_dir().glob("*.md")}
+    live = {p.name for p in m._all_md_files()}
     assert any(n.startswith("compacted-") for n in live)   # topic brief made
 
 

@@ -27,7 +27,7 @@ def _write_brief(md_store, key, facts):
         "knowledge", key, title=f"{key} brief",
         objective="Durable knowledge for this scope.", facts=facts,
         updated_at="2026-07-12T00:00:00+00:00")
-    p = md_store.memory_dir() / f"compacted-{key}.md"
+    p = md_store.brief_path(key)
     p.write_text(text, encoding="utf-8")
     return p
 
@@ -62,8 +62,8 @@ def test_map_scopes_links_related_briefs_bidirectionally(monkeypatch, mem):
     assert res["edges"] >= 1
 
     from aiforge_core.runtime.work_notes import parse_note
-    shared = parse_note((md_store.memory_dir() / "compacted-shared.md").read_text())
-    pos = parse_note((md_store.memory_dir() / "compacted-oneshell-pos.md").read_text())
+    shared = parse_note((md_store.brief_path("shared")).read_text())
+    pos = parse_note((md_store.brief_path("oneshell-pos")).read_text())
     assert any("compacted-oneshell-pos.md" in l
                for l in shared["sections"].get("links", []))
     assert any("compacted-shared.md" in l
@@ -101,7 +101,7 @@ def test_map_scopes_caps_links_per_brief(monkeypatch, mem):
     res = md_store.map_scopes()
     # shared is capped at 2 outgoing links
     from aiforge_core.runtime.work_notes import parse_note
-    shared = parse_note((md_store.memory_dir() / "compacted-shared.md").read_text())
+    shared = parse_note((md_store.brief_path("shared")).read_text())
     assert len([l for l in shared["sections"].get("links", [])
                 if "compacted-" in l]) == 2
 
@@ -118,7 +118,7 @@ def test_map_scopes_strips_stale_links_keeps_urls(monkeypatch, mem):
         facts=["a repo fact"],
         links=["[old](compacted-gone.md)", "https://jira.example/browse/ONE-1"],
         updated_at="2026-07-12T00:00:00+00:00")
-    (md_store.memory_dir() / "compacted-svc.md").write_text(text, encoding="utf-8")
+    (md_store.brief_path("svc")).write_text(text, encoding="utf-8")
     _write_brief(md_store, "shared", ["a global fact"])
 
     def _fake(role, messages, model, *a, **k):
@@ -127,7 +127,7 @@ def test_map_scopes_strips_stale_links_keeps_urls(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     md_store.map_scopes()
     svc = work_notes.parse_note(
-        (md_store.memory_dir() / "compacted-svc.md").read_text())
+        (md_store.brief_path("svc")).read_text())
     links = svc["sections"].get("links", [])
     assert not any("compacted-gone.md" in l for l in links)   # stale sibling gone
     assert any("ONE-1" in l for l in links)                   # real URL kept

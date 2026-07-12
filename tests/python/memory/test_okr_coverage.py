@@ -77,11 +77,11 @@ def test_migrate_legacy_recent_brief(cfg):
               "repo: svc\nsource: brief:svc\ncreated: 2026-07-01\n---\n\n"
               "# svc memory (compacted)\n\nConsolidated prose here.\n\n"
               "## Recent\n- fact alpha\n- fact beta\n")
-    (m.memory_dir() / "compacted-svc.md").write_text(legacy, encoding="utf-8")
+    (m.brief_path("svc")).write_text(legacy, encoding="utf-8")
     r = m.migrate_to_okr()
     assert r["migrated"] == 1
     from aiforge_core.runtime import work_notes
-    raw = (m.memory_dir() / "compacted-svc.md").read_text()
+    raw = (m.brief_path("svc")).read_text()
     parsed = work_notes.parse_note(raw)
     assert parsed["frontmatter"]["kind"] == "knowledge"
     assert parsed["sections"]["facts"] == ["fact alpha", "fact beta"]
@@ -102,7 +102,7 @@ def test_migrate_only_touches_briefs(cfg):
     from aiforge_core.memory import md_store as m
     m.write("some session", "body", kind="session", source="chat-x")
     m._brief_upsert("svc", "f")
-    (m.memory_dir() / "compacted-svc.md").write_text(
+    (m.brief_path("svc")).write_text(
         "---\nkind: compacted\n---\n# x\n## Recent\n- z\n", encoding="utf-8")
     r = m.migrate_to_okr()
     assert r["migrated"] == 1              # only the compacted brief
@@ -120,7 +120,7 @@ def test_recompact_no_double_envelope(cfg):
     m.compact(group_by="repo", min_group=2, summarize=False, archive_sources=False)
     m.capture("project_learning", "svc: fact three", repo="svc", topic="t")
     m.compact(group_by="repo", min_group=1, summarize=False, archive_sources=False)
-    raw = (m.memory_dir() / "compacted-svc.md").read_text()
+    raw = (m.brief_path("svc")).read_text()
     # exactly ONE frontmatter block, ONE Objective — no nesting
     assert raw.count("## Objective") == 1
     assert raw.split("---", 2)[1].count("kind:") == 1

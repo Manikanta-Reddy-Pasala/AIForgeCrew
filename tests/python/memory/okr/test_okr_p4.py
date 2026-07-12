@@ -73,13 +73,13 @@ def test_migrate_from_briefs(cfg, monkeypatch):
     from aiforge_core.memory import md_store, okr
     from aiforge_core.runtime import work_notes
     # two topic briefs (one split) + a non-knowledge file
-    (md_store.memory_dir() / "compacted-auth.md").write_text(
+    (md_store.brief_path("auth")).write_text(
         work_notes.render_note("knowledge", "auth", title="auth",
                                facts=["rotate keys 90d"]), encoding="utf-8")
-    (md_store.memory_dir() / "compacted-auth-2.md").write_text(
+    (md_store.brief_path("auth-2")).write_text(
         work_notes.render_note("knowledge", "auth-2", title="auth p2",
                                facts=["mTLS between services"]), encoding="utf-8")
-    (md_store.memory_dir() / "compacted-sync.md").write_text(
+    (md_store.brief_path("sync")).write_text(
         work_notes.render_note("knowledge", "sync", title="sync",
                                facts=["exponential backoff"]), encoding="utf-8")
     r = okr.migrate_from_briefs()

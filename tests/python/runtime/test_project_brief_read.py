@@ -20,7 +20,7 @@ def mem(monkeypatch, tmp_path):
 
 def _brief(md_store, key, facts, links=None):
     from aiforge_core.runtime import work_notes
-    (md_store.memory_dir() / f"compacted-{key}.md").write_text(
+    (md_store.brief_path(key)).write_text(
         work_notes.render_note("knowledge", key, title=f"{key}",
                                objective="Durable knowledge.", facts=facts,
                                links=links or [],
