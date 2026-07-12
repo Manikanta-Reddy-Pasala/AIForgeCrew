@@ -234,12 +234,16 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
 
 
 def delete_stale_compacted_notes() -> int:
-    """Remove compacted-brief rows stranded under ``repo='notes'`` — the pre-fix
-    default before briefs were ingested under their real scope. Idempotent
-    (0 once clean). Returns count removed."""
+    """Reclaim STALE brief index rows so a brief isn't stored twice:
+      * compacted rows stranded under ``repo='notes'`` (pre-scope-fix default);
+      * the old ``ingest_dir`` brief rows keyed ``source='md:compacted-…'``
+        (before ingest_dir mirrored Phase-3's ``kind=compacted``/``compacted:…``).
+    Both are re-created cleanly by the ensuing ingest under the unified
+    kind+source. Idempotent (0 once clean). Returns count removed."""
     with _LOCK, _conn() as c:
         cur = c.execute(
-            "DELETE FROM memory_units WHERE kind = 'compacted' AND repo = 'notes'")
+            "DELETE FROM memory_units WHERE (kind = 'compacted' AND repo = 'notes')"
+            " OR source LIKE 'md:compacted-%'")
         return cur.rowcount or 0
 
 
