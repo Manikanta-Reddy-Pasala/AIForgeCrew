@@ -327,6 +327,44 @@ _MAP_SYS = (
 )
 
 
+def _order_briefs_by_similarity(briefs: list[dict]) -> list[dict]:
+    """Reorder briefs so EMBEDDING-similar ones are adjacent (greedy
+    nearest-neighbour chain), so map_scopes' fixed-size batches co-present
+    topically-related briefs regardless of NAME — alphabetical batching could
+    never link ``auth-service`` ↔ ``login-flow``. Falls back to the input order
+    if embeddings are unavailable. Never raises."""
+    try:
+        from aiforge_core.memory import local_embed
+        vecs = {}
+        for b in briefs:
+            v = local_embed.embed((b.get("summary") or b.get("key") or "")[:400])
+            if any(v):
+                vecs[b["key"]] = v
+        if len(vecs) < 3:
+            return briefs
+
+        def _cos(a, c):
+            num = sum(x * y for x, y in zip(a, c))
+            da = sum(x * x for x in a) ** 0.5
+            dc = sum(y * y for y in c) ** 0.5
+            return num / (da * dc) if da and dc else 0.0
+
+        remaining = [b for b in briefs if b["key"] in vecs]
+        tail = [b for b in briefs if b["key"] not in vecs]
+        ordered = [remaining.pop(0)]
+        while remaining:
+            last = vecs[ordered[-1]["key"]]
+            best_i, best_s = 0, -2.0
+            for i, b in enumerate(remaining):
+                s = _cos(last, vecs[b["key"]])
+                if s > best_s:
+                    best_s, best_i = s, i
+            ordered.append(remaining.pop(best_i))
+        return ordered + tail
+    except Exception:  # noqa: BLE001 — no embedder → keep the given order
+        return briefs
+
+
 def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
     """Link related scope briefs BIDIRECTIONALLY: an LLM proposes which briefs
     share subject matter (a project ↔ the global/topic brief it relates to) and
@@ -338,11 +376,13 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
     if len(briefs) < 2:
         return {"edges": 0}
     by_key = {b["key"]: b for b in briefs}
+    # Order by EMBEDDING similarity (not alphabetical) so a fixed-size batch
+    # co-presents topically-related briefs even when their names differ — the
+    # alphabetical batching left ~88% of cross-name pairs never co-presented.
+    briefs = _order_briefs_by_similarity(briefs)
     lines = [f"- {b['key']}: {b['summary']}" for b in briefs]
     # BATCH so each call's listing fits the input budget — a flat listing[:cap]
     # silently hides most briefs once there are 100s of them (the edges=0 bug).
-    # Briefs are alphabetical, so topical clusters (branch-*, cache-*) stay in the
-    # same batch and still get linked.
     # Small batches keep each call fast (~10s for ~35 briefs on a local 122B);
     # a big single listing times out on a cold model. AIFORGE_OKR_MAP_INPUT_CHARS
     # tunes it.
@@ -1064,6 +1104,7 @@ def ingest_dir() -> dict:
     content hashing, so re-running is safe.
     """
     n = 0
+    present_sources: set[str] = set()   # sources of files on disk → for reconcile
     # Reclaim compacted-brief rows stranded under repo='notes' before briefs were
     # ingested under their real scope (else they linger as duplicates forever).
     try:
@@ -1107,10 +1148,24 @@ def ingest_dir() -> dict:
             _ingest_unit(title=d["title"], body=body, kind=kind,
                          tags=d["tags"], source=source, repo=repo,
                          replace=replace)
+            present_sources.add(source)
             n += 1
         except Exception:  # noqa: BLE001
             continue
-    return {"ok": True, "ingested": n, "dir": str(memory_dir())}
+    # RECONCILE: md is the source of truth — prune index rows whose md file was
+    # DELETED or archived (create/update already handled by the ingest above).
+    pruned = 0
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if _bsel.embedded():
+            from aiforge_core.memory import sqlite_memory as _sqlmem
+            pruned = _sqlmem.prune_missing_file_rows(present_sources)
+            if pruned:
+                _log.info("ingest_dir: pruned %d orphan rows (md deleted)", pruned)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "ingested": n, "pruned": pruned,
+            "dir": str(memory_dir())}
 
 
 def _demote_headings(body: str, by: int = 2) -> str:
@@ -1827,6 +1882,17 @@ def cleanup_legacy_compacted(*, dry_run: bool = False,
 def delete_file(name: str) -> bool:
     p = memory_dir() / (name if name.endswith(".md") else f"{name}.md")
     if p.is_file() and p.parent == memory_dir():
+        stem = p.stem
         p.unlink()
+        # Sync the vector index: drop this file's row(s) immediately (md is the
+        # source of truth — a deleted file must not linger in search).
+        try:
+            from aiforge_core.memory import backend_select, sqlite_memory
+            if backend_select.embedded():
+                src = (f"compacted:{stem}" if stem.startswith("compacted-")
+                       else f"md:{stem}")
+                sqlite_memory.delete_by_source(src)
+        except Exception:  # noqa: BLE001
+            pass
         return True
     return False

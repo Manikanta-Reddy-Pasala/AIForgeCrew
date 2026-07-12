@@ -247,6 +247,23 @@ def delete_stale_compacted_notes() -> int:
         return cur.rowcount or 0
 
 
+def prune_missing_file_rows(present_sources) -> int:
+    """Delete file-backed index rows (``source`` ``md:*`` / ``compacted:*``) whose
+    md file is GONE — keeps the vector index in sync when an md is deleted or
+    archived (md is the source of truth). ``present_sources`` = the sources of
+    the files currently on disk. Rows from non-file origins (chat-session:,
+    migrate:, capture, rule …) are untouched. Returns count removed."""
+    present = set(present_sources or [])
+    with _LOCK, _conn() as c:
+        rows = c.execute(
+            "SELECT id, source FROM memory_units "
+            "WHERE source LIKE 'md:%' OR source LIKE 'compacted:%'").fetchall()
+        ids = [r["id"] for r in rows if r["source"] not in present]
+        for i in ids:
+            c.execute("DELETE FROM memory_units WHERE id = ?", (i,))
+        return len(ids)
+
+
 def delete_by_source(source: str) -> int:
     """Delete every unit with this exact ``source``. Used to reclaim a brief's
     PRIOR index generation before re-ingesting the new one — otherwise each

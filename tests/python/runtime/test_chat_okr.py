@@ -104,3 +104,42 @@ def test_previous_session_brief_empty_when_only_current(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.runtime.chat_store.list_sessions",
                         lambda: [{"id": 5}])
     assert chat_okr.previous_session_brief(5) == ""
+
+
+def test_compact_session_skips_when_no_new_messages(monkeypatch, mem):
+    monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "0")
+    from aiforge_core.runtime import chat_okr
+    monkeypatch.setattr("aiforge_core.runtime.chat_store.get_messages",
+                        lambda sid: _MSGS)
+
+    def _fake(role, messages, model, *a, **k):
+        return types.SimpleNamespace(items=[
+            types.SimpleNamespace(text="a durable fact", kind="learning")])
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
+    r1 = chat_okr.compact_session("s1", repo="svc")
+    assert r1["captured"] == 1
+    r2 = chat_okr.compact_session("s1", repo="svc")   # no new messages
+    assert r2.get("skipped") == "no_new" and r2["captured"] == 0
+
+
+def test_compact_session_only_new_turns(monkeypatch, mem):
+    monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "0")
+    from aiforge_core.runtime import chat_okr
+    state = {"msgs": list(_MSGS)}
+    monkeypatch.setattr("aiforge_core.runtime.chat_store.get_messages",
+                        lambda sid: state["msgs"])
+    seen = {}
+
+    def _fake(role, messages, model, *a, **k):
+        seen["last"] = messages[-1]["content"]
+        return types.SimpleNamespace(items=[
+            types.SimpleNamespace(text="fact", kind="learning")])
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
+    chat_okr.compact_session("s1", repo="svc")               # folds 3 msgs
+    state["msgs"] = list(_MSGS) + [
+        {"role": "user", "content": "BRAND NEW deploy uses systemd now"}]
+    chat_okr.compact_session("s1", repo="svc")               # only the new one
+    assert "BRAND NEW deploy" in seen["last"]
+    assert "always run tests" not in seen["last"]            # old turns not re-sent

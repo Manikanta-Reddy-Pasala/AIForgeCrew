@@ -94,12 +94,44 @@ def _extract(transcript: str, role: str) -> list:
         return []
 
 
+def _marker_path():
+    from aiforge_core.memory import md_store
+    return md_store.memory_dir() / ".session_okr_marker.json"
+
+
+def _load_marker() -> dict:
+    import json
+    try:
+        with open(_marker_path(), encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_marker(d: dict) -> None:
+    import json
+    try:
+        p = _marker_path()
+        tmp = str(p) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
 def compact_session(session_id, *, repo: str | None = None,
                     role: str = "learner", min_turns: int = 2) -> dict:
     """Distil ONE session into scoped OKR briefs. Never raises.
 
+    Only messages AFTER the last-compacted offset are re-extracted (a durable
+    per-session marker), so a re-compaction on restart or when more messages
+    arrive doesn't re-distil — and re-capture reworded duplicates of — the
+    already-folded earlier turns.
+
     Returns ``{"ok": bool, "captured": int, ...}`` — ``skipped`` for disabled /
-    too-short sessions."""
+    too-short / no-new sessions."""
     if _disabled():
         return {"ok": False, "skipped": "disabled", "captured": 0}
     try:
@@ -118,7 +150,17 @@ def compact_session(session_id, *, repo: str | None = None,
     if len(turns) < max(1, int(min_turns)):
         return {"ok": True, "skipped": "too_short", "captured": 0}
 
-    transcript = _transcript(turns, _int_env("AIFORGE_SESSION_COMPACT_CHARS", 8000))
+    # Durable offset: distil only turns NEW since the last compaction.
+    marker = _load_marker()
+    last = marker.get(str(session_id), 0)
+    if not isinstance(last, int) or last < 0:
+        last = 0
+    if len(turns) <= last:
+        return {"ok": True, "skipped": "no_new", "captured": 0}
+    new_turns = turns[last:]
+
+    transcript = _transcript(new_turns,
+                             _int_env("AIFORGE_SESSION_COMPACT_CHARS", 8000))
     items = _extract(transcript, role)
     captured = 0
     for it in items:
@@ -133,7 +175,11 @@ def compact_session(session_id, *, repo: str | None = None,
             captured += 1
         except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
             log.debug("chat_okr capture failed: %s", exc)
-    log.info("chat_okr: session=%s repo=%s captured=%d", session_id, repo, captured)
+    # Advance the durable offset so already-distilled turns aren't re-extracted.
+    marker[str(session_id)] = len(turns)
+    _save_marker(marker)
+    log.info("chat_okr: session=%s repo=%s captured=%d (offset→%d)",
+             session_id, repo, captured, len(turns))
     return {"ok": True, "captured": captured}
 
 
