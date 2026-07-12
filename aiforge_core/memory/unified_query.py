@@ -343,6 +343,13 @@ def query(
 
     raw_hits.sort(key=lambda h: -float(h.get("score") or 0))
 
+    # Snapshot the ranked hits BEFORE cross-channel dedup. The flat `hits` below
+    # collapse a brief that matched BOTH the vector KNN and the keyword index
+    # into one copy (right for agents), but that hides the vector index behind
+    # the keyword copy in the UI's per-origin split. Keep the pre-dedup ranked
+    # list so the API can show each channel's OWN results (overlap expected).
+    ranked_predupe = list(raw_hits)
+
     # Cross-source content dedup: the same doc can arrive from find_doc AND
     # afm_bundle; keep the highest-scored copy. Soft-fail → un-deduped.
     try:
@@ -399,12 +406,17 @@ def query(
                 if add:
                     used.append("linked")
                     top = top + add
+                    ranked_predupe = ranked_predupe + add
         except Exception as exc:  # noqa: BLE001 — expansion must never break query
             errors.append(f"linked: {exc}")
 
     result = {
         "query": text,
         "hits": top,
+        # Per-channel ranked view (pre cross-channel dedup) for the UI/API split
+        # so the vector index shows its OWN results instead of only the briefs
+        # that survived dedup against the keyword copy.
+        "ranked": ranked_predupe,
         "used_sources": used,
         "errors": errors,
     }

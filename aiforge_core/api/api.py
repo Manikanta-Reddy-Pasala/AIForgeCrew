@@ -2104,12 +2104,25 @@ def memory_search(q: str = Query(..., min_length=2),
             "metadata": {"ticket": h.get("ticket"), "repo": h.get("repo")},
         }
 
-    def _grouped(rows: list[dict], res: dict) -> dict:
+    def _grouped(flat: list[dict], group_rows: list[dict], res: dict) -> dict:
+        # Groups are built from the PRE-dedup ranked list so a brief that matched
+        # BOTH the vector KNN and the keyword index shows in BOTH the vector and
+        # md buckets (overlap is expected), instead of the vector index hiding
+        # behind whichever copy won cross-channel dedup. Dedup WITHIN each bucket
+        # (by text) and cap at top_k. The flat `hits` stay cross-channel-deduped
+        # (what agents consume).
         groups: dict[str, list[dict]] = {"vector": [], "md": [], "other": []}
-        for r in rows:
-            groups.setdefault(r["origin"], []).append(r)
+        seen: dict[str, set] = {"vector": set(), "md": set(), "other": set()}
+        for r in group_rows:
+            g = r["origin"]
+            key = (r.get("text") or "")[:200]
+            if key in seen[g]:
+                continue
+            seen[g].add(key)
+            if len(groups[g]) < top_k:
+                groups[g].append(r)
         return {"query": q, "used_sources": res.get("used_sources", []),
-                "groups": groups, "hits": rows}
+                "groups": groups, "hits": flat}
 
     if backend in ("sqlite", "neo4j"):
         # Full HYBRID (same as the agents' memory_lookup): semantic KNN
@@ -2117,8 +2130,9 @@ def memory_search(q: str = Query(..., min_length=2),
         from aiforge_core.memory import unified_query as _uq
         res = _uq.query(q, role=role, limit=top_k)
         tier = "embedded" if backend == "sqlite" else "graph"
-        rows = [_shape(h, tier) for h in res.get("hits", [])]
-        return _grouped(rows, res)
+        flat = [_shape(h, tier) for h in res.get("hits", [])]
+        grp = [_shape(h, tier) for h in res.get("ranked", res.get("hits", []))]
+        return _grouped(flat, grp, res)
 
     from aiforge_core.memory.store import Memory
     m = Memory()
@@ -2129,7 +2143,7 @@ def memory_search(q: str = Query(..., min_length=2),
          "text": h.text[:800], "score": h.score, "metadata": h.metadata}
         for h in hits
     ]
-    return _grouped(rows, {"used_sources": []})
+    return _grouped(rows, rows, {"used_sources": []})
 
 
 # ───────────────────── Memory sources (ingestion) ──────────────────────

@@ -100,9 +100,11 @@ def test_memory_search_embedded(client):
     # results are separated by origin; every hit carries its bucket
     assert set(body["groups"]) == {"vector", "md", "other"}
     assert all(row.get("origin") in ("vector", "md", "other") for row in rows)
-    # the flat hits equal the union of the groups
-    grouped = sum(len(v) for v in body["groups"].values())
-    assert grouped == len(rows)
+    # groups come from the PRE-dedup ranked list (a brief matched by both the
+    # vector KNN and the keyword index shows in BOTH buckets) → they overlap and
+    # need not equal the cross-channel-deduped flat hits.
+    for g, gr in body["groups"].items():
+        assert all(row.get("origin") == g for row in gr)
 
 
 def test_set_openai_compatible_role_with_key(client):
