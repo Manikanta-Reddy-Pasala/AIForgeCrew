@@ -111,7 +111,12 @@ def migrate_briefs_to_folder() -> dict:
     Idempotent; never raises. Skips captures (``<slug>-YYYYMMDD-<6hex>.md``)."""
     moved = 0
     bdir = briefs_dir()
-    for p in list(iter_briefs()):
+    # ROOT-level briefs ONLY — a brief already in bdir must NEVER be touched
+    # (iterating iter_briefs() here would compute dest==source and unlink the
+    # live brief — a data-loss bug).
+    for p in list(memory_dir().glob("compacted-*.md")):
+        if p.parent == bdir:
+            continue                                # already in the folder — skip
         if _CAPTURE_SIG_RE.search(p.name):
             continue                                # transient capture, not a brief
         dest = bdir / p.name
