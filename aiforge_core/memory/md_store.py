@@ -122,6 +122,10 @@ def _ingest_unit(*, title: str, body: str, kind: str, tags: list[str],
         if _bsel.embedded():
             from aiforge_core.memory import sqlite_memory as _sqlmem
             if replace:
+                # embed-only-on-change: if the source's row already holds this
+                # exact text, leave it — skip a needless delete + re-embed.
+                if _sqlmem.source_text_unchanged(source, f"{title}\n\n{body}".strip()):
+                    return
                 _sqlmem.delete_by_source(source)
             _sqlmem.write_unit(text=text, kind=kind, source=source,
                                tags=tags, metadata={"md": True}, repo=repo)
@@ -161,6 +165,17 @@ def write(title: str, text: str, *, kind: str = "note",
     # capture would slip past compaction FOREVER and pile up. Strip the prefix
     # (the date+hex suffix still keeps the name unique).
     stem = re.sub(r"^compacted[-_]+", "", stem) or f"note-{digest}"
+    # CONTENT DEDUP: an identical note (same title+text → same digest) captured
+    # on a different day would otherwise mint a NEW dated file. If one already
+    # exists, reuse it — no duplicate md file, no re-ingest.
+    for _ex in memory_dir().glob(f"*-{digest}.md"):
+        try:
+            _exd = _parse(_ex)
+            if (_exd.get("title") or "") == title and (_exd.get("body") or "").strip() == (text or "").strip():
+                _exd.pop("body", None)
+                return _exd
+        except Exception:  # noqa: BLE001
+            continue
     path = memory_dir() / f"{stem}.md"
     fm = (
         "---\n"

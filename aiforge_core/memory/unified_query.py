@@ -60,6 +60,7 @@ _DEFAULT_WEIGHTS = {
     "vector":     1.0,   # global (repo-agnostic) Observation_v2 vector/FT recall
     "xrepo":      0.7,   # AiForgeMemory CALLS_REPO cross-repo edges
     "chat":       0.6,   # prior chat-session message content (chat_store)
+    "keyword":    0.9,   # BM25 keyword/exact-id recall (FTS5), fused with vector
 }
 
 
@@ -125,6 +126,22 @@ def query(
                 )
     except Exception as exc:
         errors.append(f"memory: {exc}")
+
+    # 1b) KEYWORD/BM25 recall (FTS5) — hybrid partner to the vector 'memory'
+    # source. Catches exact ids / service names / hashes that embeddings blur,
+    # with spell correction. Fused by the same per-source normalize+weight below.
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if _bsel.embedded():
+            from aiforge_core.memory import sqlite_memory as _sqlmem
+            _krepo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
+            krows = _sqlmem.keyword_search(text, repo=_krepo, limit=limit)
+            if krows:
+                used.append("keyword")
+                raw_hits.extend(
+                    _tag(krows, source="keyword", weight=weights["keyword"]))
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"keyword: {exc}")
 
     # 2) Ticket brief — explicit ticket OR auto-detected token
     auto_ticket = ticket or (_TICKET_RE.search(text) or [None])[0]

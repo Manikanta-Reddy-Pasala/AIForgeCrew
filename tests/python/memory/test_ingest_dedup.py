@@ -47,3 +47,22 @@ def test_delete_stale_compacted_notes(mem):
                   source="compacted:y")
     assert sm.delete_stale_compacted_notes() == 1
     assert _rows("compacted") == 1
+
+
+def test_write_content_dedup_no_duplicate_md(mem):
+    from aiforge_core.memory import md_store
+    a = md_store.write("same note", "identical body", kind="note", repo="svc")
+    b = md_store.write("same note", "identical body", kind="note", repo="svc")
+    files = list(md_store.memory_dir().glob("*.md"))
+    assert len(files) == 1                 # no duplicate md file
+    assert a["file"] == b["file"]
+
+
+def test_embed_on_change_skips_reingest(mem):
+    from aiforge_core.memory import md_store, sqlite_memory as sm
+    md_store._ingest_unit(title="t", body="stable body", kind="compacted",
+                          tags=[], source="compacted:x", repo="svc", replace=True)
+    n1 = _rows()
+    md_store._ingest_unit(title="t", body="stable body", kind="compacted",
+                          tags=[], source="compacted:x", repo="svc", replace=True)
+    assert _rows() == n1                   # unchanged → not re-inserted
