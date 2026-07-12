@@ -830,6 +830,69 @@ function NotesPanel() {
   );
 }
 
+// ─── Hybrid search (the SAME engine agents use: semantic KNN + keyword + spell) ──
+function SearchPanel() {
+  const [q, setQ] = useState('');
+  const [hits, setHits] = useState<any[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = useCallback(async () => {
+    const query = q.trim();
+    if (query.length < 2) return;
+    setBusy(true);
+    try {
+      setHits(await api.memorySearch(query, 'planner', 12));
+    } catch (e: any) {
+      toast.error('Search failed: ' + (e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }, [q]);
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2>Search memory</h2>
+        <span className="muted small">
+          Same hybrid recall the agents use — semantic nearest-neighbour
+          (sqlite-vec) + keyword (BM25) + spell-correction, fused. Try a
+          paraphrase (“how do we ship a release”) or an exact id.
+        </span>
+      </div>
+      <div className="row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <input
+          style={{ flex: 1, minWidth: 240 }}
+          placeholder="search across all memory…"
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') run(); }}
+        />
+        <button onClick={run} disabled={busy || q.trim().length < 2}>
+          {busy ? 'Searching…' : 'Search'}
+        </button>
+      </div>
+      {hits && hits.length === 0 && <div className="muted small">No matches.</div>}
+      {hits && hits.length > 0 && (
+        <div className="col" style={{ gap: 8 }}>
+          {hits.map((h, i) => (
+            <div key={i} className="card" style={{ padding: '10px 12px' }}>
+              <div className="row small muted" style={{ gap: 8, marginBottom: 4 }}>
+                <span className="pill">{h.wing || 'memory'}</span>
+                {h.source && <span>{truncate(h.source, 32)}</span>}
+                {h.metadata?.repo && <span>· {h.metadata.repo}</span>}
+                {typeof h.score === 'number' && (
+                  <span style={{ marginLeft: 'auto' }}>score {h.score.toFixed(2)}</span>
+                )}
+              </div>
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{h.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Memory() {
   return (
     <>
@@ -839,6 +902,9 @@ export default function Memory() {
           <div className="subtitle">Goal graph, indexed sources, and human-readable notes.</div>
         </div>
       </div>
+
+      {/* Hybrid search — same engine the agents use */}
+      <SearchPanel />
 
       {/* OKR-DAG — the goal-oriented memory (primary) */}
       <OkrPanel />
