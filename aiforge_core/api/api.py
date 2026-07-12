@@ -2061,52 +2061,75 @@ def memory_stats() -> dict:
     return {"backend": "postgres", "wings": rows}
 
 
+def _search_origin(h: dict) -> str:
+    """Bucket a unified-query hit for the UI/API split.
+
+    ``vector`` — retrieved by the semantic embedding index (sqlite-vec KNN /
+    Neo4j vector). ``md`` — backed by / retrieved from a markdown memory file
+    (keyword-BM25 over md text, brief rows, link expansion). ``other`` —
+    everything else (afm bundle, ticket, graphify, cross-repo…)."""
+    ch = str(h.get("channel") or "").strip()
+    if ch in ("memory", "vector"):
+        return "vector"
+    if ch in ("keyword", "linked"):
+        return "md"
+    src = str(h.get("source") or "")
+    if src.startswith("compacted:") or src.startswith("md:"):
+        return "md"
+    return "other"
+
+
 @app.get("/api/memory/search")
 def memory_search(q: str = Query(..., min_length=2),
                   role: str = Query("sr_developer"),
-                  top_k: int = Query(12, le=50)) -> list[dict]:
+                  top_k: int = Query(12, le=50)) -> dict:
+    """Hybrid memory search, results SEPARATED by origin.
+
+    Returns ``{"query", "used_sources", "groups": {"vector": [...], "md":
+    [...], "other": [...]}, "hits": [...]}`` — ``groups`` splits semantic
+    vector-index hits from md-file/keyword hits (and everything else); ``hits``
+    is the same rows flat (rank order) for any caller that wants them merged.
+    Each row carries an ``origin`` field mirroring its group."""
     from aiforge_core.memory import backend_select as _bsel
     backend = _bsel.memory_backend()
-    if backend == "sqlite":
+
+    def _shape(h: dict, tier: str) -> dict:
+        origin = _search_origin(h)
+        return {
+            "tier": tier, "origin": origin, "channel": h.get("channel"),
+            "wing": h.get("kind") or h.get("source"),
+            "source": h.get("source"),
+            "linked": bool(h.get("linked")),
+            "text": (h.get("text") or "")[:800], "score": h.get("score"),
+            "metadata": {"ticket": h.get("ticket"), "repo": h.get("repo")},
+        }
+
+    def _grouped(rows: list[dict], res: dict) -> dict:
+        groups: dict[str, list[dict]] = {"vector": [], "md": [], "other": []}
+        for r in rows:
+            groups.setdefault(r["origin"], []).append(r)
+        return {"query": q, "used_sources": res.get("used_sources", []),
+                "groups": groups, "hits": rows}
+
+    if backend in ("sqlite", "neo4j"):
         # Full HYBRID (same as the agents' memory_lookup): semantic KNN
-        # (sqlite-vec) + keyword/BM25 + spell-correction, fused + ranked.
+        # (sqlite-vec) + keyword/BM25 + spell-correction + link expansion.
         from aiforge_core.memory import unified_query as _uq
         res = _uq.query(q, role=role, limit=top_k)
-        return [
-            {
-                "tier": "embedded", "wing": h.get("kind"),
-                "source": h.get("source"),
-                "text": (h.get("text") or "")[:800], "score": h.get("score"),
-                "metadata": {"ticket": h.get("ticket"), "repo": h.get("repo")},
-            }
-            for h in res.get("hits", [])
-        ]
-    if backend == "neo4j":
-        # Use the unified recall (afm_bundle + graph hops); map to UI rows.
-        from aiforge_core.memory import unified_query as _uq
-        res = _uq.query(q, role=role, limit=top_k)
-        return [
-            {
-                "tier": "graph", "wing": h.get("kind") or h.get("source"),
-                "source": h.get("source"),
-                "text": (h.get("text") or "")[:800],
-                "score": h.get("score"),
-                "metadata": {k: v for k, v in h.items()
-                             if k not in ("text", "score", "source")},
-            }
-            for h in res.get("hits", [])
-        ]
+        tier = "embedded" if backend == "sqlite" else "graph"
+        rows = [_shape(h, tier) for h in res.get("hits", [])]
+        return _grouped(rows, res)
+
     from aiforge_core.memory.store import Memory
     m = Memory()
     hits = m.search(q, role=role, top_k=top_k)
-    return [
-        {
-            "tier": h.tier, "wing": h.wing, "source": h.source,
-            "text": h.text[:800], "score": h.score,
-            "metadata": h.metadata,
-        }
+    rows = [
+        {"tier": h.tier, "origin": "other", "channel": None,
+         "wing": h.wing, "source": h.source, "linked": False,
+         "text": h.text[:800], "score": h.score, "metadata": h.metadata}
         for h in hits
     ]
+    return _grouped(rows, {"used_sources": []})
 
 
 # ───────────────────── Memory sources (ingestion) ──────────────────────

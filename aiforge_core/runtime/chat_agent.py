@@ -3976,20 +3976,22 @@ def run_chat_agent(
             _add_sys_block("executed", session_ledger.ledger_block(session_id))
         except Exception:  # noqa: BLE001 — ledger must never break a turn
             pass
-    # OKR-DAG: surgical goal context for the ACTIVE Key Result (why/what/rules/
-    # recent) — the Objective→KR→Learning→Session graph, not the whole memory.
-    # Injected whenever an active KR is set (okr.set_active); empty otherwise.
-    try:
-        from aiforge_core.memory import okr as _okr
-        # repo-scoped AND query-relevant: the global rules + THIS repo's
-        # learnings/solutions most related to the CURRENT ask — never every
-        # project's docs, never the whole scope dumped.
-        _q = next((m.get("content") or "" for m in reversed(messages)
-                   if m.get("role") == "user"), "")
-        _add_sys_block("okr", _okr.context_block(
-            repo=_chat_repo_key(cwd), query=_q))
-    except Exception:  # noqa: BLE001 — okr context must never break a turn
-        pass
+    # OKR-DAG: surgical goal context for the ACTIVE Key Result — the separate
+    # Objective→KR→Learning→Session node graph under memory/okr/. CONSOLIDATED
+    # OUT by default (AIFORGE_OKR_DAG=1 to re-enable): the flat compacted-<scope>
+    # briefs (project-memory block above) are the single OKR knowledge memory now;
+    # the DAG duplicated them with a staler parallel structure.
+    if os.environ.get("AIFORGE_OKR_DAG", "0") == "1":
+        try:
+            from aiforge_core.memory import okr as _okr
+            # repo-scoped AND query-relevant: the global rules + THIS repo's
+            # learnings/solutions most related to the CURRENT ask.
+            _q = next((m.get("content") or "" for m in reversed(messages)
+                       if m.get("role") == "user"), "")
+            _add_sys_block("okr", _okr.context_block(
+                repo=_chat_repo_key(cwd), query=_q))
+        except Exception:  # noqa: BLE001 — okr context must never break a turn
+            pass
     if _sys_dropped:                # one-line note so the trim is visible
         _add_sys_block("_note", "[context note: dropped/trimmed lower-priority "
                        "blocks to fit the window: " + ", ".join(_sys_dropped) + "]")

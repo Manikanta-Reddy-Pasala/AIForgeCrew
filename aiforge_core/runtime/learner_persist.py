@@ -38,6 +38,14 @@ log = logging.getLogger("aiforge.learner_persist")
 _DECISION_PREFIX = "DECISION:"
 
 
+class _OkrDagDisabled(Exception):
+    """Raised to skip OKR-DAG authoring when AIFORGE_OKR_DAG != '1'.
+
+    Caught by the surrounding best-effort ``except Exception`` blocks, so the
+    flat compacted-<scope> briefs stay the single OKR memory by default.
+    """
+
+
 def _is_disabled() -> bool:
     return os.environ.get("AIFORGE_LEARNER_PERSIST_DISABLE", "0") in ("1", "true")
 
@@ -171,6 +179,10 @@ def persist_facts(
     # what was SOLVED, mapped to the workspace/repo, topic, and the DB tables +
     # connected services the change touched. Best-effort; never raises.
     try:
+        # OKR-DAG (the separate memory/okr/ node graph) is consolidated OUT by
+        # default; the flat compacted-<scope> briefs are the OKR memory now.
+        if os.environ.get("AIFORGE_OKR_DAG", "0") != "1":
+            raise _OkrDagDisabled
         import datetime as _dt
         from aiforge_core.memory.okr import author as _okr_author
         _date = _dt.datetime.fromtimestamp(
@@ -206,6 +218,8 @@ def persist_facts(
     # keep the repo hub profile current; services/tables mentioned accrete onto
     # it. Best-effort; only when we know the repo.
     try:
+        if os.environ.get("AIFORGE_OKR_DAG", "0") != "1":
+            raise _OkrDagDisabled
         if repo and repo not in ("notes", "shared", "repo"):
             import datetime as _dt2
             from aiforge_core.memory.okr import author as _oa

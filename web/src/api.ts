@@ -97,7 +97,11 @@ export const api = {
     j<{ started: boolean; subtasks: number }>(`/tickets/${id}/run-parallel`, { method: 'POST' }),
   memoryStats:  () => j<any>('/memory/stats'),
   memorySearch: (q: string, role = 'planner', topK = 12) =>
-    j<any[]>(`/memory/search?q=${encodeURIComponent(q)}&role=${role}&top_k=${topK}`),
+    j<{
+      query: string; used_sources: string[];
+      groups: { vector: any[]; md: any[]; other: any[] };
+      hits: any[];
+    }>(`/memory/search?q=${encodeURIComponent(q)}&role=${role}&top_k=${topK}`),
   // Markdown-file memory (human-readable notes on disk + searchable)
   memoryFiles: () => j<any[]>('/memory/files'),
   memoryFileGet: (name: string) => j<any>(`/memory/files/${encodeURIComponent(name)}`),

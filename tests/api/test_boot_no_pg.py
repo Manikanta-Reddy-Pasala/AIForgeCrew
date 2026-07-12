@@ -94,8 +94,15 @@ def test_memory_search_embedded(client):
     c, _ = client
     r = c.get("/api/memory/search", params={"q": "widgets"})
     assert r.status_code == 200
-    rows = r.json()
+    body = r.json()
+    rows = body["hits"]
     assert any("widget" in (row.get("text") or "") for row in rows)
+    # results are separated by origin; every hit carries its bucket
+    assert set(body["groups"]) == {"vector", "md", "other"}
+    assert all(row.get("origin") in ("vector", "md", "other") for row in rows)
+    # the flat hits equal the union of the groups
+    grouped = sum(len(v) for v in body["groups"].values())
+    assert grouped == len(rows)
 
 
 def test_set_openai_compatible_role_with_key(client):

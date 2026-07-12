@@ -831,9 +831,34 @@ function NotesPanel() {
 }
 
 // ─── Hybrid search (the SAME engine agents use: semantic KNN + keyword + spell) ──
+type SearchGroups = { vector: any[]; md: any[]; other: any[] };
+
+function HitCard({ h }: { h: any }) {
+  return (
+    <div className="card" style={{ padding: '10px 12px' }}>
+      <div className="row small muted" style={{ gap: 8, marginBottom: 4 }}>
+        <span className="mem-wing-pill">{h.wing || 'memory'}</span>
+        {h.linked && <span className="mem-wing-pill">linked</span>}
+        {h.source && <span>{truncate(h.source, 32)}</span>}
+        {h.metadata?.repo && <span>· {h.metadata.repo}</span>}
+        {typeof h.score === 'number' && (
+          <span style={{ marginLeft: 'auto' }}>score {h.score.toFixed(2)}</span>
+        )}
+      </div>
+      <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{h.text}</div>
+    </div>
+  );
+}
+
+const SEARCH_GROUPS: { key: keyof SearchGroups; label: string; hint: string }[] = [
+  { key: 'vector', label: 'Vector index', hint: 'semantic nearest-neighbour (sqlite-vec)' },
+  { key: 'md', label: 'Markdown files', hint: 'keyword / BM25 + linked briefs' },
+  { key: 'other', label: 'Other sources', hint: 'bundle · ticket · graph' },
+];
+
 function SearchPanel() {
   const [q, setQ] = useState('');
-  const [hits, setHits] = useState<any[] | null>(null);
+  const [groups, setGroups] = useState<SearchGroups | null>(null);
   const [busy, setBusy] = useState(false);
 
   const run = useCallback(async () => {
@@ -841,7 +866,8 @@ function SearchPanel() {
     if (query.length < 2) return;
     setBusy(true);
     try {
-      setHits(await api.memorySearch(query, 'planner', 12));
+      const res = await api.memorySearch(query, 'planner', 12);
+      setGroups(res.groups);
     } catch (e: any) {
       toast.error('Search failed: ' + (e?.message || e));
     } finally {
@@ -849,14 +875,19 @@ function SearchPanel() {
     }
   }, [q]);
 
+  const total = groups
+    ? groups.vector.length + groups.md.length + groups.other.length
+    : 0;
+
   return (
     <div className="card">
       <div className="card-header">
         <h2>Search memory</h2>
         <span className="muted small">
           Same hybrid recall the agents use — semantic nearest-neighbour
-          (sqlite-vec) + keyword (BM25) + spell-correction, fused. Try a
-          paraphrase (“how do we ship a release”) or an exact id.
+          (sqlite-vec) + keyword (BM25) + spell-correction, fused. Results are
+          split by origin: vector index vs markdown files. Try a paraphrase
+          (“how do we ship a release”) or an exact id.
         </span>
       </div>
       <div className="row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -871,20 +902,17 @@ function SearchPanel() {
           {busy ? 'Searching…' : 'Search'}
         </button>
       </div>
-      {hits && hits.length === 0 && <div className="muted small">No matches.</div>}
-      {hits && hits.length > 0 && (
-        <div className="col" style={{ gap: 8 }}>
-          {hits.map((h, i) => (
-            <div key={i} className="card" style={{ padding: '10px 12px' }}>
-              <div className="row small muted" style={{ gap: 8, marginBottom: 4 }}>
-                <span className="mem-wing-pill">{h.wing || 'memory'}</span>
-                {h.source && <span>{truncate(h.source, 32)}</span>}
-                {h.metadata?.repo && <span>· {h.metadata.repo}</span>}
-                {typeof h.score === 'number' && (
-                  <span style={{ marginLeft: 'auto' }}>score {h.score.toFixed(2)}</span>
-                )}
+      {groups && total === 0 && <div className="muted small">No matches.</div>}
+      {groups && total > 0 && (
+        <div className="col" style={{ gap: 16 }}>
+          {SEARCH_GROUPS.filter(g => groups[g.key].length > 0).map(g => (
+            <div key={g.key} className="col" style={{ gap: 8 }}>
+              <div className="row small muted" style={{ gap: 8, alignItems: 'baseline' }}>
+                <strong style={{ fontSize: 13 }}>{g.label}</strong>
+                <span>· {groups[g.key].length}</span>
+                <span style={{ marginLeft: 'auto' }}>{g.hint}</span>
               </div>
-              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>{h.text}</div>
+              {groups[g.key].map((h, i) => <HitCard key={i} h={h} />)}
             </div>
           ))}
         </div>

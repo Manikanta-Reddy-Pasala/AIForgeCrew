@@ -151,7 +151,7 @@ def query(
             if row:
                 used.append("ticket")
                 raw_hits.append({
-                    **row, "source": "ticket",
+                    **row, "source": "ticket", "channel": "ticket",
                     "_raw_score": 1.0,
                     "_weight": weights["ticket"],
                     "score": 1.0 * weights["ticket"],
@@ -368,9 +368,43 @@ def query(
     except Exception as exc:
         errors.append(f"reranker: {exc}")
 
+    top = raw_hits[:limit]
+
+    # LINK EXPANSION: search returns the briefs that MATCHED; each brief's Links
+    # section (wired by map_scopes) points at its load-bearing neighbours. Follow
+    # those edges and append the connected briefs' FULL knowledge text so a hit
+    # surfaces its related briefs too — "search goes through the links and gives
+    # full info". Embedded (md-brief) backend only; soft-fails; gated by
+    # AIFORGE_UMEM_LINK_EXPAND (default on).
+    if os.environ.get("AIFORGE_UMEM_LINK_EXPAND", "1") == "1":
+        try:
+            from aiforge_core.memory import md_store as _mds
+            srcs = [h.get("source") for h in top if h.get("source")]
+            if srcs:
+                linked = _mds.expand_links(srcs, max_links=max(3, limit // 2))
+                seen_txt = {(h.get("text") or "").strip() for h in top}
+                add: list[dict] = []
+                for lk in linked:
+                    body = (lk.get("text") or "").strip()
+                    if not body or body in seen_txt:
+                        continue
+                    seen_txt.add(body)
+                    add.append({
+                        "text": body, "source": lk.get("source"),
+                        "channel": "linked",
+                        "kind": lk.get("kind"), "title": lk.get("title"),
+                        "score": 0.0, "linked": True,
+                        "source_uri": f"linked://{lk.get('file')}",
+                    })
+                if add:
+                    used.append("linked")
+                    top = top + add
+        except Exception as exc:  # noqa: BLE001 — expansion must never break query
+            errors.append(f"linked: {exc}")
+
     result = {
         "query": text,
-        "hits": raw_hits[:limit],
+        "hits": top,
         "used_sources": used,
         "errors": errors,
     }
@@ -845,6 +879,11 @@ def _tag(rows: list[dict], *, source: str, weight: float) -> list[dict]:
     for r in rows:
         d = dict(r)
         d["source"] = d.get("source") or source
+        # The retrieval CHANNEL (which index answered), kept SEPARATE from the
+        # display ``source`` (which is the unit's stored origin, e.g.
+        # ``compacted:<stem>``). Lets the UI/API split semantic-vector hits from
+        # md-file/keyword hits even when a brief carries its own source string.
+        d["channel"] = source
         raw = float(d.get("score") or 0.5)
         # Keep the pre-weight raw score + weight so _normalize_scores can
         # min-max rescale per source before ranking (fixed-score sources

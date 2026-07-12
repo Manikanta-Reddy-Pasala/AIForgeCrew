@@ -24,6 +24,30 @@ import os
 log = logging.getLogger("aiforge.memory.migrations")
 
 
+def _archive_okr_dag_folder() -> dict:
+    """Move a live ``<memory>/okr/`` node-graph folder to a sibling
+    ``<memory>/../memory-archive/okr[-N]/`` (kept, reversible). Idempotent —
+    a no-op once the live dir is gone. Never raises."""
+    import shutil
+    try:
+        from aiforge_core.memory.md_store import memory_dir
+        src = memory_dir() / "okr"
+        if not src.is_dir() or not any(src.iterdir()):
+            return {"skipped": "no live okr/ folder"}
+        arch_root = memory_dir().parent / "memory-archive"
+        arch_root.mkdir(parents=True, exist_ok=True)
+        dest = arch_root / "okr"
+        n = 1
+        while dest.exists():                    # never clobber an earlier archive
+            dest = arch_root / f"okr-{n}"
+            n += 1
+        shutil.move(str(src), str(dest))
+        log.info("archived stale okr/ DAG folder → %s", dest)
+        return {"ok": True, "archived_to": str(dest)}
+    except Exception as exc:  # noqa: BLE001 — archiving must never break startup
+        return {"ok": False, "error": str(exc)}
+
+
 def _discover_repos() -> list:
     """Best-effort GENERIC repo list for classification — no hardcoded paths.
     Sources: AIFORGE_REPOS_ROOT (explicit), sibling git repos of the running
@@ -250,8 +274,20 @@ def run_startup_migrations() -> dict:
     except Exception as exc:  # noqa: BLE001
         out["format"] = {"ok": False, "error": str(exc)}
 
+    # OKR-DAG (the separate memory/okr/ node graph) is CONSOLIDATED OUT by
+    # default — the flat compacted-<scope> briefs are the single OKR memory now.
+    # Set AIFORGE_OKR_DAG=1 to re-enable the DAG build/migrate steps.
+    _dag_on = os.environ.get("AIFORGE_OKR_DAG", "0") == "1"
+
+    # When the DAG is off, ARCHIVE any pre-existing okr/ folder OUT of the live
+    # memory dir (kept, not deleted → reversible) so a stale node graph from an
+    # earlier build can't shadow the flat briefs. Config-driven + idempotent;
+    # no manual box edits. AIFORGE_OKR_DAG=1 leaves it in place.
+    if not _dag_on:
+        out["okr_archive"] = _archive_okr_dag_folder()
+
     # ── one-shot steps (marker-guarded so they can't undo later curation) ──
-    if "briefs_to_okr" not in done:
+    if _dag_on and "briefs_to_okr" not in done:
         try:
             from aiforge_core.memory.okr import author
             out["briefs_to_okr"] = author.migrate_from_briefs()
@@ -270,16 +306,17 @@ def run_startup_migrations() -> dict:
             done.add("neo4j_drain")     # nothing to drain — don't retry forever
 
     # ── scoped segregation (moves what the above produced into global/projects)
-    try:
-        from aiforge_core.memory.okr import store as _store
-        out["scoped"] = _store.migrate_scoped()
-    except Exception as exc:  # noqa: BLE001
-        out["scoped"] = {"ok": False, "error": str(exc)}
+    if _dag_on:
+        try:
+            from aiforge_core.memory.okr import store as _store
+            out["scoped"] = _store.migrate_scoped()
+        except Exception as exc:  # noqa: BLE001
+            out["scoped"] = {"ok": False, "error": str(exc)}
 
     # ── CLASSIFY: an LLM sorts the migrated GLOBAL learnings into their project
     # (or trashes noise). Deterministic tag/key parsing can't reliably tell a
     # repo brief from a topic brief; the LLM + repo-name match can. One-shot.
-    if "classify" not in done:
+    if _dag_on and "classify" not in done:
         repos = _discover_repos()
         if repos:
             try:
@@ -293,7 +330,7 @@ def run_startup_migrations() -> dict:
             # leave unmarked → retry next boot once repos are discoverable
 
     # ── build the per-repo hub CARDS from each project's learnings (one-shot) ─
-    if "repo_profiles" not in done:
+    if _dag_on and "repo_profiles" not in done:
         try:
             from aiforge_core.memory.okr import author
             out["repo_profiles"] = author.build_repo_profiles()
@@ -314,11 +351,12 @@ def dedupe_all() -> dict:
     """Remove duplicate OKR nodes AND duplicate chat sessions (from repeated /
     non-idempotent migrations). Soft-fail per side."""
     out: dict = {}
-    try:
-        from aiforge_core.memory.okr import store as _store
-        out["okr"] = _store.dedupe_nodes()
-    except Exception as exc:  # noqa: BLE001
-        out["okr"] = {"ok": False, "error": str(exc)}
+    if os.environ.get("AIFORGE_OKR_DAG", "0") == "1":
+        try:
+            from aiforge_core.memory.okr import store as _store
+            out["okr"] = _store.dedupe_nodes()
+        except Exception as exc:  # noqa: BLE001
+            out["okr"] = {"ok": False, "error": str(exc)}
     try:
         from aiforge_core.runtime import chat_store
         out["chat"] = chat_store.dedupe_sessions()
@@ -379,9 +417,11 @@ def force_recompact_all(on_step=None) -> dict:
         # cross-scope mapping: link related briefs (project ↔ global ↔ topic)
         # AFTER they've settled (consolidated, deduped, empties swept, rehealed).
         ("map_scopes", lambda: md_store.map_scopes()),
-        ("repo_profiles", lambda: __import__(
+        ("repo_profiles", lambda: (__import__(
             "aiforge_core.memory.okr.author", fromlist=["build_repo_profiles"]
-        ).build_repo_profiles()),
+        ).build_repo_profiles()
+            if os.environ.get("AIFORGE_OKR_DAG", "0") == "1"
+            else {"skipped": "okr-dag off"})),
         ("reingest", lambda: md_store.ingest_dir()),
     ]
     log.info("compact-all: START (%d steps)", len(steps))

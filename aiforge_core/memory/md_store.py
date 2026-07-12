@@ -534,6 +534,84 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
     return {"edges": n, "updated": sorted(updated)}
 
 
+def _brief_file_of_source(source: str) -> str:
+    """Resolve a search-hit ``source`` id back to its brief FILE name.
+
+    Brief rows are ingested with source ``compacted:<stem>`` (Phase-3 /
+    ingest_dir) or the legacy ``md:<stem>``; both map to ``<stem>.md`` where
+    ``<stem>`` is ``compacted-<scope>``. Returns "" for a non-brief source."""
+    s = str(source or "").strip()
+    for pfx in ("compacted:", "md:"):
+        if s.startswith(pfx):
+            stem = s[len(pfx):]
+            if stem.startswith("compacted-"):
+                return stem + ".md"
+    return ""
+
+
+def expand_links(sources, *, max_links: int = 6, depth: int = 1) -> list[dict]:
+    """Follow the **Links** section of each hit brief to its sibling briefs and
+    return their FULL knowledge text.
+
+    Search returns the briefs that matched the query; ``map_scopes`` has already
+    wired each brief to its load-bearing neighbours (``[title](compacted-x.md)``
+    refs in the Links section). This walks those edges so a hit surfaces the
+    connected briefs' full content too — "search goes through the links and
+    gives full info". Breadth-first up to ``depth`` hops, capped at
+    ``max_links`` unique briefs, EXCLUDING the origin briefs themselves. Never
+    raises; returns ``[{key, file, source, text, kind}]``.
+    """
+    from aiforge_core.runtime import work_notes
+    mdir = memory_dir()
+    origin = {f for f in (_brief_file_of_source(s) for s in (sources or [])) if f}
+    seen: set[str] = set(origin)
+    out: list[dict] = []
+    frontier = list(origin)
+    hop = 0
+    while frontier and hop < max(1, depth) and len(out) < max_links:
+        nxt: list[str] = []
+        for fname in frontier:
+            p = mdir / fname
+            if not p.exists():
+                continue
+            try:
+                parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            for link in (parsed["sections"].get("links") or []):
+                m = work_notes._BRIEF_REF_RE.match(link.strip())
+                if not m:
+                    continue                       # keep real URLs / jira refs out
+                tgt = m.group(1)                   # compacted-<scope>.md
+                if tgt in seen:
+                    continue
+                seen.add(tgt)
+                tp = mdir / tgt
+                if not tp.exists():
+                    continue
+                try:
+                    d = _parse(tp)
+                    text = work_notes.knowledge_text(d["body"]) or d["body"]
+                except OSError:
+                    continue
+                key = tgt[len("compacted-"):-len(".md")]
+                out.append({
+                    "key": key, "file": tgt,
+                    "source": f"linked:{tgt[:-len('.md')]}",
+                    "kind": d.get("kind") or "knowledge",
+                    "title": _brief_title(key),
+                    "text": text,
+                })
+                nxt.append(tgt)
+                if len(out) >= max_links:
+                    break
+            if len(out) >= max_links:
+                break
+        frontier = nxt
+        hop += 1
+    return out[:max_links]
+
+
 def _remove_facts_locked(path, key: str, remove_ci_keys: set) -> int:
     """Remove facts whose ``_ci_key(_fact_body(f))`` is in ``remove_ci_keys`` from
     a brief, re-reading it FRESH under ``_WRITE_LOCK`` so a concurrent capture
