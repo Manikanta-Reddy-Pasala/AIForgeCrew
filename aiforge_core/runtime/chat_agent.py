@@ -3833,11 +3833,18 @@ def run_chat_agent(
     _sys_cap = _sys_prompt_budget_chars(role)
     _sys_core_len = len(sys_msg)
     _sys_dropped: list[str] = []
+    _sys_seen_blocks: set[str] = set()
 
     def _add_sys_block(label: str, block: str) -> None:
         nonlocal sys_msg
         if not block:
             return
+        # R7: don't spend budget on a block whose exact text was already added
+        # (e.g. prev-session vs a recall block that surfaced the same content).
+        _bkey = " ".join(block.split())
+        if _bkey in _sys_seen_blocks:
+            return
+        _sys_seen_blocks.add(_bkey)
         addition = "\n\n" + block
         if len(sys_msg) + len(addition) <= _sys_cap:
             sys_msg += addition
@@ -3892,6 +3899,13 @@ def run_chat_agent(
             _add_sys_block("mentions", ment_block)
         except Exception:  # noqa: BLE001
             pass
+    # Whether the explicit PREVIOUS-SESSION continuity block will be injected
+    # (opening turn). When it is, the separate chat-session recall below is
+    # redundant — the recall bundle already carries a prior-chat source and the
+    # prev-session block carries the immediate prior conversation — so skip it to
+    # avoid surfacing the same session twice (audit R6).
+    _prev_session_on = (_is_init and not cave and session_id is not None
+                        and os.environ.get("AIFORGE_SESSION_PREV_CONTEXT", "1") != "0")
     # Self-learning recall — EVERY turn, keyed to the CURRENT user message
     # (from the shared bundle). Cave mode pulls fewer hits.
     if _ctx_on("recall") and _proactive == "full":
@@ -3899,7 +3913,7 @@ def run_chat_agent(
         # Prior CHAT SESSIONS — surface what the user discussed in OTHER
         # conversations (excludes the current session). Cave mode → fewer hits.
         # Local SQLite scan, so cheap enough to run every turn there IS a query.
-        if last_user:
+        if last_user and not _prev_session_on:
             _add_sys_block("chat-recall", _chat_session_recall(
                 last_user, session_id, limit=(2 if cave else 4)))
     elif _ctx_on("recall"):
@@ -3921,8 +3935,7 @@ def run_chat_agent(
     # (the tail of the prior session, framed as SUPERSEDABLE — a contradicting
     # new ask wins). Cheap local scan, opening turn only; AIFORGE_SESSION_PREV_
     # CONTEXT=0 disables. Skipped in cave mode (tight window).
-    if _is_init and not cave and session_id is not None \
-            and os.environ.get("AIFORGE_SESSION_PREV_CONTEXT", "1") != "0":
+    if _prev_session_on:
         try:
             from aiforge_core.runtime import chat_okr as _cokr
             _add_sys_block("prev-session",

@@ -139,7 +139,13 @@ def write(title: str, text: str, *, kind: str = "note",
     ``repo`` and ``topic`` are written into the frontmatter (NOT just the DB
     mirror) so the compactor can group by them — the project-brief (per-repo)
     and topic-note (per-topic) axes read the md files, so anything that isn't
-    stamped here simply won't roll up into either brief."""
+    stamped here simply won't roll up into either brief.
+
+    W5: direct callers (e.g. the manual /api note endpoint) that leave the
+    default ``repo="notes"`` create an UNSCOPED note — it won't roll up into any
+    project/topic brief and is invisible to repo-scoped recall (only the global
+    Memory search reaches it). That's intended for hand-dropped notes; scoped
+    knowledge should go through ``capture()`` (which classifies + stamps)."""
     tags = list(tags or [])
     created = _now_iso()
     digest = hashlib.sha1((title + text).encode()).hexdigest()[:6]
@@ -485,6 +491,15 @@ def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
                     keep.append(f)               # couldn't move → don't lose it
                     continue
                 moved += 1
+                # W4: drop the stale project-scoped INDEX row so the moved fact
+                # isn't duplicated under both the old repo and 'shared'.
+                try:
+                    from aiforge_core.memory import backend_select, sqlite_memory
+                    if backend_select.embedded():
+                        sqlite_memory.delete_by_text_contains(
+                            _fact_body(f), repo=key)
+                except Exception:  # noqa: BLE001
+                    pass
             work_notes.update_note(str(b["path"]), facts=keep,
                                    kind="knowledge", key=key)
             healed.append(key)
@@ -704,13 +719,15 @@ _LEGACY_RECENT_RE = re.compile(
 
 def _render_brief(key: str, *, facts: list[str], body_md: str = "",
                   learnings: list[str] | None = None, title: str = "",
-                  tags: list[str] | None = None) -> str:
+                  tags: list[str] | None = None,
+                  key_results: list[str] | None = None) -> str:
     from aiforge_core.runtime import work_notes
     return work_notes.render_note(
         "knowledge", key,
         title=title or f"{key} memory (compacted)",
         objective=_BRIEF_OBJECTIVE.format(key=key),
-        facts=facts, learnings=learnings, body_md=body_md, tags=tags)
+        facts=facts, key_results=key_results, learnings=learnings,
+        body_md=body_md, tags=tags)
 
 
 def _parse_brief(raw: str) -> dict:
@@ -727,7 +744,20 @@ def _parse_brief(raw: str) -> dict:
                      for ln in m.group(1).splitlines() if ln.strip())
         body = (body[:m.start()] + body[m.end():]).strip("\n")
     return {"facts": facts, "body": body, "title": parsed["title"],
-            "learnings": list(parsed["sections"].get("learnings") or [])}
+            "learnings": list(parsed["sections"].get("learnings") or []),
+            "key_results": list(parsed["sections"].get("key_results") or [])}
+
+
+# A "key: value" fact whose key is a short label (status, owner, port, mode…) —
+# a new value for the SAME key supersedes the stale one at write time.
+_KEY_PREFIX_RE = re.compile(r"^([a-z][a-z0-9_ /-]{0,18}):\s+\S")
+# A jira/issue key inside a fact → also a Key Result (the measurable work).
+_TICKET_RE = re.compile(r"\b([A-Z][A-Z0-9]{1,9}-\d+)\b")
+
+
+def _fact_body(s: str) -> str:
+    """Drop a leading ``[topic]`` prefix so comparisons hit the fact content."""
+    return re.sub(r"^\[[^\]]*\]\s+", "", str(s or "")).strip()
 
 
 def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
@@ -735,7 +765,12 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
     deduped item under the OKR ``## Facts`` section. Creates the brief (OKR
     envelope) if absent; legacy-format briefs are migrated in place. Bounded:
     past ``_BRIEF_CAP`` the OLDEST facts are dropped (the periodic
-    re-summarize folds them into the consolidated body anyway)."""
+    re-summarize folds them into the consolidated body anyway).
+
+    Write-time hygiene (so recall doesn't see stale/duplicate facts before the
+    next compaction): a new ``key: value`` supersedes the stale value for that
+    key (W1); a new fact that CONTAINS an existing shorter one prunes the short
+    (W6); a jira/issue key is seeded into ``## Key Results`` (W2)."""
     text = (text or "").strip()
     if not text:
         return
@@ -747,23 +782,46 @@ def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
         facts: list[str] = []
         body = ""
         learnings: list[str] = []
+        key_results: list[str] = []
         title = ""
         if path.exists():
             raw = path.read_text(encoding="utf-8", errors="replace")
             b = _parse_brief(raw)
             facts, body = b["facts"], b["body"]
             learnings, title = b["learnings"], b["title"]
-        # dedupe: already captured as a fact (any topic), or folded into prose
-        if any(fact in f for f in facts) or (fact and fact in body):
+            key_results = b["key_results"]
+        # already captured (contained in an existing fact) or folded into prose
+        if any(fact in _fact_body(f) for f in facts) or (fact and fact in body):
             return
+        # W6: the new fact is a SUPERSET of an existing shorter one → drop short.
+        # W1: a new `key: value` supersedes the stale value for the same key.
+        kp = _KEY_PREFIX_RE.match(fact)
+        new_key = kp.group(1).strip().lower() if kp else None
+
+        def _keep(f: str) -> bool:
+            fb = _fact_body(f)
+            if fb and fb in fact and fb != fact:      # W6 superset prune
+                return False
+            if new_key:                                # W1 supersede same key
+                mm = _KEY_PREFIX_RE.match(fb)
+                if mm and mm.group(1).strip().lower() == new_key:
+                    return False
+            return True
+
+        facts = [f for f in facts if _keep(f)]
         facts.append(item)
+        # W2: seed a ticket key into Key Results (the measurable work).
+        for tk in _TICKET_RE.findall(fact):
+            if not any(tk in k for k in key_results):
+                key_results.append(fact if len(fact) <= 140 else tk)
+            break
         # bound: drop OLDEST facts first (consolidated body is the keeper)
         while len(facts) > 1 and \
                 (len(body) + sum(len(f) + 3 for f in facts)) > _BRIEF_CAP:
             facts.pop(0)
         path.write_text(
-            _render_brief(repo, facts=facts, body_md=body,
-                          learnings=learnings, title=title),
+            _render_brief(repo, facts=facts, body_md=body, learnings=learnings,
+                          title=title, key_results=key_results),
             encoding="utf-8")
 
 

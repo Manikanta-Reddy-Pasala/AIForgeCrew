@@ -29,9 +29,22 @@ def fetch(ticket) -> str:
         log.warning("memory recall failed: %s", exc)
         return ""
 
+    # The consolidated OKR brief (project ∪ linked ∪ global) — the same curated
+    # memory chat injects. Without this the Doer saw only whatever raw hits
+    # ranked; the deduped/superseded/mapped brief never reached the pipeline
+    # (audit R2). Prepended so it leads the memory context.
+    prefix = ""
+    try:
+        from aiforge_core.runtime.context_bundle import project_brief_text
+        _pb = project_brief_text(getattr(ticket, "project", "") or "")
+        if _pb:
+            prefix = f"## Project memory (OKR briefs)\n\n{_pb}\n\n"
+    except Exception:  # noqa: BLE001
+        prefix = ""
+
     hits = result.get("hits") or []
     if not hits:
-        return ""
+        return prefix
 
     # Map→summarize: when many scattered hits come back, fold them into ONE
     # compact briefing (LLM) instead of dumping snippets. Empty → keep raw list.
@@ -43,9 +56,9 @@ def fetch(ticket) -> str:
     if brief:
         sources = ",".join(result.get("used_sources") or [])
         log.info("memory: %d hits summarized (sources=%s)", len(hits), sources)
-        return f"## Memory briefing (AiForgeMemory)\n\n{brief}\n"
+        return prefix + f"## Memory briefing (AiForgeMemory)\n\n{brief}\n"
 
-    lines = ["## Memory hits (AiForgeMemory)", ""]
+    lines = [prefix + "## Memory hits (AiForgeMemory)", ""]
     for h in hits[:8]:
         src = h.get("source", "?")
         try:

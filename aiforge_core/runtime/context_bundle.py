@@ -43,28 +43,60 @@ class ContextBundle:
                             self.memory_md) if b]
 
 
-def _project_brief(cwd: str) -> str:
-    """The compacted project brief for this context — the per-scope
-    ``compacted-<repo>.md`` (a repo, or a Jira ticket / Confluence page whose
-    folder is the cwd) UNIONED with the GLOBAL ``compacted-shared.md`` (general
-    knowledge). Both are products of the repo-axis compaction; loading both here
-    mirrors the recall union so a ticket chat sees its own compacted memory AND
-    global. Empty until the axis has compacted at least once; capped per part so
-    neither dominates the window."""
+def _linked_brief_keys(d: dict | None) -> list[str]:
+    """The sibling-brief keys a brief LINKS to (map_scopes cross-scope links) —
+    ``[data-sync](compacted-data-sync.md)`` → ``data-sync``. So a recalled
+    project brief pulls in the topic/global briefs it relates to (audit R5/R4)."""
+    if not d:
+        return []
+    from aiforge_core.runtime import work_notes
+    links = work_notes.parse_note(d.get("body") or "")["sections"].get("links") or []
+    out: list[str] = []
+    for lk in links:
+        m = work_notes._BRIEF_REF_RE.match(str(lk).strip())
+        if m:
+            key = m.group(1)[len("compacted-"):-len(".md")]
+            if key:
+                out.append(key)
+    return out
+
+
+def project_brief_text(repo: str) -> str:
+    """The compacted brief knowledge for ``repo`` — its ``compacted-<repo>.md``
+    UNIONED with the sibling briefs it LINKS to (map_scopes topic/global cross-
+    scope links) and the GLOBAL ``compacted-shared.md``. Mirrors the recall union
+    so chat AND the pipeline see the same consolidated OKR memory. Empty until
+    the axis has compacted once; capped per part so none dominates the window."""
     from aiforge_core.memory import md_store
-    from aiforge_core.runtime import repo_ident
-    repo = repo_ident.repo_name(cwd, sentinel="")
     parts: list[str] = []
-    if repo and md_store._slug(repo) != "shared":
-        knowledge = _brief_knowledge(
-            md_store.read_file(f"compacted-{md_store._slug(repo)}"))
+    seen: set[str] = {"shared"}
+    slug = md_store._slug(repo) if repo else ""
+    if slug and slug != "shared":
+        seen.add(slug)
+        d = md_store.read_file(f"compacted-{slug}")
+        knowledge = _brief_knowledge(d)
         if knowledge:
             parts.append("PROJECT MEMORY (" + repo + "):\n" + knowledge[:6000])
-    # Global compacted brief — unioned into EVERY context (skip when we ARE it).
+        # R5/R4: follow this brief's cross-scope links to sibling briefs.
+        for lk in _linked_brief_keys(d):
+            if lk in seen:
+                continue
+            seen.add(lk)
+            lk_know = _brief_knowledge(md_store.read_file(f"compacted-{lk}"))
+            if lk_know:
+                parts.append(f"LINKED MEMORY ({lk}):\n" + lk_know[:2000])
+    # Global compacted brief — unioned into EVERY context.
     gk = _brief_knowledge(md_store.read_file("compacted-shared"))
     if gk:
         parts.append("GLOBAL MEMORY:\n" + gk[:3000])
     return "\n\n".join(parts)
+
+
+def _project_brief(cwd: str) -> str:
+    """Chat-side wrapper: resolve the repo from ``cwd`` then assemble the brief
+    (project ∪ linked ∪ global) via :func:`project_brief_text`."""
+    from aiforge_core.runtime import repo_ident
+    return project_brief_text(repo_ident.repo_name(cwd, sentinel=""))
 
 
 def _repo_notes(cwd: str) -> str:

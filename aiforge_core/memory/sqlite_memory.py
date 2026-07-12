@@ -233,6 +233,24 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
     return out
 
 
+def delete_by_text_contains(fragment: str, *, repo: str) -> int:
+    """Delete units under ``repo`` whose stored text CONTAINS ``fragment``.
+    Used when a fact is MOVED between scopes (reheal promotion) so the stale
+    row doesn't linger under the old repo and duplicate the moved copy. Repo is
+    required (never a blanket delete). Returns the count removed."""
+    frag = (fragment or "").strip()
+    repo = (repo or "").strip()
+    if not frag or not repo:
+        return 0
+    with _LOCK, _conn() as c:
+        rows = c.execute(
+            "SELECT id, text FROM memory_units WHERE repo = ?", (repo,)).fetchall()
+        ids = [r["id"] for r in rows if frag in (r["text"] or "")]
+        for i in ids:
+            c.execute("DELETE FROM memory_units WHERE id = ?", (i,))
+        return len(ids)
+
+
 def dedupe(*, repo: str | None = None, threshold: float = 0.95,
            max_scan: int = 5000) -> dict:
     """Periodic SEMANTIC dedup sweep. write_unit only dedups EXACT (repo,text);
