@@ -70,6 +70,21 @@ def test_map_scopes_links_related_briefs_bidirectionally(monkeypatch, mem):
                for l in pos["sections"].get("links", []))
 
 
+def test_map_scopes_accepts_from_to_edge_keys(monkeypatch, mem):
+    """The model often returns {from,to} rather than {a,b} — accept both."""
+    monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "1")
+    from aiforge_core.memory import md_store
+    _write_brief(md_store, "shared", ["a global fact"])
+    _write_brief(md_store, "svc", ["a repo fact"])
+
+    def _fake(role, messages, model, *a, **k):
+        return types.SimpleNamespace(edges=[{"from": "shared", "to": "svc"}])
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
+    res = md_store.map_scopes()
+    assert res["edges"] == 1
+
+
 def test_map_scopes_noop_when_llm_off(mem):
     from aiforge_core.memory import md_store
     _write_brief(md_store, "shared", ["x"])

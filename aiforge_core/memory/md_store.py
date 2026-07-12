@@ -297,7 +297,8 @@ _MAP_SYS = (
     "Given the briefs (key: summary), return the pairs that are genuinely "
     "RELATED — a project brief and the global/topic brief whose subject it "
     "shares (deploys, sync, auth, a shared convention). Only real overlaps; no "
-    "trivial or speculative links. Use the EXACT keys given."
+    "trivial or speculative links. Use the EXACT keys given. Return JSON: a "
+    'list "edges", each item {"a": "<exact key>", "b": "<exact key>"}.'
 )
 
 
@@ -312,7 +313,27 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
     if len(briefs) < 2:
         return {"edges": 0}
     by_key = {b["key"]: b for b in briefs}
-    listing = "\n".join(f"- {b['key']}: {b['summary']}" for b in briefs)
+    lines = [f"- {b['key']}: {b['summary']}" for b in briefs]
+    # BATCH so each call's listing fits the input budget — a flat listing[:cap]
+    # silently hides most briefs once there are 100s of them (the edges=0 bug).
+    # Briefs are alphabetical, so topical clusters (branch-*, cache-*) stay in the
+    # same batch and still get linked.
+    try:
+        cap = max(2000, int(os.environ.get("AIFORGE_OKR_MAP_INPUT_CHARS", "24000")))
+    except (TypeError, ValueError):
+        cap = 24000
+    batches: list[list[str]] = []
+    buf: list[str] = []
+    used = 0
+    for ln in lines:
+        if used and used + len(ln) > cap:
+            batches.append(buf)
+            buf, used = [], 0
+        buf.append(ln)
+        used += len(ln) + 1
+    if buf:
+        batches.append(buf)
+    raw_edges: list = []
     try:
         from pydantic import BaseModel
 
@@ -321,23 +342,32 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
         class _Edges(BaseModel):
             edges: list[dict] = []
 
-        res = structured_complete(
-            role,
-            [{"role": "system", "content": _MAP_SYS},
-             {"role": "user", "content": listing[:8000]}],
-            _Edges, max_tokens=1200, max_retries=1, temperature=0.0)
-        raw_edges = getattr(res, "edges", None) or []
+        for batch in batches:
+            res = structured_complete(
+                role,
+                [{"role": "system", "content": _MAP_SYS},
+                 {"role": "user", "content": "\n".join(batch)}],
+                _Edges, max_tokens=1200, max_retries=1, temperature=0.0)
+            raw_edges.extend(getattr(res, "edges", None) or [])
     except Exception as exc:  # noqa: BLE001 — model down → no mapping this pass
         _log.debug("map_scopes: LLM failed: %s", exc)
         return {"edges": 0, "error": "llm_unreachable"}
+
+    def _edge_key(e: dict, *names: str) -> str:
+        for nm in names:
+            v = e.get(nm)
+            if v:
+                return str(v).strip()
+        return ""
 
     adj: dict[str, set[str]] = {}
     n = 0
     for e in raw_edges:
         if not isinstance(e, dict):
             continue
-        a = str(e.get("a") or "").strip()
-        b = str(e.get("b") or "").strip()
+        # models return {a,b} OR {from,to} OR {source,target} — accept all
+        a = _edge_key(e, "a", "from", "source")
+        b = _edge_key(e, "b", "to", "target")
         if a not in by_key or b not in by_key or a == b:
             continue
         if b in adj.get(a, set()):
