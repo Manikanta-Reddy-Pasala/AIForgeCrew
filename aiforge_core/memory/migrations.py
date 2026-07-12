@@ -353,6 +353,10 @@ def force_recompact_all(on_step=None) -> dict:
         # drop project/topic-brief facts that already live in the global brief
         # (recall unions global → those copies are pure redundancy).
         ("dedupe_global", lambda: md_store.dedupe_global_copies()),
+        # cross-brief semantic cleanup: an LLM collapses duplicate/contradictory
+        # facts that scattered across scope briefs (consolidate only dedupes
+        # within a brief). Bounded — skips above a fact ceiling.
+        ("reconcile", lambda: md_store.reconcile_briefs()),
         # self-heal mis-scoped facts (move globals out of project briefs) — heavy
         # (LLM per fact), so opt-in via AIFORGE_OKR_REHEAL=1.
         ("reheal", lambda: md_store.reheal_scopes()

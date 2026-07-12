@@ -611,6 +611,94 @@ def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
     return {"moved": moved, "healed": healed}
 
 
+_RECONCILE_SYS = (
+    "You clean a set of knowledge-memory facts drawn from several scope briefs "
+    "(each line: 'SCOPE :: fact'). Find DUPLICATES (same information, paraphrased "
+    "across briefs) and CONTRADICTIONS (one fact supersedes another — a changed "
+    "value / status / decision). For every REDUNDANT or STALE fact, output an "
+    "item {scope, fact} to REMOVE, keeping the single best/newest version in ONE "
+    "scope (prefer the broadest: shared > a topic > a project). Copy the fact "
+    "text VERBATIM as given. Only remove genuine redundancy/contradiction — when "
+    "unsure, keep it. Most facts are unique and stay."
+)
+
+
+def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
+    """CROSS-brief semantic cleanup: an LLM finds duplicate/contradictory facts
+    that scattered across different scope briefs (the compaction consolidate only
+    dedupes WITHIN a brief) and removes the redundant/stale copies, keeping one
+    canonical version in the broadest scope. Feasible only at a bounded fact
+    count (skips above ``max_facts`` so it stays a single call). Gated on
+    ``AIFORGE_OKR_SCOPE_LLM``; ``AIFORGE_OKR_RECONCILE=0`` disables. Never raises."""
+    if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0" \
+            or os.environ.get("AIFORGE_OKR_RECONCILE", "1") == "0":
+        return {"removed": 0, "skipped": "disabled"}
+    from aiforge_core.runtime import work_notes
+    briefs: dict = {}          # key -> [facts]
+    total = 0
+    for p in sorted(memory_dir().glob("compacted-*.md")):
+        if _CAPTURE_SIG_RE.search(p.name):
+            continue
+        key = p.stem[len("compacted-"):]
+        try:
+            facts = work_notes.parse_note(
+                p.read_text(encoding="utf-8"))["sections"].get("facts") or []
+        except OSError:
+            continue
+        if facts:
+            briefs[key] = facts
+            total += len(facts)
+    if total < 2 or total > max_facts:
+        return {"removed": 0, "skipped": f"facts={total}"}
+
+    listing = "\n".join(f"{k} :: {_fact_body(f)}"
+                        for k, fs in briefs.items() for f in fs)
+    try:
+        from pydantic import BaseModel
+
+        from aiforge_core.llm.structured import structured_complete
+
+        class _Rm(BaseModel):
+            scope: str = ""
+            fact: str = ""
+
+        class _Removes(BaseModel):
+            removes: list[_Rm] = []
+
+        res = structured_complete(
+            role,
+            [{"role": "system", "content": _RECONCILE_SYS},
+             {"role": "user", "content": listing[:24000]}],
+            _Removes, max_tokens=2000, max_retries=1, temperature=0.0)
+        removes = getattr(res, "removes", None) or []
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("reconcile_briefs LLM failed: %s", exc)
+        return {"removed": 0, "error": "llm_unreachable"}
+
+    # group removals by scope key → ci-keys to drop
+    drop: dict = {}
+    for r in removes:
+        k = (getattr(r, "scope", "") or "").strip()
+        f = (getattr(r, "fact", "") or "").strip()
+        if k in briefs and f:
+            drop.setdefault(k, set()).add(work_notes._ci_key(f))
+    removed = 0
+    with _WRITE_LOCK:
+        for k, dks in drop.items():
+            p = memory_dir() / f"compacted-{k}.md"
+            try:
+                parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            facts = parsed["sections"].get("facts") or []
+            kept = [f for f in facts
+                    if work_notes._ci_key(_fact_body(f)) not in dks]
+            if len(kept) != len(facts):
+                removed += len(facts) - len(kept)
+                work_notes.update_note(str(p), facts=kept, kind="knowledge", key=k)
+    return {"removed": removed, "scopes": len(drop)}
+
+
 def dedupe_global_copies() -> dict:
     """Remove facts from project/topic briefs when the SAME fact (case-insensitive)
     already lives in the global ``compacted-shared.md`` brief. Recall always

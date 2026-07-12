@@ -2258,7 +2258,7 @@ def memory_compact_all_status() -> dict:
         "running": s["running"], "done": s["done"], "current": s["current"],
         "sub": s["sub"],                       # {done,total,key} per-brief progress
         "steps_done": [x["name"] for x in s["steps"]],
-        "total_steps": 11, "error": s["error"],  # matches force_recompact_all steps
+        "total_steps": 12, "error": s["error"],  # matches force_recompact_all steps
         "elapsed_s": round(_t.time() - s["started_at"], 1) if s["started_at"] else 0,
         "result": s["result"] if s["done"] else None,
     }

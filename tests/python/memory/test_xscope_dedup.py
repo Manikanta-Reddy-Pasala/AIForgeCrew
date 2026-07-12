@@ -47,3 +47,33 @@ def test_snap_topic_merges_near_duplicate(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     d = md_store.classify_scope("some sync fact")
     assert d["topic"] == "sync-retries"        # snapped to existing, not a new brief
+
+
+def test_reconcile_briefs_collapses_cross_scope(monkeypatch, mem):
+    monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "1")
+    import types
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime.work_notes import parse_note
+    # deploy contradiction scattered across two project briefs
+    _brief(md_store, "repo-a", ["deploy uses docker compose up"])
+    _brief(md_store, "repo-b", ["deploy uses systemctl restart, not docker",
+                                "OrderController maps /orders"])
+
+    def _fake(role, messages, model, *a, **k):
+        # drop the stale docker fact from repo-a
+        return types.SimpleNamespace(removes=[
+            types.SimpleNamespace(scope="repo-a", fact="deploy uses docker compose up")])
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
+    res = md_store.reconcile_briefs()
+    assert res["removed"] == 1
+    a = parse_note((md_store.memory_dir() / "compacted-repo-a.md").read_text())["sections"].get("facts", [])
+    assert not any("docker" in f for f in a)               # stale dropped
+    b = parse_note((md_store.memory_dir() / "compacted-repo-b.md").read_text())["sections"]["facts"]
+    assert any("systemctl" in f for f in b)                # canonical kept
+    assert any("OrderController" in f for f in b)          # unrelated untouched
+
+
+def test_reconcile_disabled(mem):
+    from aiforge_core.memory import md_store
+    assert md_store.reconcile_briefs()["removed"] == 0     # suite LLM off
