@@ -198,16 +198,22 @@ _CAPTURE_KINDS = {
 # may PROMOTE a repo-hinted but universally-true fact to global — the "is this
 # global or per-project?" decision the user asked compaction to understand.
 _SCOPE_SYS = (
-    "Classify ONE captured knowledge item into its memory SCOPE.\n"
-    "- global  : cross-project knowledge — CLI/tool behaviour, coding "
-    "conventions, stack/model/endpoint facts; true regardless of repository.\n"
-    "- project : meaningful for ONE repository/service only (its classes, "
-    "endpoints, bugs, config).\n"
+    "Classify ONE captured knowledge item into its memory SCOPE. BE "
+    "CONSERVATIVE: when in doubt choose PROJECT, not global. Global is a high bar.\n"
+    "- global  : TRUE FOR EVERY REPOSITORY regardless of which one — a coding or "
+    "git convention, a language/tool-level lesson (Java, Python, Maven, Gradle), "
+    "a machine/environment gotcha. It must NOT mention any specific repo, "
+    "library, service, file, or function.\n"
+    "- project : about ONE repository/service — its code, endpoints, bugs, "
+    "config, or a named file/function INSIDE it (e.g. src/requests/utils.py, a "
+    "Session method, a service's endpoints). Transient build/test STATUS and a "
+    "task STEP are project, never global.\n"
     "- topic   : a cross-cutting theme/workflow spanning repos (e.g. data-sync, "
-    "auth, ci) that is neither a single repo nor truly global.\n"
-    "Prefer the caller's hint UNLESS the content is clearly broader — promote a "
-    "repo-hinted but universally-true fact to global. Reply scope plus, for "
-    "project the repo slug, for topic a short kebab-case topic slug."
+    "auth, ci) that is neither a single repo nor universal.\n"
+    "PREFER the caller's hint. Only OVERRIDE a repo hint to global when the item "
+    "is unmistakably universal (would you tell it to a developer on a completely "
+    "unrelated project? if not, it is NOT global). Reply scope plus, for project "
+    "the repo slug, for topic a short kebab-case topic slug."
 )
 
 
@@ -258,13 +264,16 @@ def classify_scope(text: str, *, hint_repo: str | None = None,
     if scope == "global":
         return {"scope": "global", "repo": None, "topic": None}
     if scope == "project":
-        # LLM-named repo is slugged; a bare hint repo is already caller-canonical.
+        # An explicit PROJECT verdict is NOT global even when the model names no
+        # repo (repo=None is a valid "belongs to some project" answer). Fall back
+        # to hints only for the repo label, never to a different SCOPE.
         r = _slug(repo) if repo else hint_repo
-        return {"scope": "project", "repo": r, "topic": None} if r else _fallback()
+        return {"scope": "project", "repo": r, "topic": None}
     if scope == "topic":
         t = topic or hint_topic
-        return {"scope": "topic", "repo": None, "topic": _slug(t)} if t else _fallback()
-    return _fallback()
+        return {"scope": "topic", "repo": None,
+                "topic": _slug(t) if t else None}
+    return _fallback()   # only an empty/unknown scope falls back to the hints
 
 
 # ── cross-scope mapping: link related briefs (project ↔ global ↔ topic) ───────
@@ -480,6 +489,68 @@ def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
                                    kind="knowledge", key=key)
             healed.append(key)
     return {"moved": moved, "healed": healed}
+
+
+def cleanup_reheal(*, role: str = "learner") -> dict:
+    """Recovery for an over-aggressive reheal: re-classify each moved
+    (``source: reheal``) fact ON ITS OWN and DELETE the ones that are not truly
+    global — strip them from ``compacted-shared.md`` and remove their capture
+    files. Origin repo was not recorded, so a non-global fact is removed, not
+    restored to its project. Run BEFORE any recompaction reword the shared facts
+    (matching is verbatim). Gated on ``AIFORGE_OKR_SCOPE_LLM``. Never raises."""
+    if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0":
+        return {"checked": 0, "removed": 0, "skipped": "llm_off"}
+    from aiforge_core.runtime import work_notes
+    reheal: list[dict] = []
+    for p in memory_dir().glob("*.md"):
+        if p.name.startswith("compacted-"):
+            continue
+        try:
+            d = _parse(p)
+        except Exception:  # noqa: BLE001
+            continue
+        if str(d.get("source") or "") != "reheal":
+            continue
+        head = (d.get("body") or "").strip().splitlines()
+        fact = head[0].strip().lstrip("-* ").strip() if head else ""
+        if fact:
+            reheal.append({"path": p, "fact": fact})
+    if not reheal:
+        return {"checked": 0, "removed": 0}
+
+    remove_keys: set[str] = set()
+    remove_paths: list = []
+    checked = 0
+    for r in reheal:
+        checked += 1
+        try:
+            sc = classify_scope(r["fact"], role=role)   # judged on its own merit
+        except Exception:  # noqa: BLE001
+            continue
+        if sc["scope"] != "global":
+            remove_keys.add(work_notes._ci_key(r["fact"]))
+            remove_paths.append(r["path"])
+
+    removed = 0
+    if remove_keys:
+        with _COMPACT_LOCK:
+            shared = memory_dir() / "compacted-shared.md"
+            if shared.is_file():
+                parsed = work_notes.parse_note(shared.read_text(encoding="utf-8"))
+                facts = parsed["sections"].get("facts") or []
+                kept = [f for f in facts
+                        if work_notes._ci_key(f) not in remove_keys]
+                removed = len(facts) - len(kept)
+                if removed:
+                    work_notes.update_note(str(shared), facts=kept,
+                                           kind="knowledge", key="shared")
+            for p in remove_paths:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+    return {"checked": checked, "removed": removed,
+            "capture_files_deleted": len(remove_paths)}
 
 
 def capture(kind: str, text: str, *, repo: str | None = None,

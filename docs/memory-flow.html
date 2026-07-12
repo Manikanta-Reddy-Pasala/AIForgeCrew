@@ -1,0 +1,357 @@
+<title>AIForge Memory — how it works</title>
+<style>
+  :root{
+    --ink:#161a1f; --ink-2:#3d454e; --ink-3:#6b7480;
+    --paper:#f6f7f4; --card:#ffffff; --line:#e2e4de; --line-2:#cfd2cb;
+    --accent:#1f7a8c;            /* considered teal — the system's own hue */
+    --write:#b26a1e;            /* amber — write direction */
+    --compact:#1f7a8c;          /* teal — compaction */
+    --read:#3f5aa6;             /* indigo — recall/read */
+    --g-global:#7a4fbf; --g-project:#2f8f5b; --g-topic:#2b7fb8;
+    --code-bg:#f1f2ee; --code-ink:#2a2f36;
+    --shadow:0 1px 2px rgba(20,24,29,.06),0 6px 20px rgba(20,24,29,.05);
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ink:#e8ebe6; --ink-2:#b3bac0; --ink-3:#828b93;
+      --paper:#111418; --card:#171b20; --line:#262b31; --line-2:#333a41;
+      --accent:#4fb3c4; --write:#d69a4c; --compact:#4fb3c4; --read:#8098d8;
+      --g-global:#a583e0; --g-project:#5cc389; --g-topic:#5fb0e0;
+      --code-bg:#12161a; --code-ink:#c6ccd2;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 26px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"]{
+    --ink:#161a1f; --ink-2:#3d454e; --ink-3:#6b7480; --paper:#f6f7f4;
+    --card:#ffffff; --line:#e2e4de; --line-2:#cfd2cb; --accent:#1f7a8c;
+    --write:#b26a1e; --compact:#1f7a8c; --read:#3f5aa6;
+    --g-global:#7a4fbf; --g-project:#2f8f5b; --g-topic:#2b7fb8;
+    --code-bg:#f1f2ee; --code-ink:#2a2f36;
+  }
+  :root[data-theme="dark"]{
+    --ink:#e8ebe6; --ink-2:#b3bac0; --ink-3:#828b93; --paper:#111418;
+    --card:#171b20; --line:#262b31; --line-2:#333a41; --accent:#4fb3c4;
+    --write:#d69a4c; --compact:#4fb3c4; --read:#8098d8;
+    --g-global:#a583e0; --g-project:#5cc389; --g-topic:#5fb0e0;
+    --code-bg:#12161a; --code-ink:#c6ccd2;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--paper);color:var(--ink);font-family:var(--sans);
+    line-height:1.6;margin:0;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:940px;margin:0 auto;padding:56px 24px 96px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--accent);margin:0 0 10px}
+  h1{font-size:clamp(30px,5vw,44px);line-height:1.08;margin:0 0 14px;
+    letter-spacing:-.02em;text-wrap:balance;font-weight:750}
+  .lede{font-size:19px;color:var(--ink-2);max-width:62ch;margin:0 0 8px}
+  h2{font-size:24px;letter-spacing:-.01em;margin:56px 0 6px;font-weight:700;
+    text-wrap:balance}
+  h2 .num{font-family:var(--mono);font-size:14px;color:var(--ink-3);
+    margin-right:10px;font-weight:500}
+  .sub{color:var(--ink-3);margin:0 0 22px;font-size:15px}
+  hr.rule{border:0;border-top:1px solid var(--line);margin:0}
+  p{max-width:66ch}
+  code{font-family:var(--mono);font-size:.86em;background:var(--code-bg);
+    color:var(--code-ink);padding:.12em .38em;border-radius:5px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    box-shadow:var(--shadow)}
+  /* flow diagram */
+  .flow{display:flex;flex-direction:column;gap:0;margin:6px 0 8px}
+  .node{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--c,var(--accent));
+    border-radius:11px;padding:13px 16px;box-shadow:var(--shadow)}
+  .node .t{font-weight:650;font-size:15px;display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+  .node .t code{background:transparent;padding:0;color:var(--c,var(--accent));font-size:13px}
+  .node .d{color:var(--ink-2);font-size:14px;margin-top:3px}
+  .node .d code{font-size:12px}
+  .arrow{align-self:flex-start;margin-left:26px;color:var(--c,var(--ink-3));
+    font-family:var(--mono);font-size:13px;line-height:1.3;padding:5px 0 5px 2px;
+    display:flex;gap:8px;align-items:center}
+  .arrow .glyph{font-size:16px;transform:translateY(1px)}
+  .arrow .lbl{color:var(--ink-3)}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:640px){.split{grid-template-columns:1fr}}
+  /* scope chips */
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 18px}
+  .chip{font-family:var(--mono);font-size:12px;padding:5px 11px;border-radius:999px;
+    border:1px solid var(--cc);color:var(--cc);background:color-mix(in srgb,var(--cc) 10%,transparent);
+    font-weight:600;white-space:nowrap}
+  /* code block */
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;
+    padding:16px 18px;overflow-x:auto;margin:8px 0;font-family:var(--mono);
+    font-size:13px;line-height:1.65;color:var(--code-ink)}
+  pre .fm{color:var(--ink-3)}
+  pre .h{color:var(--accent);font-weight:600}
+  pre .cm{color:var(--ink-3);font-style:italic}
+  /* table */
+  .tbl{width:100%;border-collapse:collapse;font-size:14px;margin:6px 0}
+  .tbl th,.tbl td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);
+    vertical-align:top}
+  .tbl th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--ink-3);font-weight:600}
+  .tbl td code{font-size:12px}
+  .tbl tr:last-child td{border-bottom:0}
+  .k{font-family:var(--mono);font-size:12.5px;color:var(--accent)}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--ink-2);margin:14px 0 0}
+  .legend b{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;
+    transform:translateY(1px)}
+  .note{font-size:13.5px;color:var(--ink-3);border-left:2px solid var(--line-2);
+    padding:2px 0 2px 14px;margin:14px 0;max-width:64ch}
+  .pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+  .pill{font-family:var(--mono);font-size:11.5px;padding:3px 9px;border-radius:6px;
+    background:var(--code-bg);border:1px solid var(--line);color:var(--ink-2)}
+  .anno{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+  a{color:var(--accent)}
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">AIForge · scoped OKR memory</p>
+  <h1>How the memory works</h1>
+  <p class="lede">A plain-markdown, goal-shaped memory. Every durable fact is
+  written into one <b>OKR brief</b>, sorted into a <b>scope</b>, folded by an LLM,
+  and read back as a compact briefing. This is the write path, the compaction
+  path, the links, and the read path — end to end.</p>
+
+  <div class="legend">
+    <span><b style="background:var(--write)"></b>write direction</span>
+    <span><b style="background:var(--compact)"></b>compaction</span>
+    <span><b style="background:var(--read)"></b>read / recall</span>
+    <span><b style="background:var(--g-global)"></b>global</span>
+    <span><b style="background:var(--g-project)"></b>project</span>
+    <span><b style="background:var(--g-topic)"></b>topic</span>
+  </div>
+
+  <!-- 1. TWO LAYERS -->
+  <h2><span class="num">01</span>Two layers, one truth</h2>
+  <p class="sub">The markdown briefs are the human-facing source of truth; the search backend is a mirror.</p>
+  <div class="split">
+    <div class="node" style="--c:var(--accent)">
+      <div class="t">Markdown OKR briefs <span class="anno">source of truth</span></div>
+      <div class="d">Plain <code>.md</code> files under <code>~/.aiforge/memory/</code>.
+      You can <code>cat</code> them, diff them in git, hand-edit them. One brief per scope.</div>
+    </div>
+    <div class="node" style="--c:var(--ink-3)">
+      <div class="t">Search index <span class="anno">mirror</span></div>
+      <div class="d">Embedded <b>SQLite</b> — vectors + full-text for ranked recall.
+      Every write is mirrored here. Regenerable; the md briefs are authoritative.</div>
+    </div>
+  </div>
+  <p class="note">Rule of thumb: if it isn't stamped into a brief's frontmatter
+  (<code>repo</code> / <code>topic</code>), it won't roll up into that scope.</p>
+
+  <!-- 2. OKR STRUCTURE -->
+  <h2><span class="num">02</span>The OKR envelope</h2>
+  <p class="sub">One Google-OKR shape for every brief — Objective + measurable Key Results, plus three upkeep sections. Nothing deviates from this; only how it's filled changes.</p>
+<pre><span class="fm">---                              <span class="cm"># frontmatter = machine identity</span>
+kind: knowledge
+key:  oneshell-pos               <span class="cm"># the scope</span>
+updated_at: 2026-07-12T09:00:00Z
+tags:  [repo:oneshell-pos, topic:data-sync]
+links: ["[global](compacted-shared.md)"]   <span class="cm"># cross-scope map</span>
+---</span>
+# oneshell-pos brief
+
+<span class="h">## Objective</span>     <span class="cm">the durable intent for this scope</span>
+<span class="h">## Key Results</span>   <span class="cm">measurable outcomes · TICKETS worked live here</span>
+<span class="h">## Facts</span>         <span class="cm">points to remember — config, current state</span>
+<span class="h">## Links</span>         <span class="cm">URLs, jira refs, sibling-brief map links</span>
+<span class="h">## Learnings</span>     <span class="cm">lessons, gotchas, dated changes</span>
+&lt;!-- aiforge:body --&gt;         <span class="cm">LLM-consolidated prose (free body)</span></pre>
+  <table class="tbl">
+    <tr><th>You think</th><th>Lands in</th><th>Why (OKR)</th></tr>
+    <tr><td>ticket worked</td><td class="k">Key Results</td><td>a ticket is the measurable work; its ref is copied to Links too</td></tr>
+    <tr><td>point to remember</td><td class="k">Facts</td><td>stable truth / current state</td></tr>
+    <tr><td>lesson / gotcha</td><td class="k">Learnings</td><td>the retrospective</td></tr>
+  </table>
+
+  <!-- 3. SCOPES -->
+  <h2><span class="num">03</span>Three scopes</h2>
+  <p class="sub">Every fact belongs to exactly one scope. The scope decides which brief file it folds into.</p>
+  <div class="chips">
+    <span class="chip" style="--cc:var(--g-global)">global → compacted-shared.md</span>
+    <span class="chip" style="--cc:var(--g-project)">project → compacted-&lt;repo&gt;.md</span>
+    <span class="chip" style="--cc:var(--g-topic)">topic → compacted-&lt;slug&gt;.md</span>
+  </div>
+<pre>~/.aiforge/memory/
+├─ <span class="h">compacted-shared.md</span>          <span class="cm">GLOBAL — cross-project truth (tooling, conventions, stack)</span>
+├─ <span class="h">compacted-oneshell-pos.md</span>    <span class="cm">PROJECT — one repo's classes/endpoints/bugs</span>
+├─ <span class="h">compacted-data-sync.md</span>       <span class="cm">TOPIC — a cross-cutting theme spanning repos</span>
+└─ okr/  global/ · projects/&lt;repo&gt;/   <span class="cm"># the typed OKR-DAG (separate, deterministic)</span></pre>
+
+  <!-- 4. WRITE PATH -->
+  <h2><span class="num">04</span>Write path — who writes, and how it's sorted</h2>
+  <p class="sub">Everything funnels through one entry, <code>md_store.capture()</code>. An LLM decides the scope; a cheap fold updates the brief immediately.</p>
+
+  <div class="anno" style="margin:0 0 8px">CALLERS &nbsp;— the agents that write memory</div>
+  <div class="pillrow" style="margin-bottom:16px">
+    <span class="pill">chat_learner · every turn</span>
+    <span class="pill">chat_okr.compact_session · at session end</span>
+    <span class="pill">note_curator · dossier upkeep</span>
+    <span class="pill">migrations · on boot</span>
+  </div>
+
+  <div class="flow">
+    <div class="node" style="--c:var(--write)">
+      <div class="t"><code>capture(kind, text, repo?, topic?)</code></div>
+      <div class="d">the ONE entry every learning / comment / ticket flows through</div>
+    </div>
+    <div class="arrow" style="--c:var(--write)"><span class="glyph">↓</span><span class="lbl">classify scope</span></div>
+    <div class="node" style="--c:var(--write)">
+      <div class="t"><code>classify_scope()</code> <span class="anno">learner LLM</span></div>
+      <div class="d">global · project · or topic. Deterministic hint-fallback when the
+      model is off/unreachable. A repo-hinted fact that's actually universal is
+      <b>promoted to global</b> — the "is this global or per-project?" decision.</div>
+    </div>
+    <div class="arrow" style="--c:var(--write)"><span class="glyph">↓</span><span class="lbl">stamp + write md (repo/topic in frontmatter)</span></div>
+    <div class="node" style="--c:var(--write)">
+      <div class="t"><code>_brief_upsert()</code> <span class="anno">cheap · no LLM</span></div>
+      <div class="d">folds the fact into <code>compacted-&lt;scope&gt;.md</code> right now, so recall
+      sees just-written data. Periodic compaction later only re-summarizes to bound size.</div>
+    </div>
+    <div class="arrow" style="--c:var(--ink-3)"><span class="glyph">⇒</span><span class="lbl">mirror into the embedded SQLite index for ranked search</span></div>
+  </div>
+
+  <!-- 5. SESSION END -->
+  <h2><span class="num">05</span>Every session compacts itself</h2>
+  <p class="sub">When a chat goes idle or ends, its transcript becomes scoped OKR facts — and the next chat picks up where the last left off.</p>
+  <div class="split">
+    <div>
+      <div class="anno" style="margin-bottom:8px">AT SESSION END &nbsp;(idle · explicit · every-N-turns)</div>
+      <div class="flow">
+        <div class="node" style="--c:var(--write)">
+          <div class="t"><code>compact_session()</code></div>
+          <div class="d">reads the transcript</div>
+        </div>
+        <div class="arrow" style="--c:var(--write)"><span class="glyph">↓</span><span class="lbl">learner LLM extracts</span></div>
+        <div class="node" style="--c:var(--write)">
+          <div class="t">atomic durable items</div>
+          <div class="d">decisions, learnings, <b>meaningful user inputs only</b> — chit-chat dropped</div>
+        </div>
+        <div class="arrow" style="--c:var(--write)"><span class="glyph">↓</span><span class="lbl">each → classify_scope → capture</span></div>
+        <div class="node" style="--c:var(--write)">
+          <div class="t">folded into scoped briefs</div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="anno" style="margin-bottom:8px">AT SESSION START &nbsp;(continuity)</div>
+      <div class="flow">
+        <div class="node" style="--c:var(--read)">
+          <div class="t"><code>previous_session_brief()</code></div>
+          <div class="d">the tail of the last conversation, injected so a follow-up in a
+          NEW chat has context</div>
+        </div>
+        <div class="arrow" style="--c:var(--read)"><span class="glyph">↑</span><span class="lbl">into the system prompt</span></div>
+        <div class="node" style="--c:var(--read)">
+          <div class="t">framed as supersedable</div>
+          <div class="d">if your new ask contradicts it, the new statement wins</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. COMPACTION -->
+  <h2><span class="num">06</span>Compaction — the LLM fold</h2>
+  <p class="sub">Facts accumulate in a brief's inbox; compaction re-folds them into clean OKR sections. One learner-LLM pass per brief.</p>
+  <div class="flow">
+    <div class="node" style="--c:var(--compact)">
+      <div class="t"><code>consolidate()</code> <span class="anno">learner LLM, per brief</span></div>
+      <div class="d"><b>Dedupe</b> paraphrases → one line · <b>Supersede</b> contradictions
+      (archive the stale line, or keep it tagged <code>[superseded]</code>) ·
+      <b>Map</b> each item to its correct OKR section.</div>
+    </div>
+    <div class="arrow" style="--c:var(--compact)"><span class="glyph">↓</span><span class="lbl">big input? chunk on structure (chonkie), fold chunk by chunk</span></div>
+    <div class="node" style="--c:var(--compact)">
+      <div class="t">deterministic fallback</div>
+      <div class="d">model down → union + dedupe merge. Never raises, never loses a fact.</div>
+    </div>
+  </div>
+  <div class="anno" style="margin:18px 0 8px">FULL RECOMPACT &nbsp;— <code>force_recompact_all</code>, 10 steps (daily + on demand)</div>
+<pre>tidy_legacy → <span class="h">repo</span> → <span class="h">topic</span> → sweep → sweep_empty → dedupe
+            → reheal <span class="cm">(opt-in)</span> → <span class="h">map_scopes</span> → repo_profiles → reingest</pre>
+  <div class="note"><b>reheal</b> re-classifies each fact in every project brief and
+  moves globals that slipped in over to the shared brief — the self-heal for
+  "something mis-added." Heavy (one LLM call per fact), so opt-in.</div>
+
+  <!-- 7. LINKS -->
+  <h2><span class="num">07</span>Links — mapping across scopes</h2>
+  <p class="sub">Projects map to global, global maps back, topics link both — bidirectionally. Briefs are flat files, so a map link is a same-directory reference.</p>
+  <div class="flow">
+    <div class="node" style="--c:var(--accent)">
+      <div class="t"><code>map_scopes()</code> <span class="anno">learner LLM</span></div>
+      <div class="d">proposes which briefs share a <b>specific subject</b> at different scopes
+      (a repo's branch rule ↔ the global branch convention). Strict — most briefs get no link.</div>
+    </div>
+    <div class="arrow" style="--c:var(--accent)"><span class="glyph">↕</span><span class="lbl">writes the link into BOTH briefs</span></div>
+    <div class="node" style="--c:var(--accent)">
+      <div class="t">bidirectional sibling link</div>
+      <div class="d"><code>[global](compacted-shared.md)</code> in the project brief, and the
+      project link back in global. Fan-out capped; recomputed clean each run.</div>
+    </div>
+  </div>
+  <div class="split" style="margin-top:8px">
+    <div class="node" style="--c:var(--g-project)">
+      <div class="t" style="--c:var(--g-project)">compacted-branch-naming.md</div>
+      <div class="d anno">Links → [branch-enforcement](…)</div>
+    </div>
+    <div class="node" style="--c:var(--g-global)">
+      <div class="t" style="--c:var(--g-global)">compacted-branch-enforcement.md</div>
+      <div class="d anno">Links → [branch-naming](…)</div>
+    </div>
+  </div>
+
+  <!-- 8. READ -->
+  <h2><span class="num">08</span>Read path — gather, summarize, inject</h2>
+  <p class="sub">Recall never dumps every snippet. It ranks across sources, and when a topic pulls a lot, folds them into one briefing first.</p>
+  <div class="flow">
+    <div class="node" style="--c:var(--read)">
+      <div class="t">user turn <span class="anno">query + repo scope</span></div>
+    </div>
+    <div class="arrow" style="--c:var(--read)"><span class="glyph">↓</span><span class="lbl">fan out</span></div>
+    <div class="node" style="--c:var(--read)">
+      <div class="t"><code>unified_query()</code></div>
+      <div class="d">~10 sources in parallel (project brief, vector, graph hops, prior chats,
+      tickets…), each scored, <b>ranked + merged</b> — repo-scoped so one project
+      never bleeds into another.</div>
+    </div>
+    <div class="arrow" style="--c:var(--read)"><span class="glyph">↓</span><span class="lbl">many scattered hits?</span></div>
+    <div class="node" style="--c:var(--read)">
+      <div class="t"><code>summarize_hits()</code> <span class="anno">learner LLM</span></div>
+      <div class="d">folds the ranked hits into ONE compact briefing — merge duplicates,
+      drop the irrelevant. Below the threshold it keeps the raw ranked list.</div>
+    </div>
+    <div class="arrow" style="--c:var(--read)"><span class="glyph">↑</span><span class="lbl">inject into the system prompt</span></div>
+    <div class="node" style="--c:var(--read)">
+      <div class="t">the agent arrives informed</div>
+    </div>
+  </div>
+
+  <!-- 9. AGENT / CONFIG -->
+  <h2><span class="num">09</span>Who does the thinking, and the knobs</h2>
+  <p class="sub">Every LLM seam runs on the configured <span class="k">learner</span> role — one model, routed by config, nothing hardcoded. Deterministic fallback everywhere.</p>
+  <table class="tbl">
+    <tr><th>Seam</th><th>What the learner LLM does</th></tr>
+    <tr><td class="k">classify_scope</td><td>global / project / topic</td></tr>
+    <tr><td class="k">consolidate</td><td>dedupe · supersede · map to OKR sections</td></tr>
+    <tr><td class="k">compact_session</td><td>transcript → atomic durable items</td></tr>
+    <tr><td class="k">map_scopes</td><td>propose cross-scope brief links</td></tr>
+    <tr><td class="k">summarize_hits</td><td>fold recall hits into one briefing</td></tr>
+  </table>
+  <table class="tbl" style="margin-top:20px">
+    <tr><th>Config knob</th><th>Default</th><th>Controls</th></tr>
+    <tr><td><code>AIFORGE_OKR_SCOPE_LLM</code></td><td>on</td><td>use the LLM to classify scope (else honour hints)</td></tr>
+    <tr><td><code>AIFORGE_OKR_SUPERSEDE</code></td><td><code>archive</code></td><td><code>archive</code> drops stale · <code>keep</code> tags <code>[superseded]</code></td></tr>
+    <tr><td><code>AIFORGE_SESSION_COMPACT</code></td><td><code>idle</code></td><td>idle · turns · explicit · off</td></tr>
+    <tr><td><code>AIFORGE_SESSION_IDLE_MIN</code></td><td>30</td><td>minutes quiet before a session compacts</td></tr>
+    <tr><td><code>AIFORGE_UMEM_SUMMARIZE</code></td><td>on</td><td>fold many recall hits into one briefing</td></tr>
+    <tr><td><code>AIFORGE_OKR_MAP_MAX_LINKS</code></td><td>3</td><td>max cross-scope links per brief</td></tr>
+    <tr><td><code>AIFORGE_OKR_REHEAL</code></td><td>off</td><td>move mis-scoped facts on recompact (heavy)</td></tr>
+  </table>
+
+  <p class="note" style="margin-top:40px">Soft-fail is the contract everywhere: a model
+  being down never breaks a chat turn or loses a fact — it degrades to the
+  deterministic path and logs what it skipped.</p>
+
+</div>
