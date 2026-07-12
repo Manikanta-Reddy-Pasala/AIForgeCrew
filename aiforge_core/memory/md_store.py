@@ -293,12 +293,17 @@ def _live_briefs() -> list[dict]:
 
 _MAP_SYS = (
     "You relate KNOWLEDGE-MEMORY briefs across scopes. Each brief is one scope: "
-    "a project (a repo), a cross-cutting topic, or 'shared' (global knowledge). "
-    "Given the briefs (key: summary), return the pairs that are genuinely "
-    "RELATED — a project brief and the global/topic brief whose subject it "
-    "shares (deploys, sync, auth, a shared convention). Only real overlaps; no "
-    "trivial or speculative links. Use the EXACT keys given. Return JSON: a "
-    'list "edges", each item {"a": "<exact key>", "b": "<exact key>"}.'
+    "a project (a repo), a cross-cutting topic, or 'shared' (global knowledge).\n"
+    "Link two briefs ONLY when they document the SAME SPECIFIC subject at "
+    "different scopes — e.g. a repo's branch rule and the global branch-naming "
+    "convention, or a service's sync code and the cross-cutting data-sync topic. "
+    "The link must be load-bearing: reading one brief, you would want the other.\n"
+    "Be STRICT. Do NOT link two briefs merely because they fall in the same broad "
+    "area (both about 'build', both about 'cache', both about 'tests'). MOST "
+    "briefs have NO link — returning few or zero edges is correct and expected. "
+    "When unsure, DON'T link.\n"
+    "Use the EXACT keys given. Return JSON: a list \"edges\", each item "
+    '{"a": "<exact key>", "b": "<exact key>"}.'
 )
 
 
@@ -372,6 +377,10 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
                 return str(v).strip()
         return ""
 
+    try:
+        max_links = max(1, int(os.environ.get("AIFORGE_OKR_MAP_MAX_LINKS", "3")))
+    except (TypeError, ValueError):
+        max_links = 3
     adj: dict[str, set[str]] = {}
     n = 0
     for e in raw_edges:
@@ -384,26 +393,42 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
             continue
         if b in adj.get(a, set()):
             continue                       # already counted this undirected pair
+        # Cap fan-out per brief so a loosely-linking model can't over-connect one
+        # brief to a dozen others — skip the edge once EITHER end is full.
+        if len(adj.get(a, ())) >= max_links or len(adj.get(b, ())) >= max_links:
+            continue
         adj.setdefault(a, set()).add(b)
         adj.setdefault(b, set()).add(a)
         n += 1
-    if dry_run or not adj:
+    if dry_run:
         return {"edges": n, "adj": {k: sorted(v) for k, v in adj.items()}}
 
+    # Mapping is DERIVED and fully recomputed each run: strip every brief's
+    # existing sibling-brief links (keep real URLs / jira refs) and rewrite from
+    # the fresh adjacency, so a re-run with a tighter prompt REMOVES stale/loose
+    # links instead of piling more on. Touch ALL briefs (not just adj) so a brief
+    # that lost all its links this pass is cleaned too.
     from aiforge_core.runtime import work_notes
+    updated: list[str] = []
     with _WRITE_LOCK:
-        for key, targets in adj.items():
-            b = by_key[key]
+        for b in briefs:
+            key = b["key"]
             try:
                 parsed = work_notes.parse_note(
                     b["path"].read_text(encoding="utf-8"))
             except OSError:
                 continue
-            links = list(parsed["sections"].get("links") or [])
-            links += [f"[{t}]({by_key[t]['file']})" for t in sorted(targets)]
-            work_notes.update_note(str(b["path"]), links=links,
+            existing = list(parsed["sections"].get("links") or [])
+            kept = [l for l in existing if not work_notes._BRIEF_REF_RE.match(l)]
+            fresh = kept + [f"[{t}]({by_key[t]['file']})"
+                            for t in sorted(adj.get(key, ()))]
+            if fresh == existing:
+                continue                        # nothing changed for this brief
+            work_notes.update_note(str(b["path"]), links=fresh,
                                    kind="knowledge", key=key)
-    return {"edges": n, "updated": sorted(adj.keys())}
+            if adj.get(key):
+                updated.append(key)
+    return {"edges": n, "updated": sorted(updated)}
 
 
 def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:

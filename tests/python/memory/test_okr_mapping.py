@@ -85,6 +85,54 @@ def test_map_scopes_accepts_from_to_edge_keys(monkeypatch, mem):
     assert res["edges"] == 1
 
 
+def test_map_scopes_caps_links_per_brief(monkeypatch, mem):
+    monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "1")
+    monkeypatch.setenv("AIFORGE_OKR_MAP_MAX_LINKS", "2")
+    from aiforge_core.memory import md_store
+    for k in ("shared", "a", "b", "c", "d"):
+        _write_brief(md_store, k, [f"fact for {k}"])
+
+    def _fake(role, messages, model, *a, **k):
+        return types.SimpleNamespace(edges=[
+            {"a": "shared", "b": "a"}, {"a": "shared", "b": "b"},
+            {"a": "shared", "b": "c"}, {"a": "shared", "b": "d"}])
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
+    res = md_store.map_scopes()
+    # shared is capped at 2 outgoing links
+    from aiforge_core.runtime.work_notes import parse_note
+    shared = parse_note((md_store.memory_dir() / "compacted-shared.md").read_text())
+    assert len([l for l in shared["sections"].get("links", [])
+                if "compacted-" in l]) == 2
+
+
+def test_map_scopes_strips_stale_links_keeps_urls(monkeypatch, mem):
+    """A re-run recomputes mapping: an old sibling-brief link no longer proposed
+    is removed, but a real URL link survives."""
+    monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "1")
+    from aiforge_core.memory import md_store
+    from aiforge_core.runtime import work_notes
+    # svc brief pre-seeded with a STALE sibling link + a real URL
+    text = work_notes.render_note(
+        "knowledge", "svc", title="svc brief", objective="Durable knowledge.",
+        facts=["a repo fact"],
+        links=["[old](compacted-gone.md)", "https://jira.example/browse/ONE-1"],
+        updated_at="2026-07-12T00:00:00+00:00")
+    (md_store.memory_dir() / "compacted-svc.md").write_text(text, encoding="utf-8")
+    _write_brief(md_store, "shared", ["a global fact"])
+
+    def _fake(role, messages, model, *a, **k):
+        return types.SimpleNamespace(edges=[])  # no edges this pass
+
+    monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
+    md_store.map_scopes()
+    svc = work_notes.parse_note(
+        (md_store.memory_dir() / "compacted-svc.md").read_text())
+    links = svc["sections"].get("links", [])
+    assert not any("compacted-gone.md" in l for l in links)   # stale sibling gone
+    assert any("ONE-1" in l for l in links)                   # real URL kept
+
+
 def test_map_scopes_noop_when_llm_off(mem):
     from aiforge_core.memory import md_store
     _write_brief(md_store, "shared", ["x"])
