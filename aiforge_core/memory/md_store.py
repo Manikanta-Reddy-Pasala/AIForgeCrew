@@ -318,10 +318,13 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
     # silently hides most briefs once there are 100s of them (the edges=0 bug).
     # Briefs are alphabetical, so topical clusters (branch-*, cache-*) stay in the
     # same batch and still get linked.
+    # Small batches keep each call fast (~10s for ~35 briefs on a local 122B);
+    # a big single listing times out on a cold model. AIFORGE_OKR_MAP_INPUT_CHARS
+    # tunes it.
     try:
-        cap = max(2000, int(os.environ.get("AIFORGE_OKR_MAP_INPUT_CHARS", "24000")))
+        cap = max(1500, int(os.environ.get("AIFORGE_OKR_MAP_INPUT_CHARS", "6000")))
     except (TypeError, ValueError):
-        cap = 24000
+        cap = 6000
     batches: list[list[str]] = []
     buf: list[str] = []
     used = 0
@@ -338,19 +341,28 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
         from pydantic import BaseModel
 
         from aiforge_core.llm.structured import structured_complete
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("map_scopes: import failed: %s", exc)
+        return {"edges": 0, "error": "llm_unreachable"}
 
-        class _Edges(BaseModel):
-            edges: list[dict] = []
+    class _Edges(BaseModel):
+        edges: list[dict] = []
 
-        for batch in batches:
+    # Per-batch fault isolation: one slow/failed batch (e.g. a cold-load timeout)
+    # must NOT discard the edges the other batches already produced.
+    failed = 0
+    for i, batch in enumerate(batches, 1):
+        try:
             res = structured_complete(
                 role,
                 [{"role": "system", "content": _MAP_SYS},
                  {"role": "user", "content": "\n".join(batch)}],
                 _Edges, max_tokens=1200, max_retries=1, temperature=0.0)
             raw_edges.extend(getattr(res, "edges", None) or [])
-    except Exception as exc:  # noqa: BLE001 — model down → no mapping this pass
-        _log.debug("map_scopes: LLM failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001 — skip this batch, keep the rest
+            failed += 1
+            _log.warning("map_scopes: batch %d/%d failed: %s", i, len(batches), exc)
+    if failed and not raw_edges:
         return {"edges": 0, "error": "llm_unreachable"}
 
     def _edge_key(e: dict, *names: str) -> str:
