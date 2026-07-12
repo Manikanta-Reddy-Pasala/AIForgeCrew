@@ -298,8 +298,29 @@ def classify_scope(text: str, *, hint_repo: str | None = None,
     if scope == "topic":
         t = topic or hint_topic
         return {"scope": "topic", "repo": None,
-                "topic": _slug(t) if t else None}
+                "topic": _snap_topic(_slug(t)) if t else None}
     return _fallback()   # only an empty/unknown scope falls back to the hints
+
+
+def _snap_topic(slug: str) -> str:
+    """Snap a freshly-minted topic slug to an EXISTING topic brief when they're
+    near-identical (fuzzy) — stops the classifier proliferating
+    ``sync-retries`` / ``sync-retry-policy`` / ``sync-retry`` into three briefs.
+    Falls back to the slug when nothing close exists. Never raises."""
+    if not slug:
+        return slug
+    try:
+        import difflib
+        existing = [p.stem[len("compacted-"):]
+                    for p in memory_dir().glob("compacted-*.md")
+                    if p.stem != "compacted-shared"
+                    and not _CAPTURE_SIG_RE.search(p.name)]
+        if slug in existing:
+            return slug
+        m = difflib.get_close_matches(slug, existing, n=1, cutoff=0.82)
+        return m[0] if m else slug
+    except Exception:  # noqa: BLE001
+        return slug
 
 
 # ── cross-scope mapping: link related briefs (project ↔ global ↔ topic) ───────
@@ -588,6 +609,45 @@ def reheal_scopes(*, role: str = "learner", max_per_brief: int = 60) -> dict:
                 work_notes._ci_key(_fact_body(x)) for x in moved_facts})
             healed.append(key)
     return {"moved": moved, "healed": healed}
+
+
+def dedupe_global_copies() -> dict:
+    """Remove facts from project/topic briefs when the SAME fact (case-insensitive)
+    already lives in the global ``compacted-shared.md`` brief. Recall always
+    unions the global brief for every scope, so those copies are pure redundancy
+    — dropping them de-duplicates the md layer without any recall loss. Fresh
+    read-modify-write under ``_WRITE_LOCK``. Never raises."""
+    from aiforge_core.runtime import work_notes
+    shared = memory_dir() / "compacted-shared.md"
+    if not shared.is_file():
+        return {"removed": 0, "briefs": 0}
+    try:
+        gfacts = work_notes.parse_note(
+            shared.read_text(encoding="utf-8"))["sections"].get("facts") or []
+    except OSError:
+        return {"removed": 0, "briefs": 0}
+    gkeys = {work_notes._ci_key(_fact_body(f)) for f in gfacts}
+    if not gkeys:
+        return {"removed": 0, "briefs": 0}
+    removed = 0
+    touched = 0
+    with _WRITE_LOCK:
+        for p in sorted(memory_dir().glob("compacted-*.md")):
+            if p.name == "compacted-shared.md" or _CAPTURE_SIG_RE.search(p.name):
+                continue
+            try:
+                parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            facts = parsed["sections"].get("facts") or []
+            kept = [f for f in facts
+                    if work_notes._ci_key(_fact_body(f)) not in gkeys]
+            if len(kept) != len(facts):
+                removed += len(facts) - len(kept)
+                touched += 1
+                work_notes.update_note(str(p), facts=kept, kind="knowledge",
+                                       key=p.stem[len("compacted-"):])
+    return {"removed": removed, "briefs": touched}
 
 
 def cleanup_reheal(*, role: str = "learner") -> dict:

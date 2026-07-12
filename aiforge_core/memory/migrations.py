@@ -350,6 +350,9 @@ def force_recompact_all(on_step=None) -> dict:
         ("sweep", lambda: md_store.sweep_stale_captures(archive=True)),
         ("sweep_empty", lambda: md_store.sweep_empty_briefs(archive=True)),
         ("dedupe", dedupe_all),
+        # drop project/topic-brief facts that already live in the global brief
+        # (recall unions global → those copies are pure redundancy).
+        ("dedupe_global", lambda: md_store.dedupe_global_copies()),
         # self-heal mis-scoped facts (move globals out of project briefs) — heavy
         # (LLM per fact), so opt-in via AIFORGE_OKR_REHEAL=1.
         ("reheal", lambda: md_store.reheal_scopes()
