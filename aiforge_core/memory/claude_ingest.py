@@ -99,9 +99,14 @@ def discover(roots: list[str]) -> list[Path]:
 
 
 def _wipe_memory() -> dict:
-    """Committed clean wipe: md files + sqlite index (registrations/config kept)."""
+    """Committed clean wipe of memory DATA across whatever backend is active —
+    md files + the index stores (SQLite ``sqlite`` OR the standard Neo4j graph:
+    ``graph_facts``/``chunks``/``symbols``/``graphify``). Chat sessions and the
+    registered sources/config are preserved. Each store soft-fails, so clearing
+    all is safe on any backend (SQLite-only or md+Postgres+Neo4j)."""
     from aiforge_core.memory import admin
-    return {s: admin.clear_store(s) for s in ("md_files", "sqlite")}
+    stores = [s for s in admin.CLEARABLE if s != "chat"]
+    return {s: admin.clear_store(s) for s in stores}
 
 
 def ingest_claude_files(
