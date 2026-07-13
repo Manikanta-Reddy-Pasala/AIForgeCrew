@@ -369,9 +369,17 @@ def _start_daily_reindex() -> None:
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("daily recompact-all failed: %s", exc)
 
+    # Fires at a NIGHT local hour (AIFORGE_RECOMPACT_HOUR, default 02:00 local) —
+    # a dedicated knob, NOT tied to the reindex hour, so the heavy nightly
+    # compact-all lands off-peak regardless of when reindex runs.
+    try:
+        _recompact_hour = max(0, min(23, int(
+            os.environ.get("AIFORGE_RECOMPACT_HOUR", "2"))))
+    except (TypeError, ValueError):
+        _recompact_hour = 2
     if os.environ.get("AIFORGE_RECOMPACT_DAILY", "1") != "0":
         _pd.register("recompact-all", _recompact_all,
-                     at_hour=max(0, min(23, hour + 4)))
+                     at_hour=_recompact_hour)
 
     # Session-end OKR compaction — IDLE trigger. AIFORGE_SESSION_COMPACT selects
     # the trigger (idle | turns | explicit | off); the daemon only runs the idle
