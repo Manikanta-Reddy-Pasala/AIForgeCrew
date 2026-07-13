@@ -435,6 +435,11 @@ def force_recompact_all(on_step=None) -> dict:
         # global, so a contradiction misleads). Strict prompt, default ON (unlike
         # the aggressive dedup reconcile above). "Overwrite outdated, don't append."
         ("contradict", lambda: md_store.resolve_contradictions()),
+        # dedupe_global / contradict can EMPTY a brief (its only fact moved to
+        # the global scope or dropped as stale) — e.g. a global rule leaves an
+        # empty topic stub. Sweep those NOW, before linking, so no empty brief
+        # gets a link. (The earlier sweep runs before those steps.)
+        ("sweep_empty_2", lambda: md_store.sweep_empty_briefs(archive=True)),
         # self-heal mis-scoped facts (move globals out of project briefs) — heavy
         # (LLM per fact), so opt-in via AIFORGE_OKR_REHEAL=1.
         ("reheal", lambda: md_store.reheal_scopes()

@@ -539,8 +539,13 @@ def _supersede_directive() -> str:
         return (f"SUPERSEDE: when new info contradicts an old line, KEEP BOTH — "
                 f"append ' [superseded {today}]' to the stale line and add the "
                 f"new value as a fresh line; never delete the old value.")
-    return ("SUPERSEDE: when new info contradicts an old line (status/owner/value "
-            "changed), keep the NEW value and DROP the stale line.")
+    return ("SUPERSEDE / UPDATE-IN-PLACE: when new info changes a fact's value "
+            "(a number, status, owner, path, decision, config value), REPLACE the "
+            "fact with the LATEST value — emit ONLY the current value as ONE line. "
+            "DROP the old value entirely: do NOT keep it as a second line and do "
+            "NOT annotate it with '(old)', '(previously X)', '(was …)', "
+            "'(new)', or '[superseded]'. Each fact states the CURRENT truth, not "
+            "its history.")
 
 
 _CONSOLIDATE_SYS = (
