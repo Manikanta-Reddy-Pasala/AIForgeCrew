@@ -18,6 +18,18 @@ def test_405_method_hint():
     assert "method" in hints and "methods=" in hints
 
 
+def test_shared_state_reset_hint():
+    out = ("10 errors in 0.6s\n"
+           "ERROR test_tasks.py - ValueError: Username already exists")
+    hints = " ".join(_directed_hints(out)).lower()
+    assert "autouse" in hints and "reset" in hints
+
+
+def test_keyerror_missing_key_hint():
+    hints = " ".join(_directed_hints("E  KeyError: 'deleted'"))
+    assert "deleted" in hints and "MISSING" in hints.upper()
+
+
 def test_import_hint_still_works():
     hints = " ".join(_directed_hints(
         "ImportError: cannot import name 'Book' from 'models'"))

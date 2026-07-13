@@ -2628,6 +2628,24 @@ def _directed_hints(output: str) -> list[str]:
             f"to that class (initialise it in __init__ / implement the method).")
     for name, attr in re.findall(r"module '([\w.]+)' has no attribute '(\w+)'", output):
         add(f"`{name}` is missing top-level `{attr}` — define it there.")
+    # ── shared state leaking across tests (in-memory store not reset) ───────
+    if re.search(r"(ValueError|Exception|IntegrityError)[^\n]*already exists", output) \
+            or re.search(r"errors?\b.*\n.*already exists", output, re.I) \
+            or (re.search(r"\d+\s+errors?\b", output) and "already exists" in output):
+        add("Tests ERROR with 'already exists' (not a plain assert-fail): the "
+            "in-memory store/DB KEEPS STATE BETWEEN TESTS, so the 2nd test's "
+            "setup collides with the 1st. Reset it between tests — add a pytest "
+            "AUTOUSE fixture that calls the store's reset()/clear() (and the "
+            "auth/token store) before each test, e.g. "
+            "`@pytest.fixture(autouse=True)\\ndef _reset(): store.reset(); yield`. "
+            "Put it in conftest.py or each test module. This fixes a whole BATCH "
+            "of errors at once.")
+    # ── response/dict missing an expected key ───────────────────────────────
+    for key in re.findall(r"KeyError:\s*['\"](\w+)['\"]", output):
+        add(f"KeyError `{key}`: the response/dict the test reads is MISSING key "
+            f"`{key}` — the handler must include `{key}` in what it returns "
+            f"(e.g. `return jsonify({{'{key}': ...}})`); read the test to see the "
+            f"exact expected shape.")
     # ── HTTP / web-framework status mismatches (Flask/FastAPI/Django/etc.) ──
     # These fall through the generic "assert X==Y" rule below with no root-cause,
     # so a local model patches blindly. Name the ACTUAL cause per status code.
@@ -3257,14 +3275,23 @@ def _scaffold_stubs(cwd: str, subs: list) -> list:
 
 
 def _fail_count(output: str) -> int:
-    """Number of failing tests from the build/test output (for the regression
-    guard). 999 = couldn't-run/collection-error (treat as worst); 0 = all green."""
+    """Number of unhealthy tests from the build/test output (for the regression
+    guard + reconcile progress signal). Sums pytest FAILED **and** ERRORS — a
+    setup/fixture error (e.g. 'ValueError: Username already exists' from a store
+    not reset between tests) shows as 'N errors', NOT 'failed', so counting only
+    'failed' made the loop stop early thinking it was nearly done. 999 =
+    couldn't-run/collection-error (worst); 0 = all green."""
     import re as _re
-    m = _re.search(r"(\d+)\s+failed", output or "")
-    if m:
-        return int(m.group(1))
-    if _re.search(r"error|Error|Traceback|Interrupted", output or ""):
-        return 999
+    out = output or ""
+    failed = _re.search(r"(\d+)\s+failed", out)
+    errored = _re.search(r"(\d+)\s+errors?\b", out)
+    n = (int(failed.group(1)) if failed else 0) + (int(errored.group(1)) if errored else 0)
+    if n:
+        return n
+    if failed or errored:
+        return 0                      # explicit "0 failed" style — all green
+    if _re.search(r"error|Error|Traceback|Interrupted", out):
+        return 999                    # a raw error with no pytest counts → worst
     return 0
 
 
