@@ -37,6 +37,10 @@ services:
       AIFORGE_BIND_HOST: ${AIFORGE_BIND_HOST:-127.0.0.1}
       AIFORGE_PORT: ${AIFORGE_PORT:-8799}
       AIFORGE_API_TOKEN: ${AIFORGE_API_TOKEN:-}
+      # Bind 0.0.0.0 without a token ONLY if you front the API yourself
+      # (Cloudflare / WireGuard-only proxy) — else the app refuses to boot on a
+      # non-loopback bind. Forwarded so a host that sets it (e.g. via .env) works.
+      AIFORGE_ALLOW_UNAUTH_NONLOOPBACK: ${AIFORGE_ALLOW_UNAUTH_NONLOOPBACK:-0}
       AIFORGE_CONFIG_DIR: /data/aiforge
       # Real paraphrase recall — the image baked in sentence-transformers +
       # sqlite-vec and pre-downloaded the model.
