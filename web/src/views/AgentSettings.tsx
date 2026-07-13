@@ -275,14 +275,30 @@ function ApprovalsCard() {
         file-changing tool calls. Turn OFF to let a mode run uninterrupted.
         Denied-by-policy actions and destructive deletes still confirm.
       </div>
-      {APPROVAL_MODES.map(({ key, label, hint }) => (
-        <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
-          <input type="checkbox" checked={flags[key]}
-                 onChange={e => toggle(key, e.target.checked)} />
-          <span style={{ width: 90, fontSize: 13 }}>{label}</span>
-          <span style={{ fontSize: 12, color: '#8b949e' }}>{hint}</span>
-        </label>
-      ))}
+      {APPROVAL_MODES.map(({ key, label, hint }) => {
+        const on = flags[key];
+        return (
+          <div key={key} onClick={() => toggle(key, !on)}
+               style={{ display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '7px 0', cursor: 'pointer' }}>
+            <span style={{ width: 90, fontSize: 13 }}>{label}</span>
+            <span style={{ flex: 1, fontSize: 12, color: '#8b949e' }}>{hint}</span>
+            <span style={{ fontSize: 12, fontWeight: 600,
+                           color: on ? '#3fb950' : '#8b949e' }}>
+              {on ? 'ON' : 'OFF'}
+            </span>
+            <span aria-hidden style={{
+              width: 34, height: 18, borderRadius: 999, position: 'relative',
+              transition: 'background .15s',
+              background: on ? '#238636' : '#30363d' }}>
+              <span style={{
+                position: 'absolute', top: 2, left: on ? 18 : 2,
+                width: 14, height: 14, borderRadius: '50%', background: '#fff',
+                transition: 'left .15s' }} />
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
