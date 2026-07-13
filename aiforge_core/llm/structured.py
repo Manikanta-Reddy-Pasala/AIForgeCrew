@@ -141,10 +141,16 @@ def structured_complete(role: str, messages: list[dict],
                     pass
                 return res
             except Exception as exc:  # noqa: BLE001 — fall back to our loop
-                log.info("instructor path failed [role=%s base_url=%s]: %s: %s "
-                         "— using fallback loop", role,
-                         getattr(ep, "base_url", "?"), type(exc).__name__,
-                         str(exc)[:200])
+                # A max_tokens truncation (IncompleteOutputException) is EXPECTED
+                # and fully recovered by the fallback loop below — log it at DEBUG
+                # so it doesn't read as an error. Real failures stay at INFO.
+                _lvl = (logging.DEBUG
+                        if "IncompleteOutput" in type(exc).__name__
+                        else logging.INFO)
+                log.log(_lvl, "instructor path failed [role=%s base_url=%s]: %s: %s "
+                        "— using fallback loop", role,
+                        getattr(ep, "base_url", "?"), type(exc).__name__,
+                        str(exc)[:200])
         elif mode == "instructor":
             raise ImportError(
                 "AIFORGE_STRUCTURED_MODE=instructor but the lib is not "

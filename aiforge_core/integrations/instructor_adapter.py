@@ -49,9 +49,17 @@ def structured(*, base_url: str, api_key: str, model: str,
         _oai_kwargs["http_client"] = _http
     cli = instructor.from_openai(OpenAI(**_oai_kwargs),
                                  mode=instructor.Mode.MD_JSON)
+    import os
     kwargs: dict = {}
-    if max_tokens:
-        kwargs["max_tokens"] = max_tokens
+    # A structured (JSON) reply truncated by a too-small max_tokens raises
+    # IncompleteOutputException and forces the fallback loop (noisy + a wasted
+    # call). Give it a sensible FLOOR so short structured extractions don't get
+    # clipped — tunable via AIFORGE_STRUCTURED_MAX_TOKENS.
+    try:
+        _floor = max(256, int(os.environ.get("AIFORGE_STRUCTURED_MAX_TOKENS", "4096")))
+    except (TypeError, ValueError):
+        _floor = 4096
+    kwargs["max_tokens"] = max(int(max_tokens), _floor) if max_tokens else _floor
     if temperature is not None:
         kwargs["temperature"] = temperature
     return cli.chat.completions.create(
