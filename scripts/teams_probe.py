@@ -32,6 +32,14 @@ USAGE
   Delegated (your personal chats — sign in once with device code):
      python scripts/teams_probe.py login          # prints a code to enter
      python scripts/teams_probe.py chats
+
+  Username + password (ROPC — no browser, no client secret). Still needs a
+  public-client app registration for TEAMS_CLIENT_ID; FAILS if the account has
+  MFA (use `login` then). Creds via env, never on the command line:
+     export TEAMS_TENANT_ID=... TEAMS_CLIENT_ID=...
+     export TEAMS_USERNAME=you@org.com TEAMS_PASSWORD=...
+     python scripts/teams_probe.py password       # caches a token, then:
+     python scripts/teams_probe.py chats
      python scripts/teams_probe.py chat-messages <chat_id> [--top 20]
      python scripts/teams_probe.py chat-poll      <chat_id> [--interval 5]
 
@@ -128,9 +136,43 @@ def _device_login() -> dict:
         sys.exit(f"login failed: {j.get('error_description', j)}")
 
 
+def _password_login() -> dict:
+    """ROPC — sign in with a raw username + password (no browser, no secret).
+
+    Caveats (Microsoft's, not ours): needs a public-client app registration
+    (Authentication → Allow public client flows → Yes), works ONLY for
+    cloud/managed accounts, and FAILS if the account has MFA or is federated.
+    If it errors with interaction_required/AADSTS50076, use `login` (device
+    code) instead. Creds come from env (TEAMS_USERNAME / TEAMS_PASSWORD) so they
+    never land in shell history — never paste them into chat."""
+    tenant = _cfg("TEAMS_TENANT_ID")
+    r = requests.post(
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+        data={
+            "grant_type": "password",
+            "client_id": _cfg("TEAMS_CLIENT_ID"),
+            "username": _cfg("TEAMS_USERNAME"),
+            "password": _cfg("TEAMS_PASSWORD"),
+            "scope": _DELEGATED_SCOPES,
+        }, timeout=30)
+    j = r.json()
+    if r.status_code != 200:
+        hint = ""
+        if "50076" in r.text or "50079" in r.text or "interaction_required" in r.text:
+            hint = ("\nhint: the account requires MFA — ROPC can't do that. "
+                    "Run `teams_probe.py login` (device code) instead.")
+        sys.exit(f"password login failed {r.status_code}: "
+                 f"{j.get('error_description', r.text)}{hint}")
+    os.makedirs(os.path.dirname(_TOKEN_CACHE), exist_ok=True)
+    with open(_TOKEN_CACHE, "w", encoding="utf-8") as fh:
+        json.dump(j, fh)
+    print("signed in (password) — token cached at", _TOKEN_CACHE)
+    return j
+
+
 def _delegated_token() -> str:
     if not os.path.isfile(_TOKEN_CACHE):
-        sys.exit("not signed in — run:  teams_probe.py login")
+        sys.exit("not signed in — run:  teams_probe.py login  (or: password)")
     with open(_TOKEN_CACHE, encoding="utf-8") as fh:
         tok = json.load(fh)
     # try the access token; on 401 the caller refreshes
@@ -222,6 +264,10 @@ def cmd_login(_a):
     _device_login()
 
 
+def cmd_password(_a):
+    _password_login()
+
+
 def cmd_chats(_a):
     tok = _delegated_token()
     for c in _get("/me/chats?$top=50", tok, delegated=True).get("value", []):
@@ -270,6 +316,7 @@ def main(argv=None):
     po.add_argument("--interval", type=int, default=5); po.set_defaults(func=cmd_poll)
 
     sub.add_parser("login").set_defaults(func=cmd_login)
+    sub.add_parser("password").set_defaults(func=cmd_password)
     sub.add_parser("chats").set_defaults(func=cmd_chats)
     cm = sub.add_parser("chat-messages"); cm.add_argument("chat_id")
     cm.add_argument("--top", type=int, default=20)
