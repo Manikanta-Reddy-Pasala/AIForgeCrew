@@ -12,3 +12,11 @@ graphify-out
 data
 docs
 evals
+# Runtime/local data that must never bake into the image (present on a used
+# checkout, absent on a clean clone) — these ballooned the COPY layer.
+models
+neo4j-data
+neo4j-logs
+hf-cache
+*.pptx
+*.log
