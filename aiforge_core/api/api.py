@@ -310,7 +310,7 @@ def _start_daily_reindex() -> None:
             # all): merge topics, drop global-dup facts, resolve contradictions
             # (latest wins), sweep emptied stubs, lint + (re)link briefs. Without
             # this the hourly/Compact path never linked or deduped across briefs.
-            r_rules = md_store.finalize_briefs(role="learner")
+            r_rules = md_store.finalize_briefs(role="learner", recent_only=True)
             _af_log.info("md brief: repo=%s topic=%s sweep=%s empty=%s rules=%s",
                          r_repo, r_topic, r_sweep, r_empty, r_rules)
         except Exception as exc:  # noqa: BLE001
