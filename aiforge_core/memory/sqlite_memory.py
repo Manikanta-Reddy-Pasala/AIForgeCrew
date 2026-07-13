@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS memory_units (
 CREATE INDEX IF NOT EXISTS memory_units_repo ON memory_units(repo);
 CREATE INDEX IF NOT EXISTS memory_units_kind ON memory_units(kind);
 CREATE INDEX IF NOT EXISTS memory_units_ticket ON memory_units(ticket);
+CREATE TABLE IF NOT EXISTS memory_meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 # Keyword (BM25) search — an FTS5 external-content index over memory_units.text,
@@ -630,6 +631,34 @@ def stored_dim_mismatch() -> bool:
         return False
 
 
+def _get_meta(c, key: str) -> str:
+    try:
+        row = c.execute("SELECT value FROM memory_meta WHERE key = ?",
+                        (key,)).fetchone()
+        return (row["value"] if row else "") or ""
+    except sqlite3.Error:
+        return ""
+
+
+def stored_embedder_changed() -> bool:
+    """True if the embedder that produced the stored vectors DIFFERS from the
+    active one (backend or model) — even at the SAME dimension. hash and
+    model2vec are both 256-dim, so a dim-only check misses hash↔model2vec and
+    leaves stale vectors; this signature check catches it. Rows with no vectors
+    yet (fresh store) → False."""
+    active = local_embed.embed_signature()
+    with _conn() as c:
+        stored = _get_meta(c, "embed_sig")
+        if not stored:
+            # no signature yet: only a mismatch if there ARE embedded rows from a
+            # prior (unknown) embedder — a fresh/empty store is not "changed".
+            row = c.execute(
+                "SELECT 1 FROM memory_units WHERE embedding != '[]' LIMIT 1"
+            ).fetchone()
+            return row is not None
+        return stored != active
+
+
 def reembed_all() -> dict:
     """Recompute EVERY unit's embedding with the ACTIVE embedder. Needed after a
     backend/model switch or a migration that imported rows embedded by a
@@ -650,6 +679,12 @@ def reembed_all() -> dict:
             c.execute("UPDATE memory_units SET embedding = ? WHERE id = ?",
                       (json.dumps(v), r["id"]))
             n += 1
+        # stamp WHICH embedder these vectors came from, so a later backend/model
+        # switch (even at the same dim) is detected + triggers another reembed.
+        if not failed:
+            c.execute("INSERT INTO memory_meta(key, value) VALUES('embed_sig', ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                      (local_embed.embed_signature(),))
     if failed:
         _log.warning("reembed: %d/%d rows could not be embedded (model "
                      "unavailable); left unchanged", failed, n + failed)

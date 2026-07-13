@@ -251,8 +251,11 @@ def run_startup_migrations() -> dict:
     # (SQLite) backend only.
     try:
         from aiforge_core.memory import backend_select, sqlite_memory
-        if backend_select.embedded() and sqlite_memory.stored_dim_mismatch():
-            log.info("migration: embedding dim mismatch → re-embedding all units")
+        if backend_select.embedded() and (
+                sqlite_memory.stored_dim_mismatch()
+                or sqlite_memory.stored_embedder_changed()):
+            log.info("migration: embedder changed (backend/model/dim) → "
+                     "re-embedding all units")
             out["reembed"] = sqlite_memory.reembed_all()
     except Exception as exc:  # noqa: BLE001
         out["reembed"] = {"ok": False, "error": str(exc)}

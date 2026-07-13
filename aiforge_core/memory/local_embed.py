@@ -48,6 +48,22 @@ def _backend() -> str:
     return _os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower()
 
 
+def embed_signature() -> str:
+    """A cheap identity of the ACTIVE embedder — ``backend:model`` — so a switch
+    is detected even when the new backend has the SAME dimension (hash and
+    model2vec are both 256-dim, so a dim-only check would miss hash↔model2vec and
+    leave stale vectors). No model load: reads env only."""
+    import os as _os
+    b = _backend()
+    if b in ("model2vec", "static"):
+        return "model2vec:" + (_os.environ.get("AIFORGE_EMBED_MODEL2VEC_PATH")
+                               or _os.environ.get("AIFORGE_EMBED_MODEL2VEC_MODEL")
+                               or "minishlab/potion-base-8M")
+    if b in ("api", "openai", "lmstudio", "ollama"):
+        return "api:" + (_os.environ.get("AIFORGE_EMBED_API_MODEL") or "")
+    return "hash"
+
+
 def embed(text: str) -> list[float]:
     """The active embedder (RAISES on failure for the real backends — no silent
     hash fallback; the write path degrades via ``_safe_embed``):
