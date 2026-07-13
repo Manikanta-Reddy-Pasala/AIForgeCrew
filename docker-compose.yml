@@ -44,7 +44,7 @@ services:
       AIFORGE_CONFIG_DIR: /data/aiforge
       # Real paraphrase recall — the image baked in sentence-transformers +
       # sqlite-vec and pre-downloaded the model.
-      AIFORGE_EMBED_BACKEND: ${AIFORGE_EMBED_BACKEND:-semantic}
+      AIFORGE_EMBED_BACKEND: ${AIFORGE_EMBED_BACKEND:-model2vec}
       # The agent's workspace = the mounted host filesystem, so edits/worktrees
       # land on the host and persist.
       AIFORGE_REPO_ROOT: ${AIFORGE_REPO_ROOT:-/host}

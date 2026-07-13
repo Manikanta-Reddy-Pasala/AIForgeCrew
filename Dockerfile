@@ -28,23 +28,20 @@ ENV UV_SYSTEM_PYTHON=1 PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf-cache
 
 COPY . .
-# CPU-ONLY torch FIRST so the semantic extra reuses it instead of pulling the
-# multi-GB CUDA build. Inference here is CPU (the app loads the model on cpu).
-RUN uv pip install --system --torch-backend=cpu torch \
-    || uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
-# Vendored memory pkg, then the Crew + EVERY optional extra (semantic,
-# structured, crawl, chunking) so nothing is fetched at run time. aider-chat is
-# already a CORE dep. Dev tools so chat sessions can run/test the code they build.
+# Vendored memory pkg, then the Crew + extras. Semantic recall uses model2vec
+# (embed-static) — real static embeddings with NO torch, so the image stays
+# small (torch alone was ~1GB). structured/crawl/chunking round out the extras.
+# aider-chat is a CORE dep. Dev tools so chat sessions can run/test their code.
 RUN uv pip install --system -e ./packages/aiforge_memory \
-    && uv pip install --system -e '.[semantic,structured,crawl,chunking]' \
+    && uv pip install --system -e '.[embed-static,structured,crawl,chunking]' \
     && uv pip install --system pytest ruff
 
-# Pre-download the embed model so recall works fully OFFLINE. Skip with
-# --build-arg PREFETCH_EMBED_MODEL=0 (smaller image; downloads on first use).
+# Pre-download the model2vec model (~30MB) so recall works fully OFFLINE. Skip
+# with --build-arg PREFETCH_EMBED_MODEL=0 (downloads on first use instead).
 ARG PREFETCH_EMBED_MODEL=1
-ARG EMBED_MODEL=sentence-transformers/all-MiniLM-L6-v2
+ARG EMBED_MODEL=minishlab/potion-base-8M
 RUN if [ "$PREFETCH_EMBED_MODEL" = "1" ]; then \
-      python -c "from sentence_transformers import SentenceTransformer as S; S('${EMBED_MODEL}')" \
+      python -c "from model2vec import StaticModel as S; S.from_pretrained('${EMBED_MODEL}')" \
       && echo "prefetched ${EMBED_MODEL}"; \
     else echo "skipped embed-model prefetch"; fi \
     && find /usr/local/lib/python3.12/site-packages -name '__pycache__' -type d -prune -exec rm -rf {} + \
@@ -52,9 +49,9 @@ RUN if [ "$PREFETCH_EMBED_MODEL" = "1" ]; then \
 
 # ── runtime (slim: no compiler, no uv) ─────────────────────────────────
 FROM python:3.12-slim AS runtime
-# git/curl for worktrees & git_pr; libgomp1 is torch's OpenMP runtime.
+# git/curl for worktrees & git_pr (model2vec is pure-numpy — no torch/libgomp).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl ca-certificates libgomp1 \
+        git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # The agent operates on HOST-mounted repos owned by another uid; without this
@@ -69,7 +66,7 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     AIFORGE_CONFIG_DIR=/data/aiforge \
-    AIFORGE_EMBED_BACKEND=semantic \
+    AIFORGE_EMBED_BACKEND=model2vec \
     HF_HOME=/opt/hf-cache
 # HF_HOME is an IMAGE path (NOT under /data/aiforge — a runtime bind mount that
 # would MASK the baked model); the entrypoint flips HF offline on only when the

@@ -31,20 +31,18 @@
 # aiforge_core.deploy.converge). Point it at a model on the home page
 # (http://localhost:8799/ui/).
 #
-# MEMORY EMBEDDER (recall quality) — AIFORGE_EMBED_BACKEND:
-#   • hash (default) — keyword + exact-id + spell-correction. Works fully
-#     (briefs, migration, chat, contradiction, seed-index, lint). No download.
-#   • api — semantic recall from an OpenAI-compatible /v1/embeddings endpoint you
-#     ALREADY run (LM Studio / Ollama / llama.cpp). NO HuggingFace download, no
-#     torch — best when the sentence-transformers model stalls downloading from
-#     the HF Hub. Load an embedding model on your server, then:
+# MEMORY EMBEDDER (recall quality) — AIFORGE_EMBED_BACKEND. An EXPLICIT value is
+# always honored; otherwise the lightest installed backend is auto-picked.
+#   • model2vec (RECOMMENDED semantic) — real static embeddings, ~30MB model,
+#     NO torch (pure numpy). Enable ONCE: `./run.sh --install-model2vec`. Loads
+#     from a local dir for zero-network runtime (AIFORGE_EMBED_MODEL2VEC_PATH).
+#   • hash — keyword + exact-id + spell-correction, zero deps, no download.
+#     The fallback when no semantic backend is installed.
+#   • api — semantic from an OpenAI-compatible /v1/embeddings endpoint you ALREADY
+#     run (LM Studio / Ollama). No HF download:
 #       AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<embed-model> ./run.sh
-#     (URL defaults to AIFORGE_LM_BASE_URL; e.g. LM Studio
-#      'text-embedding-nomic-embed-text-v1.5', Ollama 'nomic-embed-text'.)
-#   • semantic — LOCAL sentence-transformers + sqlite-vec (pulls torch + the
-#     model from HF, ~minutes). Enable ONCE: `./run.sh --install-semantic`.
-#     If the HF download stalls, use the 'api' backend above, or a mirror:
-#       HF_ENDPOINT=https://hf-mirror.com ./run.sh --install-semantic
+#   • semantic — HEAVY: sentence-transformers + torch (~1GB), model from HF.
+#     `./run.sh --install-semantic`. Prefer model2vec unless you need it.
 #
 # SEED A FRESH MACHINE'S MEMORY from agent-instruction files (CLAUDE.md /
 # AGENTS.md / GEMINI.md / .cursorrules) — a reproducible, committed path:
@@ -147,7 +145,8 @@ while [[ $# -gt 0 ]]; do
     --dedupe) MAINT=dedupe ;;         # remove duplicate OKR nodes + chat sessions, then exit
     --recompact-all) MAINT=recompact ;;  # re-LLM every brief + rebuild, then exit
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
-    --install-semantic) INSTALL_SEMANTIC=1 ;;  # foreground-install semantic memory (torch), then continue
+    --install-semantic) INSTALL_SEMANTIC=1 ;;  # foreground-install HEAVY semantic memory (sentence-transformers + torch)
+    --install-model2vec) INSTALL_MODEL2VEC=1 ;;  # foreground-install LIGHT semantic (model2vec, ~30MB, NO torch) — recommended
     --dev) DEV=1 ;;
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
@@ -510,29 +509,42 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   # So a normal boot NEVER installs it: use semantic if the libs are already
   # importable, else boot on hash and print how to enable it. Run it explicitly,
   # in the FOREGROUND with visible progress, via `./run.sh --install-semantic`.
-  if [[ "${AIFORGE_EMBED_BACKEND:-}" != "hash" ]]; then
-    if [[ "${INSTALL_SEMANTIC:-0}" == "1" ]] \
-        && ! .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
-      echo "==> installing semantic memory (sentence-transformers + sqlite-vec; pulls torch, may take several minutes)…"
-      if uv pip install --python .venv/bin/python -e '.[semantic]'; then
-        echo "==> semantic memory installed — pre-downloading the embed model (one-time)…"
-        # Warm the model cache NOW (foreground, visible) so it isn't fetched
-        # lazily on the first chat message. A blocked huggingface.co fails fast
-        # here (AIFORGE_EMBED_DOWNLOAD_TIMEOUT) instead of hanging a live turn.
-        AIFORGE_EMBED_BACKEND=semantic .venv/bin/python -c \
-          "from aiforge_core.integrations import semantic_embed as s; print('embed model ready, dim', s.dim())" \
-          || echo "==> WARN: embed model could not download (box may not reach huggingface.co) — pre-download it or run AIFORGE_EMBED_BACKEND=hash"
-      else
-        echo "==> semantic memory install failed — continuing on hash backend"
-      fi
-    fi
-    if .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
-      export AIFORGE_EMBED_BACKEND=semantic   # inherited by the api/runner below
-    else
-      export AIFORGE_EMBED_BACKEND=hash       # app raises on a missing semantic backend; be explicit
-      echo "==> semantic memory not installed — booting on HASH backend."
-      echo "==> to enable real semantic recall: ./run.sh --install-semantic (one-time; downloads torch)"
-    fi
+  # ── Embed backend. Priority: an EXPLICIT AIFORGE_EMBED_BACKEND (runtime.env /
+  # env) is ALWAYS honored. Else auto-pick the lightest REAL backend installed
+  # (model2vec — NO torch — over heavy sentence-transformers), else hash.
+  # Optional one-time installs: --install-model2vec (light, ~30MB, no torch —
+  # recommended) or --install-semantic (heavy, sentence-transformers + torch).
+  if [[ "${INSTALL_MODEL2VEC:-0}" == "1" ]] \
+      && ! .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
+    echo "==> installing model2vec static embeddings (real semantic, NO torch)…"
+    uv pip install --python .venv/bin/python -e '.[embed-static]' \
+      && : "${AIFORGE_EMBED_BACKEND:=model2vec}" \
+      || echo "==> model2vec install failed — continuing"
+  fi
+  if [[ "${INSTALL_SEMANTIC:-0}" == "1" ]] \
+      && ! .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
+    echo "==> installing semantic memory (sentence-transformers + sqlite-vec; pulls torch, several minutes)…"
+    if uv pip install --python .venv/bin/python -e '.[semantic]'; then
+      # Warm the model cache NOW (foreground) so it isn't fetched on the first
+      # chat message; a blocked huggingface.co fails fast, not a hung turn.
+      AIFORGE_EMBED_BACKEND=semantic .venv/bin/python -c \
+        "from aiforge_core.integrations import semantic_embed as s; print('embed model ready, dim', s.dim())" \
+        || echo "==> WARN: embed model could not download (box may not reach huggingface.co)"
+      : "${AIFORGE_EMBED_BACKEND:=semantic}"
+    else echo "==> semantic install failed — continuing"; fi
+  fi
+  if [[ -n "${AIFORGE_EMBED_BACKEND:-}" ]]; then
+    export AIFORGE_EMBED_BACKEND
+    echo "==> embed backend: ${AIFORGE_EMBED_BACKEND} (explicit)"
+  elif .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
+    export AIFORGE_EMBED_BACKEND=model2vec
+    echo "==> embed backend: model2vec (auto — static semantic, no torch)"
+  elif .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
+    export AIFORGE_EMBED_BACKEND=semantic
+    echo "==> embed backend: semantic (auto)"
+  else
+    export AIFORGE_EMBED_BACKEND=hash
+    echo "==> embed backend: hash (no semantic libs). Light semantic recall: ./run.sh --install-model2vec"
   fi
   # crawl4ai renders with headless chromium — install best-effort (idempotent).
   .venv/bin/python -m playwright install chromium >/dev/null 2>&1 || true
