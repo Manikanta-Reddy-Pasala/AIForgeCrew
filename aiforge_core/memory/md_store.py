@@ -533,7 +533,7 @@ def lint_graph(*, repair: bool = False) -> dict:
             m = work_notes._BRIEF_REF_RE.match(lk.strip())
             if not m:
                 continue
-            tgt = m.group(1)                          # compacted-<x>.md
+            tgt = m.group("file")                     # compacted-<x>.md
             if tgt in existing:
                 linked.add(key)
                 linked.add(tgt[len("compacted-"):-len(".md")])
@@ -547,7 +547,7 @@ def lint_graph(*, repair: bool = False) -> dict:
                     continue
                 links = list(parsed["sections"].get("links") or [])
                 kept = [l for l in links
-                        if not (lambda mm: mm and mm.group(1) not in existing)(
+                        if not (lambda mm: mm and mm.group("file") not in existing)(
                             work_notes._BRIEF_REF_RE.match(l.strip()))]
                 if len(kept) != len(links):
                     repaired += len(links) - len(kept)
@@ -612,22 +612,38 @@ def _live_briefs() -> list[dict]:
     return out
 
 
+# Directed relationship types + the inverse label written on the OTHER brief, so
+# a link reads correctly from both ends (a depends-on b ⇒ b required-by a).
+_REL_INVERSE = {
+    "depends-on": "required-by",
+    "configures": "configured-by",
+    "part-of": "has-part",
+    "relates-to": "relates-to",
+}
+_REL_TYPES = tuple(_REL_INVERSE)
+_REL_DEFAULT = "relates-to"
+
 _MAP_SYS = (
     "You relate KNOWLEDGE-MEMORY briefs across scopes. Each brief is one scope: "
     "a project (a repo), a cross-cutting topic, or 'shared' (global knowledge).\n"
     "LINK two briefs when they document the SAME SPECIFIC subject, or one "
     "DEPENDS ON / CONFIGURES / IS PART OF the other — such that reading one, you "
-    "would want the other. Examples that SHOULD link:\n"
-    "  • 'gpsd' (the GPS daemon) ↔ 'time-sync' (chrony consuming gpsd via SHM) — "
-    "the second depends on the first; they document one pipeline at two scopes.\n"
-    "  • a repo's branch rule ↔ the global branch-naming convention.\n"
-    "  • a service's sync code ↔ the cross-cutting data-sync topic.\n"
+    "would want the other. For each link, CLASSIFY the relationship of a → b:\n"
+    "  • depends-on — a needs/consumes/reads b (b must exist for a to work)\n"
+    "  • configures — a sets up / parameterises b\n"
+    "  • part-of — a is a component/subset of b\n"
+    "  • relates-to — clearly related, no strong direction\n"
+    "Examples that SHOULD link:\n"
+    "  • a='time-sync' (chrony consuming gpsd via SHM) → b='gpsd' (the GPS "
+    "daemon): depends-on — they document one pipeline at two scopes.\n"
+    "  • a=a repo's branch rule → b=the global branch-naming convention: part-of.\n"
     "Do NOT link two briefs merely because they fall in the same BROAD area "
     "(both mention 'build', both mention 'cache') with no concrete shared subject "
     "or dependency. Link the genuinely related pairs; leave unrelated briefs "
     "unlinked — don't invent links.\n"
     "Use the EXACT keys given. Return JSON: a list \"edges\", each item "
-    '{"a": "<exact key>", "b": "<exact key>"}.'
+    '{"a": "<exact key>", "b": "<exact key>", "type": '
+    '"depends-on|configures|part-of|relates-to"}.'
 )
 
 
@@ -801,7 +817,9 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
         max_links = max(1, int(os.environ.get("AIFORGE_OKR_MAP_MAX_LINKS", "3")))
     except (TypeError, ValueError):
         max_links = 3
-    adj: dict[str, set[str]] = {}
+    # adj[key] = {other_key: relationship_type} — directed (a's type toward b),
+    # with the inverse label stored on b so both ends read correctly.
+    adj: dict[str, dict[str, str]] = {}
     n = 0
     for e in raw_edges:
         if not isinstance(e, dict):
@@ -809,19 +827,22 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
         # models return {a,b} OR {from,to} OR {source,target} — accept all
         a = _edge_key(e, "a", "from", "source")
         b = _edge_key(e, "b", "to", "target")
+        rel = str(_edge_key(e, "type", "rel", "relationship") or "").strip().lower()
+        if rel not in _REL_INVERSE:
+            rel = _REL_DEFAULT
         if a not in by_key or b not in by_key or a == b:
             continue
-        if b in adj.get(a, set()):
+        if b in adj.get(a, {}):
             continue                       # already counted this undirected pair
         # Cap fan-out per brief so a loosely-linking model can't over-connect one
         # brief to a dozen others — skip the edge once EITHER end is full.
         if len(adj.get(a, ())) >= max_links or len(adj.get(b, ())) >= max_links:
             continue
-        adj.setdefault(a, set()).add(b)
-        adj.setdefault(b, set()).add(a)
+        adj.setdefault(a, {})[b] = rel
+        adj.setdefault(b, {})[a] = _REL_INVERSE[rel]
         n += 1
     if dry_run:
-        return {"edges": n, "adj": {k: sorted(v) for k, v in adj.items()}}
+        return {"edges": n, "adj": {k: dict(v) for k, v in adj.items()}}
 
     # Mapping is DERIVED and fully recomputed each run: strip every brief's
     # existing sibling-brief links (keep real URLs / jira refs) and rewrite from
@@ -840,8 +861,12 @@ def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
                 continue
             existing = list(parsed["sections"].get("links") or [])
             kept = [l for l in existing if not work_notes._BRIEF_REF_RE.match(l)]
-            fresh = kept + [f"[{t}]({by_key[t]['file']})"
-                            for t in sorted(adj.get(key, ()))]
+            # typed sibling links: "<rel>: [key](file)" (relates-to omits the
+            # prefix so a plain relation stays a plain link — clean + compatible).
+            fresh = kept + [
+                (f"{rel}: [{t}]({by_key[t]['file']})" if rel != _REL_DEFAULT
+                 else f"[{t}]({by_key[t]['file']})")
+                for t, rel in sorted(adj.get(key, {}).items())]
             if fresh == existing:
                 continue                        # nothing changed for this brief
             work_notes.update_note(str(b["path"]), links=fresh,
@@ -879,7 +904,6 @@ def expand_links(sources, *, max_links: int = 6, depth: int = 1) -> list[dict]:
     raises; returns ``[{key, file, source, text, kind}]``.
     """
     from aiforge_core.runtime import work_notes
-    mdir = memory_dir()
     origin = {f for f in (_brief_file_of_source(s) for s in (sources or [])) if f}
     seen: set[str] = set(origin)
     out: list[dict] = []
@@ -888,8 +912,9 @@ def expand_links(sources, *, max_links: int = 6, depth: int = 1) -> list[dict]:
     while frontier and hop < max(1, depth) and len(out) < max_links:
         nxt: list[str] = []
         for fname in frontier:
-            p = mdir / fname
-            if not p.exists():
+            # briefs live in compacted/ (not the memory-dir root) — resolve there.
+            p = _resolve_md(fname)
+            if p is None:
                 continue
             try:
                 parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
@@ -899,12 +924,13 @@ def expand_links(sources, *, max_links: int = 6, depth: int = 1) -> list[dict]:
                 m = work_notes._BRIEF_REF_RE.match(link.strip())
                 if not m:
                     continue                       # keep real URLs / jira refs out
-                tgt = m.group(1)                   # compacted-<scope>.md
+                tgt = m.group("file")              # compacted-<scope>.md
+                rel = (m.group("rel") or _REL_DEFAULT).strip()
                 if tgt in seen:
                     continue
                 seen.add(tgt)
-                tp = mdir / tgt
-                if not tp.exists():
+                tp = _resolve_md(tgt)              # compacted/ subfolder
+                if tp is None:
                     continue
                 try:
                     d = _parse(tp)
@@ -913,11 +939,13 @@ def expand_links(sources, *, max_links: int = 6, depth: int = 1) -> list[dict]:
                     continue
                 key = tgt[len("compacted-"):-len(".md")]
                 out.append({
-                    "key": key, "file": tgt,
+                    "key": key, "file": tgt, "rel": rel,
                     "source": f"linked:{tgt[:-len('.md')]}",
                     "kind": d.get("kind") or "knowledge",
                     "title": _brief_title(key),
-                    "text": text,
+                    # surface the RELATIONSHIP so recall shows HOW it connects,
+                    # not just that it does — the read side uses the typed link.
+                    "text": f"[{rel} — via linked brief '{key}']\n{text}",
                 })
                 nxt.append(tgt)
                 if len(out) >= max_links:

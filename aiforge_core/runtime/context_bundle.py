@@ -55,7 +55,7 @@ def _linked_brief_keys(d: dict | None) -> list[str]:
     for lk in links:
         m = work_notes._BRIEF_REF_RE.match(str(lk).strip())
         if m:
-            key = m.group(1)[len("compacted-"):-len(".md")]
+            key = m.group("file")[len("compacted-"):-len(".md")]
             if key:
                 out.append(key)
     return out

@@ -83,10 +83,15 @@ _WIKI_REF_RE = re.compile(r"^\[\[(jira|confluence|repo|web)/([^\]\s][^\]]*)\]\]$
 _MD_REF_RE = re.compile(
     r"^\[[^\]]*\]\(\.\./\.\./(jira|confluence|repo|web)/([^/)\s]+)/[^)]*\.md\)$")
 # Cross-SCOPE mapping between memory briefs. Briefs live FLAT in the memory dir
-# (compacted-<scope>.md), not in the work/<kind>/<key>/ tree, so their
-# cross-references are same-directory relative links to a sibling brief file,
-# e.g. [global](compacted-shared.md). Kept verbatim (already canonical).
-_BRIEF_REF_RE = re.compile(r"^\[[^\]]*\]\((compacted-[a-z0-9][a-z0-9-]*\.md)\)$")
+# (compacted-<scope>.md), so their cross-references are same-directory relative
+# links to a sibling brief file. Optionally TYPED with a relationship prefix so
+# the OKR Links section says HOW briefs relate, e.g.
+#   depends-on: [time-sync](compacted-time-sync.md)
+# The ``rel`` prefix is optional (a plain ``[x](compacted-x.md)`` still matches);
+# named groups so callers read ``.group("file")`` / ``.group("rel")``.
+_BRIEF_REF_RE = re.compile(
+    r"^(?:(?P<rel>[a-z][a-z-]*):\s*)?"
+    r"\[[^\]]*\]\((?P<file>compacted-[a-z0-9][a-z0-9-]*\.md)\)$")
 # URL shapes that ARE managed dossiers (same regexes as work_context uses).
 _JIRA_URL_RE = re.compile(r"/browse/([A-Z][A-Z0-9]{1,20}-\d+)\b")
 _CONF_URL_RE = re.compile(r"(?:/pages/|pageId=)(\d{4,})")

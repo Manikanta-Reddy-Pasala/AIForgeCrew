@@ -484,7 +484,9 @@ def test_consolidate_prompt_maps_tickets_to_key_results():
 def test_supersede_archive_is_default():
     from aiforge_core.runtime.work_notes import _supersede_directive
     d = _supersede_directive().lower()
-    assert "drop" in d and "stale" in d
+    # archive mode = drop the old value (update in place), NOT keep-both
+    assert "drop" in d and ("stale" in d or "old" in d)
+    assert "keep both" not in d           # keep-both is the OTHER (keep) mode
 
 
 def test_supersede_keep_mode_tags_instead_of_dropping(monkeypatch):
