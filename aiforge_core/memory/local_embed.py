@@ -43,24 +43,35 @@ def _tokens(text: str) -> list[str]:
     return toks
 
 
-def embed(text: str) -> list[float]:
-    """The active embedder. ``AIFORGE_EMBED_BACKEND=semantic`` → the LOCAL
-    sentence-transformer (real semantic vectors; RAISES if the model is missing —
-    no silent degrade). Default ``hash`` → the dependency-free lexical embedder
-    below (dev/test path)."""
+def _backend() -> str:
     import os as _os
-    if _os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower() in (
-            "semantic", "st", "sentence-transformers"):
+    return _os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower()
+
+
+def embed(text: str) -> list[float]:
+    """The active embedder (RAISES on failure for the real backends — no silent
+    hash fallback; the write path degrades via ``_safe_embed``):
+      * ``api`` / ``openai`` / ``lmstudio`` / ``ollama`` → an OpenAI-compatible
+        ``/v1/embeddings`` endpoint (reuses your model server; NO HF download).
+      * ``semantic`` / ``st`` → the LOCAL sentence-transformer (downloads once).
+      * default ``hash`` → the dependency-free lexical embedder below."""
+    b = _backend()
+    if b in ("api", "openai", "lmstudio", "ollama"):
+        from aiforge_core.integrations import api_embed as _ae
+        return _ae.embed(text)
+    if b in ("semantic", "st", "sentence-transformers"):
         from aiforge_core.integrations import semantic_embed as _se
-        return _se.embed(text)          # no hash fallback — errors are loud
+        return _se.embed(text)
     return _hash_embed(text)
 
 
 def embed_dim() -> int:
-    """Dimension of the ACTIVE embedder (semantic model dim, or the hash dim)."""
-    import os as _os
-    if _os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower() in (
-            "semantic", "st", "sentence-transformers"):
+    """Dimension of the ACTIVE embedder."""
+    b = _backend()
+    if b in ("api", "openai", "lmstudio", "ollama"):
+        from aiforge_core.integrations import api_embed as _ae
+        return _ae.dim()
+    if b in ("semantic", "st", "sentence-transformers"):
         from aiforge_core.integrations import semantic_embed as _se
         return _se.dim()
     return EMBED_DIM

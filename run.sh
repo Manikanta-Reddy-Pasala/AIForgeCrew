@@ -31,14 +31,20 @@
 # aiforge_core.deploy.converge). Point it at a model on the home page
 # (http://localhost:8799/ui/).
 #
-# MEMORY EMBEDDER (recall quality):
-#   • Default = 'hash' backend — keyword + exact-id + spell-correction. Works
-#     fully (briefs, migration, chat, contradiction, seed-index, lint). A normal
-#     boot NEVER downloads anything heavy.
-#   • Semantic = meaning/paraphrase recall (sentence-transformers + sqlite-vec,
-#     pulls torch, ~minutes). Enable ONCE with `./run.sh --install-semantic`
-#     (installs, then starts with semantic active); afterwards every ./run.sh
-#     auto-detects it. Force hash / skip: AIFORGE_EMBED_BACKEND=hash ./run.sh
+# MEMORY EMBEDDER (recall quality) — AIFORGE_EMBED_BACKEND:
+#   • hash (default) — keyword + exact-id + spell-correction. Works fully
+#     (briefs, migration, chat, contradiction, seed-index, lint). No download.
+#   • api — semantic recall from an OpenAI-compatible /v1/embeddings endpoint you
+#     ALREADY run (LM Studio / Ollama / llama.cpp). NO HuggingFace download, no
+#     torch — best when the sentence-transformers model stalls downloading from
+#     the HF Hub. Load an embedding model on your server, then:
+#       AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<embed-model> ./run.sh
+#     (URL defaults to AIFORGE_LM_BASE_URL; e.g. LM Studio
+#      'text-embedding-nomic-embed-text-v1.5', Ollama 'nomic-embed-text'.)
+#   • semantic — LOCAL sentence-transformers + sqlite-vec (pulls torch + the
+#     model from HF, ~minutes). Enable ONCE: `./run.sh --install-semantic`.
+#     If the HF download stalls, use the 'api' backend above, or a mirror:
+#       HF_ENDPOINT=https://hf-mirror.com ./run.sh --install-semantic
 #
 # SEED A FRESH MACHINE'S MEMORY from agent-instruction files (CLAUDE.md /
 # AGENTS.md / GEMINI.md / .cursorrules) — a reproducible, committed path:
