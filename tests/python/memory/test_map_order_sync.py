@@ -42,7 +42,7 @@ def test_prune_missing_file_rows(mem):
 def test_delete_file_removes_index_row(mem):
     from aiforge_core.memory import md_store, sqlite_memory as sm
     md_store.write("note one", "some body text", kind="note", repo="svc")
-    stem = [p.stem for p in md_store.memory_dir().glob("*.md")][0]
+    stem = [p.stem for p in md_store.captures_dir().glob("*.md")][0]
     assert sm.recall("body text", repo="svc", limit=5)
     md_store.delete_file(stem)
     assert not any("body text" in (h.get("text") or "")

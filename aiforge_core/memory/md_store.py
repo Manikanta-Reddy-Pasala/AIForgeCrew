@@ -59,6 +59,30 @@ def briefs_dir() -> Path:
     return p
 
 
+def captures_dir() -> Path:
+    """Subfolder holding the raw per-run capture / session-note ``.md`` files,
+    kept OUT of the memory-dir root (next to ``compacted/`` and ``archive/``) so
+    the root stays clean — only the ``compacted/``/``archive/``/``captures/``
+    folders and markers live there. ``migrate_captures_to_folder`` moves any
+    legacy root-level captures in here on startup."""
+    p = memory_dir() / "captures"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _capture_md_files() -> list[Path]:
+    """Every raw capture file — the ``captures/`` subfolder PLUS any legacy
+    root-level ``*.md`` not yet migrated (briefs excluded — they're in
+    ``compacted/``). De-duplicated by name (captures/ wins)."""
+    seen: dict[str, Path] = {}
+    for p in captures_dir().glob("*.md"):
+        seen[p.name] = p
+    for p in memory_dir().glob("*.md"):             # legacy root (pre-migration)
+        if not p.name.startswith("compacted-"):
+            seen.setdefault(p.name, p)
+    return [seen[k] for k in sorted(seen)]
+
+
 def brief_path(slug: str) -> Path:
     """Path to a brief file (``<memory>/compacted/compacted-<slug>.md``)."""
     return briefs_dir() / f"compacted-{slug}.md"
@@ -77,10 +101,11 @@ def iter_briefs() -> list[Path]:
 
 def _md_path_for_stem(stem: str) -> Path:
     """Path for a note stem: a brief (``compacted-*``) lives in the ``compacted/``
-    subfolder, every other (per-run capture / session note) in the root."""
+    subfolder, every other (per-run capture / session note) in ``captures/``.
+    A legacy copy still in the root is honoured by :func:`_resolve_md` on read."""
     if stem.startswith("compacted-"):
         return briefs_dir() / f"{stem}.md"
-    return memory_dir() / f"{stem}.md"
+    return captures_dir() / f"{stem}.md"
 
 
 def _brief_part_paths(base: str) -> list[Path]:
@@ -98,7 +123,7 @@ def _all_md_files() -> list[Path]:
     ``compacted/`` subfolder. De-duplicated by resolved path (a legacy brief may
     still sit in the root before migration)."""
     seen: dict[str, Path] = {}
-    for p in list(memory_dir().glob("*.md")) + iter_briefs():
+    for p in _capture_md_files() + iter_briefs():
         try:
             seen[str(p.resolve())] = p
         except OSError:
@@ -120,6 +145,30 @@ def migrate_briefs_to_folder() -> dict:
         if _CAPTURE_SIG_RE.search(p.name):
             continue                                # transient capture, not a brief
         dest = bdir / p.name
+        try:
+            if dest.exists():
+                p.unlink()                          # already migrated → drop dup
+            else:
+                p.rename(dest)
+            moved += 1
+        except OSError:
+            continue
+    return {"ok": True, "moved": moved}
+
+
+def migrate_captures_to_folder() -> dict:
+    """Move legacy root-level capture ``.md`` files into ``captures/``. A capture
+    is any root ``*.md`` that is NOT a brief (``compacted-*``). Idempotent; never
+    raises. Markers (``.session_okr_marker`` — not ``.md``) and the subfolders
+    are untouched."""
+    moved = 0
+    cdir = captures_dir()
+    for p in list(memory_dir().glob("*.md")):       # ROOT level only
+        if p.parent == cdir:
+            continue                                # already in the folder — skip
+        if p.name.startswith("compacted-"):
+            continue                                # a brief — handled elsewhere
+        dest = cdir / p.name
         try:
             if dest.exists():
                 p.unlink()                          # already migrated → drop dup
@@ -191,7 +240,8 @@ def _resolve_md(name: str) -> Path | None:
     fn = name if name.endswith(".md") else f"{name}.md"
     if os.path.basename(fn) != fn:
         return None
-    for d in (memory_dir(), briefs_dir()):
+    # captures/ + briefs first, then the legacy root (pre-migration copies).
+    for d in (captures_dir(), briefs_dir(), memory_dir()):
         p = d / fn
         if p.is_file():
             return p
@@ -268,7 +318,8 @@ def write(title: str, text: str, *, kind: str = "note",
     # CONTENT DEDUP: an identical note (same title+text → same digest) captured
     # on a different day would otherwise mint a NEW dated file. If one already
     # exists, reuse it — no duplicate md file, no re-ingest.
-    for _ex in memory_dir().glob(f"*-{digest}.md"):
+    for _ex in list(captures_dir().glob(f"*-{digest}.md")) \
+            + list(memory_dir().glob(f"*-{digest}.md")):
         try:
             _exd = _parse(_ex)
             if (_exd.get("title") or "") == title and (_exd.get("body") or "").strip() == (text or "").strip():
@@ -1275,7 +1326,7 @@ def cleanup_reheal(*, role: str = "learner") -> dict:
         return {"checked": 0, "removed": 0, "skipped": "llm_off"}
     from aiforge_core.runtime import work_notes
     reheal: list[dict] = []
-    for p in memory_dir().glob("*.md"):
+    for p in _capture_md_files():
         if p.name.startswith("compacted-"):
             continue
         try:
@@ -2227,7 +2278,7 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
 
     def _gather_planned() -> dict[str, list[dict]]:
         files: list[dict] = []
-        for p in memory_dir().glob("*.md"):
+        for p in _capture_md_files():
             try:
                 d = _parse(p)
                 d["_path"] = p

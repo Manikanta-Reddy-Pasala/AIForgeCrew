@@ -56,7 +56,7 @@ def test_cleanup_reheal_strips_nonglobal_keeps_global(monkeypatch, mem):
 
     # the wrong capture file is gone; the global one remains
     reheal_bodies = [md_store._parse(p).get("body", "")
-                     for p in md_store.memory_dir().glob("*.md")
+                     for p in md_store.captures_dir().glob("*.md")
                      if md_store._parse(p).get("source") == "reheal"]
     assert not any("requests/utils.py" in b for b in reheal_bodies)
     assert any("commit directly" in b for b in reheal_bodies)

@@ -262,6 +262,9 @@ def run_startup_migrations() -> dict:
     try:
         from aiforge_core.memory import md_store
         out["briefs_folder"] = md_store.migrate_briefs_to_folder()
+        # …and the raw captures into captures/, so the root holds only the
+        # compacted/ · captures/ · archive/ folders and markers. Idempotent.
+        out["captures_folder"] = md_store.migrate_captures_to_folder()
     except Exception as exc:  # noqa: BLE001
         out["briefs_folder"] = {"ok": False, "error": str(exc)}
 

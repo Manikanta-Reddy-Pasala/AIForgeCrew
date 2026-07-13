@@ -53,7 +53,7 @@ def test_write_content_dedup_no_duplicate_md(mem):
     from aiforge_core.memory import md_store
     a = md_store.write("same note", "identical body", kind="note", repo="svc")
     b = md_store.write("same note", "identical body", kind="note", repo="svc")
-    files = list(md_store.memory_dir().glob("*.md"))
+    files = list(md_store.captures_dir().glob("*.md"))
     assert len(files) == 1                 # no duplicate md file
     assert a["file"] == b["file"]
 
