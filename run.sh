@@ -370,9 +370,17 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
     if [[ "${INSTALL_SEMANTIC:-0}" == "1" ]] \
         && ! .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
       echo "==> installing semantic memory (sentence-transformers + sqlite-vec; pulls torch, may take several minutes)…"
-      uv pip install --python .venv/bin/python -e '.[semantic]' \
-        && echo "==> semantic memory installed" \
-        || echo "==> semantic memory install failed — continuing on hash backend"
+      if uv pip install --python .venv/bin/python -e '.[semantic]'; then
+        echo "==> semantic memory installed — pre-downloading the embed model (one-time)…"
+        # Warm the model cache NOW (foreground, visible) so it isn't fetched
+        # lazily on the first chat message. A blocked huggingface.co fails fast
+        # here (AIFORGE_EMBED_DOWNLOAD_TIMEOUT) instead of hanging a live turn.
+        AIFORGE_EMBED_BACKEND=semantic .venv/bin/python -c \
+          "from aiforge_core.integrations import semantic_embed as s; print('embed model ready, dim', s.dim())" \
+          || echo "==> WARN: embed model could not download (box may not reach huggingface.co) — pre-download it or run AIFORGE_EMBED_BACKEND=hash"
+      else
+        echo "==> semantic memory install failed — continuing on hash backend"
+      fi
     fi
     if .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
       export AIFORGE_EMBED_BACKEND=semantic   # inherited by the api/runner below
