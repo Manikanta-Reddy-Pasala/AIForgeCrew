@@ -107,6 +107,7 @@ while [[ $# -gt 0 ]]; do
     --dedupe) MAINT=dedupe ;;         # remove duplicate OKR nodes + chat sessions, then exit
     --recompact-all) MAINT=recompact ;;  # re-LLM every brief + rebuild, then exit
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
+    --install-semantic) INSTALL_SEMANTIC=1 ;;  # foreground-install semantic memory (torch), then continue
     --dev) DEV=1 ;;
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
@@ -341,33 +342,26 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
       || echo "==> integration extras skipped (built-in fallbacks active)"
   fi
   # LOCAL semantic memory (sentence-transformer embedder + sqlite-vec ANN).
-  # The '.[semantic]' extra pulls torch (~hundreds of MB) — on a fresh box the
-  # download can take minutes, so NEVER install it inline (that made run.sh look
-  # hung on "installing semantic memory"). Instead: if the libs are already
-  # present, use semantic; otherwise install them IN THE BACKGROUND and boot NOW
-  # on the hash backend — a later ./run.sh picks up semantic once ready. Fully
-  # skip with AIFORGE_SKIP_SEMANTIC=1 (or force hash with AIFORGE_EMBED_BACKEND=hash).
+  # The '.[semantic]' extra pulls torch (~hundreds of MB). Installing it during a
+  # normal boot is what made run.sh look hung — inline it blocks with no output,
+  # and backgrounding it holds the uv/.venv lock so the NEXT uv step blocks too.
+  # So a normal boot NEVER installs it: use semantic if the libs are already
+  # importable, else boot on hash and print how to enable it. Run it explicitly,
+  # in the FOREGROUND with visible progress, via `./run.sh --install-semantic`.
   if [[ "${AIFORGE_EMBED_BACKEND:-}" != "hash" ]]; then
+    if [[ "${INSTALL_SEMANTIC:-0}" == "1" ]] \
+        && ! .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
+      echo "==> installing semantic memory (sentence-transformers + sqlite-vec; pulls torch, may take several minutes)…"
+      uv pip install --python .venv/bin/python -e '.[semantic]' \
+        && echo "==> semantic memory installed" \
+        || echo "==> semantic memory install failed — continuing on hash backend"
+    fi
     if .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
       export AIFORGE_EMBED_BACKEND=semantic   # inherited by the api/runner below
-    elif [[ "${AIFORGE_SKIP_SEMANTIC:-0}" == "1" ]]; then
-      echo "==> semantic memory skipped (AIFORGE_SKIP_SEMANTIC=1) — hash backend active"
-      export AIFORGE_EMBED_BACKEND=hash
     else
-      _sem_log="${TMPDIR:-/tmp}/aiforge-semantic-install.log"
-      if [[ -f "${_sem_log}.pid" ]] && kill -0 "$(cat "${_sem_log}.pid" 2>/dev/null)" 2>/dev/null; then
-        echo "==> semantic memory still installing in background (log: ${_sem_log}) — booting on HASH for now"
-      else
-        echo "==> semantic memory not installed — installing in BACKGROUND (pulls torch, may take minutes)."
-        echo "==> booting on HASH backend now; re-run ./run.sh once it finishes to switch to semantic. Log: ${_sem_log}"
-        ( uv pip install --python .venv/bin/python -e '.[semantic]' >"${_sem_log}" 2>&1 \
-            && echo "SEMANTIC_INSTALL_DONE" >>"${_sem_log}" \
-            || echo "SEMANTIC_INSTALL_FAILED" >>"${_sem_log}" ) &
-        echo "$!" >"${_sem_log}.pid"
-      fi
-      # DO NOT export semantic — the libs aren't importable yet, and the app
-      # RAISES on a missing semantic backend (no silent fallback). Use hash now.
-      export AIFORGE_EMBED_BACKEND=hash
+      export AIFORGE_EMBED_BACKEND=hash       # app raises on a missing semantic backend; be explicit
+      echo "==> semantic memory not installed — booting on HASH backend."
+      echo "==> to enable real semantic recall: ./run.sh --install-semantic (one-time; downloads torch)"
     fi
   fi
   # crawl4ai renders with headless chromium — install best-effort (idempotent).
