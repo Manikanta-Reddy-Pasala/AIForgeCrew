@@ -19,8 +19,11 @@ AZURE SETUP (one time)
      For device-code add: Authentication → Allow public client flows → Yes.
 
 CREDENTIALS (env, or a KEY=VALUE file passed with --env-file)
-     export TEAMS_TENANT_ID=...     TEAMS_CLIENT_ID=...
-     export TEAMS_CLIENT_SECRET=...        # app-only only
+     App-only (channels)  : TEAMS_TENANT_ID + TEAMS_CLIENT_ID + TEAMS_CLIENT_SECRET
+     Delegated (your chats): NOTHING required — if TEAMS_CLIENT_ID / TEAMS_TENANT_ID
+        are unset, the probe uses Microsoft's public Azure-CLI client id and the
+        'organizations' authority, so `login` / `password` work with no app
+        registration at all. (Set them only to use your own app.)
 
 USAGE
   App-only (server, channels):
@@ -84,6 +87,30 @@ def _cfg(name: str, required: bool = True) -> str:
     return val
 
 
+# Microsoft's own public client — the Azure CLI first-party app. It's
+# pre-consented for delegated Graph in virtually every tenant, so the
+# device-code and password flows work WITHOUT registering your own app.
+# (App-only client-credentials still needs YOUR registration + secret.)
+_AZ_CLI_CLIENT = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+
+
+def _client_id() -> str:
+    """TEAMS_CLIENT_ID if set, else the Azure CLI public client id."""
+    cid = os.environ.get("TEAMS_CLIENT_ID", "").strip()
+    if not cid:
+        cid = _AZ_CLI_CLIENT
+        print(f"note: TEAMS_CLIENT_ID unset — using the Azure CLI public client "
+              f"({cid}); no app registration needed", file=sys.stderr)
+    return cid
+
+
+def _authority() -> str:
+    """Tenant segment for the login URL. TEAMS_TENANT_ID if set, else
+    'organizations' — work/school sign-in without knowing the tenant GUID
+    (the flow resolves it from your account)."""
+    return os.environ.get("TEAMS_TENANT_ID", "").strip() or "organizations"
+
+
 # ── auth: app-only (client credentials) ──────────────────────────────────────
 def _app_token() -> str:
     tenant = _cfg("TEAMS_TENANT_ID")
@@ -108,8 +135,8 @@ _DELEGATED_SCOPES = ("ChannelMessage.Read.All Chat.Read Team.ReadBasic.All "
 
 
 def _device_login() -> dict:
-    tenant = _cfg("TEAMS_TENANT_ID")
-    client = _cfg("TEAMS_CLIENT_ID")
+    tenant = _authority()
+    client = _client_id()
     r = requests.post(
         f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/devicecode",
         data={"client_id": client, "scope": _DELEGATED_SCOPES}, timeout=30)
@@ -145,12 +172,12 @@ def _password_login() -> dict:
     If it errors with interaction_required/AADSTS50076, use `login` (device
     code) instead. Creds come from env (TEAMS_USERNAME / TEAMS_PASSWORD) so they
     never land in shell history — never paste them into chat."""
-    tenant = _cfg("TEAMS_TENANT_ID")
+    tenant = _authority()
     r = requests.post(
         f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
         data={
             "grant_type": "password",
-            "client_id": _cfg("TEAMS_CLIENT_ID"),
+            "client_id": _client_id(),
             "username": _cfg("TEAMS_USERNAME"),
             "password": _cfg("TEAMS_PASSWORD"),
             "scope": _DELEGATED_SCOPES,
@@ -182,10 +209,10 @@ def _delegated_token() -> str:
 def _refresh_delegated() -> str:
     with open(_TOKEN_CACHE, encoding="utf-8") as fh:
         tok = json.load(fh)
-    tenant = _cfg("TEAMS_TENANT_ID")
+    tenant = _authority()
     r = requests.post(
         f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
-        data={"grant_type": "refresh_token", "client_id": _cfg("TEAMS_CLIENT_ID"),
+        data={"grant_type": "refresh_token", "client_id": _client_id(),
               "refresh_token": tok.get("refresh_token", ""),
               "scope": _DELEGATED_SCOPES}, timeout=30)
     if r.status_code != 200:
