@@ -306,8 +306,13 @@ def _start_daily_reindex() -> None:
             # boilerplate Objective (facts migrated elsewhere / emptied /
             # compacted-compacted-* artifact). They read as "empty" memories.
             r_empty = md_store.sweep_empty_briefs(archive=True)
-            _af_log.info("md brief: repo=%s topic=%s sweep=%s empty=%s",
-                         r_repo, r_topic, r_sweep, r_empty)
+            # Apply the CROSS-BRIEF rules on every compaction (not just Compact
+            # all): merge topics, drop global-dup facts, resolve contradictions
+            # (latest wins), sweep emptied stubs, lint + (re)link briefs. Without
+            # this the hourly/Compact path never linked or deduped across briefs.
+            r_rules = md_store.finalize_briefs(role="learner")
+            _af_log.info("md brief: repo=%s topic=%s sweep=%s empty=%s rules=%s",
+                         r_repo, r_topic, r_sweep, r_empty, r_rules)
         except Exception as exc:  # noqa: BLE001
             _af_log.warning("md compaction failed: %s", exc)
 
@@ -2237,9 +2242,20 @@ def memory_files_compact(group_by: str = Query("topic"),
     back to a plain merge when no model is reachable. ``dry_run=true`` returns
     the plan without writing. Originals are archived (reversible)."""
     from aiforge_core.memory import md_store
-    return md_store.compact(group_by=group_by, min_group=min_group,
-                            model_role=model_role,
-                            dry_run=dry_run, summarize=summarize, force=force)
+    res = md_store.compact(group_by=group_by, min_group=min_group,
+                           model_role=model_role,
+                           dry_run=dry_run, summarize=summarize, force=force)
+    # Apply the cross-brief rules (merge/dedupe/contradict/sweep/lint/link) so the
+    # 'Compact' button rewrites with ALL rules, not just the fold. Skip on a
+    # dry-run plan (mutating) and when the caller runs the full 'Compact all'
+    # (force) path, which already runs these as its own steps.
+    if not dry_run and not force:
+        try:
+            res = dict(res) if isinstance(res, dict) else {"compact": res}
+            res["rules"] = md_store.finalize_briefs(role=model_role)
+        except Exception as exc:  # noqa: BLE001
+            res["rules"] = {"error": str(exc)}
+    return res
 
 
 _compact_all_state: dict = {"running": False, "started_at": None,

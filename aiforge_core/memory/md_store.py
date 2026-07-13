@@ -669,6 +669,31 @@ def _order_briefs_by_similarity(briefs: list[dict]) -> list[dict]:
         return briefs
 
 
+def finalize_briefs(*, role: str = "learner") -> dict:
+    """Run the cross-brief RULES after a fold so EVERY compaction — the plain
+    hourly/`Compact` path, not just `Compact all` — applies them without miss:
+    merge near-duplicate topics → drop global-duplicate facts → resolve
+    cross-scope contradictions (latest value wins) → sweep briefs those steps
+    emptied → lint dangling links → (re)link related briefs bidirectionally.
+    Each step is best-effort + idempotent; a failure never blocks the rest.
+    ``force_recompact_all`` runs the same rules (plus reconcile/reheal) as its
+    own steps, so both paths stay consistent. Returns a per-step summary."""
+    out: dict = {}
+    for name, fn in (
+        ("merge_topics", lambda: merge_similar_topics()),
+        ("dedupe_global", lambda: dedupe_global_copies()),
+        ("contradict", lambda: resolve_contradictions(role=role)),
+        ("sweep_empty", lambda: sweep_empty_briefs(archive=True)),
+        ("lint_graph", lambda: lint_graph(repair=True)),
+        ("map_scopes", lambda: map_scopes(role=role)),
+    ):
+        try:
+            out[name] = fn()
+        except Exception as exc:  # noqa: BLE001 — one rule failing must not block others
+            out[name] = {"error": str(exc)}
+    return out
+
+
 def map_scopes(*, role: str = "learner", dry_run: bool = False) -> dict:
     """Link related scope briefs BIDIRECTIONALLY: an LLM proposes which briefs
     share subject matter (a project ↔ the global/topic brief it relates to) and
