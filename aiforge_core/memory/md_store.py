@@ -2193,7 +2193,9 @@ def _consolidate_brief_sections(key: str, path, blocks: list[str],
     # a no-op there.
     if not new_content.strip() and existing.get("facts"):
         new_content = "\n".join(f"- {f}" for f in existing["facts"])
-    merged = work_notes.consolidate(existing, new_content, role=model_role)
+    merged = work_notes.consolidate(
+        existing, new_content, role=model_role,
+        label=f"topic '{key}' ({len(blocks)} source(s))")
     # Deterministic UNION-BACK of derived/curated sections the LLM might omit:
     # Learnings (audit trail), Key Results (write-time W2 tickets) and Links
     # (map_scopes sibling links). Without this a single fold that drops them

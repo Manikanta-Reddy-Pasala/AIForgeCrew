@@ -667,7 +667,7 @@ def _consolidate_once(existing: dict, new_content: str, role: str) -> dict:
 
 
 def consolidate(existing: dict, new_content: str, *, role: str = "learner",
-                max_input_chars: int | None = None) -> dict:
+                max_input_chars: int | None = None, label: str | None = None) -> dict:
     """Fold ``new_content`` into ``existing`` OKR sections via an LLM that
     dedupes, resolves contradictions, and maps each item to its section.
 
@@ -726,6 +726,10 @@ def consolidate(existing: dict, new_content: str, *, role: str = "learner",
         except Exception:  # noqa: BLE001 — chunker down → plain slices
             chunks = [text[i:i + budget] for i in range(0, len(text), budget)]
 
+    # One-line visibility into every compaction: which scope, how many source
+    # chars, how many chonkie chunks it was folded through, into one brief.
+    _log.info("compact %s: %d chars → %d chunk(s) → 1 brief",
+              label or f"role={role}", len(text), len(chunks))
     if len(chunks) > 1:
         _log.info("consolidate: folding %d chunk(s) (%d chars) via LLM…",
                   len(chunks), len(text))
