@@ -65,3 +65,21 @@ def test_api_backend_no_hf_import(api, monkeypatch):
     monkeypatch.setitem(sys.modules, "sentence_transformers", None)  # poison it
     from aiforge_core.memory import local_embed as le
     assert le.embed("x") == [1.0, 2.0]        # works without ST installed
+
+
+# ── model2vec backend (static embeddings, no torch) ──────────────────────────
+def test_model2vec_backend_dispatch(monkeypatch):
+    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "model2vec")
+    import sys, types
+    fake = types.ModuleType("model2vec")
+    class _SM:
+        @classmethod
+        def from_pretrained(cls, src): return cls()
+        def encode(self, xs): return [[0.5, 0.6, 0.7]] * len(xs)
+    fake.StaticModel = _SM
+    monkeypatch.setitem(sys.modules, "model2vec", fake)
+    import aiforge_core.integrations.model2vec_embed as m2
+    m2.reset_for_tests()
+    from aiforge_core.memory import local_embed as le
+    assert le.embed("hello") == [0.5, 0.6, 0.7]
+    assert le.embed_dim() == 3

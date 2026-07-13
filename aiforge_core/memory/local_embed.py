@@ -53,12 +53,17 @@ def embed(text: str) -> list[float]:
     hash fallback; the write path degrades via ``_safe_embed``):
       * ``api`` / ``openai`` / ``lmstudio`` / ``ollama`` → an OpenAI-compatible
         ``/v1/embeddings`` endpoint (reuses your model server; NO HF download).
+      * ``model2vec`` / ``static`` → distilled STATIC embeddings (~30 MB, NO
+        torch; real paraphrase quality). Loads from a local dir → zero network.
       * ``semantic`` / ``st`` → the LOCAL sentence-transformer (downloads once).
       * default ``hash`` → the dependency-free lexical embedder below."""
     b = _backend()
     if b in ("api", "openai", "lmstudio", "ollama"):
         from aiforge_core.integrations import api_embed as _ae
         return _ae.embed(text)
+    if b in ("model2vec", "static"):
+        from aiforge_core.integrations import model2vec_embed as _m2
+        return _m2.embed(text)
     if b in ("semantic", "st", "sentence-transformers"):
         from aiforge_core.integrations import semantic_embed as _se
         return _se.embed(text)
@@ -71,6 +76,9 @@ def embed_dim() -> int:
     if b in ("api", "openai", "lmstudio", "ollama"):
         from aiforge_core.integrations import api_embed as _ae
         return _ae.dim()
+    if b in ("model2vec", "static"):
+        from aiforge_core.integrations import model2vec_embed as _m2
+        return _m2.dim()
     if b in ("semantic", "st", "sentence-transformers"):
         from aiforge_core.integrations import semantic_embed as _se
         return _se.dim()

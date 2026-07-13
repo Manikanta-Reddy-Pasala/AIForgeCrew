@@ -84,6 +84,11 @@ chunking = ["chonkie>=1.0"]
 # Selected by AIFORGE_EMBED_BACKEND=semantic; both run entirely on-box, no
 # network. Without this extra the dependency-free hash backend is used.
 semantic = ["sentence-transformers>=2.2", "sqlite-vec>=0.1"]
+# LIGHT semantic memory: model2vec STATIC embeddings — real paraphrase recall,
+# ~30 MB model, NO torch (pure numpy). Selected by AIFORGE_EMBED_BACKEND=model2vec;
+# loads from a local dir (AIFORGE_EMBED_MODEL2VEC_PATH) for zero-network runtime.
+# The practical semantic option when the sentence-transformers HF download stalls.
+embed-static = ["model2vec>=0.3", "sqlite-vec>=0.1"]
 # tracing needs NO extra: the langfuse mirror posts to the REST ingestion
 # API with core httpx (the SDK's pins conflict with aider-chat).
 # NOTE: ragas (RAG eval, scripts/rag_eval.py + integrations/ragas_adapter.py)
