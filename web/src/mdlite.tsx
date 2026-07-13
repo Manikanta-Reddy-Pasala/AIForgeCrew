@@ -25,6 +25,70 @@ function safeHref(url: string): string {
   return '';                                               // any other scheme → drop
 }
 
+// ── copy-to-clipboard ────────────────────────────────────────────────────────
+// navigator.clipboard needs a SECURE context (https / localhost); the app is
+// often reached over plain http on a LAN IP where it's undefined — fall back to
+// a hidden-textarea execCommand so Copy works everywhere.
+export function copyText(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error('copy failed'));
+    } catch (e) { reject(e as Error); }
+  });
+}
+
+/** A small Copy button that flips to a check for ~1.2s. Reused for code blocks,
+ *  full answers, and user messages. */
+export function CopyButton(
+  { text, label = 'Copy', title = 'Copy', className, style }:
+  { text: string; label?: string; title?: string;
+    className?: string; style?: React.CSSProperties },
+) {
+  const [done, setDone] = React.useState(false);
+  const onCopy = React.useCallback(() => {
+    copyText(text).then(() => {
+      setDone(true);
+      setTimeout(() => setDone(false), 1200);
+    }).catch(() => {});
+  }, [text]);
+  return (
+    <button type="button" onClick={onCopy} title={title}
+            className={className} style={style}>
+      {done ? '✓ Copied' : label}
+    </button>
+  );
+}
+
+// Wraps a fenced-code <pre> and floats a Copy button in its top-right corner.
+function CodeFence({ body, children }:
+    { body: string; children: React.ReactNode }) {
+  return (
+    <div className="mdlite-fence" style={{ position: 'relative' }}>
+      <CopyButton text={body} title="Copy code" className="mdlite-copy"
+        style={{
+          position: 'absolute', top: 6, right: 6, zIndex: 1,
+          font: '11px var(--font-sans, sans-serif)', cursor: 'pointer',
+          padding: '2px 7px', borderRadius: 5, opacity: 0.75,
+          border: '1px solid var(--border, #3a3a3a)',
+          background: 'var(--bg-2, #2a2a2a)', color: 'var(--fg-2, #ccc)',
+        }} />
+      {children}
+    </div>
+  );
+}
+
 // ── inline ──────────────────────────────────────────────────────────────────
 // Earliest-match tokenizer. Order in the alternation matters: ** before *,
 // __ before _, so bold wins over italic.
@@ -87,7 +151,8 @@ export function MdLite({ text }: { text: string }) {
         // Color a unified-diff fence (+/-/@@) line-by-line instead of a flat
         // <code> block, so an approval preview's code changes read like a diff.
         out.push(
-          <pre key={`p-${k++}`} data-lang="diff" style={{
+          <CodeFence key={`p-${k++}`} body={body}>
+          <pre data-lang="diff" style={{
             whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.45,
           }}>
@@ -105,15 +170,18 @@ export function MdLite({ text }: { text: string }) {
               }
               return <div key={j} style={{ color, background, padding: '0 4px' }}>{ln || ' '}</div>;
             })}
-          </pre>,
+          </pre>
+          </CodeFence>,
         );
         i = stop + 1;
         continue;
       }
       out.push(
-        <pre key={`p-${k++}`} data-lang={lang || undefined}>
+        <CodeFence key={`p-${k++}`} body={body}>
+        <pre data-lang={lang || undefined}>
           <code>{body}</code>
-        </pre>,
+        </pre>
+        </CodeFence>,
       );
       i = stop + 1;
       continue;

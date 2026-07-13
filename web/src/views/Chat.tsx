@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, chatMediaRawURL, ChatMedia, chatSessionSpec, setRuleScope, deleteRule, rules as fetchRules, ruleFlags, setGateFlag, clearGateFlag, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
-import { MdLite } from '../mdlite';
+import { MdLite, copyText as mdCopyText } from '../mdlite';
 
 // Header overflow-menu item styles.
 const menuBtn: React.CSSProperties = {
@@ -1350,11 +1350,12 @@ export default function Chat() {
     setEditingFrom(msg.id > 0 ? msg.id : null);
     setTimeout(() => textareaRef.current?.focus(), 30);
   }
-  // M2: copy with uniform feedback (clipboard may be absent in insecure HTTP).
+  // M2: copy with uniform feedback. Uses mdlite.copyText, which falls back to a
+  // hidden-textarea execCommand when the clipboard API is unavailable (plain
+  // HTTP on a LAN IP) — so Copy works everywhere, not only over HTTPS.
   function copyText(t: string) {
-    if (!navigator.clipboard) { toast.error('Copy needs HTTPS'); return; }
-    navigator.clipboard.writeText(t).then(() => toast.success('Copied'),
-                                          () => toast.error('Copy failed'));
+    mdCopyText(t).then(() => toast.success('Copied'),
+                       () => toast.error('Copy failed'));
   }
   const isLastTurn = messages.length > 0 && lastAssistantMsg === messages[messages.length - 1];
   const persistedAwaiting = !!(isLastTurn && lastAssistantMsg && msgAwaiting(lastAssistantMsg));
@@ -2445,12 +2446,10 @@ function AssistantBubble({
           : <span className="muted xs">· {fmtElapsed(elapsedSec)}</span>)}
         {/* M2: copy the assistant's answer */}
         {!streaming && text && (
-          <button className="ghost xs" title="Copy answer"
+          <button className="ghost xs" title="Copy the full answer"
                   style={{ padding: '0 4px', cursor: 'pointer' }}
-                  onClick={() => { navigator.clipboard
-                    ? navigator.clipboard.writeText(text).then(
-                        () => toast.success('Copied'), () => toast.error('Copy failed'))
-                    : toast.error('Copy needs HTTPS'); }}>
+                  onClick={() => mdCopyText(text).then(
+                    () => toast.success('Copied'), () => toast.error('Copy failed'))}>
             ⧉ Copy
           </button>
         )}
