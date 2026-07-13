@@ -2191,6 +2191,9 @@ def _xhtml_to_md(xhtml: str) -> str:
         s = re.sub(rf"<h{i}[^>]*>(.*?)</h{i}>",
                    lambda m, i=i: "\n" + "#" * i + " " + m.group(1).strip() + "\n",
                    s, flags=re.I | re.S)
+    s = re.sub(r"<pre[^>]*>(.*?)</pre>", lambda m: "\n```\n" + m.group(1).strip()
+               + "\n```\n", s, flags=re.I | re.S)
+    s = re.sub(r"<code[^>]*>(.*?)</code>", r"`\1`", s, flags=re.I | re.S)
     s = re.sub(r"<(strong|b)[^>]*>(.*?)</\1>", r"**\2**", s, flags=re.I | re.S)
     s = re.sub(r"<(em|i)[^>]*>(.*?)</\1>", r"*\2*", s, flags=re.I | re.S)
     s = re.sub(r'''<a\b[^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>''', r"[\2](\1)",
@@ -2300,7 +2303,7 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                   + (f" · **Priority:** {args['priority']}" if args.get('priority') else "")
                   + f"\n\n**Summary:** {args.get('summary', '?')}\n")
             if args.get("description"):
-                md += f"\n{str(args['description'])}\n"
+                md += f"\n{_xhtml_to_md(str(args['description']))}\n"
             if args.get("labels"):
                 md += f"\n**Labels:** {args['labels']}\n"
             return md
@@ -2317,12 +2320,13 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                     md += f"**{k.capitalize()}:** {args[k]}\n\n"
             if args.get("description") is not None:
                 md += ("**Description changes:**\n\n"
-                       + _change_diff(str(cur.get("description") or ""),
-                                      str(args["description"]), "description"))
+                       + _change_diff(_xhtml_to_md(str(cur.get("description") or "")),
+                                      _xhtml_to_md(str(args["description"])),
+                                      "description"))
             return md
         if tool == "jira_comment":
             return (f"### Comment on Jira `{args.get('key', '?')}`\n\n"
-                    f"{str(args.get('body', ''))}")
+                    f"{_xhtml_to_md(str(args.get('body', '')))}")
         if tool == "gitlab_create":
             md = (f"### Create GitLab issue\n\n"
                   f"**Project:** `{args.get('project', '?')}`\n\n"
