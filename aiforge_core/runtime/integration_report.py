@@ -131,10 +131,24 @@ _STDLIB = frozenset((
 ))
 
 
+def _stdlib_names() -> frozenset:
+    """Authoritative stdlib module set. Python 3.10+ exposes the real list via
+    ``sys.stdlib_module_names`` — use it so no stdlib name (secrets, hashlib,
+    sqlite3, …) is ever mis-flagged as a pip-installable third-party dep (a
+    single bad name breaks the whole venv install → pytest missing → the test
+    gate goes blind). Fall back to the hand-list on older interpreters."""
+    import sys as _sys
+    names = getattr(_sys, "stdlib_module_names", None)
+    if names:
+        return frozenset(names) | _STDLIB
+    return _STDLIB
+
+
 def _third_party_imports(cwd: str) -> list[str]:
     """Top-level third-party modules imported anywhere in the tree — so a bare
     (marker-less) project's test venv can pip-install them (pygame, numpy, …)."""
     import re as _re
+    _std = _stdlib_names()
     pat = _re.compile(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)", _re.MULTILINE)
     mods: set[str] = set()
     for root, dirs, files in os.walk(cwd):
@@ -150,7 +164,7 @@ def _third_party_imports(cwd: str) -> list[str]:
             except Exception:  # noqa: BLE001
                 continue
             for m in pat.findall(src):
-                if m and m not in _STDLIB:
+                if m and m not in _std:
                     mods.add(m)
     # a local package (a dir/… .py in the tree) isn't third-party.
     local = {d for d in os.listdir(cwd)} if os.path.isdir(cwd) else set()
@@ -197,18 +211,35 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
     venv = os.path.join(cwd, ".aiforge-venv")
     py = os.path.join(venv, "bin", "python")
     try:
-        if not os.path.exists(py):
-            subprocess.run([sys.executable, "-m", "venv", venv],
-                           capture_output=True, timeout=120)
-            # Include the pytest plugins models commonly reference in pyproject
-            # addopts / imports (cov, asyncio, mock) so a config like `--cov` or
-            # an `@pytest.mark.asyncio` doesn't make pytest exit "unrecognized
-            # arguments" / "unknown marker" with ZERO test signal — which would
-            # blind the reconcile. Generic; costs one install per venv.
-            deps = (["pytest", "pytest-cov", "pytest-asyncio", "pytest-mock",
-                     "ruff"] + _third_party_imports(cwd))
-            subprocess.run([py, "-m", "pip", "-q", "install", *deps],
+        # (Re)ensure pytest itself is importable in the venv — a PRIOR round may
+        # have created the venv but failed to install pytest (a single bad dep
+        # name aborts the whole `pip install`), leaving a venv with no pytest and
+        # the gate permanently blind. So check import, not just venv existence.
+        def _has_pytest() -> bool:
+            if not os.path.exists(py):
+                return False
+            c = subprocess.run([py, "-c", "import pytest"],
+                               capture_output=True, timeout=60)
+            return c.returncode == 0
+        if not _has_pytest():
+            if not os.path.exists(py):
+                subprocess.run([sys.executable, "-m", "venv", venv],
+                               capture_output=True, timeout=120)
+            # CORE test deps FIRST, in their own call that MUST succeed — the
+            # pytest plugins models reference via pyproject addopts (cov, asyncio,
+            # mock) so a `--cov`/`@pytest.mark.asyncio` config doesn't exit with
+            # "unrecognized arguments" and zero signal.
+            subprocess.run([py, "-m", "pip", "-q", "install", "pytest",
+                            "pytest-cov", "pytest-asyncio", "pytest-mock", "ruff"],
                            capture_output=True, timeout=timeout)
+            # Third-party imports BEST-EFFORT and one at a time — a single
+            # unresolvable/mis-detected name (a stray stdlib module, a private
+            # package) must NOT abort the whole install and strand pytest. Each
+            # failure is isolated; a genuinely-missing import just surfaces as a
+            # real test error the reconcile can act on.
+            for dep in _third_party_imports(cwd):
+                subprocess.run([py, "-m", "pip", "-q", "install", dep],
+                               capture_output=True, timeout=timeout)
             req = os.path.join(cwd, "requirements.txt")
             if os.path.exists(req):
                 subprocess.run([py, "-m", "pip", "-q", "install", "-r", req],
