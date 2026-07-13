@@ -23,7 +23,7 @@
 #   • scoped-OKR Markdown memory  (briefs in ~/.aiforge/memory/compacted/,
 #       originals archived to archive/; global 'shared' + per-repo + topic briefs)
 #   • hybrid recall  (keyword/BM25 + spell-correct by default; add semantic
-#       vector KNN with --install-semantic — optional, see below)
+#       vector KNN with --install-model2vec — optional, see below)
 #   • Aider RepoMap + CodeGraph  (code context — auto-installed)
 #   • api + team-pipeline runner on the host (full fs/shell/toolchain)
 # A prior dockerized install (Postgres/Neo4j) is auto-migrated to SQLite/OKR on
@@ -39,10 +39,8 @@
 #   • hash — keyword + exact-id + spell-correction, zero deps, no download.
 #     The fallback when no semantic backend is installed.
 #   • api — semantic from an OpenAI-compatible /v1/embeddings endpoint you ALREADY
-#     run (LM Studio / Ollama). No HF download:
+#     run (LM Studio / Ollama). No local model at all:
 #       AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<embed-model> ./run.sh
-#   • semantic — HEAVY: sentence-transformers + torch (~1GB), model from HF.
-#     `./run.sh --install-semantic`. Prefer model2vec unless you need it.
 #
 # SEED A FRESH MACHINE'S MEMORY from agent-instruction files (CLAUDE.md /
 # AGENTS.md / GEMINI.md / .cursorrules) — a reproducible, committed path:
@@ -62,8 +60,9 @@
 #   --with-graphify  install the `graphify` CLI (concept-graph tool)
 #   --migrate    force a (re-)converge: migrate a prior PG/Neo4j install →
 #                SQLite/OKR + remove docker, then start
-#   --install-semantic  install the semantic-memory extra (torch; foreground,
-#                shows progress), then start with semantic active. One-time.
+#   --install-model2vec  install semantic memory (model2vec static embeddings,
+#                ~30MB, NO torch), then start with it active. One-time.
+#                (--install-semantic is a kept alias — also installs model2vec.)
 #   --dedupe     remove duplicate OKR nodes + chat sessions, then exit
 #   --recompact-all  re-LLM every memory brief + rebuild from scratch, then exit
 #   --purge-code     drop code-as-learnings from a bad migration, then exit
@@ -145,8 +144,7 @@ while [[ $# -gt 0 ]]; do
     --dedupe) MAINT=dedupe ;;         # remove duplicate OKR nodes + chat sessions, then exit
     --recompact-all) MAINT=recompact ;;  # re-LLM every brief + rebuild, then exit
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
-    --install-semantic) INSTALL_SEMANTIC=1 ;;  # foreground-install HEAVY semantic memory (sentence-transformers + torch)
-    --install-model2vec) INSTALL_MODEL2VEC=1 ;;  # foreground-install LIGHT semantic (model2vec, ~30MB, NO torch) — recommended
+    --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
     --dev) DEV=1 ;;
     --skip-web) SKIP_WEB=1 ;;
     --test) TEST=1 ;;             # model probe runs in the venv, no stack
@@ -314,7 +312,7 @@ _npm_ci_resilient() {
 
 # ── DOCKER MODE (--docker) ─────────────────────────────────────────────
 # Build + run the self-contained single-mode container (all deps baked: aider,
-# semantic/torch, sqlite-vec, structured/crawl/chunking, pre-built UI) with the
+# model2vec semantic, sqlite-vec, structured/crawl/chunking, pre-built UI) with the
 # FULL host filesystem mounted at /host. No native venv/toolchain step. State
 # persists on the host under ${AIFORGE_DATA_DIR:-./data}/aiforge.
 if [[ "$MODE" == "docker" ]]; then
@@ -327,7 +325,7 @@ if [[ "$MODE" == "docker" ]]; then
   export AIFORGE_PORT="$PORT"
   [[ "${MIGRATE:-0}" == "1" ]] && export AIFORGE_MIGRATE=1
   mkdir -p "${AIFORGE_DATA_DIR:-./data}/aiforge"
-  echo "==> docker mode: building the all-deps image (first build pulls torch — several minutes)…"
+  echo "==> docker mode: building the all-deps image (~2GB, first build takes a few minutes)…"
   "${DC[@]}" up -d --build
   echo "==> AIForge is up. UI: http://${HOST}:${PORT}/ui/   (logs: ${DC[*]} logs -f aiforge)"
   echo "==> full host FS mounted at /host — set AIFORGE_HOST_ROOT to narrow it."
@@ -502,36 +500,15 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
       && echo "==> integration extras ready" \
       || echo "==> integration extras skipped (built-in fallbacks active)"
   fi
-  # LOCAL semantic memory (sentence-transformer embedder + sqlite-vec ANN).
-  # The '.[semantic]' extra pulls torch (~hundreds of MB). Installing it during a
-  # normal boot is what made run.sh look hung — inline it blocks with no output,
-  # and backgrounding it holds the uv/.venv lock so the NEXT uv step blocks too.
-  # So a normal boot NEVER installs it: use semantic if the libs are already
-  # importable, else boot on hash and print how to enable it. Run it explicitly,
-  # in the FOREGROUND with visible progress, via `./run.sh --install-semantic`.
   # ── Embed backend. Priority: an EXPLICIT AIFORGE_EMBED_BACKEND (runtime.env /
-  # env) is ALWAYS honored. Else auto-pick the lightest REAL backend installed
-  # (model2vec — NO torch — over heavy sentence-transformers), else hash.
-  # Optional one-time installs: --install-model2vec (light, ~30MB, no torch —
-  # recommended) or --install-semantic (heavy, sentence-transformers + torch).
+  # env) is ALWAYS honored. Else auto-pick model2vec (static semantic, NO torch)
+  # if installed, else hash. Enable semantic ONCE: ./run.sh --install-model2vec.
   if [[ "${INSTALL_MODEL2VEC:-0}" == "1" ]] \
       && ! .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
-    echo "==> installing model2vec static embeddings (real semantic, NO torch)…"
+    echo "==> installing model2vec static embeddings (real semantic, NO torch, ~30MB)…"
     uv pip install --python .venv/bin/python -e '.[embed-static]' \
       && : "${AIFORGE_EMBED_BACKEND:=model2vec}" \
       || echo "==> model2vec install failed — continuing"
-  fi
-  if [[ "${INSTALL_SEMANTIC:-0}" == "1" ]] \
-      && ! .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
-    echo "==> installing semantic memory (sentence-transformers + sqlite-vec; pulls torch, several minutes)…"
-    if uv pip install --python .venv/bin/python -e '.[semantic]'; then
-      # Warm the model cache NOW (foreground) so it isn't fetched on the first
-      # chat message; a blocked huggingface.co fails fast, not a hung turn.
-      AIFORGE_EMBED_BACKEND=semantic .venv/bin/python -c \
-        "from aiforge_core.integrations import semantic_embed as s; print('embed model ready, dim', s.dim())" \
-        || echo "==> WARN: embed model could not download (box may not reach huggingface.co)"
-      : "${AIFORGE_EMBED_BACKEND:=semantic}"
-    else echo "==> semantic install failed — continuing"; fi
   fi
   if [[ -n "${AIFORGE_EMBED_BACKEND:-}" ]]; then
     export AIFORGE_EMBED_BACKEND
@@ -539,12 +516,9 @@ if [[ "${AIFORGE_SKIP_INTEGRATIONS:-0}" != "1" ]]; then
   elif .venv/bin/python -c "import model2vec, sqlite_vec" >/dev/null 2>&1; then
     export AIFORGE_EMBED_BACKEND=model2vec
     echo "==> embed backend: model2vec (auto — static semantic, no torch)"
-  elif .venv/bin/python -c "import sentence_transformers, sqlite_vec" >/dev/null 2>&1; then
-    export AIFORGE_EMBED_BACKEND=semantic
-    echo "==> embed backend: semantic (auto)"
   else
     export AIFORGE_EMBED_BACKEND=hash
-    echo "==> embed backend: hash (no semantic libs). Light semantic recall: ./run.sh --install-model2vec"
+    echo "==> embed backend: hash (keyword). Semantic recall: ./run.sh --install-model2vec"
   fi
   # crawl4ai renders with headless chromium — install best-effort (idempotent).
   .venv/bin/python -m playwright install chromium >/dev/null 2>&1 || true

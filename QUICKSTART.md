@@ -43,20 +43,22 @@ hand-edit.
 | Backend | What it does | Cost |
 |---|---|---|
 | **hash** (default) | keyword / exact-id / spell-correction. Fully works — briefs, migration, chat, contradiction-resolve, seed-index, lint, hot-cache. | none — no heavy download |
-| **semantic** (opt-in) | adds meaning/paraphrase vector KNN ("how do we ship a release" → the deploy brief, zero shared words) | sentence-transformers + torch, ~minutes to install |
+| **model2vec** (opt-in) | adds meaning/paraphrase vector KNN ("how do we ship a release" → the deploy brief, zero shared words) | static embeddings, ~30 MB model, **no torch** |
+| **api** (opt-in) | semantic from an OpenAI-compatible `/v1/embeddings` endpoint you already run (LM Studio / Ollama) | no local model at all |
 
-Enable semantic **once** (installs, then starts with it active):
+Enable semantic **once** (installs model2vec, then starts with it active):
 ```bash
-./run.sh --install-semantic
+./run.sh --install-model2vec
 ```
-Afterwards every plain `./run.sh` auto-detects it. Force hash / skip the heavy
-install: `AIFORGE_EMBED_BACKEND=hash ./run.sh`.
+Afterwards every plain `./run.sh` auto-detects it. Force hash:
+`AIFORGE_EMBED_BACKEND=hash ./run.sh`. Or the API backend:
+`AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<embed-model> ./run.sh`.
 
 Handy flags: `--port N` · `--host 0.0.0.0` (LAN — needs `AIFORGE_API_TOKEN`, or
 `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` if you front it yourself) · `--dev` (hot
 reload) · `--reset-config` (wipe saved model config) · `--test` (probe the model
-endpoint and exit) · `--migrate` (force re-converge) · `--install-semantic`
-(one-time semantic install) · `--recompact-all` (re-fold every brief, then exit).
+endpoint and exit) · `--migrate` (force re-converge) · `--install-model2vec`
+(one-time semantic install, no torch) · `--recompact-all` (re-fold every brief, then exit).
 
 > `--lite` / `--hybrid` / `--docker` / `--no-build` are legacy no-ops — the stack
 > is always single-mode SQLite now.

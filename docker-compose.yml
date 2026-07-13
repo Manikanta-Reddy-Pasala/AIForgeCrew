@@ -1,6 +1,6 @@
 # AIForge — DOCKER MODE (single-mode: embedded SQLite + scoped-OKR memory).
 #
-# One self-contained container: the app + ALL deps (aider, semantic/torch,
+# One self-contained container: the app + ALL deps (aider, model2vec semantic,
 # sqlite-vec, structured/crawl/chunking, pre-built UI) baked into the image —
 # nothing is fetched at run time. No Postgres/Neo4j/sidecars (that was the old
 # "pro" stack; the project is single-mode now).
@@ -42,8 +42,8 @@ services:
       # non-loopback bind. Forwarded so a host that sets it (e.g. via .env) works.
       AIFORGE_ALLOW_UNAUTH_NONLOOPBACK: ${AIFORGE_ALLOW_UNAUTH_NONLOOPBACK:-0}
       AIFORGE_CONFIG_DIR: /data/aiforge
-      # Real paraphrase recall — the image baked in sentence-transformers +
-      # sqlite-vec and pre-downloaded the model.
+      # Real paraphrase recall via model2vec (static embeddings, no torch) —
+      # the image baked in the model + sqlite-vec.
       AIFORGE_EMBED_BACKEND: ${AIFORGE_EMBED_BACKEND:-model2vec}
       # The agent's workspace = the mounted host filesystem, so edits/worktrees
       # land on the host and persist.

@@ -1,5 +1,6 @@
-"""Embedder backend dispatch: semantic (sentence-transformer) vs hash, and the
-NO-FALLBACK contract (semantic selected + model missing → raises, not hash)."""
+"""Embedder backend dispatch: model2vec (static, no torch) vs hash, and the
+NO-FALLBACK contract (a vector backend selected + model missing → raises, not
+silently hash)."""
 from __future__ import annotations
 import pytest
 
@@ -12,25 +13,25 @@ def test_hash_backend_default(monkeypatch):
     assert local_embed.embed_dim() == local_embed.EMBED_DIM
 
 
-def test_semantic_backend_dispatches(monkeypatch):
-    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "semantic")
-    import aiforge_core.integrations.semantic_embed as se
-    monkeypatch.setattr(se, "embed", lambda t: [0.1, 0.9])
-    monkeypatch.setattr(se, "dim", lambda: 2)
+def test_model2vec_backend_dispatches(monkeypatch):
+    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "model2vec")
+    import aiforge_core.integrations.model2vec_embed as m2
+    monkeypatch.setattr(m2, "embed", lambda t: [0.1, 0.9])
+    monkeypatch.setattr(m2, "dim", lambda: 2)
     from aiforge_core.memory import local_embed
     assert local_embed.embed("anything") == [0.1, 0.9]
     assert local_embed.embed_dim() == 2
 
 
-def test_semantic_no_silent_fallback(monkeypatch):
-    """Semantic selected but the model can't load → RAISES (never hash)."""
-    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "semantic")
-    import aiforge_core.integrations.semantic_embed as se
+def test_model2vec_no_silent_fallback(monkeypatch):
+    """model2vec selected but the model can't load → RAISES (never hash)."""
+    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "model2vec")
+    import aiforge_core.integrations.model2vec_embed as m2
 
     def _boom():
-        raise ImportError("sentence_transformers not installed")
+        raise ImportError("model2vec not installed")
 
-    monkeypatch.setattr(se, "_load", _boom)
+    monkeypatch.setattr(m2, "_load", _boom)
     from aiforge_core.memory import local_embed
     with pytest.raises(Exception):
         local_embed.embed("x")
@@ -40,7 +41,9 @@ def test_vec_enabled_flag(monkeypatch):
     from aiforge_core.memory import sqlite_memory as sm
     monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "hash")
     assert sm._vec_enabled() is False
-    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "semantic")
+    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "model2vec")
+    assert sm._vec_enabled() is True
+    monkeypatch.setenv("AIFORGE_EMBED_BACKEND", "api")
     assert sm._vec_enabled() is True
 
 

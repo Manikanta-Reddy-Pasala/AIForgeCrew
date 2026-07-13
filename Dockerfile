@@ -1,12 +1,12 @@
 # AIForge — single-mode app image (embedded SQLite + scoped-OKR memory).
 # Self-contained: the whole app + ALL deps baked in — python deps, aider
-# (RepoMap), the semantic embedder (sentence-transformers + sqlite-vec + torch),
-# the structured/crawl/chunking extras, and the pre-built web UI. Nothing is
-# fetched at run time. See docker-compose.yml + docker/entrypoint.sh.
+# (RepoMap), the model2vec semantic embedder (static embeddings + sqlite-vec,
+# NO torch), the structured/crawl/chunking extras, and the pre-built web UI.
+# Nothing is fetched at run time. See docker-compose.yml + docker/entrypoint.sh.
 #
-# SLIM: torch is the CPU-only build (inference here is CPU — the CUDA build adds
-# ~5-8GB of NVIDIA libs this box never uses), and a multi-stage build keeps the
-# compiler toolchain OUT of the final image.
+# SLIM: semantic recall is model2vec (pure-numpy static embeddings) — no torch,
+# no CUDA — and a multi-stage build keeps the compiler toolchain out of the
+# final image.
 
 # ── web build ─────────────────────────────────────────────────────────
 FROM node:20-slim AS web

@@ -38,10 +38,11 @@ Single-mode: everything on the host, embedded **SQLite** (tickets + chat) + scop
 dockerized (Postgres/Neo4j) install? `git pull && ./run.sh` auto-migrates the data
 to SQLite/OKR and removes the DB containers (force with `./run.sh --migrate`).
 
-Recall is **keyword + spell-correction** by default (no heavy download). Add
+Recall is **keyword + spell-correction** by default (no download). Add
 **semantic** vector KNN (meaning/paraphrase recall) once with
-`./run.sh --install-semantic` (installs sentence-transformers + torch, then starts
-with it active). Force plain: `AIFORGE_EMBED_BACKEND=hash ./run.sh`.
+`./run.sh --install-model2vec` — static embeddings, ~30 MB, **no torch**. Or use
+an OpenAI-compatible `/v1/embeddings` endpoint you already run:
+`AIFORGE_EMBED_BACKEND=api AIFORGE_EMBED_API_MODEL=<model> ./run.sh`.
 
 > ⚠️ **Security.** By default the Chat agent has **full, unsandboxed filesystem and
 > shell access** on the host. Set `AIFORGE_WORKSPACE_DIR=/path/to/workspace` to clamp
@@ -49,7 +50,7 @@ with it active). Force plain: `AIFORGE_EMBED_BACKEND=hash ./run.sh`.
 > container. Treat the chat box like a terminal.
 
 `./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
-`--migrate` re-migrates a prior install; `--install-semantic` enables semantic recall.
+`--migrate` re-migrates a prior install; `--install-model2vec` enables semantic recall (no torch).
 Mode is `AIFORGE_MODE`-driven (`lite` | `hybrid` | `docker`; a flag still wins):
 `--lite` runs **zero-Docker** (host + SQLite for everything). `--migrate` moves an
 existing Postgres (chat + tickets) into the SQLite stores and removes the DB infra

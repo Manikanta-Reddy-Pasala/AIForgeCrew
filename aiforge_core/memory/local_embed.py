@@ -1,11 +1,11 @@
 """Offline, dependency-free hash embedding for the SQLite memory backend.
 
-No model, no sidecar, no network — a deterministic feature-hashing
-vectorizer over word + character-trigram tokens with sublinear term
-frequency and L2 normalization. This gives *lexical* similarity recall
-(shared words/morphology rank higher) which is enough for the embedded
-"runs anywhere" memory. Semantic recall remains the job of the bge-m3
-sidecar + Neo4j/Postgres "pro" backends.
+No model, no network — a deterministic feature-hashing vectorizer over word +
+character-trigram tokens with sublinear term frequency and L2 normalization.
+This gives *lexical* similarity recall (shared words/morphology rank higher),
+the zero-dependency default. For real paraphrase (semantic) recall without
+torch, use the ``model2vec`` backend (static embeddings) or ``api`` (an
+OpenAI-compatible /v1/embeddings endpoint) — see :func:`embed`.
 
 Properties relied on by the store and tests:
   * deterministic — same text -> same vector across processes/runs
@@ -51,37 +51,30 @@ def _backend() -> str:
 def embed(text: str) -> list[float]:
     """The active embedder (RAISES on failure for the real backends — no silent
     hash fallback; the write path degrades via ``_safe_embed``):
-      * ``api`` / ``openai`` / ``lmstudio`` / ``ollama`` → an OpenAI-compatible
-        ``/v1/embeddings`` endpoint (reuses your model server; NO HF download).
       * ``model2vec`` / ``static`` → distilled STATIC embeddings (~30 MB, NO
         torch; real paraphrase quality). Loads from a local dir → zero network.
-      * ``semantic`` / ``st`` → the LOCAL sentence-transformer (downloads once).
+      * ``api`` / ``openai`` / ``lmstudio`` / ``ollama`` → an OpenAI-compatible
+        ``/v1/embeddings`` endpoint (reuses your model server; NO HF download).
       * default ``hash`` → the dependency-free lexical embedder below."""
     b = _backend()
-    if b in ("api", "openai", "lmstudio", "ollama"):
-        from aiforge_core.integrations import api_embed as _ae
-        return _ae.embed(text)
     if b in ("model2vec", "static"):
         from aiforge_core.integrations import model2vec_embed as _m2
         return _m2.embed(text)
-    if b in ("semantic", "st", "sentence-transformers"):
-        from aiforge_core.integrations import semantic_embed as _se
-        return _se.embed(text)
+    if b in ("api", "openai", "lmstudio", "ollama"):
+        from aiforge_core.integrations import api_embed as _ae
+        return _ae.embed(text)
     return _hash_embed(text)
 
 
 def embed_dim() -> int:
     """Dimension of the ACTIVE embedder."""
     b = _backend()
-    if b in ("api", "openai", "lmstudio", "ollama"):
-        from aiforge_core.integrations import api_embed as _ae
-        return _ae.dim()
     if b in ("model2vec", "static"):
         from aiforge_core.integrations import model2vec_embed as _m2
         return _m2.dim()
-    if b in ("semantic", "st", "sentence-transformers"):
-        from aiforge_core.integrations import semantic_embed as _se
-        return _se.dim()
+    if b in ("api", "openai", "lmstudio", "ollama"):
+        from aiforge_core.integrations import api_embed as _ae
+        return _ae.dim()
     return EMBED_DIM
 
 

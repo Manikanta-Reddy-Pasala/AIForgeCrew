@@ -16,8 +16,9 @@
 > ```
 >
 > **Setup / tools**
-> - Embedder: **hash** (keyword + spell) by default; **semantic** (vector KNN)
->   via `./run.sh --install-semantic`. Env: `AIFORGE_EMBED_BACKEND=hash|semantic`.
+> - Embedder: **hash** (keyword + spell) by default; **model2vec** (vector KNN,
+>   static embeddings, no torch) via `./run.sh --install-model2vec`, or **api**
+>   (external `/v1/embeddings`). Env: `AIFORGE_EMBED_BACKEND=hash|model2vec|api`.
 > - Seed memory from instruction files (committed, reproducible; stop api first):
 >   `aiforge-memory-instructions --clear --root <repos-dir>`
 >   (CLAUDE.md / AGENTS.md / GEMINI.md / .cursorrules; `--name` to add filenames).

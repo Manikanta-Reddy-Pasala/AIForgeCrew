@@ -113,9 +113,8 @@ END;
 def _vec_enabled() -> bool:
     # every REAL vector backend uses the sqlite-vec ANN index (fast KNN); only
     # the lexical hash backend uses the brute-force scan. sqlite-vec ships with
-    # the semantic / embed-static extras.
+    # the embed-static extra.
     return os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower() in (
-        "semantic", "st", "sentence-transformers",
         "model2vec", "static", "api", "openai", "lmstudio", "ollama")
 
 
