@@ -20,6 +20,7 @@ import os
 import urllib.parse
 
 from . import _http_integration as _http
+from .jira_format import to_jira_wiki
 
 _TIMEOUT_S = 20
 _BODY_CAP = 200_000
@@ -373,7 +374,7 @@ def jira_log_work(args: dict, cwd: str | None = None) -> dict:
                                       "(e.g. time_spent='2h 30m')"}
     body: dict = {"timeSpent": time_spent}
     if args.get("comment"):
-        body["comment"] = str(args["comment"])
+        body["comment"] = to_jira_wiki(str(args["comment"]))
     if args.get("started"):
         body["started"] = str(args["started"])
     r = _request("POST", f"/rest/api/2/issue/{urllib.parse.quote(key)}/worklog",
@@ -598,7 +599,7 @@ def jira_create(args: dict, cwd: str | None = None) -> dict:
         "issuetype": {"name": args.get("issuetype") or "Task"},
     }
     if args.get("description"):
-        fields["description"] = args["description"]
+        fields["description"] = to_jira_wiki(str(args["description"]))
     if args.get("priority"):
         fields["priority"] = {"name": args["priority"]}
     if args.get("assignee"):
@@ -649,7 +650,7 @@ def jira_update(args: dict, cwd: str | None = None) -> dict:
     if args.get("summary"):
         fields["summary"] = args["summary"]
     if args.get("description") is not None:
-        fields["description"] = args["description"]
+        fields["description"] = to_jira_wiki(str(args["description"]))
     if args.get("priority"):
         fields["priority"] = {"name": args["priority"]}
     if args.get("assignee"):
@@ -686,8 +687,10 @@ def jira_comment(args: dict, cwd: str | None = None) -> dict:
         return {"ok": False, "error": "missing 'key'"}
     if not args.get("body"):
         return {"ok": False, "error": "missing 'body'"}
+    # Server/DC v2 renders WIKI markup — convert the agent's HTML/Markdown body
+    # so it doesn't post with literal <p>/<strong>/## tags.
     r = _request("POST", f"/rest/api/2/issue/{urllib.parse.quote(key)}/comment",
-                 body={"body": args["body"]})
+                 body={"body": to_jira_wiki(str(args["body"]))})
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
