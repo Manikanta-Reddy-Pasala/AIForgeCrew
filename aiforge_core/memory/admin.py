@@ -577,10 +577,14 @@ def _clear_graphify() -> int:
 
 
 def _clear_md() -> int:
+    """Delete root-level per-run captures AND the consolidated briefs in the
+    compacted/ subfolder. (Briefs moved out of the root into compacted/, so a
+    root-only glob no longer wipes them — that left stale briefs after a clear /
+    --clear re-ingest.) The archive/ and memory-archive/ trees are preserved."""
     from aiforge_core.memory import md_store
-    d = md_store.memory_dir()
     n = 0
-    for p in d.glob("*.md"):
+    for p in list(md_store.memory_dir().glob("*.md")) \
+            + list(md_store.briefs_dir().glob("*.md")):
         if p.is_file():
             p.unlink()
             n += 1

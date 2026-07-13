@@ -57,6 +57,20 @@ def test_migrate_moves_legacy_root_brief_into_folder(mem):
     assert not (m.memory_dir() / "compacted-legacy.md").exists()  # gone from root
 
 
+def test_clear_md_wipes_foldered_briefs(mem):
+    """Regression: clear_store('md_files') / --clear must wipe the compacted/
+    briefs too — a root-only glob left stale briefs after a --clear re-ingest."""
+    from aiforge_core.memory import md_store as m
+    from aiforge_core.memory import admin
+    m._brief_upsert("svc", "a fact", topic="x")
+    m.write("a capture", "some body", kind="note", repo="svc")   # root note
+    assert m.brief_path("svc").exists()
+    admin.clear_store("md_files")
+    assert not m.brief_path("svc").exists()                       # brief gone
+    assert list(m.briefs_dir().glob("*.md")) == []
+    assert list(m.memory_dir().glob("*.md")) == []                # root gone too
+
+
 def test_startup_migrations_preserve_foldered_briefs(mem):
     """The whole startup path must not lose a brief in the compacted/ folder."""
     from aiforge_core.memory import md_store as m
