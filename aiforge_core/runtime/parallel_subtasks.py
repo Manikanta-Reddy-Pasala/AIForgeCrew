@@ -2588,6 +2588,31 @@ def _directed_hints(output: str) -> list[str]:
             f"to that class (initialise it in __init__ / implement the method).")
     for name, attr in re.findall(r"module '([\w.]+)' has no attribute '(\w+)'", output):
         add(f"`{name}` is missing top-level `{attr}` — define it there.")
+    # ── HTTP / web-framework status mismatches (Flask/FastAPI/Django/etc.) ──
+    # These fall through the generic "assert X==Y" rule below with no root-cause,
+    # so a local model patches blindly. Name the ACTUAL cause per status code.
+    if re.search(r"assert 308 ==|308 PERMANENT REDIRECT|\b308\b.*[Rr]edirect", output):
+        add("HTTP 308 (permanent redirect) where the test expects a real status: "
+            "the route's TRAILING SLASH doesn't match the request path. The app "
+            "defines the route WITH a trailing slash (e.g. `/books/`) but the test "
+            "calls it WITHOUT (`/books`), so the framework 308-redirects. FIX in "
+            "the ROUTES: define the collection route to match the test exactly "
+            "(drop the trailing slash), or set `strict_slashes=False` (Flask: on "
+            "the blueprint/route; or `app.url_map.strict_slashes=False`). Do NOT "
+            "change the tests — align the routes to the paths the tests call.")
+    if re.search(r"assert 405 ==|405 METHOD NOT ALLOWED", output):
+        add("HTTP 405 (method not allowed): the route exists but doesn't accept "
+            "the HTTP method the test uses — add the method to the route's "
+            "`methods=[...]` (e.g. POST/PUT/DELETE) on the correct path.")
+    if re.search(r"assert 404 ==\s*20\d|404 NOT FOUND", output):
+        add("HTTP 404 where a 2xx is expected: the route path/prefix the test "
+            "calls isn't registered — reconcile the blueprint url_prefix + route "
+            "rule with the exact path in the test (check for a missing prefix or a "
+            "singular/plural mismatch).")
+    if re.search(r"assert 5\d\d ==|500 INTERNAL SERVER ERROR", output):
+        add("HTTP 5xx where a client status is expected: the handler raises before "
+            "returning — read the traceback in the body/log, fix the unhandled "
+            "error (often a missing key, None deref, or wrong return shape).")
     # ── assertion VALUE mismatches — a logic bug to fix in the impl ──────
     for got, exp in re.findall(r"assert (\S{1,40}) == (\S{1,40})", output):
         add(f"assertion `{got} == {exp}` failed — the impl returns the wrong "

@@ -3720,6 +3720,78 @@ def _fire_stop(reason: str, cwd: str) -> None:
         pass
 
 
+_EDIT_TOOL_NAMES = frozenset((
+    "write_file", "file_write", "edit", "editor", "edit_block", "file_patch",
+    "patch", "apply_patch", "str_replace", "create_file",
+))
+
+
+def _verify_on_final_enabled() -> bool:
+    return os.environ.get("AIFORGE_CHAT_VERIFY_ON_FINAL", "1") not in ("0", "false")
+
+
+def _verify_max_rounds() -> int:
+    try:
+        return max(0, min(12, int(os.environ.get("AIFORGE_CHAT_VERIFY_ROUNDS", "6"))))
+    except ValueError:
+        return 6
+
+
+def _run_project_verify(cwd: str):
+    """Run the project's test/build gate on ``cwd``. Returns ``(ok, output)`` or
+    ``(None, "")`` when there's nothing to test — reuses the SAME runner the
+    pipeline reconcile uses, so simple/doer runs get the same real pass/fail."""
+    try:
+        from aiforge_core.runtime.parallel_subtasks import _project_test_output
+        return _project_test_output(cwd)
+    except Exception:  # noqa: BLE001
+        return None, ""
+
+
+def _post_edit_syntax_error(name: str, args: dict, cwd: str) -> "str | None":
+    """Syntax-check the file an edit tool just wrote. Returns an error string
+    when broken, else None. Reuses the pipeline's language-agnostic syntax_guard
+    (Python compile, js/java/go/… checkers, brace-balance fallback)."""
+    path = None
+    for k in ("path", "file", "filename", "file_path", "target"):
+        v = (args or {}).get(k)
+        if isinstance(v, str) and v:
+            path = v
+            break
+    if not path:
+        return None
+    abs_path = path if os.path.isabs(path) else os.path.join(cwd, path)
+    try:
+        with open(abs_path, encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from aiforge_core.runtime.syntax_guard import validate_syntax
+        ok, err = validate_syntax(path, content)
+        return None if ok else err
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _verify_fix_message(output: str) -> str:
+    """A directed 'tests are failing, fix them' turn — reuses the reconcile's
+    root-cause hint engine so the local model gets concrete guidance, not just
+    the raw traceback."""
+    try:
+        from aiforge_core.runtime.parallel_subtasks import _directed_hints
+        hints = _directed_hints(output or "")
+    except Exception:  # noqa: BLE001
+        hints = []
+    hint_block = ("\n\nDIRECTED FIXES:\n" + "\n".join(f"- {h}" for h in hints)) if hints else ""
+    return (
+        "[automated verification — not the user] You said you were done, but the "
+        "project's tests do NOT pass. Do NOT reply FINAL until they do. Read the "
+        "failures below, fix the IMPLEMENTATION (not the tests, unless a test "
+        "clearly contradicts the request), then re-run the tests to confirm.\n\n"
+        "TEST OUTPUT:\n```\n" + (output or "")[-3000:] + "\n```" + hint_block)
+
+
 def run_chat_agent(
     messages: list[dict], *,
     cwd: str,
@@ -4082,6 +4154,13 @@ def run_chat_agent(
     _builder_finalized = False
     _builder_final_tries = 0
     _multiask_checked = False   # one-time FINAL completeness gate (multi-ask)
+    # Loop-engineering state (verify→fix on FINAL + progress gating). Only a
+    # work-producing "act" run that actually EDITED files, with a real test
+    # suite present, gets the verify gate — a Q&A turn (0 edits) is untouched.
+    _edits_made = 0
+    _verify_rounds = 0
+    _verify_prev_fails = None   # last measured failure count (progress signal)
+    _verify_stalls = 0
     while n < safety:
         n += 1
         if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -4272,6 +4351,41 @@ def run_chat_agent(
                     "missing work now (ACTIONs as needed) and produce ONE "
                     "complete FINAL covering all parts, numbered."})
                 continue
+            # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
+            # act-mode run that actually EDITED files with a real test suite —
+            # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
+            # looping while the failure count DROPS; once it stalls (2 rounds no
+            # improvement) accept the HONEST still-failing final rather than
+            # churn. This gives simple/doer runs the pipeline's no-false-green
+            # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
+            if (not plan_mode and not builder and _edits_made > 0
+                    and _verify_rounds < _verify_max_rounds()
+                    and _verify_on_final_enabled()):
+                _vok, _vout = _run_project_verify(cwd)
+                if _vok is False:
+                    try:
+                        from aiforge_core.runtime.parallel_subtasks import _fail_count
+                        _fails = _fail_count(_vout)
+                    except Exception:  # noqa: BLE001
+                        _fails = 1
+                    if _verify_prev_fails is not None and _fails >= _verify_prev_fails:
+                        _verify_stalls += 1
+                    else:
+                        _verify_stalls = 0
+                    _verify_prev_fails = _fails
+                    if _verify_stalls < 2:
+                        _verify_rounds += 1
+                        yield {"type": "thought", "role": "system",
+                               "text": f"✗ tests failing ({_fails}) — fixing "
+                                       f"(verify round {_verify_rounds}/"
+                                       f"{_verify_max_rounds()})…"}
+                        convo.append({"role": "user",
+                                      "content": _verify_fix_message(_vout)})
+                        continue
+                    yield {"type": "thought", "role": "system",
+                           "text": f"⚠ tests still failing ({_fails}) after "
+                                   f"{_verify_rounds} fix rounds — stopping with "
+                                   "the honest state."}
             # FINAL accepted on a multi-part turn: close out the tracker so
             # the dock never ends with stale pending items the model forgot
             # to flip.
@@ -4598,6 +4712,27 @@ def run_chat_agent(
             pass
         yield {"type": "tool", "name": name, "args": args, "result": result,
                "call_id": n}
+        # Loop-engineering bookkeeping: count edits that actually LANDED (gates
+        # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
+        if name in _EDIT_TOOL_NAMES and not (
+                isinstance(result, dict) and result.get("ok") is False):
+            _edits_made += 1
+            # D: post-edit self-check. Immediately syntax-check the file just
+            # written and, if broken, hand the model the error THIS step (tight
+            # feedback) instead of letting it surface only at the end-of-run test
+            # gate. Best-effort + opt-out (AIFORGE_CHAT_POST_EDIT_CHECK=0).
+            if os.environ.get("AIFORGE_CHAT_POST_EDIT_CHECK", "1") not in ("0", "false"):
+                try:
+                    _pe = _post_edit_syntax_error(name, args, cwd)
+                except Exception:  # noqa: BLE001
+                    _pe = None
+                if _pe:
+                    yield {"type": "thought", "role": "system",
+                           "text": f"⚠ syntax error in the file you just edited "
+                                   f"— fix it now: {_pe[:160]}"}
+                    convo.append({"role": "user", "content":
+                        "[automated syntax check — not the user] The file you just "
+                        f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
         # Builder finalize: a successful create_job_script / learn_skill /
         # learn_workflow / remember_rule ends the interview. Signal the UI so it
         # can drop this session's builder mode — otherwise every later message
