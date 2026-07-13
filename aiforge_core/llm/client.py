@@ -536,6 +536,20 @@ def _is_garbage(text: str) -> bool:
     return False
 
 
+def _append_no_think(messages: list[dict]) -> list[dict]:
+    """Return a copy of ``messages`` nudging the model to answer WITHOUT its
+    reasoning phase — used only on an empty-response retry. Appends ' /no_think'
+    to the last user turn (the Qwen3 / DeepSeek-R1 convention); harmless text for
+    models that ignore it."""
+    out = [dict(m) for m in (messages or [])]
+    for m in reversed(out):
+        if m.get("role") == "user":
+            m["content"] = (str(m.get("content") or "").rstrip() + " /no_think")
+            return out
+    out.append({"role": "user", "content": "/no_think"})
+    return out
+
+
 def _try_post(ep: Endpoint, messages: list[dict],
               *, temperature, max_tokens, top_p, extras,
               timeout_s: int, role: str,
@@ -553,8 +567,20 @@ def _try_post(ep: Endpoint, messages: list[dict],
     AIFORGE_LLM_EMPTY_RETRIES (default 2 → up to 3 total posts).
     """
     empty_retries = max(0, _int_env("AIFORGE_LLM_EMPTY_RETRIES", 2))
-    payload = _build_body(ep, messages, temperature, max_tokens, top_p, extras)
     for attempt in range(empty_retries + 1):
+        if attempt == 0:
+            payload = _build_body(ep, messages, temperature, max_tokens,
+                                  top_p, extras)
+        else:
+            # Last post came back EMPTY. A reasoning model (qwen*-reasoning,
+            # deepseek-r1) systematically spends its whole budget THINKING and
+            # emits empty content — re-posting the identical body just repeats
+            # that. Coax a DIRECT answer: append '/no_think' (Qwen/DeepSeek honor
+            # it → skip the reasoning phase) and widen max_tokens so a still-
+            # thinking model has room left to emit the answer.
+            _mt = min(int((max_tokens or 4096) * 2), 32768)
+            payload = _build_body(ep, _append_no_think(messages), temperature,
+                                  _mt, top_p, extras)
         try:
             body = _post_with_retry(ep, payload, timeout_s,
                                     role=role, source=source)
