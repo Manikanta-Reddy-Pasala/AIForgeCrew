@@ -16,29 +16,50 @@ Everything you need to go from clone → running → configured → doing real w
 
 ## 1. Run it
 
-**Prereqs:** Docker (for the default + `--docker` modes), Node + npm (to build the
-UI), and one reachable model endpoint (e.g. LM Studio, OpenRouter, a cloud key).
+**Prereqs:** Node + npm (to build the UI) and one reachable model endpoint (LM
+Studio, vLLM, Ollama, OpenRouter, a cloud key…). **No Docker required** — the
+stack is single-mode: embedded SQLite + Markdown OKR memory, all on the host.
+(Docker is only needed for the optional self-hosted Langfuse trace UI.)
 
 ```bash
 git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git
 cd AIForgeCrew
-./run.sh                 # DEFAULT = hybrid
+./run.sh
 ```
 
-Open **http://127.0.0.1:8799/ui/**.
+Open **http://127.0.0.1:8799/ui/**. First boot builds the venv + UI and starts
+the api + team-pipeline runner on the host — it does **not** download anything
+heavy, so it comes up fast.
 
-Three run modes:
+**Upgrading an OLD install** (a previous dockerized Postgres/Neo4j setup)? Just
+`git pull && ./run.sh` — the first boot AUTO-migrates your data (Postgres →
+SQLite tickets/chat, Neo4j facts → OKR briefs, briefs → `compacted/` folder, okr
+DAG → `memory-archive/`) and removes the DB-infra containers (keeps Langfuse).
+Force a re-migrate anytime with `./run.sh --migrate`. No data loss; nothing to
+hand-edit.
 
-| Command | What runs where | Use when |
+**Memory recall — hash (default) vs semantic:**
+
+| Backend | What it does | Cost |
 |---|---|---|
-| `./run.sh` (default) | **hybrid** — Postgres + Neo4j + embed + rerank in Docker; **api + UI + runner on the host** | You want the agent to see the host filesystem/tools (coding). |
-| `./run.sh --docker` | **everything in containers** (agent isolated to the mounted workspace) | Shared / untrusted deploy. |
-| `./run.sh --lite` | **all on the host, embedded SQLite**, no Docker | Fastest "just try it", no infra. |
+| **hash** (default) | keyword / exact-id / spell-correction. Fully works — briefs, migration, chat, contradiction-resolve, seed-index, lint, hot-cache. | none — no heavy download |
+| **semantic** (opt-in) | adds meaning/paraphrase vector KNN ("how do we ship a release" → the deploy brief, zero shared words) | sentence-transformers + torch, ~minutes to install |
+
+Enable semantic **once** (installs, then starts with it active):
+```bash
+./run.sh --install-semantic
+```
+Afterwards every plain `./run.sh` auto-detects it. Force hash / skip the heavy
+install: `AIFORGE_EMBED_BACKEND=hash ./run.sh`.
 
 Handy flags: `--port N` · `--host 0.0.0.0` (LAN — needs `AIFORGE_API_TOKEN`, or
 `AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1` if you front it yourself) · `--dev` (hot
 reload) · `--reset-config` (wipe saved model config) · `--test` (probe the model
-endpoint and exit).
+endpoint and exit) · `--migrate` (force re-converge) · `--install-semantic`
+(one-time semantic install) · `--recompact-all` (re-fold every brief, then exit).
+
+> `--lite` / `--hybrid` / `--docker` / `--no-build` are legacy no-ops — the stack
+> is always single-mode SQLite now.
 
 ---
 
@@ -112,20 +133,48 @@ that interviews you and saves it):
 
 ---
 
-## 6. Index your code into Memory
+## 6. Memory
 
-**Memory** page → **Add source** → point at a repo or docs folder. Indexing populates
-four layers (Neo4j backend):
+Memory is **scoped OKR briefs** — human-readable Markdown files under
+`~/.aiforge/memory/`:
 
-- **Tree-sitter symbols** — classes/methods + call/extends/implements edges
-- **Code / doc chunks** — embedded content for semantic recall
-- **Graphify** — a concept graph
-- **Facts** — observations/decisions the agents write during runs
+```
+~/.aiforge/memory/
+├── compacted/          the briefs — one per scope (OKR envelope:
+│   ├── compacted-shared.md          Objective / Key Results / Facts / Links / Learnings)
+│   ├── compacted-<repo>.md          · shared = global (cross-project)
+│   └── compacted-<topic>.md         · <repo> = one project · <topic> = a theme
+├── archive/            raw captures, folded + archived (reversible)
+└── okr/                (marker only — the old node-DAG is consolidated out)
+```
 
-Then: **search across everything**, hit **Preview graph** / **Explore** for an
-in-app interactive graph (pan/zoom, click a node to expand), or **Open in Neo4j
-Browser**. The chat/coding agents recall this memory automatically ("memory-first")
-before searching files.
+**How it fills:**
+- The **Memory** page → **Add source** indexes a repo/docs folder (tree-sitter
+  symbols + code/doc chunks + facts) for code context.
+- Agents write learnings during runs; each chat **session** distils into briefs
+  when it goes idle.
+- **Seed a fresh machine** from agent-instruction files — a committed, repeatable
+  command (works on hash **or** semantic; no CLAUDE.md needed on other boxes,
+  their briefs come from migrated memory):
+  ```bash
+  # stop the api first, then:
+  aiforge-memory-instructions --clear --root <repos-dir>   # CLAUDE.md / AGENTS.md / GEMINI.md
+  ```
+
+**Recall** is hybrid + self-maintaining:
+- **Search** (Memory page or the agents' `memory_lookup`) fuses semantic vector
+  KNN (if installed) + keyword/BM25 + spell-correction, and **follows brief
+  Links** to pull related briefs' full text. The API/UI split results into
+  **vector** vs **markdown** groups.
+- A **seed index** (TOC of every brief) is injected into the chat prompt so the
+  agent knows what memory exists to query.
+- Housekeeping runs nightly (02:00 local) + hourly: consolidation, **contradiction
+  resolve** (a newer fact overwrites a stale contradicting one in any scope),
+  cross-scope link mapping, and a graph-health **lint** (dangling links / orphans).
+- A **hot cache** surfaces just-written facts immediately, before compaction.
+
+The chat/coding agents recall this memory automatically ("memory-first") before
+searching files.
 
 ---
 

@@ -33,16 +33,23 @@ base URL — LM Studio (`http://localhost:1234/v1`), OpenRouter, Groq, Together,
 or a cloud endpoint with a key. Hit **Test connection** to verify. Then use **Chat**
 (a full-filesystem coding agent) or file a **Ticket** (the full pipeline).
 
-Storage defaults to embedded **SQLite** under `~/.aiforge/`. Set `AIFORGE_PG_URL`
-(Postgres tickets) and/or `NEO4J_URI` (graph memory) and the "pro" backends take
-over automatically — or run the whole pro stack with `docker compose up -d --build`.
+Single-mode: everything on the host, embedded **SQLite** (tickets + chat) + scoped
+**OKR Markdown memory** under `~/.aiforge/` — no infra Docker. Upgrading an old
+dockerized (Postgres/Neo4j) install? `git pull && ./run.sh` auto-migrates the data
+to SQLite/OKR and removes the DB containers (force with `./run.sh --migrate`).
+
+Recall is **keyword + spell-correction** by default (no heavy download). Add
+**semantic** vector KNN (meaning/paraphrase recall) once with
+`./run.sh --install-semantic` (installs sentence-transformers + torch, then starts
+with it active). Force plain: `AIFORGE_EMBED_BACKEND=hash ./run.sh`.
 
 > ⚠️ **Security.** By default the Chat agent has **full, unsandboxed filesystem and
 > shell access** on the host. Set `AIFORGE_WORKSPACE_DIR=/path/to/workspace` to clamp
 > file/exec operations to one directory, and run shared/untrusted deployments inside a
 > container. Treat the chat box like a terminal.
 
-`./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind.
+`./run.sh --dev` enables hot reload; `--port N` / `--host H` change the bind;
+`--migrate` re-migrates a prior install; `--install-semantic` enables semantic recall.
 Mode is `AIFORGE_MODE`-driven (`lite` | `hybrid` | `docker`; a flag still wins):
 `--lite` runs **zero-Docker** (host + SQLite for everything). `--migrate` moves an
 existing Postgres (chat + tickets) into the SQLite stores and removes the DB infra

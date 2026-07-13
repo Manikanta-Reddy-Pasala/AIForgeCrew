@@ -1,4 +1,45 @@
-# OKR-DAG Memory
+# OKR Memory
+
+> **Current state (2026-07-13).** The memory is **flat scoped OKR briefs** —
+> Markdown files under `~/.aiforge/memory/compacted/`, one per scope (global
+> `shared` / per-repo / per-topic), each an OKR envelope (Objective / Key Results
+> / Facts / Links / Learnings). The typed **node-DAG** described below is
+> CONSOLIDATED OUT by default (`AIFORGE_OKR_DAG=0`; the `okr/` folder is archived
+> to `memory-archive/` on boot) — kept for reference/reversibility, not active.
+> See **"Flat-brief scope memory"** at the bottom + the summary below.
+>
+> **Layout**
+> ```
+> ~/.aiforge/memory/compacted/   the briefs (compacted-<scope>.md)
+> ~/.aiforge/memory/archive/     folded raw captures (reversible)
+> ~/.aiforge/memory/okr/         marker only (DAG consolidated out)
+> ```
+>
+> **Setup / tools**
+> - Embedder: **hash** (keyword + spell) by default; **semantic** (vector KNN)
+>   via `./run.sh --install-semantic`. Env: `AIFORGE_EMBED_BACKEND=hash|semantic`.
+> - Seed memory from instruction files (committed, reproducible; stop api first):
+>   `aiforge-memory-instructions --clear --root <repos-dir>`
+>   (CLAUDE.md / AGENTS.md / GEMINI.md / .cursorrules; `--name` to add filenames).
+> - Migrate a prior install into this layout: `./run.sh --migrate` (PG→SQLite,
+>   Neo4j→briefs, root briefs→`compacted/`, okr DAG→archive).
+>
+> **Recall (hybrid, self-maintaining)** — `unified_query` fuses: semantic vector
+> KNN (`memory`) + keyword/BM25 + spell (`keyword`) + **hot cache** of newest
+> facts (`recent`) + **link expansion** (follows a hit brief's Links to sibling
+> briefs). `/api/memory/search` splits results into **vector** vs **md** groups.
+> A **seed TOC** of all briefs is injected into the chat prompt (so the model
+> knows what to recall). Housekeeping: hourly compaction + nightly (02:00 local)
+> full recompact — consolidate, **contradiction-resolve** (newer fact overwrites
+> a stale contradicting one across repo/global), cross-scope link **map**, and a
+> graph-health **lint** (dangling links / orphans).
+>
+> Env knobs: `AIFORGE_SEED_TOC`, `AIFORGE_UMEM_RECENT`, `AIFORGE_UMEM_LINK_EXPAND`,
+> `AIFORGE_OKR_CONTRADICT`, `AIFORGE_RECOMPACT_HOUR` (default 2), `AIFORGE_OKR_DAG`.
+
+---
+
+*(Historical — the OKR-DAG design, now dormant behind `AIFORGE_OKR_DAG=1`.)*
 
 A Markdown-backed, goal-oriented memory: files are **nodes**, YAML frontmatter
 carries **typed edges**, and an **in-memory DAG** (built at boot, no Neo4j)

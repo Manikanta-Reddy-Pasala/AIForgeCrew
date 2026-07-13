@@ -5,13 +5,29 @@
 #
 # SINGLE MODE — everything on the host, zero infra Docker:
 #   • embedded SQLite  (tickets + chat)
-#   • scoped-OKR Markdown memory  (global/ + projects/<repo>/)
+#   • scoped-OKR Markdown memory  (briefs in ~/.aiforge/memory/compacted/,
+#       originals archived to archive/; global 'shared' + per-repo + topic briefs)
+#   • hybrid recall  (keyword/BM25 + spell-correct by default; add semantic
+#       vector KNN with --install-semantic — optional, see below)
 #   • Aider RepoMap + CodeGraph  (code context — auto-installed)
 #   • api + team-pipeline runner on the host (full fs/shell/toolchain)
 # A prior dockerized install (Postgres/Neo4j) is auto-migrated to SQLite/OKR on
 # first boot and its DB containers/images/volumes removed (see
 # aiforge_core.deploy.converge). Point it at a model on the home page
 # (http://localhost:8799/ui/).
+#
+# MEMORY EMBEDDER (recall quality):
+#   • Default = 'hash' backend — keyword + exact-id + spell-correction. Works
+#     fully (briefs, migration, chat, contradiction, seed-index, lint). A normal
+#     boot NEVER downloads anything heavy.
+#   • Semantic = meaning/paraphrase recall (sentence-transformers + sqlite-vec,
+#     pulls torch, ~minutes). Enable ONCE with `./run.sh --install-semantic`
+#     (installs, then starts with semantic active); afterwards every ./run.sh
+#     auto-detects it. Force hash / skip: AIFORGE_EMBED_BACKEND=hash ./run.sh
+#
+# SEED A FRESH MACHINE'S MEMORY from agent-instruction files (CLAUDE.md /
+# AGENTS.md / GEMINI.md / .cursorrules) — a reproducible, committed path:
+#   aiforge-memory-instructions --clear --root <repos-dir>   # (stop api first)
 #
 # Flags:
 #   --port N     listen port (default 8799)
@@ -27,6 +43,8 @@
 #   --with-graphify  install the `graphify` CLI (concept-graph tool)
 #   --migrate    force a (re-)converge: migrate a prior PG/Neo4j install →
 #                SQLite/OKR + remove docker, then start
+#   --install-semantic  install the semantic-memory extra (torch; foreground,
+#                shows progress), then start with semantic active. One-time.
 #   --dedupe     remove duplicate OKR nodes + chat sessions, then exit
 #   --recompact-all  re-LLM every memory brief + rebuild from scratch, then exit
 #   --purge-code     drop code-as-learnings from a bad migration, then exit
@@ -117,7 +135,7 @@ while [[ $# -gt 0 ]]; do
     --reset-config) RESET_CONFIG=1 ;;
     --port) PORT="$2"; shift ;;
     --host) HOST="$2"; shift ;;
-    -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,60p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
