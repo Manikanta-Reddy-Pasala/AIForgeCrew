@@ -477,6 +477,31 @@ export default function Chat() {
     } catch { return 'simple'; }
   });
 
+  // Per-mode approval toggle (mirrors Settings → Approvals). ON = this mode
+  // pauses for Approve/Reject on risky/file-changing tools; OFF = runs
+  // uninterrupted (hard DENY + destructive-delete still confirm).
+  const [approvalFlags, setApprovalFlags] =
+    useState<{ chat: boolean; plan: boolean; pipeline: boolean }>(
+      { chat: true, plan: true, pipeline: true });
+  useEffect(() => {
+    chatApi.approvalSettings().then(setApprovalFlags).catch(() => { /* */ });
+  }, []);
+  const modeApprovalKey = (m: ChatMode): 'chat' | 'plan' | 'pipeline' =>
+    m === 'team' ? 'pipeline' : m === 'plan' ? 'plan' : 'chat';
+  const approvalsOn = approvalFlags[modeApprovalKey(chatMode)];
+  async function toggleApprovals() {
+    const key = modeApprovalKey(chatMode);
+    const next = !approvalFlags[key];
+    setApprovalFlags(f => ({ ...f, [key]: next }));   // optimistic
+    try {
+      setApprovalFlags(await chatApi.setApprovalMode(key, next));
+      toast.success(`${key} approvals ${next ? 'on' : 'off'}`);
+    } catch (e: any) {
+      setApprovalFlags(f => ({ ...f, [key]: !next }));
+      toast.error(e?.message || 'Failed to update approvals');
+    }
+  }
+
   // Per-session builder flow (job/skill/workflow/rule). When set for the active
   // session, every message that session sends carries `builder` so the backend
   // runs the interview charter instead of the enhancer/team pipeline.
@@ -1565,6 +1590,24 @@ export default function Chat() {
               </button>
             </div>
 
+            {/* Per-mode approval toggle — pause for Approve/Reject in this mode */}
+            <button
+              type="button"
+              onClick={toggleApprovals}
+              title={approvalsOn
+                ? `Approvals ON for ${modeApprovalKey(chatMode)} — pauses for Approve/Reject on risky/file-changing tools. Click to turn OFF.`
+                : `Approvals OFF for ${modeApprovalKey(chatMode)} — runs uninterrupted (hard-denied actions + destructive deletes still confirm). Click to turn ON.`}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
+                padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
+                border: `1px solid ${approvalsOn ? 'var(--ok,#22c55e)' : 'var(--border-1)'}`,
+                background: approvalsOn ? 'rgba(34,197,94,0.10)' : 'transparent',
+                color: approvalsOn ? 'var(--ok,#22c55e)' : 'var(--fg-2)',
+              }}
+            >
+              {approvalsOn ? '🛡' : '⚡'} Approvals {approvalsOn ? 'on' : 'off'}
+            </button>
+
             {/* Model selector — less relevant in team mode, so hide it */}
             {chatMode !== 'team' && (
               <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
@@ -1725,7 +1768,10 @@ export default function Chat() {
         ) : (
           <>
             <div className="chat-log" ref={logRef}>
-              <AutoApprovalsPanel />
+              {/* Captured auto-approve flags are IGNORED while this mode requires
+                  approval, so don't advertise them then — only surface the panel
+                  when approvals are OFF and a bypass can actually take effect. */}
+              {!approvalsOn && <AutoApprovalsPanel />}
               {messages.length === 0 && !liveTurn && !busy && (
                 <div className="chat-empty-state" style={{ flex: 'none' }}>
                   <div className="empty-icon">✨</div>

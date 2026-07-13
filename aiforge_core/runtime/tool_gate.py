@@ -142,7 +142,11 @@ def make_approval_gate_callback():
             # PUSH is explicitly EXCLUDED — a push updates a remote (external,
             # may trigger CI / a merge), so it ALWAYS requires an explicit
             # approval even when local commits are auto-approved.
-            if policy != tool_policy.DENY and not force_review:
+            # Captured commit-bypass applies ONLY when this mode's approvals are
+            # OFF — with approvals ON the per-mode toggle is the master and we
+            # ask regardless (mode-OFF already returned above, so this block is
+            # effectively for the OFF path / defensive).
+            if policy != tool_policy.DENY and not force_review and not approvals_on:
                 try:
                     from aiforge_core.runtime import rule_capture as _rc
                     _cmd = (args or {}).get("cmd") or (args or {}).get("command") or ""

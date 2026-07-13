@@ -4377,6 +4377,12 @@ def run_chat_agent(
         # approval gate for any mutating tool even if policy would auto-allow.
         _force_review = (session_id is not None and _is_mutating(name, args)
                          and chat_approve.review_edits(session_id))
+        # Per-mode approval Settings toggle (Chat/Plan/Pipeline). When ON, this
+        # mode pauses for Approve/Reject AND the captured "never re-ask" bypass
+        # flags below are IGNORED (the toggle is the master control — a user who
+        # turned approvals ON wants to be asked, not silently auto-approved). When
+        # OFF, ask-policy/review gates don't fire and the bypass flags apply.
+        _mode_approvals = chat_approve.approvals_required(session_id)
         # Destructive delete (rm -rf, etc): the run_command tool has its OWN
         # confirm_delete arg gate (delete_guard). If we don't route it through
         # the approval gate AND mark it confirmed on approve, the tool keeps
@@ -4399,23 +4405,21 @@ def run_chat_agent(
                     and delete_guard.is_destructive_delete(_cmd))
             except Exception:  # noqa: BLE001
                 _destructive_del = False
-            try:
-                from aiforge_core.runtime import rule_capture as _rc
-                _repo = _repo_name(cwd)
-                if _rc.is_commit_command(_cmd) and _rc.flag_active(
-                        "commit_auto_approve", repo=_repo, session_id=session_id):
-                    _auto_commit = True
-                if _destructive_del and _rc.flag_active(
-                        "allow_delete", repo=_repo, session_id=session_id):
-                    _destructive_del = False
-                    args["confirm_delete"] = True
-            except Exception:  # noqa: BLE001
-                pass
-        # Per-mode approval Settings toggle: when approvals are turned OFF for
-        # this run's chat mode, don't pause on an `ask`-policy or review-edits
-        # gate. A destructive delete still confirms (safety floor, not a
-        # chat-mode approval); DENY was already handled above.
-        _mode_approvals = chat_approve.approvals_required(session_id)
+            # Captured bypass flags apply ONLY when this mode's approvals are OFF
+            # — with approvals ON the toggle wins and we ask regardless.
+            if not _mode_approvals:
+                try:
+                    from aiforge_core.runtime import rule_capture as _rc
+                    _repo = _repo_name(cwd)
+                    if _rc.is_commit_command(_cmd) and _rc.flag_active(
+                            "commit_auto_approve", repo=_repo, session_id=session_id):
+                        _auto_commit = True
+                    if _destructive_del and _rc.flag_active(
+                            "allow_delete", repo=_repo, session_id=session_id):
+                        _destructive_del = False
+                        args["confirm_delete"] = True
+                except Exception:  # noqa: BLE001
+                    pass
         _gate = ((( verdict["policy"] == tool_policy.ASK or _force_review)
                   and _mode_approvals)
                  or _destructive_del)
