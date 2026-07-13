@@ -2533,6 +2533,15 @@ Only when it would actually help — don't search on every turn.
 detail, or catch yourself repeating a step that isn't working, emit ASK: \
 <question> and wait — never loop on the same failing action or guess at an \
 ambiguous request.
+- REMOTE COMMANDS OVER SSH — use a LOGIN SHELL: a bare `ssh host 'cmd'` runs \
+`cmd` in a NON-login, non-interactive shell that does NOT source the remote \
+~/.profile / ~/.bashrc / /etc/profile.d, so remote PATH and env vars are \
+missing — the classic symptom is a tool returning empty/blank output over ssh \
+but the right output when you log in interactively (e.g. `virsh list --all` \
+shows no VMs because LIBVIRT_DEFAULT_URI=qemu:///system isn't set). ALWAYS \
+wrap the remote command in a login shell: `ssh <opts> host 'bash -lc "<cmd>"'` \
+(single-quote the ssh arg, double-quote inside). This makes single commands \
+behave exactly like your interactive session.
 - RULE BOOK: when the user says "remember…", "always…", "never…", "for \
 all sessions", or states a standing rule about the folder/repo/workflow, \
 immediately call remember_rule (scope=repo for this repo, scope=global for \
