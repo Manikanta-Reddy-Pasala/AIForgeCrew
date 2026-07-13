@@ -424,6 +424,11 @@ def force_recompact_all(on_step=None) -> dict:
         # facts that scattered across scope briefs (consolidate only dedupes
         # within a brief). Bounded — skips above a fact ceiling.
         ("reconcile", lambda: md_store.reconcile_briefs()),
+        # CONTRADICTION-only cross-scope resolver — a new fact that contradicts a
+        # repo OR the global brief REPLACES the stale one (recall unions repo ∪
+        # global, so a contradiction misleads). Strict prompt, default ON (unlike
+        # the aggressive dedup reconcile above). "Overwrite outdated, don't append."
+        ("contradict", lambda: md_store.resolve_contradictions()),
         # self-heal mis-scoped facts (move globals out of project briefs) — heavy
         # (LLM per fact), so opt-in via AIFORGE_OKR_REHEAL=1.
         ("reheal", lambda: md_store.reheal_scopes()

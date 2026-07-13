@@ -881,6 +881,110 @@ def reconcile_briefs(*, role: str = "learner", max_facts: int = 400) -> dict:
     return {"removed": removed, "scopes": len(drop)}
 
 
+_CONTRADICT_SYS = (
+    "You are given knowledge facts from several scope briefs — each line is "
+    "'SCOPE :: fact' (SCOPE is a project name, a topic, or 'shared' = global). "
+    "Recall UNIONS a project's brief with the global 'shared' brief, so a fact "
+    "in one scope that CONTRADICTS a fact in another is surfaced together and "
+    "misleads. Find ONLY DIRECT CONTRADICTIONS: two facts about the SAME specific "
+    "subject asserting MUTUALLY EXCLUSIVE values — a changed deploy method, port, "
+    "runtime/version, status, owner, or decision (e.g. 'deploy via docker' vs "
+    "'deploy via systemctl restart'; 'runtime python3.11' vs 'runtime python3.12' "
+    "for the SAME thing). For each contradiction, output ONE item {scope, fact} "
+    "naming the STALE/outdated fact to REMOVE, keeping the current one.\n"
+    "STRICT RULES: (1) ONLY genuine contradictions — NOT duplicates, NOT "
+    "paraphrases, NOT merely related facts. (2) Different subjects that share a "
+    "word are NOT a contradiction (service A's port vs service B's port; repo X's "
+    "runtime vs repo Y's runtime). (3) Prefer removing the one in the NARROWER or "
+    "OLDER scope when a global default was overridden. (4) When in ANY doubt, "
+    "output NOTHING. Copy the stale fact text VERBATIM. Most facts have no "
+    "contradiction — returning an empty list is the common, correct answer."
+)
+
+
+def resolve_contradictions(*, role: str = "learner", max_facts: int = 400) -> dict:
+    """CONTRADICTION-only cross-scope resolver — REPLACE outdated facts.
+
+    A new fact that contradicts what a repo brief OR the global 'shared' brief
+    already holds must supersede it (the video's "overwrite outdated facts, don't
+    append" rule), because recall unions repo ∪ shared and would otherwise
+    surface both. Unlike :func:`reconcile_briefs` (which also removes DUPLICATES
+    and was too aggressive → off by default), this pass touches ONLY genuine
+    contradictions with a strict prompt, so it is safe to run automatically
+    (default ON; ``AIFORGE_OKR_CONTRADICT=0`` disables). Bounded to a single LLM
+    call (skips above ``max_facts``). Gated on ``AIFORGE_OKR_SCOPE_LLM``. Never
+    raises. Returns ``{removed, scopes}``."""
+    if os.environ.get("AIFORGE_OKR_SCOPE_LLM", "1") == "0" \
+            or os.environ.get("AIFORGE_OKR_CONTRADICT", "1") == "0":
+        return {"removed": 0, "skipped": "disabled"}
+    from aiforge_core.runtime import work_notes
+    briefs: dict = {}          # key -> [facts]
+    total = 0
+    for p in iter_briefs():
+        if _CAPTURE_SIG_RE.search(p.name):
+            continue
+        key = p.stem[len("compacted-"):]
+        try:
+            facts = work_notes.parse_note(
+                p.read_text(encoding="utf-8"))["sections"].get("facts") or []
+        except OSError:
+            continue
+        if facts:
+            briefs[key] = facts
+            total += len(facts)
+    if total < 2 or total > max_facts:
+        return {"removed": 0, "skipped": f"facts={total}"}
+
+    listing = "\n".join(f"{k} :: {_fact_body(f)}"
+                        for k, fs in briefs.items() for f in fs)
+    try:
+        from pydantic import BaseModel
+
+        from aiforge_core.llm.structured import structured_complete
+
+        class _Rm(BaseModel):
+            scope: str = ""
+            fact: str = ""
+
+        class _Removes(BaseModel):
+            removes: list[_Rm] = []
+
+        res = structured_complete(
+            role,
+            [{"role": "system", "content": _CONTRADICT_SYS},
+             {"role": "user", "content": listing[:24000]}],
+            _Removes, max_tokens=2000, max_retries=1, temperature=0.0)
+        removes = getattr(res, "removes", None) or []
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("resolve_contradictions LLM failed: %s", exc)
+        return {"removed": 0, "error": "llm_unreachable"}
+
+    drop: dict = {}
+    for r in removes:
+        k = (getattr(r, "scope", "") or "").strip()
+        f = (getattr(r, "fact", "") or "").strip()
+        if k in briefs and f:
+            drop.setdefault(k, set()).add(work_notes._ci_key(f))
+    removed = 0
+    with _WRITE_LOCK:
+        for k, dks in drop.items():
+            p = brief_path(k)
+            try:
+                parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            facts = parsed["sections"].get("facts") or []
+            kept = [f for f in facts
+                    if work_notes._ci_key(_fact_body(f)) not in dks]
+            if len(kept) != len(facts):
+                # reconcile the search index too, so the stale contradicted fact
+                # stops surfacing before the next full reingest.
+                _reconcile_dropped_index([f for f in facts if f not in kept], k)
+                removed += len(facts) - len(kept)
+                work_notes.update_note(str(p), facts=kept, kind="knowledge", key=k)
+    return {"removed": removed, "scopes": len(drop)}
+
+
 def dedupe_global_copies() -> dict:
     """Remove facts from project/topic briefs when the SAME fact (case-insensitive)
     already lives in the global ``compacted-shared.md`` brief. Recall always
@@ -1211,6 +1315,24 @@ _KEY_DENY = frozenset({
 def _fact_body(s: str) -> str:
     """Drop a leading ``[topic]`` prefix so comparisons hit the fact content."""
     return re.sub(r"^\[[^\]]*\]\s+", "", str(s or "")).strip()
+
+
+def _reconcile_dropped_index(dropped, repo: str) -> None:
+    """Drop the search-index rows for facts removed from a brief so recall stops
+    surfacing them before the next full reingest. Only for the embedded (SQLite)
+    backend; per-fact rows are the raw learning captures (NOT the brief itself, so
+    ``exclude_kind='knowledge'``). Skips <12-char bodies (substring over-delete)."""
+    for _df in dropped or []:
+        _dfb = _fact_body(_df)
+        if len(_dfb) < 12:
+            continue
+        try:
+            from aiforge_core.memory import backend_select, sqlite_memory
+            if backend_select.embedded():
+                sqlite_memory.delete_by_text_contains(
+                    _dfb, repo=_slug(repo), exclude_kind="knowledge")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _brief_upsert(repo: str, text: str, *, topic: str | None = None) -> None:
