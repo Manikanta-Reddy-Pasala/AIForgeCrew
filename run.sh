@@ -362,6 +362,12 @@ if [[ ! -d .venv ]]; then
   echo "==> creating .venv"
   uv venv .venv
 fi
+# Put the venv's bin on PATH for THIS process and every child shell it spawns —
+# job/Doer shells (tmux/run_shell) need `aiforge-tool`, `aiforge-maint`, etc. to
+# resolve, otherwise a script that should bridge to the authenticated Jira/
+# Confluence tools can't find the CLI and falls back to a credential-less curl
+# (→ 401). Absolute path so a worktree cwd still resolves it.
+export PATH="$PWD/.venv/bin:$PATH"
 echo "==> installing python deps (editable)"
 # Global uv targeting the venv's python — `uv venv` does not install uv
 # *into* the venv, so `.venv/bin/uv` would not exist on a fresh machine.
