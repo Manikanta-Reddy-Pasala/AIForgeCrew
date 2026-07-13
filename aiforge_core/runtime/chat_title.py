@@ -11,6 +11,42 @@ import re
 
 _BAD = re.compile(r'^["\'`\s]+|["\'`\s]+$')
 
+# A reasoning model (triage role) emits chain-of-thought first; capped at a few
+# tokens it leaks TRUNCATED CoT ("Thinking Process:", "The user is asking…") that
+# must never become the title.
+_THINK_TAG = re.compile(r"<think>.*?(?:</think>|$)", re.I | re.S)
+_REASON_START = re.compile(
+    r"^(thinking|thought|okay|ok\b|so\b|well\b|sure\b|let'?s|let me|first\b|"
+    r"the user|i (?:need|should|think|'?ll|will|am|have|can|would)|"
+    r"we (?:need|should|could)|here'?s|alright|now\b|hmm|to (?:answer|title|"
+    r"generate|create)|reasoning|analysis|based on)\b", re.I)
+
+
+def _title_like(line: str) -> bool:
+    """A short label, not a sentence of reasoning."""
+    if not line or line.endswith(":"):
+        return False
+    if _REASON_START.match(line):
+        return False
+    return 1 <= len(line.split()) <= 10
+
+
+def _extract_title(out: str, prompt: str) -> str:
+    """Pull a clean title out of a possibly-reasoning model dump; fall back to
+    the deterministic provisional title when nothing title-like survives."""
+    cleaned = _THINK_TAG.sub("", out or "")
+    lines = []
+    for ln in cleaned.splitlines():
+        ln = re.sub(r"^(title|chat)\s*[:\-]\s*", "", ln.strip(), flags=re.I)
+        ln = _BAD.sub("", ln)
+        if ln:
+            lines.append(ln)
+    # A reasoning model concludes with the title LAST — prefer the last clean line.
+    for ln in reversed(lines):
+        if _title_like(ln):
+            return ln[:60]
+    return provisional_title(prompt)
+
 # Leading filler to strip so the title starts on the SUBJECT, not the verb.
 _LEAD = re.compile(
     r"^(please\s+|kindly\s+|can you\s+|could you\s+|would you\s+|i (?:want|need|"
@@ -62,18 +98,18 @@ def suggest_title(prompt: str, role: str = "chat") -> str:
             {"role": "system", "content":
                 "You generate a short, specific title for a chat. Reply with "
                 "ONLY the title: 3-6 words, Title Case, no quotes, no trailing "
-                "punctuation, no prefix like 'Title:'."},
+                "punctuation, no prefix like 'Title:'. Do NOT think out loud or "
+                "explain — output the title text and nothing else. /no_think"},
             {"role": "user", "content": text[:1500]},
-        ], max_tokens=20, temperature=0.0)
+        # Enough room for a reasoning model to finish any CoT AND still emit the
+        # title on a final line — _extract_title then discards the CoT. (At 20
+        # tokens the CoT was truncated and its preamble became the title.)
+        ], max_tokens=64, temperature=0.0)
     except Exception:  # noqa: BLE001 — endpoint down / contended → clean fallback
         return provisional_title(text)
     if not out:
         return provisional_title(text)
-    # First non-empty line; drop a 'Title:' prefix, THEN surrounding quotes.
-    line = next((ln for ln in out.splitlines() if ln.strip()), "").strip()
-    line = re.sub(r"^(title|chat)\s*[:\-]\s*", "", line, flags=re.I)
-    line = _BAD.sub("", line)
-    return line[:60] or provisional_title(text)
+    return _extract_title(out, text)
 
 
 __all__ = ["suggest_title"]
