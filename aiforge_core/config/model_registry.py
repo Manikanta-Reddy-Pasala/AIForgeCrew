@@ -314,9 +314,17 @@ def apply_to_roles(model_id: str, roles: list[str]) -> dict:
     return {"applied": applied, "errors": errors}
 
 
-# Roles that benefit from a reasoning/"thinking" model (planning, judging).
-_THINKING_ROLES = ("planner", "architect", "enhancer", "reviewer", "learner",
-                   "validator", "critic", "reasoner", "judge", "orchestrator")
+# Roles that benefit from a reasoning/"thinking" model (deep planning/judging).
+_THINKING_ROLES = ("planner", "architect", "reviewer",
+                   "validator", "critic", "reasoner", "judge", "orchestrator",
+                   "gap_eval", "verify")
+# QUICK, direct-output roles — a reasoning/"thinking" model is WRONG here: it
+# spends its whole budget thinking and returns EMPTY on these short tasks
+# (rephrase a query, distil a fact, classify, title). Force the fast
+# NON-thinking model. (enhancer/learner were mis-classified as thinking —
+# that's what made them return empty on a reasoning model.)
+_FAST_ROLES = ("enhancer", "learner", "triage", "feedback", "refiner",
+               "title", "summar", "classif", "ctx_", "live_verifier")
 # Code-generation-heavy roles — a fast non-reasoning coder is better + cheaper.
 _CODER_ROLES = ("doer", "developer", "coder", "implementer", "builder", "tester")
 
@@ -348,12 +356,20 @@ def suggest_assignments(roles: list) -> dict:
     think = _by_ctx([m for m in models if m.get("has_thinking")])
     coder = _by_ctx([m for m in models if not m.get("has_thinking")])
     vision = _by_ctx([m for m in models if m.get("has_vision")])
-    default = _by_ctx(models)[0]["id"]
+    # DEFAULT for unclassified roles (e.g. chat) = the FAST non-thinking model,
+    # not the largest-context one — a reasoning model as the blanket default is
+    # what silently made simple chat answers come back empty. Only fall to a
+    # thinking model when no fast one is configured.
+    default = (coder or think or _by_ctx(models))[0]["id"]
     out: dict = {}
     for role in roles:
         rl = (role or "").lower()
         if "vision" in rl and vision:
             out[role] = vision[0]["id"]
+        elif any(f in rl for f in _FAST_ROLES):
+            # quick/direct-output → the fast NON-thinking model (a reasoning
+            # model returns empty here). Fall back to any model if none exists.
+            out[role] = (coder or think or _by_ctx(models))[0]["id"]
         elif any(t in rl for t in _THINKING_ROLES) and think:
             out[role] = think[0]["id"]
         elif any(c in rl for c in _CODER_ROLES) and coder:

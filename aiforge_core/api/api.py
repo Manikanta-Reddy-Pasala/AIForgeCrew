@@ -183,6 +183,19 @@ def _check_tool_parity() -> None:
 
 
 @app.on_event("startup")
+def _reassign_agents_on_boot() -> None:
+    """Re-apply capability-based agent→model assignment on every boot (when
+    auto-assign is on, the default) so EXISTING configs pick up mapping fixes —
+    e.g. quick roles (enhancer/learner) moving OFF a reasoning model that returns
+    empty, ONTO the fast model. Manual mode (AIFORGE_AUTO_ASSIGN_AGENTS=0) is
+    left untouched. Best-effort; never blocks startup."""
+    try:
+        _reassign_by_capability()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.on_event("startup")
 def _run_memory_migrations() -> None:
     """Auto-upgrade EVERY deployment's memory into the current scoped-OKR shape:
     legacy brief format → OKR envelope, compacted briefs → OKR learnings, old
