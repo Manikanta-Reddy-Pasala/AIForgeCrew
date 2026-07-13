@@ -14,6 +14,7 @@ Public surface:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -21,6 +22,29 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from aiforge_core.memory import local_embed
+
+_log = logging.getLogger("aiforge.memory")
+_EMBED_WARNED = False
+
+
+def _safe_embed(text: str) -> list:
+    """Embed ``text``, or return the ``[]`` sentinel if the model can't load.
+
+    A memory WRITE must never be lost because the embedder is unavailable — the
+    note is stored and stays findable via keyword/FTS, and ``reembed_all`` fills
+    the missing vector once the model is back. (The recall path stays loud — a
+    broken semantic search still raises, per the no-silent-degrade rule.)"""
+    global _EMBED_WARNED
+    try:
+        return local_embed.embed(text)
+    except Exception as exc:                      # noqa: BLE001 — degrade, don't lose
+        if not _EMBED_WARNED:
+            _log.warning(
+                "embedder unavailable (%s); storing notes WITHOUT vectors — "
+                "run `aiforge-maint memory reembed` (or restart with the model "
+                "present) to backfill semantic recall", exc)
+            _EMBED_WARNED = True
+        return []
 
 _LOCK = threading.Lock()
 
@@ -183,7 +207,7 @@ def write_unit(
     text = (text or "").strip()
     if not text:
         return 0
-    vec = local_embed.embed(text)
+    vec = _safe_embed(text)
     with _LOCK, _conn() as c:
         dup = c.execute(
             "SELECT id FROM memory_units WHERE text = ? AND "
@@ -611,14 +635,22 @@ def reembed_all() -> dict:
     (dropping a stale-dim one) and the per-row UPDATE triggers repopulate it.
     Idempotent. Returns the count re-embedded."""
     n = 0
+    failed = 0
     with _LOCK, _conn() as c:      # _init_vec (in _conn) already fixed the vec dim
         rows = c.execute("SELECT id, text FROM memory_units").fetchall()
         for r in rows:
-            v = local_embed.embed(r["text"] or "")
+            try:
+                v = local_embed.embed(r["text"] or "")
+            except Exception:                     # noqa: BLE001 — half-broken model
+                failed += 1                       # leave the existing vector intact,
+                continue                          # don't abort the whole batch
             c.execute("UPDATE memory_units SET embedding = ? WHERE id = ?",
                       (json.dumps(v), r["id"]))
             n += 1
-    return {"reembedded": n}
+    if failed:
+        _log.warning("reembed: %d/%d rows could not be embedded (model "
+                     "unavailable); left unchanged", failed, n + failed)
+    return {"reembedded": n, "failed": failed}
 
 
 def source_text_unchanged(source: str, text: str) -> bool:

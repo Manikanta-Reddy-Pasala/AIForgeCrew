@@ -64,6 +64,15 @@ def _cmd_memory_mine(args) -> int:
     return 0
 
 
+def _cmd_memory_reembed(args) -> int:
+    """Backfill vectors for notes written while the embedder was unavailable
+    (stored with the ``[]`` sentinel) and re-embed after a model/backend switch."""
+    from aiforge_core.memory import sqlite_memory
+    out = sqlite_memory.reembed_all()
+    print(json.dumps({"cmd": "memory.reembed", **out}))
+    return 0
+
+
 def _cmd_index_symbols(args) -> int:
     from aiforge_core.indexing import symbol_embed
     out = symbol_embed.backfill(repo=args.repo, batch=args.batch)
@@ -166,6 +175,10 @@ def main(argv: list[str] | None = None) -> int:
     mem_sub = mem.add_subparsers(dest="action", required=True)
     mem_sub.add_parser("decay").set_defaults(func=_cmd_memory_decay)
     mem_sub.add_parser("mine").set_defaults(func=_cmd_memory_mine)
+    mem_sub.add_parser("reembed",
+                       help="backfill vectors for notes stored without an "
+                            "embedding (model was unavailable at write time)"
+                       ).set_defaults(func=_cmd_memory_reembed)
     mem_sub.add_parser("migrate-okr",
                        help="rewrite legacy compacted-*.md knowledge briefs "
                             "into the standard OKR envelope (idempotent)"
