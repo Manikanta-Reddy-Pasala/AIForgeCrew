@@ -389,7 +389,9 @@ if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" || "${MIGRATE:-0}" == "1" ]]; then
   # previous instance before starting us, so the SQLite files are free to migrate.
   _cvg=()
   [[ "${MIGRATE:-0}" == "1" ]] && _cvg=(--force)
-  .venv/bin/python -m aiforge_core.deploy.converge "${_cvg[@]}" || true
+  # ${arr[@]+"${arr[@]}"} — expand to NOTHING when empty (no phantom "" arg);
+  # a bare "${arr[@]}" trips `set -u` on macOS bash 3.2 ("unbound variable").
+  .venv/bin/python -m aiforge_core.deploy.converge ${_cvg[@]+"${_cvg[@]}"} || true
 fi
 
 # (PG/Neo4j env was already stripped right after .env load; docker cleanup —
@@ -679,4 +681,4 @@ RELOAD=()
 # Tell the app which host it's bound to, so the security boot-guard can refuse
 # a non-loopback bind that has no AIFORGE_API_TOKEN set (unauth shell API on LAN).
 export AIFORGE_BIND_HOST="$HOST"
-exec .venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" "${RELOAD[@]}"
+exec .venv/bin/python -m uvicorn aiforge_core.api.api:app --host "$HOST" --port "$PORT" ${RELOAD[@]+"${RELOAD[@]}"}
