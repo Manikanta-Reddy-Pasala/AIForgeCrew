@@ -2662,11 +2662,17 @@ def _directed_hints(output: str) -> list[str]:
         add("HTTP 405 (method not allowed): the route exists but doesn't accept "
             "the HTTP method the test uses — add the method to the route's "
             "`methods=[...]` (e.g. POST/PUT/DELETE) on the correct path.")
-    if re.search(r"assert 404 ==\s*20\d|404 NOT FOUND", output):
-        add("HTTP 404 where a 2xx is expected: the route path/prefix the test "
-            "calls isn't registered — reconcile the blueprint url_prefix + route "
-            "rule with the exact path in the test (check for a missing prefix or a "
-            "singular/plural mismatch).")
+    if re.search(r"assert 404 ==\s*[2344]\d\d|404 NOT FOUND", output):
+        add("HTTP 404 where a real status is expected: the route the test calls "
+            "isn't MATCHING. Check, in order: (1) ID-TYPE MISMATCH — if a route "
+            "uses a typed converter like `<int:id>` but the store assigns a "
+            "different type (e.g. `uuid.uuid4()` strings, or vice-versa), the URL "
+            "never matches → 404. Make the id type CONSISTENT across models + "
+            "store + route converter (all int, or use `<string:id>`/no converter). "
+            "This is the #1 cause of 404 on nested resources like "
+            "/projects/<pid>/tasks/<tid>. (2) a missing blueprint url_prefix or a "
+            "singular/plural path mismatch. (3) the lookup returns None because "
+            "the item was stored under a different key than it's fetched by.")
     if re.search(r"assert 5\d\d ==|500 INTERNAL SERVER ERROR", output):
         add("HTTP 5xx where a client status is expected: the handler raises before "
             "returning — read the traceback in the body/log, fix the unhandled "

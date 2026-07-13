@@ -30,6 +30,13 @@ def test_keyerror_missing_key_hint():
     assert "deleted" in hints and "MISSING" in hints.upper()
 
 
+def test_404_id_type_mismatch_hint():
+    hints = " ".join(_directed_hints(
+        "FAILED test_tasks.py::test_get_task - assert 404 == 200")).lower()
+    assert "id-type mismatch" in hints or "id type" in hints
+    assert "converter" in hints and "consistent" in hints
+
+
 def test_import_hint_still_works():
     hints = " ".join(_directed_hints(
         "ImportError: cannot import name 'Book' from 'models'"))
