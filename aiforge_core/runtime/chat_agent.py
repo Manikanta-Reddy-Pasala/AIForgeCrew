@@ -2797,6 +2797,10 @@ _OUTPUT_REPEAT = 3
 
 _CONDENSE_OPEN = "<<AIFORGE_CTX_CONDENSED>>"
 _CONDENSE_CLOSE = "<</AIFORGE_CTX_CONDENSED>>"
+# E: pinned-goal markers — kept OUTSIDE the condense sentinel so a repeated
+# condense strips the rolling summary but NEVER the original task.
+_GOAL_PIN_OPEN = "<<AIFORGE_PINNED_GOAL>>"
+_GOAL_PIN_CLOSE = "<</AIFORGE_PINNED_GOAL>>"
 
 
 _CANCELLED = object()   # sentinel: generation abandoned because Stop was pressed
@@ -3326,6 +3330,20 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     sys_text = re.sub(
         re.escape(_CONDENSE_OPEN) + r".*?" + re.escape(_CONDENSE_CLOSE),
         "", convo[0].get("content") or "", flags=re.S).rstrip()
+    # E: pin the ORIGINAL task into the system prompt (ONCE) so a long, repeatedly
+    # -condensed run never loses WHAT it's building — the first user turn gets
+    # summarised out of the middle, and on later condenses it's gone entirely, so
+    # capture it here the first time and keep it OUTSIDE the strippable condense
+    # sentinel. Small-window models otherwise drift off-goal mid-task.
+    if _GOAL_PIN_OPEN not in sys_text:
+        _goal = next((_text_of(m).strip() for m in convo[1:]
+                      if m.get("role") == "user" and _text_of(m).strip()
+                      and not _text_of(m).strip().startswith("OBSERVATION:")), "")
+        _goal = _goal.split("\n\n---\n[Interpreted request")[0].strip() or _goal
+        if _goal:
+            sys_text = (sys_text + "\n\n" + _GOAL_PIN_OPEN + "\nORIGINAL TASK (stay "
+                        "on this until it's fully done + verified):\n"
+                        + _goal[:1200] + "\n" + _GOAL_PIN_CLOSE).strip()
     head = [{"role": "system", "content": (sys_text + "\n\n" + note).strip()}]
     return head + tail
 

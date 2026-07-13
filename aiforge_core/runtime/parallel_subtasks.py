@@ -182,8 +182,14 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
             _prev_err = (last.get("error")
                          or (last.get("validation") or {}).get("error")
                          or "the previous build/tests failed")
+            # C (lightweight re-decompose): a subtask that STOPPED (hit the turn
+            # budget without finishing) was too big for one pass. Rather than
+            # blindly re-run, tell the retry to ship the CORE first — a minimal
+            # working slice — then extras only if room. Small models finish a
+            # scoped core where they thrash on the whole thing.
+            _too_big = "(stopped:" in str(_prev_err).lower() or bool(last.get("stopped"))
             subtask = {**subtask, "_retry_error": str(_prev_err)[:800],
-                       "_retry_n": i}
+                       "_retry_n": i, "_too_big": _too_big}
             _emit(ticket_id, slug, "subtask_retry",
                   f"{slug} retry {i}/{attempts - 1}", {"slug": slug, "attempt": i})
         last = _attempt(subtask, wt, slug, run_one, validate_one)
@@ -755,7 +761,16 @@ def default_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
         + f"Implement this subtask, then build + test it.\n\n{path_pin}GOAL: {goal}\n"
         + ("ACCEPTANCE:\n" + "\n".join(f"- {a}" for a in accept) + "\n" if accept else "")
         + ("SCOPE (only touch these): " + ", ".join(scope) + "\n" if scope else "")
-        + "Keep the change focused on THIS subtask only; other subtasks handle the rest.")
+        + "Keep the change focused on THIS subtask only; other subtasks handle the rest."
+        + ("\n\n⚠ The previous attempt ran out of budget before finishing — it was "
+           "too big for one pass. This time build the CORE first: the smallest "
+           "COMPLETE, working, testable slice of the goal. Get that green, THEN add "
+           "extras only if you have room. Do not start broad and leave everything half-done."
+           if subtask.get("_too_big") else ""))
+    _retry_err = str(subtask.get("_retry_error") or "").strip()
+    if _retry_err:
+        msg += (f"\n\n⚠ YOUR PREVIOUS ATTEMPT FAILED with:\n{_retry_err[:800]}\n"
+                "Fix exactly that this time.")
 
     def complete_fn(role, convo):
         return _complete(role, convo)
@@ -2384,6 +2399,31 @@ def _reconcile_rounds() -> int:
         return 12
 
 
+def _escalation_model() -> "str | None":
+    """The model to hand a STUCK residual to (F: escalation ladder). Priority:
+    1. AIFORGE_ESCALATION_MODEL (explicit),
+    2. a stronger reasoning role's configured model (reasoner/reviewer/critic/
+       architect) when it DIFFERS from the reconcile default — so a deploy that
+       assigns a bigger model to reasoning roles auto-escalates without extra
+       env. Returns None when no distinct stronger model exists (nothing to
+       escalate to — don't pretend). Config-driven, no hardcoded model id."""
+    env = os.environ.get("AIFORGE_ESCALATION_MODEL", "").strip()
+    if env:
+        return env
+    try:
+        from aiforge_core.config import agent_config as _ac
+        cfg = _ac.load_all() or {}
+        base = ((cfg.get("doer") or {}).get("model")
+                or (cfg.get("_default") or {}).get("model") or "").strip()
+        for role in ("reasoner", "reviewer", "critic", "architect", "planner"):
+            m = ((cfg.get(role) or {}).get("model") or "").strip()
+            if m and m != base:
+                return m
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _collect_run_output(res: dict) -> str:
     """Gather the run output from ANY key project_runner might use — a compiled
     build puts the compile error under stdout/stderr, not just output/error."""
@@ -3524,7 +3564,7 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None):
         # rounds), hand the residual failures it can't crack to a stronger/reasoning
         # model (AIFORGE_ESCALATION_MODEL, e.g. a 9B reasoning model). General —
         # only the STUCK residual escalates, not every round; no per-problem code.
-        _esc_model = os.environ.get("AIFORGE_ESCALATION_MODEL", "").strip() or None
+        _esc_model = _escalation_model()
         # TRIAGE: a structurally-hard residual (cross-file import/signature/
         # attribute mismatch) that the coder+repo-map didn't crack in ONE round
         # escalates to the reasoning model early — don't burn a 2nd stall round on
