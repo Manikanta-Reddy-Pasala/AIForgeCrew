@@ -126,7 +126,14 @@ _LEARNER_TOOLS = (
 # currently-served local model so a manual `repo learn` run without env
 # overrides still hits a real endpoint instead of a deleted model.
 # Override via AIFORGE_<ROLE>_MODEL when re-enabling the legacy path.
-_LEGACY_DEFAULT_MODEL = "qwen/qwen3-coder-next"
+# NO hardcoded model id (that pins a specific model into the repo): read the
+# configured local default from env, so switching the served model doesn't leave
+# a stale id here. AIFORGE_LOCAL_DEFAULT_MODEL is the canonical knob; fall back to
+# the LM-Studio model var, then a clearly-unconfigured placeholder.
+_LEGACY_DEFAULT_MODEL = (
+    os.environ.get("AIFORGE_LOCAL_DEFAULT_MODEL")
+    or os.environ.get("AIFORGE_LMS_MODEL")
+    or "local-model-unconfigured")
 SUPERVISOR_MODEL = os.environ.get("AIFORGE_SUPERVISOR_MODEL", _LEGACY_DEFAULT_MODEL)
 PLANNER_MODEL    = os.environ.get("AIFORGE_PLANNER_MODEL",    _LEGACY_DEFAULT_MODEL)
 DOER_MODEL       = os.environ.get("AIFORGE_DOER_MODEL",       _LEGACY_DEFAULT_MODEL)
