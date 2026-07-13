@@ -505,6 +505,52 @@ def recall(text: str, *, limit: int = 8, repo: str | None = None,
     return out
 
 
+def recent(*, limit: int = 5, repo: str | None = None,
+           exclude_kind: str | None = None) -> list[dict]:
+    """The most-recently-written memory units (hot cache) — newest first, by
+    ``created_at``/``id``. A just-captured fact surfaces immediately, before the
+    embedding index or the next compaction folds it into a brief. ``repo`` filters
+    to that repo + global/agnostic rows; ``exclude_kind`` drops a kind (e.g. the
+    consolidated 'compacted'/'knowledge' briefs, so this returns raw fresh facts).
+    Never raises."""
+    if limit <= 0:
+        return []
+    where = []
+    params: list = []
+    if repo:
+        where.append("(repo = ? OR repo IS NULL OR repo = 'shared')")
+        params.append(repo)
+    if exclude_kind:
+        where.append("kind != ?")
+        params.append(exclude_kind)
+    sql = "SELECT * FROM memory_units"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+    params.append(int(limit))
+    try:
+        with _conn() as c:
+            rows = c.execute(sql, params).fetchall()
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for i, r in enumerate(rows):
+        txt = r["text"]
+        if not txt or txt in seen:
+            continue
+        seen.add(txt)
+        out.append({
+            "text": txt, "title": r["title"],
+            "source": r["source"] or "recent",
+            "group": f"recent:{r['id']}",
+            "kind": r["kind"], "ticket": r["ticket"], "repo": r["repo"],
+            # descending score preserves recency order through normalization
+            "score": 1.0 - (i / max(1, len(rows))),
+        })
+    return out
+
+
 def delete_stale_compacted_notes() -> int:
     """Reclaim STALE brief index rows so a brief isn't stored twice:
       * compacted rows stranded under ``repo='notes'`` (pre-scope-fix default);

@@ -402,6 +402,111 @@ def classify_scope(text: str, *, hint_repo: str | None = None,
     return _fallback()   # only an empty/unknown scope falls back to the hints
 
 
+def brief_index() -> list[dict]:
+    """A compact table-of-contents of EVERY brief — ``[{key, title, snippet}]``
+    (snippet = the brief's first fact). The "seed memory" that tells a model what
+    concepts exist so it knows what to recall (the video's "amnesia" fix — a
+    model never queries memory it doesn't know is there). Cheap (reads headers +
+    one fact). Sorted by key. Never raises."""
+    from aiforge_core.runtime import work_notes
+    out: list[dict] = []
+    for p in iter_briefs():
+        if _CAPTURE_SIG_RE.search(p.name):
+            continue
+        key = p.stem[len("compacted-"):]
+        try:
+            parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        facts = parsed["sections"].get("facts") or []
+        snippet = _fact_body(facts[0])[:100] if facts else ""
+        out.append({"key": key,
+                    "title": (parsed.get("frontmatter") or {}).get("title")
+                    or _brief_title(key),
+                    "snippet": snippet})
+    return sorted(out, key=lambda d: d["key"])
+
+
+def seed_memory_block(*, max_briefs: int = 60) -> str:
+    """Render :func:`brief_index` as a compact prompt block so a chat/agent turn
+    knows what memory EXISTS to query. Empty string when no briefs. Bounded by
+    ``max_briefs`` (AIFORGE_SEED_TOC_MAX). Gated by AIFORGE_SEED_TOC (default on)."""
+    if os.environ.get("AIFORGE_SEED_TOC", "1") == "0":
+        return ""
+    try:
+        cap = max(1, int(os.environ.get("AIFORGE_SEED_TOC_MAX", str(max_briefs))))
+    except (TypeError, ValueError):
+        cap = max_briefs
+    idx = brief_index()
+    if not idx:
+        return ""
+    lines = ["[memory index] briefs you can recall (ask memory_lookup for detail):"]
+    for d in idx[:cap]:
+        s = f"  - {d['key']}: {d['title']}"
+        if d["snippet"]:
+            s += f" — {d['snippet']}"
+        lines.append(s)
+    if len(idx) > cap:
+        lines.append(f"  … +{len(idx) - cap} more")
+    return "\n".join(lines)
+
+
+def lint_graph(*, repair: bool = False) -> dict:
+    """Deterministic graph-health lint over the brief link structure (the video's
+    periodic linting step). Finds:
+
+    * ``broken`` — a brief's Links entry pointing at a ``compacted-*.md`` file
+      that no longer exists (a dangling ref after a brief was deleted/renamed).
+    * ``orphans`` — briefs with NO brief-to-brief link either way (candidates for
+      the next ``map_scopes`` pass; reported, never deleted — an orphan may be a
+      genuinely standalone topic).
+
+    With ``repair=True`` the broken refs are STRIPPED from each brief's Links
+    (real URLs / jira refs are kept). Never raises. Returns
+    ``{broken, orphans, repaired}``."""
+    from aiforge_core.runtime import work_notes
+    briefs = [p for p in iter_briefs() if not _CAPTURE_SIG_RE.search(p.name)]
+    existing = {p.name for p in briefs}
+    linked: set[str] = set()          # keys that have ANY brief-ref (in or out)
+    broken: list[dict] = []
+    repaired = 0
+    parsed_cache: dict = {}
+    for p in briefs:
+        key = p.stem[len("compacted-"):]
+        try:
+            parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        parsed_cache[p] = parsed
+        for lk in (parsed["sections"].get("links") or []):
+            m = work_notes._BRIEF_REF_RE.match(lk.strip())
+            if not m:
+                continue
+            tgt = m.group(1)                          # compacted-<x>.md
+            if tgt in existing:
+                linked.add(key)
+                linked.add(tgt[len("compacted-"):-len(".md")])
+            else:
+                broken.append({"brief": key, "ref": tgt})
+    if repair and broken:
+        with _WRITE_LOCK:
+            for p in briefs:
+                parsed = parsed_cache.get(p)
+                if not parsed:
+                    continue
+                links = list(parsed["sections"].get("links") or [])
+                kept = [l for l in links
+                        if not (lambda mm: mm and mm.group(1) not in existing)(
+                            work_notes._BRIEF_REF_RE.match(l.strip()))]
+                if len(kept) != len(links):
+                    repaired += len(links) - len(kept)
+                    work_notes.update_note(str(p), links=kept, kind="knowledge",
+                                           key=p.stem[len("compacted-"):])
+    orphans = sorted(p.stem[len("compacted-"):] for p in briefs
+                     if p.stem[len("compacted-"):] not in linked)
+    return {"broken": broken, "orphans": orphans, "repaired": repaired}
+
+
 def _snap_topic(slug: str) -> str:
     """Snap a freshly-minted topic slug to an EXISTING topic brief when they're
     near-identical (fuzzy) — stops the classifier proliferating

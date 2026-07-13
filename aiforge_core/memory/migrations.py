@@ -434,6 +434,9 @@ def force_recompact_all(on_step=None) -> dict:
         ("reheal", lambda: md_store.reheal_scopes()
             if os.environ.get("AIFORGE_OKR_REHEAL", "0") == "1"
             else {"skipped": "disabled"}),
+        # graph-health lint: strip dangling brief links (refs to deleted briefs);
+        # reports orphans. Runs BEFORE map_scopes rewrites the link layer.
+        ("lint_graph", lambda: md_store.lint_graph(repair=True)),
         # cross-scope mapping: link related briefs (project ↔ global ↔ topic)
         # AFTER they've settled (consolidated, deduped, empties swept, rehealed).
         ("map_scopes", lambda: md_store.map_scopes()),

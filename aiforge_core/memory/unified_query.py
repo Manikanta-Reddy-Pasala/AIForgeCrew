@@ -61,6 +61,7 @@ _DEFAULT_WEIGHTS = {
     "xrepo":      0.7,   # AiForgeMemory CALLS_REPO cross-repo edges
     "chat":       0.6,   # prior chat-session message content (chat_store)
     "keyword":    0.9,   # BM25 keyword/exact-id recall (FTS5), fused with vector
+    "recent":     0.7,   # hot cache: most-recently-written units (fresh facts)
 }
 
 
@@ -142,6 +143,27 @@ def query(
                     _tag(krows, source="keyword", weight=weights["keyword"]))
     except Exception as exc:  # noqa: BLE001
         errors.append(f"keyword: {exc}")
+
+    # 1c) HOT CACHE — the N most-recently-written units (fresh facts that may not
+    # be embedded/compacted yet). A small always-on source so a just-captured
+    # learning surfaces immediately. Embedded backend only; gated by
+    # AIFORGE_UMEM_RECENT (default on).
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if _bsel.embedded() and os.environ.get("AIFORGE_UMEM_RECENT", "1") == "1":
+            from aiforge_core.memory import sqlite_memory as _sqlmem
+            _rrepo = repo or os.environ.get("AIFORGE_AFM_REPO", "").strip() or None
+            try:
+                _rn = max(1, int(os.environ.get("AIFORGE_UMEM_RECENT_N", "5")))
+            except (TypeError, ValueError):
+                _rn = 5
+            rrows = _sqlmem.recent(limit=_rn, repo=_rrepo)
+            if rrows:
+                used.append("recent")
+                raw_hits.extend(
+                    _tag(rrows, source="recent", weight=weights["recent"]))
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"recent: {exc}")
 
     # 2) Ticket brief — explicit ticket OR auto-detected token
     auto_ticket = ticket or (_TICKET_RE.search(text) or [None])[0]

@@ -3884,6 +3884,16 @@ def run_chat_agent(
     # Project memory (compacted per-repo brief) — small + high-value; the
     # "you already know this repo" anchor. Always injected.
     _add_sys_block("project-memory", _bundle.project_brief_md)
+    # Seed memory / concept index — a compact TOC of EVERY brief so the agent
+    # knows what memory exists to recall (the "amnesia" fix: a model never queries
+    # memory it doesn't know is there). Gated by AIFORGE_SEED_TOC; embedded only.
+    try:
+        from aiforge_core.memory import backend_select as _bsel2
+        if _bsel2.embedded():
+            from aiforge_core.memory import md_store as _mds2
+            _add_sys_block("memory-index", _mds2.seed_memory_block())
+    except Exception:  # noqa: BLE001 — seed TOC must never break a turn
+        pass
     if _ctx_on("summary"):
         _add_sys_block("repo-summary", _bundle.repo_summary_md)
     # WORKFLOWS before the (big) repo-map, and NOT skipped in cave mode: a
