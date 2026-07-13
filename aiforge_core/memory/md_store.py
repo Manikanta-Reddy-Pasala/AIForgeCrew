@@ -895,10 +895,12 @@ _CONTRADICT_SYS = (
     "STRICT RULES: (1) ONLY genuine contradictions — NOT duplicates, NOT "
     "paraphrases, NOT merely related facts. (2) Different subjects that share a "
     "word are NOT a contradiction (service A's port vs service B's port; repo X's "
-    "runtime vs repo Y's runtime). (3) Prefer removing the one in the NARROWER or "
-    "OLDER scope when a global default was overridden. (4) When in ANY doubt, "
-    "output NOTHING. Copy the stale fact text VERBATIM. Most facts have no "
-    "contradiction — returning an empty list is the common, correct answer."
+    "runtime vs repo Y's runtime). (3) RECENCY = TRUTH: each scope shows its "
+    "'updated' date; when two facts contradict, REMOVE the one from the scope "
+    "with the OLDER 'updated' date (it is stale) and keep the newer. If an "
+    "explicit correction says 'now X, NOT Y', the 'Y' fact is the stale one. "
+    "(4) When in ANY doubt, output NOTHING. Copy the stale fact text VERBATIM. "
+    "Most facts have no contradiction — an empty list is the common, correct answer."
 )
 
 
@@ -919,23 +921,27 @@ def resolve_contradictions(*, role: str = "learner", max_facts: int = 400) -> di
         return {"removed": 0, "skipped": "disabled"}
     from aiforge_core.runtime import work_notes
     briefs: dict = {}          # key -> [facts]
+    updated: dict = {}         # key -> updated_at (recency tiebreaker)
     total = 0
     for p in iter_briefs():
         if _CAPTURE_SIG_RE.search(p.name):
             continue
         key = p.stem[len("compacted-"):]
         try:
-            facts = work_notes.parse_note(
-                p.read_text(encoding="utf-8"))["sections"].get("facts") or []
+            parsed = work_notes.parse_note(p.read_text(encoding="utf-8"))
+            facts = parsed["sections"].get("facts") or []
         except OSError:
             continue
         if facts:
             briefs[key] = facts
+            updated[key] = (parsed.get("frontmatter") or {}).get("updated_at") or ""
             total += len(facts)
     if total < 2 or total > max_facts:
         return {"removed": 0, "skipped": f"facts={total}"}
 
-    listing = "\n".join(f"{k} :: {_fact_body(f)}"
+    # scope label carries the brief's updated date so the model picks the STALE
+    # (older) side of a contradiction — recency = truth.
+    listing = "\n".join(f"{k} (updated {updated.get(k) or '?'}) :: {_fact_body(f)}"
                         for k, fs in briefs.items() for f in fs)
     try:
         from pydantic import BaseModel
