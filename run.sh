@@ -292,6 +292,13 @@ if [[ -n "${MAINT:-}" ]]; then
 fi
 
 # ── Python env ────────────────────────────────────────────────────────
+# uv may already be installed but off a non-interactive PATH (astral's installer
+# only wires interactive shells) — pick it up before deciding to (re)install.
+if ! command -v uv >/dev/null 2>&1; then
+  for _d in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+    [[ -x "$_d/uv" ]] && export PATH="$_d:$PATH" && break
+  done
+fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "==> 'uv' not found — installing (astral.sh)…"
   if command -v curl >/dev/null 2>&1; then
