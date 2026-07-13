@@ -158,11 +158,31 @@ def _third_party_imports(cwd: str) -> list[str]:
     return sorted(m for m in mods if m not in local)
 
 
+_TEST_SKIP_DIRS = frozenset((
+    ".aiforge-venv", ".aiforge-worktrees", ".venv", "venv", "env",
+    "__pycache__", ".git", "node_modules", "site-packages", ".tox",
+    ".pytest_cache", "build", "dist",
+))
+
+
 def _python_test_files(cwd: str) -> list[str]:
+    """Test files under ``cwd``, skipping vendored/artifact dirs. Filters on path
+    components RELATIVE to cwd — a substring check on the absolute path wrongly
+    drops everything when the workspace itself lives under e.g.
+    ~/.aiforge/chat-workspaces (the '.aiforge' segment is in the ROOT, not an
+    artifact inside the tree), which silently disabled test discovery — and thus
+    the reconcile's pass/fail gate — for every chat-mode run."""
     import glob
     hits = glob.glob(os.path.join(cwd, "**", "test_*.py"), recursive=True)
     hits += glob.glob(os.path.join(cwd, "**", "*_test.py"), recursive=True)
-    return [h for h in hits if ".aiforge" not in h and "/.venv" not in h]
+    out = []
+    for h in hits:
+        rel = os.path.relpath(h, cwd)
+        parts = rel.split(os.sep)
+        if any(p in _TEST_SKIP_DIRS for p in parts):
+            continue
+        out.append(h)
+    return out
 
 
 def run_bare_python_tests(cwd: str, timeout: int = 300):
