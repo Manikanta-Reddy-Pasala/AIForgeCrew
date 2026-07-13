@@ -1,242 +1,58 @@
-# Full-stack "pro" deployment for AIForge — the existing NUC setup as
-# one `docker compose up`. Postgres + Neo4j + the two python embedding
-# sidecars + the API + the graph runner.
+# AIForge — DOCKER MODE (single-mode: embedded SQLite + scoped-OKR memory).
 #
-# Data safety — ALL persistent data lives on the HOST filesystem under
-# ${AIFORGE_DATA_DIR:-./data} (git-ignored), NOT in docker-internal named
-# volumes. So you can see/back-up/inspect every byte from the host:
-#   (postgres uses a docker named volume — a host bind breaks its initdb on
-#    macOS/virtiofs; it still persists across restarts)
-#   ${NEO4J_DATA_DIR:-./data/neo4j}         Neo4j graph (symbols, memory, graphify ingest)
-#   ${AIFORGE_DATA_DIR:-./data}/aiforge     app state: config, sqlite fallback, ticket files
-#   ${AIFORGE_DATA_DIR:-./data}/hf-cache    rerank model cache
-#   ${AIFORGE_HOST_WORKSPACE:-./data/workspace}  the agent's repo workspace (AIFORGE_REPO_ROOT)
-# Point AIFORGE_HOST_WORKSPACE at your projects dir (e.g. ~/code) to have the
-# agent operate on your EXISTING local repos. run.sh mkdir -p's these first.
+# One self-contained container: the app + ALL deps (aider, semantic/torch,
+# sqlite-vec, structured/crawl/chunking, pre-built UI) baked into the image —
+# nothing is fetched at run time. No Postgres/Neo4j/sidecars (that was the old
+# "pro" stack; the project is single-mode now).
 #
-# Laptop / no-Docker users: `./run.sh --lite` runs the embedded SQLite build.
+# FULL HOST FILESYSTEM is mounted at /host so the agent works on your real repos
+# and files. AIFORGE_HOST_ROOT (default `/`) chooses what to expose; point it at
+# a narrower dir (e.g. $HOME or ~/code) to limit the blast radius.
+#
+#   docker compose up -d --build        # or: ./run.sh --docker
+#
+# Persisted state (config, sqlite, memory, hf-cache) lives on the host under
+# ${AIFORGE_DATA_DIR:-./data}/aiforge so it survives rebuilds.
 
 services:
-  postgres:
-    image: postgres:16
-    container_name: aiforge-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${PG_USER:-aiforge}
-      # SECURITY: the default password is fine ONLY for a loopback-bound local
-      # stack. CHANGE IT (set PG_PASSWORD) before exposing anything on the LAN
-      # (AIFORGE_BIND_HOST=0.0.0.0). The app logs a loud WARNING at boot if it
-      # detects a non-loopback bind still on this default.
-      POSTGRES_PASSWORD: ${PG_PASSWORD:-aiforgepass}
-      POSTGRES_DB: ${PG_DB:-aiforge}
-    volumes:
-      # Postgres uses a docker NAMED volume (not a host bind mount). A live PG
-      # cluster on a host bind fails initdb on macOS Docker-Desktop / OrbStack:
-      # the gRPC-FUSE/virtiofs mount rejects chmod ("could not change
-      # permissions ... Operation not permitted") even for root, so initdb
-      # can't set the required 0700 on PGDATA. The named volume lives in the
-      # docker VM where perms work, and still persists across restarts. The
-      # data you actually browse (neo4j graph, app-state, workspace/repos)
-      # stays on host binds below.
-      - aiforge_pgdata:/var/lib/postgresql/data
-    ports:
-      - "${PG_PORT:-5432}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-aiforge} -d ${PG_DB:-aiforge}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  neo4j:
-    image: neo4j:5-community
-    container_name: aiforge-neo4j
-    restart: unless-stopped
-    environment:
-      # SECURITY: default creds are for LOCAL loopback use only. CHANGE THESE
-      # (set NEO4J_AUTH and AIFORGE_NEO4J_PASSWORD) before LAN exposure. The
-      # app logs a loud WARNING at boot if a non-loopback bind still uses them.
-      NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/password}
-      # apoc only — the genai plugin makes external AI-provider calls and is
-      # unused here; dropped under the network lockdown.
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-8G}
-      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-4G}
-      NEO4J_server_default__listen__address: 0.0.0.0
-    volumes:
-      # Bind-mount the host data dir so an existing Neo4j store is reused
-      # in place (zero copy). Point these at your current dirs to migrate
-      # without data loss; defaults are fresh local dirs for new installs.
-      - ${NEO4J_DATA_DIR:-./data/neo4j}:/data
-      - ${NEO4J_LOGS_DIR:-./data/neo4j-logs}:/logs
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-
-  embed:
-    build:
-      context: ./services/embed_sidecar
-      network: host
-    container_name: aiforge-embed
-    restart: unless-stopped
-    environment:
-      BGE_M3_DIR: /models/bge-m3
-      # Offline + no HF telemetry — fail-closed instead of downloading at runtime.
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_DISABLE_TELEMETRY: "1"
-      DO_NOT_TRACK: "1"
-    volumes:
-      # Bind-mount an existing bge-m3 model dir (offline, no HF download).
-      # Defaults to a local dir for fresh installs.
-      - ${BGE_M3_HOST_DIR:-./models/bge-m3}:/models/bge-m3:ro
-    ports:
-      - "8764:8764"
-
-  rerank:
-    build:
-      context: ./services/rerank_sidecar
-      network: host
-    container_name: aiforge-rerank
-    restart: unless-stopped
-    environment:
-      # Offline + no HF telemetry. NOTE: rerank normally downloads
-      # BAAI/bge-reranker-v2-m3 at runtime — with offline set it FAILS-CLOSED
-      # instead of silently downloading. The operator MUST pre-stage the model
-      # into the hf-cache (./data/hf-cache) for rerank to work offline.
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_DISABLE_TELEMETRY: "1"
-      DO_NOT_TRACK: "1"
-    volumes:
-      - ${AIFORGE_DATA_DIR:-./data}/hf-cache:/root/.cache/huggingface
-    ports:
-      - "8765:8765"
-
-  api:
+  aiforge:
     build:
       context: .
       dockerfile: Dockerfile
       network: host
+      args:
+        # 0 → don't bake the embed model (smaller image; downloads on first use)
+        PREFETCH_EMBED_MODEL: ${PREFETCH_EMBED_MODEL:-1}
     image: aiforge-app:latest
-    container_name: aiforge-api
+    container_name: aiforge
     restart: unless-stopped
-    # Host networking: lets the app reach a host-loopback LM endpoint
-    # (e.g. an SSH tunnel on 127.0.0.1:1234) AND the published
-    # postgres/neo4j/embed/rerank ports via localhost. For a fully
-    # container-internal setup instead, drop network_mode and switch the
-    # env hostnames below back to service names (postgres/neo4j/embed).
+    # Host networking so the app reaches a host-loopback LM endpoint (e.g. an
+    # SSH tunnel / LM Studio on 127.0.0.1:1234) with no extra config.
     network_mode: host
-    # SECURITY: bind LOOPBACK by default — this API runs shell + edits files,
-    # so it must not land on the LAN unauthenticated. To expose it, set BOTH
-    # AIFORGE_BIND_HOST=0.0.0.0 and AIFORGE_API_TOKEN=<secret> (the app refuses
-    # to boot on a non-loopback bind without a token). Shell-form so the env
-    # var expands; the app reads AIFORGE_BIND_HOST to decide if auth is forced.
-    command: >
-      sh -c 'uvicorn aiforge_core.api.api:app --host "${AIFORGE_BIND_HOST:-127.0.0.1}" --port 8799'
-    environment: &app_env
-      # Bind host the app also reads to decide whether the API token is
-      # MANDATORY. Loopback (default) = local-open; 0.0.0.0 / a LAN IP forces
-      # AIFORGE_API_TOKEN. Set a token when exposing beyond localhost.
+    environment:
+      # SECURITY: loopback bind by default — this API runs shell + edits files,
+      # so it must not land on the LAN unauthenticated. To expose it, set BOTH
+      # AIFORGE_BIND_HOST=0.0.0.0 and AIFORGE_API_TOKEN=<secret> (the app refuses
+      # to boot on a non-loopback bind without a token).
       AIFORGE_BIND_HOST: ${AIFORGE_BIND_HOST:-127.0.0.1}
+      AIFORGE_PORT: ${AIFORGE_PORT:-8799}
       AIFORGE_API_TOKEN: ${AIFORGE_API_TOKEN:-}
-      # Set =1 when you front the api with your OWN access layer (Cloudflare /
-      # WireGuard-only reverse proxy) — allows a non-loopback bind without a
-      # token. Otherwise a 0.0.0.0 bind without a token refuses to boot.
-      AIFORGE_ALLOW_UNAUTH_NONLOOPBACK: ${AIFORGE_ALLOW_UNAUTH_NONLOOPBACK:-0}
-      # Browser/UI CORS allowlist (never "*"). Add your UI origin here if you
-      # serve it from another host/port.
-      AIFORGE_CORS_ORIGINS: ${AIFORGE_CORS_ORIGINS:-http://127.0.0.1:8799,http://localhost:8799}
-      AIFORGE_DSN: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:5432/${PG_DB:-aiforge}
-      AIFORGE_PG_URL: postgresql://${PG_USER:-aiforge}:${PG_PASSWORD:-aiforgepass}@127.0.0.1:5432/${PG_DB:-aiforge}
-      AIFORGE_FORCE_PG: "1"
-      # Parallel job processing: N runner loops each claim a distinct ticket.
-      AIFORGE_RUNNER_CONCURRENCY: ${AIFORGE_RUNNER_CONCURRENCY:-1}
-      AIFORGE_RUNNER_POLL_SEC: ${AIFORGE_RUNNER_POLL_SEC:-10}
-      AIFORGE_NEO4J_URI: bolt://127.0.0.1:7687
-      NEO4J_URI: bolt://127.0.0.1:7687
-      AIFORGE_NEO4J_USER: neo4j
-      AIFORGE_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-password}
-      AIFORGE_MEMORY_BACKEND: neo4j
-      # Fail LOUD if any data store (tickets/memory/chat/jobs) resolves to
-      # embedded SQLite in this data-driven stack — no silent .db files.
-      AIFORGE_REQUIRE_DATA_BACKEND: "1"
-      AIFORGE_EMBED_URL: http://127.0.0.1:8764
-      AIFORGE_RERANK_URL: http://127.0.0.1:8765
-      AIFORGE_LM_BASE_URL: ${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}
-      # TLS for self-hosted https model endpoints. Set AIFORGE_LLM_SSL_VERIFY=false on
-      # the host for a self-signed/internal cert you trust, or point AIFORGE_LLM_CA_BUNDLE
-      # at a PEM to keep verification ON. Default secure (verify).
-      AIFORGE_LLM_SSL_VERIFY: ${AIFORGE_LLM_SSL_VERIFY:-true}
-      AIFORGE_LLM_CA_BUNDLE: ${AIFORGE_LLM_CA_BUNDLE:-}
-      # Chat team mode: lean=1 skips the researcher + ctx_conventions fan-out so
-      # the run reaches the Planner (+ the subtask decomposition the UI charts)
-      # fast on slower local models. 0 = full context (richer splits, slower).
-      AIFORGE_CHAT_LEAN: ${AIFORGE_CHAT_LEAN:-0}
-      # ── Network + telemetry lockdown ──────────────────────────────────
-      # At runtime the ONLY sanctioned internet egress is the researcher's
-      # web-SEARCH plus the configured LLM endpoint. Everything else defaults
-      # to no-egress; each gate has an opt-in for power users.
-      AIFORGE_EXTERNAL_INGEST: "0"        # kill the auto ticket-URL/SaaS ingest driver
-      AIFORGE_DOCS_INDEX: "0"             # no external library-docs fetch
-      AIFORGE_ALLOW_WEB_FETCH: "0"        # agents can't fetch arbitrary URLs (researcher SEARCH stays on)
-      AIFORGE_BROWSER_ALLOWLIST: "127.0.0.1,localhost"
-      LITELLM_TELEMETRY: "False"
-      DO_NOT_TRACK: "1"
-      HF_HUB_DISABLE_TELEMETRY: "1"
       AIFORGE_CONFIG_DIR: /data/aiforge
-      # The agent's repo workspace — bind-mounted from the host below, so
-      # worktrees/edits land on the host and persist. Point
-      # AIFORGE_HOST_WORKSPACE at your projects dir to work on existing repos.
-      AIFORGE_REPO_ROOT: /workspace
+      # Real paraphrase recall — the image baked in sentence-transformers +
+      # sqlite-vec and pre-downloaded the model.
+      AIFORGE_EMBED_BACKEND: ${AIFORGE_EMBED_BACKEND:-semantic}
+      # The agent's workspace = the mounted host filesystem, so edits/worktrees
+      # land on the host and persist.
+      AIFORGE_REPO_ROOT: ${AIFORGE_REPO_ROOT:-/host}
+      # Point at your model endpoint (host loopback works via network_mode:host).
+      AIFORGE_LM_BASE_URL: ${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}
+      AIFORGE_LLM_SSL_VERIFY: ${AIFORGE_LLM_SSL_VERIFY:-true}
+      # N>0 runs N ticket-runner loops in-container alongside the api; 0 = api only.
+      AIFORGE_RUNNER_CONCURRENCY: ${AIFORGE_RUNNER_CONCURRENCY:-0}
+      # Force a (re-)converge/migration on boot when set to 1.
+      AIFORGE_MIGRATE: ${AIFORGE_MIGRATE:-}
     volumes:
-      # Config/app-state dir. AIFORGE_CONFIG_HOST_DIR lets a HYBRID host point
-      # the container at the SAME dir the host api uses (e.g. ~/.aiforge), so a
-      # docker api and a host api never diverge into two config stores (which
-      # made saved model/agent settings "vanish" when they traded the port).
-      - ${AIFORGE_CONFIG_HOST_DIR:-${AIFORGE_DATA_DIR:-./data}/aiforge}:/data/aiforge
-      - ${AIFORGE_HOST_WORKSPACE:-./data/workspace}:/workspace
-    depends_on:
-      postgres:
-        condition: service_healthy
-      neo4j:
-        condition: service_started
-
-  runner:
-    image: aiforge-app:latest
-    container_name: aiforge-runner
-    restart: unless-stopped
-    network_mode: host
-    # adk_runner is single-shot (claims ONE ticket, runs it, exits). To process
-    # jobs in PARALLEL, run AIFORGE_RUNNER_CONCURRENCY independent claim-run loops
-    # (default 1) — each loop atomically claims a DIFFERENT 'todo' ticket, so N
-    # tickets run concurrently in their own per-ticket worktrees. Poll interval
-    # keeps restart:unless-stopped from hot-looping on an empty queue.
-    command: >
-      sh -c 'N=$${AIFORGE_RUNNER_CONCURRENCY:-1};
-      for i in $$(seq 1 $$N); do
-      (while true; do python -m aiforge_core.runtime.adk_runner || true;
-      sleep $${AIFORGE_RUNNER_POLL_SEC:-10}; done) & done; wait'
-    environment: *app_env
-    volumes:
-      # Config/app-state dir. AIFORGE_CONFIG_HOST_DIR lets a HYBRID host point
-      # the container at the SAME dir the host api uses (e.g. ~/.aiforge), so a
-      # docker api and a host api never diverge into two config stores (which
-      # made saved model/agent settings "vanish" when they traded the port).
-      - ${AIFORGE_CONFIG_HOST_DIR:-${AIFORGE_DATA_DIR:-./data}/aiforge}:/data/aiforge
-      - ${AIFORGE_HOST_WORKSPACE:-./data/workspace}:/workspace
-    depends_on:
-      - api
-      - postgres
-      - neo4j
-
-# Only postgres uses a docker-managed named volume (a host bind mount breaks
-# its initdb on macOS/virtiofs — see the postgres service). Everything else
-# (neo4j, app-state, hf-cache, workspace) is a host bind under
-# ${AIFORGE_DATA_DIR:-./data}; run.sh creates those dirs before `up`.
-volumes:
-  aiforge_pgdata:
+      # Persisted app state (config, sqlite, memory briefs/captures, hf-cache).
+      - ${AIFORGE_DATA_DIR:-./data}/aiforge:/data/aiforge
+      # FULL host filesystem → /host (read-write). Narrow it with AIFORGE_HOST_ROOT.
+      - ${AIFORGE_HOST_ROOT:-/}:/host

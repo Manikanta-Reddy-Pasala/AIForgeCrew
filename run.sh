@@ -10,6 +10,14 @@
 #   • python + node deps, Aider RepoMap, CodeGraph — installed on first boot
 # You just need git + curl (or wget). Everything else is bootstrapped.
 #
+# TWO INSTALL MODES (see INSTALL.md):
+#   • BINARY / NATIVE (default) — runs on the host, full fs/shell/toolchain.
+#       ./run.sh                      # your user
+#       sudo ./run.sh                 # as root (full-filesystem access)
+#   • DOCKER — one self-contained container, all deps baked (aider, semantic/
+#       torch, sqlite-vec, extras, UI), the FULL host FS mounted at /host:
+#       ./run.sh --docker             # build + up the container
+#
 # SINGLE MODE — everything on the host, zero infra Docker:
 #   • embedded SQLite  (tickets + chat)
 #   • scoped-OKR Markdown memory  (briefs in ~/.aiforge/memory/compacted/,
@@ -127,7 +135,8 @@ WITH_GRAPHIFY=0  # --with-graphify installs the graphify CLI on the host
 WITH_LANGFUSE="${AIFORGE_LANGFUSE:-0}"  # --with-langfuse (or AIFORGE_LANGFUSE=1): self-hosted trace UI
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --lite|--hybrid|--docker|--no-build) : ;;  # legacy no-ops (always SQLite now)
+    --docker) MODE=docker ;;      # build + run the self-contained single-mode container
+    --lite|--hybrid|--no-build) : ;;  # legacy no-ops (always SQLite now)
     --migrate) MIGRATE=1 ;;   # force a (re-)converge: migrate PG/Neo4j → SQLite/OKR + remove docker, then start
     --dedupe) MAINT=dedupe ;;         # remove duplicate OKR nodes + chat sessions, then exit
     --recompact-all) MAINT=recompact ;;  # re-LLM every brief + rebuild, then exit
@@ -297,6 +306,28 @@ _npm_ci_resilient() {
 # The app runs on embedded SQLite + the scoped-OKR memory, with Aider RepoMap +
 # CodeGraph for code context. Nothing to start here — fall through to venv +
 # launch. (Tracing via --with-langfuse is the only optional Docker piece.)
+
+# ── DOCKER MODE (--docker) ─────────────────────────────────────────────
+# Build + run the self-contained single-mode container (all deps baked: aider,
+# semantic/torch, sqlite-vec, structured/crawl/chunking, pre-built UI) with the
+# FULL host filesystem mounted at /host. No native venv/toolchain step. State
+# persists on the host under ${AIFORGE_DATA_DIR:-./data}/aiforge.
+if [[ "$MODE" == "docker" ]]; then
+  if docker compose version >/dev/null 2>&1; then DC=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then DC=(docker-compose)
+  else
+    echo "==> docker mode needs Docker + Compose — install Docker Desktop/Engine, or use the native path: ./run.sh" >&2
+    exit 1
+  fi
+  export AIFORGE_PORT="$PORT"
+  [[ "${MIGRATE:-0}" == "1" ]] && export AIFORGE_MIGRATE=1
+  mkdir -p "${AIFORGE_DATA_DIR:-./data}/aiforge"
+  echo "==> docker mode: building the all-deps image (first build pulls torch — several minutes)…"
+  "${DC[@]}" up -d --build
+  echo "==> AIForge is up. UI: http://${HOST}:${PORT}/ui/   (logs: ${DC[*]} logs -f aiforge)"
+  echo "==> full host FS mounted at /host — set AIFORGE_HOST_ROOT to narrow it."
+  exit 0
+fi
 
 # ── Network lockdown (host process) ───────────────────────────────────
 # External-ingest/web-fetch default ON in code; force off for a self-hosted box.
