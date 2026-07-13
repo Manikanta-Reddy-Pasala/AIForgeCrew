@@ -3,6 +3,13 @@
 #
 #   git clone … && cd AIForgeCrew && ./run.sh
 #
+# ZERO PREREQS — on a clean machine run.sh installs its own toolchain:
+#   • uv       — auto-installed via astral.sh if missing (needs curl or wget)
+#   • Node/npm — a portable Node is fetched into ~/.aiforge/node if missing
+#                (no sudo, no nvm; Linux/macOS x64+arm64). Pin: AIFORGE_NODE_VERSION
+#   • python + node deps, Aider RepoMap, CodeGraph — installed on first boot
+# You just need git + curl (or wget). Everything else is bootstrapped.
+#
 # SINGLE MODE — everything on the host, zero infra Docker:
 #   • embedded SQLite  (tickets + chat)
 #   • scoped-OKR Markdown memory  (briefs in ~/.aiforge/memory/compacted/,
@@ -215,6 +222,42 @@ _ensure_access() {
 }
 _ensure_access
 
+# Portable Node.js — if the machine has no npm, fetch a self-contained Node into
+# ~/.aiforge/node (no sudo, no system package manager, no nvm) so a clean box can
+# build the web UI from just `./run.sh`. Sets PATH for this run and persists the
+# install for the next one. Best-effort: an unsupported OS/arch, no curl/wget, or
+# no network falls through to the existing stale-bundle warning.
+_ensure_node() {
+  command -v npm >/dev/null 2>&1 && return 0
+  local ver="${AIFORGE_NODE_VERSION:-v20.18.1}" base="$HOME/.aiforge/node"
+  local os arch pkg url tmp
+  if [[ -x "$base/bin/npm" ]]; then export PATH="$base/bin:$PATH"; return 0; fi
+  case "$(uname -s)" in
+    Linux)  os=linux ;;
+    Darwin) os=darwin ;;
+    *) return 0 ;;                              # Windows-native etc — skip (WSL is Linux)
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64)  arch=x64 ;;
+    arm64|aarch64) arch=arm64 ;;
+    *) return 0 ;;
+  esac
+  pkg="node-${ver}-${os}-${arch}"
+  url="https://nodejs.org/dist/${ver}/${pkg}.tar.gz"
+  echo "==> npm not found — fetching portable Node ${ver} (${os}-${arch}) into ${base}…"
+  tmp="$(mktemp -d)"
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf "$url" -o "$tmp/node.tgz" || { rm -rf "$tmp"; return 0; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$tmp/node.tgz" "$url" || { rm -rf "$tmp"; return 0; }
+  else
+    rm -rf "$tmp"; return 0
+  fi
+  tar -xzf "$tmp/node.tgz" -C "$tmp" || { rm -rf "$tmp"; return 0; }
+  mkdir -p "$(dirname "$base")"; rm -rf "$base"; mv "$tmp/$pkg" "$base"; rm -rf "$tmp"
+  [[ -x "$base/bin/npm" ]] && export PATH="$base/bin:$PATH"
+}
+
 # ── Single mode: SQLite on the host (no Docker infra to bring up) ─────────
 # The app runs on embedded SQLite + the scoped-OKR memory, with Aider RepoMap +
 # CodeGraph for code context. Nothing to start here — fall through to venv +
@@ -250,7 +293,21 @@ fi
 
 # ── Python env ────────────────────────────────────────────────────────
 if ! command -v uv >/dev/null 2>&1; then
-  echo "==> 'uv' not found. Install it: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)" >&2
+  echo "==> 'uv' not found — installing (astral.sh)…"
+  if command -v curl >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh || true
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- https://astral.sh/uv/install.sh | sh || true
+  else
+    echo "==> need curl or wget to auto-install uv" >&2
+  fi
+  # the installer drops uv in one of these — put it on PATH for this run
+  for _d in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+    [[ -x "$_d/uv" ]] && export PATH="$_d:$PATH"
+  done
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  echo "==> uv install failed — install manually: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)" >&2
   exit 1
 fi
 
@@ -450,6 +507,7 @@ fi
 
 # ── Web UI build (optional) ───────────────────────────────────────────
 if [[ $SKIP_WEB -eq 0 ]]; then
+  _ensure_node                       # fetch a portable Node if the box has no npm
   if command -v npm >/dev/null 2>&1; then
     # Rebuild only when dist is missing or any source is newer than it.
     if [[ ! -d web/dist ]] || [[ -n "$(find web/src web/index.html web/package.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]; then
@@ -459,16 +517,17 @@ if [[ $SKIP_WEB -eq 0 ]]; then
       echo "==> web UI up to date (use --skip-web to skip this check)"
     fi
   elif [[ ! -d web/dist ]]; then
-    echo "!! npm not found AND no web/dist — the UI will not load. Install Node" >&2
-    echo "!! (https://nodejs.org), then re-run; or build web/ on another machine." >&2
+    echo "!! npm not found and portable Node auto-install failed (no network or" >&2
+    echo "!! unsupported OS/arch) AND no web/dist — the UI will not load. Install" >&2
+    echo "!! Node (https://nodejs.org), then re-run; or build web/ elsewhere." >&2
   elif [[ -n "$(find web/src web/index.html web/package.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]; then
     # Loud: a git pull updated the source but npm is missing, so the OLD bundle
     # is still being served — the #1 cause of "I pulled but the UI is unchanged".
     echo "!! ============================================================" >&2
-    echo "!! npm not found — web/dist is STALE. You are serving an OUTDATED UI." >&2
-    echo "!! The source changed but the bundle was NOT rebuilt. Install Node" >&2
-    echo "!! (https://nodejs.org) and re-run, or 'cd web && npm run build'" >&2
-    echo "!! on a machine that has npm, then copy web/dist over. Hard-refresh after." >&2
+    echo "!! npm not found (portable Node auto-install failed) — web/dist is STALE." >&2
+    echo "!! You are serving an OUTDATED UI: source changed but the bundle was NOT" >&2
+    echo "!! rebuilt. Install Node (https://nodejs.org) and re-run, or run" >&2
+    echo "!! 'cd web && npm run build' on a machine with npm and copy web/dist over." >&2
     echo "!! ============================================================" >&2
   else
     echo "==> npm not found — skipping UI build (dist present + current)" >&2
