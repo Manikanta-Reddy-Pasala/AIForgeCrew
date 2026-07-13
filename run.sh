@@ -222,16 +222,35 @@ _ensure_access() {
 }
 _ensure_access
 
-# Portable Node.js — if the machine has no npm, fetch a self-contained Node into
-# ~/.aiforge/node (no sudo, no system package manager, no nvm) so a clean box can
-# build the web UI from just `./run.sh`. Sets PATH for this run and persists the
-# install for the next one. Best-effort: an unsupported OS/arch, no curl/wget, or
-# no network falls through to the existing stale-bundle warning.
+# Minimum Node major the web build (vite 5) needs. An OLDER system Node is as
+# broken as none — vite refuses to run — so we treat it the same and fetch a
+# portable one.
+_NODE_MIN_MAJOR=18
+
+_node_ok() {
+  # true if npm exists AND node is new enough for the web build
+  command -v npm >/dev/null 2>&1 || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  local maj; maj="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)"
+  [[ "$maj" =~ ^[0-9]+$ ]] && (( maj >= _NODE_MIN_MAJOR ))
+}
+
+# Portable Node.js — if the machine has no npm OR its Node is too old for the web
+# build, fetch a self-contained Node into ~/.aiforge/node (no sudo, no package
+# manager, no nvm) so a clean box builds from just `./run.sh`. Sets PATH for this
+# run and persists it. Best-effort: unsupported OS/arch, no curl/wget, or no
+# network falls through to the existing stale-bundle warning.
 _ensure_node() {
-  command -v npm >/dev/null 2>&1 && return 0
+  _node_ok && return 0
   local ver="${AIFORGE_NODE_VERSION:-v20.18.1}" base="$HOME/.aiforge/node"
   local os arch pkg url tmp
-  if [[ -x "$base/bin/npm" ]]; then export PATH="$base/bin:$PATH"; return 0; fi
+  # a previously-fetched portable Node — prefer it over an old system Node
+  if [[ -x "$base/bin/npm" ]]; then
+    export PATH="$base/bin:$PATH"
+    _node_ok && return 0                       # good; else it's stale, re-fetch
+  fi
+  command -v node >/dev/null 2>&1 && echo \
+    "==> system Node $(node -v 2>/dev/null) is too old for the web build (need ${_NODE_MIN_MAJOR}+) — fetching a portable Node…" >&2
   case "$(uname -s)" in
     Linux)  os=linux ;;
     Darwin) os=darwin ;;
@@ -244,7 +263,7 @@ _ensure_node() {
   esac
   pkg="node-${ver}-${os}-${arch}"
   url="https://nodejs.org/dist/${ver}/${pkg}.tar.gz"
-  echo "==> npm not found — fetching portable Node ${ver} (${os}-${arch}) into ${base}…"
+  echo "==> fetching portable Node ${ver} (${os}-${arch}) into ${base}…"
   tmp="$(mktemp -d)"
   if command -v curl >/dev/null 2>&1; then
     curl -LsSf "$url" -o "$tmp/node.tgz" || { rm -rf "$tmp"; return 0; }
