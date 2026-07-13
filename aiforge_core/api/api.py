@@ -3034,6 +3034,30 @@ def models_list() -> dict:
     return {"models": model_registry.list_models()}
 
 
+class _ApprovalModeBody(BaseModel):
+    enabled: bool = Field(..., description="Require human approval for this mode")
+
+
+@app.get("/api/chat/approval-settings")
+def approval_settings_get() -> dict:
+    """Per-chat-mode approval toggles (Chat/Plan/Pipeline). True = that mode
+    pauses for human Approve/Reject on ask-policy / review-gated tools."""
+    from aiforge_core.config import approval_settings
+    m = approval_settings.all_modes()
+    return {"chat": m["simple"], "plan": m["plan"], "pipeline": m["team"]}
+
+
+@app.put("/api/chat/approval-settings/{mode}")
+def approval_settings_set(mode: str, body: _ApprovalModeBody) -> dict:
+    """Enable/disable approvals for one mode. `mode` is chat | plan | pipeline."""
+    from aiforge_core.config import approval_settings
+    try:
+        approval_settings.set_mode(mode, body.enabled)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return approval_settings_get()
+
+
 def _reassign_by_capability() -> None:
     """Re-run capability-based agent auto-assignment. Called whenever the model
     set changes so the system always chooses each agent's model internally — no
@@ -4856,6 +4880,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             "AIFORGE_CHAT_REVIEW_EDITS", "0") in ("1", "true", "yes", "on")
         _chat_approve.set_review_edits(
             session_id, (bool(body.review_edits) or _review_env) and not team)
+        # Record the EFFECTIVE run mode (after any team→simple downgrade) so the
+        # tool gate can honor the per-mode approval Settings toggle.
+        _eff_mode = "team" if team else ("plan" if agent_mode == "plan" else "simple")
+        _chat_approve.set_mode(session_id, _eff_mode)
         steps: list[dict] = []
         final_text = ""
         awaiting = False   # turn ended with a question / pause, not an outcome

@@ -44,6 +44,15 @@ export const api = {
       body: JSON.stringify({ roles }),
     }),
   syncModels: () => j<{ added: string[]; count: number }>('/agents/models/sync', { method: 'POST' }),
+  // Per-chat-mode approval toggles (Chat / Plan / Pipeline). true = that mode
+  // pauses for human Approve/Reject on ask-policy / review-gated tools.
+  approvalSettings: () =>
+    j<{ chat: boolean; plan: boolean; pipeline: boolean }>('/chat/approval-settings'),
+  setApprovalMode: (mode: 'chat' | 'plan' | 'pipeline', enabled: boolean) =>
+    j<{ chat: boolean; plan: boolean; pipeline: boolean }>(`/chat/approval-settings/${mode}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }),
   // Capability-based auto-assignment: thinking→reasoning model, coder→fast coder,
   // vision→vision model. Applies to every archetype internally.
   autoAssign: () =>
@@ -573,6 +582,8 @@ export const chatApi = {
   applyModel: api.applyModel,
   autoAssign: api.autoAssign,
   syncModels: api.syncModels,
+  approvalSettings: api.approvalSettings,
+  setApprovalMode: api.setApprovalMode,
   providersTest: api.providersTest,
   // AgentSettings reads the per-role config through chatApi too; without this
   // delegation the call is undefined, throws, and the swallowed catch leaves

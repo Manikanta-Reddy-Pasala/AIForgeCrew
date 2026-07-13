@@ -113,17 +113,25 @@ def make_approval_gate_callback():
             verdict = tool_policy.decide(name, args or {})
             policy = verdict["policy"]
             sid = chat_cancel.active()
+            # Per-mode approval Settings toggle: approvals OFF for this run's
+            # chat mode → never pause for human Approve/Reject. DENY still
+            # blocks below (hard policy, not a chat-mode approval).
+            approvals_on = chat_approve.approvals_required(sid)
             # Gap D — pre-apply review mode: force human Approve/Reject for any
             # file-mutating tool, even when policy would ALLOW it. Only when the
             # session has it armed AND an interactive approver is attached (an
             # autonomous run with no human still degrades to allow, below).
             force_review = (
-                policy != tool_policy.DENY
+                approvals_on
+                and policy != tool_policy.DENY
                 and _is_mutating(name, args or {})
                 and chat_approve.review_edits(sid)
                 and chat_approve.has_emitter(sid)
             )
             if policy == tool_policy.ALLOW and not force_review:
+                return None
+            # Mode approvals OFF: allow any non-DENY tool without pausing.
+            if not approvals_on and policy != tool_policy.DENY:
                 return None
             # Captured-rule "never re-ask": an EXPLICITLY-enabled "commit
             # directly" flag auto-approves a WHOLE-command git commit/add

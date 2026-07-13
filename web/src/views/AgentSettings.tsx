@@ -216,6 +216,8 @@ export default function AgentSettings() {
     <>
       <ModelsCard models={models} reload={loadModels} />
 
+      <ApprovalsCard />
+
       <div className="card" style={{ marginBottom: 16 }}>
         <h2 style={{ fontSize: 14 }}>Agents <span className="small muted">· auto-decided</span></h2>
         <div className="subtitle" style={{ marginTop: 4, marginBottom: 12 }}>
@@ -232,6 +234,56 @@ export default function AgentSettings() {
         {otherRoles.map(r => <RoleRow key={r} role={r} />)}
       </div>
     </>
+  );
+}
+
+// Per-chat-mode approval toggle. ON = that mode pauses for human Approve/Reject
+// on ask-policy / review-gated tool calls; OFF = the run proceeds without
+// interruption (a hard DENY policy and a destructive-delete confirm still
+// apply — those aren't chat-mode approvals). Autonomous ticket runs unaffected.
+const APPROVAL_MODES: { key: 'chat' | 'plan' | 'pipeline'; label: string; hint: string }[] = [
+  { key: 'chat', label: 'Chat', hint: 'quick single-turn answers' },
+  { key: 'plan', label: 'Plan', hint: 'planning / analysis' },
+  { key: 'pipeline', label: 'Pipeline', hint: 'multi-agent build (team)' },
+];
+
+function ApprovalsCard() {
+  const [flags, setFlags] = useState<{ chat: boolean; plan: boolean; pipeline: boolean }>(
+    { chat: true, plan: true, pipeline: true });
+
+  useEffect(() => {
+    chatApi.approvalSettings().then(setFlags).catch(() => { /* */ });
+  }, []);
+
+  async function toggle(mode: 'chat' | 'plan' | 'pipeline', enabled: boolean) {
+    const prev = flags;
+    setFlags(f => ({ ...f, [mode]: enabled }));    // optimistic
+    try {
+      setFlags(await chatApi.setApprovalMode(mode, enabled));
+      toast.success(`${mode} approvals ${enabled ? 'on' : 'off'}`);
+    } catch (e: any) {
+      setFlags(prev);
+      toast.error(e?.message || 'Failed to update approvals');
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <h2 style={{ fontSize: 14 }}>Approvals <span className="small muted">· per chat mode</span></h2>
+      <div className="subtitle" style={{ marginTop: 4, marginBottom: 12 }}>
+        When ON, the mode pauses for your Approve/Reject before risky or
+        file-changing tool calls. Turn OFF to let a mode run uninterrupted.
+        Denied-by-policy actions and destructive deletes still confirm.
+      </div>
+      {APPROVAL_MODES.map(({ key, label, hint }) => (
+        <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+          <input type="checkbox" checked={flags[key]}
+                 onChange={e => toggle(key, e.target.checked)} />
+          <span style={{ width: 90, fontSize: 13 }}>{label}</span>
+          <span style={{ fontSize: 12, color: '#8b949e' }}>{hint}</span>
+        </label>
+      ))}
+    </div>
   );
 }
 

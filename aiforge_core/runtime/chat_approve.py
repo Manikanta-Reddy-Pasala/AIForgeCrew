@@ -62,6 +62,41 @@ def review_edits(session_id: int | None) -> bool:
     with _LOCK:
         return bool(_REVIEW_EDITS.get(session_id))
 
+
+# Per-session CHAT MODE (simple/plan/team). Recorded at run start so the tool
+# gate — which only has the session id — can consult the per-mode approval
+# setting (config.approval_settings). Cleared on :func:`finish`.
+_MODE: dict[int, str] = {}
+
+
+def set_mode(session_id: int | None, mode: str) -> None:
+    """Record this run's chat mode for ``session_id`` (None → no-op)."""
+    if session_id is None:
+        return
+    with _LOCK:
+        _MODE[session_id] = (mode or "").strip().lower() or "simple"
+
+
+def get_mode(session_id: int | None) -> str:
+    if session_id is None:
+        return ""
+    with _LOCK:
+        return _MODE.get(session_id, "")
+
+
+def approvals_required(session_id: int | None) -> bool:
+    """Whether this session's mode requires human approval (per the per-mode
+    Settings toggle). Defaults ON — an unknown session or any lookup failure
+    fails safe to requiring approval. Autonomous runs (id None) return True but
+    the gates independently no-op without a human approver."""
+    if session_id is None:
+        return True
+    try:
+        from aiforge_core.config import approval_settings
+        return approval_settings.required(get_mode(session_id))
+    except Exception:  # noqa: BLE001
+        return True
+
 # Per-session event emitter. The simple chat loop yields approval events
 # itself; the TEAM pipeline runs in a background thread whose tool-gate
 # callback can't yield — it pushes the approval event through this emitter
@@ -172,6 +207,7 @@ def finish(session_id: int) -> None:
     with _LOCK:
         p = _PENDING.pop(session_id, None)
         _REVIEW_EDITS.pop(session_id, None)   # no stale review flag next turn
+        _MODE.pop(session_id, None)           # no stale mode next turn
     if p is not None and not p.event.is_set():
         p.decision = "reject"
         p.note = "run finished"
@@ -180,4 +216,5 @@ def finish(session_id: int) -> None:
 
 __all__ = ["request", "wait", "resolve", "cancel", "finish",
            "set_emitter", "clear_emitter", "has_emitter", "emit",
-           "set_review_edits", "review_edits"]
+           "set_review_edits", "review_edits",
+           "set_mode", "get_mode", "approvals_required"]

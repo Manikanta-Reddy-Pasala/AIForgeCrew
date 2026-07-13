@@ -4411,7 +4411,13 @@ def run_chat_agent(
                     args["confirm_delete"] = True
             except Exception:  # noqa: BLE001
                 pass
-        _gate = (verdict["policy"] == tool_policy.ASK or _force_review
+        # Per-mode approval Settings toggle: when approvals are turned OFF for
+        # this run's chat mode, don't pause on an `ask`-policy or review-edits
+        # gate. A destructive delete still confirms (safety floor, not a
+        # chat-mode approval); DENY was already handled above.
+        _mode_approvals = chat_approve.approvals_required(session_id)
+        _gate = ((( verdict["policy"] == tool_policy.ASK or _force_review)
+                  and _mode_approvals)
                  or _destructive_del)
         # A captured "commit directly" flag may auto-approve the gate ONLY when
         # the SOLE reason to gate is a pure whole-command git commit/add/push —
