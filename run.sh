@@ -277,6 +277,22 @@ _ensure_node() {
   [[ -x "$base/bin/npm" ]] && export PATH="$base/bin:$PATH"
 }
 
+# `npm ci` that survives a private registry which doesn't mirror every package.
+# Corporate boxes often set registry=https://artifactory.internal/ in ~/.npmrc;
+# if it lacks a dep the install 404s. Honor an explicit AIFORGE_NPM_REGISTRY;
+# otherwise try the box's configured registry first (respects intended mirrors),
+# and only on failure retry against public npm so a clean build still works.
+# MUST be called with the working dir already at web/.
+_npm_ci_resilient() {
+  if [[ -n "${AIFORGE_NPM_REGISTRY:-}" ]]; then
+    npm ci --registry="$AIFORGE_NPM_REGISTRY"; return $?
+  fi
+  npm ci && return 0
+  echo "==> npm ci failed on the configured registry (a private mirror may be" >&2
+  echo "==> missing a package) — retrying against https://registry.npmjs.org/" >&2
+  npm ci --registry=https://registry.npmjs.org/
+}
+
 # ── Single mode: SQLite on the host (no Docker infra to bring up) ─────────
 # The app runs on embedded SQLite + the scoped-OKR memory, with Aider RepoMap +
 # CodeGraph for code context. Nothing to start here — fall through to venv +
@@ -540,7 +556,7 @@ if [[ $SKIP_WEB -eq 0 ]]; then
     # Rebuild only when dist is missing or any source is newer than it.
     if [[ ! -d web/dist ]] || [[ -n "$(find web/src web/index.html web/package.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]; then
       echo "==> building web UI"
-      ( cd web && { [[ -d node_modules ]] || npm ci; } && npm run build )
+      ( cd web && { [[ -d node_modules ]] || _npm_ci_resilient; } && npm run build )
     else
       echo "==> web UI up to date (use --skip-web to skip this check)"
     fi
