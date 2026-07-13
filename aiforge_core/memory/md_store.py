@@ -522,6 +522,15 @@ def _snap_topic(slug: str) -> str:
                     and not _CAPTURE_SIG_RE.search(p.name)]
         if slug in existing:
             return slug
+        # Prefix-containment: a slug that EXTENDS (or is extended by) an existing
+        # topic at a word boundary is the same subject — 'gpsd-config' → 'gpsd',
+        # 'gpsd' stays 'gpsd' even when 'gpsd-configuration' exists. Canonical =
+        # the SHORTER (broader) name, so a family collapses to one brief instead
+        # of gpsd / gpsd-config / gpsd-configuration. difflib's 0.82 cutoff misses
+        # these (ratio 0.5-0.76). Check shortest-first for a stable target.
+        for e in sorted(existing, key=len):
+            if slug.startswith(e + "-") or e.startswith(slug + "-"):
+                return e if len(e) <= len(slug) else slug
         m = difflib.get_close_matches(slug, existing, n=1, cutoff=0.82)
         return m[0] if m else slug
     except Exception:  # noqa: BLE001
@@ -1135,6 +1144,126 @@ def dedupe_global_copies() -> dict:
     return {"removed": removed, "briefs": touched}
 
 
+def _topic_clusters(keys: list[str]) -> list[list[str]]:
+    """Group topic keys that are the SAME subject: prefix-family (one extends
+    another at a word boundary — gpsd / gpsd-config / gpsd-configuration) OR
+    fuzzy-near-identical (note / notes). Union-find over both signals. Returns
+    only clusters with >1 member (the ones worth merging)."""
+    import difflib
+    parent = {k: k for k in keys}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            # canonical root = the SHORTER (broader) name
+            if len(rb) < len(ra) or (len(rb) == len(ra) and rb < ra):
+                ra, rb = rb, ra
+            parent[rb] = ra
+
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            if (a.startswith(b + "-") or b.startswith(a + "-")   # prefix family
+                    or a == b + "s" or b == a + "s"              # plural (note/notes)
+                    or difflib.SequenceMatcher(None, a, b).ratio() >= 0.9):
+                union(a, b)
+    groups: dict[str, list[str]] = {}
+    for k in keys:
+        groups.setdefault(find(k), []).append(k)
+    return [sorted(v, key=len) for v in groups.values() if len(v) > 1]
+
+
+def merge_similar_topics() -> dict:
+    """Consolidate near-duplicate TOPIC briefs into ONE — kills the
+    ``gpsd`` / ``gpsd-config`` / ``gpsd-configuration`` (and ``note`` / ``notes``)
+    sprawl that made the Memory page a junk drawer. For each cluster the SHORTER
+    (broader) name is canonical; the others' Facts / Learnings / Links / Key
+    Results are unioned into it and the duplicate briefs deleted (index rows
+    reconciled). Deterministic (no LLM). Repo briefs (discovered repo names) and
+    the global ``shared`` brief are PROTECTED from merging. Default on
+    (``AIFORGE_OKR_TOPIC_MERGE``); never raises. Returns ``{merged, groups}``."""
+    if os.environ.get("AIFORGE_OKR_TOPIC_MERGE", "1") == "0":
+        return {"merged": 0, "skipped": "disabled"}
+    from aiforge_core.runtime import work_notes
+    # protect repo briefs: a discovered repo's brief must never fold into another
+    protected = {"shared"}
+    try:
+        from aiforge_core.memory.migrations import _discover_repos
+        protected |= {_slug(r) for r in (_discover_repos() or [])}
+    except Exception:  # noqa: BLE001
+        pass
+    keys = [p.stem[len("compacted-"):] for p in iter_briefs()
+            if not _CAPTURE_SIG_RE.search(p.name)
+            and p.stem[len("compacted-"):] not in protected]
+    clusters = _topic_clusters(keys)
+    merged = 0
+    done: list[list[str]] = []
+    with _WRITE_LOCK:
+        for cluster in clusters:
+            canonical = cluster[0]
+            cpath = brief_path(canonical)
+            if not cpath.exists():
+                continue
+            try:
+                cb = _parse_brief(cpath.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+            facts = list(cb["facts"]); learns = list(cb["learnings"])
+            links = list(cb.get("links") or []); krs = list(cb["key_results"])
+            body = cb["body"]; title = cb["title"]
+            moved_any = False
+            for other in cluster[1:]:
+                op = brief_path(other)
+                if not op.exists():
+                    continue
+                try:
+                    ob = _parse_brief(op.read_text(encoding="utf-8"))
+                except OSError:
+                    continue
+                for f in ob["facts"]:
+                    if f not in facts and _fact_body(f) not in {_fact_body(x) for x in facts}:
+                        facts.append(f)
+                for l in ob["learnings"]:
+                    if l not in learns:
+                        learns.append(l)
+                for lk in (ob.get("links") or []):
+                    if lk not in links:
+                        links.append(lk)
+                for kr in ob["key_results"]:
+                    if kr not in krs:
+                        krs.append(kr)
+                if ob["body"] and ob["body"] not in body:
+                    body = (body + "\n\n" + ob["body"]).strip() if body else ob["body"]
+                # remove the duplicate brief + its index rows
+                _reconcile_dropped_index(ob["facts"], other)
+                try:
+                    from aiforge_core.memory import backend_select, sqlite_memory
+                    if backend_select.embedded():
+                        sqlite_memory.delete_by_source(f"compacted:compacted-{other}")
+                        sqlite_memory.delete_by_source(f"md:compacted-{other}")
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    op.unlink()
+                except OSError:
+                    pass
+                moved_any = True
+                merged += 1
+            if moved_any:
+                cpath.write_text(
+                    _render_brief(canonical, facts=facts, body_md=body,
+                                  learnings=learns, title=title, key_results=krs,
+                                  links=links),
+                    encoding="utf-8")
+                done.append(cluster)
+    return {"merged": merged, "groups": done}
+
+
 def cleanup_reheal(*, role: str = "learner") -> dict:
     """Recovery for an over-aggressive reheal: re-classify each moved
     (``source: reheal``) fact ON ITS OWN and DELETE the ones that are not truly
@@ -1376,14 +1505,15 @@ _LEGACY_RECENT_RE = re.compile(
 def _render_brief(key: str, *, facts: list[str], body_md: str = "",
                   learnings: list[str] | None = None, title: str = "",
                   tags: list[str] | None = None,
-                  key_results: list[str] | None = None) -> str:
+                  key_results: list[str] | None = None,
+                  links: list[str] | None = None) -> str:
     from aiforge_core.runtime import work_notes
     return work_notes.render_note(
         "knowledge", key,
         title=title or f"{key} memory (compacted)",
         objective=_BRIEF_OBJECTIVE.format(key=key),
         facts=facts, key_results=key_results, learnings=learnings,
-        body_md=body_md, tags=tags)
+        links=links, body_md=body_md, tags=tags)
 
 
 def _parse_brief(raw: str) -> dict:
@@ -1401,6 +1531,7 @@ def _parse_brief(raw: str) -> dict:
         body = (body[:m.start()] + body[m.end():]).strip("\n")
     return {"facts": facts, "body": body, "title": parsed["title"],
             "learnings": list(parsed["sections"].get("learnings") or []),
+            "links": list(parsed["sections"].get("links") or []),
             "key_results": list(parsed["sections"].get("key_results") or [])}
 
 

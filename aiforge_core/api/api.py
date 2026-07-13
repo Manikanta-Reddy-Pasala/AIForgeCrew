@@ -2057,7 +2057,10 @@ def memory_stats() -> dict:
         s = _sqlmem.stats()
         wings = [{"tier": "embedded", "wing": k, "n": v, "embedded": v}
                  for k, v in s.get("by_kind", {}).items()]
-        return {"backend": "sqlite", "total": s.get("total", 0), "wings": wings}
+        return {"backend": "sqlite", "total": s.get("total", 0), "wings": wings,
+                # the OKR node-DAG view is consolidated out by default; the UI
+                # hides its panel unless the DAG is explicitly enabled.
+                "okr_dag": os.environ.get("AIFORGE_OKR_DAG", "0") == "1"}
     with _db() as c, c.cursor() as cur:
         cur.execute(
             "SELECT tier, wing, COUNT(*) AS n, "
@@ -2306,7 +2309,7 @@ def memory_compact_all_status() -> dict:
         "running": s["running"], "done": s["done"], "current": s["current"],
         "sub": s["sub"],                       # {done,total,key} per-brief progress
         "steps_done": [x["name"] for x in s["steps"]],
-        "total_steps": 14, "error": s["error"],  # matches force_recompact_all steps
+        "total_steps": 15, "error": s["error"],  # matches force_recompact_all steps
         "elapsed_s": round(_t.time() - s["started_at"], 1) if s["started_at"] else 0,
         "result": s["result"] if s["done"] else None,
     }
