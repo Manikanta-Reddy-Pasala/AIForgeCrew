@@ -333,7 +333,9 @@ if [[ "$MODE" == "docker" ]]; then
 fi
 
 # ── Network lockdown (host process) ───────────────────────────────────
-# External-ingest/web-fetch default ON in code; force off for a self-hosted box.
+# External-ingest is code-default ON → forced OFF here. web-fetch is code-default
+# OFF → forced ON below (line with AIFORGE_ALLOW_WEB_FETCH:-1; SSRF-guarded); do
+# NOT delete that line thinking it's redundant — it is what enables web egress.
 # Operator overrides win via `:-`.
 export AIFORGE_EXTERNAL_INGEST="${AIFORGE_EXTERNAL_INGEST:-0}"
 export AIFORGE_DOCS_INDEX="${AIFORGE_DOCS_INDEX:-0}"

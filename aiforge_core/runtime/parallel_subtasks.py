@@ -767,35 +767,48 @@ def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
     merged = 0
     merge_ok = False
     integ: dict = {"ok": None, "skipped": True}
+    cancelled = False
     try:
         _run_wave_set(wt, subs, run_one, validate_one, on_status, ticket_id,
                       should_cancel, results, 0)
-        # Capture anything the doers left uncommitted — EXCLUDE build artifacts
-        # (target/, node_modules/, __pycache__/…) so they don't sweep into base.
-        _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], wt)
-        _git(["commit", "-m", "shared-worktree subtasks"], wt)  # no-op if clean
-        # ONE integration build+test on the combined tree (P5 verify).
-        if integration_test is not None:
-            try:
-                integ = integration_test(wt) or {"ok": False}
-            except Exception as exc:  # noqa: BLE001
-                integ = {"ok": False, "error": str(exc)}
+        # Stop pressed mid-run: do NOT commit/integrate/merge PARTIAL work into
+        # base — leave the branch for inspection (the per-worktree path guards
+        # the merge on cancel the same way). Without this, a Stop after wave 1
+        # of 3 silently merged half-implemented code into base.
+        if should_cancel and should_cancel():
+            cancelled = True
+            integ = {"ok": None, "skipped": True, "cancelled": True}
         else:
-            integ = _build_or_test(wt)
-        if merge:
-            merge_ok, info = _merge_branch(repo_root, base_branch, branch)
-            if merge_ok:
-                merged = 1
+            # Capture anything the doers left uncommitted — EXCLUDE build
+            # artifacts (target/, node_modules/, __pycache__/…) from base.
+            _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], wt)
+            _git(["commit", "-m", "shared-worktree subtasks"], wt)  # no-op if clean
+            # ONE integration build+test on the combined tree (P5 verify).
+            if integration_test is not None:
+                try:
+                    integ = integration_test(wt) or {"ok": False}
+                except Exception as exc:  # noqa: BLE001
+                    integ = {"ok": False, "error": str(exc)}
             else:
-                conflicts.append("shared")
+                integ = _build_or_test(wt)
+            if merge:
+                merge_ok, info = _merge_branch(repo_root, base_branch, branch)
+                if merge_ok:
+                    merged = 1
+                else:
+                    conflicts.append("shared")
     finally:
         if wt and os.path.isdir(wt):
             _git(["worktree", "remove", "--force", wt], repo_root)
-        # Delete the branch ONLY after a successful merge. On conflict the shared
-        # branch is the SOLE copy of every subtask's work — keep it (and surface
-        # its name) so nothing is lost and it can be inspected / re-merged.
-        if merge_ok or not merge:
+        # Delete the branch ONLY after a successful merge (or when merge was
+        # off). On conflict OR cancel the shared branch is the SOLE copy of the
+        # subtask work — keep it (surface its name) so nothing is lost.
+        _kept = bool(conflicts) or cancelled
+        if merge_ok or (not merge and not cancelled):
             _git(["branch", "-D", branch], repo_root)
+        elif cancelled:
+            log.warning("shared-worktree CANCELLED — KEEPING branch %s "
+                        "(partial work, NOT merged into base)", branch)
         else:
             log.warning("shared-worktree merge conflict — KEEPING branch %s "
                         "(holds all subtask work; inspect/re-merge manually)",
@@ -806,17 +819,20 @@ def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
                for s in subs]
     done = sum(1 for r in ordered if r.get("ok"))
     failed = len(subs) - done
-    all_ok = (done == len(subs) and not conflicts
+    all_ok = (not cancelled and done == len(subs) and not conflicts
               and integ.get("ok") is not False)
-    review = (f"shared worktree: {done}/{len(subs)} subtasks done"
+    review = (("STOPPED — " if cancelled else "")
+              + f"shared worktree: {done}/{len(subs)} subtasks done"
               + ("; integration green" if integ.get("ok") else "")
               + ("; integration FAILED" if integ.get("ok") is False else "")
-              + ("; MERGE CONFLICT" if conflicts else ""))
+              + ("; MERGE CONFLICT" if conflicts else "")
+              + ("; partial work kept on branch, NOT merged" if cancelled else ""))
     return {"ok": all_ok, "total": len(subs), "done": done, "validated": done,
             "failed": failed, "merged": merged, "conflicts": conflicts,
-            "conflict_details": ([f"kept branch {branch}"] if conflicts else []),
+            "cancelled": cancelled,
+            "conflict_details": ([f"kept branch {branch}"] if _kept else []),
             "warnings": [], "integration": integ,
-            "kept_branch": (branch if conflicts else None),
+            "kept_branch": (branch if _kept else None),
             "review": review, "results": ordered, "mode": "shared_worktree"}
 
 
