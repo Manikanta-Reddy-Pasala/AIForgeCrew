@@ -686,12 +686,22 @@ def _recurse_max() -> int:
         return 2
 
 
+def _decomp_retries() -> int:
+    """Retries per subtask/sub-agent before it decomposes into deeper
+    sub-agents. Applies at every recursion level."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_DECOMP_RETRIES", "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
 def _run_one_recursive(sub, wt, run_one, validate_one, on_status, ticket_id,
                        should_cancel, depth: int) -> dict:
     """Run ONE subtask in the shared worktree ``wt``, VALIDATE it (build/tests
-    green via ``validate_one`` when given) with one retry, and on persistent
-    failure decompose it one level deeper and run its sub-agents under the same
-    scheduler (P3, depth-capped). Returns ``{ok, slug, ...}``."""
+    green via ``validate_one`` when given) with N informed retries
+    (AIFORGE_DECOMP_RETRIES), and on persistent failure decompose it one level
+    deeper and run its sub-agents under the same scheduler — each sub-agent also
+    gets the retry loop (P3, depth-capped). Returns ``{ok, slug, ...}``."""
     slug = sub.get("slug")
     _update(ticket_id, slug, "running", on_status)
 
@@ -713,15 +723,21 @@ def _run_one_recursive(sub, wt, run_one, validate_one, on_status, ticket_id,
                 return {"ok": False, "error": f"validate: {exc}"}
         return rr
 
+    # Informed retry loop — applies at EVERY level (each sub-agent also runs
+    # through this function), so a failing sub-agent retries too. Each retry
+    # feeds the prior failure back into the prompt (a blind identical re-run on
+    # a deterministic endpoint is a no-op). Count via AIFORGE_DECOMP_RETRIES
+    # (default 2); depth is threaded into the status so the UI shows nesting.
     r = _attempt_once()
-    if not r.get("ok") and not (should_cancel and should_cancel()):
-        # Informed retry: feed the failure into the subtask so the retry prompt
-        # knows what went wrong (a blind identical re-run on a deterministic
-        # endpoint is a no-op). We can't hard-reset the shared tree (it holds
-        # other subtasks' work), so this is the best available signal.
+    _tries = 0
+    while (not r.get("ok") and _tries < _decomp_retries()
+           and not (should_cancel and should_cancel())):
+        _tries += 1
         sub["_retry_error"] = str(r.get("error") or "")[:800]
+        _emit(ticket_id, slug, "retry",
+              f"retry {_tries}/{_decomp_retries()} (depth {depth}) — {str(r.get('error') or '')[:120]}", {})
         r = _attempt_once()
-        sub.pop("_retry_error", None)
+    sub.pop("_retry_error", None)
     if r.get("ok"):
         _update(ticket_id, slug, "done", on_status)
         return {**r, "slug": slug}
