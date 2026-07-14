@@ -125,6 +125,16 @@ def identify_repos(prompt: str, cwd: str) -> list[dict]:
             _log.warning("identify_repos: capped %d repos to %d (set "
                          "AIFORGE_ANALYSIS_MAX_REPOS)", len(out), cap)
             out = out[:cap]
+        # Disambiguate duplicate basenames (two repos both named `api`) — the
+        # name is used as the subtask slug, and a collision makes the panel flip
+        # both rows together. Suffix collisions with the parent dir.
+        _seen: dict[str, int] = {}
+        for r in out:
+            _seen[r["name"]] = _seen.get(r["name"], 0) + 1
+        for r in out:
+            if _seen[r["name"]] > 1:
+                _parent = os.path.basename(os.path.dirname(r["path"])) or "?"
+                r["name"] = f"{r['name']} ({_parent})"
         return out
     # 4. fallback — the pinned folder itself
     return [{"name": os.path.basename(os.path.abspath(cwd).rstrip("/")) or "repo",
@@ -313,12 +323,14 @@ def stream_analysis_team(prompt: str, cwd: str, session_id=None,
             r = fut_map[fut]
             if session_id is not None and chat_cancel.is_cancelled(session_id):
                 cancelled = True
-                # NOTE: in-flight explores can't be interrupted (they run with
-                # session_id=None); the pool's context-exit waits for them. We
-                # stop consuming and mark the run partial.
-                yield {"type": "thought", "role": "router",
-                       "text": "Stopped — no more explores; finishing with "
-                               "whatever completed."}
+                # Do NOT yield an intermediate event here: the SSE producer
+                # breaks its consume loop the instant it sees a post-cancel
+                # event, which would abandon THIS generator before the partial
+                # draft below is synthesized. Break silently so the draft
+                # message (with its "Stopped early" banner) is the FIRST event
+                # after cancel — the producer captures it as final_text, then
+                # stops. (in-flight explores can't be interrupted — session_id
+                # is None — so the pool's context-exit waits for them.)
                 break
             try:
                 res = fut.result()

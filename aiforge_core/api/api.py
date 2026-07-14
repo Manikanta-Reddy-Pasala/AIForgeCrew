@@ -4816,8 +4816,20 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # a "analyze X and write a report" turn ran writable and could mutate the
         # repo + trigger the post-run build. Non-doc turns keep their mode.
         _single_mode = "analyze" if _doc_task and agent_mode != "plan" else agent_mode
-        yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
-                                  session_id=session_id, mode=_single_mode)
+        _turn_awaiting = False
+        for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
+                                  session_id=session_id, mode=_single_mode):
+            if _ev.get("type") == "message" and _ev.get("awaiting_input"):
+                _turn_awaiting = True
+            yield _ev
+        # A turn that ended AWAITING user input — e.g. a REJECT ("tell me what to
+        # do instead") or an ASK — must NOT fall into the post-run integration
+        # build below: on a turn that had an earlier APPLIED edit, _wrote_source()
+        # is True and the build fires AFTER the reject, holds the is_running slot
+        # (run.finish() is in _produce's finally), and 409-blocks the user's very
+        # next (resume) message. Pointless work on a paused turn — end here.
+        if _turn_awaiting:
+            return
         # Read-only / analysis query ("analyze/explain/how does X work") → the user
         # wants an EXPLANATION, not a build. Don't run the integration-check +
         # self-heal (which would build/test an existing repo and report a failure
