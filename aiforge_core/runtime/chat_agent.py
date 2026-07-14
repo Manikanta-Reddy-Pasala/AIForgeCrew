@@ -2162,6 +2162,16 @@ _PLAN_BANNER = (
     "to execute it. ASK if you need input to plan well."
 )
 
+_ANALYZE_BANNER = (
+    "ANALYSIS MODE — you are READ-ONLY this turn. Inspect the repo (file_read, "
+    "list_dir, find, grep, repo_map, codegraph_*) and recall memory, but you "
+    "CANNOT write files, run commands, install, or change anything. Your job is "
+    "to UNDERSTAND and REPORT: produce a clear, structured FINDINGS report in "
+    "FINAL: (what the code does, how it's organized, key files/symbols as "
+    "path:line, notable risks/gaps). Do NOT propose a change-plan or edits — "
+    "this is analysis for the user to read, not an implementation task."
+)
+
 
 # The approval gate is where the operator accepts/rejects a write — they see the
 # WHOLE thing (full page, full diff, full Jira body); it's just text the UI
@@ -3852,7 +3862,13 @@ def run_chat_agent(
     from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
     from aiforge_core.runtime.tools import tool_policy
     chat_cancel.set_active(session_id)
-    plan_mode = (mode or "act").lower() == "plan"
+    _mode = (mode or "act").lower()
+    plan_mode = _mode == "plan"
+    analyze_mode = _mode == "analyze"
+    # Both plan and analyze are READ-ONLY (same tool gate); they differ only in
+    # the banner/output intent — plan produces a change-PLAN, analyze produces
+    # FINDINGS. Used by the analysis fan-out's explore agents.
+    readonly_mode = plan_mode or analyze_mode
     # Scope allowlist (autonomous Doer). When the caller passes globs, a
     # mutating file tool whose target path falls outside them is rejected
     # BEFORE it runs — the FunctionNode text Doer can't carry the native
@@ -3950,7 +3966,9 @@ def run_chat_agent(
         sys_msg = prefs + "\n\n" + sys_msg
     if rules:                       # user rule book first — highest priority
         sys_msg = rules + "\n\n" + sys_msg
-    if plan_mode:                   # plan banner second — constrains this turn
+    if analyze_mode:                # read-only ANALYSIS (findings, not a plan)
+        sys_msg = _ANALYZE_BANNER + "\n\n" + sys_msg
+    elif plan_mode:                 # plan banner second — constrains this turn
         sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
     if builder:                     # task-specific builder charter (highest)
         try:
@@ -4508,7 +4526,7 @@ def run_chat_agent(
             continue
 
         # PLAN mode (#2): block mutating tools — read-only only.
-        if plan_mode and name not in _READONLY_TOOLS:
+        if readonly_mode and name not in _READONLY_TOOLS:
             result = {"ok": False, "blocked": "plan_mode",
                       "error": f"'{name}' is blocked in Plan mode (read-only). "
                                "Finish with a PLAN; the user will switch to Act "

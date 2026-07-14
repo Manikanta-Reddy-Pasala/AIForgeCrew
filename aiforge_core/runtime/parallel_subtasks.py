@@ -619,7 +619,10 @@ def _shared_worktree_enabled() -> bool:
         in ("1", "true", "yes", "on")
 
 
-_GOAL_FILE_RE = re.compile(r"\s*([\w./\-]+\.\w+)\s*:")
+# `<file.ext>:` anywhere in the goal — .search (not .match) so a leading verb
+# ("update config.yaml: add key") still recovers the file. Requires a
+# dotted-extension token before the colon, so "Refactor: split" stays empty.
+_GOAL_FILE_RE = re.compile(r"\b([\w./\-]+\.\w+)\s*:")
 
 
 def _files_of(s: dict) -> set:
@@ -631,7 +634,7 @@ def _files_of(s: dict) -> set:
     raw = (s.get("files") or s.get("scope_allowlist_globs")
            or ([s["path"]] if s.get("path") else []))
     if not raw:
-        m = _GOAL_FILE_RE.match(str(s.get("goal") or ""))
+        m = _GOAL_FILE_RE.search(str(s.get("goal") or ""))
         if m:
             raw = [m.group(1)]
     return {str(x) for x in raw if x}
@@ -825,9 +828,9 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
     (build/tests green), then merge the validated branches into ``base_branch``
     sequentially. Returns an aggregate incl. a review summary.
 
-    With AIFORGE_SHARED_WORKTREE=1 (default) this delegates to the shared-
-    worktree wave scheduler (P2); on any error it falls back to the per-worktree
-    path below so a scheduler bug can never brick a run.
+    With AIFORGE_SHARED_WORKTREE=1 (OPT-IN; default OFF) this delegates to the
+    shared-worktree sequential scheduler (P2); on any error it falls back to the
+    per-worktree path below so a scheduler bug can never brick a run.
     """
     subs = [s for s in (subtasks or []) if isinstance(s, dict) and s.get("slug")]
     if subs and _shared_worktree_enabled():

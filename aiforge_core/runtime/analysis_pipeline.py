@@ -74,15 +74,27 @@ def identify_repos(prompt: str, cwd: str) -> list[dict]:
     _common = {"web", "api", "app", "pos", "core", "bot", "cli", "crud", "ui",
                "db", "lib", "docs", "server", "client", "code", "main", "test"}
 
-    # 1. registry names EXPLICITLY mentioned in the prompt (length>=4, not a
-    #    common word) — a specific name is a real signal; a common word is not.
+    # 1. registry names mentioned in the prompt. A SPECIFIC name (len>=4, not a
+    #    common word) is a real signal on a plain mention. A common/short name
+    #    (core/web/pos/erp) matches too much in prose, so require a repo CUE —
+    #    backticks around it, or the word "repo"/"repository" adjacent — so an
+    #    EXPLICITLY named short repo ("the `core` repo") is still recovered.
     try:
         from aiforge_core.config import repo_map as _rm
         paths = (_rm.list_all() or {}).get("paths") or {}
         for name, path in paths.items():
             nlow = str(name).strip().lower()
-            if len(nlow) >= 4 and nlow not in _common \
-                    and re.search(r"\b" + re.escape(nlow) + r"\b", plow):
+            if not nlow:
+                continue
+            esc = re.escape(nlow)
+            word = re.search(r"\b" + esc + r"\b", plow)
+            specific = len(nlow) >= 4 and nlow not in _common
+            cued = (re.search(r"`\s*" + esc + r"\s*`", plow)
+                    or re.search(r"\b" + esc + r"\b[\s\w]{0,12}\brepo",
+                                 plow)
+                    or re.search(r"\brepo(?:sitor(?:y|ies))?\b[\s\w]{0,12}\b"
+                                 + esc + r"\b", plow))
+            if (specific and word) or cued:
                 _add(str(name), str(path))
     except Exception:  # noqa: BLE001 — registry optional
         pass
@@ -183,16 +195,16 @@ def _explore_one(repo: dict, topics: list[str], overall: str) -> dict:
 
     findings, ok = "", False
     try:
-        # mode="plan" is the HARD read-only guard: run_chat_agent's tool gate
-        # blocks any tool not in _READONLY_TOOLS (file_write/patch/bash/
-        # confluence_create/... all blocked; file_read/grep/repo_map/codegraph
-        # allowed). role= does NOT restrict tools in the chat loop, and
-        # session_id=None skips the approval gate — so WITHOUT plan mode a
-        # hallucinated write would auto-apply in the user's REAL repo. This runs
-        # in the real dir with no worktree, so read-only is mandatory.
+        # mode="analyze" is the HARD read-only guard AND asks for FINDINGS (not
+        # a change-plan): run_chat_agent's tool gate blocks any tool not in
+        # _READONLY_TOOLS (file_write/patch/bash/confluence_create/... blocked;
+        # file_read/grep/repo_map/codegraph allowed). role= does NOT restrict
+        # tools in the chat loop and session_id=None skips the approval gate, so
+        # WITHOUT read-only mode a hallucinated write would auto-apply in the
+        # user's REAL repo (no worktree here) — read-only is mandatory.
         for ev in run_chat_agent([{"role": "user", "content": msg}],
                                  cwd=repo["path"], role="researcher",
-                                 session_id=None, mode="plan",
+                                 session_id=None, mode="analyze",
                                  complete_fn=complete_fn):
             if ev.get("type") == "error":
                 return {"name": repo["name"], "path": repo["path"], "ok": False,
