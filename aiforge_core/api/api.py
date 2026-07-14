@@ -4554,6 +4554,19 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                            and (_greenfield or _new_build)
                            and not _doc_task)
         if _doc_task:
+            # Multi-repo analysis fans OUT (one read-only explore agent per repo,
+            # in parallel, then synthesize a draft). A single-repo/topic analysis
+            # or a plain doc task stays on the single research agent below.
+            try:
+                from aiforge_core.runtime import analysis_pipeline as _ap
+                _fan, _ana_repos, _ana_topics = _ap.should_fan_out(prompt, cwd)
+            except Exception:  # noqa: BLE001 — never break routing on the probe
+                _fan, _ana_repos, _ana_topics = (False, [], [])
+            if _fan and _psub_on:
+                yield from _ap.stream_analysis_team(
+                    prompt, cwd=cwd, session_id=session_id,
+                    repos=_ana_repos, topics=_ana_topics)
+                return
             yield {"type": "thought", "role": "router",
                    "text": "Doc/analysis task (analysis or a doc/Confluence "
                            "deliverable) — routing to the single research agent, "
