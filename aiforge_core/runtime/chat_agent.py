@@ -2778,6 +2778,20 @@ def _parse(out: str) -> dict:
     tho = _THOUGHT_RE.search(out)
     if tho:
         return {"kind": "continue", "thought": tho.group(1).strip() or out.strip()}
+    # Malformed step = ONLY leaked protocol scaffolding (a lone `ARGS_JSON: null`,
+    # a bare `ACTION:` with no tool, an empty `{}`/```json fence). A local model
+    # sometimes emits a tool call with no ACTION line; the prose fallback then
+    # surfaced raw "ARGS_JSON: null" to the UI as the answer. Strip the
+    # scaffolding — if nothing meaningful survives, nudge the model to re-emit a
+    # proper step instead of quitting on garbage.
+    _scaffold = re.sub(
+        r"(?im)^\s*(?:action|args_json|final|ask|thought|reasoning)\b\s*:?.*$"
+        r"|^\s*(?:null|\{\s*\}|```+\w*|```+)\s*$",
+        "", out).strip().strip("`").strip()
+    if not _scaffold:
+        return {"kind": "continue",
+                "thought": "malformed step (protocol scaffolding only) — "
+                           "re-emit a valid ACTION + ARGS_JSON, or FINAL: <answer>"}
     # Genuinely just prose with no protocol at all → treat as the final answer.
     # Tag it IMPLICIT (no explicit ``FINAL:`` marker): in interactive chat that's
     # the real answer, but in a work-producing run (doer / builder) it's usually
@@ -4452,7 +4466,11 @@ def run_chat_agent(
 
         # action
         name = step["tool"]
-        args = step["args"]
+        # Coerce to a dict: a model can emit `ARGS_JSON: null` (or a JSON
+        # scalar) which parses to None/non-dict; every tool does `args.get(...)`
+        # and would crash. An empty dict lets the tool return its own
+        # instructive "missing 'url'"/"missing arg" so the model self-corrects.
+        args = step["args"] if isinstance(step["args"], dict) else {}
         # Stuck-action loop: same tool+args repeated too many times → ask
         # the user instead of looping to the safety cap.
         sig = name + "|" + json.dumps(args, sort_keys=True, default=str)

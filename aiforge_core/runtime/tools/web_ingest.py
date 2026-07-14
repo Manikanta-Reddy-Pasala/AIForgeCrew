@@ -67,6 +67,8 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
     ``sanctioned: True`` bypasses the AIFORGE_ALLOW_WEB_FETCH gate — set
     ONLY by the researcher wrapper (the role's sanctioned egress, parity
     with its ungated web_read); the chat path stays gated like web_fetch."""
+    if not isinstance(args, dict):
+        return {"ok": False, "error": "missing 'url' (args must be a JSON object)"}
     from aiforge_core.runtime.tools import web_search as _ws
     if _ws._disabled():
         return {"ok": False, "error": "web_search_disabled"}
