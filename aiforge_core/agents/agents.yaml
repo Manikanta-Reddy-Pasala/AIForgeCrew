@@ -100,6 +100,7 @@ agents:
       max_wall_s: 3600
     tools:
       allowed:
+        - web_search             # keyless DuckDuckGo search (stuck-recovery: search → web_crawl hit)
         - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         # NOTE: names must match the REAL doer_tools registry (audit: the old
         # graph_lookup/search_memory/grep_repos era names matched nothing).
@@ -171,6 +172,7 @@ agents:
       max_wall_s: 1200
     tools:
       allowed:
+        - web_search             # keyless DuckDuckGo search (stuck-recovery: search → web_crawl hit)
         - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         # NOTE: names must match the REAL doer_tools registry (audit found the
         # old graph_lookup/search_memory/grep_repos era names matched nothing —
@@ -304,6 +306,7 @@ agents:
       # enforcement on here without reconciling — it would strip the Doer's
       # primary file/shell surface and brick it.
       allowed:
+        - web_search             # keyless DuckDuckGo search (stuck-recovery: search → web_crawl hit)
         - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - editor                    # OH-parity multi-command editor
         - bash                      # tmux persistent session
@@ -710,6 +713,7 @@ agents:
       max_wall_s: 900
     tools:
       allowed:
+        - web_search             # keyless DuckDuckGo search (stuck-recovery: search → web_crawl hit)
         - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - bash
         - file_read
@@ -759,6 +763,7 @@ agents:
       # exactly the one tool the prompt calls. Forbidden names are the real
       # write/exec tools (ask_user removed — not a tool on this surface).
       allowed:
+        - web_search             # keyless DuckDuckGo search (stuck-recovery: search → web_crawl hit)
         - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - memory_lookup
       forbidden:
@@ -799,6 +804,7 @@ agents:
       # the real doer-tool surface (grep_repo, not grep_repos) and cover every
       # tool the prompt calls, plus safe read siblings.
       allowed:
+        - web_search             # keyless DuckDuckGo search (stuck-recovery: search → web_crawl hit)
         - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - repo_map                  # tree-sitter PageRank digest (AST, no vectors) — use FIRST
         - graphify_lookup
@@ -848,6 +854,7 @@ agents:
       # Enforced via adk_function_tools(role="ctx_conventions"): grep_repo (the
       # real name) + editor view + safe read siblings; write/exec forbidden.
       allowed:
+        - web_search             # keyless DuckDuckGo search (stuck-recovery: search → web_crawl hit)
         - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - grep_repo
         - grep                      # alias — model may emit either spelling

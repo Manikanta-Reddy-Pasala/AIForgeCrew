@@ -1678,21 +1678,21 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         confluence_children, confluence_attach,
                         read_lines, rename_symbol]
     aliases = [read, write, patch, edit, str_replace, ls, shell, bash, run,
-               grep, search, http_get, web_fetch, web_crawl,
+               grep, search, http_get, web_fetch, web_crawl, web_search,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
     tools = [FunctionTool(func=fn)
              for fn in new_canonical + legacy_canonical + aliases]
     # Web egress:
     #   * web_fetch + web_crawl are in the base list — every agent gets them,
-    #     but both stay behind the AIFORGE_ALLOW_WEB_FETCH gate (default off)
-    #     and the SSRF guard, so "available" != "unlocked".
-    #   * web_search (query) + web_read (UNGATED page read) remain
-    #     RESEARCHER-only — the researcher is still the single agent with
-    #     sanctioned, gate-free web egress.
+    #     behind the AIFORGE_ALLOW_WEB_FETCH gate (SSRF-guarded).
+    #   * web_search (keyless DuckDuckGo query) is ALSO in the base list —
+    #     ungated so a stuck agent can search the web and then web_crawl the
+    #     best hit. Recovery flow: web_search(error) → web_crawl(url).
+    #   * web_read (UNGATED raw page read) stays RESEARCHER-only — the
+    #     researcher keeps the widest sanctioned egress.
     if role == "researcher":
-        tools = tools + [FunctionTool(func=web_search),
-                         FunctionTool(func=web_read)]
+        tools = tools + [FunctionTool(func=web_read)]
     # CodeGraph gate: drop the codegraph_* tools unless codegraph is actually
     # usable on this run — the SINGLE shared gate (binary + real index for the
     # repo + not env-disabled + not opted out per-ticket). Same gate the Doer
