@@ -337,7 +337,11 @@ fi
 # Operator overrides win via `:-`.
 export AIFORGE_EXTERNAL_INGEST="${AIFORGE_EXTERNAL_INGEST:-0}"
 export AIFORGE_DOCS_INDEX="${AIFORGE_DOCS_INDEX:-0}"
-export AIFORGE_ALLOW_WEB_FETCH="${AIFORGE_ALLOW_WEB_FETCH:-0}"
+# Web fetch (web_crawl/web_fetch) defaults ON: the tools are broadly available
+# to chat + all tool-using agents and are protected by the SSRF guard
+# (guard_public_url blocks metadata/loopback/private-LAN pivots). Set
+# AIFORGE_ALLOW_WEB_FETCH=0 in .env to re-lock a fully offline box.
+export AIFORGE_ALLOW_WEB_FETCH="${AIFORGE_ALLOW_WEB_FETCH:-1}"
 export AIFORGE_BROWSER_ALLOWLIST="${AIFORGE_BROWSER_ALLOWLIST:-127.0.0.1,localhost}"
 export DO_NOT_TRACK="${DO_NOT_TRACK:-1}"
 export HF_HUB_DISABLE_TELEMETRY="${HF_HUB_DISABLE_TELEMETRY:-1}"
