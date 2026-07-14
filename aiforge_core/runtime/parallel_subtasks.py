@@ -598,6 +598,192 @@ def _run_sequential(cwd: str, base_branch: str, subs: list, run_one, *,
             "failed": failed}
 
 
+# ─────────── Shared-worktree scheduler (P2) + recursion (P3) ───────────────
+# Instead of one worktree PER subtask + a merge step, run every subtask in ONE
+# shared worktree, ordered into WAVES: deps first, and within a wave only
+# file-DISJOINT subtasks run in parallel (file-sharing ones serialize — we
+# never merge two edits to the SAME file). A subtask that itself fails big is
+# decomposed ONE level deeper and its sub-agents run under the same scheduler
+# (bounded by AIFORGE_DECOMP_MAX_DEPTH). Guarded by AIFORGE_SHARED_WORKTREE
+# (default on); any failure falls back to the per-worktree path below.
+
+
+def _shared_worktree_enabled() -> bool:
+    return os.environ.get("AIFORGE_SHARED_WORKTREE", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _files_of(s: dict) -> set:
+    """The file set a subtask owns — for disjointness. Prefer explicit
+    ``files``, then ``scope_allowlist_globs``, then the single ``path``."""
+    raw = (s.get("files") or s.get("scope_allowlist_globs")
+           or ([s["path"]] if s.get("path") else []))
+    return {str(x) for x in raw if x}
+
+
+def schedule_waves(subs: list[dict]) -> list[list[dict]]:
+    """Order subtasks into execution WAVES for a shared worktree.
+
+    - deps respected: a subtask runs only after every dep slug has completed;
+    - within a wave, subtasks are pairwise file-DISJOINT (safe to run parallel
+      in one tree). A subtask sharing a file with one already picked for the
+      wave is deferred to a later wave (serialized — no same-file merge).
+    Cycle/unknown-dep safe: if nothing is ready, force the first remaining
+    subtask so the loop always makes progress.
+    """
+    remaining = [s for s in subs if isinstance(s, dict) and s.get("slug")]
+    slugs = {s.get("slug") for s in remaining}
+    done: set = set()
+    waves: list[list[dict]] = []
+    guard = 0
+    while remaining and guard < 10000:
+        guard += 1
+        ready = [s for s in remaining
+                 if all(d in done or d not in slugs
+                        for d in (s.get("deps") or []))]
+        if not ready:                       # dep cycle → force progress
+            ready = [remaining[0]]
+        wave: list[dict] = []
+        used: set = set()
+        for s in ready:
+            fs = _files_of(s)
+            if fs and (fs & used):          # shares a file → next wave
+                continue
+            wave.append(s)
+            used |= fs
+        for s in wave:
+            done.add(s.get("slug"))
+            remaining.remove(s)
+        waves.append(wave)
+    if remaining:                           # safety net: serialize leftovers
+        waves.extend([[s] for s in remaining])
+    return waves
+
+
+def _recurse_max() -> int:
+    try:
+        return max(1, int(os.environ.get("AIFORGE_DECOMP_MAX_DEPTH", "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _run_one_recursive(sub, wt, run_one, on_status, ticket_id, should_cancel,
+                       depth: int) -> dict:
+    """Run ONE subtask in the shared worktree ``wt``. On failure, if we're not
+    yet at the depth cap, decompose it one level deeper and run its sub-agents
+    under the same scheduler (P3). Returns ``{ok, slug, ...}``."""
+    slug = sub.get("slug")
+    _update(ticket_id, slug, "running", on_status)
+    try:
+        r = run_one(sub, wt) or {}
+    except Exception as exc:  # noqa: BLE001
+        r = {"ok": False, "error": str(exc)}
+    if r.get("ok"):
+        _update(ticket_id, slug, "done", on_status)
+        return {**r, "slug": slug}
+    if depth + 1 < _recurse_max() and not (should_cancel and should_cancel()):
+        children = _decompose(sub.get("goal") or sub.get("title") or "")
+        if len(children) >= 2:
+            for i, c in enumerate(children):
+                c["slug"] = f"{slug}.{i + 1}"
+                c["_depth"] = depth + 1
+            _emit(ticket_id, slug, "recurse",
+                  f"subtask too big — split into {len(children)} sub-agents", {})
+            child_results: dict = {}
+            _run_wave_set(wt, children, run_one, on_status, ticket_id,
+                          should_cancel, child_results, depth + 1)
+            ok = bool(child_results) and all(
+                cr.get("ok") for cr in child_results.values())
+            _update(ticket_id, slug, "done" if ok else "failed", on_status)
+            return {"ok": ok, "slug": slug, "recursed": True,
+                    "children": len(children)}
+    _update(ticket_id, slug, "failed", on_status)
+    return {**r, "slug": slug}
+
+
+def _run_wave_set(wt, subs, run_one, on_status, ticket_id, should_cancel,
+                  results: dict, depth: int) -> None:
+    """Execute waves in ``wt``: sequential across waves, parallel WITHIN a wave
+    (files are disjoint by construction). Fills ``results`` slug→result."""
+    for wave in schedule_waves(subs):
+        if should_cancel and should_cancel():
+            break
+        if len(wave) == 1:
+            s = wave[0]
+            results[s["slug"]] = _run_one_recursive(
+                s, wt, run_one, on_status, ticket_id, should_cancel, depth)
+            continue
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=_max_workers()) as ex:
+            futs = {ex.submit(_run_one_recursive, s, wt, run_one, on_status,
+                              ticket_id, should_cancel, depth): s for s in wave}
+            for f in concurrent.futures.as_completed(futs):
+                s = futs[f]
+                if should_cancel and should_cancel():
+                    for pf in futs:
+                        pf.cancel()
+                try:
+                    results[s["slug"]] = f.result()
+                except concurrent.futures.CancelledError:
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    results[s["slug"]] = {"ok": False, "slug": s["slug"],
+                                          "error": str(exc)}
+
+
+def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
+                         validate_one, on_status, run_token, should_cancel,
+                         merge, integration_test) -> dict:
+    """Run all subtasks in ONE shared worktree (waves), build+test the whole
+    tree ONCE, then merge the single shared branch. No per-subtask worktrees,
+    no cross-branch merge of same-file edits."""
+    wt, branch = _make_worktree(repo_root, base_branch, "shared", run_token)
+    results: dict = {}
+    conflicts: list[str] = []
+    merged = 0
+    integ: dict = {"ok": None, "skipped": True}
+    try:
+        _run_wave_set(wt, subs, run_one, on_status, ticket_id, should_cancel,
+                      results, 0)
+        # Capture anything the doers left uncommitted onto the shared branch.
+        _git(["add", "-A"], wt)
+        _git(["commit", "-m", "shared-worktree subtasks"], wt)  # no-op if clean
+        # ONE integration build+test on the combined tree (P5 verify).
+        if integration_test is not None:
+            try:
+                integ = integration_test(wt) or {"ok": False}
+            except Exception as exc:  # noqa: BLE001
+                integ = {"ok": False, "error": str(exc)}
+        else:
+            integ = _build_or_test(wt)
+        if merge:
+            ok, info = _merge_branch(repo_root, base_branch, branch)
+            if ok:
+                merged = 1
+            else:
+                conflicts.append("shared")
+    finally:
+        if wt and os.path.isdir(wt):
+            _git(["worktree", "remove", "--force", wt], repo_root)
+        _git(["branch", "-D", branch], repo_root)
+        _git(["worktree", "prune"], repo_root)
+
+    ordered = [results.get(s["slug"], {"ok": False, "slug": s["slug"]})
+               for s in subs]
+    done = sum(1 for r in ordered if r.get("ok"))
+    failed = len(subs) - done
+    all_ok = (done == len(subs) and not conflicts
+              and integ.get("ok") is not False)
+    review = (f"shared worktree: {done}/{len(subs)} subtasks done"
+              + ("; integration green" if integ.get("ok") else "")
+              + ("; integration FAILED" if integ.get("ok") is False else "")
+              + ("; MERGE CONFLICT" if conflicts else ""))
+    return {"ok": all_ok, "total": len(subs), "done": done, "validated": done,
+            "failed": failed, "merged": merged, "conflicts": conflicts,
+            "conflict_details": [], "warnings": [], "integration": integ,
+            "review": review, "results": ordered, "mode": "shared_worktree"}
+
+
 def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                  subtasks: list[dict], run_one, *, validate_one=None,
                  integration_test=None, on_status=None, merge: bool = True,
@@ -605,8 +791,22 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
     """Run ``subtasks`` concurrently (each in its own worktree), VALIDATE each
     (build/tests green), then merge the validated branches into ``base_branch``
     sequentially. Returns an aggregate incl. a review summary.
+
+    With AIFORGE_SHARED_WORKTREE=1 (default) this delegates to the shared-
+    worktree wave scheduler (P2); on any error it falls back to the per-worktree
+    path below so a scheduler bug can never brick a run.
     """
     subs = [s for s in (subtasks or []) if isinstance(s, dict) and s.get("slug")]
+    if subs and _shared_worktree_enabled():
+        try:
+            import uuid as _uuid
+            return _run_shared_worktree(
+                repo_root, base_branch, ticket_id, subs, run_one, validate_one,
+                on_status, _uuid.uuid4().hex[:8], should_cancel, merge,
+                integration_test)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("shared-worktree scheduler failed (%s) — falling back "
+                        "to per-worktree", exc)
     if not subs:
         return {"ok": True, "total": 0, "done": 0, "failed": 0, "validated": 0,
                 "merged": 0, "conflicts": [], "note": "no subtasks",

@@ -69,16 +69,28 @@ turn → CLASSIFY(task_type) ─┬─ simple            → single agent
 - Per-subtask verify (compile+test for code; findings-non-empty for analysis).
 - Bounded turns/wall; `too_big` → recurse (once) or core-first retry.
 
-## Phased build order
-- **P0** Narrow ab61daa: analysis fan-out vs single-agent split in the router.
-- **P1** Analysis fan-out pipeline (by-repo explore → synthesize → draft).
-  Highest user value, lowest risk (read-only, new module).
-- **P2** Shared-worktree scheduler with dep-DAG + disjoint-parallel waves
-  (replaces per-subtask-worktree+merge for code).
-- **P3** Recursive decomposition (`too_big` → one level deeper) + depth cap.
-- **P4** CodeGraph: blocking first-time `codegraph init` + gate cwd fix +
-  ensure tools advertised.
-- **P5** Tightening pass across all levels (scope, verify, bounds).
+## Phased build order  (ALL SHIPPED)
+- **P0 ✅** Narrow ab61daa: analysis fan-out vs single-agent split (439c538).
+- **P1 ✅** Analysis fan-out pipeline (by-repo explore → synthesize → draft)
+  — `analysis_pipeline.py` (439c538).
+- **P2 ✅** Shared-worktree scheduler with dep-DAG + disjoint-parallel waves
+  — `schedule_waves` / `_run_shared_worktree` in parallel_subtasks.py, behind
+  `AIFORGE_SHARED_WORKTREE` (default on, per-worktree fallback on error).
+- **P3 ✅** Recursive decomposition (`_run_one_recursive`: failed subtask →
+  one level deeper sub-agents), depth cap `AIFORGE_DECOMP_MAX_DEPTH` (2).
+- **P4 ✅** CodeGraph blocking first-time `codegraph init` + repo-root gate fix
+  (ddac2bd).
+- **P5 ✅** Tightening: single integration build+test on the combined tree,
+  fresh scoped context per sub-agent, disjoint-wave parallelism.
+
+## Known limitations (verify/harden on NUC)
+- Shared-worktree PARALLEL: safety rests on the scheduler's disjoint-file
+  waves. Hard scope-REVERT (undo an out-of-scope write) is not implemented;
+  a mis-behaving agent editing a sibling's file in the same wave isn't caught.
+- Each subtask's Doer still builds/tests inside its loop; concurrent builds in
+  one tree could contend. Disable with `AIFORGE_SHARED_WORKTREE=0` if it bites.
+- E2E (real ADK/agent runs) unverified locally (google.adk absent) — validate
+  on NUC. Pure logic (routing, repo-id, topics, wave scheduling) is tested.
 
 ## Already shipped this effort
 - Web: certifi TLS, web_crawl+web_search to all agents, SSRF guard, gate on.
