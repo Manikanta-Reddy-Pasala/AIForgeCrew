@@ -192,10 +192,24 @@ def make_approval_gate_callback():
             loop = asyncio.get_running_loop()
             decision = await loop.run_in_executor(None, chat_approve.wait, sid)
             if decision.get("decision") != "approve":
-                return {"ok": False, "rejected": True,
+                _note = decision.get("note") or ""
+                # Interactive reject HALTS the run — don't just hand the Doer an
+                # error and let it keep looping (the user then had to hit Stop /
+                # Reset stuck runs). Signal cancel so the pipeline stops at its
+                # next checkpoint (chat_pipeline/parallel_subtasks honour it) and
+                # the run ends; the user resumes by sending feedback as a new
+                # message. A cancelled approval ('cancelled' note, from /stop)
+                # is already a stop, so don't re-cancel on that.
+                if _note != "cancelled":
+                    try:
+                        from aiforge_core.runtime import chat_cancel
+                        chat_cancel.cancel(sid)
+                    except Exception:  # noqa: BLE001 — best-effort halt
+                        pass
+                return {"ok": False, "rejected": True, "halt": True,
                         "error": "user rejected this action"
-                                 + (f": {decision['note']}" if decision.get("note") else "")
-                                 + " — do NOT retry; adjust or ask what they want."}
+                                 + (f": {_note}" if _note else "")
+                                 + " — run halted; waiting for the user's next message."}
             return None
         except Exception as exc:  # noqa: BLE001 — never block the pipeline on a gate bug
             log.debug("tool_gate internal error (allow): %s", exc)

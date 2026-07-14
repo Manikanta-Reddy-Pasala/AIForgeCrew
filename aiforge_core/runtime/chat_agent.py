@@ -4628,10 +4628,28 @@ def run_chat_agent(
             if decision.get("note") == "approval timed out":
                 yield {"type": "approval_expired", "id": seq, "name": name}
             if decision.get("decision") != "approve":
+                _rnote = decision.get("note") or ""
                 result = {"ok": False, "rejected": True,
                           "error": "user rejected this action"
-                                   + (f": {decision['note']}" if decision.get("note") else "")}
+                                   + (f": {_rnote}" if _rnote else "")}
                 yield {"type": "tool", "name": name, "args": args, "result": result}
+                # Interactive reject is TERMINAL: STOP and WAIT for the user.
+                # The old path recorded an OBSERVATION and `continue`d the loop —
+                # so a model that didn't emit ASK: just kept going and the user
+                # had to hit Stop / Reset stuck runs. Now a human reject pauses
+                # via the awaiting_input primitive (same as ASK:/stuck paths):
+                # the run ends cleanly and the next user message resumes it.
+                # Autonomous runs (session_id is None) have no human to answer,
+                # so they keep the record-and-continue behaviour.
+                if session_id is not None:
+                    _ask = ("Stopped — you rejected the "
+                            f"`{name}` action"
+                            + (f" ({_rnote})" if _rnote else "")
+                            + ". Tell me what you'd like me to do instead, and "
+                            "I'll continue from there.")
+                    yield {"type": "message", "awaiting_input": True, "text": _ask}
+                    yield {"type": "done"}
+                    return
                 convo.append({"role": "user",
                               "content": f"OBSERVATION: {json.dumps(result)} "
                                          "(the user rejected it — do NOT retry; "
