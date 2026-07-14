@@ -715,7 +715,13 @@ def _run_one_recursive(sub, wt, run_one, validate_one, on_status, ticket_id,
 
     r = _attempt_once()
     if not r.get("ok") and not (should_cancel and should_cancel()):
-        r = _attempt_once()                 # one retry (same shared tree)
+        # Informed retry: feed the failure into the subtask so the retry prompt
+        # knows what went wrong (a blind identical re-run on a deterministic
+        # endpoint is a no-op). We can't hard-reset the shared tree (it holds
+        # other subtasks' work), so this is the best available signal.
+        sub["_retry_error"] = str(r.get("error") or "")[:800]
+        r = _attempt_once()
+        sub.pop("_retry_error", None)
     if r.get("ok"):
         _update(ticket_id, slug, "done", on_status)
         return {**r, "slug": slug}
@@ -768,21 +774,33 @@ def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
     merge_ok = False
     integ: dict = {"ok": None, "skipped": True}
     cancelled = False
+    committed = False
     try:
         _run_wave_set(wt, subs, run_one, validate_one, on_status, ticket_id,
                       should_cancel, results, 0)
-        # Stop pressed mid-run: do NOT commit/integrate/merge PARTIAL work into
-        # base — leave the branch for inspection (the per-worktree path guards
-        # the merge on cancel the same way). Without this, a Stop after wave 1
-        # of 3 silently merged half-implemented code into base.
+        # ALWAYS commit the subtask work onto the shared branch FIRST — the
+        # `finally` force-removes the worktree, which would DISCARD anything
+        # left uncommitted (incl. earlier waves that already succeeded). Commit
+        # even on cancel so the kept branch actually holds the work; we just
+        # skip MERGING partial work into base.
+        _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], wt)
+        _git(["commit", "-m", "shared-worktree subtasks"], wt)  # no-op if clean
+        # "committed" = the branch is AHEAD of base — true whether the stragglers
+        # commit above landed OR the doers already committed milestones inside
+        # the shared tree. (A clean `commit` returns non-zero, so we must NOT key
+        # off its exit code or we'd delete a branch that holds doer commits.)
+        try:
+            _ahead = _git(["rev-list", "--count", f"{base_branch}..{branch}"],
+                          repo_root)
+            committed = int((_ahead.stdout or "0").strip() or "0") > 0
+        except Exception:  # noqa: BLE001 — can't tell → keep (never lose work)
+            committed = True
+        # Stop pressed mid-run: keep the committed branch, but do NOT
+        # integrate/merge PARTIAL work into base.
         if should_cancel and should_cancel():
             cancelled = True
             integ = {"ok": None, "skipped": True, "cancelled": True}
         else:
-            # Capture anything the doers left uncommitted — EXCLUDE build
-            # artifacts (target/, node_modules/, __pycache__/…) from base.
-            _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], wt)
-            _git(["commit", "-m", "shared-worktree subtasks"], wt)  # no-op if clean
             # ONE integration build+test on the combined tree (P5 verify).
             if integration_test is not None:
                 try:
@@ -800,19 +818,18 @@ def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
     finally:
         if wt and os.path.isdir(wt):
             _git(["worktree", "remove", "--force", wt], repo_root)
-        # Delete the branch ONLY after a successful merge (or when merge was
-        # off). On conflict OR cancel the shared branch is the SOLE copy of the
-        # subtask work — keep it (surface its name) so nothing is lost.
-        _kept = bool(conflicts) or cancelled
-        if merge_ok or (not merge and not cancelled):
-            _git(["branch", "-D", branch], repo_root)
-        elif cancelled:
-            log.warning("shared-worktree CANCELLED — KEEPING branch %s "
-                        "(partial work, NOT merged into base)", branch)
+        # KEEP the branch only when it holds UNMERGED work worth inspecting —
+        # a cancel or a merge conflict, AND something was actually committed.
+        # Otherwise (clean merge, merge-off, or a mid-run exception before the
+        # commit) delete it: there's nothing on it, and run_parallel's fallback
+        # re-runs everything under fresh branches.
+        _kept = committed and (bool(conflicts) or cancelled)
+        if _kept:
+            log.warning("shared-worktree %s — KEEPING branch %s (holds subtask "
+                        "work, NOT merged into base; inspect/re-merge manually)",
+                        "CANCELLED" if cancelled else "merge conflict", branch)
         else:
-            log.warning("shared-worktree merge conflict — KEEPING branch %s "
-                        "(holds all subtask work; inspect/re-merge manually)",
-                        branch)
+            _git(["branch", "-D", branch], repo_root)
         _git(["worktree", "prune"], repo_root)
 
     ordered = [results.get(s["slug"], {"ok": False, "slug": s["slug"]})

@@ -244,7 +244,7 @@ def _synthesize(overall: str, results: list[dict], topics: list[str]) -> str:
     (no tools) — the findings are already gathered. Draft-only."""
     from aiforge_core.llm.client import complete as _complete
     # Budget PER REPO so a many-repo run doesn't silently drop the tail repos'
-    # findings (a flat [:48000] cut lands mid-stream and omits later repos).
+    # findings (a flat cut lands mid-stream and omits later repos).
     per = max(2000, 46000 // max(1, len(results)))
     blocks = []
     for r in results:
@@ -254,6 +254,11 @@ def _synthesize(overall: str, results: list[dict], topics: list[str]) -> str:
             body = body[:per] + "\n\n_(…findings truncated for synthesis)_"
         blocks.append(f"{head}\n\n{body}")
     joined = "\n\n---\n\n".join(blocks)
+    # Final cap CONSISTENT with the per-repo budget so EVERY repo's block is
+    # represented (a flat [:48000] would drop the tail once per*N exceeds it,
+    # e.g. an operator raising AIFORGE_ANALYSIS_MAX_REPOS).
+    _cap = per * len(results) + 4000
+    joined = joined[:_cap]
     topic_line = ("The requested topics were: " + "; ".join(topics) + ".\n"
                   if topics else "")
     convo = [{"role": "user", "content": (
@@ -267,7 +272,7 @@ def _synthesize(overall: str, results: list[dict], topics: list[str]) -> str:
         "a short 'gaps & recommendations' section. Keep concrete file references. "
         "This is a DRAFT for the user to review — do not add a 'published to "
         "Confluence' note.\n\n"
-        f"=== PER-REPOSITORY FINDINGS ===\n\n{joined[:48000]}")}]
+        f"=== PER-REPOSITORY FINDINGS ===\n\n{joined}")}]
     try:
         out = _complete("researcher", convo)
         return (out or "").strip() or joined
@@ -300,14 +305,20 @@ def stream_analysis_team(prompt: str, cwd: str, session_id=None,
         for r in repos]}
 
     results: list[dict] = []
+    cancelled = False
     workers = min(_max_workers(), max(1, len(repos)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         fut_map = {ex.submit(_explore_one, r, topics, prompt): r for r in repos}
         for fut in concurrent.futures.as_completed(fut_map):
             r = fut_map[fut]
             if session_id is not None and chat_cancel.is_cancelled(session_id):
+                cancelled = True
+                # NOTE: in-flight explores can't be interrupted (they run with
+                # session_id=None); the pool's context-exit waits for them. We
+                # stop consuming and mark the run partial.
                 yield {"type": "thought", "role": "router",
-                       "text": "Stopped — cancelling remaining explores."}
+                       "text": "Stopped — no more explores; finishing with "
+                               "whatever completed."}
                 break
             try:
                 res = fut.result()
@@ -320,20 +331,25 @@ def stream_analysis_team(prompt: str, cwd: str, session_id=None,
             # silently, freezing the panel at "pending").
             yield {"type": "subtask_update", "slug": r["name"],
                    "status": "done" if res.get("ok") else "failed"}
+            _why = res.get("error") or "no findings produced"
             yield {"type": "thought", "role": "researcher",
                    "text": (f"{r['name']}: "
                             + ("findings ready" if res.get("ok")
-                               else f"explore failed ({res.get('error')})"))}
+                               else f"explore failed ({_why})"))}
 
     if not results:
         yield {"type": "message",
-               "text": "No repositories could be analyzed."}
+               "text": ("Stopped before any repository was analyzed."
+                        if cancelled else "No repositories could be analyzed.")}
         yield {"type": "done"}
         return
 
     yield {"type": "thought", "role": "synthesizer",
            "text": "Merging per-repo findings into one draft document."}
     draft = _synthesize(prompt, results, topics)
+    if cancelled:
+        draft = ("> ⚠ **Stopped early** — this is a PARTIAL analysis of "
+                 f"{len(results)} of {len(repos)} repositories.\n\n") + draft
     yield {"type": "message", "text": draft}
     yield {"type": "done"}
 
