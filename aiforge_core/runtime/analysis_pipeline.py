@@ -148,7 +148,10 @@ def extract_topics(prompt: str) -> list[str]:
     'analyze', 'on', 'about', 'cover', 'including') and splits it on commas /
     'and'. Returns [] when none is found — the explore agent then does a
     general overview."""
-    p = prompt or ""
+    # Strip filesystem paths first — otherwise "analyze /home/ai/codeRepo/X and
+    # /home/ai/codeRepo/Y" turns the path segments ("home", "codeRepo", the repo
+    # names) into bogus "topics".
+    p = re.sub(r"(?:~|/)[\w./\-]+", " ", prompt or "")
     m = re.search(
         r"\b(?:topics?|explore|analy[sz]e|cover(?:ing)?|about|on|including|"
         r"focus(?:ing)?\s+on)\b[:\s]+(.{3,240})", p, re.IGNORECASE)
