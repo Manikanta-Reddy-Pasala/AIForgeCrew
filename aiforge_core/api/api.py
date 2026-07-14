@@ -3543,6 +3543,18 @@ def _served_model_ids_for_role(role: str) -> set:
     return _served_model_ids(provider)
 
 
+def _model_env_override(role: str) -> dict | None:
+    """If an ``AIFORGE_<ROLE>_MODEL`` env var is set, it ALWAYS wins over the
+    picker's persisted value (agent_config.load_all ops escape hatch). Return
+    the pinning var + value so the UI can WARN that a pick won't take effect —
+    otherwise the picker silently saves a model that never runs."""
+    var = f"AIFORGE_{role.upper()}_MODEL"
+    val = os.environ.get(var)
+    if val and val.strip():
+        return {"var": var, "model": val.strip()}
+    return None
+
+
 @app.get("/api/chat/models")
 def chat_models() -> dict:
     """Models the user can pick for the 'chat' slot.
@@ -3583,11 +3595,15 @@ def chat_models() -> dict:
             out[mid] = {"id": mid, "label": mid.split("/")[-1], "active": True}
 
     models = sorted(out.values(), key=lambda m: (not m["active"], m["id"]))
+    # An env pin (AIFORGE_CHAT_MODEL / AIFORGE_DEFAULT_MODEL) overrides the
+    # picker — surface it so the UI can show "env-pinned, picking won't apply".
+    env_ovr = _model_env_override("chat") or _model_env_override("_default")
     return {
         "provider": provider,
         "current": current,
         "current_active": (current in served) if served else True,
         "models": models,
+        "env_override": env_ovr,
     }
 
 
@@ -3623,9 +3639,21 @@ def chat_model_set(body: _ChatModelBody) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     served = _served_model_ids_for_role("chat")
+    # WARN when an env pin will override this pick — the persisted value is
+    # saved but an AIFORGE_<ROLE>_MODEL env var wins on read, so the running
+    # model won't change. Without this the picker silently no-ops.
+    env_ovr = _model_env_override("chat")
+    if body.apply_all and not env_ovr:
+        env_ovr = _model_env_override("_default")
+    warning = None
+    if env_ovr and env_ovr.get("model") != cfg.get("model"):
+        warning = (f"saved, but {env_ovr['var']}={env_ovr['model']} is set and "
+                   "overrides it — the running model won't change until that "
+                   "env var is unset")
     return {"provider": cfg.get("provider"), "model": cfg.get("model"),
             "applied_to": "all agents" if body.apply_all else "chat only",
-            "active": (cfg.get("model") in served) if served else True}
+            "active": (cfg.get("model") in served) if served else True,
+            "env_override": env_ovr, "warning": warning}
 
 
 class _ModelReloadBody(BaseModel):
