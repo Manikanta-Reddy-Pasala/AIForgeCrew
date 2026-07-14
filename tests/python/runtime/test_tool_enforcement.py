@@ -194,13 +194,14 @@ def test_code_quality_tools_wired_into_pipeline(monkeypatch):
 
 def test_power_tools_wired_into_pipeline(monkeypatch):
     # OH-parity power tools that used to be chat-only are now on the pipeline
-    # surface too. web_search is intentionally excluded (researcher-only egress).
+    # surface too. web_search + web_crawl are ALSO in the base surface now
+    # (66784fc — stuck-agent recovery); only web_read stays researcher-only.
     monkeypatch.setenv("AIFORGE_TOOL_ENFORCE", "0")
     names = _names(doer_tools.adk_function_tools(role=None))
     for t in ("mcp", "browse", "execute_ipython_cell", "delegate_to_agent",
-              "github_pr", "multi_edit"):
+              "github_pr", "multi_edit", "web_search", "web_crawl"):
         assert t in names, f"power tool {t} missing from pipeline surface"
-    assert "web_search" not in names, "web egress stays researcher-only"
+    assert "web_read" not in names, "ungated web_read stays researcher-only"
 
 
 def test_git_and_jira_workflow_tools(monkeypatch):

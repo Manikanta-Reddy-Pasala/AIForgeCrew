@@ -193,6 +193,19 @@ def _explore_one(repo: dict, topics: list[str], overall: str) -> dict:
     def complete_fn(role, convo):
         return _complete(role, convo)
 
+    # Bind the repo root to THIS worker thread's context. ThreadPoolExecutor
+    # does NOT copy contextvars, and codegraph._repo() resolves via
+    # get_repo_root() BEFORE its cwd arg — so without this, a concurrent team
+    # run's process-global AIFORGE_REPO_ROOT env would make every explore
+    # resolve codegraph to the WRONG repo. Setting the contextvar here makes it
+    # win over the shared env, and reset restores the worker's context.
+    _root_tok = None
+    try:
+        from aiforge_core.runtime import request_context as _rc
+        _root_tok = _rc.set_repo_root(repo["path"])
+    except Exception:  # noqa: BLE001
+        _rc = None
+
     findings, ok = "", False
     try:
         # mode="analyze" is the HARD read-only guard AND asks for FINDINGS (not
@@ -216,6 +229,12 @@ def _explore_one(repo: dict, topics: list[str], overall: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"name": repo["name"], "path": repo["path"], "ok": False,
                 "error": str(exc), "findings": ""}
+    finally:
+        if _root_tok is not None and _rc is not None:
+            try:
+                _rc.reset_repo_root(_root_tok)
+            except Exception:  # noqa: BLE001
+                pass
     return {"name": repo["name"], "path": repo["path"], "ok": ok,
             "findings": findings}
 
@@ -296,7 +315,10 @@ def stream_analysis_team(prompt: str, cwd: str, session_id=None,
                 res = {"name": r["name"], "path": r["path"], "ok": False,
                        "error": str(exc), "findings": ""}
             results.append(res)
-            yield {"type": "subtask_status", "slug": r["name"],
+            # subtask_update is the event type BOTH the API state and the
+            # frontend reducer handle (subtask_status was invented and dropped
+            # silently, freezing the panel at "pending").
+            yield {"type": "subtask_update", "slug": r["name"],
                    "status": "done" if res.get("ok") else "failed"}
             yield {"type": "thought", "role": "researcher",
                    "text": (f"{r['name']}: "

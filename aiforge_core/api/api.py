@@ -4562,7 +4562,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 _fan, _ana_repos, _ana_topics = _ap.should_fan_out(prompt, cwd)
             except Exception:  # noqa: BLE001 — never break routing on the probe
                 _fan, _ana_repos, _ana_topics = (False, [], [])
-            if _fan and _psub_on:
+            # No _psub_on gate: analysis fan-out is READ-ONLY + bounded, and its
+            # concurrency already respects AIFORGE_PARALLEL_SUBTASKS_MAX (=1 →
+            # sequential). Gating on _psub_on left a single agent seeing only
+            # cwd, silently dropping the other repos.
+            if _fan:
                 yield from _ap.stream_analysis_team(
                     prompt, cwd=cwd, session_id=session_id,
                     repos=_ana_repos, topics=_ana_topics)
@@ -4806,8 +4810,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 _simple_sha = _commit_turn_baseline(cwd)
             except Exception:  # noqa: BLE001
                 _simple_sha = ""
+        # A doc/analysis task is READ-ONLY: force analyze mode so the single
+        # agent (like the fan-out explores) can't write/patch/bash in the user's
+        # real repo — it produces the analysis/document as its answer. Otherwise
+        # a "analyze X and write a report" turn ran writable and could mutate the
+        # repo + trigger the post-run build. Non-doc turns keep their mode.
+        _single_mode = "analyze" if _doc_task and agent_mode != "plan" else agent_mode
         yield from run_chat_agent(_enriched_history, cwd=cwd, role=role,
-                                  session_id=session_id, mode=agent_mode)
+                                  session_id=session_id, mode=_single_mode)
         # Read-only / analysis query ("analyze/explain/how does X work") → the user
         # wants an EXPLANATION, not a build. Don't run the integration-check +
         # self-heal (which would build/test an existing repo and report a failure

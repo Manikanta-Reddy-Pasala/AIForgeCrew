@@ -160,11 +160,12 @@ def test_doer_keeps_full_working_surface():
     references the legacy read/write/exec tools heavily, so scoping would
     starve it. Guard that the full surface still carries the doer essentials."""
     names = _names(doer_tools.adk_function_tools())
-    # web_search/web_read are intentionally NOT here — web is researcher-scoped.
+    # web_search/web_crawl ARE in the base surface now (66784fc); only the
+    # ungated web_read stays researcher-scoped.
     for t in ("project", "subtask_update", "serve", "editor",
               "run_shell", "file_write", "file_patch", "file_read",
-              "git_commit", "bash", "ensure_runtime"):
+              "git_commit", "bash", "ensure_runtime", "web_search", "web_crawl"):
         assert t in names, f"doer full surface is missing {t}"
-    assert "web_search" not in names, "web is researcher-only; doer must not have it"
+    assert "web_read" not in names, "ungated web_read stays researcher-only"
     # doer.py must remain unwired (full set) — not in the scoped set.
     assert "doer" not in _wired_roles()

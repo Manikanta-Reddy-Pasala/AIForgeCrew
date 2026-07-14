@@ -3924,7 +3924,13 @@ def run_chat_agent(
             # Blocking first-time build: a freshly pinned repo has no .codegraph
             # index, so the tools would be silently dropped. Build it once (the
             # user chose blocking-first-time) so codegraph is usable THIS turn.
-            _cg.ensure_indexed(cwd)
+            # SKIP the BUILD in any read-only mode (plan/analyze): the build
+            # writes a .codegraph/ dir into the repo — a mutation a read-only
+            # turn promised not to make — and the analysis fan-out would fire
+            # 4-8 concurrent 180s `codegraph init` builds across the real repos
+            # in parallel. Read-only turns still QUERY an existing index.
+            if not readonly_mode:
+                _cg.ensure_indexed(cwd)
             if _cg.enabled_for_run(cwd):
                 sys_msg += (
                     "\n\nCODEGRAPH IS AVAILABLE (a pre-built code-relation index "
@@ -4525,12 +4531,15 @@ def run_chat_agent(
                           "content": f"OBSERVATION: {json.dumps(result)}"})
             continue
 
-        # PLAN mode (#2): block mutating tools — read-only only.
+        # PLAN/ANALYZE mode (#2): block mutating tools — read-only only.
         if readonly_mode and name not in _READONLY_TOOLS:
+            _mname = "Analyze" if analyze_mode else "Plan"
+            _mtail = ("Report your FINDINGS." if analyze_mode
+                      else "Finish with a PLAN; the user will switch to Act "
+                           "mode to execute it.")
             result = {"ok": False, "blocked": "plan_mode",
-                      "error": f"'{name}' is blocked in Plan mode (read-only). "
-                               "Finish with a PLAN; the user will switch to Act "
-                               "mode to execute it."}
+                      "error": f"'{name}' is blocked in {_mname} mode "
+                               f"(read-only). {_mtail}"}
             yield {"type": "tool", "name": name, "args": args, "result": result}
             convo.append({"role": "user",
                           "content": f"OBSERVATION: {json.dumps(result)}"})

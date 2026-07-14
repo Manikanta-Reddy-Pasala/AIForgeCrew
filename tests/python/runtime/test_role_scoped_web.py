@@ -1,5 +1,7 @@
-"""Role-scoped web: only the researcher gets web_search + web_read; the Doer
-(no role) and other agents never receive them; fetch_url stays gated."""
+"""Web-tool surface (updated 66784fc): web_search + web_crawl are in the BASE
+surface — every tool-using agent gets them (gated by AIFORGE_ALLOW_WEB_FETCH,
+SSRF-guarded); web_search is keyless DuckDuckGo. web_READ (ungated raw page
+read) stays RESEARCHER-only. fetch_url stays gated."""
 from __future__ import annotations
 import os
 import pytest
@@ -13,19 +15,23 @@ def _names(role):
 
 def test_researcher_gets_web_tools():
     n = _names("researcher")
-    assert "web_search" in n and "web_read" in n
+    assert {"web_search", "web_read", "web_crawl"} <= n
 
 
-def test_doer_no_role_has_no_web_tools():
-    # role=None returns the full base set — which must NOT contain the web tools
+def test_doer_no_role_gets_base_web_but_not_web_read():
+    # role=None returns the full base set — web_search + web_crawl are in it now,
+    # but web_read (ungated raw read) stays researcher-only.
     n = _names(None)
-    assert "web_search" not in n and "web_read" not in n
+    assert "web_search" in n and "web_crawl" in n
+    assert "web_read" not in n
 
 
-def test_other_role_no_web(monkeypatch):
-    # a restricted non-researcher role never gets web tools
+def test_planner_gets_web_search_not_web_read():
+    # a tool-using role (planner allowlist includes web_search/web_crawl); the
+    # ungated web_read is still researcher-only.
     n = _names("planner")
-    assert "web_search" not in n and "web_read" not in n
+    assert "web_search" in n and "web_crawl" in n
+    assert "web_read" not in n
 
 
 def test_web_read_ungated(monkeypatch):

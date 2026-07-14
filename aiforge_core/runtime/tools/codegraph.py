@@ -179,6 +179,12 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
     with _lock_for(repo):            # PER-REPO lock (not one global)
         if indexed(cwd):            # built by another thread while we waited
             return True
+        # Re-check the negative cache INSIDE the lock — a thread that queued
+        # while another built-and-failed must honor that fresh failure, not
+        # re-run the full blocking build.
+        ts2 = _FAILED.get(repo)
+        if ts2 is not None and (_time.monotonic() - ts2) < _retry_cooldown_s():
+            return False
         exe = _bin()
         if not exe:
             return False
