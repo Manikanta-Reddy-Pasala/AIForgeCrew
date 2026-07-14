@@ -4454,6 +4454,43 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 r"^(how|what|why|where|when|which|who|should|can|could|would|"
                 r"is|are|do|does|did|explain|tell me|show me|help me understand|"
                 r"any (idea|thought)|best way)\b", p))
+
+        def _is_doc_analysis_task(p: str) -> bool:
+            """A DOC / ANALYSIS deliverable, not a code build. e.g. 'analyze 3
+            repos and create a Confluence page', 'write a report/summary',
+            'review the architecture'. The code pipeline (architect→tests→PR)
+            is WRONG for these — the deliverable is prose/analysis, not a file
+            tree with tests. Routes to the single research agent instead.
+
+            Guard against a code task that merely MENTIONS a doc word ('a
+            monthly REPORT module', 'a TICKET service'): a code noun + build
+            verb, or any hard code-build signal, wins → NOT a doc task."""
+            import re as _re
+            p = (p or "").lower()
+            if len(p) < 8:
+                return False
+            doc_noun = _re.search(
+                r"\b(confluence|wiki|documentation|readme|report|summary|"
+                r"write[- ]?up|analysis|assessment|overview|whitepaper|"
+                r"design\s+doc|architecture\s+doc|rfc|proposal|memo|"
+                r"presentation|slide\s*deck|jira\s+(page|ticket|story|epic))\b", p)
+            analysis_verb = _re.search(
+                r"\b(analy[sz]e|analy[sz]is|review|audit|assess|"
+                r"summar[iy][sz]e|document|investigate|compare|explain|"
+                r"describe|understand|evaluate|explore)\b", p)
+            code_signal = _re.search(
+                r"\b(implement|refactor|debug|fix|unit\s*test|endpoint|compile|"
+                r"deploy|write\s+(code|a\s+function|a\s+class|tests?))\b", p)
+            code_noun = _re.search(
+                r"\b(app|application|api|service|server|cli|module|package|"
+                r"library|component|endpoint|function|class|microservice|"
+                r"backend|frontend|engine|parser|compiler|bot|dashboard|crud)\b", p)
+            build_verb = _re.search(
+                r"\b(build|create|implement|generate|make|write|develop|code|"
+                r"scaffold|add)\b", p)
+            if code_signal or (code_noun and build_verb):
+                return False
+            return bool(doc_noun or analysis_verb)
         # NB: _parallel_team is `team and enabled()` — False for simple/plan. Use
         # the raw capability (_pp.enabled()) so escalation can fire off-team.
         _psub_on = False
@@ -4472,6 +4509,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # only build verbs (build/create/implement), NOT a "fix"/edit, and the
         # pipeline's greenfield-guard skips scaffold/off-plan-prune + never deletes
         # baseline files. A targeted edit still stays single-agent (no match).
+        # DOC / ANALYSIS deliverable (analyze repos → Confluence page, write a
+        # report, review architecture) must NEVER enter the code pipeline — it
+        # designs a file tree + tests + PR, which is the wrong artifact. Route
+        # these to the single research agent regardless of team mode.
+        _doc_task = _is_doc_analysis_task(prompt)
         _build_escalate = bool(
             not team and _psub_on
             # PLAN mode is read-only — it must NEVER escalate into a pipeline that
@@ -4480,6 +4522,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             # A question ("how do I build X with tests?") is advice, not a build
             # order — answer it, don't spin up the whole build pipeline.
             and not _is_advice_question(prompt)
+            and not _doc_task
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
             and _looks_like_multifile_build(prompt))
         if _build_escalate:
@@ -4508,8 +4551,15 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # files) instead of re-decomposing from scratch and clobbering prior work.
         _new_build = _looks_like_multifile_build(prompt)
         _route_pipeline = (_psub_on and (team or _build_escalate)
-                           and (_greenfield or _new_build))
-        if team and not _route_pipeline:
+                           and (_greenfield or _new_build)
+                           and not _doc_task)
+        if _doc_task:
+            yield {"type": "thought", "role": "router",
+                   "text": "Doc/analysis task (analysis or a doc/Confluence "
+                           "deliverable) — routing to the single research agent, "
+                           "NOT the code build pipeline. No file tree, tests, or "
+                           "PR; the output is the analysis/document (draft)."}
+        if team and not _route_pipeline and not _doc_task:
             yield {"type": "thought", "role": "router",
                    "text": "Existing code + a targeted change — editing in place "
                            "with the single agent (history + current files in "
@@ -4571,11 +4621,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 yield {"type": "done"}
                 return
             _af_log.info("parallel decompose <2 subtasks — sequential fallback")
-        if team:
+        if team and not _doc_task:
             # Sequential team pipeline already has its own ADK enhancer agent;
             # don't double-enhance here. Mark the driver launched ONLY here —
             # so a crash in the parallel pre-steps above (which never reach this
             # line) still persists + cleans up inline in _gen's finally.
+            # A DOC/ANALYSIS task falls through to the single research agent
+            # below (not this code pipeline), even in team mode.
             _path["driver"] = True
             yield from stream_chat_pipeline(prompt, cwd=cwd, session_id=session_id,
                                             history=history, started_at=_turn_t0)
@@ -4650,6 +4702,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                         f"{_raw}\n\n---\n[Interpreted request — a context-enriched "
                         f"restatement; if it conflicts with my words above, my "
                         f"words win:]\n{_enriched}")
+                # DRAFT-ONLY for a doc/analysis task: the deliverable is the
+                # written analysis/document as markdown in the final answer. Do
+                # NOT publish to Confluence/Jira (no confluence_create/update,
+                # jira_create) unless the user EXPLICITLY says publish/post — a
+                # wrong or premature write to the team wiki is not recoverable.
+                if _doc_task:
+                    _pub = bool(__import__("re").search(
+                        r"\b(publish|post it|post the|go ahead and (create|post|"
+                        r"publish)|actually create)\b", (prompt or "").lower()))
+                    if not _pub:
+                        _m["content"] += (
+                            "\n\n---\n[Deliverable = DRAFT ONLY. Produce the "
+                            "analysis/document as markdown in your final answer. "
+                            "Do NOT publish — do not call confluence_create/"
+                            "confluence_update/jira_create. Read tools (repos, "
+                            "web, existing pages) are fine. I will review and "
+                            "post it myself.]")
                 break
         if agent_mode == "plan":
             _subs = _pp._decompose(_enriched)       # Planner
