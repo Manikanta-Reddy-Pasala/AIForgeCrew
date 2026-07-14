@@ -1331,8 +1331,14 @@ export default function Chat() {
     try {
       const r = await chatSessionSteer(activeId, q);
       if (r.queued) {
-        // FE5: rely on the server's role:'steer' echo instead of an
-        // optimistic note that's never reconciled if the run ends first.
+        // Show the steer text IMMEDIATELY as a step in the live stream so it
+        // doesn't just vanish from the composer until the agent drains it. It
+        // commits with the turn (no orphan): the later server role:'steer' echo
+        // marks it actually applied.
+        setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps, {
+          kind: 'thought' as const, role: 'steer',
+          text: `↪ Steer queued (applies at the next step): ${q}`,
+        }] } : prev);
         toast('Steer queued — applies at the next step');
       } else if (r.unsupported) {
         setInput(q);   // restore — nothing was queued
