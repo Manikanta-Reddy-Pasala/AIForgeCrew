@@ -125,5 +125,59 @@ def test_extract_topics_comma_and_list():
         "auth", "sync", "data-model"]
 
 
+# ─────────── recursion (P3) + per-level N-retry (_run_one_recursive) ────────
+def test_subtask_passes_no_retry_no_recursion(monkeypatch):
+    monkeypatch.setenv("AIFORGE_DECOMP_RETRIES", "2")
+    calls = []
+    r = ps._run_one_recursive(
+        {"slug": "P", "goal": "g"}, "/tmp/wt",
+        lambda sub, wt: (calls.append(sub["slug"]) or {"ok": True}),
+        None, None, None, None, 0)
+    assert r["ok"] is True and "recursed" not in r and len(calls) == 1
+
+
+def test_retry_succeeds_on_second_attempt(monkeypatch):
+    monkeypatch.setenv("AIFORGE_DECOMP_RETRIES", "2")
+    seq = [{"ok": False, "error": "e"}, {"ok": True}]
+    r = ps._run_one_recursive(
+        {"slug": "P", "goal": "g"}, "/tmp/wt",
+        lambda sub, wt: seq.pop(0), None, None, None, None, 0)
+    assert r["ok"] is True and "recursed" not in r and seq == []
+
+
+def test_persistent_failure_retries_then_spawns_subagents_that_also_retry(monkeypatch):
+    # A subtask that keeps failing: N retries, then decompose into sub-agents,
+    # and EACH sub-agent also retries (the user's requirement). Depth-capped.
+    monkeypatch.setenv("AIFORGE_DECOMP_RETRIES", "2")   # 1 + 2 = 3 attempts/level
+    monkeypatch.setenv("AIFORGE_DECOMP_MAX_DEPTH", "2")  # top + one recursion
+    monkeypatch.setattr(ps, "_decompose", lambda goal, tries=2: [
+        {"slug": "a", "goal": "child a"}, {"slug": "b", "goal": "child b"}])
+    calls = []
+    r = ps._run_one_recursive(
+        {"slug": "P", "goal": "big"}, "/tmp/wt",
+        lambda sub, wt: (calls.append(sub["slug"]) or {"ok": False, "error": "boom"}),
+        None, None, None, None, 0)
+    assert r["recursed"] is True and r["children"] == 2 and r["ok"] is False
+    # parent 3 attempts + 2 children x 3 attempts = 9; children are depth-capped
+    assert len(calls) == 9
+    assert calls.count("P") == 3          # parent retried
+    assert calls.count("P.1") == 3        # sub-agent 1 retried
+    assert calls.count("P.2") == 3        # sub-agent 2 retried
+
+
+def test_recursion_depth_cap_stops_at_one_level(monkeypatch):
+    monkeypatch.setenv("AIFORGE_DECOMP_RETRIES", "0")   # no retries, isolate depth
+    monkeypatch.setenv("AIFORGE_DECOMP_MAX_DEPTH", "2")
+    monkeypatch.setattr(ps, "_decompose", lambda goal, tries=2: [
+        {"slug": "a", "goal": "a"}, {"slug": "b", "goal": "b"}])
+    calls = []
+    ps._run_one_recursive(
+        {"slug": "P", "goal": "big"}, "/tmp/wt",
+        lambda sub, wt: (calls.append(sub["slug"]) or {"ok": False}),
+        None, None, None, None, 0)
+    # parent(1) + 2 children(1 each) = 3; children at depth 1 do NOT re-decompose
+    assert len(calls) == 3 and not any("." in c and c.count(".") > 1 for c in calls)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
