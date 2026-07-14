@@ -108,7 +108,29 @@ def enabled_for_run(cwd: str | None = None) -> bool:
 
 
 import threading as _threading  # noqa: E402
-_BUILD_LOCK = _threading.Lock()
+import time as _time  # noqa: E402
+from collections import defaultdict as _defaultdict  # noqa: E402
+
+# PER-REPO build locks (not one global) — a first-time build of repo X must not
+# block an unrelated first-time build of repo Y across sessions.
+_LOCKS: "dict[str, _threading.Lock]" = _defaultdict(_threading.Lock)
+_LOCKS_GUARD = _threading.Lock()
+# Negative cache: repo → monotonic ts of last FAILED/timed-out build, so a repo
+# that can't index within the budget isn't re-attempted (blocking!) every turn.
+_FAILED: "dict[str, float]" = {}
+
+
+def _lock_for(repo: str) -> "_threading.Lock":
+    with _LOCKS_GUARD:
+        return _LOCKS[repo]
+
+
+def _retry_cooldown_s() -> int:
+    try:
+        return max(60, int(os.environ.get(
+            "AIFORGE_CODEGRAPH_RETRY_COOLDOWN_S", "3600")))
+    except (TypeError, ValueError):
+        return 3600
 
 
 def _autobuild_enabled() -> bool:
@@ -148,19 +170,33 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
     repo = _repo(cwd)
     if not repo or not os.path.isdir(repo):
         return False
-    with _BUILD_LOCK:
+    # Negative cache: a repo that failed/timed out must NOT re-trigger the
+    # (blocking) build every turn — that hung chat forever on a repo too big to
+    # index in the budget. Skip re-attempts for a cooldown window.
+    ts = _FAILED.get(repo)
+    if ts is not None and (_time.monotonic() - ts) < _retry_cooldown_s():
+        return False
+    with _lock_for(repo):            # PER-REPO lock (not one global)
         if indexed(cwd):            # built by another thread while we waited
             return True
         exe = _bin()
         if not exe:
             return False
         try:
-            subprocess.run([exe, _init_cmd(), "--path", repo],
-                           capture_output=True, text=True,
-                           timeout=timeout_s or _build_timeout_s())
-        except Exception:  # noqa: BLE001 — leave unindexed on any failure
+            p = subprocess.run([exe, _init_cmd(), "--path", repo],
+                               capture_output=True, text=True,
+                               timeout=timeout_s or _build_timeout_s())
+        except Exception:  # noqa: BLE001 — timeout / spawn failure
+            _FAILED[repo] = _time.monotonic()
             return False
-    return indexed(cwd)
+        # A non-zero exit (wrong subcommand, disk full, partial write) can still
+        # leave a stub .codegraph dir — require BOTH a clean exit and a real
+        # index before trusting it, else negative-cache and stay unavailable.
+        if p.returncode != 0 or not indexed(cwd):
+            _FAILED[repo] = _time.monotonic()
+            return False
+        _FAILED.pop(repo, None)
+        return True
 
 
 def _run(args: list[str], cwd: str | None) -> dict:

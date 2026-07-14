@@ -4721,9 +4721,14 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 # jira_create) unless the user EXPLICITLY says publish/post — a
                 # wrong or premature write to the team wiki is not recoverable.
                 if _doc_task:
+                    # EXPLICIT publish intent only — 'post the findings' / a
+                    # 'post-the-fact review' must NOT flip publishing on. Default
+                    # to draft (a wrong write to the team wiki is unrecoverable).
                     _pub = bool(__import__("re").search(
-                        r"\b(publish|post it|post the|go ahead and (create|post|"
-                        r"publish)|actually create)\b", (prompt or "").lower()))
+                        r"\b(publish it|publish the (page|doc|report)|"
+                        r"go ahead and (publish|post)|actually (publish|create "
+                        r"the (page|confluence))|post it to confluence)\b",
+                        (prompt or "").lower()))
                     if not _pub:
                         _m["content"] += (
                             "\n\n---\n[Deliverable = DRAFT ONLY. Produce the "

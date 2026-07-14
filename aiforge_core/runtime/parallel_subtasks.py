@@ -609,15 +609,31 @@ def _run_sequential(cwd: str, base_branch: str, subs: list, run_one, *,
 
 
 def _shared_worktree_enabled() -> bool:
-    return os.environ.get("AIFORGE_SHARED_WORKTREE", "1").strip().lower() \
-        not in ("0", "false", "no", "off")
+    # OPT-IN (default OFF). The per-worktree path (below) is the tested,
+    # parallel-safe default: each subtask gets its OWN git index, so parallel
+    # commits never race. A SHARED worktree cannot run subtasks in parallel
+    # safely — they'd contend on one .git/index — so shared mode runs
+    # SEQUENTIALLY (deps order), useful when subtasks must see each other's
+    # files in one tree. Enable with AIFORGE_SHARED_WORKTREE=1.
+    return os.environ.get("AIFORGE_SHARED_WORKTREE", "0").strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+_GOAL_FILE_RE = re.compile(r"\s*([\w./\-]+\.\w+)\s*:")
 
 
 def _files_of(s: dict) -> set:
-    """The file set a subtask owns — for disjointness. Prefer explicit
-    ``files``, then ``scope_allowlist_globs``, then the single ``path``."""
+    """The file set a subtask owns — for dependency/disjointness reasoning.
+    Prefer explicit ``files`` / ``scope_allowlist_globs`` / ``path``; else
+    recover the target from the ``goal`` (the decomposer's ``<file>: <what>``
+    convention), so planner/decompose subtasks (which carry only slug+goal)
+    aren't treated as owning NOTHING."""
     raw = (s.get("files") or s.get("scope_allowlist_globs")
            or ([s["path"]] if s.get("path") else []))
+    if not raw:
+        m = _GOAL_FILE_RE.match(str(s.get("goal") or ""))
+        if m:
+            raw = [m.group(1)]
     return {str(x) for x in raw if x}
 
 
@@ -667,17 +683,36 @@ def _recurse_max() -> int:
         return 2
 
 
-def _run_one_recursive(sub, wt, run_one, on_status, ticket_id, should_cancel,
-                       depth: int) -> dict:
-    """Run ONE subtask in the shared worktree ``wt``. On failure, if we're not
-    yet at the depth cap, decompose it one level deeper and run its sub-agents
-    under the same scheduler (P3). Returns ``{ok, slug, ...}``."""
+def _run_one_recursive(sub, wt, run_one, validate_one, on_status, ticket_id,
+                       should_cancel, depth: int) -> dict:
+    """Run ONE subtask in the shared worktree ``wt``, VALIDATE it (build/tests
+    green via ``validate_one`` when given) with one retry, and on persistent
+    failure decompose it one level deeper and run its sub-agents under the same
+    scheduler (P3, depth-capped). Returns ``{ok, slug, ...}``."""
     slug = sub.get("slug")
     _update(ticket_id, slug, "running", on_status)
-    try:
-        r = run_one(sub, wt) or {}
-    except Exception as exc:  # noqa: BLE001
-        r = {"ok": False, "error": str(exc)}
+
+    def _attempt_once() -> dict:
+        try:
+            rr = run_one(sub, wt) or {}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        # Gate on real validation (compile/tests) when a validator is supplied —
+        # "the agent emitted a final answer" is NOT "it works".
+        if rr.get("ok") and validate_one is not None:
+            try:
+                v = validate_one(sub, wt) or {}
+                if v.get("ok") is False:
+                    return {"ok": False, "error": v.get("error") or "validation failed",
+                            "validated": False}
+                rr = {**rr, "validated": True}
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": f"validate: {exc}"}
+        return rr
+
+    r = _attempt_once()
+    if not r.get("ok") and not (should_cancel and should_cancel()):
+        r = _attempt_once()                 # one retry (same shared tree)
     if r.get("ok"):
         _update(ticket_id, slug, "done", on_status)
         return {**r, "slug": slug}
@@ -690,8 +725,8 @@ def _run_one_recursive(sub, wt, run_one, on_status, ticket_id, should_cancel,
             _emit(ticket_id, slug, "recurse",
                   f"subtask too big — split into {len(children)} sub-agents", {})
             child_results: dict = {}
-            _run_wave_set(wt, children, run_one, on_status, ticket_id,
-                          should_cancel, child_results, depth + 1)
+            _run_wave_set(wt, children, run_one, validate_one, on_status,
+                          ticket_id, should_cancel, child_results, depth + 1)
             ok = bool(child_results) and all(
                 cr.get("ok") for cr in child_results.values())
             _update(ticket_id, slug, "done" if ok else "failed", on_status)
@@ -701,34 +736,20 @@ def _run_one_recursive(sub, wt, run_one, on_status, ticket_id, should_cancel,
     return {**r, "slug": slug}
 
 
-def _run_wave_set(wt, subs, run_one, on_status, ticket_id, should_cancel,
-                  results: dict, depth: int) -> None:
-    """Execute waves in ``wt``: sequential across waves, parallel WITHIN a wave
-    (files are disjoint by construction). Fills ``results`` slug→result."""
+def _run_wave_set(wt, subs, run_one, validate_one, on_status, ticket_id,
+                  should_cancel, results: dict, depth: int) -> None:
+    """Execute subtasks in ``wt`` SEQUENTIALLY in wave (dependency) order. A
+    SHARED worktree has ONE git index, so parallel subtasks would race on
+    ``.git/index`` and on build output dirs — sequential is the only safe order
+    here. (Parallelism lives in the per-worktree path, where each subtask has
+    its own index.) Fills ``results`` slug→result."""
     for wave in schedule_waves(subs):
-        if should_cancel and should_cancel():
-            break
-        if len(wave) == 1:
-            s = wave[0]
+        for s in wave:
+            if should_cancel and should_cancel():
+                return
             results[s["slug"]] = _run_one_recursive(
-                s, wt, run_one, on_status, ticket_id, should_cancel, depth)
-            continue
-        with concurrent.futures.ThreadPoolExecutor(
-                max_workers=_max_workers()) as ex:
-            futs = {ex.submit(_run_one_recursive, s, wt, run_one, on_status,
-                              ticket_id, should_cancel, depth): s for s in wave}
-            for f in concurrent.futures.as_completed(futs):
-                s = futs[f]
-                if should_cancel and should_cancel():
-                    for pf in futs:
-                        pf.cancel()
-                try:
-                    results[s["slug"]] = f.result()
-                except concurrent.futures.CancelledError:
-                    continue
-                except Exception as exc:  # noqa: BLE001
-                    results[s["slug"]] = {"ok": False, "slug": s["slug"],
-                                          "error": str(exc)}
+                s, wt, run_one, validate_one, on_status, ticket_id,
+                should_cancel, depth)
 
 
 def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
@@ -741,12 +762,14 @@ def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
     results: dict = {}
     conflicts: list[str] = []
     merged = 0
+    merge_ok = False
     integ: dict = {"ok": None, "skipped": True}
     try:
-        _run_wave_set(wt, subs, run_one, on_status, ticket_id, should_cancel,
-                      results, 0)
-        # Capture anything the doers left uncommitted onto the shared branch.
-        _git(["add", "-A"], wt)
+        _run_wave_set(wt, subs, run_one, validate_one, on_status, ticket_id,
+                      should_cancel, results, 0)
+        # Capture anything the doers left uncommitted — EXCLUDE build artifacts
+        # (target/, node_modules/, __pycache__/…) so they don't sweep into base.
+        _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], wt)
         _git(["commit", "-m", "shared-worktree subtasks"], wt)  # no-op if clean
         # ONE integration build+test on the combined tree (P5 verify).
         if integration_test is not None:
@@ -757,15 +780,23 @@ def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
         else:
             integ = _build_or_test(wt)
         if merge:
-            ok, info = _merge_branch(repo_root, base_branch, branch)
-            if ok:
+            merge_ok, info = _merge_branch(repo_root, base_branch, branch)
+            if merge_ok:
                 merged = 1
             else:
                 conflicts.append("shared")
     finally:
         if wt and os.path.isdir(wt):
             _git(["worktree", "remove", "--force", wt], repo_root)
-        _git(["branch", "-D", branch], repo_root)
+        # Delete the branch ONLY after a successful merge. On conflict the shared
+        # branch is the SOLE copy of every subtask's work — keep it (and surface
+        # its name) so nothing is lost and it can be inspected / re-merged.
+        if merge_ok or not merge:
+            _git(["branch", "-D", branch], repo_root)
+        else:
+            log.warning("shared-worktree merge conflict — KEEPING branch %s "
+                        "(holds all subtask work; inspect/re-merge manually)",
+                        branch)
         _git(["worktree", "prune"], repo_root)
 
     ordered = [results.get(s["slug"], {"ok": False, "slug": s["slug"]})
@@ -780,7 +811,9 @@ def _run_shared_worktree(repo_root, base_branch, ticket_id, subs, run_one,
               + ("; MERGE CONFLICT" if conflicts else ""))
     return {"ok": all_ok, "total": len(subs), "done": done, "validated": done,
             "failed": failed, "merged": merged, "conflicts": conflicts,
-            "conflict_details": [], "warnings": [], "integration": integ,
+            "conflict_details": ([f"kept branch {branch}"] if conflicts else []),
+            "warnings": [], "integration": integ,
+            "kept_branch": (branch if conflicts else None),
             "review": review, "results": ordered, "mode": "shared_worktree"}
 
 

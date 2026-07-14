@@ -206,7 +206,7 @@ def make_approval_gate_callback():
                         chat_cancel.cancel(sid)
                     except Exception:  # noqa: BLE001 — best-effort halt
                         pass
-                return {"ok": False, "rejected": True, "halt": True,
+                return {"ok": False, "rejected": True,
                         "error": "user rejected this action"
                                  + (f": {_note}" if _note else "")
                                  + " — run halted; waiting for the user's next message."}

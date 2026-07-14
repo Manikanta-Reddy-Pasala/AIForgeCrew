@@ -65,33 +65,55 @@ def identify_repos(prompt: str, cwd: str) -> list[dict]:
 
     p = prompt or ""
     plow = p.lower()
+    try:
+        cap = max(2, int(os.environ.get("AIFORGE_ANALYSIS_MAX_REPOS", "12")))
+    except (TypeError, ValueError):
+        cap = 12
+    # Common words that are ALSO real repo names (web/api/pos/core/bot/...) —
+    # matching them in prose spuriously pulls a repo in. Require a specific name.
+    _common = {"web", "api", "app", "pos", "core", "bot", "cli", "crud", "ui",
+               "db", "lib", "docs", "server", "client", "code", "main", "test"}
 
-    # 1. registry names mentioned in the prompt
+    # 1. registry names EXPLICITLY mentioned in the prompt (length>=4, not a
+    #    common word) — a specific name is a real signal; a common word is not.
     try:
         from aiforge_core.config import repo_map as _rm
         paths = (_rm.list_all() or {}).get("paths") or {}
         for name, path in paths.items():
-            if re.search(r"\b" + re.escape(str(name).lower()) + r"\b", plow):
+            nlow = str(name).strip().lower()
+            if len(nlow) >= 4 and nlow not in _common \
+                    and re.search(r"\b" + re.escape(nlow) + r"\b", plow):
                 _add(str(name), str(path))
     except Exception:  # noqa: BLE001 — registry optional
         pass
 
-    # 2. explicit filesystem paths in the prompt
+    # 2. explicit filesystem paths in the prompt — ONLY if they are git repos
+    #    (an analysis targets repos, not an incidental /etc/nginx mention).
     for m in re.findall(r"(?:~|/)[\w./\-]+", p):
-        _add(os.path.basename(m.rstrip("/")), m)
+        ap = os.path.abspath(os.path.expanduser(m.rstrip("/")))
+        if _is_git_repo(ap):
+            _add(os.path.basename(ap), ap)
 
-    # 3. child git repos of a pinned parent folder
-    try:
-        if os.path.isdir(cwd):
-            for entry in sorted(os.listdir(cwd)):
-                child = os.path.join(cwd, entry)
-                if _is_git_repo(child):
-                    _add(entry, child)
-    except Exception:  # noqa: BLE001
-        pass
+    # 3. child git repos of a pinned PARENT — ONLY when the prompt named nothing
+    #    specific (sources 1+2 empty). Otherwise "summarize repoA" in a parent
+    #    holding 10 checkouts would fan out over all 10.
+    if not found:
+        try:
+            if os.path.isdir(cwd):
+                for entry in sorted(os.listdir(cwd)):
+                    child = os.path.join(cwd, entry)
+                    if _is_git_repo(child):
+                        _add(entry, child)
+        except Exception:  # noqa: BLE001
+            pass
 
     if found:
-        return list(found.values())
+        out = list(found.values())
+        if len(out) > cap:
+            _log.warning("identify_repos: capped %d repos to %d (set "
+                         "AIFORGE_ANALYSIS_MAX_REPOS)", len(out), cap)
+            out = out[:cap]
+        return out
     # 4. fallback — the pinned folder itself
     return [{"name": os.path.basename(os.path.abspath(cwd).rstrip("/")) or "repo",
              "path": os.path.abspath(cwd)}]
@@ -161,9 +183,17 @@ def _explore_one(repo: dict, topics: list[str], overall: str) -> dict:
 
     findings, ok = "", False
     try:
+        # mode="plan" is the HARD read-only guard: run_chat_agent's tool gate
+        # blocks any tool not in _READONLY_TOOLS (file_write/patch/bash/
+        # confluence_create/... all blocked; file_read/grep/repo_map/codegraph
+        # allowed). role= does NOT restrict tools in the chat loop, and
+        # session_id=None skips the approval gate — so WITHOUT plan mode a
+        # hallucinated write would auto-apply in the user's REAL repo. This runs
+        # in the real dir with no worktree, so read-only is mandatory.
         for ev in run_chat_agent([{"role": "user", "content": msg}],
                                  cwd=repo["path"], role="researcher",
-                                 session_id=None, complete_fn=complete_fn):
+                                 session_id=None, mode="plan",
+                                 complete_fn=complete_fn):
             if ev.get("type") == "error":
                 return {"name": repo["name"], "path": repo["path"], "ok": False,
                         "error": ev.get("text"), "findings": ""}
@@ -182,17 +212,23 @@ def _synthesize(overall: str, results: list[dict], topics: list[str]) -> str:
     """Merge per-repo findings into ONE draft deliverable. A single LLM call
     (no tools) — the findings are already gathered. Draft-only."""
     from aiforge_core.llm.client import complete as _complete
+    # Budget PER REPO so a many-repo run doesn't silently drop the tail repos'
+    # findings (a flat [:48000] cut lands mid-stream and omits later repos).
+    per = max(2000, 46000 // max(1, len(results)))
     blocks = []
     for r in results:
         head = f"## {r['name']} ({r['path']})"
         body = (r.get("findings") or "").strip() or "_(no findings — explore failed)_"
+        if len(body) > per:
+            body = body[:per] + "\n\n_(…findings truncated for synthesis)_"
         blocks.append(f"{head}\n\n{body}")
     joined = "\n\n---\n\n".join(blocks)
     topic_line = ("The requested topics were: " + "; ".join(topics) + ".\n"
                   if topics else "")
     convo = [{"role": "user", "content": (
         "You are synthesizing a cross-repository analysis into ONE cohesive "
-        "draft document (markdown).\n\n"
+        "draft document (markdown). DRAFT ONLY — do not suggest it was "
+        "published anywhere.\n\n"
         f"Original request: {overall.strip()[:1000]}\n{topic_line}\n"
         "Below are per-repository findings. Merge them into a single, well-"
         "structured document: an executive summary, then a section per topic "

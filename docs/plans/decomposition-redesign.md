@@ -83,14 +83,35 @@ turn → CLASSIFY(task_type) ─┬─ simple            → single agent
 - **P5 ✅** Tightening: single integration build+test on the combined tree,
   fresh scoped context per sub-agent, disjoint-wave parallelism.
 
-## Known limitations (verify/harden on NUC)
-- Shared-worktree PARALLEL: safety rests on the scheduler's disjoint-file
-  waves. Hard scope-REVERT (undo an out-of-scope write) is not implemented;
-  a mis-behaving agent editing a sibling's file in the same wave isn't caught.
-- Each subtask's Doer still builds/tests inside its loop; concurrent builds in
-  one tree could contend. Disable with `AIFORGE_SHARED_WORKTREE=0` if it bites.
+## Post-review hardening (adversarial review → fixes)
+- **Shared worktree is now OPT-IN (`AIFORGE_SHARED_WORKTREE=0` default) and
+  SEQUENTIAL.** Parallel-in-one-worktree races on the single `.git/index`
+  (concurrent doer commits) — unsafe. Parallelism stays in the tested
+  per-worktree path (own index each). Shared mode = sequential deps-order, for
+  when subtasks must see each other's files in one tree.
+- `_files_of` now recovers the target file from the `goal` (`<file>: <what>`)
+  so planner subtasks (slug+goal only) aren't treated as owning nothing.
+- Per-subtask `validate_one` + one retry re-threaded into `_run_one_recursive`
+  (was dropped); `ok` gated on real build/test, not just "agent answered".
+- Merge conflict KEEPS the shared branch (was force-deleted → total data loss);
+  `add -A` excludes build artifacts.
+- **Analysis explores are hard read-only** (`mode="plan"` → `_READONLY_TOOLS`);
+  `role=` alone did NOT gate tools, so writes/bash/confluence_create were
+  auto-applying in the user's REAL repo. Critical fix.
+- `identify_repos`: child-repo scan only when nothing named (was unconditional
+  → fanned out over all siblings); paths must be git repos; registry names need
+  length≥4 + not a common word; repo count capped (AIFORGE_ANALYSIS_MAX_REPOS).
+- CodeGraph: per-repo build lock (was global), negative cache (was re-blocking
+  180s every turn), returncode+index check (was trusting a stub dir).
+
+## Still open (verify/harden on NUC)
 - E2E (real ADK/agent runs) unverified locally (google.adk absent) — validate
-  on NUC. Pure logic (routing, repo-id, topics, wave scheduling) is tested.
+  on NUC. Pure logic (routing, repo-id, topics, wave scheduling, `_files_of`)
+  is tested.
+- Analysis explore Stop: in-flight explores aren't interrupted mid-run
+  (session_id=None avoids cancel-token races); bounded by the turn deadline.
+- Shared-worktree fallback doesn't snapshot base SHA (low-prob double-apply if
+  a post-merge statement raised — currently none do).
 
 ## Already shipped this effort
 - Web: certifi TLS, web_crawl+web_search to all agents, SSRF guard, gate on.
