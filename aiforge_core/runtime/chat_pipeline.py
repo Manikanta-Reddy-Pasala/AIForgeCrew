@@ -322,6 +322,14 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             os.environ["AIFORGE_REPO_ROOT"] = cwd
             from aiforge_core.runtime import request_context
             root_token = request_context.set_repo_root(cwd)
+            # Blocking first-time codegraph build for the pipeline's repo so the
+            # Doer's codegraph tools are available (a fresh repo has no index →
+            # tools silently dropped). Best-effort; never blocks the run on it.
+            try:
+                from aiforge_core.runtime.tools import codegraph as _cg
+                _cg.ensure_indexed(cwd)
+            except Exception:  # noqa: BLE001
+                pass
             from google.adk.runners import Runner
             from google.adk.sessions import InMemorySessionService
             from google.genai import types as gtypes

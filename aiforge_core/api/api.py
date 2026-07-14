@@ -4937,6 +4937,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
         from aiforge_core.runtime import request_context as _reqctx
         _sess_token = _reqctx.set_session_id(session_id)
+        # Bind the repo root to the turn's cwd so the codegraph gate (which some
+        # Doer-side call sites resolve via request_context.get_repo_root() with
+        # NO cwd) sees the SAME repo the tools run against. Without this, simple
+        # chat left the repo root unset and those sites fell back to "." (the
+        # AIForge process dir), so codegraph was mis-gated off the wrong folder.
+        _repo_token = _reqctx.set_repo_root(cwd)
         # Auto-route classify + its dependents, run HERE (already off the
         # response-open path — see the note where `team`/`_parallel_team`
         # were declared above) rather than in the synchronous request
@@ -5076,6 +5082,10 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 pass
             try:
                 _reqctx.reset_session_id(_sess_token)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                _reqctx.reset_repo_root(_repo_token)
             except Exception:  # noqa: BLE001
                 pass
             # TEAM mode: the background driver owns the run's lifetime AND its

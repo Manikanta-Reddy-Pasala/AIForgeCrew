@@ -3905,6 +3905,10 @@ def run_chat_agent(
     if True:  # noqa: SIM103 — keep the try/except scoped without re-indenting
         try:
             from aiforge_core.runtime.tools import codegraph as _cg
+            # Blocking first-time build: a freshly pinned repo has no .codegraph
+            # index, so the tools would be silently dropped. Build it once (the
+            # user chose blocking-first-time) so codegraph is usable THIS turn.
+            _cg.ensure_indexed(cwd)
             if _cg.enabled_for_run(cwd):
                 sys_msg += (
                     "\n\nCODEGRAPH IS AVAILABLE (a pre-built code-relation index "

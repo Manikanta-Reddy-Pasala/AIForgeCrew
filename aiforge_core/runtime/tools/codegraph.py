@@ -107,6 +107,62 @@ def enabled_for_run(cwd: str | None = None) -> bool:
             and not _ticket_opts_out())
 
 
+import threading as _threading  # noqa: E402
+_BUILD_LOCK = _threading.Lock()
+
+
+def _autobuild_enabled() -> bool:
+    return os.environ.get("AIFORGE_CODEGRAPH_AUTOBUILD", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _init_cmd() -> str:
+    """The binary subcommand that BUILDS the index (``codegraph init`` by
+    default — overridable if the installed binary spells it differently)."""
+    return os.environ.get("AIFORGE_CODEGRAPH_INIT_CMD", "init").strip() or "init"
+
+
+def _build_timeout_s() -> int:
+    try:
+        return max(10, int(os.environ.get("AIFORGE_CODEGRAPH_BUILD_TIMEOUT_S",
+                                          "180")))
+    except (TypeError, ValueError):
+        return 180
+
+
+def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> bool:
+    """Blocking, bounded first-time build: if the resolved repo has no
+    ``.codegraph`` index yet, run ``codegraph init --path <repo>`` ONCE (deduped
+    by a process lock) so the codegraph tools become available for THIS folder.
+    Returns whether the index exists afterwards.
+
+    No-ops (returns ``indexed()``) when the binary is missing, codegraph is
+    env-disabled, or autobuild is turned off (AIFORGE_CODEGRAPH_AUTOBUILD=0).
+    Never raises — a build failure just leaves the tools unavailable, same as
+    before. Callers invoke this at turn start so the FIRST turn on a freshly
+    pinned repo can use codegraph (the user chose blocking-first-time)."""
+    if not _autobuild_enabled() or _disabled() or not available():
+        return indexed(cwd)
+    if indexed(cwd):
+        return True
+    repo = _repo(cwd)
+    if not repo or not os.path.isdir(repo):
+        return False
+    with _BUILD_LOCK:
+        if indexed(cwd):            # built by another thread while we waited
+            return True
+        exe = _bin()
+        if not exe:
+            return False
+        try:
+            subprocess.run([exe, _init_cmd(), "--path", repo],
+                           capture_output=True, text=True,
+                           timeout=timeout_s or _build_timeout_s())
+        except Exception:  # noqa: BLE001 — leave unindexed on any failure
+            return False
+    return indexed(cwd)
+
+
 def _run(args: list[str], cwd: str | None) -> dict:
     exe = _bin()
     if not exe:
