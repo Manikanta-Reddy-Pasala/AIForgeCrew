@@ -1678,20 +1678,21 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         confluence_children, confluence_attach,
                         read_lines, rename_symbol]
     aliases = [read, write, patch, edit, str_replace, ls, shell, bash, run,
-               grep, search, http_get, web_fetch,
+               grep, search, http_get, web_fetch, web_crawl,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
     tools = [FunctionTool(func=fn)
              for fn in new_canonical + legacy_canonical + aliases]
-    # Role-scoped web: only the RESEARCHER gets internet tools — web_search
-    # (query) + web_read (ungated page read). They are NOT in the base list,
-    # so every other agent (incl. the no-role Doer) simply never receives them;
-    # general fetch stays behind the AIFORGE_ALLOW_WEB_FETCH gate. This makes
-    # the researcher the single sanctioned web-egress agent.
+    # Web egress:
+    #   * web_fetch + web_crawl are in the base list — every agent gets them,
+    #     but both stay behind the AIFORGE_ALLOW_WEB_FETCH gate (default off)
+    #     and the SSRF guard, so "available" != "unlocked".
+    #   * web_search (query) + web_read (UNGATED page read) remain
+    #     RESEARCHER-only — the researcher is still the single agent with
+    #     sanctioned, gate-free web egress.
     if role == "researcher":
         tools = tools + [FunctionTool(func=web_search),
-                         FunctionTool(func=web_read),
-                         FunctionTool(func=web_crawl)]
+                         FunctionTool(func=web_read)]
     # CodeGraph gate: drop the codegraph_* tools unless codegraph is actually
     # usable on this run — the SINGLE shared gate (binary + real index for the
     # repo + not env-disabled + not opted out per-ticket). Same gate the Doer

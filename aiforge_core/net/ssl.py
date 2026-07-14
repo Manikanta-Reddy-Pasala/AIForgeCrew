@@ -65,6 +65,38 @@ def _ca_bundle() -> str | None:
     return None
 
 
+def _certifi_where() -> str | None:
+    """Path to certifi's Mozilla CA bundle, or ``None`` if certifi is absent.
+
+    Best-effort — certifi is a transitive dep (httpx/requests) but not a hard
+    one, so never fail context resolution when it is missing."""
+    try:
+        import certifi
+        return certifi.where()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _verifying_context() -> ssl.SSLContext:
+    """A *verifying* default context that also trusts certifi's CA bundle.
+
+    python.org macOS framework builds (and some minimal Linux images) ship an
+    EMPTY system trust store, so ``ssl.create_default_context()`` there fails
+    every public https with ``CERTIFICATE_VERIFY_FAILED: unable to get local
+    issuer certificate``. Loading certifi's Mozilla roots on top of the OS
+    store fixes that while keeping verification ON. An explicit
+    ``AIFORGE_LLM_CA_BUNDLE`` / ``SSL_CERT_FILE`` still wins in ``context_for``
+    (this helper is only the no-explicit-bundle path)."""
+    ctx = ssl.create_default_context()
+    where = _certifi_where()
+    if where:
+        try:
+            ctx.load_verify_locations(cafile=where)
+        except Exception:  # noqa: BLE001 — keep whatever the OS store gave us
+            pass
+    return ctx
+
+
 def _host_of(url: str | None) -> str | None:
     if not url:
         return None
@@ -329,8 +361,9 @@ def context_for(url: str | None) -> ssl.SSLContext | None:
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
-    # Public host, or verify left on: full default verification.
-    return ssl.create_default_context()
+    # Public host, or verify left on: full default verification (with certifi
+    # roots layered in so an empty OS trust store doesn't break public https).
+    return _verifying_context()
 
 
 def httpx_verify(url: str | None = None, *, insecure_tls: bool = False):

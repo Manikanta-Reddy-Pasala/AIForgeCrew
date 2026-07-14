@@ -100,6 +100,7 @@ agents:
       max_wall_s: 3600
     tools:
       allowed:
+        - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         # NOTE: names must match the REAL doer_tools registry (audit: the old
         # graph_lookup/search_memory/grep_repos era names matched nothing).
         # create_parent_ticket/update_ticket are SERVER-side runtime ops.
@@ -170,6 +171,7 @@ agents:
       max_wall_s: 1200
     tools:
       allowed:
+        - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         # NOTE: names must match the REAL doer_tools registry (audit found the
         # old graph_lookup/search_memory/grep_repos era names matched nothing —
         # if this role ever gets a tool factory the starved list would ship an
@@ -302,6 +304,7 @@ agents:
       # enforcement on here without reconciling — it would strip the Doer's
       # primary file/shell surface and brick it.
       allowed:
+        - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - editor                    # OH-parity multi-command editor
         - bash                      # tmux persistent session
         - file_read                 # real primary surface — read a file
@@ -707,6 +710,7 @@ agents:
       max_wall_s: 900
     tools:
       allowed:
+        - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - bash
         - file_read
         - grep
@@ -755,6 +759,7 @@ agents:
       # exactly the one tool the prompt calls. Forbidden names are the real
       # write/exec tools (ask_user removed — not a tool on this surface).
       allowed:
+        - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - memory_lookup
       forbidden:
         - file_write
@@ -794,6 +799,7 @@ agents:
       # the real doer-tool surface (grep_repo, not grep_repos) and cover every
       # tool the prompt calls, plus safe read siblings.
       allowed:
+        - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - repo_map                  # tree-sitter PageRank digest (AST, no vectors) — use FIRST
         - graphify_lookup
         - grep_repo
@@ -842,6 +848,7 @@ agents:
       # Enforced via adk_function_tools(role="ctx_conventions"): grep_repo (the
       # real name) + editor view + safe read siblings; write/exec forbidden.
       allowed:
+        - web_crawl              # broadened web egress (gated by AIFORGE_ALLOW_WEB_FETCH + SSRF guard)
         - grep_repo
         - grep                      # alias — model may emit either spelling
         - editor                    # view-only via editor_commands below

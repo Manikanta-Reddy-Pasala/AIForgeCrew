@@ -79,6 +79,17 @@ def web_crawl(args: dict, cwd: str | None = None) -> dict:
         return {"ok": False, "error": "missing 'url'"}
     if not re.match(r"^https?://", url, re.IGNORECASE):
         return {"ok": False, "error": "url must be http(s)"}
+    # SSRF guard: web_crawl is now available to every agent (not just the
+    # researcher), so a model-supplied URL must not pivot to cloud metadata
+    # (169.254.169.254), loopback services or the private LAN — applies to
+    # BOTH the crawl4ai browser engine and the plain-fetch fallback below. A
+    # pure DNS failure is left to the engine to surface as a natural error.
+    from aiforge_core.net.ssl import SSRFBlocked, guard_public_url
+    try:
+        guard_public_url(url)
+    except SSRFBlocked as exc:
+        if exc.kind != "dns":
+            return {"ok": False, "error": f"blocked (ssrf): {exc}"}
     try:
         max_chars = int(args.get("max_chars", 3000))
     except (TypeError, ValueError):
