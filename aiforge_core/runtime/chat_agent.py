@@ -4601,8 +4601,14 @@ def run_chat_agent(
                         args["confirm_delete"] = True
                 except Exception:  # noqa: BLE001
                     pass
-        _gate = ((( verdict["policy"] == tool_policy.ASK or _force_review)
-                  and _mode_approvals)
+        # review_edits (_force_review) is an EXPLICIT per-request / global opt-in
+        # ("hold my edits") — it must gate INDEPENDENTLY of the per-mode approval
+        # toggle, else body.review_edits=True / AIFORGE_CHAT_REVIEW_EDITS=1 were
+        # silently ignored whenever the (default-OFF) mode toggle was off. Only
+        # the ASK-POLICY gate is subordinate to the mode toggle; forced review
+        # and destructive deletes always gate.
+        _gate = ((verdict["policy"] == tool_policy.ASK and _mode_approvals)
+                 or _force_review
                  or _destructive_del)
         # A captured "commit directly" flag may auto-approve the gate ONLY when
         # the SOLE reason to gate is a pure whole-command git commit/add/push —
