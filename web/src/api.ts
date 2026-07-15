@@ -645,11 +645,14 @@ export const chatApi = {
     }),
 
   // Resolve a pending approval gate (#1) — Approve/Reject a risky action.
-  approve: (id: number, decision: 'approve' | 'reject', seq?: number) =>
+  // `note` = optional guidance the user typed on the card; on reject it steers
+  // the agent to adjust and continue instead of just stopping.
+  approve: (id: number, decision: 'approve' | 'reject', seq?: number, note?: string) =>
     j<{ resolved: boolean; decision: string }>(`/chat/sessions/${id}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision, ...(seq != null ? { id: seq } : {}) }),
+      body: JSON.stringify({ decision, ...(seq != null ? { id: seq } : {}),
+                             ...(note ? { note } : {}) }),
     }),
 
   // Workspace checkpoints (#3).

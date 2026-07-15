@@ -563,6 +563,10 @@ export default function Chat() {
 
   // Pending approval gate (#1) + checkpoints panel (#3).
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  // Optional guidance the user types on the approval card — on reject it steers
+  // the agent ("use single-star bold") so it adjusts + continues, no separate
+  // follow-up message needed.
+  const [approvalNote, setApprovalNote] = useState('');
   // Plan→approve→execute (Gap B): set when a plan-mode run emits a plan_ready
   // event carrying the approved spec the user can one-click execute as a team run.
   const [planReady, setPlanReady] = useState<{ spec: string; msgId?: number } | null>(null);
@@ -658,11 +662,13 @@ export default function Chat() {
   // ── Approval gate (#1) ──────────────────────────────────────────────────────
   async function resolveApproval(decision: 'approve' | 'reject') {
     const p = pendingApproval;
+    const note = approvalNote.trim();
     setPendingApproval(null);   // optimistic — run resumes server-side
+    setApprovalNote('');
     if (!p || activeId === null) return;
     if (p.sessionId !== activeId) return;   // stale card from another session
     try {
-      await chatApi.approve(p.sessionId, decision, p.id);
+      await chatApi.approve(p.sessionId, decision, p.id, note || undefined);
     } catch (e: any) {
       toast.error(`Approval failed: ${e.message}`);
     }
@@ -1917,11 +1923,31 @@ export default function Chat() {
                   {pendingApproval.reason && (
                     <div className="muted xs" style={{ marginBottom: 6 }}>{pendingApproval.reason}</div>
                   )}
+                  {/* Guidance box — chat on the approval. Text here steers the
+                      agent on Reject (it adjusts + continues); optional. */}
+                  <textarea
+                    value={approvalNote}
+                    onChange={e => setApprovalNote(e.target.value)}
+                    placeholder="Optional guidance — e.g. 'use single-star bold'. On Reject this steers the agent to fix + continue."
+                    rows={2}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        resolveApproval(approvalNote.trim() ? 'reject' : 'approve');
+                      }
+                    }}
+                    style={{ width: '100%', boxSizing: 'border-box', fontSize: 12,
+                             padding: 6, borderRadius: 6, marginBottom: 8,
+                             border: '1px solid var(--fg-3)', background: 'var(--bg-2)',
+                             color: 'var(--fg-1)', resize: 'vertical' }}
+                  />
                   {/* Buttons FIRST — always reachable without scrolling past a
                       tall preview (the old layout buried them under the diff). */}
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
                     <button onClick={() => resolveApproval('approve')}>✓ Approve</button>
-                    <button className="danger" onClick={() => resolveApproval('reject')}>✗ Reject</button>
+                    <button className="danger" onClick={() => resolveApproval('reject')}>
+                      {approvalNote.trim() ? '✗ Reject + send guidance' : '✗ Reject'}
+                    </button>
                   </div>
                   {pendingApproval.preview && (
                     // Collapsible so the change PREVIEW (a diff / page body) is

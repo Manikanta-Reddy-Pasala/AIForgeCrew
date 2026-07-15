@@ -2307,19 +2307,24 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                         if cur_md else "**New body:**\n\n" + new_md)
             return out
         if tool == "jira_create":
+            from aiforge_core.runtime.tools.jira_format import to_jira_wiki
             md = (f"### Create Jira issue\n\n"
                   f"**Project:** `{args.get('project', '?')}` · "
                   f"**Type:** {args.get('issuetype', 'Task')}"
                   + (f" · **Priority:** {args['priority']}" if args.get('priority') else "")
                   + f"\n\n**Summary:** {args.get('summary', '?')}\n")
             if args.get("description"):
-                md += f"\n{_xhtml_to_md(str(args['description']))}\n"
+                # Preview the ACTUAL Jira wiki markup that will be sent (single-*
+                # bold etc.), not the model's raw markdown — so what you approve
+                # is what Jira renders.
+                md += f"\n{to_jira_wiki(str(args['description']))}\n"
             if args.get("labels"):
                 md += f"\n**Labels:** {args['labels']}\n"
             return md
         if tool == "jira_update":
             key = args.get("key", "?")
             from aiforge_core.runtime.tools import jira
+            from aiforge_core.runtime.tools.jira_format import to_jira_wiki
             cur = _fetch_current(jira.jira_read, {"key": key}, cwd)
             md = f"### Update Jira issue `{key}`\n\n"
             if args.get("summary"):
@@ -2329,9 +2334,13 @@ def _diff_preview(tool: str, args: dict, cwd: str) -> str:
                 if args.get(k):
                     md += f"**{k.capitalize()}:** {args[k]}\n\n"
             if args.get("description") is not None:
+                # Diff Jira-wiki vs Jira-wiki: the current body is already wiki
+                # markup, so convert the new one too — otherwise every '*bold*'
+                # line reads as a change (markdown '**' vs wiki '*') and the
+                # preview shows the wrong '**'. Now the diff is real content only.
                 md += ("**Description changes:**\n\n"
-                       + _change_diff(_xhtml_to_md(str(cur.get("description") or "")),
-                                      _xhtml_to_md(str(args["description"])),
+                       + _change_diff(str(cur.get("description") or ""),
+                                      to_jira_wiki(str(args["description"])),
                                       "description"))
             return md
         if tool == "jira_comment":
@@ -4708,22 +4717,36 @@ def run_chat_agent(
                 yield {"type": "approval_expired", "id": seq, "name": name}
             if decision.get("decision") != "approve":
                 _rnote = decision.get("note") or ""
+                # Distinguish USER guidance (typed in the approval card) from the
+                # system notes the registry sets itself — only the former should
+                # steer the agent.
+                _sys_notes = ("cancelled", "superseded", "run finished",
+                              "approval timed out", "no pending approval")
+                _user_guidance = _rnote if _rnote and _rnote not in _sys_notes else ""
                 result = {"ok": False, "rejected": True,
                           "error": "user rejected this action"
                                    + (f": {_rnote}" if _rnote else "")}
                 yield {"type": "tool", "name": name, "args": args, "result": result}
-                # Interactive reject is TERMINAL: STOP and WAIT for the user.
-                # The old path recorded an OBSERVATION and `continue`d the loop —
-                # so a model that didn't emit ASK: just kept going and the user
-                # had to hit Stop / Reset stuck runs. Now a human reject pauses
-                # via the awaiting_input primitive (same as ASK:/stuck paths):
-                # the run ends cleanly and the next user message resumes it.
-                # Autonomous runs (session_id is None) have no human to answer,
-                # so they keep the record-and-continue behaviour.
+                # CHAT-ON-APPROVAL: if the user rejected WITH guidance, don't just
+                # stop — fold the guidance in as a steer and CONTINUE so the agent
+                # adjusts immediately (no separate follow-up message needed).
+                if session_id is not None and _user_guidance:
+                    yield {"type": "thought", "role": "user",
+                           "text": f"Guidance on reject: {_user_guidance}"}
+                    convo.append({"role": "user", "content":
+                                  f"The user REJECTED the `{name}` action and gave "
+                                  f"this guidance: {_user_guidance}\n"
+                                  "Do NOT repeat the rejected action as-is — adjust "
+                                  "per the guidance and continue."})
+                    continue
+                # Interactive reject WITHOUT guidance is TERMINAL: STOP and WAIT
+                # for the user (the old record-and-continue let a model that
+                # didn't emit ASK: just keep going). Pause via awaiting_input;
+                # the next user message resumes. Autonomous runs (session_id is
+                # None) keep the record-and-continue behaviour.
                 if session_id is not None:
                     _ask = ("Stopped — you rejected the "
                             f"`{name}` action"
-                            + (f" ({_rnote})" if _rnote else "")
                             + ". Tell me what you'd like me to do instead, and "
                             "I'll continue from there.")
                     yield {"type": "message", "awaiting_input": True, "text": _ask}
