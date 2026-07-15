@@ -45,6 +45,34 @@ def test_empty_then_coaxed_retry(monkeypatch):
     assert posts[1]["max_tokens"] == 8192
 
 
+def test_empty_json_container_is_not_garbage():
+    """The learner replies '[]' (nothing durable to record) — a valid answer,
+    NOT garbage. It must pass through on attempt 1 (no coax, no warning spam)."""
+    assert c._is_garbage("[]") is False
+    assert c._is_garbage("{}") is False
+    # genuinely empty / fragments are still garbage
+    assert c._is_garbage("") is True
+    assert c._is_garbage("  ") is True
+    assert c._is_garbage("<tool_call>") is True
+
+
+def test_learner_empty_list_returns_first_attempt(monkeypatch):
+    """A model that answers '[]' must NOT trigger the 3× empty-retry loop."""
+    posts: list = []
+
+    def _fake_post(ep, payload, timeout_s, *, role, source):
+        posts.append(1)
+        return _body("[]")
+    monkeypatch.setattr(c, "_post_with_retry", _fake_post)
+    monkeypatch.setattr(c, "_record_usage", lambda *a, **k: None)
+    out = c._try_post(
+        _ep(), [{"role": "user", "content": "distil facts"}],
+        temperature=0.0, max_tokens=800, top_p=None, extras=None,
+        timeout_s=30, role="learner", source="primary")
+    assert out is not None and out[0] == "[]"
+    assert len(posts) == 1        # single post, no empty-retry loop
+
+
 def test_all_empty_returns_none(monkeypatch):
     monkeypatch.setattr(c, "_post_with_retry",
                         lambda *a, **k: _body(""))       # always empty

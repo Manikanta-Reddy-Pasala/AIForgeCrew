@@ -529,6 +529,12 @@ def _is_garbage(text: str) -> bool:
     if not text or not text.strip():
         return True
     t = text.strip()
+    # Valid EMPTY JSON containers are a legitimate answer, NOT garbage: the
+    # learner / fact-distiller roles reply "[]" (no durable facts this turn) or
+    # "{}" — accepting it avoids 3 pointless empty-retries + warnings + a
+    # /no_think coax on a perfectly good "nothing to record" response.
+    if t in ("[]", "{}"):
+        return False
     if len(t) < 3:
         return True
     if t in ("<tool_call>", "</tool_call>", "<|im_end|>", "<|endoftext|>"):
