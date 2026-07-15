@@ -329,6 +329,17 @@ _FAST_ROLES = ("enhancer", "learner", "triage", "feedback", "refiner",
 _CODER_ROLES = ("doer", "developer", "coder", "implementer", "builder", "tester")
 
 
+def is_fast_role(role: str) -> bool:
+    """True when ``role`` is a QUICK, direct-output role (enhancer/learner/
+    triage/feedback/refiner/title/summary/classify/…). These want a plain answer,
+    NOT a reasoning trace — a reasoning model spends its budget thinking and
+    returns empty. Callers use this to pre-empt the reasoning phase (send
+    ``/no_think`` from the first attempt) so a fast role never wastes a round on
+    an empty reasoning-model response."""
+    rl = (role or "").strip().lower()
+    return any(f in rl for f in _FAST_ROLES)
+
+
 # Embedding / rerank models can't generate — never assign them to a chat role.
 _NON_GENERATIVE_MARKERS = (
     "embed", "embedding", "rerank", "reranker", "bge-", "-bge", "nomic-embed",

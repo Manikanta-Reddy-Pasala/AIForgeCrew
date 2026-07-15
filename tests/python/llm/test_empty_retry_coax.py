@@ -29,11 +29,12 @@ def test_empty_then_coaxed_retry(monkeypatch):
     monkeypatch.setattr(c, "_post_with_retry", _fake_post)
     monkeypatch.setattr(c, "_record_usage", lambda *a, **k: None)
 
+    # role="chat" is neither fast nor thinking → attempt 0 stays verbatim.
     out = c._try_post(
         _ep(), [{"role": "system", "content": "s"},
                 {"role": "user", "content": "explain sys logs"}],
         temperature=0.0, max_tokens=4096, top_p=None, extras=None,
-        timeout_s=30, role="learner", source="primary")
+        timeout_s=30, role="chat", source="primary")
 
     assert out is not None and "System log tickets" in out[0]
     assert len(posts) == 2
@@ -43,6 +44,55 @@ def test_empty_then_coaxed_retry(monkeypatch):
     # attempt 2: /no_think appended + max_tokens widened
     assert posts[1]["messages"][-1]["content"].endswith("/no_think")
     assert posts[1]["max_tokens"] == 8192
+
+
+def test_fast_role_coaxes_no_think_from_first_attempt(monkeypatch):
+    """A FAST role (learner) backed by a reasoning model must send /no_think on
+    attempt 0 — pre-empting the empty instead of discovering it on retry."""
+    posts: list = []
+
+    def _fake_post(ep, payload, timeout_s, *, role, source):
+        posts.append(json.loads(payload.decode()))
+        return _body("distilled fact")
+    monkeypatch.setattr(c, "_post_with_retry", _fake_post)
+    monkeypatch.setattr(c, "_record_usage", lambda *a, **k: None)
+    monkeypatch.delenv("AIFORGE_FAST_ROLE_NO_THINK", raising=False)
+    out = c._try_post(_ep(), [{"role": "user", "content": "distil"}],
+                      temperature=0.0, max_tokens=800, top_p=None, extras=None,
+                      timeout_s=30, role="learner", source="primary")
+    assert out is not None and len(posts) == 1
+    assert posts[0]["messages"][-1]["content"].endswith("/no_think")
+
+
+def test_thinking_role_keeps_reasoning_on_first_attempt(monkeypatch):
+    """A THINKING role (planner) must NOT be coaxed — it needs the reasoning."""
+    posts: list = []
+
+    def _fake_post(ep, payload, timeout_s, *, role, source):
+        posts.append(json.loads(payload.decode()))
+        return _body("a plan")
+    monkeypatch.setattr(c, "_post_with_retry", _fake_post)
+    monkeypatch.setattr(c, "_record_usage", lambda *a, **k: None)
+    out = c._try_post(_ep(), [{"role": "user", "content": "plan it"}],
+                      temperature=0.0, max_tokens=800, top_p=None, extras=None,
+                      timeout_s=30, role="planner", source="primary")
+    assert out is not None
+    assert posts[0]["messages"][-1]["content"] == "plan it"   # verbatim
+
+
+def test_append_no_think_is_idempotent():
+    msgs = [{"role": "user", "content": "hi"}]
+    once = c._append_no_think(msgs)
+    twice = c._append_no_think(once)
+    assert once[-1]["content"] == "hi /no_think"
+    assert twice[-1]["content"] == "hi /no_think"      # not doubled
+
+
+def test_is_fast_role_classification():
+    from aiforge_core.config.model_registry import is_fast_role
+    assert is_fast_role("learner") and is_fast_role("enhancer")
+    assert is_fast_role("triage") and is_fast_role("ctx_memory")
+    assert not is_fast_role("planner") and not is_fast_role("doer")
 
 
 def test_empty_json_container_is_not_garbage():

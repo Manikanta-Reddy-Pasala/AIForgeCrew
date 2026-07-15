@@ -550,10 +550,27 @@ def _append_no_think(messages: list[dict]) -> list[dict]:
     out = [dict(m) for m in (messages or [])]
     for m in reversed(out):
         if m.get("role") == "user":
-            m["content"] = (str(m.get("content") or "").rstrip() + " /no_think")
+            cur = str(m.get("content") or "").rstrip()
+            # idempotent — never append twice (a fast role already coaxed on
+            # attempt 0 must not become "… /no_think /no_think" on a retry).
+            if not cur.endswith("/no_think"):
+                cur = cur + " /no_think"
+            m["content"] = cur
             return out
     out.append({"role": "user", "content": "/no_think"})
     return out
+
+
+def _is_fast_role(role: str) -> bool:
+    """Fast/direct-output role → pre-empt reasoning with /no_think from the
+    start. Guarded import (registry optional); default False on any failure."""
+    if os.environ.get("AIFORGE_FAST_ROLE_NO_THINK", "1") in ("0", "false", "no"):
+        return False
+    try:
+        from aiforge_core.config.model_registry import is_fast_role
+        return is_fast_role(role)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _try_post(ep: Endpoint, messages: list[dict],
@@ -573,9 +590,16 @@ def _try_post(ep: Endpoint, messages: list[dict],
     AIFORGE_LLM_EMPTY_RETRIES (default 2 → up to 3 total posts).
     """
     empty_retries = max(0, _int_env("AIFORGE_LLM_EMPTY_RETRIES", 3))
+    # Fast/direct-output roles (learner/enhancer/triage/…) want a plain answer,
+    # not a reasoning trace — if the configured model is a reasoning one it
+    # returns EMPTY. Pre-empt that: coax /no_think from the FIRST attempt so
+    # these roles don't burn a round discovering the empty. Thinking roles
+    # (planner/architect/…) are untouched — they NEED the reasoning phase.
+    fast_role = _is_fast_role(role)
     for attempt in range(empty_retries + 1):
         if attempt == 0:
-            payload = _build_body(ep, messages, temperature, max_tokens,
+            base = _append_no_think(messages) if fast_role else messages
+            payload = _build_body(ep, base, temperature, max_tokens,
                                   top_p, extras)
         else:
             # Last post came back EMPTY. A reasoning model (qwen*-reasoning,
