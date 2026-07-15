@@ -4440,43 +4440,16 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # through the parallel pipeline — a single ReAct agent stalls on large
         # builds (one huge-context call, no decomposition). Gated + heuristic so
         # chit-chat / small edits still use the fast single-agent path.
-        # Task-type detection is done by the LLM classifier below. These two tiny
-        # helpers are SAFETY NETS, not the classifier: (a) a cheap advice-question
-        # veto so a QUESTION can never auto-launch the file-writing pipeline even
-        # if the classifier misfires, and (b) a minimal build-detect used ONLY as
-        # a fallback when the classifier is unavailable (disabled/errored/skipped)
-        # so a genuine build still escalates instead of grinding single-agent.
-        def _advice_question(p: str) -> bool:
-            import re as _re
-            p = (p or "").strip().lower()
-            if p.endswith("?"):
-                return True
-            return bool(_re.match(
-                r"^(how|what|why|where|when|which|who|should|can|could|would|"
-                r"is|are|do|does|did|explain|tell me|show me|help me understand|"
-                r"any (idea|thought)|best way)\b", p))
-
-        def _regex_build_fallback(p: str) -> bool:
-            import re as _re
-            p = (p or "").lower()
-            if len(p) < 12 or _advice_question(p):
-                return False
-            # tracker actions are never a code build
-            if _re.search(r"\b(jira|confluence)\b", p) and _re.search(
-                    r"\b(ticket|tickets|story|stories|epic|epics|issue|issues|"
-                    r"page|pages)\b", p):
-                return False
-            verb = _re.search(r"\b(build|create|implement|generate|scaffold|"
-                              r"develop)\b", p)
-            noun = _re.search(r"\b(app|application|api|service|server|cli|tool|"
-                              r"website|web ?app|webapp|system|library|package|"
-                              r"project|backend|frontend|module|engine|bot|"
-                              r"dashboard|parser|compiler|microservice)\b", p)
-            cues = any(c in p for c in ("with test", "unit test", " files",
-                                        "endpoints", "multiple file"))
-            return bool(verb and (noun or cues))
-        # NB: _parallel_team is `team and enabled()` — False for simple/plan. Use
-        # the raw capability (_pp.enabled()) so escalation can fire off-team.
+        # ── TASK-TYPE ROUTING — see aiforge_core.runtime.chat_router ──────────
+        # The heavy decision (which path handles this request) is a PURE function
+        # there; here we only gather its side-effecting inputs and dispatch:
+        #   • _psub_on   parallel capability (raw — escalation can fire off-team);
+        #   • _greenfield  is this a fresh/empty tree?;
+        #   • _fresh     NOT a follow-up (only fresh turns pay the LLM classify);
+        #   • _cat       the LLM class (chat|tracker|doc_analysis|code_build|
+        #                code_edit) or None → chat_router falls back to regex;
+        #   • _team_approvals  Pipeline-approvals ON → force the gated sequential
+        #                pipeline (the parallel path can't gate — J).
         _psub_on = False
         try:
             _psub_on = _pp.enabled()
@@ -4487,108 +4460,37 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             _greenfield = _pp._is_greenfield(cwd)
         except Exception:  # noqa: BLE001
             _greenfield = True
-        # Escalate a MULTI-FILE BUILD to the pipeline — greenfield OR a genuinely
-        # new subsystem on an existing repo (e.g. "build an auth module with
-        # tests"). Safe on an existing repo: the classifier flags only real
-        # from-scratch builds as `code_build` (an edit/fix classifies as
-        # `code_edit`), and the pipeline's greenfield-guard skips scaffold/
-        # off-plan-prune + never deletes baseline files.
-        # DOC / ANALYSIS deliverable (analyze repos → Confluence page, write a
-        # report, review architecture) must NEVER enter the code pipeline — it
-        # designs a file tree + tests + PR, which is the wrong artifact. Route
-        # these to the single research agent regardless of team mode.
-        # TASK-TYPE ROUTING — the LLM classifier (task_router.classify_task) is
-        # PRIMARY: chat|tracker|doc_analysis|code_build|code_edit →
-        #   doc_analysis → research agent; code_build → build pipeline;
-        #   tracker/chat/code_edit → single chat agent.
-        # LATENCY: only classify FRESH requests — a follow-up in an ongoing chat
-        # is almost always a targeted edit/question routed single-agent anyway, so
-        # skip the per-turn classify call and use the regex fallback for the rare
-        # follow-up build. FALLBACK: when there's no positive class (follow-up /
-        # classifier disabled / errored) use the minimal regex build-detect so a
-        # real build still escalates. SAFETY: an advice question NEVER escalates.
-        _cat = None
         try:
             from aiforge_core.runtime import turn_router as _tr2
             _fresh = not _tr2.is_followup(history)
         except Exception:  # noqa: BLE001
             _fresh = True
+        _cat = None
         if _fresh:
             try:
                 from aiforge_core.runtime import task_router as _tr
                 _cat = _tr.classify_task(prompt, history=history, cwd=cwd)
             except Exception:  # noqa: BLE001 — never break routing on the classifier
                 _cat = None
-        if _cat is not None:
-            _doc_task = _cat == "doc_analysis"
-            _is_build_task = _cat == "code_build"
-        else:
-            _doc_task = False                       # no positive doc class → single agent
-            _is_build_task = _regex_build_fallback(prompt)
-        # (C) PLAN mode owns its own analysis + always yields a change-PLAN — a
-        # doc_analysis class must not re-route it to the research agent (wrong
-        # deliverable). Keep it in the plan flow.
-        if agent_mode == "plan":
-            _doc_task = False
-        # (A) An EXPLICIT team pick + a request that clearly looks like a code
-        # build must NOT be downgraded to the read-only research agent just
-        # because the classifier said doc_analysis — a misclassified team build
-        # would produce no code. A real doc task ("write a report") has no code
-        # noun, so this only rescues genuine builds.
-        if team and _doc_task and _regex_build_fallback(prompt):
-            _doc_task = False
-        _build_escalate = bool(
-            not team and _psub_on
-            # PLAN mode is read-only — it must NEVER escalate into a pipeline that
-            # writes files (that silently violated the plan contract).
-            and agent_mode != "plan"
-            # SAFETY: a question is advice, never a build order — a file-writing
-            # pipeline must not fire on it even if the classifier misreads it.
-            and not _advice_question(prompt)
-            and not _doc_task
-            and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
-            and _is_build_task)
-        if _build_escalate:
-            yield {"type": "thought", "role": "router",
-                   "text": "Multi-file build detected — routing through the build "
-                           "pipeline (decompose → scaffold → implement → test) "
-                           "instead of a single agent."}
-        elif (not team and not _psub_on and agent_mode != "plan"
-              and _is_build_task):
-            # Multi-file build with the fan-out DISABLED: say so instead of
-            # silently grinding through N files with one agent — the operator
-            # can't fix a knob they can't see.
-            yield {"type": "thought", "role": "router",
-                   "text": "Multi-file build detected, but the parallel pipeline "
-                           "is disabled — running single-agent (sequential). "
-                           "Enable AIFORGE_PARALLEL_SUBTASKS=1 to decompose + "
-                           "fan out (set AIFORGE_PARALLEL_SUBTASKS_MAX=4 only "
-                           "if the model endpoint truly serves concurrent "
-                           "requests — a serial local endpoint gains nothing)."}
-        # FOLLOW-UP / existing-repo routing: the decompose→build pipeline is for a
-        # NEW project. A request on a repo that ALREADY has code — a follow-up
-        # ("add a delete method", "fix the eviction bug") or an existing repo —
-        # that isn't itself a fresh multi-file build is a TARGETED EDIT: route it
-        # to the single agent (which sees the conversation history + the existing
-        # files) instead of re-decomposing from scratch and clobbering prior work.
-        _new_build = _is_build_task
-        # (J) Approvals CAN'T gate the parallel path (no per-subtask emitter →
-        # tool_gate auto-allows), so when team approvals are ON, route to the
-        # SEQUENTIAL team pipeline (chat_pipeline) which wires the emitter + gates
-        # every risky tool. Approvals OFF → keep the fast parallel path.
-        _team_approvals = False
+        _team_approvals = bool(team)   # fail safe → gated sequential
         try:
             from aiforge_core.config import approval_settings as _aps
             _team_approvals = bool(team and _aps.required("team"))
         except Exception:  # noqa: BLE001
-            _team_approvals = bool(team)   # fail safe → gated sequential
-        # (F) An EXPLICIT team pick on a FRESH request always runs the pipeline —
-        # don't require greenfield/new-build (that guard is for simple-mode
-        # AUTO-escalation). A team FOLLOW-UP stays a single-agent edit.
-        _route_pipeline = (_psub_on and not _doc_task and not _team_approvals
-                           and ((team and _fresh)
-                                or ((team or _build_escalate)
-                                    and (_greenfield or _new_build))))
+            pass
+        from aiforge_core.runtime import chat_router as _cr
+        _rd = _cr.decide(
+            prompt, agent_mode=agent_mode, team=team, psub_on=_psub_on,
+            greenfield=_greenfield, fresh=_fresh, cat=_cat,
+            team_approvals=_team_approvals,
+            auto_escalate=os.environ.get("AIFORGE_AUTO_ESCALATE", "1")
+            not in ("0", "false"))
+        _doc_task = _rd.doc_task
+        _is_build_task = _rd.is_build_task
+        _build_escalate = _rd.build_escalate
+        _route_pipeline = _rd.route_pipeline
+        if _rd.notice:
+            yield {"type": "thought", "role": "router", "text": _rd.notice}
         if _doc_task:
             # Multi-repo analysis fans OUT (one read-only explore agent per repo,
             # in parallel, then synthesize a draft). A single-repo/topic analysis
@@ -4612,19 +4514,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                            "deliverable) — routing to the single research agent, "
                            "NOT the code build pipeline. No file tree, tests, or "
                            "PR; the output is the analysis/document (draft)."}
-        if team and not _route_pipeline and not _doc_task:
-            if _team_approvals:
-                yield {"type": "thought", "role": "router",
-                       "text": "Team + approvals ON → running the SEQUENTIAL "
-                               "pipeline so every risky tool pauses for your "
-                               "Approve/Reject (the parallel path can't gate). "
-                               "Turn Pipeline approvals off for the faster "
-                               "parallel build."}
-            else:
-                yield {"type": "thought", "role": "router",
-                       "text": "Existing code + a targeted change — sequential "
-                               "in-place pipeline (history + current files in "
-                               "context), not a from-scratch parallel rebuild."}
+        # (the team not-route_pipeline notice — approvals-sequential vs in-place
+        # edit — is emitted above via chat_router's _rd.notice.)
         # Review-edits is a simple/plan-only feature (forced on there). Team /
         # parallel / best-of-N runners run the full pipeline and don't hold
         # edits — left as-is by design, no notice (avoids per-run noise).
