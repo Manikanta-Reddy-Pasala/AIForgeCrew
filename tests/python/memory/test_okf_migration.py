@@ -64,3 +64,25 @@ def test_migrate_frontmatter_walks_compacted_and_skips_reserved(
     assert "type: knowledge" in a and "kind:" not in a.split("\n---", 1)[0]
     assert (mem / "compacted" / "index.md").read_text(encoding="utf-8") \
         == "# nav\n- a\n"                  # reserved file untouched
+
+
+def test_rename_removes_stale_marker_only_okr(tmp_path, monkeypatch):
+    mem = tmp_path / "memory"
+    (mem / "okr").mkdir(parents=True)
+    (mem / "okr" / ".migrations.json").write_text("{}", encoding="utf-8")
+    (mem / "okf").mkdir()                  # okf/ already the live bundle
+    monkeypatch.setattr("aiforge_core.memory.md_store.memory_dir", lambda: mem)
+    r = migrations._rename_okr_dir_to_okf()
+    assert "removed_stale_marker" in r
+    assert not (mem / "okr").exists()      # orphaned marker folder gone
+
+
+def test_rename_moves_okr_when_okf_absent(tmp_path, monkeypatch):
+    mem = tmp_path / "memory"
+    (mem / "okr" / "global" / "learnings").mkdir(parents=True)
+    (mem / "okr" / "global" / "learnings" / "L-01.md").write_text(
+        "---\ntype: learning\nid: L-01\n---\nx\n", encoding="utf-8")
+    monkeypatch.setattr("aiforge_core.memory.md_store.memory_dir", lambda: mem)
+    r = migrations._rename_okr_dir_to_okf()
+    assert r.get("ok") and not (mem / "okr").exists()
+    assert (mem / "okf" / "global" / "learnings" / "L-01.md").is_file()

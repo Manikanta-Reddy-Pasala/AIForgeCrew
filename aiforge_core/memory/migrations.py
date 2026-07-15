@@ -106,29 +106,45 @@ def _rewrite_file_frontmatter_to_okf(path) -> bool:
 
 def _migrate_frontmatter_to_okf() -> dict:
     """Rewrite legacy frontmatter keys (kind/source_url/updated_at/created_at)
-    to OKF names across the memory briefs (``compacted/``) and, when present,
-    the ``okf/`` node bundle. Reserved OKF files (index.md/log.md) are skipped.
-    Idempotent + soft-fail — brings pre-OKF on-disk files up to spec so a
-    Google OKF reader can consume them directly."""
+    to OKF names across EVERY memory Markdown file — briefs (``compacted/``),
+    raw captures (``captures/``), session notes, rule books, and the ``okf/``
+    node bundle. Reserved OKF files (index.md/log.md) and the historical
+    ``archive/`` snapshots are skipped. Idempotent + soft-fail — brings every
+    pre-OKF on-disk file up to spec so a Google OKF reader consumes it directly."""
     try:
         from aiforge_core.memory.md_store import memory_dir
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     changed = 0
+    scanned = 0
     root = memory_dir()
-    for sub in ("compacted", "okf"):
-        d = root / sub
-        if not d.is_dir():
+    if not root.is_dir():
+        return {"ok": True, "rewritten": 0, "scanned": 0}
+    for p in root.rglob("*.md"):
+        # skip reserved OKF nav/audit files and archived historical snapshots
+        if p.name in ("index.md", "log.md"):
             continue
-        for p in d.rglob("*.md"):
-            if p.name in ("index.md", "log.md"):
-                continue
-            try:
-                if _rewrite_file_frontmatter_to_okf(p):
-                    changed += 1
-            except Exception:  # noqa: BLE001 — one bad file never blocks the rest
-                continue
-    return {"ok": True, "rewritten": changed}
+        parts = set(p.relative_to(root).parts)
+        if "archive" in parts or "memory-archive" in parts:
+            continue
+        scanned += 1
+        try:
+            if _rewrite_file_frontmatter_to_okf(p):
+                changed += 1
+        except Exception:  # noqa: BLE001 — one bad file never blocks the rest
+            continue
+    return {"ok": True, "rewritten": changed, "scanned": scanned}
+
+
+def migrate_okf_format() -> dict:
+    """Explicit, standalone OKF format migration (the ``./run.sh --migrate-okf``
+    entry): rename a legacy ``okr/`` node bundle → ``okf/`` and rewrite every
+    memory Markdown file's frontmatter to OKF names. Idempotent + soft-fail.
+    run.sh calls this on every start so old-format files always converge to OKF."""
+    out = {"dir_rename": _rename_okr_dir_to_okf(),
+           "frontmatter": _migrate_frontmatter_to_okf()}
+    log.info("migrate_okf_format: %s", out)
+    return out
 
 
 def _rename_okr_dir_to_okf() -> dict:
@@ -143,7 +159,14 @@ def _rename_okr_dir_to_okf() -> dict:
         if not src.is_dir():
             return {"skipped": "no legacy okr/ folder"}
         if dst.exists():
-            return {"skipped": "okf/ already exists"}
+            # okf/ is already the live bundle — an okr/ holding only stale
+            # bookkeeping (.migrations.json) is orphaned; remove it so the tree
+            # is clean. Anything else stays put (don't clobber real data).
+            leftover = [p for p in src.iterdir() if p.name != ".migrations.json"]
+            if not leftover:
+                shutil.rmtree(str(src), ignore_errors=True)
+                return {"ok": True, "removed_stale_marker": str(src)}
+            return {"skipped": "okf/ exists and okr/ has data — left in place"}
         shutil.move(str(src), str(dst))
         log.info("renamed legacy okr/ node bundle → okf/")
         return {"ok": True, "moved_to": str(dst)}
@@ -598,7 +621,7 @@ def force_recompact_all(on_step=None) -> dict:
 
 
 __all__ = ["run_startup_migrations", "purge_migrated_code",
-           "force_recompact_all", "dedupe_all"]
+           "force_recompact_all", "dedupe_all", "migrate_okf_format"]
 
 
 if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [flag]
@@ -609,5 +632,7 @@ if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [fla
         print(dedupe_all())
     elif "--recompact-all" in sys.argv:      # compact at any cost (+ dedupe)
         print(force_recompact_all())
+    elif "--migrate-okf" in sys.argv:        # okr→okf dir + all md → OKF frontmatter
+        print(migrate_okf_format())
     else:
         print(run_startup_migrations())

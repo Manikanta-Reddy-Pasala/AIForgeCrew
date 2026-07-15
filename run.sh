@@ -65,6 +65,9 @@
 #                (--install-semantic is a kept alias — also installs model2vec.)
 #   --dedupe     remove duplicate OKR nodes + chat sessions, then exit
 #   --recompact-all  re-LLM every memory brief + rebuild from scratch, then exit
+#   --migrate-okf    rename okr→okf + convert ALL memory md files to OKF (Open
+#                    Knowledge Format v0.1) frontmatter, then exit (also runs
+#                    automatically on every start; opt out AIFORGE_MIGRATE_OKF=0)
 #   --purge-code     drop code-as-learnings from a bad migration, then exit
 #   (--lite/--hybrid/--docker/--no-build are legacy no-ops — always SQLite now)
 #
@@ -143,6 +146,7 @@ while [[ $# -gt 0 ]]; do
     --migrate) MIGRATE=1 ;;   # force a (re-)converge: migrate PG/Neo4j → SQLite/OKR + remove docker, then start
     --dedupe) MAINT=dedupe ;;         # remove duplicate OKR nodes + chat sessions, then exit
     --recompact-all) MAINT=recompact ;;  # re-LLM every brief + rebuild, then exit
+    --migrate-okf) MAINT=migrateokf ;;  # rename okr→okf + convert ALL md files to OKF frontmatter, then exit
     --purge-code) MAINT=purge ;;      # drop code-as-learnings from a bad drain, then exit
     --install-model2vec|--install-semantic) INSTALL_MODEL2VEC=1 ;;  # install semantic memory (model2vec, ~30MB, NO torch). --install-semantic kept as an alias.
     --dev) DEV=1 ;;
@@ -363,6 +367,8 @@ if [[ -n "${MAINT:-}" ]]; then
                .venv/bin/python -m aiforge_core.memory.migrations --dedupe; exit $? ;;
     recompact) echo "==> recompact-all: re-LLM every brief + rebuild (minutes)…"
                .venv/bin/python -m aiforge_core.memory.migrations --recompact-all; exit $? ;;
+    migrateokf) echo "==> migrate-okf: rename okr→okf + convert ALL memory md files to OKF frontmatter…"
+               .venv/bin/python -m aiforge_core.memory.migrations --migrate-okf; exit $? ;;
     purge)     echo "==> purge-code: dropping code-as-learnings…"
                .venv/bin/python -m aiforge_core.memory.migrations --purge-code; exit $? ;;
   esac
@@ -475,6 +481,16 @@ if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" || "${MIGRATE:-0}" == "1" ]]; then
   # ${arr[@]+"${arr[@]}"} — expand to NOTHING when empty (no phantom "" arg);
   # a bare "${arr[@]}" trips `set -u` on macOS bash 3.2 ("unbound variable").
   .venv/bin/python -m aiforge_core.deploy.converge ${_cvg[@]+"${_cvg[@]}"} || true
+fi
+
+# ── OKF format converge (every start) ─────────────────────────────────────
+# Bring the on-disk memory to Open Knowledge Format v0.1: rename a legacy okr/
+# node bundle → okf/ and rewrite EVERY memory .md file's frontmatter to OKF
+# names (kind→type, source_url→resource, updated_at/created_at→timestamp).
+# Idempotent + fast (no LLM) — a no-op once everything is already OKF, so it is
+# safe to run unconditionally on each launch. Opt out with AIFORGE_MIGRATE_OKF=0.
+if [[ "${AIFORGE_MIGRATE_OKF:-1}" != "0" && -x .venv/bin/python ]]; then
+  .venv/bin/python -m aiforge_core.memory.migrations --migrate-okf || true
 fi
 
 # (PG/Neo4j env was already stripped right after .env load; docker cleanup —
