@@ -4454,6 +4454,17 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                               r"microservice|rest)\b", p)
             cues = any(c in p for c in ("with test", "unit test", "multiple file",
                                         " files", "test case", "endpoints"))
+            # TRACKER ACTION veto (STRONGEST): "create N jira tickets", "create a
+            # confluence page", "file a story/epic/issue" is a JIRA/Confluence
+            # WRITE (jira_create / confluence_create), NEVER a code build — even
+            # when it names an api/service (that's the ticket's SUBJECT, not an
+            # artifact to scaffold). This wins over the code-noun check below,
+            # which otherwise mis-routes "create 2 jira tickets about the API"
+            # into the scaffold→write-files→tests pipeline.
+            if _re.search(r"\b(jira|confluence)\b", p) and _re.search(
+                    r"\b(ticket|tickets|story|stories|epic|epics|issue|issues|"
+                    r"page|pages)\b", p):
+                return False
             # DOCUMENT / non-code artifact tasks ("write a JIRA ticket for adding
             # rate limiting", "confluence page", "email", "spec doc") must NOT be
             # treated as a code build even though they mention build-y nouns.
