@@ -123,6 +123,6 @@ def test_recompact_no_double_envelope(cfg):
     raw = (m.brief_path("svc")).read_text()
     # exactly ONE frontmatter block, ONE Objective — no nesting
     assert raw.count("## Objective") == 1
-    assert raw.split("---", 2)[1].count("kind:") == 1
+    assert raw.split("---", 2)[1].count("type:") == 1   # OKF identity field
     parsed = work_notes.parse_note(raw)
     assert parsed["frontmatter"]["kind"] == "knowledge"
