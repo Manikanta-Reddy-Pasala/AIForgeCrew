@@ -1544,8 +1544,7 @@ def set_doer_backend_alias(payload: dict) -> dict:
     return set_llm_backend(payload)
 
 
-def _env_truthy(name: str) -> bool:
-    return str(os.environ.get(name, "")).strip().lower() in ("1", "true", "yes", "on")
+from aiforge_core.api._shared import env_truthy as _env_truthy  # noqa: E402
 
 
 @app.get("/api/runtime/force_full_pipeline")
