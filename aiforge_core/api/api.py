@@ -4552,7 +4552,26 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # report, review architecture) must NEVER enter the code pipeline — it
         # designs a file tree + tests + PR, which is the wrong artifact. Route
         # these to the single research agent regardless of team mode.
-        _doc_task = _is_doc_analysis_task(prompt)
+        # TASK-TYPE ROUTING. Primary = a cheap LLM classify (robust to phrasing
+        # like "create 2 JIRA tickets about the API" that the regex misreads as a
+        # build); FALLBACK = the regex heuristics when the classifier is disabled,
+        # errors, or is ambiguous (routing never hard-depends on the model). The
+        # category maps to two signals the rest of the routing already uses:
+        #   doc_analysis → the research agent;  code_build → the build pipeline;
+        #   tracker/chat/code_edit → the single chat agent (which has jira_create
+        #   / confluence_create + edit tools).
+        _cat = None
+        try:
+            from aiforge_core.runtime import task_router as _tr
+            _cat = _tr.classify_task(prompt, history=history, cwd=cwd)
+        except Exception:  # noqa: BLE001 — never break routing on the classifier
+            _cat = None
+        if _cat is not None:
+            _doc_task = _cat == "doc_analysis"
+            _is_build_task = _cat == "code_build"
+        else:
+            _doc_task = _is_doc_analysis_task(prompt)
+            _is_build_task = _looks_like_multifile_build(prompt)
         _build_escalate = bool(
             not team and _psub_on
             # PLAN mode is read-only — it must NEVER escalate into a pipeline that
@@ -4563,7 +4582,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             and not _is_advice_question(prompt)
             and not _doc_task
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
-            and _looks_like_multifile_build(prompt))
+            and _is_build_task)
         if _build_escalate:
             yield {"type": "thought", "role": "router",
                    "text": "Multi-file build detected — routing through the build "
@@ -4571,7 +4590,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                            "instead of a single agent."}
         elif (not team and not _psub_on and agent_mode != "plan"
               and not _is_advice_question(prompt)
-              and _looks_like_multifile_build(prompt)):
+              and _is_build_task):
             # Multi-file build with the fan-out DISABLED: say so instead of
             # silently grinding through N files with one agent — the operator
             # can't fix a knob they can't see.
@@ -4588,7 +4607,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # that isn't itself a fresh multi-file build is a TARGETED EDIT: route it
         # to the single agent (which sees the conversation history + the existing
         # files) instead of re-decomposing from scratch and clobbering prior work.
-        _new_build = _looks_like_multifile_build(prompt)
+        _new_build = _is_build_task
         _route_pipeline = (_psub_on and (team or _build_escalate)
                            and (_greenfield or _new_build)
                            and not _doc_task)
