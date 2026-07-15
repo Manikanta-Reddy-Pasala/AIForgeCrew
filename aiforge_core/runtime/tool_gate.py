@@ -193,13 +193,26 @@ def make_approval_gate_callback():
             decision = await loop.run_in_executor(None, chat_approve.wait, sid)
             if decision.get("decision") != "approve":
                 _note = decision.get("note") or ""
-                # Interactive reject HALTS the run — don't just hand the Doer an
-                # error and let it keep looping (the user then had to hit Stop /
-                # Reset stuck runs). Signal cancel so the pipeline stops at its
-                # next checkpoint (chat_pipeline/parallel_subtasks honour it) and
-                # the run ends; the user resumes by sending feedback as a new
-                # message. A cancelled approval ('cancelled' note, from /stop)
-                # is already a stop, so don't re-cancel on that.
+                # Reject WITH guidance (typed in the approval card) → STEER +
+                # CONTINUE, same as the simple/plan loop: fold the guidance in as
+                # a steer so the Doer adjusts on its next model call, skip the
+                # rejected tool, and let the pipeline keep going (no halt). Only a
+                # bare reject (no guidance) HALTS the run.
+                _guidance = _note if _note not in ("cancelled", "") else ""
+                if _guidance:
+                    try:
+                        from aiforge_core.runtime import chat_interject
+                        chat_interject.push(sid, _guidance)
+                    except Exception:  # noqa: BLE001 — best-effort steer
+                        pass
+                    return {"ok": False, "rejected": True,
+                            "error": f"user rejected this action and asked: "
+                                     f"{_guidance}. Do NOT repeat it as-is — "
+                                     "adjust per that guidance and continue."}
+                # No guidance → HALT: signal cancel so the pipeline stops at its
+                # next checkpoint (chat_pipeline/parallel_subtasks honour it); the
+                # user resumes by sending a new message. A 'cancelled' note (from
+                # /stop) is already a stop, so don't re-cancel.
                 if _note != "cancelled":
                     try:
                         from aiforge_core.runtime import chat_cancel

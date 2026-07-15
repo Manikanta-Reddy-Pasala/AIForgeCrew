@@ -4525,6 +4525,18 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         else:
             _doc_task = False                       # no positive doc class → single agent
             _is_build_task = _regex_build_fallback(prompt)
+        # (C) PLAN mode owns its own analysis + always yields a change-PLAN — a
+        # doc_analysis class must not re-route it to the research agent (wrong
+        # deliverable). Keep it in the plan flow.
+        if agent_mode == "plan":
+            _doc_task = False
+        # (A) An EXPLICIT team pick + a request that clearly looks like a code
+        # build must NOT be downgraded to the read-only research agent just
+        # because the classifier said doc_analysis — a misclassified team build
+        # would produce no code. A real doc task ("write a report") has no code
+        # noun, so this only rescues genuine builds.
+        if team and _doc_task and _regex_build_fallback(prompt):
+            _doc_task = False
         _build_escalate = bool(
             not team and _psub_on
             # PLAN mode is read-only — it must NEVER escalate into a pipeline that
@@ -4560,9 +4572,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # to the single agent (which sees the conversation history + the existing
         # files) instead of re-decomposing from scratch and clobbering prior work.
         _new_build = _is_build_task
-        _route_pipeline = (_psub_on and (team or _build_escalate)
-                           and (_greenfield or _new_build)
-                           and not _doc_task)
+        # (J) Approvals CAN'T gate the parallel path (no per-subtask emitter →
+        # tool_gate auto-allows), so when team approvals are ON, route to the
+        # SEQUENTIAL team pipeline (chat_pipeline) which wires the emitter + gates
+        # every risky tool. Approvals OFF → keep the fast parallel path.
+        _team_approvals = False
+        try:
+            from aiforge_core.config import approval_settings as _aps
+            _team_approvals = bool(team and _aps.required("team"))
+        except Exception:  # noqa: BLE001
+            _team_approvals = bool(team)   # fail safe → gated sequential
+        # (F) An EXPLICIT team pick on a FRESH request always runs the pipeline —
+        # don't require greenfield/new-build (that guard is for simple-mode
+        # AUTO-escalation). A team FOLLOW-UP stays a single-agent edit.
+        _route_pipeline = (_psub_on and not _doc_task and not _team_approvals
+                           and ((team and _fresh)
+                                or ((team or _build_escalate)
+                                    and (_greenfield or _new_build))))
         if _doc_task:
             # Multi-repo analysis fans OUT (one read-only explore agent per repo,
             # in parallel, then synthesize a draft). A single-repo/topic analysis
@@ -4587,10 +4613,18 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                            "NOT the code build pipeline. No file tree, tests, or "
                            "PR; the output is the analysis/document (draft)."}
         if team and not _route_pipeline and not _doc_task:
-            yield {"type": "thought", "role": "router",
-                   "text": "Existing code + a targeted change — editing in place "
-                           "with the single agent (history + current files in "
-                           "context), not a from-scratch rebuild."}
+            if _team_approvals:
+                yield {"type": "thought", "role": "router",
+                       "text": "Team + approvals ON → running the SEQUENTIAL "
+                               "pipeline so every risky tool pauses for your "
+                               "Approve/Reject (the parallel path can't gate). "
+                               "Turn Pipeline approvals off for the faster "
+                               "parallel build."}
+            else:
+                yield {"type": "thought", "role": "router",
+                       "text": "Existing code + a targeted change — sequential "
+                               "in-place pipeline (history + current files in "
+                               "context), not a from-scratch parallel rebuild."}
         # Review-edits is a simple/plan-only feature (forced on there). Team /
         # parallel / best-of-N runners run the full pipeline and don't hold
         # edits — left as-is by design, no notice (avoids per-run noise).
