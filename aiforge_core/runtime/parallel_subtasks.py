@@ -1984,6 +1984,9 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                 _txt = (_txt or "").strip()
                 if not _txt:
                     continue
+                # Echo the user's steer TEXT (role:steer) so it shows + persists
+                # in the UI for team mode too — same as the simple/plan loop.
+                yield {"type": "thought", "role": "steer", "text": _txt}
                 route = _route_steering(_txt, subs)
                 target, note = route["target"], route["note"]
                 # A user comment is a MANDATORY requirement, not a hint — mark it so

@@ -259,6 +259,12 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
         if session_id is not None:
             from aiforge_core.runtime import chat_approve
             chat_approve.set_emitter(session_id, q.put)
+            # Mark this team run STEERABLE so /steer accepts mid-run guidance —
+            # the Doer/Refiner before_model callback (chat_steer_callback) folds
+            # it in and this loop surfaces the "📌 Got your message" ack. Without
+            # this, push(require_steerable=True) refused every steer and the UI
+            # (wrongly) reported "steering not available in team mode".
+            chat_interject.set_steerable(session_id, True)
             # Expose the session so the Doer's subtask_update tool can push a
             # LIVE subtask_update event onto this stream (real-time status in
             # the pinned dock), not just persist it to the ticket store.

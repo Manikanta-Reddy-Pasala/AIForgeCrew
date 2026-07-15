@@ -1348,7 +1348,7 @@ export default function Chat() {
         toast('Steer queued — applies at the next step');
       } else if (r.unsupported) {
         setInput(q);   // restore — nothing was queued
-        toast('Steering not available in team mode');
+        toast('Steering not available for this run');
       } else {
         setInput(q);   // restore so the user can retry or Stop
         toast('Could not steer (the run may have ended)');
