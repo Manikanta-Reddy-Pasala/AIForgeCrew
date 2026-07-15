@@ -69,8 +69,14 @@ app = FastAPI(title="AIForge API")
 # them here is import-safe.
 from aiforge_core.api.routes import jobs as _r_jobs  # noqa: E402
 from aiforge_core.api.routes import repos as _r_repos  # noqa: E402
+from aiforge_core.api.routes import library as _r_library  # noqa: E402
+from aiforge_core.api.routes import rules as _r_rules  # noqa: E402
+from aiforge_core.api.routes import mcp as _r_mcp  # noqa: E402
 app.include_router(_r_jobs.router)
 app.include_router(_r_repos.router)
+app.include_router(_r_library.router)
+app.include_router(_r_rules.router)
+app.include_router(_r_mcp.router)
 
 
 @app.on_event("startup")
@@ -1223,176 +1229,8 @@ def patch_ticket(identifier: str, payload: TicketPatch) -> dict:
     return get_ticket(identifier)
 
 
-@app.get("/api/workflows")
-def list_workflows() -> list[dict]:
-    """Public registry view — UI uses this to populate the workflow
-    dropdown on the new-ticket form."""
-    from aiforge_core.workflows import list_all
-    return [w.to_public_dict() for w in list_all()]
-
-
-# ─────────── Playbook Library: skills · workflows · rules ──────────────
-# Operator-managed instruction library (separate from the ticket-routing
-# /api/workflows registry above). Display all + create from text or via the
-# configured LLM. These are the auto_context sources the agents pull from.
-
-def _bundled_names(kind: str) -> set:
-    """Filenames of the BUNDLED default playbooks for a kind. These ship in
-    ``runtime/builtin_playbooks/{kind}`` and ``ensure_dirs()`` COPIES them into
-    the user-writable global dir (keeping the filename), so a path check can't
-    tell a seeded default from a user file — but the FILENAME still identifies
-    it. Cached per process."""
-    cache = _bundled_names.__dict__.setdefault("_cache", {})
-    if kind not in cache:
-        try:
-            from pathlib import Path
-
-            from aiforge_core.runtime import workflows as _wf
-            d = Path(_wf.__file__).resolve().parent / "builtin_playbooks" / kind
-            cache[kind] = {f.name for f in d.glob("*.md")} if d.is_dir() else set()
-        except Exception:  # noqa: BLE001
-            cache[kind] = set()
-    return cache[kind]
-
-
-def _library_origin(source: str, kind: str) -> str:
-    """``"default"`` when the item is one of the bundled playbooks (matched by
-    its source FILENAME), else ``"custom"`` — everything the user or a repo
-    added. Never raises (classification must not break the listing)."""
-    try:
-        from pathlib import Path
-        if source and Path(source).name in _bundled_names(kind):
-            return "default"
-    except Exception:  # noqa: BLE001
-        return "custom"
-    return "custom"
-
-
-def _skill_dict(s, kind: str | None = None) -> dict:
-    source = getattr(s, "source", "")
-    return {"name": s.name, "description": s.description,
-            "triggers": list(getattr(s, "triggers", []) or []),
-            "body": s.body, "source": source,
-            "always": bool(getattr(s, "always", False)),
-            "origin": _library_origin(source, kind) if kind else "default"}
-
-
-@app.get("/api/library/{kind}")
-def library_list(kind: str) -> list[dict]:
-    """List all skills / workflows / rules."""
-    if kind == "skills":
-        from aiforge_core.runtime import skills
-        return [_skill_dict(s, "skills") for s in skills.load()]
-    if kind == "workflows":
-        from aiforge_core.runtime import workflows
-        return [_skill_dict(w, "workflows") for w in workflows.load()]
-    if kind == "rules":
-        from aiforge_core.runtime import repo_rules
-        return [{"name": r.name, "description": r.description,
-                 "triggers": list(r.triggers), "scope": r.scope,
-                 "body": r.body, "source": r.source,
-                 "globs": list(r.globs), "always": r.always,
-                 "origin": _library_origin(r.source, "rules")}
-                for r in repo_rules.load_global_and_builtin()]
-    raise HTTPException(404, f"unknown kind {kind!r}")
-
-
-@app.post("/api/library/{kind}", status_code=201)
-def library_create(kind: str, payload: dict = Body(...)) -> dict:
-    """Create/overwrite a skill / workflow / rule from text."""
-    name = (payload.get("name") or "").strip()
-    body = (payload.get("body") or "").strip()
-    desc = (payload.get("description") or "").strip()
-    triggers = payload.get("triggers") or []
-    if isinstance(triggers, str):
-        triggers = [t.strip() for t in triggers.split(",") if t.strip()]
-    if not name or not body:
-        raise HTTPException(400, "name and body are required")
-    if kind == "skills":
-        from aiforge_core.runtime import skills
-        res = skills.write_skill(name, desc, body, triggers)
-    elif kind == "workflows":
-        from aiforge_core.runtime import workflows
-        res = workflows.write_workflow(name, desc, body, triggers)
-    elif kind == "rules":
-        from aiforge_core.runtime import repo_rules
-        res = repo_rules.write_rule(name, body, globs=payload.get("globs"),
-                                    always=bool(payload.get("always", True)))
-    else:
-        raise HTTPException(404, f"unknown kind {kind!r}")
-    if not res.get("ok"):
-        raise HTTPException(400, res.get("error", "write failed"))
-    return res
-
-
-@app.delete("/api/library/{kind}/{name}")
-def library_delete(kind: str, name: str) -> dict:
-    """Delete a single skill / workflow / rule by name (custom or default)."""
-    if kind == "skills":
-        from aiforge_core.runtime import skills
-        res = skills.delete_skill(name)
-    elif kind == "workflows":
-        from aiforge_core.runtime import workflows
-        res = workflows.delete_workflow(name)
-    elif kind == "rules":
-        from aiforge_core.runtime import repo_rules
-        res = repo_rules.delete_rule(name)
-    else:
-        raise HTTPException(404, f"unknown kind {kind!r}")
-    if not res.get("ok"):
-        raise HTTPException(404, res.get("error", "delete failed"))
-    return res
-
-
-@app.delete("/api/library/{kind}")
-def library_clear(kind: str) -> dict:
-    """Clear ALL skills / workflows / rules of a kind (custom + defaults)."""
-    if kind == "skills":
-        from aiforge_core.runtime import skills
-        return skills.clear_skills()
-    if kind == "workflows":
-        from aiforge_core.runtime import workflows
-        return workflows.clear_workflows()
-    if kind == "rules":
-        from aiforge_core.runtime import repo_rules
-        return repo_rules.clear_rules()
-    raise HTTPException(404, f"unknown kind {kind!r}")
-
-
-# (repo-folder mapping routes moved to aiforge_core.api.routes.repos)
-
-
-_LIBRARY_GEN_PROMPT = {
-    "skills": ("Write a SKILL.md. Output ONLY a markdown doc with YAML "
-               "frontmatter (name, description, triggers: [..]) then a concise "
-               "instruction body the agent follows. Topic: "),
-    "workflows": ("Write a WORKFLOW.md: YAML frontmatter (name, description, "
-                  "triggers: [..]) then numbered end-to-end steps. Topic: "),
-    "rules": ("Write a coding RULE as a short markdown doc: one '# Title' then "
-              "tight imperative bullet points the agent must follow. Topic: "),
-}
-
-
-@app.post("/api/library/{kind}/generate")
-def library_generate(kind: str, payload: dict = Body(...)) -> dict:
-    """Draft a skill / workflow / rule from a text description using the
-    configured LLM. Returns the draft markdown for review before saving."""
-    if kind not in _LIBRARY_GEN_PROMPT:
-        raise HTTPException(404, f"unknown kind {kind!r}")
-    prompt = (payload.get("prompt") or "").strip()
-    if not prompt:
-        raise HTTPException(400, "prompt is required")
-    role = payload.get("role") or "architect"
-    try:
-        from aiforge_core.llm import client
-        draft = client.complete(role, [
-            {"role": "system", "content": "You author concise, high-signal "
-             "agent instruction docs. Output ONLY the markdown, no preamble."},
-            {"role": "user", "content": _LIBRARY_GEN_PROMPT[kind] + prompt},
-        ], max_tokens=1200)
-    except Exception as exc:  # noqa: BLE001 — surface model/credit errors
-        raise HTTPException(502, f"LLM generate failed: {exc}")
-    return {"ok": True, "draft": draft}
+# ─── Playbook Library (skills/workflows/rules) + /api/workflows list →
+#     moved to aiforge_core.api.routes.library (APIRouter).
 
 
 @app.post("/api/workflows/preview")
@@ -2968,74 +2806,7 @@ def agents_auto_assign(body: _AutoAssignBody) -> dict:
     return out
 
 
-# ─────────────────────── MCP marketplace / installer ───────────────────────
-class _McpInstallBody(BaseModel):
-    catalog_id: str = Field(..., min_length=1)
-    url: str | None = Field(None, description="override catalog url (required for custom)")
-    name: str | None = Field(None, description="override display name")
-    api_key: str | None = Field(None, description="optional bearer/api key")
-
-
-class _McpUpdateBody(BaseModel):
-    name: str | None = None
-    url: str | None = None
-    description: str | None = None
-    enabled: bool | None = None
-    api_key: str | None = None
-
-
-@app.get("/api/mcp/catalog")
-def mcp_catalog() -> dict:
-    """The curated MCP marketplace catalog (browse → one-click install)."""
-    from aiforge_core.config import mcp_registry
-    return {"catalog": mcp_registry.load_catalog()}
-
-
-@app.get("/api/mcp/servers")
-def mcp_servers() -> dict:
-    """Installed MCP servers (secrets stripped)."""
-    from aiforge_core.config import mcp_registry
-    return {"servers": mcp_registry.list_servers()}
-
-
-@app.post("/api/mcp/servers", status_code=201)
-def mcp_server_install(body: _McpInstallBody) -> dict:
-    from aiforge_core.config import mcp_registry
-    try:
-        return mcp_registry.install_from_catalog(
-            body.catalog_id, url=body.url, api_key=body.api_key, name=body.name)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.put("/api/mcp/servers/{server_id}")
-def mcp_server_update(server_id: str, body: _McpUpdateBody) -> dict:
-    from aiforge_core.config import mcp_registry
-    row = mcp_registry.update_server(
-        server_id, name=body.name, url=body.url, description=body.description,
-        enabled=body.enabled, api_key=body.api_key)
-    if row is None:
-        raise HTTPException(404, f"unknown MCP server: {server_id}")
-    return row
-
-
-@app.delete("/api/mcp/servers/{server_id}", status_code=204)
-def mcp_server_delete(server_id: str) -> None:
-    from aiforge_core.config import mcp_registry
-    if not mcp_registry.remove_server(server_id):
-        raise HTTPException(404, f"unknown MCP server: {server_id}")
-
-
-@app.post("/api/mcp/servers/{server_id}/test")
-def mcp_server_test(server_id: str) -> dict:
-    """Connectivity check — list the server's tools via the MCP client."""
-    from aiforge_core.config import mcp_registry
-    from aiforge_core.runtime.tools import mcp_client
-    row = mcp_registry.get_server(server_id)
-    if row is None:
-        raise HTTPException(404, f"unknown MCP server: {server_id}")
-    name = row.get("name") or row.get("id")
-    return mcp_client.list_tools(name)
+# ─── MCP marketplace/installer + servers routes → aiforge_core.api.routes.mcp
 
 
 @app.put("/api/agents/v2/{role}/config")
@@ -5142,85 +4913,7 @@ def chat_session_approve(session_id: int, body: _ApproveBody) -> dict:
 
 # ── Rule / Memory / Feedback capture transparency ────────────────────────────
 
-@app.get("/api/rules")
-def list_captured_rules(repo: str | None = None,
-                        session_id: int | None = None) -> dict:
-    """Captured rules/memories/feedback for the transparency panel, grouped by
-    scope. Optional ``repo`` / ``session_id`` filters."""
-    from aiforge_core.runtime import rule_capture
-    items = rule_capture.list_captured(repo=repo, session_id=session_id)
-    by_scope: dict[str, list] = {}
-    for it in items:
-        by_scope.setdefault(it.get("scope") or "global", []).append(it)
-    return {"items": items, "by_scope": by_scope}
-
-
-class _RuleScopeBody(BaseModel):
-    scope: str = Field(..., description="'global' | 'project' | 'session'")
-    repo_root: str | None = Field(
-        None, description="repo root so a →project rescope writes .aiforge/rules")
-
-
-@app.put("/api/rules/{rule_id}/scope")
-def rescope_captured_rule(rule_id: str, body: _RuleScopeBody) -> dict:
-    """Re-file a captured item under a new scope (correcting a misclass). Any
-    gate flag the rule enabled moves with it (and a deleted/undone one is
-    revoked)."""
-    from aiforge_core.runtime import rule_capture
-    repo_root = body.repo_root or os.environ.get("AIFORGE_REPO_ROOT") or None
-    return rule_capture.rescope(rule_id, body.scope, repo_root=repo_root)
-
-
-@app.delete("/api/rules/{rule_id}")
-def delete_captured_rule(rule_id: str) -> dict:
-    """Undo a captured item — removes it from its store AND revokes any gate
-    flag it enabled (so the approval gate is re-enabled)."""
-    from aiforge_core.runtime import rule_capture
-    return {"ok": rule_capture.undo(rule_id)}
-
-
-# ── Explicit gate-disable flags (the EXPLICIT, scoped, revocable opt-in) ──────
-#
-# A gate is NEVER disabled by the classifier — only by an explicit user action
-# through these endpoints. The capture path merely OFFERS the opt-in (gate_intent
-# on the `captured` event); the UI pill calls POST here when the user clicks it.
-
-@app.get("/api/rules/flags")
-def list_gate_flags() -> dict:
-    """Active gate-disable flags grouped by scope, for the Auto-approvals
-    panel."""
-    from aiforge_core.runtime import rule_capture
-    return {"by_scope": rule_capture.list_flags()}
-
-
-class _GateFlagBody(BaseModel):
-    name: str = Field(..., description="'commit_auto_approve' | 'allow_delete'")
-    scope: str = Field(..., description="'session' | 'project' (global needs confirm)")
-    repo: str | None = None
-    session_id: int | None = None
-    rule_id: str | None = None
-    allow_global: bool = False
-
-
-@app.post("/api/rules/flags")
-def set_gate_flag_ep(body: _GateFlagBody) -> dict:
-    """EXPLICITLY enable a gate-disable flag for a scope (user-confirmed opt-in).
-    Refuses global unless allow_global is set."""
-    from aiforge_core.runtime import rule_capture
-    return rule_capture.set_gate_flag(
-        body.name, scope=body.scope, repo=body.repo,
-        session_id=body.session_id, rule_id=body.rule_id,
-        allow_global=body.allow_global)
-
-
-@app.delete("/api/rules/flags/{name}")
-def clear_gate_flag_ep(name: str, scope: str, repo: str | None = None,
-                       session_id: int | None = None) -> dict:
-    """Revoke a gate-disable flag for a scope (re-enables the gate)."""
-    from aiforge_core.runtime import rule_capture
-    ok = rule_capture.clear_gate_flag(name, scope=scope, repo=repo,
-                                      session_id=session_id)
-    return {"ok": ok}
+# ─── Captured-rules + gate-flag routes → aiforge_core.api.routes.rules
 
 
 class _CheckpointBody(BaseModel):
@@ -5574,105 +5267,7 @@ def ticket_answer(identifier: str, body: _TicketAnswerBody) -> dict:
             "trace_url": f"/api/tickets/{t.identifier}/events/stream"}
 
 
-_MCP_ALLOWED_TOOLS = {
-    "sym_lookup", "list_repos", "list_services", "list_endpoints",
-    "list_integrations", "graph_neighborhood", "caller_chain",
-    "callee_chain", "read_source", "impact", "cross_repo_flow",
-    "data_lineage", "build_plan", "test_plan", "kube_status",
-    "kube_describe", "kube_image_tag", "kube_config", "find_doc",
-    "related_memories", "ticket_fetch", "ticket_brief",
-}
-
-
-class _McpCallBody(BaseModel):
-    tool: str = Field(..., description="Tool name from graph_rag MCP allowlist")
-    args: dict[str, Any] = Field(default_factory=dict)
-
-
-@app.post("/api/mcp/tool")
-async def mcp_tool_call(body: _McpCallBody) -> dict:
-    if body.tool not in _MCP_ALLOWED_TOOLS:
-        raise HTTPException(400, f"tool '{body.tool}' not in allowlist")
-    cmd = [
-        os.environ.get("AIFORGE_MCP_BIN",
-                       "aiforge-graph-mcp"),
-    ]
-    env = {
-        **os.environ,
-        "AIFORGE_NEO4J_URI": os.environ.get(
-            "AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
-        "AIFORGE_NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
-        "AIFORGE_NEO4J_PASSWORD": os.environ.get(
-            "AIFORGE_NEO4J_PASSWORD", "password"),
-        # graph_rag/cypher_lib reads NEO4J_URI / NEO4J_USER / NEO4J_PASS
-        # (no AIFORGE_ prefix); mirror so the subprocess can connect.
-        "NEO4J_URI": os.environ.get(
-            "AIFORGE_NEO4J_URI", "bolt://127.0.0.1:7687"),
-        "NEO4J_USER": os.environ.get("AIFORGE_NEO4J_USER", "neo4j"),
-        "NEO4J_PASS": os.environ.get(
-            "AIFORGE_NEO4J_PASSWORD", "password"),
-        # Embed sidecar — graph_mcp defaults to :1235/v1 (planner LLM
-        # port) which 404s. Force the real sidecar URL for this run.
-        "EMBED_URL": os.environ.get(
-            "EMBED_URL", "http://127.0.0.1:8764"),
-        "AIFORGE_DSN": os.environ.get(
-            "AIFORGE_DSN",
-            "postgresql://aiforge:aiforgepass@127.0.0.1:5432/aiforge"),
-    }
-
-    # JSON-RPC dance: initialize → tools/call → shutdown.
-    init_req = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"protocolVersion": "2024-11-05",
-                           "capabilities": {"tools": {}},
-                           "clientInfo": {"name": "aiforge-ui",
-                                          "version": "0.1"}}}
-    init_notify = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-    tool_req = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": {"name": body.tool, "arguments": body.args}}
-    payload = (
-        json.dumps(init_req) + "\n" +
-        json.dumps(init_notify) + "\n" +
-        json.dumps(tool_req) + "\n"
-    )
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, env=env,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, err = await asyncio.wait_for(
-            proc.communicate(payload.encode()), timeout=30,
-        )
-    except TimeoutError:
-        try:
-            proc.kill()
-            await proc.wait()   # reap — don't leak a zombie
-        except Exception: pass
-        raise HTTPException(504, "MCP server timed out")
-    except FileNotFoundError:
-        # No MCP server binary installed (operator reset 2026-06-26). Fail
-        # soft so the UI shows a clean empty state instead of a 500.
-        return {"ok": False, "error": "MCP not configured",
-                "detail": f"binary not found: {cmd[0]}"}
-
-    # Scan stdout line by line for the JSON-RPC response to id=2.
-    result: dict | None = None
-    for line in out.splitlines():
-        try:
-            msg = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(msg, dict) and msg.get("id") == 2:
-            result = msg
-            break
-    if result is None:
-        raise HTTPException(
-            500, f"MCP call produced no response. stderr={err[:400]!r}",
-        )
-    if "error" in result:
-        raise HTTPException(400, f"MCP error: {result['error']}")
-    return {"tool": body.tool, "result": result.get("result")}
+# ─── /api/mcp/tool → aiforge_core.api.routes.mcp
 
 
 # ─────────────────────────── Workflow topology (DAG view) ──────────────
