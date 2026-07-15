@@ -518,7 +518,7 @@ def _record_usage(role: str, resp_body: dict) -> None:
     pass
 
 
-def _is_garbage(text: str) -> bool:
+def _is_garbage(text: str, *, allow_empty_json: bool = False) -> bool:
     """Heuristic for a 200-OK but useless response.
 
     Triggers fallback when:
@@ -529,11 +529,12 @@ def _is_garbage(text: str) -> bool:
     if not text or not text.strip():
         return True
     t = text.strip()
-    # Valid EMPTY JSON containers are a legitimate answer, NOT garbage: the
-    # learner / fact-distiller roles reply "[]" (no durable facts this turn) or
-    # "{}" — accepting it avoids 3 pointless empty-retries + warnings + a
-    # /no_think coax on a perfectly good "nothing to record" response.
-    if t in ("[]", "{}"):
+    # Valid EMPTY JSON containers are a legitimate answer ONLY for the roles that
+    # PRODUCE JSON lists/objects (the learner/fact-distiller reply "[]" = nothing
+    # to record). For a chat/doer answer a bare "[]" is nonsense → still garbage
+    # (retry). Gated by ``allow_empty_json`` (caller passes it for fast/
+    # structured roles) so the learner fix doesn't leak into conversational output.
+    if allow_empty_json and t in ("[]", "{}"):
         return False
     if len(t) < 3:
         return True
@@ -627,7 +628,9 @@ def _try_post(ep: Endpoint, messages: list[dict],
             return None
         _record_usage(role, body)
         text = _extract_text(body)
-        if not _is_garbage(text):
+        # "[]"/"{}" is a valid answer only for fast/structured roles (learner
+        # etc.), never for conversational chat/doer output.
+        if not _is_garbage(text, allow_empty_json=fast_role):
             return text, body
         _log.warning(
             "llm.empty_response",

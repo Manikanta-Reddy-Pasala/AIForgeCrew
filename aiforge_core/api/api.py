@@ -4440,8 +4440,41 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # through the parallel pipeline — a single ReAct agent stalls on large
         # builds (one huge-context call, no decomposition). Gated + heuristic so
         # chit-chat / small edits still use the fast single-agent path.
-        # (Task-type detection is done by the LLM classifier below —
-        # aiforge_core.runtime.task_router.classify_task — not by regex.)
+        # Task-type detection is done by the LLM classifier below. These two tiny
+        # helpers are SAFETY NETS, not the classifier: (a) a cheap advice-question
+        # veto so a QUESTION can never auto-launch the file-writing pipeline even
+        # if the classifier misfires, and (b) a minimal build-detect used ONLY as
+        # a fallback when the classifier is unavailable (disabled/errored/skipped)
+        # so a genuine build still escalates instead of grinding single-agent.
+        def _advice_question(p: str) -> bool:
+            import re as _re
+            p = (p or "").strip().lower()
+            if p.endswith("?"):
+                return True
+            return bool(_re.match(
+                r"^(how|what|why|where|when|which|who|should|can|could|would|"
+                r"is|are|do|does|did|explain|tell me|show me|help me understand|"
+                r"any (idea|thought)|best way)\b", p))
+
+        def _regex_build_fallback(p: str) -> bool:
+            import re as _re
+            p = (p or "").lower()
+            if len(p) < 12 or _advice_question(p):
+                return False
+            # tracker actions are never a code build
+            if _re.search(r"\b(jira|confluence)\b", p) and _re.search(
+                    r"\b(ticket|tickets|story|stories|epic|epics|issue|issues|"
+                    r"page|pages)\b", p):
+                return False
+            verb = _re.search(r"\b(build|create|implement|generate|scaffold|"
+                              r"develop)\b", p)
+            noun = _re.search(r"\b(app|application|api|service|server|cli|tool|"
+                              r"website|web ?app|webapp|system|library|package|"
+                              r"project|backend|frontend|module|engine|bot|"
+                              r"dashboard|parser|compiler|microservice)\b", p)
+            cues = any(c in p for c in ("with test", "unit test", " files",
+                                        "endpoints", "multiple file"))
+            return bool(verb and (noun or cues))
         # NB: _parallel_team is `team and enabled()` — False for simple/plan. Use
         # the raw capability (_pp.enabled()) so escalation can fire off-team.
         _psub_on = False
@@ -4464,30 +4497,42 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # report, review architecture) must NEVER enter the code pipeline — it
         # designs a file tree + tests + PR, which is the wrong artifact. Route
         # these to the single research agent regardless of team mode.
-        # TASK-TYPE ROUTING — the LLM classifier is AUTHORITATIVE. It buckets the
-        # request into chat|tracker|doc_analysis|code_build|code_edit; the two
-        # signals below drive the rest of the routing:
-        #   doc_analysis → the research agent;  code_build → the build pipeline;
-        #   tracker/chat/code_edit → the single chat agent (jira_create /
-        #   confluence_create + edit tools).
-        # No regex heuristics: on a None result (classifier disabled/errored/
-        # ambiguous) we default to the SAFE single-agent path — never
-        # auto-escalate to the pipeline or research agent without a positive
-        # classification. (An advice question classifies as `chat`, so it never
-        # escalates — the old string-match advice guard is subsumed.)
+        # TASK-TYPE ROUTING — the LLM classifier (task_router.classify_task) is
+        # PRIMARY: chat|tracker|doc_analysis|code_build|code_edit →
+        #   doc_analysis → research agent; code_build → build pipeline;
+        #   tracker/chat/code_edit → single chat agent.
+        # LATENCY: only classify FRESH requests — a follow-up in an ongoing chat
+        # is almost always a targeted edit/question routed single-agent anyway, so
+        # skip the per-turn classify call and use the regex fallback for the rare
+        # follow-up build. FALLBACK: when there's no positive class (follow-up /
+        # classifier disabled / errored) use the minimal regex build-detect so a
+        # real build still escalates. SAFETY: an advice question NEVER escalates.
         _cat = None
         try:
-            from aiforge_core.runtime import task_router as _tr
-            _cat = _tr.classify_task(prompt, history=history, cwd=cwd)
-        except Exception:  # noqa: BLE001 — never break routing on the classifier
-            _cat = None
-        _doc_task = _cat == "doc_analysis"
-        _is_build_task = _cat == "code_build"
+            from aiforge_core.runtime import turn_router as _tr2
+            _fresh = not _tr2.is_followup(history)
+        except Exception:  # noqa: BLE001
+            _fresh = True
+        if _fresh:
+            try:
+                from aiforge_core.runtime import task_router as _tr
+                _cat = _tr.classify_task(prompt, history=history, cwd=cwd)
+            except Exception:  # noqa: BLE001 — never break routing on the classifier
+                _cat = None
+        if _cat is not None:
+            _doc_task = _cat == "doc_analysis"
+            _is_build_task = _cat == "code_build"
+        else:
+            _doc_task = False                       # no positive doc class → single agent
+            _is_build_task = _regex_build_fallback(prompt)
         _build_escalate = bool(
             not team and _psub_on
             # PLAN mode is read-only — it must NEVER escalate into a pipeline that
             # writes files (that silently violated the plan contract).
             and agent_mode != "plan"
+            # SAFETY: a question is advice, never a build order — a file-writing
+            # pipeline must not fire on it even if the classifier misreads it.
+            and not _advice_question(prompt)
             and not _doc_task
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
             and _is_build_task)

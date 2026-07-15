@@ -2835,28 +2835,46 @@ _CONDENSE_CLOSE = "<</AIFORGE_CTX_CONDENSED>>"
 _GOAL_PIN_OPEN = "<<AIFORGE_PINNED_GOAL>>"
 _GOAL_PIN_CLOSE = "<</AIFORGE_PINNED_GOAL>>"
 
-# WEB-lookup intent: phrasings that mean "get this from the live web", where a
-# local model tends to (wrongly) answer from stale memory. A bare URL is NOT
-# here — a URL already routes the model to web_crawl/web_fetch and works.
-_WEB_INTENT_RE = re.compile(
+# WEB-lookup intent. STRONG cues explicitly ask for the open web → always force
+# web_search. WEAK cues ("latest version", "release notes") also mean the web —
+# BUT commonly appear in LOCAL-code questions too ("bump to the latest version in
+# package.json", "what's the current version in my config"), so they only fire
+# when NO local-code indicator is present. A bare URL is in neither list — a URL
+# already routes to web_crawl/web_fetch.
+_WEB_INTENT_STRONG_RE = re.compile(
     r"\b(search\s+(the\s+)?web|search\s+online|web\s+search|google\s+(it|for)|"
     r"look\s+(it\s+)?up\s+(online|on\s+the\s+web)|on\s+the\s+internet|"
-    r"latest\s+(version|release|news|stable)|current\s+version|"
-    r"newest\s+version|release\s+notes|what'?s\s+new\s+in|"
-    r"up[-\s]?to[-\s]?date|as\s+of\s+(today|now)|recent\s+news)\b",
+    r"what'?s\s+new\s+in|recent\s+news|as\s+of\s+(today|now))\b",
+    re.IGNORECASE)
+_WEB_INTENT_WEAK_RE = re.compile(
+    r"\b(latest\s+(version|release|news|stable)|current\s+version|"
+    r"newest\s+version|release\s+notes|up[-\s]?to[-\s]?date)\b",
+    re.IGNORECASE)
+# Signals the "latest/current version" question is about THIS codebase, not the
+# web — suppress the weak web cue then.
+_LOCAL_CODE_CTX_RE = re.compile(
+    r"(`[^`]+`|\b[\w./-]+\.(py|js|ts|tsx|jsx|java|go|rs|rb|json|ya?ml|toml|txt|md|"
+    r"cfg|ini|lock|xml|gradle)\b|package\.json|requirements\.txt|pyproject|"
+    r"\bmy\s+(code|repo|project|config|file|app)|\bthis\s+(repo|project|file|"
+    r"codebase|code)\b|\bin\s+(the|my|this)\s+\w+)",
     re.IGNORECASE)
 
 
 def _has_web_intent(text: str) -> bool:
     """True when the user's message signals a LIVE-WEB lookup and carries no URL
-    (a URL already drives web_crawl). Used to force web_search on models that
-    would otherwise answer from stale parametric memory."""
+    (a URL already drives web_crawl). Strong cues always match; weak version/
+    release cues are suppressed when the message is clearly about local code —
+    so "bump to the latest version in package.json" does NOT force a web search."""
     t = (text or "").strip()
     if not t:
         return False
     if re.search(r"https?://", t):   # a URL → web_crawl path already handles it
         return False
-    return bool(_WEB_INTENT_RE.search(t))
+    if _WEB_INTENT_STRONG_RE.search(t):
+        return True
+    if _WEB_INTENT_WEAK_RE.search(t) and not _LOCAL_CODE_CTX_RE.search(t):
+        return True
+    return False
 
 
 _WEB_LOOKUP_DIRECTIVE = (
@@ -4056,6 +4074,15 @@ def run_chat_agent(
             sys_msg += addition[:room] + "\n…(truncated to fit context)\n"
         _sys_dropped.append(label)
 
+    # WEB-LOOKUP directive FIRST — it's short + critical, so it must outrank the
+    # big optional blocks (repo-map/recall) under a tight window (blocks added
+    # LATER drop first). Without top priority the "you MUST web_search" nudge got
+    # trimmed exactly when context was full, and the model answered from stale
+    # memory. Read-only tool → safe in plan/analyze too. (Detected on last_user;
+    # a bare URL is excluded — it already routes to web_crawl.)
+    if last_user and _has_web_intent(last_user):
+        _add_sys_block("web-lookup", _WEB_LOOKUP_DIRECTIVE)
+
     # Dynamic context blocks — via the SHARED bundle builder (same source
     # selection/scoping/gating as chat-team + the pipeline). rules+prefs are
     # already injected above as high-priority blocks, so skip them here.
@@ -4111,14 +4138,6 @@ def run_chat_agent(
             _add_sys_block("mentions", ment_block)
         except Exception:  # noqa: BLE001
             pass
-    # WEB-LOOKUP intent → force the tool. Local models often answer a "search
-    # the web / latest version / current / news" query from stale parametric
-    # memory instead of calling web_search. When the user's message signals a
-    # web lookup (and no URL is present — a URL already routes to web_crawl),
-    # inject a hard directive so the model searches FIRST. Read-only tool, so it
-    # is safe in plan/analyze mode too.
-    if last_user and _has_web_intent(last_user):
-        _add_sys_block("web-lookup", _WEB_LOOKUP_DIRECTIVE)
     # Whether the explicit PREVIOUS-SESSION continuity block will be injected
     # (opening turn). When it is, the separate chat-session recall below is
     # redundant — the recall bundle already carries a prior-chat source and the

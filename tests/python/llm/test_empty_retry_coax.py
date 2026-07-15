@@ -95,15 +95,17 @@ def test_is_fast_role_classification():
     assert not is_fast_role("planner") and not is_fast_role("doer")
 
 
-def test_empty_json_container_is_not_garbage():
-    """The learner replies '[]' (nothing durable to record) — a valid answer,
-    NOT garbage. It must pass through on attempt 1 (no coax, no warning spam)."""
-    assert c._is_garbage("[]") is False
-    assert c._is_garbage("{}") is False
-    # genuinely empty / fragments are still garbage
-    assert c._is_garbage("") is True
+def test_empty_json_container_is_role_gated():
+    """'[]'/'{}' is a valid answer ONLY for JSON-producing roles (allow_empty_json
+    passed by fast/structured roles). For a chat/doer answer it's still garbage."""
+    assert c._is_garbage("[]", allow_empty_json=True) is False   # learner etc.
+    assert c._is_garbage("{}", allow_empty_json=True) is False
+    assert c._is_garbage("[]") is True                           # chat/doer → garbage
+    assert c._is_garbage("{}") is True
+    # genuinely empty / fragments are still garbage regardless
+    assert c._is_garbage("", allow_empty_json=True) is True
     assert c._is_garbage("  ") is True
-    assert c._is_garbage("<tool_call>") is True
+    assert c._is_garbage("<tool_call>", allow_empty_json=True) is True
 
 
 def test_learner_empty_list_returns_first_attempt(monkeypatch):
