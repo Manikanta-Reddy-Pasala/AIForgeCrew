@@ -4,8 +4,8 @@ without any manual step.
 
 Chain (order matters):
   1. md_store.migrate_to_okr     — legacy flat brief format → OKR envelope
-  2. okr.migrate_from_briefs     — compacted-<topic>.md briefs → OKR learnings
-  3. okr.store.migrate_scoped    — flat okr/<type>/ → global/ + projects/<repo>/
+  2. okf.migrate_from_briefs     — compacted-<topic>.md briefs → OKR learnings
+  3. okf.store.migrate_scoped    — flat okf/<type>/ → global/ + projects/<repo>/
   4. neo4j_drain                 — old Neo4j Observation/Decision nodes → md
                                    captures (which then roll up into 2+3)
 
@@ -33,7 +33,7 @@ def _archive_okr_dag_folder() -> dict:
         from aiforge_core.memory.md_store import memory_dir
         src = memory_dir() / "okr"
         # A folder holding ONLY the migration bookkeeping marker (.migrations.json,
-        # which _save_marker rewrites into okr_root after each archive) is NOT real
+        # which _save_marker rewrites into okf_root after each archive) is NOT real
         # DAG data — treat it as empty so we don't re-archive a marker-only folder
         # into okr-1, okr-2… on every restart.
         if not src.is_dir():
@@ -84,8 +84,8 @@ def _discover_repos() -> list:
 
 
 def _marker_path() -> str:
-    from aiforge_core.memory.okr import store as _store
-    return os.path.join(_store.okr_root(), ".migrations.json")
+    from aiforge_core.memory.okf import store as _store
+    return os.path.join(_store.okf_root(), ".migrations.json")
 
 
 def _load_marker() -> dict:
@@ -182,7 +182,7 @@ def purge_migrated_code() -> dict:
     out = {"removed_md": 0, "removed_okr_learnings": 0, "kept_learnings": 0}
     try:
         from aiforge_core.memory import md_store
-        from aiforge_core.memory.okr import store as okr_store
+        from aiforge_core.memory.okf import store as okr_store
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
@@ -310,7 +310,7 @@ def run_startup_migrations() -> dict:
     # ── one-shot steps (marker-guarded so they can't undo later curation) ──
     if _dag_on and "briefs_to_okr" not in done:
         try:
-            from aiforge_core.memory.okr import author
+            from aiforge_core.memory.okf import author
             out["briefs_to_okr"] = author.migrate_from_briefs()
             done.add("briefs_to_okr")
         except Exception as exc:  # noqa: BLE001
@@ -329,7 +329,7 @@ def run_startup_migrations() -> dict:
     # ── scoped segregation (moves what the above produced into global/projects)
     if _dag_on:
         try:
-            from aiforge_core.memory.okr import store as _store
+            from aiforge_core.memory.okf import store as _store
             out["scoped"] = _store.migrate_scoped()
         except Exception as exc:  # noqa: BLE001
             out["scoped"] = {"ok": False, "error": str(exc)}
@@ -341,7 +341,7 @@ def run_startup_migrations() -> dict:
         repos = _discover_repos()
         if repos:
             try:
-                from aiforge_core.memory.okr import author
+                from aiforge_core.memory.okf import author
                 out["classify"] = author.reclassify_global_learnings(repos)
                 done.add("classify")
             except Exception as exc:  # noqa: BLE001
@@ -353,7 +353,7 @@ def run_startup_migrations() -> dict:
     # ── build the per-repo hub CARDS from each project's learnings (one-shot) ─
     if _dag_on and "repo_profiles" not in done:
         try:
-            from aiforge_core.memory.okr import author
+            from aiforge_core.memory.okf import author
             out["repo_profiles"] = author.build_repo_profiles()
             done.add("repo_profiles")
         except Exception as exc:  # noqa: BLE001
@@ -374,7 +374,7 @@ def dedupe_all() -> dict:
     out: dict = {}
     if os.environ.get("AIFORGE_OKR_DAG", "0") == "1":
         try:
-            from aiforge_core.memory.okr import store as _store
+            from aiforge_core.memory.okf import store as _store
             out["okr"] = _store.dedupe_nodes()
         except Exception as exc:  # noqa: BLE001
             out["okr"] = {"ok": False, "error": str(exc)}
@@ -455,7 +455,7 @@ def force_recompact_all(on_step=None) -> dict:
         # AFTER they've settled (consolidated, deduped, empties swept, rehealed).
         ("map_scopes", lambda: md_store.map_scopes()),
         ("repo_profiles", lambda: (__import__(
-            "aiforge_core.memory.okr.author", fromlist=["build_repo_profiles"]
+            "aiforge_core.memory.okf.author", fromlist=["build_repo_profiles"]
         ).build_repo_profiles()
             if os.environ.get("AIFORGE_OKR_DAG", "0") == "1"
             else {"skipped": "okr-dag off"})),

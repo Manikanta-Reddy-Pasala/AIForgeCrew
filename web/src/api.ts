@@ -138,11 +138,11 @@ export const api = {
     error: string | null; elapsed_s: number; result: any }>(
     '/memory/compact-all/status'),
   memoryOkr: () => j<{ ok: boolean; counts: Record<string, number>;
-    active_kr: string | null; nodes: any[] }>('/memory/okr'),
+    active_kr: string | null; nodes: any[] }>('/memory/okf'),
   memoryOkrSetActive: (active_kr: string | null) =>
-    j<any>('/memory/okr/active', { method: 'POST', body: JSON.stringify({ active_kr }) }),
+    j<any>('/memory/okf/active', { method: 'POST', body: JSON.stringify({ active_kr }) }),
   memoryOkrMigrate: () => j<{ ok: boolean; migrated: number; topics: number }>(
-    '/memory/okr/migrate', { method: 'POST' }),
+    '/memory/okf/migrate', { method: 'POST' }),
   memoryFilesCleanup: (dry_run?: boolean) =>
     j<{ ok: boolean; folded?: number; facts?: number; stale?: string[]; count?: number }>(
       `/memory/files/cleanup${dry_run ? '?dry_run=true' : ''}`, { method: 'POST' }),

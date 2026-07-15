@@ -1,7 +1,7 @@
-"""OKR node store — the typed folder layout under ``<memory>/okr/``, SEGREGATED
+"""OKF node store — the typed folder layout under ``<memory>/okf/``, SEGREGATED
 by scope into a GLOBAL subtree and one subtree per PROJECT (repo/workspace):
 
-    okr/
+    okf/
       global/
         objectives/  key_results/  learnings/  sessions/  solutions/
       projects/<workspace>/
@@ -12,7 +12,7 @@ A node's scope is DERIVED from its frontmatter (a solution's ``workspace``, a
 learning's ``workspace``/``scope: repo:<name>``, else global). Ids stay globally
 unique per type (S-01, L-03) so cross-scope edges keep resolving; the folder is
 organization only. Reads walk global + every project (and legacy flat
-``okr/<dir>/`` until :func:`migrate_scoped` moves them), so nothing breaks
+``okf/<dir>/`` until :func:`migrate_scoped` moves them), so nothing breaks
 mid-migration. All reads soft-fail (a missing/half-written file is skipped).
 """
 from __future__ import annotations
@@ -48,9 +48,9 @@ _DIR = {"objective": "objectives", "key_result": "key_results",
         "task": "tasks"}
 
 
-def okr_root() -> str:
+def okf_root() -> str:
     from aiforge_core.memory.md_store import memory_dir
-    return os.path.join(str(memory_dir()), "okr")
+    return os.path.join(str(memory_dir()), "okf")
 
 
 def _scope_slug(s) -> str:
@@ -74,7 +74,7 @@ def _scope_of(node_type: str, meta: dict | None) -> str:
 
 def _scope_bases() -> list[str]:
     """All scope roots that currently exist: global/ + each projects/<name>/."""
-    root = okr_root()
+    root = okf_root()
     bases = [os.path.join(root, "global")]
     pdir = os.path.join(root, "projects")
     if os.path.isdir(pdir):
@@ -85,7 +85,7 @@ def _scope_bases() -> list[str]:
 
 def okr_scopes() -> list[str]:
     """Project workspace names that have an OKR subtree (excludes global)."""
-    pdir = os.path.join(okr_root(), "projects")
+    pdir = os.path.join(okf_root(), "projects")
     if not os.path.isdir(pdir):
         return []
     return sorted(n for n in os.listdir(pdir)
@@ -106,7 +106,7 @@ def type_dir(node_type: str, scope: str = "") -> str:
     """Folder for ``node_type`` in ``scope`` (""/None → global). Created lazily."""
     scope = _scope_slug(scope)
     sub = os.path.join("projects", scope) if scope else "global"
-    d = os.path.join(okr_root(), sub, _DIR.get(node_type, "misc"))
+    d = os.path.join(okf_root(), sub, _DIR.get(node_type, "misc"))
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -144,14 +144,14 @@ def next_id(node_type: str) -> str:
 
 def _list_files(node_type: str) -> list[str]:
     """Every file for ``node_type`` across the global + all project subtrees,
-    PLUS the legacy flat ``okr/<dir>/`` (read until migrate_scoped moves it)."""
+    PLUS the legacy flat ``okf/<dir>/`` (read until migrate_scoped moves it)."""
     dirname = _DIR.get(node_type, "misc")
     out: list[str] = []
     for base in _scope_bases():
         d = os.path.join(base, dirname)
         if os.path.isdir(d):
             out += [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".md")]
-    legacy = os.path.join(okr_root(), dirname)   # pre-segregation location
+    legacy = os.path.join(okf_root(), dirname)   # pre-segregation location
     if os.path.isdir(legacy):
         out += [os.path.join(legacy, f) for f in os.listdir(legacy)
                 if f.endswith(".md")]
@@ -200,7 +200,7 @@ def _write_index() -> str:
     section then one ``## <workspace>`` section per project, each listing its
     concepts with absolute bundle-relative links. Soft-fail (best-effort)."""
     try:
-        root = okr_root()
+        root = okf_root()
         by_scope: dict[str, list[tuple[str, str]]] = {}
         for d in load_all():
             p = d.get("path", "")
@@ -249,7 +249,7 @@ def _dir_signature() -> tuple:
     """A CHEAP fingerprint of the whole bundle: (newest mtime, .md count).
     Changes on any add / edit / delete, so it invalidates the parse cache
     without re-reading file contents (stat only)."""
-    root = okr_root()
+    root = okf_root()
     newest = 0.0
     n = 0
     for dp, _dn, fns in (os.walk(root) if os.path.isdir(root) else []):
@@ -310,12 +310,12 @@ def load_all(scope: str | None = None) -> list[dict]:
 
 
 def migrate_scoped() -> dict:
-    """One-shot: move legacy FLAT ``okr/<dir>/*.md`` nodes into their scoped home
+    """One-shot: move legacy FLAT ``okf/<dir>/*.md`` nodes into their scoped home
     (global/ or projects/<workspace>/) by each node's derived scope. Idempotent
     (already-scoped nodes are untouched); empty legacy dirs are removed; the
     index is rebuilt. Soft-fail. Returns ``{ok, moved, scopes}``."""
     import shutil
-    root = okr_root()
+    root = okf_root()
     moved = 0
     for t in _n.NODE_TYPES:
         legacy = os.path.join(root, _DIR.get(t, "misc"))
@@ -386,5 +386,5 @@ def dedupe_nodes() -> dict:
     return {"ok": True, "removed": removed, "kept": len(seen)}
 
 
-__all__ = ["okr_root", "type_dir", "next_id", "save_node", "read_node",
+__all__ = ["okf_root", "type_dir", "next_id", "save_node", "read_node",
            "load_all", "okr_scopes", "migrate_scoped", "dedupe_nodes"]

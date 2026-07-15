@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from aiforge_core.memory import okr
+from aiforge_core.memory import okf as okr
 
 
 @pytest.fixture()

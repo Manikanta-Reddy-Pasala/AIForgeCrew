@@ -255,7 +255,7 @@ def record_solution(*, kind: str, summary: str, workspace: str = "",
                 entry = (f"[{kind}] {title}"
                          + (f" ({'; '.join(extra)})" if extra else "")
                          + (f" · {r.get('id')}"))
-                okf.append_log(_os.path.join(_store.okr_root(), "log.md"),
+                okf.append_log(_os.path.join(_store.okf_root(), "log.md"),
                                entry, date=date)
             except Exception:  # noqa: BLE001 — log is best-effort
                 pass
@@ -393,9 +393,9 @@ def reclassify_global_learnings(repos: "list[str]", *, dry_run: bool = False) ->
                              reindex=False)
         if r.get("ok"):
             moved += 1
-    # REVERSIBLE delete: noise nodes MOVE to okr/.trash/ (not unlink) so a
+    # REVERSIBLE delete: noise nodes MOVE to okf/.trash/ (not unlink) so a
     # mis-classified learning can be restored.
-    trash = _os.path.join(_store.okr_root(), ".trash")
+    trash = _os.path.join(_store.okf_root(), ".trash")
     for nid in plan["delete"]:
         with __import__("contextlib").suppress(OSError):
             _os.makedirs(trash, exist_ok=True)

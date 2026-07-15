@@ -4,7 +4,7 @@
 (objective↔KR, KR→sessions, objective→learnings). Cheap to rebuild (flat files),
 cached by the folder's newest mtime so a write is picked up automatically. The
 ``active_context`` pointer (which KR the agent is working on) persists in
-``okr/.active.json`` so retrieval knows where to stand.
+``okf/.active.json`` so retrieval knows where to stand.
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ _CACHE: dict = {"mtime": None, "graph": None}
 
 def _folder_mtime() -> float:
     newest = 0.0
-    root = _store.okr_root()
+    root = _store.okf_root()
     for dp, _dn, fns in os.walk(root) if os.path.isdir(root) else []:
         for f in fns:
             if f.endswith(".md"):
@@ -94,12 +94,12 @@ def build(*, force: bool = False) -> Graph:
 
 # ── active-context pointer ─────────────────────────────────────────────
 def _active_path() -> str:
-    return os.path.join(_store.okr_root(), ".active.json")
+    return os.path.join(_store.okf_root(), ".active.json")
 
 
 def set_active(kr_id: str | None) -> dict:
     """Mark the KR the agent is working on (None clears). Soft-fail."""
-    os.makedirs(_store.okr_root(), exist_ok=True)
+    os.makedirs(_store.okf_root(), exist_ok=True)
     try:
         with open(_active_path(), "w", encoding="utf-8") as fh:
             json.dump({"active_kr": kr_id or None}, fh)
