@@ -184,7 +184,7 @@ def persist_facts(
         if os.environ.get("AIFORGE_OKR_DAG", "0") != "1":
             raise _OkrDagDisabled
         import datetime as _dt
-        from aiforge_core.memory.okr import author as _okr_author
+        from aiforge_core.memory.okf import author as _okr_author
         _date = _dt.datetime.fromtimestamp(
             event_time, _dt.UTC).strftime("%Y-%m-%d") if event_time \
             else _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%d")
@@ -222,7 +222,7 @@ def persist_facts(
             raise _OkrDagDisabled
         if repo and repo not in ("notes", "shared", "repo"):
             import datetime as _dt2
-            from aiforge_core.memory.okr import author as _oa
+            from aiforge_core.memory.okf import author as _oa
             _dt = _dt2.datetime.fromtimestamp(
                 event_time, _dt2.UTC).strftime("%Y-%m-%d") if event_time else ""
             _FIELD = {"build": "build", "ci-cd": "build", "testing": "test",

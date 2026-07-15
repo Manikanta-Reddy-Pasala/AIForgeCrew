@@ -29,7 +29,7 @@ def test_new_brief_is_okr_envelope(cfg):
     m._brief_upsert("svc", "db access only via gateway", topic="arch")
     raw = _raw("compacted-svc.md")
     assert raw.startswith("---\n")
-    assert 'kind: "knowledge"' in raw
+    assert 'type: "knowledge"' in raw
     assert 'key: "svc"' in raw
     assert "## Objective" in raw
     assert "## Facts" in raw
@@ -63,7 +63,7 @@ def test_legacy_recent_brief_migrates(cfg):
     (m.brief_path("svc")).write_text(legacy, encoding="utf-8")
     m._brief_upsert("svc", "new fact")
     raw = _raw("compacted-svc.md")
-    assert 'kind: "knowledge"' in raw            # migrated envelope
+    assert 'type: "knowledge"' in raw            # migrated envelope
     assert "## Recent" not in raw                # legacy tail gone
     assert "- old bullet one" in raw             # ...migrated into Facts
     assert "- new fact" in raw
@@ -77,7 +77,7 @@ def test_compact_repo_axis_writes_okr_brief(cfg):
     r = m.compact(group_by="repo", min_group=2, summarize=False)
     assert r["groups"].get("svc") == 2
     raw = _raw("compacted-svc.md")
-    assert 'kind: "knowledge"' in raw
+    assert 'type: "knowledge"' in raw
     assert "## Objective" in raw
     assert "validate at boundary" in raw and "no direct mongo" in raw
 

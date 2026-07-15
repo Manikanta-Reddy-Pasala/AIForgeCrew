@@ -98,6 +98,27 @@ _CONF_URL_RE = re.compile(r"(?:/pages/|pageId=)(\d{4,})")
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 
+# OKF ⇄ legacy frontmatter key aliases. Writers emit the OKF name (left); the
+# parser mirrors BOTH directions so a legacy on-disk file (kind/source_url/
+# updated_at) and any legacy reader (fm["kind"]) keep working unchanged, while
+# new OKF readers (fm["type"]) also resolve. type↔kind, resource↔source_url,
+# timestamp↔updated_at.
+_FM_ALIASES = (("type", "kind"), ("resource", "source_url"),
+               ("timestamp", "updated_at"))
+
+
+def _mirror_aliases(fm: dict) -> dict:
+    """Fill each OKF/legacy key from its counterpart when only one is present,
+    so both spellings resolve. Never overwrites an explicit value."""
+    for okf, legacy in _FM_ALIASES:
+        has_okf = str(fm.get(okf) or "").strip() != ""
+        has_leg = str(fm.get(legacy) or "").strip() != ""
+        if has_okf and not has_leg:
+            fm[legacy] = fm[okf]
+        elif has_leg and not has_okf:
+            fm[okf] = fm[legacy]
+    return fm
+
 # Explicit start-of-body sentinel. Without it a free body following the last
 # list section is indistinguishable from that section's items; an HTML comment
 # is invisible in rendered markdown and survives hand-editing. parse_note
@@ -236,7 +257,10 @@ def validate_note(text: str) -> tuple[bool, list[str]]:
     issues: list[str] = []
     parsed = parse_note(text or "")
     fm = parsed.get("frontmatter") or {}
-    for req in ("kind", "key", "updated_at"):
+    # OKF requires a non-empty `type:`; we additionally want `key` + a
+    # `timestamp`. parse_note mirrors legacy aliases so an old file (kind/
+    # updated_at) still satisfies these.
+    for req in ("type", "key", "timestamp"):
         if not str(fm.get(req) or "").strip():
             issues.append(f"missing frontmatter '{req}'")
     if not str(parsed.get("title") or "").strip():
@@ -276,25 +300,40 @@ def normalize_tags(tags) -> list[str]:
 def render_note(kind: str, key: str, *, title: str, source_url: str = "",
                 objective: str = "", key_results=None, facts=None,
                 links=None, learnings=None, body_md: str = "",
-                updated_at: str = "", tags=None) -> str:
-    """Render the standard note. Empty sections are skipped; ordering is fixed
-    (frontmatter → title → Objective → Key Results → Facts → Links → Learnings
-    → free body). ``updated_at`` is injectable for deterministic tests /
-    read-modify-write; it defaults to now (UTC). ``tags`` land in the
-    frontmatter (metadata, not a body section)."""
+                updated_at: str = "", tags=None,
+                description: str = "", resource: str = "",
+                timestamp: str = "") -> str:
+    """Render the standard note in **Open Knowledge Format (OKF v0.1)**: the
+    frontmatter's required identity field is ``type:`` (from ``kind``), the
+    resource URI is ``resource:`` (from ``resource``/``source_url``), the
+    last-change stamp is ``timestamp:`` (from ``timestamp``/``updated_at``), and
+    an optional one-line ``description:`` is emitted when given. Empty sections
+    are skipped; ordering is fixed (frontmatter → title → Objective → Key
+    Results → Facts → Links → Learnings → free body). The stamp is injectable
+    for deterministic tests / read-modify-write; it defaults to now (UTC).
+    ``tags`` land in the frontmatter (metadata, not a body section).
+
+    Legacy aliases (``source_url``/``updated_at`` kwargs) are still accepted so
+    callers need no change; the OUTPUT is always OKF names. :func:`parse_note`
+    mirrors OKF↔legacy keys so old files and old readers keep working."""
     # Repair (never reject): a blank kind gets the memory-brief default so the
     # header always has an identity; unknown kinds pass through (repo mints new
     # ones over time — don't gate on an allow-list).
     kind = (str(kind or "").strip() or "knowledge")
     norm_links = normalize_links(links, kind, key)
     norm_tags = normalize_tags(tags)
+    res = (resource or source_url or "").strip()
+    ts = (timestamp or updated_at or _now_iso())
     fm = [
         "---",
-        f"kind: {_yaml_str(kind)}",
+        f"type: {_yaml_str(kind)}",
         f"key: {_yaml_str(key)}",
-        f"source_url: {_yaml_str(source_url or '')}",
-        f"updated_at: {_yaml_str(updated_at or _now_iso())}",
+        f"resource: {_yaml_str(res)}",
+        f"timestamp: {_yaml_str(ts)}",
     ]
+    desc = (description or "").strip()
+    if desc:
+        fm.append(f"description: {_yaml_str(desc)}")
     if norm_tags:
         fm.append("tags:")
         fm.extend(f"  - {_yaml_str(t)}" for t in norm_tags)
@@ -352,7 +391,7 @@ def parse_note(text: str) -> dict:
             import yaml
             loaded = yaml.safe_load(m.group(1))
             if isinstance(loaded, dict):
-                fm = loaded
+                fm = _mirror_aliases(loaded)
         except Exception:  # noqa: BLE001 — hand-edited YAML must not explode
             fm = {}
         text = text[m.end():]
@@ -441,7 +480,11 @@ def update_note(path: str, **section_updates) -> dict:
     fm = parsed["frontmatter"]
     sec = parsed["sections"]
 
-    kind = str(section_updates.pop("kind", None) or fm.get("kind") or "misc")
+    # fm carries mirrored OKF+legacy keys (parse_note); accept either spelling
+    # for the identity/resource/description fields on update.
+    kind = str(section_updates.pop("type", None)
+               or section_updates.pop("kind", None)
+               or fm.get("type") or fm.get("kind") or "misc")
     key = str(section_updates.pop("key", None) or fm.get("key") or "unknown")
 
     def _pick(name, current):
@@ -450,14 +493,16 @@ def update_note(path: str, **section_updates) -> dict:
     rendered = render_note(
         kind, key,
         title=_pick("title", parsed["title"] or key),
-        source_url=str(_pick("source_url", fm.get("source_url") or "")),
+        resource=str(section_updates.get("resource",
+                     _pick("source_url", fm.get("resource") or ""))),
+        description=str(_pick("description", fm.get("description") or "")),
         objective=_pick("objective", sec.get("objective", "")),
         key_results=_pick("key_results", sec.get("key_results")),
         facts=_pick("facts", sec.get("facts")),
         links=_pick("links", sec.get("links")),
         learnings=_pick("learnings", sec.get("learnings")),
         body_md=_pick("body_md", parsed["body"]),
-        updated_at=_now_iso(),      # the write IS the freshness event
+        timestamp=_now_iso(),      # the write IS the freshness event
         tags=_pick("tags", fm.get("tags")),
     )
     tmp = path + ".tmp"

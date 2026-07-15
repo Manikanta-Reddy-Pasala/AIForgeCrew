@@ -107,8 +107,8 @@ agent gets what) is **[TOOLS.md](TOOLS.md)**.
 
 ## 4. Memory & knowledge
 
-- **OKR-DAG** (`aiforge_core/memory/okr/`, see **[OKR_MEMORY.md](OKR_MEMORY.md)**):
-  the goal-oriented memory. Markdown nodes in `~/.aiforge/memory/okr/{objectives,
+- **OKR-DAG** (`aiforge_core/memory/okf/`, see **[OKR_MEMORY.md](OKR_MEMORY.md)**):
+  the goal-oriented memory. Markdown nodes in `~/.aiforge/memory/okf/{objectives,
   key_results,learnings,sessions}/` carry typed frontmatter edges
   (`parent_objective`, `linked_krs`, `scope`), built into an **in-memory graph**
   (plain dicts, no DB). *Surgical* retrieval for the active Key Result — ascend

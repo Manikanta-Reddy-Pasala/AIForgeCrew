@@ -56,6 +56,52 @@ def test_render_parse_roundtrip():
     assert "With paragraphs." in p["body"]
 
 
+def test_render_emits_okf_frontmatter_names():
+    """OKF v0.1: the identity field is `type:`, the URI is `resource:`, the
+    stamp is `timestamp:`, plus an optional one-line `description:`. The legacy
+    names must NOT appear in the OUTPUT."""
+    from aiforge_core.memory import okf
+    raw = work_notes.render_note(
+        "jira", "ENG-1", title="t", source_url="https://j/browse/ENG-1",
+        description="a one-line summary", facts=["x"])
+    head = raw.split("\n---", 1)[0]
+    assert "type: " in head and "resource: " in head and "timestamp: " in head
+    assert "description: " in head
+    assert "kind:" not in head and "source_url:" not in head \
+        and "updated_at:" not in head
+    # the rendered file passes the OKF conformance validator (has `type:`)
+    assert okf.validate_file(raw) == []
+    p = work_notes.parse_note(raw)
+    assert p["frontmatter"]["type"] == "jira"
+    assert p["frontmatter"]["resource"] == "https://j/browse/ENG-1"
+    assert p["frontmatter"]["description"] == "a one-line summary"
+
+
+def test_parse_mirrors_legacy_frontmatter_aliases():
+    """A pre-OKF file on disk (kind/source_url/updated_at) still parses, and
+    BOTH the OKF and the legacy spellings resolve so old + new readers work."""
+    legacy = ("---\nkind: jira\nkey: E-1\n"
+              "source_url: https://j/browse/E-1\n"
+              "updated_at: 2020-01-01T00:00:00+00:00\n---\n# E-1\nbody\n")
+    fm = work_notes.parse_note(legacy)["frontmatter"]
+    assert fm["type"] == "jira" and fm["kind"] == "jira"
+    assert fm["resource"] == "https://j/browse/E-1"
+    assert fm["source_url"] == "https://j/browse/E-1"
+    # unquoted YAML dates parse as datetime; both spellings mirror the same value
+    assert str(fm["timestamp"]).startswith("2020-01-01")
+    assert fm["updated_at"] == fm["timestamp"]
+    # and an update rewrites it into OKF shape
+    import tempfile, os as _os
+    fd, path = tempfile.mkstemp(suffix=".md")
+    _os.close(fd)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(legacy)
+    assert work_notes.update_note(path, facts=["y"])["ok"]
+    head = open(path, encoding="utf-8").read().split("\n---", 1)[0]
+    assert "type: " in head and "kind:" not in head
+    _os.unlink(path)
+
+
 def test_render_skips_empty_sections_and_is_deterministic():
     a = work_notes.render_note("web", "s1", title="T", updated_at="X",
                                facts=["engine: fetch"])

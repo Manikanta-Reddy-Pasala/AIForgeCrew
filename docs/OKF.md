@@ -31,7 +31,7 @@ truth in code: [`aiforge_core/memory/okf.py`](../aiforge_core/memory/okf.py)
 ## 3. Reserved files
 
 - **`index.md`** — navigation only; **no frontmatter**; lists contents.
-  (AIForge regenerates it on every OKR save — see `okr/store._write_index`.)
+  (AIForge regenerates it on every OKR save — see `okf/store._write_index`.)
 - **`log.md`** — audit trail; flat list of **ISO-8601** date headings
   (`## 2026-07-11`), **newest first**.
 
@@ -56,6 +56,6 @@ truth in code: [`aiforge_core/memory/okf.py`](../aiforge_core/memory/okf.py)
 |---|---|
 | Compaction (fold notes → knowledge) | `work_notes._CONSOLIDATE_SYS` appends `OKF_RULES` |
 | Learner (fact distillation) | `prompts/learner.py` — OKF concept/link note |
-| OKR node renderer | `okr/nodes.render_node` (type + preserved recommended fields) |
-| `index.md` | `okr/store._write_index` (regenerated per save) |
+| OKR node renderer | `okf/nodes.render_node` (type + preserved recommended fields) |
+| `index.md` | `okf/store._write_index` (regenerated per save) |
 | Helpers | `okf.okf_frontmatter`, `okf.append_log`, `okf.render_index`, `okf.validate_file` |

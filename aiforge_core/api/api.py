@@ -2344,12 +2344,12 @@ def memory_compact_all_status() -> dict:
     }
 
 
-@app.get("/api/memory/okr")
+@app.get("/api/memory/okf")
 def memory_okr_graph() -> dict:
     """The OKR-DAG: nodes (by type) + the active KR. Lightweight — frontmatter
     + a body preview, not full bodies."""
-    from aiforge_core.memory import okr
-    g = okr.build(force=True)
+    from aiforge_core.memory import okf
+    g = okf.build(force=True)
     nodes = []
     for nid, n in g.nodes.items():
         m = n.get("meta") or {}
@@ -2360,7 +2360,7 @@ def memory_okr_graph() -> dict:
                       "scope": m.get("scope"), "linked_krs": m.get("linked_krs"),
                       "tags": m.get("tags"), "timestamp": m.get("timestamp"),
                       "preview": (n.get("body") or "")[:200]})
-    return {"ok": True, "counts": g.counts(), "active_kr": okr.get_active(),
+    return {"ok": True, "counts": g.counts(), "active_kr": okf.get_active(),
             "nodes": nodes}
 
 
@@ -2368,18 +2368,18 @@ class _OkrActive(BaseModel):
     active_kr: str | None = None
 
 
-@app.post("/api/memory/okr/active")
+@app.post("/api/memory/okf/active")
 def memory_okr_set_active(body: _OkrActive) -> dict:
-    from aiforge_core.memory import okr
-    return okr.set_active(body.active_kr)
+    from aiforge_core.memory import okf
+    return okf.set_active(body.active_kr)
 
 
-@app.post("/api/memory/okr/migrate")
+@app.post("/api/memory/okf/migrate")
 def memory_okr_migrate() -> dict:
     """Seed the OKR graph from the existing flat topic briefs (each topic → a
     global Learning). Idempotent; briefs left in place."""
-    from aiforge_core.memory import okr
-    return okr.migrate_from_briefs()
+    from aiforge_core.memory import okf
+    return okf.migrate_from_briefs()
 
 
 @app.post("/api/memory/files/cleanup")
@@ -5269,7 +5269,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             # KeyResults/Learnings from this session into the graph,
                             # and write a session node from the executed steps.
                             try:
-                                from aiforge_core.memory import okr as _okr
+                                from aiforge_core.memory import okf as _okr
                                 from aiforge_core.runtime.chat_agent import (
                                     _chat_repo_key)
                                 _rkey = _chat_repo_key(cwd)

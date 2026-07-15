@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from aiforge_core.memory import okr
+from aiforge_core.memory import okf as okr
 
 
 @pytest.fixture()
@@ -70,7 +70,7 @@ def test_author_disabled(cfg, monkeypatch):
 
 
 def test_migrate_from_briefs(cfg, monkeypatch):
-    from aiforge_core.memory import md_store, okr
+    from aiforge_core.memory import md_store, okf as okr
     from aiforge_core.runtime import work_notes
     # two topic briefs (one split) + a non-knowledge file
     (md_store.brief_path("auth")).write_text(

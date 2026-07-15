@@ -22,8 +22,8 @@ _ID_PREFIX = {"objective": "O", "key_result": "KR", "learning": "L",
 
 # Required + optional frontmatter keys per type (beyond `type` + `id`).
 _SCHEMA: dict[str, dict] = {
-    "objective": {"required": (), "opt": ("title", "status", "priority",
-                                          "tags", "created_at")},
+    "objective": {"required": (), "opt": ("title", "description", "status",
+                                          "priority", "tags", "timestamp")},
     "key_result": {"required": ("parent_objective",),
                    "opt": ("title", "status", "metrics")},
     "learning": {"required": ("scope",), "opt": ("title", "category")},
@@ -71,8 +71,11 @@ def render_node(node_type: str, node_id: str, meta: dict, body: str = "") -> str
     m = dict(meta or {})
     m.pop("type", None)
     m.pop("id", None)
-    if node_type == "objective" and not m.get("created_at"):
-        m["created_at"] = _now()
+    # OKF recommended field: every node carries a `timestamp` (ISO-8601 of last
+    # meaningful change). Legacy objectives used `created_at`; honour it as the
+    # stamp when present (tolerated custom key) but default new ones to timestamp.
+    if not m.get("timestamp"):
+        m["timestamp"] = m.get("created_at") or _now()
     for k, v in m.items():
         if isinstance(v, (list, tuple)):
             if v:

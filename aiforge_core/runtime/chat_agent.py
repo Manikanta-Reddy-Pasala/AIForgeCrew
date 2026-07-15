@@ -4146,7 +4146,7 @@ def run_chat_agent(
     # the DAG duplicated them with a staler parallel structure.
     if os.environ.get("AIFORGE_OKR_DAG", "0") == "1":
         try:
-            from aiforge_core.memory import okr as _okr
+            from aiforge_core.memory import okf as _okr
             # repo-scoped AND query-relevant: the global rules + THIS repo's
             # learnings/solutions most related to the CURRENT ask.
             _q = next((m.get("content") or "" for m in reversed(messages)

@@ -205,9 +205,11 @@ def _parse(path: Path) -> dict:
         "name": path.stem,
         "file": path.name,
         "title": meta.get("title") or meta.get("name") or path.stem,
-        "kind": meta.get("kind") or "note",
+        # OKF identity field is `type:`; accept the legacy `kind:` alias too.
+        "kind": meta.get("type") or meta.get("kind") or "note",
         "tags": [t.strip() for t in (meta.get("tags") or "").split(",") if t.strip()],
-        "source": meta.get("source") or "manual",
+        # OKF `resource:` supersedes the old `source:`; keep both readable.
+        "source": meta.get("source") or meta.get("resource") or "manual",
         "created": meta.get("created") or "",
         # repo + topic drive the two compaction axes (project brief / topic note).
         # topic falls back to a `topic:<slug>` tag when not an explicit field.
@@ -1816,10 +1818,10 @@ def migrate_to_okr() -> dict:
     is still in the legacy shape (``# heading`` + ``## Recent`` bullets, or a
     plain ``kind: compacted`` prose file) into the standard OKR envelope.
 
-    Idempotent — a brief already in OKR form (``kind: knowledge``) is skipped.
-    Only touches ``compacted-*.md`` (the memory briefs); per-session notes,
-    rule books and skills keep their own formats. Returns
-    ``{"ok", "migrated", "skipped", "files"}``; never raises."""
+    Idempotent — a brief already in OKF/OKR form (``type: knowledge`` or the
+    legacy ``kind: knowledge``) is skipped. Only touches ``compacted-*.md`` (the
+    memory briefs); per-session notes, rule books and skills keep their own
+    formats. Returns ``{"ok", "migrated", "skipped", "files"}``; never raises."""
     migrated: list[str] = []
     skipped = 0
     for p in iter_briefs():
@@ -1829,7 +1831,9 @@ def migrate_to_okr() -> dict:
             continue
         m = _FM_RE.match(raw)
         fm_block = m.group(1) if m else ""
-        if re.search(r'^\s*kind:\s*"?knowledge"?\s*$', fm_block, re.MULTILINE):
+        # OKF `type:` (current) or legacy `kind:` — either means already-enveloped.
+        if re.search(r'^\s*(?:type|kind):\s*"?knowledge"?\s*$', fm_block,
+                     re.MULTILINE):
             skipped += 1
             continue
         # scope key = the part after "compacted-" in the filename

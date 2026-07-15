@@ -12,7 +12,7 @@
 > ```
 > ~/.aiforge/memory/compacted/   the briefs (compacted-<scope>.md)
 > ~/.aiforge/memory/archive/     folded raw captures (reversible)
-> ~/.aiforge/memory/okr/         marker only (DAG consolidated out)
+> ~/.aiforge/memory/okf/         marker only (DAG consolidated out)
 > ```
 >
 > **Setup / tools**
@@ -50,7 +50,7 @@ flat topic-brief dump with an Objective → Key Result → Session/Learning grap
 ## Decisions (locked)
 - **A — add-DAG, demote Neo4j.** Neo4j stays optional; the OKR-DAG is the
   primary memory and needs no DB.
-- **B — folder split.** Nodes live in typed folders under `~/.aiforge/memory/okr/`.
+- **B — folder split.** Nodes live in typed folders under `~/.aiforge/memory/okf/`.
 - **C — scope segregation.** The bundle splits into a `global/` subtree and one
   `projects/<repo>/` subtree per repo, so read never leaks one project's
   knowledge into another. A node's scope is DERIVED from its frontmatter
@@ -59,7 +59,7 @@ flat topic-brief dump with an Objective → Key Result → Session/Learning grap
 
 ## Layout
 ```
-~/.aiforge/memory/okr/
+~/.aiforge/memory/okf/
   global/                          universal knowledge (all repos)
     objectives/  O-<id>.md         the "why"  — long-lived goals
     key_results/ KR-<id>.md        the "what" — milestones (→ objective)

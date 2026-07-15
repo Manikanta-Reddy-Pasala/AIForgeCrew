@@ -4,8 +4,8 @@ without any manual step.
 
 Chain (order matters):
   1. md_store.migrate_to_okr     — legacy flat brief format → OKR envelope
-  2. okr.migrate_from_briefs     — compacted-<topic>.md briefs → OKR learnings
-  3. okr.store.migrate_scoped    — flat okr/<type>/ → global/ + projects/<repo>/
+  2. okf.migrate_from_briefs     — compacted-<topic>.md briefs → OKR learnings
+  3. okf.store.migrate_scoped    — flat okf/<type>/ → global/ + projects/<repo>/
   4. neo4j_drain                 — old Neo4j Observation/Decision nodes → md
                                    captures (which then roll up into 2+3)
 
@@ -33,7 +33,7 @@ def _archive_okr_dag_folder() -> dict:
         from aiforge_core.memory.md_store import memory_dir
         src = memory_dir() / "okr"
         # A folder holding ONLY the migration bookkeeping marker (.migrations.json,
-        # which _save_marker rewrites into okr_root after each archive) is NOT real
+        # which _save_marker rewrites into okf_root after each archive) is NOT real
         # DAG data — treat it as empty so we don't re-archive a marker-only folder
         # into okr-1, okr-2… on every restart.
         if not src.is_dir():
@@ -52,6 +52,125 @@ def _archive_okr_dag_folder() -> dict:
         log.info("archived stale okr/ DAG folder → %s", dest)
         return {"ok": True, "archived_to": str(dest)}
     except Exception as exc:  # noqa: BLE001 — archiving must never break startup
+        return {"ok": False, "error": str(exc)}
+
+
+# Legacy frontmatter key → OKF name. created_at folds into timestamp too.
+_OKF_KEY_RENAMES = (("kind", "type"), ("source_url", "resource"),
+                    ("updated_at", "timestamp"), ("created_at", "timestamp"))
+
+
+def _rewrite_file_frontmatter_to_okf(path) -> bool:
+    """Rename legacy frontmatter keys → OKF names in ONE md file's frontmatter
+    block (body untouched). Idempotent: a key is renamed only when its OKF name
+    isn't already present, so re-runs and mixed files are safe. Atomic write.
+    Returns True iff the file changed. Never raises."""
+    import re
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    m = re.match(r"\A(---\s*\n)(.*?)(\n---\s*\n?)", text, re.DOTALL)
+    if not m:
+        return False
+    head, fm, tail = m.group(1), m.group(2), m.group(3)
+    lines = fm.split("\n")
+    present = {ln.split(":", 1)[0].strip() for ln in lines if ":" in ln}
+    changed = False
+    out_lines: list[str] = []
+    for ln in lines:
+        renamed = False
+        for legacy, okf in _OKF_KEY_RENAMES:
+            mm = re.match(rf"^(\s*){re.escape(legacy)}(\s*:.*)$", ln)
+            if mm and okf not in present:
+                out_lines.append(f"{mm.group(1)}{okf}{mm.group(2)}")
+                present.add(okf)
+                changed = True
+                renamed = True
+                break
+        if not renamed:
+            out_lines.append(ln)
+    if not changed:
+        return False
+    new_text = head + "\n".join(out_lines) + tail + text[m.end():]
+    try:
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
+def _migrate_frontmatter_to_okf() -> dict:
+    """Rewrite legacy frontmatter keys (kind/source_url/updated_at/created_at)
+    to OKF names across EVERY memory Markdown file — briefs (``compacted/``),
+    raw captures (``captures/``), session notes, rule books, and the ``okf/``
+    node bundle. Reserved OKF files (index.md/log.md) and the historical
+    ``archive/`` snapshots are skipped. Idempotent + soft-fail — brings every
+    pre-OKF on-disk file up to spec so a Google OKF reader consumes it directly."""
+    try:
+        from aiforge_core.memory.md_store import memory_dir
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    changed = 0
+    scanned = 0
+    root = memory_dir()
+    if not root.is_dir():
+        return {"ok": True, "rewritten": 0, "scanned": 0}
+    for p in root.rglob("*.md"):
+        # skip reserved OKF nav/audit files and archived historical snapshots
+        if p.name in ("index.md", "log.md"):
+            continue
+        parts = set(p.relative_to(root).parts)
+        if "archive" in parts or "memory-archive" in parts:
+            continue
+        scanned += 1
+        try:
+            if _rewrite_file_frontmatter_to_okf(p):
+                changed += 1
+        except Exception:  # noqa: BLE001 — one bad file never blocks the rest
+            continue
+    return {"ok": True, "rewritten": changed, "scanned": scanned}
+
+
+def migrate_okf_format() -> dict:
+    """Explicit, standalone OKF format migration (the ``./run.sh --migrate-okf``
+    entry): rename a legacy ``okr/`` node bundle → ``okf/`` and rewrite every
+    memory Markdown file's frontmatter to OKF names. Idempotent + soft-fail.
+    run.sh calls this on every start so old-format files always converge to OKF."""
+    out = {"dir_rename": _rename_okr_dir_to_okf(),
+           "frontmatter": _migrate_frontmatter_to_okf()}
+    log.info("migrate_okf_format: %s", out)
+    return out
+
+
+def _rename_okr_dir_to_okf() -> dict:
+    """When the DAG is ON, rename a legacy ``<memory>/okr/`` node bundle to the
+    OKF folder name ``<memory>/okf/`` so existing nodes are found at the new
+    root. No-op if okr/ is absent or okf/ already exists. Never raises."""
+    import shutil
+    try:
+        from aiforge_core.memory.md_store import memory_dir
+        src = memory_dir() / "okr"
+        dst = memory_dir() / "okf"
+        if not src.is_dir():
+            return {"skipped": "no legacy okr/ folder"}
+        if dst.exists():
+            # okf/ is already the live bundle — an okr/ holding only stale
+            # bookkeeping (.migrations.json) is orphaned; remove it so the tree
+            # is clean. Anything else stays put (don't clobber real data).
+            leftover = [p for p in src.iterdir() if p.name != ".migrations.json"]
+            if not leftover:
+                shutil.rmtree(str(src), ignore_errors=True)
+                return {"ok": True, "removed_stale_marker": str(src)}
+            return {"skipped": "okf/ exists and okr/ has data — left in place"}
+        shutil.move(str(src), str(dst))
+        log.info("renamed legacy okr/ node bundle → okf/")
+        return {"ok": True, "moved_to": str(dst)}
+    except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
 
@@ -84,8 +203,8 @@ def _discover_repos() -> list:
 
 
 def _marker_path() -> str:
-    from aiforge_core.memory.okr import store as _store
-    return os.path.join(_store.okr_root(), ".migrations.json")
+    from aiforge_core.memory.okf import store as _store
+    return os.path.join(_store.okf_root(), ".migrations.json")
 
 
 def _load_marker() -> dict:
@@ -182,7 +301,7 @@ def purge_migrated_code() -> dict:
     out = {"removed_md": 0, "removed_okr_learnings": 0, "kept_learnings": 0}
     try:
         from aiforge_core.memory import md_store
-        from aiforge_core.memory.okr import store as okr_store
+        from aiforge_core.memory.okf import store as okr_store
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
@@ -295,10 +414,23 @@ def run_startup_migrations() -> dict:
     except Exception as exc:  # noqa: BLE001
         out["format"] = {"ok": False, "error": str(exc)}
 
-    # OKR-DAG (the separate memory/okr/ node graph) is CONSOLIDATED OUT by
+    # ── bring existing on-disk files to OKF v0.1: rename legacy frontmatter keys
+    # (kind→type, source_url→resource, updated_at/created_at→timestamp) in the
+    # briefs (+ okf/ nodes). Idempotent; makes pre-OKF files OKF-readable.
+    try:
+        out["okf_frontmatter"] = _migrate_frontmatter_to_okf()
+    except Exception as exc:  # noqa: BLE001
+        out["okf_frontmatter"] = {"ok": False, "error": str(exc)}
+
+    # OKR-DAG (the separate memory/okf/ node graph) is CONSOLIDATED OUT by
     # default — the flat compacted-<scope> briefs are the single OKR memory now.
     # Set AIFORGE_OKR_DAG=1 to re-enable the DAG build/migrate steps.
     _dag_on = os.environ.get("AIFORGE_OKR_DAG", "0") == "1"
+
+    # When the DAG is ON, rename a legacy okr/ node bundle to the OKF folder
+    # name so its nodes are found at okf_root(). (DAG OFF archives okr/ below.)
+    if _dag_on:
+        out["okr_to_okf_dir"] = _rename_okr_dir_to_okf()
 
     # When the DAG is off, ARCHIVE any pre-existing okr/ folder OUT of the live
     # memory dir (kept, not deleted → reversible) so a stale node graph from an
@@ -310,7 +442,7 @@ def run_startup_migrations() -> dict:
     # ── one-shot steps (marker-guarded so they can't undo later curation) ──
     if _dag_on and "briefs_to_okr" not in done:
         try:
-            from aiforge_core.memory.okr import author
+            from aiforge_core.memory.okf import author
             out["briefs_to_okr"] = author.migrate_from_briefs()
             done.add("briefs_to_okr")
         except Exception as exc:  # noqa: BLE001
@@ -329,7 +461,7 @@ def run_startup_migrations() -> dict:
     # ── scoped segregation (moves what the above produced into global/projects)
     if _dag_on:
         try:
-            from aiforge_core.memory.okr import store as _store
+            from aiforge_core.memory.okf import store as _store
             out["scoped"] = _store.migrate_scoped()
         except Exception as exc:  # noqa: BLE001
             out["scoped"] = {"ok": False, "error": str(exc)}
@@ -341,7 +473,7 @@ def run_startup_migrations() -> dict:
         repos = _discover_repos()
         if repos:
             try:
-                from aiforge_core.memory.okr import author
+                from aiforge_core.memory.okf import author
                 out["classify"] = author.reclassify_global_learnings(repos)
                 done.add("classify")
             except Exception as exc:  # noqa: BLE001
@@ -353,7 +485,7 @@ def run_startup_migrations() -> dict:
     # ── build the per-repo hub CARDS from each project's learnings (one-shot) ─
     if _dag_on and "repo_profiles" not in done:
         try:
-            from aiforge_core.memory.okr import author
+            from aiforge_core.memory.okf import author
             out["repo_profiles"] = author.build_repo_profiles()
             done.add("repo_profiles")
         except Exception as exc:  # noqa: BLE001
@@ -374,7 +506,7 @@ def dedupe_all() -> dict:
     out: dict = {}
     if os.environ.get("AIFORGE_OKR_DAG", "0") == "1":
         try:
-            from aiforge_core.memory.okr import store as _store
+            from aiforge_core.memory.okf import store as _store
             out["okr"] = _store.dedupe_nodes()
         except Exception as exc:  # noqa: BLE001
             out["okr"] = {"ok": False, "error": str(exc)}
@@ -455,7 +587,7 @@ def force_recompact_all(on_step=None) -> dict:
         # AFTER they've settled (consolidated, deduped, empties swept, rehealed).
         ("map_scopes", lambda: md_store.map_scopes()),
         ("repo_profiles", lambda: (__import__(
-            "aiforge_core.memory.okr.author", fromlist=["build_repo_profiles"]
+            "aiforge_core.memory.okf.author", fromlist=["build_repo_profiles"]
         ).build_repo_profiles()
             if os.environ.get("AIFORGE_OKR_DAG", "0") == "1"
             else {"skipped": "okr-dag off"})),
@@ -489,7 +621,7 @@ def force_recompact_all(on_step=None) -> dict:
 
 
 __all__ = ["run_startup_migrations", "purge_migrated_code",
-           "force_recompact_all", "dedupe_all"]
+           "force_recompact_all", "dedupe_all", "migrate_okf_format"]
 
 
 if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [flag]
@@ -500,5 +632,7 @@ if __name__ == "__main__":       # python -m aiforge_core.memory.migrations [fla
         print(dedupe_all())
     elif "--recompact-all" in sys.argv:      # compact at any cost (+ dedupe)
         print(force_recompact_all())
+    elif "--migrate-okf" in sys.argv:        # okr→okf dir + all md → OKF frontmatter
+        print(migrate_okf_format())
     else:
         print(run_startup_migrations())

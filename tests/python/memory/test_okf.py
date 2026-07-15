@@ -43,9 +43,9 @@ def test_okf_rules_injected_into_producers():
 
 def test_okr_store_writes_reserved_index_without_frontmatter(monkeypatch):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", tempfile.mkdtemp())
-    from aiforge_core.memory.okr import store
+    from aiforge_core.memory.okf import store
     store.save_node("objective", None, {"title": "O"}, "body")
-    idx = os.path.join(store.okr_root(), "index.md")
+    idx = os.path.join(store.okf_root(), "index.md")
     assert os.path.isfile(idx)
     assert not open(idx).read().startswith("---")       # reserved: NO frontmatter
     assert "/objectives/" in open(idx).read()           # absolute bundle link
@@ -55,7 +55,7 @@ def test_record_solution_okf_node_log_and_dedup(monkeypatch, tmp_path):
     """A completed feature/fix → an OKF `solution` node (kind + workspace +
     topic + tables + services) + a dated log.md entry; a duplicate is skipped."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
-    from aiforge_core.memory.okr import author, store
+    from aiforge_core.memory.okf import author, store
     r = author.record_solution(
         kind="fix", summary="MessageRetryService reads priority header",
         workspace="PosClientBackend", topic="sync",
@@ -67,7 +67,7 @@ def test_record_solution_okf_node_log_and_dedup(monkeypatch, tmp_path):
                  "sync", "productTxn", "NATS", "PosServerBackend"):
         assert want in node, want
     import os as _os
-    log = open(_os.path.join(store.okr_root(), "log.md")).read()
+    log = open(_os.path.join(store.okf_root(), "log.md")).read()
     assert "## 2026-07-11" in log and "[fix]" in log
     # dedup: same fix again → no second node
     author.record_solution(kind="fix", summary="did: MessageRetryService reads priority header",
@@ -82,10 +82,10 @@ def test_okr_scope_segregation_global_vs_project(monkeypatch, tmp_path):
     flat node migrates to its scoped home."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
     import os
-    from aiforge_core.memory.okr import store as s
+    from aiforge_core.memory.okf import store as s
     # legacy flat node (pre-segregation) with a workspace
-    os.makedirs(os.path.join(s.okr_root(), "solutions"))
-    open(os.path.join(s.okr_root(), "solutions", "S-01.md"), "w").write(
+    os.makedirs(os.path.join(s.okf_root(), "solutions"))
+    open(os.path.join(s.okf_root(), "solutions", "S-01.md"), "w").write(
         '---\ntype: solution\nid: "S-01"\nkind: "fix"\nworkspace: "RepoA"\n---\nx')
     s.save_node("solution", None, {"kind": "feature", "title": "T",
                                    "workspace": "RepoB"}, "b")     # → projects/RepoB
@@ -99,7 +99,7 @@ def test_okr_scope_segregation_global_vs_project(monkeypatch, tmp_path):
         "projects/RepoA/solutions/S-01.md")
     assert sorted(d["id"] for d in s.load_all("global")) == ["L-01"]
     assert sorted(d["id"] for d in s.load_all("RepoA")) == ["L-02", "S-01"]
-    idx = open(os.path.join(s.okr_root(), "index.md")).read()
+    idx = open(os.path.join(s.okf_root(), "index.md")).read()
     assert "## Global" in idx and "## RepoA" in idx and "## RepoB" in idx
     assert not idx.startswith("---")                          # reserved: no frontmatter
 
@@ -108,7 +108,7 @@ def test_okr_learning_classification_global_vs_repo(monkeypatch, tmp_path):
     """extract_and_save classifies each learning: scope 'repo' → projects/<repo>/
     with a topic category; scope 'global' → global/."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
-    from aiforge_core.memory.okr import author, store
+    from aiforge_core.memory.okf import author, store
 
     class _L:
         def __init__(s, rule, scope, topic=""):
@@ -134,8 +134,8 @@ def test_context_block_scoped_no_cross_project_leak(monkeypatch, tmp_path):
     never leaks in (the 'links all documents' fix)."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
     import importlib
-    from aiforge_core.memory.okr import store
-    R = importlib.import_module("aiforge_core.memory.okr.retrieve")
+    from aiforge_core.memory.okf import store
+    R = importlib.import_module("aiforge_core.memory.okf.retrieve")
     store.save_node("learning", None, {"scope": "global", "title": "univ rule"}, "g")
     store.save_node("learning", None,
                     {"scope": "repo:RepoA", "workspace": "RepoA"}, "A rule")
@@ -152,7 +152,7 @@ def test_okr_load_all_cache_and_deferred_index(monkeypatch, tmp_path):
     it once."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
     import os
-    from aiforge_core.memory.okr import store as s
+    from aiforge_core.memory.okf import store as s
     s.save_node("learning", None, {"scope": "global", "title": "A"}, "a")
     a = s.load_all()
     assert a is not s.load_all()          # returns a fresh list copy…
@@ -161,7 +161,7 @@ def test_okr_load_all_cache_and_deferred_index(monkeypatch, tmp_path):
     s.save_node("learning", None, {"scope": "repo:RepoX", "workspace": "RepoX"}, "b")
     assert len(s.load_all()) == 2
     # reindex=False: index NOT rewritten by the save itself
-    idx = os.path.join(s.okr_root(), "index.md")
+    idx = os.path.join(s.okf_root(), "index.md")
     os.remove(idx)
     s.save_node("learning", None, {"scope": "global", "title": "C"}, "c",
                 reindex=False)
@@ -174,8 +174,8 @@ def test_context_block_query_relevance_returns_related_only(monkeypatch, tmp_pat
     """Read returns only documents RELATED to the query, not the whole scope."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
     import importlib
-    from aiforge_core.memory.okr import store
-    R = importlib.import_module("aiforge_core.memory.okr.retrieve")
+    from aiforge_core.memory.okf import store
+    R = importlib.import_module("aiforge_core.memory.okf.retrieve")
     for cat, body in [("sync", "sync retries use exponential backoff resilience4j"),
                       ("cache", "cache eviction uses TTL and size limits"),
                       ("auth", "JWT tokens expire after 15 minutes")]:
@@ -191,8 +191,8 @@ def test_context_block_fuzzy_fallback_ladder(monkeypatch, tmp_path):
     query still finds the note; a totally unrelated query falls back non-empty."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
     import importlib
-    from aiforge_core.memory.okr import store
-    R = importlib.import_module("aiforge_core.memory.okr.retrieve")
+    from aiforge_core.memory.okf import store
+    R = importlib.import_module("aiforge_core.memory.okf.retrieve")
     for cat, body in [("sync", "sync retries use exponential backoff"),
                       ("cache", "cache eviction uses TTL and size limits")]:
         store.save_node("learning", None,
@@ -207,8 +207,8 @@ def test_repo_script_task_nodes_and_retrieval(monkeypatch, tmp_path):
     read surfaces the repo hub first, then scripts + task recipes."""
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
     import importlib
-    from aiforge_core.memory.okr import author, store
-    R = importlib.import_module("aiforge_core.memory.okr.retrieve")
+    from aiforge_core.memory.okf import author, store
+    R = importlib.import_module("aiforge_core.memory.okf.retrieve")
     author.record_repo_profile("CacheLayer", stack="Java", build="./mvnw package",
                                gotchas=["L1+L2 together"])
     author.record_repo_profile("CacheLayer", test="./mvnw test",

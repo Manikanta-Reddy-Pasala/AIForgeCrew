@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from aiforge_core.memory import okr
+from aiforge_core.memory import okf as okr
 
 
 @pytest.fixture()
@@ -52,7 +52,7 @@ def test_store_save_load_and_id_allocation(cfg):
     all_nodes = {n["id"]: n for n in okr.load_all()}
     assert set(all_nodes) == {"O-01", "O-02", "KR-01"}
     assert all_nodes["O-01"]["type"] == "objective"
-    assert all_nodes["O-01"]["meta"]["created_at"]        # objective stamped
+    assert all_nodes["O-01"]["meta"]["timestamp"]        # objective stamped (OKF)
     # a session id is date-based + unique
     s1 = okr.save_node("session", None, {"linked_krs": ["KR-01"]}, "ran x")
     s2 = okr.save_node("session", None, {"linked_krs": ["KR-01"]}, "ran y")
