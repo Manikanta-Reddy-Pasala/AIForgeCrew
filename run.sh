@@ -66,8 +66,9 @@
 #   --dedupe     remove duplicate OKR nodes + chat sessions, then exit
 #   --recompact-all  re-LLM every memory brief + rebuild from scratch, then exit
 #   --migrate-okf    rename okr→okf + convert ALL memory md files to OKF (Open
-#                    Knowledge Format v0.1) frontmatter, then exit (also runs
-#                    automatically on every start; opt out AIFORGE_MIGRATE_OKF=0)
+#                    Knowledge Format v0.1) frontmatter, then exit. On start it
+#                    runs ONLY when a legacy <memory>/okr/ folder still exists
+#                    (the pre-OKF signal); opt out with AIFORGE_MIGRATE_OKF=0
 #   --purge-code     drop code-as-learnings from a bad migration, then exit
 #   (--lite/--hybrid/--docker/--no-build are legacy no-ops — always SQLite now)
 #
@@ -483,13 +484,18 @@ if [[ "${AIFORGE_AUTO_MIGRATE:-1}" != "0" || "${MIGRATE:-0}" == "1" ]]; then
   .venv/bin/python -m aiforge_core.deploy.converge ${_cvg[@]+"${_cvg[@]}"} || true
 fi
 
-# ── OKF format converge (every start) ─────────────────────────────────────
-# Bring the on-disk memory to Open Knowledge Format v0.1: rename a legacy okr/
-# node bundle → okf/ and rewrite EVERY memory .md file's frontmatter to OKF
-# names (kind→type, source_url→resource, updated_at/created_at→timestamp).
-# Idempotent + fast (no LLM) — a no-op once everything is already OKF, so it is
-# safe to run unconditionally on each launch. Opt out with AIFORGE_MIGRATE_OKF=0.
-if [[ "${AIFORGE_MIGRATE_OKF:-1}" != "0" && -x .venv/bin/python ]]; then
+# ── OKF format converge (only when a legacy okr/ folder is present) ───────
+# TRIGGER: a leftover ``<memory>/okr/`` folder is the signal that this install
+# predates OKF. Only THEN do we converge — rename okr/ → okf/ and rewrite every
+# memory .md file's frontmatter to OKF names (kind→type, source_url→resource,
+# updated_at/created_at→timestamp). Once okr/ is gone (renamed/cleaned) this
+# skips entirely, so a fresh/already-OKF install never scans on start. Run the
+# one-shot conversion by hand any time with ``./run.sh --migrate-okf``.
+# Opt out even when okr/ is present with AIFORGE_MIGRATE_OKF=0.
+_okf_memdir="${AIFORGE_MEMORY_MD_DIR:-$_cfgdir/memory}"
+if [[ "${AIFORGE_MIGRATE_OKF:-1}" != "0" && -x .venv/bin/python \
+      && -d "$_okf_memdir/okr" ]]; then
+  echo "==> legacy okr/ folder present → converging memory to OKF (okr→okf)…"
   .venv/bin/python -m aiforge_core.memory.migrations --migrate-okf || true
 fi
 
