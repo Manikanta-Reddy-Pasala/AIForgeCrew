@@ -4440,96 +4440,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         # through the parallel pipeline — a single ReAct agent stalls on large
         # builds (one huge-context call, no decomposition). Gated + heuristic so
         # chit-chat / small edits still use the fast single-agent path.
-        def _looks_like_multifile_build(p: str) -> bool:
-            import re as _re
-            p = (p or "").lower()
-            if len(p) < 12:
-                return False
-            verb = _re.search(r"\b(build|create|implement|generate|make|write|"
-                              r"develop|code|scaffold)\b", p)
-            noun = _re.search(r"\b(game|app|application|api|service|server|cli|"
-                              r"tool|website|web ?app|webapp|system|library|"
-                              r"package|project|backend|frontend|module|engine|"
-                              r"bot|dashboard|parser|compiler|interpreter|crud|"
-                              r"microservice|rest)\b", p)
-            cues = any(c in p for c in ("with test", "unit test", "multiple file",
-                                        " files", "test case", "endpoints"))
-            # TRACKER ACTION veto (STRONGEST): "create N jira tickets", "create a
-            # confluence page", "file a story/epic/issue" is a JIRA/Confluence
-            # WRITE (jira_create / confluence_create), NEVER a code build — even
-            # when it names an api/service (that's the ticket's SUBJECT, not an
-            # artifact to scaffold). This wins over the code-noun check below,
-            # which otherwise mis-routes "create 2 jira tickets about the API"
-            # into the scaffold→write-files→tests pipeline.
-            if _re.search(r"\b(jira|confluence)\b", p) and _re.search(
-                    r"\b(ticket|tickets|story|stories|epic|epics|issue|issues|"
-                    r"page|pages)\b", p):
-                return False
-            # DOCUMENT / non-code artifact tasks ("write a JIRA ticket for adding
-            # rate limiting", "confluence page", "email", "spec doc") must NOT be
-            # treated as a code build even though they mention build-y nouns.
-            # BUT the veto only applies when NO strong code noun matched — a
-            # blanket veto mis-routed real builds that merely MENTION a doc word
-            # ("a monthly REPORT module", "a TICKET service") to the single
-            # agent, which then ground through 10 files sequentially.
-            doc = _re.search(r"\b(jira|confluence|ticket|story|epic|description|"
-                             r"document|doc|documentation|wiki|email|e-mail|report|"
-                             r"summary|summari[sz]e|proposal|rfc|readme|changelog|"
-                             r"release notes?|blog|article|memo|letter|announcement|"
-                             r"agenda|minutes|slide|presentation|spec sheet)\b", p)
-            if doc and not noun:
-                return False
-            return bool(verb and (noun or cues))
-
-        def _is_advice_question(p: str) -> bool:
-            """A QUESTION about how/whether to build — advice, not a build order.
-            '_looks_like_analysis' misses these because they carry a build verb
-            ('how do I BUILD a CLI?'); a fresh build must never fire on them."""
-            import re as _re
-            p = (p or "").strip().lower()
-            if p.endswith("?"):
-                return True
-            return bool(_re.match(
-                r"^(how|what|why|where|when|which|who|should|can|could|would|"
-                r"is|are|do|does|did|explain|tell me|show me|help me understand|"
-                r"any (idea|thought)|best way)\b", p))
-
-        def _is_doc_analysis_task(p: str) -> bool:
-            """A DOC / ANALYSIS deliverable, not a code build. e.g. 'analyze 3
-            repos and create a Confluence page', 'write a report/summary',
-            'review the architecture'. The code pipeline (architect→tests→PR)
-            is WRONG for these — the deliverable is prose/analysis, not a file
-            tree with tests. Routes to the single research agent instead.
-
-            Guard against a code task that merely MENTIONS a doc word ('a
-            monthly REPORT module', 'a TICKET service'): a code noun + build
-            verb, or any hard code-build signal, wins → NOT a doc task."""
-            import re as _re
-            p = (p or "").lower()
-            if len(p) < 8:
-                return False
-            doc_noun = _re.search(
-                r"\b(confluence|wiki|documentation|readme|report|summary|"
-                r"write[- ]?up|analysis|assessment|overview|whitepaper|"
-                r"design\s+doc|architecture\s+doc|rfc|proposal|memo|"
-                r"presentation|slide\s*deck|jira\s+(page|ticket|story|epic))\b", p)
-            analysis_verb = _re.search(
-                r"\b(analy[sz]e|analy[sz]is|review|audit|assess|"
-                r"summar[iy][sz]e|document|investigate|compare|explain|"
-                r"describe|understand|evaluate|explore)\b", p)
-            code_signal = _re.search(
-                r"\b(implement|refactor|debug|fix|unit\s*test|endpoint|compile|"
-                r"deploy|write\s+(code|a\s+function|a\s+class|tests?))\b", p)
-            code_noun = _re.search(
-                r"\b(app|application|api|service|server|cli|module|package|"
-                r"library|component|endpoint|function|class|microservice|"
-                r"backend|frontend|engine|parser|compiler|bot|dashboard|crud)\b", p)
-            build_verb = _re.search(
-                r"\b(build|create|implement|generate|make|write|develop|code|"
-                r"scaffold|add)\b", p)
-            if code_signal or (code_noun and build_verb):
-                return False
-            return bool(doc_noun or analysis_verb)
+        # (Task-type detection is done by the LLM classifier below —
+        # aiforge_core.runtime.task_router.classify_task — not by regex.)
         # NB: _parallel_team is `team and enabled()` — False for simple/plan. Use
         # the raw capability (_pp.enabled()) so escalation can fire off-team.
         _psub_on = False
@@ -4544,42 +4456,38 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             _greenfield = True
         # Escalate a MULTI-FILE BUILD to the pipeline — greenfield OR a genuinely
         # new subsystem on an existing repo (e.g. "build an auth module with
-        # tests"). Safe on an existing repo: `_looks_like_multifile_build` matches
-        # only build verbs (build/create/implement), NOT a "fix"/edit, and the
-        # pipeline's greenfield-guard skips scaffold/off-plan-prune + never deletes
-        # baseline files. A targeted edit still stays single-agent (no match).
+        # tests"). Safe on an existing repo: the classifier flags only real
+        # from-scratch builds as `code_build` (an edit/fix classifies as
+        # `code_edit`), and the pipeline's greenfield-guard skips scaffold/
+        # off-plan-prune + never deletes baseline files.
         # DOC / ANALYSIS deliverable (analyze repos → Confluence page, write a
         # report, review architecture) must NEVER enter the code pipeline — it
         # designs a file tree + tests + PR, which is the wrong artifact. Route
         # these to the single research agent regardless of team mode.
-        # TASK-TYPE ROUTING. Primary = a cheap LLM classify (robust to phrasing
-        # like "create 2 JIRA tickets about the API" that the regex misreads as a
-        # build); FALLBACK = the regex heuristics when the classifier is disabled,
-        # errors, or is ambiguous (routing never hard-depends on the model). The
-        # category maps to two signals the rest of the routing already uses:
+        # TASK-TYPE ROUTING — the LLM classifier is AUTHORITATIVE. It buckets the
+        # request into chat|tracker|doc_analysis|code_build|code_edit; the two
+        # signals below drive the rest of the routing:
         #   doc_analysis → the research agent;  code_build → the build pipeline;
-        #   tracker/chat/code_edit → the single chat agent (which has jira_create
-        #   / confluence_create + edit tools).
+        #   tracker/chat/code_edit → the single chat agent (jira_create /
+        #   confluence_create + edit tools).
+        # No regex heuristics: on a None result (classifier disabled/errored/
+        # ambiguous) we default to the SAFE single-agent path — never
+        # auto-escalate to the pipeline or research agent without a positive
+        # classification. (An advice question classifies as `chat`, so it never
+        # escalates — the old string-match advice guard is subsumed.)
         _cat = None
         try:
             from aiforge_core.runtime import task_router as _tr
             _cat = _tr.classify_task(prompt, history=history, cwd=cwd)
         except Exception:  # noqa: BLE001 — never break routing on the classifier
             _cat = None
-        if _cat is not None:
-            _doc_task = _cat == "doc_analysis"
-            _is_build_task = _cat == "code_build"
-        else:
-            _doc_task = _is_doc_analysis_task(prompt)
-            _is_build_task = _looks_like_multifile_build(prompt)
+        _doc_task = _cat == "doc_analysis"
+        _is_build_task = _cat == "code_build"
         _build_escalate = bool(
             not team and _psub_on
             # PLAN mode is read-only — it must NEVER escalate into a pipeline that
             # writes files (that silently violated the plan contract).
             and agent_mode != "plan"
-            # A question ("how do I build X with tests?") is advice, not a build
-            # order — answer it, don't spin up the whole build pipeline.
-            and not _is_advice_question(prompt)
             and not _doc_task
             and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false")
             and _is_build_task)
@@ -4589,7 +4497,6 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                            "pipeline (decompose → scaffold → implement → test) "
                            "instead of a single agent."}
         elif (not team and not _psub_on and agent_mode != "plan"
-              and not _is_advice_question(prompt)
               and _is_build_task):
             # Multi-file build with the fan-out DISABLED: say so instead of
             # silently grinding through N files with one agent — the operator
@@ -4729,8 +4636,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                 # referent against the prior turns instead of running on the raw
                 # prompt (skipping it there under-serves the request). A genuine
                 # multi-file build follow-up also enhances.
-                if _tr2.is_followup(history) \
-                        and not _looks_like_multifile_build(prompt):
+                if _tr2.is_followup(history) and not _is_build_task:
                     try:
                         _cls = _tr2.classify(prompt, history=history)
                     except Exception:  # noqa: BLE001 — classify blew up → enhance
