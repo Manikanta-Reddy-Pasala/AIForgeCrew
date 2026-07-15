@@ -4334,7 +4334,8 @@ def run_chat_agent(
                     convo[-1]["content"] += f"\n\n[steer] {steer}"
                 else:
                     convo.append({"role": "user", "content": f"[steer] {steer}"})
-                yield {"type": "thought", "role": "steer", "text": steer}
+                from aiforge_core.runtime import chat_steer
+                yield chat_steer.steer_event(steer)
         # Auto-condense the running history before the call so a long session
         # can't overflow the model's context window (MUST). Tell the user it
         # happened (one-time per condense) for transparency.
@@ -4736,12 +4737,8 @@ def run_chat_agent(
                 yield {"type": "approval_expired", "id": seq, "name": name}
             if decision.get("decision") != "approve":
                 _rnote = decision.get("note") or ""
-                # Distinguish USER guidance (typed in the approval card) from the
-                # system notes the registry sets itself — only the former should
-                # steer the agent.
-                _sys_notes = ("cancelled", "superseded", "run finished",
-                              "approval timed out", "no pending approval")
-                _user_guidance = _rnote if _rnote and _rnote not in _sys_notes else ""
+                from aiforge_core.runtime import chat_steer
+                _user_guidance = chat_steer.user_guidance(_rnote)
                 result = {"ok": False, "rejected": True,
                           "error": "user rejected this action"
                                    + (f": {_rnote}" if _rnote else "")}
@@ -4750,13 +4747,10 @@ def run_chat_agent(
                 # stop — fold the guidance in as a steer and CONTINUE so the agent
                 # adjusts immediately (no separate follow-up message needed).
                 if session_id is not None and _user_guidance:
-                    yield {"type": "thought", "role": "user",
-                           "text": f"Guidance on reject: {_user_guidance}"}
-                    convo.append({"role": "user", "content":
-                                  f"The user REJECTED the `{name}` action and gave "
-                                  f"this guidance: {_user_guidance}\n"
-                                  "Do NOT repeat the rejected action as-is — adjust "
-                                  "per the guidance and continue."})
+                    yield chat_steer.steer_event(_user_guidance)
+                    convo.append({"role": "user",
+                                  "content": chat_steer.reject_directive(
+                                      name, _user_guidance)})
                     continue
                 # Interactive reject WITHOUT guidance is TERMINAL: STOP and WAIT
                 # for the user (the old record-and-continue let a model that

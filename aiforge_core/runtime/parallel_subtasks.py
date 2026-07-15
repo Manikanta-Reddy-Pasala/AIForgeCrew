@@ -1986,7 +1986,8 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
                     continue
                 # Echo the user's steer TEXT (role:steer) so it shows + persists
                 # in the UI for team mode too — same as the simple/plan loop.
-                yield {"type": "thought", "role": "steer", "text": _txt}
+                from aiforge_core.runtime import chat_steer
+                yield chat_steer.steer_event(_txt)
                 route = _route_steering(_txt, subs)
                 target, note = route["target"], route["note"]
                 # A user comment is a MANDATORY requirement, not a hint — mark it so

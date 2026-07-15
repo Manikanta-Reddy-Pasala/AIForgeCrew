@@ -412,10 +412,9 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                 # simple-mode ReAct loop shows inline, polled once per event
                 # since the callback has no direct handle to this queue.
                 if session_id is not None:
+                    from aiforge_core.runtime import chat_steer
                     for _applied in chat_interject.pop_applied(session_id):
-                        q.put({"type": "thought", "role": "system",
-                               "text": f"📌 Got your message — folding it in "
-                                       f"now: “{_applied[:120]}”"})
+                        q.put(chat_steer.applied_event(_applied))
                 if session_id is not None and chat_cancel.is_cancelled(session_id):
                     # ADK-native stop: aclose() the run generator (cancels
                     # the in-flight agent + all its sub-agents) and close the
