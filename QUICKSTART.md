@@ -33,7 +33,7 @@ heavy, so it comes up fast.
 
 **Upgrading an OLD install** (a previous dockerized Postgres/Neo4j setup)? Just
 `git pull && ./run.sh` — the first boot AUTO-migrates your data (Postgres →
-SQLite tickets/chat, Neo4j facts → OKR briefs, briefs → `compacted/` folder, okr
+SQLite tickets/chat, Neo4j facts → OKR briefs, briefs → `compacted/` folder, okf
 DAG → `memory-archive/`) and removes the DB-infra containers (keeps Langfuse).
 Force a re-migrate anytime with `./run.sh --migrate`. No data loss; nothing to
 hand-edit.
@@ -147,7 +147,7 @@ Memory is **scoped OKR briefs** — human-readable Markdown files under
 │   ├── compacted-<repo>.md          · shared = global (cross-project)
 │   └── compacted-<topic>.md         · <repo> = one project · <topic> = a theme
 ├── archive/            raw captures, folded + archived (reversible)
-└── okr/                (marker only — the old node-DAG is consolidated out)
+└── okf/                (marker only — the old node-DAG is consolidated out)
 ```
 
 **How it fills:**
