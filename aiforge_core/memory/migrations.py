@@ -55,6 +55,102 @@ def _archive_okr_dag_folder() -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+# Legacy frontmatter key → OKF name. created_at folds into timestamp too.
+_OKF_KEY_RENAMES = (("kind", "type"), ("source_url", "resource"),
+                    ("updated_at", "timestamp"), ("created_at", "timestamp"))
+
+
+def _rewrite_file_frontmatter_to_okf(path) -> bool:
+    """Rename legacy frontmatter keys → OKF names in ONE md file's frontmatter
+    block (body untouched). Idempotent: a key is renamed only when its OKF name
+    isn't already present, so re-runs and mixed files are safe. Atomic write.
+    Returns True iff the file changed. Never raises."""
+    import re
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    m = re.match(r"\A(---\s*\n)(.*?)(\n---\s*\n?)", text, re.DOTALL)
+    if not m:
+        return False
+    head, fm, tail = m.group(1), m.group(2), m.group(3)
+    lines = fm.split("\n")
+    present = {ln.split(":", 1)[0].strip() for ln in lines if ":" in ln}
+    changed = False
+    out_lines: list[str] = []
+    for ln in lines:
+        renamed = False
+        for legacy, okf in _OKF_KEY_RENAMES:
+            mm = re.match(rf"^(\s*){re.escape(legacy)}(\s*:.*)$", ln)
+            if mm and okf not in present:
+                out_lines.append(f"{mm.group(1)}{okf}{mm.group(2)}")
+                present.add(okf)
+                changed = True
+                renamed = True
+                break
+        if not renamed:
+            out_lines.append(ln)
+    if not changed:
+        return False
+    new_text = head + "\n".join(out_lines) + tail + text[m.end():]
+    try:
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(new_text)
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
+def _migrate_frontmatter_to_okf() -> dict:
+    """Rewrite legacy frontmatter keys (kind/source_url/updated_at/created_at)
+    to OKF names across the memory briefs (``compacted/``) and, when present,
+    the ``okf/`` node bundle. Reserved OKF files (index.md/log.md) are skipped.
+    Idempotent + soft-fail — brings pre-OKF on-disk files up to spec so a
+    Google OKF reader can consume them directly."""
+    try:
+        from aiforge_core.memory.md_store import memory_dir
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    changed = 0
+    root = memory_dir()
+    for sub in ("compacted", "okf"):
+        d = root / sub
+        if not d.is_dir():
+            continue
+        for p in d.rglob("*.md"):
+            if p.name in ("index.md", "log.md"):
+                continue
+            try:
+                if _rewrite_file_frontmatter_to_okf(p):
+                    changed += 1
+            except Exception:  # noqa: BLE001 — one bad file never blocks the rest
+                continue
+    return {"ok": True, "rewritten": changed}
+
+
+def _rename_okr_dir_to_okf() -> dict:
+    """When the DAG is ON, rename a legacy ``<memory>/okr/`` node bundle to the
+    OKF folder name ``<memory>/okf/`` so existing nodes are found at the new
+    root. No-op if okr/ is absent or okf/ already exists. Never raises."""
+    import shutil
+    try:
+        from aiforge_core.memory.md_store import memory_dir
+        src = memory_dir() / "okr"
+        dst = memory_dir() / "okf"
+        if not src.is_dir():
+            return {"skipped": "no legacy okr/ folder"}
+        if dst.exists():
+            return {"skipped": "okf/ already exists"}
+        shutil.move(str(src), str(dst))
+        log.info("renamed legacy okr/ node bundle → okf/")
+        return {"ok": True, "moved_to": str(dst)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def _discover_repos() -> list:
     """Best-effort GENERIC repo list for classification — no hardcoded paths.
     Sources: AIFORGE_REPOS_ROOT (explicit), sibling git repos of the running
@@ -295,10 +391,23 @@ def run_startup_migrations() -> dict:
     except Exception as exc:  # noqa: BLE001
         out["format"] = {"ok": False, "error": str(exc)}
 
-    # OKR-DAG (the separate memory/okr/ node graph) is CONSOLIDATED OUT by
+    # ── bring existing on-disk files to OKF v0.1: rename legacy frontmatter keys
+    # (kind→type, source_url→resource, updated_at/created_at→timestamp) in the
+    # briefs (+ okf/ nodes). Idempotent; makes pre-OKF files OKF-readable.
+    try:
+        out["okf_frontmatter"] = _migrate_frontmatter_to_okf()
+    except Exception as exc:  # noqa: BLE001
+        out["okf_frontmatter"] = {"ok": False, "error": str(exc)}
+
+    # OKR-DAG (the separate memory/okf/ node graph) is CONSOLIDATED OUT by
     # default — the flat compacted-<scope> briefs are the single OKR memory now.
     # Set AIFORGE_OKR_DAG=1 to re-enable the DAG build/migrate steps.
     _dag_on = os.environ.get("AIFORGE_OKR_DAG", "0") == "1"
+
+    # When the DAG is ON, rename a legacy okr/ node bundle to the OKF folder
+    # name so its nodes are found at okf_root(). (DAG OFF archives okr/ below.)
+    if _dag_on:
+        out["okr_to_okf_dir"] = _rename_okr_dir_to_okf()
 
     # When the DAG is off, ARCHIVE any pre-existing okr/ folder OUT of the live
     # memory dir (kept, not deleted → reversible) so a stale node graph from an
