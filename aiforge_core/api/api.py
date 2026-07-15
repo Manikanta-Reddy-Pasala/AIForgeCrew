@@ -68,7 +68,9 @@ app = FastAPI(title="AIForge API")
 # They only import shared helpers + runtime modules (never api.py), so including
 # them here is import-safe.
 from aiforge_core.api.routes import jobs as _r_jobs  # noqa: E402
+from aiforge_core.api.routes import repos as _r_repos  # noqa: E402
 app.include_router(_r_jobs.router)
+app.include_router(_r_repos.router)
 
 
 @app.on_event("startup")
@@ -1357,44 +1359,7 @@ def library_clear(kind: str) -> dict:
     raise HTTPException(404, f"unknown kind {kind!r}")
 
 
-@app.get("/api/repos")
-def repos_get() -> dict:
-    """Configured repo folders: the global base + explicit per-repo paths."""
-    from aiforge_core.config import repo_map
-    return repo_map.list_all()
-
-
-class _RepoMapBody(BaseModel):
-    default_root: str | None = None   # global base folder for all repos
-    name: str | None = None           # a repo name to map to an explicit path
-    path: str | None = None           # its absolute local folder
-
-
-@app.put("/api/repos")
-def repos_set(body: _RepoMapBody) -> dict:
-    """Set the global base folder and/or an explicit per-repo path."""
-    from aiforge_core.config import repo_map
-    if body.default_root:
-        r = repo_map.set_default_root(body.default_root)
-        if not r.get("ok"):
-            raise HTTPException(400, r.get("error", "bad default_root"))
-    if body.name and body.path:
-        r = repo_map.set_path(body.name, body.path)
-        if not r.get("ok"):
-            raise HTTPException(400, r.get("error", "bad path mapping"))
-    elif bool(body.name) != bool(body.path):
-        raise HTTPException(400, "name and path must be given together")
-    return repo_map.list_all()
-
-
-@app.delete("/api/repos/{name}")
-def repos_delete(name: str) -> dict:
-    """Remove an explicit per-repo path mapping."""
-    from aiforge_core.config import repo_map
-    r = repo_map.delete_path(name)
-    if not r.get("ok"):
-        raise HTTPException(404, r.get("error", "not found"))
-    return repo_map.list_all()
+# (repo-folder mapping routes moved to aiforge_core.api.routes.repos)
 
 
 _LIBRARY_GEN_PROMPT = {
