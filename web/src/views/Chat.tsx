@@ -1881,9 +1881,15 @@ export default function Chat() {
               {/* Approval gate (#1): run is paused, awaiting Approve/Reject */}
               {pendingApproval && (
                 <div style={{
+                  // STICKY so a pending Approve/Reject is ALWAYS visible at the
+                  // bottom of the chat as it streams — an inline card scrolls
+                  // out of view and gets ignored. Pinned above the composer with
+                  // a strong warn border + shadow so it reads as "act now".
+                  position: 'sticky', bottom: 8, zIndex: 30,
                   margin: '8px 0', padding: 12,
-                  border: '1px solid var(--warn, #f59e0b)',
+                  border: '2px solid var(--warn, #f59e0b)',
                   borderRadius: 8, background: 'var(--bg-1)',
+                  boxShadow: '0 6px 24px rgba(0,0,0,0.28)',
                 }}>
                   {(() => {
                     const a = (pendingApproval.args || {}) as any;
@@ -1911,22 +1917,30 @@ export default function Chat() {
                   {pendingApproval.reason && (
                     <div className="muted xs" style={{ marginBottom: 6 }}>{pendingApproval.reason}</div>
                   )}
-                  {pendingApproval.preview && (
-                    <div style={{
-                      maxHeight: '60vh', overflow: 'auto', fontSize: 12,
-                      background: 'var(--bg-2)', padding: 8, borderRadius: 6,
-                      margin: '0 0 8px',
-                    }}>
-                      {/* Preview is markdown (Confluence/Jira pages format as
-                          md; code changes come as ```diff fences MdLite colors).
-                          Full content — the container scrolls. */}
-                      <MdLite text={pendingApproval.preview} />
-                    </div>
-                  )}
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  {/* Buttons FIRST — always reachable without scrolling past a
+                      tall preview (the old layout buried them under the diff). */}
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                     <button onClick={() => resolveApproval('approve')}>✓ Approve</button>
                     <button className="danger" onClick={() => resolveApproval('reject')}>✗ Reject</button>
                   </div>
+                  {pendingApproval.preview && (
+                    // Collapsible so the change PREVIEW (a diff / page body) is
+                    // available but doesn't dominate the card as a wall of code.
+                    <details open>
+                      <summary style={{ cursor: 'pointer', fontSize: 12,
+                                        color: 'var(--fg-2)', marginBottom: 6 }}>
+                        Preview changes
+                      </summary>
+                      <div style={{
+                        maxHeight: '50vh', overflow: 'auto', fontSize: 12,
+                        background: 'var(--bg-2)', padding: 8, borderRadius: 6,
+                      }}>
+                        {/* markdown (Confluence/Jira page bodies) + ```diff
+                            fences MdLite colors. Container scrolls. */}
+                        <MdLite text={pendingApproval.preview} />
+                      </div>
+                    </details>
+                  )}
                 </div>
               )}
             </div>
