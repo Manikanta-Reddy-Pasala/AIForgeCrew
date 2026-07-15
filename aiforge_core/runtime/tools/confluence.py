@@ -22,6 +22,8 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from .confluence_format import md_to_storage
 import uuid
 
 from . import _http_integration as _http
@@ -427,7 +429,7 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
             return {"ok": False, "error": f"missing '{k}'"}
     # Rewrite mermaid/code fences + images into storage macros; images are
     # uploaded as attachments after the page exists (id needed).
-    xhtml, img_refs = _storagify_media(str(args["body"]))
+    xhtml, img_refs = _storagify_media(md_to_storage(str(args["body"])))
     payload: dict = {
         "type": "page", "title": args["title"],
         "space": {"key": args["space"]},
@@ -463,7 +465,7 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     d = cur["data"] if isinstance(cur["data"], dict) else {}
     next_ver = ((d.get("version") or {}).get("number") or 0) + 1
     title = args.get("title") or d.get("title")
-    xhtml, img_refs = _storagify_media(str(args["body"]))
+    xhtml, img_refs = _storagify_media(md_to_storage(str(args["body"])))
     # Upload attachments FIRST (page id already exists) so the <ri:attachment>
     # references in the new body resolve as soon as the version is published.
     attachments = _upload_page_images(str(pid), img_refs, cwd) if img_refs else []
