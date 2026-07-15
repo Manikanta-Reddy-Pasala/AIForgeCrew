@@ -66,3 +66,23 @@ def test_plain_text_unchanged():
 def test_empty_and_none():
     assert to_jira_wiki("") == ""
     assert to_jira_wiki(None) is None
+
+
+def test_bold_inside_bullets_and_headings_becomes_single_star():
+    """Regression: bold inside a bullet or heading was left as markdown '**'
+    because inline conversion only ran on plain lines. Jira bold is '*x*'."""
+    out = to_jira_wiki(
+        "## **WiFi** APIs\n"
+        "- **Endpoint:** POST /api/wifi/connect\n"
+        "- plain **inline** bold\n"
+        "1. **First** step\n")
+    assert "**" not in out                       # no markdown double-star left
+    assert "h2. *WiFi* APIs" in out
+    assert "* *Endpoint:* POST /api/wifi/connect" in out
+    assert "* plain *inline* bold" in out
+    assert "# *First* step" in out
+
+
+def test_inline_code_and_link_inside_bullet():
+    out = to_jira_wiki("- see `flag` at [docs](http://x)")
+    assert "* see {{flag}} at [docs|http://x]" in out
