@@ -572,7 +572,7 @@ def _try_post(ep: Endpoint, messages: list[dict],
     stalled generation back into a real answer. Retry count is
     AIFORGE_LLM_EMPTY_RETRIES (default 2 → up to 3 total posts).
     """
-    empty_retries = max(0, _int_env("AIFORGE_LLM_EMPTY_RETRIES", 2))
+    empty_retries = max(0, _int_env("AIFORGE_LLM_EMPTY_RETRIES", 3))
     for attempt in range(empty_retries + 1):
         if attempt == 0:
             payload = _build_body(ep, messages, temperature, max_tokens,
@@ -582,9 +582,10 @@ def _try_post(ep: Endpoint, messages: list[dict],
             # deepseek-r1) systematically spends its whole budget THINKING and
             # emits empty content — re-posting the identical body just repeats
             # that. Coax a DIRECT answer: append '/no_think' (Qwen/DeepSeek honor
-            # it → skip the reasoning phase) and widen max_tokens so a still-
-            # thinking model has room left to emit the answer.
-            _mt = min(int((max_tokens or 4096) * 2), 32768)
+            # it → skip the reasoning phase) and PROGRESSIVELY widen max_tokens
+            # each retry (×2, ×3, …) so a still-thinking model always has room
+            # left to emit the answer instead of us giving up on empty.
+            _mt = min(int((max_tokens or 4096) * (attempt + 1)), 32768)
             payload = _build_body(ep, _append_no_think(messages), temperature,
                                   _mt, top_p, extras)
         try:

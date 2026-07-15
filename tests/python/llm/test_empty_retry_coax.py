@@ -73,6 +73,38 @@ def test_learner_empty_list_returns_first_attempt(monkeypatch):
     assert len(posts) == 1        # single post, no empty-retry loop
 
 
+def test_empty_retry_widens_max_tokens_progressively(monkeypatch):
+    """Each empty-retry gives the (still-thinking) model MORE room: ×2, ×3, …
+    so we keep trying to get a real answer instead of giving up."""
+    posts: list[dict] = []
+
+    def _fake_post(ep, payload, timeout_s, *, role, source):
+        posts.append(json.loads(payload.decode()))
+        return _body("")                     # always empty → exhaust retries
+    monkeypatch.setattr(c, "_post_with_retry", _fake_post)
+    monkeypatch.setattr(c, "_record_usage", lambda *a, **k: None)
+    monkeypatch.setenv("AIFORGE_LLM_EMPTY_RETRIES", "3")
+    out = c._try_post(_ep(), [{"role": "user", "content": "hi"}],
+                      temperature=0.0, max_tokens=4096, top_p=None, extras=None,
+                      timeout_s=30, role="doer", source="primary")
+    assert out is None
+    assert len(posts) == 4                   # 1 initial + 3 retries (default 3)
+    mts = [p["max_tokens"] for p in posts]
+    assert mts == [4096, 8192, 12288, 16384]  # verbatim, then ×2, ×3, ×4
+
+
+def test_default_empty_retries_is_three(monkeypatch):
+    posts: list = []
+    monkeypatch.setattr(c, "_post_with_retry",
+                        lambda *a, **k: (posts.append(1), _body(""))[1])
+    monkeypatch.setattr(c, "_record_usage", lambda *a, **k: None)
+    monkeypatch.delenv("AIFORGE_LLM_EMPTY_RETRIES", raising=False)
+    c._try_post(_ep(), [{"role": "user", "content": "hi"}],
+                temperature=None, max_tokens=None, top_p=None, extras=None,
+                timeout_s=30, role="chat", source="primary")
+    assert len(posts) == 4                   # default now 3 retries → 4 posts
+
+
 def test_all_empty_returns_none(monkeypatch):
     monkeypatch.setattr(c, "_post_with_retry",
                         lambda *a, **k: _body(""))       # always empty
