@@ -727,13 +727,40 @@ def flag_active_scope(name: str, *, repo: str | None = None,
     return None
 
 
+def _prune_stale_session_flags(flags: dict) -> bool:
+    """Drop session-scoped gate flags whose session no longer exists (deleted /
+    old numbering) — a per-session auto-approve is meaningless once that session
+    is gone, but it lingered in the Auto-approvals panel forever (e.g. the stale
+    "commits auto-approved · session 7020"). Returns True if anything changed."""
+    session_flags = flags.get("session") or {}
+    if not session_flags:
+        return False
+    try:
+        from aiforge_core.runtime import chat_store
+        live = {str(s.get("id")) for s in (chat_store.list_sessions() or [])}
+    except Exception:  # noqa: BLE001 — can't confirm liveness → leave as-is
+        return False
+    stale = [s for s in list(session_flags) if str(s) not in live]
+    for s in stale:
+        session_flags.pop(s, None)
+    if stale:
+        flags["session"] = session_flags
+    return bool(stale)
+
+
 def list_flags() -> dict:
     """All active gate-disable flags, grouped by scope, for the Auto-approvals
-    panel. Only truthy flags are listed."""
+    panel. Only truthy flags are listed. Stale session flags (session deleted)
+    are pruned + persisted so the panel self-cleans."""
     try:
         flags = _load_flags()
     except Exception:  # noqa: BLE001
         return {"global": {}, "repo": {}, "session": {}}
+    try:
+        if _prune_stale_session_flags(flags):
+            _save_flags(flags)          # persist the cleanup
+    except Exception:  # noqa: BLE001 — pruning is best-effort, never break listing
+        pass
     out: dict = {"global": {}, "repo": {}, "session": {}}
     for n, v in (flags.get("global") or {}).items():
         if v:
