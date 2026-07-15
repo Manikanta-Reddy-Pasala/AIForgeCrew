@@ -2826,6 +2826,40 @@ _CONDENSE_CLOSE = "<</AIFORGE_CTX_CONDENSED>>"
 _GOAL_PIN_OPEN = "<<AIFORGE_PINNED_GOAL>>"
 _GOAL_PIN_CLOSE = "<</AIFORGE_PINNED_GOAL>>"
 
+# WEB-lookup intent: phrasings that mean "get this from the live web", where a
+# local model tends to (wrongly) answer from stale memory. A bare URL is NOT
+# here — a URL already routes the model to web_crawl/web_fetch and works.
+_WEB_INTENT_RE = re.compile(
+    r"\b(search\s+(the\s+)?web|search\s+online|web\s+search|google\s+(it|for)|"
+    r"look\s+(it\s+)?up\s+(online|on\s+the\s+web)|on\s+the\s+internet|"
+    r"latest\s+(version|release|news|stable)|current\s+version|"
+    r"newest\s+version|release\s+notes|what'?s\s+new\s+in|"
+    r"up[-\s]?to[-\s]?date|as\s+of\s+(today|now)|recent\s+news)\b",
+    re.IGNORECASE)
+
+
+def _has_web_intent(text: str) -> bool:
+    """True when the user's message signals a LIVE-WEB lookup and carries no URL
+    (a URL already drives web_crawl). Used to force web_search on models that
+    would otherwise answer from stale parametric memory."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if re.search(r"https?://", t):   # a URL → web_crawl path already handles it
+        return False
+    return bool(_WEB_INTENT_RE.search(t))
+
+
+_WEB_LOOKUP_DIRECTIVE = (
+    "[web lookup required] The user is asking for information that must come "
+    "from the LIVE web (a search, the latest/current version, release notes, "
+    "or recent news). You MUST call `web_search` FIRST with a focused query, "
+    "then `web_fetch` the most authoritative result to confirm, and base your "
+    "answer ONLY on what you find — do NOT answer from prior knowledge, it may "
+    "be out of date. If web_search returns no results, refine the query (drop "
+    "years/qualifiers) and retry ONCE before saying you couldn't find it."
+)
+
 
 _CANCELLED = object()   # sentinel: generation abandoned because Stop was pressed
 
@@ -4068,6 +4102,14 @@ def run_chat_agent(
             _add_sys_block("mentions", ment_block)
         except Exception:  # noqa: BLE001
             pass
+    # WEB-LOOKUP intent → force the tool. Local models often answer a "search
+    # the web / latest version / current / news" query from stale parametric
+    # memory instead of calling web_search. When the user's message signals a
+    # web lookup (and no URL is present — a URL already routes to web_crawl),
+    # inject a hard directive so the model searches FIRST. Read-only tool, so it
+    # is safe in plan/analyze mode too.
+    if last_user and _has_web_intent(last_user):
+        _add_sys_block("web-lookup", _WEB_LOOKUP_DIRECTIVE)
     # Whether the explicit PREVIOUS-SESSION continuity block will be injected
     # (opening turn). When it is, the separate chat-session recall below is
     # redundant — the recall bundle already carries a prior-chat source and the

@@ -28,6 +28,7 @@ import urllib.request
 from aiforge_core.net.ssl import context_for as _ssl_context_for
 
 _DDG_HTML = "https://html.duckduckgo.com/html/"
+_DDG_LITE = "https://lite.duckduckgo.com/lite/"   # simpler markup — fallback
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 _FETCH_CAP = 1_000_000          # raw bytes read ceiling
@@ -62,6 +63,10 @@ def _default_limit() -> int:
         return 5
 
 
+_NET_ERRORS = (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+               OSError, ValueError)
+
+
 def _get(url: str, *, data: bytes | None = None) -> str:
     req = urllib.request.Request(
         url, data=data,
@@ -73,6 +78,19 @@ def _get(url: str, *, data: bytes | None = None) -> str:
         raw = r.read(_FETCH_CAP + 1)
     # honour the response charset loosely; default utf-8
     return raw[:_FETCH_CAP].decode("utf-8", "replace")
+
+
+def _get_retry(url: str, *, data: bytes | None = None, tries: int = 2) -> str:
+    """`_get` with a small retry — DDG's HTML endpoint intermittently 202s /
+    rate-limits / drops the connection; one immediate retry recovers most of
+    those transient misses. Raises the last error only after all tries fail."""
+    last: Exception | None = None
+    for _ in range(max(1, tries)):
+        try:
+            return _get(url, data=data)
+        except _NET_ERRORS as exc:
+            last = exc
+    raise last if last else RuntimeError("request failed")
 
 
 def _strip_tags(s: str) -> str:
@@ -100,6 +118,44 @@ _RESULT_A = re.compile(
     r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.DOTALL)
 _SNIPPET = re.compile(
     r'class="result__snippet"[^>]*>(.*?)</a>', re.DOTALL)
+# DDG lite (fallback): result links carry class="result-link".
+_LITE_A = re.compile(
+    r'<a\b[^>]*href="(https?://[^"]+)"[^>]*class=["\']result-link["\'][^>]*>'
+    r'(.*?)</a>', re.DOTALL | re.IGNORECASE)
+
+
+def _parse_html(body: str, limit: int) -> list[dict]:
+    """Parse the html.duckduckgo.com result page (result__a links + the snippet
+    that falls between each link and the next — robust to snippet-less cards)."""
+    matches = list(_RESULT_A.finditer(body))
+    results: list[dict] = []
+    for idx, m in enumerate(matches):
+        title = _strip_tags(m.group(2))
+        if not title:
+            continue
+        nxt = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        sm = _SNIPPET.search(body, m.end(), nxt)
+        results.append({"title": title, "url": _ddg_real_url(m.group(1)),
+                        "snippet": _strip_tags(sm.group(1)) if sm else ""})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _parse_lite(body: str, limit: int) -> list[dict]:
+    """Parse the lite.duckduckgo.com result page (result-link anchors; lite has
+    no reliable inline snippet, so snippet stays empty — the URL + title are
+    what the agent needs to then web_fetch)."""
+    results: list[dict] = []
+    for m in _LITE_A.finditer(body):
+        title = _strip_tags(m.group(2))
+        if not title:
+            continue
+        results.append({"title": title, "url": _ddg_real_url(m.group(1)),
+                        "snippet": ""})
+        if len(results) >= limit:
+            break
+    return results
 
 
 def _api_search(query: str, limit: int) -> "list[dict] | None":
@@ -158,35 +214,28 @@ def web_search(args: dict, cwd: str | None = None) -> dict:
     api = _api_search(query, limit)
     if api is not None:
         return {"ok": True, "query": query, "results": api, "provider": "api"}
-    try:
-        body = _get(_DDG_HTML, data=urllib.parse.urlencode(
-            {"q": query, "kl": "us-en"}).encode())
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            OSError, ValueError) as exc:
-        return {"ok": False, "error": str(exc)}
 
-    # Pair each result link with the snippet that falls BETWEEN it and the
-    # next result link — robust even when a block has no snippet (ads /
-    # zero-click cards), unlike two independent findall lists that desync.
-    matches = list(_RESULT_A.finditer(body))
-    results: list[dict] = []
-    for idx, m in enumerate(matches):
-        title = _strip_tags(m.group(2))
-        if not title:
+    # Keyless DDG scrape, HARDENED: try the html endpoint (with one retry), and
+    # on any error OR zero parsed results fall back to the lite endpoint (simpler
+    # markup that survives html-page A/B changes + rate-limit 202s). Only report
+    # failure when BOTH endpoints come up empty/error.
+    err: str | None = None
+    for url, is_lite in ((_DDG_HTML, False), (_DDG_LITE, True)):
+        try:
+            body = _get_retry(url, data=urllib.parse.urlencode(
+                {"q": query, "kl": "us-en"}).encode())
+        except _NET_ERRORS as exc:
+            err = str(exc)
             continue
-        next_start = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        sm = _SNIPPET.search(body, m.end(), next_start)
-        results.append({
-            "title": title,
-            "url": _ddg_real_url(m.group(1)),
-            "snippet": _strip_tags(sm.group(1)) if sm else "",
-        })
-        if len(results) >= limit:
-            break
-    if not results:
-        return {"ok": True, "results": [], "provider": "ddg",
-                "note": "no results (query too narrow, or DDG markup changed)"}
-    return {"ok": True, "query": query, "results": results, "provider": "ddg"}
+        results = _parse_lite(body, limit) if is_lite \
+            else _parse_html(body, limit)
+        if results:
+            return {"ok": True, "query": query, "results": results,
+                    "provider": "ddg-lite" if is_lite else "ddg"}
+    if err:
+        return {"ok": False, "error": err, "query": query}
+    return {"ok": True, "results": [], "provider": "ddg",
+            "note": "no results (query too narrow, or DDG markup changed)"}
 
 
 def web_fetch(args: dict, cwd: str | None = None) -> dict:
