@@ -161,6 +161,16 @@ export default function Jobs() {
                       onChange={e => setDraft({ ...draft, cron: e.target.value })}
                     />
                   </label>
+                  <label className="field">
+                    Type
+                    <select
+                      value={draft.kind || 'ticket'}
+                      onChange={e => setDraft({ ...draft, kind: e.target.value as 'ticket' | 'agent' })}
+                    >
+                      <option value="ticket">Ticket — build code → PR</option>
+                      <option value="agent">Agent — run like chat (Jira/Confluence/email, no code)</option>
+                    </select>
+                  </label>
                   <div className="row" style={{ justifyContent: 'flex-end' }}>
                     <button className="ghost" onClick={() => { setPreview(null); setDraft(null); }}>
                       Discard

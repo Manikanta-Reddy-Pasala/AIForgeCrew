@@ -28,6 +28,10 @@ class JobCreate(BaseModel):
     ticket_title: str = Field(..., min_length=1)
     ticket_body: str = Field(..., min_length=1)
     project: str | None = None
+    # 'ticket' (default) → the code pipeline builds it into a PR; 'agent' → runs
+    # the request through the chat agent (full jira/confluence/email tools, no
+    # code framing) for operational tasks ("read Jira + email me").
+    kind: str = Field("ticket")
 
 
 class JobScriptCreate(BaseModel):
@@ -77,10 +81,11 @@ def jobs_create(payload: JobCreate) -> dict:
     if not jobs_parse.schedulable(payload.cron):
         raise HTTPException(400, f"invalid or unschedulable cron: {payload.cron!r}")
     nxt = jobs_parse.next_runs(payload.cron, n=1)[0]
+    _kind = payload.kind if payload.kind in ("ticket", "agent") else "ticket"
     return jobs_store.create(
         name=payload.name, cron=payload.cron,
         ticket_title=payload.ticket_title, ticket_body=payload.ticket_body,
-        project=payload.project, next_run_at=nxt)
+        project=payload.project, next_run_at=nxt, kind=_kind)
 
 
 @router.post("/api/jobs/script", status_code=201)

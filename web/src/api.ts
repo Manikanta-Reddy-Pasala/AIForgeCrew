@@ -456,6 +456,9 @@ export interface JobDraft {
   ticket_title: string;
   ticket_body: string;
   project: string | null;
+  // 'ticket' (default) → code pipeline → PR. 'agent' → runs the task through
+  // the chat agent (jira/confluence/email tools, no code framing).
+  kind?: 'ticket' | 'agent';
 }
 
 export interface JobPreview {
