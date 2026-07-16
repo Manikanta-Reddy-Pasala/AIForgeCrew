@@ -181,6 +181,31 @@ def test_no_markers_treated_as_final(tmp_path):
     assert [e for e in evs if e["type"] == "message"][0]["text"].startswith("just a plain")
 
 
+def test_parse_bare_args_json_null_does_not_surface():
+    # A lone leaked marker is garbage, not an answer → nudge to continue.
+    assert ca._parse("ARGS_JSON: null")["kind"] == "continue"
+
+
+def test_parse_final_with_only_scaffolding_after_it_continues():
+    # `FINAL:` present but only `ARGS_JSON: null` after it → don't answer garbage.
+    assert ca._parse("FINAL:\nARGS_JSON: null")["kind"] == "continue"
+
+
+def test_parse_strips_trailing_args_json_null_from_real_answer():
+    p = ca._parse("Here is the answer.\nARGS_JSON: null")
+    assert p["kind"] == "final"
+    assert "ARGS_JSON" not in p["text"]
+    assert p["text"] == "Here is the answer."
+
+
+def test_parse_keeps_code_fences_and_real_action_values():
+    # The stripper must NOT eat code fences or a keyword line with real content.
+    txt = "Here:\n```python\naction = 1\n```"
+    p = ca._parse("FINAL: " + txt)
+    assert p["kind"] == "final"
+    assert "```python" in p["text"] and "action = 1" in p["text"]
+
+
 def test_workspace_clamp(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_WORKSPACE_DIR", str(tmp_path))
     fn = _scripted([

@@ -25,7 +25,21 @@ from .jira_format import to_jira_wiki
 _TIMEOUT_S = 20
 _BODY_CAP = 200_000
 
+# Jira Server caps a single /search page (default 50, hard max ~100), so a bare
+# maxResults=99 silently returns only the first page. We loop startAt in pages
+# of this size until the caller's `limit` is met or the result set is exhausted.
+_SEARCH_PAGE = 100
+
 _truthy = _http.truthy
+
+
+def _search_cap() -> int:
+    """Hard ceiling on how many issues one search may pull (limit=all / 0).
+    Guards against fetching an entire project. Tunable via env."""
+    try:
+        return max(1, int(os.environ.get("AIFORGE_JIRA_SEARCH_CAP", "500")))
+    except ValueError:
+        return 500
 
 
 def _conf() -> dict:
@@ -242,7 +256,12 @@ def _issue_summary(d: dict, *, with_time: bool = False) -> dict:
 # ─────────────────────────── tools ──────────────────────────────────
 
 def jira_search(args: dict, cwd: str | None = None) -> dict:
-    """Find issues. ``jql`` (raw JQL) OR ``query`` (full-text). ``limit``."""
+    """Find issues. ``jql`` (raw JQL) OR ``query`` (full-text).
+
+    ``limit`` = how many to return (default 50). Pass ``limit="all"`` (or 0) to
+    pull every match up to the safety cap (``AIFORGE_JIRA_SEARCH_CAP``, def 500).
+    Results are paginated internally, so a limit above Jira's per-page cap works.
+    The reply carries ``total`` (all matches) and ``truncated`` (more exist)."""
     jql = (args.get("jql") or "").strip()
     if not jql and args.get("query"):
         q = str(args["query"]).replace('"', '\\"')
@@ -267,15 +286,47 @@ def jira_search(args: dict, cwd: str | None = None) -> dict:
     flds = "summary,status,issuetype,assignee"
     if want_time:
         flds += "," + _TIME_FIELDS
-    r = _request("GET", "/rest/api/2/search",
-                 params={"jql": jql, "maxResults": int(args.get("limit", 10)),
-                         "fields": flds})
-    if not r["ok"]:
-        return r
-    data = r["data"] if isinstance(r["data"], dict) else {}
-    out = [_issue_summary(x, with_time=want_time)
-           for x in (data.get("issues") or [])]
-    return {"ok": True, "results": out, "total": data.get("total")}
+    # Resolve the desired count. "all"/0/negative → everything up to the cap.
+    cap = _search_cap()
+    raw_limit = args.get("limit", 50)
+    if str(raw_limit).strip().lower() in ("all", "0", "-1", ""):
+        limit = cap
+    else:
+        try:
+            limit = max(1, int(raw_limit))
+        except (TypeError, ValueError):
+            limit = 50
+        limit = min(limit, cap)
+    try:
+        start = max(0, int(args.get("startAt", args.get("start_at", 0)) or 0))
+    except (TypeError, ValueError):
+        start = 0
+    out: list = []
+    total = None
+    while len(out) < limit:
+        page = min(_SEARCH_PAGE, limit - len(out))
+        r = _request("GET", "/rest/api/2/search",
+                     params={"jql": jql, "startAt": start,
+                             "maxResults": page, "fields": flds})
+        if not r["ok"]:
+            # Fail hard on the first page; on a later page keep what we have.
+            if not out:
+                return r
+            return {"ok": True, "results": out, "total": total,
+                    "count": len(out), "truncated": True,
+                    "error": r.get("error")}
+        data = r["data"] if isinstance(r["data"], dict) else {}
+        issues = data.get("issues") or []
+        if isinstance(data.get("total"), int):
+            total = data["total"]
+        out.extend(_issue_summary(x, with_time=want_time) for x in issues)
+        start += len(issues)
+        # Exhausted: server returned a short/empty page, or we've reached total.
+        if not issues or (isinstance(total, int) and start >= total):
+            break
+    truncated = isinstance(total, int) and total > len(out)
+    return {"ok": True, "results": out, "total": total,
+            "count": len(out), "truncated": truncated}
 
 
 def jira_read(args: dict, cwd: str | None = None) -> dict:

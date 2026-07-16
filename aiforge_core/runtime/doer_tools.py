@@ -1004,8 +1004,10 @@ def confluence_update(id: str, body: str, title: str = "") -> dict:
     return _c.confluence_update({"id": id, "body": body, "title": title}, str(root()))
 
 
-def jira_search(query: str = "", jql: str = "", limit: int = 10) -> dict:
-    """Find JIRA issues. Pass ``query`` (full-text) OR ``jql`` (raw JQL)."""
+def jira_search(query: str = "", jql: str = "", limit=50) -> dict:
+    """Find JIRA issues. Pass ``query`` (full-text) OR ``jql`` (raw JQL).
+    ``limit`` defaults to 50; pass ``limit="all"`` to pull every match
+    (paginated) up to the safety cap."""
     from aiforge_core.runtime.tools import jira as _j
     return _j.jira_search({"query": query, "jql": jql, "limit": limit}, str(root()))
 

@@ -2446,7 +2446,7 @@ Tool arguments:
 - confluence_children {{"id": "12345"}}  ·  confluence_descendants {{"id": "12345"}}       (direct child pages · ALL descendants deep)
 - confluence_labels {{"id": "12345"}}  ·  confluence_add_label {{"id": "12345", "labels": ["runbook","ops"]}}   (read · add labels — add needs Approve)
 - confluence_comments {{"id": "12345"}}  ·  confluence_comment {{"id": "12345", "body": "<p>note</p>"}}         (read · add a comment — add needs Approve)
-- jira_search   {{"query": "..."}}  or  {{"jql": "project = ENG AND status = Open"}}   (find issues)
+- jira_search   {{"query": "..."}}  or  {{"jql": "project = ENG AND status = Open"}}   (find issues; default 50 — add "limit": "all" for every match, e.g. a full sprint)
 - jira_read     {{"key": "ENG-123"}}                                                    (read an issue: fields, comments + time tracking — original/remaining estimate, time spent)
 - jira_search   {{"jql": "assignee = currentUser()", "time": true}}                     (add time:true to include estimate/spent per issue)
 - jira_worklog  {{"key": "ENG-123"}}                                                    (all time LOGGED on an issue: who, how much, when + estimate/spent rollup — "how much time recorded on X")
@@ -2741,6 +2741,22 @@ def _strip_reasoning_prefix(text: str) -> str:
     return tail or rest.strip() or text
 
 
+# A model that fumbles the ACTION/ARGS_JSON protocol can leak scaffolding INTO an
+# answer we then surface raw to the UI — the user saw a bare ``ARGS_JSON: null``
+# (or ``ACTION:``, ``{}``) as the reply. Strip marker-ONLY lines from any text
+# treated as a final answer. Conservative by design: a keyword line survives
+# when it carries real content (``ACTION: build``), so code/prose and YAML like
+# ``status: open`` are untouched — only bare / null / empty-object markers go.
+_PROTOCOL_NOISE_RE = re.compile(
+    r"(?im)^[ \t]*(?:action|args_json|ask|final|thought|reasoning)"
+    r"[ \t]*:?[ \t]*(?:null|none|\{\s*\})?[ \t]*$")
+
+
+def _strip_protocol_noise(text: str) -> str:
+    """Remove leaked protocol marker-only lines from a would-be final answer."""
+    return _PROTOCOL_NOISE_RE.sub("", text or "").strip()
+
+
 def _parse(out: str) -> dict:
     """Parse a model turn into {kind, ...}. Tolerant of code fences,
     pretty-printed JSON, and stray markdown around the protocol."""
@@ -2769,7 +2785,7 @@ def _parse(out: str) -> dict:
             if not txt.strip():
                 after = out[act.end():].strip()
                 txt = after or out.strip()
-            return {"kind": "final", "text": txt.strip()}
+            return {"kind": "final", "text": _strip_protocol_noise(txt) or txt.strip()}
         # Args = first balanced {...} after the ARGS_JSON marker if present,
         # else after the ACTION line. Handles ```json fenced args.
         m = re.search(r"ARGS_JSON\s*:?", out, re.IGNORECASE)
@@ -2788,7 +2804,11 @@ def _parse(out: str) -> dict:
     if ask:
         return {"kind": "ask", "text": ask.group(1).strip()}
     if fin:
-        return {"kind": "final", "text": fin.group(1).strip()}
+        txt = _strip_protocol_noise(fin.group(1))
+        if txt:
+            return {"kind": "final", "text": txt}
+        # `FINAL:` present but only scaffolding after it (e.g. `FINAL:\nARGS_JSON:
+        # null`) → don't answer with garbage; fall through to the continue-nudge.
     # No FINAL/ASK/ACTION marker. If the model was mid-reasoning — it emitted a
     # THOUGHT (intent to act) but no ACTION — it almost certainly got truncated
     # or forgot to emit the ACTION line. Treating that as the final answer stops
@@ -2816,7 +2836,8 @@ def _parse(out: str) -> dict:
     # the real answer, but in a work-producing run (doer / builder) it's usually
     # premature narration ("let me test what's happening…") and the loop should
     # nudge-and-continue rather than quit — see the ``final`` branch in the loop.
-    return {"kind": "final", "text": out.strip(), "implicit": True}
+    return {"kind": "final",
+            "text": _strip_protocol_noise(out) or out.strip(), "implicit": True}
 
 
 # Loop detection: no fixed step budget — long coding sessions run until

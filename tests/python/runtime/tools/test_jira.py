@@ -64,6 +64,53 @@ def test_search(cfg, monkeypatch):
     assert seen["headers"].get("Authorization") == "Bearer pat-123"
 
 
+def _paged(monkeypatch, total):
+    """Mock /search that honours startAt+maxResults over a set of `total` bugs."""
+    calls = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        import urllib.parse as up
+        calls.append(req.full_url)
+        q = up.parse_qs(up.urlsplit(req.full_url).query)
+        start = int(q["startAt"][0])
+        mx = int(q["maxResults"][0])
+        issues = [{"key": f"BT-{i}", "fields": {"summary": "s",
+                   "issuetype": {"name": "Bug"}, "status": {"name": "Open"}}}
+                  for i in range(start, min(start + mx, total))]
+        return _Resp({"total": total, "startAt": start, "issues": issues})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
+
+
+def test_search_all_loops_pages_until_exhausted(cfg, monkeypatch):
+    """99 bugs across pages → limit=all returns EVERY one, not just page 1."""
+    monkeypatch.setattr(jr, "_SEARCH_PAGE", 40)          # force multi-page
+    calls = _paged(monkeypatch, 99)
+    out = jr.jira_search({"jql": "sprint = 'BT July-2026' AND type = Bug",
+                          "limit": "all"})
+    assert out["ok"]
+    assert out["count"] == 99 and out["total"] == 99
+    assert out["truncated"] is False
+    assert len(out["results"]) == 99
+    assert len(calls) == 3                               # 40 + 40 + 19
+
+
+def test_search_default_limit_reports_truncation(cfg, monkeypatch):
+    """No explicit limit → 50 returned, but truncated flag + total tell the
+    agent 99 exist so it can re-ask with limit=all."""
+    _paged(monkeypatch, 99)
+    out = jr.jira_search({"jql": "type = Bug"})
+    assert out["count"] == 50 and out["total"] == 99
+    assert out["truncated"] is True
+
+
+def test_search_explicit_limit_honoured(cfg, monkeypatch):
+    _paged(monkeypatch, 99)
+    out = jr.jira_search({"jql": "type = Bug", "limit": 99})
+    assert out["count"] == 99 and out["truncated"] is False
+
+
 def test_read_by_key(cfg, monkeypatch):
     _capture(monkeypatch, {"key": "ENG-10", "fields": {
         "summary": "Runbook", "description": "desc",
