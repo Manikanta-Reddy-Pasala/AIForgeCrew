@@ -26,7 +26,7 @@ def test_chat_models_unions_registry_with_served(monkeypatch, tmp_path):
     api = _api(monkeypatch, tmp_path)
 
     # Registry has 3 configured models incl. an embedding; only one is loaded.
-    monkeypatch.setattr(api, "_served_model_ids_for_role",
+    monkeypatch.setattr(api._r_chat, "_served_model_ids_for_role",
                         lambda role: {"qwen/qwen3-coder-next"})
     monkeypatch.setattr(api._acfg, "get",
                         lambda role: {"provider": "local",
@@ -40,7 +40,7 @@ def test_chat_models_unions_registry_with_served(monkeypatch, tmp_path):
         {"model": "text-embedding-nomic", "label": "embed"},
     ])
 
-    out = api.chat_models()
+    out = api._r_chat.chat_models()
     ids = [m["id"] for m in out["models"]]
 
     # embedding excluded; both LLMs present even though gemma isn't loaded
@@ -57,13 +57,13 @@ def test_chat_models_unions_registry_with_served(monkeypatch, tmp_path):
 
 def test_chat_models_served_not_in_registry_still_listed(monkeypatch, tmp_path):
     api = _api(monkeypatch, tmp_path)
-    monkeypatch.setattr(api, "_served_model_ids_for_role",
+    monkeypatch.setattr(api._r_chat, "_served_model_ids_for_role",
                         lambda role: {"mystery/loaded-model"})
     monkeypatch.setattr(api._acfg, "get", lambda role: {"provider": "local"})
     monkeypatch.setattr(api._acfg, "archetypes", lambda: ["chat"])
     import aiforge_core.config.model_registry as mr
     monkeypatch.setattr(mr, "list_models", lambda: [])
 
-    out = api.chat_models()
+    out = api._r_chat.chat_models()
     assert [m["id"] for m in out["models"]] == ["mystery/loaded-model"]
     assert out["models"][0]["active"] is True

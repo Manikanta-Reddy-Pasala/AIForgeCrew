@@ -22,6 +22,9 @@ def _clear_cache():
 def test_hit_is_cached_second_call_skips_scan(tmp_path, monkeypatch):
     from aiforge_core.memory import md_store
     monkeypatch.setattr(md_store, "memory_dir", lambda: tmp_path)
+    # md_store is now a package; _find_by_source resolves memory_dir in its
+    # own (_base) submodule, so patch there too for the internal lookup.
+    monkeypatch.setattr(md_store._base, "memory_dir", lambda: tmp_path)
     p = tmp_path / "rules.md"
     p.write_text("---\nsource: rules:global\n---\n\n- x\n")
 
@@ -68,6 +71,9 @@ def test_memory_dir_change_busts_cache(tmp_path, monkeypatch):
 
     current = {"dir": dir_a}
     monkeypatch.setattr(md_store, "memory_dir", lambda: current["dir"])
+    # md_store is now a package; _find_by_source resolves memory_dir in its
+    # own (_base) submodule, so patch there too for the internal lookup.
+    monkeypatch.setattr(md_store._base, "memory_dir", lambda: current["dir"])
 
     got_a = ca._cached_find_by_source("rules:global")
     assert got_a == dir_a / "rules.md"

@@ -44,7 +44,7 @@ def test_repo_add_auto_indexes(app_client, monkeypatch, tmp_path):
     # avoid GIL-starving uvicorn, so an in-process monkeypatch of run_index is
     # never seen by the child. Patch the _spawn_index seam the endpoint calls —
     # that's what proves the repo add auto-kicks the index.
-    monkeypatch.setattr(api, "_spawn_index", lambda sid: calls.append(sid))
+    monkeypatch.setattr(api._r_memory, "_spawn_index", lambda sid: calls.append(sid))
 
     r = client.post("/api/memory/sources",
                     json={"kind": "repo", "location": str(repo), "name": "r"})

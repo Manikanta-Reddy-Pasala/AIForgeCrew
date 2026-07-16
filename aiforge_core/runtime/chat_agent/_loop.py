@@ -1,0 +1,1055 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import time
+from collections.abc import Callable, Iterator
+from pathlib import Path
+
+from ._shell import (_MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS, _smart_truncate_obs)
+from ._tools import (_ROOT_SCOPED_TOOLS, _chat_repo_key, _preferences_context, _rules_context, _scoped_root)
+from ._registry import (TOOLS, _ANALYZE_BANNER, _BUILDER_FINALIZE_TOOL, _BUILDER_NUDGE_AFTER, _FINALIZE_TOOLS, _PLAN_BANNER, _READONLY_TOOLS, _is_mutating, _perf_family)
+from ._preview import (_diff_preview)
+from ._prompt import (_SYSTEM, _parse, _strip_reasoning_prefix)
+from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _fire_stop, _has_web_intent, _post_edit_syntax_error, _repo_name, _run_project_verify, _split_asks, _sys_prompt_budget_chars, _text_of, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled)
+
+def run_chat_agent(
+    messages: list[dict], *,
+    cwd: str,
+    role: str = "doer",
+    max_steps: int | None = None,   # kept for callers/tests; None = no cap
+    complete_fn: Callable[..., str] | None = None,
+    session_id: int | None = None,
+    mode: str = "act",              # "act" = full tools; "plan" = read-only
+    scope_globs: list[str] | None = None,  # autonomous Doer scope allowlist
+    builder: str | None = None,     # job|skill|workflow|rule — task charter
+    strict_finish: bool = False,    # work-producing run (doer): an IMPLICIT
+    #                                 bare-prose final is premature narration →
+    #                                 nudge to act, don't quit with no work done
+) -> Iterator[dict]:
+    """Drive the ReAct loop until the agent finishes or a stuck loop is
+    detected (NOT a step count). Yields SSE-ready event dicts:
+
+    ``{"type": "thought", "text"}`` · ``{"type": "tool", "name", "args",
+    "result"}`` · ``{"type": "message", "text"}`` (final) ·
+    ``{"type": "approval", ...}`` (ask-policy gate) ·
+    ``{"type": "error", "text"}`` · ``{"type": "done"}``.
+    """
+    if complete_fn is None:
+        from aiforge_core.llm.client import complete as complete_fn  # type: ignore
+
+    from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
+    from aiforge_core.runtime.tools import tool_policy
+    chat_cancel.set_active(session_id)
+    _mode = (mode or "act").lower()
+    plan_mode = _mode == "plan"
+    analyze_mode = _mode == "analyze"
+    # Both plan and analyze are READ-ONLY (same tool gate); they differ only in
+    # the banner/output intent — plan produces a change-PLAN, analyze produces
+    # FINDINGS. Used by the analysis fan-out's explore agents.
+    readonly_mode = plan_mode or analyze_mode
+    # Scope allowlist (autonomous Doer). When the caller passes globs, a
+    # mutating file tool whose target path falls outside them is rejected
+    # BEFORE it runs — the FunctionNode text Doer can't carry the native
+    # scope_guard before_tool_callback, so this is its equivalent jail.
+    # Empty/None = no restriction (back-compat; the chat UI passes nothing).
+    _scope_globs = [g for g in (scope_globs or [])
+                    if isinstance(g, str) and g]
+
+    import collections
+    safety = max_steps or int(os.environ.get("AIFORGE_CHAT_SAFETY_CAP", "2000"))
+    # Wall-clock turn backstop. The 2000-step cap is not a real stopping
+    # point on a slow local model — 2000 steps × seconds-to-minutes each is
+    # effectively "forever" from the user's chair. This deadline bounds the
+    # WHOLE turn regardless of step count, so a wandering or churning agent
+    # (evades the exact-repeat stall guards below by varying its args) can't
+    # run for hours. Generous default (1h) so it's a backstop, not a normal
+    # limit; 0 disables. Tunable via AIFORGE_CHAT_TURN_DEADLINE_S.
+    try:
+        _turn_budget_s = float(os.environ.get("AIFORGE_CHAT_TURN_DEADLINE_S", "3600"))
+    except (TypeError, ValueError):
+        _turn_budget_s = 3600.0
+    _turn_deadline = (time.monotonic() + _turn_budget_s) if _turn_budget_s > 0 else None
+
+    # Latest user message drives mentions (#4) + skill triggers (#6) +
+    # memory recall. In simple/plan mode the API augments the last user turn
+    # with an "[Interpreted request …]" enhancer block; key off the user's RAW
+    # words (split that marker off) so recall/skills/mentions aren't diluted by
+    # the boilerplate + restatement.
+    last_user = next(
+        (_text_of(m) for m in reversed(messages)
+         if (m.get("role") or "user") == "user" and m.get("content")), "")
+    # _text_of flattens a multimodal (vision) turn's list content to text, so the
+    # .split() below can't crash on a list.
+    last_user = last_user.split("\n\n---\n[Interpreted request")[0].strip() or last_user
+
+    # Inject a fresh repo map every turn so the agent ALWAYS knows the
+    # directory structure of the working dir without re-searching it on
+    # each follow-up question (the conversation history only carries prior
+    # answers, not the structure it discovered last turn).
+    cave = _cave_mode()
+    rules = _rules_context(cwd, last_user)
+    prefs = _preferences_context(cwd)
+    sys_msg = _SYSTEM.format(cwd=cwd)
+    # CodeGraph tools are advertised ONLY when actually usable on this run — the
+    # single shared gate (binary + real index for THIS repo + not env-disabled +
+    # not opted out per-ticket). Otherwise the model would be told to call a tool
+    # that always errors (un-indexed repo) / the A/B "without" arm would leak.
+    # Without this block the tools are in TOOLS but absent from the catalog, so
+    # the model never learns they exist.
+    if True:  # noqa: SIM103 — keep the try/except scoped without re-indenting
+        try:
+            from aiforge_core.runtime.tools import codegraph as _cg
+            # Blocking first-time build: a freshly pinned repo has no .codegraph
+            # index, so the tools would be silently dropped. Build it once (the
+            # user chose blocking-first-time) so codegraph is usable THIS turn.
+            # SKIP the BUILD in any read-only mode (plan/analyze): the build
+            # writes a .codegraph/ dir into the repo — a mutation a read-only
+            # turn promised not to make — and the analysis fan-out would fire
+            # 4-8 concurrent 180s `codegraph init` builds across the real repos
+            # in parallel. Read-only turns still QUERY an existing index.
+            if not readonly_mode:
+                _cg.ensure_indexed(cwd)
+            if _cg.enabled_for_run(cwd):
+                sys_msg += (
+                    "\n\nCODEGRAPH IS AVAILABLE (a pre-built code-relation index "
+                    "for THIS repo). USE IT — do not rediscover with grep what "
+                    "the graph already knows:\n"
+                    "- BEFORE editing or extending any EXISTING symbol, call "
+                    "codegraph_callers AND codegraph_impact on it to find every "
+                    "call site + everything a change would affect. Grep misses "
+                    "call sites and matches comments/strings; the graph does not.\n"
+                    "- To ORIENT on an unfamiliar area, call codegraph_explore "
+                    "with the task in plain words FIRST (before list_dir/grep).\n"
+                    "- To locate a definition, use codegraph_query, not grep.\n"
+                    "Tools:\n"
+                    "- codegraph_explore  {\"query\": \"where amounts are parsed\"}  "
+                    "relevant symbols + their source for a natural-language query\n"
+                    "- codegraph_query    {\"query\": \"clean_amount\"}   find a "
+                    "symbol + its defining file:line\n"
+                    "- codegraph_callers  {\"symbol\": \"foo\"}   every caller of foo\n"
+                    "- codegraph_callees  {\"symbol\": \"foo\"}   what foo calls\n"
+                    "- codegraph_impact   {\"symbol\": \"foo\"}   blast-radius of "
+                    "changing foo — ALWAYS call before editing a shared symbol")
+        except Exception:  # noqa: BLE001 — never break prompt build
+            pass
+    # Multi-part message (simple mode has no enhancer/spec, so nothing else
+    # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the
+    # system prompt — the model must cover every part, not answer #1 and stop.
+    _asks = [] if builder else _split_asks(last_user)
+    if _asks:
+        sys_msg = ("MULTI-PART REQUEST — the user's CURRENT message contains "
+                   f"{len(_asks)} distinct asks. Address EVERY one; number "
+                   "your final answer to match. Checklist:\n"
+                   + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
+                   + "\nTRACK your progress: when you START part N call "
+                     'ACTION: plan_progress ARGS_JSON: {"slug": "part-N", '
+                     '"status": "running"}, and when it is DONE call it again '
+                     'with "status": "done" — the user watches this live.'
+                   + "\n\n" + sys_msg)
+    if prefs:                       # standing user preferences — always applied
+        sys_msg = prefs + "\n\n" + sys_msg
+    if rules:                       # user rule book first — highest priority
+        sys_msg = rules + "\n\n" + sys_msg
+    if analyze_mode:                # read-only ANALYSIS (findings, not a plan)
+        sys_msg = _ANALYZE_BANNER + "\n\n" + sys_msg
+    elif plan_mode:                 # plan banner second — constrains this turn
+        sys_msg = _PLAN_BANNER + "\n\n" + sys_msg
+    if builder:                     # task-specific builder charter (highest)
+        try:
+            from aiforge_core.runtime.prompts_extended import builders as _bld
+            _charter = _bld.charter_for(builder)
+        except Exception:  # noqa: BLE001 — a bad charter must never break chat
+            _charter = None
+        if _charter:
+            sys_msg = _charter + "\n\n" + sys_msg
+    # C2: budget the (un-condensable) system prompt. The CORE prompt + rules
+    # above are ALWAYS kept; each optional block below is appended via a
+    # budget-aware helper that truncates/drops it (lowest priority = appended
+    # last = dropped first) when it would blow the cap. `_cap_system_prompt`
+    # is the final backstop guaranteeing len(sys_msg) <= cap.
+    _sys_cap = _sys_prompt_budget_chars(role)
+    _sys_core_len = len(sys_msg)
+    _sys_dropped: list[str] = []
+    _sys_seen_blocks: set[str] = set()
+
+    def _add_sys_block(label: str, block: str) -> None:
+        nonlocal sys_msg
+        if not block:
+            return
+        # R7: don't spend budget on a block whose exact text was already added
+        # (e.g. prev-session vs a recall block that surfaced the same content).
+        _bkey = " ".join(block.split())
+        if _bkey in _sys_seen_blocks:
+            return
+        _sys_seen_blocks.add(_bkey)
+        addition = "\n\n" + block
+        if len(sys_msg) + len(addition) <= _sys_cap:
+            sys_msg += addition
+            return
+        room = _sys_cap - len(sys_msg)
+        if room > 400:              # enough left for a meaningful truncated slice
+            sys_msg += addition[:room] + "\n…(truncated to fit context)\n"
+        _sys_dropped.append(label)
+
+    # WEB-LOOKUP directive FIRST — it's short + critical, so it must outrank the
+    # big optional blocks (repo-map/recall) under a tight window (blocks added
+    # LATER drop first). Without top priority the "you MUST web_search" nudge got
+    # trimmed exactly when context was full, and the model answered from stale
+    # memory. Read-only tool → safe in plan/analyze too. (Detected on last_user;
+    # a bare URL is excluded — it already routes to web_crawl.)
+    if last_user and _has_web_intent(last_user):
+        _add_sys_block("web-lookup", _WEB_LOOKUP_DIRECTIVE)
+
+    # Dynamic context blocks — via the SHARED bundle builder (same source
+    # selection/scoping/gating as chat-team + the pipeline). rules+prefs are
+    # already injected above as high-priority blocks, so skip them here.
+    from aiforge_core.runtime import context_bundle as _cb
+    # Proactive-recall mode. "lite" (default): send a SMALL anchor (repo summary
+    # + the compacted project brief) and let the model PULL specifics via the
+    # memory tools on demand — instead of pre-dumping the full recall every turn.
+    # "full": the old behaviour (dump memory_md + prior-session recall upfront).
+    # EXCEPTION even in lite: the SESSION-START turn injects one recall keyed to
+    # the opening request, so the agent arrives informed (self-learning) instead
+    # of re-deriving what past sessions worked out.
+    _proactive = os.environ.get(
+        "AIFORGE_CHAT_PROACTIVE_RECALL", "lite").strip().lower()
+    _is_init = not any(m.get("role") == "assistant" for m in messages)
+    # In lite mode a FOLLOW-UP turn doesn't inject recall at all — skip the
+    # unified_query work too instead of building a block that gets dropped.
+    _recall_wanted = _proactive == "full" or _is_init
+    _bundle = _cb.build_bundle(
+        cwd, last_user, cave=cave,
+        ctx_on=lambda b: _ctx_on(b) and (b != "recall" or _recall_wanted),
+        session_id=session_id, want_rules=False, want_prefs=False)
+    # Project memory (compacted per-repo brief) — small + high-value; the
+    # "you already know this repo" anchor. Always injected.
+    _add_sys_block("project-memory", _bundle.project_brief_md)
+    # Seed memory / concept index — a compact TOC of EVERY brief so the agent
+    # knows what memory exists to recall (the "amnesia" fix: a model never queries
+    # memory it doesn't know is there). Gated by AIFORGE_SEED_TOC; embedded only.
+    try:
+        from aiforge_core.memory import backend_select as _bsel2
+        if _bsel2.embedded():
+            from aiforge_core.memory import md_store as _mds2
+            _add_sys_block("memory-index", _mds2.seed_memory_block())
+    except Exception:  # noqa: BLE001 — seed TOC must never break a turn
+        pass
+    if _ctx_on("summary"):
+        _add_sys_block("repo-summary", _bundle.repo_summary_md)
+    # WORKFLOWS before the (big) repo-map, and NOT skipped in cave mode: a
+    # matched workflow is a MANDATORY user procedure (branch/MR conventions,
+    # naming) — dropping it silently made the agent e.g. commit straight to
+    # main. Append order = drop order under a tight window, so procedures
+    # must outrank the repo-map (the agent can always grep structure back).
+    if _ctx_on("workflows"):
+        _add_sys_block("workflows", _bundle.workflows_md)
+    if not cave and _ctx_on("skills"):
+        _add_sys_block("skills", _bundle.skills_md)
+    if _ctx_on("repomap"):
+        _add_sys_block("repo-map", _bundle.repo_map_md)
+    # @-mentions — optional; cave mode skips (searchable on demand).
+    if not cave and _ctx_on("mentions"):
+        try:
+            from aiforge_core.runtime import mentions as _mentions
+            ment_block, _toks = _mentions.expand(last_user, cwd)
+            _add_sys_block("mentions", ment_block)
+        except Exception:  # noqa: BLE001
+            pass
+    # Whether the explicit PREVIOUS-SESSION continuity block will be injected
+    # (opening turn). When it is, the separate chat-session recall below is
+    # redundant — the recall bundle already carries a prior-chat source and the
+    # prev-session block carries the immediate prior conversation — so skip it to
+    # avoid surfacing the same session twice (audit R6).
+    _prev_session_on = (_is_init and not cave and session_id is not None
+                        and os.environ.get("AIFORGE_SESSION_PREV_CONTEXT", "1") != "0")
+    # Self-learning recall — EVERY turn, keyed to the CURRENT user message
+    # (from the shared bundle). Cave mode pulls fewer hits.
+    if _ctx_on("recall") and _proactive == "full":
+        _add_sys_block("recall", _bundle.memory_md)
+        # Prior CHAT SESSIONS — surface what the user discussed in OTHER
+        # conversations (excludes the current session). Cave mode → fewer hits.
+        # Local SQLite scan, so cheap enough to run every turn there IS a query.
+        if last_user:
+            # Keep prior-chat recall, but when the prev-session continuity block
+            # is injected, exclude ONLY that one session's hits (not all of
+            # them) so older relevant sessions still surface (audit R6).
+            _drop = None
+            if _prev_session_on:
+                try:
+                    from aiforge_core.runtime import chat_okr as _cokr
+                    _drop = _cokr.previous_session_id(session_id)
+                except Exception:  # noqa: BLE001
+                    _drop = None
+            _add_sys_block("chat-recall", _chat_session_recall(
+                last_user, session_id, limit=(2 if cave else 4),
+                drop_session=_drop))
+    elif _ctx_on("recall"):
+        # LITE (default): don't pre-dump on follow-ups — but the SESSION-START
+        # turn still gets the one-time recall keyed to the opening request.
+        if _is_init:
+            _add_sys_block("recall", _bundle.memory_md)
+        # Tell the model it HAS memory + the tools to reach it, so it pulls
+        # only what THIS turn needs.
+        _add_sys_block("memory-tools",
+            "MEMORY: a project brief for this repo is above. For anything "
+            "specific you don't already see — past decisions/learnings, code, "
+            "symbols, or what was discussed in earlier chats — CALL the tools: "
+            "memory_lookup(query) for learnings/decisions, graphify_lookup for "
+            "concept-graph, grep/repo_map/read for code, search_chat_sessions "
+            "for prior chats. Look it up; don't guess or assume it's absent.")
+    # PREVIOUS SESSION continuity — at session START, carry the last
+    # conversation forward so a follow-up asked in a NEW chat has its context
+    # (the tail of the prior session, framed as SUPERSEDABLE — a contradicting
+    # new ask wins). Cheap local scan, opening turn only; AIFORGE_SESSION_PREV_
+    # CONTEXT=0 disables. Skipped in cave mode (tight window).
+    if _prev_session_on:
+        try:
+            from aiforge_core.runtime import chat_okr as _cokr
+            _add_sys_block("prev-session",
+                           _cokr.previous_session_brief(session_id))
+        except Exception:  # noqa: BLE001 — continuity must never break a turn
+            pass
+    # SESSION IMAGES: descriptions of images the user attached, so the (maybe
+    # text-only) model can answer questions about them all session long.
+    _img_blocks: list[dict] = []
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_media
+            _add_sys_block("images", chat_media.context_block(session_id))
+            _img_blocks = chat_media.image_blocks_for_turn(session_id, role)
+        except Exception:  # noqa: BLE001 — images must never break a turn
+            _img_blocks = []
+        # EXECUTION LEDGER: what this session ALREADY ran (exact commands + files
+        # + outcomes) so a follow-up doesn't redo completed work.
+        try:
+            from aiforge_core.runtime import session_ledger
+            _add_sys_block("executed", session_ledger.ledger_block(session_id))
+        except Exception:  # noqa: BLE001 — ledger must never break a turn
+            pass
+    # OKR-DAG: surgical goal context for the ACTIVE Key Result — the separate
+    # Objective→KR→Learning→Session node graph under memory/okr/. CONSOLIDATED
+    # OUT by default (AIFORGE_OKR_DAG=1 to re-enable): the flat compacted-<scope>
+    # briefs (project-memory block above) are the single OKR knowledge memory now;
+    # the DAG duplicated them with a staler parallel structure.
+    if os.environ.get("AIFORGE_OKR_DAG", "0") == "1":
+        try:
+            from aiforge_core.memory import okf as _okr
+            # repo-scoped AND query-relevant: the global rules + THIS repo's
+            # learnings/solutions most related to the CURRENT ask.
+            _q = next((m.get("content") or "" for m in reversed(messages)
+                       if m.get("role") == "user"), "")
+            _add_sys_block("okr", _okr.context_block(
+                repo=_chat_repo_key(cwd), query=_q))
+        except Exception:  # noqa: BLE001 — okr context must never break a turn
+            pass
+    if _sys_dropped:                # one-line note so the trim is visible
+        _add_sys_block("_note", "[context note: dropped/trimmed lower-priority "
+                       "blocks to fit the window: " + ", ".join(_sys_dropped) + "]")
+    # A dropped WORKFLOWS/SKILLS block means the agent may skip a mandatory
+    # user procedure (e.g. branch-then-MR) — surface that to the USER instead
+    # of failing silently inside the prompt.
+    _dropped_playbooks = [b for b in ("workflows", "skills") if b in _sys_dropped]
+    # Final backstop: guarantee the system prompt is under the cap (keeps the
+    # core + rules at the front; truncates the injected tail).
+    sys_msg = _cap_system_prompt(sys_msg, _sys_cap, protect=_sys_core_len)
+    sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
+    convo: list[dict] = [{"role": "system", "content": sys_msg}]
+    for m in messages:
+        r = m.get("role") or "user"
+        convo.append({"role": "assistant" if r == "assistant" else "user",
+                      "content": m.get("content") or ""})
+    # When the model is vision-capable, fold the actual images into the latest
+    # user turn (multimodal content) so it can SEE them, not just their text.
+    if _img_blocks:
+        for _m in reversed(convo):
+            if _m.get("role") == "user":
+                _m["content"] = [{"type": "text", "text": _m.get("content") or ""},
+                                 *_img_blocks]
+                break
+
+    action_counts: dict[str, int] = {}
+    recent_outputs: collections.deque = collections.deque(maxlen=_OUTPUT_REPEAT)
+    condensed_notified = False
+    continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
+
+    # Mid-run steering (simple mode): let the user type WHILE the agent works —
+    # each message is folded into the conversation as a live instruction the next
+    # step must honour (parity with the pipeline's steering).
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import chat_interject as _ci
+            _ci.set_steerable(session_id, True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    if _dropped_playbooks:
+        yield {"type": "thought", "role": "system",
+               "text": "⚠ context window too small — dropped the "
+                       + " + ".join(_dropped_playbooks) + " block(s): matched "
+                       "workflows/skills may NOT be followed this turn. Load "
+                       "the model at a larger context window to fix this."}
+    # Simple-mode task tracking: surface the derived checklist in the UI's
+    # subtasks dock (same events the pipeline uses) so the user can watch the
+    # parts get worked live — the agent flips them via plan_progress.
+    if _asks:
+        yield {"type": "subtasks", "items": [
+            {"slug": f"part-{i + 1}", "title": a, "status": "pending"}
+            for i, a in enumerate(_asks)]}
+
+    n = 0
+    _builder_nudged = False
+    _builder_finalized = False
+    _builder_final_tries = 0
+    _multiask_checked = False   # one-time FINAL completeness gate (multi-ask)
+    # Loop-engineering state (verify→fix on FINAL + progress gating). Only a
+    # work-producing "act" run that actually EDITED files, with a real test
+    # suite present, gets the verify gate — a Q&A turn (0 edits) is untouched.
+    _edits_made = 0
+    _verify_rounds = 0
+    _verify_prev_fails = None   # last measured failure count (progress signal)
+    _verify_stalls = 0
+    while n < safety:
+        n += 1
+        if session_id is not None and chat_cancel.is_cancelled(session_id):
+            yield {"type": "error", "text": "stopped by user"}
+            yield {"type": "done"}
+            return
+        # Builder nudge (#7): a local model can interview forever and never emit
+        # the finalize tool, leaving the session with no artifact. Once it has had
+        # enough back-and-forth, inject a one-time reminder to finalize NOW.
+        if builder and not _builder_nudged and n >= _BUILDER_NUDGE_AFTER:
+            _builder_nudged = True
+            _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+            convo.append({"role": "user", "content":
+                f"[system reminder] You have gathered enough detail. Call "
+                f"`{_fin}` NOW with the collected values to finish — do not keep "
+                f"asking questions. If one required value is genuinely missing, "
+                f"ask ONLY for that, then finalize."})
+        # (#16) Mid-run steering is drained in ONE place — the guarded block just
+        # below (before the model call). A second, earlier drain here used to win
+        # the race and append an UNGUARDED user turn, creating two consecutive
+        # user turns (breaks claude_local) — removed.
+        if _turn_deadline is not None and time.monotonic() > _turn_deadline:
+            _fire_stop("deadline", cwd)
+            yield {"type": "message",
+                   "text": f"(stopped: hit the {int(_turn_budget_s)}s turn "
+                           "time budget — raise AIFORGE_CHAT_TURN_DEADLINE_S "
+                           "if this was real long-running work)"}
+            yield {"type": "done"}
+            return
+        # Mid-run steering (Gap A): fold any user-injected guidance into the
+        # working context as a user turn BEFORE the next model call, so the
+        # agent adjusts course without a Stop + new turn. Surface it so the UI
+        # shows the steer was applied.
+        if session_id is not None:
+            for steer in chat_interject.drain(session_id):
+                # If the last turn is already a user message (e.g. the
+                # OBSERVATION we just appended after a tool step), MERGE the
+                # steer into it — two consecutive user turns break some
+                # providers (claude_local). Otherwise append a fresh user turn.
+                if convo and convo[-1].get("role") == "user":
+                    convo[-1]["content"] += f"\n\n[steer] {steer}"
+                else:
+                    convo.append({"role": "user", "content": f"[steer] {steer}"})
+                from aiforge_core.runtime import chat_steer
+                yield chat_steer.steer_event(steer)
+        # Auto-condense the running history before the call so a long session
+        # can't overflow the model's context window (MUST). Tell the user it
+        # happened (one-time per condense) for transparency.
+        _before = len(convo)
+        convo = _compact_convo(convo, role=role, complete_fn=complete_fn,
+                               session_id=session_id)
+        if len(convo) < _before and not condensed_notified:
+            condensed_notified = True   # notify ONCE, not every over-budget turn
+            yield {"type": "thought", "role": "system",
+                   "text": "⚙ condensed earlier context to stay within the window"}
+        # M3: surface how full the context window is (char-estimate; ~4 chars/
+        # token) so the user can see they're approaching the condense point.
+        # MUST mirror _compact_convo's math exactly (history-only sum vs a
+        # budget that reserves the ACTUAL system prompt, list-safe _text_of) —
+        # the old raw-len/whole-convo version double-counted the per-turn
+        # system prompt against a 14K estimate, so the meter jumped between
+        # turns and collapsed to ~0 on image turns.
+        _sys_len = (len(_text_of(convo[0]))
+                    if convo and convo[0].get("role") == "system" else 0)
+        _ctx_chars = sum(len(_text_of(m)) for m in convo[1:])
+        _ctx_budget = _ctx_budget_chars(role, sys_chars=_sys_len)
+        if _ctx_budget > 0:
+            # ~4 chars/token → surface ABSOLUTE token counts (in k) alongside the
+            # pct so the UI can show "120k / 256k" not just a bare percentage.
+            _ctx_tokens = _ctx_chars // 4
+            _win_tokens = _ctx_budget // 4
+            yield {"type": "usage", "context_chars": _ctx_chars,
+                   "budget_chars": _ctx_budget,
+                   "context_tokens": _ctx_tokens,
+                   "window_tokens": _win_tokens,
+                   "pct": min(100, round(_ctx_chars * 100 / _ctx_budget))}
+        try:
+            out = _complete_cancellable(complete_fn, role, convo, session_id)
+        except Exception as exc:  # noqa: BLE001
+            # RESILIENCE: a local model can transiently drop a request (mid-load,
+            # busy, a one-off empty/4xx). Retry a few times before surfacing, and
+            # never show the raw `llm.exhausted role=chat …` stack; give a plain,
+            # actionable message.
+            # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 5) — a
+            # local model that's loading/busy often needs a few passes.
+            _retries = 5
+            try:
+                _retries = max(0, int(os.environ.get("AIFORGE_CHAT_LLM_RETRIES", "5")))
+            except ValueError:
+                _retries = 5
+            out = None
+            _last = exc
+            for _rn in range(_retries):
+                if session_id is not None and chat_cancel.is_cancelled(session_id):
+                    break
+                yield {"type": "thought", "role": "system",
+                       "text": f"⟳ model didn't respond — retrying ({_rn + 1}/{_retries})…"}
+                # Escalating backoff: give a mid-load / busy local model (or a
+                # slow compress+forward hop) progressively more room to recover.
+                time.sleep(3.0 * (_rn + 1))
+                try:
+                    out = _complete_cancellable(complete_fn, role, convo, session_id)
+                    _last = None
+                    break
+                except Exception as exc2:  # noqa: BLE001
+                    _last = exc2
+            if _last is not None:
+                yield {"type": "message", "text":
+                       "⚠️ The model didn't respond (it may be loading, busy, or the "
+                       "request was rejected). Nothing was changed — please try again "
+                       "in a moment. If it keeps happening, check the model endpoint."}
+                yield {"type": "done"}
+                return
+        # H1: Stop pressed DURING generation — the cancellable wrapper returned
+        # the sentinel (the abandoned LLM call finishes in the background,
+        # ignored). Distinct from a legitimately-empty completion below.
+        if out is _CANCELLED:
+            yield {"type": "error", "text": "stopped by user"}
+            yield {"type": "done"}
+            return
+        if out is None:
+            out = ""   # a real empty completion — treat as an empty turn
+
+        # Stuck-output loop: identical model reply N times running. Rather
+        # than just bailing, ASK the user for guidance (don't circle).
+        recent_outputs.append(out.strip())
+        if (len(recent_outputs) == _OUTPUT_REPEAT
+                and len(set(recent_outputs)) == 1):
+            yield {"type": "message", "awaiting_input": True,
+                   "text": "I seem to be going in circles on this. Could you "
+                           "clarify what you'd like me to do, or give a bit "
+                           "more detail? (I stopped rather than keep retrying "
+                           "the same thing.)"}
+            yield {"type": "done"}
+            return
+
+        convo.append({"role": "assistant", "content": out})
+        step = _parse(out)
+        if step["kind"] == "final":
+            # In a builder session, a "final" BEFORE the finalize tool succeeded
+            # means the model narrated/stalled ("let me test what's happening…")
+            # instead of building the artifact — don't end the interview with
+            # nothing created. Nudge it to call the finalize tool and continue the
+            # loop (bounded so a model that truly can't finalize still exits).
+            if builder and not _builder_finalized and _builder_final_tries < 2:
+                _builder_final_tries += 1
+                _fin = _BUILDER_FINALIZE_TOOL.get(builder, "the finalize tool")
+                if step.get("text"):
+                    yield {"type": "thought", "text": step["text"]}
+                convo.append({"role": "user", "content":
+                    f"[system reminder] You stopped without creating the {builder}. "
+                    f"Call `{_fin}` NOW with the collected values to finish — do "
+                    f"not just narrate or 'test'. If ONE required value is genuinely "
+                    f"missing, ask only for that, then finalize."})
+                continue
+            # Doer guard: an IMPLICIT final (bare prose, no explicit `FINAL:`
+            # marker) from a work-producing run (strict_finish — the text-doer /
+            # subtask path) is almost always premature narration ("let me test…"),
+            # not a real answer. Nudge to act/finish instead of ending with no work.
+            # Bounded by continue_nudges so a model that truly can't finish still
+            # exits. Interactive chat / generic callers (strict_finish=False) keep
+            # bare prose as the legitimate answer — unchanged.
+            if step.get("implicit") and strict_finish and not builder:
+                continue_nudges += 1
+                if continue_nudges <= 2:
+                    if step.get("text"):
+                        yield {"type": "thought", "text": step["text"]}
+                    convo.append({"role": "user", "content":
+                        "You narrated but did NOT emit an ACTION or an explicit "
+                        "`FINAL:` line. Continue: take the next ACTION (tool call) "
+                        "to make progress, or output `FINAL: <answer>` ONLY when "
+                        "the work is actually done. Do not just narrate or 'test'."})
+                    continue
+            # Multi-ask completeness gate (once): before accepting FINAL on a
+            # multi-part message, make the model self-check its answer against
+            # the checklist — the #1 simple-mode complaint is answering ask 1
+            # and silently dropping the rest.
+            if _asks and not _multiask_checked and not builder:
+                _multiask_checked = True
+                yield {"type": "thought", "role": "system",
+                       "text": f"✔ checking all {len(_asks)} parts of the "
+                               "request are addressed…"}
+                convo.append({"role": "user", "content":
+                    "[completeness check — not the user] The user's message "
+                    f"contained {len(_asks)} distinct asks:\n"
+                    + "\n".join(f"{i + 1}. {a}" for i, a in enumerate(_asks))
+                    + "\nRe-read your answer above. If EVERY ask is addressed, "
+                    "resend it unchanged as FINAL. If any is missing, do the "
+                    "missing work now (ACTIONs as needed) and produce ONE "
+                    "complete FINAL covering all parts, numbered."})
+                continue
+            # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
+            # act-mode run that actually EDITED files with a real test suite —
+            # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
+            # looping while the failure count DROPS; once it stalls (2 rounds no
+            # improvement) accept the HONEST still-failing final rather than
+            # churn. This gives simple/doer runs the pipeline's no-false-green
+            # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
+            if (not plan_mode and not builder and _edits_made > 0
+                    and _verify_rounds < _verify_max_rounds()
+                    and _verify_on_final_enabled()):
+                _vok, _vout = _run_project_verify(cwd)
+                if _vok is False:
+                    try:
+                        from aiforge_core.runtime.parallel_subtasks import _fail_count
+                        _fails = _fail_count(_vout)
+                    except Exception:  # noqa: BLE001
+                        _fails = 1
+                    if _verify_prev_fails is not None and _fails >= _verify_prev_fails:
+                        _verify_stalls += 1
+                    else:
+                        _verify_stalls = 0
+                    _verify_prev_fails = _fails
+                    if _verify_stalls < 2:
+                        _verify_rounds += 1
+                        yield {"type": "thought", "role": "system",
+                               "text": f"✗ tests failing ({_fails}) — fixing "
+                                       f"(verify round {_verify_rounds}/"
+                                       f"{_verify_max_rounds()})…"}
+                        convo.append({"role": "user",
+                                      "content": _verify_fix_message(_vout)})
+                        continue
+                    yield {"type": "thought", "role": "system",
+                           "text": f"⚠ tests still failing ({_fails}) after "
+                                   f"{_verify_rounds} fix rounds — stopping with "
+                                   "the honest state."}
+            # FINAL accepted on a multi-part turn: close out the tracker so
+            # the dock never ends with stale pending items the model forgot
+            # to flip.
+            if _asks:
+                for _i in range(len(_asks)):
+                    yield {"type": "subtask_update",
+                           "slug": f"part-{_i + 1}", "status": "done"}
+            _fire_stop("final", cwd)
+            yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
+            yield {"type": "done"}
+            return
+        if step["kind"] == "ask":
+            # Agent is asking the user a question — show it + wait for the
+            # next message (which answers it). awaiting_input flags the UI.
+            yield {"type": "message", "awaiting_input": True,
+                   "text": step["text"]}
+            yield {"type": "done"}
+            return
+
+        if step["kind"] == "continue":
+            # The model narrated a next step (THOUGHT) but emitted no ACTION —
+            # usually a truncated turn or a dropped protocol line. Surface the
+            # thought and nudge it to actually act, instead of ending the run.
+            if step.get("thought"):
+                yield {"type": "thought", "text": step["thought"]}
+            continue_nudges += 1
+            if continue_nudges > 2:
+                # It keeps describing without acting — stop cleanly rather than
+                # loop to the safety cap; hand back what it was thinking.
+                _fire_stop("no_action", cwd)
+                yield {"type": "message",
+                       "text": (step.get("thought") or "").strip()
+                       or "I described a next step but couldn't complete the "
+                          "action. Could you rephrase or narrow the request?"}
+                yield {"type": "done"}
+                return
+            convo.append({"role": "user",
+                          "content": "You described your next step but did NOT "
+                          "emit an ACTION. Continue now — output the next ACTION "
+                          "(tool call) to make progress, or `FINAL: <answer>` if "
+                          "you are genuinely done. Do not just narrate."})
+            n += 1
+            continue
+
+        continue_nudges = 0   # a real action resets the narration guard
+
+        # action
+        name = step["tool"]
+        # Coerce to a dict: a model can emit `ARGS_JSON: null` (or a JSON
+        # scalar) which parses to None/non-dict; every tool does `args.get(...)`
+        # and would crash. An empty dict lets the tool return its own
+        # instructive "missing 'url'"/"missing arg" so the model self-corrects.
+        args = step["args"] if isinstance(step["args"], dict) else {}
+        # Stuck-action loop: same tool+args repeated too many times → ask
+        # the user instead of looping to the safety cap.
+        sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
+        action_counts[sig] = action_counts.get(sig, 0) + 1
+        if action_counts[sig] >= _LOOP_REPEAT:
+            yield {"type": "message", "awaiting_input": True,
+                   "text": f"I keep trying the same step (`{name}`) without "
+                           "progress. I've paused — could you clarify or tell "
+                           "me how you'd like me to proceed?"}
+            yield {"type": "done"}
+            return
+
+        if step.get("thought"):
+            yield {"type": "thought", "text": step["thought"]}
+
+        # Simple-mode task tracker: plan_progress flips a checklist item in
+        # the UI's subtasks dock. Pure bookkeeping — no side effects, allowed
+        # in every mode (incl. plan), never gated.
+        if name == "plan_progress":
+            _slug = str(args.get("slug") or args.get("part") or "").strip()
+            _st = str(args.get("status") or "done").strip().lower()
+            if _st not in ("pending", "running", "done", "failed"):
+                _st = "done"
+            if _slug:
+                yield {"type": "subtask_update", "slug": _slug, "status": _st}
+            result = {"ok": bool(_slug), "slug": _slug, "status": _st,
+                      **({} if _slug else {"error": "missing 'slug'"})}
+            yield {"type": "tool", "name": name, "args": args, "result": result}
+            convo.append({"role": "user",
+                          "content": f"OBSERVATION: {json.dumps(result)}"})
+            continue
+
+        # PLAN/ANALYZE mode (#2): block mutating tools — read-only only.
+        if readonly_mode and name not in _READONLY_TOOLS:
+            _mname = "Analyze" if analyze_mode else "Plan"
+            _mtail = ("Report your FINDINGS." if analyze_mode
+                      else "Finish with a PLAN; the user will switch to Act "
+                           "mode to execute it.")
+            result = {"ok": False, "blocked": "plan_mode",
+                      "error": f"'{name}' is blocked in {_mname} mode "
+                               f"(read-only). {_mtail}"}
+            yield {"type": "tool", "name": name, "args": args, "result": result}
+            convo.append({"role": "user",
+                          "content": f"OBSERVATION: {json.dumps(result)}"})
+            continue
+
+        # Permission policy (#5) + risk (#7): allow / ask / deny.
+        verdict = tool_policy.decide(name, args)
+        if verdict["policy"] == tool_policy.DENY:
+            result = {"ok": False, "blocked": "policy",
+                      "error": f"'{name}' is denied by policy: {verdict['reason']}"}
+            yield {"type": "tool", "name": name, "args": args, "result": result}
+            convo.append({"role": "user",
+                          "content": f"OBSERVATION: {json.dumps(result)}"})
+            continue
+        # Pre-apply review mode (Gap D): when armed for this session, force the
+        # approval gate for any mutating tool even if policy would auto-allow.
+        _force_review = (session_id is not None and _is_mutating(name, args)
+                         and chat_approve.review_edits(session_id))
+        # Per-mode approval Settings toggle (Chat/Plan/Pipeline). When ON, this
+        # mode pauses for Approve/Reject AND the captured "never re-ask" bypass
+        # flags below are IGNORED (the toggle is the master control — a user who
+        # turned approvals ON wants to be asked, not silently auto-approved). When
+        # OFF, ask-policy/review gates don't fire and the bypass flags apply.
+        _mode_approvals = chat_approve.approvals_required(session_id)
+        # Destructive delete (rm -rf, etc): the run_command tool has its OWN
+        # confirm_delete arg gate (delete_guard). If we don't route it through
+        # the approval gate AND mark it confirmed on approve, the tool keeps
+        # refusing ("re-issue with confirm_delete=true") and the model loops
+        # asking the user to "type yes" forever. So always gate it, and let the
+        # human's Approve BE the confirmation.
+        _destructive_del = False
+        # Captured-rule "never re-ask" flags — set ONLY by an EXPLICIT user
+        # opt-in (rule_capture.set_gate_flag), never by the classifier. A
+        # commit_auto_approve flag auto-approves a whole-command git commit/add/
+        # push; allow_delete auto-confirms a destructive delete — for the scope
+        # (session → repo precedence; autonomous runs ignore chat-set flags).
+        _auto_commit = False
+        if name in ("run_command", "bash", "run_shell", "shell", "serve"):
+            _cmd = args.get("cmd") or args.get("command") or ""
+            try:
+                from aiforge_core.runtime.tools import delete_guard
+                _destructive_del = (not delete_guard.allow_delete(
+                    ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
+                    and delete_guard.is_destructive_delete(_cmd))
+            except Exception:  # noqa: BLE001
+                _destructive_del = False
+            # Captured bypass flags apply ONLY when this mode's approvals are OFF
+            # — with approvals ON the toggle wins and we ask regardless.
+            if not _mode_approvals:
+                try:
+                    from aiforge_core.runtime import rule_capture as _rc
+                    _repo = _repo_name(cwd)
+                    if _rc.is_commit_command(_cmd) and _rc.flag_active(
+                            "commit_auto_approve", repo=_repo, session_id=session_id):
+                        _auto_commit = True
+                    if _destructive_del and _rc.flag_active(
+                            "allow_delete", repo=_repo, session_id=session_id):
+                        _destructive_del = False
+                        args["confirm_delete"] = True
+                except Exception:  # noqa: BLE001
+                    pass
+        # review_edits (_force_review) is an EXPLICIT per-request / global opt-in
+        # ("hold my edits") — it must gate INDEPENDENTLY of the per-mode approval
+        # toggle, else body.review_edits=True / AIFORGE_CHAT_REVIEW_EDITS=1 were
+        # silently ignored whenever the (default-OFF) mode toggle was off. Only
+        # the ASK-POLICY gate is subordinate to the mode toggle; forced review
+        # and destructive deletes always gate.
+        _gate = ((verdict["policy"] == tool_policy.ASK and _mode_approvals)
+                 or _force_review
+                 or _destructive_del)
+        # A captured "commit directly" flag may auto-approve the gate ONLY when
+        # the SOLE reason to gate is a pure whole-command git commit/add/push —
+        # NEVER when a destructive delete (or any non-commit risk: forced review,
+        # DENY) co-occurs. So `git commit && rm -rf` is NOT auto-approved.
+        if _gate and _auto_commit and not _destructive_del and not _force_review \
+                and verdict["policy"] != tool_policy.DENY:
+            _gate = False
+            # Audit: emit an attributable record of the bypass (not invisible).
+            try:
+                from aiforge_core.runtime import rule_capture as _rc2
+                _ascope = _rc2.flag_active_scope(
+                    "commit_auto_approve", repo=_repo_name(cwd),
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001
+                _ascope = None
+            yield {"type": "auto_approved", "name": name,
+                   "flag": "commit_auto_approve", "scope": _ascope}
+        if _gate:
+            # Approval gate (#1): surface the action + diff preview, block on
+            # the user's Approve/Reject (POST /api/chat/sessions/{id}/approve).
+            preview = _diff_preview(name, args, cwd)
+            seq = chat_approve.request(session_id) if session_id is not None else 0
+            _reason = (verdict["reason"] if verdict["policy"] == tool_policy.ASK
+                       else "Confirm this destructive delete before it runs."
+                       if _destructive_del
+                       else "Review edits: confirm this file change before it lands.")
+            yield {"type": "approval", "id": seq, "name": name, "args": args,
+                   "reason": _reason, "preview": preview}
+            if session_id is None:
+                # Autonomous path (parallel sub-Doer) — no human to approve.
+                # Mirror run_shell's floor: auto-approve caution/review gates,
+                # hard-block only truly DANGEROUS commands + destructive deletes
+                # (a blanket reject here silently broke sudo / -g installs /
+                # force-push in worktree-isolated autonomous runs).
+                _danger = bool(_destructive_del)
+                if not _danger and name in ("run_command", "run_shell", "serve",
+                                            "bash", "shell"):
+                    try:
+                        from aiforge_core.runtime.tools import command_risk
+                        _lvl = command_risk.assess(
+                            args.get("cmd") or args.get("command") or "")["level"]
+                        _danger = _lvl == command_risk.DANGEROUS
+                    except Exception:  # noqa: BLE001
+                        _danger = False
+                decision = ({"decision": "reject", "note": "autonomous: dangerous action blocked"}
+                            if _danger else
+                            {"decision": "approve", "note": "autonomous auto-approve"})
+            else:
+                decision = chat_approve.wait(session_id)
+            # M4: a gate left unanswered (user navigated away) auto-rejects on
+            # timeout — surface it explicitly so the UI shows "approval expired"
+            # instead of silently moving on with a rejected action.
+            if decision.get("note") == "approval timed out":
+                yield {"type": "approval_expired", "id": seq, "name": name}
+            if decision.get("decision") != "approve":
+                _rnote = decision.get("note") or ""
+                from aiforge_core.runtime import chat_steer
+                _user_guidance = chat_steer.user_guidance(_rnote)
+                result = {"ok": False, "rejected": True,
+                          "error": "user rejected this action"
+                                   + (f": {_rnote}" if _rnote else "")}
+                yield {"type": "tool", "name": name, "args": args, "result": result}
+                # CHAT-ON-APPROVAL: if the user rejected WITH guidance, don't just
+                # stop — fold the guidance in as a steer and CONTINUE so the agent
+                # adjusts immediately (no separate follow-up message needed).
+                if session_id is not None and _user_guidance:
+                    yield chat_steer.steer_event(_user_guidance)
+                    convo.append({"role": "user",
+                                  "content": chat_steer.reject_directive(
+                                      name, _user_guidance)})
+                    continue
+                # Interactive reject WITHOUT guidance is TERMINAL: STOP and WAIT
+                # for the user (the old record-and-continue let a model that
+                # didn't emit ASK: just keep going). Pause via awaiting_input;
+                # the next user message resumes. Autonomous runs (session_id is
+                # None) keep the record-and-continue behaviour.
+                if session_id is not None:
+                    _ask = ("Stopped — you rejected the "
+                            f"`{name}` action"
+                            + ". Tell me what you'd like me to do instead, and "
+                            "I'll continue from there.")
+                    yield {"type": "message", "awaiting_input": True, "text": _ask}
+                    yield {"type": "done"}
+                    return
+                convo.append({"role": "user",
+                              "content": f"OBSERVATION: {json.dumps(result)} "
+                                         "(the user rejected it — do NOT retry; "
+                                         "adjust or ASK what they want instead.)"})
+                continue
+            # Approved → the human's Accept IS the delete confirmation, so
+            # satisfy the run_command tool's confirm_delete gate (otherwise it
+            # re-refuses and the model loops asking the user again).
+            if _destructive_del:
+                args["confirm_delete"] = True
+            # A Stop that landed WHILE the approval gate was open must not still
+            # write the file — the file tools have no subprocess for cancel() to
+            # kill, so re-check here before dispatching the (now-approved) tool.
+            if session_id is not None and chat_cancel.is_cancelled(session_id):
+                yield {"type": "tool", "name": name, "args": args,
+                       "result": {"ok": False, "error": "cancelled"}}
+                # continue (not break) → the top-of-loop cancel check emits the
+                # accurate "stopped by user" rather than the safety-cap message.
+                continue
+
+        # Lifecycle hook (Claude Code parity): PreToolUse can block a tool
+        # (a `block_on_nonzero` hook that exits non-zero) — surface it like the
+        # plan-mode/policy blocks. Hooks soft-fail; a hooks error never breaks
+        # the turn.
+        _hook_block = None
+        try:
+            from aiforge_core.runtime import hooks as _hooks
+            _pre = _hooks.fire("PreToolUse", {"tool": name, "args": args}, cwd)
+            if _pre.get("blocked"):
+                _hook_block = _pre
+        except Exception:  # noqa: BLE001 — hooks must never break dispatch
+            _hook_block = None
+
+        # Scope allowlist enforcement (autonomous Doer path). Reject a
+        # mutating file tool whose resolved target path is outside the
+        # ticket's scope_allowlist_globs — refuse WITHOUT writing, and hand
+        # the model a corrective observation. Reuses scope_guard's matcher
+        # so the text path enforces exactly like the native callback.
+        if _scope_globs:
+            try:
+                from aiforge_core.runtime import scope_guard as _sg
+                _off = [p for p in _sg._path_from_args(name, args or {})
+                        if not _sg._matches_any(p, _scope_globs)]
+            except Exception:  # noqa: BLE001 — never break dispatch
+                _off = []
+            if _off:
+                result = {
+                    "ok": False, "error": "scope_violation",
+                    "blocked_paths": _off,
+                    "scope_allowlist_globs": _scope_globs,
+                    "hint": ("Edit refused: path is outside the ticket's "
+                             "scope_allowlist_globs. Edit only files inside "
+                             "an allowed glob."),
+                }
+                yield {"type": "tool", "name": name, "args": args,
+                       "result": result}
+                convo.append({"role": "user",
+                              "content": f"OBSERVATION: {json.dumps(result)}"})
+                continue
+
+        fn = TOOLS.get(name)
+        if _hook_block is not None:
+            result = {"ok": False, "blocked": "hook", "hook": _hook_block,
+                      "error": f"'{name}' was blocked by a PreToolUse hook"}
+        elif fn is None:
+            result = {"ok": False, "error": f"unknown tool: {name}"}
+        else:
+            # Live "it's running" signal — a slow tool (bash/test/build) used
+            # to show NOTHING until `fn` returned, so the UI looked stalled
+            # for however long the command actually took. `call_id` (the
+            # ReAct step counter `n`, unique per iteration) lets the UI match
+            # this to the completed `tool` event below and flip it in place
+            # instead of appending a second, duplicate row.
+            yield {"type": "tool_start", "name": name, "args": args,
+                   "call_id": n}
+            _perf_t0 = time.perf_counter()
+            # Strong tools resolve through sandbox.root(); scope the override to
+            # the workspace root (NOT the raw cwd, so it can't escape an
+            # AIFORGE_WORKSPACE_DIR jail) and ALWAYS reset it in finally so a
+            # reused thread can't leak this session's dir into the next.
+            _root_tok = None
+            if name in _ROOT_SCOPED_TOOLS:
+                try:
+                    from aiforge_core.runtime import sandbox as _sb
+                    _root_tok = _sb.set_root_override(_scoped_root(cwd))
+                except Exception:  # noqa: BLE001
+                    _root_tok = None
+            try:
+                result = fn(args, cwd)
+            except KeyError as exc:
+                result = {"ok": False, "error": f"missing arg: {exc}"}
+            except Exception as exc:  # noqa: BLE001
+                result = {"ok": False, "error": str(exc)}
+            finally:
+                if _root_tok is not None:
+                    try:
+                        from aiforge_core.runtime import sandbox as _sb
+                        _sb.reset_root_override(_root_tok)
+                    except Exception:  # noqa: BLE001
+                        pass
+            try:
+                from aiforge_core.runtime import perf_recorder
+                perf_recorder.record(
+                    _perf_family(name), name,
+                    (time.perf_counter() - _perf_t0) * 1000.0)
+            except Exception:  # noqa: BLE001 — perf must never break a run
+                pass
+        # PostToolUse hook (best-effort, never blocks).
+        try:
+            from aiforge_core.runtime import hooks as _hooks
+            _hooks.fire("PostToolUse",
+                        {"tool": name, "args": args, "result": result}, cwd)
+        except Exception:  # noqa: BLE001 — hooks must never break the turn
+            pass
+        yield {"type": "tool", "name": name, "args": args, "result": result,
+               "call_id": n}
+        # Loop-engineering bookkeeping: count edits that actually LANDED (gates
+        # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
+        if name in _EDIT_TOOL_NAMES and not (
+                isinstance(result, dict) and result.get("ok") is False):
+            _edits_made += 1
+            # D: post-edit self-check. Immediately syntax-check the file just
+            # written and, if broken, hand the model the error THIS step (tight
+            # feedback) instead of letting it surface only at the end-of-run test
+            # gate. Best-effort + opt-out (AIFORGE_CHAT_POST_EDIT_CHECK=0).
+            if os.environ.get("AIFORGE_CHAT_POST_EDIT_CHECK", "1") not in ("0", "false"):
+                try:
+                    _pe = _post_edit_syntax_error(name, args, cwd)
+                except Exception:  # noqa: BLE001
+                    _pe = None
+                if _pe:
+                    yield {"type": "thought", "role": "system",
+                           "text": f"⚠ syntax error in the file you just edited "
+                                   f"— fix it now: {_pe[:160]}"}
+                    convo.append({"role": "user", "content":
+                        "[automated syntax check — not the user] The file you just "
+                        f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
+        # Builder finalize: a successful create_job_script / learn_skill /
+        # learn_workflow / remember_rule ends the interview. Signal the UI so it
+        # can drop this session's builder mode — otherwise every later message
+        # re-fires the charter and the user is stuck building forever (and can be
+        # walked into duplicate artifacts).
+        if name in _FINALIZE_TOOLS and isinstance(result, dict) and result.get("ok"):
+            _builder_finalized = True
+            yield {"type": "builder_done", "kind": name}
+        _obs_cap = _MAX_OBS_READ if name in _READ_OBS_TOOLS else _MAX_OBS
+        # Content-READ tools: cut oversized documents at a STRUCTURE boundary
+        # (chonkie) with a continuation note, instead of a blunt slice that
+        # hands the model a broken JSON/sentence tail. Others keep the slice.
+        obs = (_smart_truncate_obs(result, _obs_cap)
+               if name in _READ_OBS_TOOLS else json.dumps(result)[:_obs_cap])
+        # Recency reminder: a strict output format from an APPLICABLE SKILL sits
+        # in the system prompt (far above), while this fresh tool result sits at
+        # the end where the model attends most — so after a tool round-trip it
+        # tends to summarize the result in its own words and drop the format
+        # (e.g. a jira-reading skill's exact layout). Re-assert the format right
+        # next to the data so the FINAL honours it. Only when a skill fired.
+        _tail = ("\n[format reminder] If your FINAL presents this result and an "
+                 "APPLICABLE SKILL above specifies an output format, reproduce "
+                 "it EXACTLY — no extra prose, headers, or table it does not "
+                 "specify.") if _bundle.skills_md else ""
+        convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
+
+    _fire_stop("cap", cwd)
+    yield {"type": "message",
+           "text": "(stopped: hit the runaway safety cap — "
+                   "raise AIFORGE_CHAT_SAFETY_CAP if this was real work)"}
+    yield {"type": "done"}

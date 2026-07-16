@@ -134,8 +134,11 @@ def test_external_ingest_skipped_when_off(monkeypatch):
 
 
 def test_external_ingest_gate_present_in_source():
+    import inspect
+
     from aiforge_core.runtime import adk_runner
 
-    with open(adk_runner.__file__, encoding="utf-8") as fh:
-        text = fh.read()
+    # adk_runner was split into a package; read the source of the gated
+    # function directly rather than the package __init__ file.
+    text = inspect.getsource(adk_runner._ingest_ticket_external_refs)
     assert 'os.environ.get("AIFORGE_EXTERNAL_INGEST"' in text

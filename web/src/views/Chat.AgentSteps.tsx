@@ -1,0 +1,188 @@
+import { useState } from 'react';
+import { Icon } from '../icons';
+import { AgentStep, ChangeFile } from './Chat.types';
+
+// ── Agent step row ─────────────────────────────────────────────────────────────
+
+// Small pill showing WHICH agent produced a step (team mode). Stable
+// color per role name so the eye can track each agent across steps.
+function AgentBadge({ role }: { role?: string }) {
+  if (!role) return null;
+  let h = 0;
+  for (let i = 0; i < role.length; i++) h = (h * 31 + role.charCodeAt(i)) % 360;
+  return (
+    <span style={{
+      flexShrink: 0,
+      fontFamily: 'var(--font-mono)',
+      fontStyle: 'normal',
+      fontSize: '10px',
+      fontWeight: 600,
+      padding: '1px 6px',
+      borderRadius: 999,
+      color: `hsl(${h} 70% 30%)`,
+      background: `hsl(${h} 70% 92%)`,
+      border: `1px solid hsl(${h} 60% 80%)`,
+      marginTop: 1,
+      whiteSpace: 'nowrap',
+    }} title={`agent: ${role}`}>{role}</span>
+  );
+}
+
+// A thought/reasoning step. Long chain-of-thought (reasoning models dump
+// their whole "Thinking Process…") is collapsed to one line so each
+// agent reads as a clean structured step; click to expand the full text.
+function ThoughtRow({ step }: { step: Extract<AgentStep, { kind: 'thought' }> }) {
+  const long = step.text.length > 180;
+  const [open, setOpen] = useState(!long);
+  const preview = long && !open
+    ? step.text.replace(/\s+/g, ' ').slice(0, 140) + '…'
+    : step.text;
+  return (
+    <div style={{
+      display: 'flex', gap: 6, alignItems: 'flex-start',
+      padding: '5px 10px',
+      background: 'var(--bg-1)',
+      border: '1px solid var(--border-0)',
+      borderRadius: 'var(--r-sm)',
+      fontStyle: 'italic',
+      color: 'var(--fg-2)',
+      fontSize: 'var(--fs-xs)',
+      lineHeight: 1.5,
+    }}>
+      <span style={{ flexShrink: 0, marginTop: 1 }}>💭</span>
+      <AgentBadge role={step.role} />
+      <span style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{preview}</span>
+      {long && (
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="ghost sm"
+          style={{ flexShrink: 0, fontSize: 10, fontStyle: 'normal', padding: '0 6px' }}
+        >
+          {open ? 'collapse' : 'expand'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function DiffBody({ diff }: { diff: string }) {
+  return (
+    <pre style={{
+      margin: 0, padding: '8px 10px', overflowX: 'auto',
+      fontSize: 'var(--fs-xs)', lineHeight: 1.55, fontFamily: 'var(--font-mono)',
+      background: 'var(--bg-code)', borderTop: '1px solid var(--border-0)',
+    }}>
+      {diff.split('\n').map((ln, i) => {
+        let color: string | undefined;
+        let bg: string | undefined;
+        if (/^\+\+\+|^---|^diff |^index |^@@/.test(ln)) { color = 'var(--fg-3)'; }
+        else if (ln.startsWith('+')) { color = 'var(--ok)'; bg = 'rgba(63,185,80,.10)'; }
+        else if (ln.startsWith('-')) { color = 'var(--err)'; bg = 'rgba(248,81,73,.10)'; }
+        return <div key={i} style={{ color, background: bg, whiteSpace: 'pre' }}>{ln || ' '}</div>;
+      })}
+    </pre>
+  );
+}
+
+function ChangeFileRow({ file }: { file: ChangeFile }) {
+  const [open, setOpen] = useState(false);
+  const statusColor = file.status === 'added' ? 'var(--ok)'
+    : file.status === 'deleted' ? 'var(--err)' : 'var(--accent)';
+  return (
+    <div style={{ borderTop: '1px solid var(--border-0)' }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+        padding: '6px 10px', background: 'transparent', border: 0, cursor: 'pointer',
+        fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', textAlign: 'left',
+      }}>
+        <span style={{ color: 'var(--fg-3)', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .1s' }}>▸</span>
+        <span style={{ color: statusColor, textTransform: 'uppercase', fontSize: 10, width: 62, flexShrink: 0 }}>{file.status}</span>
+        <span style={{ color: 'var(--fg-1)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.path}</span>
+        {file.additions > 0 && <span style={{ color: 'var(--ok)' }}>+{file.additions}</span>}
+        {file.deletions > 0 && <span style={{ color: 'var(--err)' }}>−{file.deletions}</span>}
+      </button>
+      {open && <DiffBody diff={file.diff} />}
+    </div>
+  );
+}
+
+function ChangesView({ files, summary }: { files: ChangeFile[]; summary: { files: number; additions: number; deletions: number } }) {
+  return (
+    <div style={{ border: '1px solid var(--border-1)', borderRadius: 'var(--r-md)', overflow: 'hidden', background: 'var(--bg-1)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: 'var(--bg-2)', fontSize: 'var(--fs-xs)', fontWeight: 600 }}>
+        <Icon.GitBranch size={14} />
+        <span>Changes</span>
+        <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>
+          {summary.files} file{summary.files === 1 ? '' : 's'}
+        </span>
+        {summary.additions > 0 && <span style={{ color: 'var(--ok)' }}>+{summary.additions}</span>}
+        {summary.deletions > 0 && <span style={{ color: 'var(--err)' }}>−{summary.deletions}</span>}
+      </div>
+      {files.map((f, i) => <ChangeFileRow key={i} file={f} />)}
+    </div>
+  );
+}
+
+export function AgentStepRow({ step }: { step: AgentStep }) {
+  if (step.kind === 'changes') {
+    return <ChangesView files={step.files} summary={step.summary} />;
+  }
+  if (step.kind === 'thought') {
+    return <ThoughtRow step={step} />;
+  }
+  if (step.kind === 'tool') {
+    const res = step.result as any;
+    const ok = res?.ok !== false && !res?.error;
+    const snippet = step.pending
+      ? 'running…'
+      : ok
+      ? (res?.output ? String(res.output).slice(0, 120) : 'ok')
+      : (res?.error ? String(res.error).slice(0, 120) : 'error');
+    return (
+      <div style={{
+        display: 'flex', gap: 6, alignItems: 'flex-start',
+        padding: '5px 10px',
+        background: 'var(--bg-1)',
+        border: '1px solid var(--border-0)',
+        borderRadius: 'var(--r-sm)',
+        fontSize: 'var(--fs-xs)',
+        lineHeight: 1.5,
+        fontFamily: 'var(--font-mono)',
+        color: step.pending ? 'var(--fg-1)' : (ok ? 'var(--fg-1)' : 'var(--err)'),
+      }}>
+        <span style={{ flexShrink: 0, marginTop: 1 }}>{step.pending ? '⏳' : '🔧'}</span>
+        <AgentBadge role={step.role} />
+        <span>
+          <strong>{step.name}</strong>
+          {'('}
+          {Object.entries(step.args as Record<string, unknown>).slice(0, 3).map(([k, v], i) =>
+            `${i > 0 ? ', ' : ''}${k}=${JSON.stringify(v).slice(0, 40)}`
+          ).join('')}
+          {')'}
+          {' → '}
+          <span style={{ color: step.pending ? 'var(--fg-2, var(--fg-1))' : (ok ? 'var(--ok)' : 'var(--err)') }}>
+            {snippet}
+          </span>
+        </span>
+      </div>
+    );
+  }
+  if (step.kind === 'error') {
+    return (
+      <div style={{
+        display: 'flex', gap: 6, alignItems: 'flex-start',
+        padding: '5px 10px',
+        background: 'var(--err-soft)',
+        border: '1px solid transparent',
+        borderRadius: 'var(--r-sm)',
+        fontSize: 'var(--fs-xs)',
+        lineHeight: 1.5,
+        color: 'var(--err)',
+      }}>
+        <span style={{ flexShrink: 0, marginTop: 1 }}>✗</span>
+        <span>{step.text}</span>
+      </div>
+    );
+  }
+  return null;
+}

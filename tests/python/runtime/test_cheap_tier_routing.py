@@ -30,8 +30,11 @@ def test_suggest_title_forwards_role_to_client(monkeypatch):
 
 
 def test_api_titles_on_triage_role():
-    """The api.py call site pins the cheap role for titling."""
-    src = pathlib.Path(ac.__file__).parents[1] / "api" / "api.py"
+    """The chat session-message call site pins the cheap role for titling.
+    (Moved from api.py into api/routes/chat.py during the APIRouter split.)"""
+    # ac is now a package (config/agent_config/__init__.py), so aiforge_core
+    # is parents[2] (was parents[1] when agent_config was a plain module).
+    src = pathlib.Path(ac.__file__).parents[2] / "api" / "routes" / "chat.py"
     text = src.read_text(encoding="utf-8")
     assert 'suggest_title(prompt, role="triage")' in text
 

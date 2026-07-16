@@ -115,7 +115,7 @@ def test_compact_summarize_uses_llm(md, monkeypatch):
         calls["n"] += 1
         return "## Consolidated\n\n- merged " + str(len(blocks)) + " blocks"
 
-    monkeypatch.setattr(ms, "_summarize_notes", fake_summarize)
+    monkeypatch.setattr(ms._compact, "_summarize_notes", fake_summarize)
     for i in range(3):
         md.write(f"S{i}", f"body {i}", kind="session")
     r = md.compact(group_by="kind", summarize=True)
@@ -127,7 +127,7 @@ def test_compact_summarize_uses_llm(md, monkeypatch):
 
 def test_compact_summarize_falls_back_to_merge(md, monkeypatch):
     import aiforge_core.memory.md_store as ms
-    monkeypatch.setattr(ms, "_summarize_notes", lambda blocks, role: None)  # model down
+    monkeypatch.setattr(ms._compact, "_summarize_notes", lambda blocks, role: None)  # model down
     for i in range(2):
         md.write(f"N{i}", f"note {i}", kind="note")
     r = md.compact(group_by="kind", summarize=True)
@@ -145,7 +145,7 @@ def test_compact_rerun_resummarizes_existing(md, monkeypatch):
             seen["had_prev"] = True
         return "## C\n\nx"
 
-    monkeypatch.setattr(ms, "_summarize_notes", fake_summarize)
+    monkeypatch.setattr(ms._compact, "_summarize_notes", fake_summarize)
     for i in range(2):
         md.write(f"A{i}", "a", kind="session")
     md.compact(group_by="kind", summarize=True)
