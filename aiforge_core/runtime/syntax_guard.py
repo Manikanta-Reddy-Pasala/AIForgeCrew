@@ -24,6 +24,8 @@ import shutil
 import subprocess
 import tempfile
 
+from aiforge_core.config import languages as _languages
+
 _PAIRS: tuple[tuple[str, str], ...] = (("{", "}"), ("(", ")"), ("[", "]"))
 _KWARG_PATTERN = re.compile(r"\b\w+\s*=\s*\w+[\s,]")
 _ANNOTATION_PATTERN = re.compile(r"@\w+\s*\(")
@@ -40,22 +42,30 @@ _ISOLATION_MARKERS = (
 
 # ext → (binary, argv builder). Each command is a SYNTAX-ONLY / parse check that
 # never executes the file. ``-x`` forces the language for header files.
-_CHECKERS: dict[str, tuple[str, object]] = {
-    ".sh":   ("bash",  lambda b, f: [b, "-n", f]),
-    ".bash": ("bash",  lambda b, f: [b, "-n", f]),
-    ".c":    ("gcc",   lambda b, f: [b, "-fsyntax-only", f]),
-    ".h":    ("gcc",   lambda b, f: [b, "-fsyntax-only", "-x", "c", f]),
-    ".cpp":  ("g++",   lambda b, f: [b, "-fsyntax-only", f]),
-    ".cc":   ("g++",   lambda b, f: [b, "-fsyntax-only", f]),
-    ".cxx":  ("g++",   lambda b, f: [b, "-fsyntax-only", f]),
-    ".hpp":  ("g++",   lambda b, f: [b, "-fsyntax-only", "-x", "c++", f]),
-    ".java": ("javac", lambda b, f: [b, "-d", os.path.dirname(f), f]),
-    ".go":   ("gofmt", lambda b, f: [b, "-e", f]),
-    ".js":   ("node",  lambda b, f: [b, "--check", f]),
-    ".mjs":  ("node",  lambda b, f: [b, "--check", f]),
-    ".rb":   ("ruby",  lambda b, f: [b, "-c", f]),
-    ".php":  ("php",   lambda b, f: [b, "-l", f]),
-}
+#
+# Primary per-extension entries are SOURCED from the language registry
+# (aiforge_core/config/languages) — shell (bash -n), C (gcc -fsyntax-only),
+# C++ (g++ -fsyntax-only), Java (javac -d). Two kinds of entry can't be
+# expressed by a profile's single ``syntax_check`` and stay as literals below:
+#   1. Header files (.h / .hpp) force their language via ``-x`` (the profile's
+#      generic gcc/g++ form is overridden here).
+#   2. Languages not modelled first-class in the registry — Go, JS, Ruby, PHP.
+# Rust / Python / Kotlin expose no external checker (syntax_check is None →
+# skipped), so they fall back to compile() / the brace-balance heuristic.
+_CHECKERS: dict[str, tuple[str, object]] = {}
+for _prof in _languages.all_profiles():
+    if _prof.syntax_check:
+        for _ext in _prof.extensions:
+            _CHECKERS[_ext] = _prof.syntax_check
+_CHECKERS.update({
+    ".h":   ("gcc",   lambda b, f: [b, "-fsyntax-only", "-x", "c", f]),
+    ".hpp": ("g++",   lambda b, f: [b, "-fsyntax-only", "-x", "c++", f]),
+    ".go":  ("gofmt", lambda b, f: [b, "-e", f]),
+    ".js":  ("node",  lambda b, f: [b, "--check", f]),
+    ".mjs": ("node",  lambda b, f: [b, "--check", f]),
+    ".rb":  ("ruby",  lambda b, f: [b, "-c", f]),
+    ".php": ("php",   lambda b, f: [b, "-l", f]),
+})
 
 
 def _last_err_line(err: str) -> str:

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import os
 
+from aiforge_core.config import languages as _languages
+
 # stderr fragments that mean the toolchain isn't installed here (→ give the
 # user manual steps instead of reporting a false failure).
 _TOOLCHAIN_ABSENT = (
@@ -47,6 +49,15 @@ _MANUAL: dict[str, list[str]] = {
     "php": ["composer install", "./vendor/bin/phpunit"],
 }
 
+# Kotlin (first-class) — build/test steps sourced from the language registry
+# (aiforge_core/config/languages/kotlin.py) so they stay in sync with the rest
+# of the subsystem. Additive: no existing key changes.
+_kt_profile = _languages.PROFILES["kotlin"]
+_MANUAL["kotlin"] = [
+    f"{_kt_profile.compile_cmd}   # build (or: mvn -q compile)",
+    f"{_kt_profile.test_cmd}   # test (or: mvn -q test)",
+]
+
 
 # Map the project_runner stack name → our _MANUAL language key, so the manual
 # steps ALWAYS match the stack that was actually tested (no re-detection race).
@@ -55,6 +66,7 @@ _STACK_TO_LANG = {
     "typescript": "node", "java": "java-maven", "maven": "java-maven",
     "gradle": "java-gradle", "go": "go", "golang": "go", "rust": "rust",
     "cpp": "c/c++", "c": "c/c++", "php": "php", "ruby": "ruby", "shell": "shell",
+    "kotlin": "kotlin",
 }
 
 
@@ -96,7 +108,11 @@ def _detect_lang(cwd: str) -> str | None:
                      ("java-maven", {".java"}), ("c/c++", {".c", ".cpp", ".cc", ".cxx"}),
                      ("php", {".php"}), ("ruby", {".rb"}),
                      ("node", {".ts", ".tsx", ".js", ".mjs"}),
-                     ("shell", {".sh", ".bash"})):
+                     ("shell", {".sh", ".bash"}),
+                     # Kotlin (first-class) placed LAST so no previously-matched
+                     # language changes — only a marker-less .kt/.kts tree that
+                     # matched nothing before now resolves to "kotlin".
+                     ("kotlin", {".kt", ".kts"})):
         if exts & es:
             return lang
     return None

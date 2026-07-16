@@ -41,6 +41,8 @@ import shutil
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Iterable
 
+from aiforge_core.config import languages as _languages
+
 
 @dataclass
 class Standards:
@@ -143,6 +145,21 @@ _DEFAULTS_BY_LANG: dict[str, dict[str, str]] = {
         "format_cmd":        "yarn prettier --write src",
         "security_scan_cmd": "yarn audit --level high",
     },
+}
+
+# Kotlin (first-class) — sourced from the language registry so its command
+# knowledge lives in one place (aiforge_core/config/languages/kotlin.py). The
+# LanguageProfile doesn't model build_cmd (that's a Gradle-oriented default
+# supplied here); compile/test/lint/format come straight from the profile. A
+# Kotlin repo with a real Gradle/Maven driver is refined by resolve_toolchain's
+# JVM branch; this default only backstops a marker-less Kotlin tree.
+_kotlin_profile = _languages.PROFILES["kotlin"]
+_DEFAULTS_BY_LANG["kotlin"] = {
+    "build_cmd":   "./gradlew build -x test",
+    "compile_cmd": _kotlin_profile.compile_cmd,
+    "test_cmd":    _kotlin_profile.test_cmd,
+    "lint_cmd":    _kotlin_profile.lint_cmd,
+    "format_cmd":  _kotlin_profile.format_cmd,
 }
 
 
@@ -401,6 +418,13 @@ def _detect_lang_uncached(base: str) -> str:
     if _glob.glob(os.path.join(base, "**", "*.sh"), recursive=True) \
             or _glob.glob(os.path.join(base, "**", "*.bash"), recursive=True):
         return "shell"
+    # Kotlin (first-class) — a bare Kotlin tree with no build driver. Placed
+    # LAST so no previously-matched language changes: gradle/maven markers
+    # already return "java" above, and any repo that matched earlier keeps its
+    # result. Only a marker-less .kt/.kts tree (formerly "") becomes "kotlin".
+    if _glob.glob(os.path.join(base, "**", "*.kt"), recursive=True) \
+            or _glob.glob(os.path.join(base, "**", "*.kts"), recursive=True):
+        return "kotlin"
     return ""
 
 
