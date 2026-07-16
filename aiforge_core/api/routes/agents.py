@@ -14,9 +14,120 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from aiforge_core.api._shared import _db
 from aiforge_core.config import agent_config as _acfg
+from aiforge_core.config.env import ROLES
 
 router = APIRouter()
+
+
+@router.get("/api/agents")
+def list_agents() -> list[dict]:
+    """Static role catalogue + dynamic last-activity from ticket_events."""
+    out = []
+    # Activity stats use Postgres-specific SQL (FILTER). On the embedded
+    # SQLite backend they degrade to nulls — the static role catalogue
+    # still renders so the Agents / Home views work everywhere.
+    def _activity(name: str) -> tuple:
+        try:
+            with _db() as c, c.cursor() as cur:
+                cur.execute(
+                    "SELECT MAX(created_at) AS last_activity, "
+                    "COUNT(*) FILTER (WHERE kind='llm_turn') AS turns "
+                    "FROM ticket_events WHERE agent_role = %s",
+                    (name,),
+                )
+                row = cur.fetchone() or {}
+                cur.execute(
+                    "SELECT identifier, status FROM tickets "
+                    "WHERE assignee_role = %s AND status IN "
+                    "('todo','in_progress','in_review') ORDER BY created_at DESC",
+                    (name,),
+                )
+                active = [{"identifier": r["identifier"], "status": r["status"]}
+                          for r in cur.fetchall()]
+            last = row.get("last_activity")
+            return (last.isoformat() if last else None, row.get("turns", 0), active)
+        except Exception:
+            return (None, 0, [])
+
+    # Enumerate the REAL archetype list (config.agent_config) — not the 5
+    # legacy env.py ROLES — so the page shows enhancer/architect/planner and
+    # every other configured agent. Per-role model/provider come from
+    # agent_config; max_turns/tool_allowlist only exist for the legacy ROLES
+    # (default sensibly when absent). Activity stats default to 0/null for
+    # roles that never fired.
+    try:
+        roles = _acfg.archetypes()
+    except Exception:
+        roles = list(ROLES.keys())
+
+    # Only the synthetic default is hidden — every real agent (incl. the chat
+    # slot + the context/verifier fan-out sub-agents) is shown, grouped.
+    roles = [r for r in roles if r != "_default"]
+
+    _DESC = {
+        "enhancer": "Cleans the raw request into a clear, unambiguous spec before planning.",
+        "architect": "Designs the file/module structure and approach for the spec.",
+        "triage": "Routes the work — trivial fast-path vs full pipeline.",
+        "planner": "Splits the design into ordered, concrete subtasks.",
+        "verifier": "Critiques the plan before code is written (merges the verify_* verdicts).",
+        "researcher": "Gathers the codebase/external context the plan needs.",
+        "doer": "Writes the actual code and runs the tools that implement each subtask.",
+        "refiner": "Polishes the doer's output — cleanup, edge cases — inside the work loop.",
+        "feedback": "In-loop reviewer: checks each pass and feeds corrections back.",
+        "learner": "Persists durable lessons/memory so future runs start smarter.",
+        "verify_correctness": "Axis critic: is the plan/code correct and complete?",
+        "verify_scope": "Axis critic: does it stay within the requested scope?",
+        "verify_risk": "Axis critic: flags risky, destructive, or fragile changes.",
+        "ctx_memory": "Parallel gatherer: pulls relevant past decisions / memory.",
+        "ctx_repomap": "Parallel gatherer: builds a map of the repo structure.",
+        "ctx_conventions": "Parallel gatherer: extracts the project's coding conventions.",
+        "gap_eval": "Research-completeness critic: drives the bounded re-search loop.",
+        "live_verifier": "Boots + exercises the built project against a live-verify recipe.",
+        "chat": "The dashboard chat assistant's own model slot (independent of the pipeline).",
+    }
+    _ORCH = {"enhancer", "architect", "planner"}
+    _FANOUT = {"ctx_memory", "ctx_repomap", "ctx_conventions",
+               "verify_correctness", "verify_scope", "verify_risk",
+               "gap_eval", "live_verifier"}
+
+    def _group(r: str) -> str:
+        if r == "chat":
+            return "chat"
+        if r in _ORCH:
+            return "orchestrator"
+        if r in _FANOUT:
+            return "fanout"
+        return "pipeline"
+
+    for name in roles:
+        rc = ROLES.get(name)
+        try:
+            cfg = _acfg.get(name)
+        except Exception:
+            cfg = {}
+        model = (cfg.get("model") if isinstance(cfg, dict) else None) \
+            or (rc.model if rc else "")
+        # "transport" doubles as the provider chip in the UI: legacy roles
+        # report their transport; new orchestrator roles report the provider.
+        transport = (rc.transport if rc
+                     else (cfg.get("provider") if isinstance(cfg, dict) else None)
+                     or "openai_compatible")
+        last_iso, turns, active = _activity(name)
+        out.append({
+            "role": name,
+            "description": _DESC.get(name, ""),
+            "group": _group(name),
+            "model": model,
+            "transport": transport,
+            "max_turns": rc.max_turns if rc else None,
+            "tool_allowlist": list(rc.tool_allowlist) if rc else [],
+            "last_activity": last_iso,
+            "lifetime_turns": turns,
+            "active_tickets": active,
+        })
+    return out
 
 
 @router.get("/api/config/agents")
