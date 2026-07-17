@@ -38,13 +38,30 @@ def _probe_image_b64() -> str:
         return _PROBE_PNG
 
 
+def _error_text(exc: Exception) -> str:
+    """Full text of a probe error INCLUDING the HTTP response body — a urllib
+    ``HTTPError`` is also a response object whose body carries the real message
+    (e.g. LM Studio's 'does not support image inputs'), which ``str(exc)`` alone
+    ('HTTP Error 400: Bad Request') drops. Without the body the definitive
+    modality-rejection signal is lost and the model is wrongly left unknown."""
+    t = str(exc)
+    read = getattr(exc, "read", None)
+    if callable(read):
+        try:
+            b = exc.read()
+            t += " " + (b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b))
+        except Exception:  # noqa: BLE001
+            pass
+    return t
+
+
 def _classify_probe_error(exc: Exception) -> bool | None:
     """Read a failed vision probe. Returns ``False`` ONLY when the endpoint
     definitively rejected the IMAGE MODALITY (a modality word AND a rejection
     word together) — a transport blip, a bare 400, or a generic "content" error
     is inconclusive (``None``) so a genuine VLM is never permanently marked
-    non-vision. Tightened from the old any-of("400","invalid","content",…)."""
-    msg = str(exc).lower()
+    non-vision. Classifies on the full error text incl. the HTTP body."""
+    msg = _error_text(exc).lower()
     modality = any(t in msg for t in ("image", "vision", "multimodal", "modal"))
     rejected = any(t in msg for t in (
         "unsupported", "not support", "does not support", "invalid",
@@ -66,38 +83,30 @@ def _settings_override() -> bool:
 
 def _probe_vision(model: str, role: str) -> bool:
     """Ask the OpenAI-compatible endpoint itself whether it accepts image input
-    — NO hardcoded model list. Sends one tiny multimodal request; a server that
-    can't do vision rejects the image content (4xx) → False, one that accepts
-    it → True. Cached per model so it costs one probe. Transport errors are
-    inconclusive (not cached)."""
+    — NO hardcoded model list. Delegates to :func:`probe_vision_endpoint` on the
+    role's resolved endpoint so the probe hits the raw ``/chat/completions`` via
+    the ``_post`` path — which preserves the HTTP error BODY (the definitive
+    'does not support image inputs' signal that ``client.complete`` swallows into
+    a generic ``llm.exhausted``). Caches only a DEFINITIVE result; a transient /
+    ambiguous error stays inconclusive (uncached) so a genuine VLM isn't
+    permanently marked non-vision."""
     if model in _VISION_CACHE:
         return _VISION_CACHE[model]
     try:
-        from aiforge_core.llm import client
-        content = [
-            {"type": "text", "text": "Reply with the single word: ok"},
-            {"type": "image_url",
-             "image_url": {"url": "data:image/png;base64," + _probe_image_b64()}},
-        ]
-        # A non-vision server raises (4xx invalid content) → caught below.
-        # Short timeout: this is a best-effort capability probe, not real
-        # work — a down/slow endpoint must not stall the turn (tunable via
-        # AIFORGE_VISION_PROBE_TIMEOUT_S).
-        try:
-            _pt = int(os.environ.get("AIFORGE_VISION_PROBE_TIMEOUT_S", "8"))
-        except (TypeError, ValueError):
-            _pt = 8
-        client.complete(role, [{"role": "user", "content": content}],
-                        max_tokens=1, timeout_s=_pt)
+        from aiforge_core.llm.router import resolve
+        ep = resolve(role)
+        base_url = getattr(ep, "base_url", "") or ""
+        api_key = getattr(ep, "api_key", "") or ""
+    except Exception:  # noqa: BLE001
+        return False
+    verdict = probe_vision_endpoint(model, base_url, api_key)
+    if verdict is True:
         _VISION_CACHE[model] = True
         return True
-    except Exception as exc:  # noqa: BLE001
-        # Only a definitive modality rejection caches "no"; a transport blip or
-        # ambiguous error stays inconclusive so a genuine VLM isn't permanently
-        # marked non-vision (the reported auto-detect failure).
-        if _classify_probe_error(exc) is False:
-            _VISION_CACHE[model] = False
+    if verdict is False:
+        _VISION_CACHE[model] = False
         return False
+    return False   # inconclusive — not cached, re-probe next time
 
 
 def reset_vision_cache() -> None:
@@ -205,10 +214,10 @@ def warm_vision_async(role: str = "chat") -> None:
 
 
 def _safe_ensure(role: str) -> None:
-    try:
+    import contextlib
+    # warming must never surface an error
+    with contextlib.suppress(Exception):
         ensure_vision_known(role)
-    except Exception:  # noqa: BLE001 — warming must never surface an error
-        pass
 
 
 def probe_vision_endpoint(model: str, base_url: str, api_key: str | None = None,
