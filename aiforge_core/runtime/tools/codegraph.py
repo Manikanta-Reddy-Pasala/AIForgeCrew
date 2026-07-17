@@ -189,7 +189,12 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
         if not exe:
             return False
         try:
-            p = subprocess.run([exe, _init_cmd(), "--path", repo],
+            # NOTE: `init` takes a POSITIONAL path (`codegraph init <path>`) —
+            # unlike the query subcommands, which use `-p/--path`. Passing
+            # `--path` here makes the binary reject it ("unknown option
+            # '--path'") so autobuild silently failed and every un-preindexed
+            # repo stayed "CodeGraph not initialized".
+            p = subprocess.run([exe, _init_cmd(), repo],
                                capture_output=True, text=True,
                                timeout=timeout_s or _build_timeout_s())
         except Exception:  # noqa: BLE001 — timeout / spawn failure
