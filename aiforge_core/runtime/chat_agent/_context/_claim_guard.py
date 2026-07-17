@@ -35,12 +35,26 @@ _EDIT_CLAIM_OBJ_RE = re.compile(
     r"yml|json|xml|html|css|scss|md|sql|toml|gradle|dockerfile|cfg|ini))")
 
 
+# A PRIOR-WORK cue — the model recapping edits it made in an EARLIER turn, not
+# claiming a this-turn write. A recap turn legitimately makes zero edits, so the
+# guard must not fire on it ("Previously created isprime.py …", "already added
+# reset()"). This is what caused the truthful-recap false-positive.
+_RECAP_CUE_RE = re.compile(
+    r"(?i)\b(?:previously|already|earlier|beforehand|so far|up to now|"
+    r"in (?:an?|the) (?:prior|previous|earlier) (?:turn|step|message|response)|"
+    r"(?:last|prior|previous) turn|earlier in (?:this|the) (?:session|chat|conversation))\b")
+
+
 def _claims_file_edits(text: str) -> bool:
-    """True when the answer ASSERTS it edited/created a file this turn. Requires
-    both an edit verb AND a file/code object so plain prose doesn't false-fire.
+    """True when the answer ASSERTS it edited/created a file THIS turn. Requires
+    an edit verb AND a file/code object so plain prose doesn't false-fire, and
+    is suppressed when the text carries a PRIOR-WORK cue (previously/already/…)
+    — a truthful recap of an earlier turn's edits is not a this-turn claim.
     Conservative by design — a miss (no nudge) is fine; the disk cross-check in
     the loop is the real safety net."""
     if not text:
+        return False
+    if _RECAP_CUE_RE.search(text):
         return False
     return bool(_EDIT_CLAIM_VERB_RE.search(text)
                 and _EDIT_CLAIM_OBJ_RE.search(text))

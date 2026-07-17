@@ -25,6 +25,18 @@ def test_claims_file_edits_negative_on_plain_prose():
     assert not _claims_file_edits("")
 
 
+def test_prior_work_recap_is_not_a_claim():
+    # A truthful recap of an EARLIER turn's edits must NOT trip the guard
+    # (this was the false-positive on a "run the tests" turn).
+    assert not _claims_file_edits(
+        "Previously created isprime.py with is_prime(n). All tests pass.")
+    assert not _claims_file_edits("I already added a reset() method to counter.py.")
+    assert not _claims_file_edits(
+        "Earlier in this session I updated calc.py with divide().")
+    # …but a fresh this-turn claim still trips it.
+    assert _claims_file_edits("I have now applied the fix to Dashboard.vue.")
+
+
 def test_disclaimer_prepends_honest_note_once():
     out = _edit_claim_disclaimer("Applied the fix to app.py.")
     assert out.lower().startswith("⚠ note")
