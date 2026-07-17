@@ -86,6 +86,7 @@ from ._text import (
 
 __all__ = [
     "complete",
+    "complete_raw",
     "set_cancel_event",
     "resolve",
     "escalate",
@@ -247,6 +248,40 @@ def complete(role: str, messages: list[dict], *,
     _trace_generation(role, messages, out or "",
                       int((_time.monotonic() - _t0) * 1000))
     return out
+
+
+def complete_raw(role: str, messages: list[dict], *,
+                 tools: list | None = None,
+                 tool_choice=None,
+                 temperature: float | None = None,
+                 max_tokens: int | None = None,
+                 top_p: float | None = None,
+                 extras: dict | None = None,
+                 timeout_s: int | None = None) -> dict:
+    """Native tool-calling completion. Returns the RAW assistant message dict
+    (``{"role","content","tool_calls"?}``) instead of extracted text, so the
+    caller can dispatch native ``tool_calls`` — the reliable alternative to the
+    text ACTION/ARGS_JSON protocol (which local models fumble into
+    ``ARGS_JSON: {}``). Bypasses the empty-content garbage filter because a
+    tool-call reply legitimately has empty ``content``. Primary endpoint only —
+    no cloud escalation (native FC is a local-model concern). Raises on
+    transport failure or a malformed response so the caller falls back to text."""
+    if timeout_s is None:
+        timeout_s = _int_env("AIFORGE_LLM_TIMEOUT_S", 900)
+    ex = dict(extras or {})
+    if tools is not None:
+        ex["tools"] = tools
+    if tool_choice is not None:
+        ex["tool_choice"] = tool_choice
+    ep: Endpoint = resolve(role)
+    payload = _build_body(ep, messages, temperature, max_tokens, top_p, ex)
+    body = _post_with_retry(ep, payload, timeout_s, role=role, source="native")
+    _record_usage(role, body)
+    try:
+        msg = body["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"native completion: no message in response ({exc})") from exc
+    return dict(msg) if isinstance(msg, dict) else {"role": "assistant", "content": str(msg)}
 
 
 def _complete_impl(role: str, messages: list[dict], *,
