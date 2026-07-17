@@ -81,7 +81,18 @@ def _build_context_plugins() -> list:
     except Exception:  # noqa: BLE001
         _ctx_win = 131072
     # ~4 chars/token; budget in tokens then converted to a char ceiling.
-    max_tokens = _int_env("AIFORGE_CONTEXT_MAX_TOKENS", int(_ctx_win * 0.55))
+    # Default the fraction to the SAME condense trigger the simple ReAct loop
+    # uses (_history_fraction — cave standard → ~40%, opted-out → 0.85), so team
+    # mode AND mid-run steers condense EARLY too instead of running near-full
+    # where small models drift + invent edits. Explicit AIFORGE_CONTEXT_MAX_TOKENS
+    # still overrides. Soft-fails to the old 0.55 if the import is unavailable.
+    try:
+        from aiforge_core.runtime.chat_agent._context._window import (
+            _history_fraction)
+        _frac = _history_fraction()
+    except Exception:  # noqa: BLE001
+        _frac = 0.55
+    max_tokens = _int_env("AIFORGE_CONTEXT_MAX_TOKENS", int(_ctx_win * _frac))
     max_chars = max(4000, max_tokens * 4)
     max_part_chars = _int_env("AIFORGE_CONTEXT_MAX_PART_CHARS", 24000)
     min_keep = max(4, _int_env("AIFORGE_CONTEXT_MIN_KEEP", 8))
