@@ -516,19 +516,38 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
             else:
                 msg = (by_role.get("doer") or st.get("doer_outcome")
                        or by_role.get("researcher") or final or "Done.")
-            final_text = msg
-            _run_ok = True
-            q.put({"type": "message", "text": msg})
             # Structured Changes diff (same PR-style view as the parallel path).
-            # The sequential Doer edits the working tree, so include it.
+            # The sequential Doer edits the working tree, so include it. Compute
+            # it BEFORE surfacing the answer so the claim-vs-reality guard can
+            # cross-check an "applied fixes" claim against the ACTUAL diff — the
+            # SAME events the UI renders, computed once (DRY).
+            _change_events: list = []
             if _seq_start_sha and not _enhancer_blocked_reason:
                 try:
                     from .parallel_subtasks import _emit_changes
-                    for _ev in _emit_changes(cwd, _seq_start_sha,
-                                             include_worktree=True):
-                        q.put(_ev)
+                    _change_events = list(_emit_changes(
+                        cwd, _seq_start_sha, include_worktree=True))
                 except Exception:  # noqa: BLE001 — never break the turn
+                    _change_events = []
+            # The promoted answer (often the Enhancer's or a local text_doer's
+            # prose) can claim it "applied fixes" while the diff is EMPTY — the
+            # same hallucination the simple loop guards. When it asserts an edit
+            # but nothing changed, prepend an honest note. A non-git run
+            # (_seq_start_sha == "") gives no signal, so it's left alone.
+            if _seq_start_sha and not _enhancer_blocked_reason and not _change_events:
+                try:
+                    from aiforge_core.runtime.chat_agent._context import (
+                        _claims_file_edits, _edit_claim_disclaimer,
+                        _edit_claim_guard_enabled)
+                    if _edit_claim_guard_enabled() and _claims_file_edits(msg):
+                        msg = _edit_claim_disclaimer(msg)
+                except Exception:  # noqa: BLE001 — guard must never break a turn
                     pass
+            final_text = msg
+            _run_ok = True
+            q.put({"type": "message", "text": msg})
+            for _ev in _change_events:
+                q.put(_ev)
         except Exception as exc:  # noqa: BLE001
             q.put({"type": "error", "text": f"pipeline: {exc}"})
         finally:

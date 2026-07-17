@@ -142,100 +142,17 @@ def describe_upload(path: str, filename: str, mime: str, role: str = "chat") -> 
     return txt
 
 
-# 1x1 transparent PNG — the smallest valid image to probe with.
-_PROBE_PNG = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
-    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
-
-# model id -> probed vision capability. One live probe per model, then cached.
-_VISION_CACHE: dict[str, bool] = {}
-
-
-def _settings_override() -> bool:
-    try:
-        from aiforge_core.config import runtime_settings
-        return int(runtime_settings.get("vision_capable")) > 0
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _probe_vision(model: str, role: str) -> bool:
-    """Ask the OpenAI-compatible endpoint itself whether it accepts image input
-    — NO hardcoded model list. Sends one tiny multimodal request; a server that
-    can't do vision rejects the image content (4xx) → False, one that accepts
-    it → True. Cached per model so it costs one probe. Transport errors are
-    inconclusive (not cached)."""
-    if model in _VISION_CACHE:
-        return _VISION_CACHE[model]
-    import base64 as _b64
-    try:
-        from aiforge_core.llm import client
-        content = [
-            {"type": "text", "text": "Reply with the single word: ok"},
-            {"type": "image_url",
-             "image_url": {"url": "data:image/png;base64," + _PROBE_PNG}},
-        ]
-        # A non-vision server raises (4xx invalid content) → caught below.
-        # Short timeout: this is a best-effort capability probe, not real
-        # work — a down/slow endpoint must not stall the turn (tunable via
-        # AIFORGE_VISION_PROBE_TIMEOUT_S).
-        import os as _os
-        try:
-            _pt = int(_os.environ.get("AIFORGE_VISION_PROBE_TIMEOUT_S", "8"))
-        except (TypeError, ValueError):
-            _pt = 8
-        client.complete(role, [{"role": "user", "content": content}],
-                        max_tokens=1, timeout_s=_pt)
-        _VISION_CACHE[model] = True
-        return True
-    except Exception as exc:  # noqa: BLE001
-        # Only a content/modality rejection is a definitive "no"; a transport
-        # blip shouldn't permanently mark the model non-vision.
-        msg = str(exc).lower()
-        definitive = any(t in msg for t in (
-            "image", "modal", "content", "vision", "unsupported",
-            "400", "422", "invalid"))
-        if definitive:
-            _VISION_CACHE[model] = False
-        return False
-
-
-def reset_vision_cache() -> None:
-    _VISION_CACHE.clear()
-
-
-def vision_enabled(role: str = "chat", *, probe: bool = False) -> bool:
-    """True when the session's model can see images. The user's manual setting
-    wins; otherwise it's probed from the OpenAI-compatible endpoint itself (no
-    hardcoded allowlist). ``probe=False`` (default) only consults the settings
-    override + a cached prior probe — fast, used on session-load. ``probe=True``
-    runs the one-time live probe — used on the upload path where a brief delay
-    is expected."""
-    if _settings_override():
-        return True
-    try:
-        from aiforge_core.llm.router import resolve
-        ep = resolve(role)
-        model = ep.model or ""
-        base_url = getattr(ep, "base_url", "") or ""
-    except Exception:  # noqa: BLE001
-        return False
-    if not model:
-        return False
-    # An explicit per-model vision flag from the registry wins over probing
-    # (the user set it themselves for a model the probe can't resolve).
-    try:
-        from aiforge_core.config import model_registry
-        flag = model_registry.vision_for(model, base_url)
-        if flag == "yes":
-            return True
-        if flag == "no":
-            return False
-    except Exception:  # noqa: BLE001
-        pass
-    if probe:
-        return _probe_vision(model, role)
-    return _VISION_CACHE.get(model, False)
+# Vision-capability detection lives in its own module (probe / cache /
+# resolve / persist). Re-exported here so existing callers keep using
+# ``chat_media.vision_enabled`` / ``reset_vision_cache`` / etc. unchanged.
+from .vision_detect import (  # noqa: F401 — re-export for back-compat
+    classify_and_store_vision,
+    probe_vision_endpoint,
+    reset_vision_cache,
+    vision_enabled,
+    _probe_vision,
+    _settings_override,
+)
 
 
 def _vision_role(role: str) -> str | None:

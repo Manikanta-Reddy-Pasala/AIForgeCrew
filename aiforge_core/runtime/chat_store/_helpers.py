@@ -22,8 +22,30 @@ _STOPWORDS = frozenset({
 })
 
 
+# Inflection suffixes stripped to a STEM (longest match first) so a substring
+# scan matches across word forms: query "deployment" → stem "deploy" matches
+# "deployed"/"deploys"; "registries" → "registry". Cheap, no NLP dependency.
+_STEM_SUFFIXES = ("ations", "ation", "ements", "ement", "ments", "ment",
+                  "ings", "ing", "ies", "edly", "ers", "er", "ed", "es", "s")
+
+
+def _stem(t: str) -> str:
+    """Strip a common English inflection to a stem (>=3 chars). Conservative:
+    only for tokens len>=4, and the stem must stay >=3 so we don't over-crush
+    short words into noise. Handles ``ies -> y`` (registries -> registry)."""
+    if len(t) < 4:
+        return t
+    for suf in _STEM_SUFFIXES:
+        if t.endswith(suf) and len(t) - len(suf) >= 3:
+            base = t[: -len(suf)]
+            return base + "y" if suf == "ies" else base
+    return t
+
+
 def _tokens(query: str) -> list[str]:
-    """Lowercase alphanumeric tokens, len>=3, minus common stopwords."""
+    """Lowercase alphanumeric tokens, len>=3, minus common stopwords — PLUS a
+    stemmed variant of each so substring search matches across word forms
+    (topic queries were failing on exact-form-only matching)."""
     if not query:
         return []
     raw = re.split(r"[^a-z0-9]+", query.lower())
@@ -31,6 +53,9 @@ def _tokens(query: str) -> list[str]:
     for t in raw:
         if len(t) >= 3 and t not in _STOPWORDS:
             seen[t] = None
+            st = _stem(t)
+            if st != t and len(st) >= 3:
+                seen[st] = None
     return list(seen)
 
 
@@ -85,10 +110,14 @@ def _rank_search(rows: list[dict], toks: list[str], limit: int) -> list[dict]:
         matched = sum(1 for t in toks if t in low)
         if matched == 0:
             continue
-        scored.append((matched, r["id"], r, content))
-    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        # Density = total hits, so an on-topic message (a term repeated) ranks
+        # above one incidental mention — breaking ties by relevance BEFORE
+        # recency (id), not purely by how new the message is.
+        density = sum(low.count(t) for t in toks)
+        scored.append((matched, density, r["id"], r, content))
+    scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
     out: list[dict] = []
-    for _matched, _id, r, content in scored[:max(0, int(limit or 0))]:
+    for _matched, _density, _id, r, content in scored[:max(0, int(limit or 0))]:
         out.append({
             "session_id": r["session_id"],
             "session_title": r.get("session_title") or "Untitled chat",

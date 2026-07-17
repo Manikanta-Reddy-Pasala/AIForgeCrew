@@ -308,6 +308,24 @@ def models_add(body: _ModelBody) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     _reassign_by_capability()          # auto-decide agents on model add
+    # Vision auto-detect: when vision=='auto' and the NAME heuristic couldn't
+    # classify it (has_vision False), probe the endpoint with a test image and
+    # persist yes/no per model — in the BACKGROUND so the request returns now.
+    # Opt out: AIFORGE_VISION_PROBE_ON_ADD=0.
+    try:
+        if ((body.vision or "auto") == "auto" and not row.get("has_vision")
+                and (body.base_url or "").strip()
+                and os.environ.get("AIFORGE_VISION_PROBE_ON_ADD", "1")
+                not in ("0", "false")):
+            import threading
+
+            from aiforge_core.runtime import chat_media
+            threading.Thread(
+                target=chat_media.classify_and_store_vision,
+                args=(row.get("id"), body.model, body.base_url, body.api_key),
+                daemon=True, name="vision-probe-add").start()
+    except Exception:  # noqa: BLE001 — probe must never break model-add
+        pass
     return row
 
 

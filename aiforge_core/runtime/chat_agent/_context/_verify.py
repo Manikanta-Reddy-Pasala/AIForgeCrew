@@ -16,6 +16,10 @@ def _fire_stop(reason: str, cwd: str) -> None:
 _EDIT_TOOL_NAMES = frozenset((
     "write_file", "file_write", "edit", "editor", "edit_block", "file_patch",
     "patch", "apply_patch", "str_replace", "create_file",
+    # These land real edits too but were missing — so genuine edits via them
+    # didn't set _edits_made (verify gate skipped) and could trip the
+    # claim-vs-reality guard on a truthful "I edited …" final.
+    "multi_edit", "file_create",
 ))
 
 

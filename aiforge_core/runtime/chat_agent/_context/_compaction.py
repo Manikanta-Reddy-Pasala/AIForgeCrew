@@ -4,6 +4,7 @@ import os
 import re
 
 from .._shell import _ACTION_RE
+from ._claim_guard import _claims_file_edits
 from ._generation import _CANCELLED, _complete_cancellable
 from ._window import _ctx_budget_chars
 
@@ -153,7 +154,12 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
                 tools.append(mt.group(1))
             # An assistant FINAL (no ACTION:) is a substantive outcome — keep a
             # short trace so the summary carries decisions, not just tool counts.
-            elif content and "ACTION:" not in content:
+            # BUT never fold an unbacked EDIT CLAIM ("I applied the fix to X")
+            # into the rolling summary: with no ACTION it was a hallucinated
+            # write, and persisting it as an "Earlier outcome" makes the model
+            # believe the edit happened forever after — the bug compounds as the
+            # session grows. Drop those lines from the breadcrumb.
+            elif content and "ACTION:" not in content and not _claims_file_edits(content):
                 finals.append(content.replace("\n", " ")[:160])
         elif mrole == "user" and content and not content.startswith("OBSERVATION:"):
             user_asks.append(content.replace("\n", " ")[:120])
