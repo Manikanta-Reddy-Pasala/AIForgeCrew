@@ -338,10 +338,12 @@ def models_update(model_id: str, body: _ModelBody) -> dict:
         thinking=body.thinking, context_window=body.context_window)
     if row is None:
         raise HTTPException(404, f"model {model_id} not found")
-    # A vision change invalidates the probe cache for that model.
+    # A model change invalidates the per-model capability probe caches.
     try:
         from aiforge_core.runtime import chat_media
+        from aiforge_core.runtime.chat_agent import _native
         chat_media.reset_vision_cache()
+        _native.reset_native_cache()
     except Exception:  # noqa: BLE001
         pass
     return row

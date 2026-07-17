@@ -39,6 +39,19 @@ def run_chat_agent(
     """
     if complete_fn is None:
         from aiforge_core.llm.client import complete as complete_fn  # type: ignore
+        # Native OpenAI tool-calling — the reliable alternative to the text
+        # ACTION/ARGS_JSON protocol that local models fumble into `ARGS_JSON: {}`
+        # (the same mechanism OpenWebUI uses on these endpoints). When the model
+        # supports it (probed once, or forced via AIFORGE_CHAT_TOOL_PROTOCOL),
+        # swap in a completion that returns REAL structured args; the rest of the
+        # loop is unchanged — it parses the SAME synthesized ACTION step. Only
+        # when the caller didn't inject its own complete_fn (tests/doer paths).
+        try:
+            from ._native import make_native_complete_fn, native_tools_enabled
+            if native_tools_enabled(role):
+                complete_fn = make_native_complete_fn()
+        except Exception:  # noqa: BLE001 — native must never break the turn
+            pass
 
     from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject
     from aiforge_core.runtime.tools import tool_policy
