@@ -141,7 +141,74 @@ def vision_enabled(role: str = "chat", *, probe: bool = False) -> bool:
         pass
     if probe:
         return _probe_vision(model, role)
+    # UNKNOWN (auto, no heuristic hit, not cached): don't just assume no-vision
+    # — kick a background probe so the capability is IDENTIFIED for the next
+    # turn/upload. Return the current best guess (False) for THIS cheap call.
+    warm_vision_async(role)
     return _VISION_CACHE.get(model, False)
+
+
+def ensure_vision_known(role: str = "chat") -> bool | None:
+    """Proactively DETERMINE + PERSIST a model's vision capability. Resolution:
+    settings override → registry explicit flag → NAME heuristic (persisted) →
+    cached probe → a live probe (persisted when definitive). Returns True/False
+    when known, None when it couldn't be resolved (no model / inconclusive
+    probe). Called at model-add, chat-model-set, session start and first turn so
+    a model's vision support is known BEFORE an image is ever attached — and
+    lazily identifies it mid-chat if still unknown."""
+    if _settings_override():
+        return True
+    try:
+        from aiforge_core.llm.router import resolve
+        ep = resolve(role)
+        model = ep.model or ""
+        base_url = getattr(ep, "base_url", "") or ""
+    except Exception:  # noqa: BLE001
+        return None
+    if not model:
+        return None
+    try:
+        from aiforge_core.config import model_registry
+        flag = model_registry.vision_for(model, base_url)
+        if flag == "yes":
+            return True
+        if flag == "no":
+            return False
+        if model_registry.detect_capability(model, "vision"):
+            # Name heuristic recognises a VLM family — persist it so it's durable.
+            model_registry.set_vision_flag(model, base_url, "yes")
+            _VISION_CACHE[model] = True
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    if model in _VISION_CACHE:
+        return _VISION_CACHE[model]
+    # Genuinely unknown → probe now (caches only a DEFINITIVE result).
+    _probe_vision(model, role)
+    if model in _VISION_CACHE:
+        try:
+            from aiforge_core.config import model_registry
+            model_registry.set_vision_flag(
+                model, base_url, "yes" if _VISION_CACHE[model] else "no")
+        except Exception:  # noqa: BLE001
+            pass
+    return _VISION_CACHE.get(model)
+
+
+def warm_vision_async(role: str = "chat") -> None:
+    """Fire-and-forget :func:`ensure_vision_known` on a daemon thread — used at
+    session start / model-set so identification never blocks the request. No-op
+    if the capability is already known/cached for the role's model."""
+    import threading
+    threading.Thread(target=lambda: _safe_ensure(role),
+                     name=f"vision-warm-{role}", daemon=True).start()
+
+
+def _safe_ensure(role: str) -> None:
+    try:
+        ensure_vision_known(role)
+    except Exception:  # noqa: BLE001 — warming must never surface an error
+        pass
 
 
 def probe_vision_endpoint(model: str, base_url: str, api_key: str | None = None,
@@ -187,14 +254,22 @@ def probe_vision_endpoint(model: str, base_url: str, api_key: str | None = None,
 
 def classify_and_store_vision(registry_id: str, model: str, base_url: str,
                               api_key: str | None = None) -> bool | None:
-    """Probe an endpoint's vision capability and PERSIST it into the registry
-    row (``yes``/``no``) so it survives a restart and the Settings badge is
-    right — used at model-add time for a model the NAME heuristic couldn't
-    classify. Only writes on a conclusive probe; returns the verdict. Never
+    """Determine + PERSIST a model's vision capability at add-time, for EVERY
+    model. A live endpoint probe wins; if it's inconclusive (endpoint not yet
+    reachable), fall back to the NAME heuristic so a recognisable VLM is still
+    marked ``yes``. Only writes a definite result; returns the verdict. Never
     raises (add-time background use)."""
     verdict = probe_vision_endpoint(model, base_url, api_key)
     if verdict is None:
-        return None
+        # Probe inconclusive → trust the name heuristic when it recognises a VLM.
+        try:
+            from aiforge_core.config import model_registry
+            if model_registry.detect_capability(model, "vision"):
+                verdict = True
+        except Exception:  # noqa: BLE001
+            verdict = None
+        if verdict is None:
+            return None
     try:
         from aiforge_core.config import model_registry
         model_registry.update_model(

@@ -161,6 +161,29 @@ def update_model(model_id: str, **fields: Any) -> dict | None:
     return None
 
 
+def set_vision_flag(model: str, base_url: str, flag: str) -> bool:
+    """Persist a resolved vision flag (``yes``/``no``) onto the row matched by
+    model id (+ base_url when given). Used by the auto-detect path to make a
+    probed/heuristic result durable so it survives a restart and shows the right
+    badge. No-op (returns False) when ``flag`` is invalid or no row matches (an
+    env-override model that isn't a registry row keeps only the in-memory cache)."""
+    if flag not in ("yes", "no"):
+        return False
+    model = (model or "").strip()
+    if not model:
+        return False
+    with _LOCK:
+        rows = _load()
+        for r in rows:
+            if r.get("model") == model and (not base_url or r.get("base_url") == base_url):
+                if r.get("vision") == flag:
+                    return True
+                r["vision"] = flag
+                _save(rows)
+                return True
+    return False
+
+
 def remove_model(model_id: str) -> bool:
     with _LOCK:
         rows = _load()

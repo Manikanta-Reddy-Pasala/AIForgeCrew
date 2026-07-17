@@ -14,9 +14,8 @@ import json
 import logging
 import os
 import threading
-from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -292,6 +291,13 @@ def chat_model_set(body: _ChatModelBody) -> dict:
         warning = (f"saved, but {env_ovr['var']}={env_ovr['model']} is set and "
                    "overrides it — the running model won't change until that "
                    "env var is unset")
+    # Model changed → re-identify its vision capability (background).
+    try:
+        from aiforge_core.runtime import vision_detect
+        vision_detect.reset_vision_cache()
+        vision_detect.warm_vision_async("chat")
+    except Exception:  # noqa: BLE001
+        pass
     return {"provider": cfg.get("provider"), "model": cfg.get("model"),
             "applied_to": "all agents" if body.apply_all else "chat only",
             "active": (cfg.get("model") in served) if served else True,
@@ -320,6 +326,14 @@ def chat_model_reload(body: _ModelReloadBody) -> dict:
         err = res.get("error", "reload failed")
         code = 503 if "AIFORGE_LMS_HOST" in err else 502
         raise HTTPException(code, err)
+    # A freshly (re)loaded model is now reachable — identify its vision
+    # capability in the background so a definitive probe can persist.
+    try:
+        from aiforge_core.runtime import vision_detect
+        vision_detect.reset_vision_cache()
+        vision_detect.warm_vision_async("chat")
+    except Exception:  # noqa: BLE001
+        pass
     return res
 
 
@@ -431,6 +445,13 @@ def chat_session_create(body: _NewSessionBody) -> dict:
         chat_session_fold.fold_previous_async(s["id"])
     except Exception:  # noqa: BLE001 — a fold must never break session create
         pass
+    # Identify the chat model's vision capability NOW (background), so it's known
+    # before the user attaches an image — not discovered only on first upload.
+    try:
+        from aiforge_core.runtime import vision_detect
+        vision_detect.warm_vision_async(s.get("role") or "chat")
+    except Exception:  # noqa: BLE001
+        pass
     return s
 
 
@@ -532,7 +553,11 @@ def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
 @router.delete("/api/chat/sessions/{session_id}", status_code=204)
 def chat_session_delete(session_id: int) -> None:
     from aiforge_core.runtime import (
-        chat_approve, chat_cancel, chat_interject, chat_runs, chat_store,
+        chat_approve,
+        chat_cancel,
+        chat_interject,
+        chat_runs,
+        chat_store,
     )
     # Stop any in-flight run first so its background producer doesn't keep
     # running + persisting against a session that no longer exists.
@@ -1337,8 +1362,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
             pass
         if not _skip_worktree:
             try:
-                from aiforge_core.runtime.parallel_subtasks import (
-                    _commit_turn_baseline)
+                from aiforge_core.runtime.parallel_subtasks import _commit_turn_baseline
                 _simple_sha = _commit_turn_baseline(cwd)
             except Exception:  # noqa: BLE001
                 _simple_sha = ""
@@ -1422,7 +1446,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         def _worth_verifying() -> bool:
             try:
                 from aiforge_core.runtime.tools.project_runner import (
-                    _has_tests, detect,
+                    _has_tests,
+                    detect,
                 )
                 stacks = (detect(cwd) or {}).get("stacks") or []
                 if stacks and _has_tests(cwd, stacks):
@@ -1577,9 +1602,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     # persisted final_text — persist it as a step instead.
                     final_text = ev.get("text", "")
                     awaiting = bool(ev.get("awaiting_input"))
-                elif ev.get("type") == "message" and ev.get("supplementary"):
-                    steps.append(ev)
-                elif ev.get("type") in ("thought", "tool", "error", "changes"):
+                elif ev.get("type") == "message" and ev.get("supplementary") or ev.get("type") in ("thought", "tool", "error", "changes"):
                     steps.append(ev)
                 elif ev.get("type") == "subtasks":
                     _subtasks = list(ev.get("items") or [])
@@ -1774,8 +1797,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             # and write a session node from the executed steps.
                             try:
                                 from aiforge_core.memory import okf as _okr
-                                from aiforge_core.runtime.chat_agent import (
-                                    _chat_repo_key)
+                                from aiforge_core.runtime.chat_agent import _chat_repo_key
                                 _rkey = _chat_repo_key(cwd)
                                 _msgs2 = chat_store.get_messages(session_id) or []
                                 _tx = "\n".join(
@@ -1868,7 +1890,11 @@ def chat_kill_all() -> dict:
     approval + steer gates, finishes every live-run buffer, and force-releases
     the team run-serialization lock. Idempotent and safe to hit any time."""
     from aiforge_core.runtime import (
-        chat_approve, chat_cancel, chat_interject, chat_pipeline, chat_runs,
+        chat_approve,
+        chat_cancel,
+        chat_interject,
+        chat_pipeline,
+        chat_runs,
     )
     sessions = chat_cancel.cancel_all()
     for sid in sessions:
@@ -1938,7 +1964,7 @@ class _CheckpointBody(BaseModel):
 @router.get("/api/chat/sessions/{session_id}/checkpoints")
 def chat_session_checkpoints(session_id: int) -> dict:
     """List workspace checkpoints (#3) for this session's working dir."""
-    from aiforge_core.runtime import checkpoints, chat_store
+    from aiforge_core.runtime import chat_store, checkpoints
     session = chat_store.get_session(session_id)
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
@@ -1951,7 +1977,7 @@ def chat_session_checkpoint_create(session_id: int, body: _CheckpointBody) -> di
     """Snapshot the session's working dir (#3) to a hidden git ref."""
     import datetime as _dt
 
-    from aiforge_core.runtime import checkpoints, chat_store
+    from aiforge_core.runtime import chat_store, checkpoints
     session = chat_store.get_session(session_id)
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
@@ -1976,7 +2002,7 @@ def chat_session_checkpoint_restore(session_id: int, body: _RestoreBody) -> dict
 
     Granularity: ``paths`` restores a subset; ``delete_orphans`` makes it a
     full-state restore (matching the snapshot exactly)."""
-    from aiforge_core.runtime import checkpoints, chat_store
+    from aiforge_core.runtime import chat_store, checkpoints
     session = chat_store.get_session(session_id)
     if not session:
         raise HTTPException(404, f"session {session_id} not found")

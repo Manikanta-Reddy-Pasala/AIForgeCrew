@@ -287,7 +287,7 @@ def _reassign_by_capability() -> None:
     if os.environ.get("AIFORGE_AUTO_ASSIGN_AGENTS", "1") in ("0", "false"):
         return
     try:
-        from aiforge_core.config import model_registry, agent_config
+        from aiforge_core.config import agent_config, model_registry
         model_registry.auto_assign(agent_config.archetypes())
     except Exception:  # noqa: BLE001
         pass
@@ -308,20 +308,19 @@ def models_add(body: _ModelBody) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     _reassign_by_capability()          # auto-decide agents on model add
-    # Vision auto-detect: when vision=='auto' and the NAME heuristic couldn't
-    # classify it (has_vision False), probe the endpoint with a test image and
-    # persist yes/no per model — in the BACKGROUND so the request returns now.
+    # Vision auto-detect for EVERY model added with vision=='auto': probe the
+    # endpoint with a test image and persist yes/no (heuristic fallback when the
+    # probe is inconclusive) — in the BACKGROUND so the request returns now.
     # Opt out: AIFORGE_VISION_PROBE_ON_ADD=0.
     try:
-        if ((body.vision or "auto") == "auto" and not row.get("has_vision")
-                and (body.base_url or "").strip()
+        if ((body.vision or "auto") == "auto"
                 and os.environ.get("AIFORGE_VISION_PROBE_ON_ADD", "1")
                 not in ("0", "false")):
             import threading
 
-            from aiforge_core.runtime import chat_media
+            from aiforge_core.runtime import vision_detect
             threading.Thread(
-                target=chat_media.classify_and_store_vision,
+                target=vision_detect.classify_and_store_vision,
                 args=(row.get("id"), body.model, body.base_url, body.api_key),
                 daemon=True, name="vision-probe-add").start()
     except Exception:  # noqa: BLE001 — probe must never break model-add
@@ -385,7 +384,7 @@ class _AutoAssignBody(BaseModel):
 def agents_auto_assign_preview() -> dict:
     """Preview capability-based assignments (thinking→reasoning model, coder→fast
     coder, vision→vision model) for every archetype — no changes applied."""
-    from aiforge_core.config import model_registry, agent_config
+    from aiforge_core.config import agent_config, model_registry
     return {"assignments": model_registry.suggest_assignments(agent_config.archetypes())}
 
 
@@ -394,7 +393,7 @@ def agents_auto_assign(body: _AutoAssignBody) -> dict:
     """Auto-choose the best model for every agent BY CAPABILITY and apply it.
     Thinking/reasoning roles → a reasoning model, code roles → a fast coder,
     vision-needing → a vision model (larger context wins within a tier)."""
-    from aiforge_core.config import model_registry, agent_config
+    from aiforge_core.config import agent_config, model_registry
     roles = body.roles or agent_config.archetypes()
     if body.dry_run:
         return {"assignments": model_registry.suggest_assignments(roles), "applied": False}
