@@ -21,9 +21,10 @@ Three pieces (structured for testability):
   2. :func:`make_text_doer_node` — the thin ADK adapter: a ``node(...)``
      that reads state, resolves the per-ticket worktree cwd, runs the
      core, and writes the results back into ``ctx.state``.
-  3. :func:`should_use_text_protocol` — the opt-in-safe switch:
-     ``AIFORGE_DOER_PROTOCOL`` (``text`` / ``native`` / ``auto``), default
-     ``auto`` = text ONLY when the Doer endpoint is local.
+  3. :func:`should_use_text_protocol` — the opt-in switch:
+     ``AIFORGE_DOER_PROTOCOL`` (``text`` / ``native`` / ``auto``). Native is
+     now the DEFAULT everywhere; only ``text`` selects this fallback (for a
+     genuinely tool-incapable local runtime like mlx-lm).
 
 Everything soft-fails: the text Doer must never crash the pipeline build
 or a run. On any error the run degrades to a partial (error outcome), so
@@ -33,7 +34,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # Doer tool name → quality-signal state key. This MIRRORS
 # ``quality_gate._TOOL_SIGNAL_KEYS`` exactly (run_tests→tests_ok,
@@ -526,28 +528,17 @@ def should_use_text_protocol(role: str = "doer") -> bool:
 
     ``AIFORGE_DOER_PROTOCOL``:
       * ``text``   → always True.
-      * ``native`` → always False.
-      * ``auto`` / unset / anything else → auto-detect: True when the Doer
-        endpoint is LOCAL (base_url contains 127.0.0.1 / localhost), else
-        False.
+      * ``native`` / ``auto`` / unset / anything else → False (native).
 
-    Soft-fails to False (the safe native default) on any error. Default is
-    ``auto`` so a local-endpoint deployment auto-gets the text protocol and a
-    cloud one keeps native — no flag to flip, and never a behavior change for
-    cloud.
+    Native tool-calling is now the DEFAULT everywhere — the same mechanism
+    OpenWebUI uses on these OpenAI-compatible endpoints (LM Studio etc.), which
+    handle native FC correctly, so the local-endpoint text heuristic was
+    penalising them for no reason. The text protocol remains available for a
+    genuinely tool-incapable local runtime (notably mlx-lm's 'zero tool_use'
+    bug) by setting ``AIFORGE_DOER_PROTOCOL=text``.
     """
-    mode = (os.environ.get("AIFORGE_DOER_PROTOCOL") or "auto").strip().lower()
-    if mode == "text":
-        return True
-    if mode == "native":
-        return False
-    try:
-        from aiforge_core.llm import router
-        ep = router.resolve(role)
-        base = (getattr(ep, "base_url", "") or "").lower()
-        return ("127.0.0.1" in base) or ("localhost" in base)
-    except Exception:  # noqa: BLE001 — native is the safe default
-        return False
+    mode = (os.environ.get("AIFORGE_DOER_PROTOCOL") or "native").strip().lower()
+    return mode == "text"
 
 
 __all__ = ["run_text_doer", "make_text_doer_node", "should_use_text_protocol"]

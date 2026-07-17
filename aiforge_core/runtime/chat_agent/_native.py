@@ -21,9 +21,14 @@ _NATIVE_CACHE: dict[str, bool] = {}
 
 
 def _protocol_setting() -> str:
-    """``native`` | ``text`` | ``auto`` (default). auto probes the model once."""
-    v = (os.environ.get("AIFORGE_CHAT_TOOL_PROTOCOL", "auto") or "auto").strip().lower()
-    return v if v in ("native", "text", "auto") else "auto"
+    """``native`` (DEFAULT) | ``text`` | ``auto``. Native is the default
+    everywhere — the text ACTION/ARGS_JSON protocol is the fumble-prone legacy
+    path. ``auto`` probes the model once; ``text`` forces the legacy protocol.
+    Native self-heals to text at runtime only on a DEFINITIVE tools-rejection
+    (see :func:`make_native_complete_fn`), so defaulting native is safe even for
+    an occasional model that can't do tools."""
+    v = (os.environ.get("AIFORGE_CHAT_TOOL_PROTOCOL", "native") or "native").strip().lower()
+    return v if v in ("native", "text", "auto") else "native"
 
 
 def reset_native_cache() -> None:
@@ -140,12 +145,26 @@ def make_native_complete_fn():
     from ._tools._schemas import NATIVE_TOOL_SCHEMAS
 
     def _fn(role: str, convo: list[dict]) -> str:
-        msg = client.complete_raw(
-            role, convo, tools=NATIVE_TOOL_SCHEMAS, tool_choice="auto")
+        # Known-incapable model (a prior turn hit a definitive tools-rejection)
+        # → text protocol, transparently. This is the ONLY thing that disables
+        # native, and it's per-model + self-discovered, never transient.
+        model = _model_for(role)
+        if _NATIVE_CACHE.get(model) is False:
+            return client.complete(role, convo)
+        try:
+            msg = client.complete_raw(
+                role, convo, tools=NATIVE_TOOL_SCHEMAS, tool_choice="auto")
+        except Exception as exc:  # noqa: BLE001
+            if _tools_unsupported(exc):
+                # DEFINITIVE: this model can't do native tools — cache + fall
+                # back to text for this and every future turn.
+                _NATIVE_CACHE[model] = False
+                log.info("native unsupported at runtime → text fallback (%s)", model)
+                return client.complete(role, convo)
+            raise  # transient (busy/timeout) → let the loop's retry handle it
         calls = msg.get("tool_calls") or []
-        # Observability: every model step here is a NATIVE call; log whether it
-        # produced a native tool_call or plain content so a run can be audited
-        # ("all calls native"). INFO so it lands in the service journal.
+        # Observability: log whether this native step produced a tool_call or
+        # plain content so a run can be audited ("all calls native").
         if calls:
             fn = (calls[0] or {}).get("function") or {}
             log.info("native tool_call: %s (n=%d)", fn.get("name"), len(calls))

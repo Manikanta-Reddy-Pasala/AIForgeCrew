@@ -151,27 +151,21 @@ def test_should_use_text_explicit_native(monkeypatch):
     assert td.should_use_text_protocol() is False
 
 
-def test_should_use_text_auto_local(monkeypatch):
+def test_should_use_text_auto_local_now_native(monkeypatch):
+    # Native is the default EVERYWHERE now — a local endpoint no longer forces
+    # the text protocol (LM Studio etc. do native FC fine; the same reason
+    # OpenWebUI works). Only AIFORGE_DOER_PROTOCOL=text opts out (for mlx-lm).
     monkeypatch.setenv("AIFORGE_DOER_PROTOCOL", "auto")
-    from aiforge_core.llm import router
-    monkeypatch.setattr(router, "resolve",
-                        lambda role: _ep("http://127.0.0.1:1234/v1"))
-    assert td.should_use_text_protocol() is True
+    assert td.should_use_text_protocol() is False
 
 
-def test_should_use_text_auto_localhost(monkeypatch):
-    monkeypatch.delenv("AIFORGE_DOER_PROTOCOL", raising=False)  # unset => auto
-    from aiforge_core.llm import router
-    monkeypatch.setattr(router, "resolve",
-                        lambda role: _ep("http://localhost:8080/v1"))
-    assert td.should_use_text_protocol() is True
+def test_should_use_text_default_unset_is_native(monkeypatch):
+    monkeypatch.delenv("AIFORGE_DOER_PROTOCOL", raising=False)  # unset => native
+    assert td.should_use_text_protocol() is False
 
 
 def test_should_use_text_auto_cloud(monkeypatch):
     monkeypatch.setenv("AIFORGE_DOER_PROTOCOL", "auto")
-    from aiforge_core.llm import router
-    monkeypatch.setattr(router, "resolve",
-                        lambda role: _ep("https://api.openai.com/v1"))
     assert td.should_use_text_protocol() is False
 
 
@@ -298,9 +292,8 @@ def test_node_pins_workspace_jail_during_run_and_restores(monkeypatch):
 def test_no_edit_guard_retries_then_flags_incomplete(monkeypatch):
     """A Doer that finishes with ZERO edits (hallucinated 'already done') gets
     one corrective retry and, still empty, is flagged incomplete."""
-    import os
-    from aiforge_core.runtime import text_doer as td
     from aiforge_core.runtime import chat_agent as ca
+    from aiforge_core.runtime import text_doer as td
     monkeypatch.setenv("AIFORGE_DOER_MIN_EDIT_RETRIES", "1")
     passes = []
 
@@ -319,8 +312,8 @@ def test_no_edit_guard_retries_then_flags_incomplete(monkeypatch):
 
 def test_no_edit_guard_noop_when_edit_made(monkeypatch):
     """A Doer that makes a real edit is NOT retried and NOT flagged."""
-    from aiforge_core.runtime import text_doer as td
     from aiforge_core.runtime import chat_agent as ca
+    from aiforge_core.runtime import text_doer as td
     passes = []
 
     def fake_edit(msgs, **kw):
