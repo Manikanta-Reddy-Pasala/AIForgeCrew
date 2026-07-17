@@ -348,43 +348,103 @@ def migrate_scoped() -> dict:
     return {"ok": True, "moved": moved, "scopes": okr_scopes()}
 
 
-def dedupe_nodes() -> dict:
-    """Remove DUPLICATE OKR nodes — same type + same SCOPE + same normalized
-    content (title / description / body). Keeps the first (lowest id), deletes
-    the rest. Fixes learnings/solutions duplicated by repeated migrations.
-    Returns {ok, removed, kept}. Soft-fail."""
-    import os
-    seen: dict = {}
-    removed = 0
+def _norm_concept(s: str) -> str:
+    """Normalize concept text for identity comparison — lowercase, keep only
+    alphanumerics + spaces, collapse whitespace. Shared by the write-time
+    concept lookup and the post-hoc dedupe so both agree on 'same concept'."""
+    return re.sub(r"\s+", " ",
+                  re.sub(r"[^a-z0-9 ]", "", (s or "").lower())).strip()
 
-    def _norm(s: str) -> str:
-        return re.sub(r"\s+", " ",
-                      re.sub(r"[^a-z0-9 ]", "", (s or "").lower())).strip()
+
+def _concept_of(d: dict) -> str:
+    """The concept text of a parsed node — body first (learnings/facts share the
+    same rule text even when titles differ), else description, else title."""
+    m = d.get("meta") or {}
+    return _norm_concept(d.get("body") or m.get("description") or m.get("title") or "")
+
+
+def find_by_concept(node_type: str, meta: dict, concept_text: str,
+                    *, threshold: float | None = None) -> str | None:
+    """Return the id of an EXISTING node of the same ``node_type`` and the same
+    resolved SCOPE whose concept text matches ``concept_text`` — exactly, or
+    fuzzily above ``threshold``. Lets a writer REUSE the concept's file (pass the
+    id back to :func:`save_node`) instead of minting a new incrementing id, so
+    types with no natural title key (learnings, key_results) still honour OKF
+    'one concept = one file' (≤1 per scope → ≤2 total: global + project).
+    ``None`` when no match. Soft-fail (returns None on any error)."""
+    if threshold is None:
+        try:
+            threshold = float(os.environ.get("AIFORGE_OKF_CONCEPT_SIMILARITY", "0.86"))
+        except (TypeError, ValueError):
+            threshold = 0.86
+    target = _norm_concept(concept_text)
+    if not target:
+        return None
+    try:
+        import difflib
+        want_scope = _scope_of(node_type, meta or {})
+        best: tuple[str, float] | None = None
+        for d in load_all():
+            if d.get("type") != node_type:
+                continue
+            if _scope_of(node_type, d.get("meta") or {}) != want_scope:
+                continue
+            cand = _concept_of(d)
+            if not cand:
+                continue
+            if cand == target:
+                return d.get("id")
+            r = difflib.SequenceMatcher(None, target, cand).ratio()
+            if r >= threshold and (best is None or r > best[1]):
+                best = (d.get("id"), r)
+        return best[0] if best else None
+    except Exception:  # noqa: BLE001 — lookup must never break a write
+        return None
+
+
+def dedupe_nodes() -> dict:
+    """Remove DUPLICATE OKR nodes — same type + same SCOPE + same-or-NEAR
+    content. Keeps the first (lowest id), deletes the rest. Matches EXACTLY on
+    normalized content and FUZZILY (difflib >= AIFORGE_OKF_CONCEPT_SIMILARITY,
+    default 0.86) so paraphrases of one concept — the L-01/L-07/L-13 pile-up the
+    learner produced over repeated runs — collapse to a single file, restoring
+    OKF 'one concept = one file'. Returns {ok, removed, kept}. Soft-fail."""
+    import difflib
+    import os
+    try:
+        threshold = float(os.environ.get("AIFORGE_OKF_CONCEPT_SIMILARITY", "0.86"))
+    except (TypeError, ValueError):
+        threshold = 0.86
+    # bucket kept concepts by (type, scope) so fuzzy compares stay in-scope
+    kept: dict[tuple, list[str]] = {}
+    removed = 0
     try:
         nodes = sorted(load_all(), key=lambda d: str(d.get("id") or ""))
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     for d in nodes:
-        m = d.get("meta") or {}
-        # key on the CONTENT (body) first — duplicates share the same rule/fact
-        # text even when their titles differ; fall back to description/title.
-        key_text = _norm(d.get("body") or m.get("description") or m.get("title") or "")
+        key_text = _concept_of(d)
         if not key_text:
             continue
-        sig = (d.get("type"), _scope_label_from_path(d.get("path", "")), key_text)
-        if sig in seen:
+        bucket = (d.get("type"), _scope_label_from_path(d.get("path", "")))
+        prior = kept.setdefault(bucket, [])
+        dup = key_text in prior or any(
+            difflib.SequenceMatcher(None, key_text, p).ratio() >= threshold
+            for p in prior)
+        if dup:
             try:
                 os.unlink(d["path"])
                 removed += 1
             except OSError:
                 pass
         else:
-            seen[sig] = d.get("id")
+            prior.append(key_text)
     if removed:
         _invalidate()
         _write_index()
-    return {"ok": True, "removed": removed, "kept": len(seen)}
+    return {"ok": True, "removed": removed, "kept": sum(len(v) for v in kept.values())}
 
 
 __all__ = ["okf_root", "type_dir", "next_id", "save_node", "read_node",
-           "load_all", "okr_scopes", "migrate_scoped", "dedupe_nodes"]
+           "load_all", "okr_scopes", "migrate_scoped", "dedupe_nodes",
+           "find_by_concept"]

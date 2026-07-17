@@ -138,7 +138,10 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None,
             meta["parent_objective"] = oid
         if kr.metrics.strip():
             meta["metrics"] = kr.metrics.strip()
-        r = _store.save_node("key_result", None, meta, "", reindex=False)
+        # REUSE the same-concept KR file (same scope + same title) instead of
+        # minting a fresh KR-NN each run — OKF 'one concept = one file'.
+        krid = _store.find_by_concept("key_result", meta, kr.title.strip())
+        r = _store.save_node("key_result", krid, meta, "", reindex=False)
         made["key_results"].append(r.get("id"))
     for ln in res.learnings:
         if not ln.rule.strip():
@@ -162,7 +165,12 @@ def extract_and_save(session_text: str, *, active_kr: str | None = None,
             if tp:
                 meta["category"] = tp
                 meta["tags"] = [f"topic:{tp}"]
-        r = _store.save_node("learning", None, meta, ln.rule.strip(),
+        # REUSE the same-concept learning file (same scope + same/near rule
+        # text) instead of minting a fresh L-NN each run — this is the primary
+        # fix for 'multiple files for the same topic': the learner ran twice
+        # over similar work and produced L-01, L-07, L-13… for one rule.
+        lid = _store.find_by_concept("learning", meta, ln.rule.strip())
+        r = _store.save_node("learning", lid, meta, ln.rule.strip(),
                              reindex=False)
         made["learnings"].append(r.get("id"))
     if made["objectives"] or made["key_results"] or made["learnings"]:
