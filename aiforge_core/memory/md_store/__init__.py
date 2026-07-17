@@ -90,6 +90,8 @@ from ._graph import (
     reconcile_briefs,
     reheal_scopes,
     resolve_contradictions,
+    fold_kind_briefs,
+    tidy_briefs,
 )
 from ._ingest import (
     _ingest_unit,
@@ -140,6 +142,8 @@ __all__ = [
     "map_scopes",
     "memory_dir",
     "merge_similar_topics",
+    "fold_kind_briefs",
+    "tidy_briefs",
     "migrate_briefs_to_folder",
     "migrate_captures_to_folder",
     "migrate_to_okr",

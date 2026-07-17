@@ -35,6 +35,8 @@ from ._reconcile import (
     merge_similar_topics,
     reconcile_briefs,
     resolve_contradictions,
+    fold_kind_briefs,
+    tidy_briefs,
 )
 
 __all__ = [
@@ -48,4 +50,6 @@ __all__ = [
     "reconcile_briefs",
     "reheal_scopes",
     "resolve_contradictions",
+    "fold_kind_briefs",
+    "tidy_briefs",
 ]

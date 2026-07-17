@@ -555,8 +555,12 @@ def force_recompact_all(on_step=None) -> dict:
         ("sweep", lambda: md_store.sweep_stale_captures(archive=True)),
         ("sweep_empty", lambda: md_store.sweep_empty_briefs(archive=True)),
         ("dedupe", dedupe_all),
+        # fold KIND-named junk briefs (compacted-learning.md, compacted-user-
+        # comment.md …) — minted by the old topic kind-fallback — into the global
+        # shared brief, then delete. Proper-named briefs only after this.
+        ("fold_kind", lambda: md_store.fold_kind_briefs()),
         # merge near-duplicate TOPIC briefs (gpsd/gpsd-config/gpsd-configuration,
-        # note/notes) into one — kills topic-brief sprawl.
+        # note/notes, gps/gpst) into one — kills topic-brief sprawl.
         ("merge_topics", lambda: md_store.merge_similar_topics()),
         # drop project/topic-brief facts that already live in the global brief
         # (recall unions global → those copies are pure redundancy).

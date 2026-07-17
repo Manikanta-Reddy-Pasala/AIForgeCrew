@@ -27,6 +27,13 @@ from ._capture import capture
 from ._ingest import _ingest_unit
 from ._render import _BRIEF_OBJECTIVE, _parse_brief, _render_brief
 
+# Sentinel topic key for a note the topic labeller couldn't theme. Such a note
+# already lives in its repo/shared brief, so it must NOT spawn a topic file —
+# and it must NEVER fall back to the note's KIND (that minted the junk
+# compacted-learning.md / compacted-user-comment.md briefs). `compact()` drops
+# this group before writing.
+_NO_TOPIC = "\x00no-topic"
+
 
 def sweep_stale_captures(*, archive: bool = True) -> dict:
     """Retire per-run capture files that MASQUERADE as canonical briefs.
@@ -251,13 +258,16 @@ def _group_key(d: dict, group_by: str) -> str:
         return "shared"
     if group_by == "topic":
         # Topic axis: explicit frontmatter `topic` or a `topic:<slug>` tag wins
-        # (no LLM needed); else the precomputed label; else kind.
+        # (no LLM needed); else the precomputed label; else UNGROUPED. A note the
+        # labeller couldn't theme returns _NO_TOPIC (dropped by compact()) — it
+        # must NOT fall back to the note's KIND, which minted junk briefs like
+        # compacted-learning.md / compacted-user-comment.md.
         if d.get("topic"):
             return d["topic"]
         for t in d.get("tags") or []:
             if t.startswith("topic:"):
-                return t.split(":", 1)[1] or (d.get("kind") or "note")
-        return d.get("_topic") or (d.get("kind") or "note")
+                return t.split(":", 1)[1] or _NO_TOPIC
+        return d.get("_topic") or _NO_TOPIC
     if group_by == "tag":
         return (d["tags"][0] if d.get("tags") else "untagged")
     if group_by == "source":
@@ -492,6 +502,10 @@ def compact(*, group_by: str = "kind", min_group: int = 2,
         groups: dict[str, list[dict]] = {}
         for d in live:
             groups.setdefault(_group_key(d, group_by), []).append(d)
+        # In topic mode, notes the labeller couldn't theme (_NO_TOPIC) must not
+        # form a topic file — they already live in their repo/shared brief.
+        if group_by == "topic":
+            groups.pop(_NO_TOPIC, None)
         result = {k: v for k, v in groups.items() if len(v) >= min_group}
         if force:
             # re-consolidate every EXISTING brief too (recheck all files) — add

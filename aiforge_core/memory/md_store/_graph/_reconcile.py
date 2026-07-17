@@ -17,6 +17,26 @@ from .._base import (
 from .._render import _fact_body, _parse_brief, _reconcile_dropped_index, _render_brief
 
 
+def _topic_merge_ratio() -> float:
+    """Fuzzy cutoff for clustering near-duplicate topic slugs. 0.85 catches
+    near-typos like gps/gpst (ratio ~0.857) while staying above the point where
+    distinct short slugs start colliding. Env AIFORGE_TOPIC_MERGE_RATIO."""
+    try:
+        return float(os.environ.get("AIFORGE_TOPIC_MERGE_RATIO", "0.85"))
+    except (TypeError, ValueError):
+        return 0.85
+
+
+# Brief stems that are a note's KIND, not a topic — these were minted by the old
+# kind-fallback in _group_key and are junk (compacted-learning.md etc.). tidy_
+# briefs folds them into the global shared brief.
+_KIND_BRIEF_STEMS = frozenset({
+    "learning", "topic-learning", "user-comment", "rule", "session", "note",
+    "project-learning", "topic-suggestion", "skills", "task-history",
+    "project", "repo",
+})
+
+
 _RECONCILE_SYS = (
     "You clean a set of knowledge-memory facts drawn from several scope briefs "
     "(each line: 'SCOPE :: fact'). Find DUPLICATES (same information, paraphrased "
@@ -280,11 +300,12 @@ def _topic_clusters(keys: list[str]) -> list[list[str]]:
                 ra, rb = rb, ra
             parent[rb] = ra
 
+    ratio = _topic_merge_ratio()
     for i, a in enumerate(keys):
         for b in keys[i + 1:]:
             if (a.startswith(b + "-") or b.startswith(a + "-")   # prefix family
                     or a == b + "s" or b == a + "s"              # plural (note/notes)
-                    or difflib.SequenceMatcher(None, a, b).ratio() >= 0.9):
+                    or difflib.SequenceMatcher(None, a, b).ratio() >= ratio):
                 union(a, b)
     groups: dict[str, list[str]] = {}
     for k in keys:
@@ -303,7 +324,6 @@ def merge_similar_topics() -> dict:
     (``AIFORGE_OKR_TOPIC_MERGE``); never raises. Returns ``{merged, groups}``."""
     if os.environ.get("AIFORGE_OKR_TOPIC_MERGE", "1") == "0":
         return {"merged": 0, "skipped": "disabled"}
-    from aiforge_core.runtime import work_notes
     # protect repo briefs: a discovered repo's brief must never fold into another
     protected = {"shared"}
     try:
@@ -376,3 +396,116 @@ def merge_similar_topics() -> dict:
                     encoding="utf-8")
                 done.append(cluster)
     return {"merged": merged, "groups": done}
+
+
+def _fold_kind_briefs(*, dry_run: bool) -> int:
+    """Fold every KIND-named junk brief (compacted-learning.md, compacted-user-
+    comment.md, …) INTO the global shared brief, then delete it. These have a
+    note's KIND as their name (minted by the old _group_key kind-fallback), not
+    a topic — their content is untopic'd knowledge that belongs in global.
+    Returns the count folded; dry_run only counts. Protects shared + repo briefs
+    (only _KIND_BRIEF_STEMS are touched)."""
+    kind_paths = [p for p in iter_briefs()
+                  if not _CAPTURE_SIG_RE.search(p.name)
+                  and p.stem[len("compacted-"):] in _KIND_BRIEF_STEMS]
+    if dry_run:
+        return len(kind_paths)
+    sp = brief_path("shared")
+    try:
+        sb = _parse_brief(sp.read_text(encoding="utf-8")) if sp.exists() else {
+            "facts": [], "learnings": [], "links": [], "key_results": [],
+            "body": "", "title": ""}
+    except OSError:
+        return 0
+    facts = list(sb["facts"]); learns = list(sb["learnings"])
+    links = list(sb.get("links") or []); krs = list(sb["key_results"])
+    body = sb["body"]; title = sb["title"] or "shared"
+    folded = 0
+    for p in kind_paths:
+        try:
+            kb = _parse_brief(p.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        seen = {_fact_body(x) for x in facts}
+        for f in kb["facts"]:
+            if f not in facts and _fact_body(f) not in seen:
+                facts.append(f); seen.add(_fact_body(f))
+        for l in kb["learnings"]:
+            if l not in learns:
+                learns.append(l)
+        for lk in (kb.get("links") or []):
+            if lk not in links:
+                links.append(lk)
+        for kr in kb["key_results"]:
+            if kr not in krs:
+                krs.append(kr)
+        if kb["body"] and kb["body"] not in body:
+            body = (body + "\n\n" + kb["body"]).strip() if body else kb["body"]
+        _reconcile_dropped_index(kb["facts"], p.stem[len("compacted-"):])
+        try:
+            from aiforge_core.memory import backend_select, sqlite_memory
+            if backend_select.embedded():
+                sqlite_memory.delete_by_source(f"compacted:{p.stem}")
+                sqlite_memory.delete_by_source(f"md:{p.stem}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            p.unlink()
+        except OSError:
+            pass
+        folded += 1
+    if folded:
+        sp.write_text(
+            _render_brief("shared", facts=facts, body_md=body, learnings=learns,
+                          title=title, key_results=krs, links=links),
+            encoding="utf-8")
+    return folded
+
+
+def fold_kind_briefs() -> dict:
+    """Fold KIND-named junk briefs into the global shared brief + delete them
+    (public step for the recompact pipeline). Returns ``{folded}``."""
+    with _WRITE_LOCK:
+        try:
+            return {"folded": _fold_kind_briefs(dry_run=False)}
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("fold_kind_briefs failed: %s", exc)
+            return {"folded": 0}
+
+
+def tidy_briefs(*, dry_run: bool = False) -> dict:
+    """One-shot Memory-folder tidy so briefs are PROPER-named, canonical, and
+    free of cross-scope duplicate content:
+      1. fold KIND-named junk briefs into the global shared brief (delete them),
+      2. merge near-duplicate TOPIC briefs into one canonical file,
+      3. drop project/topic facts already present in the global shared brief.
+    ``dry_run`` reports counts without touching disk. Never raises."""
+    with _WRITE_LOCK:
+        try:
+            folded = _fold_kind_briefs(dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("tidy_briefs: fold_kind failed: %s", exc)
+            folded = 0
+    if dry_run:
+        # count-only estimate for the other two passes
+        try:
+            keys = [p.stem[len("compacted-"):] for p in iter_briefs()
+                    if not _CAPTURE_SIG_RE.search(p.name)]
+            clusters = _topic_clusters(keys)
+            would_merge = sum(len(c) - 1 for c in clusters)
+        except Exception:  # noqa: BLE001
+            would_merge = 0
+        return {"ok": True, "dry_run": True, "folded_kind": folded,
+                "merged": would_merge, "deduped": 0}
+    try:
+        merged = merge_similar_topics().get("merged", 0)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("tidy_briefs: merge_similar_topics failed: %s", exc)
+        merged = 0
+    try:
+        deduped = dedupe_global_copies().get("removed", 0)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("tidy_briefs: dedupe_global_copies failed: %s", exc)
+        deduped = 0
+    return {"ok": True, "dry_run": False, "folded_kind": folded,
+            "merged": merged, "deduped": deduped}
