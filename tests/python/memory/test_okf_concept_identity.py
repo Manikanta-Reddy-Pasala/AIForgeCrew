@@ -62,6 +62,28 @@ def test_scope_isolation(store):
     assert lid is None                                  # project scope ≠ global
 
 
+def test_fold_session_scopes_to_global(store):
+    """Phantom projects/session-<id>/ scopes (unpinned chat scratch workspaces
+    mis-scoped as projects) are folded into GLOBAL, deduped, and their dirs
+    removed — restoring the ≤2-per-concept (global+project) shape."""
+    # two sessions each learned the SAME rule → phantom per-session projects
+    store.save_node("learning", None,
+                    {"workspace": "session-64", "scope": "repo:session-64"},
+                    "Always paginate jira_search")
+    store.save_node("learning", None,
+                    {"workspace": "session-65", "scope": "repo:session-65"},
+                    "Always paginate jira_search")
+    assert set(store.okr_scopes()) >= {"session-64", "session-65"}
+    res = store.fold_session_scopes_to_global()
+    assert res["ok"] and res["moved"] == 2
+    # both folded into global and collapsed to ONE concept file
+    gl = [d for d in store.load_all() if d.get("type") == "learning"
+          and store._scope_label_from_path(d["path"]) == "Global"]
+    assert len(gl) == 1
+    # the phantom session-* project dirs are gone
+    assert not any(s.startswith("session-") for s in store.okr_scopes())
+
+
 def test_dedupe_collapses_fuzzy_duplicates(store):
     meta = {"scope": "global"}
     # simulate the pre-fix pile-up: three near-identical learnings, distinct ids

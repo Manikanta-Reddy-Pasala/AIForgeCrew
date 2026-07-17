@@ -17,6 +17,7 @@ mid-migration. All reads soft-fail (a missing/half-written file is skipped).
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import threading
@@ -348,6 +349,51 @@ def migrate_scoped() -> dict:
     return {"ok": True, "moved": moved, "scopes": okr_scopes()}
 
 
+def fold_session_scopes_to_global() -> dict:
+    """Repair phantom ``projects/session-<id>/`` OKR scopes — an unpinned chat's
+    isolated scratch workspace that was mis-scoped as a project (one bogus
+    "project" per chat session). Relocates every node under a ``session-<id>``
+    scope into GLOBAL (fresh id, drop the old file), then dedupes the merged
+    globals and removes the now-empty ``session-*`` project dirs. Idempotent;
+    soft-fail. Returns ``{ok, moved, removed, dirs}``."""
+    import shutil
+    moved = 0
+    try:
+        for d in list(load_all()):
+            label = str(_scope_label_from_path(d.get("path", "")))
+            if not re.match(r"^session-\d+$", label):
+                continue
+            meta = dict(d.get("meta") or {})
+            meta.pop("workspace", None)
+            meta["scope"] = "global"
+            save_node(d.get("type"), None, meta, d.get("body") or "",
+                      reindex=False)
+            with contextlib.suppress(OSError):
+                os.unlink(d["path"])
+            moved += 1
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc), "moved": moved}
+    ded = dedupe_nodes()          # collapse the merged paraphrases in global
+    dirs = 0
+    pdir = os.path.join(okf_root(), "projects")
+    if os.path.isdir(pdir):
+        for n in list(os.listdir(pdir)):
+            if not re.match(r"^session-\d+$", n):
+                continue
+            sub = os.path.join(pdir, n)
+            # only remove once it holds no .md files (dedupe emptied it)
+            if not any(f.endswith(".md") for _r, _ds, fs in os.walk(sub)
+                       for f in fs):
+                with contextlib.suppress(OSError):
+                    shutil.rmtree(sub)
+                    dirs += 1
+    if moved or dirs:
+        _invalidate()
+        _write_index()
+    return {"ok": True, "moved": moved, "removed": ded.get("removed", 0),
+            "dirs": dirs}
+
+
 def _norm_concept(s: str) -> str:
     """Normalize concept text for identity comparison — lowercase, keep only
     alphanumerics + spaces, collapse whitespace. Shared by the write-time
@@ -447,4 +493,4 @@ def dedupe_nodes() -> dict:
 
 __all__ = ["okf_root", "type_dir", "next_id", "save_node", "read_node",
            "load_all", "okr_scopes", "migrate_scoped", "dedupe_nodes",
-           "find_by_concept"]
+           "find_by_concept", "fold_session_scopes_to_global"]

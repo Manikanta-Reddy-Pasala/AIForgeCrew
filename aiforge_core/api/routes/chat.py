@@ -422,6 +422,22 @@ def _delete_chat_workspace(cwd: str | None) -> bool:
     return True
 
 
+def _is_isolated_workspace(cwd: str | None) -> bool:
+    """True when ``cwd`` is a session's auto-created isolated scratch workspace
+    (``chat-workspaces/session-<id>``) — NOT a real project. Such a session must
+    not mint a phantom ``projects/session-<id>/`` OKR scope; its knowledge is
+    GLOBAL. Same containment check as :func:`_delete_chat_workspace`."""
+    if not cwd or not str(cwd).strip():
+        return False
+    try:
+        root = os.path.realpath(_chat_workspace_root())
+        target = os.path.realpath(str(cwd))
+    except Exception:  # noqa: BLE001
+        return False
+    return (target != root and target.startswith(root + os.sep)
+            and os.path.basename(target).startswith("session-"))
+
+
 @router.post("/api/chat/sessions", status_code=201)
 def chat_session_create(body: _NewSessionBody) -> dict:
     from aiforge_core.runtime import chat_store
@@ -1798,7 +1814,13 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                             try:
                                 from aiforge_core.memory import okf as _okr
                                 from aiforge_core.runtime.chat_agent import _chat_repo_key
-                                _rkey = _chat_repo_key(cwd)
+                                # An unpinned chat runs in an isolated scratch
+                                # workspace (chat-workspaces/session-<id>) — NOT
+                                # a real repo. Scope its knowledge GLOBAL instead
+                                # of minting a phantom projects/session-<id>/ OKR
+                                # tree (one bogus "project" per session).
+                                _rkey = None if _is_isolated_workspace(cwd) \
+                                    else _chat_repo_key(cwd)
                                 _msgs2 = chat_store.get_messages(session_id) or []
                                 _tx = "\n".join(
                                     f"{m.get('role')}: {m.get('content')}"
