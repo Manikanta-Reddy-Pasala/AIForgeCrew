@@ -45,10 +45,27 @@ def _model_for(role: str) -> str:
         return role
 
 
+def _tools_unsupported(exc: Exception) -> bool:
+    """A DEFINITIVE 'this endpoint can't do native tools' signal (vs a transient
+    busy/timeout/transport error). Only a tools/function rejection counts — a
+    timeout or connection drop on a model that's merely loading is inconclusive
+    and must NOT permanently disable native."""
+    m = str(exc).lower()
+    mentions_tools = "tool" in m or "function" in m
+    rejected = any(t in m for t in (
+        "unsupported", "not support", "does not support", "unknown", "invalid",
+        "no such", "not allowed", "not implemented"))
+    return mentions_tools and rejected
+
+
 def _probe_native(role: str) -> bool:
     """Force one tiny tool call; the endpoint supports native FC iff it returns
-    a ``tool_calls`` reply. A server without tool support errors (4xx) → False.
-    Cached per model so it costs one probe. Never raises."""
+    a ``tool_calls`` reply. Result is cached per model — but ONLY a definitive
+    outcome (a real response, or a tools-rejection error). A transient failure
+    (timeout / busy / model reloading) is inconclusive: it is NOT cached and we
+    stay OPTIMISTIC (return True) so a momentary endpoint hiccup can't disable
+    native for the whole process lifetime (it re-confirms on the next turn).
+    Never raises."""
     model = _model_for(role)
     if model in _NATIVE_CACHE:
         return _NATIVE_CACHE[model]
@@ -68,10 +85,15 @@ def _probe_native(role: str) -> bool:
             role, msgs, tools=tools, tool_choice="required",
             max_tokens=64, timeout_s=_probe_timeout())
         ok = bool(m.get("tool_calls"))
-    except Exception:  # noqa: BLE001 — no tool support / transport → text protocol
-        ok = False
-    _NATIVE_CACHE[model] = ok
-    return ok
+        _NATIVE_CACHE[model] = ok          # definitive: endpoint responded
+        return ok
+    except Exception as exc:  # noqa: BLE001
+        if _tools_unsupported(exc):
+            _NATIVE_CACHE[model] = False   # definitive: endpoint rejects tools
+            return False
+        # Inconclusive (busy / timeout / reloading) — don't cache, stay native.
+        log.info("native probe inconclusive (%s) — staying optimistic", exc)
+        return True
 
 
 def native_tools_enabled(role: str) -> bool:

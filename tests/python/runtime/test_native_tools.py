@@ -52,6 +52,38 @@ def test_protocol_env_overrides(monkeypatch):
     assert _native.native_tools_enabled("chat") is True
 
 
+def test_tools_unsupported_classifier():
+    assert _native._tools_unsupported(RuntimeError("this model does not support tools"))
+    assert _native._tools_unsupported(RuntimeError("unknown parameter: tools"))
+    # a plain timeout / connection drop is NOT a tools-rejection
+    assert not _native._tools_unsupported(TimeoutError("read timed out"))
+    assert not _native._tools_unsupported(ConnectionError("connection refused"))
+
+
+def test_probe_transient_failure_stays_optimistic(monkeypatch):
+    # A busy/reloading endpoint (timeout) must NOT cache False — native stays on
+    # and re-confirms next turn (the bug: one bad probe disabled native for the
+    # whole process).
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "busy-model")
+    import aiforge_core.llm.client as llm
+    monkeypatch.setattr(llm, "complete_raw",
+                        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("timed out")))
+    assert _native._probe_native("chat") is True          # optimistic
+    assert "busy-model" not in _native._NATIVE_CACHE       # NOT cached
+
+
+def test_probe_definitive_rejection_caches_false(monkeypatch):
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "no-tools-model")
+    import aiforge_core.llm.client as llm
+    monkeypatch.setattr(llm, "complete_raw",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("400 this model does not support tools")))
+    assert _native._probe_native("chat") is False
+    assert _native._NATIVE_CACHE["no-tools-model"] is False  # cached definitive
+
+
 def test_every_registry_tool_is_native():
     from aiforge_core.runtime.chat_agent._registry import TOOLS
     # EVERY registry tool is exposed natively (rich or permissive), and every
