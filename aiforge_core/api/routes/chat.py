@@ -424,6 +424,13 @@ def chat_session_create(body: _NewSessionBody) -> dict:
             s = chat_store.set_session_cwd(s["id"], ws) or s
         except OSError:
             pass
+    # Opening a NEW chat = moving away from the previous one — fold that prior
+    # session into memory in the background so its knowledge is recalled here.
+    try:
+        from aiforge_core.runtime import chat_session_fold
+        chat_session_fold.fold_previous_async(s["id"])
+    except Exception:  # noqa: BLE001 — a fold must never break session create
+        pass
     return s
 
 
@@ -536,6 +543,12 @@ def chat_session_delete(session_id: int) -> None:
     # Grab the isolated-workspace path BEFORE deleting the row so we can rm -rf
     # it — a lingering workspace's files otherwise leak into a future chat.
     _sess = chat_store.get_session(session_id)
+    # Fold this session's knowledge into memory BEFORE its rows go — otherwise
+    # deleting a chat silently discards everything worked out in it. Blocking +
+    # idempotent + never raises; skip via AIFORGE_SESSION_COMPACT_ON_SWITCH=0.
+    from aiforge_core.runtime import chat_session_fold
+    if chat_session_fold._enabled():
+        chat_session_fold.fold_sync(session_id)
     if not chat_store.delete_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
     _delete_chat_workspace((_sess or {}).get("cwd"))

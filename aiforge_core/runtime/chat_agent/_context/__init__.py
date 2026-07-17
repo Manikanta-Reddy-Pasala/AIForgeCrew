@@ -68,3 +68,10 @@ from ._verify import (
     _post_edit_syntax_error,
     _verify_fix_message,
 )
+from ._claim_guard import (
+    _claims_file_edits,
+    _edit_claim_guard_enabled,
+    _edit_claim_nudge,
+    _edit_claim_disclaimer,
+    _worktree_fingerprint,
+)

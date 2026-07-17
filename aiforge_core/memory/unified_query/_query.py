@@ -323,13 +323,16 @@ def query(
     # worked out in chat was invisible to ticket runs (only distilled facts
     # bridged). Surface it as a low-weight source so it informs without
     # dominating. Gated by AIFORGE_UMEM_CHAT (default on); soft-fails to [].
-    # Contamination guard (same as 7b): _chat_sessions searches ALL prior chat
-    # messages by text only — no repo filter — so generic build phrasing ("build
-    # a Python library with pytest tests") matches an UNRELATED past task and
-    # drags its content in. That was the concrete cross-task leak. For a scoped
-    # task skip it unless AIFORGE_UMEM_CROSS_TASK=1; keep it for global search.
-    if (repo is None or _cross_task) \
-            and os.environ.get("AIFORGE_UMEM_CHAT", "1") == "1":
+    # _chat_sessions searches ALL prior chat messages by text only (no repo
+    # filter). It was previously OFF for any scoped call (unless
+    # AIFORGE_UMEM_CROSS_TASK=1) to avoid a generic-phrasing cross-task leak —
+    # but that meant a normal repo-scoped chat NEVER recalled prior chats, the
+    # top user complaint. It's now ON for scoped calls too (default), kept at a
+    # low weight so it informs without dominating; disable with
+    # AIFORGE_UMEM_CHAT_SCOPED=0 (or AIFORGE_UMEM_CHAT=0 to kill it entirely).
+    _chat_scoped_ok = (repo is None or _cross_task
+                       or os.environ.get("AIFORGE_UMEM_CHAT_SCOPED", "1") == "1")
+    if _chat_scoped_ok and os.environ.get("AIFORGE_UMEM_CHAT", "1") == "1":
         try:
             rows = _pkg._chat_sessions(text, limit=limit,
                                        exclude_session=exclude_session)

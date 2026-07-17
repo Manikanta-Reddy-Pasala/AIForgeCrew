@@ -13,7 +13,7 @@ from ._tools import (_ROOT_SCOPED_TOOLS, _chat_repo_key, _preferences_context, _
 from ._registry import (TOOLS, _ANALYZE_BANNER, _BUILDER_FINALIZE_TOOL, _BUILDER_NUDGE_AFTER, _FINALIZE_TOOLS, _PLAN_BANNER, _READONLY_TOOLS, _is_mutating, _perf_family)
 from ._preview import (_diff_preview)
 from ._prompt import (_SYSTEM, _parse, _strip_reasoning_prefix)
-from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _fire_stop, _has_web_intent, _post_edit_syntax_error, _repo_name, _run_project_verify, _split_asks, _sys_prompt_budget_chars, _text_of, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled)
+from ._context import (_CANCELLED, _EDIT_TOOL_NAMES, _LOOP_REPEAT, _OUTPUT_REPEAT, _WEB_LOOKUP_DIRECTIVE, _cap_system_prompt, _cave_mode, _chat_session_recall, _claims_file_edits, _compact_convo, _complete_cancellable, _compress_prompt, _ctx_budget_chars, _ctx_on, _edit_claim_disclaimer, _edit_claim_guard_enabled, _edit_claim_nudge, _fire_stop, _has_web_intent, _post_edit_syntax_error, _repo_name, _run_project_verify, _split_asks, _sys_prompt_budget_chars, _text_of, _verify_fix_message, _verify_max_rounds, _verify_on_final_enabled, _worktree_fingerprint)
 
 def run_chat_agent(
     messages: list[dict], *,
@@ -411,6 +411,12 @@ def run_chat_agent(
     _verify_rounds = 0
     _verify_prev_fails = None   # last measured failure count (progress signal)
     _verify_stalls = 0
+    # Claim-vs-reality guard: baseline the working tree ONCE so a final answer
+    # claiming edits can be cross-checked against a real on-disk change (any
+    # tool, not just the counted ones). "" = non-git workspace / no signal.
+    # Skip the git call entirely when the guard is off.
+    _wt_fp0 = _worktree_fingerprint(cwd) if _edit_claim_guard_enabled() else ""
+    _edit_claim_nudges = 0
     while n < safety:
         n += 1
         if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -602,6 +608,29 @@ def run_chat_agent(
                     "missing work now (ACTIONs as needed) and produce ONE "
                     "complete FINAL covering all parts, numbered."})
                 continue
+            # Claim-vs-reality guard: the model asserts it edited/created files
+            # but landed ZERO edits this turn AND the working tree is unchanged
+            # (checked against every tool + any on-disk write, not just counted
+            # ones) — a hallucinated tool-use surfaced as prose (the frequent
+            # "I applied the fix to X / Confirmed Fixes Applied" with no diff).
+            # Nudge it to actually write (bounded); if it still won't, prepend an
+            # honest note so the user is never told a change landed that didn't.
+            # Opt out: AIFORGE_CHAT_EDIT_CLAIM_GUARD=0.
+            if (not plan_mode and not builder and _edits_made == 0
+                    and _edit_claim_guard_enabled()
+                    and _claims_file_edits(step.get("text") or "")
+                    and _worktree_fingerprint(cwd) == _wt_fp0):
+                if _edit_claim_nudges < 2:
+                    _edit_claim_nudges += 1
+                    if step.get("text"):
+                        yield {"type": "thought", "text": step["text"]}
+                    yield {"type": "thought", "role": "system",
+                           "text": "⚠ you described file edits but no write ran "
+                                   "and nothing changed on disk — applying for "
+                                   "real…"}
+                    convo.append({"role": "user", "content": _edit_claim_nudge()})
+                    continue
+                step["text"] = _edit_claim_disclaimer(step.get("text") or "")
             # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
             # act-mode run that actually EDITED files with a real test suite —
             # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
