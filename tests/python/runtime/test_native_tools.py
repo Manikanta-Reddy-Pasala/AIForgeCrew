@@ -52,12 +52,15 @@ def test_protocol_env_overrides(monkeypatch):
     assert _native.native_tools_enabled("chat") is True
 
 
-def test_core_schemas_match_registry():
+def test_every_registry_tool_is_native():
     from aiforge_core.runtime.chat_agent._registry import TOOLS
-    # every native schema name must dispatch through the real registry
-    for name in NATIVE_TOOL_NAMES:
-        assert name in TOOLS, f"native schema {name} missing from TOOLS registry"
+    # EVERY registry tool is exposed natively (rich or permissive), and every
+    # native name dispatches through the real registry — no orphans either way.
+    assert set(NATIVE_TOOL_NAMES) == set(TOOLS)
     # schemas are well-formed OpenAI function tools
     for s in NATIVE_TOOL_SCHEMAS:
         assert s["type"] == "function"
-        assert s["function"]["name"] and "parameters" in s["function"]
+        fn = s["function"]
+        assert fn["name"] and fn["parameters"]["type"] == "object"
+        # open object so an extra documented key still passes
+        assert fn["parameters"].get("additionalProperties") is True
