@@ -216,14 +216,17 @@ def build_bundle(cwd: str, query: str, *, cave: bool = False,
     # Consolidated per-repo project memory (compacted brief) — load it whenever
     # we have a repo, so opening a project brings its accumulated memory.
     b.project_brief_md = _safe(lambda: _project_brief(cwd))
-    # Relevance-matched playbooks. WORKFLOWS are built even in cave mode — a
-    # matched workflow is a MANDATORY user procedure (branch/MR conventions);
-    # silently dropping it on a small window made the agent skip it (e.g.
-    # commit straight to main). Skills stay cave-skipped (searchable on demand).
+    # Relevance-matched playbooks. WORKFLOWS + SKILLS are both static QUALITY
+    # context (how to do the task right), NOT the growing history that makes
+    # small models drift — so BOTH are built even in cave mode. Dropping skills
+    # to save tokens was a quality regression; token safety comes from
+    # condensing HISTORY early + the system-prompt cap (which trims the
+    # lowest-priority TAIL first — skills are ordered above the repo-map, so
+    # they survive a tight window).
     if ctx_on("workflows"):
         b.workflows_md = _safe(lambda: _wf.auto_context(query, cwd))
         b.used_workflows = _safe(lambda: _wf.selected_names(query, cwd), default=[])
-    if not cave and ctx_on("skills"):
+    if ctx_on("skills"):
         b.skills_md = _safe(lambda: _sk.auto_context(query, cwd))
         b.used_skills = _safe(lambda: _sk.selected_names(query, cwd), default=[])
     if want_summary and ctx_on("summary"):

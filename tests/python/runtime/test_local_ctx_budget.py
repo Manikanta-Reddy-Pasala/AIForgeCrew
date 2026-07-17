@@ -80,18 +80,20 @@ def test_cave_budget_smaller_than_non_cave(ca, monkeypatch):
     assert ca._ctx_budget_chars() < normal
 
 
-# --- window-aware cave auto-enable -----------------------------------------
+# --- cave is the STANDARD DEFAULT across all models ------------------------
 
-def test_cave_auto_enables_on_small_window(ca, monkeypatch):
+def test_cave_default_on_small_window(ca, monkeypatch):
     monkeypatch.delenv("AIFORGE_CAVE_MODE", raising=False)
-    monkeypatch.setenv("AIFORGE_LOCAL_CTX_WINDOW", "32768")   # <= 48K
+    monkeypatch.setenv("AIFORGE_LOCAL_CTX_WINDOW", "32768")
     assert ca._cave_mode() is True
 
 
-def test_cave_off_on_large_window_when_unset(ca, monkeypatch):
+def test_cave_default_on_even_on_large_window(ca, monkeypatch):
+    """Cave is standard EVERYWHERE now — a big window no longer opts out on its
+    own; the operator must set AIFORGE_CAVE_MODE=0 to keep the full window."""
     monkeypatch.delenv("AIFORGE_CAVE_MODE", raising=False)
     monkeypatch.setenv("AIFORGE_LOCAL_CTX_WINDOW", "131072")  # big model
-    assert ca._cave_mode() is False
+    assert ca._cave_mode() is True
 
 
 def test_explicit_env_forces_cave_on_regardless_of_window(ca, monkeypatch):

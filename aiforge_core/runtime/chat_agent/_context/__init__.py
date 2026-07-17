@@ -35,8 +35,6 @@ from ._compaction import (
     _compact_convo,
 )
 from ._window import (
-    _CAVE_AUTO_WINDOW_DEFAULT,
-    _cave_auto_window,
     _resolved_window,
     _window_scaled,
     _cave_mode,

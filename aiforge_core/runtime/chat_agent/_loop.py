@@ -261,12 +261,19 @@ def run_chat_agent(
     # must outrank the repo-map (the agent can always grep structure back).
     if _ctx_on("workflows"):
         _add_sys_block("workflows", _bundle.workflows_md)
-    if not cave and _ctx_on("skills"):
+    # SKILLS are static QUALITY context (how to do the task right), not the
+    # growing history that makes small models drift — so cave KEEPS them. Token
+    # safety comes from condensing HISTORY early + the _cap_system_prompt
+    # backstop (which drops the lowest-priority TAIL first, and skills are
+    # ordered ABOVE the repo-map so they survive a tight window). Dropping
+    # skills to save tokens was a quality regression; don't.
+    if _ctx_on("skills"):
         _add_sys_block("skills", _bundle.skills_md)
     if _ctx_on("repomap"):
         _add_sys_block("repo-map", _bundle.repo_map_md)
-    # @-mentions — optional; cave mode skips (searchable on demand).
-    if not cave and _ctx_on("mentions"):
+    # @-mentions — static quality context too; KEEP in cave (the cap trims it
+    # from the tail only if the window is genuinely too tight).
+    if _ctx_on("mentions"):
         try:
             from aiforge_core.runtime import mentions as _mentions
             ment_block, _toks = _mentions.expand(last_user, cwd)
@@ -278,7 +285,7 @@ def run_chat_agent(
     # redundant — the recall bundle already carries a prior-chat source and the
     # prev-session block carries the immediate prior conversation — so skip it to
     # avoid surfacing the same session twice (audit R6).
-    _prev_session_on = (_is_init and not cave and session_id is not None
+    _prev_session_on = (_is_init and session_id is not None
                         and os.environ.get("AIFORGE_SESSION_PREV_CONTEXT", "1") != "0")
     # Self-learning recall — EVERY turn, keyed to the CURRENT user message
     # (from the shared bundle). Cave mode pulls fewer hits.
@@ -299,7 +306,7 @@ def run_chat_agent(
                 except Exception:  # noqa: BLE001
                     _drop = None
             _add_sys_block("chat-recall", _chat_session_recall(
-                last_user, session_id, limit=(2 if cave else 4),
+                last_user, session_id, limit=4,
                 drop_session=_drop))
     elif _ctx_on("recall"):
         # LITE (default): don't pre-dump on follow-ups — but the SESSION-START
@@ -319,7 +326,8 @@ def run_chat_agent(
     # conversation forward so a follow-up asked in a NEW chat has its context
     # (the tail of the prior session, framed as SUPERSEDABLE — a contradicting
     # new ask wins). Cheap local scan, opening turn only; AIFORGE_SESSION_PREV_
-    # CONTEXT=0 disables. Skipped in cave mode (tight window).
+    # CONTEXT=0 disables. Kept in cave too — it's quality continuity, not
+    # growing history; the cap trims it only if the window is genuinely tight.
     if _prev_session_on:
         try:
             from aiforge_core.runtime import chat_okr as _cokr

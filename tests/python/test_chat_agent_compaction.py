@@ -106,11 +106,11 @@ def test_condense_summary_includes_earlier_asks(monkeypatch):
     assert "Earlier asks:" in sys_text and "invoice exporter" in sys_text
 
 
-def test_cave_mode_skips_optional_blocks_and_shrinks_budget(tmp_path, monkeypatch):
-    """Cave mode drops skills/mentions blocks + condenses sooner. WORKFLOWS
-    are still built even in cave — a matched workflow is a MANDATORY user
-    procedure (branch/MR conventions); silently dropping it on small windows
-    made the agent e.g. commit straight to main."""
+def test_cave_mode_keeps_quality_blocks_and_shrinks_budget(tmp_path, monkeypatch):
+    """Cave mode condenses HISTORY sooner (smaller budget) but does NOT drop
+    quality context: skills, mentions AND workflows are all still assembled —
+    they're static how-to context, not the growing history that makes small
+    models drift. Dropping skills to save tokens was a quality regression."""
     from aiforge_core.runtime import chat_agent as ca
     seen = {"skills": 0, "workflows": 0, "mentions": 0}
     import aiforge_core.runtime.skills as sk
@@ -120,7 +120,7 @@ def test_cave_mode_skips_optional_blocks_and_shrinks_budget(tmp_path, monkeypatc
     monkeypatch.setattr(wf, "auto_context", lambda *a, **k: (seen.__setitem__("workflows", seen["workflows"] + 1), "WF")[1])
     monkeypatch.setattr(mn, "expand", lambda *a, **k: (seen.__setitem__("mentions", seen["mentions"] + 1), ("M", 0))[1])
 
-    # Budget shrinks in cave mode.
+    # Budget shrinks in cave mode (condense fires sooner).
     monkeypatch.setenv("AIFORGE_CAVE_MODE", "0")
     monkeypatch.delenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", raising=False)
     normal = ca._ctx_budget_chars()
@@ -130,7 +130,6 @@ def test_cave_mode_skips_optional_blocks_and_shrinks_budget(tmp_path, monkeypatc
     fn = _scripted(["FINAL: done"])
     list(ca.run_chat_agent([{"role": "user", "content": "hi"}],
                            cwd=str(tmp_path), complete_fn=fn))
-    # In cave mode the OPTIONAL blocks were never assembled; workflows
-    # (mandatory procedures) still were.
-    assert seen["skills"] == 0 and seen["mentions"] == 0
+    # Cave keeps the QUALITY blocks — nothing dropped to save tokens.
+    assert seen["skills"] >= 1 and seen["mentions"] >= 1
     assert seen["workflows"] >= 1

@@ -3,23 +3,6 @@ from __future__ import annotations
 import os
 
 
-# Below this resolved context window (tokens) a small local box gets lean
-# ("cave") context automatically — the operator needn't flip a setting.
-# Override the threshold with AIFORGE_CAVE_AUTO_WINDOW; a big-window model
-# stays above it and keeps the full context.
-_CAVE_AUTO_WINDOW_DEFAULT = 49152   # 48K
-
-
-def _cave_auto_window() -> int:
-    raw = os.environ.get("AIFORGE_CAVE_AUTO_WINDOW")
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return _CAVE_AUTO_WINDOW_DEFAULT
-
-
 def _resolved_window(role: str | None = None) -> int:
     """The resolved context window in tokens. Routes through the ONE window
     source (``model_registry.effective_context_window``) so cave sizing, the
@@ -58,10 +41,11 @@ def _cave_mode() -> bool:
     Resolution — an EXPLICIT operator choice always wins, in order:
       1. env ``AIFORGE_CAVE_MODE`` (1/0 force on/off)
       2. an explicitly-stored ``cave_mode`` setting (UI wrote it — 1/0)
-    Only when NEITHER is set do we AUTO-enable cave for a small resolved
-    context window (<= ``AIFORGE_CAVE_AUTO_WINDOW``, default 48K), so a
-    small local box gets lean context without the operator flipping a
-    setting while a big-window model keeps the full context."""
+    When NEITHER is set, cave is the STANDARD DEFAULT across ALL models — lean
+    context everywhere, because the small local models this runs on drift +
+    hallucinate as context grows and lean context is the safe default. An
+    operator on a strong big-window model opts OUT with ``AIFORGE_CAVE_MODE=0``
+    (or the ``cave_mode`` setting)."""
     env = os.environ.get("AIFORGE_CAVE_MODE")
     if env is not None:
         return env not in ("0", "false", "")
@@ -74,12 +58,8 @@ def _cave_mode() -> bool:
             return stored > 0
     except Exception:  # noqa: BLE001
         pass
-    # Unset → auto-enable when the window is small enough that the full
-    # context wouldn't fit comfortably.
-    try:
-        return _resolved_window() <= _cave_auto_window()
-    except Exception:  # noqa: BLE001
-        return False
+    # Unset → cave ON by default, standard across all models.
+    return True
 
 
 def _compress_prompt(text: str) -> str:
@@ -117,6 +97,32 @@ _SYSTEM_PROMPT_CHARS = 14000
 _CTX_BUDGET_FLOOR_CHARS = 4000
 
 
+# Live-history fraction of the window kept before an auto-condense fires.
+# Cave is the STANDARD DEFAULT (see :func:`_cave_mode`), so the cave value is
+# what a model gets unless the operator explicitly opts out on a strong,
+# big-window model.
+_CAVE_CONDENSE_FRACTION = 0.40     # cave (default) → compact at ~40% full
+_FULL_CONDENSE_FRACTION = 0.85     # cave opted OUT (strong model) → use window
+
+
+def _history_fraction(role: str | None = None) -> float:
+    """Fraction of the (post-reserve) window kept as LIVE history before an
+    auto-condense fires. An explicit ``AIFORGE_CTX_HISTORY_FRACTION`` wins;
+    otherwise cave mode (the standard default for the small local models this
+    runs on) condenses early at :data:`_CAVE_CONDENSE_FRACTION` (~40% full) —
+    small models drift + invent file edits as live context grows, so keeping
+    the live slice small is what stops the hallucination. An operator who opted
+    OUT of cave on a strong big-window model keeps :data:`_FULL_CONDENSE_FRACTION`
+    of the window. Clamped to a sane band."""
+    env = os.environ.get("AIFORGE_CTX_HISTORY_FRACTION")
+    if env is not None:
+        try:
+            return min(0.95, max(0.15, float(env)))
+        except (TypeError, ValueError):
+            pass
+    return _CAVE_CONDENSE_FRACTION if _cave_mode() else _FULL_CONDENSE_FRACTION
+
+
 def _ctx_budget_chars(role: str | None = None,
                       sys_chars: int | None = None) -> int:
     """Char budget for the running conversation before auto-condensing. 0
@@ -152,19 +158,11 @@ def _ctx_budget_chars(role: str | None = None,
         except Exception:  # noqa: BLE001
             win = 0
     # Fraction of the (post-reserve) window kept as live history before we
-    # condense. This is a SAFETY margin ON TOP of the explicit output + system
-    # reservations below (the 4-chars/token estimate is imprecise and a turn's
-    # tool output can still grow mid-flight), so it is < 1.0 on purpose — but
-    # the old 0.55 was too conservative and made a big window (e.g. a 256k model)
-    # feel like ~120k. 0.85 uses most of a large window (256k → condense ~210k)
-    # while still leaving a ~15% cushion for the 4-chars/token estimate error +
-    # mid-turn tool growth. Cave mode still condenses sooner. Tunable per deploy.
-    _default_frac = 0.40 if _cave_mode() else 0.85
-    try:
-        headroom = float(os.environ.get("AIFORGE_CTX_HISTORY_FRACTION", _default_frac))
-        headroom = min(0.95, max(0.15, headroom))  # clamp to a sane band
-    except (TypeError, ValueError):
-        headroom = _default_frac
+    # condense — see :func:`_history_fraction`. Cave (the standard default)
+    # condenses at ~40% full: small models drift + invent edits as live context
+    # grows LONG before the window physically fills, so the live slice is kept
+    # small. A strong model with cave opted out keeps ~85%. Env-tunable.
+    headroom = _history_fraction(role)
     if win > 0:
         # Reserve what the request needs beyond history: the model's own reply
         # (output cap) and the system prompt. ~4 chars/token.

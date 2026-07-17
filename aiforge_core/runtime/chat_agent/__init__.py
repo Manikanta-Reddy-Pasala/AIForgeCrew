@@ -230,8 +230,6 @@ from ._context import (
     _GEN_SEM,
     _gen_sem,
     _complete_cancellable,
-    _CAVE_AUTO_WINDOW_DEFAULT,
-    _cave_auto_window,
     _resolved_window,
     _window_scaled,
     _cave_mode,
