@@ -56,10 +56,13 @@ def _probe_native(role: str) -> bool:
                        "properties": {"ack": {"type": "string"}},
                        "required": []}}}]
     msgs = [{"role": "user", "content": "Call the aiforge_ping tool with ack='ok'."}]
+    # tool_choice MUST be a string ("none"/"auto"/"required") — LM Studio (and
+    # some other OpenAI-compatible servers) reject the object form with HTTP 400
+    # ("Invalid tool_choice type: 'object'"). "required" forces a call so the
+    # probe gets a deterministic positive signal on a tool-capable endpoint.
     try:
         m = client.complete_raw(
-            role, msgs, tools=tools,
-            tool_choice={"type": "function", "function": {"name": "aiforge_ping"}},
+            role, msgs, tools=tools, tool_choice="required",
             max_tokens=64, timeout_s=_probe_timeout())
         ok = bool(m.get("tool_calls"))
     except Exception:  # noqa: BLE001 — no tool support / transport → text protocol
