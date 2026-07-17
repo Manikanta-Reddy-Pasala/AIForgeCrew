@@ -38,28 +38,18 @@ def _cave_mode() -> bool:
     skills/workflows/mentions blocks, fewer memory hits, tighter condense
     budget).
 
-    Resolution — an EXPLICIT operator choice always wins, in order:
-      1. env ``AIFORGE_CAVE_MODE`` (1/0 force on/off)
-      2. an explicitly-stored ``cave_mode`` setting (UI wrote it — 1/0)
-    When NEITHER is set, cave is the STANDARD DEFAULT across ALL models — lean
-    context everywhere, because the small local models this runs on drift +
-    hallucinate as context grows and lean context is the safe default. An
-    operator on a strong big-window model opts OUT with ``AIFORGE_CAVE_MODE=0``
-    (or the ``cave_mode`` setting)."""
-    env = os.environ.get("AIFORGE_CAVE_MODE")
-    if env is not None:
-        return env not in ("0", "false", "")
+    Cave is the STANDARD DEFAULT across ALL models (``cave_mode`` default 1) —
+    lean, hallucination-safe context everywhere, because the small local models
+    this runs on drift + invent edits as context grows. Resolves through the one
+    settings resolver (stored ``cave_mode`` → ``AIFORGE_CAVE_MODE`` env →
+    default 1); an operator on a strong big-window model opts OUT with either.
+    A stale seeded 0 from the old default is cleared by
+    ``runtime_settings._migrate_stale_cave_default`` so this default holds."""
     try:
         from aiforge_core.config import runtime_settings
-        # Distinguish an explicitly-stored value from the unset default (a
-        # stored 0 = operator opted OUT and must be respected).
-        stored = runtime_settings._read_store().get("cave_mode")
-        if isinstance(stored, int):
-            return stored > 0
+        return runtime_settings.get("cave_mode") > 0
     except Exception:  # noqa: BLE001
-        pass
-    # Unset → cave ON by default, standard across all models.
-    return True
+        return True
 
 
 def _compress_prompt(text: str) -> str:

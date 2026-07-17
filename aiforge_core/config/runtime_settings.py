@@ -28,7 +28,6 @@ per-role ``agent_config.json`` load/merge logic.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -44,11 +43,14 @@ _SPEC: dict[str, tuple[str, int]] = {
     # multimodal model the allowlist doesn't recognise). Auto-detection by model
     # id still applies when this is 0.
     "vision_capable": ("AIFORGE_CHAT_VISION_CAPABLE", 0),
-    # 0/1 "cave mode": send the agents the leanest useful context — smaller repo
-    # map, skip optional skills/workflows/mentions blocks, fewer memory hits,
-    # tighter condense budget, harder prompt compression. Cheaper + faster on a
-    # small local model; the agent can still grep/read on demand.
-    "cave_mode": ("AIFORGE_CAVE_MODE", 0),
+    # 0/1 "cave mode": lean, hallucination-safe context — smaller repo map,
+    # condense HISTORY early (~40% window) so small local models don't drift +
+    # invent edits as context grows. Quality blocks (skills/workflows/mentions/
+    # recall) are KEPT. DEFAULT 1 (standard across all local models); an operator
+    # on a strong big-window cloud model opts OUT with AIFORGE_CAVE_MODE=0 or the
+    # setting. (A stale seeded 0 from the old default is cleared by
+    # _migrate_stale_cave_default so this default actually takes effect.)
+    "cave_mode": ("AIFORGE_CAVE_MODE", 1),
     # 0/1: summarise the dropped middle with the model (code-aware) on condense,
     # instead of the cheap heuristic breadcrumb. Swappable model: AIFORGE_COMPACT_ROLE.
     "compact_llm": ("AIFORGE_COMPACT_LLM", 0),
@@ -169,8 +171,41 @@ def set_many(values: dict[str, Any]) -> dict[str, int]:
         if not (lo <= ival <= hi):
             raise ValueError(f"{name} must be between {lo} and {hi}")
         store[name] = ival
+    # Stamp the cave-default migration marker on any write, so a store CREATED
+    # after this change (a fresh install saving settings) is never later
+    # "migrated" — its cave_mode value, including a deliberate 0, is a real
+    # operator choice. Only PRE-EXISTING stores (no marker) get the one-time
+    # stale-0 clear in _migrate_stale_cave_default.
+    store["_cave_default_v2"] = 1
     _fc.write_json(_path(), store)   # atomic + busts the read cache
     return all_settings()
+
+
+def _migrate_stale_cave_default() -> None:
+    """One-time: the ``cave_mode`` default flipped 0→1 (cave is now standard
+    across all models). A store seeded with the OLD default 0 — or written by an
+    early UI save that persisted every knob — would otherwise pin cave OFF
+    forever and defeat the new default. Clear a stale ``cave_mode == 0`` ONCE
+    (guarded by a persisted marker), so it reverts to the new default. A
+    deliberate opt-out an operator sets AFTER this migration is preserved
+    (the marker stops the migration re-running). Idempotent + atomic; on a
+    fresh install (no store file) there's nothing to migrate. Never raises."""
+    try:
+        p = _path()
+        if not p.exists():
+            return
+        store = _read_store()
+        if store.get("_cave_default_v2"):
+            return
+        if store.get("cave_mode") == 0:
+            store.pop("cave_mode", None)   # revert to the new default (1)
+        store["_cave_default_v2"] = 1
+        _fc.write_json(p, store)
+    except Exception:  # noqa: BLE001 — a migration must never break startup
+        pass
+
+
+_migrate_stale_cave_default()
 
 
 __all__ = ["get", "explicit", "all_settings", "set_many"]

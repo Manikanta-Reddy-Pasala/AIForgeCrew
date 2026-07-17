@@ -22,12 +22,36 @@ def test_defaults(rs):
     assert rs.get("max_output_tokens") == 8192
     assert rs.get("context_window") == 131072
     assert rs.get("vision_capable") == 0
-    assert rs.get("cave_mode") == 0
+    assert rs.get("cave_mode") == 1        # cave is the STANDARD DEFAULT now
     assert rs.all_settings() == {
         "max_output_tokens": 8192, "context_window": 131072,
-        "vision_capable": 0, "cave_mode": 0, "compact_llm": 0,
+        "vision_capable": 0, "cave_mode": 1, "compact_llm": 0,
         "ctx_no_recall": 0, "ctx_no_mentions": 0, "ctx_no_skills": 0,
         "ctx_no_workflows": 0, "ctx_no_repomap": 0, "ctx_no_summary": 0}
+
+
+def test_stale_cave_zero_migrated_to_default(rs, monkeypatch):
+    """A store seeded with the OLD cave_mode default (0) is cleared once so cave
+    reverts to the new standard default (1). The migration is marked so it never
+    re-runs."""
+    import json
+    p = rs._path()
+    p.write_text(json.dumps({"cave_mode": 0, "context_window": 200000}))
+    rs._migrate_stale_cave_default()
+    assert rs.get("cave_mode") == 1                 # reverted to new default
+    assert rs.get("context_window") == 200000       # other knobs untouched
+    stored = rs._read_store()
+    assert "cave_mode" not in stored                # stale value removed
+    assert stored.get("_cave_default_v2") == 1      # marked
+
+
+def test_deliberate_cave_off_on_fresh_install_preserved(rs):
+    """A fresh install that saves cave_mode=0 is a REAL opt-out — set_many
+    stamps the marker so the migration never clears it."""
+    rs.set_many({"cave_mode": 0})                   # stamps _cave_default_v2
+    assert rs._read_store().get("_cave_default_v2") == 1
+    rs._migrate_stale_cave_default()                # must NOT clear it
+    assert rs.get("cave_mode") == 0
 
 
 def test_env_overrides_default(rs, monkeypatch):
