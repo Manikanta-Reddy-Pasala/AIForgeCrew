@@ -11,7 +11,10 @@ only changes HOW the next step is produced. Text protocol stays the fallback.
 from __future__ import annotations
 
 import json
+import logging
 import os
+
+log = logging.getLogger("aiforge.chat.native")
 
 # model id -> native-tool support (probed once, then cached).
 _NATIVE_CACHE: dict[str, bool] = {}
@@ -117,6 +120,15 @@ def make_native_complete_fn():
     def _fn(role: str, convo: list[dict]) -> str:
         msg = client.complete_raw(
             role, convo, tools=NATIVE_TOOL_SCHEMAS, tool_choice="auto")
+        calls = msg.get("tool_calls") or []
+        # Observability: every model step here is a NATIVE call; log whether it
+        # produced a native tool_call or plain content so a run can be audited
+        # ("all calls native"). INFO so it lands in the service journal.
+        if calls:
+            fn = (calls[0] or {}).get("function") or {}
+            log.info("native tool_call: %s (n=%d)", fn.get("name"), len(calls))
+        else:
+            log.info("native content step (no tool_call)")
         return _synth_step(msg)
 
     return _fn

@@ -37,6 +37,7 @@ def run_chat_agent(
     ``{"type": "approval", ...}`` (ask-policy gate) ·
     ``{"type": "error", "text"}`` · ``{"type": "done"}``.
     """
+    _native_on = False
     if complete_fn is None:
         from aiforge_core.llm.client import complete as complete_fn  # type: ignore
         # Native OpenAI tool-calling — the reliable alternative to the text
@@ -50,6 +51,7 @@ def run_chat_agent(
             from ._native import make_native_complete_fn, native_tools_enabled
             if native_tools_enabled(role):
                 complete_fn = make_native_complete_fn()
+                _native_on = True
         except Exception:  # noqa: BLE001 — native must never break the turn
             pass
 
@@ -430,6 +432,17 @@ def run_chat_agent(
     # Skip the git call entirely when the guard is off.
     _wt_fp0 = _worktree_fingerprint(cwd) if _edit_claim_guard_enabled() else ""
     _edit_claim_nudges = 0
+    # One-time visibility: confirm native tool-calling is driving this run (every
+    # tool call goes through native OpenAI function-calling, not the text
+    # ACTION/ARGS_JSON protocol). Opt out of the banner: AIFORGE_CHAT_NATIVE_BANNER=0.
+    if _native_on and os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") not in ("0", "false"):
+        try:
+            from ._tools._schemas import NATIVE_TOOL_SCHEMAS
+            _ntools = len(NATIVE_TOOL_SCHEMAS)
+        except Exception:  # noqa: BLE001
+            _ntools = 0
+        yield {"type": "thought", "role": "system",
+               "text": f"🔌 native tool-calling active ({_ntools} tools)"}
     while n < safety:
         n += 1
         if session_id is not None and chat_cancel.is_cancelled(session_id):
