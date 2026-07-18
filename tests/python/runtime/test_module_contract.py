@@ -4,7 +4,7 @@ lives (the `from .queue import X` vs class-in-core.py failure)."""
 from __future__ import annotations
 
 from aiforge_core.runtime.parallel_subtasks._planning import (
-    _module_contract, _plan_files,
+    _module_contract, _plan_files, _validate_plan,
 )
 
 
@@ -45,6 +45,26 @@ def test_every_subtask_goal_carries_the_map():
     # and so does every other buildable subtask
     for s in subs:
         assert "PROJECT MODULE MAP" in s["goal"]
+
+
+def test_over_fragmentation_gate_reasks_to_consolidate(monkeypatch):
+    monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES", "6")
+    # 7 non-test code modules → over-fragmented → an issue naming the cap
+    over = ([{"path": f"pkg/m{i}.py", "purpose": "x", "api": []} for i in range(7)]
+            + [{"path": "tests/test_a.py", "purpose": "t", "api": []},
+               {"path": "pyproject.toml", "purpose": "manifest", "api": []}])
+    _clean, issues = _validate_plan(over)
+    assert any("over-fragmented" in i and "at most 6" in i for i in issues)
+
+
+def test_cap_ignores_tests_and_manifest(monkeypatch):
+    monkeypatch.setenv("AIFORGE_ARCHITECT_MAX_MODULES", "3")
+    # 3 code modules + MANY tests + manifest → tests/manifest don't count → no gate
+    plan = ([{"path": f"pkg/m{i}.py", "purpose": "x", "api": []} for i in range(3)]
+            + [{"path": f"tests/test_m{i}.py", "purpose": "t", "api": []} for i in range(3)]
+            + [{"path": "pyproject.toml", "purpose": "m", "api": []}])
+    _clean, issues = _validate_plan(plan)
+    assert not any("over-fragmented" in i for i in issues)
 
 
 def test_plan_files_still_unique_slugs_and_paths():

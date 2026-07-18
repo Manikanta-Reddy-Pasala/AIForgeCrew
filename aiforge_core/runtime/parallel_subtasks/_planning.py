@@ -400,6 +400,20 @@ _PLAN_CODE_EXTS = {"py", "java", "js", "ts", "tsx", "go", "rs", "kt", "rb",
                    "c", "cpp", "cs", "php"}
 
 
+def _max_code_modules() -> int:
+    """Cap on NON-TEST code modules in one plan. Finer decompose is WORSE on a
+    local model — it over-splits one responsibility (a single queue into
+    ``core.py`` + ``queue_ordering.py`` + ``worker_retry.py``) and the isolated
+    workers then diverge on names/imports the reconcile can't stitch. A tight cap
+    forces the architect to consolidate coupled logic into cohesive modules
+    (coarser = safer). Raise AIFORGE_ARCHITECT_MAX_MODULES for a genuinely large
+    build. Tests + manifests don't count — only implementation modules."""
+    try:
+        return max(1, int(os.environ.get("AIFORGE_ARCHITECT_MAX_MODULES", "6")))
+    except ValueError:
+        return 6
+
+
 def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
     """Deterministic sanity gate on the architect's file plan — the plan is a
     single point of failure (every subtask builds against it), so structural
@@ -428,6 +442,20 @@ def _validate_plan(files: list[dict]) -> tuple[list[dict], list[str]]:
     if len(paths) > 40:
         issues.append(f"{len(paths)} files is a dump, not a plan — collapse "
                       "coupled concerns (aim well under 40)")
+    # Over-fragmentation gate: too many NON-TEST code modules → the architect
+    # atomised a coupled subsystem. Re-ask to consolidate (coarser = safer on a
+    # local model; finer split diverges and won't reconcile).
+    _code_modules = [p for p in paths
+                     if p.rsplit(".", 1)[-1].lower() in _PLAN_CODE_EXTS
+                     and "test" not in p.lower()]
+    _cap = _max_code_modules()
+    if len(_code_modules) > _cap:
+        issues.append(
+            f"{len(_code_modules)} code modules is over-fragmented for one build "
+            f"— CONSOLIDATE coupled logic into at most {_cap} cohesive modules "
+            "(e.g. ONE queue.py, not core.py + queue_ordering.py + worker_retry.py). "
+            "Give a separate file only to a genuinely DECOUPLED concern "
+            "(persistence, CLI/entrypoint). Keep every test + the manifest.")
     if code_exts and not any("test" in p.lower() for p in paths):
         issues.append("plan has code modules but NO test files — every code "
                       "module needs a test file in the SAME plan")
