@@ -294,80 +294,212 @@ def _synthesize(overall: str, results: list[dict], topics: list[str]) -> str:
         return "# Analysis (raw findings — synthesis failed)\n\n" + joined
 
 
-def stream_analysis_team(prompt: str, cwd: str, session_id=None,
-                         repos: list[dict] | None = None,
-                         topics: list[str] | None = None):
-    """Generator of chat SSE events: fan out read-only explore agents (one per
-    repo, in parallel), then synthesize a single draft. Coarse-grained status
-    (per-repo start/finish) — the heavy per-agent trace stays inside each
-    autonomous sub-run."""
-    from aiforge_core.runtime import chat_cancel
-    if repos is None or topics is None:
-        _fan, repos, topics = should_fan_out(prompt, cwd)
-    repos = repos or []
-    topics = topics or []
+# ─────────────── intra-repo planning (single repo, many files) ───────────────
+# The cross-repo fan-out above needs ≥2 repos. But a doc/analysis task on ONE
+# repo that names MANY files ("summarise these 12 classes") is exactly what a
+# local model CAN'T do flat — it loses the worklist and stalls re-reading. So we
+# PLAN it: discover the real target files, split them into small bounded GROUPS,
+# and run one read-only explore agent per group (each batch-reads its handful
+# and reports), then synthesize. Same discover→batch→synthesize shape as the
+# code pipeline, for reads.
 
+_PATHISH_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./\-]*\.[A-Za-z0-9]{1,6}")
+
+
+def _discover_target_files(prompt: str, cwd: str) -> list[str]:
+    """Path-like tokens in the prompt that ACTUALLY EXIST under ``cwd`` — returned
+    as repo-relative paths. Validating against disk is the whole point: a slightly
+    mistyped path is simply dropped (never fed to a stalling model), and every
+    path handed to an explore agent is real, so the agent reads it verbatim and
+    NEVER has to reproduce a path from memory (the local-model failure mode)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    root = os.path.realpath(cwd)
+    for tok in _PATHISH_RE.findall(prompt or ""):
+        tok = tok.strip().strip(".,;:)('\"`")
+        cand = tok if os.path.isabs(tok) else os.path.join(root, tok)
+        try:
+            if os.path.isfile(cand):
+                rel = os.path.relpath(os.path.realpath(cand), root)
+                if rel not in seen:
+                    seen.add(rel)
+                    out.append(rel)
+        except OSError:
+            continue
+    return out
+
+
+def _min_files_to_plan() -> int:
+    try:
+        return max(2, int(os.environ.get("AIFORGE_ANALYSIS_MIN_FILES", "6")))
+    except ValueError:
+        return 6
+
+
+def _files_per_group() -> int:
+    try:
+        return max(1, int(os.environ.get("AIFORGE_ANALYSIS_FILES_PER_GROUP", "4")))
+    except ValueError:
+        return 4
+
+
+def plan_single_repo(prompt: str, cwd: str) -> tuple[bool, list[dict], list[str]]:
+    """Intra-repo analysis plan: if a single-repo analysis names ≥ N real files
+    (AIFORGE_ANALYSIS_MIN_FILES, default 6), split them into bounded groups of
+    AIFORGE_ANALYSIS_FILES_PER_GROUP (default 4). Returns (plan, groups, topics);
+    ``plan`` False → let the plain single research agent handle it (unchanged)."""
+    files = _discover_target_files(prompt, cwd)
+    topics = extract_topics(prompt)
+    if len(files) < _min_files_to_plan():
+        return (False, [], topics)
+    per = _files_per_group()
+    groups: list[dict] = []
+    for i in range(0, len(files), per):
+        chunk = files[i:i + per]
+        groups.append({"name": f"files {i + 1}-{i + len(chunk)}",
+                       "path": cwd, "files": chunk})
+    return (True, groups, topics)
+
+
+def _explore_files_group(group: dict, topics: list[str], overall: str) -> dict:
+    """One READ-ONLY explore agent scoped to a SMALL, explicit file set. It
+    batch-reads the group via ``read_files`` (exact paths supplied — no path
+    typing) and reports per file; bounded so the model never tracks a long
+    worklist. Same shape/return as :func:`_explore_one`."""
+    from aiforge_core.llm.client import complete as _complete
+    from aiforge_core.runtime.chat_agent import run_chat_agent
+    files = group.get("files") or []
+    topic_line = ("Focus: " + "; ".join(topics) + "\n") if topics else ""
+    listing = "\n".join(f"- {f}" for f in files)
+    msg = (
+        "READ-ONLY analysis. Do NOT modify, create, or delete any file.\n"
+        f"{topic_line}Overall request (context): {overall.strip()[:600]}\n\n"
+        "Read THESE files in ONE call using `read_files` (the paths are exact — "
+        f"pass them verbatim):\n{listing}\n\n"
+        "Then produce a concise markdown findings block — one short section per "
+        "file: its key class/symbols and what it does (path:line where useful). "
+        "Return ONLY the findings markdown.")
+
+    def complete_fn(role, convo):
+        return _complete(role, convo)
+
+    _root_tok = None
+    _rc = None
+    try:
+        from aiforge_core.runtime import request_context as _rc
+        _root_tok = _rc.set_repo_root(group["path"])
+    except Exception:  # noqa: BLE001
+        _rc = None
+    findings, ok = "", False
+    try:
+        for ev in run_chat_agent([{"role": "user", "content": msg}],
+                                 cwd=group["path"], role="researcher",
+                                 session_id=None, mode="analyze",
+                                 complete_fn=complete_fn):
+            if ev.get("type") == "error":
+                return {"name": group["name"], "path": group["path"],
+                        "ok": False, "error": ev.get("text"), "findings": ""}
+            if ev.get("type") == "message" and not ev.get("awaiting_input"):
+                txt = ev.get("text") or ""
+                if txt and not txt.startswith("(stopped:"):
+                    findings, ok = txt, True
+    except Exception as exc:  # noqa: BLE001
+        return {"name": group["name"], "path": group["path"], "ok": False,
+                "error": str(exc), "findings": ""}
+    finally:
+        if _root_tok is not None and _rc is not None:
+            try:
+                _rc.reset_repo_root(_root_tok)
+            except Exception:  # noqa: BLE001
+                pass
+    return {"name": group["name"], "path": group["path"], "ok": ok,
+            "findings": findings}
+
+
+def _fan_out_and_synthesize(prompt, units, explore_fn, topics, session_id, noun):
+    """Shared fan-out skeleton for BOTH cross-repo and intra-repo analysis: run
+    one read-only explore agent per UNIT in parallel, track subtasks, then
+    synthesize ONE draft. ``explore_fn(unit, topics, overall)`` returns
+    ``{name, path, ok, findings}``; ``noun`` is the human label (repository /
+    file group)."""
+    from aiforge_core.runtime import chat_cancel
+    units = units or []
+    topics = topics or []
     yield {"type": "thought", "role": "router",
-           "text": (f"Analysis fan-out — {len(repos)} repo(s)"
+           "text": (f"Analysis fan-out — {len(units)} {noun}(s)"
                     + (f", topics: {', '.join(topics)}" if topics else "")
                     + ". Exploring each in parallel (read-only), then "
                     "synthesizing one draft.")}
     yield {"type": "subtasks", "items": [
-        {"slug": r["name"], "goal": f"explore {r['name']}"
+        {"slug": u["name"], "goal": f"explore {u['name']}"
          + (f" for {', '.join(topics)}" if topics else ""), "status": "pending"}
-        for r in repos]}
+        for u in units]}
 
     results: list[dict] = []
     cancelled = False
-    workers = min(_max_workers(), max(1, len(repos)))
+    workers = min(_max_workers(), max(1, len(units)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        fut_map = {ex.submit(_explore_one, r, topics, prompt): r for r in repos}
+        fut_map = {ex.submit(explore_fn, u, topics, prompt): u for u in units}
         for fut in concurrent.futures.as_completed(fut_map):
-            r = fut_map[fut]
+            u = fut_map[fut]
             if session_id is not None and chat_cancel.is_cancelled(session_id):
+                # Break silently — the SSE producer stops on the first post-cancel
+                # event, so the partial draft below must be the first thing it sees.
                 cancelled = True
-                # Do NOT yield an intermediate event here: the SSE producer
-                # breaks its consume loop the instant it sees a post-cancel
-                # event, which would abandon THIS generator before the partial
-                # draft below is synthesized. Break silently so the draft
-                # message (with its "Stopped early" banner) is the FIRST event
-                # after cancel — the producer captures it as final_text, then
-                # stops. (in-flight explores can't be interrupted — session_id
-                # is None — so the pool's context-exit waits for them.)
                 break
             try:
                 res = fut.result()
             except Exception as exc:  # noqa: BLE001
-                res = {"name": r["name"], "path": r["path"], "ok": False,
+                res = {"name": u["name"], "path": u.get("path", ""), "ok": False,
                        "error": str(exc), "findings": ""}
             results.append(res)
-            # subtask_update is the event type BOTH the API state and the
-            # frontend reducer handle (subtask_status was invented and dropped
-            # silently, freezing the panel at "pending").
-            yield {"type": "subtask_update", "slug": r["name"],
+            yield {"type": "subtask_update", "slug": u["name"],
                    "status": "done" if res.get("ok") else "failed"}
             _why = res.get("error") or "no findings produced"
             yield {"type": "thought", "role": "researcher",
-                   "text": (f"{r['name']}: "
+                   "text": (f"{u['name']}: "
                             + ("findings ready" if res.get("ok")
                                else f"explore failed ({_why})"))}
 
     if not results:
         yield {"type": "message",
-               "text": ("Stopped before any repository was analyzed."
-                        if cancelled else "No repositories could be analyzed.")}
+               "text": (f"Stopped before any {noun} was analyzed."
+                        if cancelled else f"No {noun}s could be analyzed.")}
         yield {"type": "done"}
         return
 
     yield {"type": "thought", "role": "synthesizer",
-           "text": "Merging per-repo findings into one draft document."}
+           "text": f"Merging per-{noun} findings into one draft document."}
     draft = _synthesize(prompt, results, topics)
     if cancelled:
         draft = ("> ⚠ **Stopped early** — this is a PARTIAL analysis of "
-                 f"{len(results)} of {len(repos)} repositories.\n\n") + draft
+                 f"{len(results)} of {len(units)} {noun}s.\n\n") + draft
     yield {"type": "message", "text": draft}
     yield {"type": "done"}
 
 
+def stream_analysis_team(prompt: str, cwd: str, session_id=None,
+                         repos: list[dict] | None = None,
+                         topics: list[str] | None = None):
+    """Cross-repo fan-out: one read-only explore agent per repo, then synthesize."""
+    if repos is None or topics is None:
+        _fan, repos, topics = should_fan_out(prompt, cwd)
+    yield from _fan_out_and_synthesize(prompt, repos or [], _explore_one,
+                                       topics or [], session_id, "repository")
+
+
+def stream_analysis_planned(prompt: str, cwd: str, session_id=None,
+                            groups: list[dict] | None = None,
+                            topics: list[str] | None = None):
+    """Intra-repo planned fan-out: one read-only explore agent per bounded
+    file-group (each batch-reads its handful), then synthesize — so a local model
+    never faces a flat many-file sweep it can't track."""
+    if groups is None:
+        _plan, groups, topics = plan_single_repo(prompt, cwd)
+    yield from _fan_out_and_synthesize(prompt, groups or [], _explore_files_group,
+                                       topics or [], session_id, "file group")
+
+
 __all__ = ["identify_repos", "extract_topics", "should_fan_out",
+           "plan_single_repo", "stream_analysis_planned",
            "stream_analysis_team"]

@@ -1162,6 +1162,27 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
                     prompt, cwd=cwd, session_id=session_id,
                     repos=_ana_repos, topics=_ana_topics)
                 return
+            # Single repo but the task names MANY real files → PLAN it into
+            # bounded read-only groups (discover→batch-read→synthesize), one
+            # explore agent each. A flat many-file analysis is exactly what a
+            # local model can't track on one agent; planning keeps every step
+            # inside its ceiling. Disable with AIFORGE_ANALYSIS_MIN_FILES=999.
+            try:
+                _plan, _ana_groups, _ana_topics2 = _ap.plan_single_repo(prompt, cwd)
+            except Exception:  # noqa: BLE001 — never break routing on the probe
+                _plan, _ana_groups, _ana_topics2 = (False, [], [])
+            if _plan:
+                _nfiles = sum(len(g.get("files") or []) for g in _ana_groups)
+                yield {"type": "thought", "role": "router",
+                       "text": (f"Doc/analysis on one repo spanning {_nfiles} "
+                                f"files — planning into {len(_ana_groups)} bounded "
+                                "read-only groups (discover → batch-read → "
+                                "synthesize), one explore agent each, so a local "
+                                "model never faces a flat multi-file sweep.")}
+                yield from _ap.stream_analysis_planned(
+                    prompt, cwd=cwd, session_id=session_id,
+                    groups=_ana_groups, topics=_ana_topics2)
+                return
             yield {"type": "thought", "role": "router",
                    "text": "Doc/analysis task (analysis or a doc/Confluence "
                            "deliverable) — routing to the single research agent, "
