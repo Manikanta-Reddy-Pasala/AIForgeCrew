@@ -1,7 +1,3 @@
-import json
-
-import pytest
-
 from aiforge_core.runtime import chat_agent as ca
 
 
@@ -32,9 +28,12 @@ def test_compact_convo_condenses_long_history(monkeypatch):
     # consecutive same-role messages); actions summarized.
     assert "auto-condensed" in out[0]["content"]
     assert "file_read" in out[0]["content"]
-    # L-3: keep_recent is scaled DOWN to the (tiny 2000-char) budget — 8 turns
-    # of 200+ chars each wouldn't fit — so the tail is the adaptive 4, not 8.
-    assert len(out) == 1 + 4                               # system + adaptive tail
+    # Size-aware tail: the kept recent slice FITS the (tiny 2000-char) budget so
+    # condense actually frees the window, with a usable floor (>=4). Bounded by
+    # chars, not a fixed count.
+    tail = out[1:]
+    assert 4 <= len(tail) < 60
+    assert sum(len(m.get("content") or "") for m in tail) <= 2000
     # no two consecutive non-system same-role messages
     roles = [m["role"] for m in out]
     assert not any(roles[i] == roles[i+1] != "system" for i in range(len(roles)-1))
@@ -133,3 +132,35 @@ def test_cave_mode_keeps_quality_blocks_and_shrinks_budget(tmp_path, monkeypatch
     # Cave keeps the QUALITY blocks — nothing dropped to save tokens.
     assert seen["skills"] >= 1 and seen["mentions"] >= 1
     assert seen["workflows"] >= 1
+
+
+def test_condense_tail_capped_by_size_not_count(monkeypatch):
+    """Size-aware tail: with LARGE recent turns the verbatim tail is capped by
+    CHARS (~half the budget), not a fixed count — so condense always frees the
+    window instead of keeping N huge tool-outputs. Small turns keep more."""
+    from aiforge_core.runtime.chat_agent._context._compaction import (
+        _compact_convo, _recent_tail_count)
+    monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "20000")
+    budget = 20000
+
+    def _run(turn_chars):
+        convo = [{"role": "system", "content": "S" * 500}]
+        for i in range(40):
+            convo.append({"role": "assistant", "content": "ACTION: file_read\nARGS_JSON: {}"})
+            convo.append({"role": "user", "content": "OBSERVATION: " + "x" * turn_chars})
+        out = _compact_convo(convo, keep_recent=18)
+        tail = out[1:]
+        return len(tail), sum(len(m.get("content") or "") for m in tail)
+
+    big_n, big_chars = _run(4000)     # huge turns
+    small_n, small_chars = _run(100)  # tiny turns
+    # both tails fit ~half the budget (freed the window)
+    assert big_chars <= budget and small_chars <= budget
+    # big turns → FEWER kept (size cap bites); small turns → more (up to ceiling)
+    assert big_n < small_n
+    assert big_n >= 4                 # never below the floor
+
+    # helper: floor honoured even when the first message already exceeds the cap
+    huge = [{"role": "system", "content": ""}] + [
+        {"role": "user", "content": "z" * 99999} for _ in range(10)]
+    assert _recent_tail_count(huge, budget=1000, ceiling=18, floor=4) == 4

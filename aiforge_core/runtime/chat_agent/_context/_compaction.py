@@ -112,6 +112,34 @@ def _llm_summarize_middle(middle: list[dict], complete_fn, session_id=None) -> s
     return box.get("out", "")
 
 
+def _recent_tail_count(convo: list[dict], budget: int, *,
+                       ceiling: int = 18, floor: int = 4,
+                       frac: float = 0.5) -> int:
+    """How many TRAILING messages to keep verbatim on a condense — capped by
+    SIZE, not a fixed count. Walks from the newest message accumulating chars
+    until the kept tail would exceed ``frac`` of the history budget (or the
+    ``ceiling`` count), always keeping at least ``floor``. A fixed count kept N
+    large tool-outputs verbatim and barely freed the window; sizing by chars
+    guarantees condense lands near ``frac`` of budget even when recent turns are
+    big. Env ``AIFORGE_CONDENSE_TAIL_FRACTION`` overrides ``frac``."""
+    if budget <= 0:
+        return floor
+    try:
+        frac = float(os.environ.get("AIFORGE_CONDENSE_TAIL_FRACTION", frac))
+    except (TypeError, ValueError):
+        pass
+    frac = min(0.9, max(0.1, frac))
+    cap = int(budget * frac)
+    kept = total = 0
+    for m in reversed(convo[1:]):          # newest → oldest, skip system
+        ln = len(_text_of(m))
+        if kept >= floor and (total + ln > cap or kept >= ceiling):
+            break
+        total += ln
+        kept += 1
+    return max(floor, min(kept, ceiling))
+
+
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
                    complete_fn=None, session_id=None) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
@@ -130,10 +158,11 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     budget = _ctx_budget_chars(role, sys_chars=sys_chars)
     if budget <= 0:
         return convo
-    # Scale the verbatim tail to the budget: on a SMALL window, keeping 18 turns
-    # could itself exceed the budget (condense fires but can't get under it).
-    # ~2k chars/turn heuristic, floor 4 so there's always a usable recent slice.
-    keep_recent = max(4, min(keep_recent, budget // 2000))
+    # Size-aware tail: keep the newest messages up to ~half the budget (by
+    # CHARS), floor 4 — so condense lands ~50% of budget even when recent turns
+    # are large (a fixed count kept N huge tool-outputs verbatim and barely freed
+    # the window). ``keep_recent`` is the ceiling.
+    keep_recent = _recent_tail_count(convo, budget, ceiling=keep_recent)
     if len(convo) <= keep_recent + 2:
         return convo
     if sum(len(_text_of(m)) for m in convo[1:]) <= budget:
