@@ -31,23 +31,44 @@ _STOPWORDS = frozenset({
 _STEM_SUFFIXES = ("ations", "ation", "ements", "ement", "ments", "ment",
                   "ings", "ing", "ies", "edly", "ers", "er", "ed", "es", "s", "y")
 
+# DERIVATIONAL agent/quality suffixes ("worker→work", "policy→polic") that, on a
+# SHORT word, leave a 3-4 char root common enough to substring-match unrelated
+# words: server→"serv" hits pre**serv**e/ob**serv**e/con**serv**e, reader→"read"
+# hits al**read**y/th**read**, player→"play", policy→"polic". For THESE we require
+# the root to stay >=5 chars, so only genuinely long stems unify. Plural/tense
+# suffixes (s/es/ed/ing) are NOT here — they must stay aggressive so test/tests,
+# bug/bugs and fix/fixed still collapse.
+_DERIV_SHORTROOT_SUFFIXES = ("ers", "er", "edly", "y")
+_DERIV_MIN_ROOT = 5
+
 
 def _stem(t: str) -> str:
-    """Strip a common English inflection to a BARE stem (>=3 chars). Conservative:
-    only for tokens len>=4, and the stem must stay >=3 so we don't over-crush
-    short words into noise.
+    """Strip a common English inflection to a BARE stem (>=3 chars, or >=5 for the
+    short-root derivational suffixes). Conservative: only for tokens len>=4.
 
     The matcher is pure SUBSTRING, so the stem must be a substring of every
     inflected form it should unify. For ``ies`` we strip to the bare root
     (``registries -> registr``), NOT ``registry`` — ``registry`` is NOT a
     substring of ``registries`` (…tri… vs …try…), so the old ``ies -> y`` never
     matched the plural it was meant to. ``registr`` IS a substring of both
-    ``registry`` and ``registries``, making the match symmetric."""
+    ``registry`` and ``registries``, making the match symmetric.
+
+    ``server``/``reader``/``player`` are deliberately NOT crushed to
+    ``serv``/``read``/``play`` (the :data:`_DERIV_SHORTROOT_SUFFIXES` floor): those
+    3-4 char roots are substrings of many unrelated words, inflating match/density
+    ranking. ``servers -> server`` still unifies with the singular via the plural
+    ``s`` rule."""
     if len(t) < 4:
         return t
     for suf in _STEM_SUFFIXES:
-        if t.endswith(suf) and len(t) - len(suf) >= 3:
-            return t[: -len(suf)]
+        if not t.endswith(suf):
+            continue
+        root = len(t) - len(suf)
+        if root < 3:
+            continue
+        if suf in _DERIV_SHORTROOT_SUFFIXES and root < _DERIV_MIN_ROOT:
+            continue           # short common root — skip (a later suffix may fit)
+        return t[: -len(suf)]
     return t
 
 

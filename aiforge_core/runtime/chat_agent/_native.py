@@ -220,9 +220,11 @@ def make_native_complete_fn():
             msg = client.complete_raw(
                 role, convo, tools=NATIVE_TOOL_SCHEMAS, tool_choice="auto")
         except Exception as exc:  # noqa: BLE001
-            if _tools_unsupported(exc):
+            if _tools_unsupported(exc) and not _rejects_only_tool_choice(exc):
                 # DEFINITIVE: this model can't do native tools — cache + fall
-                # back to text for this and every future turn.
+                # back to text for this and every future turn. A rejection that
+                # names ONLY tool_choice is NOT a tools-capability signal (same
+                # guard the probe uses) — the model does native FC; don't disable.
                 _NATIVE_CACHE[model] = False
                 log.info("native unsupported at runtime → text fallback (%s)", model)
                 return client.complete(role, convo)

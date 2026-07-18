@@ -87,3 +87,33 @@ def test_stem_never_injects_a_stopword():
     from aiforge_core.runtime.chat_store._helpers import _tokens
     assert "the" not in _tokens("they")
     assert "the" not in _tokens("how do they handle retries")
+
+
+def test_round11_short_derivational_stem_no_overmatch():
+    from aiforge_core.runtime.chat_store._helpers import (
+        _rank_search, _stem, _stem_root, _tokens,
+    )
+    # server must NOT crush to the 3-4 char root "serv" that substring-hits
+    # preserve/observe/conserve.
+    assert _stem("servers") == "server"
+    assert _stem_root("server") == "server"
+    assert _stem_root("servers") != "serv"
+    # …but the plural still unifies with the singular.
+    assert _stem_root("servers") == _stem_root("server")
+    # ranking: the doc actually about a server beats the spurious substring doc.
+    def _row(i, text):
+        return {"id": i, "session_id": "s", "session_title": "t", "role": "user",
+                "content": text, "created_at": "2026-01-01T00:00:00+00:00"}
+    rows = [
+        _row("b", "preserve observe conserve"),
+        _row("a", "restart the server"),
+    ]
+    ranked = _rank_search(rows, _tokens("servers"), 10)
+    assert ranked and ranked[0]["content"] == "restart the server"
+
+
+def test_round11_common_stems_still_unify():
+    from aiforge_core.runtime.chat_store._helpers import _stem_root
+    for a, b in (("tests", "test"), ("bugs", "bug"), ("fixed", "fix"),
+                 ("deployment", "deployed"), ("registries", "registry")):
+        assert _stem_root(a) == _stem_root(b), (a, b)

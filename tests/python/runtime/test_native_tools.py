@@ -157,3 +157,21 @@ def test_round10_probe_stays_optimistic_on_tool_choice_rejection(monkeypatch):
     monkeypatch.setattr(_native, "_model_for", lambda role: "m-x")
     assert _native._probe_native("planner") is True     # optimistic
     assert "m-x" not in _native._NATIVE_CACHE            # NOT cached-disabled
+
+
+def test_round11_runtime_fn_not_disabled_on_tool_choice_rejection(monkeypatch):
+    # Symmetric to the probe: the RUNTIME complete_fn must not permanently
+    # disable native when a server rejects only the tool_choice parameter.
+    _native.reset_native_cache()
+    from aiforge_core.llm import client
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-tc")
+
+    def raise_tc(*a, **k):
+        raise _http_err(400, 'tool_choice "auto" is not supported here')
+    monkeypatch.setattr(client, "complete_raw", raise_tc)
+    monkeypatch.setattr(client, "complete", lambda role, convo: "TEXT_FALLBACK")
+
+    fn = _native.make_native_complete_fn()
+    out = fn("planner", [{"role": "user", "content": "hi"}])
+    assert out == "TEXT_FALLBACK"                 # text this turn
+    assert _native._NATIVE_CACHE.get("m-tc") is not False   # NOT disabled

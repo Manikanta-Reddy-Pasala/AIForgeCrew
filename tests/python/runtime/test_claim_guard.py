@@ -140,3 +140,36 @@ def test_round10_adjacent_passive_still_suppresses():
     # A truly passive/advisory-framed verb (marker adjacent) stays suppressed.
     assert not _claims_file_edits("The config file should be updated.")
     assert not _claims_file_edits("The file was deleted by the linter earlier.")
+
+
+def test_round11_fn1_conjoined_resubject_claim_fires():
+    # A third-party subject on the FIRST verb must not mask a re-subjected
+    # first-person claim later in the same sentence.
+    assert _claims_file_edits(
+        "The linter fixed formatting and I edited main.py.")
+    assert _claims_file_edits("CI ran the suite; I rewrote server.py.")
+
+
+def test_round11_fn1_conjoined_same_subject_still_suppressed():
+    # …but a conjoined predicate on the SAME third-party subject (no re-subject
+    # boundary) stays suppressed — "commit" did both "added" and "fixed".
+    assert not _claims_file_edits(
+        "This commit added the config and fixed the module.")
+
+
+def test_round11_fn2_bare_recap_as_noun_modifier_is_a_claim():
+    # "previously"/"earlier" modifying a NOUN is part of a live claim, not a recap.
+    assert _claims_file_edits(
+        "I've updated the previously broken import in utils.py.")
+    assert _claims_file_edits("I fixed the earlier reported bug in Dashboard.vue.")
+
+
+def test_round11_fn2_bare_recap_as_verb_adverb_still_suppressed():
+    # "previously" BEFORE the verb (its adverb) is a genuine recap → suppressed.
+    assert not _claims_file_edits("I previously updated utils.py.")
+
+
+def test_round11_fp1_adverb_separated_passive_suppressed():
+    # An adverb between passive aux and participle must not defeat suppression.
+    assert not _claims_file_edits("This file was automatically updated.")
+    assert not _claims_file_edits("The config was successfully modified.")

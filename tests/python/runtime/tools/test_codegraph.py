@@ -130,3 +130,31 @@ def _valid_sqlite_bytes() -> bytes:
         data = f.read()
     os.unlink(p)
     return data
+
+
+def test_round11_corrupt_index_not_deleted_when_build_contended(tmp_path, monkeypatch):
+    """Regression: the fast-path must NOT rmtree a corrupt-reading index without
+    holding the cross-process lock — it could be a CONCURRENT builder's DB caught
+    mid-write. When the build lock is contended, ensure_indexed returns False and
+    leaves the index on disk (the lock holder will finish/replace it)."""
+    from aiforge_core.runtime.tools import codegraph as cg
+    repo = tmp_path
+    d = repo / ".codegraph"
+    d.mkdir()
+    (d / "graph.db").write_text("torn mid-write header")   # reads corrupt
+
+    monkeypatch.setattr(cg, "_autobuild_enabled", lambda: True)
+    monkeypatch.setattr(cg, "_disabled", lambda: False)
+    monkeypatch.setattr(cg, "available", lambda: True)
+    monkeypatch.setattr(cg, "_bin", lambda: "/usr/bin/true")
+    monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", str(repo))
+    cg._VERIFIED_HEALTHY.clear()
+    cg._FAILED.clear()
+    # simulate: another process holds the build lock (contended)
+    monkeypatch.setattr(cg, "_acquire_build_lock", lambda repo: None)
+    monkeypatch.setattr(cg.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not build while contended")))
+
+    assert cg.ensure_indexed(str(repo)) is False
+    assert (d / "graph.db").exists()       # concurrent builder's DB left intact

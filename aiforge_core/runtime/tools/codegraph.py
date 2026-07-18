@@ -306,9 +306,14 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
         if not _db_corrupt(rc):
             _VERIFIED_HEALTHY.add(rc)
             return True
-        _remove_partial_index(rc)          # crashed-process corrupt leftover
+        # PROVEN-corrupt crash-leftover. Do NOT delete it HERE — this fast-path
+        # holds no lock, and an index that reads corrupt right now can be a
+        # CONCURRENT process's DB caught mid-write (torn header/pages). rmtree'ing
+        # it would destroy a healthy build another process is finishing. Fall
+        # through to the locked build path, which removes + rebuilds only under
+        # the cross-process flock. Clear the negative cache so the rebuild isn't
+        # cooldown-blocked.
         _FAILED.pop(rc, None)
-        # fall through to rebuild
     repo = _repo(cwd)
     if not repo or not os.path.isdir(repo):
         return False
@@ -324,7 +329,9 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
     if ts is not None and (_time.monotonic() - ts) < _retry_cooldown_s():
         return False
     with _lock_for(repo):            # PER-REPO lock (not one global)
-        if indexed(cwd):            # built by another thread while we waited
+        # Built by another thread while we waited — trust it UNLESS it's the
+        # proven-corrupt leftover we fell through for (don't re-trust corrupt).
+        if indexed(cwd) and (repo in _VERIFIED_HEALTHY or not _db_corrupt(repo)):
             return True
         # Re-check the negative cache INSIDE the lock — a thread that queued
         # while another built-and-failed must honor that fresh failure, not
@@ -349,7 +356,14 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
         _have_lock = not isinstance(_fl, str)
         try:
             if indexed(cwd):            # built by the other process meanwhile
-                return True
+                if repo in _VERIFIED_HEALTHY or not _db_corrupt(repo):
+                    return True
+                # Corrupt leftover AND we hold the real cross-process lock → no
+                # other process is building, so it's OUR crashed stub: remove it
+                # so `init` starts clean. Under the nolock fallback we can't prove
+                # that, so leave it (init overwrites, or the failure is handled).
+                if _have_lock:
+                    _remove_partial_index(repo)
             try:
                 # NOTE: `init` takes a POSITIONAL path (`codegraph init <path>`)
                 # — the query subcommands use `-p/--path`. Passing `--path` here

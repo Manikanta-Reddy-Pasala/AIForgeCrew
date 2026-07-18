@@ -40,8 +40,8 @@ _MADE_CHANGES_RE = re.compile(
 # A THIRD-PARTY subject that is the one DOING the edit — a commit / author /
 # PR, not the assistant. Only these dependable subject nouns (NOT ordinary
 # content words like "diff"/"patch"/"snippet"/"example" that appear as OBJECTS
-# in genuine claims). Used with an adjacency check (:func:`_subject_is_descriptive`)
-# so it suppresses only when the noun actually precedes the edit verb.
+# in genuine claims). Used with an adjacency check (:func:`_verb_subject_descriptive`)
+# so it suppresses only the verb the noun actually governs.
 _DESCRIPTIVE_NOUN_RE = re.compile(
     r"(?i)(?:\b(?:this|that|the|a|another|the\s+following)\s+"
     r"(?:\w+\s+){0,2}"          # optional adjectives ("the recent commit")
@@ -79,20 +79,24 @@ _EDIT_CLAIM_OBJ_RE = re.compile(
 # A PRIOR-WORK cue — the model recapping edits it made in an EARLIER turn, not
 # claiming a this-turn write. Deliberately EXCLUDES "already" / "so far": those
 # are hallmarks of a this-turn false claim ("I've already applied the fix to
-# X.vue"), NOT a recap — treating them as recap cues let hallucinations escape
-# the guard. Only unambiguous prior-turn framing suppresses.
-_RECAP_CUE_RE = re.compile(
-    r"(?i)\b(?:previously|earlier|beforehand|"
+# X.vue"), NOT a recap. STRONG cues are unambiguous multi-word prior-turn
+# framings — they suppress the whole clause wherever they appear.
+_RECAP_STRONG_RE = re.compile(
+    r"(?i)\b(?:"
     r"in (?:an?|the) (?:prior|previous|earlier) (?:turn|step|message|response)|"
-    r"(?:last|prior|previous) turn|earlier in (?:this|the) (?:session|chat|conversation))\b")
+    r"(?:last|prior|previous) turn|"
+    r"earlier in (?:this|the) (?:session|chat|conversation))\b")
+
+# BARE recap adverbs ("previously"/"earlier"/"beforehand") are AMBIGUOUS: as a
+# verb adverb they frame a recap ("I previously updated X"), but as a noun
+# modifier they're part of a live claim ("I updated the previously broken
+# import"). So they suppress ONLY a verb they PRECEDE (adverb position), checked
+# per-verb via :func:`_recap_before` — never the whole clause.
+_RECAP_BARE_RE = re.compile(r"(?i)\b(?:previously|earlier|beforehand)\b")
 
 # Split into clauses so a suppressor (recap cue / descriptive subject) in ONE
 # sentence can't disable the guard for a fresh hallucinated claim in ANOTHER.
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
-
-# How close (chars) a descriptive noun must sit BEFORE an edit verb to count as
-# its subject.
-_SUBJECT_WINDOW = 40
 
 
 # A re-subject boundary — after it, the edit verb belongs to a NEW subject (the
@@ -100,27 +104,46 @@ _SUBJECT_WINDOW = 40
 _RESUBJECT_RE = re.compile(r"(?i)[,;:]|\b(?:i|we)\b")
 
 
-def _subject_is_descriptive(clause: str) -> bool:
-    """True when a third-party subject (commit / author / …) is the one doing an
-    edit verb in this clause — the noun is closely FOLLOWED by an edit verb
-    ("this commit added…", "the author removed…"), so the clause DESCRIBES
-    someone else's diff rather than claiming a this-turn edit. A descriptive noun
-    used only as an OBJECT ("I updated the diff view component"), or one whose
-    verb belongs to a RE-SUBJECT ("after the pull request, I updated…"), does NOT
-    suppress."""
+def _verb_subject_descriptive(clause: str, vpos: int) -> bool:
+    """True when the edit verb at ``vpos`` is governed by a THIRD-PARTY subject
+    (commit / author / linter / …), so THIS verb describes someone else's diff,
+    not a this-turn claim. Per-VERB (not per-clause) so a conjoined re-subjected
+    claim — "The linter fixed formatting and I edited main.py" — still fires on
+    "edited": its nearest descriptive noun ("The linter") is separated from it by
+    a re-subject boundary ("and I") and by another edit verb, so it does NOT
+    govern "edited"."""
+    best = None
     for m in _DESCRIPTIVE_NOUN_RE.finditer(clause):
-        # If an edit verb (or "made the changes") precedes this noun, the noun is
-        # that verb's OBJECT — the assistant's own claim ("I refactored the build
-        # script and updated X") — NOT a third-party subject. Only a leading
-        # descriptive noun ("The linter removed X") is a real subject.
-        head = clause[:m.start()]
-        if _EDIT_CLAIM_VERB_RE.search(head) or _MADE_CHANGES_RE.search(head):
+        if m.end() > vpos:
+            break
+        # A noun with an edit verb BEFORE it is that verb's OBJECT, not a subject
+        # ("I refactored the build script and updated X" — "script" is the object
+        # of "refactored", not the subject of "updated"). Skip it.
+        if (_EDIT_CLAIM_VERB_RE.search(clause[:m.start()])
+                or _MADE_CHANGES_RE.search(clause[:m.start()])):
             continue
-        tail = clause[m.end(): m.end() + _SUBJECT_WINDOW]
-        cut = _RESUBJECT_RE.search(tail)      # stop before a new subject takes over
-        if cut:
-            tail = tail[:cut.start()]
-        if _EDIT_CLAIM_VERB_RE.search(tail):
+        best = m                           # nearest leading descriptive subject
+    if best is None:
+        return False
+    between = clause[best.end():vpos]
+    # a re-subject boundary (comma/";"/"I"/"we") hands the verb to a NEW subject
+    # ("The linter fixed it and I edited main.py" — "edited" is the assistant's).
+    # A conjoined predicate on the SAME subject ("This commit added X and fixed Y")
+    # has no such boundary, so "fixed" stays third-party. Only the boundary breaks
+    # government, NOT an intervening edit verb.
+    if _RESUBJECT_RE.search(between):
+        return False
+    return True
+
+
+def _recap_before(clause: str, vpos: int) -> bool:
+    """True when a BARE recap adverb ("previously"/"earlier") sits BEFORE the edit
+    verb at ``vpos`` as its adverb ("I previously updated X"), with no re-subject
+    boundary between — so this verb is a recap, not a this-turn claim. A bare
+    recap AFTER the verb ("I updated the previously broken import") does NOT
+    suppress: it modifies a noun, not the claim."""
+    for m in _RECAP_BARE_RE.finditer(clause):
+        if m.end() <= vpos and not _RESUBJECT_RE.search(clause[m.end():vpos]):
             return True
     return False
 
@@ -141,11 +164,13 @@ def _advisory_before(clause: str, pos: int) -> bool:
     "please"/"not" LATER in the clause ("I updated X, please review" / "I updated
     X, not Y") does not, so a real claim isn't suppressed."""
     # ADJACENCY: the marker must actually PRECEDE this verb closely ("was
-    # deleted", "should be updated", "haven't updated") — a 16-char window is
-    # ~2-3 words. A stray auxiliary/negation from an unrelated fragment earlier
-    # in the same clause ("The bug is fixed, and I updated X") must NOT suppress
-    # the real claim, so the window is tight, not the whole clause.
-    pre = clause[max(0, pos - 16): pos]
+    # deleted", "should be updated", "haven't updated", "was automatically
+    # updated") — a 28-char window is ~3-4 words, wide enough to tolerate ONE
+    # adverb between a passive auxiliary and the participle. A stray
+    # auxiliary/negation from an unrelated fragment earlier in the same clause
+    # ("The bug is fixed, and I updated X") must NOT suppress the real claim —
+    # the re-subject cut below (not the window width) handles that case.
+    pre = clause[max(0, pos - 28): pos]
     # …AND a re-subject boundary (comma/semicolon or a fresh "I"/"we") starts a
     # NEW fragment: a marker BEFORE it ("is fixed," / "was failing;") governs the
     # old subject, not this verb — keep only text after the LAST such boundary so
@@ -171,21 +196,27 @@ def _claims_file_edits(text: str) -> bool:
     if not text:
         return False
     for clause in _SENT_SPLIT.split(text):
-        if _RECAP_CUE_RE.search(clause):
+        # An unambiguous multi-word prior-turn framing suppresses the whole
+        # clause. Bare recap adverbs are handled PER-VERB below (they may just be
+        # modifying a noun in a live claim).
+        if _RECAP_STRONG_RE.search(clause):
             continue
         # first-person "I/we made the changes" — a claim unless it's suggested
-        # ("we should make the changes") or attributed to a third party.
+        # ("we should make the changes"), a recap, or attributed to a third party.
         made = _MADE_CHANGES_RE.search(clause)
         if (made and not _advisory_before(clause, made.start())
-                and not _subject_is_descriptive(clause)):
+                and not _recap_before(clause, made.start())
+                and not _verb_subject_descriptive(clause, made.start())):
             return True
         if not _EDIT_CLAIM_OBJ_RE.search(clause):
             continue
-        if _subject_is_descriptive(clause):
-            continue
-        # a claim if ANY edit verb is not framed as a suggestion.
+        # a claim if ANY edit verb is not framed as a suggestion, driven by a
+        # third-party subject, or preceded by a recap adverb — all checked for
+        # THAT verb, so a suppressed verb can't mask a live one in the same clause.
         for vm in _EDIT_CLAIM_VERB_RE.finditer(clause):
-            if not _advisory_before(clause, vm.start()):
+            if (not _advisory_before(clause, vm.start())
+                    and not _verb_subject_descriptive(clause, vm.start())
+                    and not _recap_before(clause, vm.start())):
                 return True
     return False
 
