@@ -497,14 +497,45 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
         return []
 
 
+def _module_contract(files: list[dict]) -> str:
+    """A shared symbol→module map injected into EVERY subtask's brief.
+
+    The #1 parallel-decompose failure on a local model: each subtask builds in an
+    isolated worktree knowing only ITS own file's api, so one subtask's
+    ``__init__.py`` writes ``from .queue import TaskQueue`` while the subtask that
+    actually defines ``TaskQueue`` put it in ``core.py`` — the imports don't line
+    up and the reconciled package won't even import. Pinning WHERE each shared
+    symbol lives removes the guess: a subtask importing a symbol reads this map
+    and uses the EXACT module that defines it. Tests + api-less files are omitted
+    (nothing imports from them)."""
+    lines: list[str] = []
+    for f in files:
+        path = str(f.get("path") or "").strip().lstrip("/")
+        api = [str(a) for a in (f.get("api") or []) if a]
+        if not path or path.startswith("tests/") or not api:
+            continue
+        lines.append(f"- `{path}` defines: " + "; ".join(api))
+    if len(lines) < 2:
+        return ""            # nothing cross-module to coordinate
+    return ("PROJECT MODULE MAP — when you import a symbol another module owns, "
+            "import it from EXACTLY the module named below; NEVER invent a module "
+            "name or assume a symbol lives in a differently-named file:\n"
+            + "\n".join(lines))
+
+
 def _plan_files(files: list[dict]) -> list[dict]:
     """Architect file list → one subtask per file (guaranteed distinct files).
 
     The slug must be UNIQUE within the plan: it names the worktree dir + branch,
     so two files sharing a basename (``a/db.py`` + ``b/db.py``) slugging to the
     same ``db`` would collide on one worktree → two workers clobber each other.
-    On a slug collision we disambiguate with a short hash of the FULL path."""
+    On a slug collision we disambiguate with a short hash of the FULL path.
+
+    Every subtask's goal also carries the shared MODULE MAP (:func:`_module_contract`)
+    so isolated worktrees can't diverge on where a shared symbol lives — the
+    parallel-decompose cohesion fix."""
     import hashlib
+    contract = _module_contract(files)
     out, seen_paths, seen_slugs = [], set(), set()
     for f in files:
         path = str(f.get("path") or "").strip().lstrip("/")
@@ -521,7 +552,8 @@ def _plan_files(files: list[dict]) -> list[dict]:
         _api = [str(a) for a in (f.get("api") or []) if a]
         out.append({"slug": slug, "path": path, "api": _api,
                     "goal": f"{path}: {f.get('purpose') or 'implement'}"
-                            + (" | MUST expose EXACTLY: " + "; ".join(_api) if _api else "")})
+                            + (" | MUST expose EXACTLY: " + "; ".join(_api) if _api else "")
+                            + (("\n\n" + contract) if contract else "")})
     return out
 
 

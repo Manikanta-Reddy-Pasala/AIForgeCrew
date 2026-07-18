@@ -65,10 +65,18 @@ def default_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
     def complete_fn(role, convo):
         return _complete(role, convo)
 
+    # HARD file ownership: restrict this subtask's WRITES to the file(s) it owns
+    # so two subtasks can NEVER edit the same file — the reconcile is then a
+    # trivial disjoint union, not a same-file merge. Prefer an explicit
+    # scope_allowlist_globs, else the subtask's single target ``path``; a
+    # phase/decompose subtask with neither stays unscoped (nothing to pin).
+    _own_scope = (scope or ([path] if path else None)) or None
+
     ok = False
     try:
         for ev in run_chat_agent([{"role": "user", "content": msg}], cwd=worktree,
                                  role="doer", complete_fn=complete_fn,
+                                 scope_globs=_own_scope,
                                  strict_finish=True):
             if ev.get("type") == "error":
                 return {"ok": False, "error": ev.get("text")}
