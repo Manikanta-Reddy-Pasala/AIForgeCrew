@@ -98,3 +98,16 @@ def test_classifier_image_input_not_requires_supported():
         assert vd._classify_probe_error(RuntimeError(m)) is False, m
     # form-specific 'accept image_url' stays inconclusive
     assert vd._classify_probe_error(RuntimeError("does not accept image_url")) is None
+
+
+def test_classifier_model_drop_and_multimodal():
+    from aiforge_core.runtime import vision_detect as vd
+    # a model-reload/warm-up body is TRANSIENT, never a capability verdict
+    for m in ("multimodal not loaded", "model is loading", "no vision tokens generated"):
+        assert vd._classify_probe_error(RuntimeError(m)) is None, m
+    # real multimodal text-only rejections ARE definitive
+    for m in ("multimodal inputs are not supported", "multimodal is not supported",
+              "this model does not support the following input modality: image"):
+        assert vd._classify_probe_error(RuntimeError(m)) is False, m
+    # a form/resolution complaint stays inconclusive
+    assert vd._classify_probe_error(RuntimeError("image resolution is not supported")) is None

@@ -209,7 +209,21 @@ def make_native_complete_fn():
                 _NATIVE_CACHE[model] = False
                 log.info("native unsupported at runtime → text fallback (%s)", model)
                 return client.complete(role, convo)
-            raise  # transient (busy/timeout) → let the loop's retry handle it
+            # A clearly TRANSIENT error (5xx/429/timeout/model-reloading) → let
+            # the loop's retry re-issue native. Anything else (an unclassified
+            # 400 — e.g. a strict/Jackson server rejecting the 'tools' field with
+            # wording our token list doesn't recognise) must NOT hard-fail every
+            # turn: fall back to text for THIS turn (no permanent disable — we
+            # re-probe native next turn).
+            try:
+                from aiforge_core.llm.client._errors import _is_transient_exc
+                transient = bool(_is_transient_exc(exc)[0])
+            except Exception:  # noqa: BLE001
+                transient = False
+            if transient:
+                raise
+            log.info("native call failed non-transiently → text this turn (%s)", exc)
+            return client.complete(role, convo)
         calls = msg.get("tool_calls") or []
         # Observability: log whether this native step produced a tool_call or
         # plain content so a run can be audited ("all calls native").

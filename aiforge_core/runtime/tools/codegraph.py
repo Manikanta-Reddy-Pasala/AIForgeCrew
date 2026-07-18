@@ -292,10 +292,14 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
                                    capture_output=True, text=True,
                                    timeout=timeout_s or _build_timeout_s())
             except Exception:  # noqa: BLE001 — timeout / spawn failure
-                # A timed-out build may leave a HALF-WRITTEN .codegraph; indexed()
-                # only checks dir existence, so leaving it would make every future
-                # turn short-circuit onto a corrupt index. Remove it so the next
-                # attempt is clean.
+                # A TIMEOUT means the PROCESS didn't exit in time — NOT that the
+                # index is incomplete: a build that finished writing the DB but
+                # overran on a slow teardown lands here with a VALID index. Mirror
+                # the returncode path — only remove when the index is genuinely
+                # absent; if a populated .codegraph exists, keep + use it.
+                if indexed(cwd):
+                    _FAILED.pop(repo, None)
+                    return True
                 if _have_lock:
                     _remove_partial_index(repo)
                 _FAILED[repo] = _time.monotonic()

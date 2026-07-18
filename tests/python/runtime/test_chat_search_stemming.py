@@ -73,3 +73,10 @@ def test_stem_root_groups_non_idempotent_stem():
          "content": "the process had errors today", "created_at": 0}]
     top = _rank_search(rows, _tokens("process errors"), 2)
     assert top[0]["session_id"] == 2          # two-concept row beats spam
+
+
+def test_singular_query_finds_plural():
+    # 'registry' now stems to the shared root so it matches stored 'registries'
+    from aiforge_core.runtime.chat_store._helpers import _stem_root, _tokens
+    assert _stem_root("registry") == _stem_root("registries")
+    assert "registr" in _tokens("registry")       # base expands to the shared root

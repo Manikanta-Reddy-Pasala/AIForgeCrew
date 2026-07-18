@@ -84,3 +84,15 @@ def test_advisory_prose_is_not_a_claim():
     # real this-turn claims still fire
     assert _claims_file_edits("I updated config.yaml")
     assert _claims_file_edits("Applied the fix to Dashboard.vue")
+
+
+def test_advisory_only_frames_when_before_verb():
+    # advisory framing the verb → suppressed
+    assert not _claims_file_edits("the config file should be updated with a 30s timeout")
+    assert not _claims_file_edits("a new test file needs to be created")
+    # a trailing 'please'/'make sure' after a real claim does NOT suppress it
+    assert _claims_file_edits("I have made the changes, please let me know if you need more")
+    assert _claims_file_edits("I updated main.py to make sure the tests pass")
+    # adjective between determiner and subject noun still reads as descriptive
+    assert not _claims_file_edits("The recent commit added a new endpoint to routes.py")
+    assert not _claims_file_edits("That last commit removed the deprecated method from utils.py")

@@ -69,19 +69,25 @@ _TEXT_ONLY = ("text only", "text-only", "only supports text", "only support text
 #   • form-specific "support image FORMAT/_URL/TYPE" — a VLM that takes image
 #     URLs but not the data-URI the probe sends says "does not support image_url
 #     …"; the negative lookahead keeps those inconclusive.
+_FORM_LOOKAHEAD = (
+    r"(?!\s*[-_a-z]*(?:url|format|type|scheme|encoding|codec|base64|"
+    r"dimension|size|mode|resolution|pixel))")
 _MODALITY_REJECT_RE = re.compile(
     r"(?i)(?:"
-    r"(?:does\s?n[o']t|do not|not) support (?:image|images|vision|multimodal)s?"
-    r"(?!\s*[-_a-z]*(?:url|format|type|scheme|encoding|codec|base64|dimension|size|mode))"
-    r"|vision (?:is )?not supported|no (?:image|vision) support"
-    r"|no support for (?:image|vision)|not multimodal|multimodal not"
-    r"|\bno vision\b|not a vision model"
-    # require the trailing 'supported/accepted/…' — a bare '…is not' over-matched
-    # payload errors ('image input is not a valid base64 PNG').
-    r"|images? (?:is|are) not (?:supported|accepted|enabled|allowed)"
-    r"|image inputs? (?:is|are) not (?:supported|accepted|enabled|allowed)"
-    r"|(?:does not|doesn't|not) accept images?"
-    r"(?!\s*[-_a-z]*(?:url|format|type|scheme|encoding|codec|base64|dimension|size|mode))"
+    # "(does not) support image/vision/multimodal / input modality" — but NOT a
+    # form-specific rejection (image_url / format / resolution / …).
+    r"(?:does\s?n[o']t|do not|not) support "
+    r"(?:the following input modalit\w*|image|images|vision|multimodal)s?"
+    + _FORM_LOOKAHEAD +
+    # "<modality> [input(s)/support] (is|are) not supported/enabled/…" — the
+    # intervening word is restricted to input(s)/support so a form-specific
+    # complaint ("image resolution is not supported") is NOT caught.
+    r"|(?:image|vision|multimodal)\s+(?:inputs?\s+|support\s+)?(?:is|are)?\s*"
+    r"not\s+(?:supported|accepted|enabled|available|allowed)"
+    r"|no (?:image|vision|multimodal) support"
+    r"|no support for (?:image|vision|multimodal)"
+    r"|not a (?:vision|multimodal) model"
+    r"|(?:does not|doesn't|not) accept images?" + _FORM_LOOKAHEAD +
     r")")
 
 
@@ -102,6 +108,15 @@ def _classify_probe_error(exc: Exception) -> bool | None:
     if code == 429 or (isinstance(code, int) and code >= 500):
         return None
     msg = _error_text(exc).lower()
+    # A model-reload/drop body ("not loaded", "model is loading", …) is TRANSIENT
+    # — a genuine VLM warming up. It must NEVER be read as a capability verdict
+    # (a 4xx warm-up body could otherwise contain a 'multimodal…' phrase).
+    try:
+        from aiforge_core.llm.client._errors import _MODEL_DROP_MARKERS
+        if any(k in msg for k in _MODEL_DROP_MARKERS):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
     if any(p in msg for p in _TEXT_ONLY):
         return False
     return False if _MODALITY_REJECT_RE.search(msg) else None

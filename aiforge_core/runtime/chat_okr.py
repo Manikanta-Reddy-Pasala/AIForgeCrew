@@ -43,6 +43,11 @@ _FOLD_LOCKS_GUARD = threading.Lock()
 # sessions' per-session locks don't serialize that shared file, so without this
 # two sessions folding at once would clobber each other's offset (lost update).
 _MARKER_LOCK = threading.Lock()
+# Bumped by clear_all_markers (a cross-session reset that can't hold every
+# session's fold lock). A fold that SNAPSHOTTED the epoch before a reset must not
+# write its now-stale offset back afterwards (which would resurrect a cleared
+# entry → a reused session id under-folds). Read/written under _MARKER_LOCK.
+_RESET_EPOCH = 0
 
 
 class _SessionFoldLock:
@@ -184,8 +189,10 @@ def clear_all_markers() -> None:
     bulk. Session ids restart at 1 after a reset, so a leftover offset would make
     a NEW session id-1 read a stale high-water mark and skip folding (silent
     knowledge loss). Under the marker lock. Never raises."""
+    global _RESET_EPOCH
     try:
         with _MARKER_LOCK:
+            _RESET_EPOCH += 1
             _save_marker({})
     except Exception as exc:  # noqa: BLE001
         log.debug("clear_all_markers failed: %s", exc)
@@ -251,6 +258,7 @@ def compact_session(session_id, *, repo: str | None = None,
         # marker lock is short — a DIFFERENT session mustn't clobber the shared
         # file (lost update) — but is released before the slow LLM work.
         with _MARKER_LOCK:
+            epoch0 = _RESET_EPOCH        # snapshot: a reset after this invalidates our write-back
             marker = _load_marker()
             last = marker.get(str(session_id), 0)
             if not isinstance(last, int) or last < 0:
@@ -276,8 +284,13 @@ def compact_session(session_id, *, repo: str | None = None,
             except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
                 log.debug("chat_okr capture failed: %s", exc)
         # Advance the durable offset (re-read under the marker lock so a
-        # concurrent different-session write isn't clobbered).
+        # concurrent different-session write isn't clobbered). But if a reset
+        # (clear_all_markers) ran while we did the slow LLM work, our offset is
+        # stale — writing it would resurrect a cleared entry and make a reused
+        # session id under-fold; skip the write-back in that case.
         with _MARKER_LOCK:
+            if _RESET_EPOCH != epoch0:
+                return {"ok": True, "captured": captured, "skipped": "reset"}
             marker = _load_marker()
             marker[str(session_id)] = len(turns)
             _save_marker(marker)

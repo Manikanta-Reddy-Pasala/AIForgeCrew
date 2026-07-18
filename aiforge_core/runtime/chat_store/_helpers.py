@@ -25,8 +25,11 @@ _STOPWORDS = frozenset({
 # Inflection suffixes stripped to a STEM (longest match first) so a substring
 # scan matches across word forms: query "deployment" → stem "deploy" matches
 # "deployed"/"deploys"; "registries" → "registry". Cheap, no NLP dependency.
+# NOTE: trailing "y" is stripped too (registry → registr) so a SINGULAR query
+# finds its plural: 'registry' isn't a substring of 'registries', but the shared
+# root 'registr' is. Pairs with the "ies"→bare-root rule for symmetry.
 _STEM_SUFFIXES = ("ations", "ation", "ements", "ement", "ments", "ment",
-                  "ings", "ing", "ies", "edly", "ers", "er", "ed", "es", "s")
+                  "ings", "ing", "ies", "edly", "ers", "er", "ed", "es", "s", "y")
 
 
 def _stem(t: str) -> str:

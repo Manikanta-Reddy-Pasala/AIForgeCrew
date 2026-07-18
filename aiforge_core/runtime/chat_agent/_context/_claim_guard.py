@@ -44,6 +44,7 @@ _MADE_CHANGES_RE = re.compile(
 # so it suppresses only when the noun actually precedes the edit verb.
 _DESCRIPTIVE_NOUN_RE = re.compile(
     r"(?i)\b(?:this|that|the|a|another|the\s+following)\s+"
+    r"(?:\w+\s+){0,2}"          # optional adjectives ("the recent commit")
     r"(?:commit|pull\s+request|pr|mr|changeset|revision|author|contributor|"
     r"developer|maintainer|linter|formatter|compiler|tool|script|"
     r"pipeline|ci|bot|migration)\b")
@@ -111,25 +112,41 @@ def _subject_is_descriptive(clause: str) -> bool:
     return False
 
 
+def _advisory_before(clause: str, pos: int) -> bool:
+    """True when an advisory/modal marker sits just BEFORE the edit verb at
+    ``pos`` — i.e. it FRAMES that verb as a suggestion ("the config should be
+    updated"). A stray "please"/"make sure" LATER in the clause ("I updated X,
+    please review") does not, so a real claim isn't suppressed."""
+    return bool(_ADVISORY_RE.search(clause[max(0, pos - 30): pos]))
+
+
 def _claims_file_edits(text: str) -> bool:
     """True when the answer ASSERTS it edited/created a file THIS turn. Evaluated
     PER CLAUSE so a recap/descriptive sentence can't mask a fresh claim in a
-    neighbouring one: a clause is a claim when it has an edit verb + a file/code
-    object (or "made the changes"), UNLESS it carries an unambiguous prior-work
-    cue or a third-party subject drives the edit verb. Conservative — a miss (no
-    nudge) is fine; the loop's disk cross-check is the real safety net."""
+    neighbouring one. A clause is a claim when it has an edit verb + a file/code
+    object (or first-person "made the changes") whose verb is NEITHER
+    advisory-framed (a suggestion) NOR driven by a third-party subject, and the
+    clause carries no prior-work cue. Conservative — a miss (no nudge) is fine;
+    the loop's disk cross-check is the real safety net."""
     if not text:
         return False
     for clause in _SENT_SPLIT.split(text):
-        has_claim = ((_EDIT_CLAIM_VERB_RE.search(clause)
-                      and _EDIT_CLAIM_OBJ_RE.search(clause))
-                     or _MADE_CHANGES_RE.search(clause))
-        if not has_claim:
+        if _RECAP_CUE_RE.search(clause):
             continue
-        if (_RECAP_CUE_RE.search(clause) or _ADVISORY_RE.search(clause)
-                or _subject_is_descriptive(clause)):
+        # first-person "I/we made the changes" — a claim unless it's suggested
+        # ("we should make the changes") or attributed to a third party.
+        made = _MADE_CHANGES_RE.search(clause)
+        if (made and not _advisory_before(clause, made.start())
+                and not _subject_is_descriptive(clause)):
+            return True
+        if not _EDIT_CLAIM_OBJ_RE.search(clause):
             continue
-        return True
+        if _subject_is_descriptive(clause):
+            continue
+        # a claim if ANY edit verb is not framed as a suggestion.
+        for vm in _EDIT_CLAIM_VERB_RE.finditer(clause):
+            if not _advisory_before(clause, vm.start()):
+                return True
     return False
 
 
