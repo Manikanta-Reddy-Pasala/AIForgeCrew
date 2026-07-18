@@ -30,13 +30,17 @@ import re
 
 _log = logging.getLogger("aiforge.analysis")
 
-# Cap parallel explore agents — reuse the code pipeline's knob so an operator
-# tunes one number. A serial local endpoint gains nothing above 1.
+# Cap parallel explore agents. Defaults to 1 (SEQUENTIAL): a single local LLM
+# endpoint serializes requests anyway, and firing N explores at it concurrently
+# just THRASHES it (JIT model reloads, timeouts, half-finished groups — observed:
+# group 1 done, 2-3 hung). Sequential is strictly better on local — each group
+# runs clean. Raise AIFORGE_ANALYSIS_MAX_WORKERS on a backend that genuinely
+# serves concurrent requests (falls back to the code-pipeline knob if that's set).
 def _max_workers() -> int:
     try:
-        n = int(os.environ.get("AIFORGE_PARALLEL_SUBTASKS_MAX", "4"))
+        n = int(os.environ.get("AIFORGE_ANALYSIS_MAX_WORKERS", "1"))
     except (TypeError, ValueError):
-        n = 4
+        n = 1
     return max(1, min(n, 8))
 
 
