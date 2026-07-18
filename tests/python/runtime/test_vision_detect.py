@@ -73,3 +73,15 @@ def test_classifier_order_independent_rejections():
     # payload errors about the probe image → inconclusive (real VLM protected)
     for m in ("invalid image_url", "cannot decode image", "image format unsupported"):
         assert vd._classify_probe_error(RuntimeError(m)) is None, m
+
+
+def test_classifier_reads_http_400_body_not_status_phrase():
+    import io
+    import urllib.error
+    from aiforge_core.runtime import vision_detect as vd
+    # the REAL LM-Studio path: HTTP 400 whose str() is only 'HTTP Error 400: Bad
+    # Request' — the definitive signal is in the BODY. 'Bad Request' must NOT be
+    # treated as a payload error (that regressed text-only detection to None).
+    e = urllib.error.HTTPError("http://x", 400, "Bad Request", {},
+                               io.BytesIO(b"this model does not support image inputs"))
+    assert vd._classify_probe_error(e) is False

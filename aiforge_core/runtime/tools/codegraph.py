@@ -70,18 +70,32 @@ def indexed(cwd: str | None = None) -> bool:
     THIS-repo index the tools actually need."""
     try:
         r = _repo(cwd)
-        return bool(r) and os.path.isdir(os.path.join(r, ".codegraph"))
+        if not r:
+            return False
+        d = os.path.join(r, ".codegraph")
+        # Require a POPULATED index, not a bare directory — a build that timed
+        # out / aborted (esp. on the "nolock" path where we can't safely remove
+        # it) leaves an empty or partial .codegraph dir; trusting mere existence
+        # made every later turn short-circuit onto a corrupt index forever.
+        return os.path.isdir(d) and any(os.scandir(d))
     except Exception:  # noqa: BLE001
         return False
 
 
 def _build_lock_path(repo: str) -> str:
     """Lock-file path for a repo — kept OUTSIDE the repo (temp dir, keyed by a
-    hash of the repo path) so it can NEVER be staged into the Doer's PR the way
-    a ``<repo>/.codegraph.build.lock`` would."""
+    hash of the repo's CANONICAL path) so it can NEVER be staged into the Doer's
+    PR the way a ``<repo>/.codegraph.build.lock`` would. Uses ``realpath`` +
+    ``normcase`` (not ``abspath``) so two processes reaching the SAME physical
+    repo via a symlink, a bind mount, or different CWDs (the ``.`` fallback) map
+    to the SAME lock file — else the flock wouldn't actually exclude them."""
     import hashlib
     import tempfile
-    h = hashlib.sha1(os.path.abspath(repo).encode("utf-8", "replace")).hexdigest()[:16]
+    try:
+        canon = os.path.normcase(os.path.realpath(repo))
+    except Exception:  # noqa: BLE001
+        canon = os.path.normcase(os.path.abspath(repo))
+    h = hashlib.sha1(canon.encode("utf-8", "replace")).hexdigest()[:16]
     return os.path.join(tempfile.gettempdir(), f"aiforge-codegraph-{h}.lock")
 
 

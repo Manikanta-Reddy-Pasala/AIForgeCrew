@@ -48,6 +48,18 @@ def _stem(t: str) -> str:
     return t
 
 
+def _stem_root(t: str) -> str:
+    """Fixed-point of :func:`_stem` (idempotent) — repeatedly stem until stable,
+    so a word and its own once-stemmed form collapse to the SAME grouping key
+    (``process``/``proces`` → ``proce``). Bounded iterations."""
+    for _ in range(4):
+        s = _stem(t)
+        if s == t:
+            break
+        t = s
+    return t
+
+
 def _tokens(query: str) -> list[str]:
     """Lowercase alphanumeric tokens, len>=3, minus common stopwords — PLUS a
     stemmed variant of each so substring search matches across word forms
@@ -110,10 +122,13 @@ def _rank_search(rows: list[dict], toks: list[str], limit: int) -> list[dict]:
     # Group each query WORD with its stem (``deployments`` + ``deployment``) so a
     # raw token and its own stem count as ONE unit toward ``matched`` — else a
     # single repeated word matches twice and TIES a genuine two-concept hit,
-    # letting a short repetitive spam row win. Grouping by stem does exactly that.
+    # letting a short repetitive spam row win. Key by the FIXED-POINT stem root
+    # (``_stem`` isn't idempotent — ``process`` → ``proces`` → ``proce`` — so a
+    # bare ``_stem(t)`` key would put a word and its own stem in DIFFERENT groups
+    # for the ``-s``/``-ss`` class, silently re-opening the double-count).
     units: dict[str, list[str]] = {}
     for t in toks:
-        units.setdefault(_stem(t), []).append(t)
+        units.setdefault(_stem_root(t), []).append(t)
     groups = list(units.values())
     scored: list[tuple] = []
     for r in rows:

@@ -55,26 +55,30 @@ def _tools_unsupported(exc: Exception) -> bool:
     busy/timeout/transport error). Only a tools/function rejection counts — a
     timeout or connection drop on a model that's merely loading is inconclusive
     and must NOT permanently disable native."""
+    # A 5xx / 429 is transient (busy / loading / rate-limited), NEVER a
+    # definitive tools-rejection — check the code FIRST, before consuming the
+    # one-shot body, so a transient error can't disable native.
+    code = getattr(exc, "code", 0)
+    if code == 429 or (isinstance(code, int) and code >= 500):
+        return False
     # A tools-incapable OpenAI-compatible endpoint returns HTTP 400 whose REASON
     # is in the response BODY — `str(exc)` alone is just "HTTP Error 400: Bad
-    # Request" (no tool/reject word), so the self-heal never fired and the model
-    # failed every turn. Classify on str(exc) + the HTTP body.
+    # Request" (no tool/reject word). Classify on str(exc) + the HTTP body.
     try:
         from aiforge_core.llm.client._errors import _http_err_body
         body = _http_err_body(exc)
     except Exception:  # noqa: BLE001
         body = ""
-    # A 5xx / 429 is transient (busy / loading / rate-limited), NEVER a
-    # definitive tools-rejection — must not disable native.
-    code = getattr(exc, "code", 0)
-    if code == 429 or (isinstance(code, int) and code >= 500):
-        return False
     m = (str(exc) + " " + body).lower()
     mentions_tools = "tool" in m or "function" in m
+    # DELIBERATELY excludes the generic validator words 'unrecognized' /
+    # 'unexpected' — a Jackson/Spring proxy rejecting an UNKNOWN request field
+    # emits 'Unrecognized field …' and echoes the tools schema (which contains
+    # "function"), which would falsely + PERMANENTLY disable native. The tokens
+    # below signal a real tools-capability rejection.
     rejected = any(t in m for t in (
         "unsupported", "not support", "does not support", "unknown", "invalid",
-        "no such", "not allowed", "not implemented", "not a valid",
-        "not supported", "unrecognized", "unexpected"))
+        "no such", "not allowed", "not implemented"))
     return mentions_tools and rejected
 
 

@@ -31,7 +31,13 @@ log = logging.getLogger("aiforge.chat_okr")
 # single global lock stalling an unrelated session's delete behind a slow fold's
 # LLM calls. Named _FOLD_* (not _COMPACT_*) to avoid confusion with the distinct
 # md_store._COMPACT_LOCK.
-_FOLD_LOCKS: "dict[str, threading.Lock]" = {}
+#
+# REFCOUNTED so the map can't grow unbounded (one lock per session id ever seen):
+# each entry is ``[Lock, refcount]``; a session's entry is removed the moment its
+# last holder exits. While ANY holder references the key the SAME lock object is
+# reused (correct mutual exclusion); when refcount hits 0 no one holds it, so
+# deleting it is safe (a later fold just makes a fresh lock).
+_FOLD_LOCKS: "dict[str, list]" = {}
 _FOLD_LOCKS_GUARD = threading.Lock()
 # Short-held lock JUST for the SHARED marker file's read-modify-write — different
 # sessions' per-session locks don't serialize that shared file, so without this
@@ -39,13 +45,37 @@ _FOLD_LOCKS_GUARD = threading.Lock()
 _MARKER_LOCK = threading.Lock()
 
 
-def _fold_lock(session_id) -> "threading.Lock":
-    key = str(session_id)
-    with _FOLD_LOCKS_GUARD:
-        lk = _FOLD_LOCKS.get(key)
-        if lk is None:
-            lk = _FOLD_LOCKS[key] = threading.Lock()
-        return lk
+class _SessionFoldLock:
+    """A refcounted per-session lock as a context manager (see _FOLD_LOCKS)."""
+
+    def __init__(self, key: str):
+        self._key = key
+        self._lock: "threading.Lock | None" = None
+
+    def __enter__(self):
+        with _FOLD_LOCKS_GUARD:
+            ent = _FOLD_LOCKS.get(self._key)
+            if ent is None:
+                ent = _FOLD_LOCKS[self._key] = [threading.Lock(), 0]
+            ent[1] += 1
+            self._lock = ent[0]
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        if self._lock is not None:
+            self._lock.release()
+        with _FOLD_LOCKS_GUARD:
+            ent = _FOLD_LOCKS.get(self._key)
+            if ent is not None:
+                ent[1] -= 1
+                if ent[1] <= 0:
+                    _FOLD_LOCKS.pop(self._key, None)
+        return False
+
+
+def _fold_lock(session_id) -> "_SessionFoldLock":
+    return _SessionFoldLock(str(session_id))
 
 _EXTRACT_SYS = (
     "You distil a chat session between an engineer and an AI assistant into "

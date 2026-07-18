@@ -19,20 +19,30 @@ import os
 import re
 
 # An edit VERB in the past tense — the model saying it already did the write.
+# NOTE: "made" is NOT here — it co-occurs with file nouns in ordinary prose ("I
+# made sure the file exists"); a this-turn "made the changes" is caught by
+# _MADE_CHANGES_RE instead.
 _EDIT_CLAIM_VERB_RE = re.compile(
     r"(?i)\b(?:applied|committed|wrote|written|saved|updated|modified|edited|"
-    r"patched|replaced|inserted|refactored|implemented|created|corrected|made|"
+    r"patched|replaced|inserted|refactored|implemented|created|corrected|"
     r"adjusted|rewrote|overwrote|added|removed|deleted|fixed|renamed|appended)\b")
 
-# A THIRD-PARTY subject — the answer is DESCRIBING someone else's / a commit's /
-# a diff's change, not claiming a this-turn edit. Suppresses the guard so an
-# "explain this commit / review this diff" answer ("This commit added the
-# config", "the author removed the script") isn't slapped with a false "nothing
-# was written" disclaimer.
-_DESCRIPTIVE_SUBJECT_RE = re.compile(
+# The specific this-turn phrasing "made the changes / made some edits" — a claim
+# even though "made" is too promiscuous to be a general edit verb.
+_MADE_CHANGES_RE = re.compile(
+    r"(?i)\bmade\s+(?:the\s+|some\s+|a\s+few\s+|these\s+)?"
+    r"(?:changes?|edits?|updates?|modifications?|fixes?|adjustments?)\b")
+
+# A THIRD-PARTY subject that is the one DOING the edit — a commit / author /
+# PR, not the assistant. Only these dependable subject nouns (NOT ordinary
+# content words like "diff"/"patch"/"snippet"/"example" that appear as OBJECTS
+# in genuine claims). Used with an adjacency check (:func:`_subject_is_descriptive`)
+# so it suppresses only when the noun actually precedes the edit verb.
+_DESCRIPTIVE_NOUN_RE = re.compile(
     r"(?i)\b(?:this|that|the|a|another|the\s+following)\s+"
-    r"(?:commit|pull\s+request|pr|mr|diff|patch|changeset|author|contributor|"
-    r"developer|snippet|example|revision)\b")
+    r"(?:commit|pull\s+request|pr|mr|changeset|revision|author|contributor|"
+    r"developer|maintainer)\b")
+
 # An OBJECT that makes the verb about a file/code artifact — a path with an
 # extension, an explicit file/code noun, or the screenshot's "fixes applied"
 # heading. Required ALONGSIDE the verb so prose like "I updated my estimate"
@@ -55,19 +65,47 @@ _RECAP_CUE_RE = re.compile(
     r"in (?:an?|the) (?:prior|previous|earlier) (?:turn|step|message|response)|"
     r"(?:last|prior|previous) turn|earlier in (?:this|the) (?:session|chat|conversation))\b")
 
+# Split into clauses so a suppressor (recap cue / descriptive subject) in ONE
+# sentence can't disable the guard for a fresh hallucinated claim in ANOTHER.
+_SENT_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+
+# How close (chars) a descriptive noun must sit BEFORE an edit verb to count as
+# its subject.
+_SUBJECT_WINDOW = 40
+
+
+def _subject_is_descriptive(clause: str) -> bool:
+    """True when a third-party subject (commit / author / …) is the one doing an
+    edit verb in this clause — the noun is closely FOLLOWED by an edit verb
+    ("this commit added…", "the author removed…"), so the clause DESCRIBES
+    someone else's diff rather than claiming a this-turn edit. A descriptive noun
+    used only as an OBJECT ("I updated the diff view component") does NOT
+    suppress, because no edit verb follows it."""
+    for m in _DESCRIPTIVE_NOUN_RE.finditer(clause):
+        if _EDIT_CLAIM_VERB_RE.search(clause[m.end(): m.end() + _SUBJECT_WINDOW]):
+            return True
+    return False
+
+
 def _claims_file_edits(text: str) -> bool:
-    """True when the answer ASSERTS it edited/created a file THIS turn. Requires
-    an edit verb AND a file/code object so plain prose doesn't false-fire, and is
-    suppressed only by an UNAMBIGUOUS prior-work cue (previously / earlier / in a
-    prior turn — NOT "already" / "so far", which are this-turn hallucination
-    tells). Conservative — a miss (no nudge) is fine; the loop's disk cross-check
-    is the real safety net."""
+    """True when the answer ASSERTS it edited/created a file THIS turn. Evaluated
+    PER CLAUSE so a recap/descriptive sentence can't mask a fresh claim in a
+    neighbouring one: a clause is a claim when it has an edit verb + a file/code
+    object (or "made the changes"), UNLESS it carries an unambiguous prior-work
+    cue or a third-party subject drives the edit verb. Conservative — a miss (no
+    nudge) is fine; the loop's disk cross-check is the real safety net."""
     if not text:
         return False
-    if _RECAP_CUE_RE.search(text) or _DESCRIPTIVE_SUBJECT_RE.search(text):
-        return False
-    return bool(_EDIT_CLAIM_VERB_RE.search(text)
-                and _EDIT_CLAIM_OBJ_RE.search(text))
+    for clause in _SENT_SPLIT.split(text):
+        has_claim = ((_EDIT_CLAIM_VERB_RE.search(clause)
+                      and _EDIT_CLAIM_OBJ_RE.search(clause))
+                     or _MADE_CHANGES_RE.search(clause))
+        if not has_claim:
+            continue
+        if _RECAP_CUE_RE.search(clause) or _subject_is_descriptive(clause):
+            continue
+        return True
+    return False
 
 
 def _edit_claim_guard_enabled() -> bool:

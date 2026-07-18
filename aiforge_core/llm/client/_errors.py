@@ -94,11 +94,15 @@ def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
             return True, f"http_{exc.code}"
         # A 4xx whose body names a model drop is still transient (the server
         # is reloading), not a permanent bad-request. NOTE: exc.read() is
-        # one-shot — stash the bytes on the exc so _http_err_body can log the
-        # server's actual rejection reason (else the 400 cause is invisible).
+        # ONE-SHOT — prefer a body already read+stashed by another reader
+        # (_http_err_body / _tools_unsupported may run FIRST and consume it);
+        # only read fresh when nothing is stashed, and never overwrite a good
+        # stash with the empty bytes a second read returns.
         try:
-            _body = exc.read()
-            exc._aiforge_body = _body  # type: ignore[attr-defined]
+            _body = getattr(exc, "_aiforge_body", None)
+            if _body is None:
+                _body = exc.read()
+                exc._aiforge_body = _body  # type: ignore[attr-defined]
             if _body and any(m in _body.decode("utf-8", "replace").lower()
                              for m in _MODEL_DROP_MARKERS):
                 return True, "model_reloading_4xx"

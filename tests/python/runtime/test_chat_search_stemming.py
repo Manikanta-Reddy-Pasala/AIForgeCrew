@@ -59,3 +59,17 @@ def test_stem_unit_grouping_beats_repetition_spam():
          "content": "we did the deployment and the rollback", "created_at": 0}]
     top = _rank_search(rows, _tokens("deployments rollback"), 2)
     assert top[0]["session_id"] == 2          # genuine 2-concept row wins
+
+
+def test_stem_root_groups_non_idempotent_stem():
+    # 'process' → 'proces' → 'proc': raw + its stem must land in ONE unit so a
+    # process-spam row (one concept) can't tie a genuine two-concept match.
+    from aiforge_core.runtime.chat_store._helpers import _rank_search, _tokens, _stem_root
+    assert _stem_root("process") == _stem_root("proces")     # collapse to one root
+    rows = [
+        {"id": 1, "session_id": 1, "role": "user",
+         "content": "process process process", "created_at": 0},
+        {"id": 2, "session_id": 2, "role": "user",
+         "content": "the process had errors today", "created_at": 0}]
+    top = _rank_search(rows, _tokens("process errors"), 2)
+    assert top[0]["session_id"] == 2          # two-concept row beats spam

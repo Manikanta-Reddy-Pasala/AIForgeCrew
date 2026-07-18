@@ -55,46 +55,49 @@ def _error_text(exc: Exception) -> str:
     return t
 
 
-# A modality noun (the error is ABOUT vision/images) …
-_MODALITY_WORDS = ("image", "vision", "multimodal", "modal")
-# … an explicit text-only declaration (definitive, order-independent) …
+# An explicit text-only declaration → definitive no-vision (order-independent).
 _TEXT_ONLY = ("text only", "text-only", "only supports text", "only support text",
-              "text-only model", "language-only")
-# … a CAPABILITY rejection (the MODEL can't do it) — order-independent tokens …
-_CAP_REJECT = ("not support", "does not support", "doesn't support", "no support",
-               "not supported", "no image support", "no vision", "not enabled",
-               "not available", "not a valid", "unsupported", "cannot process",
-               "can't process", "not accept", "does not accept", "not implemented")
-# … but a PAYLOAD error is about the PROBE IMAGE, not the model's capability —
-# these keep the verdict INCONCLUSIVE so a real VLM isn't marked no-vision.
-_PAYLOAD_ERR = ("invalid", "decode", "corrupt", "malformed", "too large",
-                "format", "unreadable", "download", "base64", "bad request",
-                "dimensions", "resize")
+              "text-only model", "language-only", "language only")
+# MODALITY-BOUND rejection PHRASES — the rejection targets the model's IMAGE/
+# VISION capability, not the probe payload. Kept as specific phrases (not bare
+# tokens like "invalid"/"unsupported"/"bad request") so a real VLM rejecting the
+# PROBE IMAGE ("invalid image_url", "cannot decode image", "unsupported image
+# format") is NOT wrongly marked non-vision — those contain no phrase here and
+# stay inconclusive. Matched as substrings on the full error text incl. body.
+_MODALITY_REJECT = (
+    "does not support image", "doesn't support image", "not support image",
+    "does not support images", "not support images",
+    "does not support vision", "doesn't support vision", "not support vision",
+    "vision not supported", "vision is not supported", "no vision support",
+    "no image support", "no support for image", "no support for vision",
+    "does not support multimodal", "not support multimodal", "not multimodal",
+    "multimodal not", "no vision", "not a vision model",
+    "image input is not", "image inputs are not", "image input not supported",
+    "images are not supported", "images not supported",
+    "does not accept image", "not accept image",
+    "cannot process image", "can't process image", "unable to process image",
+)
 
 
 def _classify_probe_error(exc: Exception) -> bool | None:
     """Read a failed vision probe. Returns ``False`` ONLY when the endpoint
-    definitively rejected the IMAGE MODALITY (an explicit text-only declaration,
-    or a modality noun + a capability-rejection token, order-independent) — a
-    transport blip, a bare 400, a 5xx/429, or a PAYLOAD error ('invalid
+    definitively rejected the IMAGE MODALITY — an explicit text-only declaration
+    (:data:`_TEXT_ONLY`) or a modality-bound rejection phrase
+    (:data:`_MODALITY_REJECT`). A transport blip, a bare 400 (whose ``str`` is
+    just 'HTTP Error 400: Bad Request'), a 5xx/429, or a PAYLOAD error ('invalid
     image_url', 'cannot decode image', 'unsupported image format') stays
     inconclusive (``None``) so a genuine VLM is never permanently marked
     non-vision. Classifies on the full error text incl. the HTTP body."""
     # A 5xx / 429 is transient (busy / loading / rate-limited), NEVER a
     # definitive modality rejection — a mid-inference crash body could otherwise
-    # contain 'image' + 'cannot' and poison the cache as no-vision.
+    # look like one and poison the cache as no-vision.
     code = getattr(exc, "code", 0)
     if code == 429 or (isinstance(code, int) and code >= 500):
         return None
     msg = _error_text(exc).lower()
     if any(p in msg for p in _TEXT_ONLY):
         return False
-    if not any(w in msg for w in _MODALITY_WORDS):
-        return None
-    # a payload/format complaint about the probe image → inconclusive, not "no"
-    if any(p in msg for p in _PAYLOAD_ERR):
-        return None
-    return False if any(p in msg for p in _CAP_REJECT) else None
+    return False if any(p in msg for p in _MODALITY_REJECT) else None
 
 
 # model id -> probed vision capability. One live probe per model, then cached.

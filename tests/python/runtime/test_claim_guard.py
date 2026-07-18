@@ -57,9 +57,17 @@ def test_weak_cues_are_not_recaps():
 
 
 def test_descriptive_subject_not_a_claim():
-    # describing a COMMIT / author's diff is not a this-turn edit claim → suppress
+    # a third-party subject DRIVING the edit verb ("commit added", "author
+    # removed") = describing someone else's diff → suppress
     assert not _claims_file_edits("This commit added the config and fixed the module")
     assert not _claims_file_edits("The author removed the script")
-    assert not _claims_file_edits("the following patch updated the file")
-    # first-person 'made the changes' IS a claim now ('made' verb + 'changes' obj)
+    # but a descriptive noun used only as an OBJECT ("the diff view component")
+    # must NOT suppress a real claim (clause-scoped, subject-adjacency check)
+    assert _claims_file_edits("I updated the diff view component in App.vue")
+    assert _claims_file_edits("I fixed the config module")
+    # 'made the changes' IS a this-turn claim; 'made sure the file exists' is NOT
     assert _claims_file_edits("I made the changes to Dashboard.vue")
+    assert not _claims_file_edits("I made sure the file exists before reading it")
+    # a recap/descriptive sentence must not mask a fresh claim in a NEXT clause
+    assert _claims_file_edits(
+        "This commit added logging. I've now applied the fix to config.py")
