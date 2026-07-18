@@ -51,7 +51,10 @@ def test_enabled_for_run_requires_index(tmp_path, monkeypatch):
     monkeypatch.delenv("AIFORGE_CODEGRAPH_DISABLE", raising=False)
     monkeypatch.delenv("AIFORGE_CURRENT_TICKET", raising=False)
     assert cg.enabled_for_run() is False          # no .codegraph yet
-    (tmp_path / ".codegraph").mkdir()
-    assert cg.enabled_for_run() is True            # index present
+    d = tmp_path / ".codegraph"
+    d.mkdir()
+    assert cg.enabled_for_run() is False           # EMPTY stub dir is not a real index
+    (d / "graph.db").write_text("x")               # populated → real index
+    assert cg.enabled_for_run() is True
     monkeypatch.setenv("AIFORGE_CODEGRAPH_DISABLE", "1")
     assert cg.enabled_for_run() is False           # env-disabled
