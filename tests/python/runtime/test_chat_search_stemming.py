@@ -80,3 +80,10 @@ def test_singular_query_finds_plural():
     from aiforge_core.runtime.chat_store._helpers import _stem_root, _tokens
     assert _stem_root("registry") == _stem_root("registries")
     assert "registr" in _tokens("registry")       # base expands to the shared root
+
+
+def test_stem_never_injects_a_stopword():
+    # the trailing-'y' rule stems 'they'->'the'; 'the' must NOT become a token
+    from aiforge_core.runtime.chat_store._helpers import _tokens
+    assert "the" not in _tokens("they")
+    assert "the" not in _tokens("how do they handle retries")

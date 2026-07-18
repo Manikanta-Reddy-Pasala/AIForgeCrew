@@ -82,7 +82,7 @@ _MODALITY_REJECT_RE = re.compile(
     # "<modality> [input(s)/support] (is|are) not supported/enabled/…" — the
     # intervening word is restricted to input(s)/support so a form-specific
     # complaint ("image resolution is not supported") is NOT caught.
-    r"|(?:image|vision|multimodal)\s+(?:inputs?\s+|support\s+)?(?:is|are)?\s*"
+    r"|(?:image|vision|multimodal)s?\s+(?:inputs?\s+|support\s+)?(?:is|are)?\s*"
     r"not\s+(?:supported|accepted|enabled|available|allowed)"
     r"|no (?:image|vision|multimodal) support"
     r"|no support for (?:image|vision|multimodal)"

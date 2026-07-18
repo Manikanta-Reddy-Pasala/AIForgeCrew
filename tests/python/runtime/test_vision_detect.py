@@ -111,3 +111,9 @@ def test_classifier_model_drop_and_multimodal():
         assert vd._classify_probe_error(RuntimeError(m)) is False, m
     # a form/resolution complaint stays inconclusive
     assert vd._classify_probe_error(RuntimeError("image resolution is not supported")) is None
+
+
+def test_classifier_plural_images_rejection():
+    from aiforge_core.runtime import vision_detect as vd
+    assert vd._classify_probe_error(RuntimeError("Images are not supported")) is False
+    assert vd._classify_probe_error(RuntimeError("images not supported")) is False

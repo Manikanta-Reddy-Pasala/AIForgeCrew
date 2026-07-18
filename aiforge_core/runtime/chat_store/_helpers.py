@@ -76,7 +76,10 @@ def _tokens(query: str) -> list[str]:
         if len(t) >= 3 and t not in _STOPWORDS:
             seen[t] = None
             st = _stem(t)
-            if st != t and len(st) >= 3:
+            # re-check the stem against stopwords — the trailing-'y' rule stems
+            # 'they'->'the', and 'the' as a search token matches nearly every
+            # message. Never inject a stopword stem.
+            if st != t and len(st) >= 3 and st not in _STOPWORDS:
                 seen[st] = None
     return list(seen)
 

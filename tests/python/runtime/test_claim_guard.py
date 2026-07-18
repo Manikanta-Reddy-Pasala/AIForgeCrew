@@ -96,3 +96,12 @@ def test_advisory_only_frames_when_before_verb():
     # adjective between determiner and subject noun still reads as descriptive
     assert not _claims_file_edits("The recent commit added a new endpoint to routes.py")
     assert not _claims_file_edits("That last commit removed the deprecated method from utils.py")
+
+
+def test_descriptive_noun_as_object_still_fires():
+    # a tool-noun used as the OBJECT of the assistant's own second verb must NOT
+    # suppress the claim ("I refactored the build script and updated the config")
+    assert _claims_file_edits("I refactored the build script and updated the config file")
+    assert _claims_file_edits("I edited the config file and updated the deploy script")
+    # a LEADING third-party subject still suppresses (it's not an object)
+    assert not _claims_file_edits("The linter removed the unused imports from utils.py")

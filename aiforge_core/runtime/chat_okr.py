@@ -244,6 +244,12 @@ def compact_session(session_id, *, repo: str | None = None,
     # snapshot (resurrection) or double-capture. Different sessions fold + delete
     # concurrently — no global stall.
     with _fold_lock(session_id):
+        # Snapshot the reset epoch BEFORE reading messages, so ANY reset that
+        # lands after this data snapshot advances the epoch past epoch0 and trips
+        # the write-back skip (snapshotting it later left a window where a reset
+        # between the message read and the epoch read went undetected).
+        with _MARKER_LOCK:
+            epoch0 = _RESET_EPOCH
         try:
             messages = chat_store.get_messages(session_id)
         except Exception as exc:  # noqa: BLE001
@@ -258,7 +264,6 @@ def compact_session(session_id, *, repo: str | None = None,
         # marker lock is short — a DIFFERENT session mustn't clobber the shared
         # file (lost update) — but is released before the slow LLM work.
         with _MARKER_LOCK:
-            epoch0 = _RESET_EPOCH        # snapshot: a reset after this invalidates our write-back
             marker = _load_marker()
             last = marker.get(str(session_id), 0)
             if not isinstance(last, int) or last < 0:

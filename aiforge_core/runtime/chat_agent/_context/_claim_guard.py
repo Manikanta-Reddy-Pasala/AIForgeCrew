@@ -103,6 +103,13 @@ def _subject_is_descriptive(clause: str) -> bool:
     verb belongs to a RE-SUBJECT ("after the pull request, I updated…"), does NOT
     suppress."""
     for m in _DESCRIPTIVE_NOUN_RE.finditer(clause):
+        # If an edit verb (or "made the changes") precedes this noun, the noun is
+        # that verb's OBJECT — the assistant's own claim ("I refactored the build
+        # script and updated X") — NOT a third-party subject. Only a leading
+        # descriptive noun ("The linter removed X") is a real subject.
+        head = clause[:m.start()]
+        if _EDIT_CLAIM_VERB_RE.search(head) or _MADE_CHANGES_RE.search(head):
+            continue
         tail = clause[m.end(): m.end() + _SUBJECT_WINDOW]
         cut = _RESUBJECT_RE.search(tail)      # stop before a new subject takes over
         if cut:

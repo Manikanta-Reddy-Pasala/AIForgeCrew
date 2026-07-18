@@ -131,6 +131,35 @@ def _acquire_build_lock(repo: str):
         return "nolock"
 
 
+def _index_healthy(repo: str) -> bool:
+    """Cheap INTEGRITY probe of a built ``.codegraph`` — a SQLite quick_check on
+    its DB file(s). Distinguishes a COMPLETE index (kept when a build overran the
+    timeout on slow teardown) from a HALF-WRITTEN one (a mid-write timeout leaves
+    a corrupt DB that ``indexed()``'s dir-existence check can't detect and would
+    trust forever). True only when a DB exists AND passes quick_check. Never
+    raises; on any doubt returns False so the caller removes + rebuilds."""
+    import glob
+    import sqlite3
+    d = os.path.join(repo, ".codegraph")
+    try:
+        dbs = (glob.glob(os.path.join(d, "**", "*.db"), recursive=True)
+               + glob.glob(os.path.join(d, "**", "*.sqlite*"), recursive=True))
+    except Exception:  # noqa: BLE001
+        return False
+    if not dbs:
+        return False                      # no DB → not a usable index
+    for db in dbs:
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+            row = con.execute("PRAGMA quick_check").fetchone()
+            con.close()
+            if not row or str(row[0]).lower() != "ok":
+                return False
+        except Exception:  # noqa: BLE001 — locked / corrupt / unreadable
+            return False
+    return True
+
+
 def _remove_partial_index(repo: str) -> None:
     """Best-effort remove a half-written ``.codegraph`` left by a failed/timed-out
     build. Safe: ensure_indexed only builds when the repo was NOT already
@@ -292,12 +321,13 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
                                    capture_output=True, text=True,
                                    timeout=timeout_s or _build_timeout_s())
             except Exception:  # noqa: BLE001 — timeout / spawn failure
-                # A TIMEOUT means the PROCESS didn't exit in time — NOT that the
-                # index is incomplete: a build that finished writing the DB but
-                # overran on a slow teardown lands here with a VALID index. Mirror
-                # the returncode path — only remove when the index is genuinely
-                # absent; if a populated .codegraph exists, keep + use it.
-                if indexed(cwd):
+                # A TIMEOUT means the PROCESS didn't exit in time — NOT
+                # necessarily that the index is incomplete: a build that finished
+                # writing the DB but overran on slow teardown is VALID. But a
+                # timeout mid-DB-write leaves a CORRUPT non-empty dir that
+                # indexed() (existence only) would trust forever, so gate on a
+                # real integrity probe: keep only a DB that passes quick_check.
+                if indexed(cwd) and _index_healthy(repo):
                     _FAILED.pop(repo, None)
                     return True
                 if _have_lock:
