@@ -30,15 +30,21 @@ _STEM_SUFFIXES = ("ations", "ation", "ements", "ement", "ments", "ment",
 
 
 def _stem(t: str) -> str:
-    """Strip a common English inflection to a stem (>=3 chars). Conservative:
+    """Strip a common English inflection to a BARE stem (>=3 chars). Conservative:
     only for tokens len>=4, and the stem must stay >=3 so we don't over-crush
-    short words into noise. Handles ``ies -> y`` (registries -> registry)."""
+    short words into noise.
+
+    The matcher is pure SUBSTRING, so the stem must be a substring of every
+    inflected form it should unify. For ``ies`` we strip to the bare root
+    (``registries -> registr``), NOT ``registry`` — ``registry`` is NOT a
+    substring of ``registries`` (…tri… vs …try…), so the old ``ies -> y`` never
+    matched the plural it was meant to. ``registr`` IS a substring of both
+    ``registry`` and ``registries``, making the match symmetric."""
     if len(t) < 4:
         return t
     for suf in _STEM_SUFFIXES:
         if t.endswith(suf) and len(t) - len(suf) >= 3:
-            base = t[: -len(suf)]
-            return base + "y" if suf == "ies" else base
+            return t[: -len(suf)]
     return t
 
 

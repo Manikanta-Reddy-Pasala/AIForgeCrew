@@ -55,7 +55,21 @@ def _tools_unsupported(exc: Exception) -> bool:
     busy/timeout/transport error). Only a tools/function rejection counts — a
     timeout or connection drop on a model that's merely loading is inconclusive
     and must NOT permanently disable native."""
-    m = str(exc).lower()
+    # A tools-incapable OpenAI-compatible endpoint returns HTTP 400 whose REASON
+    # is in the response BODY — `str(exc)` alone is just "HTTP Error 400: Bad
+    # Request" (no tool/reject word), so the self-heal never fired and the model
+    # failed every turn. Classify on str(exc) + the HTTP body.
+    try:
+        from aiforge_core.llm.client._errors import _http_err_body
+        body = _http_err_body(exc)
+    except Exception:  # noqa: BLE001
+        body = ""
+    # A 5xx / 429 is transient (busy / loading / rate-limited), NEVER a
+    # definitive tools-rejection — must not disable native.
+    code = getattr(exc, "code", 0)
+    if code == 429 or (isinstance(code, int) and code >= 500):
+        return False
+    m = (str(exc) + " " + body).lower()
     mentions_tools = "tool" in m or "function" in m
     rejected = any(t in m for t in (
         "unsupported", "not support", "does not support", "unknown", "invalid",
@@ -107,31 +121,58 @@ def native_tools_enabled(role: str) -> bool:
     s = _protocol_setting()
     if s == "text":
         return False
+    # A model that hit a DEFINITIVE tools-rejection on a prior turn is cached
+    # False — don't re-wire native (and don't emit the 'native active' banner
+    # for a run that will silently run on text).
+    if _NATIVE_CACHE.get(_model_for(role)) is False:
+        return False
     if s == "native":
         return True
     return _probe_native(role)
 
 
+# Sentinel: a tool_call whose arguments were ATTEMPTED but are unrecoverable
+# (truncated/malformed JSON). Emitting ``ARGS_JSON: {}`` would silently drop the
+# model's real args — the exact empty-args failure this feature kills — so we
+# signal the caller to redo the turn on the hardened text path instead.
+_NATIVE_ARGS_UNRECOVERABLE = "\x00native-args-unrecoverable"
+
+
 def _synth_step(msg: dict) -> str:
     """Adapt a native assistant message into the text step the loop's ``_parse``
     already understands. A ``tool_calls`` reply → a synthetic ACTION/ARGS_JSON
-    line carrying the REAL structured args (no more ``ARGS_JSON: {}``); a plain
-    reply → its content verbatim (parsed as FINAL/ASK/text as before). Only the
-    FIRST tool call is taken — the loop runs one action per turn."""
+    line carrying the REAL structured args; a plain reply → its recovered text
+    (content, else the reasoning channel, think-stripped). Only the FIRST tool
+    call is taken — the loop runs one action per turn. Returns the
+    ``_NATIVE_ARGS_UNRECOVERABLE`` sentinel when a named call's arguments were
+    attempted but can't be parsed (caller falls back to text for that turn)."""
+    from aiforge_core.llm.client._text import _msg_text
     calls = msg.get("tool_calls") or []
     if calls:
         fn = (calls[0] or {}).get("function") or {}
         name = fn.get("name") or ""
         raw = fn.get("arguments")
-        try:
-            args = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        except (ValueError, TypeError):
+        # Resolve args, DISTINGUISHING a legit empty-args call from a malformed
+        # one: dict → use it; None/""/"{}" → genuinely empty; a non-empty string
+        # that fails to parse → ATTEMPTED-but-broken (don't surrender to {}).
+        if isinstance(raw, dict):
+            args = raw
+        elif raw is None or (isinstance(raw, str) and raw.strip() in ("", "{}")):
             args = {}
+        elif isinstance(raw, str):
+            try:
+                args = json.loads(raw)
+            except (ValueError, TypeError):
+                args = None
+        else:
+            args = None
+        # A nameless call carries no action → treat it as plain content.
+        if not name:
+            return _msg_text(msg)
         if not isinstance(args, dict):
-            args = {}
+            return _NATIVE_ARGS_UNRECOVERABLE
         return f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}"
-    content = msg.get("content") or ""
-    return content if isinstance(content, str) else str(content)
+    return _msg_text(msg)
 
 
 def make_native_complete_fn():
@@ -170,6 +211,12 @@ def make_native_complete_fn():
             log.info("native tool_call: %s (n=%d)", fn.get("name"), len(calls))
         else:
             log.info("native content step (no tool_call)")
-        return _synth_step(msg)
+        step = _synth_step(msg)
+        if step == _NATIVE_ARGS_UNRECOVERABLE:
+            # the model attempted tool args but they were truncated/malformed —
+            # redo this turn on the hardened text path rather than emit empty args
+            log.info("native args unrecoverable → text fallback for this turn")
+            return client.complete(role, convo)
+        return step
 
     return _fn

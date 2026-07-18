@@ -26,14 +26,18 @@ def test_claims_file_edits_negative_on_plain_prose():
 
 
 def test_prior_work_recap_is_not_a_claim():
-    # A truthful recap of an EARLIER turn's edits must NOT trip the guard
-    # (this was the false-positive on a "run the tests" turn).
+    # A truthful recap with an UNAMBIGUOUS prior-turn cue adjacent to the verb
+    # must NOT trip the guard (the false-positive on a "run the tests" turn).
     assert not _claims_file_edits(
         "Previously created isprime.py with is_prime(n). All tests pass.")
-    assert not _claims_file_edits("I already added a reset() method to counter.py.")
     assert not _claims_file_edits(
         "Earlier in this session I updated calc.py with divide().")
-    # …but a fresh this-turn claim still trips it.
+    # …but 'already' is NOT a recap cue — it's a this-turn hallucination tell
+    # ("I've already applied the fix to X" is the classic fake claim), so it
+    # still trips the guard; the loop's disk cross-check (_edits_made>0 / tree
+    # changed) is what spares a genuinely-completed edit from a false nudge.
+    assert _claims_file_edits("I already applied the fix to Dashboard.vue.")
+    # a fresh this-turn claim still trips it.
     assert _claims_file_edits("I have now applied the fix to Dashboard.vue.")
 
 
@@ -41,3 +45,12 @@ def test_disclaimer_prepends_honest_note_once():
     out = _edit_claim_disclaimer("Applied the fix to app.py.")
     assert out.lower().startswith("⚠ note")
     assert "Applied the fix to app.py." in out
+
+
+def test_weak_cues_are_not_recaps():
+    # 'already' / 'so far' are this-turn hallucination tells, NOT recaps → fire
+    assert _claims_file_edits("I've already applied the fix to Dashboard.vue")
+    assert _claims_file_edits("So far I saved the changes to config.yaml")
+    # unambiguous prior-turn cues → truthful recap, suppress
+    assert not _claims_file_edits("Previously created isprime.py in an earlier turn")
+    assert not _claims_file_edits("I earlier updated the config file")

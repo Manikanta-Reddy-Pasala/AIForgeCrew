@@ -650,10 +650,18 @@ def run_chat_agent(
             # Nudge it to actually write (bounded); if it still won't, prepend an
             # honest note so the user is never told a change landed that didn't.
             # Opt out: AIFORGE_CHAT_EDIT_CLAIM_GUARD=0.
+            # Disk cross-check: "" = no git signal (honor the contract — NOT
+            # "clean"), so in a non-git workspace we rely on _edits_made==0 alone;
+            # with git, fire only when the tree is UNCHANGED (a real write would
+            # have dirtied it — an incidental dirty tree suppressing the guard is
+            # an accepted conservative miss).
+            _wt_now = (_worktree_fingerprint(cwd)
+                       if _edit_claim_guard_enabled() else "")
+            _no_landed_write = (_wt_now == "" or _wt_now == _wt_fp0)
             if (not plan_mode and not builder and _edits_made == 0
                     and _edit_claim_guard_enabled()
                     and _claims_file_edits(step.get("text") or "")
-                    and _worktree_fingerprint(cwd) == _wt_fp0):
+                    and _no_landed_write):
                 if _edit_claim_nudges < 2:
                     _edit_claim_nudges += 1
                     if step.get("text"):

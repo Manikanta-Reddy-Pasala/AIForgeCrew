@@ -75,6 +75,20 @@ def indexed(cwd: str | None = None) -> bool:
         return False
 
 
+def _remove_partial_index(repo: str) -> None:
+    """Best-effort remove a half-written ``.codegraph`` left by a failed/timed-out
+    build. Safe: ensure_indexed only builds when the repo was NOT already
+    indexed, so any index present after a failed build is a stub from that
+    attempt, not a good prior index. Never raises."""
+    try:
+        import shutil
+        d = os.path.join(repo, ".codegraph")
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _disabled() -> bool:
     return os.environ.get("AIFORGE_CODEGRAPH_DISABLE", "0").strip().lower() in (
         "1", "true", "yes", "on")
@@ -154,8 +168,9 @@ def _build_timeout_s() -> int:
 
 def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> bool:
     """Blocking, bounded first-time build: if the resolved repo has no
-    ``.codegraph`` index yet, run ``codegraph init --path <repo>`` ONCE (deduped
-    by a process lock) so the codegraph tools become available for THIS folder.
+    ``.codegraph`` index yet, run ``codegraph init <repo>`` (POSITIONAL path)
+    ONCE (deduped by a per-repo lock) so the codegraph tools become available
+    for THIS folder.
     Returns whether the index exists afterwards.
 
     No-ops (returns ``indexed()``) when the binary is missing, codegraph is
@@ -194,16 +209,25 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
             # `--path` here makes the binary reject it ("unknown option
             # '--path'") so autobuild silently failed and every un-preindexed
             # repo stayed "CodeGraph not initialized".
-            p = subprocess.run([exe, _init_cmd(), repo],
+            # split() so an override like "init --force" becomes two argv tokens,
+            # not one bogus subcommand string.
+            p = subprocess.run([exe, *_init_cmd().split(), repo],
                                capture_output=True, text=True,
                                timeout=timeout_s or _build_timeout_s())
         except Exception:  # noqa: BLE001 — timeout / spawn failure
+            # A timed-out build may have left a HALF-WRITTEN .codegraph dir;
+            # indexed() only checks dir existence, so leaving it would make every
+            # future turn short-circuit (line "if indexed(cwd): return True")
+            # onto a corrupt index and never consult the negative cache. Remove
+            # the partial index so the next attempt is clean.
+            _remove_partial_index(repo)
             _FAILED[repo] = _time.monotonic()
             return False
         # A non-zero exit (wrong subcommand, disk full, partial write) can still
         # leave a stub .codegraph dir — require BOTH a clean exit and a real
-        # index before trusting it, else negative-cache and stay unavailable.
+        # index before trusting it; remove the stub, negative-cache, stay off.
         if p.returncode != 0 or not indexed(cwd):
+            _remove_partial_index(repo)
             _FAILED[repo] = _time.monotonic()
             return False
         _FAILED.pop(repo, None)

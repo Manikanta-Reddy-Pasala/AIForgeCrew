@@ -22,8 +22,16 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 
 log = logging.getLogger("aiforge.chat_okr")
+
+# Serializes the marker read-modify-write + capture across concurrent folds
+# (fold_previous_async daemon thread, the delete-path fold, the periodic scan).
+# Without it two folds of DIFFERENT sessions clobber each other's marker entry
+# (lost offset → re-distil → duplicate captures), and a create-fold racing a
+# delete-fold of the SAME session double-captures. One lock closes both.
+_COMPACT_LOCK = threading.Lock()
 
 _EXTRACT_SYS = (
     "You distil a chat session between an engineer and an AI assistant into "
@@ -153,34 +161,37 @@ def compact_session(session_id, *, repo: str | None = None,
     if len(turns) < max(1, int(min_turns)):
         return {"ok": True, "skipped": "too_short", "captured": 0}
 
-    # Durable offset: distil only turns NEW since the last compaction.
-    marker = _load_marker()
-    last = marker.get(str(session_id), 0)
-    if not isinstance(last, int) or last < 0:
-        last = 0
-    if len(turns) <= last:
-        return {"ok": True, "skipped": "no_new", "captured": 0}
-    new_turns = turns[last:]
+    # Serialize the offset read → capture → offset write so concurrent folds
+    # can't clobber the shared marker or double-capture the same session.
+    with _COMPACT_LOCK:
+        # Durable offset: distil only turns NEW since the last compaction.
+        marker = _load_marker()
+        last = marker.get(str(session_id), 0)
+        if not isinstance(last, int) or last < 0:
+            last = 0
+        if len(turns) <= last:
+            return {"ok": True, "skipped": "no_new", "captured": 0}
+        new_turns = turns[last:]
 
-    transcript = _transcript(new_turns,
-                             _int_env("AIFORGE_SESSION_COMPACT_CHARS", 8000))
-    items = _extract(transcript, role)
-    captured = 0
-    for it in items:
-        text = (getattr(it, "text", "") or "").strip()
-        if not text:
-            continue
-        kind = (getattr(it, "kind", "") or "learning").strip()
-        try:
-            sc = md_store.classify_scope(text, hint_repo=repo, role=role)
-            md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
-                             classify=False, source=f"chat-session:{session_id}")
-            captured += 1
-        except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
-            log.debug("chat_okr capture failed: %s", exc)
-    # Advance the durable offset so already-distilled turns aren't re-extracted.
-    marker[str(session_id)] = len(turns)
-    _save_marker(marker)
+        transcript = _transcript(new_turns,
+                                 _int_env("AIFORGE_SESSION_COMPACT_CHARS", 8000))
+        items = _extract(transcript, role)
+        captured = 0
+        for it in items:
+            text = (getattr(it, "text", "") or "").strip()
+            if not text:
+                continue
+            kind = (getattr(it, "kind", "") or "learning").strip()
+            try:
+                sc = md_store.classify_scope(text, hint_repo=repo, role=role)
+                md_store.capture(kind, text, repo=sc["repo"], topic=sc["topic"],
+                                 classify=False, source=f"chat-session:{session_id}")
+                captured += 1
+            except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
+                log.debug("chat_okr capture failed: %s", exc)
+        # Advance the durable offset so already-distilled turns aren't re-extracted.
+        marker[str(session_id)] = len(turns)
+        _save_marker(marker)
     log.info("chat_okr: session=%s repo=%s captured=%d (offset→%d)",
              session_id, repo, captured, len(turns))
     return {"ok": True, "captured": captured}

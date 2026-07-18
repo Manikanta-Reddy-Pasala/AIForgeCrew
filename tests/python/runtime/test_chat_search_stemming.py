@@ -7,7 +7,10 @@ from aiforge_core.runtime.chat_store._helpers import _rank_search, _stem, _token
 
 def test_stem_strips_common_inflections():
     assert _stem("deployment") == "deploy"
-    assert _stem("registries") == "registry"
+    # 'ies' strips to the BARE root, not '…y' — 'registr' is a substring of BOTH
+    # 'registry' and 'registries' (the matcher is pure substring), so plural and
+    # singular actually unify. 'registry' is NOT a substring of 'registries'.
+    assert _stem("registries") == "registr"
     # "running" -> strips "ing"; stem differs and stays >= 3 chars
     assert _stem("running") != "running" and len(_stem("running")) >= 3
     # short words untouched

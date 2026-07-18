@@ -55,18 +55,36 @@ def _error_text(exc: Exception) -> str:
     return t
 
 
+# Phrases where the rejection binds to the MODALITY itself — a definitive
+# "this model can't see images". Matched as substrings on the full error text
+# incl. the HTTP body. Deliberately NOT bare tokens like "invalid" / "cannot":
+# a real VLM that rejects the PROBE PAYLOAD ("invalid image_url", "cannot decode
+# image", "unsupported image format") emits those, and marking it no-vision would
+# be a sticky false-negative (it gets persisted to the registry).
+_MODALITY_REJECTIONS = (
+    "does not support image", "not support image", "doesn't support image",
+    "does not support vision", "not support vision", "doesn't support vision",
+    "does not support multimodal", "not multimodal", "no vision",
+    "not a vision", "text-only", "text only model", "image input is not",
+    "image inputs are not", "vision is not supported", "images are not supported",
+)
+
+
 def _classify_probe_error(exc: Exception) -> bool | None:
     """Read a failed vision probe. Returns ``False`` ONLY when the endpoint
-    definitively rejected the IMAGE MODALITY (a modality word AND a rejection
-    word together) — a transport blip, a bare 400, or a generic "content" error
-    is inconclusive (``None``) so a genuine VLM is never permanently marked
+    definitively rejected the IMAGE MODALITY (a modality-bound rejection PHRASE,
+    e.g. 'does not support image inputs') — a transport blip, a bare 400, a 5xx/
+    429, or a payload error ('invalid image_url', 'cannot decode image') is
+    inconclusive (``None``) so a genuine VLM is never permanently marked
     non-vision. Classifies on the full error text incl. the HTTP body."""
+    # A 5xx / 429 is transient (busy / loading / rate-limited), NEVER a
+    # definitive modality rejection — a mid-inference crash body could otherwise
+    # contain 'image' + 'cannot' and poison the cache as no-vision.
+    code = getattr(exc, "code", 0)
+    if code == 429 or (isinstance(code, int) and code >= 500):
+        return None
     msg = _error_text(exc).lower()
-    modality = any(t in msg for t in ("image", "vision", "multimodal", "modal"))
-    rejected = any(t in msg for t in (
-        "unsupported", "not support", "does not support", "invalid",
-        "cannot", "no vision", "not multimodal", "unrecognized", "unknown"))
-    return False if (modality and rejected) else None
+    return False if any(p in msg for p in _MODALITY_REJECTIONS) else None
 
 
 # model id -> probed vision capability. One live probe per model, then cached.

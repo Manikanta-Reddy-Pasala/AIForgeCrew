@@ -57,14 +57,22 @@ def _strip_think(text: str) -> str:
     return text.strip()
 
 
-def _extract_text(resp_body: dict) -> str:
-    msg = (resp_body.get("choices") or [{}])[0].get("message", {}) or {}
+def _msg_text(msg: dict) -> str:
+    """Answer text from an assistant MESSAGE dict: think-stripped ``content``,
+    else the ``reasoning_content`` channel (also think-stripped). Shared by the
+    text path and the native path's plain-content branch so both recover a
+    reasoning-only reply identically."""
     content = _strip_think((msg.get("content") or "").strip())
     if content:
         return content
     # content was empty or pure <think> — fall back to the reasoning channel,
     # but strip any nested think markers there too (some proxies double-wrap).
     return _strip_think((msg.get("reasoning_content") or "").strip())
+
+
+def _extract_text(resp_body: dict) -> str:
+    msg = (resp_body.get("choices") or [{}])[0].get("message", {}) or {}
+    return _msg_text(msg)
 
 
 def _is_garbage(text: str, *, allow_empty_json: bool = False) -> bool:

@@ -15,13 +15,19 @@ def test_bundled_probe_image_exists_and_loads():
 
 
 def test_classifier_only_definitive_modality_rejection_is_no():
-    # modality word + rejection word → definitive "no vision"
-    assert vision_detect._classify_probe_error(
-        RuntimeError("400 invalid image content for this model")) is False
+    # a MODALITY-BOUND rejection phrase → definitive "no vision"
     assert vision_detect._classify_probe_error(
         RuntimeError("this model does not support image input")) is False
-    # ambiguous / transport errors → inconclusive (None), NEVER cached as no —
-    # this was the bug: genuine VLMs got marked non-vision on a bare 400.
+    assert vision_detect._classify_probe_error(
+        RuntimeError("400: vision is not supported")) is False
+    # PAYLOAD errors on a real VLM ("invalid image_url" / "cannot decode image")
+    # must be INCONCLUSIVE (None), never a sticky no-vision — this was the
+    # false-negative: a real VLM rejecting the probe image got marked non-vision.
+    assert vision_detect._classify_probe_error(
+        RuntimeError("400 invalid image content for this model")) is None
+    assert vision_detect._classify_probe_error(
+        RuntimeError("cannot decode image")) is None
+    # ambiguous / transport errors → inconclusive (None)
     assert vision_detect._classify_probe_error(
         RuntimeError("HTTP 400 Bad Request")) is None
     assert vision_detect._classify_probe_error(

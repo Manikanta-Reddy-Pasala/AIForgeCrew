@@ -38,11 +38,22 @@ def test_no_tool_call_returns_content_verbatim():
     assert _parse(_native._synth_step(msg))["kind"] == "final"
 
 
-def test_malformed_args_do_not_crash():
+def test_malformed_args_signal_text_fallback():
+    # a truncated/malformed arguments JSON must NOT degrade to ARGS_JSON:{}
+    # (the exact empty-args failure this feature kills) — it returns the sentinel
+    # so make_native_complete_fn redoes the turn on the hardened text path.
     msg = {"tool_calls": [{"function": {"name": "file_read",
                                         "arguments": "{not json"}}]}
-    parsed = _parse(_native._synth_step(msg))
-    assert parsed["tool"] == "file_read" and parsed["args"] == {}
+    assert _native._synth_step(msg) == _native._NATIVE_ARGS_UNRECOVERABLE
+
+
+def test_legit_empty_args_still_action():
+    # a genuinely no-arg call ("{}" / "") is NOT malformed → real ACTION, {} args
+    for empty in ("{}", "", None):
+        msg = {"tool_calls": [{"function": {"name": "list_dir",
+                                            "arguments": empty}}]}
+        parsed = _parse(_native._synth_step(msg))
+        assert parsed["tool"] == "list_dir" and parsed["args"] == {}
 
 
 def test_protocol_env_overrides(monkeypatch):
@@ -96,3 +107,19 @@ def test_every_registry_tool_is_native():
         assert fn["name"] and fn["parameters"]["type"] == "object"
         # open object so an extra documented key still passes
         assert fn["parameters"].get("additionalProperties") is True
+
+
+def test_tools_unsupported_reads_http_body():
+    import io
+    import urllib.error
+    # HTTP 400 whose reason is ONLY in the body — str(exc) is just "HTTP Error 400";
+    # the self-heal must read the body or it never fires (the critical bug).
+    body = b'{"error":{"message":"this model does not support tools"}}'
+    exc = urllib.error.HTTPError("http://x", 400, "Bad Request", {}, io.BytesIO(body))
+    assert _native._tools_unsupported(exc) is True
+    # a 5xx / 429 is transient — NEVER a definitive tools-rejection, even if the
+    # body mentions tools (must not disable native process-wide).
+    for code in (500, 503, 429):
+        e = urllib.error.HTTPError("http://x", code, "busy", {},
+                                   io.BytesIO(b"tools not supported"))
+        assert _native._tools_unsupported(e) is False

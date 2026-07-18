@@ -36,22 +36,22 @@ _EDIT_CLAIM_OBJ_RE = re.compile(
 
 
 # A PRIOR-WORK cue — the model recapping edits it made in an EARLIER turn, not
-# claiming a this-turn write. A recap turn legitimately makes zero edits, so the
-# guard must not fire on it ("Previously created isprime.py …", "already added
-# reset()"). This is what caused the truthful-recap false-positive.
+# claiming a this-turn write. Deliberately EXCLUDES "already" / "so far": those
+# are hallmarks of a this-turn false claim ("I've already applied the fix to
+# X.vue"), NOT a recap — treating them as recap cues let hallucinations escape
+# the guard. Only unambiguous prior-turn framing suppresses.
 _RECAP_CUE_RE = re.compile(
-    r"(?i)\b(?:previously|already|earlier|beforehand|so far|up to now|"
+    r"(?i)\b(?:previously|earlier|beforehand|"
     r"in (?:an?|the) (?:prior|previous|earlier) (?:turn|step|message|response)|"
     r"(?:last|prior|previous) turn|earlier in (?:this|the) (?:session|chat|conversation))\b")
 
-
 def _claims_file_edits(text: str) -> bool:
     """True when the answer ASSERTS it edited/created a file THIS turn. Requires
-    an edit verb AND a file/code object so plain prose doesn't false-fire, and
-    is suppressed when the text carries a PRIOR-WORK cue (previously/already/…)
-    — a truthful recap of an earlier turn's edits is not a this-turn claim.
-    Conservative by design — a miss (no nudge) is fine; the disk cross-check in
-    the loop is the real safety net."""
+    an edit verb AND a file/code object so plain prose doesn't false-fire, and is
+    suppressed only by an UNAMBIGUOUS prior-work cue (previously / earlier / in a
+    prior turn — NOT "already" / "so far", which are this-turn hallucination
+    tells). Conservative — a miss (no nudge) is fine; the loop's disk cross-check
+    is the real safety net."""
     if not text:
         return False
     if _RECAP_CUE_RE.search(text):

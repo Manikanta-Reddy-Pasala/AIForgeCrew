@@ -27,10 +27,13 @@ _THINKING_MARKERS = (
     "qwythos", "ornith", "thinking", "reasoner", "reasoning", "-r1", "r1-",
     "deepseek-r1", "qwq", "o1", "o3", "o4-mini", "marco-o1", "sky-t1", "-think",
 )
+# NOTE: markers are substring-matched, so a bare "vl" wrongly flagged "vllm" /
+# "nvl" etc. — use BOUNDARY forms (-vl / vl- / -vl-) so a served-by-vllm text
+# model isn't mistaken for a vision-language model.
 _VISION_MARKERS = (
-    "vl", "vision", "-v-", "llava", "bakllava", "moondream", "pixtral", "-vl-",
-    "internvl", "minicpm-v", "qwen2-vl", "qwen2.5-vl", "gemma-3", "gemma3",
-    "llama-3.2-11b", "llama-3.2-90b", "-omni",
+    "-vl", "vl-", "-vl-", "vision", "-v-", "llava", "bakllava", "moondream",
+    "pixtral", "internvl", "minicpm-v", "qwen2-vl", "qwen2.5-vl", "gemma-3",
+    "gemma3", "llama-3.2-11b", "llama-3.2-90b", "-omni",
 )
 
 
