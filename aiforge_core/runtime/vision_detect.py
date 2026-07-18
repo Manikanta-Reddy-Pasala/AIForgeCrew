@@ -76,8 +76,12 @@ _MODALITY_REJECT_RE = re.compile(
     r"|vision (?:is )?not supported|no (?:image|vision) support"
     r"|no support for (?:image|vision)|not multimodal|multimodal not"
     r"|\bno vision\b|not a vision model"
-    r"|images? (?:is|are) not supported|image inputs? (?:is|are) not"
-    r"|does not accept image|not accept image"
+    # require the trailing 'supported/accepted/…' — a bare '…is not' over-matched
+    # payload errors ('image input is not a valid base64 PNG').
+    r"|images? (?:is|are) not (?:supported|accepted|enabled|allowed)"
+    r"|image inputs? (?:is|are) not (?:supported|accepted|enabled|allowed)"
+    r"|(?:does not|doesn't|not) accept images?"
+    r"(?!\s*[-_a-z]*(?:url|format|type|scheme|encoding|codec|base64|dimension|size|mode))"
     r")")
 
 

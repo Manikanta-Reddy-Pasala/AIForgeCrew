@@ -658,7 +658,7 @@ def run_chat_agent(
             _wt_now = (_worktree_fingerprint(cwd)
                        if _edit_claim_guard_enabled() else "")
             _no_landed_write = (_wt_now == "" or _wt_now == _wt_fp0)
-            if (not plan_mode and not builder and _edits_made == 0
+            if (not readonly_mode and not builder and _edits_made == 0
                     and _edit_claim_guard_enabled()
                     and _claims_file_edits(step.get("text") or "")
                     and _no_landed_write):

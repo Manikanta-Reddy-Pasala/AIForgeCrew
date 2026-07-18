@@ -85,3 +85,16 @@ def test_classifier_reads_http_400_body_not_status_phrase():
     e = urllib.error.HTTPError("http://x", 400, "Bad Request", {},
                                io.BytesIO(b"this model does not support image inputs"))
     assert vd._classify_probe_error(e) is False
+
+
+def test_classifier_image_input_not_requires_supported():
+    from aiforge_core.runtime import vision_detect as vd
+    # 'image input is not <payload complaint>' must stay inconclusive
+    for m in ("image input is not a valid base64 png", "image input is not decodable"):
+        assert vd._classify_probe_error(RuntimeError(m)) is None, m
+    # only a real capability rejection is definitive
+    for m in ("image input is not supported", "image inputs are not accepted",
+              "does not accept images"):
+        assert vd._classify_probe_error(RuntimeError(m)) is False, m
+    # form-specific 'accept image_url' stays inconclusive
+    assert vd._classify_probe_error(RuntimeError("does not accept image_url")) is None
