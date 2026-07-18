@@ -370,7 +370,6 @@ def _explore_files_group(group: dict, topics: list[str], overall: str) -> dict:
     batch-reads the group via ``read_files`` (exact paths supplied — no path
     typing) and reports per file; bounded so the model never tracks a long
     worklist. Same shape/return as :func:`_explore_one`."""
-    from aiforge_core.llm.client import complete as _complete
     from aiforge_core.runtime.chat_agent import run_chat_agent
     files = group.get("files") or []
     topic_line = ("Focus: " + "; ".join(topics) + "\n") if topics else ""
@@ -384,9 +383,6 @@ def _explore_files_group(group: dict, topics: list[str], overall: str) -> dict:
         "file: its key class/symbols and what it does (path:line where useful). "
         "Return ONLY the findings markdown.")
 
-    def complete_fn(role, convo):
-        return _complete(role, convo)
-
     _root_tok = None
     _rc = None
     try:
@@ -396,10 +392,13 @@ def _explore_files_group(group: dict, topics: list[str], overall: str) -> dict:
         _rc = None
     findings, ok = "", False
     try:
+        # NO complete_fn → run_chat_agent picks NATIVE tool-calling (the default).
+        # `read_files` needs reliable structured args, which local models only get
+        # via native FC — the text protocol fumbles them into `ARGS_JSON: {}` and
+        # the explore stalls. Native is the proven-good path for this exact tool.
         for ev in run_chat_agent([{"role": "user", "content": msg}],
                                  cwd=group["path"], role="researcher",
-                                 session_id=None, mode="analyze",
-                                 complete_fn=complete_fn):
+                                 session_id=None, mode="analyze"):
             if ev.get("type") == "error":
                 return {"name": group["name"], "path": group["path"],
                         "ok": False, "error": ev.get("text"), "findings": ""}
