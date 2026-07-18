@@ -54,3 +54,12 @@ def test_weak_cues_are_not_recaps():
     # unambiguous prior-turn cues → truthful recap, suppress
     assert not _claims_file_edits("Previously created isprime.py in an earlier turn")
     assert not _claims_file_edits("I earlier updated the config file")
+
+
+def test_descriptive_subject_not_a_claim():
+    # describing a COMMIT / author's diff is not a this-turn edit claim → suppress
+    assert not _claims_file_edits("This commit added the config and fixed the module")
+    assert not _claims_file_edits("The author removed the script")
+    assert not _claims_file_edits("the following patch updated the file")
+    # first-person 'made the changes' IS a claim now ('made' verb + 'changes' obj)
+    assert _claims_file_edits("I made the changes to Dashboard.vue")

@@ -35,6 +35,13 @@ def _http_err_body(exc: Exception) -> str:
             raw = exc.read()
         except Exception:
             return ""
+        # Stash so a SECOND reader (retry logging + tools-unsupported classify)
+        # gets the same body — the read is one-shot, so without this the order of
+        # callers determined whether the body survived (a latent ordering bug).
+        try:
+            exc._aiforge_body = raw  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
     try:
         return raw.decode("utf-8", "replace")[:600]
     except Exception:

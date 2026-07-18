@@ -21,8 +21,18 @@ import re
 # An edit VERB in the past tense — the model saying it already did the write.
 _EDIT_CLAIM_VERB_RE = re.compile(
     r"(?i)\b(?:applied|committed|wrote|written|saved|updated|modified|edited|"
-    r"patched|replaced|inserted|refactored|implemented|created|corrected|"
+    r"patched|replaced|inserted|refactored|implemented|created|corrected|made|"
     r"adjusted|rewrote|overwrote|added|removed|deleted|fixed|renamed|appended)\b")
+
+# A THIRD-PARTY subject — the answer is DESCRIBING someone else's / a commit's /
+# a diff's change, not claiming a this-turn edit. Suppresses the guard so an
+# "explain this commit / review this diff" answer ("This commit added the
+# config", "the author removed the script") isn't slapped with a false "nothing
+# was written" disclaimer.
+_DESCRIPTIVE_SUBJECT_RE = re.compile(
+    r"(?i)\b(?:this|that|the|a|another|the\s+following)\s+"
+    r"(?:commit|pull\s+request|pr|mr|diff|patch|changeset|author|contributor|"
+    r"developer|snippet|example|revision)\b")
 # An OBJECT that makes the verb about a file/code artifact — a path with an
 # extension, an explicit file/code noun, or the screenshot's "fixes applied"
 # heading. Required ALONGSIDE the verb so prose like "I updated my estimate"
@@ -54,7 +64,7 @@ def _claims_file_edits(text: str) -> bool:
     is the real safety net."""
     if not text:
         return False
-    if _RECAP_CUE_RE.search(text):
+    if _RECAP_CUE_RE.search(text) or _DESCRIPTIVE_SUBJECT_RE.search(text):
         return False
     return bool(_EDIT_CLAIM_VERB_RE.search(text)
                 and _EDIT_CLAIM_OBJ_RE.search(text))

@@ -75,19 +75,30 @@ def indexed(cwd: str | None = None) -> bool:
         return False
 
 
+def _build_lock_path(repo: str) -> str:
+    """Lock-file path for a repo — kept OUTSIDE the repo (temp dir, keyed by a
+    hash of the repo path) so it can NEVER be staged into the Doer's PR the way
+    a ``<repo>/.codegraph.build.lock`` would."""
+    import hashlib
+    import tempfile
+    h = hashlib.sha1(os.path.abspath(repo).encode("utf-8", "replace")).hexdigest()[:16]
+    return os.path.join(tempfile.gettempdir(), f"aiforge-codegraph-{h}.lock")
+
+
 def _acquire_build_lock(repo: str):
     """Non-blocking OS file lock so two PROCESSES (per-ticket Doers run as
     separate processes, all resolving to the same parent repo) don't run
     ``codegraph init`` on the same SQLite index concurrently — a half-written
     index. Returns the held file object, the string ``"nolock"`` on a platform
     without ``fcntl`` (proceed on the thread-lock alone), or ``None`` when
-    another process holds it (caller skips the duplicate build). Never raises."""
+    another process holds it (caller skips the duplicate build). Never raises.
+    The lock file lives OUTSIDE the repo so it can't leak into a PR."""
     try:
         import fcntl
     except Exception:  # noqa: BLE001 — non-POSIX: rely on the per-repo thread lock
         return "nolock"
     try:
-        f = open(os.path.join(repo, ".codegraph.build.lock"), "w")
+        f = open(_build_lock_path(repo), "w")
     except OSError:
         return "nolock"
     try:
@@ -235,6 +246,12 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
         _fl = _acquire_build_lock(repo)
         if _fl is None:
             return False
+        # Only remove a failed build's stub index when we hold a REAL
+        # cross-process lock — then no OTHER process could have built a good
+        # index concurrently, so any .codegraph present is our own stub. Under
+        # the "nolock" fallback we can't prove that, so we must NOT rmtree
+        # (could delete a concurrent process's fresh good index).
+        _have_lock = not isinstance(_fl, str)
         try:
             if indexed(cwd):            # built by the other process meanwhile
                 return True
@@ -252,14 +269,16 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
                 # only checks dir existence, so leaving it would make every future
                 # turn short-circuit onto a corrupt index. Remove it so the next
                 # attempt is clean.
-                _remove_partial_index(repo)
+                if _have_lock:
+                    _remove_partial_index(repo)
                 _FAILED[repo] = _time.monotonic()
                 return False
             # A non-zero exit (wrong subcommand, disk full, partial write) can
             # still leave a stub .codegraph — require BOTH a clean exit and a real
             # index; else remove the stub, negative-cache, stay off.
             if p.returncode != 0 or not indexed(cwd):
-                _remove_partial_index(repo)
+                if _have_lock:
+                    _remove_partial_index(repo)
                 _FAILED[repo] = _time.monotonic()
                 return False
             _FAILED.pop(repo, None)

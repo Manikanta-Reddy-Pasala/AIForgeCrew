@@ -73,7 +73,8 @@ def _tools_unsupported(exc: Exception) -> bool:
     mentions_tools = "tool" in m or "function" in m
     rejected = any(t in m for t in (
         "unsupported", "not support", "does not support", "unknown", "invalid",
-        "no such", "not allowed", "not implemented"))
+        "no such", "not allowed", "not implemented", "not a valid",
+        "not supported", "unrecognized", "unexpected"))
     return mentions_tools and rejected
 
 

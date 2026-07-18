@@ -26,12 +26,26 @@ import threading
 
 log = logging.getLogger("aiforge.chat_okr")
 
-# Serializes the marker read-modify-write + capture across concurrent folds
-# (fold_previous_async daemon thread, the delete-path fold, the periodic scan).
-# Without it two folds of DIFFERENT sessions clobber each other's marker entry
-# (lost offset → re-distil → duplicate captures), and a create-fold racing a
-# delete-fold of the SAME session double-captures. One lock closes both.
-_COMPACT_LOCK = threading.Lock()
+# PER-SESSION lock: serializes folds (+ the message snapshot) of the SAME
+# session so a create-fold racing a delete-fold can't double-capture, WITHOUT a
+# single global lock stalling an unrelated session's delete behind a slow fold's
+# LLM calls. Named _FOLD_* (not _COMPACT_*) to avoid confusion with the distinct
+# md_store._COMPACT_LOCK.
+_FOLD_LOCKS: "dict[str, threading.Lock]" = {}
+_FOLD_LOCKS_GUARD = threading.Lock()
+# Short-held lock JUST for the SHARED marker file's read-modify-write — different
+# sessions' per-session locks don't serialize that shared file, so without this
+# two sessions folding at once would clobber each other's offset (lost update).
+_MARKER_LOCK = threading.Lock()
+
+
+def _fold_lock(session_id) -> "threading.Lock":
+    key = str(session_id)
+    with _FOLD_LOCKS_GUARD:
+        lk = _FOLD_LOCKS.get(key)
+        if lk is None:
+            lk = _FOLD_LOCKS[key] = threading.Lock()
+        return lk
 
 _EXTRACT_SYS = (
     "You distil a chat session between an engineer and an AI assistant into "
@@ -113,9 +127,10 @@ def _marker_path():
 def forget_session(session_id) -> None:
     """Drop a session's compaction-offset marker entry — called when the session
     is deleted so the marker file doesn't grow unbounded across many sessions.
-    Under the same lock as compact_session. Never raises."""
+    Takes the session's fold lock (so it can't race a concurrent fold of the
+    same session) + the marker lock (shared file). Never raises."""
     try:
-        with _COMPACT_LOCK:
+        with _fold_lock(session_id), _MARKER_LOCK:
             marker = _load_marker()
             if marker.pop(str(session_id), None) is not None:
                 _save_marker(marker)
@@ -163,25 +178,30 @@ def compact_session(session_id, *, repo: str | None = None,
         from aiforge_core.runtime import chat_store
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc), "captured": 0}
-    try:
-        messages = chat_store.get_messages(session_id)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc), "captured": 0}
 
-    turns = [m for m in (messages or [])
-             if isinstance(m, dict) and m.get("role") in ("user", "assistant")
-             and (m.get("content") or "").strip()]
-    if len(turns) < max(1, int(min_turns)):
-        return {"ok": True, "skipped": "too_short", "captured": 0}
+    # PER-SESSION lock spans the message SNAPSHOT → capture → offset write, so a
+    # concurrent fold of the SAME session can't act on a stale pre-delete
+    # snapshot (resurrection) or double-capture. Different sessions fold + delete
+    # concurrently — no global stall.
+    with _fold_lock(session_id):
+        try:
+            messages = chat_store.get_messages(session_id)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "captured": 0}
+        turns = [m for m in (messages or [])
+                 if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+                 and (m.get("content") or "").strip()]
+        if len(turns) < max(1, int(min_turns)):
+            return {"ok": True, "skipped": "too_short", "captured": 0}
 
-    # Serialize the offset read → capture → offset write so concurrent folds
-    # can't clobber the shared marker or double-capture the same session.
-    with _COMPACT_LOCK:
-        # Durable offset: distil only turns NEW since the last compaction.
-        marker = _load_marker()
-        last = marker.get(str(session_id), 0)
-        if not isinstance(last, int) or last < 0:
-            last = 0
+        # Durable offset: distil only turns NEW since the last compaction. The
+        # marker lock is short — a DIFFERENT session mustn't clobber the shared
+        # file (lost update) — but is released before the slow LLM work.
+        with _MARKER_LOCK:
+            marker = _load_marker()
+            last = marker.get(str(session_id), 0)
+            if not isinstance(last, int) or last < 0:
+                last = 0
         if len(turns) <= last:
             return {"ok": True, "skipped": "no_new", "captured": 0}
         new_turns = turns[last:]
@@ -202,9 +222,12 @@ def compact_session(session_id, *, repo: str | None = None,
                 captured += 1
             except Exception as exc:  # noqa: BLE001 — one bad item never aborts the fold
                 log.debug("chat_okr capture failed: %s", exc)
-        # Advance the durable offset so already-distilled turns aren't re-extracted.
-        marker[str(session_id)] = len(turns)
-        _save_marker(marker)
+        # Advance the durable offset (re-read under the marker lock so a
+        # concurrent different-session write isn't clobbered).
+        with _MARKER_LOCK:
+            marker = _load_marker()
+            marker[str(session_id)] = len(turns)
+            _save_marker(marker)
     log.info("chat_okr: session=%s repo=%s captured=%d (offset→%d)",
              session_id, repo, captured, len(turns))
     return {"ok": True, "captured": captured}

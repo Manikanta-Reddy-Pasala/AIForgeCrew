@@ -107,19 +107,26 @@ def _media_out(d: dict) -> dict:
 def _rank_search(rows: list[dict], toks: list[str], limit: int) -> list[dict]:
     """Shared ranking for search_messages — portable Python over candidate rows
     (keys: session_id, session_title, role, content, created_at, id)."""
+    # Group each query WORD with its stem (``deployments`` + ``deployment``) so a
+    # raw token and its own stem count as ONE unit toward ``matched`` — else a
+    # single repeated word matches twice and TIES a genuine two-concept hit,
+    # letting a short repetitive spam row win. Grouping by stem does exactly that.
+    units: dict[str, list[str]] = {}
+    for t in toks:
+        units.setdefault(_stem(t), []).append(t)
+    groups = list(units.values())
     scored: list[tuple] = []
     for r in rows:
         content = (r.get("content") or "").strip()
         if not content:
             continue
         low = content.lower()
-        matched = sum(1 for t in toks if t in low)
+        matched = sum(1 for grp in groups if any(g in low for g in grp))
         if matched == 0:
             continue
         # Density = total hits (a term repeated on-topic ranks above one
-        # incidental mention), but each token's count is CAPPED so a short
-        # repetitive row ("car car car") can't outrank a substantive message
-        # that mentions each term once. Ties break by relevance BEFORE recency.
+        # incidental mention), each token CAPPED so a short repetitive row
+        # ("car car car") can't dominate. Ties break by relevance before recency.
         density = sum(min(low.count(t), 3) for t in toks)
         scored.append((matched, density, r["id"], r, content))
     scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)

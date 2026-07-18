@@ -34,6 +34,9 @@ _VISION_MARKERS = (
     "-vl", "vl-", "-vl-", "vision", "-v-", "llava", "bakllava", "moondream",
     "pixtral", "internvl", "minicpm-v", "qwen2-vl", "qwen2.5-vl", "gemma-3",
     "gemma3", "llama-3.2-11b", "llama-3.2-90b", "-omni",
+    # explicit VLM families where "vl" isn't dash-bordered (bare "vl" was
+    # dropped as it false-matched "vllm"/generic ids).
+    "cogvlm", "nvlm",
 )
 
 

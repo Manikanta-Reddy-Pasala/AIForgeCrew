@@ -62,3 +62,14 @@ def test_classify_and_store_skips_on_inconclusive(monkeypatch):
                         lambda *a, **k: hit.__setitem__("n", hit["n"] + 1))
     assert vision_detect.classify_and_store_vision("m1", "x", "http://x") is None
     assert hit["n"] == 0   # never persists a guess
+
+
+def test_classifier_order_independent_rejections():
+    from aiforge_core.runtime import vision_detect as vd
+    # order-independent modality rejections → definitive no-vision
+    for m in ("model is text only", "no image support", "multimodal not enabled",
+              "vision not supported", "only supports text"):
+        assert vd._classify_probe_error(RuntimeError(m)) is False, m
+    # payload errors about the probe image → inconclusive (real VLM protected)
+    for m in ("invalid image_url", "cannot decode image", "image format unsupported"):
+        assert vd._classify_probe_error(RuntimeError(m)) is None, m

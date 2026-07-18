@@ -46,3 +46,16 @@ def test_density_outranks_recency():
     out = _rank_search([incidental_new, dense_old], toks, 5)
     # the on-topic (denser) message wins despite the other being newer (higher id)
     assert out[0]["content"].startswith("cache cache cache")
+
+
+def test_stem_unit_grouping_beats_repetition_spam():
+    # raw token + its stem count as ONE unit toward 'matched', so a short
+    # repetitive single-word row can't tie/outrank a genuine two-concept match.
+    from aiforge_core.runtime.chat_store._helpers import _rank_search, _tokens
+    rows = [
+        {"id": 1, "session_id": 1, "role": "user",
+         "content": "deployments deployments deployments", "created_at": 0},
+        {"id": 2, "session_id": 2, "role": "user",
+         "content": "we did the deployment and the rollback", "created_at": 0}]
+    top = _rank_search(rows, _tokens("deployments rollback"), 2)
+    assert top[0]["session_id"] == 2          # genuine 2-concept row wins
