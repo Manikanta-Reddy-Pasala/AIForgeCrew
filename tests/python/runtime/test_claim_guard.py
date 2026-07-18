@@ -126,3 +126,17 @@ def test_passive_and_thirdparty_human_not_a_claim():
     assert not _claims_file_edits("The engineer implemented the fix in auth.py")
     # active first-person still fires
     assert _claims_file_edits("I updated config.yaml")
+
+
+def test_round10_adjacency_stray_passive_does_not_suppress_real_claim():
+    # An UNRELATED passive/negation fragment earlier in the clause must NOT
+    # suppress a genuine adjacent this-turn claim (16-char adjacency window).
+    assert _claims_file_edits("The bug is fixed, and I updated src/app.py.")
+    assert _claims_file_edits(
+        "The test was failing; I rewrote the handler in server.py.")
+
+
+def test_round10_adjacent_passive_still_suppresses():
+    # A truly passive/advisory-framed verb (marker adjacent) stays suppressed.
+    assert not _claims_file_edits("The config file should be updated.")
+    assert not _claims_file_edits("The file was deleted by the linter earlier.")

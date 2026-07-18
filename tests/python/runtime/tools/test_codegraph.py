@@ -58,3 +58,75 @@ def test_enabled_for_run_requires_index(tmp_path, monkeypatch):
     assert cg.enabled_for_run() is True
     monkeypatch.setenv("AIFORGE_CODEGRAPH_DISABLE", "1")
     assert cg.enabled_for_run() is False           # env-disabled
+
+
+def test_round10_fast_path_rebuilds_on_corrupt_index(tmp_path, monkeypatch):
+    """A corrupt index left by a CRASHED prior process must not be trusted
+    forever: ensure_indexed verifies once, removes the corrupt index, rebuilds."""
+    from aiforge_core.runtime.tools import codegraph as cg
+    repo = tmp_path
+    d = repo / ".codegraph"
+    d.mkdir()
+    (d / "graph.db").write_text("not a real sqlite file")   # corrupt
+
+    monkeypatch.setattr(cg, "_autobuild_enabled", lambda: True)
+    monkeypatch.setattr(cg, "_disabled", lambda: False)
+    monkeypatch.setattr(cg, "available", lambda: True)
+    monkeypatch.setattr(cg, "_bin", lambda: "/usr/bin/true")
+    monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", str(repo))
+    cg._VERIFIED_HEALTHY.clear()
+    cg._FAILED.clear()
+
+    built = {"n": 0}
+
+    def fake_run(cmd, **k):
+        built["n"] += 1
+        d.mkdir(exist_ok=True)                                # corrupt was rm'd
+        (d / "graph.db").write_bytes(_valid_sqlite_bytes())   # good rebuild
+
+        class _P:
+            returncode = 0
+            stdout = stderr = ""
+        return _P()
+    monkeypatch.setattr(cg.subprocess, "run", fake_run)
+
+    assert cg.ensure_indexed(str(repo)) is True
+    assert built["n"] == 1                      # corrupt index triggered rebuild
+    # second call trusts the now-healthy cached fast-path — no rebuild
+    assert cg.ensure_indexed(str(repo)) is True
+    assert built["n"] == 1
+
+
+def test_round10_fast_path_trusts_healthy_index(tmp_path, monkeypatch):
+    from aiforge_core.runtime.tools import codegraph as cg
+    repo = tmp_path
+    d = repo / ".codegraph"
+    d.mkdir()
+    (d / "graph.db").write_bytes(_valid_sqlite_bytes())
+
+    monkeypatch.setattr(cg, "_autobuild_enabled", lambda: True)
+    monkeypatch.setattr(cg, "_disabled", lambda: False)
+    monkeypatch.setattr(cg, "available", lambda: True)
+    monkeypatch.setenv("AIFORGE_CODEGRAPH_PATH", str(repo))
+    cg._VERIFIED_HEALTHY.clear()
+
+    def no_build(cmd, **k):
+        raise AssertionError("healthy index must not rebuild")
+    monkeypatch.setattr(cg.subprocess, "run", no_build)
+    assert cg.ensure_indexed(str(repo)) is True
+
+
+def _valid_sqlite_bytes() -> bytes:
+    import sqlite3
+    import tempfile
+    import os
+    fd, p = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE t(x)")
+    con.commit()
+    con.close()
+    with open(p, "rb") as f:
+        data = f.read()
+    os.unlink(p)
+    return data

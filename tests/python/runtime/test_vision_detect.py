@@ -127,3 +127,20 @@ def test_classifier_cannot_is_not_a_capability_verdict():
     assert vd._classify_probe_error(RuntimeError("cannot accept images at this resolution")) is None
     # a real modality rejection still definitive
     assert vd._classify_probe_error(RuntimeError("does not support image inputs")) is False
+
+
+def test_round10_form_rejection_is_inconclusive_not_no():
+    # A rejection of the base64 / data-uri / image_url TRANSPORT form is NOT a
+    # modality rejection — the model may still do vision via another form. Must
+    # be inconclusive (None), never a definitive "no vision" (False).
+    for m in (
+        "base64 image input is not supported on this endpoint",
+        "data:image URIs are not accepted; use image_url",
+        "inline image_url is unsupported, only file references allowed",
+    ):
+        assert vision_detect._classify_probe_error(RuntimeError(m)) is None
+
+
+def test_round10_true_modality_rejection_still_no():
+    assert vision_detect._classify_probe_error(
+        RuntimeError("this model does not support vision")) is False

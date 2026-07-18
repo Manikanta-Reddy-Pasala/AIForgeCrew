@@ -140,7 +140,22 @@ def _advisory_before(clause: str, pos: int) -> bool:
     be updated") or DENIED ("I haven't updated the file"), not claimed. A stray
     "please"/"not" LATER in the clause ("I updated X, please review" / "I updated
     X, not Y") does not, so a real claim isn't suppressed."""
-    pre = clause[max(0, pos - 30): pos]
+    # ADJACENCY: the marker must actually PRECEDE this verb closely ("was
+    # deleted", "should be updated", "haven't updated") — a 16-char window is
+    # ~2-3 words. A stray auxiliary/negation from an unrelated fragment earlier
+    # in the same clause ("The bug is fixed, and I updated X") must NOT suppress
+    # the real claim, so the window is tight, not the whole clause.
+    pre = clause[max(0, pos - 16): pos]
+    # …AND a re-subject boundary (comma/semicolon or a fresh "I"/"we") starts a
+    # NEW fragment: a marker BEFORE it ("is fixed," / "was failing;") governs the
+    # old subject, not this verb — keep only text after the LAST such boundary so
+    # "The bug is fixed, and I updated X" reads as a real claim, while a genuine
+    # adjacent frame ("I haven't updated X") keeps its marker.
+    last = None
+    for m in _RESUBJECT_RE.finditer(pre):
+        last = m
+    if last is not None:
+        pre = pre[last.end():]
     return bool(_ADVISORY_RE.search(pre) or _NEGATION_RE.search(pre)
                 or _PASSIVE_RE.search(pre))
 

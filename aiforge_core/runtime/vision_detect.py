@@ -72,6 +72,16 @@ _TEXT_ONLY = ("text only", "text-only", "only supports text", "only support text
 _FORM_LOOKAHEAD = (
     r"(?!\s*[-_a-z]*(?:url|format|type|scheme|encoding|codec|base64|"
     r"dimension|size|mode|resolution|pixel))")
+# A form/encoding qualifier co-occurring with a rejection → the PROBE PAYLOAD
+# form is rejected (the probe sends a base64 data-URI), not the image modality.
+_FORM_REJECT_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:base64|base-64|data[\s-]?uris?|data:image|inline|image[_\s-]?urls?|"
+    r"jpe?g|png|webp|gif|bmp|svg|tiff?|heic)\b[^.]{0,40}?"
+    r"(?:not supported|not accepted|unsupported|not allowed|only)"
+    r"|(?:not supported|not accepted|unsupported|only\s+support\w*|use)"
+    r"[^.]{0,40}?\b(?:base64|data[\s-]?uris?|image[_\s-]?urls?|url)\b"
+    r")")
 _MODALITY_REJECT_RE = re.compile(
     r"(?i)(?:"
     # "(does not) support image/vision/multimodal / input modality" — but NOT a
@@ -117,6 +127,12 @@ def _classify_probe_error(exc: Exception) -> bool | None:
             return None
     except Exception:  # noqa: BLE001
         pass
+    # A FORM/ENCODING rejection ("base64 images are not supported, use image_url",
+    # "data-uri not supported") is about HOW the probe sent the image (it sends a
+    # base64 data-URI), NOT the model's capability — a real VLM that wants a URL
+    # emits these. Keep them inconclusive (None), before the modality check.
+    if _FORM_REJECT_RE.search(msg):
+        return None
     if any(p in msg for p in _TEXT_ONLY):
         return False
     return False if _MODALITY_REJECT_RE.search(msg) else None

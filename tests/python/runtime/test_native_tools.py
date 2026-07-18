@@ -128,3 +128,32 @@ def test_tools_unsupported_reads_http_body():
         e = urllib.error.HTTPError("http://x", code, "busy", {},
                                    io.BytesIO(b"tools not supported"))
         assert _native._tools_unsupported(e) is False
+
+
+def _http_err(code, body):
+    import io
+    import urllib.error
+    e = urllib.error.HTTPError(
+        "http://x", code, "Bad Request", {}, io.BytesIO(body.encode()))
+    e._aiforge_body = body.encode()      # stash so body-readers see it
+    return e
+
+
+def test_round10_tool_choice_only_rejection_not_treated_as_no_tools():
+    # A server that does native FC with tool_choice="auto" but rejects the
+    # forced "required" mode the probe uses must NOT be permanently disabled.
+    exc = _http_err(400, 'Invalid tool_choice: "required" is not supported')
+    assert _native._rejects_only_tool_choice(exc) is True
+
+
+def test_round10_probe_stays_optimistic_on_tool_choice_rejection(monkeypatch):
+    _native.reset_native_cache()
+    exc = _http_err(400, 'tool_choice "required" not supported')
+
+    def boom(*a, **k):
+        raise exc
+    from aiforge_core.llm import client
+    monkeypatch.setattr(client, "complete_raw", boom)
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-x")
+    assert _native._probe_native("planner") is True     # optimistic
+    assert "m-x" not in _native._NATIVE_CACHE            # NOT cached-disabled

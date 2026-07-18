@@ -114,12 +114,29 @@ def _probe_native(role: str) -> bool:
         _NATIVE_CACHE[model] = ok          # definitive: endpoint responded
         return ok
     except Exception as exc:  # noqa: BLE001
-        if _tools_unsupported(exc):
+        if _tools_unsupported(exc) and not _rejects_only_tool_choice(exc):
             _NATIVE_CACHE[model] = False   # definitive: endpoint rejects tools
             return False
-        # Inconclusive (busy / timeout / reloading) — don't cache, stay native.
+        # A rejection that names ONLY tool_choice (the probe forces
+        # tool_choice="required"; some servers do tools with "auto" but reject
+        # the forced mode the RUNTIME never uses) is NOT a tools-capability
+        # rejection — the model can do native FC. Stay optimistic, don't cache.
+        # Also inconclusive (busy / timeout / reloading).
         log.info("native probe inconclusive (%s) — staying optimistic", exc)
         return True
+
+
+def _rejects_only_tool_choice(exc: Exception) -> bool:
+    """True when the rejection is specifically about the ``tool_choice`` PARAMETER
+    (the forced-call mode the probe uses), not about tools support in general —
+    so a model that does native FC with ``tool_choice="auto"`` isn't wrongly
+    disabled just because it refuses ``"required"``."""
+    try:
+        from aiforge_core.llm.client._errors import _http_err_body
+        m = (str(exc) + " " + _http_err_body(exc)).lower()
+    except Exception:  # noqa: BLE001
+        m = str(exc).lower()
+    return "tool_choice" in m or "tool choice" in m
 
 
 def native_tools_enabled(role: str) -> bool:

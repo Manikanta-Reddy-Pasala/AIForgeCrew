@@ -131,42 +131,50 @@ def _acquire_build_lock(repo: str):
         return "nolock"
 
 
-def _index_healthy(repo: str) -> bool:
-    """Cheap INTEGRITY probe of a built ``.codegraph`` — a SQLite quick_check on
-    its DB file(s). Distinguishes a COMPLETE index (kept when a build overran the
-    timeout on slow teardown) from a HALF-WRITTEN one (a mid-write timeout leaves
-    a corrupt DB that ``indexed()``'s dir-existence check can't detect and would
-    trust forever). True only when a DB exists AND passes quick_check. Never
-    raises; on any doubt returns False so the caller removes + rebuilds."""
+def _db_files(repo: str) -> list:
+    """The SQLite DB file(s) inside a built ``.codegraph``, EXCLUDING WAL/SHM/
+    journal sidecars (not standalone DBs). Empty when the binary names its store
+    with an extension we don't recognise — callers must treat 'no DB found' as
+    'can't verify', NOT 'corrupt'."""
     import glob
-    import sqlite3
     d = os.path.join(repo, ".codegraph")
     try:
         dbs = (glob.glob(os.path.join(d, "**", "*.db"), recursive=True)
                + glob.glob(os.path.join(d, "**", "*.sqlite"), recursive=True))
-        # drop WAL/SHM/journal sidecars — they aren't standalone DBs; a
-        # quick_check on them throws and would wrongly condemn a HEALTHY
-        # WAL-mode index. (Also why *.sqlite, not *.sqlite*.)
-        dbs = [x for x in dbs
-               if not x.endswith(("-wal", "-shm", "-journal", ".db-wal",
-                                  ".db-shm", ".sqlite-wal", ".sqlite-shm"))]
     except Exception:  # noqa: BLE001
-        return False
-    if not dbs:
-        return False                      # no DB → not a usable index
-    for db in dbs:
+        return []
+    return [x for x in dbs
+            if not x.endswith(("-wal", "-shm", "-journal", ".db-wal", ".db-shm",
+                               ".sqlite-wal", ".sqlite-shm"))]
+
+
+def _db_corrupt(repo: str) -> bool:
+    """True ONLY when a recognisable DB file EXISTS and FAILS a SQLite
+    quick_check — i.e. PROVEN corrupt. 'No DB found' (unknown filename) → False
+    (not proven corrupt), so a valid build whose store we can't locate is never
+    wrongly deleted. Never raises."""
+    import sqlite3
+    for db in _db_files(repo):
         try:
-            # immutable=1: read-only WITHOUT needing to create a -shm/-wal (the
-            # build is done, no writer), so a WAL-mode DB opens cleanly.
+            # immutable=1: read-only without needing a -shm/-wal (build is done,
+            # no writer), so a WAL-mode DB opens cleanly.
             con = sqlite3.connect(f"file:{db}?mode=ro&immutable=1", uri=True,
                                   timeout=2)
             row = con.execute("PRAGMA quick_check").fetchone()
             con.close()
             if not row or str(row[0]).lower() != "ok":
-                return False
-        except Exception:  # noqa: BLE001 — locked / corrupt / unreadable
-            return False
-    return True
+                return True
+        except Exception:  # noqa: BLE001 — corrupt / unreadable
+            return True
+    return False
+
+
+def _index_healthy(repo: str) -> bool:
+    """A USABLE index — a recognisable DB is present AND passes quick_check. Used
+    for the timeout-keep decision (a slow-teardown overrun with a complete DB is
+    kept; a mid-write timeout with a corrupt/absent DB is not). Distinct from
+    ``not _db_corrupt`` which is True even when NO db is found."""
+    return bool(_db_files(repo)) and not _db_corrupt(repo)
 
 
 def _remove_partial_index(repo: str) -> None:
@@ -174,6 +182,7 @@ def _remove_partial_index(repo: str) -> None:
     build. Safe: ensure_indexed only builds when the repo was NOT already
     indexed, so any index present after a failed build is a stub from that
     attempt, not a good prior index. Never raises."""
+    _VERIFIED_HEALTHY.discard(repo)
     try:
         import shutil
         d = os.path.join(repo, ".codegraph")
@@ -223,6 +232,18 @@ from collections import defaultdict as _defaultdict  # noqa: E402
 # block an unrelated first-time build of repo Y across sessions.
 _LOCKS: "dict[str, _threading.Lock]" = _defaultdict(_threading.Lock)
 _LOCKS_GUARD = _threading.Lock()
+# Repos whose index passed a quick_check this process — skip re-verifying every
+# turn (the fast-path integrity check is one-shot per repo).
+_VERIFIED_HEALTHY: "set[str]" = set()
+
+
+def _canon_repo(repo: str) -> str:
+    """Canonical (realpath + normcase) repo key — so the thread lock, negative
+    cache, flock and health cache all key on ONE path regardless of spelling."""
+    try:
+        return os.path.normcase(os.path.realpath(repo))
+    except Exception:  # noqa: BLE001
+        return repo
 # Negative cache: repo → monotonic ts of last FAILED/timed-out build, so a repo
 # that can't index within the budget isn't re-attempted (blocking!) every turn.
 _FAILED: "dict[str, float]" = {}
@@ -275,7 +296,19 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
     if not _autobuild_enabled() or _disabled() or not available():
         return indexed(cwd)
     if indexed(cwd):
-        return True
+        # Integrity-verify ONCE per repo (cached) so a corrupt index left by a
+        # CRASHED prior process (OOM / SIGKILL mid-init — no in-process cleanup)
+        # isn't trusted forever. A PROVEN-corrupt index is removed + rebuilt; a
+        # valid or unverifiable one is trusted and cached.
+        rc = _canon_repo(_repo(cwd))
+        if rc in _VERIFIED_HEALTHY:
+            return True
+        if not _db_corrupt(rc):
+            _VERIFIED_HEALTHY.add(rc)
+            return True
+        _remove_partial_index(rc)          # crashed-process corrupt leftover
+        _FAILED.pop(rc, None)
+        # fall through to rebuild
     repo = _repo(cwd)
     if not repo or not os.path.isdir(repo):
         return False
@@ -283,10 +316,7 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
     # cross-process flock all key on the SAME path — else two spellings of one
     # repo (the "." fallback, a symlink) would get separate _FAILED / _LOCKS
     # entries and the flock's canonical guarantee wouldn't match them.
-    try:
-        repo = os.path.normcase(os.path.realpath(repo))
-    except Exception:  # noqa: BLE001
-        pass
+    repo = _canon_repo(repo)
     # Negative cache: a repo that failed/timed out must NOT re-trigger the
     # (blocking) build every turn — that hung chat forever on a repo too big to
     # index in the budget. Skip re-attempts for a cooldown window.
@@ -338,24 +368,27 @@ def ensure_indexed(cwd: str | None = None, *, timeout_s: int | None = None) -> b
                 # real integrity probe: keep only a DB that passes quick_check.
                 if indexed(cwd) and _index_healthy(repo):
                     _FAILED.pop(repo, None)
+                    _VERIFIED_HEALTHY.add(repo)
                     return True
-                # Remove the stub if we hold the lock OR it's PROVEN corrupt
-                # (a failed quick_check) — a corrupt index is never a concurrent
-                # process's good one, so it's safe to drop even under "nolock"
-                # (else indexed()'s existence check would trust it forever).
-                if _have_lock or not _index_healthy(repo):
+                # Remove the stub if we hold the lock OR it's PROVEN corrupt (a
+                # found DB failed quick_check) — a corrupt index is never a
+                # concurrent process's good one, so it's safe to drop even under
+                # "nolock" (else indexed()'s existence check trusts it forever).
+                if _have_lock or _db_corrupt(repo):
                     _remove_partial_index(repo)
                 _FAILED[repo] = _time.monotonic()
                 return False
             # A non-zero exit (wrong subcommand, disk full, partial write) can
-            # still leave a stub .codegraph — require a clean exit AND a real,
-            # HEALTHY index; else remove the stub, negative-cache, stay off.
-            if p.returncode != 0 or not indexed(cwd) or not _index_healthy(repo):
-                if _have_lock or not _index_healthy(repo):
+            # still leave a stub .codegraph. A clean exit (rc 0) is TRUSTED — we
+            # do NOT integrity-gate it (the binary may name its DB with an
+            # extension we can't probe; gating deleted every good build).
+            if p.returncode != 0 or not indexed(cwd):
+                if _have_lock or _db_corrupt(repo):
                     _remove_partial_index(repo)
                 _FAILED[repo] = _time.monotonic()
                 return False
             _FAILED.pop(repo, None)
+            _VERIFIED_HEALTHY.add(repo)     # fresh clean build → trust fast-path
             return True
         finally:
             if hasattr(_fl, "close"):
