@@ -70,6 +70,36 @@ def test_recovery_is_bounded_then_bails(tmp_path):
     assert any(e.get("type") == "done" for e in events)
 
 
+def test_duplicate_read_is_skipped_and_forces_new_progress(tmp_path):
+    """A re-read of an already-read file is short-circuited (not re-executed, not
+    counted toward the stuck guard) with a 'read a DIFFERENT file / WRITE' nudge —
+    so a model that re-reads is pushed to make new progress or finish."""
+    f = tmp_path / "A.java"
+    f.write_text("class A { int x; }")
+    reads = {"n": 0}
+    seen_dupe = {"hit": False}
+
+    def script(role, convo):
+        # after the duplicate-skip observation appears, the model finishes
+        if any("[skipped — duplicate]" in str(m.get("content") or "") for m in convo):
+            seen_dupe["hit"] = True
+            return "FINAL: done, one file"
+        reads["n"] += 1
+        return f'ACTION: file_read\nARGS_JSON: {{"path": "{f}"}}'
+
+    events = _run(tmp_path, script, AIFORGE_CHAT_STUCK_RECOVERIES="3")
+    texts = [e.get("text", "") for e in events]
+    assert any("⏭ duplicate read skipped" in t for t in texts)   # dup detected
+    assert seen_dupe["hit"]                                       # model saw the skip
+    assert any("done, one file" in t for t in texts)             # finished
+    # emitted twice (executed once, then the identical re-read skipped) — only the
+    # first actually ran the tool (one `tool` event), the dup never re-executed.
+    assert reads["n"] == 2
+    tool_reads = [e for e in events if e.get("type") == "tool"
+                  and e.get("name") == "file_read"]
+    assert len(tool_reads) == 1
+
+
 def test_recoveries_disabled_restores_hard_bail(tmp_path):
     """AIFORGE_CHAT_STUCK_RECOVERIES=0 restores the old immediate hard bail —
     no recovery nudge, straight to the honest bail."""

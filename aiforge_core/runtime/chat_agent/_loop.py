@@ -398,6 +398,8 @@ def run_chat_agent(
     condensed_notified = False
     continue_nudges = 0   # consecutive "narrated but didn't act" re-prompts
     stuck_recoveries = 0  # progress-recap nudges spent recovering a repeated step
+    read_sigs_seen: set = set()   # read tool+args already executed this run
+    _long_chain_help = _stuck_recovery_max() > 0   # 0 → full legacy behaviour
 
     # Mid-run steering (simple mode): let the user type WHILE the agent works —
     # each message is folded into the conversation as a live instruction the next
@@ -786,6 +788,24 @@ def run_chat_agent(
         # Stuck-action loop: same tool+args repeated too many times → ask
         # the user instead of looping to the safety cap.
         sig = name + "|" + json.dumps(args, sort_keys=True, default=str)
+        # Duplicate-READ short-circuit: a local model on a long sweep re-issues a
+        # read it already ran (its result is still above in the convo). Don't
+        # re-execute or count it toward the stuck guard — hand back a cheap
+        # progress recap that points at the next unread file / the write step, so
+        # every read must make NEW progress. Cleared on any edit (a file just
+        # written is worth re-reading). Disabled with the same env switch as the
+        # recovery nudge (AIFORGE_CHAT_STUCK_RECOVERIES=0 → full legacy behaviour).
+        if _long_chain_help and name in _READ_OBS_TOOLS and sig in read_sigs_seen:
+            _recap = _progress_recap(convo)
+            yield {"type": "thought", "role": "system",
+                   "text": f"⏭ duplicate read skipped ({name})"}
+            convo.append({"role": "user", "content":
+                "OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
+                "read; its result is above and re-reading wastes a step. "
+                + (_recap + ". " if _recap else "")
+                + "Read a DIFFERENT file you have not read yet, or if you have "
+                "enough, WRITE your output now (file_write) or emit FINAL."})
+            continue
         action_counts[sig] = action_counts.get(sig, 0) + 1
         if action_counts[sig] >= _LOOP_REPEAT:
             # A local model on a long chain re-issues an action it already ran —
@@ -1117,9 +1137,14 @@ def run_chat_agent(
                "call_id": n}
         # Loop-engineering bookkeeping: count edits that actually LANDED (gates
         # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
+        # Remember a successful read so a later identical re-read short-circuits.
+        if (_long_chain_help and name in _READ_OBS_TOOLS and not (
+                isinstance(result, dict) and result.get("ok") is False)):
+            read_sigs_seen.add(sig)
         if name in _EDIT_TOOL_NAMES and not (
                 isinstance(result, dict) and result.get("ok") is False):
             _edits_made += 1
+            read_sigs_seen.clear()   # a file just changed → re-reads are valid again
             # D: post-edit self-check. Immediately syntax-check the file just
             # written and, if broken, hand the model the error THIS step (tight
             # feedback) instead of letting it surface only at the end-of-run test
